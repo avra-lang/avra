@@ -1,0 +1,41 @@
+// ONE STORE, TWO LANGUAGES: a reader's print is an input of every file it reads, so what one
+// language's reading made is never another's answer. Read again under its own language, a file
+// costs nothing; under another, everything is read again, and the program answers alike.
+use @std.avrac.testing.held.{Pass, empty_store, held_at}
+use @std.program.tests.support.store_in_memory.{StoreInMemory}
+
+const TG_MAIN: string = "/w/src/main.av"
+
+/// One process reading the package under the language printed `language`, over `store`.
+fn tg_pass(language: string, store: StoreInMemory) -> Pass {
+    let held = held_at(
+        {
+            "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+            TG_MAIN: "fn f() -> int { 7 }\nf()\n",
+        },
+        "/w",
+    )
+    (held with { language: language }).passed_over(TG_MAIN, store)
+}
+
+spec "compiler/build — two languages, one store" {
+    given "one store read under two languages" {
+        then "the same language twice reads its own answers back" {
+            let s = empty_store()
+            let _ = tg_pass("avra-one", s)
+            tg_pass("avra-one", s).worked.is_empty()
+        }
+        then "another language's reading works the file out again" {
+            let s = empty_store()
+            let first = tg_pass("avra-one", s)
+            let other = tg_pass("avra-two", s)
+            !other.worked.is_empty() && other.ran == first.ran
+        }
+        then "the first language, back over that store, still reads its own" {
+            let s = empty_store()
+            let _ = tg_pass("avra-one", s)
+            let _ = tg_pass("avra-two", s)
+            tg_pass("avra-one", s).worked.is_empty()
+        }
+    }
+}

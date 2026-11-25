@@ -1,0 +1,35 @@
+// A fn's cancel bits settle with its strongly-connected set, asked of the program layer: a cycle
+// takes what a member outside it reaches, and a cycle with no waiter reaches nothing.
+use @std.avrac.testing.{held_at, Judged}
+
+/// The program `main` writes, judged on the layer.
+fn cancel_judged(main: string) -> Judged {
+    held_at(
+        {"/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n", "/w/src/main.av": main},
+        "/w",
+    )
+        .judged_at("/w/src/main.av")
+}
+
+/// Whether a call to `name` may park.
+fn parks_now(j: Judged, name: string) -> bool { j.cancel_bits(name).starts_with("p") }
+
+fn cancel_cycle(leaf_body: string) -> string {
+    "extern fn avra_fiber_sleep(ms: int)\nfn leaf() {\n    ${leaf_body}\n}\nfn ping(k: int) {\n    if k > 0 { pong(k - 1) } else { leaf() }\n}\nfn pong(k: int) {\n    if k > 0 { ping(k - 1) }\n}\nfn quiet() -> int { 1 }\n"
+}
+
+spec "compiler/cancel_reach — a fn's cancel bits settle with its own set" {
+    given "a two-fn cycle whose way out reaches a fn that parks" {
+        then "the fn that parks parks" { parks_now(cancel_judged(cancel_cycle("avra_fiber_sleep(1)")), "leaf") }
+        then "both members of the cycle park" {
+            let j = cancel_judged(cancel_cycle("avra_fiber_sleep(1)"))
+            parks_now(j, "ping") && parks_now(j, "pong")
+        }
+    }
+    given "the same cycle where nothing parks" {
+        then "neither member parks" {
+            let j = cancel_judged(cancel_cycle("let _ = 1"))
+            !parks_now(j, "ping") && !parks_now(j, "pong")
+        }
+    }
+}

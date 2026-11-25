@@ -1,0 +1,255 @@
+//! WHAT A BODY READS OF THE PROGRAM'S STATE, on the program layer: the read set's walks (features/
+//! read_set.av, the one definition of which reads count) over a body's names as its typing resolved
+//! them. A declared fn's own reads and the fns it calls are kept per fn (`fn_reads`); what it
+//! reaches through them, through any cycle, per fn asked (`fn_reaches`), folded from those.
+use core.{
+    template_file,
+    template_home,
+    BindSite,
+    CalledFn,
+    ExprId,
+    KeptState,
+    NameRead,
+    NamedValue,
+    NamesRead,
+    NodeReads,
+    StatesAsked,
+    StatesRead,
+    StmtId,
+    SyntaxArena,
+    distinct,
+    flatten,
+    kept_state,
+    reached_union,
+    some_list,
+    sorted_texts,
+}
+use features.{ReadFacts, StatePlace, site_places_in, structural_places_in}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+
+/// A body's names on the program layer: its tree, its reads as typing resolved them, what a name the
+/// program declares names read from a home, and what a call of a declared fn reaches.
+type ProgramReads = {
+    store: SyntaxArena,
+    names: NamesRead,
+    named: fn(string, string?) -> NamedValue?,
+    reach: fn(CalledFn) -> List<StatePlace>,
+}
+
+impl ReadFacts for ProgramReads {
+    fn tree() -> SyntaxArena { self.store }
+
+    fn named_place(e: ExprId) -> StatePlace? {
+        let r? = self.names.at(e) else { return null }
+        self.place_of(r)
+    }
+
+    fn captured_places(e: ExprId) -> List<StatePlace> { [p for r in self.names.captured(e) for p in some_list(self.place_of(r))] }
+
+    fn reads_receiver(e: ExprId) -> bool { receives(self.names.at(e)) || self.names.captured(e).any((r) -> receives(r)) }
+
+    fn callee_places(call: ExprId) -> List<StatePlace> {
+        let r? = self.names.at(call) else { return [StatePlace.Unknown] }
+        if r.binder != null { return [StatePlace.Unknown] }
+        let named? = (self.named)(r.name, r.home) else { return [StatePlace.Unknown] }
+        match named {
+            .Fn(c) -> if c.external || c.owner != null { [StatePlace.Unknown] } else { (self.reach)(c) },
+            .Literal(_) or .Settled(_, _) or .Unsettled(_) or .Built(_) or .Kept(_, _) -> [],
+        }
+    }
+}
+
+impl ProgramReads {
+    /// The place a read names: a module `state` the program declares; a `state` statement of the
+    /// body, whose cell the body holds; nothing for any other.
+    fn place_of(r: NameRead) -> StatePlace? {
+        let site? = r.binder else { return kept_place((self.named)(r.name, r.home)) }
+        match site {
+            .Stmt(i) -> if self.store.is_state_stmt(StmtId { index: i }) { StatePlace.Own(StmtId { index: i }) } else { null },
+            .Expr(_) or .Pat(_) or .Seat(_) or .Receiver -> null,
+        }
+    }
+}
+
+/// The module `state` a name names, absent for any other value.
+fn kept_place(named: NamedValue?) -> StatePlace? {
+    let n? = named else { return null }
+    match n {
+        .Kept(c, _) -> StatePlace.Kept(c.file, c.name),
+        .Fn(_) or .Literal(_) or .Settled(_, _) or .Unsettled(_) or .Built(_) -> null,
+    }
+}
+
+/// Whether a read reads the receiver.
+fn receives(r: NameRead?) -> bool {
+    let site? = r?.binder else { return false }
+    site is .Receiver
+}
+
+/// What a name read in `file` from `home` names: where the template that wrote it was written, then
+/// `file`.
+fn named_from(engine: QueryEngine, file: SourceFileAddress, name: string, home: string?) -> NamedValue? {
+    read_from(engine, file, home).find_map((f) -> named_value(engine, f, name))
+}
+
+/// The places `roots` read, through `facts`: those read at paint time that no reading answers for
+/// where `structural`, `answered` giving the heads of an instance a cell of it takes.
+fn roots_read(
+    facts: ProgramReads,
+    roots: List<ExprId>,
+    structural: bool,
+    answered: fn(ExprId) -> List<ExprId>,
+) -> List<StatePlace> {
+    flatten(
+        [if structural { structural_places_in(facts, r, answered) } else { site_places_in(facts, r) } for r in roots],
+    )
+}
+
+/// The module states the part of a body `asked` names reads in `file`, each as its box is reached,
+/// and the body's own `state` statements it reads — unnamed for a read at paint time, which no cell
+/// of the body answers for.
+export fn states_read(engine: QueryEngine, file: SourceFileAddress, asked: StatesAsked) -> StatesRead {
+    let facts = ProgramReads {
+        store: asked.store,
+        names: asked.names,
+        named: (n: string, home: string?) -> named_from(engine, file, n, home),
+        reach: (c: CalledFn) -> reached_places(engine, c, asked.structural),
+    }
+    let places = roots_read(facts, asked.roots, asked.structural, asked.answered)
+    let own = if asked.structural { [] } else { [s for p in places for s in own_stmt(p)] }
+    let kept: List<KeptState?> = [kept_box(engine, p) for p in places if own_stmt(p).is_empty() || asked.structural]
+    StatesRead {
+        states: [k! for k in kept if k != null],
+        unnamed: kept.any(it == null),
+        locals: own,
+    }
+}
+
+/// The body's own `state` statement a place is, none for any other.
+fn own_stmt(p: StatePlace) -> List<StmtId> { match p { .Own(s) -> [s], rest -> [] } }
+
+/// The box a place's module `state` is kept in, absent for a place no box answers for.
+fn kept_box(engine: QueryEngine, p: StatePlace) -> KeptState? {
+    match p {
+        .Kept(f, n) -> {
+            let named? = named_value(engine, f, n) else { return null }
+            kept_state(named)
+        },
+        .Local(_, _) or .Global(_) or .Own(_) or .Unknown -> null,
+    }
+}
+
+/// What a call of the declared fn `c` reaches.
+fn reached_places(engine: QueryEngine, c: CalledFn, structural: bool) -> List<StatePlace> {
+    [place_at(k) for k in fn_reaches(engine, c.file, c.name, structural)]
+}
+
+/// The place a key names.
+fn place_at(key: string) -> StatePlace {
+    let at = key.index_of("\t")
+    let file? = (if at < 0 { null } else { template_file(key.substring(0, at)) }) else { return StatePlace.Unknown }
+    StatePlace.Kept(file, key.substring(at + 1, key.length))
+}
+
+/// A declared name as one key: the file declaring it, then its name.
+fn declared_key(file: SourceFileAddress, name: string) -> string { "${template_home(file)}\t${name}" }
+
+/// A place as one key; `?` for one nothing names.
+fn place_said(p: StatePlace) -> string {
+    match p {
+        .Kept(f, n) -> declared_key(f, n),
+        .Local(_, _) or .Global(_) or .Own(_) or .Unknown -> UNNAMED,
+    }
+}
+
+/// What the fn `file` declares as `name` reads of the program's state by its own body, and the fns
+/// it calls, each by its key: what it reads at paint time that no reading answers for where
+/// `structural`. A fn with no body to read reads what nothing names.
+@query
+export fn fn_reads(engine: QueryEngine, file: SourceFileAddress, name: string, structural: bool) -> NodeReads {
+    let body? = elaborated_fn(engine, file, name) else { return unnamed_reads() }
+    let calls: Cell<List<string>> = Cell.new([])
+    let facts = ProgramReads {
+        store: body.store,
+        names: NamesRead { reads: body.reads },
+        named: (n: string, home: string?) -> named_from(engine, file, n, home),
+        reach: (c: CalledFn) -> called(calls, c),
+    }
+    let places = roots_read(facts, [body.body], structural, (x) -> heads_answered(engine, body, x))
+    let here = declared_key(file, name)
+    NodeReads { own: [read_said(body.store, here, p) for p in places], refs: calls.get() }
+}
+
+/// A place as a body's own reads key it: a `state` statement of the body by the fn it stands in
+/// (`here`), its name and where it's written; any other as `place_said` keys it.
+fn read_said(store: SyntaxArena, here: string, p: StatePlace) -> string {
+    match p {
+        .Own(s) -> own_said(store, here, s),
+        .Kept(_, _) or .Local(_, _) or .Global(_) or .Unknown -> place_said(p),
+    }
+}
+
+/// The key of the `state` statement `s` of a body of the fn `here`: its name and where it's written.
+fn own_said(store: SyntaxArena, here: string, s: StmtId) -> string {
+    let name = store.let_name(s) ?? ""
+    let at = store.stmt_span(s)?.lo ?? -1
+    "${OWN_MARK}${here}\t${name}@${at}"
+}
+
+/// What a body's own `state` key begins with.
+const OWN_MARK: string = "&"
+
+/// `c` noted among the fns a body calls; it reaches nothing here.
+fn called(calls: Cell<List<string>>, c: CalledFn) -> List<StatePlace> {
+    calls.push(declared_key(c.file, c.name))
+    []
+}
+
+/// What the fn `file` declares as `name` reaches, by its own body and every fn it calls through any
+/// cycle, each place by its key; a body's own `state` is one no caller can name.
+@query
+export fn fn_reaches(engine: QueryEngine, file: SourceFileAddress, name: string, structural: bool) -> List<
+    string,
+> {
+    let reached = reached_union(
+        declared_key(file, name),
+        (k) -> keyed_places(engine, k, structural),
+    )
+    sorted_texts(distinct([if k.starts_with(OWN_MARK) { UNNAMED } else { k } for k in reached]))
+}
+
+/// What a fn no body is read for reads: what nothing names.
+fn unnamed_reads() -> NodeReads { NodeReads { own: [UNNAMED], refs: [] } }
+
+/// The key of a place nothing names.
+const UNNAMED: string = "?"
+
+/// `fn_reads` of the fn a key names.
+fn keyed_places(engine: QueryEngine, key: string, structural: bool) -> NodeReads {
+    let at = key.index_of("\t")
+    let file? = (if at < 0 { null } else { template_file(key.substring(0, at)) }) else { return unnamed_reads() }
+    fn_reads(engine, file, key.substring(at + 1, key.length), structural)
+}
+
+/// The heads of an instance in `body` a cell of the instance takes: those whose field its record
+/// makes a `state` field.
+fn heads_answered(engine: QueryEngine, body: ElaboratedBody, x: ExprId) -> List<ExprId> {
+    let heads? = match body.store.expr(x) {
+        .Component(_, _, heads, _, _, _) -> heads,
+        rest -> null,
+    } else { return [] }
+    let lit? = body.store.expansion_of(x) else { return [] }
+    let ty? = body.core[lit.index] else { return [] }
+    let at? = declared_at(ty) else { return [] }
+    let fields = record_signature(engine, at.file, at.name)?.fields ?? []
+    let parts? = body.store.struct_lit_parts(lit) else { return [] }
+    [h for j, h in heads if j < parts.fields.length && fields.any(it.name == parts.fields[j] && it.state)]
+}
+
+collect listed_place_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries what a body reads of the program's state is read through, for a process to hand its
+/// engine.
+export fn place_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_place_facts) }

@@ -1,0 +1,586 @@
+// The router: a route is a grammar over the FRAMED target, each
+// handler keeps its own record, and one compiled table holds routes
+// whose records differ. A target nothing answers is a 404 — a value.
+// The adversarial half of this story is route_adversarial_test.av.
+use @std.http_message.message.{Method}
+use @std.http.http.{Request, Unrouted, Response, text}
+use @std.http.route.{
+    Route,
+    routed,
+    fixed,
+    tailed,
+    compiled,
+    dispatch,
+    faults,
+    route_faults,
+    RouteFault,
+    get,
+    prefixed,
+}
+
+grammar Idea = "/ideas/{id}"
+grammar Search = "/search/{term}/{page}"
+grammar Static = "/static/{path...}"
+grammar Png = "/img/{path...}.png"
+
+fn serve_idea(q: Request<Idea>) -> Response { text(200, "idea " + q.params.id) }
+fn serve_search(q: Request<Search>) -> Response { text(200, "search " + q.params.term + " " + q.params.page) }
+fn serve_gone(_q: Request<Idea>) -> Response { Response { status: 410 } }
+fn serve_static(q: Request<Static>) -> Response { text(200, "static " + q.params.path) }
+fn serve_png(q: Request<Png>) -> Response { text(200, "png " + q.params.path) }
+fn serve_word(_q: Request<Unrouted>) -> Response { text(200, "word") }
+
+fn r_static() -> Route {
+    tailed<Static>(
+        Method.Get,
+        "/static/{path...}",
+        (t: Bytes) -> Static.parse_octets(t),
+        serve_static,
+    )
+}
+fn r_png() -> Route { tailed<Png>(Method.Get, "/img/{path...}.png", (t: Bytes) -> Png.parse_octets(t), serve_png) }
+
+/// The words of a table's fault variants, one per fault.
+fn kinds(rows: List<Route>) -> List<string> {
+    [kind_of(f) for f in route_faults(rows)]
+}
+
+fn kind_of(f: RouteFault) -> string {
+    match f {
+        .Overlap(_, _) -> "overlap",
+        .Unmarked(_) -> "unmarked",
+        .Unclaimed(_) -> "unclaimed",
+    }
+}
+
+/// One path under three methods, written in no order.
+fn many_methods() -> List<Route> {
+    [
+        fixed(Method.Delete, "/p", serve_word),
+        fixed(Method.Post, "/p", serve_word),
+        fixed(Method.Get, "/p", serve_word),
+    ]
+}
+
+fn reversed_rows(rows: List<Route>) -> List<Route> { [rows[rows.length - 1 - i] for i in 0..rows.length] }
+
+/// A group at `/api`: a GET beneath it and a POST at its root.
+fn under_api() -> List<Route> {
+    prefixed("/api", [fixed(Method.Get, "/x", serve_word), fixed(Method.Post, "/", serve_word)])
+}
+
+/// The status and the `allow` field a table answers for a target.
+fn refused_as(rows: List<Route>, line: string) -> string {
+    let q? = asked(line) else { return "unframed" }
+    let r = dispatch(compiled(rows), q)
+    "${r.status} ${r.header("allow") ?? ""}"
+}
+
+/// What a table of these routes answers for a target.
+fn answer_of(rows: List<Route>, line: string) -> string {
+    let q? = asked(line) else { return "unframed" }
+    let r = dispatch(compiled(rows), q)
+    "${r.status} ${r.body.text() ?? ""}"
+}
+
+fn routes() -> List<Route> {
+    [
+        routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse_octets(t), serve_idea),
+        routed<Search>(
+            Method.Get,
+            "/search/{term}/{page}",
+            (t: Bytes) -> Search.parse_octets(t),
+            serve_search,
+        ),
+    ]
+}
+
+/// Four routes over ONE position, one per rank, written widest first:
+/// only the ranking can pick the right one.
+fn wide_first() -> List<Route> {
+    [
+        get "/ideas/{path...}" { req -> "rest " + req.params.path },
+        get "/ideas/{slug}" { req -> "text " + req.params.slug },
+        get "/ideas/{id: int}" { req -> "narrow ${req.params.id}" },
+        get "/ideas/new" { _req -> "literal" },
+    ]
+}
+
+/// The same four, written tightest first.
+fn tight_first() -> List<Route> { reversed_rows(wide_first()) }
+
+/// The status and body a target earns, or "unframed" when the framer
+/// refused the line before the router ever saw it.
+fn answered(line: string) -> string { answer_of(routes(), line) }
+
+spec "@std.http route" {
+    given "a table of routes whose records differ" {
+        then "each route answers through its own typed handler" {
+            answered("GET /ideas/7 HTTP/1.1") == "200 idea 7"
+        }
+        then "the second route reads a record of a different type" {
+            answered("GET /search/cats/2 HTTP/1.1") == "200 search cats 2"
+        }
+        then "a target nothing answers is a 404, and a value" {
+            answered("GET /nowhere HTTP/1.1") == "404 "
+        }
+        then "a target that is one segment short does not match" {
+            answered("GET /search/cats HTTP/1.1") == "404 "
+        }
+        then "a target with an extra segment does not match" {
+            answered("GET /ideas/7/extra HTTP/1.1") == "404 "
+        }
+        then "an empty capture still matches, because a hole may take nothing" {
+            answered("GET /ideas/ HTTP/1.1") == "200 idea "
+        }
+        then "the method is part of the match" {
+            answered("POST /ideas/7 HTTP/1.1") == "405 "
+        }
+        then "a HEAD no HEAD route answers is answered by its GET route" {
+            answered("HEAD /ideas/7 HTTP/1.1") == "200 idea 7"
+        }
+        then "a HEAD route answers its HEAD before the GET route does, in either order" {
+            let head = fixed(Method.Head, "/ideas/7", (_q: Request<Unrouted>) -> text(200, "head"))
+            answer_of(routes().concat([head]), "HEAD /ideas/7 HTTP/1.1") == "200 head" &&
+                answer_of([head].concat(routes()), "HEAD /ideas/7 HTTP/1.1") == "200 head"
+        }
+        then "a HEAD of a path no route reads is still a 404" {
+            answered("HEAD /nowhere HTTP/1.1") == "404 "
+        }
+        then "a HEAD with no GET route beside it is refused like any method" {
+            refused_as([fixed(Method.Post, "/p", serve_word)], "HEAD /p HTTP/1.1") == "405 POST"
+        }
+    }
+    given "a target only another method's route reads" {
+        then "it is a 405 whose Allow names that method, HEAD beside GET" {
+            refused_as(routes(), "POST /ideas/7 HTTP/1.1") == "405 GET, HEAD"
+        }
+        then "Allow lists every method the path takes in one order, however the table is written" {
+            refused_as(many_methods(), "PUT /p HTTP/1.1") == "405 GET, HEAD, POST, DELETE" &&
+                refused_as(reversed_rows(many_methods()), "PUT /p HTTP/1.1") == "405 GET, HEAD, POST, DELETE"
+        }
+        then "a HEAD route beside its GET is named once" {
+            let head = fixed(Method.Head, "/p", serve_word)
+            refused_as(many_methods().concat([head]), "PUT /p HTTP/1.1") == "405 GET, HEAD, POST, DELETE"
+        }
+        then "a HEAD route alone does not name GET" {
+            refused_as([fixed(Method.Head, "/p", serve_word)], "GET /p HTTP/1.1") == "405 HEAD"
+        }
+        then "a path no route reads is a 404 with no Allow" {
+            refused_as(routes(), "POST /nowhere HTTP/1.1") == "404 " &&
+                refused_as(many_methods(), "PUT /p/x HTTP/1.1") == "404 " &&
+                refused_as(many_methods(), "PUT /q HTTP/1.1") == "404 "
+        }
+        then "a route whose reader refuses the target lends no method" {
+            refused_as(
+                    [get "/pages/{n: int}" { req -> "page ${req.params.n}" }],
+                    "POST /pages/two HTTP/1.1",
+                ) == "404 " &&
+                refused_as(
+                    [get "/pages/{n: int}" { req -> "page ${req.params.n}" }],
+                    "POST /pages/2 HTTP/1.1",
+                ) == "405 GET, HEAD"
+        }
+        then "a method the handler answers is its answer, whatever the other routes take" {
+            answer_of(many_methods(), "POST /p HTTP/1.1") == "200 word"
+        }
+        then "an OPTIONS of a routed path is refused by the same law" {
+            refused_as(routes(), "OPTIONS /ideas/7 HTTP/1.1") == "405 GET, HEAD"
+        }
+        then "a target that names no resource is still a 404" {
+            refused_as(routes(), "OPTIONS * HTTP/1.1") == "404 "
+        }
+        then "a rest-taker lends its method at every depth it reads" {
+            refused_as([r_static()], "POST /static/css/app.css HTTP/1.1") == "405 GET, HEAD" &&
+                refused_as([r_png()], "POST /img/a/b.gif HTTP/1.1") == "404 "
+        }
+    }
+    given "routes under a prefix" {
+        then "a route beneath it lends its method beneath it alone" {
+            refused_as(under_api(), "POST /api/x HTTP/1.1") == "405 GET, HEAD" &&
+                refused_as(under_api(), "POST /x HTTP/1.1") == "404 " &&
+                refused_as(under_api(), "POST /apix HTTP/1.1") == "404 "
+        }
+        then "the group's root door lends its method at the prefix, and not past a slash" {
+            refused_as(under_api(), "GET /api HTTP/1.1") == "405 POST" &&
+                refused_as(under_api(), "GET /api/ HTTP/1.1") == "404 "
+        }
+        then "a prefix under a prefix reads the same" {
+            refused_as(prefixed("/v1", under_api()), "POST /v1/api/x HTTP/1.1") == "405 GET, HEAD" &&
+                refused_as(prefixed("/v1", under_api()), "GET /v1/api HTTP/1.1") == "405 POST"
+        }
+    }
+    given "a handler's own 404" {
+
+        then "a handler answering 410 is its answer, not a miss" {
+            dispatch(
+                compiled(
+                    [
+                        routed<Idea>(
+                            Method.Get,
+                            "/ideas/{id}",
+                            (t: Bytes) -> Idea.parse_octets(t),
+                            serve_gone,
+                        ),
+                    ],
+                ),
+                asked("GET /ideas/7 HTTP/1.1")!,
+            )
+                .status == 410
+        }
+        then "a route that does not match still falls through to the next" {
+            dispatch(
+                compiled(
+                    [
+                        routed<Search>(
+                            Method.Get,
+                            "/search/{term}/{page}",
+                            (t: Bytes) -> Search.parse_octets(t),
+                            serve_search,
+                        ),
+                        routed<Idea>(
+                            Method.Get,
+                            "/ideas/{id}",
+                            (t: Bytes) -> Idea.parse_octets(t),
+                            serve_idea,
+                        ),
+                    ],
+                ),
+                asked("GET /ideas/7 HTTP/1.1")!,
+            )
+                .status == 200
+        }
+    }
+    given "the law over a table" {
+
+        then "two routes of one shape are named, later first" {
+            faults(
+                [
+                    routed<Idea>(
+                        Method.Get,
+                        "/ideas/{id}",
+                        (t: Bytes) -> Idea.parse_octets(t),
+                        serve_idea,
+                    ),
+                    routed<Idea>(
+                        Method.Get,
+                        "/ideas/{slug}",
+                        (t: Bytes) -> Idea.parse_octets(t),
+                        serve_gone,
+                    ),
+                ],
+            )
+                .length == 1
+        }
+        then "the refusal names both patterns and says which is unreachable" {
+            let found = faults(
+                [
+                    routed<Idea>(
+                        Method.Get,
+                        "/ideas/{id}",
+                        (t: Bytes) -> Idea.parse_octets(t),
+                        serve_idea,
+                    ),
+                    routed<Idea>(
+                        Method.Get,
+                        "/ideas/{slug}",
+                        (t: Bytes) -> Idea.parse_octets(t),
+                        serve_gone,
+                    ),
+                ],
+            )
+            found[0] == "`GET /ideas/{slug}` is unreachable — `GET /ideas/{id}` is declared above it and matches every target it does"
+        }
+        then "routes of different shapes do not conflict" {
+            faults(routes()).is_empty()
+        }
+        then "one shape under two methods is two routes, not a conflict" {
+            faults(
+                [
+                    routed<Idea>(
+                        Method.Get,
+                        "/ideas/{id}",
+                        (t: Bytes) -> Idea.parse_octets(t),
+                        serve_idea,
+                    ),
+                    routed<Idea>(
+                        Method.Post,
+                        "/ideas/{id}",
+                        (t: Bytes) -> Idea.parse_octets(t),
+                        serve_gone,
+                    ),
+                ],
+            )
+                .is_empty()
+        }
+    }
+    given "a route matches the path, and the query rides beside it" {
+
+        then "a query does not join the capture" {
+            answered("GET /ideas/7?q=x HTTP/1.1") == "200 idea 7"
+        }
+        then "A `/` INSIDE THE QUERY IS NOT A SEGMENT, so the route still matches" {
+            answered("GET /ideas/7?redirect=/home HTTP/1.1") == "200 idea 7"
+        }
+        then "a query of several pairs changes nothing about the match" {
+            answered("GET /ideas/7?a=1&b=2&c=3 HTTP/1.1") == "200 idea 7"
+        }
+        then "a bare `?` leaves the capture whole" {
+            answered("GET /ideas/7? HTTP/1.1") == "200 idea 7"
+        }
+        then "the query cannot make a target match a route it does not" {
+            answered("GET /nowhere?q=/ideas/7 HTTP/1.1") == "404 "
+        }
+    }
+    given "a route that takes the rest" {
+
+        then "it matches at its own width, binding one segment" {
+            answer_of([r_static()], "GET /static/app.css HTTP/1.1") == "200 static app.css"
+        }
+        then "IT MATCHES DEEPER, and the hole holds every segment past its own" {
+            answer_of([r_static()], "GET /static/css/app.css HTTP/1.1") == "200 static css/app.css"
+        }
+        then "it keeps holding however deep the target goes" {
+            answer_of([r_static()], "GET /static/a/b/c/d/e.css HTTP/1.1") == "200 static a/b/c/d/e.css"
+        }
+        then "it does not match a target narrower than itself" {
+            answer_of([r_static()], "GET /static HTTP/1.1") == "404 "
+        }
+        then "an empty capture at its own width is still a capture" {
+            answer_of([r_static()], "GET /static/ HTTP/1.1") == "200 static "
+        }
+        then "a target under another prefix is not its own" {
+            answer_of([r_static()], "GET /other/a/b HTTP/1.1") == "404 "
+        }
+        then "a rest-taking route may anchor its own end" {
+            answer_of([r_png()], "GET /img/a/b/logo.png HTTP/1.1") == "200 png a/b/logo"
+        }
+        then "and the anchor still refuses what does not end that way" {
+            answer_of([r_png()], "GET /img/a/b/logo.jpg HTTP/1.1") == "404 "
+        }
+        then "A ROUTE OF FIXED WIDTH IS STILL REFUSED A DEEPER TARGET, tails in the table or not" {
+            answer_of([r_static(), routes()[0]], "GET /ideas/7/extra HTTP/1.1") == "404 "
+        }
+        then "a path answers before a rest-taker that covers it, declared above or below" {
+            answer_of(
+                [r_static(), fixed(Method.Get, "/static/logo.svg", serve_word)],
+                "GET /static/logo.svg HTTP/1.1",
+            ) == "200 word"
+        }
+        then "and the rest-taker still answers what the path does not" {
+            answer_of(
+                [r_static(), fixed(Method.Get, "/static/logo.svg", serve_word)],
+                "GET /static/app.css HTTP/1.1",
+            ) == "200 static app.css"
+        }
+        then "the order of the two is not the answer" {
+            answer_of(
+                [fixed(Method.Get, "/static/logo.svg", serve_word), r_static()],
+                "GET /static/logo.svg HTTP/1.1",
+            ) == "200 word"
+        }
+    }
+    given "what the law says about a rest-taker" {
+
+        then "A DOOR THAT TAKES THE REST NEEDS A PATTERN THAT SAYS SO" {
+            faults(
+                [
+                    tailed<Static>(
+                        Method.Get,
+                        "/static/files",
+                        (t: Bytes) -> Static.parse_octets(t),
+                        serve_static,
+                    ),
+                ],
+            )[0] == "`GET /static/files` is declared to take the rest and its last hole does not say so — write `{name...}`, which is what its grammar spells too"
+        }
+        then "and a pattern without the mark is named even when it has a hole" {
+            faults(
+                [
+                    tailed<Static>(
+                        Method.Get,
+                        "/static/{path}",
+                        (t: Bytes) -> Static.parse_octets(t),
+                        serve_static,
+                    ),
+                ],
+            )
+                .length == 1
+        }
+        then "A PATTERN THAT SPELLS THE REST NEEDS A DOOR THAT TAKES IT" {
+            faults(
+                [
+                    routed<Static>(
+                        Method.Get,
+                        "/static/{path...}",
+                        (t: Bytes) -> Static.parse_octets(t),
+                        serve_static,
+                    ),
+                ],
+            )[0] == "`GET /static/{path...}` spells a hole that takes the rest and the route was declared for one width — declare it with `tailed`, or drop the `...`"
+        }
+        then "a static path holding the three dots is neither, because its braces are octets" {
+            faults([fixed(Method.Get, "/static/{a...}", serve_word)]).is_empty()
+        }
+        then "a mark on a hole that is not last is a greedy hole, not a claim on the rest" {
+            faults(
+                [
+                    routed<Search>(
+                        Method.Get,
+                        "/search/{term...}/{page}",
+                        (t: Bytes) -> Search.parse_octets(t),
+                        serve_search,
+                    ),
+                ],
+            )
+                .is_empty()
+        }
+        then "a rest-taker above a deeper path is no fault — the path is more specific" {
+            faults([r_static(), fixed(Method.Get, "/static/logo.svg", serve_word)]).is_empty()
+        }
+        then "nor is a route of greater width below it — a hole outranks the rest" {
+            faults(
+                [
+                    r_static(),
+                    routed<Search>(
+                        Method.Get,
+                        "/static/{term}/{page}",
+                        (t: Bytes) -> Search.parse_octets(t),
+                        serve_search,
+                    ),
+                ],
+            )
+                .is_empty()
+        }
+        then "a path above a rest-taker is reachable" {
+            faults([fixed(Method.Get, "/static/logo.svg", serve_word), r_static()]).is_empty()
+        }
+        then "NO ROUTE OF FIXED WIDTH CAN SHADOW A REST-TAKER — there is always a deeper target" {
+            faults(
+                [
+                    routed<Idea>(
+                        Method.Get,
+                        "/static/{x}",
+                        (t: Bytes) -> Idea.parse_octets(t),
+                        serve_idea,
+                    ),
+                    r_static(),
+                ],
+            )
+                .is_empty()
+        }
+        then "a rest-taker anchoring its own end shadows nothing it does not reach" {
+            faults([r_png(), fixed(Method.Get, "/img/a/b.jpg", serve_word)]).is_empty()
+        }
+        then "two rest-takers of one shape are named" {
+            faults(
+                [
+                    r_static(),
+                    tailed<Static>(
+                        Method.Get,
+                        "/static/{rest...}",
+                        (t: Bytes) -> Static.parse_octets(t),
+                        serve_static,
+                    ),
+                ],
+            )
+                .length == 1
+        }
+    }
+    given "each kind of fault is its own variant" {
+
+        then "two routes of one specificity over one set of targets are an Overlap" {
+            kinds(
+                [
+                    routed<Idea>(
+                        Method.Get,
+                        "/ideas/{id}",
+                        (t: Bytes) -> Idea.parse_octets(t),
+                        serve_idea,
+                    ),
+                    routed<Idea>(
+                        Method.Get,
+                        "/ideas/{slug}",
+                        (t: Bytes) -> Idea.parse_octets(t),
+                        serve_gone,
+                    ),
+                ],
+            )
+                .join(",") == "overlap"
+        }
+        then "a rest door under a pattern that does not say so is Unmarked" {
+            kinds(
+                [
+                    tailed<Static>(
+                        Method.Get,
+                        "/static/files",
+                        (t: Bytes) -> Static.parse_octets(t),
+                        serve_static,
+                    ),
+                ],
+            )
+                .join(",") == "unmarked"
+        }
+        then "a rest pattern under a door of one width is Unclaimed" {
+            kinds(
+                [
+                    routed<Static>(
+                        Method.Get,
+                        "/static/{path...}",
+                        (t: Bytes) -> Static.parse_octets(t),
+                        serve_static,
+                    ),
+                ],
+            )
+                .join(",") == "unclaimed"
+        }
+        then "a sound table has none" {
+            kinds(routes()).is_empty()
+        }
+    }
+    given "a hole's rank is its type's" {
+
+        then "the ladder is literal, narrow hole, text hole, rest — whichever way the four are written" {
+            let lines = [
+                "GET /ideas/new HTTP/1.1",
+                "GET /ideas/7 HTTP/1.1",
+                "GET /ideas/abc HTTP/1.1",
+                "GET /ideas/a/b HTTP/1.1",
+            ]
+            let ladder = "200 literal|200 narrow 7|200 text abc|200 rest a/b"
+            [answer_of(wide_first(), g) for g in lines].join("|") == ladder &&
+                [answer_of(tight_first(), g) for g in lines].join("|") == ladder
+        }
+        then "four ranks over one position are four routes, and no clash" {
+            faults(wide_first()).is_empty()
+        }
+    }
+    given "two routes of one rank over one position" {
+
+        then "two narrow holes are one route, and the fault is an Overlap" {
+            kinds(
+                [
+                    get "/ideas/{id: int}" { _req -> "by id" },
+                    get "/ideas/{num: int}" { _req -> "by number" },
+                ],
+            )
+                .join(",") == "overlap"
+        }
+        then "a hole anchored on a literal and a bare one are equally specific, so they share targets" {
+            faults(
+                [get "/v{major: int}" { _req -> "anchored" }, get "/{n: int}" { _req -> "bare" }],
+            )
+                .join(";")
+                .contains("equally specific and match some of the same targets")
+        }
+        then "two holes of one rank over different literals meet nowhere, so both stand" {
+            faults(
+                [
+                    get "/ideas/{id: int}" { _req -> "idea" },
+                    get "/tasks/{id: int}" { _req -> "task" },
+                ],
+            )
+                .is_empty()
+        }
+    }
+}

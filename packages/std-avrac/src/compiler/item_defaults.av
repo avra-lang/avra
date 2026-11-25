@@ -1,0 +1,186 @@
+//! WHAT A TRAIT'S OWN BODY GIVES: a method a type never writes, answered by the one trait it
+//! implements that writes a body for it. That body is lowered once per type it answers for, `Self`
+//! and the receiver that type, its unit named for the trait, the method and the type.
+use core.{CalledFn, DefaultSeats, SignedType, StmtId, TypeHead, TypeRef, headed_type}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+
+/// An impl that makes a type implement a trait whose own body gives a method: the impl, the trait,
+/// the arguments the impl applies it to, and the trait as the impl writes it (`Realize<Text>`).
+export type DefaultGiver = { at: ImplAt, giver: TraitAt, args: List<SignedType>, written: string }
+
+/// Each impl applied to nothing that makes the type `file` declares as `owner` implement a trait
+/// whose own body gives the method `method`.
+export fn default_givers(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    owner: string,
+    method: string,
+) -> List<DefaultGiver> {
+    [DefaultGiver {
+        at: i.at,
+        giver: i.implements!,
+        args: impl_trait_args(engine, i.at),
+        written: impl_given(engine, i.at) ?? i.implements!.name,
+    } for i in impls_of(engine, file, owner) if i.at.params.is_empty() &&
+        i.implements != null &&
+        given_body(engine, i.implements!, method) != null]
+}
+
+/// The one giver of the method `method` to the type `file` declares as `owner`, or among several the
+/// one whose trait is written `written_as`; absent where none is.
+export fn default_giver(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    owner: string,
+    method: string,
+    written_as: string? = null,
+) -> DefaultGiver? {
+    let all = default_givers(engine, file, owner, method)
+    if written_as != null { return all.find(it.written == written_as) }
+    if all.length == 1 { all[0] } else { null }
+}
+
+/// The method `method` the giver `g` gives, signed with `Self` `receiver` and the trait's own type
+/// parameters the arguments the impl applies it to.
+export fn given_signature(
+    engine: QueryEngine,
+    g: DefaultGiver,
+    method: string,
+    receiver: SignedType,
+) -> FnSignature? {
+    if g.args.is_empty() { trait_method_signature(engine, g.giver, method, receiver) } else { applied_trait_fn(engine, g.giver, method, false, receiver, g.args) }
+}
+
+/// What the one impl that makes the type `file` declares as `owner` implement a generic trait whose
+/// own body gives the method `method` says of its seats; absent where no such one impl gives it, or
+/// where an impl of the type gives the method itself. That is asked as method resolution asks it,
+/// the written first, so a generator's own code, whose methods are written, never asks what
+/// generators make.
+export fn default_seats(engine: QueryEngine, file: SourceFileAddress, owner: string, method: string) -> DefaultSeats? {
+    if !impls_with(engine, file, owner, method, false).is_empty() { return null }
+    let givers = default_givers(engine, file, owner, method)
+    if givers.length != 1 || givers[0].args.is_empty() { return null }
+    let g = givers[0]
+    let body? = given_body(engine, g.giver, method) else { return null }
+    let s? = body.item.stmts.find((x) -> body.item.store.trait_parts(x)?.name == g.giver.name) else { return null }
+    let names = body.item.store.decl_tparams(s)
+    DefaultSeats {
+        held: headed_type(TypeHead.Declared(g.giver.file, g.giver.name)) with { args: g.args },
+        takes: [parameter_place(names, p.ty) for p in body.item.store.fn_parts(body.stmt)!.params],
+    }
+}
+
+/// The place among `names` of the parameter the written type `ty` is, bare; -1 for any other type.
+fn parameter_place(names: List<string>, ty: TypeRef?) -> int {
+    let t? = ty else { return 0 - 1 }
+    if !t.applied.is_empty() || t.optional || t.dynamic || t.arrow { return 0 - 1 }
+    names.find_index(it == t.name) ?? 0 - 1
+}
+
+/// A trait's member fn with a body: the trait's item, and the statement.
+type GivenBody = { item: ReadItem, stmt: StmtId }
+
+/// The member `method` the trait `t` declares with a body of its own, absent when it declares none.
+fn given_body(engine: QueryEngine, t: TraitAt, method: string) -> GivenBody? {
+    let item? = declaring_item(engine, t.file, t.name, ItemKind.Trait) else { return null }
+    let s? = trait_fns(item)
+        .find(
+            (f) -> item.store.fn_parts(f)?.name == method &&
+                !item.store.is_static(f) &&
+                written_body(item, f),
+        ) else { return null }
+    GivenBody { item: item, stmt: s }
+}
+
+/// Whether a trait's member writes a body: a bare signature's is a hole.
+fn written_body(item: ReadItem, s: StmtId) -> bool { !(item.store.expr(item.store.fn_parts(s)!.body) is .Error) }
+
+/// The name the body `giver` gives the method `method` is known by as the type `file` declares as
+/// `owner` answers it.
+export fn default_unit(giver: TraitAt, method: string, file: SourceFileAddress, owner: string) -> string {
+    "${giver.name}.${method}\$for\$${spelled_file(file)}.${owner}"
+}
+
+/// The method `method` the type `file` declares as `owner` never writes, as a call reaches the body
+/// the one trait it implements gives it, or among several the one written `written_as`. Absent for a
+/// method no such trait gives.
+fn given_callee(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    owner: string,
+    method: string,
+    written_as: string? = null,
+) -> CalledFn? {
+    let g? = default_giver(engine, file, owner, method, written_as) else { return null }
+    let giver = g.giver
+    let written? = given_body(engine, giver, method) else { return null }
+    let parts = written.item.store.fn_parts(written.stmt)!
+    let used = receiver_use(engine, file, owner, method, giver.file.package_name)
+    let receiver = headed_type(TypeHead.Declared(file, owner))
+    CalledFn {
+        file: giver.file,
+        name: method,
+        symbol: declared_symbol(giver.file, given_unit(giver, method, file, owner, written_as)),
+        given_in: written_as,
+        external: false,
+        plain: parts.tparams.is_empty() && parts.params.all(plain_seat),
+        owner: owner,
+        of: file,
+        writes: used.written(),
+        unproved: used.unproved(),
+        given_by: giver.name,
+        params: signed_seats(given_signature(engine, g, method, receiver)?.params ?? []),
+    }
+}
+
+/// The body the one trait the type `file` declares as `owner` implements gives the method `method`,
+/// or among several the one written `written_as`, lowered with `Self` and the receiver that type and the
+/// trait's parameters what its impl applies it to. Absent when no such trait gives it a body.
+@query
+export fn lowered_default(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    owner: string,
+    method: string,
+    written_as: string?,
+) -> LoweredFn? {
+    let g? = default_giver(engine, file, owner, method, written_as) else { return null }
+    let giver = g.giver
+    let written? = given_body(engine, giver, method) else { return null }
+    let receiver = headed_type(TypeHead.Declared(file, owner))
+    let signature? = given_signature(engine, g, method, receiver) else { return null }
+    lowered_signed(
+        engine,
+        giver.file,
+        SignedBody {
+            signature: signature,
+            item: written.item,
+            body: written.item.store.fn_parts(written.stmt)!.body,
+            stmt: written.stmt,
+            receiver: receiver,
+            receiver_written: receiver_use(engine, file, owner, method, giver.file.package_name).written(),
+        },
+        given_unit(giver, method, file, owner, written_as),
+        null,
+    )
+}
+
+/// The unit the body `giver` gives `method` is known by for the type `file` declares as `owner`;
+/// one of several givers is told apart by its trait as written, `written_as`.
+fn given_unit(
+    giver: TraitAt,
+    method: string,
+    file: SourceFileAddress,
+    owner: string,
+    written_as: string?,
+) -> string {
+    let unit = default_unit(giver, method, file, owner)
+    if written_as == null { unit } else { "${unit}@${written_as!}" }
+}
+
+collect listed_default_lowered_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries a trait's default body lowers through, for a process to hand its engine.
+export fn default_lowered_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_default_lowered_facts) }

@@ -1,0 +1,196 @@
+//! `avra explain` — each form over a package of two files, as the command runs
+//! where the package stands: every refusal whose words are about the argument,
+//! a file's, a declaration's and one answer's page, the table, the calls of a
+//! body, and the two properties an inspection owes — asked twice it prints the
+//! same thing, and it leaves the store as it found it. `avra_ran`,
+//! `avra_ran_in`, `scratch_dir` and `exit_is_zero` are the neighbouring tests'
+//! own: this module shares one namespace.
+use @std.io.{list_dir, make_dirs, write_text}
+use @std.time.{stamp}
+use @std.text.{parse_int}
+
+/// A package of an entry and a module it imports, nothing built or checked yet.
+fn probe(name: string) -> string {
+    let root = "${scratch_dir()}/explain_${name}_${stamp()}"
+    let _ = make_dirs("${root}/src/lib")
+    let _ = write_text("${root}/avra.toml", "[package]\nname = \"probe\"\nversion = \"0.1.0\"\n")
+    let _ = write_text("${root}/src/lib/a.av", "export fn twice(n: int) -> int { n + n }\n")
+    let _ = write_text(
+        "${root}/src/main.av",
+        "use lib.{twice}\n\nfn shown(n: int) -> string { \"\${twice(n)}\" }\n\nprintln(shown(4))\n",
+    )
+    root
+}
+
+/// The probe, checked: its store holds a check's answers.
+fn checked(name: string) -> string {
+    let root = probe(name)
+    let _ = avra_ran(["check", root])
+    root
+}
+
+/// What a form prints where it answers, absent where it refuses.
+fn said(root: string, args: List<string>) -> string? {
+    match avra_ran_in(root, ["explain"].concat(args)) {
+        .Ok(o) -> if exit_is_zero(o.exit) { o.out.stdout } else { null },
+        .Err(_) -> null,
+    }
+}
+
+/// A form's refusal: what it says on stderr where it exits 1, absent where it answers.
+fn refusal(root: string, args: List<string>) -> string? {
+    match avra_ran_in(root, ["explain"].concat(args)) {
+        .Ok(o) -> if exit_is_zero(o.exit) { null } else { o.out.stderr },
+        .Err(_) -> null,
+    }
+}
+
+fn lines_of(text: string?) -> List<string> { [l for l in (text ?? "").split("\n") if !l.is_empty()] }
+
+/// The numbers a table row ends in: its answers, then its reads.
+fn counts_of(row: string) -> List<int> { [n! for w in row.split(" ") for n in [parse_int(w)] if n != null] }
+
+/// The files a package's store holds, in name order.
+fn held(root: string) -> string { (list_dir("${root}/.avra-cache/tapes") catch []).join("\n") }
+
+spec "avra explain — refusals the words alone decide" {
+    given "a package nothing has checked" {
+        then "no target and no form is refused, naming every form" {
+            refusal(probe("bare"), []) == "avra: `explain` needs a file, `@name` or `query(subject)` — or `--stats` or `--why` for the whole package\n"
+        }
+        then "`@` alone names no declaration" {
+            refusal(probe("at"), ["@"]) == "avra: `explain @` names no declaration — write `@name`\n"
+        }
+        then "an answer's subject left open is refused, never read as a path" {
+            refusal(probe("open"), ["file_items(src/main.av"]) == "avra: `file_items(src/main.av` opens an answer's subject and never closes it — write `query(subject)`\n"
+        }
+        then "a path that is not there is refused by the words it was given" {
+            refusal(probe("gone"), ["src/nope.av"]) == "avra: no `src/nope.av` — `explain` reads a file, a package's directory, `@name` or `query(subject)`\n"
+        }
+        then "a directory under no package is refused, naming it" {
+            (refusal("/tmp", ["--stats"]) ?? "").contains("no `avra.toml` at or above /tmp")
+        }
+        then "`--stats` with `--why` is refused" {
+            (refusal(probe("both"), ["--stats", "--why"]) ?? "")
+                .contains("takes `--stats` or `--why`, never both")
+        }
+        then "`--sites` with another form is refused" {
+            (refusal(probe("sites_both"), ["--sites", "--stats", "@shown"]) ?? "")
+                .contains("is a form of its own")
+        }
+        then "`--stats` of one file is refused, since it counts a package" {
+            (refusal(probe("stats_file"), ["--stats", "src/main.av"]) ?? "")
+                .contains("counts a whole package — `src/main.av` names one thing in it")
+        }
+        then "`--sites` of anything but a declaration is refused" {
+            (refusal(probe("sites_file"), ["--sites", "src/main.av"]) ?? "")
+                .contains("`src/main.av` is not a `@name`")
+        }
+        then "a file the store keeps nothing of is refused, saying what to do first" {
+            (refusal(probe("cold"), ["src/main.av"]) ?? "")
+                .contains("keeps no answer keyed by probe/src/main.av — build or check the package first")
+        }
+        then "`--why` before any build is refused, naming the build" {
+            (refusal(probe("why_cold"), ["--why"]) ?? "")
+                .contains("has kept why it was built — build it with `avra build`")
+        }
+    }
+    given "a checked package" {
+        then "a name no kept answer is keyed by is refused" {
+            (refusal(checked("noname"), ["@nothing_here"]) ?? "")
+                .contains("no answer this package's store keeps is keyed by `nothing_here`")
+        }
+        then "a query the store keeps nothing of is refused, and the queries it keeps are named" {
+            let r = refusal(checked("noquery"), ["nope(src/main.av)"]) ?? ""
+            r.contains("keeps no answer of a query `nope` — it keeps these:") &&
+                r.contains("\n  file_items\n")
+        }
+        then "an answer its query never gave is refused by its label" {
+            (refusal(checked("noanswer"), ["file_items(nowhere)"]) ?? "")
+                .contains("keeps no answer `file_items(nowhere)`")
+        }
+    }
+}
+
+spec "avra explain — what the store keeps" {
+    given "a file" {
+        then "each answer keyed by it has a page: its question, its digest, and what it read" {
+            let page = said(checked("file"), ["src/lib/a.av"]) ?? ""
+            page.contains("file_items(probe/src/lib/a.av)  ") &&
+                page.contains("\n  reads 1\n    source_text(probe/src/lib/a.av)  ")
+        }
+        then "the file's text is an input: it reads nothing" {
+            lines_of(said(checked("input"), ["source_text(src/lib/a.av)"])).take(2).last() == "  reads 0"
+        }
+    }
+    given "one answer, named by its question" {
+        then "it says who reads it, after what it read" {
+            let page = said(checked("readers"), ["source_text(src/lib/a.av)"]) ?? ""
+            page.contains("\n  read by ") && page.contains("\n    file_items(probe/src/lib/a.av)\n")
+        }
+        then "a file named as the program names it answers the same" {
+            let root = checked("spelled")
+            said(root, ["file_items(src/lib/a.av)"]) == said(root, ["file_items(probe/src/lib/a.av)"])
+        }
+    }
+    given "a declaration" {
+        then "every answer keyed by its name is explained, its signature among them" {
+            (said(checked("decl"), ["@twice"]) ?? "")
+                .contains("fn_signature(probe/src/lib/a.av, twice)  ")
+        }
+    }
+    given "`--stats`" {
+        then "the table opens with its columns and closes with its total" {
+            let rows = lines_of(said(checked("table"), ["--stats"]))
+            (rows.first() ?? "").starts_with("query") &&
+                (rows.first() ?? "").ends_with("reads") &&
+                (rows.last() ?? "").starts_with("total")
+        }
+        then "the total row sums the queries above it" {
+            let rows = lines_of(said(checked("total"), ["--stats"]))
+            let body = [counts_of(r) for r in rows.slice(1, rows.length - 1)]
+            let total = counts_of(rows.last() ?? "")
+            total.length == 2 &&
+                total[0] == [c[0] for c in body].sum() &&
+                total[1] == [c[1] for c in body].sum()
+        }
+        then "a package named by its directory is the package counted" {
+            let root = checked("named")
+            said(root, ["--stats"]) == said(root, ["--stats", root])
+        }
+    }
+    given "`--sites`" {
+        then "each call of the body is named by what it was resolved to" {
+            let page = said(checked("sites"), ["--sites", "@shown"]) ?? ""
+            page.starts_with("shown calls ") &&
+                page.contains("probe/src/lib/a.av.twice — a declared fn of probe/src/lib/a.av")
+        }
+        then "a name no source declares as a fn is refused" {
+            (refusal(checked("sites_none"), ["--sites", "@nothing_here"]) ?? "")
+                .contains("no source of this package declares a fn `nothing_here`")
+        }
+    }
+    given "`--why`" {
+        then "after a build it says how the build came to be worked out" {
+            let root = probe("why")
+            let _ = avra_ran(["build", root])
+            (said(root, ["--why"]) ?? "").contains("the build ")
+        }
+    }
+    given "an inspection" {
+        then "every form asked twice prints the same thing" {
+            let root = checked("twice")
+            [["--stats"], ["src/lib/a.av"], ["@twice"], ["file_items(src/lib/a.av)"]]
+                .all((form) -> said(root, form) != null && said(root, form) == said(root, form))
+        }
+        then "no form that reads the store writes it" {
+            let root = checked("readonly")
+            let before = held(root)
+            let _ = said(root, ["--stats"])
+            let _ = said(root, ["src/lib/a.av"])
+            let _ = said(root, ["@twice"])
+            let _ = said(root, ["source_text(src/lib/a.av)"])
+            !before.is_empty() && held(root) == before
+        }
+    }
+}

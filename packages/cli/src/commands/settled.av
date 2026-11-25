@@ -1,0 +1,47 @@
+//! `avra settled <file> <name>` — a const of the program, as the compiler
+//! settled it on the program layer, printed as JSON (`const_json`): any
+//! tool can read what the compiler holds.
+use @std.cli.{CliResult, Runnable, command, arg}
+use @std.avrac.compiler.{avra_fact_definitions, const_json}
+use @std.path.{joined_path}
+use @std.program.layered_store.{program_store_at}
+use @std.program.query_engine.{query_engine}
+
+type SettledCmd = {}
+
+impl Runnable for SettledCmd {
+    fn run(args: CliResult) -> int {
+        let path? = argued_path(args) else { return 2 }
+        let aimed = match program_aimed(path) { .Ok(a) -> a, .Err(code) -> { return code } }
+        let store = program_store_at(joined_path(aimed.disk.root, ".avra-cache/tapes"))
+        let engine = query_engine(store, avra_fact_definitions(), aimed.disk.name)
+        if timed(args) { engine.time_queries() }
+        let said = const_json(engine, aimed.disk.file_at(aimed.bin), args.arg("name"))
+        store_kept(engine, store)
+        if timed(args) { eprintln(time_rows_said(engine, CHECK_ROWS)) }
+        match said {
+            .Ok(json) -> {
+                println(json)
+                0
+            },
+            .Err(why) -> {
+                println(why)
+                1
+            },
+        }
+    }
+}
+
+export command settled {
+    description: "A const of the program as the compiler settled it, printed as JSON"
+    flags: [time]
+    arg file {
+        description: "the program's file"
+        required: true
+    }
+    arg name {
+        description: "the const to print"
+        required: true
+    }
+    run: SettledCmd {}
+}

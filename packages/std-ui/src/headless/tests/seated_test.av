@@ -1,0 +1,94 @@
+//! A control's place, by its law: given one it shares it, given none it keeps its own, seeded from
+//! `initial`; its gesture writes the place before its handler hears it, and `shown`, where given, is
+//! what it shows instead — told each paint, never written.
+use @std.ui.components.{checkbox, column, dialog, field, switch, text}
+use @std.ui.headless.{headless}
+
+/// The places the sharing cases hand a field: a module's `state`, as a view reads one.
+state draft: string = ""
+state seeded: string = "x"
+
+spec "a control keeps its own place where it is given none" {
+    given "a field" {
+        then "what is typed stays through the next paint" {
+            let page = headless(() -> field "Name")
+            page.fill("Name", "ab") && page.text() == "field \"Name\" value=\"ab\" placeholder=\"\""
+        }
+        then "it starts from `initial`, read once" {
+            let page = headless(() -> field "Name" { initial: "x" })
+            let seeded = page.text() == "field \"Name\" value=\"x\" placeholder=\"\""
+            seeded &&
+                page.fill("Name", "y") &&
+                page.text() == "field \"Name\" value=\"y\" placeholder=\"\""
+        }
+        then "its handler hears what was typed, after the place holds it" {
+            let heard: Cell<string> = Cell.new("")
+            let page = headless(() -> field "Name" { on input { typed -> heard.set(typed) } })
+            page.fill("Name", "ab") && heard.get() == "ab"
+        }
+    }
+    given "a checkbox and a dialog" {
+        then "a tick stays ticked" {
+            let page = headless(() -> checkbox "Agree")
+            page.check("Agree", true) && page.text() == "checkbox \"Agree\" checked"
+        }
+        then "a switch flipped on stays on" {
+            let page = headless(() -> switch "Dark")
+            page.check("Dark", true) && page.text() == "switch \"Dark\" checked"
+        }
+        then "a dialog sent away stays shut" {
+            let page = headless(() -> dialog "About" { initial: true })
+            page.dismiss() && !page.dismiss()
+        }
+    }
+}
+
+spec "a control given a place shares it" {
+    given "a module's `state`" {
+        then "typing writes it, and every reader sees it" {
+            let page = headless(
+                () -> column {
+                    field "Name" { value: draft }
+                    text "draft ${draft}"
+                },
+            )
+            page.fill("Name", "ab") && draft == "ab" && page.text().contains("text \"draft ab\"")
+        }
+        then "a write to it is what the field shows" {
+            let page = headless(() -> field "Name" { value: seeded })
+            page
+                    .turn(
+                        () -> {
+                            seeded = "z"
+                            true
+                        },
+                    ) &&
+                page.text() == "field \"Name\" value=\"z\" placeholder=\"\""
+        }
+    }
+}
+
+spec "a control given `shown` is held to it" {
+    given "a field shown otherwise than it was typed" {
+        then "typing is heard, and the field shows what the program says" {
+            let heard: Cell<string> = Cell.new("")
+            let page = headless(
+                () -> field "Name" {
+                    shown: "${heard.get()}!"
+                    on input { typed -> heard.set(typed) }
+                },
+            )
+            page.fill("Name", "ab") &&
+                heard.get() == "ab" &&
+                page.text() == "field \"Name\" value=\"ab!\" placeholder=\"\""
+        }
+        then "a switch the program holds off stays off" {
+            let page = headless(() -> switch "Dark" { shown: false })
+            page.check("Dark", true) && page.text() == "switch \"Dark\""
+        }
+        then "a checkbox the program holds unticked stays unticked" {
+            let page = headless(() -> checkbox "Agree" { shown: false })
+            page.check("Agree", true) && page.text() == "checkbox \"Agree\""
+        }
+    }
+}

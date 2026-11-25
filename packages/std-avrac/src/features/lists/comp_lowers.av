@@ -1,0 +1,148 @@
+//! The lowering rule of a list comprehension: an empty list, then each head a walk inside the one
+//! before, each filter a region around what follows it, and past the last clause the element pushed.
+//! A head over a map walks its keys and its values side by side; one over octets, each octet.
+use core.{
+    BinOp,
+    Bound,
+    CompClause,
+    ExprId,
+    Layout,
+    ListWalk,
+    Literal,
+    Lowering,
+    Lowers,
+    OwnType,
+    Reg,
+    SignedType,
+    literal_of,
+    owned_type,
+    rt_sig_of,
+}
+use core.expr.{Comp}
+
+impl Lowers for Comp {
+    /// A comprehension whose heads each walk a list, a map or octets, or count up to a bound. One over
+    /// any other source isn't lowered yet.
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        let ty? = cx.type_at(e) else { return cx.untyped(e) }
+        if ty.listed() == null { return cx.unlowered(e) }
+        if self.clauses.any((c) -> !walkable(cx, c)) { return cx.missed_as(source_unwalked()) }
+        let fill = filling(cx, self, ty)
+        if fill != null { return filled(cx, ty, fill!) }
+        cx.pack_declined(e, ty)
+        let built = cx.list_made(ty, cx.const_int(0))
+        walked(cx, self, 0, built)
+        built
+    }
+}
+
+/// A comprehension that is a fill: a count from `lo` up to `hi`, every cell the literal `cell`.
+type Fill = { lo: ExprId, hi: ExprId, cell: Literal }
+
+/// THE FILL: `[c for _k in lo..hi]`, one count and a literal scalar `c` of the list's own element,
+/// is a packed list laid out full of `c` — no walk, no push. The literal reads nothing the walk
+/// binds, so every cell is the same word. Absent for any other comprehension.
+fn filling(mut cx: Lowering, c: Comp, ty: SignedType) -> Fill? {
+    if c.clauses.length != 1 || !cx.packs(ty) { return null }
+    let head = match c.clauses[0] {
+        .Head(index, _, source, hi) -> if index == null && hi != null { Fill { lo: source, hi: hi!, cell: Literal.Int(0) } } else { null },
+        .Filter(_) -> null,
+    }
+    let fill? = head else { return null }
+    let lit? = literal_of(cx.store.valued(c.elem)) else { return null }
+    let elem? = ty.listed() else { return null }
+    let scalar = match lit { .Int(_) or .Float(_) or .Bool(_) -> true, .Text(_) -> false }
+    if !scalar || lit.type().spelled() != elem.spelled() { return null }
+    fill with { cell: lit }
+}
+
+/// The fill `f` of type `ty`: the count's bound read, then its start, as its walk reads them, and a
+/// cell for each step between.
+fn filled(mut cx: Lowering, ty: SignedType, f: Fill) -> Reg {
+    let end = cx.lower(f.hi)
+    let start = cx.lower(f.lo)
+    let n = cx.bin(Layout.Word, BinOp.Sub, end, start)
+    cx.call_row(cx.laid_out(ty), rt_sig_of("avra_array_filled_words")!, [n, cx.constant(f.cell)])
+}
+
+/// Whether a clause is one this rule walks: a filter, or a head over a list, a map or octets, or
+/// counting from its source to its bound.
+fn walkable(cx: Lowering, c: CompClause) -> bool {
+    match c {
+        .Head(_, _, source, hi) -> {
+            let from? = cx.seen_at(source) else { return false }
+            if hi != null { return from.spelled() == owned_type("int").spelled() }
+            if from.owns(OwnType.Bytes) { return true }
+            let elem? = from.listed() ?? from.mapped() else { return false }
+            cx.program.checked.layout(elem) != null
+        },
+        .Filter(_) -> true,
+    }
+}
+
+/// Clause `at` onward, inside every walk before it; past the last, the element pushed onto `built`.
+fn walked(mut cx: Lowering, c: Comp, at: int, built: Reg) {
+    if at == c.clauses.length { return cx.push_slot(built, cx.lower(c.elem)) }
+    match c.clauses[at] {
+        .Head(index, name, source, hi) -> {
+            let value = cx.seen_at(source)?.mapped()
+            if value != null && hi == null { return mapped_head(cx, c, at, built, index?.of, name.of, source, value!) }
+            let octets = hi == null && cx.seen_at(source)!.owns(OwnType.Bytes)
+            let w = when {
+                hi != null -> counted_walk(cx, source, hi!)
+                octets -> cx.walk_octets(cx.lower(source))
+                _ -> headed_walk(cx, c, at, source)
+            }
+            let here = cx.walk_turn(w)
+            let v = when {
+                w.list == null -> here
+                octets -> cx.octet_at(w.list!, here)
+                _ -> cx.walked_element(w, here)
+            }
+            if index != null { cx.bind(index!.of, Bound.Value(cx.walk_place(w, here), owned_type("int"))) }
+            cx.bind(name.of, Bound.Value(v, w.elem))
+            walked(cx, c, at + 1, built)
+            cx.loop_end()
+        },
+        .Filter(cond) -> cx.void_region(cx.lower(cond)) { cx -> walked(cx, c, at + 1, built) },
+    }
+}
+
+/// A head over the map `source` of `value`s: its keys and its values read once, side by side, each
+/// turn binding a key to `key` and its value to `name`, then clause `at + 1` onward.
+fn mapped_head(
+    mut cx: Lowering,
+    c: Comp,
+    at: int,
+    built: Reg,
+    key: string?,
+    name: string,
+    source: ExprId,
+    value: SignedType,
+) {
+    let w = cx.walk_map(cx.lower(source), owned_type("string"))
+    let here = cx.walk_turn(w.keys)
+    if key != null { cx.bind(key!, Bound.Value(cx.key_at(w, here), w.keys.elem)) }
+    cx.bind(name, Bound.Value(cx.value_at(w, value, here), value))
+    walked(cx, c, at + 1, built)
+    cx.loop_end()
+}
+
+/// A walk over the list the head at `at` reads, from its start to its length: the text a `chars` view
+/// reads, the lookup the planner narrows its `source` to, else the source itself.
+fn headed_walk(mut cx: Lowering, c: Comp, at: int, source: ExprId) -> ListWalk {
+    let text = cx.chars_viewed(source)
+    if text != null { return cx.walk_chars(cx.lower(text!)) }
+    let elem = cx.seen_at(source)!.listed()!
+    let narrowed? = narrowed_source(cx, c, at, source) else { return cx.walk_list(cx.lower(source), elem) }
+    cx.walk_list(narrowed, elem)
+}
+
+/// A count from `lo` up to `hi`, the bound read first.
+fn counted_walk(mut cx: Lowering, lo: ExprId, hi: ExprId) -> ListWalk {
+    let len = cx.lower(hi)
+    cx.walk_count(cx.lower(lo), len)
+}
+
+/// Why a comprehension over a source this rule doesn't walk isn't lowered yet.
+fn source_unwalked() -> string { "a comprehension over a source that isn't a list, a map, octets or a count" }

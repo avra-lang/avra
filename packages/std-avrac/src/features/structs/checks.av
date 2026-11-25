@@ -1,0 +1,279 @@
+//! The typing rule of a record literal: each value checks against its field's type, and the literal
+//! is the record. A generic record's arguments come from the type arguments the literal writes, else
+//! from the seat it fills when that names the record, else from what its values fill.
+use core.{
+    Refused,
+    makes_key,
+    meta_key,
+    Checking,
+    Checks,
+    ExprId,
+    Expected,
+    FieldSeat,
+    LiteralFault,
+    PatChecks,
+    PatId,
+    ReadAs,
+    Seating,
+    Unhanded,
+    SignedType,
+    RecordShape,
+    TypeHead,
+    TypeRef,
+    defaulted,
+    headed_type,
+    owned_type,
+    spelled,
+    spread_entry,
+}
+use core.expr.{StructLit, With}
+use core.pat.{Fields}
+
+/// Whether a literal's name `named` reads as names nothing at all: no name, or the hole a type is
+/// left to. A type the language owns is a name, whose literal its own law refuses.
+fn undeclared(named: SignedType) -> bool {
+    match named.head {
+        .Unnamed(_) or .Inferred -> true,
+        .Owned(_) or .Declared(_, _) or .Parameter(_, _) or .Function or .Union or .Never or .Meta -> false,
+    }
+}
+
+impl Checks for StructLit {
+    /// The record the literal names, its values seated in its fields, and each node it is extended by
+    /// checked on its own. A name nothing declares is read as no record.
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        for v in cx.store.extended_by(e) { let _ = cx.check(v, Expected.Free) }
+        let named = cx.type_named(self.name.of, cx.home_of(e))
+        if undeclared(named) { cx.unbound_record(e, self.name.of) }
+        let record? = cx.record_of(named) else {
+            fieldless(cx, e, self.name.of, named)
+            cx.checked_free(self.values)
+            return null
+        }
+        let _ = cx.seals(e, named, "built here")
+        if cx.fields_repeated([f.of for f in self.fields], self.values, spread_entry) { return null }
+        if self.fields.any(it.of == spread_entry) { return spread_checked(cx, self, named, record.params) }
+        let seats = [record.fields.find(it.name == f.of)?.ty for f in self.fields]
+        if seats.any(it == null) {
+            let fields = [f.name for f in record.fields]
+            for at, f in self.fields {
+                // a handler its instance cannot hear is refused by the event's law, not as a field
+                if seats[at] == null &&
+                    at < self.values.length &&
+                    !cx.store.refused_elsewhere(self.values[at]) {
+                    cx
+                        .literal_refused(self.values[at], LiteralFault.Unknown(self.name.of, f.of, fields))
+                }
+            }
+            cx.checked_free(self.values)
+            return null
+        }
+        // a handler its instance cannot hear is refused by the event's law, and fills no seat
+        let seatable = [at for at, v in self.values if !cx.store.refused_elsewhere(v)]
+        cx.checked_free([v for v in self.values if cx.store.refused_elsewhere(v)])
+        let applied = pinned_by(cx, e, named, record.params) ?? applied_by(
+            expected,
+            named,
+            record.params,
+        )
+        if applied != null {
+            for at in seatable { seated(cx, self.values[at], seats[at]!.bound(applied!.args), self.fields[at].of) }
+            places_handed(cx, e, self, record.fields, seats)
+            return applied
+        }
+        let keyed = [at for at in seatable if meta_key(seats[at]!.unwrapped())]
+        for at in keyed { seated(cx, self.values[at], seats[at]!, self.fields[at].of) }
+        let rest = [at for at in seatable if !keyed.contains(at)]
+        let written = cx.store.struct_targs_of(e)
+        mut pins: Map<string, SignedType> = {}
+        for at, t in written { pins.set("${at}", cx.written(t)) }
+        let before = cx.refused.get().length
+        let found? = cx
+            .fills(
+                [seats[at]! for at in rest],
+                [self.values[at] for at in rest],
+                pins,
+                named with { args: [headed_type(TypeHead.Parameter(at, n)) for at, n in record.names] },
+                expected,
+                (j: int) -> field_seating(cx, self.values[rest[j]], self.fields[rest[j]].of),
+            ) else { return null }
+        places_handed(cx, e, self, record.fields, seats)
+        let filled = defaulted(found, record.defaults)
+        let args = [filled.get("${at}") for at in 0..record.params]
+        let open = args.find_index(it == null)
+        if open == null { return named with { args: [a! for a in args] } }
+        if !written.is_empty() && cx.refused.get().length == before { unpinned_literal(cx, e, self, record, open!, written) }
+        null
+    }
+}
+
+/// The value `v` checked into the seat `seat` of the field `name`: a field of `@std/meta`'s `Key` takes
+/// a value of any type a key is made from, as its own type; refused, as a value of no such type, where
+/// it makes none.
+fn seated(mut cx: Checking, v: ExprId, seat: SignedType, name: string) {
+    if !meta_key(seat.unwrapped()) || cx.store.null_literal(v) {
+        let _ = cx.check_seated(v, seat, field_seating(cx, v, name))
+        return
+    }
+    let made? = cx.check(v, Expected.Free) else { return }
+    if meta_key(made.unwrapped()) ||
+        makes_key(cx, made) ||
+        seat.nullable() && made.nullable() && makes_key(cx, made.unwrapped()) { return }
+    cx.refused.push(Refused { at: v, want: seat, found: made, seat: field_seating(cx, v, name) })
+}
+
+/// The seat the value `v` of the field `name` fills: the handler of the event a setting names, else
+/// the field.
+fn field_seating(cx: Checking, v: ExprId, name: string) -> Seating {
+    let heard? = cx.store.on_handler(v) else { return Seating.Field(name) }
+    Seating.Heard(heard.event)
+}
+
+/// Each entry of the literal `e`, what an instance means, writing a field that takes its writer's
+/// place, held to the place law once its value is typed. A literal the compiler makes for itself
+/// writes values, never places.
+fn places_handed(
+    mut cx: Checking,
+    e: ExprId,
+    lit: StructLit,
+    fields: List<FieldSeat>,
+    seats: List<SignedType?>,
+) {
+    let sugar? = cx.store.minted_for(e) else { return }
+    if !(cx.store.expr(sugar) is .Component) { return }
+    for at, f in lit.fields {
+        if fields.any(it.name == f.of && it.placed) {
+            cx
+                .state_seat_handed(
+                    cx.store.unnamed(lit.values[at]),
+                    seats[at]!,
+                    lit.name.of,
+                    at,
+                    f.of,
+                    Unhanded.Unshared,
+                )
+        }
+    }
+    overshown(cx, lit, fields)
+}
+
+/// Each entry of the literal `lit` for a member shown over a place, written beside a place handed
+/// that place: what it shows would stand over what the caller already holds, so the two are one
+/// setting too many.
+fn overshown(mut cx: Checking, lit: StructLit, fields: List<FieldSeat>) {
+    for at, f in lit.fields {
+        let seat? = fields.find(it.name == f.of) else { continue }
+        let over? = seat.over else { continue }
+        let placed? = lit.fields.find_index(it.of == over) else { continue }
+        if !fields.any(it.name == over && it.placed) { continue }
+        if !cx.placed(cx.store.unnamed(lit.values[placed])) { continue }
+        let ty? = seat.ty else { continue }
+        cx.unhanded(lit.values[at], ty, lit.name.of, at, "${f.of} ${over}", Unhanded.Overshown)
+    }
+}
+
+/// The literal at `e` naming `name`, which resolves to `named`, no record: refused where that is an
+/// enum, or another type an alias names.
+fn fieldless(mut cx: Checking, e: ExprId, name: string, named: SignedType) {
+    if named.head is .Unnamed || named.generic() || named.inferred() { return }
+    if cx.enum_of(named) != null { return cx.literal_refused(e, LiteralFault.Enum(name)) }
+    if named.word() != name { cx.literal_refused(e, LiteralFault.Fieldless(name, named.spelled())) }
+}
+
+/// A literal that spreads records, of the record `named` declaring `params` type parameters: each
+/// spread checks for the record it is, each written field against its seat, and the literal is the
+/// record; one of a generic record isn't typed.
+fn spread_checked(mut cx: Checking, lit: StructLit, named: SignedType, params: int) -> SignedType? {
+    if params != 0 {
+        cx.checked_free(lit.values)
+        return null
+    }
+    for at, v in lit.values {
+        let name = lit.fields[at].of
+        let field = if name == spread_entry { null } else { cx.field_of(named, name) }
+        if field == null {
+            let _ = cx.check(v, Expected.Free)
+        } else {
+            seated(cx, v, field!, name)
+        }
+    }
+    named
+}
+
+/// The literal `lit` at `e`, writing the leading type arguments `written`, refused where it leaves the
+/// parameter `open` of `record` pinned by nothing: named by the fields it leaves unwritten that could.
+fn unpinned_literal(
+    mut cx: Checking,
+    e: ExprId,
+    lit: StructLit,
+    record: RecordShape,
+    open: int,
+    written: List<TypeRef>,
+) {
+    let unwritten = [f.name for f in record.fields if !lit.fields.any(it.of == f.name) && (f.ty?.parameters() ?? []).contains(open)]
+    let param = if open < record.names.length { record.names[open] } else { "${open}" }
+    let none = owned_type("void")
+    cx
+        .refused
+        .push(
+            Refused {
+                at: e,
+                want: none,
+                found: none,
+                seat: Seating
+                    .LiteralUnpinned(lit.name.of, param, [spelled(t) for t in written], unwritten),
+            },
+        )
+}
+
+/// The record a literal names, applied to the type arguments it writes (`Box<int> { … }`), absent for
+/// a literal that writes none, or not one for each of the record's parameters.
+fn pinned_by(cx: Checking, e: ExprId, named: SignedType, params: int) -> SignedType? {
+    let pinned = cx.store.struct_targs_of(e)
+    if pinned.is_empty() || pinned.length != params { return null }
+    named with { args: [cx.written(t) for t in pinned] }
+}
+
+/// The record a seat names, applied to every argument it takes, absent for a seat that names another
+/// or none.
+fn applied_by(expected: Expected, named: SignedType, params: int) -> SignedType? {
+    let wanted? = match expected { .Exactly(ty) -> ty, rest -> null } else { return null }
+    if !wanted.names_as(named) || wanted.dynamic || wanted.args.length != params { return null }
+    wanted with { nulls: 0 }
+}
+
+/// The value `v` a `with` writes for the field `name` of `subject`, checked against that field: a
+/// field of `@std/meta`'s `Key` as a literal's is; a value of a subject no field is known of, freely.
+fn written(mut cx: Checking, subject: SignedType?, v: ExprId, name: string) {
+    let held? = subject else {
+        let _ = cx.check(v, Expected.Free)
+        return
+    }
+    let field? = cx.field_of(held, name) else {
+        let _ = cx.check(v, Expected.Free)
+        return
+    }
+    if meta_key(field.unwrapped()) { return seated(cx, v, field, name) }
+    let _ = cx.check(v, Expected.Exactly(field))
+}
+
+impl Checks for With {
+    /// `r with { f: v }` is `r`'s record, each value checked against its field.
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let subject = cx.check(self.subject, Expected.Free)
+        let _ = cx.seals(e, subject, "copied with new fields here")
+        if cx.fields_repeated([f.of for f in self.fields], self.values, spread_entry) { return subject }
+        for at, v in self.values { written(cx, subject, v, self.fields[at].of) }
+        subject
+    }
+}
+
+impl PatChecks for Fields {
+    /// A record pattern binds each field's pattern against that field.
+    fn pat_checked(mut cx: Checking, p: PatId, subject: SignedType?) {
+        let named = cx.type_named(self.name.of, null)
+        let record = if cx.record_of(named) != null { named } else { subject }
+        for f in self.fields { cx.check_pat(f.pat, if record == null { null } else { cx.field_of(record!, f.name.of) }) }
+        for r in self.rests { cx.check_pat(r, null) }
+    }
+}

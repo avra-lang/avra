@@ -1,0 +1,233 @@
+//! WHAT A COMPONENT'S `check` SAYS OF AN INSTANCE, at compile time: an instance that settles alone
+//! (`settles_alone`, the judgement the old path makes too) has its `check` call lowered with it as one
+//! body and run in the evaluator; each `Diagnostic` it answers is said of the instance, a refusal or a
+//! warning, in the check's own words. A check that traps or runs past its budget did not run, and
+//! says so; an instance that reads what only a run knows is not checked. The answer is saved per item, so an unchanged instance is not checked again.
+use core.{ExprId, Seating, StmtId, SyntaxArena, TaskChecks, flatten, name_read, settles_alone}
+use compiler.backend.{run_lifted}
+use compiler.laws.{Found, law}
+use diagnostics.{Voice}
+use features.{Unsettled, new_meta_heap}
+use @std.meta.{derive}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.saved_derive.{Saved}
+use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+
+/// One thing a check said of an instance: where the instance stands, the check's words and remedy,
+/// and whether it warns rather than refuses. `ran` is false where the check did not run, and
+/// `message` then says why.
+@derive(Saved)
+type InstanceSaid = { at: FindingAt?, message: string, help: string?, warning: bool, ran: bool = true }
+
+/// Everything the checks of the instances one written item declares said.
+@derive(Saved)
+type ItemChecked = { rows: List<InstanceSaid> }
+
+/// What the `check` of each component instance the written item `at` of `file` writes says of it, in
+/// every body the item holds — its fns', its defaults' and consts', a declared instance's own, and the statements it runs where
+/// it runs where its file is an entry (the entry read only by an item that runs one). An instance is judged only where it settles alone (`settles_alone`); an item
+/// that writes no instance reads nothing more: one its summary says wears no instance word — what
+/// it says is every word its tape's store wears, so never fewer than its item read back wears — is
+/// never read back here, and a new body for it asks nothing more.
+/// A query of its own: a check runs a program, so whether it runs again is the engine's to judge,
+/// apart from the laws that read what it says.
+@query
+fn item_instances_checked(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemChecked {
+    if !item_held(engine, file, at) { return ItemChecked { rows: [] } }
+    if !item_said(engine, file, at).instanced { return ItemChecked { rows: [] } }
+    let item = read_item(engine, file, at)
+    if !every_node(item.store).any((e) -> item.store.instance_word(e) != null) { return ItemChecked { rows: [] } }
+    let fns = [b! for s in item.stmts for p in [item.store.fn_parts(s)] if p != null for b in [signed_body(engine, file, p!.name)] if b != null]
+    let methods = [m!.signed for a in impls_at(engine, file, at) for s in impl_fns_at(item, a) if item.store.fn_parts(s) != null for m in [signed_method(engine, a, item.store.fn_parts(s)!.name, item.store.is_static(s))] if m != null]
+    let declared = [b for d in file_declares_at(engine, file, at).names if d.item == at && built_instance(engine, d) for b in declared_body(engine, d)]
+    let bodies = fns.concat(methods).concat(default_bodies(engine, file, at, item)).concat(declared)
+    let entry = if runs_in(engine, file, at) { entry_read(engine, file) } else { null }
+    let ran = [judged_in(engine, file, s!, at) for s in [if entry == null { null } else { entry_signed(entry!) }] if s != null]
+    let judged = [judged_in(engine, file, b, -1) for b in bodies].concat(ran)
+    ItemChecked { rows: flatten([instances_said(engine, file, entry, j) for j in judged]) }
+}
+
+/// What `item_instances_checked` answers for the item `view` shows, asked once a view.
+fn instances_checked_seen(view: ItemView) -> ItemChecked {
+    let held? = view.instances_checked.get() else {
+        let asked = item_instances_checked(view.engine, view.file, view.at)
+        view.instances_checked.set(asked)
+        return asked
+    }
+    held
+}
+
+/// A typed body an item holds, over the store its nodes stand in: the statement it's lowered as
+/// written by, and for an entry's statements the item whose nodes alone are its (-1: every node).
+type Judged = { store: SyntaxArena, typed: TypedBody, owner: StmtId, only: int }
+
+/// What the checks of the instances `j` types say of them: each instance its component judges, the
+/// body types, that is the item's own and settles alone.
+fn instances_said(engine: QueryEngine, file: SourceFileAddress, entry: EntryRead?, j: Judged) -> List<
+    InstanceSaid,
+> {
+    let instances = [e for e in every_node(j.store) if j.store.checked_by(e) != null &&
+        typed_here(j.typed, e) &&
+        (j.only < 0 || item_holding(entry!, e.index) == j.only)]
+    flatten([instance_checked(engine, file, j, e) for e in instances if settles_here(j, e)])
+}
+
+/// Whether the instance `e` settles alone: what its check reads, as typing bound each name.
+fn settles_here(j: Judged, e: ExprId) -> bool {
+    let at? = j.store.expr_span(e) else { return false }
+    let nodes = j.store.every_expr(j.store.checked_by(e)!).map(it.index)
+    settles_alone(
+        j.store,
+        at,
+        [name_read(j.store, r) for r in j.typed.reads if nodes.contains(r.at)],
+    )
+}
+
+/// What the check of the instance `e` says of it: the check's call, the instance its receiver, lowered
+/// as one body and run in the evaluator as one program, each fn it only holds made when the run calls
+/// it; nothing where it isn't lowered here.
+fn instance_checked(engine: QueryEngine, file: SourceFileAddress, j: Judged, e: ExprId) -> List<
+    InstanceSaid,
+> {
+    let call = j.store.checked_by(e)!
+    let said? = j.typed.types[call.index] else { return [] }
+    let place = kept_at(j.store.expr_span(e))
+    let name = "${call.index}\$checked"
+    let body = SignedBody {
+        signature: value_signature(said),
+        item: ReadItem { store: j.store, stmts: [j.owner], written: j.store.expr_count() },
+        body: call,
+        stmt: j.owner,
+        seat: Seating.Binding(name),
+    }
+    let unit = signed_lowered(engine, file, body, name, null)
+    if !unit.whole() || unit.refused > 0 { return [] }
+    let symbol = declared_symbol(file, name)
+    let survey = task_survey(engine)
+    let made = match made_reaching(
+        survey,
+        unit,
+        symbol,
+        [],
+        TaskChecks.Surveyed,
+        lazy: true,
+        unhashed_absent: true,
+    ) { .Made(l) -> l, .Unmade(_, _) or .Refused(_) -> { return [] } }
+    match run_lifted(
+        made,
+        symbol,
+        [],
+        new_meta_heap(),
+        lifted_budgets(engine, file.package_name),
+        (n: string) -> named_lifted(engine, file, n),
+        late: late_door(survey, TaskChecks.Surveyed),
+    ) {
+        .Ok(answer) -> [InstanceSaid { at: place, message: s.message, help: s.help, warning: s.warning } for s in answer.saids()],
+        .Err(why) -> did_not_run(place, why),
+    }
+}
+
+/// The body the instance `d` declares its value by; none where it has none.
+fn declared_body(engine: QueryEngine, d: DeclaredName) -> List<SignedBody> {
+    match const_body(engine, d) { .Ok(b) -> [b], .Err(_) -> [] }
+}
+
+/// The body `b` judged in a store of its own, typed through each node's meaning there; `only` the
+/// item whose instances it judges, -1 for every one.
+fn judged_in(engine: QueryEngine, file: SourceFileAddress, b: SignedBody, only: int) -> Judged {
+    let own = own_store(b)
+    Judged {
+        store: own.item.store,
+        typed: meant_typed(engine, file, own),
+        owner: own.stmt,
+        only: only,
+    }
+}
+
+/// The body `b` typed through each node's meaning, as it's lowered: an instance's `check` call typed.
+fn meant_typed(engine: QueryEngine, file: SourceFileAddress, b: SignedBody) -> TypedBody { kept_body(body_checked(engine, file, b, true)) }
+
+/// Whether the body `typed` gives the node `e` a type.
+fn typed_here(typed: TypedBody, e: ExprId) -> bool { e.index < typed.types.length && typed.types[e.index] != null }
+
+/// Every expression a store holds.
+fn every_node(store: SyntaxArena) -> List<ExprId> { [ExprId { index: i } for i in 0..store.exprs.count()] }
+
+/// A check that trapped or ran past its budget: it did not run, and its words say why. One that reads
+/// what only a run knows says nothing.
+fn did_not_run(at: FindingAt?, why: Unsettled) -> List<InstanceSaid> {
+    match why {
+        .Trap(words) or .Budget(words) -> [InstanceSaid { at: at, message: words, help: null, warning: false, ran: false }],
+        .Reach(_) or .Param(_) or .Spoken or .Recursive -> [],
+    }
+}
+
+// ── Laws ────────────────────────────────────────────────────────────
+
+/// Every refusal the checks of the instances the item `view` shows declares said, each with its
+/// words and remedy.
+fn checks_refused(view: ItemView) -> List<Found> {
+    [r.found() for r in instances_checked_seen(view).rows if r.ran && !r.warning]
+}
+
+/// Every warning the checks of the instances the item `view` shows declares said.
+fn checks_warned(view: ItemView) -> List<Found> {
+    [r.found() for r in instances_checked_seen(view).rows if r.ran && r.warning]
+}
+
+/// Every check of an instance the item `view` shows declares that did not run, with why.
+fn checks_unrun(view: ItemView) -> List<Found> {
+    [r.found() for r in instances_checked_seen(view).rows if !r.ran]
+}
+
+impl InstanceSaid {
+    /// The thing said as its law finds it: its words, then its remedy, the check's own else the
+    /// law's.
+    fn found() -> Found { Found { at: span_of(self.at), args: [self.message, self.help ?? checked_help] } }
+}
+
+/// a component's `check` refused this instance
+export law instance_check_refused {
+    kind: "lower.component_checked"
+    reads_view: checks_refused
+    voice: refused_words
+    witness: "use @std.meta.{Diagnostic, refuse}\n\ncomponent tray {\n    capacity: int = 1\n    fn check() -> List<Diagnostic> { if self.capacity < 1 { [refuse(\"a tray holds at least one\")] } else { [] } }\n}\n\ntray t { capacity: 0 }\n\"\${t.capacity}\"\n"
+}
+
+/// a component's `check` warned of this instance
+export law instance_check_warned {
+    kind: "lower.component_checked"
+    reads_view: checks_warned
+    voice: warned_words
+    warns: true
+    witness: "use @std.meta.{Diagnostic}\n\ncomponent tray {\n    capacity: int = 1\n    fn check() -> List<Diagnostic> { if self.capacity > 9 { [Diagnostic { message: \"a large tray\", help: null, at: null, warning: true }] } else { [] } }\n}\n\ntray t { capacity: 10 }\n\"\${t.capacity}\"\n"
+}
+
+/// a component's `check` did not run over this instance
+export law instance_check_unrun {
+    kind: "lower.component_checked"
+    reads_view: checks_unrun
+    voice: unrun_words
+    witness: "use @std.meta.{Diagnostic}\n\ncomponent tray {\n    capacity: int = 1\n    fn check() -> List<Diagnostic> {\n        let said: List<List<Diagnostic>> = []\n        said[self.capacity]\n    }\n}\n\ntray t { capacity: 5 }\n\"\${t.capacity}\"\n"
+}
+
+fn refused_words(a: List<string>) -> Voice { Voice { message: a[0], label: "`check` refused this instance", help: a[1] } }
+
+fn warned_words(a: List<string>) -> Voice { Voice { message: a[0], label: "`check` says so of this instance", help: a[1] } }
+
+fn unrun_words(a: List<string>) -> Voice {
+    Voice {
+        message: "this instance's `check` did not run: ${a[0]}",
+        label: "checked here",
+        help: "a `check` runs at compile time over the settings — what fails there is the component's to fix",
+    }
+}
+
+/// What a `check` says when it gave no way out.
+const checked_help: string = "change the instance's settings, or the library's `check` that refuses them"
+
+collect listed_check_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries the instance-check laws are read through, for a process to hand its engine.
+export fn check_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_check_facts) }

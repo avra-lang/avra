@@ -1,0 +1,746 @@
+//! STABLE ENCODINGS — a hash and a byte codec that answer from a value's
+//! CONTENT alone: never a dense id, an address, or the process that
+//! built it, so an answer written by one process is checked by the next.
+//!
+//! Every variable-length part carries its own length or count ahead of
+//! it, and every `?` layer its own presence flag: the arity is fixed per
+//! kind, so no two shapes spell the same bytes. The hash mixes at every
+//! step — a mix only at the end keeps every collision a linear fold made
+//! on the way.
+
+use @std.errors.{Loc}
+use @std.text.{from_codepoint, parse_int}
+
+/// splitmix64's finalizer: a nonlinear 64-bit mix.
+export fn mix(x: int) -> int {
+    let a = (x ^ shifted(x, 30)).wrapping_mul(-4658895280553007687)
+    let b = (a ^ shifted(a, 27)).wrapping_mul(-7723592293110705685)
+    b ^ shifted(b, 31)
+}
+
+/// `z` shifted right by `k` with zeros in from the top — `>>` carries
+/// the sign bit.
+fn shifted(z: int, k: int) -> int {
+    (z >> k) & 1.wrapping_shl(64 - k).wrapping_sub(1)
+}
+
+/// A hash under construction — one word, so it rides a register and a
+/// field costs no allocation.
+export type StableHasher = { z: int }
+
+export fn stable_hasher(seed: int) -> StableHasher {
+    StableHasher { z: mix(seed) }
+}
+
+/// A text's own stable hash — the seed a relation's stable name gives
+/// its rows.
+export fn text_hash(s: string) -> int {
+    stable_hasher(0).text(s).finish()
+}
+
+/// A multiset's hash: the wrapping sum of its members' finished hashes —
+/// order-free, and a duplicate counts twice. The empty set is zero.
+export fn set_hash(hashes: List<int>) -> int {
+    mut sum = 0
+    for h in hashes { sum = sum.wrapping_add(h) }
+    sum
+}
+
+impl StableHasher {
+    fn word(w: int) -> StableHasher { StableHasher { z: mix(self.z ^ w) } }
+
+    fn int(v: int) -> StableHasher { self.word(v) }
+
+    fn bool(v: bool) -> StableHasher { self.word(flag(v)) }
+
+    /// One `?` layer: whether a value is there.
+    fn present(p: bool) -> StableHasher { self.bool(p) }
+
+    /// A list's length, ahead of its elements.
+    fn count(n: int) -> StableHasher { self.word(n) }
+
+    fn text(s: string) -> StableHasher { self.octets(s.bytes()) }
+
+    /// The length first, then every eight octets as one little-endian
+    /// word.
+    fn octets(b: Bytes) -> StableHasher {
+        mut h = self.word(b.length)
+        // LICENSED loops.index_walk: a stride of eight — no element walk says it
+        mut at = 0
+        while at < b.length {
+            h = h.word(word_at(b, at))
+            at = at + 8
+        }
+        h
+    }
+
+    fn finish() -> int { mix(self.z) }
+}
+
+/// Up to eight octets from `at`, little-endian; the length ahead of
+/// them says where a short final word ends.
+fn word_at(b: Bytes, at: int) -> int {
+    mut w = 0
+    for k in 0..8 {
+        if at + k < b.length { w = w | b.at(at + k).wrapping_shl(8 * k) }
+    }
+    w
+}
+
+/// A `?` layer folded in: its presence, then the value when there is one.
+export fn hashed_opt<T>(h: StableHasher, v: T?, each: fn(StableHasher, T) -> StableHasher) -> StableHasher {
+    match v {
+        x? -> each(h.present(true), x)
+        null -> h.present(false)
+    }
+}
+
+/// A list folded in: its count, then every element in order.
+export fn hashed_list<T>(h: StableHasher, xs: List<T>, each: fn(StableHasher, T) -> StableHasher) -> StableHasher {
+    mut acc = h.count(xs.length)
+    for x in xs { acc = each(acc, x) }
+    acc
+}
+
+fn flag(v: bool) -> int {
+    if v { 1 } else { 0 }
+}
+
+// ── The codec ──
+
+/// HOW A DENSE ID CROSSES A PROCESS. A `@dense` id is an arena's index, which means nothing
+/// outside the process that minted it, so a codec writes it through the scope its owner
+/// hands in: a spelling of the id — a durable name for a declaration, an offset from a
+/// window's base for an expression — and an inverse that answers absent for a spelling it
+/// does not hold. `kind` is the id type's own name.
+///
+/// A PLACE IN A TEXT crosses the same way: an offset means nothing once the text above it
+/// moves, so the scope spells a span of `file` as it chooses (a token place), absent where
+/// it cannot, and reads one back to its offsets, absent where the text no longer holds it.
+///
+/// A PLACE'S FILE is spelled by the scope too (`file_spelled`), so a place crosses naming no
+/// checkout.
+///
+/// A LONG TEXT crosses out of line where the scope keeps one: `kept_out` answers the
+/// reference it filed the text under, absent to keep it in the record, and `kept_back` the
+/// text a reference names, absent once it is gone — so a record reading one fails, and its
+/// answer is computed again.
+export trait Scope {
+    fn spelled(kind: string, index: int) -> string
+
+    fn unspelled(kind: string, text: string) -> int?
+
+    fn placed(file: string, lo: int, hi: int) -> List<int>?
+
+    fn unplaced(file: string, at: List<int>) -> List<int>?
+
+    fn kept_out(text: string) -> string? { null }
+
+    fn kept_back(reference: string) -> string? { null }
+
+    fn file_spelled(file: string) -> string { file }
+
+    fn file_unspelled(text: string) -> string { text }
+}
+
+/// The scope that spells an id by its index, which only the process that wrote it reads back.
+export type Indexed = {}
+
+impl Scope for Indexed {
+    fn spelled(kind: string, index: int) -> string { "${index}" }
+
+    fn placed(file: string, lo: int, hi: int) -> List<int>? { [lo, hi] }
+
+    fn unplaced(file: string, at: List<int>) -> List<int>? { if at.length == 2 { at } else { null } }
+
+    fn unspelled(kind: string, text: string) -> int? {
+        if text.is_empty() || text.length > 18 { return null }
+        mut n = 0
+        for i in 0..text.length {
+            let c = text.char_code(i)
+            if c < 48 || c > 57 { return null }
+            n = n * 10 + (c - 48)
+        }
+        n
+    }
+}
+
+/// The index scope, as a value.
+export fn indexed_scope() -> dyn Scope { Indexed {} }
+
+/// A record under construction, as octets. An IDENTITY: every holder
+/// of a writer writes the one record, so no seat needs `mut`.
+export type Writer = {
+    out: Cell<List<int>>,
+    chunks: Cell<List<Bytes>>,
+    named: Cell<Map<string, int>>,
+    /// Whether an id was written that its scope names as nothing: what was written names no call.
+    nameless: Cell<bool> = Cell.new(false),
+    /// The tree a text under it is spelled from, empty for none: a record names no checkout.
+    home: Cell<string> = Cell.new(""),
+}
+
+export fn writer() -> Writer {
+    let out: Cell<List<int>> = Cell.new([])
+    let chunks: Cell<List<Bytes>> = Cell.new([])
+    let named: Cell<Map<string, int>> = Cell.new({})
+    Writer { out: out, chunks: chunks, named: named }
+}
+
+/// A dense id written: the type named `kind`, as `scope` spells it — the spelling once per
+/// record, a later write of the same id by the place its first came. The scope travels with the
+/// call, never with the writer, so a writer costs no box.
+export fn written_dense(w: Writer, scope: dyn Scope, kind: string, index: int) {
+    let key = "${kind}:${index}"
+    let seen = w.named.get().get(key)
+    if seen != null {
+        w.varint(seen!)
+        return
+    }
+    let spelled = scope.spelled(kind, index)
+    if spelled.is_empty() { w.nameless.set(true) }
+    w.varint(0)
+    w.spelled_text(spelled)
+    w.named.put(key, w.named.get().length + 1)
+}
+
+/// A place written: its file, then the span as `scope` spells it — absent where it cannot.
+/// A place with no file is no text's, so it keeps its offsets.
+export fn written_place(w: Writer, scope: dyn Scope, l: Loc) {
+    let file? = l.file else {
+        w.present(false)
+        w.int(l.lo)
+        w.int(l.hi)
+        return
+    }
+    w.present(true)
+    w.text(scope.file_spelled(file))
+    let at = scope.placed(file, l.lo, l.hi)
+    w.present(at != null)
+    if at != null { written_list(w, at!, (w: Writer, n: int) -> w.int(n)) }
+}
+
+/// The length from which a counted run of octets is kept as a chunk of its own.
+const CHUNK: int = 32
+
+/// The most single octets held pending: each costs a word until it closes into a chunk.
+const PENDING: int = 4096
+
+impl Writer {
+    fn byte(v: int) {
+        self.out.push(v & 255)
+        if self.out.get().length >= PENDING { self.settle_pending() }
+    }
+
+    /// Unsigned LEB128 over all 64 bits: seven at a time, low first.
+    fn varint(v: int) {
+        mut rest = v
+        while rest < 0 || rest > 127 {
+            self.byte((rest & 127) | 128)
+            rest = shifted(rest, 7)
+        }
+        self.byte(rest)
+    }
+
+    /// A word as exactly eight octets, low first: a hash is uniform, so a varint would cost
+    /// nine or ten of them.
+    fn fixed(v: int) {
+        for k in 0..8 { self.byte(v >> 8 * k) }
+    }
+
+    /// Zigzag, so a small negative is a short varint.
+    fn int(v: int) { self.varint(v.wrapping_shl(1) ^ (v >> 63)) }
+
+    fn bool(v: bool) { self.byte(flag(v)) }
+
+    fn present(p: bool) { self.bool(p) }
+
+    fn count(n: int) { self.varint(n) }
+
+    fn text(written: string) { self.spelled_text(saved_in(self.home.get(), written)) }
+
+    /// A text its scope already spelled for any checkout.
+    fn spelled_text(s: string) {
+        if s.length >= CHUNK { return self.octets(s.bytes()) }
+        self.count(s.length)
+        for i in 0..s.length { self.byte(s.char_code(i)) }
+    }
+
+    /// A run of octets, counted: a long one joins the record as one chunk, a short one a byte at a time.
+    fn octets(b: Bytes) { self.counted(b.length, b) }
+
+    /// `b` behind the count `n`.
+    fn counted(n: int, b: Bytes) {
+        self.count(n)
+        if b.length < CHUNK {
+            for i in 0..b.length { self.byte(b.at(i)) }
+            return
+        }
+        self.settle_pending()
+        self.chunks.push(b)
+    }
+
+    /// The single octets written since the last chunk, closed into one.
+    fn settle_pending() {
+        let pending = self.out.get()
+        if pending.is_empty() { return }
+        self.chunks.push(pending.bytes() ?? "".bytes())
+        self.out.set([])
+    }
+
+    fn bytes() -> Bytes {
+        self.settle_pending()
+        self.chunks.get().bytes()
+    }
+
+    /// The octets as text no other octets spell: what a record is interned by. A printable
+    /// octet stands as itself and every other, `%` included, as `%` and two hex digits.
+    fn spelled() -> string {
+        let all = self.bytes()
+        let words = octet_words()
+        [words[all.at(i)] for i in 0..all.length].join("")
+    }
+}
+
+/// Each octet's spelling in `Writer.spelled`, by its value.
+once fn octet_words() -> List<string> { [octet_word(o) for o in 0..256] }
+
+fn octet_word(o: int) -> string {
+    if o > 32 && o < 127 && o != 37 { return from_codepoint(o) }
+    let digits = "0123456789ABCDEF"
+    "%${digits.substring(o / 16, o / 16 + 1)}${digits.substring(o % 16, o % 16 + 1)}"
+}
+
+/// HOW A SAVED NAME SPELLS THE TREE ITS STORE STANDS IN: `home` as a whole path — itself, or
+/// a path under it — is kept as the tree, and a path beside it (under `home`'s own directory)
+/// as the tree's sibling, so a store read from another checkout of the same tree, or of a
+/// package laid beside the same dependencies, names the same files. A longer name that only
+/// begins like `home` is kept as it is; so is a path further out, and everything when `home`
+/// is empty.
+const TREE_MARK: string = "{tree}"
+
+/// `text` with every whole `home` spelled as the tree: a path under it in one pass, then the
+/// rare `home` that ends a path where it stands.
+export fn saved_in(home: string, text: string) -> string {
+    if home.is_empty() { return text }
+    let beside = beside_of(home)
+    if !text.contains(beside) { return text }
+    let under = text.replace("${home}/", "${TREE_MARK}/").replace(beside, "${TREE_MARK}/../")
+    if !under.contains(home) { return under }
+    mut parts: List<string> = []
+    mut rest = under
+    mut at = rest.index_of(home)
+    while at >= 0 {
+        let after = rest.substring(at + home.length, rest.length)
+        parts.push(rest.substring(0, at))
+        parts.push(if ends_a_path(after) { TREE_MARK } else { home })
+        rest = after
+        at = rest.index_of(home)
+    }
+    parts.push(rest)
+    parts.join("")
+}
+
+/// Whether a path ends where `after` begins: nothing follows, or what follows is no part of a
+/// file's name.
+fn ends_a_path(after: string) -> bool {
+    if after.is_empty() { return true }
+    let c = after.char_code(0)
+    !(c >= 48 && c <= 57 ||
+        c >= 65 && c <= 90 ||
+        c >= 97 && c <= 122 ||
+        c == 45 ||
+        c == 46 ||
+        c == 95)
+}
+
+/// `text` with the tree spelled as `home`.
+export fn unsaved_in(home: string, text: string) -> string {
+    if home.is_empty() || !text.contains(TREE_MARK) { return text }
+    text.replace("${TREE_MARK}/../", beside_of(home)).replace(TREE_MARK, home)
+}
+
+/// The directory `home` stands in, ending in its slash — never the filesystem's root, so a
+/// tree at the top of the disk has nothing beside it.
+fn beside_of(home: string) -> string {
+    mut at = home.length - 1
+    while at > 0 && home.char_code(at) != 47 { at = at - 1 }
+    if at <= 0 { "${home}/" } else { home.substring(0, at + 1) }
+}
+
+/// A text argument spelled for a call's key: itself with `%` and a tab escaped, so a tab joins
+/// spellings unambiguously and a path in it is spelled from the tree like any saved text.
+export fn text_spelled(s: string) -> string { s.replace("%", "%25").replace("\t", "%09") }
+
+/// A number argument spelled for a call's key.
+export fn int_spelled(n: int) -> string { "${n}" }
+
+/// `text_spelled`'s inverse.
+export fn text_unspelled(s: string) -> string { s.replace("%09", "\t").replace("%25", "%") }
+
+/// `int_spelled`'s inverse; a text no number spells reads as zero, a call nothing asked.
+export fn int_unspelled(s: string) -> int { parse_int(s) ?? 0 }
+
+/// A call's spelling cut back into its `count` seats' spellings and asked, none when it holds
+/// another number.
+export fn each_spelling(s: string, count: int, ask: fn(List<string>) -> void) {
+    let parts = "${s}\t.".split("\t")
+    if parts.length != count + 1 { return }
+    ask(parts.slice(0, count))
+}
+
+/// The key a call's kept answer is filed under: its query's name and its arguments' spelling,
+/// folded — the one spelling the process interns the call by, so the two never disagree.
+export fn spelled_hash(query: string, spelled: string) -> int { stable_hasher(text_hash(query)).text(spelled).finish() }
+
+/// What `parts` write, in order, spelled out.
+export fn spelled_with(parts: List<fn(Writer) -> void>) -> string {
+    let w = writer()
+    for part in parts { part(w) }
+    w.spelled()
+}
+
+/// The parts spelled as a call's lasting name, none when an id among them names nothing past
+/// the process: such a call is never kept.
+export fn named_with(parts: List<fn(Writer) -> void>) -> string? {
+    let w = writer()
+    for part in parts { part(w) }
+    if w.nameless.get() { return null }
+    w.spelled()
+}
+
+/// A `?` layer written: its presence, then the value when there is one.
+export fn written_opt<T>(w: Writer, v: T?, each: fn(Writer, T) -> void) {
+    match v {
+        x? -> {
+            w.present(true)
+            each(w, x)
+        }
+        null -> w.present(false)
+    }
+}
+
+/// A list written: its count, then every element in order.
+/// A value written through each of its columns' writers, in order — a
+/// nested record's fixed arity.
+export fn written_all<T>(w: Writer, v: T, columns: List<fn(Writer, T) -> void>) {
+    for each in columns { each(w, v) }
+}
+
+/// A map written: its count, then every entry's key and value in insertion order.
+export fn written_map<V>(w: Writer, m: Map<string, V>, each: fn(Writer, V) -> void) {
+    w.count(m.length)
+    for e in m.entries() {
+        w.text(e.key)
+        each(w, e.value)
+    }
+}
+
+export fn written_list<T>(w: Writer, xs: List<T>, each: fn(Writer, T) -> void) {
+    w.count(xs.length)
+    for x in xs { each(w, x) }
+}
+
+/// A tagged value: its variant's name, then its payload's writers in order.
+export fn written_tagged(w: Writer, tag: string, parts: List<fn(Writer) -> void>) {
+    w.text(tag)
+    for part in parts { part(w) }
+}
+
+/// A variant of a fingerprinted codec: its place in the declaration, then its payload's writers.
+export fn written_ordinal(w: Writer, at: int, parts: List<fn(Writer) -> void>) {
+    w.count(at)
+    for part in parts { part(w) }
+}
+
+/// One value as a record, through its writer.
+export fn encoded_with<T>(v: T, each: fn(Writer, T) -> void) -> Bytes {
+    let w = writer()
+    each(w, v)
+    w.bytes()
+}
+
+/// `v` encoded as a record that names it past the process; none when an id in it names nothing.
+export fn named_encoding<T>(v: T, each: fn(Writer, T) -> void) -> Bytes? {
+    let w = writer()
+    each(w, v)
+    if w.nameless.get() { return null }
+    w.bytes()
+}
+
+/// `named_encoding`, every text under `home` spelled from it.
+export fn named_encoding_from<T>(home: string, v: T, each: fn(Writer, T) -> void) -> Bytes? {
+    let w = writer()
+    w.home.set(home)
+    each(w, v)
+    if w.nameless.get() { return null }
+    w.bytes()
+}
+
+/// `decoded_with`, every text spelled from the tree read back under `home`.
+export fn decoded_from<T>(home: string, b: Bytes, each: fn(Reader) -> Result<T, CodecFault>) -> Result<
+    T,
+    CodecFault,
+> {
+    let r = reader_from(home, b)
+    let v = each(r)?
+    if !r.done() { fail CodecFault.Trailing }
+    v
+}
+
+/// A record read back through its reader — one with octets to spare
+/// refused, never half read.
+export fn decoded_with<T>(b: Bytes, each: fn(Reader) -> Result<T, CodecFault>) -> Result<
+    T,
+    CodecFault,
+> {
+    let r = reader(b)
+    let v = each(r)?
+    if !r.done() { fail CodecFault.Trailing }
+    v
+}
+
+/// Why a record does not decode. A record that does not decode is
+/// dropped and recomputed, never guessed at.
+export enum CodecFault {
+    Truncated
+    Overlong
+    NotFlag
+    NotText
+    /// octets left after the last field
+    Trailing
+    /// a variant name the enum does not declare
+    NotVariant
+    /// a record kept for other arguments than the call's
+    OtherArguments
+    /// a record written under another shape than the type's own
+    OtherShape
+    /// a dense id's spelling or a place the scope does not hold
+    Unresolved
+}
+
+impl CodecFault {
+    fn word() -> string {
+        match self {
+            .Truncated -> "truncated",
+            .Overlong -> "overlong",
+            .NotFlag -> "not_flag",
+            .NotText -> "not_text",
+            .Trailing -> "trailing",
+            .NotVariant -> "not_variant",
+            .OtherArguments -> "other_arguments",
+            .OtherShape -> "other_shape",
+            .Unresolved -> "unresolved",
+        }
+    }
+}
+
+/// A record being read: its octets and the position reached. An
+/// IDENTITY, as a writer is: every holder reads on from one position.
+export type Reader = { b: Bytes, at: Cell<int>, known: Cell<List<int>>, home: Cell<string> = Cell.new("") }
+
+export fn reader(b: Bytes) -> Reader {
+    let known: Cell<List<int>> = Cell.new([])
+    Reader { b: b, at: Cell.new(0), known: known }
+}
+
+/// A reader whose texts are spelled from the tree back under `home`.
+export fn reader_from(home: string, b: Bytes) -> Reader {
+    let r = reader(b)
+    r.home.set(home)
+    r
+}
+
+impl Reader {
+    fn byte() -> Result<int, CodecFault> {
+        let at = self.at.get()
+        if at >= self.b.length { fail CodecFault.Truncated }
+        self.at.set(at + 1)
+        self.b.at(at)
+    }
+
+    /// One value has one encoding: a tenth octet holds only bit 63,
+    /// and no continuation ends in a zero octet.
+    fn varint() -> Result<int, CodecFault> {
+        mut v = 0
+        for k in 0..10 {
+            let o = self.byte()?
+            if k == 9 && o > 1 { fail CodecFault.Overlong }
+            v = v | (o & 127).wrapping_shl(7 * k)
+            if o < 128 {
+                if k > 0 && o == 0 { fail CodecFault.Overlong }
+                return v
+            }
+        }
+        fail CodecFault.Overlong
+    }
+
+    /// Eight octets, low first: `fixed`'s reader.
+    fn fixed() -> Result<int, CodecFault> {
+        mut v = 0
+        for k in 0..8 { v = v | (self.byte()?).wrapping_shl(8 * k) }
+        v
+    }
+
+    fn int() -> Result<int, CodecFault> {
+        let z = self.varint()?
+        shifted(z, 1) ^ 0 - (z & 1)
+    }
+
+    fn bool() -> Result<bool, CodecFault> {
+        match self.byte()? { 0 -> false, 1 -> true, rest -> { fail CodecFault.NotFlag } }
+    }
+
+    fn present() -> Result<bool, CodecFault> { self.bool() }
+
+    /// A count, never past what is left to read.
+    fn count() -> Result<int, CodecFault> {
+        let n = self.varint()?
+        if n < 0 || n > self.b.length - self.at.get() { fail CodecFault.Truncated }
+        n
+    }
+
+    fn octets() -> Result<Bytes, CodecFault> { self.run(self.count()?) }
+
+    /// The next `n` octets, never past what is left to read.
+    fn run(n: int) -> Result<Bytes, CodecFault> {
+        let at = self.at.get()
+        if n < 0 || n > self.b.length - at { fail CodecFault.Truncated }
+        self.at.set(at + n)
+        self.b.slice(at, at + n)
+    }
+
+    fn text() -> Result<string, CodecFault> {
+        unsaved_in(self.home.get(), self.spelled_text()?)
+    }
+
+    /// A text as written, its scope's to read back.
+    fn spelled_text() -> Result<string, CodecFault> {
+        let s? = (self.octets()?).text() else { fail CodecFault.NotText }
+        s
+    }
+
+    /// A dense id of the type named `kind`, read back through the scope.
+
+    /// A variant's place among `n` declared, refused past the last.
+    fn ordinal(n: int) -> Result<int, CodecFault> {
+        let at = self.varint()?
+        if at < 0 || at >= n { fail CodecFault.NotVariant }
+        at
+    }
+
+    /// A variant read back by its NAME: its place among `names`, the
+    /// enum's variants in declared order.
+    fn variant(names: List<string>) -> Result<int, CodecFault> {
+        let at = names.index_of(self.text()?)
+        if at < 0 { fail CodecFault.NotVariant }
+        at
+    }
+
+    /// Whether every octet has been read.
+    fn done() -> bool { self.at.get() == self.b.length }
+}
+
+/// A text written through the scope: a count of zero and the scope's reference where it keeps
+/// the text out of line, else its length plus one and its octets.
+export fn written_text(w: Writer, scope: dyn Scope, s: string) {
+    let out = scope.kept_out(s)
+    if out != null {
+        w.count(0)
+        w.text(out!)
+        return
+    }
+    let b = s.bytes()
+    w.counted(b.length + 1, b)
+}
+
+/// `written_text` read back: a text kept out of line comes back through the scope, and one
+/// the scope no longer keeps is unresolved.
+export fn text_read(r: Reader, scope: dyn Scope) -> Result<string, CodecFault> {
+    let n = r.varint()?
+    if n == 0 {
+        let reference = r.text()?
+        let kept? = scope.kept_back(reference) else { fail CodecFault.Unresolved }
+        return kept
+    }
+    let s? = (r.run(n - 1)?).text() else { fail CodecFault.NotText }
+    s
+}
+
+/// A dense id read back through the reader's scope and built by `make`.
+export fn dense_read<T>(r: Reader, scope: dyn Scope, kind: string, make: fn(int) -> T) -> Result<
+    T,
+    CodecFault,
+> {
+    let place = r.varint()?
+    if place > 0 {
+        let known = r.known.get()
+        if place > known.length { fail CodecFault.Unresolved }
+        return .Ok(make(known[place - 1]))
+    }
+    let spelling = r.spelled_text()?
+    let index? = scope.unspelled(kind, spelling) else { fail CodecFault.Unresolved }
+    r.known.push(index)
+    .Ok(make(index))
+}
+
+/// A place read back through the scope: a span the scope cannot place, or no longer holds,
+/// is refused — never clamped to where it never pointed.
+export fn place_read(r: Reader, scope: dyn Scope) -> Result<Loc, CodecFault> {
+    if !r.present()? {
+        let lo = r.int()?
+        return Loc { file: null, lo: lo, hi: r.int()? }
+    }
+    let file = scope.file_unspelled(r.text()?)
+    if !r.present()? { fail CodecFault.Unresolved }
+    let n = r.count()?
+    let at = [r.int()? for _k in 0..n]
+    let span? = scope.unplaced(file, at) else { fail CodecFault.Unresolved }
+    if span.length != 2 { fail CodecFault.Unresolved }
+    Loc { file: file, lo: span[0], hi: span[1] }
+}
+
+/// A tagged enum's variant, read back by its place among the names.
+export fn tagged<T>(at: Result<int, CodecFault>, variants: List<T>) -> Result<T, CodecFault> {
+    variants[at?]
+}
+
+/// A nullable read back: its presence, then the value when present.
+export fn read_opt<T>(r: Reader, each: fn(Reader) -> Result<T, CodecFault>) -> Result<
+    T?,
+    CodecFault,
+> {
+    if !r.present()? { return .Ok(null) }
+    .Ok(each(r)?)
+}
+
+/// A list read back: its count, then every element in order.
+export fn read_list<T>(r: Reader, each: fn(Reader) -> Result<T, CodecFault>) -> Result<
+    List<T>,
+    CodecFault,
+> {
+    let n = r.count()?
+    .Ok([each(r)? for i in 0..n])
+}
+
+/// A map read back: its count, then every entry in order.
+export fn read_map<V>(r: Reader, each: fn(Reader) -> Result<V, CodecFault>) -> Result<
+    Map<string, V>,
+    CodecFault,
+> {
+    let n = r.count()?
+    mut m: Map<string, V> = {}
+    for i in 0..n {
+        let k = r.text()?
+        m.set(k, each(r)?)
+    }
+    m
+}
+
+/// A value read through `read`, then made into the type that stands over it.
+export fn read_over<A, B>(r: Reader, read: fn(Reader) -> Result<A, CodecFault>, make: fn(A) -> B) -> Result<
+    B,
+    CodecFault,
+> {
+    make(read(r)?)
+}

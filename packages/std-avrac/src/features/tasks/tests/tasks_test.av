@@ -1,0 +1,218 @@
+// The vertical: `spawn` runs beside the spawner, `.await` answers what
+// the body did, `.done` asks without parking, and a task is joined where
+// the last thing holding it ends.
+use @std.avrac.testing.{shown, refused_at_run, refused_with, refused_in, ir_of, floored, answered}
+use compiler.backend.{render_ir}
+
+extern fn avra_sched_timers() -> int
+extern fn avra_sched_pick_links() -> int
+extern fn avra_now_ns() -> int
+extern fn avra_clock_virtual(on: int)
+
+spec "features/tasks" {
+    given "spawn and await" {
+        then "a body's answer comes back through `.await`" {
+            shown("let t = spawn 20 + 1\n\"\${t.await}\"") == "21"
+        }
+        then "`.done` asks without parking — the spawner runs on first" {
+            shown("let t = spawn 1\nlet d = t.done\nlet v = t.await\n\"\${d} \${t.done} \${v}\"") == "false true 1"
+        }
+        then "`t.cancel()` lowers to the row and answers nothing" {
+            render_ir(ir_of("let t = spawn 1\nt.cancel()")).contains("call avra_task_cancel")
+        }
+        then "a `within` over a block that answers nothing is refused by name" {
+            refused_with(
+                "type Lim = { ms: int }\nfn spin() {\n    let _n = 1\n}\nlet x = within Lim { ms: 5 } { spin() }\n0",
+                "this block answers nothing",
+            )
+        }
+        then "a `within` where no `@std/time` holds `TimedOut` is refused by name" {
+            refused_with(
+                "type Lim = { ms: int }\nlet x = within Lim { ms: 5 } { 1 }\n0",
+                "`TimedOut` is `@std/time`'s",
+            )
+        }
+        then "a list of tasks awaits in order" {
+            shown(
+                "mut ts: List<Task<int>> = []\nfor i in 0..4 {\n    ts.push(spawn i * i)\n}\n[\"\${t.await}\" for t in ts].join(\",\")",
+            ) == "0,1,4,9"
+        }
+    }
+    given "the owner joins where it ends" {
+        then "a bound task is joined at its block's end" {
+            shown(
+                "let c = Cell.new(0)\nif true {\n    let _t = spawn {\n        c.set(7)\n        0\n    }\n}\nc.get()",
+            ) == "7"
+        }
+        then "a task nothing binds is owned by its block" {
+            shown(
+                "let c = Cell.new(0)\nif true {\n    spawn {\n        c.set(9)\n        0\n    }\n}\nc.get()",
+            ) == "9"
+        }
+        then "a nullable task owns what it holds, and absence joins nothing" {
+            shown(
+                "let t: Task<int>? = null\nlet u: Task<int>? = spawn 3\n\"\${t == null} \${u?.await ?? 0}\"",
+            ) == "true 3"
+        }
+        then "a task's body may await a sibling — both join here" {
+            shown("let a = spawn 4\nlet b = spawn { a.await + 100 }\nb.await") == "104"
+        }
+    }
+    given "a caught await" {
+        then "it lowers to the join that passes no cancel on, and a region on what that answered" {
+            let text = render_ir(floored(caught("let v = t.await catch c -> c.by\nv")).lowered())
+            let parts = text.split("call avra_task_join_caught(")
+            parts.length == 2 &&
+                in_order(
+                    parts[1],
+                    ["flag unwinding", " != ", "pack ", "} else {", "call avra_task_join("],
+                )
+        }
+        then "an answered task answers its value, and the arm does not run" {
+            answered(floored(caught("let v = t.await catch _ -> 0\n\"\${v}\""))) == "5"
+        }
+        then "a task nothing answers is caught as a statement" {
+            answered(
+                floored(
+                    "let seen = Cell.new(0)\nlet t = spawn { seen.set(1) }\nt.await catch _ -> { seen.set(9) }\nseen.get()",
+                ),
+            ) == "1"
+        }
+        then "a lone source sees no prelude, and is told what the catch recovers" {
+            refused_with(
+                "fn w() -> int { 5 }\nlet t = spawn w()\nlet v = t.await catch _ -> 0\nv",
+                "a caught `await` recovers the prelude's `Cancelled`, and this program sees no `@std/prelude`",
+            )
+        }
+        then "its help says where the prelude is seen" {
+            refused_with(
+                "fn w() -> int { 5 }\nlet t = spawn w()\nlet v = t.await catch _ -> 0\nv",
+                "a file in a package sees the prelude",
+            )
+        }
+        then "a variant arm is refused — a `Cancelled` has none to name" {
+            refused_in(
+                floored(caught("let v = t.await catch .Gone -> 0\nv")),
+                "`.Gone` names a variant, but `Cancelled` has none",
+            )
+        }
+        then "the arm answers what the task answers" {
+            refused_in(
+                floored(caught("let v = t.await catch _ -> \"no\"\nv")),
+                "a `catch` arm answers the ok side: `int`, this is `string`",
+            )
+        }
+        then "an await bound first is no failure to catch — the cancel left at the await" {
+            refused_in(
+                floored(caught("let v = t.await\nlet u = v catch _ -> 0\nu")),
+                "`catch` recovers a `Result`, this is `int`",
+            )
+        }
+    }
+    given "tasks nothing runs" {
+        then "a join of a cancelled task cancels the run that joined, which says who asked" {
+            refused_at_run(
+                "extern fn avra_task_pending() -> ptr\nextern fn avra_task_cancel(t: ptr)\nextern fn avra_task_join(t: ptr) -> ptr\nlet p = avra_task_pending()\navra_task_cancel(p)\nlet _a = avra_task_join(p)\n1",
+                "main was cancelled — awaiting a task cancelled by main",
+            )
+        }
+        then "a run that awaits no cancelled task ends as it chose" {
+            shown(
+                "extern fn avra_task_pending() -> ptr\nextern fn avra_task_cancel(t: ptr)\nlet p = avra_task_pending()\navra_task_cancel(p)\n1",
+            ) == "1"
+        }
+        then "a join between a wait row and its park traps as the runtime's does" {
+            refused_at_run(
+                "extern fn avra_wait_until(at_ns: int, arm: int, member: int)\nextern fn avra_task_pending() -> ptr\nextern fn avra_task_join(t: ptr) -> ptr\nlet p = avra_task_pending()\navra_wait_until(9000000000000000000, 0, 0)\nlet _a = avra_task_join(p)\n1",
+                "a task waited inside a wait it had not parked",
+            )
+        }
+        then "a settle there traps alike" {
+            refused_at_run(
+                "extern fn avra_wait_until(at_ns: int, arm: int, member: int)\nextern fn avra_task_pending() -> ptr\nextern fn avra_task_settle(t: ptr)\nlet p = avra_task_pending()\navra_wait_until(9000000000000000000, 0, 0)\navra_task_settle(p)\n1",
+                "a task waited inside a wait it had not parked",
+            )
+        }
+        then "a join of a task already done is no wait, and passes inside a set" {
+            shown(
+                "extern fn avra_wait_until(at_ns: int, arm: int, member: int)\nextern fn avra_wait_park() -> int\nextern fn avra_now_ns() -> int\nlet t = spawn 5\nlet first = t.await\navra_wait_until(avra_now_ns() + 1000000, 2, 3)\nlet again = t.await\nlet claim = avra_wait_park()\n\"\${first} \${again} \${claim >> 32}:\${claim & 4294967295}\"",
+            ) == "5 5 2:3"
+        }
+        then "a task answers once" {
+            refused_at_run(
+                "extern fn avra_task_pending() -> ptr\nextern fn avra_task_answer(t: ptr, v: ptr)\nextern fn avra_array_new() -> ptr\nlet p = avra_task_pending()\nlet v = avra_array_new()\navra_task_answer(p, v)\navra_task_answer(p, v)\n1",
+                "a task answered twice",
+            )
+        }
+        then "a slot past the four traps" {
+            refused_at_run(
+                "extern fn avra_task_slot(key: int) -> ptr?\nlet _s = avra_task_slot(4)\n1",
+                "a task has four slots, and this is none of them",
+            )
+        }
+    }
+    given "one process, many runs" {
+        then "a run a trap stopped with tasks outstanding leaves none for the next" {
+            shown("let a = spawn 1\nlet b = spawn 2\n[1][5]") == "<refused>" &&
+                shown("let t = spawn 3\nt.await") == "3"
+        }
+        then "a run that ends holding a pending task and a far timer leaves the policy none" {
+            shown(
+                    "extern fn avra_task_pending() -> ptr\nextern fn avra_task_at(at_ns: int) -> ptr\nlet _p = avra_task_pending()\nlet _t = avra_task_at(9000000000000000000)\n1",
+                ) == "1" &&
+                avra_sched_timers() == 0 &&
+                shown("let t = spawn 3\nt.await") == "3"
+        }
+        then "a seed a run took and never settled ends with the run" {
+            shown(
+                    "extern fn avra_sched_seed(schedule: int)\navra_sched_seed(3)\nlet a = spawn 1\nlet b = spawn 2\n\"\${a.await + b.await}\"",
+                ) == "3" &&
+                picks_while(
+                    () -> shown("let a = spawn 1\nlet b = spawn 2\n\"\${a.await + b.await}\""),
+                ) == 0
+        }
+        then "a clock a run turned virtual, and the hour it jumped, end with the run" {
+            // on the wall's clock, so a clock the run left frozen shows
+            avra_clock_virtual(0)
+            let before = avra_now_ns()
+            shown(
+                    "extern fn avra_clock_virtual(on: int)\nextern fn avra_fiber_sleep(ms: int)\navra_clock_virtual(1)\navra_fiber_sleep(3600000)\n\"slept\"",
+                ) == "slept" &&
+                avra_now_ns() - before < 60000000000 &&
+                flows()
+        }
+    }
+}
+
+/// A program whose task `t` answers 5, then `rest`.
+fn caught(rest: string) -> string {
+    "fn w() -> int { 5 }\nlet t = spawn w()\n" + rest
+}
+
+/// Whether each of `marks` stands in `text` past the one before it.
+fn in_order(text: string, marks: List<string>) -> bool {
+    mut rest = text
+    for m in marks {
+        let at = rest.index_of(m)
+        if at < 0 { return false }
+        rest = rest.substring(at + m.length, rest.length)
+    }
+    true
+}
+
+/// Whether the clock moves: it reads a later instant within a million
+/// reads.
+fn flows() -> bool {
+    let t0 = avra_now_ns()
+    mut i = 0
+    while i < 1000000 && avra_now_ns() == t0 { i = i + 1 }
+    i < 1000000
+}
+
+/// How many links of the queue the seeded pick walked while `run` ran:
+/// none, for an unseeded process.
+fn picks_while(run: fn() -> string) -> int {
+    let before = avra_sched_pick_links()
+    let _ = run()
+    avra_sched_pick_links() - before
+}

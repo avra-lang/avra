@@ -1,0 +1,92 @@
+// The rules one by one: each boundary on both sides, the empty case
+// first, and what each refusal says.
+use @std.validate.{range, length, email, pattern, one_of, matches, nearest, Issue}
+
+/// A verdict as text: `ok <value>` or the refusal's words.
+fn said(r: Result<string, string>) -> string {
+    match r { .Ok(v) -> "ok ${v}", .Err(m) -> m }
+}
+
+fn said_int(r: Result<int, string>) -> string {
+    match r { .Ok(v) -> "ok ${v}", .Err(m) -> m }
+}
+
+fn said_issue(r: Result<string, Issue>) -> string {
+    match r { .Ok(v) -> "ok ${v}", .Err(i) -> "${i.message} fix=${i.fix?.shown() ?? "-"}" }
+}
+
+fn slug(s: string) -> bool { s == "ok" }
+fn never(_s: string) -> bool { false }
+
+spec "std/validate rules" {
+    given "range" {
+        then "both ends are inside" { range(13, 13, 130) is .Ok && range(130, 13, 130) is .Ok }
+        then "one past either end is outside" { range(12, 13, 130) is .Err && range(131, 13, 130) is .Err }
+        then "the refusal names the range" { said_int(range(9, 13, 130)) == "must be between 13 and 130" }
+        then "a message replaces the default" { said_int(range(1, 13, 130, "you must be 13 or over")) == "you must be 13 or over" }
+        then "an empty range refuses everything" { range(5, 5, 4) is .Err && range(4, 5, 4) is .Err }
+    }
+    given "length" {
+        then "the empty text has length zero" { length("", 0, 0) is .Ok && length("", min: 1) is .Err }
+        then "code points, not bytes" { length("日本", max: 2) is .Ok && length("é!", max: 1) is .Err }
+        then "min alone, max alone, both, exactly" {
+            said(length("x", min: 12)) == "must be at least 12 characters" &&
+                said(length("abcd", max: 3)) == "must be at most 3 characters" &&
+                said(length("a", 2, 4)) == "must be between 2 and 4 characters" &&
+                said(length("a", 3, 3)) == "must be exactly 3 characters"
+        }
+        then "a passing value is answered as it came" { said(length("abc", 1, 5)) == "ok abc" }
+    }
+    given "email" {
+        then "a mailbox passes" {
+            ["a@b.co", "ada.lovelace+x@mail.example.dev", "x@日本.jp", "a_b@c-d.e"]
+                .all(email(it) is .Ok)
+        }
+        then "the near misses are refused" {
+            [
+                "",
+                "@",
+                "a@",
+                "@b.co",
+                "a@b",
+                "a@b.",
+                "a@.b",
+                "a b@c.d",
+                "a@b@c.d",
+                "a@-b.c",
+                "a@b-.c",
+                "a@b..c",
+                "\"a\"@b.c",
+            ]
+                .all(email(it) is .Err)
+        }
+        then "past 254 bytes is refused" { email("a@" + ["b" for _i in 0..250].join("") + ".co") is .Err }
+    }
+    given "pattern" {
+        then "a test that passes, passes" { pattern("ok", slug) is .Ok }
+        then "unnamed and named refusals" {
+            said(pattern("x", never)) == "is not in the expected format" &&
+                said(pattern("x", never, "slug")) == "must be a valid slug"
+        }
+    }
+    given "one_of" {
+        then "an option passes and the empty text does not" { one_of("pro", ["free", "pro"]) is .Ok && one_of("", ["free", "pro"]) is .Err }
+        then "a near miss names the option it meant" { said_issue(one_of("prp", ["free", "pro"])) == "must be one of \"free\", \"pro\" fix=\"pro\"" }
+        then "a far miss names none" { said_issue(one_of("enterprise", ["free", "pro"])) == "must be one of \"free\", \"pro\" fix=-" }
+        then "no options refuses everything" { one_of("x", []) is .Err }
+        then "nearest reads edits: one for short words, two for long" {
+            nearest("mathz", ["maths"]) == "maths" &&
+                nearest("mxthz", ["maths"]) == null &&
+                nearest("pasword", ["password"]) == "password" &&
+                nearest("pawsord", ["password"]) == "password"
+        }
+    }
+    given "matches" {
+        then "the same text passes" { matches("s3cret", "s3cret") is .Ok }
+        then "a different text is refused, named when asked" {
+            said(matches("b", "a")) == "does not match" &&
+                said(matches("b", "a", "password")) == "must match password"
+        }
+        then "nothing to compare when the sibling was refused" { matches("anything", null) is .Ok }
+    }
+}

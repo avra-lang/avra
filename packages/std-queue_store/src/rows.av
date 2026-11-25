@@ -1,0 +1,242 @@
+//! The rows a store home keeps, as `@model` types: `@std/db` owns their
+//! tables. An instant is a `Time`: nanoseconds on the wall clock, the
+//! one clock a second process reads alike, and the integer every
+//! statement here binds and compares.
+use @std.db.{model}
+use @std.db.apply.{recorded_shapes}
+use @std.db.migrate.{diff}
+use @std.db.shape.{shape_read}
+use @std.sqlite.{Db, sql}
+use @std.time.{Time}
+use @std.queue.{HomeError, Order, Overflow}
+use fault.{home_error, homed}
+
+/// One item owed a fate. `id` is the order items were sent in and the
+/// handle a delivery names it by. `body` is the item's octets.
+/// `ready_at` holds an item back until that instant. A take raises
+/// `epoch` and sets `reader` and `leased_until`; a release clears both.
+/// `in_line` is the instant a row no reader holds took its place in
+/// line: its send, for one due from the first, or the take that found
+/// it due. It is absent while the row waits for `ready_at`, and while a
+/// reader holds it. The rows in line are found by queue in send order,
+/// the ones a take hands out; the rows that wait by their due instant
+/// (`held_index`); the rows a reader holds by queue and the instant its
+/// lease ends, the ones a take may reach once that instant passed.
+@model
+export type FlowItem = {
+    id: int = 0,
+    @index(present: in_line) queue: string,
+    key: string,
+    shape: int,
+    body: Bytes,
+    sent_at: Time,
+    ready_at: Time,
+    attempt: int = 0,
+    epoch: int = 0,
+    reader: string? = null,
+    @index(queue, present: leased_until) leased_until: Time? = null,
+    in_line: Time? = null,
+}
+
+/// A send remembered by the name its sender gave it: `answer` is what
+/// that send answered, and `at` the instant it was filed.
+@model
+export type FlowSeen = {
+    id: int = 0,
+    queue: string,
+    @unique(queue) name: string,
+    at: Time,
+    answer: string,
+}
+
+/// An item no take could read, out of its queue: the id, key, shape,
+/// octets and send instant it had there, the instant it was set aside,
+/// and why as `unread.av` numbers it.
+@model
+export type FlowUnread = {
+    id: int = 0,
+    queue: string,
+    item: int,
+    key: string,
+    shape: int,
+    body: Bytes,
+    sent_at: Time,
+    at: Time,
+    why: int,
+}
+
+/// An item shape a home has written, by its hash.
+@model
+export type FlowShape = {
+    id: int = 0,
+    @unique hash: int,
+    descriptor: string,
+}
+
+/// The terms a queue's home was last opened under, so the database
+/// says what each of its queues promises without the program that
+/// declared it: spans in nanoseconds, `overflow` and `order` as
+/// numbered below, and `shape` the hash its items are written under.
+@model
+export type FlowTerms = {
+    id: int = 0,
+    @unique queue: string,
+    capacity: int,
+    lease: int,
+    retries: int,
+    overflow: int,
+    order: int,
+    dedupe: int,
+    opened_at: Time,
+    shape: int,
+}
+
+/// An overflow term as its row holds it.
+export fn overflow_code(o: Overflow) -> int {
+    match o { .park -> 1, .latest -> 2, .drop_oldest -> 3, .drop_newest -> 4, .fail -> 5 }
+}
+
+/// The overflow term a row's number names; absent for a number another
+/// build gave.
+export fn overflow_coded(code: int) -> Overflow? {
+    match code {
+        1 -> Overflow.park,
+        2 -> Overflow.latest,
+        3 -> Overflow.drop_oldest,
+        4 -> Overflow.drop_newest,
+        5 -> Overflow.fail,
+        _ -> null,
+    }
+}
+
+/// An order term as its row holds it.
+export fn order_code(o: Order) -> int {
+    match o { .fifo -> 1, .by_key -> 2 }
+}
+
+/// The order term a row's number names; absent for a number another
+/// build gave.
+export fn order_coded(code: int) -> Order? {
+    match code { 1 -> Order.fifo, 2 -> Order.by_key, _ -> null }
+}
+
+/// The terms of the queue `?1`, written each time a home opens on it.
+export const terms_kept: string = "INSERT INTO \"FlowTerms\" (\"queue\", \"capacity\", \"lease\", \"retries\", \"overflow\", \"order\", \"dedupe\", \"opened_at\", \"shape\") VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) ON CONFLICT (\"queue\") DO UPDATE SET \"capacity\" = ?2, \"lease\" = ?3, \"retries\" = ?4, \"overflow\" = ?5, \"order\" = ?6, \"dedupe\" = ?7, \"opened_at\" = ?8, \"shape\" = ?9"
+
+/// One queue's counts, kept by the triggers below in the transaction
+/// of the write they count: `waiting` the items no take has reached,
+/// `owed` every item still owed a fate. A send reads its room and a
+/// depth its answer from this row, never from a walk of the items. The
+/// row is made when a home opens on its queue, from the items that
+/// stand then. No model: the counts are read by the home alone, and a
+/// change of one is no change of the queue's items.
+const room_table: string = "CREATE TABLE IF NOT EXISTS \"FlowRoom\" (\"queue\" TEXT PRIMARY KEY, \"waiting\" INTEGER NOT NULL, \"owed\" INTEGER NOT NULL) WITHOUT ROWID"
+
+/// The database's own mark: one row, written once, of sixteen digits
+/// no other database was given. Every id a home answers begins with it,
+/// so a delivery names its item in its own database and none in
+/// another.
+const mark_table: string = "CREATE TABLE IF NOT EXISTS \"FlowMark\" (\"one\" INTEGER PRIMARY KEY CHECK (\"one\" = 1), \"mark\" TEXT NOT NULL)"
+
+const mark_made: string = "INSERT OR IGNORE INTO \"FlowMark\" (\"one\", \"mark\") VALUES (1, lower(hex(randomblob(8))))"
+
+export const read_mark: string = "SELECT \"mark\" FROM \"FlowMark\""
+
+/// An item written is owed a fate, and waits while no take reached it.
+const count_filed: string = "CREATE TRIGGER IF NOT EXISTS \"FlowItem_filed\" AFTER INSERT ON \"FlowItem\" BEGIN UPDATE \"FlowRoom\" SET \"owed\" = \"owed\" + 1, \"waiting\" = \"waiting\" + (new.\"epoch\" = 0) WHERE \"queue\" = new.\"queue\"; END"
+
+/// A take's first reach of an item ends its wait.
+const count_reached: string = "CREATE TRIGGER IF NOT EXISTS \"FlowItem_reached\" AFTER UPDATE OF \"epoch\" ON \"FlowItem\" WHEN (old.\"epoch\" = 0) <> (new.\"epoch\" = 0) BEGIN UPDATE \"FlowRoom\" SET \"waiting\" = \"waiting\" + (new.\"epoch\" = 0) - (old.\"epoch\" = 0) WHERE \"queue\" = old.\"queue\"; END"
+
+/// An item gone is owed nothing, and waited only if no take reached it.
+const count_gone: string = "CREATE TRIGGER IF NOT EXISTS \"FlowItem_gone\" AFTER DELETE ON \"FlowItem\" BEGIN UPDATE \"FlowRoom\" SET \"owed\" = \"owed\" - 1, \"waiting\" = \"waiting\" - (old.\"epoch\" = 0) WHERE \"queue\" = old.\"queue\"; END"
+
+/// The counts of the queue `?1`, taken from its items once: only
+/// while the queue has no count.
+export const count_standing: string = "INSERT OR IGNORE INTO \"FlowRoom\" (\"queue\", \"waiting\", \"owed\") SELECT ?1, coalesce(sum(\"epoch\" = 0), 0), count(*) FROM \"FlowItem\" WHERE \"queue\" = ?1 AND NOT EXISTS (SELECT 1 FROM \"FlowRoom\" WHERE \"queue\" = ?1)"
+
+/// The rows a take has reached, by queue and key: the only rows that
+/// can keep a place ahead of another.
+const taken_index: string = "CREATE INDEX IF NOT EXISTS \"FlowItem_taken\" ON \"FlowItem\" (\"queue\", \"key\") WHERE \"epoch\" > 0"
+
+/// The rows that wait for their due instant, by queue and that instant:
+/// the ones a take puts in line once the instant passed. DDL, since they
+/// are the rows with neither a lease nor a place in line, two absences
+/// no field mark says, and a mark for both would copy two facts the row
+/// already holds.
+const held_index: string = "CREATE INDEX IF NOT EXISTS \"FlowItem_held\" ON \"FlowItem\" (\"queue\", \"ready_at\") WHERE \"leased_until\" IS NULL AND \"in_line\" IS NULL"
+
+/// The rows of the queue `?1` whose due instant passed by `?2`, put in
+/// line at it.
+export const found_due: string = "UPDATE \"FlowItem\" SET \"in_line\" = ?2 WHERE \"queue\" = ?1 AND \"leased_until\" IS NULL AND \"in_line\" IS NULL AND \"ready_at\" <= ?2"
+
+/// The rows no take has reached, by queue and key in send order: the
+/// one `latest` gives up for a newer item of its key. Made by a home
+/// whose terms coalesce.
+export const waiting_index: string = "CREATE INDEX IF NOT EXISTS \"FlowItem_waiting\" ON \"FlowItem\" (\"queue\", \"key\", \"id\") WHERE \"epoch\" = 0"
+
+/// The take: `?1` the reader, `?2` the new lease's end, `?3` the queue,
+/// `?4` now, `?5` whether one standing delivery holds the whole queue,
+/// `?6` the instant a lease ended by to be handed out again — now, or
+/// for a later take of one call the instant before the call's own
+/// holds end, where those are over at once, so no call takes back a
+/// hold it gave.
+/// The candidate is the oldest row in line that is due, read from the
+/// index of the rows in line, or the row whose lease ran out
+/// first, read from the index of the rows one holds; the older of the
+/// two is handed out. A row a live
+/// lease holds is never walked. A candidate is handed out only when no
+/// row KEEPS ITS PLACE ahead of it: one under a live lease, or one
+/// released and still backing off — any such row under `fifo`, asked
+/// once as the walk's limit so a blocked take walks no candidate, one
+/// of the same key under `by_key`. A row
+/// that keeps its place was taken once, so it is found in
+/// `FlowItem_taken`. The body is answered as octets whatever class its
+/// cell holds.
+export const take_next: string = "UPDATE \"FlowItem\" SET \"reader\" = ?1, \"epoch\" = \"epoch\" + 1, \"leased_until\" = ?2, \"in_line\" = NULL WHERE \"id\" = (SELECT min(\"id\") FROM (SELECT \"id\" FROM (SELECT c.\"id\" AS \"id\" FROM \"FlowItem\" c WHERE c.\"queue\" = ?3 AND c.\"in_line\" IS NOT NULL AND c.\"ready_at\" <= ?4 AND (?5 = 1 OR NOT EXISTS (SELECT 1 FROM \"FlowItem\" h WHERE h.\"queue\" = c.\"queue\" AND h.\"key\" = c.\"key\" AND h.\"epoch\" > 0 AND (h.\"leased_until\" > ?4 OR (h.\"leased_until\" IS NULL AND h.\"ready_at\" > ?4)))) ORDER BY c.\"id\" LIMIT (SELECT ?5 = 0 OR NOT EXISTS (SELECT 1 FROM \"FlowItem\" h WHERE h.\"queue\" = ?3 AND h.\"epoch\" > 0 AND (h.\"leased_until\" > ?4 OR (h.\"leased_until\" IS NULL AND h.\"ready_at\" > ?4))))) UNION ALL SELECT \"id\" FROM (SELECT c.\"id\" AS \"id\" FROM \"FlowItem\" c WHERE c.\"queue\" = ?3 AND c.\"leased_until\" <= ?6 AND (?5 = 1 OR NOT EXISTS (SELECT 1 FROM \"FlowItem\" h WHERE h.\"queue\" = c.\"queue\" AND h.\"key\" = c.\"key\" AND h.\"epoch\" > 0 AND (h.\"leased_until\" > ?4 OR (h.\"leased_until\" IS NULL AND h.\"ready_at\" > ?4)))) ORDER BY c.\"leased_until\" LIMIT (SELECT ?5 = 0 OR NOT EXISTS (SELECT 1 FROM \"FlowItem\" h WHERE h.\"queue\" = ?3 AND h.\"epoch\" > 0 AND (h.\"leased_until\" > ?4 OR (h.\"leased_until\" IS NULL AND h.\"ready_at\" > ?4))))))) RETURNING \"id\", \"key\", CAST(\"body\" AS BLOB), \"shape\", \"attempt\", \"epoch\""
+
+/// Every table a store home reads, made where it is missing, and the
+/// item table grown where an earlier build made it. Answers how many
+/// tables stand.
+export fn tables_made(db: Db) -> Result<int, HomeError> {
+    let _ = items_made(db)?
+    let _ = homed(FlowSeen.create_table(db))?
+    let _ = homed(FlowShape.create_table(db))?
+    let _ = homed(FlowUnread.create_table(db))?
+    let _ = homed(FlowTerms.create_table(db))?
+    for made in [
+        room_table,
+        mark_table,
+        mark_made,
+        taken_index,
+        held_index,
+        count_filed,
+        count_reached,
+        count_gone,
+    ] {
+        let _ = homed(db.run(sql(made)))?
+    }
+    7
+}
+
+/// The item table made, or grown to this build's shape where an earlier
+/// build made it; inside a transaction, made only. A table this build
+/// cannot grow to its shape, as one a newer build grew, stands as it is:
+/// the store reads only the columns it names.
+fn items_made(db: Db) -> Result<int, HomeError> {
+    if db.in_transaction() { return homed(FlowItem.create_table(db)) }
+    match FlowItem.migrate(db) {
+        .Ok(steps) -> .Ok(steps),
+        .Err(.Sql(e)) -> .Err(home_error(e)),
+        .Err(.Moving(_)) -> .Ok(0),
+        .Err(e) -> .Err(HomeError.Refused(e.describe().message)),
+    }
+}
+
+/// Whether the item table stands with nothing to grow: made, and holding
+/// every column and index this build's shape holds.
+export fn items_stand(db: Db) -> Result<bool, HomeError> {
+    let mine? = shape_read(FlowItem.shape()) else { return false }
+    let held? = (homed(recorded_shapes(db))?).find(it.name == mine.name) else { return false }
+    diff(held, mine, []).steps.is_empty()
+}

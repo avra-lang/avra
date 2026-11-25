@@ -1,0 +1,34 @@
+//! The collect declaration's StmtSemantics: dispatch only. A collect
+//! binds a program-wide name, like a const — resolve records it in
+//! the declaration table, never the sequence; typing lives in
+//! check.av; lowering is compiler/lower/lower.av's synthesis, keyed
+//! on the same declaration, so there is nothing to lower here.
+use core.{StmtId}
+use core.stmt.{Collect, CollectEnum}
+use features.{StmtSemantics, ResolveCx, TypeCx, nested_types}
+
+impl StmtSemantics for Collect {
+    fn resolve_stmt(mut cx: ResolveCx, s: StmtId) {
+        cx.walk_value(s)
+        cx.bind_checked(s)
+    }
+
+    fn type_stmt(mut cx: TypeCx, s: StmtId) {
+        check_collect(cx, s)
+    }
+}
+
+/// `collect enum` declares a TYPE, like `enum` — its name binds at
+/// mint (decls_mint.av), never here, so resolving is only the
+/// nesting law every type declaration shares.
+impl StmtSemantics for CollectEnum {
+    fn resolve_stmt(mut cx: ResolveCx, s: StmtId) {
+        let _ = cx.refuses_nested(s, "resolve.nested_type", nested_types())
+        // each `: T` names its trait as an annotation's argument does
+        for t in cx.view.store.collect_enum_parts(s)?.traits ?? [] { cx.walk(t) }
+    }
+
+    fn type_stmt(mut cx: TypeCx, s: StmtId) {
+        check_collect_enum(cx, s)
+    }
+}

@@ -1,0 +1,48 @@
+//! WHAT AN ITEM'S PARSE REFUSED, as laws read it off the item's tape: the engine's own words are the
+//! law's voice, as `codes.av` projects them, so a refusal reads alike however it's reached.
+use core.{ParseRefusal, Span}
+use compiler.laws.{Found, law}
+use diagnostics.{Voice}
+use @std.grammar.{Diagnostic}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+
+/// Every refusal the parse of the item `view` shows made, in the file's offsets: its kind, the
+/// engine's message and its help, as the driver projects them — the lexer's, the grammar's, a
+/// block's and a builder's alike.
+fn parse_refused(view: ItemView) -> List<Found> {
+    [refused_found(r) for r in view.item.store.refusals()]
+}
+
+/// A parse's refusal as its law reads it.
+fn refused_found(r: ParseRefusal) -> Found {
+    match r {
+        .Grammar(cause, message, span, expected, in_rule) -> said_projected(
+            Diagnostic {
+                cause: cause,
+                message: message,
+                loc: span?.engine_loc(),
+                expected: expected,
+                in_rule: in_rule,
+            },
+            span,
+        ),
+        .Builder(kind, message, help, span) -> Found { at: span, args: [message, help], kind: kind },
+    }
+}
+
+/// An engine refusal at `span`, its kind and words as the driver projects them.
+fn said_projected(d: Diagnostic, span: Span?) -> Found {
+    let p = project(d, null)
+    Found { at: span, args: [p.message, p.help ?? ""], kind: p.kind }
+}
+
+/// a source parses: every refusal its parse makes is said, in its own kind
+export law parse_expected {
+    kind: "parse.expected"
+    reads_view: parse_refused
+    voice: engine_words
+    witness: "fn f() -> int {\n    let x = (1 + 2\n    x\n}\n"
+}
+
+fn engine_words(words: List<string>) -> Voice { Voice { message: words[0], help: if words[1].is_empty() { null } else { words[1] } } }

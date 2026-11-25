@@ -1,0 +1,65 @@
+// A value a `collect` keeps hears the element its seat wants, as a list
+// literal's element does — so a kept `match` judges each arm against
+// that element, and an `if` under a declared type judges its branches
+// the same way. A kept arm answers one element: a list is written as the
+// arm's statements.
+use @std.avrac.testing.{shown, refused_with, refusals}
+
+/// Two records sharing one trait, and the enum that picks between them.
+fn shapes() -> string {
+    "trait Sh {\n    fn said() -> string\n}\ntype P = { n: int }\ntype Q = { t: string }\nimpl Sh for P {\n    fn said() -> string { \"p\${self.n}\" }\n}\nimpl Sh for Q {\n    fn said() -> string { \"q\${self.t}\" }\n}\nenum K {\n    A\n    B\n    C\n}\n"
+}
+
+/// A collect over `dyn Sh` whose kept `match` draws per arm.
+fn picked(k: string) -> string {
+    shapes() +
+        "fn kept(k: K) -> List<dyn Sh> {\n    let xs: List<dyn Sh> = collect {\n        match k {\n            .A -> P { n: 1 }\n            .B -> Q { t: \"b\" }\n            .C -> {\n                P { n: 2 }\n                Q { t: \"c\" }\n            }\n        }\n        P { n: 9 }\n    }\n    xs\n}\n[s.said() for s in kept(K.${k})].join(\" \")"
+}
+
+spec "features/lists/collect — a kept arm hears the element" {
+    given "a kept `match` whose arms answer different types" {
+        then "each arm is boxed into the collect's element" {
+            shown(picked("A")) == "p1 p9" && shown(picked("B")) == "qb p9"
+        }
+        then "a braced arm keeps each of its statements, its tail as the arm's value" {
+            shown(picked("C")) == "p2 qc p9"
+        }
+    }
+    given "a kept arm that answers a list" {
+        then "is refused in the collect's law, naming the statement form" {
+            refused_with(
+                "enum K {\n    A\n    B\n}\nlet k = K.A\nlet xs: List<int> = collect {\n    match k {\n        .A -> [1, 2]\n        .B -> 3\n    }\n}\nxs.length",
+                "error[type.kept_arm]: a kept arm answers one `int`, and this one answers `List<int>`",
+            )
+        }
+        then "the statement form keeps each value" {
+            shown(
+                "enum K {\n    A\n    B\n}\nlet k = K.A\nlet xs: List<int> = collect {\n    match k {\n        .A -> {\n            1\n            2\n        }\n        .B -> 3\n    }\n}\nxs.length",
+            ) == "2"
+        }
+    }
+    given "a `match` under a declared type" {
+        then "refuses a wrong first arm once" {
+            refusals(
+                "enum K {\n    A\n    B\n}\nlet k = K.A\nlet x: int = match k {\n    .A -> \"s\"\n    .B -> 1\n}\nx",
+            ) == 1
+        }
+    }
+    given "an `if` under a declared type" {
+        then "boxes each branch into the declared `dyn`" {
+            shown(
+                shapes() +
+                    "fn one(on: bool) -> dyn Sh {\n    let v: dyn Sh = if on { P { n: 1 } } else { Q { t: \"x\" } }\n    v\n}\none(true).said() + one(false).said()",
+            ) == "p1qx"
+        }
+        then "a branch the declared type refuses names the seat, not the first branch" {
+            refused_with(
+                "let on = true\nlet v: int = if on { 1 } else { \"no\" }\nv",
+                "an `if`'s branches disagree: `string` vs the seat's `int`",
+            )
+        }
+        then "without a declared type, the branches join as before" {
+            refusals("let on = true\nlet v = if on { 1 } else { null }\nv ?? 0") == 0
+        }
+    }
+}

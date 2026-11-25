@@ -1,0 +1,1714 @@
+//! Lowers a program to IR. The driver owns refusal, statement order,
+//! registers, and the slot tables; HOW a statement or node lowers —
+//! brackets included — lives in its owning feature. Lowering emits
+//! PURE semantics — the memory pass owns every Retain and Release.
+//! A definition's register is its slot (a mut binding's is a CELL,
+//! loaded at each read), a param IS its register (params mint
+//! first), so names cost nothing.
+//! Each fn lowers to its OWN body with its own registers; `main` is
+//! the statement list.
+use @std.meta.{derive}
+use @std.relation.{codec}
+use @std.io.{env}
+use @std.errors.{Frame, Loc}
+use @std.text.{text_before}
+use core.{
+    CalledFn,
+    FnWrapper,
+    IndexRange,
+    BoxedValue,
+    Ids,
+    rt_sigs,
+    Fingerprint,
+    StmtId,
+    ExprId,
+    Expr,
+    TypeId,
+    Type,
+    Reg,
+    Ins,
+    Level,
+    TypeRegistry,
+    joined,
+    flatten,
+    sorted_by,
+    root_kind_of,
+    pattern_kinds,
+    Arm,
+    SyntaxArena,
+    DeclId,
+    FileId,
+    Arrow,
+    RtSig,
+    RtKind,
+    extern_kind_name,
+    inout_row,
+    no_marks,
+    state_mark,
+    Param,
+    SeatMark,
+    Static,
+    Slot,
+    StaticBox,
+    CollectParts,
+    CollectKind,
+    CollectScope,
+    Plain,
+    DeclKind,
+    Layout,
+    filled,
+}
+use diagnostics.{Diag, defect_at, loc_at, refusal, Voices, no_voices}
+use compiler.hosts.{HostFnOwed, host_fn_owed_diag}
+use features.{
+    LowerCx,
+    BodyFrame,
+    FnSig,
+    Sub,
+    SeatValue,
+    new_emitter,
+    new_body_regs,
+    viewed,
+    Decl,
+    Decls,
+    Jobs,
+    new_jobs,
+    Wanted,
+    Lift,
+    Wrap,
+    Unsettled,
+    Settled,
+    SettleRoot,
+    AnnotationFact,
+    Lifted,
+    MetaVal,
+    new_meta_heap,
+}
+use features.collects.{generic_words, collect_field_text, sort_value, sort_key_before, SortValue}
+use features.specs.{show_case_failure}
+use compiler.{Analysis, any_root}
+
+/// One lowered body: instructions in order and each register's type
+/// (dense by Reg). For a fn, the first `params.length` registers ARE
+/// the params, and `gives` is the register RetVal answers with.
+@derive(Fingerprint)
+@codec
+export type Body = {
+    name: string,
+    params: List<TypeId>,
+    ret: TypeId,
+    gives: Reg?,
+    ins: List<Ins>,
+    reg_types: List<TypeId>,
+    /// Each register's layout, by its index: what the memory pass reads of a register. Filled where
+    /// the lowering hands its bodies on (`Decls.laid`).
+    layouts: List<Layout> = [],
+    /// Each seat's layout and the answer's: what a declaration of the body reads. Filled with
+    /// `layouts`.
+    seats: List<Layout> = [],
+    answer: Layout? = null,
+    /// The file whose unit lowered this — what lets a program's IR be split
+    /// into one module per file. Absent for a body no file owns (a synthetic
+    /// entry), which is a GROWTH: every existing construction site is
+    /// untouched.
+    file: FileId? = null,
+    /// Instantiations may be emitted by more than one cached object.
+    weak: bool = false,
+    /// Where a task's body was written, `file:line` — what a trace and
+    /// a listing name the task by. Absent for a body that is no task's.
+    site: string? = null,
+    /// The file the body was written in, spelled: what a program's bodies are split into modules by,
+    /// so an edit moves the module of the file it touches. Absent for a body no file holds.
+    home: string? = null,
+    /// Its registers holding a fn value's box, each with the box's type: what a program layer's code
+    /// hash tells a call through a value apart by.
+    boxed: List<BoxedValue> = [],
+    /// The declared fn's own seat marks, `mut`/`const`/`isolated`
+    /// written and `consumed` inferred (R3) — what the memory pass
+    /// reads to seed a consuming param scope-owned at entry, and what
+    /// a DIRECT, by-name caller reads to decide retain-or-hand-over
+    /// at a `.Call`. This body's OWN currency, never a fn VALUE's
+    /// type (`Decls.seat_mark` never merges `consumed` in — features/
+    /// checks.av's `fn_fits` says why): a `.CallPtr` through a value
+    /// or a `dyn` dispatch reads the plain marks a fn value carries
+    /// and treats every seat as borrowed. A GROWTH: a synthetic body
+    /// (a lambda, a wrapper) declares no seat a caller could mark, so
+    /// its default is the empty list every plain seat already reads
+    /// as.
+    marks: List<SeatMark> = [],
+    /// A HOST FN's own — its name is a symbol of the host seam, which
+    /// the backend defines beside it under its row's shape. A GROWTH:
+    /// every other body answers false.
+    hosted: bool = false,
+    /// Whether its code reads the whole program — a code hash's answer, a body standing in for one
+    /// not made yet — so a build keeps it in a module apart from the program's other bodies, whose
+    /// key moves with any edit.
+    program_wide: bool = false,
+}
+
+impl Decls {
+    /// WHETHER A UNIT EXISTS BECAUSE A PROGRAM ASKED: a generic at its type
+    /// arguments, a fn at its settled seats, a root no declaration owns. A plain
+    /// declaration's body — a declared instance's included — is its FILE's
+    /// content, its unit wearing the file (`lower_root`'s `home`); an
+    /// instantiation is its PROGRAM's. THE DECLARATION
+    /// ANSWERS, never the ask: a plain fn wanted from inside an instantiation
+    /// arrives under its caller's substitution and is the same body all the same.
+    fn instantiated(w: Wanted) -> bool {
+        if !w.seats.is_empty() { return true }
+        let d? = w.decl else { return w.root != null }
+        self.generic(d)
+    }
+
+    /// Whether a body lowers only at type arguments: its own, or its type's.
+    fn generic(d: DeclId) -> bool { !self.tparams(d).is_empty() || !self.tparams(self.decl(d).parent ?? d).is_empty() }
+}
+
+/// The lowering facts: every fn body, the entry body (`main` — its
+/// specialness is explicit: no params, the answer's puts, exit 0), the
+/// registry that names the types, and any defects.
+/// A package in the program's closure that owns native code, and the
+/// library the tree DERIVES for it. The path is derived from the
+/// package's manifest NAME and never named by a manifest: a manifest
+/// path the toolchain OPENS is a load primitive, which is §2.3's
+/// write-primitive law at the same force.
+/// A package of the closure that owns native code: its manifest name,
+/// its library's stem, and the externs it declares — what names the
+/// package a missing symbol belongs to.
+export type LinkedPackage = { name: string, library: string, externs: List<string> = [], wasm: bool = false }
+
+export type Lowered = {
+    fns: List<Body>,
+    entry: Body,
+    types: TypeRegistry,
+    diagnostics: List<Diag>,
+    // the host fns the program declares `extern` — rows the backend
+    // declares and the evaluator refuses
+    externs: List<RtSig>,
+    /// The program's OWN closure, as libraries the evaluator may open.
+    /// Empty for a bare file, which has no packages and no closure.
+    libraries: List<LinkedPackage> = [],
+    // the settled aggregates its bodies read by address, each once
+    statics: List<Static>,
+    /// The code hashes the program answers, each `target=hash` — what
+    /// the program's own module, which holds their bodies, is keyed by.
+    code_hashes: List<string> = [],
+    /// Each code hash asked, and the file whose body asked it — what a
+    /// file keeps beside its object, so a build that holds it still
+    /// answers its asks.
+    hash_asks: List<HashAsk> = [],
+    /// The bodies as lowered, before the memory pass — what a file's
+    /// code is kept as, so a held file's record and a fresh body hash
+    /// alike.
+    unmanaged: List<Body> = [],
+    /// Each fn a run made lazily holds as a value and has not made yet: made the first time the run
+    /// calls it, through the wrapper a value of it is called through.
+    deferred: List<DeferredFn> = [],
+}
+
+/// A fn a lazily made program holds as a value: the call that reaches it, and the wrapper a value of
+/// it is called through.
+export type DeferredFn = { callee: CalledFn, wrapper: FnWrapper? }
+
+/// A code hash a body asks, and the file the body is in — none for a
+/// body no file owns.
+export type HashAsk = { by: FileId?, target: string }
+
+impl Decls {
+    /// The program's extern fns by symbol — what every emitter refuses
+    /// an unknown callee against.
+    fn extern_names() -> List<string> { [x.name for x in self.standing_externs()] }
+
+    /// The externs the program reached as registry rows: typing a call to an extern
+    /// stood its module, so every callee has one, and a held module nothing called
+    /// is no row.
+    /// A row is read only where a body calls its extern, and typing that body read the extern's
+    /// signature: unheard, a unit stands on the externs it calls and on no other.
+    fn extern_rows() -> List<RtSig> {
+        let none: List<RtSig> = []
+        let rows = Cell.new(none)
+        self
+            .record_kernel
+            .unheard(() -> rows.set([self.extern_row_of(d) for d in self.standing_externs()]))
+        rows.get()
+    }
+
+    /// An extern's runtime row. The WIDTHS are read back from the
+    /// program — the annotation the seat wrote — because the signature
+    /// carries the type that crosses (`int`) and never the machine
+    /// width: a width is a property of a SEAT, and the store is where
+    /// the seats are.
+    fn extern_row_of(d: Decl) -> RtSig {
+        let sig: FnSig? = self.sig(d.id)?.fn_sig()
+        // THE WIDTHS ARE A DECLARATION FACT, not a store read: a held extern has no
+        // store, and a width is a property of a SEAT — the one parse fact the row
+        // cannot derive from the signature alone (`int` crosses, but at what width).
+        let host: List<string> = self.facts_or(d.id).host
+        let params: List<TypeId> = sig?.params ?? []
+        inout_row(
+            self.symbol(d.id),
+            extern_kind_name(
+                self.types,
+                host_name(host, host.length - 1),
+                sig?.ret ?? self.type(void),
+            ),
+            [self.host_seat_kind(d.id, host, j, p) for j, p in params],
+            [self.host_cell_kind(d.id, host, j, p) for j, p in params],
+        )
+    }
+
+    /// A host seat's ABI kind. A `mut` seat is an INOUT — it carries the
+    /// ADDRESS of the caller's cell, so it is a POINTER whatever the
+    /// cell holds; every other seat is its width or its type's kind.
+    fn host_seat_kind(d: DeclId, host: List<string>, j: int, p: TypeId) -> RtKind {
+        if self.seat_mark(d, j).mutable { return RtKind.Ptr }
+        extern_kind_name(self.types, host_name(host, j), p)
+    }
+
+    /// The width of the CELL behind an inout seat — what the backend
+    /// normalises after the call. `Void` for every seat that is not one.
+    fn host_cell_kind(d: DeclId, host: List<string>, j: int, p: TypeId) -> RtKind {
+        if !self.seat_mark(d, j).mutable { return RtKind.Void }
+        extern_kind_name(self.types, host_name(host, j), p)
+    }
+}
+
+/// The annotation seat `j` wrote: the host names carry one per parameter and the ANSWER
+/// last, so the answer's index is the length and is never a seat.
+fn host_name(host: List<string>, j: int) -> string {
+    if j < 0 || j >= host.length { return "" }
+    host[j]
+}
+
+/// One lowering per BODY — `fn_ret` is that body's declared answer
+/// (null for main) and `sub` its instantiation (null when the body
+/// is not a specialization), which is why they are fields, not
+/// stacks.
+fn new_lower_cx(
+    a: Analysis,
+    fn_ret: TypeId?,
+    sub: Sub?,
+    seats: List<SeatValue>,
+    seat_marks: List<SeatMark>,
+    jobs: Jobs,
+    checks: bool = true,
+    roots: List<ExprId>? = null,
+) -> LowerCx {
+    LowerCx {
+        view: a.view,
+        names: a.names,
+        facts: a.facts,
+        decl_places: (d: DeclId) -> a.decl_places(d),
+        decl_structural: (d: DeclId) -> a.decl_structural(d),
+        roots: roots,
+        dispatch: a.lang.dispatch,
+        out: new_emitter(jobs.externs, a.view.decls),
+        body: new_body_regs(
+            a.view.store.exprs.count(),
+            a.view.store.stmts.count(),
+            a.view.store.pat_count(),
+        ),
+        sub: sub,
+        seats: seats,
+        seat_regs: [],
+        seat_marks: seat_marks,
+        fn_ret: fn_ret,
+        jobs: jobs,
+        checks: checks,
+        deferred: [],
+        depth: 0,
+    }
+}
+
+/// The roots of a frame whose code is the one expression `e`, none when it has
+/// none.
+fn framed(e: ExprId?) -> List<ExprId>? {
+    let r? = e else { return null }
+    [r]
+}
+
+/// A lone file's program, lowered without a memo — the tests' seam.
+export fn lower(a: Analysis) -> Lowered {
+    let externs = a.view.decls.extern_names()
+    a
+        .view
+        .decls
+        .union(
+            [a],
+            0,
+            false,
+            false,
+            true,
+            [],
+            (w: Wanted) -> lower_unit(a, externs, w, no_settle, no_cross),
+            (_f: FileId) -> false,
+        )
+}
+
+/// One unit LOWERED: its body with the lambdas it lifted and the
+/// wrappers it minted (they never escape it), the bodies of OTHER
+/// declarations it wants — the program asks for those, and asking
+/// twice reuses — and every voice lowering earned.
+@derive(Fingerprint)
+@codec
+export type Unit = { bodies: List<Body>, wants: List<Wanted>, voices: Voices, statics: List<Static>, hashes: List<string> = [] }
+
+/// A unit lowered in its file's analysis: the body, then its own
+/// lifts and wrappers drained locally — a lambda's body may mint
+/// more of each. Every body OWNS its worklist and hands it back, so
+/// the drain reads values, never a shared box. `externs` is the
+/// program's extern symbols, gathered once per program by the
+/// workspace: every body's emitter refuses a callee it does not
+/// know against it.
+export fn lower_unit(
+    a: Analysis,
+    externs: List<string>,
+    w: Wanted,
+    settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>,
+    cross: fn(DeclId, TypeId) -> Lifted,
+    checks: bool = true,
+) -> Unit {
+    // a `collect` carries no body of its own — SYNTHESISED, never
+    // parsed (`is_collect_decl`) — so it is exempt from the guard a
+    // bodyless ordinary declaration trips.
+    if w.root == null &&
+        w.decl != null &&
+        !a.view.decls.has_body(w.decl!) &&
+        !is_collect_decl(a, w.decl!) &&
+        !is_state_decl(a, w.decl!) {
+        mut out = new_emitter(externs, a.view.decls)
+        out.defect("a unit without a body was asked for — `${w.name}`")
+        return Unit { bodies: [], wants: [], voices: out.voices, statics: [] }
+    }
+    let first = when {
+        w.decl != null && is_state_decl(a, w.decl!) -> lower_state_root(
+            a,
+            a.view.decls.decl(w.decl!),
+            w,
+            externs,
+            settle,
+            cross,
+            checks,
+        )
+        w.root != null -> lower_root(
+            a,
+            w.root!,
+            w.name,
+            w.seats,
+            externs,
+            settle,
+            cross,
+            if w.decl == null { null } else { a.view.file },
+            checks,
+        )
+        w.decl == null -> lower_main(a, w.name, externs, settle, cross, checks)
+        is_collect_decl(a, w.decl!) -> lower_collect(
+            a,
+            a.view.decls.decl(w.decl!),
+            w.name,
+            externs,
+            settle,
+            cross,
+            checks,
+        )
+        _ -> lower_fn(
+            a,
+            a.view.decls.decl(w.decl!),
+            w.name,
+            w.sub,
+            w.seats,
+            externs,
+            settle,
+            cross,
+            checks,
+        )
+    }
+    mut bodies: List<Body> = [first.body]
+    mut spoken: List<Diag> = first.voices.list
+    mut wants: List<Wanted> = first.jobs.pending
+    mut lifts: List<Lift> = first.jobs.lifts
+    mut wraps: List<Wrap> = first.jobs.wraps
+    mut statics: List<Static> = first.jobs.statics
+    mut hashes: List<string> = first.jobs.hashes
+    // a wrapper may be wanted by several of the unit's bodies — once
+    mut wrapped: Map<string, bool> = {}
+    while !lifts.is_empty() || !wraps.is_empty() {
+        if lifts.is_empty() {
+            let wj = wraps.pop()
+            if wrapped.get(wj.name) == null {
+                wrapped.set(wj.name, true)
+                bodies
+                    .push(
+                        if wj.unboxes == null { wrapped_body(a, wj) } else { unboxing_body(a, wj, wj.unboxes!, externs, settle, cross) },
+                    )
+            }
+        } else {
+            let lf = lower_lambda(a, lifts.pop(), externs, settle, cross, checks)
+            bodies.push(lf.body)
+            spoken = spoken.concat(lf.voices.list)
+            wants = wants.concat(lf.jobs.pending)
+            lifts = lifts.concat(lf.jobs.lifts)
+            wraps = wraps.concat(lf.jobs.wraps)
+            statics = statics.concat(lf.jobs.statics)
+            hashes = hashes.concat(lf.jobs.hashes)
+        }
+    }
+    Unit {
+        bodies: bodies,
+        wants: wants,
+        voices: Voices { list: spoken },
+        statics: statics,
+        hashes: hashes,
+    }
+}
+
+impl Decls {
+    /// The whole program as IR: the entry's main and every body it
+    /// reaches, transitively — each unit through `unit_of`, which the
+    /// workspace memoizes. A program only CHECKED has no entry: every
+    /// declared body lowers instead, so each speaks its refusals; a
+    /// test run asks for `every` declared body under its entry, whose
+    /// laws (a module file runs nothing) still hold. A unit is asked
+    /// once per symbol — a memoization identity, never a NAME a
+    /// declaration could also wear. The entry asks under
+    /// `program_symbol`, which no `module_symbol` can ever spell.
+    /// A HOST FN IS A ROOT: a host reaches it by name, so a program
+    /// lowers it even when nothing inside calls it. An `export` is a
+    /// module's visibility and roots nothing. `hashed` says whether the
+    /// program's code hashes are owed: unowed, no held code is read for them.
+    fn union(
+        files: List<Analysis>,
+        entry: int?,
+        every: bool,
+        programs: bool,
+        hashed: bool,
+        moved: List<Wanted>,
+        unit_of: fn(Wanted) -> Unit,
+        is_program: fn(FileId) -> bool,
+    ) -> Lowered {
+        mut fns: List<Body> = []
+        mut spoken: List<Diag> = []
+        let at: int = entry ?? 0
+        let hosted = flatten([self.host_fns_of_file(a.view.file) for a in files])
+        let bodies: List<Wanted> = if entry == null || every { flatten([declared(a) for a in files]) } else { [self.plain_want(d) for d in hosted] }
+        spoken = spoken.concat(self.host_fns_twice(hosted))
+        // EVERY FILE A PROGRAM: each file's run-time statements lower as
+        // a body under the program's own symbol, for a runner's entry to
+        // call in turn — every program in one binary
+        mut wants: List<Wanted> = if programs { bodies.concat([program_main(a) for a in files]) } else { bodies }
+        spoken = spoken.concat(self.outside_entry(files, entry, is_program))
+        let main_unit: Unit? = if entry == null {
+            null
+        } else {
+            unit_of(
+                Wanted {
+                    file: files[at].view.file,
+                    decl: null,
+                    name: program_symbol(self.file(files[at].view.file).name),
+                    sub: null,
+                    seats: [],
+                    root: null,
+                },
+            )
+        }
+        mut entry_body: Body = empty_main(self.types).body
+        mut statics: List<Static> = []
+        mut hashes: List<HashAsk> = []
+        if main_unit != null {
+            let mu = main_unit!
+            entry_body = mu.bodies.first() ?? entry_body
+            fns = fns.concat(mu.bodies.slice(1, mu.bodies.length))
+            spoken = spoken.concat(mu.voices.list)
+            wants = wants.concat(mu.wants)
+            statics = mu.statics
+            hashes = [HashAsk { by: files[at].view.file, target: h } for h in mu.hashes]
+        }
+        let d = drained(wants.concat(moved), unit_of, (w: Wanted) -> self.instantiated(w))
+        fns = fns.concat(d.fns)
+        spoken = spoken.concat(d.spoken)
+        let laid_out = distinct_statics(statics.concat(d.statics))
+        let asked = hashes.concat(d.hashes)
+        let unmanaged = fns
+        let answered = if hashed {
+            code_hashes(
+                self,
+                fns.concat([entry_body]),
+                laid_out,
+                [h.target for h in asked],
+                [r.name for r in rt_sigs()].concat(self.extern_names()),
+            )
+        } else {
+            CodeHashes { bodies: [], keys: [] }
+        }
+        fns = fns.concat(answered.bodies)
+        let every_body = fns.concat([entry_body])
+        spoken = spoken.concat(minted_pointers(self.types, every_body))
+        Lowered {
+            fns: [self.laid(b) for b in fns],
+            entry: self.laid(entry_body),
+            types: self.types,
+            diagnostics: spoken,
+            externs: self.extern_rows(),
+            statics: laid_out,
+            libraries: [],
+            code_hashes: answered.keys,
+            hash_asks: asked,
+            unmanaged: unmanaged,
+        }
+    }
+
+    /// ONE SYMBOL, ONE BODY: two host fns of one name in a program are
+    /// two definitions of one symbol — each after the first is refused
+    /// where it stands.
+    fn host_fns_twice(hosted: List<DeclId>) -> List<Diag> {
+        [self.host_fn_twice(d, hosted[first_named(self, hosted, d)]) for j, d in hosted if first_named(self, hosted, d) < j]
+    }
+
+    fn code_hash_in_const(root: Wanted) -> Diag {
+        refusal(
+            "lower.code_hash_const",
+            if root.decl == null { null } else { self.loc(root.decl!) },
+            code_hash_unheld(),
+            CODE_HASH_REACHED,
+            "ask `code_hash` where the program runs, in a fn body",
+        )
+    }
+
+    fn host_fn_twice(d: DeclId, first: DeclId) -> Diag {
+        host_fn_owed_diag(self.loc(d), self.decl(d).name, "", HostFnOwed.Twice, self.loc(first))
+    }
+
+    /// A declaration's own body as a want, under no substitution.
+    fn plain_want(d: DeclId) -> Wanted {
+        Wanted {
+            file: self.decl(d).file,
+            decl: d,
+            name: self.symbol(d),
+            sub: null,
+            seats: [],
+            root: null,
+        }
+    }
+
+    /// THE ENTRY'S LAW over every other file: a module file runs nothing. A program
+    /// file is no module file — its statements are its own program's.
+    fn outside_entry(files: List<Analysis>, entry: int?, is_program: fn(FileId) -> bool) -> List<
+        Diag,
+    > {
+        if entry == null { return [] }
+        flatten(
+            [entry_only(a, files[entry!]) for i, a in files if i != entry! && !is_program(a.view.file)],
+        )
+    }
+
+    /// A settled run as a program of its own: the root unit's first body
+    /// is the entry, and everything it reaches follows — through the same
+    /// `unit_of`, so a body the program also runs lowers once. A code hash
+    /// it reaches is refused where `refuses_hash` holds, else answered absent.
+    fn settlement(root: Wanted, unit_of: fn(Wanted) -> Unit, refuses_hash: bool) -> Lowered {
+        let ru = unit_of(root)
+        let d = drained(ru.wants, unit_of, (_w: Wanted) -> false)
+        let entry = ru.bodies.first() ?? empty_main(self.types).body
+        let lowered_fns = ru.bodies.slice(1, ru.bodies.length).concat(d.fns)
+        let laid_out = distinct_statics(ru.statics.concat(d.statics))
+        let reached = ru.hashes.concat([h.target for h in d.hashes])
+        let fns = lowered_fns
+            .concat(if refuses_hash { [] } else { absent_hashes(self.types, reached) })
+        let every_body = fns.concat([entry])
+        let spoken = ru
+            .voices
+            .list
+            .concat(d.spoken)
+            .concat(minted_pointers(self.types, every_body))
+            .concat(if refuses_hash && !reached.is_empty() { [self.code_hash_in_const(root)] } else { [] })
+        Lowered {
+            fns: [self.laid(b) for b in fns],
+            entry: self.laid(entry),
+            types: self.types,
+            diagnostics: spoken,
+            externs: self.extern_rows(),
+            statics: laid_out,
+            libraries: [],
+        }
+    }
+
+    /// A const's initializer lowered only until a body `stops` — the
+    /// bodies reached so far as a program, or null when none stops and
+    /// the whole reach was lowered. What a structural refusal needs
+    /// without lowering everything its initializer reaches.
+    fn settlement_until(root: Wanted, unit_of: fn(Wanted) -> Unit, stops: fn(Body) -> bool) -> Lowered? {
+        let ru = unit_of(root)
+        mut bodies = ru.bodies
+        mut wants = ru.wants
+        mut seen: Map<string, bool> = {}
+        mut hit = ru.bodies.any(stops)
+        // breadth first, so a shallow reach is found before a deep branch is lowered
+        mut at = 0
+        while !hit && at < wants.length {
+            let w = wants[at]
+            at = at + 1
+            if claim_seen(seen, w.name) {
+                let u = unit_of(w)
+                bodies = bodies.concat(u.bodies)
+                wants = wants.concat(u.wants)
+                hit = u.bodies.any(stops)
+            }
+        }
+        if !hit { return null }
+        Lowered {
+            fns: [self.laid(b) for b in bodies.slice(1, bodies.length)],
+            entry: self.laid(bodies.first() ?? empty_main(self.types).body),
+            types: self.types,
+            diagnostics: [],
+            externs: self.extern_rows(),
+            statics: [],
+        }
+    }
+}
+
+/// The bodies a worklist reaches, each name once, the statics they
+/// read, and what they spoke.
+type Drained = { fns: List<Body>, spoken: List<Diag>, statics: List<Static>, hashes: List<HashAsk> }
+
+fn drained(pending: List<Wanted>, unit_of: fn(Wanted) -> Unit, instantiated: fn(Wanted) -> bool) -> Drained {
+    mut wants = [w for w in pending]
+    mut fns: List<Body> = []
+    mut spoken: List<Diag> = []
+    mut statics: List<Static> = []
+    mut hashes: List<HashAsk> = []
+    mut seen: Map<string, bool> = {}
+    mut minted = 0
+    while !wants.is_empty() && minted < unit_ceiling {
+        let w = wants.pop()
+        // A HELD FILE'S BODIES ARE ITS STORED OBJECT, so they are never asked for.
+        // An instantiation is no file's content: it lowers in every program that
+        // wants it, WEAK and owned by no file — and its home is reported, because
+        // a home that is held has no body to lower from.
+        let roams = instantiated(w)
+        let fresh = claim_seen(seen, w.name)
+        if fresh {
+            minted = minted + 1
+            let u = unit_of(w)
+            // LICENSED loops.push_loop: a comprehension would COPY the list, which is the bug.
+            for b in u.bodies { fns.push(if roams { b with { file: null, weak: true } } else { b }) }
+            // LICENSED loops.push_loop: a comprehension would COPY the list, which is the bug.
+            for d in u.voices.list { spoken.push(d) }
+            // LICENSED loops.push_loop: a comprehension would COPY the list, which is the bug.
+            for more in u.wants {
+                wants.push(more)
+            }
+            // LICENSED loops.push_loop: a comprehension would COPY the list, which is the bug.
+            for st in u.statics { statics.push(st) }
+            // LICENSED loops.push_loop: a comprehension would COPY the list, which is the bug.
+            for h in u.hashes { hashes.push(HashAsk { by: if roams { null } else { w.file }, target: h }) }
+        }
+    }
+    if !wants.is_empty() {
+        spoken
+            .push(
+                defect_at(
+                    null,
+                    "specializations exploded past ${unit_ceiling} — polymorphic recursion is not supported",
+                ),
+            )
+    }
+    Drained { fns: fns, spoken: spoken, statics: statics, hashes: hashes }
+}
+
+/// Each static once: units read one const independently and each
+/// lays it out, so the program keeps the first of a name.
+fn distinct_statics(xs: List<Static>) -> List<Static> {
+    mut seen: Map<string, bool> = {}
+    mut out: List<Static> = []
+    for s in xs {
+        if seen.get(s.name) == null {
+            seen.set(s.name, true)
+            out.push(s)
+        }
+    }
+    out
+}
+
+/// THE POINTER-CONSTANT LAW. A `ConstInt` aimed at a pointer-riding
+/// register IS the null pointer in both engines — absence is the
+/// zero of its type — so a NON-ZERO one would be read as null by
+/// each, agreeing on the wrong answer. Refused HERE, ahead of both:
+/// the backend's emitter has no failure channel and the interpreter
+/// has one, so a guard in either alone would make them disagree on a
+/// single instruction. A pointer is minted only by a runtime row
+/// (`avra_ptr_at`), whose answer reaches its register through a call,
+/// so no constant ever aims at one and the guard never arms.
+export fn minted_pointers(types: TypeRegistry, bodies: List<Body>) -> List<Diag> {
+    [pointer_constant(b.name) for b in bodies if mints_a_pointer(types, b)]
+}
+
+fn mints_a_pointer(types: TypeRegistry, b: Body) -> bool {
+    b.ins.any(is_pointer_constant(types, b.reg_types, it))
+}
+
+fn is_pointer_constant(types: TypeRegistry, reg_types: List<TypeId>, i: Ins) -> bool {
+    match i { .ConstInt(d, v) -> v != 0 && types.rides_pointer(reg_types[d.index]), _ -> false }
+}
+
+fn pointer_constant(name: string) -> Diag {
+    defect_at(
+        null,
+        "a non-zero constant reached a pointer register in `${name}` — a pointer's only constant is null",
+    )
+}
+
+/// The ceiling on DISTINCT bodies one program mints. A source
+/// bounds its own count; only polymorphic recursion — each turn a
+/// wider substitution, none ever repeated — climbs forever.
+const unit_ceiling: int = 100000
+
+/// A file's declared bodies to ask for, plain — a generic one waits
+/// for an instantiation to want it.
+/// A file's main as a wanted body, named for the program it is.
+fn program_main(a: Analysis) -> Wanted {
+    Wanted {
+        file: a.view.file,
+        decl: null,
+        name: program_symbol(a.view.decls.file(a.view.file).name),
+        sub: null,
+        seats: [],
+        root: null,
+    }
+}
+
+/// The symbol a program's body wears in a programs binary: its file's
+/// NAME (`Workspace.file_name` — its package and its path within it), every
+/// separator written as `_`, so a wreck names its file, no two programs
+/// collide, and no symbol carries where the building machine keeps the tree.
+/// A STEM ALONE COLLIDED: a package's program test is named after the module
+/// it proves (`std-path/src/tests/path/path.av` beside
+/// `std-path/src/path.av`), both wanted `program$path`, and the one the
+/// worklist minted was the module's — an empty body that printed nothing.
+export fn program_symbol(name: string) -> string {
+    "program\$${name.replace("/", "_").replace(".", "_").replace(":", "_")}"
+}
+
+export fn unit_wants(a: Analysis) -> List<Wanted> { declared(a).concat([program_main(a)]) }
+
+fn declared(a: Analysis) -> List<Wanted> {
+    let own = a.view.decls.decls_of_file(a.view.file)
+    let bodies = [wanted_of(a, d) for d in own if lowers_plain(a, d)]
+    bodies.concat([a.view.decls.instance_unit(d) for d in own if a.view.decls.is_instance(d)])
+}
+
+/// Where the first host fn of `d`'s name stands in `hosted`.
+fn first_named(decls: Decls, hosted: List<DeclId>, d: DeclId) -> int {
+    [j for j, x in hosted if decls.decl(x).name == decls.decl(d).name].first() ?? 0
+}
+
+/// A step that calls a hosted fn and keeps its answer.
+type KeptCall = { dst: Reg, callee: string, args: List<Reg> }
+
+fn kept_call(i: Ins) -> KeptCall? {
+    match i {
+        .CallRt(dst, callee, args) -> KeptCall { dst: dst, callee: callee, args: args },
+        rest -> null,
+    }
+}
+
+/// A step that calls a hosted fn for nothing.
+type BareCall = { callee: string, args: List<Reg> }
+
+fn bare_call(i: Ins) -> BareCall? {
+    match i { .CallRtVoid(callee, args) -> BareCall { callee: callee, args: args }, rest -> null }
+}
+
+/// THE PROGRAM ANSWERS ITS OWN HOST FNS. A call that names a symbol one
+/// of the program's host fns defines is a call to that body, whoever
+/// declared the name bodiless — so an evaluated run needs no linker to
+/// join the two. A linked build keeps the call as written: there each
+/// file's object is the same whatever program links it, and the symbol
+/// is the linker's to resolve.
+export fn hosted_within(l: Lowered) -> Lowered {
+    let own = [b.name for b in l.fns if b.hosted]
+    if own.is_empty() { return l }
+    let nothing_ty = l.types.type(void)
+    l with { fns: [answering(b, own, nothing_ty) for b in l.fns], entry: answering(l.entry, own, nothing_ty) }
+}
+
+/// `b` with each call of a symbol in `own` made a call to that body, each register it gains a `void`.
+fn answering(b: Body, own: List<string>, nothing_ty: TypeId) -> Body {
+    mut regs = [t for t in b.reg_types]
+    let ins = [own_call(i, own, regs, nothing_ty) for i in b.ins]
+    b with { ins: ins, reg_types: regs, layouts: b.layouts.concat(filled(regs.length - b.reg_types.length, Layout.Void)) }
+}
+
+/// One step, a call of a host fn's symbol made a call to its body.
+fn own_call(i: Ins, own: List<string>, mut regs: List<TypeId>, nothing_ty: TypeId) -> Ins {
+    let kept? = kept_call(i) else { return own_bare_call(i, own, regs, nothing_ty) }
+    if own.contains(kept.callee) { Ins.Call(kept.dst, kept.callee, kept.args) } else { i }
+}
+
+/// A call for nothing gains the register a body's answer lands in.
+fn own_bare_call(i: Ins, own: List<string>, mut regs: List<TypeId>, nothing_ty: TypeId) -> Ins {
+    let unkept? = bare_call(i) else { return i }
+    if !own.contains(unkept.callee) { return i }
+    regs.push(nothing_ty)
+    Ins.Call(Reg { index: regs.length - 1 }, unkept.callee, unkept.args)
+}
+
+/// One declared body of `a`'s file, as a want — the plain root every caller
+/// that lowers a file's declarations reads.
+fn wanted_of(a: Analysis, d: DeclId) -> Wanted { a.view.decls.plain_want(d) }
+
+/// A body lowered without an instantiation: one that has no type
+/// parameters of its own or its type's.
+fn lowers_plain(a: Analysis, d: DeclId) -> bool {
+    a.view.decls.decl(d).root != null && !a.view.decls.generic(d)
+}
+
+/// A module file holds declarations; run-time statements belong to
+/// the entry alone.
+fn entry_only(a: Analysis, entry: Analysis) -> List<Diag> {
+    [runs_outside_entry(a, s, entry) for s in a.view.stmts if runs_at_top(a.view.store, s)]
+}
+
+fn runs_at_top(store: SyntaxArena, s: StmtId) -> bool {
+    !store.is_declaration(s)
+}
+
+type LoweredBody = { body: Body, voices: Voices, jobs: Jobs }
+
+/// The static `Frame` a body's unwind pushes: its `{label, loc}` laid
+/// out as the binary's data, one per body. The label is the name a
+/// reader knows the body by, the loc the place it was written.
+fn body_frame(a: Analysis, sym: string, label: string, file: FileId, body: IndexRange) -> BodyFrame {
+    let site = StaticBox
+        .Slots([Slot.Text(a.view.decls.file_named(file)), Slot.Int(body.lo), Slot.Int(body.hi)])
+    BodyFrame {
+        sym: "frame\$${sym}",
+        boxes: [site, StaticBox.Slots([Slot.Text(label), Slot.Box(0)])],
+    }
+}
+
+/// The name a body's frame wears: a method's under its type, a free
+/// fn's or a default's own.
+fn decl_label(x: Decl) -> string {
+    if x.owner.is_empty() { return x.name }
+    "${x.owner}.${x.name}"
+}
+
+/// One body — a fn's, a method's, a default's: params pre-minted as
+/// registers 0..N-1, the body inside one scope, the answer after
+/// the scope settles.
+fn lower_fn(
+    a: Analysis,
+    x: Decl,
+    fname: string,
+    sub: Sub?,
+    seats: List<SeatValue>,
+    externs: List<string>,
+    settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>,
+    cross: fn(DeclId, TypeId) -> Lifted,
+    checks: bool = true,
+) -> LoweredBody {
+    let root: ExprId = x.root!
+    let sig: FnSig? = a.view.decls.sig(x.id)?.fn_sig()
+    let raw: List<TypeId> = sig?.params ?? []
+    let rt: TypeId = viewed(
+        a.view.decls.types,
+        sub,
+        sig?.ret ?? a.view.decls.types.intern(Type.Error),
+    )
+    let seat_marks: List<SeatMark> = a.view.decls.marks_of(x.id, raw.length)
+    // A `state` seat's register IS the caller's cell: the body reads
+    // and writes what it holds, so the seat wears `Cell<T>` even
+    // though its declared type is `T`.
+    let ptypes = [if state_mark(seat_marks, j) {
+        a.view.decls.types.intern(Type.Cell(viewed(a.view.decls.types, sub, pt)))
+    } else {
+        viewed(a.view.decls.types, sub, pt)
+    } for j, pt in raw]
+    // R3's `consumed` rides only the BODY's own marks, read directly
+    // (features/decls.av's `seat_mark` never merges it) — never
+    // `seat_marks` above, which stays the currency a fn VALUE's TYPE
+    // carries.
+    let body_marks: List<SeatMark> = [m with { consumed: a.view.decls.consumed_seat(x.id, j) } for j, m in seat_marks]
+    mut lo = new_lower_cx(
+        a,
+        rt,
+        sub,
+        seats,
+        seat_marks,
+        new_jobs(externs, settle, cross),
+        checks,
+        [root],
+    )
+    lo.frame = body_frame(a, fname, decl_label(x), a.view.file, x.body())
+    // an `@unbroken` fn's own `while`s carry no back-edge check — the
+    // cancel pass already decided it: a fn that SPINS has one, and its
+    // bit is false for an `@unbroken` fn
+    lo.unbroken = !(a.view.decls.cancel_bits(x.id)?.spins ?? true)
+    // the params ARE registers 0..N-1, minted in order
+    for pt in ptypes { let _ = lo.mint_ty(pt) }
+    lo.seeded()
+    lo.seats_enter()
+    // A `then` case is a body like any fn's, but a FAILURE shows its
+    // two sides when its answer is one equality — the driver knows
+    // the case kind, as typing's `case_body` does, and the rule lives
+    // with the feature. The body's block scope stays OPEN across that
+    // report: the operands it reads belong to the frame, so closing
+    // the frame first would drop them before the failure arm read.
+    let cached = a.view.store.is_once(x.stmt)
+    let open = if x.kind is .Case && !cached {
+        match a.view.store.expr(root) {
+            .Block(_) -> lo.lower_block_open(a.view.store.lead_of(root), a.view.store.tail_of(root), rt),
+            rest -> OpenBlock { reg: lo.reg_of(root), opened: false },
+        }
+    } else {
+        OpenBlock {
+            reg: if cached { lo.once_body(fname, root, rt) } else { lo.reg_of(root) },
+            opened: false,
+        }
+    }
+    if x.kind is .Case { show_case_failure(lo, root, open.reg) }
+    lo.lower_block_close(open)
+    lo.seats_exit(open.reg)
+    lo.emit(Ins.RetVal(open.reg))
+    LoweredBody {
+        body: Body {
+            name: fname,
+            params: ptypes,
+            ret: rt,
+            gives: open.reg,
+            ins: lo.out.ins,
+            reg_types: lo.out.reg_types,
+            file: a.view.file,
+            weak: sub != null,
+            marks: body_marks,
+            hosted: a.view.decls.is_host_fn(x.id),
+        },
+        voices: lo.out.voices,
+        jobs: lo.jobs,
+    }
+}
+
+/// One LIFTED lambda: register 0 is the env box (typed as the
+/// lambda's own fn type — a pointer, managed, released by the
+/// callee per the ABI), registers 1..N its params; the body reads
+/// captures through slot 1+j of the env.
+fn lower_lambda(
+    a: Analysis,
+    lj: Lift,
+    externs: List<string>,
+    settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>,
+    cross: fn(DeclId, TypeId) -> Lifted,
+    checks: bool = true,
+) -> LoweredBody {
+    let lam_ty = viewed(a.view.decls.types, lj.sub, a.facts.type_at(lj.lam))
+    let held: Arrow? = a.view.decls.types.arrow_parts(lam_ty)
+    let seats: List<TypeId> = held?.seats ?? []
+    let rt: TypeId = held?.answer ?? a.view.decls.types.intern(Type.Error)
+    let body: ExprId? = a.view.store.lambda_parts(lj.lam)?.body
+    mut lo = new_lower_cx(
+        a,
+        rt,
+        lj.sub,
+        [],
+        [],
+        new_jobs(externs, settle, cross),
+        checks,
+        framed(body),
+    )
+    lo.frame = body_frame(a, lj.name, lj.name, a.view.file, IndexRange { lo: 0, hi: 0 })
+    // a lambda's `while`s wear its maker's law: an `@unbroken` fn's lifted
+    // body carries no back-edge check either
+    lo.unbroken = lj.unbroken
+    if lj.kind is .Task { lo.exit = lo.answer_cell(rt) }
+    // register 0 is the env box, 1..N the seats
+    let _ = lo.mint_ty(lam_ty)
+    for pt in seats { let _ = lo.mint_ty(pt) }
+    lo.seeded()
+    lo.seats_enter()
+    if body == null {
+        lo.defect("a lift without a lambda survived typing")
+    }
+    // a PRODUCER's sink rides the env past every capture: the reader's
+    // channel handed the spawn, read back here for the body's `yield`s.
+    if lj.sink != null {
+        let held = lo.names.capture(lj.lam)
+        let n = if held == null { 0 } else { held!.names.length }
+        lo.producer_sink = lo.env_read(n, lj.sink!)
+    }
+    let value = lo.reg_of(body ?? lj.lam)
+    // the producer's block END closes the sink: the channel ends when
+    // its writer does, and nobody closes a `produce` by hand.
+    if lj.sink != null { lo.close_produced(lj.sink!) }
+    let r = if lj.kind is .Task { lo.one_cell(value, rt) } else { value }
+    let answers = lo.out.type_of_reg(r)
+    lo.seats_exit(r)
+    lo.emit(Ins.RetVal(r))
+    LoweredBody {
+        body: Body {
+            name: lj.name,
+            params: [lam_ty].concat(seats),
+            ret: answers,
+            gives: r,
+            ins: lo.out.ins,
+            reg_types: lo.out.reg_types,
+            file: a.view.file,
+            weak: true,
+            site: if lj.kind is .Task { written_at(a, lj.lam) } else { null },
+        },
+        voices: lo.out.voices,
+        jobs: lo.jobs,
+    }
+}
+
+/// Where `e` was written, `file:line`. Absent for code a template
+/// copied from another file: its offsets are that file's.
+fn written_at(a: Analysis, e: ExprId) -> string? {
+    if a.view.store.spanned_elsewhere(e) { return null }
+    let at? = a.view.store.expr_span(e) else { return null }
+    "${a.view.decls.file_named(a.view.file)}:${a.view.source.linecol(at.lo).line}"
+}
+
+/// The wrapper, built directly in IR — no AST exists for it: env
+/// ignored at seat 0, the target called with the forwarded seats.
+fn wrapped_body(a: Analysis, w: Wrap) -> Body {
+    let fnty = a.view.decls.types.intern(Type.Fn(w.seats, no_marks(w.seats.length), w.ret))
+    mut tys: List<TypeId> = [fnty]
+    mut args: List<Reg> = []
+    for j, st in w.seats {
+        tys.push(st)
+        args.push(Reg { index: j + 1 })
+    }
+    let dst = Reg { index: tys.length }
+    tys.push(w.ret)
+    let ins: List<Ins> = [
+        Ins.ScopeEnter(Level.Application),
+        Ins.Call(dst, w.target, args),
+        Ins.ScopeExit(dst),
+        Ins.RetVal(dst),
+    ]
+    Body {
+        name: w.name,
+        params: [fnty].concat(w.seats),
+        ret: w.ret,
+        gives: dst,
+        ins: ins,
+        reg_types: tys,
+        file: a.view.file,
+        weak: true,
+    }
+}
+
+/// A `dyn` entry for a VALUE RECORD receiver: seat 0 is the box the
+/// `dyn` slot holds, read back into the receiver the method takes.
+fn unboxing_body(
+    a: Analysis,
+    w: Wrap,
+    recv: TypeId,
+    externs: List<string>,
+    settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>,
+    cross: fn(DeclId, TypeId) -> Lifted,
+) -> Body {
+    mut lo = new_lower_cx(a, w.ret, null, [], [], new_jobs(externs, settle, cross))
+    for st in w.seats { let _ = lo.mint_ty(st) }
+    lo.seeded()
+    lo.seats_enter()
+    let receiver = lo.unboxed(Reg { index: 0 }, recv)
+    let r = lo
+        .call_decl(w.ret, w.target, [receiver].concat([Reg { index: j } for j in 1..w.seats.length]))
+    lo.seats_exit(r)
+    lo.emit(Ins.RetVal(r))
+    Body {
+        name: w.name,
+        params: w.seats,
+        ret: w.ret,
+        gives: r,
+        ins: lo.out.ins,
+        reg_types: lo.out.reg_types,
+        file: a.view.file,
+        weak: true,
+    }
+}
+
+/// Whether `d` declares a `collect` — its body is SYNTHESISED
+/// (`lower_collect`), never lowered from its own (empty) source. The
+/// real DeclKind, never a file-path guess: `features/collects`.
+fn is_collect_decl(a: Analysis, d: DeclId) -> bool {
+    let x = a.view.decls.decl(d)
+    a.view.decls.store_of(x.file).collect_parts(x.stmt) != null
+}
+
+/// A COLLECT'S ANSWER TYPE — the record's own, or `Type.Error` when
+/// nothing recorded one: a held collect's interface carries no value
+/// to project a type from (`fill_opaque` mints its declaration alone),
+/// so a stub built for a held collect answers the same absorbing type
+/// a fresh one falls back to. `lower_collect` and `unlowered_stub`'s
+/// `collect_stub` share this one derivation.
+export fn collect_answer_type(decls: Decls, f: FileId, s: StmtId) -> TypeId {
+    decls.type_of_const(f, s) ?? decls.types.intern(Type.Error)
+}
+
+/// A collect's body: every declaration of `p.kind`, in `p.scope`,
+/// projected by `p.proj` and ordered by `p.order` — SYNTHESISED, no
+/// AST, `wrapped_body`'s shape, keyed on the one declaration
+/// `is_collect_decl` names. The scope's files were admitted when the
+/// collect was typed (`Decls.gathered`).
+fn lower_collect(
+    a: Analysis,
+    x: Decl,
+    fname: string,
+    externs: List<string>,
+    settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>,
+    cross: fn(DeclId, TypeId) -> Lifted,
+    checks: bool = true,
+) -> LoweredBody {
+    let p: CollectParts = a.view.decls.store_of(x.file).collect_parts(x.stmt)!
+    let rt: TypeId = collect_answer_type(a.view.decls, x.file, x.stmt)
+    mut lo = new_lower_cx(a, rt, null, [], [], new_jobs(externs, settle, cross), checks)
+    lo.out.seeded()
+    lo.seats_enter()
+    let r = collect_table_reg(lo, a, rt, p, x.file)
+    lo.seats_exit(r)
+    lo.out.give(Ins.RetVal(r))
+    LoweredBody {
+        body: Body {
+            name: fname,
+            params: [],
+            ret: rt,
+            gives: r,
+            ins: lo.out.ins,
+            reg_types: lo.out.reg_types,
+            file: a.view.file,
+            weak: false,
+        },
+        voices: lo.out.voices,
+        jobs: lo.jobs,
+    }
+}
+
+/// The list itself: every member, in a FIXED order — `p.order`
+/// sorted, never the host's directory listing order, which a build
+/// must not depend on — each packed into the projected type's slots.
+fn collect_table_reg(mut lo: LowerCx, a: Analysis, rt: TypeId, p: CollectParts, owner: FileId) -> Reg {
+    let entry_ty: TypeId = lo.view.types.element(rt) ?? rt
+    let regs = [collect_entry_reg(lo, a, entry_ty, p, d) for d in ordered_collect_members(a.view.decls, p.kind, p.scope, p.order, owner)]
+    let size = lo.box_size(regs.length)
+    lo.grown_box(lo.view.types.shape_of(rt), size, regs)
+}
+
+/// A member beside its `by` key — one TYPED value per `by` field, a
+/// TUPLE, so two different keys never read as one and a tie keeps both —
+/// and its qualified name, which orders a tie.
+type SortedMember = { key: List<SortValue>, named: string, decl: Decl }
+
+/// Every matching declaration, in `by` order — shared by both collect
+/// flavors (a value's rows, an enum's variants); only `Decls` is
+/// needed, never a whole `Analysis`, since ordering is a fact of the
+/// declaration table alone.
+export fn ordered_collect_members(
+    decls: Decls,
+    kind: CollectKind,
+    scope: CollectScope,
+    order: List<Plain>,
+    owner: FileId,
+) -> List<Decl> {
+    let found = decls.gathered_into(kind, scope, owner)
+    let keyed = [SortedMember {
+        key: [sort_value(decls, kind, k, d) for k in order],
+        named: decls.qualified_name(d),
+        decl: d,
+    } for d in found]
+    [m.decl for m in sorted_by(keyed, member_before)]
+}
+
+/// `by` order, and a tie by qualified name — never by the order files were read in.
+fn member_before(x: SortedMember, y: SortedMember) -> bool {
+    if sort_key_before(x.key, y.key) { return true }
+    !sort_key_before(y.key, x.key) && text_before(x.named, y.named)
+}
+
+/// One entry: its fields read by NAME off the projected type's own
+/// signature, filled from `p.proj.fields` — so their declared order
+/// never has to match the order these mint in.
+fn collect_entry_reg(mut lo: LowerCx, a: Analysis, entry_ty: TypeId, p: CollectParts, d: Decl) -> Reg {
+    let sig? = lo.fields_of(entry_ty) else { return lo.mint_ty(entry_ty) }
+    mut byname: Map<string, Reg> = {}
+    for f in p.proj.fields {
+        byname.set(f.field.of, collect_field_reg(lo, a, entry_ty, f.field.of, f.path, p.kind, d))
+    }
+    lo.packed_struct(entry_ty, [byname.get(n)! for n in sig.names])
+}
+
+/// WHAT ONE PROJECTED FIELD READS OFF EACH MEMBER — decided once per field
+/// from the collect's own types, and dispatched on by the lowering and by a
+/// held collector's key alike, so a read the lowering learns is one the key
+/// folds.
+export enum FieldPlan {
+    /// The declaration crossed WHOLE as the `@std/meta` value its seat names
+    /// (`Fn`/`Type`/`Named`/`Trait`), for a bare `it` whose seat asks for one.
+    Crossed
+    /// The declaration ITSELF, a callable fn value, for any other bare `it`.
+    Value
+    /// A component instance's root-kind indices, off its written body.
+    RootKind
+    /// Every node kind a component instance's patterns name, off its written body.
+    NodeKinds
+    /// An `.Annotated` kind's matched mark, for `it.mark`.
+    Mark
+    /// A component's OWN field, read off its instance's built value.
+    Component(word: string)
+    /// The GENERIC text projection, const.
+    Text(path: List<Plain>)
+}
+
+/// The read one projected field makes, by its seat's type and its path.
+export fn field_plan(
+    decls: Decls,
+    entry_ty: TypeId,
+    name: string,
+    path: List<Plain>,
+    kind: CollectKind,
+) -> FieldPlan {
+    if path.is_empty() {
+        return if decls.takes_a_decl(field_seat(decls, entry_ty, name)) { FieldPlan.Crossed } else { FieldPlan.Value }
+    }
+    if is_root_kind_path(path) { return FieldPlan.RootKind }
+    if is_node_kinds_path(path) { return FieldPlan.NodeKinds }
+    if is_mark_path(path) && by_mark(kind) { return FieldPlan.Mark }
+    if path.length == 1 && !generic_words.contains(path[0].of) && by_component(kind) { return FieldPlan.Component(path[0].of) }
+    FieldPlan.Text(path)
+}
+
+/// A projected field's declared type; the absorbing one when none is.
+fn field_seat(decls: Decls, entry_ty: TypeId, name: string) -> TypeId {
+    decls.field_type_named(entry_ty, name) ?? decls.types.intern(Type.Error)
+}
+
+fn by_mark(kind: CollectKind) -> bool {
+    match kind { .Annotated(_) -> true, .Component(_) -> false }
+}
+
+fn by_component(kind: CollectKind) -> bool {
+    match kind { .Component(_) -> true, .Annotated(_) -> false }
+}
+
+/// One field's register: what its plan reads off the member, lowered.
+fn collect_field_reg(
+    mut lo: LowerCx,
+    a: Analysis,
+    entry_ty: TypeId,
+    name: string,
+    path: List<Plain>,
+    kind: CollectKind,
+    d: Decl,
+) -> Reg {
+    match field_plan(a.view.decls, entry_ty, name, path, kind) {
+        .Crossed -> decl_crossed_reg(lo, field_seat(a.view.decls, entry_ty, name), d.id),
+        .Value -> member_value_reg(lo, d, field_seat(a.view.decls, entry_ty, name)),
+        .RootKind -> int_list_box(lo, component_root_kind(a.view.decls, d)),
+        .NodeKinds -> int_list_box(lo, component_node_kinds(a.view.decls, d)),
+        .Mark -> mark_field_reg(lo, field_seat(a.view.decls, entry_ty, name), kind, d),
+        .Component(word) -> component_field_reg(lo, a, field_seat(a.view.decls, entry_ty, name), word, d),
+        .Text(p) -> lo.const_str(collect_field_text(a.view.decls, d, p)),
+    }
+}
+
+/// A declaration crossed WHOLE as the meta value `want` names — the
+/// same crossing an annotation's own receiver seat gets
+/// (`Workspace.crossed_decl_of`), materialized here as a settled
+/// value's are (`materialized`, features/values.av): a compile-time
+/// fact about the declaration, laid out once as static data.
+fn decl_crossed_reg(mut lo: LowerCx, want: TypeId, d: DeclId) -> Reg {
+    let crossed = lo.jobs.cross(d, want)
+    lo
+        .materialized(
+            crossed.answer,
+            crossed.heap,
+            want,
+            "crossed\$${lo.view.decls.symbol(d)}\$${lo.view.decls.type_symbol(want)}",
+        )
+}
+
+/// `root_kind` — the one kind-typed (non-string) field a
+/// `.Component` kind's declarations may answer: not a stored field
+/// of the component's own record (`rule` declares none named this),
+/// so it is read off the WRITTEN body rather than the built value.
+fn is_root_kind_path(path: List<Plain>) -> bool {
+    path.length == 1 && path[0].of == "root_kind"
+}
+
+/// `node_kinds` — the other field read off a component instance's written body.
+fn is_node_kinds_path(path: List<Plain>) -> bool {
+    path.length == 1 && path[0].of == "node_kinds"
+}
+
+/// A component instance's ROOT-KIND INDICES: its one-seat fn field's
+/// WRITTEN arms, every pattern's own kind (`core.root_kind_of`) —
+/// `[any_root]` when the field is not there, is not an arms body,
+/// or a single pattern cannot narrow. Read off the PARSED body,
+/// never the built value `component_field_reg` reads: the index is
+/// a fact about what was WRITTEN, settled once at lowering, the same
+/// door `rule`'s own hand-built version once opened by hand
+/// (docs/2026_09_22_COLLECTIONS.md §5 — nodes touched, never nodes
+/// × rules).
+export fn component_root_kind(decls: Decls, d: Decl) -> List<int> {
+    let arms? = component_arms(decls, d) else { return [any_root] }
+    root_kind_of(decls.store_of(d.file), arms) ?? [any_root]
+}
+
+/// EVERY NODE KIND A COMPONENT INSTANCE'S PATTERNS NAME — read off the
+/// PARSED body as `component_root_kind` is, settled once at lowering by
+/// the compiler that builds it, so a running compiler can tell a rule it
+/// cannot match.
+export fn component_node_kinds(decls: Decls, d: Decl) -> List<int> {
+    let arms? = component_arms(decls, d) else { return [] }
+    pattern_kinds(decls.store_of(d.file), arms)
+}
+
+/// A component instance's one-seat fn field's written arms, when it has them.
+fn component_arms(decls: Decls, d: Decl) -> List<Arm>? {
+    let store = decls.store_of(d.file)
+    let v? = store.stmt_value(d.stmt) else { return null }
+    let block? = match store.expr(v) { .Component(_, _, _, b, _, _) -> b, rest -> null } else { return null }
+    let lam? = store.body_fn(block) else { return null }
+    let parts? = store.lambda_parts(lam) else { return null }
+    match store.expr(parts.body) { .Match(_, ar) -> ar, rest -> null }
+}
+
+/// `mark` — the one field an `.Annotated` kind's declarations may
+/// answer past the four generic ones: the annotation that GATHERED
+/// this member, packed into the projected field's own record type —
+/// its `name` and its literal `args`. Never the declaration's whole
+/// annotation list: `collect`'s kind already named the one that
+/// matched, and that is the one a member's own body sees again.
+fn is_mark_path(path: List<Plain>) -> bool {
+    path.length == 1 && path[0].of == "mark"
+}
+
+fn mark_field_reg(mut lo: LowerCx, field_ty: TypeId, kind: CollectKind, d: Decl) -> Reg {
+    let matched? = gathering_mark(lo.view.decls, kind, d) else { return lo.mint_ty(field_ty) }
+    let sig? = lo.fields_of(field_ty) else { return lo.mint_ty(field_ty) }
+    lo.packed_struct(field_ty, [mark_part_reg(lo, matched, n) for n in sig.names])
+}
+
+/// The mark a member was gathered by; none for a kind that gathers by no mark,
+/// or a member that no longer wears it.
+export fn gathering_mark(decls: Decls, kind: CollectKind, d: Decl) -> AnnotationFact? {
+    match kind {
+        .Annotated(w) -> decls.annotations_of(d.id).find(it.name == w),
+        .Component(_) -> null,
+    }
+}
+
+/// `mark`'s own record, filled by field NAME — `name` the matched
+/// annotation's own word, `args` its literal arguments as text; any
+/// other field name the user's record wrote answers "", the same
+/// silence an unhandled generic path already reads as
+/// (`collect_field_text`).
+fn mark_part_reg(mut lo: LowerCx, m: AnnotationFact, part: string) -> Reg {
+    if part == "args" { return string_list_box(lo, [a.text for a in m.args]) }
+    if part == "name" { return lo.const_str(m.name) }
+    lo.const_str("")
+}
+
+fn string_list_box(mut lo: LowerCx, texts: List<string>) -> Reg {
+    let regs = [lo.const_str(t) for t in texts]
+    lo.grown_box(Type.List(lo.view.types.type(string)), lo.box_size(regs.length), regs)
+}
+
+fn int_list_box(mut lo: LowerCx, ns: List<int>) -> Reg {
+    let regs = [lo.const_int(n) for n in ns]
+    lo.grown_box(Type.List(lo.view.types.type(int)), lo.box_size(regs.length), regs)
+}
+
+/// `it.field` over a `.Component` kind, when `field` is not one of
+/// the four generic words: the instance's own value, built once per
+/// run through its unit exactly as a bare `it` reads an instance
+/// elsewhere (`state.av`'s `instance_value_reg`, here with no
+/// read-site expression to mint the answer at — the instance's own
+/// declared type stands in), then the named field read off it
+/// (`values.av`'s `field_named`, whose own DEFECT is the honest
+/// answer for a word that names no field).
+fn component_field_reg(mut lo: LowerCx, a: Analysis, field_ty: TypeId, word: string, d: Decl) -> Reg {
+    let inst_ty: TypeId = a.view.decls.type_of_const(d.file, d.stmt) ?? lo
+        .view
+        .types
+        .intern(Type.Error)
+    let unit = lo.view.decls.instance_unit(d.id)
+    if lo.unseen(unit.name) { lo.jobs.pending.push(unit) }
+    let inst = lo.call_decl(inst_ty, unit.name, [])
+    lo.field_named(inst, inst_ty, word, field_ty)
+}
+
+/// A bare `it` of a member: a const IS its settled value, any other
+/// declaration its callable fn value.
+fn member_value_reg(mut lo: LowerCx, d: Decl, seat: TypeId) -> Reg {
+    if !holds_a_value(d.kind) { return collect_fn_reg(lo, d.id, seat) }
+    lo.settled_value_reg(d.file, d.stmt, seat, [], lo.view.decls.const_symbol(d.file, d.stmt)) ?? lo
+        .zeroed(lo.mint_ty(seat))
+}
+
+/// Whether a declaration of this kind is a settled value rather than code.
+/// A registry: every kind answers.
+fn holds_a_value(kind: DeclKind) -> bool {
+    match kind {
+        .Const -> true,
+        .Builtin or .Fn or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Collect or .CollectEnum or .State -> false,
+    }
+}
+
+/// A NAMED fn as a value, at the reference's own site — `fn_value_reg`'s
+/// twin (compiler/lower/state.av) with no `ExprId`: a member is never
+/// CALLED by name here, only ever referenced, as a bare `it` field.
+fn collect_fn_reg(mut lo: LowerCx, d: DeclId, fnty: TypeId) -> Reg {
+    let symbol = lo.wanted(d)
+    let wname = "${symbol}\$w"
+    if lo.unseen(wname) {
+        let held: Arrow? = lo.view.decls.types.arrow_parts(fnty)
+        lo
+            .jobs
+            .wraps
+            .push(
+                Wrap {
+                    target: symbol,
+                    seats: held?.seats ?? [],
+                    ret: held?.answer ?? lo.view.decls.types.intern(Type.Error),
+                    name: wname,
+                },
+            )
+    }
+    lo.static_fn_box(lo.view.types.shape_of(fnty), wname)
+}
+
+/// A file's run-time statements as a body under `name` — `main` for
+/// the entry, a program's own symbol when every file is a program.
+/// An EXPRESSION as a body of its own — a const's initializer, an
+/// annotation's argument: no params, the value inside the seats'
+/// bracket, the answer after it settles. The evaluator runs it to
+/// settle the value; a program never calls it — a settled value is
+/// spelled or laid out at its reads. A DECLARED INSTANCE's unit is the
+/// exception on both counts: a program calls it, and it is its file's
+/// content, so it wears `home` and the file's object holds it; a root no
+/// declaration owns has none.
+fn lower_root(
+    a: Analysis,
+    root: ExprId,
+    name: string,
+    seats: List<SeatValue>,
+    externs: List<string>,
+    settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>,
+    cross: fn(DeclId, TypeId) -> Lifted,
+    home: FileId?,
+    checks: bool = true,
+) -> LoweredBody {
+    let rt: TypeId = a.facts.type_at(root)
+    mut lo = new_lower_cx(a, rt, null, seats, [], new_jobs(externs, settle, cross), checks, [root])
+    lo.seeded()
+    // THE SETTLED SEATS ARE CONSTANTS HERE: the initializer reads a
+    // `const` seat as its called value, so the settlement computes on
+    // the value the unit was made for.
+    lo.seed_seats()
+    lo.seats_enter()
+    // a value no literal spells is answered ONCE per run, as a
+    // `once fn` is; a scalar or text is spelled at its uses
+    let r = if a.view.decls.types.spells(rt) { lo.reg_of(root) } else { lo.once_body(name, root, rt) }
+    lo.seats_exit(r)
+    lo.emit(Ins.RetVal(r))
+    LoweredBody {
+        body: Body {
+            name: name,
+            params: [],
+            ret: rt,
+            gives: r,
+            ins: lo.out.ins,
+            reg_types: lo.out.reg_types,
+            file: home,
+        },
+        voices: lo.out.voices,
+        jobs: lo.jobs,
+    }
+}
+
+/// Whether `d` is a module-level `state` — its unit builds the one
+/// Cell the module shares rather than a plain value.
+fn is_state_decl(a: Analysis, d: DeclId) -> bool {
+    a.view.decls.decl(d).kind is .State
+}
+
+/// A module-level `state`'s unit: the ONE Cell the module shares,
+/// built once per run under the declaration's own symbol. Its answer
+/// is a `Cell<T>`, so a read loads the value and a write stores it —
+/// both reach the same box. A HELD state's object holds the build,
+/// so its name is declared weak and nothing is emitted here.
+fn lower_state_root(
+    a: Analysis,
+    x: Decl,
+    w: Wanted,
+    externs: List<string>,
+    settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>,
+    cross: fn(DeclId, TypeId) -> Lifted,
+    checks: bool = true,
+) -> LoweredBody {
+    let read_ty: TypeId = a.view.decls.type_of_const(x.file, x.stmt) ?? a
+        .view
+        .decls
+        .types
+        .intern(Type.Error)
+    let cell_ty: TypeId = a.view.decls.types.intern(Type.Cell(read_ty))
+    let root? = w.root else {
+        return LoweredBody {
+            body: Body {
+                name: w.name,
+                params: [],
+                ret: cell_ty,
+                gives: null,
+                ins: [],
+                reg_types: [],
+                file: null,
+                weak: true,
+            },
+            voices: no_voices(),
+            jobs: new_jobs(externs, settle, cross),
+        }
+    }
+    let init = root
+    let maybe: TypeId = a.view.decls.types.type(cell_ty?)
+    mut lo = new_lower_cx(a, cell_ty, null, [], [], new_jobs(externs, settle, cross), checks)
+    lo.seeded()
+    lo.seats_enter()
+    let held = lo.once_read(lo.view.decls.types.shape_of(maybe), w.name)
+    let r = lo
+        .region_as(lo.presence_of(held, maybe), cell_ty) { cx -> cx.carried_of(held, maybe) } else { cx ->
+            let made = cx.state_cell(x.stmt, cx.reg_of(init))
+            cx.once_commit(w.name, made)
+            made
+        }
+    lo.seats_exit(r)
+    lo.emit(Ins.RetVal(r))
+    LoweredBody {
+        body: Body {
+            name: w.name,
+            params: [],
+            ret: cell_ty,
+            gives: r,
+            ins: lo.out.ins,
+            reg_types: lo.out.reg_types,
+            file: a.view.file,
+        },
+        voices: lo.out.voices,
+        jobs: lo.jobs,
+    }
+}
+
+/// Where no workspace stands behind the lowering, no const settles.
+// LICENSED fns.dead_parameter: a fn VALUE filling the settle seat — its parameters are the seat's contract, and the answer needs none of them
+fn no_settle(f: FileId, root: SettleRoot, seats: List<SeatValue>) -> Result<Settled, Unsettled> {
+    .Err(Unsettled.Trap("nothing here evaluates a const"))
+}
+
+/// `no_settle`'s twin: where no workspace stands behind the
+/// lowering, no declaration crosses as a meta value either.
+// LICENSED fns.dead_parameter: a fn VALUE filling the cross seat — its parameters are the seat's contract, and the answer needs none of them
+fn no_cross(d: DeclId, want: TypeId) -> Lifted {
+    Lifted { answer: MetaVal.Absent, heap: new_meta_heap() }
+}
+
+fn lower_main(
+    a: Analysis,
+    name: string,
+    externs: List<string>,
+    settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>,
+    cross: fn(DeclId, TypeId) -> Lifted,
+    checks: bool = true,
+) -> LoweredBody {
+    mut lo = new_lower_cx(a, null, null, [], [], new_jobs(externs, settle, cross), checks)
+    lo.scope_enter()
+    lo.lower_stmts(a.view.stmts)
+    let shown: ExprId? = program_answer(a)
+    let refusal: Diag? = if shown == null { null } else { lo.print_lowering(lo.reg_of(shown!)) }
+    if refusal != null { lo.speak(refusal!) }
+    lo.scope_exit(null)
+    lo.emit(Ins.Ret(0))
+    LoweredBody {
+        body: Body {
+            name: name,
+            params: [],
+            ret: a.view.decls.types.type(int),
+            gives: null,
+            ins: lo.out.ins,
+            reg_types: lo.out.reg_types,
+            file: a.view.file,
+        },
+        voices: lo.out.voices,
+        jobs: lo.jobs,
+    }
+}
+
+/// What a program shows: the expression of its FINAL statement that
+/// RUNS, when that statement is an expression — declarations after
+/// it do not run; a binding, a loop or an assignment last shows
+/// nothing.
+fn program_answer(a: Analysis) -> ExprId? {
+    let last? = [s for s in a.view.stmts if runs_at_top(a.view.store, s)].last() else { return null }
+    a.view.store.shown_value(last)
+}
+
+/// The entry of a program that is only checked: nothing runs.
+fn empty_main(types: TypeRegistry) -> LoweredBody {
+    let ins: List<Ins> = [Ins.ScopeEnter(Level.Application), Ins.ScopeExit(null), Ins.Ret(0)]
+    LoweredBody {
+        body: Body {
+            name: "main",
+            params: [],
+            ret: types.type(int),
+            gives: null,
+            ins: ins,
+            reg_types: [],
+        },
+        voices: no_voices(),
+        jobs: new_jobs([], no_settle, no_cross),
+    }
+}
+
+// ── voices ──
+
+fn runs_outside_entry(a: Analysis, s: StmtId, entry: Analysis) -> Diag {
+    entry_only_refused(
+        loc_at(a.view.source.file, a.view.store.stmt_span(s)),
+        entry.view.source.file ?? "the entry",
+    )
+}
+
+/// A statement a module file runs at `at`, where only the entry, at `entry`, runs statements.
+export fn entry_only_refused(at: Loc?, entry: string) -> Diag {
+    refusal(
+        "lower.entry_only",
+        at,
+        "a module file holds declarations — only the entry `${entry}` runs statements",
+        "runs here",
+        "move it into the entry, or wrap it in a fn the entry calls",
+    )
+}
+
+/// CLAIM A NAME: true the first time, and the seat is MUT so the write lands in the
+/// caller's map rather than copying it — the copy-on-write was the walk's whole cost.
+fn claim_seen(mut seen: Map<string, bool>, name: string) -> bool {
+    if seen.get(name) != null { return false }
+    seen.set(name, true)
+    true
+}
+
+impl Decls {
+
+    fn mangle(name: string, sub: Sub) -> string {
+        let ids = joined([self.type_symbol(a) for a in sub.args], "_")
+        if sub.consts.is_empty() { return "${name}\$${ids}" }
+        "${name}\$${ids}@${joined(sub.consts, "_")}"
+    }
+}
+
+/// Why a const's value can't hold a code hash: what the old path's refusal says, and what the program
+/// layer's settlement traps with.
+export fn code_hash_unheld() -> string { "a const's value cannot hold a code hash — at compile time the program is only what the const reaches" }
+
+/// Where a const's value that holds a code hash goes wrong.
+export const CODE_HASH_REACHED: string = "reaches `code_hash`"

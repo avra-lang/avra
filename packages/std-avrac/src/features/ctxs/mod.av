@@ -1,0 +1,31 @@
+//! `ctx` — a value the program declares once and any fn reads, set for a block by the code that
+//! calls it: `ctx theme: Theme = plain()` declares one, `ctx theme = dark` sets it until its block
+//! ends, `ctx.theme` reads it. The running task holds one frame of them, so a set reaches every read
+//! made under it, through any call, and nothing else.
+use features.{LanguageFeature}
+// LICENSED modules.unused_import: `Fixed` and `Term` are named by GENERATED code, not by this
+// file — a rule that states a payload writes a `Fixed` literal, and one that builds a node in
+// place writes a `Term`. Resolve needs the names the source never spells.
+use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Fixed, Term, Expect, Recover}
+use diagnostics.{DiagCode}
+
+export fn contexts() -> LanguageFeature {
+    let codes = table<DiagCode> {
+        kind           | summary
+        "ctx.unknown"  | "`ctx.name` reads a context, and no `ctx name` is declared"
+        "ctx.where"    | "a context is declared at a module's top level and set inside a body"
+        "ctx.required" | "a required context is set before the program reads it"
+        "ctx.unread"   | "a context's set is read by something it is in force over"
+        "ctx.cached"   | "a cached fn reads only a context that compares by value"
+        "ctx.old_path" | "`ctx` is built on the program layer"
+    }
+    LanguageFeature contexts {
+        gram: grammar {
+            stmt = CTX name:NAME "=" value:expression END -> Stmt.CtxSet
+            stmt = CTX name:NAME ":" ty:type ( "=" value:expression )? END -> Stmt.CtxDecl
+            primary = CTX "." name:NAME -> Expr.CtxRead
+        }
+        diags: codes
+    }
+    contexts
+}

@@ -1,0 +1,1238 @@
+//! A GENERATOR ON THE PROGRAM LAYER: the `static fn derive` a trait's own body writes, or a declaring
+//! annotation's own fn, lowered with every body it reaches into a program the evaluator runs over a
+//! declaration's meta value: a `Type` for a derive, a `Fn` for an annotation.
+use core.{
+    some_list,
+    OwnType,
+    Span,
+    Annotation,
+    ExprId,
+    Literal,
+    SignedType,
+    StmtId,
+    SyntaxArena,
+    TaskChecks,
+    flatten,
+    literal_of,
+    new_node_store,
+    template_home,
+}
+use features.{
+    Budgets,
+    MetaHeap,
+    MetaVal,
+    arg_lit,
+    meta_of_fn,
+    meta_of_template,
+    meta_of_field,
+    meta_of_trait,
+    meta_of_type,
+    new_meta_heap,
+    unsettled_label,
+    unsettled_of,
+}
+use @std.meta.{Diagnostic, Directive, Node, derive}
+use @std.program.address.{SourceFileAddress}
+use @std.program.answer_record.{ContentHash, content_hash}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.saved_derive.{Saved}
+use @std.program.saved_query.{cut_query, definitions_of, ListedQuery, query, query_definition}
+use @std.program.source_facts.{PlacedTape}
+use @std.relation.engine.{map_cell}
+use compiler.lower.{Lowered}
+use compiler.backend.{EvalPlan, body_lines, eval_plan, run_lifted, static_block}
+
+/// What a trait's generator is named in its own body.
+const GENERATOR: string = "derive"
+
+/// A generator: the fn that writes declarations, the file declaring it, the name it goes by there,
+/// and what it's handed.
+@derive(Saved)
+export type GeneratorAt = { file: SourceFileAddress, name: string, kind: GeneratorKind }
+
+/// Which fn a generator is, and so what it's handed and what it's named by.
+@derive(Saved)
+export enum GeneratorKind {
+    /// A trait's own `static fn derive`, `name` the trait's: handed the `Type` a `@derive` naming the
+    /// trait stands on.
+    Derive
+    /// A declaring annotation's own fn over a fn: handed the `Fn` the annotation stands on.
+    Annotation
+    /// A declaring annotation's own fn over a type: handed the `Type` the annotation stands on.
+    TypeAnnotation
+    /// A declaring annotation's own fn over a trait: handed the `Trait` the annotation stands on.
+    TraitAnnotation
+    /// An annotation's own fn over any declaration: handed the `Named` it stands on.
+    NamedAnnotation
+}
+
+/// The `@std/meta` record a generator's seat takes a declaration as.
+@derive(Saved)
+export enum DeclSeat {
+    Fn
+    Type
+    Trait
+    Named
+}
+
+impl DeclSeat {
+    /// The seat as `@std/meta` names its type.
+    fn spelled() -> string {
+        match self {
+            .Fn -> META_FN,
+            .Type -> META_TYPE,
+            .Trait -> META_TRAIT,
+            .Named -> META_NAMED,
+        }
+    }
+
+    /// Whether a declaration of `kind` crosses into the seat.
+    fn takes(kind: ItemKind) -> bool {
+        match self {
+            .Fn -> kind == ItemKind.Fn,
+            .Type -> match kind {
+                .Record or .Enum or .Named or .CollectEnum or .Component -> true,
+                .Fn or .Alias or .Trait or .Syntax or .Collect or .Const or .State or .Ctx -> false,
+            },
+            .Trait -> kind == ItemKind.Trait,
+            .Named -> true,
+        }
+    }
+}
+
+/// A declaration a site hands its generator past the one it stands on: where it's written and the
+/// seat it crosses into.
+@derive(Saved)
+export type HandedDecl = { file: SourceFileAddress, name: string, item: int, seat: DeclSeat }
+
+/// What a site hands one seat of its generator past the declaration it stands on: a declaration the
+/// argument names, the literal it spells, or the quote it writes; or why it crosses as none of them.
+@derive(Saved)
+export enum HandedArg {
+    /// A declaration, crossed as the seat's `@std/meta` record.
+    Decl(d: HandedDecl)
+    /// A literal, written there or the value of a const naming one.
+    Value(l: Literal)
+    /// A quote with no holes, written in the file `home` names at `at`.
+    Code(home: string, at: int, parts: List<string>)
+    /// A const the argument names whose value is no literal: its settled value, run where it's
+    /// declared, and the print of its settlement — what a site that hands it runs again on.
+    Settled(file: SourceFileAddress, name: string, item: int, value: ContentHash)
+    /// Fields of the declaration `decl` the site stands on in `file`, by their place among its
+    /// fields: one, or a list of them where `listed`.
+    Fields(file: SourceFileAddress, decl: string, picked: List<int>, listed: bool)
+    /// An argument the source computes — a call — written at node `at` of the written item `item` of
+    /// `file`: its value run at compile time under the seat type `seat`.
+    Computed(file: SourceFileAddress, item: int, at: int, seat: SignedType)
+    /// An argument the program layer doesn't cross yet, and why.
+    Uncrossed(why: string)
+    /// An argument naming no declaration its seat takes: the program's fault, and why.
+    Unfit(why: string)
+    /// A word naming no field of the declaration: the program's fault, which its own law says.
+    Misnamed(why: string)
+}
+
+impl GeneratorAt {
+    /// The unit the generator's body is lowered as in its file.
+    fn unit() -> string {
+        match self.kind {
+            .Derive -> "${self.name}.${GENERATOR}",
+            .Annotation or .TypeAnnotation or .TraitAnnotation or .NamedAnnotation -> self.name,
+        }
+    }
+}
+
+impl GeneratorKind {
+    /// The seat the declaration the generator stands on crosses into.
+    fn first_seat() -> DeclSeat {
+        match self {
+            .Annotation -> DeclSeat.Fn,
+            .Derive or .TypeAnnotation -> DeclSeat.Type,
+            .TraitAnnotation -> DeclSeat.Trait,
+            .NamedAnnotation -> DeclSeat.Named,
+        }
+    }
+}
+
+/// The generator `g`'s body, signed; absent when it writes none.
+fn generator_body(engine: QueryEngine, g: GeneratorAt) -> SignedBody? {
+    match g.kind {
+        .Derive -> trait_generator(engine, TraitAt { file: g.file, name: g.name }),
+        .Annotation or .TypeAnnotation or .TraitAnnotation or .NamedAnnotation -> signed_body(engine, g.file, g.name),
+    }
+}
+
+/// The trait `t`'s own static `derive`, its body signed with no `Self`; absent when it writes none
+/// with a body.
+fn trait_generator(engine: QueryEngine, t: TraitAt) -> SignedBody? { trait_static_body(engine, t, GENERATOR) }
+
+/// The static fn `name` the trait `t` writes in its own body, signed with no `Self`; absent when it
+/// writes none with a body.
+fn trait_static_body(engine: QueryEngine, t: TraitAt, name: string) -> SignedBody? {
+    let item? = declaring_item(engine, t.file, t.name, ItemKind.Trait) else { return null }
+    let s? = trait_fns(item).find((f) -> static_written(item, f, name)) else { return null }
+    let written = written_fn(item.store, [s], name)!
+    SignedBody {
+        signature: written_signature(
+            Signing {
+                engine: engine,
+                file: t.file,
+                type_params: written.type_params,
+                writer: written.writer,
+            },
+            written,
+        ),
+        item: item,
+        body: item.store.fn_parts(s)!.body,
+        stmt: s,
+    }
+}
+
+/// Whether `f` is a static fn named `name` written with a body.
+fn static_written(item: ReadItem, f: StmtId, name: string) -> bool {
+    item.store.fn_parts(f)?.name == name && item.store.is_static(f) && written_body(item, f)
+}
+
+/// Whether the trait `t` writes its own static `derive` with a body.
+fn derives(engine: QueryEngine, t: TraitAt) -> bool {
+    let item? = declaring_item(engine, t.file, t.name, ItemKind.Trait) else { return false }
+    trait_fns(item).any((f) -> static_written(item, f, GENERATOR))
+}
+
+/// The symbol a generator runs as.
+export fn generator_symbol(g: GeneratorAt) -> string { declared_symbol(g.file, g.unit()) }
+
+/// The generator `g` and every body it reaches, made into a program whose entry is the generator
+/// itself, its seat the meta value, each fn it only holds as a value made when a run calls it; with
+/// `missed`, each body it reaches that isn't lowered yet filed there. Absent when it writes no body.
+export fn made_generator(engine: QueryEngine, g: GeneratorAt, missed: Cell<List<Missed>>? = null) -> MadeProgram? {
+    let signed? = generator_body(engine, g) else { return null }
+    let root = lowered_signed(engine, g.file, signed, g.unit(), null)
+    if !root.whole() { return MadeProgram.Unmade(root.missing[0], "the generator") }
+    made_reaching(
+        task_survey(engine),
+        root,
+        generator_symbol(g),
+        root.params,
+        TaskChecks.Tested,
+        missed,
+        lazy: true,
+        unhashed_absent: true,
+    )
+}
+
+/// What a trait's generator is: the hash of the program made of it, printed, or why it isn't made.
+@derive(Saved)
+export type GeneratorPrint = { print: ContentHash?, unmade: string }
+
+/// The generator `g` as the content of the program made of it: the hash of its printed IR, the
+/// program kept for this process under that hash.
+@query
+export fn generator_print(engine: QueryEngine, g: GeneratorAt) -> GeneratorPrint {
+    let m? = made_generator(engine, g) else { return GeneratorPrint { print: null, unmade: "`${g.name}` writes no generator" } }
+    match m {
+        .Made(l) -> GeneratorPrint { print: kept_program(l), unmade: "" },
+        .Unmade(why, at) -> GeneratorPrint {
+            print: null,
+            unmade: "`${g.name}`'s generator isn't made yet: ${why} at ${at}",
+        },
+        .Refused(files) -> GeneratorPrint { print: null, unmade: generator_refused(g, files) },
+    }
+}
+
+/// The program the generator `g` is made of, by the hash its print answered: the one this process
+/// keeps under it, or made again; absent when made again it prints otherwise.
+fn generator_program(engine: QueryEngine, g: GeneratorAt, print: ContentHash) -> Lowered? {
+    let kept = made_programs().get().get(print_key(print))
+    if kept != null { return kept }
+    let m? = made_generator(engine, g) else { return null }
+    match m {
+        .Made(l) -> if kept_program(l).same_as(print) { l } else { null },
+        .Unmade(_, _) or .Refused(_) -> null,
+    }
+}
+
+/// The hash of a made program's printed IR, the program kept under it for this process.
+fn kept_program(l: Lowered) -> ContentHash {
+    let print = content_hash(printed_program(l).bytes())
+    made_programs().put(print_key(print), l)
+    print
+}
+
+/// A made program as text: its entry's and each body's name, the layouts of its seats and its
+/// answer, and its instructions; then its statics.
+fn printed_program(l: Lowered) -> string {
+    flatten(
+        [[
+            "fn ${b.name}(${[s.spelled() for s in b.seats].join(", ")}) -> ${b.answer?.spelled() ?? "void"}",
+        ]
+            .concat(body_lines(b.ins)) for b in [l.entry].concat(l.fns)],
+    )
+        .concat(flatten([static_block(s) for s in l.statics]))
+        .join("\n")
+}
+
+/// The programs this process has made generators into, by their print.
+once fn made_programs() -> Cell<Map<string, Lowered>> { map_cell() }
+
+/// The evaluator's plan of the program a generator printing as `print` is made of, `l`: worked out
+/// once in this process, every run of the generator taking the transfers the runs before it took.
+export fn generator_plan(print: ContentHash, l: Lowered) -> EvalPlan {
+    let key = print_key(print)
+    let kept = made_plans().get().get(key)
+    if kept != null { return kept! }
+    let plan = eval_plan(l)
+    made_plans().put(key, plan)
+    plan
+}
+
+/// The evaluator's plans of the programs this process made generators into, by their print.
+once fn made_plans() -> Cell<Map<string, EvalPlan>> { map_cell() }
+
+fn print_key(print: ContentHash) -> string { "${print.high_word}:${print.low_word}" }
+
+/// What a generator made over one declaration: the directives it answered and what it said about
+/// the declaration, or why it didn't run.
+export enum GeneratorRun {
+    Ran(made: List<Directive>, problems: List<Diagnostic>)
+    /// It didn't run: the program layer couldn't hand it what it takes.
+    Stopped(why: string, fault: bool, said: bool)
+    /// It ran, and stopped before it answered: a trap, a budget spent.
+    Trapped(why: string)
+}
+
+/// The made generator `l` of `g` run under `budgets` over the declaration `file` writes as `name`,
+/// handed that declaration as its kind takes it, then each of `handed`, and answering `type_named`
+/// from `file`.
+export fn generator_run(
+    engine: QueryEngine,
+    l: Lowered,
+    g: GeneratorAt,
+    file: SourceFileAddress,
+    name: string,
+    handed: List<HandedArg>,
+    budgets: Budgets,
+    plan: EvalPlan? = null,
+    method: MethodSite? = null,
+) -> GeneratorRun {
+    let values = handed_values(engine, file, name, g.kind.first_seat(), handed, method)
+    if values.broken != null {
+        return GeneratorRun
+            .Trapped(
+                unsettled_label(
+                    annotation_named(g),
+                    unsettled_of(values.broken!.kind, values.broken!.words),
+                ),
+            )
+    }
+    if !values.stopped.is_empty() { return GeneratorRun.Stopped(values.stopped, values.fault, values.said) }
+    match run_lifted(
+        l,
+        generator_symbol(g),
+        values.args,
+        values.heap,
+        budgets,
+        (n: string) -> named_lifted(engine, file, n),
+        null,
+        plan,
+        spelled: reader_spelled(file.package_name),
+        late: late_door(task_survey(engine), TaskChecks.Tested),
+    ) {
+        .Ok(lifted) -> match answer_shape(engine, g) {
+            .Declared -> GeneratorRun.Ran(lifted.declared_made(), lifted.declared_problems()),
+            .Directives -> GeneratorRun.Ran(lifted.directives(), []),
+            .Diagnostics -> GeneratorRun.Ran([], lifted.saids()),
+            .Nothing -> GeneratorRun.Ran([], []),
+        },
+        .Err(why) -> GeneratorRun.Trapped(unsettled_label(annotation_named(g), why)),
+    }
+}
+
+/// What a site hands its generator, crossed into one heap: the declaration it stands on, then each
+/// argument; none, and why, where one doesn't cross.
+@derive(Saved)
+export type HandedValues = { args: List<MetaVal>, heap: MetaHeap, stopped: string, fault: bool = false, said: bool = false, broken: BrokenSettlement? = null }
+
+/// What the site over the declaration `file` writes as `name` — a method of the impl `method` where
+/// it's one — hands a generator whose first seat is `first`, past it `handed`. An answer of its own,
+/// so a site whose declaration and arguments cross as they did runs its generator no more: an edit
+/// elsewhere in the file moves what the file declares, never this.
+@query
+export fn handed_values(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    name: string,
+    first: DeclSeat,
+    handed: List<HandedArg>,
+    method: MethodSite?,
+) -> HandedValues {
+    mut heap = new_meta_heap()
+    let arg? = (if method == null { meta_handed(engine, first, file, name, heap) } else { method_handed(engine, method!, name, heap) }) else { return unhanded(not_handed(first, name)) }
+    let unfit = handed.find_map(match it { .Unfit(w) -> w, rest -> null })
+    if unfit != null { return unhanded(unfit!) with { fault: true } }
+    let broken = handed.find_map((h) -> argument_broken(engine, h))
+    if broken != null { return unhanded(broken!.words) with { broken: broken } }
+    let misnamed = handed.find_map(match it { .Misnamed(w) -> w, rest -> null })
+    if misnamed != null { return unhanded(misnamed!) with { said: true } }
+    let why = handed.find_map(match it { .Uncrossed(w) -> w, rest -> null })
+    if why != null { return unhanded(why!) }
+    let rest = [v! for h in handed for v in [meta_arg(engine, h, heap)] if v != null]
+    if rest.length != handed.length { return unhanded(not_handed_all(name)) }
+    HandedValues { args: [arg].concat(rest), heap: heap, stopped: "" }
+}
+
+fn unhanded(why: string) -> HandedValues { HandedValues { args: [], heap: new_meta_heap(), stopped: why } }
+
+/// What a generator answers: `@std/meta`'s `Declared`, its directives beside what it says; its
+/// directives alone; what it says alone — a validating annotation's diagnostics; or nothing — an
+/// annotation that records.
+enum AnswerShape {
+    Declared
+    Directives
+    Diagnostics
+    Nothing
+}
+
+/// What the generator `g` is declared to answer.
+fn answer_shape(engine: QueryEngine, g: GeneratorAt) -> AnswerShape {
+    let answer? = generator_body(engine, g)?.signature?.answer else { return AnswerShape.Directives }
+    if meta_named(answer, DECLARED) { return AnswerShape.Declared }
+    if diagnostics_listed(answer) { return AnswerShape.Diagnostics }
+    if answer.owns(OwnType.Void) { AnswerShape.Nothing } else { AnswerShape.Directives }
+}
+
+/// The declaration `file` writes as `name`, as the meta value `seat` takes, laid out in `heap`;
+/// absent when it declares nothing that crosses there.
+fn meta_handed(
+    engine: QueryEngine,
+    seat: DeclSeat,
+    file: SourceFileAddress,
+    name: string,
+    mut heap: MetaHeap,
+) -> MetaVal? {
+    match seat {
+        .Type -> {
+            let t? = meta_of_decl(engine, file, name) else { return null }
+            meta_of_type(t, heap)
+        },
+        .Fn -> {
+            let f? = meta_of_fn_decl(engine, file, name) else { return null }
+            meta_of_fn(f, fn_slots(engine), heap)
+        },
+        .Trait -> {
+            let t? = meta_of_trait_decl(engine, file, name) else { return null }
+            meta_of_trait(t, fn_slots(engine), heap)
+        },
+        .Named -> named_handed(engine, file, name, heap),
+    }
+}
+
+/// What a site hands one seat as the meta value it takes, laid out in `heap`; absent for a
+/// declaration that doesn't cross there, or an argument that crosses as nothing.
+fn meta_arg(engine: QueryEngine, h: HandedArg, mut heap: MetaHeap) -> MetaVal? {
+    match h {
+        .Decl(d) -> meta_handed(engine, d.seat, d.file, d.name, heap),
+        .Value(l) -> match l {
+            .Int(n) -> MetaVal.Int(n),
+            .Float(bits) -> MetaVal.Float(bits),
+            .Bool(b) -> MetaVal.Bool(b),
+            .Text(t) -> MetaVal.Text(t),
+        },
+        .Code(home, at, parts) -> meta_of_template(Node.Template(home, at, parts, []), heap),
+        .Settled(file, name, item, _) -> settled_handed(engine, file, name, item, heap),
+        .Fields(file, decl, picked, listed) -> fields_meta(engine, file, decl, picked, listed, heap),
+        .Computed(file, item, at, seat) -> match argument_lifted(engine, file, item, at, seat) {
+            .Ok(ran) -> heap.adopt(ran.heap, ran.answer),
+            .Err(_) -> null,
+        },
+        .Uncrossed(_) or .Unfit(_) or .Misnamed(_) -> null,
+    }
+}
+
+/// The method `name` the impl `m` writes as the `Fn` a generator over it takes, laid out in `heap`.
+fn method_handed(engine: QueryEngine, m: MethodSite, name: string, mut heap: MetaHeap) -> MetaVal? {
+    let f? = meta_of_method(engine, m, name) else { return null }
+    meta_of_fn(f, fn_slots(engine), heap)
+}
+
+/// What annotations make of a fn's or a method's body: the wrapper a wrap made of it, read back, its
+/// written body moved aside beside it; and what a generator said instead where one didn't run. No
+/// wrapper where no wrap stands on it.
+export type Wrapping = { wrapper: ReadItem?, said: List<string> }
+
+impl Wrapping {
+    /// Whether a wrap stands on it, so its written body is typed and lowered as the moved one.
+    fn wraps() -> bool { self.wrapper != null }
+}
+
+/// What annotations make of the body of the fn `file` writes as `name`, or with `method` of the
+/// method of that name the impl writes. THE ONE READER of whether a body is wrapped.
+export fn wrapping(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    name: string,
+    method: MethodSite? = null,
+) -> Wrapping {
+    let made = body_generated(engine, file, name, method)
+    let wrap? = made.items.find(it.wraps) else { return Wrapping { wrapper: null, said: made.said } }
+    let tape = wrap.wrapper ?? wrap.tape
+    let store = new_node_store()
+    let stmts = item_read_back(store, PlacedTape { start: 0, tape: tape })
+    Wrapping {
+        wrapper: ReadItem { store: store, stmts: stmts, written: store.expr_count() },
+        said: made.said,
+    }
+}
+
+/// What the generators the fn `file` writes as `name` wears make, or with `method` those the method
+/// of that name the impl writes wears.
+fn body_generated(engine: QueryEngine, file: SourceFileAddress, name: string, method: MethodSite?) -> GeneratedItems {
+    if method == null { fn_generated(engine, file, name) } else { method_generated(engine, method!, name) }
+}
+
+/// Whether a wrap stands on the body of the fn `file` writes as `name`, or with `method` of the
+/// method of that name the impl writes: what `wrapping` answers of it, its wrapper never read back.
+export fn wraps_body(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    name: string,
+    method: MethodSite? = null,
+) -> bool { body_generated(engine, file, name, method).items.any(it.wraps) }
+
+/// How many fields `@std/meta`'s `Fn` declares: the slots a crossed `Fn` is written with.
+fn fn_slots(engine: QueryEngine) -> int {
+    let d? = declarations_of(engine, META, [], false, META_FN).find(it.kind == ItemKind.Record) else { return 0 }
+    let sig? = record_signature(engine, d.file, d.name) else { return 0 }
+    sig.fields.length
+}
+
+/// A declaration a generator runs over: the name its file declares it as, the item declaring it, the
+/// generator, each argument the site hands it past this one, and, for a method, the impl writing it.
+export type GeneratorSite = { name: string, item: int, generator: GeneratorAt, handed: List<HandedArg> = [], method: MethodSite? = null }
+
+/// A method an annotation stands on: the impl writing it, and whether it's a static.
+@derive(Saved)
+export type MethodSite = { at: ImplAt, statics: bool }
+
+/// Each generator a file's declarations name that makes declarations, in the order written: each
+/// trait a `@derive` names, and each declaring annotation a declaration wears.
+export fn generator_sites(engine: QueryEngine, file: SourceFileAddress) -> List<GeneratorSite> { [s for s in annotated_sites(engine, file) if !validates(engine, s.generator)] }
+
+/// Each validating annotation a file's declarations wear, in the order written: one whose own fn
+/// answers diagnostics, or nothing, and makes no declaration.
+export fn validator_sites(engine: QueryEngine, file: SourceFileAddress) -> List<GeneratorSite> { [s for s in annotated_sites(engine, file) if validates(engine, s.generator)] }
+
+/// Each annotation's own fn or derived trait a file's declarations name, in the order written.
+fn annotated_sites(engine: QueryEngine, file: SourceFileAddress) -> List<GeneratorSite> {
+    let scope? = file_scope(engine, file) else { return [] }
+    flatten([declared_sites(engine, scope, file, d) for d in file_declares(engine, file).names])
+        .concat(method_sites(engine, scope, file))
+}
+
+/// Each generator a method the file's written impls write names, in the order written: each impl
+/// whose target written names alone resolve, so a site never asks what generators make.
+fn method_sites(engine: QueryEngine, scope: FileScope, file: SourceFileAddress) -> List<
+    GeneratorSite,
+> {
+    flatten(
+        [impl_method_sites(engine, scope, a) for k in item_ids(engine, file) for a in written_impls_at(engine, scope, file, k)],
+    )
+}
+
+/// The impls the written item `at` of `file` holds whose targets its written names resolve, as
+/// `impls_at` places them.
+fn written_impls_at(engine: QueryEngine, scope: FileScope, file: SourceFileAddress, at: int) -> List<
+    ImplAt,
+> {
+    [ImplAt { file: file, item: at, params: impl_params(engine, i, d!), nth: nth } for nth, i in filed_impls(engine, file, at) for d in [
+        declared_of(resolved_in(engine, scope, file, Space.Type, i.target).named()) ?? own_declared(
+            i.target,
+        ),
+    ] if d != null]
+}
+
+/// Each generator the methods the impl `a` writes name.
+fn impl_method_sites(engine: QueryEngine, scope: FileScope, a: ImplAt) -> List<GeneratorSite> {
+    let item = read_item(engine, a.file, a.item)
+    flatten(
+        [[site with { method: MethodSite { at: a, statics: item.store.is_static(s) } } for site in annotation_sites(
+            engine,
+            scope,
+            a.file,
+            item.store.fn_parts(s)!.name,
+            a.item,
+            ItemKind.Fn,
+            item,
+            x,
+        )] for s in impl_fns(item, a) for x in item.store.annotations_of(s)],
+    )
+}
+
+/// The sites written on the method `name` a file's impls write, as `site` names one.
+export fn method_sites_of(engine: QueryEngine, m: MethodSite, name: string) -> List<GeneratorSite> {
+    let scope? = file_scope(engine, m.at.file) else { return [] }
+    [x for x in impl_method_sites(engine, scope, m.at) if x.name == name && x.method?.statics == m.statics]
+}
+
+/// Each generator the declaration `d` names.
+export fn declaration_sites(engine: QueryEngine, file: SourceFileAddress, d: DeclaredName) -> List<
+    GeneratorSite,
+> {
+    let scope? = file_scope(engine, file) else { return [] }
+    declared_sites(engine, scope, file, d)
+}
+
+fn declared_sites(engine: QueryEngine, scope: FileScope, file: SourceFileAddress, d: DeclaredName) -> List<
+    GeneratorSite,
+> {
+    if item_held(engine, file, d.item) {
+        let worn? = worn_in_item(engine, d) else { return [] }
+        if !worn.declared && !worn.marked { return [] }
+        if worn.declared &&
+            !worn.marked_declared &&
+            !(d.kind == ItemKind.Component && worn.bodied_component) { return delegated_sites(engine, d).concat(member_sites(engine, d, [])) }
+    }
+    let item = read_item(engine, file, d.item)
+    let s? = item.stmts.find((x) -> item.store.named_by(x) == d.name) else { return [] }
+    let annotated = flatten(
+        [annotation_sites(engine, scope, file, d.name, d.item, d.kind, item, a) for a in item.store.annotations_of(s)],
+    )
+    annotated
+        .concat(delegated_sites(engine, d))
+        .concat(member_sites(engine, d, annotated))
+        .concat(composed_sites(engine, d, item.store, s, annotated))
+}
+
+/// A COMPONENT WITH A BODY: the trait that composes it, its own `derive` over it, as `@derive` of
+/// that trait written on it would be — none where one is written, or no one trait composes it.
+fn composed_sites(
+    engine: QueryEngine,
+    d: DeclaredName,
+    store: SyntaxArena,
+    s: StmtId,
+    annotated: List<GeneratorSite>,
+) -> List<GeneratorSite> {
+    if d.kind != ItemKind.Component || store.component_body(s) == null { return [] }
+    let t? = composer(engine, d.file) else { return [] }
+    if annotated.any((a) -> derives_trait(a, t)) { return [] }
+    [derive_site(d.name, d.item, t)]
+}
+
+/// THE trait that composes a component `file` declares: the one `composers` finds; absent where none
+/// does, and where more than one would.
+export fn composer(engine: QueryEngine, file: SourceFileAddress) -> TraitAt? {
+    let all = composers(engine, file)
+    if all.length == 1 { all[0] } else { null }
+}
+
+/// A `collect enum E: T`'s sites: `@std/meta`'s `delegate` over the enum once per trait, handed the
+/// trait, as `@delegate(T)` written on it would be.
+fn delegated_sites(engine: QueryEngine, d: DeclaredName) -> List<GeneratorSite> {
+    if d.kind != ItemKind.CollectEnum { return [] }
+    let made_by? = declarations_of(engine, META, [], false, DELEGATE).find(it.kind == ItemKind.Fn) else { return [] }
+    let g = GeneratorAt {
+        file: made_by.file,
+        name: made_by.name,
+        kind: GeneratorKind.TypeAnnotation,
+    }
+    [GeneratorSite { name: d.name, item: d.item, generator: g, handed: [HandedArg.Decl(h!)] } for t in gathered_traits(engine, d.file, d.name, true) for h in [handed_trait(engine, t)] if h != null]
+}
+
+/// The trait `t` as a declaration handed to a generator's `Trait` seat.
+fn handed_trait(engine: QueryEngine, t: TraitAt) -> HandedDecl? {
+    let item? = file_declares_named(engine, t.file, t.name)
+        .names
+        .find(it.name == t.name && it.kind == ItemKind.Trait)?.item else { return null }
+    HandedDecl { file: t.file, name: t.name, item: item, seat: DeclSeat.Trait }
+}
+
+/// A record a `collect enum E: T` gathers, each `T` it writes no impl of and no `@derive` of: `T`'s
+/// own `derive` over it, in its own file, where `T` writes one and stands in another file.
+fn member_sites(engine: QueryEngine, d: DeclaredName, annotated: List<GeneratorSite>) -> List<
+    GeneratorSite,
+> {
+    if d.kind != ItemKind.Record { return [] }
+    let derivable = [t for g in package_gatherings(engine, d.file.package_name).each if g.members.any(it.is(d)) for t in g.derived]
+    if derivable.is_empty() { return [] }
+    let written = written_traits(engine, d.file, d.name)
+    let traits = [t for j, t in derivable if derivable.find_index((x) -> same_trait(x, t)) == j]
+    [derive_site(d.name, d.item, t) for t in traits if !written.contains(t.name) &&
+        !annotated.any((a) -> derives_trait(a, t)) &&
+        !same_file(t.file, d.file)]
+}
+
+/// The trait `t`'s own `derive` over the declaration `d`, as `@derive(T)` written on it runs.
+fn derive_site(name: string, item: int, t: TraitAt) -> GeneratorSite {
+    GeneratorSite {
+        name: name,
+        item: item,
+        generator: GeneratorAt { file: t.file, name: t.name, kind: GeneratorKind.Derive },
+    }
+}
+
+/// Whether two name one trait.
+fn same_trait(a: TraitAt, b: TraitAt) -> bool { a.name == b.name && same_file(a.file, b.file) }
+
+/// Whether a site is a `@derive` of the trait `t`.
+fn derives_trait(site: GeneratorSite, t: TraitAt) -> bool {
+    match site.generator.kind {
+        .Derive -> same_trait(TraitAt { file: site.generator.file, name: site.generator.name }, t),
+        .Annotation or .TypeAnnotation or .TraitAnnotation or .NamedAnnotation -> false,
+    }
+}
+
+/// A `collect enum` with traits: the members it gathers and each of its traits that writes a
+/// `derive`, which a member writing no impl of it takes.
+@derive(Saved)
+type DerivedGathering = { members: List<DeclaredName>, derived: List<TraitAt> }
+
+/// Each `collect enum` a package writes with a trait that derives, and what it gathers.
+@derive(Saved)
+type DerivedGatherings = { each: List<DerivedGathering> }
+
+/// The gatherings a package's written `collect enum`s make, each read where it's written.
+@cut_query
+fn package_gatherings(engine: QueryEngine, package: string) -> DerivedGatherings {
+    let enums = [d for p in package_sources(engine, package, "src") for d in file_declares(engine, SourceFileAddress { package_name: package, path_in_package: p }).names if d.kind == ItemKind.CollectEnum]
+    DerivedGatherings { each: [g! for d in enums for g in [gathering(engine, d)] if g != null] }
+}
+
+/// The gathering the `collect enum` `d` makes; absent when none of its traits derives, or it gathers
+/// only once built.
+fn gathering(engine: QueryEngine, d: DeclaredName) -> DerivedGathering? {
+    let derived = [t for t in gathered_traits(engine, d.file, d.name, true) if derives(engine, t)]
+    if derived.is_empty() { return null }
+    let members? = members_of(engine, d.file, d.name, false, "") else { return null }
+    DerivedGathering { members: members, derived: derived }
+}
+
+/// The generators one annotation on `d` names, its name read among written names alone: each trait
+/// a `@derive` names, or the annotation's own fn where it declares over a fn.
+fn annotation_sites(
+    engine: QueryEngine,
+    scope: FileScope,
+    file: SourceFileAddress,
+    name: string,
+    item: int,
+    kind: ItemKind,
+    read: ReadItem,
+    a: Annotation,
+) -> List<GeneratorSite> {
+    let store = read.store
+    let named? = resolved_in(engine, scope, file, Space.Value, a.name).named() else { return [] }
+    if named.file.package_name == META && named.name == DERIVE {
+        return [derive_site(name, item, t!) for e in a.args for t in [trait_named(engine, scope, file, arg_lit(store, e).text)] if t != null]
+    }
+    if named.kind != ItemKind.Fn { return [] }
+    let made_as? = annotation_kind(engine, named.file, named.name) else { return [] }
+    if !made_as.first_seat().takes(kind) { return [] }
+    let generator = GeneratorAt { file: named.file, name: named.name, kind: made_as }
+    [
+        GeneratorSite {
+            name: name,
+            item: item,
+            generator: generator,
+            handed: uncomputed(engine, generator, handed_args(engine, scope, file, read, a, named, name)),
+        },
+    ]
+}
+
+/// `handed` as the annotation fn `generator` takes it: one that makes declarations runs no computed
+/// argument, which its own law refuses.
+fn uncomputed(engine: QueryEngine, generator: GeneratorAt, handed: List<HandedArg>) -> List<
+    HandedArg,
+> {
+    if validates(engine, generator) { return handed }
+    [match h { .Computed(_, _, _, _) -> HandedArg.Misnamed(computed_declaring()), rest -> h } for h in handed]
+}
+
+fn computed_declaring() -> string { "an annotation that makes declarations is handed a computed argument" }
+
+/// What an annotation hands each seat of its fn `named` past the first, in order: the argument
+/// written there, or the seat's default where none is, each crossed where it's written.
+fn handed_args(
+    engine: QueryEngine,
+    scope: FileScope,
+    file: SourceFileAddress,
+    read: ReadItem,
+    a: Annotation,
+    named: DeclaredName,
+    decl: string,
+) -> List<HandedArg> {
+    let store = read.store
+    let seats = (generator_signature(engine, named.file, named.name)?.params ?? []).drop(1)
+    let args = [e for e in a.args if store.arg_label(e) == null]
+    [seat_handed(engine, scope, file, read, named, decl, p, j, args) for j, p in seats]
+}
+
+/// What the seat `p`, the `j`th past the first of the annotation fn `named`, is handed of `args`,
+/// the annotation standing on `decl`: the fields its words name where it takes fields, else the
+/// argument written there, else its default.
+fn seat_handed(
+    engine: QueryEngine,
+    scope: FileScope,
+    file: SourceFileAddress,
+    read: ReadItem,
+    named: DeclaredName,
+    decl: string,
+    p: SignedParam,
+    j: int,
+    args: List<ExprId>,
+) -> HandedArg {
+    match field_take(p) {
+        .Many -> fields_handed(engine, file, decl, read.store, args.drop(j), true),
+        .One -> if j < args.length { fields_handed(engine, file, decl, read.store, [args[j]], false) } else { defaulted_arg(engine, named, j + 1) },
+        .Not -> if j < args.length {
+            computed_or(
+                fitted(handed_arg(engine, scope, file, read, p.ty, args[j]), p.ty),
+                file,
+                read,
+                p.ty,
+                args[j],
+            )
+        } else {
+            defaulted_arg(engine, named, j + 1)
+        },
+    }
+}
+
+/// `h` as a seat of type `ty` takes it: a literal of another scalar than the seat's is the program's
+/// fault, which the seats' law says, so the generator isn't run on it.
+fn fitted(h: HandedArg, ty: SignedType?) -> HandedArg {
+    let t? = ty else { return h }
+    let want? = t.owned() else { return h }
+    if t.nulls > 0 { return h }
+    let found = match h {
+        .Value(l) -> match l { .Int(_) -> "int", .Float(_) -> "float", .Bool(_) -> "bool", .Text(_) -> "string" },
+        rest -> want,
+    }
+    if ["int", "float", "bool", "string"].contains(want) && found != want { HandedArg.Misnamed(unfit_literal(want)) } else { h }
+}
+
+fn unfit_literal(want: string) -> string { "an annotation's argument is no `${want}`, which its seat takes" }
+
+/// `h` where the argument `e` it was read from is computed — a call the source writes, no literal,
+/// quote or name — and its seat has a type: that argument run at compile time. An annotation that
+/// makes declarations is refused one, by its own law, and runs nothing.
+fn computed_or(h: HandedArg, file: SourceFileAddress, read: ReadItem, seat: SignedType?, e: ExprId) -> HandedArg {
+    if !(h is .Uncrossed) { return h }
+    let ty? = seat else { return h }
+    let item? = read.at else { return h }
+    let v = read.store.unnamed(e)
+    if read.store.ident_name(v) != null { return h }
+    HandedArg.Computed(file, item, v.index, ty)
+}
+
+/// Why the computed argument `h` didn't run, where it broke a law of a compile-time run; absent for
+/// any other argument, one that ran, or one the program layer can't run yet.
+fn argument_broken(engine: QueryEngine, h: HandedArg) -> BrokenSettlement? {
+    match h {
+        .Computed(file, item, at, seat) -> match argument_lifted(engine, file, item, at, seat) {
+            .Ok(_) -> null,
+            .Err(b) -> if b.kind.is_empty() { null } else { b },
+        },
+        rest -> null,
+    }
+}
+
+/// How a seat of an annotation fn takes the words written there: as one field of the declaration
+/// the annotation stands on, as a list of them, or not as fields.
+export enum FieldTake {
+    One
+    Many
+    Not
+}
+
+/// How the seat `p` takes fields: a seat of `@std/meta`'s `Field` one, a rest seat of a list of them
+/// many.
+export fn field_take(p: SignedParam) -> FieldTake {
+    let t? = p.ty else { return FieldTake.Not }
+    if !p.rest { return if meta_named(t, META_FIELD) { FieldTake.One } else { FieldTake.Not } }
+    let element? = t.listed() else { return FieldTake.Not }
+    if meta_named(element, META_FIELD) { FieldTake.Many } else { FieldTake.Not }
+}
+
+/// Whether any of `seats` takes fields.
+export fn seats_take_fields(seats: List<SignedParam>) -> bool { seats.any(!(field_take(it) is .Not)) }
+
+/// The words among `args`, the unlabelled arguments an annotation writes, that fill a seat among
+/// `seats` (past the first) taking fields.
+export fn seat_field_words(seats: List<SignedParam>, args: List<ExprId>) -> List<ExprId> { flatten([words_filling(p, j, args) for j, p in seats]) }
+
+fn words_filling(p: SignedParam, j: int, args: List<ExprId>) -> List<ExprId> {
+    match field_take(p) {
+        .Many -> args.drop(j),
+        .One -> if j < args.length { [args[j]] } else { [] },
+        .Not -> [],
+    }
+}
+
+/// The names of the fields `file` declares `decl` with, in written order, spreads among them.
+export fn decl_fields(engine: QueryEngine, file: SourceFileAddress, decl: string) -> List<string> { [f.name for f in meta_of_decl(engine, file, decl)?.fields ?? []] }
+
+/// The fields the words `words`, in `store`, name among `decl`'s, as a site hands them; none where a
+/// word is no field's name, which the program is at fault for.
+fn fields_handed(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    decl: string,
+    store: SyntaxArena,
+    words: List<ExprId>,
+    listed: bool,
+) -> HandedArg {
+    let fields = decl_fields(engine, file, decl)
+    let picked = [fields.index_of(store.ident_name(w) ?? "") for w in words]
+    if picked.any(it < 0) { return HandedArg.Misnamed(unknown_field(decl)) }
+    HandedArg.Fields(file, decl, picked, listed)
+}
+
+/// The fields `picked` of the declaration `decl` of `file` as `@std/meta`'s `Field`s, laid out in
+/// `heap`: one, or a list of them where `listed`.
+fn fields_meta(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    decl: string,
+    picked: List<int>,
+    listed: bool,
+    mut heap: MetaHeap,
+) -> MetaVal? {
+    let t? = meta_of_decl(engine, file, decl) else { return null }
+    let vals = [meta_of_field(t.fields[i], heap) for i in picked]
+    if listed { heap.node(vals) } else { vals.first() }
+}
+
+fn unknown_field(decl: string) -> string { "an annotation's argument names no field of `${decl}`" }
+
+/// What the argument `e`, written in `file`, hands a seat of type `ty`: the declaration it names
+/// where the seat takes one, any other seat the value it spells.
+fn handed_arg(
+    engine: QueryEngine,
+    scope: FileScope,
+    file: SourceFileAddress,
+    read: ReadItem,
+    ty: SignedType?,
+    e: ExprId,
+) -> HandedArg {
+    let store = read.store
+    let seat? = meta_seat_of(ty) else { return spelled_arg(engine, scope, file, read, e, 0) }
+    let name? = store.ident_name(e) else { return HandedArg.Unfit(unnamed_decl()) }
+    let d? = resolved_in(engine, scope, file, space_taking(seat), name).named() else { return HandedArg.Unfit(unnamed_decl()) }
+    if seat.takes(d.kind) { HandedArg.Decl(HandedDecl { file: d.file, name: d.name, item: d.item, seat: seat }) } else { HandedArg.Unfit(unnamed_decl()) }
+}
+
+/// The value `e`, written in `file`, spells: its literal, a hole-less quote as the template it is,
+/// or the value of the const it names, however many consts deep, each read where it's written.
+export fn spelled_arg(
+    engine: QueryEngine,
+    scope: FileScope,
+    file: SourceFileAddress,
+    read: ReadItem,
+    e: ExprId,
+    depth: int,
+) -> HandedArg {
+    let store = read.store
+    let x = store.valued(e)
+    let l = literal_of(x)
+    if l != null { return HandedArg.Value(l!) }
+    let body = x.body_of()
+    if body != null && body!.holes.is_empty() {
+        let written = store.expr_span(e) ?? Span { lo: 0, hi: 0 }
+        return HandedArg
+            .Code(template_home(file), span_in_file(engine, file, read, written).lo, body!.parts)
+    }
+    let name? = store.ident_name(e) else { return HandedArg.Uncrossed(unspelled_arg()) }
+    if depth >= CONST_CHAIN { return HandedArg.Uncrossed(unspelled_arg()) }
+    let d? = resolved_in(engine, scope, file, Space.Value, name).named() else { return HandedArg.Uncrossed(unspelled_arg()) }
+    if d.kind != ItemKind.Const { return HandedArg.Uncrossed(unspelled_arg()) }
+    let item = read_item(engine, d.file, d.item)
+    let s? = item.stmts.find((x) -> item.store.let_name(x) == d.name) else { return HandedArg.Uncrossed(unspelled_arg()) }
+    let v? = item.store.const_value(s) else { return HandedArg.Uncrossed(unspelled_arg()) }
+    let there? = file_scope(engine, d.file) else { return HandedArg.Uncrossed(unspelled_arg()) }
+    let spelled = spelled_arg(engine, there, d.file, item, v, depth + 1)
+    if spelled is .Uncrossed { HandedArg.Settled(d.file, d.name, d.item, settled_print(engine, d)) } else { spelled }
+}
+
+/// The print of the const `d`'s settlement: its value as it settles, through whatever it reads, so
+/// it moves exactly when that value does.
+fn settled_print(engine: QueryEngine, d: DeclaredName) -> ContentHash { content_hash(const_settlement(engine, d.file, d.name, d.item).saved_bytes()) }
+
+/// The const `file` declares as `name` in its written item `item`, its value run where it's declared
+/// and laid out in `heap`; absent where it doesn't settle.
+fn settled_handed(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    name: string,
+    item: int,
+    mut heap: MetaHeap,
+) -> MetaVal? {
+    let ran? = const_lifted(engine, file, name, item) else { return null }
+    heap.adopt(ran.heap, ran.answer)
+}
+
+/// What the seat `at` of the annotation fn `named` takes where nothing is written there: the value
+/// its default spells, read in the fn's own file.
+fn defaulted_arg(engine: QueryEngine, named: DeclaredName, at: int) -> HandedArg {
+    let item = read_item(engine, named.file, named.item)
+    let s? = item.stmts.find((x) -> item.store.fn_parts(x)?.name == named.name) else { return HandedArg.Uncrossed(unspelled_arg()) }
+    let params = item.store.fn_parts(s)!.params
+    if at >= params.length { return HandedArg.Uncrossed(unspelled_arg()) }
+    let e? = params[at].default else { return HandedArg.Uncrossed(unspelled_arg()) }
+    let scope? = file_scope(engine, named.file) else { return HandedArg.Uncrossed(unspelled_arg()) }
+    let spelled = spelled_arg(engine, scope, named.file, item, e, 0)
+    if !(spelled is .Uncrossed) { return spelled }
+    settled_default(engine, named, params[at].name.of)
+}
+
+/// What the default the annotation fn `named` writes for its seat `seat` settles to, run as a
+/// program of its own: a number, a truth, a float or text.
+fn settled_default(engine: QueryEngine, named: DeclaredName, seat: string) -> HandedArg {
+    let low? = lowered_seat_default(engine, named.file, named.name, seat) else { return HandedArg.Uncrossed(unspelled_arg()) }
+    if !low.whole() { return HandedArg.Uncrossed(unsettled_default(low.missing[0])) }
+    let symbol = declared_symbol(named.file, "${named.name}.${seat}\$default")
+    let made = made_reaching(
+        task_survey(engine),
+        low,
+        symbol,
+        low.params,
+        TaskChecks.Tested,
+        unhashed_absent: true,
+    )
+    let l? = match made {
+        .Made(l) -> l,
+        .Unmade(why, _) -> { return HandedArg.Uncrossed(unsettled_default(why)) },
+        .Refused(_) -> null,
+    } else { return HandedArg.Uncrossed(unspelled_arg()) }
+    match run_lifted(
+        l,
+        symbol,
+        [],
+        new_meta_heap(),
+        lifted_budgets(engine, named.file.package_name),
+        spelled: reader_spelled(named.file.package_name),
+    ) {
+        .Ok(lifted) -> match lifted.answer {
+            .Int(n) -> HandedArg.Value(Literal.Int(n)),
+            .Float(bits) -> HandedArg.Value(Literal.Float(bits)),
+            .Bool(b) -> HandedArg.Value(Literal.Bool(b)),
+            .Text(t) -> HandedArg.Value(Literal.Text(t)),
+            rest -> HandedArg.Uncrossed(unspelled_arg()),
+        },
+        .Err(why) -> HandedArg.Uncrossed(unsettled_label(named.name, why)),
+    }
+}
+
+/// How many consts deep an argument's value is read.
+const CONST_CHAIN: int = 64
+
+fn unnamed_decl() -> string { "an annotation's argument names no declaration its seat takes" }
+
+fn unsettled_default(why: string) -> string { "an annotation seat's default doesn't settle: ${why}" }
+
+fn unspelled_arg() -> string { "an annotation's argument spells no literal, quote or const the program layer crosses" }
+
+/// The space a name handed to `seat` is read in.
+fn space_taking(seat: DeclSeat) -> Space {
+    match seat { .Fn -> Space.Value, .Type or .Trait or .Named -> Space.Type }
+}
+
+/// What generator the fn `file` declares as `name` is when it's an annotation's own: one over a fn
+/// when its first seat takes `@std/meta`'s `Fn`, over a type when it takes its `Type`, answering
+/// `Declared`, a list of directives, a list of diagnostics, or nothing. Absent for any other fn.
+export fn annotation_kind(engine: QueryEngine, file: SourceFileAddress, name: string) -> GeneratorKind? {
+    let sig? = generator_signature(engine, file, name) else { return null }
+    let first? = sig.params.first()?.ty else { return null }
+    if !meta_named(sig.answer, DECLARED) &&
+        !directives_listed(sig.answer) &&
+        !diagnostics_listed(sig.answer) &&
+        !sig.answer.owns(OwnType.Void) { return null }
+    let seat? = meta_seat_of(first) else { return null }
+    match seat {
+        .Fn -> GeneratorKind.Annotation,
+        .Type -> GeneratorKind.TypeAnnotation,
+        .Trait -> GeneratorKind.TraitAnnotation,
+        .Named -> GeneratorKind.NamedAnnotation,
+    }
+}
+
+/// Whether the generator `g` is a validating annotation's: its own fn answers diagnostics, or
+/// nothing, so it makes no item.
+export fn validates(engine: QueryEngine, g: GeneratorAt) -> bool {
+    if g.kind is .Derive { return false }
+    let answer? = generator_signature(engine, g.file, g.name)?.answer else { return false }
+    diagnostics_listed(answer) || answer.owns(OwnType.Void)
+}
+
+/// Whether the generator `g` is an annotation's own fn answering diagnostics: one whose run judges
+/// the declaration, so a run that doesn't happen is a judgement not made.
+export fn judges(engine: QueryEngine, g: GeneratorAt) -> bool {
+    if g.kind is .Derive { return false }
+    let answer? = generator_signature(engine, g.file, g.name)?.answer else { return false }
+    diagnostics_listed(answer)
+}
+
+/// The seat a type names, when it's `@std/meta`'s `Fn`, `Type`, `Trait` or `Named`, present.
+fn meta_seat_of(ty: SignedType?) -> DeclSeat? {
+    let t? = ty else { return null }
+    if meta_named(t, META_FN) { return DeclSeat.Fn }
+    if meta_named(t, META_TYPE) { return DeclSeat.Type }
+    if meta_named(t, META_TRAIT) { return DeclSeat.Trait }
+    if meta_named(t, META_NAMED) { DeclSeat.Named } else { null }
+}
+
+/// Whether a seat of type `ty` takes a declaration whole: `@std/meta`'s `Fn`, `Type`, `Trait` or
+/// `Named`.
+export fn takes_a_declaration(ty: SignedType?) -> bool {
+    let t? = ty else { return false }
+    meta_seat_of(t) != null
+}
+
+/// Whether `ty` is a list of `@std/meta`'s `Diagnostic`s: what a validating annotation answers.
+fn diagnostics_listed(ty: SignedType) -> bool {
+    let element? = ty.listed() else { return false }
+    meta_named(element, DIAGNOSTIC)
+}
+
+/// What a validating annotation answers a list of.
+const DIAGNOSTIC: string = "Diagnostic"
+
+/// Whether `ty` is a list of `@std/meta`'s `Directive`s.
+fn directives_listed(ty: SignedType) -> bool {
+    let element? = ty.listed() else { return false }
+    meta_named(element, DIRECTIVE)
+}
+
+/// Whether `ty` is `@std/meta`'s `name`, present.
+fn meta_named(ty: SignedType, name: string) -> bool {
+    if ty.nulls > 0 { return false }
+    match ty.head { .Declared(file, n) -> file.package_name == META && n == name, _ -> false }
+}
+
+/// What the `@derive`s the statement `s` of `file` wears claim of the marks written on the
+/// declaration `name` it makes: the union of each derived trait's own `marks` run over it. Absent
+/// where that can't be known — it wears an annotation that is no `@derive`, a derived trait is
+/// written in this file or its `marks` doesn't run; a trait that declares no `marks` claims nothing.
+export fn derive_claims(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    store: SyntaxArena,
+    s: StmtId,
+    name: string,
+) -> List<string>? {
+    let scope? = file_scope(engine, file) else { return null }
+    let worn = store.annotations_of(s)
+    if worn.is_empty() { return null }
+    mut claims: List<string> = []
+    for a in worn {
+        let d? = resolved_in(engine, scope, file, Space.Value, a.name).named() else { return null }
+        if d.file.package_name != META || d.name != DERIVE { return null }
+        for e in a.args {
+            let t? = trait_named(engine, scope, file, arg_lit(store, e).text) else { return null }
+            if same_file(t.file, file) { return null }
+            let held? = trait_claims(engine, t, file, name).claims else { return null }
+            claims = claims.concat(held)
+        }
+    }
+    claims
+}
+
+/// What one trait claims of the marks on a declaration: the names its `marks` answers, or absent
+/// where they can't be known.
+@derive(Saved)
+export type TraitClaims = { claims: List<string>? }
+
+/// The trait `t`'s own `static fn marks` run over the declaration `file` writes as `name`, as its
+/// `derive` is run: the marks it claims; none where it declares no `marks`, absent where it doesn't
+/// run.
+@query
+export fn trait_claims(engine: QueryEngine, t: TraitAt, file: SourceFileAddress, name: string) -> TraitClaims {
+    let unknown = TraitClaims { claims: null }
+    let body? = trait_static_body(engine, t, CLAIMS) else { return TraitClaims { claims: [] } }
+    let unit = "${t.name}.${CLAIMS}"
+    let root = lowered_signed(engine, t.file, body, unit, null)
+    if !root.whole() { return unknown }
+    let symbol = declared_symbol(t.file, unit)
+    let made = match made_reaching(
+        task_survey(engine),
+        root,
+        symbol,
+        root.params,
+        TaskChecks.Tested,
+        lazy: true,
+        unhashed_absent: true,
+    ) { .Made(l) -> l, .Unmade(_, _) or .Refused(_) -> { return unknown } }
+    mut heap = new_meta_heap()
+    let arg? = meta_handed(engine, DeclSeat.Type, file, name, heap) else { return unknown }
+    match run_lifted(
+        made,
+        symbol,
+        [arg],
+        heap,
+        lifted_budgets(engine, file.package_name),
+        (n: string) -> named_lifted(engine, file, n),
+        null,
+        null,
+        spelled: reader_spelled(file.package_name),
+        late: late_door(task_survey(engine), TaskChecks.Tested),
+    ) {
+        .Ok(ran) -> TraitClaims {
+            claims: [w for v in ran.heap.slots(ran.answer) for w in some_list(match v { .Text(x) -> x, rest -> null })],
+        },
+        .Err(_) -> unknown,
+    }
+}
+
+/// The static fn a trait claims the marks on a declaration through.
+const CLAIMS: string = "marks"
+
+/// The trait `name` names from `file`, absent for a name naming none.
+fn trait_named(engine: QueryEngine, scope: FileScope, file: SourceFileAddress, name: string) -> TraitAt? {
+    let d? = resolved_in(engine, scope, file, Space.Type, name).named() else { return null }
+    if d.kind == ItemKind.Trait { TraitAt { file: d.file, name: d.name } } else { null }
+}
+
+/// The annotation naming the traits whose generators run over a declaration.
+const DERIVE: string = "derive"
+
+/// The record a declaring annotation's first seat takes.
+const META_FN: string = "Fn"
+
+/// The record a declaring annotation over a type's first seat takes.
+const META_TYPE: string = "Type"
+
+/// The record a declaring annotation over a trait's first seat takes.
+const META_TRAIT: string = "Trait"
+
+/// The record a seat taking any declaration takes.
+const META_NAMED: string = "Named"
+
+/// What a seat naming a field of the annotated declaration takes.
+const META_FIELD: string = "Field"
+
+/// `@std/meta`'s generator of a `collect enum`'s impl of one of its traits.
+const DELEGATE: string = "delegate"
+
+/// What a declaring annotation answers.
+const DECLARED: string = "Declared"
+
+/// What a generator answers a list of, beside a `Declared`.
+const DIRECTIVE: string = "Directive"
+
+collect listed_generator_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries a trait's generator is printed through, for a process to hand its engine.
+export fn generator_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_generator_facts) }
+
+fn not_handed(seat: DeclSeat, name: string) -> string {
+    match seat {
+        .Type -> "`${name}` declares no type with fields, variants or a shape",
+        .Fn -> "`${name}` declares no fn",
+        .Trait -> "`${name}` declares no trait whose methods each sign",
+        .Named -> "`${name}` declares nothing",
+    }
+}
+
+fn not_handed_all(name: string) -> string { "a declaration the site on `${name}` hands its generator doesn't cross into its seat" }
+
+fn generator_refused(g: GeneratorAt, files: List<SourceFileAddress>) -> string {
+    "`${g.name}`'s generator holds a value its seat refuses, in ${[spelled_file(f) for f in files].join(", ")}"
+}

@@ -1,0 +1,169 @@
+//! Lowering rules: literals become constants, an ident IS its
+//! definition's register (the language is SSA by construction), and
+//! eager binaries become one instruction — string `==`/`!=` routes
+//! to the runtime's value comparison. The LAZY ops (`&&`/`||`)
+//! desugar onto the region brackets, so the right side's
+//! instructions live inside a branch and short-circuit natively.
+use core.{ExprId, BinOp, Reg, Ins, Type, TypeId}
+use features.{LowerCx, EnumSig, variant_defect, PropertyRow, property_of, property_row}
+
+/// The presence test's subject — the typing projection's shape
+/// twin: exactly one nullable beside the absence, for `==`/`!=`.
+fn asked_subject(cx: LowerCx, op: BinOp, l: ExprId, r: ExprId) -> ExprId? {
+    if op != BinOp.Eq && op != BinOp.Ne { return null }
+    if cx.seen_at(l) is .Opt && cx.seen_at(r) is .Null { return l }
+    if cx.seen_at(r) is .Opt && cx.seen_at(l) is .Null { return r }
+    null
+}
+
+/// `x != null` IS the presence bit; `x == null` is its negation.
+/// The null side lowers to nothing at all.
+fn presence_reg(mut cx: LowerCx, e: ExprId, op: BinOp, subject: ExprId) -> Reg {
+    let p = cx.presence_of(cx.reg_of(subject), cx.type_at(subject))
+    if op == BinOp.Ne { return p }
+    cx.un_at(e, p)
+}
+
+fn index_reg(mut cx: LowerCx, e: ExprId, s: ExprId, i: ExprId) -> Reg {
+    let arr = cx.reg_of(s)
+    let idx = cx.reg_of(i)
+    cx.elem_read(arr, idx, cx.type_at(e))
+}
+
+/// A property read, by the subject's shape: a TYPE NAME builds a
+/// variant, a struct reads a slot at its declaration index, and
+/// only `length` otherwise survives typing.
+///
+/// IN THE TYPER'S ORDER (`member_type_of`): a receiver's own fields,
+/// then its OWN property, and only then the shape it stands over. A
+/// name over a record has no fields of its own and answers `of`; seen
+/// through first, it was a record with no `of` slot.
+fn prop_reg(mut cx: LowerCx, e: ExprId, s: ExprId, name: string) -> Reg {
+    let sh: Type = cx.shape_at(s)
+    if sh is .TypeName { return variant_reg(cx, e, name) }
+    if cx.fields_of(cx.type_at(s)) == null &&
+        property_row(cx.view.lang.properties, name, sh) != null {
+        return property_reg(cx, e, s, name)
+    }
+    // A NAME IS TRANSPARENT AT A READ, and the register already IS
+    // the shape's — so the SHAPE's layout decides, never the name's.
+    let sty = cx.seen(cx.type_at(s))
+    let sig? = cx.fields_of(sty) else { return property_reg(cx, e, s, name) }
+    let slot? = sig.slot_of(name) else {
+        return cx.lower_defect(e, "a fieldless property on a struct survived typing")
+    }
+    // A `state` field's slot holds the cell; the read is the value
+    // the cell holds, so a `Cell` never reaches the reader.
+    if sig.state_at(slot) {
+        let cell = cx.field_read(cx.reg_of(s), sty, slot, sig.types[slot])
+        return cx.proven_read(cell, 0, cx.type_at(e))
+    }
+    // THE one slot read: a boxed record reads through its box, a
+    // flat one extracts from registers, and this site knows neither.
+    cx.field_read(cx.reg_of(s), sty, slot, cx.type_at(e))
+}
+
+/// Constructing a variant: ONE array carrying the tag at slot 0.
+/// The type name itself lowers to nothing — it never was a value.
+fn variant_reg(mut cx: LowerCx, e: ExprId, name: string) -> Reg {
+    let sig: EnumSig? = cx.variants_at(e)
+    if sig == null {
+        return cx.lower_defect(e, "a variant construction without an enum type")
+    }
+    let which: int? = sig!.tag_of(name)
+    if which == null {
+        return cx.lower_defect(e, variant_defect)
+    }
+    cx.tagged_value(cx.shape_at(e), which!, [])
+}
+fn ident_reg(mut cx: LowerCx, e: ExprId) -> Reg {
+    let def: Reg? = cx.def_reg(e)
+    def ?? cx.lower_defect(e, "an unresolved name survived a clean analysis")
+}
+
+fn binary_reg(mut cx: LowerCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> Reg {
+    if op == BinOp.And || op == BinOp.Or { return lazy_reg(cx, e, op, l, r) }
+    let asked: ExprId? = asked_subject(cx, op, l, r)
+    if asked != null { return presence_reg(cx, e, op, asked!) }
+    let a = cx.reg_of(l)
+    let b = cx.reg_of(r)
+    // THE READ'S SHAPE: a NAMED type lowers exactly as what it
+    // stands over — it IS that value at runtime.
+    let sh: Type = cx.seen_at(l)
+    // THE BACKEND PICKS THE INSTRUCTION FROM THE OPERAND TYPE, so the
+    // shapes below are the ones needing a DIFFERENT lowering, not a
+    // different opcode — float needed no arm here for exactly that
+    // reason. By arm count this is a registry and `make vocab` does
+    // NOT name it, deliberately: converting it means refactoring the
+    // dispatch, which is a slice and not a line.
+    // THE HAZARD, so it is not rediscovered: a future value category
+    // that needs its own lowering SHAPE (as `Str` does for `+`) falls
+    // to the eager `Bin` in silence. Add its arm here when it lands.
+    if (op == BinOp.Eq || op == BinOp.Ne) && (sh is .Opt || cx.seen_at(r) is .Opt) {
+        return negated_when(cx, e, op == BinOp.Ne, nullable_eq_reg(cx, l, r))
+    }
+    if op == BinOp.Add && sh is .Str {
+        return cx.str_concat(cx.shape_at(e), a, b)
+    }
+    // text, enums and one-field records compare through the one
+    // value-equality verb;
+    // scalars are the operator itself
+    if (op == BinOp.Eq || op == BinOp.Ne) &&
+        (sh is .Str || sh is .Bytes || sh is .Enum || sh is .Struct) {
+        let same = cx.same_value(a, b, cx.type_at(l))
+        if op == BinOp.Eq { return same }
+        return cx.un_at(e, same)
+    }
+    cx.bin_at(e, op, a, b)
+}
+
+/// `a == b` with a nullable side: the NULLABLE side leads the test,
+/// whichever side wrote it; both lower in source order. A BARE
+/// `null` OPERAND skips the roundtrip: its own register has no repr
+/// of its own (`null_reg`'s "the ADOPTING edge gives it one"), so
+/// testing IT for presence asks a question its bits were never built
+/// to answer — the OTHER side's own presence, negated, IS the test,
+/// asked of the OTHER side's own type so a literal that never
+/// resolved one never matters.
+fn nullable_eq_reg(mut cx: LowerCx, l: ExprId, r: ExprId) -> Reg {
+    if cx.view.store.null_literal(l) { return cx.un(cx.presence_of(cx.reg_of(r), cx.type_at(r))) }
+    if cx.view.store.null_literal(r) { return cx.un(cx.presence_of(cx.reg_of(l), cx.type_at(l))) }
+    let a = cx.reg_of(l)
+    let b = cx.reg_of(r)
+    let lt = cx.type_at(l)
+    let rt = cx.type_at(r)
+    if cx.view.types.carried(lt) == null { return cx.same_through(b, rt, a, lt) }
+    cx.same_through(a, lt, b, rt)
+}
+
+fn negated_when(mut cx: LowerCx, e: ExprId, negate: bool, v: Reg) -> Reg {
+    if !negate { return v }
+    cx.un_at(e, v)
+}
+
+/// `a && b` is `if a { b } else { false }`; `a || b` is
+/// `if a { true } else { b }` — regions, so the taken side alone
+/// runs. Registers mint in instruction order at every step.
+fn lazy_reg(mut cx: LowerCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> Reg {
+    let a = cx.reg_of(l)
+    if op == BinOp.And { return cx.region(a, e) { cx -> cx.reg_of(r) } else { cx -> cx.const_bool(false) } }
+    cx.region(a, e) { cx -> cx.const_bool(true) } else { cx -> cx.reg_of(r) }
+}
+
+fn not_reg(mut cx: LowerCx, e: ExprId, v: ExprId) -> Reg {
+    cx.un_at(e, cx.reg_of(v))
+}
+
+/// A property the receiver's shape answers — its row's lowering.
+fn property_reg(mut cx: LowerCx, e: ExprId, s: ExprId, name: string) -> Reg {
+    let row: PropertyRow? = property_of(cx.view.types, cx.view.lang.properties, name, cx.type_at(s))
+    if row == null {
+        return cx
+            .lower_defect(
+                e,
+                "a property `${name}` on `${cx.view.types.name_of(cx.type_at(s))}` without a row survived typing in `${cx.view.source.file}` at expression ${e.index}",
+            )
+    }
+    let r = row!
+    r.lower(cx, e, cx.reg_of(s), cx.type_at(s))
+}

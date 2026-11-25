@@ -1,0 +1,40 @@
+//! proves: the parking verbs — a server task accepts, reads and echoes
+//! while the main task connects, writes and reads, each parked until
+//! its socket is ready; EOF reads as null, and every byte comes back
+use @std.net.{listen, connect, Listener, Conn, NetError}
+use @std.time.{secs}
+
+fn echo(l: Listener) -> Result<int, NetError> {
+    let c = l.accept()?
+    mut total = 0
+    while true {
+        let b? = c.read(64)? else { break }
+        total = total + c.write(b)?
+    }
+    let _ = c.close()?
+    .Ok(total)
+}
+
+fn drained(c: Conn) -> Result<string, NetError> {
+    mut got = ""
+    while true {
+        let b? = c.read(5)? else { break }
+        got = got + (b.text() ?? "?")
+    }
+    .Ok(got)
+}
+
+fn run() -> Result<string, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let server = spawn echo(l)
+    let c = connect("127.0.0.1", l.port, secs(2))?
+    let sent = c.write("hello, parked world".bytes())?
+    let _ = c.shutdown_write()?
+    let back = drained(c)?
+    let echoed = server.await?
+    let _ = c.close()?
+    let _ = l.close()?
+    .Ok("${sent} ${echoed} ${back}")
+}
+
+run() catch _ -> "failed"

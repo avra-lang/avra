@@ -1,0 +1,83 @@
+//! Parse-time lowering: the Collect statements, computed from their
+//! rules. `it`, `by` and `dense` are the feature's SOFT words — matched
+//! where its rules write them, never reserved; each projected field and
+//! each `by` key is a record its own rule makes.
+use core.{
+    Stmt,
+    Scoped,
+    Plain,
+    CollectKind,
+    CollectScope,
+    Projection,
+    OrderKey,
+    Slots,
+    Built,
+    computed,
+    named_ref,
+    worded_CollectScope,
+}
+
+/// `collect name: List<T> = kind in scope as Ty { field: it.path, … } by …`.
+///
+/// STAYS A FUNCTION: its kind, scope, projection and order fill payloads from words and nested
+/// records, not from nodes a rule builds.
+@computed
+fn collect_written(s: dyn Slots) -> Result<Built, string> {
+    let proj = Projection { ty: named_ref(s.text_of("of")?), fields: s.proj_fields_of("fields")? }
+    dense_made(
+        s,
+        Stmt
+            .Collect(
+                Scoped(s.text_of("name")?),
+                s.type_of("ty")?,
+                kind_of(s)?,
+                scope_of(s.text_of("scope")?),
+                proj,
+                order_of(s)?,
+            ),
+    )
+}
+
+/// `collect enum Name: T = kind in scope by …` — no declared type and no
+/// projection; each `: T` the enum implements, a name read where written.
+///
+/// STAYS A FUNCTION: its kind, scope and order fill payloads from words, not from nodes a rule
+/// builds.
+@computed
+fn collect_enum_written(s: dyn Slots) -> Result<Built, string> {
+    dense_made(
+        s,
+        Stmt
+            .CollectEnum(
+                Scoped(s.text_of("name")?),
+                kind_of(s)?,
+                scope_of(s.text_of("scope")?),
+                order_of(s)?,
+                s.exprs_of("traits")?,
+            ),
+    )
+}
+
+/// The collect as this build's statement, marked `dense` when the word
+/// was written.
+fn dense_made(s: dyn Slots, gathering: Stmt) -> Result<Built, string> {
+    let made = s.made_stmt(gathering)?
+    if s.present_of("dense")? { s.arena().mark_collect_dense(made, true) }
+    .Ok(Built.Stmt(made))
+}
+
+/// Each `by` key as the one text a collect orders by.
+fn order_of(s: dyn Slots) -> Result<List<Plain>, string> {
+    .Ok([k.spelled() for k in s.order_keys_of("order")?])
+}
+
+/// A collect's kind: `@name` is `Annotated` — every declaration wearing
+/// that annotation; a bare word is a component's own name (`model`,
+/// `rule`), as written, for `collect`'s own laws to judge.
+fn kind_of(s: dyn Slots) -> Result<CollectKind, string> {
+    if !s.present_of("mark")? { return .Ok(CollectKind.Component(s.text_of("kind")?)) }
+    let written = s.text_of("mark")?
+    .Ok(CollectKind.Annotated(written.substring(1, written.length)))
+}
+
+fn scope_of(word: string) -> CollectScope { worded_CollectScope(word) ?? CollectScope.UnknownScope(word) }

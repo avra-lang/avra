@@ -1,0 +1,23 @@
+//! proves: a full channel's send parks its sender, a reader's take
+//! wakes it, and the buffer never exceeds n — five items through a
+//! channel that holds two.
+use @std.task.{open_channel, Channel}
+
+fn feed(ch: Channel<int>) -> int {
+    for i in 1..6 {
+        let _ = ch.sink.send(i)
+    }
+    ch.sink.close()
+    5
+}
+
+let ch = open_channel<int>(2)
+let t = spawn feed(ch)
+mut seen: List<int> = []
+mut v = ch.source.next()
+while v != null {
+    seen.push(v!)
+    v = ch.source.next()
+}
+let _ = t.await
+seen.length

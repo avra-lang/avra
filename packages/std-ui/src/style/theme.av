@@ -1,0 +1,205 @@
+//! `style/theme.av` — the token TABLES as data. A token is a name; the
+//! theme is what each name means on a target, held in the token enum's own
+//! table (`Sizes`, `Tones`, `Inks`, `Fonts`), so every token has a value by
+//! construction and a misspelled one is a compile error. Light and dark
+//! are ONE theme: each colour is a `Dial` the reader's settings turn, and
+//! `mode` says whether the page follows them or holds one. One default
+//! ships, "Crisp"; a user replaces it whole. Values are target-neutral
+//! (whole units, a colour as text, a family list).
+use style.tokens.{Tone, Sizes, Tones, Inks, Fonts, Levels, TypeSizes, LineHeights, Trackings}
+use @std.meta.{derive}
+use style.words.{Words}
+use style.look.{Look, Wear, Shading, unstyled}
+use tree.node.{Prims}
+
+/// Which scheme a page wears: the one the reader's settings ask for, or one
+/// held whatever they ask.
+@derive(Words)
+export enum Mode {
+    @word(system) System
+    @word(light) Light
+    @word(dark) Dark
+}
+
+/// Whether a page's contrast follows the reader's settings, or holds the
+/// normal or the stronger colours whatever they ask.
+@derive(Words)
+export enum Contrast {
+    @word(system) System
+    @word(standard) Standard
+    @word(more) More
+}
+
+/// One of the two schemes a colour has a shade in.
+@derive(Words)
+export enum Scheme {
+    @word(light) Light
+    @word(dark) Dark
+}
+
+/// A colour in each scheme.
+export type Shades = { light: string, dark: string }
+
+impl Shades {
+    /// The shade a scheme reads.
+    fn of(s: Scheme) -> string {
+        match s { .Light -> self.light, .Dark -> self.dark }
+    }
+}
+
+/// A colour in each scheme, and the stronger shades a reader who asks for
+/// more contrast reads instead; with none, the normal ones stand.
+export type Dial = { light: string, dark: string, more: Shades? = null }
+
+impl Dial {
+    /// The shades a reader at this contrast reads: the stronger ones at more
+    /// contrast where the colour has them, else the normal ones.
+    fn read_at(c: Contrast) -> Shades {
+        let normal = Shades { light: self.light, dark: self.dark }
+        match c { .More -> self.more ?? normal, .System or .Standard -> normal }
+    }
+}
+
+/// A surface's colours: its fill, and what sits on it.
+export type Swatch = { fill: Dial, on: Dial }
+
+/// Every token family one target needs, together. A level names the
+/// surface it wears; a type size is whole units, leading a multiple of it,
+/// tracking a fraction of it. `control` is a control's height and `row` a
+/// row's padding, in whole units. `look` is what each primitive wears when
+/// its author says nothing, and `shading` how far a surface shades in a
+/// state.
+export type Theme = {
+    mode: Mode,
+    contrast: Contrast = .System,
+    space: Sizes<int>,
+    radius: Sizes<int>,
+    tone: Tones<Swatch>,
+    ink: Inks<Dial>,
+    elevation: Levels<Tone>,
+    face: Fonts<string>,
+    text_size: TypeSizes<int>,
+    line_height: LineHeights<float>,
+    tracking: Trackings<float>,
+    control: int,
+    row: int,
+    look: Prims<Look>,
+    shading: Shading,
+}
+
+const sans = "system-ui, -apple-system, \"Segoe UI\", Roboto, sans-serif"
+
+/// Crisp's ink: the accent, the text and the focus ring are one.
+const ink = Dial { light: "#0A0A0A", dark: "#FAFAFA" }
+
+/// Crisp's paper: the ground, and what sits on the ink.
+const paper = Dial { light: "#FFFFFF", dark: "#0A0A0A" }
+
+/// Success is one green, as a fill and as words on the canvas.
+const green = Dial { light: "#0F5132", dark: "#7FE0AE" }
+
+/// A line at more contrast: the ink itself.
+const edge = Shades { light: "#0A0A0A", dark: "#FAFAFA" }
+
+const ground = Swatch { fill: paper, on: ink }
+
+/// A control's frame: the corner and the height every control keeps.
+const framed = Wear { radius: .M, least: .Control }
+
+/// A control a reader acts on, drawn by the target inside Crisp's frame.
+const control = Look { rest: framed, acts: true }
+
+const sunk = Swatch { fill: Dial { light: "#F2F2F2", dark: "#1C1C1C" }, on: ink }
+
+/// "Crisp": black and white, the accent is the ink, small corners, no
+/// shadows, the system font.
+export const default_theme = Theme {
+    mode: .System,
+    space: Sizes { none: 0, xs: 4, s: 8, m: 16, l: 32, xl: 48 },
+    radius: Sizes { none: 0, xs: 2, s: 3, m: 4, l: 6, xl: 12 },
+    tone: Tones {
+        canvas: ground,
+        surface: ground,
+        surface_raised: ground,
+        surface_sunk: sunk,
+        accent: Swatch { fill: ink, on: paper },
+        neutral: sunk,
+        danger: Swatch {
+            fill: Dial { light: "#B3261E", dark: "#FF6B5E" },
+            on: Dial { light: "#FFFFFF", dark: "#1F0502" },
+        },
+        success: Swatch { fill: green, on: paper },
+        warning: Swatch {
+            fill: Dial { light: "#8A4B00", dark: "#FFB547" },
+            on: Dial { light: "#FFFFFF", dark: "#1F1300" },
+        },
+    },
+    ink: Inks {
+        text: ink,
+        muted: Dial {
+            light: "#525252",
+            dark: "#ADADAD",
+            more: Shades { light: "#2E2E2E", dark: "#D9D9D9" },
+        },
+        disabled: Dial {
+            light: "#8A8A8A",
+            dark: "#707070",
+            more: Shades { light: "#5C5C5C", dark: "#A3A3A3" },
+        },
+        danger: Dial { light: "#A1211A", dark: "#FF8D82" },
+        success: green,
+        warning: Dial { light: "#8A4B00", dark: "#FFC46B" },
+        link: ink,
+        border: Dial { light: "#D6D6D6", dark: "#3A3A3A", more: edge },
+        field: Dial { light: "#767676", dark: "#8A8A8A", more: edge },
+        focus: ink,
+    },
+    elevation: Levels<Tone> {
+        flat: .Surface,
+        low: .SurfaceRaised,
+        medium: .SurfaceRaised,
+        high: .SurfaceRaised,
+        highest: .SurfaceRaised,
+    },
+    face: Fonts {
+        body: sans,
+        heading: sans,
+        footnote: sans,
+        mono: "ui-monospace, \"SF Mono\", \"Cascadia Mono\", Menlo, Consolas, monospace",
+    },
+    text_size: TypeSizes { display: 32, headline: 26, title: 17, body: 15, label: 12 },
+    line_height: LineHeights { tight: 1.2, normal: 1.45, loose: 1.7 },
+    tracking: Trackings { tight: -0.02, normal: 0.0, wide: 0.06 },
+    control: 36,
+    row: 10,
+    look: Prims {
+        text: unstyled,
+        heading: unstyled,
+        button: Look {
+            rest: framed with { ground: .Clear, line: .Field, block: .Step(.Xs), inline: .Step(.S) },
+            acts: true,
+        },
+        link: unstyled,
+        image: unstyled,
+        field: control,
+        checkbox: control,
+        row: unstyled,
+        column: unstyled,
+        dialog: Look { rest: Wear { ground: .Fill(.SurfaceRaised, 0) } },
+        divider: unstyled,
+        icon: unstyled,
+        surface: unstyled,
+        list: unstyled,
+        item: Look { rest: Wear { block: .Row } },
+        card: unstyled,
+        progress: unstyled,
+        alert: unstyled,
+        spinner: unstyled,
+        form: unstyled,
+        fieldset: unstyled,
+        switch: control,
+        slider: control,
+        key: unstyled,
+    },
+    shading: Shading { hover: 8, pressed: 16 },
+}

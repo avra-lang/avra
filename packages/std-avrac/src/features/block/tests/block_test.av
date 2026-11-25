@@ -1,0 +1,71 @@
+// Blocks, vertically: the inline form costs no node, statements
+// scope and shadow inside braces (multi-line expressions arrive
+// free — braces swallow their BREAKs), block memory releases
+// inside while the yield escapes, and nested fns refuse politely.
+use @std.avrac.compiler.{analyze_source}
+use @std.avrac.testing.{shown, ir_of}
+use compiler.backend.{render_ir}
+
+spec "features/block" {
+    given "multi-line bodies" {
+        then "statements run in order; the last expression answers" {
+            shown("fn f(x: int) -> int {\n    let y = x + 1\n    y + y\n}\nf(3)") == "8"
+        }
+        then "a block shadows an outer let and restores it after" {
+            shown("let x = 1\nlet y = if true {\n    let x = 10\n    x + 1\n} else { 0 }\nx + y") == "12"
+        }
+        then "a block's let shadows a fn PARAM of the same name" {
+            shown(
+                "fn f(n: int) -> int {\n    if true {\n        let n = 7\n        n\n    } else { 0 }\n}\nf(35)",
+            ) == "7"
+        }
+        then "an if branch takes a whole block, multi-line" {
+            shown(
+                "fn pick(n: int) -> int {\n    if n < 5 {\n        let bonus = 100\n        n + bonus\n    } else { n }\n}\npick(3)",
+            ) == "103"
+        }
+    }
+    given "wrong shapes" {
+        then "a block without a value is void — a declared return refuses it" {
+            let a = analyze_source("fn f() -> int {\n    let x = 1\n}\nf()")
+            a.diagnostics.length == 1 &&
+                a.report().contains("the body answers `void` but `f` declares `int`")
+        }
+        then "fn declarations live at the top level" {
+            let a = analyze_source("fn f() -> int {\n    fn g() -> int { 1 }\n    2\n}\nf()")
+            a.diagnostics.length == 1 &&
+                a.report().contains("fn declarations live at the top level")
+        }
+    }
+    given "the scopes in the IR, as `avra ir` prints it" {
+        then "block strings release inside; the yield is adopted outward" {
+            let expected = """fn alone/src/main.av.tag() -> box text
+scope application {
+  scope application {
+    r0 = str "was"
+    r1 = str "te"
+    r2 = call avra_str_concat(r0, r1)
+    r3 = str "ke"
+    r4 = str "ep"
+    r5 = call avra_str_concat(r3, r4)
+    release r2
+    yield r5
+  }
+  yield r5
+}
+ret r5
+
+scope application {
+  r0 = call alone/src/main.av.tag()
+  call avra_puts(r0)
+  release r0
+}
+ret 0"""
+            render_ir(
+                ir_of(
+                    "fn tag() -> string {\n    let inner = \"was\" + \"te\"\n    \"ke\" + \"ep\"\n}\ntag()",
+                ),
+            ) == expected
+        }
+    }
+}

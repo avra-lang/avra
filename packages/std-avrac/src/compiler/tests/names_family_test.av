@@ -1,0 +1,33 @@
+// A declaration's names are its own: a binding gained in one fn's body types that fn again and
+// leaves its neighbour's answers standing, over the store an earlier judging left.
+use @std.avrac.testing.held.{Held, empty_store, held_at}
+
+fn names_source(a_body: string, b_body: string) -> string {
+    "fn one() -> int {\n    1\n}\nfn a() -> int {\n    ${a_body}\n}\nfn b() -> int {\n    ${b_body}\n}\n"
+}
+
+fn names_held(main: string) -> Held {
+    held_at(
+        {"/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n", "/w/src/main.av": main},
+        "/w",
+    )
+}
+
+/// How many fn bodies a second process types again judging the file as `after`, over the store a
+/// judging of it as `before` left.
+fn names_retyped(before: string, after: string) -> int {
+    let store = empty_store()
+    let _ = names_held(before).worked_judging("/w/src/main.av", store)
+    names_held(after).worked_judging("/w/src/main.av", store).filter(it == "typed_fn").length
+}
+
+spec "compiler/workspace — a declaration's names are declaration-grain" {
+    given "a file where one fn gains a binding" {
+        then "a new binding in `a` types `a` alone again, and leaves `b` where it was" {
+            names_retyped(names_source("1", "2"), names_source("one()", "2")) == 1
+        }
+        then "a new binding in `b` types `b` again" {
+            names_retyped(names_source("1", "2"), names_source("1", "one()")) == 1
+        }
+    }
+}

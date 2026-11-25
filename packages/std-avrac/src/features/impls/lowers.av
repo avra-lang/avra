@@ -1,0 +1,457 @@
+//! The lowering rule of a method call: a verb the language owns that is one runtime row is that row,
+//! handed the receiver then each argument, and one that is a shape of rows is that shape; a method a
+//! type the program declares has in one impl is a call of the method's own symbol, the receiver its
+//! first seat; one on a named type is its shape's. A call through a type builds the variant it names, or calls the type's static fn. Any
+//! other method call isn't lowered yet, and says what it is.
+use core.{
+    Declined,
+    DynDecline,
+    CalledFn,
+    ExprId,
+    Layout,
+    Lowering,
+    Lowers,
+    Reg,
+    RtSig,
+    SignedType,
+    TraitMember,
+    OwnRow,
+    OwnType,
+    own_row_of,
+    unbounded_asked,
+    own_shape,
+    rt_sig_of,
+}
+use core.expr.{MethodCall}
+
+impl Lowers for MethodCall {
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        let subject? = cx.type_at(self.subject) else { return cx.missed_as("a method `${self.name.of}` of an untyped subject") }
+        let described = subject.described()
+        if described != null { return through_type(cx, self, e, described!) }
+        if subject.dynamic { return dyn_dispatched(cx, self, e, subject) }
+        if subject.nullable() { return cx.missed_as("a method `${self.name.of}` of the nullable `${subject.spelled()}`") }
+        if fn_field_of(cx, subject, self.name.of) != null { return field_called(cx, self, e, subject) }
+        let shape = cx.named_over(subject)
+        if shape != null && cx.method(subject, self.name.of) == null {
+            mut seen = cx.reading_as(self.subject, shape!)
+            return self.lowered(seen, e)
+        }
+        match subject.head {
+            .Owned(word) -> owned_verb(cx, self, e, subject, word),
+            .Declared(_, _) -> declared_method(cx, self, e, subject),
+            .Parameter(_, _) -> cx.missed_as(unbounded_asked("a method of a type parameter")),
+            .Unnamed(_) or .Inferred or .Function or .Union or .Never or .Meta -> cx.missed_as("a method `${self.name.of}` of `${subject.spelled()}`"),
+        }
+    }
+}
+
+/// A call through a type: the variant of that name the type has, built of the arguments; a static
+/// fn an impl the program writes gives the type; a verb the language owns on its own type
+/// (`Cell.new`).
+fn through_type(mut cx: Lowering, m: MethodCall, e: ExprId, ty: SignedType) -> Reg {
+    let made? = cx.type_at(e) else { return cx.missed_as("an untyped call through a type") }
+    let named = m.args.any((a) -> cx.store.arg_label(a) != null)
+    let tag = if made.names_as(ty) { cx.variants_of(made)?.find_index(it.name == m.name.of) } else { null }
+    if tag != null {
+        if named { return cx.missed_as("a variant built naming a payload") }
+        return cx.tagged_value(cx.laid_out(made), tag!, [cx.lower(a) for a in m.args])
+    }
+    match ty.head {
+        .Owned(word) -> {
+            if cx.static_fn(ty, m.name.of) != null { return static_called(cx, m, e, ty) }
+            if named { return cx.missed_as("a verb on a type the language owns, naming an argument") }
+            let shape? = own_shape(ty, m.name.of) else { return cx.missed_as(verb_unlowered(word, m.name.of)) }
+            if !shape.on_the_type() { return cx.missed_as(verb_unlowered(word, m.name.of)) }
+            cx.own_verb_lowered(shape, e, m.subject, m.args)
+        },
+        .Declared(_, _) -> static_called(cx, m, e, ty),
+        .Parameter(_, _) -> cx.missed_as(unbounded_asked("a static fn or variant of a type parameter")),
+        .Unnamed(_) or .Inferred or .Function or .Union or .Never or .Meta -> cx.missed_as("a call through a type"),
+    }
+}
+
+/// A static fn of a type the program declares applied to nothing: a call of the symbol the call
+/// reaches, each argument into the seat it fills, a `mut` one handed the place it writes through.
+fn static_called(mut cx: Lowering, m: MethodCall, e: ExprId, ty: SignedType) -> Reg {
+    let first = if m.args.is_empty() { null } else { cx.type_at(m.args[0]) }
+    let reached = cx.program.checked.static_reached(ty, m.name.of, first)
+    let written? = cx.static_fn(ty, reached) ?? cx.static_among(ty, m.name.of, m.args) else {
+        return cx.missed_as(static_unlowered(ty, m.name.of))
+    }
+    let callee? = static_unit(cx, m, e, ty, written, reached) else { return cx.missed_as(generic_static_unlaid(ty)) }
+    let mark = cx.handing_mark()
+    let args? = cx.call_args(callee, m.args) else { return cx.missed_as(static_unlowered(ty, m.name.of)) }
+    let r = cx.call_fn(cx.layout_at(e), callee, args)
+    cx.handed_back(mark)
+    r
+}
+
+/// The unit a call of the static `written` of `ty`, reached as `reached`, is: itself on a type of no type parameters;
+/// on a generic type, the unit its arguments and the call's own type lay out the type's parameters
+/// in. Absent where they don't.
+fn static_unit(
+    cx: Lowering,
+    m: MethodCall,
+    e: ExprId,
+    ty: SignedType,
+    written: CalledFn,
+    reached: string,
+) -> CalledFn? {
+    if !cx.generic_declared(ty) { return written }
+    let signed? = (cx.program.checked.static_of)(ty, reached) else { return null }
+    cx.instantiated_as(written, signed, [], m.args, e)
+}
+
+/// A call of a static of a generic type whose arguments and type don't lay out the type's parameters.
+fn generic_static_unlaid(ty: SignedType) -> string { "a static fn of the generic `${ty.spelled()}` whose arguments and answer don't lay out its type parameters" }
+
+/// A verb on a type the language owns: the body the prelude writes for it, else its row, handed the
+/// receiver then each argument, or the shape of rows it is.
+fn owned_verb(mut cx: Lowering, m: MethodCall, e: ExprId, subject: SignedType, word: string) -> Reg {
+    let verb = cx.bodied_verb(subject, m.name.of)
+    if verb != null { return bodied_verb(cx, m, e, verb!) }
+    let own? = own_row_of(subject, m.name.of) else { return shaped_verb(cx, m, e, subject, word) }
+    owned_row(cx, m, e, word, own)
+}
+
+/// A verb the prelude writes a body for: a call of that body, of a generic one's unit under its
+/// arguments' layouts, the receiver its first seat.
+fn bodied_verb(mut cx: Lowering, m: MethodCall, e: ExprId, verb: CalledFn) -> Reg {
+    let args = [m.subject].concat(m.args)
+    let callee? = verb_unit(cx, verb, m, args, e) else { return cx.missed_as(verb_unlaid(verb)) }
+    let seats? = cx.call_args(callee, args) else { return cx.missed_as(verb_unlaid(verb)) }
+    cx.call_fn(cx.layout_at(e), callee, seats)
+}
+
+/// The unit a call of `verb` as the method `m` handed `args` reaches: the verb itself, or a generic
+/// one's unit under their layouts, its seats as typing reads the verb on the receiver.
+fn verb_unit(cx: Lowering, verb: CalledFn, m: MethodCall, args: List<ExprId>, e: ExprId) -> CalledFn? {
+    if verb.type_params == 0 { return verb }
+    let subject? = cx.type_at(m.subject) else { return null }
+    let signed? = (cx.program.checked.method_of)(subject, m.name.of) else { return null }
+    cx.instantiated_as(verb, signed, [], args, e)
+}
+
+/// A verb on a type the language owns that is a shape of rows.
+fn shaped_verb(mut cx: Lowering, m: MethodCall, e: ExprId, subject: SignedType, word: string) -> Reg {
+    let shape? = own_shape(subject, m.name.of) else { return owned_rule(cx, m, e, subject) ?? owned_impl(cx, m, e, subject, word) }
+    if shape.on_the_type() || m.args.any((a) -> cx.store.arg_label(a) != null) { return cx.missed_as(verb_unlowered(word, m.name.of)) }
+    cx.own_verb_lowered(shape, e, m.subject, m.args)
+}
+
+/// A method an impl writes for a type the language owns (`impl Tr<T> for Task<T>`), called as any
+/// declared method is; a verb nothing gives isn't lowered yet.
+fn owned_impl(mut cx: Lowering, m: MethodCall, e: ExprId, subject: SignedType, word: string) -> Reg {
+    if cx.method(subject, m.name.of) == null { return cx.missed_as(verb_unlowered(word, m.name.of)) }
+    declared_method(cx, m, e, subject)
+}
+
+/// A verb on a type the language owns that its own feature's rule lowers: a walk, a wrapping or a
+/// checked operator, a conversion between numbers, a map's entries; absent, with nothing emitted, for any other.
+fn owned_rule(mut cx: Lowering, m: MethodCall, e: ExprId, subject: SignedType) -> Reg? {
+    let own? = subject.own() else { return null }
+    cx.list_walked(m, e, own) ?? cx.int_wrapped(m, e, own) ?? cx.int_checked(m, e, own) ?? cx
+        .number_converted(m, e, own)
+}
+
+/// A verb on a type the language owns that is one row.
+fn owned_row(mut cx: Lowering, m: MethodCall, e: ExprId, word: string, own: OwnRow) -> Reg {
+    let row? = rt_sig_of(own.row) else { return cx.missed_as(verb_unlowered(word, m.name.of)) }
+    match own.answer {
+        .Answer -> row_called(cx, m, e, word, row),
+        .Folds -> {
+            let code = folded_code(cx, m)
+            if code != null { return cx.const_int(code!) }
+            row_called(cx, m, e, word, row)
+        },
+    }
+}
+
+/// The row handed the receiver then each argument, answering the call's value; a seat the call leaves
+/// filled by the default the verb's declaration writes for it.
+fn row_called(mut cx: Lowering, m: MethodCall, e: ExprId, word: string, row: RtSig) -> Reg {
+    if m.args.length + 1 >= row.params.length {
+        return cx
+            .call_words(cx.layout_at(e), row, [cx.lower(m.subject)].concat([cx.lower(a) for a in m.args]))
+    }
+    let subject = cx.type_at(m.subject)!
+    let declared? = cx.declared_verb(subject, m.name.of) else { return cx.missed_as(default_unwritten(word, m.name.of)) }
+    let seats? = cx.call_args(declared, [m.subject].concat(m.args)) else { return cx.missed_as(default_unwritten(word, m.name.of)) }
+    cx.call_words(cx.layout_at(e), row, seats)
+}
+
+/// The code a literal receiver holds at a literal index inside it, absent for any other.
+fn folded_code(cx: Lowering, m: MethodCall) -> int? {
+    let s? = cx.store.expr(m.subject).text_of() else { return null }
+    let index = if m.args.is_empty() { 0 } else { cx.store.valued(m.args[0]).int_of() }
+    let at? = index else { return null }
+    if at < 0 || at >= s.length { null } else { s.char_code(at) }
+}
+
+/// A method a type the program declares has: a call of its symbol, the receiver its first seat; of a
+/// generic type, of the unit its arguments lay out. One that writes its receiver is handed it as
+/// `written_seats` opens it.
+fn declared_method(mut cx: Lowering, m: MethodCall, e: ExprId, subject: SignedType) -> Reg {
+    let declared? = cx.method(subject, m.name.of) ?? cx.method_among(subject, m.name.of, m.args) else {
+        let run? = run_chosen(cx, subject, m) else { return static_through(cx, m, e, subject) }
+        return run_called(cx, m, e, subject, run)
+    }
+    let callee? = cx.instantiated_on(declared, subject, m.name.of, m.args, e) else { return cx.missed_as("a method of the generic `${subject.spelled()}`") }
+    if !callee.plain && callee.params.is_empty() { return cx.missed_as(method_unlowered(subject, m.name.of)) }
+    if callee.unproved != null { return cx.missed_as(write_unproved(callee.unproved!)) }
+    let mark = cx.handing_mark()
+    let seats = if callee.writes { written_seats(cx, m, callee) } else { read_seats(cx, m, callee) }
+    if seats == null && callee.writes && plain_args(cx, m, callee) { return cx.missed_as(written_unlowered(cx, m.subject)) }
+    if seats == null { return cx.missed_as(unseated(subject, m.name.of)) }
+    let r = cx.call_fn(cx.layout_at(e), callee, seats!)
+    cx.handed_back(mark)
+    r
+}
+
+/// A static fn of the type a value has, called through the value: the value lowered for what it
+/// does, then the static.
+fn static_through(mut cx: Lowering, m: MethodCall, e: ExprId, subject: SignedType) -> Reg {
+    if cx.static_fn(subject, m.name.of) == null { return cx.missed_as(method_unlowered(subject, m.name.of)) }
+    cx.owns(cx.dropped(m.subject), subject)
+    static_called(cx, m, e, subject)
+}
+
+/// The receiver a method writes, then each argument: a `mut` binding's own cell holding a value that
+/// rides no pointer, or a `mut` seat itself, read as it is; one that rides a pointer opened as where
+/// it stands says, after the arguments when a `mut` binding's cell holds it, since they may write the
+/// cell; a value, or one a seat holds, that rides a pointer thawed once, here. Absent for any other
+/// receiver.
+fn written_seats(mut cx: Lowering, m: MethodCall, callee: CalledFn) -> List<Reg>? {
+    let ty = cx.type_at(m.subject)
+    if ty != null && cx.place_handed(ty!) {
+        let place = cx.handed(m.subject, ty!)
+        let args? = cx.call_args(callee, m.args) else { return null }
+        return [place].concat(args)
+    }
+    if cx.cell_rooted(m.subject) || cx.mut_seat_rooted(m.subject) { return seated(cx, m, callee) }
+    let how = cx.written_opening(m.subject)
+    if how != null && cx.in_cell(m.subject) {
+        let args? = cx.call_args(callee, m.args) else { return null }
+        return [cx.opened_written(m.subject, how!)].concat(args)
+    }
+    if how != null {
+        let opened = cx.opened_written(m.subject, how!)
+        let args? = cx.call_args(callee, m.args) else { return null }
+        return [opened].concat(args)
+    }
+    if !thawed_here(cx, m.subject) { return null }
+    let ty = cx.type_at(m.subject)!
+    let thawed = cx.call_row(cx.laid_out(ty), rt_sig_of("avra_box_thawed")!, [cx.lower(m.subject)])
+    let args? = cx.call_args(callee, m.args) else { return null }
+    [thawed].concat(args)
+}
+
+/// Whether a written receiver is thawed at the call: it rides a pointer, and it's a value or a place
+/// rooted in a value binding that isn't a `mut` seat — a seat or a name a pattern binds — which the
+/// write reaches through.
+fn thawed_here(cx: Lowering, subject: ExprId) -> bool {
+    let ty? = cx.type_at(subject) else { return false }
+    let l? = cx.program.checked.layout(ty) else { return false }
+    if !l.pointer() { return false }
+    if cx.store.place_root(subject) == null { return true }
+    let name? = cx.root_name(subject) else { return false }
+    let b? = cx.bound(name) else { return false }
+    match b {
+        .Value(_, _) -> !cx.mut_seat(name),
+        .Const(_, _) or .Slot(_, _) or .Outer(_, _, _) or .Held(_, _) or .Shared(_, _) or .OuterShared(_, _, _) -> false,
+    }
+}
+
+/// A call through the `dyn` box `subject` is of: the receiver then each argument lowered, the value
+/// read from the box's first slot and the code from the method's own, a box a cell holds read from it
+/// as it stands; a method that may write its receiver handed the box itself, opened. One handed its
+/// arguments by name or into seats that promise isn't lowered yet.
+fn dyn_dispatched(mut cx: Lowering, m: MethodCall, e: ExprId, subject: SignedType) -> Reg {
+    if subject.nullable() { return cx.unlowered(e) }
+    let members? = (cx.program.traits)(subject) else { return cx.missed_as("a `dyn` dispatch on `${subject.spelled()}`") }
+    let at? = members.find_index(it.name == m.name.of) else { return cx.missed_as(method_unlowered(subject, m.name.of)) }
+    let member = members[at]
+    if member.writes { return dyn_written(cx, m, e, subject, at, member) }
+    if m.args.any((a) -> cx.store.arg_label(a) != null) || !member.plain && !positional(member, m) { return cx.missed_as(method_unlowered(subject, m.name.of)) }
+    let seats? = (if member.plain { read_seats(cx, m, null) } else { member_seated(cx, m, member) }) else { return cx.missed_as(method_unlowered(subject, m.name.of)) }
+    let value = cx.slot_read(cx.laid_out(subject), seats[0], 0)
+    let code = cx.dyn_code(seats[0], at)
+    cx.declined(e, Declined.Dyn(DynDecline.TargetsUnknown))
+    let entered = placed_call(cx, subject, seats[0])
+    let answered = cx.called_code(cx.layout_at(e), code, value, seats.drop(1), subject)
+    if entered != null { cx.placed_left(entered!) }
+    cx.dyn_marked(answered, subject, at)
+    answered
+}
+
+/// Where a call through the box `box` of `subject` runs under the frame the box was placed under: the
+/// frame entered, for `placed_left`. Absent for a trait that isn't placed, or a body whose placed
+/// boxes carry no frame.
+fn placed_call(mut cx: Lowering, subject: SignedType, box: Reg) -> Reg? {
+    if !cx.placed(subject) || !cx.placing() { return null }
+    cx.placed_entered(box)
+}
+
+/// A call of `member`, at `at` among the trait's methods, that may write its receiver through the
+/// `dyn` box `subject` is of: each argument lowered, then the box opened as a written receiver
+/// opens — a `mut` seat's as it is, one on a path or in a `mut` binding's cell along where it
+/// stands, any other thawed here — and handed whole to the code at the method's place.
+fn dyn_written(
+    mut cx: Lowering,
+    m: MethodCall,
+    e: ExprId,
+    subject: SignedType,
+    at: int,
+    member: TraitMember,
+) -> Reg {
+    if !member.plain || m.args.any((a) -> cx.store.arg_label(a) != null) { return cx.missed_as(method_unlowered(subject, m.name.of)) }
+    let args = [cx.lower(a) for a in m.args]
+    let how = cx.written_opening(m.subject)
+    let box = when {
+        cx.mut_seat_rooted(m.subject) -> cx.lower(m.subject)
+        how != null -> cx.opened_written(m.subject, how!)
+        _ -> cx.call_row(cx.laid_out(subject), rt_sig_of("avra_box_thawed")!, [cx.lower(m.subject)])
+    }
+    cx.declined(e, Declined.Dyn(DynDecline.TargetsUnknown))
+    let code = cx.dyn_code(box, at)
+    let entered = placed_call(cx, subject, box)
+    let answered = cx.called_code(cx.layout_at(e), code, box, args, subject)
+    if entered != null { cx.placed_left(entered!) }
+    cx.dyn_marked(answered, subject, at)
+    answered
+}
+
+/// Whether a call hands `member` its arguments by position, none into a rest, each seat it leaves
+/// out one the trait's own member writes a default for.
+fn positional(member: TraitMember, m: MethodCall) -> bool {
+    member.seats.length >= m.args.length &&
+        !member.seats.any(it.rest) &&
+        member.seats.drop(m.args.length).all(it.defaulted) &&
+        (member.callee != null || member.seats.length == m.args.length)
+}
+
+/// The receiver, then each argument into its seat of `member`: a `mut` seat handed the place it
+/// writes through; then each seat left out, its default the trait's own member writes. Absent where a
+/// `mut` seat's argument stands where no write reaches back.
+fn member_seated(mut cx: Lowering, m: MethodCall, member: TraitMember) -> List<Reg>? {
+    let receiver = cx.lower(m.subject)
+    let args = [cx.seat_arg(member.seats[k], a) for k, a in m.args]
+    if args.any(it == null) { return null }
+    let defaults = [cx.defaulted(member.callee!, s) for s in member.seats.drop(m.args.length)]
+    [receiver].concat([a! for a in args]).concat(defaults)
+}
+
+/// The receiver then each argument, lowered left to right, each argument into its seat of `callee`
+/// where the method is a declared one; a receiver read out of a `mut` binding's cell, at its root or
+/// along a path from it, is read after the arguments, which may write the cell.
+fn read_seats(mut cx: Lowering, m: MethodCall, callee: CalledFn?) -> List<Reg>? {
+    if !cx.in_cell(m.subject) {
+        let receiver = cx.lower(m.subject)
+        let args? = args_lowered(cx, m, callee) else { return null }
+        return [receiver].concat(args)
+    }
+    let args? = args_lowered(cx, m, callee) else { return null }
+    [cx.lower(m.subject)].concat(args)
+}
+
+/// What `read_seats` hands a method that writes the receiver it's handed as it is: absent for a
+/// receiver on a path that starts in a cell, whose read is a copy the write wouldn't reach.
+fn seated(mut cx: Lowering, m: MethodCall, callee: CalledFn?) -> List<Reg>? {
+    if cx.in_cell(m.subject) && cx.store.place_root(m.subject)?.index != m.subject.index { return null }
+    read_seats(cx, m, callee)
+}
+
+/// Each argument lowered, into its seat of `callee` where the method is a declared one: by its name
+/// or its place, a seat none fills its default's value. Absent where a call of `callee` isn't seated
+/// yet.
+fn args_lowered(mut cx: Lowering, m: MethodCall, callee: CalledFn?) -> List<Reg>? {
+    let c? = callee else { return [cx.lower(a) for a in m.args] }
+    cx.call_args(c, m.args)
+}
+
+/// Whether a call of the declared `callee` hands its arguments by position into seats that promise
+/// nothing and have no default.
+fn plain_args(cx: Lowering, m: MethodCall, callee: CalledFn) -> bool { callee.plain && !m.args.any((a) -> cx.store.names_its_seat(a)) }
+
+// ── Voices ──────────────────────────────────────────────────────────
+
+fn verb_unlowered(word: string, name: string) -> string { "`${word}.${name}`" }
+
+fn default_unwritten(word: string, name: string) -> string { "`${word}.${name}` leaving a seat its declaration writes no default for" }
+
+fn verb_unlaid(verb: CalledFn) -> string { "the prelude's `${verb.name}`, whose arguments' layouts aren't known" }
+
+fn method_unlowered(subject: SignedType, name: string) -> string { "the method `${name}` of `${subject.spelled()}`" }
+
+fn static_unlowered(ty: SignedType, name: string) -> string { "the static fn `${name}` of `${ty.spelled()}`" }
+
+fn unseated(subject: SignedType, name: string) -> string { "the method `${name}` of `${subject.spelled()}`, a seat by name or by default not seated" }
+
+fn write_unproved(why: string) -> string { "a method that may write its receiver: ${why}" }
+
+/// Why a written receiver isn't lowered, by where it's held.
+fn written_unlowered(cx: Lowering, subject: ExprId) -> string {
+    let name? = cx.root_name(subject) else { return "a written receiver that rides no pointer" }
+    let b? = cx.bound(name) else { return "a written receiver the body doesn't bind" }
+    match b {
+        .Value(_, _) -> if cx.seat_named(name) { "a written receiver a seat holds that rides no pointer, or on a `mut` seat's path" } else { "a written receiver a `let` holds, its seed boxed" },
+        .Const(_, _) -> "a written receiver a `const` holds",
+        .Slot(_, _) -> "a written receiver in a `mut` binding's cell, opened or thawed by where its seed came from",
+        .Outer(_, _, _) -> "a written receiver a lambda captures",
+        .Held(_, _) -> "a written receiver a seat holds in the box it was handed",
+        .Shared(_, _) or .OuterShared(_, _, _) -> "a written receiver a `state` local holds",
+    }
+}
+
+/// Members of one name several impls give, among which a `dyn` argument's run-time type chooses: the
+/// argument's place, and each member.
+type RunChoice = { seat: int, members: List<CalledFn> }
+
+/// The members of the method `m` names on a value of `subject` that one `dyn` argument's run-time
+/// type chooses among: it is the only `dyn` argument, every other argument is of each member's seat,
+/// and each member takes a type of its own there. Absent otherwise.
+fn run_chosen(cx: Lowering, subject: SignedType, m: MethodCall) -> RunChoice? {
+    let members = (cx.program.methods_among)(subject, m.name.of)
+    if members.length < 2 { return null }
+    let typed = [cx.type_at(a) for a in m.args]
+    let dyns = [j for j, t in typed if t?.dynamic ?? false]
+    if dyns.length != 1 { return null }
+    let k = dyns[0]
+    let fits = members
+        .all(
+            (c) -> c.params.length == typed.length &&
+                !c.params[k].ty.dynamic &&
+                (0..typed.length).all(it == k || typed[it]?.spelled() == c.params[it].ty.spelled()),
+        )
+    if fits { RunChoice { seat: k, members: members } } else { null }
+}
+
+/// A call whose member the `dyn` argument's run-time type chooses: the box's type tag switched over
+/// each member's, the member called with the value the box holds; a tag no member takes traps in
+/// the call's words.
+fn run_called(mut cx: Lowering, m: MethodCall, e: ExprId, subject: SignedType, run: RunChoice) -> Reg {
+    if run.members.any(it.writes) { return cx.missed_as("a member a `dyn` argument chooses that writes its receiver") }
+    let tags = [cx.type_tag(c.params[run.seat].ty) for c in run.members]
+    if tags.any(it == null) { return cx.missed_as("a member a `dyn` argument chooses taking a type with no tag") }
+    let receiver = cx.lower(m.subject)
+    let args = [cx.lower(a) for a in m.args]
+    let boxed = args[run.seat]
+    let dyn_ty = cx.type_at(m.args[run.seat])!
+    let l = cx.layout_at(e)
+    let words = no_member_for(subject, m.name.of)
+    cx
+        .switched(cx.dyn_tag(boxed, dyn_ty), [t! for t in tags], l) { cx, j ->
+            if j == run.members.length {
+                cx.run_row(rt_sig_of("avra_trap")!, [cx.const_str(words)])
+                return cx.zero_of(l)
+            }
+            let c = run.members[j]
+            let held = cx.dyn_held(boxed, c.params[run.seat].ty)
+            cx
+                .call_fn(l, c, [receiver].concat([if at == run.seat { held } else { a } for at, a in args]))
+        }
+}
+
+/// The words a call traps in where a `dyn` argument's type has no member.
+fn no_member_for(subject: SignedType, name: string) -> string { "`${subject.spelled()}.${name}` has no member for this `dyn` value's type" }

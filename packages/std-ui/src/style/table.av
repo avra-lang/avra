@@ -1,0 +1,34 @@
+//! `style/table.av` — `@derive(Table)`: an enum's TABLE is a record with
+//! one field per variant, named by its `@word(…)` as written, so a value
+//! for every variant is a record literal the compiler holds complete.
+//! `@derive(Table) enum Tone` reads `Tones<V>` with `at(k)`, one match over
+//! the variants: a variant the record lacks is a field the match cannot
+//! read, so the enum and its table cannot drift, and no reader falls back to
+//! a default.
+use @std.meta.{Type, Variant, Directive, beside}
+
+/// An enum whose variants key a record named for it, plural.
+export trait Table {
+    static fn derive(t: Type) -> List<Directive> {
+        let arms = [quote { .${v} -> self.${written_word(v)} } for v in t.variants]
+        [
+            beside(
+                t,
+                quote {
+                    impl ${"${t.name}s"}<V> {
+                        /// The value a variant keys.
+                        fn at(k: ${t}) -> V { match k { ${arms} } }
+                    }
+                },
+            ),
+        ]
+    }
+
+    static fn marks(t: Type) -> List<string> { ["word"] }
+}
+
+/// The variant's `@word(…)` as written, or its own name when it carries none.
+fn written_word(v: Variant) -> string {
+    let m? = v.marks.find(it.name == "word") else { return v.name }
+    m.args.first() ?? v.name
+}

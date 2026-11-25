@@ -1,0 +1,426 @@
+// The evaluator's tasks: the SAME policy as a compiled program's,
+// driven the way the evaluator drives it — so one scenario, run as
+// fibers and as virtual tasks, interleaves alike.
+#include <fcntl.h>
+#include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/wait.h>
+#include <time.h>
+#include <unistd.h>
+
+#include "../avra_box.h"
+#include "../avra_fiber.h"
+#include "../avra_runtime.h"
+
+static int g_checks = 0;
+static int g_fails = 0;
+#define CHECK(cond, what) do { g_checks++; if (!(cond)) { g_fails++; fprintf(stderr, "vtask_test: FAILED %s (%s:%d)\n", what, __FILE__, __LINE__); } } while (0)
+
+// A descriptor closed through the scheduler's door, as every closer must:
+// its waiters woken and its registration forgotten, so the number's next
+// tenant inherits none.
+static void closed(int fd) { avra_fiber_fd_closing(fd); close(fd); }
+
+static char g_log[128];
+static int g_log_len = 0;
+static void note(char c) { if (g_log_len < 127) g_log[g_log_len++] = c; g_log[g_log_len] = 0; }
+
+// ── one scenario: three tasks, each noting its name, yielding, noting
+// again; the second sleeps between. Written twice, once per engine. ──
+
+// as fibers
+typedef void* (*Code)(void*);
+static void* closure(Code code, int64_t cap) {
+    void* box = avra_array_sized(2);
+    avra_array_push(box, (int64_t)(uintptr_t)code);
+    avra_array_push(box, cap);
+    return box;
+}
+static void* fiber_body(void* self) {
+    char name = (char)((AvraArray*)self)->data[1];
+    note(name);
+    avra_fiber_yield();
+    if (name == 'b') avra_fiber_sleep(5);
+    note(name);
+    return NULL;
+}
+static void as_fibers(void) {
+    void* t[3];
+    for (int i = 0; i < 3; i++) { void* b = closure(fiber_body, 'a' + i); t[i] = avra_task_spawn(b); avra_rc_release(b); }
+    for (int i = 0; i < 3; i++) { void* r = avra_task_join(t[i]); avra_rc_release(r); avra_rc_release(t[i]); }
+}
+
+// as the evaluator: each task a step machine, resumed by the policy
+typedef struct { int64_t id; char name; int step; } VTask;
+static void as_virtual(void) {
+    VTask ts[3];
+    for (int i = 0; i < 3; i++) { ts[i] = (VTask){ avra_vtask_new(), (char)('a' + i), 0 }; avra_vtask_ready(ts[i].id); }
+    int done = 0;
+    while (done < 3) {
+        int64_t id = avra_vtask_next();
+        VTask* v = NULL;
+        for (int i = 0; i < 3; i++) if (ts[i].id == id) v = &ts[i];
+        if (v->step == 0) { note(v->name); v->step = 1; avra_vtask_ready(id); continue; }       // note, yield
+        if (v->step == 1 && v->name == 'b') { v->step = 2; avra_vtask_sleep(id, 5); continue; }  // sleep
+        note(v->name);
+        v->step = 3;
+        done++;
+    }
+    for (int i = 0; i < 3; i++) avra_vtask_free(ts[i].id);
+}
+
+// A join by a virtual task parks as a compiled join does: readied where
+// the task ends, deaf to its own deadline.
+static int64_t in_ms(int64_t ms) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (int64_t)t.tv_sec * 1000000000 + t.tv_nsec + ms * 1000000;
+}
+static void joins(void) {
+    int64_t j = avra_vtask_new();
+    void* timed = avra_task_at(in_ms(40));
+    int64_t before = in_ms(0);
+    int64_t outer = avra_vtask_within(j, 5);
+    CHECK(avra_vtask_join(j, timed) == 1, "a virtual task joins a task the timer ends, and parks");
+    CHECK(avra_vtask_next() == j, "the policy names it when the task's time comes");
+    CHECK(in_ms(0) - before >= 35 * 1000000, "at that time: not at its own deadline");
+    avra_vtask_within_end(j, outer);
+    CHECK(avra_vtask_join(j, timed) == 0, "a join of a task that has ended parks nothing");
+    CHECK(avra_sched_timers() == 0, "and nothing stays filed");
+    avra_rc_release(timed);
+    avra_vtask_free(j);
+}
+
+// A CANCEL A JOIN PASSES TO A VIRTUAL TASK is its own request from
+// there: the bit set, the asker named, a standing request kept.
+static void a_passed_cancel(void) {
+    int64_t t = avra_vtask_new();
+    avra_vtask_passed(t, 7);
+    CHECK(avra_vtask_unwinding(t) == 1, "a cancel passed to a virtual task sets its bit");
+    CHECK(avra_vtask_asker(t) == 7, "and stands as its own request, naming the asker");
+    avra_vtask_passed(t, 9);
+    CHECK(avra_vtask_asker(t) == 7, "a request that stands is not displaced");
+    avra_vtask_free(t);
+}
+
+// The byte pair on a virtual task: the enter saves and clears, the leave
+// ORs the saved bit back, so a bit raised inside the shield stands.
+static void shield_bytes(void) {
+    int64_t t = avra_vtask_new();
+    avra_vtask_set_unwinding(t, 1);
+    avra_vtask_shield_enter(t);
+    CHECK(avra_vtask_unwinding(t) == 0, "the shield clears a virtual task's saved bit");
+    CHECK(avra_vtask_shielded(t) == 1, "and the task reads as shielded while it stands");
+    avra_vtask_set_unwinding(t, 1);
+    avra_vtask_shield_leave(t);
+    CHECK(avra_vtask_unwinding(t) == 1, "and the leave keeps a bit raised inside");
+    CHECK(avra_vtask_shielded(t) == 0, "and unshielded after it");
+    avra_vtask_free(t);
+}
+
+// A `within` opened while a virtual task runs shielded: its own limit
+// alone cuts the wait, and a task cancel does not.
+static void shields(void) {
+    int64_t t = avra_vtask_new();
+    avra_vtask_cancel(t, 7);
+    avra_vtask_shield_enter(t);
+    int64_t scope = avra_vtask_within(t, 5);
+    CHECK(avra_vtask_deadline(t) != 0, "a `within` opened under a shield carries its own limit");
+    void* gate = avra_gate_new();
+    avra_vtask_wait_gate(t, gate, 0, 0);
+    CHECK(avra_vtask_park(t) == 1, "a cancelled virtual wait under a shield scope parks");
+    avra_vtask_cancel(t, 8);                // an ask while it is parked does not claim it
+    CHECK(avra_sched_timers() >= 1, "its own limit stands filed");
+    CHECK(avra_vtask_next() == t, "the policy names it at its own limit, not the cancel");
+    int64_t claim = avra_vtask_claim(t);
+    CHECK((int)(claim >> 32) == -1 && (int)(int32_t)(uint32_t)claim == 1, "the claim is the shield scope's deadline");
+    avra_vtask_within_end(t, scope);
+    CHECK(avra_sched_timers() == 0, "the shield scope's end takes its entry out");
+    avra_vtask_shield_leave(t);
+    avra_rc_release(gate);
+    avra_vtask_free(t);
+}
+
+// A CANCEL CUTS A VIRTUAL JOIN: the task is readied at once with its
+// own unwind bit set, as a compiled join's is.
+// A cancel that stands when an evaluated task reaches a descriptor park
+// is met there: nothing parks, the park answers cut, and the task's own
+// bit is raised. Under a shield scope the park is the scope's to bound.
+static void a_standing_cancel_at_a_park(void) {
+    int p[2];
+    if (pipe(p) != 0) { CHECK(0, "a pipe"); return; }
+    fcntl(p[0], F_SETFL, O_NONBLOCK);
+    int64_t t = avra_vtask_new();
+    avra_vtask_cancel(t, 3);
+    CHECK(avra_vtask_park_fd(t, p[0], 0, -1) == 0, "a cancelled virtual task parks on no descriptor");
+    CHECK(avra_vtask_timed_out(t) == 1, "its park answers cut");
+    CHECK(avra_vtask_unwinding(t) == 1, "and its unwind bit is raised there");
+    avra_vtask_free(t);
+    int64_t z = avra_vtask_new(), other = avra_vtask_new();
+    avra_vtask_cancel(z, 3);
+    avra_vtask_sleep(other, 2);
+    avra_vtask_sleep(z, 1000);
+    CHECK(avra_vtask_next() == z, "a cancelled virtual task's sleep parks for no time");
+    CHECK(avra_vtask_unwinding(z) == 1, "and its unwind bit is raised there");
+    avra_vtask_free(z); avra_vtask_free(other);
+    int64_t s = avra_vtask_new();
+    avra_vtask_cancel(s, 3);
+    avra_vtask_shield_enter(s);
+    int64_t scope = avra_vtask_within(s, 5);
+    CHECK(avra_vtask_park_fd(s, p[0], 0, -1) == 1, "under a shield scope the cancelled task still parks");
+    CHECK(avra_vtask_unwinding(s) == 0, "and no bit is raised by the cancel");
+    CHECK(avra_vtask_next() == s, "its scope's limit wakes it");
+    avra_vtask_within_end(s, scope);
+    avra_vtask_shield_leave(s);
+    avra_vtask_free(s);
+    closed(p[0]); closed(p[1]);
+}
+
+// What an owner's scope end and a yield ask of an evaluated task: a
+// cancel stands once asked — by a cancel or by a joined task's passed
+// one, never by a scope's limit — and a yield meets it unless shielded.
+static void a_standing_cancel_asked(void) {
+    int64_t t = avra_vtask_new();
+    CHECK(avra_vtask_asked(t) == 0, "no cancel stands on a fresh virtual task");
+    avra_vtask_yield_met(t);
+    CHECK(avra_vtask_unwinding(t) == 0, "and its yield raises no bit");
+    int64_t scope = avra_vtask_within(t, 1);
+    struct timespec nap = {0, 3000000};
+    nanosleep(&nap, NULL);
+    CHECK(avra_vtask_asked(t) == 0, "a scope's passed limit is no cancel");
+    avra_vtask_yield_met(t);
+    CHECK(avra_vtask_unwinding(t) == 0, "and a yield under it raises no bit");
+    avra_vtask_within_end(t, scope);
+    avra_vtask_cancel(t, 3);
+    CHECK(avra_vtask_asked(t) == 1, "a cancel asked stands");
+    avra_vtask_shield_enter(t);
+    avra_vtask_yield_met(t);
+    CHECK(avra_vtask_unwinding(t) == 0, "a shielded yield is not cut");
+    CHECK(avra_vtask_asked(t) == 1, "though the cancel still stands for what the task owns");
+    avra_vtask_shield_leave(t);
+    avra_vtask_yield_met(t);
+    CHECK(avra_vtask_unwinding(t) == 1, "an unshielded yield meets it");
+    avra_vtask_free(t);
+    int64_t j = avra_vtask_new();
+    avra_vtask_passed(j, 5);
+    CHECK(avra_vtask_asked(j) == 1, "a cancel passed on by a join stands as the task's own");
+    avra_vtask_free(j);
+}
+
+static void cancelled_join(void) {
+    int64_t j = avra_vtask_new();
+    void* timed = avra_task_at(in_ms(60000));
+    CHECK(avra_vtask_join(j, timed) == 1, "a virtual task parks on a timer's task");
+    avra_vtask_cancel(j, 0);
+    CHECK(avra_vtask_next() == j, "a cancel cuts the join and the policy names it at once");
+    CHECK(avra_vtask_unwinding(j) == 1, "with its own unwind bit set");
+    avra_task_cancel(timed);
+    avra_rc_release(timed);
+    avra_vtask_free(j);
+}
+
+// A TASK'S END WAKES ITS JOINERS AND THE SETS ON IT IN ONE ORDER: the
+// order they came, a joiner between two sets as it was filed.
+static void end_wakes_in_order(void) {
+    void* end = avra_gate_new();
+    int64_t first = avra_vtask_new(), joiner = avra_vtask_new(), last = avra_vtask_new();
+    avra_vtask_wait_gate(first, end, 3, 0);
+    CHECK(avra_vtask_park(first) == 1, "a set parks on a task's end");
+    CHECK(avra_vtask_join(joiner, end) == 1, "a joiner parks on it after");
+    avra_vtask_wait_gate(last, end, 4, 0);
+    CHECK(avra_vtask_park(last) == 1, "and a second set after the joiner");
+    avra_vgate_ended(end, 7);
+    CHECK(avra_vtask_next() == first, "the end wakes the first set first");
+    CHECK(avra_vtask_claim(first) == ((int64_t)3 << 32), "on its own arm");
+    CHECK(avra_vtask_next() == joiner, "then the joiner, where it was filed");
+    CHECK(avra_vtask_next() == last, "then the set that came after it");
+    CHECK(avra_vtask_claim(last) == ((int64_t)4 << 32), "on its own arm");
+    CHECK(avra_vtask_join(joiner, end) == 0, "a join after the end parks nothing");
+    avra_rc_release(end);
+    avra_vtask_free(first);
+    avra_vtask_free(joiner);
+    avra_vtask_free(last);
+}
+
+// A VIRTUAL TASK'S OWN CLAIM RANKS AS A COMPILED ONE'S: an arm found
+// ready as it armed gives way to a cancel that stands.
+static void ready_arm_hears_cancel(void) {
+    void* open = avra_gate_new();
+    avra_vgate_open(open);
+    int64_t t = avra_vtask_new();
+    avra_vtask_wait_gate(t, open, 2, 0);
+    CHECK(avra_vtask_park(t) == 0 && avra_vtask_claim(t) == ((int64_t)2 << 32), "an open gate claims a virtual task's set as it arms");
+    avra_vtask_cancel(t, 0);
+    avra_vtask_wait_gate(t, open, 2, 0);
+    CHECK(avra_vtask_park(t) == 0, "under a cancel its next park does not switch either");
+    CHECK(avra_vtask_claim(t) == (int64_t)0xffffffff00000000LL, "and answers the cancel, not the arm");
+    CHECK(avra_vtask_unwinding(t) == 1, "with its own unwind bit set");
+    avra_rc_release(open);
+    avra_vtask_free(t);
+}
+
+// A VIRTUAL TASK SCANS AS A COMPILED ONE DOES: its scan hears a cancel
+// on its own bit, and its rest says when nothing is filed.
+static void a_virtual_scan(void) {
+    void* shut = avra_gate_new();
+    int64_t t = avra_vtask_new();
+    CHECK(avra_vtask_enter(t, "pkg/main.av:7") == 0, "a virtual scan begins with nothing standing");
+    CHECK(avra_vtask_rest(t) == -1, "its rest with nothing filed answers -1");
+    avra_vtask_wait_gate(t, shut, 0, 0);
+    CHECK(avra_vtask_rest(t) == 1, "and parks on what is filed");
+    CHECK(avra_vgate_claim(t, shut) == 0 && avra_vtask_next() == t, "a claim readies it");
+    avra_vtask_claim(t);
+    avra_vtask_cancel(t, 0);
+    CHECK(avra_vtask_enter(t, "pkg/main.av:7") == (int64_t)0xffffffff00000000LL, "under a cancel its next scan answers -1:0");
+    CHECK(avra_vtask_unwinding(t) == 1, "with its own unwind bit set");
+    avra_rc_release(shut);
+    avra_vtask_free(t);
+}
+
+// Counted text, as a program's own would be.
+const char* avra_int_text(int64_t v);
+
+// A virtual task's sites are kept as a compiled one's: the text it was
+// spawned at and the text its scan began at, both let go as it goes.
+static void a_virtual_tasks_sites_are_kept(void) {
+    int64_t t = avra_vtask_new();
+    int64_t before = avra_mem_live();
+    const char* spawned = avra_int_text(1717);
+    const char* scanned = avra_int_text(2828);
+    int64_t held = avra_mem_live();
+    avra_vtask_sited(t, spawned);
+    avra_vtask_enter(t, scanned);
+    avra_rc_release((void*)spawned);
+    avra_rc_release((void*)scanned);
+    CHECK(avra_mem_live() == held, "a virtual task's record holds both texts after their writer let go");
+    avra_vtask_free(t);
+    CHECK(avra_mem_live() == before, "and lets both go as it goes");
+}
+
+// A VIRTUAL TASK'S END AND A COMPILED ONE'S SHARE ONE ORDER: the
+// evaluator stamps its own task's end from the count a compiled end
+// draws from, so the three stand in the order they ended.
+static void ends_of_both_kinds_share_one_order(void) {
+    void* unit = avra_array_sized(1);
+    avra_array_push(unit, 0);
+    void* first = avra_task_pending();
+    avra_task_answer(first, unit);
+    int64_t t = avra_vtask_new();
+    int64_t virtual_end = avra_stamp_next();
+    avra_vtask_end(t);
+    void* last = avra_task_pending();
+    avra_task_answer(last, unit);
+    CHECK(avra_task_since(first) < virtual_end && virtual_end < avra_task_since(last), "a virtual task's end stands between the compiled ends before and after it");
+    avra_rc_release(unit);
+    avra_rc_release(first);
+    avra_rc_release(last);
+}
+
+static void deadlocked(void) {
+    int64_t t = avra_vtask_new();   // filed nowhere: nothing ready, nothing to wait on
+    (void)t;
+    avra_vtask_next();
+}
+
+// Inside a run: two virtual tasks, each parked on its own gate, name
+// what each waits on. The policy answers the evaluator no task.
+static void run_deadlocked(void) {
+    avra_sched_run_begins();
+    int64_t a = avra_vtask_new(), b = avra_vtask_new();
+    void* ga = avra_gate_new();
+    void* gb = avra_gate_new();
+    avra_vtask_wait_gate(a, ga, 0, 0);
+    avra_vtask_park(a);
+    avra_vtask_wait_gate(b, gb, 0, 0);
+    avra_vtask_park(b);
+    if (avra_vtask_next() != 0) _exit(3);
+    avra_sched_run_ends();
+}
+
+int main(void) {
+    joins();
+    shield_bytes();
+    a_passed_cancel();
+    shields();
+    cancelled_join();
+    a_standing_cancel_asked();
+    end_wakes_in_order();
+    ready_arm_hears_cancel();
+    a_standing_cancel_at_a_park();
+    a_virtual_scan();
+    a_virtual_tasks_sites_are_kept();
+    ends_of_both_kinds_share_one_order();
+    // one scenario, both engines, one interleaving
+    g_log_len = 0; as_fibers();
+    char fibers[128]; strcpy(fibers, g_log);
+    g_log_len = 0; as_virtual();
+    CHECK(strcmp(fibers, "abcacb") == 0, "the fibers interleave as the policy says");
+    CHECK(strcmp(fibers, g_log) == 0, "virtual tasks interleave exactly as fibers do");
+
+    // a virtual park on a pipe wakes on a write, and a silent one times out
+    int p[2];
+    if (pipe(p) != 0) return 1;
+    fcntl(p[0], F_SETFL, O_NONBLOCK);
+    int64_t r = avra_vtask_new(), s = avra_vtask_new();
+    CHECK(avra_vtask_park_fd(r, p[0], 0, -1) == 1, "a virtual task parks on a pipe");
+    avra_vtask_sleep(s, 2);
+    CHECK(avra_vtask_next() == s, "the sleeper wakes while the reader still waits");
+    CHECK(write(p[1], "x", 1) == 1, "a byte written");
+    CHECK(avra_vtask_next() == r && !avra_vtask_timed_out(r), "the reader wakes on the byte");
+    CHECK(avra_vtask_park_fd(r, p[0], 0, 5) == 1, "parked again, with a deadline, on a pipe with a byte");
+    CHECK(avra_vtask_next() == r, "a readable pipe answers at once");
+    char c; CHECK(read(p[0], &c, 1) == 1, "the byte is there");
+    CHECK(avra_vtask_park_fd(r, p[0], 0, 5) == 1, "parked on a silent pipe with a deadline");
+    CHECK(avra_vtask_next() == r && avra_vtask_timed_out(r), "the deadline wakes it, timed out");
+    CHECK(avra_vtask_park_fd(r, 987654, 0, -1) == 0, "a descriptor nobody holds is ready at once");
+    CHECK(avra_vtask_next() == r, "and the task runs, for its read to say why");
+    avra_vtask_free(r); avra_vtask_free(s);
+    closed(p[0]); closed(p[1]);
+
+    // a task freed while filed anywhere leaves nothing behind
+    if (pipe(p) != 0) return 1;
+    fcntl(p[0], F_SETFL, O_NONBLOCK);
+    int64_t parked = avra_vtask_new(), readied = avra_vtask_new(), timed = avra_vtask_new(), last = avra_vtask_new();
+    avra_vtask_park_fd(parked, p[0], 0, 1000);
+    avra_vtask_ready(readied);
+    avra_vtask_sleep(timed, 1000);
+    avra_vtask_free(parked); avra_vtask_free(readied); avra_vtask_free(timed);
+    CHECK(write(p[1], "y", 1) == 1, "a byte for a reader that is gone");
+    avra_vtask_sleep(last, 3);
+    CHECK(avra_vtask_next() == last, "the freed tasks are nowhere — the next is the one still filed");
+    avra_vtask_free(last);
+    closed(p[0]); closed(p[1]);
+
+    // nothing ready and nothing to wait on: the policy's deadlock, in a child
+    int out[2];
+    if (pipe(out) != 0) return 1;
+    pid_t pid = fork();
+    if (pid == 0) { dup2(out[1], 2); close(out[0]); alarm(60); deadlocked(); _exit(0); }
+    close(out[1]);
+    char buf[1024] = {0};
+    size_t got = 0;
+    for (ssize_t n; got < sizeof buf - 1 && (n = read(out[0], buf + got, sizeof buf - 1 - got)) > 0;) got += (size_t)n;
+    int status = 0;
+    waitpid(pid, &status, 0);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 2 && strstr(buf, "every task is waiting — deadlock"), "a virtual deadlock is the policy's trap");
+    CHECK(strstr(buf, "the evaluated program's own run") != NULL, "and names the task");
+
+    // inside a run, the same deadlock is the evaluator's to file, named
+    if (pipe(out) != 0) return 1;
+    pid = fork();
+    if (pid == 0) { dup2(out[1], 2); close(out[0]); alarm(60); run_deadlocked(); _exit(0); }
+    close(out[1]);
+    memset(buf, 0, sizeof buf);
+    got = 0;
+    for (ssize_t n; got < sizeof buf - 1 && (n = read(out[0], buf + got, sizeof buf - 1 - got)) > 0;) got += (size_t)n;
+    waitpid(pid, &status, 0);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0, "inside a run, a virtual deadlock answers the evaluator: no task");
+    CHECK(strstr(buf, "every task is waiting, and nothing can wake one") != NULL, "and the run's report is headed");
+    CHECK(strstr(buf, "the evaluated program's own run") != NULL && strstr(buf, "waits on gate 0x") != NULL, "each task is named with the gate it waits on");
+    CHECK(buf[0] != 0 && strstr(strstr(buf, "waits on gate 0x") + 1, "waits on gate 0x") != NULL, "both waiting tasks are named");
+
+    printf("vtasks: %d checks, %d failed\n", g_checks, g_fails);
+    return g_fails ? 1 : 0;
+}

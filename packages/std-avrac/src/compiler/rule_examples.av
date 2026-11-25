@@ -1,0 +1,264 @@
+//! A rule's own proof: each `@fixes`/`@keeps` example, checked
+//! exactly as `avra check` would read it — the WHOLE before-text
+//! analysed and walked, never its first statement alone (a `type` or
+//! an `impl` above the fn under test is setup, not a boundary), the
+//! rule's nearest hit found (`nearest_fix` — a rule fires at a node,
+//! an example names a program), a rewrite's rendered text re-parsed
+//! and compared by fingerprint (span-blind; text equality is too
+//! strict), a keep answered by absence alone. `avra test` (`suite.av`)
+//! runs one of these per example, for every rule the package under
+//! test declares — the examples themselves are `RuleEntry.fixes`/
+//! `.keeps`, already typed values by the time this reads them
+//! (features/components/lower.av's `augmented`), never a second read
+//! of the declaration's own annotations.
+use core.{root_of, flatten, fp_list, list_eq, some_list}
+use features.{Code, Fix, Fixes, Decl, Decls, Analysed}
+use compiler.{analyze_source, Analysis, avra, new_workspace, one_shot_let_go}
+use compiler.host.{memory_host}
+use compiler.lower.{component_root_kind}
+use diagnostics.{spliced}
+
+/// The first hit `applied` finds at `root` or under it, depth-first,
+/// or absence when nothing in the whole subtree fires.
+export fn nearest_fix(applied: fn(Code) -> Fix?, root: Code) -> Fix? {
+    applied(root) ?? first_of(applied, root.kids())
+}
+
+fn first_of(applied: fn(Code) -> Fix?, cs: List<Code>) -> Fix? {
+    let hit? = cs.first() else { return null }
+    nearest_fix(applied, hit) ?? first_of(applied, cs.slice(1, cs.length))
+}
+
+/// EVERY top-level statement of the example, each at its own root: an
+/// expression statement stands as its expression (the same reduction a
+/// rule's own pattern root takes, `core.root_of`), every other
+/// statement as itself. An example that leads with a `type` or an
+/// `impl` is setup the fn under test needs, so the walk starts at every
+/// statement and reaches the fn wherever it sits; empty only for text
+/// that parsed to no statement at all (an @fixes/@keeps whose text does
+/// not parse is the honest miss it looks like, never a crash).
+/// ONE TEXT, ONE TREE (avra-8sb5.25.21): a quote pattern's own body
+/// takes the same tail law a program's does (`features/quote/
+/// builders.av`'s `build_quote`), so a both-branches-answering
+/// `if`/`else` is `Expr.If` on both sides of a match — the pattern
+/// and a bare example alike — and no shielding is owed here for it.
+export fn example_roots(a: Analysis) -> List<Code> {
+    [a.code_at(root_of(a.view.store, s)) for s in a.view.stmts]
+}
+
+/// An example's whole program as ONE fold: each top-level statement
+/// folds to one value, then the list folds — so the boundary between
+/// two statements is recorded, and a text that differs only in a
+/// trailing statement cannot pass for its sibling. Absent for text
+/// that parsed to nothing.
+fn example_fp(a: Analysis) -> int? {
+    if a.view.stmts.is_empty() { return null }
+    fp_list([a.view.store.subtree_fp(root_of(a.view.store, s)) for s in a.view.stmts])
+}
+
+/// The first hit `applied` finds under any of `roots`, in order.
+fn nearest_fix_in(applied: fn(Code) -> Fix?, roots: List<Code>) -> Fix? {
+    let r? = roots.first() else { return null }
+    nearest_fix(applied, r) ?? nearest_fix_in(applied, roots.slice(1, roots.length))
+}
+
+/// The example's program: a lone source, or — when it names files —
+/// the entry of the package those files complete, under a lawful
+/// manifest. One one-shot workspace is alive at a time, so the one
+/// before is let go.
+fn example_analysis(before: string, files: Map<string, string>) -> Analysis {
+    if files.is_empty() { return analyze_source(before) }
+    mut all = files
+    all.set("/w/avra.toml", "[package]\nname = \"app\"\nversion = \"0.1.0\"\n")
+    all.set("/w/src/main.av", before)
+    one_shot_let_go()
+    let ws = new_workspace(memory_host(all, all.keys()), "/w", avra())
+    ws.alone()
+    ws.analyze_file("/w/src/main.av")
+}
+
+/// Whether `rule`, applied to `before`, answers a rewrite whose
+/// rendered text — re-parsed — is span-blind equal to `after`.
+export fn checks_fixes(
+    applied: fn(Code) -> Fix?,
+    before: string,
+    after: string,
+    files: Map<string, string> = {},
+) -> bool {
+    let roots = example_roots(example_analysis(before, files))
+    let hit? = nearest_fix_in(applied, roots) else { return false }
+    let text? = hit.rendered() else { return false }
+    same_fingerprint(text, after)
+}
+
+/// Whether the rule answers nothing anywhere in `before`.
+export fn checks_keeps(applied: fn(Code) -> Fix?, before: string) -> bool {
+    nearest_fix_in(applied, example_roots(analyze_source(before))) == null
+}
+
+/// An `@fixes(before)` example with no "after": the rule answers a
+/// `Fix.Delete` at `before`'s nearest hit, and deleting what it names
+/// (`rule_delete.av`'s `delete_edits` — the SAME builder `avra fix`
+/// splices) leaves a file that still analyses clean. There is no
+/// rewritten form to fingerprint against, unlike `checks_fixes`.
+export fn checks_delete(applied: fn(Code) -> Fix?, before: string, files: Map<string, string> = {}) -> bool {
+    let a = example_analysis(before, files)
+    let hit? = nearest_fix_in(applied, example_roots(a)) else { return false }
+    let what? = deleted(hit) else { return false }
+    let edits? = delete_edits(
+        Analysed { view: a.view, names: a.names, facts: a.facts },
+        a.view.source.text,
+        what,
+    ) else {
+        return false
+    }
+    let after? = spliced(a.view.source.text, edits) else { return false }
+    example_analysis(after, files).clean()
+}
+
+fn same_fingerprint(rendered: string, after: string) -> bool {
+    let r? = example_fp(analyze_source(rendered)) else { return false }
+    let a? = example_fp(analyze_source(after)) else { return false }
+    r == a
+}
+
+// ── THE EXAMPLES' OWN COVERAGE ──
+// An example proves a rule only if the example is WALKED WHOLE — the
+// fn under test, wherever the example puts it. A walk that starts at the
+// first statement leaves every `type`/`impl`-first example vacuous, and
+// the suite counts it as coverage anyway.
+
+/// What an example lacks: no statement parsed at all, or a walk that
+/// stops before the example's own last top-level statement.
+export enum ExampleLack {
+    NoStatement
+    NotReached
+}
+
+/// One example that proves nothing, named by its rule and position.
+export type ExampleGap = { rule: string, example: string, lack: ExampleLack }
+
+impl ExampleLack {
+    fn word() -> string {
+        match self {
+            .NoStatement -> "parsed to no statement",
+            .NotReached -> "the walk does not reach every top-level statement",
+        }
+    }
+}
+
+impl ExampleGap {
+    /// The keeper's one-line currency.
+    fn line() -> string { "${self.rule}\t${self.example}\t${self.lack.word()}" }
+}
+
+/// Every gap as its one line, in table then example order.
+export fn example_gap_lines(gaps: List<ExampleGap>) -> List<string> { [g.line() for g in gaps] }
+
+/// How many examples the rules carry — what the keeper examined.
+export fn example_count(entries: List<RuleEntry>) -> int {
+    [r.fixes.length + r.keeps.length for r in entries].sum()
+}
+
+/// Every example the real walk leaves partly unexamined.
+export fn example_gaps(entries: List<RuleEntry>) -> List<ExampleGap> {
+    coverage_gaps(entries, example_roots)
+}
+
+/// Every example a GIVEN walk leaves partly unexamined — the keeper's
+/// own door, so a test can hand it a narrow walk and watch it refuse.
+export fn coverage_gaps(entries: List<RuleEntry>, walk: fn(Analysis) -> List<Code>) -> List<
+    ExampleGap,
+> {
+    flatten([rule_example_gaps(walk, r) for r in entries])
+}
+
+fn rule_example_gaps(walk: fn(Analysis) -> List<Code>, r: RuleEntry) -> List<ExampleGap> {
+    let kept = [kept_gap(walk, r, i, k) for i, k in r.keeps]
+    let fixed = [fix_gap(walk, r, i, f) for i, f in r.fixes]
+    flatten([some_list(g) for g in kept.concat(fixed)])
+}
+
+fn kept_gap(walk: fn(Analysis) -> List<Code>, r: RuleEntry, i: int, before: string) -> ExampleGap? {
+    example_gap(walk, r, "keeps ${i}", before, {})
+}
+
+fn fix_gap(walk: fn(Analysis) -> List<Code>, r: RuleEntry, i: int, f: Fixes) -> ExampleGap? {
+    example_gap(walk, r, "fixes ${i}", f.before, f.files)
+}
+
+/// One example's gap, judged by the walk it is given: absent when the
+/// walk covers every top-level statement the example parses to.
+fn example_gap(
+    walk: fn(Analysis) -> List<Code>,
+    r: RuleEntry,
+    example: string,
+    before: string,
+    files: Map<string, string>,
+) -> ExampleGap? {
+    let a = example_analysis(before, files)
+    if a.view.stmts.is_empty() {
+        return ExampleGap { rule: rule_id(r), example: example, lack: ExampleLack.NoStatement }
+    }
+    if walk(a).length >= a.view.stmts.length { return null }
+    ExampleGap { rule: rule_id(r), example: example, lack: ExampleLack.NotReached }
+}
+
+// ── THE TABLE'S OWN PROOF ──
+// `rules`' rows are SYNTHESISED, at lowering, from these same
+// declarations (compiler/lower/lower.av's `lower_collect`) — there
+// is no restated list left to hold a row against. What stays worth
+// proving is that the rule's own LOGIC does what its
+// `@fixes`/`@keeps` claim.
+
+/// One example, checked — a line iff it failed.
+export type ExampleCheck = { label: string, ok: bool }
+
+fn checked(label: string, ok: bool) -> ExampleCheck { ExampleCheck { label: label, ok: ok } }
+
+impl Workspace {
+    /// Every rule's synthesised entry, proved against its live
+    /// declaration: the root-kind index `lower_collect` baked in,
+    /// recomputed fresh (`compiler.lower.component_root_kind`), and
+    /// every `@fixes`/`@keeps` the entry itself carries.
+    fn rules_checked() -> List<ExampleCheck> {
+        // The suite proves the WHOLE package it is testing — same
+        // walk `avra check`'s own root-package analysis always does
+        // (root_files() over the package under test), not a
+        // collect-specific admission: a self-test examines everything
+        // it can reach as its own package, the way any package-scope
+        // check does.
+        for path in self.root_files() { let _ = self.items(self.file_id(path)) }
+        let found = self.decls.decls_of_word("rule").concat(self.decls.decls_of_word("fact_rule"))
+
+        flatten([self.decls.entry_checked(found, r) for r in rule_entries()])
+    }
+}
+
+impl Decls {
+    fn entry_checked(found: List<Decl>, r: RuleEntry) -> List<ExampleCheck> {
+        let d? = found.find(named(r, it)) else { return [] }
+        let root_check = checked(
+            "${rule_id(r)}'s synthesised root-kind index matches its declaration",
+            list_eq(component_root_kind(self, d), r.root, (a, b) -> a == b),
+        )
+        [root_check]
+            .concat(
+                [checked("${rule_id(r)} @fixes", fixes_checked((c: Code) -> r.run.applied(c), f)) for f in r.fixes],
+            )
+            .concat(
+                [checked("${rule_id(r)} @keeps", checks_keeps((c: Code) -> r.run.applied(c), k)) for k in r.keeps],
+            )
+    }
+}
+
+fn named(r: RuleEntry, d: Decl) -> bool { r.name == d.name }
+
+/// One `@fixes` example, whichever form it wrote: an `after` proves a
+/// rewrite, its absence a `Fix.Delete`.
+fn fixes_checked(applied: fn(Code) -> Fix?, f: Fixes) -> bool {
+    match f.after {
+        after? -> checks_fixes(applied, f.before, after, f.files)
+        null -> checks_delete(applied, f.before, f.files)
+    }
+}

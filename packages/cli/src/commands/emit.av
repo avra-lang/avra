@@ -1,0 +1,39 @@
+//! `avra emit` — print a program's verified LLVM module: the program lowered whole on the program
+//! layer, written by the backend's text emitter as one module.
+use @std.cli.{CliResult, Runnable, command}
+use @std.avrac.compiler.backend.{emit_ll}
+use @std.avrac.compiler.lower.{Lowered}
+use @std.io.{make_dirs}
+use @std.path.{dir_of, joined_path, stem_of}
+
+type EmitCmd = {}
+
+impl Runnable for EmitCmd {
+    fn run(args: CliResult) -> int {
+        let at = module_path(path_arg(args))
+        on_lowered(args, (l) -> emitted(l, at))
+    }
+}
+
+/// Where the module of the program `path` names is written: under its package's `build/`, named
+/// for the package or the file.
+fn module_path(path: string) -> string {
+    let root = if is_a_dir(path) { path } else { file_home(path) ?? dir_of(path) }
+    joined_path(joined_path(root, "build"), "${stem_of(path)}.ll")
+}
+
+fn emitted(l: Lowered, at: string) -> Result<int, string> {
+    let _ = make_dirs(dir_of(at))
+    let failure = emit_ll(l, at, "")
+    if failure != null { fail failure! }
+    // LICENSED compiler.host_asked_directly: a command's read of the file it wrote, at this instant — no query frame is open
+    println(disk_host().spared_text(at).as_text() ?? "")
+    0
+}
+
+export command emit {
+    description: "Print a program's verified LLVM module"
+    flags: [time]
+    args: [file]
+    run: EmitCmd {}
+}

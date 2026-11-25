@@ -1,0 +1,22 @@
+// `@codec` over a `@local` field: the wire leaves it out and a decoded value takes the default
+// its declaration writes.
+use @std.relation.{codec}
+use @std.relation.stable.{indexed_scope}
+
+@codec
+type Local = { kept: int, @local scratch: int = 42 }
+
+spec "std/relation — a field that is no part of the wire" {
+    given "a `@local` field with a default" {
+        then "it is rebuilt from the default its declaration writes" {
+            match Local
+                .decoded_in(indexed_scope(), Local { kept: 5, scratch: 99 }.encoded_in(indexed_scope())) {
+                .Ok(back) -> back.kept == 5 && back.scratch == 42,
+                .Err(_) -> false,
+            }
+        }
+        then "the wire holds the kept field alone" {
+            Local { kept: 5, scratch: 1 }.encoded_in(indexed_scope()) == Local { kept: 5, scratch: 2 }.encoded_in(indexed_scope())
+        }
+    }
+}

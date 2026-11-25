@@ -1,0 +1,187 @@
+//! WHO ANSWERS A DOT-CALL — decided once, here, and matched
+//! exhaustively by typing and lowering, so a new kind of receiver
+//! breaks both passes at compile time instead of one silently. The
+//! precedence is the surface's: a type name constructs; a bounded
+//! parameter and a contract value speak through their trait; a
+//! fn-typed field is called; the vocabulary's row answers; the impl
+//! table answers last; nothing else has methods.
+//!
+//! A TYPE NAME is the one receiver two things answer for: its
+//! VARIANTS and its `static fn`s share the spelling `Type.name(…)`.
+//! THE VARIANT WINS, decided here so typing and lowering cannot
+//! disagree, and with neither the variant law speaks the refusal —
+//! it is the one that can name what the type does have.
+use core.{Type, TypeId, DeclId}
+use core.{ExprId}
+use features.{FileView, MethodRow, method_row, EnumSig, declared_decl, NameFacts}
+
+export enum Callee {
+    Variant(decl: DeclId, tname: string)
+    Static(m: DeclId, tname: string)
+    Bounded(decl: DeclId, j: int, tname: string)
+    BoundStatic(decl: DeclId, j: int, tname: string)
+    Contract(tdecl: DeclId, tname: string)
+    FnField(slot: int, fty: TypeId)
+    Row(r: MethodRow)
+    Declared(decl: DeclId, tname: string)
+    Nameless
+}
+
+/// A dot-call's callee by its SUBJECT: a type parameter's read is a
+/// type, so its call is a static's; every other subject is a value.
+export fn subject_callee(
+    view: FileView,
+    names: NameFacts,
+    subject: ExprId,
+    ty: TypeId,
+    name: string,
+) -> Callee {
+    if names.reads_type_param(subject) { type_callee(view, ty, name) } else { callee_of(view, ty, name) }
+}
+
+/// A call on a TYPE PARAMETER: its bound's static while the parameter
+/// is abstract, the static of the type it stands for once pinned.
+fn type_callee(view: FileView, ty: TypeId, name: string) -> Callee {
+    match view.types.shape_of(ty) {
+        .Var(decl, j, tname) -> Callee.BoundStatic(decl, j, tname),
+        rest -> {
+            let d? = view.decls.implementor(ty) else { return Callee.Nameless }
+            type_receiver(view, d, view.types.name_of(ty), name)
+        },
+    }
+}
+
+export fn callee_of(view: FileView, ty: TypeId, name: string) -> Callee {
+    // A NAME IS TRANSPARENT AT A READ, and its OWN impl answers
+    // first: a method the name declares wins, and everything else
+    // the shape answers — so `rows.best()` and `rows.push(v)` are
+    // one surface.
+    let under: TypeId? = stood_over(view, ty, name)
+    if under != null { return callee_of(view, under!, name) }
+    let sh: Type = view.types.shape_of(ty)
+    let built: Callee? = builtin_static(view, sh, name)
+    if built != null { return built! }
+    let spoken_for: Callee? = through_a_contract(view, sh, name)
+    if spoken_for != null { return spoken_for! }
+    let field: Callee? = fn_field(view, ty, name)
+    if field != null { return field! }
+    let row: MethodRow? = method_row(view.lang.methods, name, sh)
+    if row != null { return Callee.Row(row!) }
+    declared(sh) ?? implemented(view, ty, name) ?? Callee.Nameless
+}
+
+/// A scalar or a generic built-in answers a method an impl filed
+/// under its builtin declaration — `"hi".response()` once
+/// `impl Respond for string`, and `r.show()` once `impl Respond for
+/// Result<T, E>`.
+fn implemented(view: FileView, ty: TypeId, name: string) -> Callee? {
+    let d? = view.decls.implementor(ty) else { return null }
+    if view.decls.method(d, name) == null { return null }
+    Callee.Declared(d, view.decls.decl(d).name)
+}
+
+/// A structural built-in type's static vocabulary — the LANGUAGE's
+/// own declarations alone: a user's type reaches a row only through
+/// its declaration (`grammar_door`). Declared variants and
+/// user-written static methods keep their established precedence.
+fn builtin_static(view: FileView, sh: Type, name: string) -> Callee? {
+    match sh {
+        .TypeName(decl, tname) -> {
+            if !(view.decls.decl(decl).kind is .Builtin) { return null }
+            if names_a_variant(view, decl, name) || static_method(view, decl, name) != null { return null }
+            let row? = method_row(view.lang.methods, name, sh) else { return null }
+            Callee.Row(row)
+        },
+        _ -> null,
+    }
+}
+
+/// A receiver whose methods a TYPE or a TRAIT supplies before any
+/// field or row is asked.
+fn through_a_contract(view: FileView, sh: Type, name: string) -> Callee? {
+    match sh {
+        .TypeName(decl, tname) -> type_receiver(view, decl, tname, name),
+        .Var(decl, j, tname) -> Callee.Bounded(decl, j, tname),
+        .Dyn(d, n) -> Callee.Contract(d, n),
+        .Struct(_, _) or .Enum(_, _) or .App(_, _, _) or .Int or .Float or .Bytes or .Bool or .Str or .Ptr or .List(_) or .Cell(_) or .Task(_) or .Tasks or .Map(_, _) or .Res(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or .EmptyList or .EmptyMap or .Union(_) or .Error or .Void or .Range -> null,
+    }
+}
+
+/// A TYPE as the receiver: its VARIANT of that name (the type's own
+/// shape), else a `grammar`'s vocabulary door, else a `static fn` of
+/// its impl. With none it is still the variant's answer, so the
+/// refusal names what the type has.
+fn type_receiver(view: FileView, decl: DeclId, tname: string, name: string) -> Callee {
+    if names_a_variant(view, decl, name) { return Callee.Variant(decl, tname) }
+    let door: MethodRow? = grammar_door(view, decl, tname, name)
+    if door != null { return Callee.Row(door!) }
+    let m: DeclId? = static_method(view, decl, name)
+    if m != null { return Callee.Static(m!, tname) }
+    let enum_door: MethodRow? = enum_static_door(view, decl, tname, name)
+    if enum_door != null { return Callee.Row(enum_door!) }
+    Callee.Variant(decl, tname)
+}
+
+/// An enum type NAME's static vocabulary — the methods table's rows
+/// over the enum's VALUE shape. Looked up with `.Enum` on purpose: a
+/// built-in or grammar type name is looked up by its own name shape
+/// above, so it can never reach these rows. A VARIANT wins first (a
+/// variant spelled `all` is the type's own), a static fn next, and a
+/// generic enum is refused — `all` has no argument to pin its Vars.
+/// The row's own rule judges the enum (`all` wants no payloads).
+fn enum_static_door(view: FileView, decl: DeclId, tname: string, name: string) -> MethodRow? {
+    if view.decls.sig(decl)?.enum_sig() == null { return null }
+    if !view.decls.tparams(decl).is_empty() { return null }
+    method_row(view.lang.methods, name, Type.Enum(decl, tname))
+}
+
+/// A `grammar`-declared type's vocabulary door of this name —
+/// `parse`, `print` — a method row whose receiver is the type. The
+/// vocabulary outranks a user's impl here as it does for a value
+/// (`method_row` before `declared`), so a door beats a `static fn` of
+/// the same name. The test asks the DECLARATION for its format, never
+/// whether some fn of that name exists — that question is the static.
+fn grammar_door(view: FileView, decl: DeclId, tname: string, name: string) -> MethodRow? {
+    if view.decls.grammar_of(decl) == null { return null }
+    method_row(view.lang.methods, name, Type.TypeName(decl, tname))
+}
+
+/// A receiverless method of the type's impl, by name.
+fn static_method(view: FileView, target: DeclId, name: string) -> DeclId? {
+    let m: DeclId? = view.decls.method(target, name)
+    if m == null { return null }
+    if !view.decls.is_static_of(m!) { return null }
+    m
+}
+
+fn names_a_variant(view: FileView, decl: DeclId, name: string) -> bool {
+    let sig: EnumSig? = view.decls.sig(decl)?.enum_sig()
+    sig != null && sig!.tag_of(name) != null
+}
+
+/// The shape a NAMED type forwards this call to — absent when the
+/// type is no name, or when its own impl declares the method.
+fn stood_over(view: FileView, ty: TypeId, name: string) -> TypeId? {
+    let under: TypeId? = view.types.stands_for(ty)
+    if under == null { return null }
+    let d: DeclId? = declared_decl(view.types.shape_of(ty))
+    if d != null && view.decls.method(d!, name) != null { return null }
+    under
+}
+
+/// A fn-typed field of the name — the capability-record pattern.
+fn fn_field(view: FileView, ty: TypeId, name: string) -> Callee? {
+    let sig? = view.decls.fields_of_type(ty) else { return null }
+    let slot? = sig.slot_of(name) else { return null }
+    let fty = sig.types[slot]
+    if !(view.types.shape_of(fty) is .Fn) { return null }
+    Callee.FnField(slot, fty)
+}
+
+/// The impl table's key and the name the voices use.
+fn declared(sh: Type) -> Callee? {
+    match sh {
+        .Struct(d, n) or .Enum(d, n) or .App(d, n, _) -> Callee.Declared(d, n),
+        .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Int or .Float or .Bytes or .Bool or .Str or .Ptr or .List(_) or .Cell(_) or .Task(_) or .Tasks or .Map(_, _) or .Res(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or .EmptyList or .EmptyMap or .Union(_) or .Error or .Void or .Range -> null,
+    }
+}

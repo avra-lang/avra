@@ -1,0 +1,50 @@
+// proves: in a terminal app, a timer and a task's answer each reach the
+// loop as a turn and repaint the screen, while a key fed to the terminal
+// changes the focused control. The clock is virtual, so no real time
+// passes and the output does not depend on the machine.
+use @std.ui.components.{list, text}
+use @std.ui.native.net.{unwired}
+use @std.ui.app.{later}
+use @std.ui.native.sources.{answered, opened, served, unshown}
+use @std.ui.tests.parts.{counter}
+use @std.ui.terminal.{terminal}
+use @std.ui.app.{running, stood}
+use @std.time.{ms, sleep}
+
+extern fn avra_clock_virtual(on: int)
+
+let ticks = Cell.new(0)
+let answer = Cell.new("none")
+let on = terminal(
+    () -> list { items: [text "ticks=${ticks.get()} answer=${answer.get()}", counter "k"] },
+    width: 40,
+)
+avra_clock_virtual(1)
+let before = running()
+stood(on.shown.app)
+let inbox = opened(on.shown.app, unwired)
+let loop = spawn served(on.shown.app, inbox, () -> on.printed())
+println("── start")
+println(on.screen())
+on.feed("\n")
+let _ = later(
+    ms(250),
+    () -> {
+        ticks.set(ticks.get() + 1)
+        true
+    },
+)
+let _ = answered(
+    () -> 42,
+    (n: int) -> {
+        answer.set("${n}")
+        true
+    },
+)
+sleep(ms(300))
+sleep(ms(0))
+println("── after the timer and the answer")
+println(on.screen())
+on.shown.app.close()
+let _ = loop.await
+stood(before)

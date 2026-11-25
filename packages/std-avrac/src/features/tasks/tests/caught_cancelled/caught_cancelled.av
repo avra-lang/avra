@@ -1,0 +1,29 @@
+// proves: a caught await of a cancelled task runs its arm, and `c.by`
+// names the task that asked — main, then a spawned one — in both engines
+use @std.task.{open_channel, Sink}
+use @std.time.{secs, sleep}
+
+extern fn avra_task_id() -> int
+
+fn idle(up: Sink<int>) -> int {
+    let _ = up.post(1)
+    sleep(secs(60))
+    0
+}
+
+fn asker(c: Cancelled) -> int { c.by }
+
+let up = open_channel<int>(1)
+let t = spawn idle(up.sink)
+let _ = up.source.next()
+t.cancel()
+let by_main = t.await catch c -> { 100 + asker(c) }
+let w = spawn {
+    let inner = open_channel<int>(1)
+    let u = spawn idle(inner.sink)
+    let _ = inner.source.next()
+    u.cancel()
+    let by = u.await catch c -> { asker(c) }
+    by == avra_task_id()
+}
+"${by_main} ${w.await}"

@@ -1,0 +1,52 @@
+//! HASHKEYEDTABLE ALONE: for each size, a table built from empty by that many keys of two random
+//! words (as a content hash's are), then every key looked up in an order unlike the order it was put
+//! in, then as many keys that aren't there. Prints inserts, hits and misses per second; build with
+//! AVRA_PROGRAM_MODE=release and run each table twice or more, alternated, for its spread.
+use @std.program.hash_keyed_table.{HashKeyedTable, hash_keyed_table}
+use @std.time.{now_ns}
+
+/// A word made from `i` and `salt`, spread as a hash's is.
+fn mixed(i: int, salt: int) -> int {
+    let x = (i ^ salt).wrapping_mul(0 - 4658895280553007687)
+    let y = (x ^ (x >> 31)).wrapping_mul(0 - 7046029254386353131)
+    y ^ (y >> 29)
+}
+
+/// `count` operations over `nanos` as millions per second.
+fn rate(count: int, nanos: int) -> string {
+    let per = if nanos <= 0 { 0 } else { count * 1000 / (nanos / 1000 + 1) }
+    "${per / 1000}.${per / 100 % 10}M/s"
+}
+
+/// `rounds` tables of `n` keys, built and looked up.
+fn bench(n: int, rounds: int) {
+    mut insert_ns = 0
+    mut hit_ns = 0
+    mut miss_ns = 0
+    mut found = 0
+    for r in 0..rounds {
+        let held: HashKeyedTable<int> = hash_keyed_table()
+        let t0 = now_ns()
+        for i in 0..n { held.put_at(mixed(i, 11), mixed(i, 12), i) }
+        let t1 = now_ns()
+        for i in 0..n {
+            let j = i * 7919 % n
+            if held.get_at(mixed(j, 11), mixed(j, 12)) != null { found = found + 1 }
+        }
+        let t2 = now_ns()
+        for i in 0..n { if held.get_at(mixed(i, 13), mixed(i, 14)) != null { found = found + 1 } }
+        let t3 = now_ns()
+        insert_ns = insert_ns + (t1 - t0)
+        hit_ns = hit_ns + (t2 - t1)
+        miss_ns = miss_ns + (t3 - t2)
+    }
+    println(
+        "n=${n} rounds=${rounds} inserts ${rate(n * rounds, insert_ns)} hits ${rate(n * rounds, hit_ns)} misses ${rate(n * rounds, miss_ns)} found=${found}",
+    )
+}
+
+bench(64, 20000)
+bench(4096, 300)
+bench(65536, 20)
+bench(600000, 3)
+bench(2000000, 1)

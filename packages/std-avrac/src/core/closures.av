@@ -1,0 +1,308 @@
+//! A FN AS A VALUE: a lambda's body lowered as its own unit, register 0 the box it's handed and its
+//! seats after; every name the body reads from further out is a lane of that box, in the order the
+//! body first reads it, a value record's fields and a value enum's tag and word across slots of their
+//! own. Where the lambda stands, its captures are read in lane order and boxed behind the body's code
+//! address; a call through such a box hands it the box first.
+use @std.meta.{derive}
+use @std.program.saved_derive.{Saved}
+use core.expr.{Lambda}
+
+/// A lambda's body lowered as its own unit: where it's written, the symbol its code is known by, its
+/// seats' layouts (the box first), its answer's, its instructions, each register's layout, and the
+/// fns it calls.
+@derive(Saved)
+export type LiftedBody = {
+    lo: int,
+    hi: int,
+    symbol: string,
+    params: List<Layout>,
+    answer: Layout,
+    ins: List<Ins>,
+    layouts: List<Layout>,
+    callees: List<CalledFn>,
+    /// The task tests it holds, not placed yet.
+    tests: List<TaskTest> = [],
+    /// Its registers holding a fn value's box, each with the box's type.
+    boxed: List<BoxedValue> = [],
+    /// Its `ctx` sets and its calls through a `dyn` box.
+    marks: ContextMarks = ContextMarks {},
+    /// Whether any unit may lift this same body under its symbol, as a shim named by the fn it
+    /// serves is: the link keeps one.
+    shared: bool = false,
+    /// Where a task's body was written, which a trace names its spawn by; absent for any other lambda.
+    site: string? = null,
+}
+
+/// A lambda lifted: its body, the names it captures in lane order, and what of it wasn't lowered.
+export type Lift = { body: LiftedBody, lanes: List<string>, missing: List<string> }
+
+/// A name a lambda's body reads from further out, and the slots its value takes in the box.
+export type Lane = { name: string, slots: int }
+
+/// The lane a framed lambda's box carries its frame of contexts in, first of its lanes: a name no
+/// binding is written with.
+export const FRAME_LANE: string = "\$frame"
+
+/// The slot a framed lambda's box holds its frame in: its first lane, after its code.
+export const FN_FRAME: int = 1
+
+impl Lowering {
+    /// The lambda `lam` at the node `site`, of the fn type `ty` that `lift_refusal` passes, its body
+    /// lowered as its own unit against `program`; a task's, when `tasked`, answers its value in a
+    /// one-cell list.
+    mut fn lift(
+        lam: Lambda,
+        ty: SignedType,
+        site: ExprId,
+        program: LoweredProgram,
+        tasked: bool = false,
+    ) -> Lift { self.lift_ended(lam, ty, site, program, tasked) { cx -> } }
+
+    /// The lambda `lam` lifted as `lift` lifts it, `ended` run in its body once the body's value is
+    /// made, inside the body's own scope.
+    mut fn lift_ended(
+        lam: Lambda,
+        ty: SignedType,
+        site: ExprId,
+        program: LoweredProgram,
+        tasked: bool,
+        ended: fn(mut Lowering) -> void,
+    ) -> Lift {
+        let span = self.store.expr_span(site) ?? Span { lo: 0, hi: 0 }
+        let named = lift_named(self.store, program, site, span)
+        let symbol = if tasked { "${named}\$task" } else { named }
+        let framed = program.framed.contains(symbol)
+        let lanes: Cell<List<Lane>> = Cell
+            .new(if framed { [Lane { name: FRAME_LANE, slots: 1 }] } else { [] })
+        let record = self.offered_record(lam, ty)
+        let written = if record != null { [] } else { [p.name.of for at, p in lam.params if ty.seats[at].mutable] }
+        mut body = lowering(self.store, program, self.types, self.seats, ty.answer!) with { tasked: tasked, written_seats: written, names: self.names, roots: [lam.body] }
+        for scope in self.scopes.get() {
+            for name, b in scope { body.bind(name, b.outer(name, lanes)) }
+        }
+        let _ = body.mint(body.laid_out(ty))
+        if record != null { body.offer_seated(lam, record!) } else { for at, p in lam.params { body.seated_written(p.name.of, ty.seats[at].ty, ty.seats[at].mutable) } }
+        body.scope_enter()
+        if framed {
+            body.opened()
+            body.frame_entered()
+        }
+        let value = body.lower(lam.body)
+        ended(body)
+        if framed { body.closed() }
+        let r = if tasked { body.answer_cell(value) } else { value }
+        body.scope_exit(r)
+        body.emit(Ins.RetVal(r))
+        Lift {
+            body: LiftedBody {
+                lo: span.lo,
+                hi: span.hi,
+                symbol: symbol,
+                params: body.layouts.get().take(1 + ty.seats.length),
+                answer: if tasked { Layout.Boxed(BoxKind.List) } else { body.laid_out(ty.answer!) },
+                ins: body.ins.get(),
+                layouts: body.layouts.get(),
+                callees: body.callees.get(),
+                tests: body.tests.get(),
+                boxed: body.boxed.get(),
+                marks: body.marks.get(),
+                site: if tasked { (program.written_at)(site) } else { null },
+            },
+            lanes: [l.name for l in lanes.get()],
+            missing: body.missing.get(),
+        }
+    }
+
+    /// `l` kept: its body among the program's lifts, once, and what of it wasn't lowered noted here.
+    mut fn kept_lift(l: Lift) {
+        if !self.program.lifts.get().any(it.symbol == l.body.symbol) { self.program.lifts.push(l.body) }
+        for m in l.missing { self.missed(m) }
+    }
+
+    /// The box of layout `l` holding the code at `symbol`, then `captures`' words, sized for them: a
+    /// value of the fn type `of`.
+    mut fn fn_box(
+        l: Layout,
+        symbol: string,
+        captures: List<Reg>,
+        of: SignedType,
+        framed: bool = false,
+    ) -> Reg {
+        let words = flatten([self.leaves(c) for c in captures])
+        let dst = self
+            .call_row(
+                l,
+                rt_sig_of("avra_array_sized")!,
+                [
+                    self
+                        .const_int(
+                            1 +
+                                if framed { 1 } else { 0 } +
+                                [self.layout_of(w).slots() for w in words].sum(),
+                        ),
+                ],
+            )
+        let code = self.mint(Layout.Word)
+        self.emit(Ins.FnAddr(code, symbol))
+        self.run_row(rt_sig_of("avra_array_push")!, [dst, code])
+        if framed { self.run_row(rt_sig_of("avra_ctx_frame_pushed")!, [dst]) }
+        for w in words { self.push_leaf(dst, w) }
+        self.box_typed(dst, of)
+        dst
+    }
+
+    /// The box a making of `lift` makes, of the fn type `of`: its code, then the frame in force where it
+    /// carries one, marked as its frame, then each lane it captures.
+    mut fn lift_boxed(l: Layout, lift: Lift, of: SignedType) -> Reg {
+        let lanes = [self.lane_of(n) for n in lift.lanes if n != FRAME_LANE]
+        self.fn_box(l, lift.body.symbol, lanes, of, lift.lanes.contains(FRAME_LANE))
+    }
+
+    /// The box in `box` noted as a value of `of`, keyed alike wherever its type is spelled; an unknown
+    /// type keys nothing.
+    mut fn box_typed(box: Reg, of: SignedType?) {
+        let ty? = of else { return }
+        let key? = value_key((self.named_over(ty) ?? ty) with { nulls: 0 }) else { return }
+        self.boxed.push(BoxedValue { reg: box.index, of: key })
+    }
+
+    /// The box in `box`, of a fn type of `seats` seats no more is known of, noted so.
+    mut fn box_seated(box: Reg, seats: int) { self.boxed.push(BoxedValue { reg: box.index, of: open_value_key(seats) }) }
+
+    /// A task's answer `value` in the one cell its joiner reads.
+    mut fn answer_cell(value: Reg) -> Reg {
+        let cell = self
+            .call_row(Layout.Boxed(BoxKind.List), rt_sig_of("avra_array_sized")!, [self.const_int(1)])
+        self.push_slot(cell, value)
+        cell
+    }
+
+    /// The code the fn box `box` holds.
+    mut fn code_of(box: Reg) -> Reg { self.slot_read(Layout.Word, box, 0) }
+
+    /// A call of the code `code` read from `box`, a value of the fn type `of`, handed the box then
+    /// `args`, answering a value of layout `l`.
+    mut fn called_code(l: Layout, code: Reg, box: Reg, args: List<Reg>, of: SignedType?) -> Reg {
+        self.box_typed(box, of)
+        let dst = self.mint(l)
+        self.emit(Ins.CallPtr(dst, code, [box].concat(args)))
+        self.unwound_after(true)
+        dst
+    }
+}
+
+impl Lowering {
+    /// Whether a fn of `from` in a seat of `into` is called with a seat handed its place that the fn
+    /// takes as a value: a `mut` seat of `into`, of a type that rides no pointer, the fn never
+    /// writes through.
+    fn reseats(from: SignedType, into: SignedType) -> bool {
+        from.fits_written(into) &&
+            [s for at, s in into.seats if s.mutable && !from.seats[at].mutable && self.place_handed(s.ty)]
+                .length > 0
+    }
+
+    /// `r`, a fn of `from`, as a seat of `into` that `reseats` it holds it: a box of the code that
+    /// takes `into`'s seats, then the fn; under a `?`, present.
+    mut fn reseated(r: Reg, from: SignedType, into: SignedType) -> Reg {
+        if from.generic() || into.generic() {
+            return self
+                .missed_as("a fn value under type parameters in a seat that writes where it doesn't")
+        }
+        let seat = into.unwrapped()
+        let made = self.fn_box(self.laid_out(seat), self.reseating_code(from, seat), [r], seat)
+        if into.nullable() { self.adopted(made, seat, into) } else { made }
+    }
+
+    /// The code a fn of `from` is called by through a seat of `into` that `reseats` it: a unit taking
+    /// its box, then `into`'s seats, that calls the fn the box carries, handing it what a place holds
+    /// wherever it takes a value.
+    mut fn reseating_code(from: SignedType, into: SignedType) -> string {
+        let symbol = "seated\$${from.spelled()}\$${into.spelled()}"
+        if self.program.lifts.get().any(it.symbol == symbol) { return symbol }
+        let answer = into.answer ?? owned_type("void")
+        mut shim = lowering(self.store, self.program, self.types, self.seats, answer)
+        let box = shim.mint(shim.laid_out(into))
+        let seats = [shim.mint(shim.seat_laid(s.ty, s.mutable)) for s in into.seats]
+        shim.scope_enter()
+        let held = shim.unboxed_at(shim.laid_out(from), box, 1)
+        let args = [if s.mutable && !from.seats[at].mutable && shim.place_handed(s.ty) { shim.proven_read(shim.laid_out(s.ty), seats[at], 0) } else { seats[at] } for at, s in into.seats]
+        let r = shim.called_code(shim.laid_out(answer), shim.code_of(held), held, args, from)
+        self.shim_kept(shim, symbol, seats.length, r, answer)
+    }
+}
+
+/// A fn value's type as a key: its seat count, then its seats' types, with no seat's marks, and its
+/// answer's. A fn type naming a type parameter keys by its seat count alone, since the body a box is
+/// made in and the one that calls it may each see a different type there. A `dyn` box's type keys by
+/// its spelling, and keys nothing where it names a type parameter.
+fn value_key(seen: SignedType) -> string? {
+    if !(seen.head is .Function) { return if seen.generic() { null } else { seen.spelled() } }
+    if seen.generic() { return open_value_key(seen.seats.length) }
+    "${seen.seats.length}${VALUE_SEATS}fn(${[s.ty.spelled() for s in seen.seats].join(", ")}) -> ${seen.answer?.spelled() ?? "void"}"
+}
+
+/// The key of a fn type of `seats` seats no more is known of.
+fn open_value_key(seats: int) -> string { "${seats}${VALUE_SEATS}${OPEN_VALUE}" }
+
+/// What parts a fn value's key: its seat count from what follows.
+export const VALUE_SEATS: string = "|"
+
+/// What a fn value's key holds after its seat count where no more of its type is known.
+export const OPEN_VALUE: string = "*"
+
+impl Lowering {
+    /// The record the lambda `lam` of type `ty` takes the fields of by name, as `takes_by_name` says;
+    /// absent for a lambda that takes its seats as they are.
+    fn offered_record(lam: Lambda, ty: SignedType) -> SignedType? {
+        if ty.seats.length != 1 { return null }
+        let record = ty.seats[0].ty
+        if takes_by_name(lam.params, 1, self.fields_of(record)?.map(it.name)) { record } else { null }
+    }
+
+    /// The one seat of a lambda taking `record`'s fields by name: the record, and each of `lam`'s
+    /// parameters bound to its field read off it.
+    mut fn offer_seated(lam: Lambda, record: SignedType) {
+        let v = self.mint(self.laid_out(record))
+        let fields = self.fields_of(record)!
+        let laid? = self.seat_layouts(fields) else {
+            self.missed("a lambda taking the fields of a record whose fields aren't laid out")
+            return
+        }
+        for p in lam.params {
+            let n = fields.find_index(it.name == p.name.of)!
+            self.bind(p.name.of, Bound.Value(self.field_read(v, record, laid, n), fields[n].ty!))
+        }
+    }
+}
+
+/// THE OFFER: whether a lambda of `params`, filling a fn seat of `seats` seats, takes the fields of the
+/// one record that seat holds by name, `fields` that record's field names — any subset, none
+/// included: it writes no seat's type, and each seat names a field, `it` never.
+export fn takes_by_name(params: List<Param>, seats: int, fields: List<string>?) -> bool {
+    let names? = fields else { return false }
+    seats == 1 && params.all((p) -> p.ty == null && p.name.of != "it" && names.contains(p.name.of))
+}
+
+/// Why the lambda `lam` of type `ty` isn't lifted yet, absent when it is: each of its seats is one
+/// value, plain or written through, or the one record whose fields it takes by name.
+export fn lift_refusal(lam: Lambda, ty: SignedType, by_name: bool = false) -> string? {
+    if ty.nullable() || !(ty.head is .Function) || ty.answer == null { return "an untyped lambda" }
+    if ty.seats.length != lam.params.length && !by_name { return "a lambda taking a record's fields by name" }
+    if ty.seats.any(it.settled) { return "a lambda's seat that promises" }
+    null
+}
+
+/// The first slot of a lambda's box the name `name` it reads from further out rides in, its value
+/// taking `slots`: past the code and the lanes the body read first.
+fn capture_slot(lanes: Cell<List<Lane>>, name: string, slots: int) -> int {
+    let at = lanes.get().find_index(it.name == name)
+    if at == null { lanes.push(Lane { name: name, slots: slots }) }
+    1 + [l.slots for l in lanes.get().take(at ?? lanes.get().length - 1)].sum()
+}
+
+/// The name the lambda at `at`, written at `span`, is lifted by: where it stands in its body, and for
+/// one whose place another node may share, its own node too.
+fn lift_named(store: SyntaxArena, program: LoweredProgram, at: ExprId, span: Span) -> string {
+    let placed = (program.lift_symbol)(span.lo)
+    if store.place_shared(at) { "${placed}\$${at.index}" } else { placed }
+}

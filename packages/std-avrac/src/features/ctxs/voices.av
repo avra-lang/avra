@@ -1,0 +1,68 @@
+//! What a refusal of a `ctx` form says.
+use diagnostics.{Voice}
+
+/// `ctx.name` read, or `ctx name = v` set, where `name` declares no context.
+export fn context_unknown(name: string) -> Voice {
+    Voice {
+        message: "`ctx.${name}` reads a context, and no `ctx ${name}` is declared or imported here",
+        label: "names no context",
+        help: "declare it at a module's top level (`ctx ${name}: T = …`), or import it by name",
+    }
+}
+
+/// A context declared inside a body, or set at a module's top level, as `declared` says.
+export fn context_misplaced(name: string, declared: bool) -> Voice {
+    if declared {
+        Voice {
+            message: "`ctx ${name}: …` declares a context, and a context is declared at a module's top level",
+            label: "declared inside a body",
+            help: "move the declaration to the top level; inside a body, `ctx ${name} = v` sets it",
+        }
+    } else {
+        Voice {
+            message: "`ctx ${name} = …` sets a context for the rest of its block, and a module's top level is no block",
+            label: "set at the top level",
+            help: "give the default where it's declared (`ctx ${name}: T = v`), or set it inside a body",
+        }
+    }
+}
+
+/// The required context `name` an entry reaches with nothing setting it, by the bodies `chain` says;
+/// through a box of `subject` that may hold `held`, `crossed` there (called, or placed), where
+/// `subject` isn't empty; `starts` names the entry: a program, a case or a host fn.
+export fn context_required(
+    name: string,
+    chain: string,
+    subject: string,
+    held: string,
+    crossed: string,
+    starts: string,
+) -> Voice {
+    let how = if subject.is_empty() { "(${chain})" } else { "(${chain}): `${held}` reads it, and a `${subject}` ${crossed} there may be it" }
+    Voice {
+        message: "`${name}` is required, and this ${starts} reaches `ctx.${name}` with nothing setting it ${how}",
+        label: "the ${starts} starts here",
+        help: "set it before it is read (`ctx ${name} = …`), or give it a default where it is declared (`ctx ${name}: T = …`)",
+    }
+}
+
+/// The context `name`, of the type `ty` no value compares by, read by the cached fn `cached` — through
+/// the bodies `chain` says, where it isn't empty: a kept answer stands while each context it read
+/// holds what it held, and this one's is told apart by nothing.
+export fn context_cached(cached: string, name: string, ty: string, chain: string) -> Voice {
+    let through = if chain.is_empty() { "" } else { " through ${chain}" }
+    Voice {
+        message: "`${cached}` keeps its answers, and it reads `ctx.${name}`${through}, a `${ty}`, which compares by no value",
+        label: "kept by what it reads",
+        help: "read the context outside the cached fn and hand it the value as an argument, or make the context a value that compares — a number, text, a truth, or a record of one",
+    }
+}
+
+/// A `ctx name = v` that nothing in force under it reads.
+export fn context_set_unread(name: string) -> Voice {
+    Voice {
+        message: "`ctx ${name} = …` changes nothing: nothing it is in force over reads `ctx.${name}`",
+        label: "set here",
+        help: "drop the set, or read the context where the set is in force",
+    }
+}

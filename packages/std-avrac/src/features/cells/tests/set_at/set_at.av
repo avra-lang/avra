@@ -1,0 +1,35 @@
+// proves: set_at through a cell writes the held list in place, for ints
+// and strings, and a value read out of the list before a write keeps it.
+type Node = { name: string, kids: Cell<List<Node>> }
+
+fn no_kids() -> Cell<List<Node>> { Cell.new([]) }
+
+fn fill(c: Cell<List<int>>, n: int) {
+    for i in 0..n { c.set_at(i, i * 2) }
+}
+
+fn rename(c: Cell<List<string>>, n: int) {
+    for i in 0..n { c.set_at(i, "s${i}") }
+}
+
+fn kept(c: Cell<List<string>>) -> string {
+    let before = c.get()[0]
+    c.set_at(0, "gone")
+    before
+}
+
+fn again(c: Cell<List<string>>) {
+    c.set_at(1, c.get()[1])
+}
+
+let ints = Cell.new([0, 0, 0, 0])
+fill(ints, 4)
+let words = Cell.new(["a" + "x", "b" + "x", "c" + "x"])
+rename(words, 3)
+let was = kept(words)
+again(words)
+let leaf = Node { name: "leaf", kids: no_kids() }
+let root = Node { name: "root", kids: Cell.new([leaf]) }
+root.kids.set_at(0, Node { name: "new", kids: Cell.new([leaf]) })
+root.kids.get()[0].kids.set_at(0, Node { name: "deep", kids: no_kids() })
+"${ints.get()[3]} ${words.get()[0]} ${words.get()[1]} ${words.get()[2]} ${was} ${root.kids.get()[0].name} ${root.kids.get()[0].kids.get()[0].name} ${leaf.name}"

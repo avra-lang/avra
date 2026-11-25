@@ -1,0 +1,99 @@
+// What a `Result<T, _>` fn raises, asked of the program layer: a
+// concretely typed fn that fails, a `_` fn that catches it and re-raises
+// another's error — at any depth inside the arm — and a mutually
+// recursive pair whose sets close over each other.
+use @std.avrac.testing.{held_at, Judged}
+
+const RAISE_PATH: string = "/w/src/main.av"
+
+/// The program `main` writes, judged on the layer.
+fn raise_judged(main: string) -> Judged {
+    held_at(
+        {"/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n", RAISE_PATH: main},
+        "/w",
+    )
+        .judged_at(RAISE_PATH)
+}
+
+fn inferring_source() -> string {
+    "fn a() -> Result<int, string> {\n" +
+        "    fail \"boom\"\n" +
+        "}\n" +
+        "fn other() -> Result<int, string> {\n" +
+        "    fail \"oops\"\n" +
+        "}\n" +
+        "fn b() -> Result<int, _> {\n" +
+        "    let v = a() catch e -> {\n" +
+        "        other()?\n" +
+        "    }\n" +
+        "    v\n" +
+        "}\n"
+}
+
+fn nested_inferring() -> string {
+    "fn a() -> Result<int, string> {\n" +
+        "    fail \"boom\"\n" +
+        "}\n" +
+        "fn other() -> Result<int, string> {\n" +
+        "    fail \"oops\"\n" +
+        "}\n" +
+        "fn via_if(n: int) -> Result<int, _> {\n" +
+        "    let v = a() catch e -> {\n" +
+        "        if n > 0 {\n" +
+        "            other()?\n" +
+        "        } else {\n" +
+        "            0\n" +
+        "        }\n" +
+        "    }\n" +
+        "    v\n" +
+        "}\n" +
+        "fn via_match(n: int) -> Result<int, _> {\n" +
+        "    let v = a() catch e -> {\n" +
+        "        match n {\n" +
+        "            0 -> other()?,\n" +
+        "            rest -> 5,\n" +
+        "        }\n" +
+        "    }\n" +
+        "    v\n" +
+        "}\n" +
+        "fn via_nested_catch() -> Result<int, _> {\n" +
+        "    let v = a() catch e -> {\n" +
+        "        other() catch e2 -> {\n" +
+        "            e2.length\n" +
+        "        }\n" +
+        "    }\n" +
+        "    v\n" +
+        "}\n"
+}
+
+fn mutual_inferring() -> string {
+    "enum A {\n    A\n}\nenum B {\n    B\n}\n" +
+        "fn f(n: int) -> Result<int, _> {\n    if n <= 0 {\n        fail A.A\n    }\n    g(n - 1)?\n}\n" +
+        "fn g(n: int) -> Result<int, _> {\n    if n <= 0 {\n        fail B.B\n    }\n    f(n - 1)?\n}\n"
+}
+
+spec "compiler/failures — what a `_` fn raises over a catch and a re-raise" {
+    then "the program judges clean" { raise_judged(inferring_source()).clean() }
+    then "the `_` fn raises the re-raised error, once" { raise_judged(inferring_source()).raised_of(RAISE_PATH, "b").join(",") == "string" }
+}
+
+spec "compiler/failures — a re-raise nested inside further control flow within the arm" {
+    then "a re-raise inside an `if` inside the arm is raised" {
+        raise_judged(nested_inferring()).raised_of(RAISE_PATH, "via_if").join(",") == "string"
+    }
+    then "a re-raise inside a `match` inside the arm is raised" {
+        raise_judged(nested_inferring()).raised_of(RAISE_PATH, "via_match").join(",") == "string"
+    }
+    then "a catch nested in a catch's arm raises nothing past it, so its `_` is refused" {
+        let j = raise_judged(nested_inferring())
+        j.raised_of(RAISE_PATH, "via_nested_catch").is_empty() &&
+            j.diagnostics.map(it.kind).join(",") == "type.infer_result"
+    }
+}
+
+spec "compiler/failures — a mutually recursive pair" {
+    then "each raises the closed union" {
+        let j = raise_judged(mutual_inferring())
+        j.raised_of(RAISE_PATH, "f").length == 2 && j.raised_of(RAISE_PATH, "g").length == 2
+    }
+}

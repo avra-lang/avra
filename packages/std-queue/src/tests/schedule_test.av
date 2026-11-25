@@ -1,0 +1,271 @@
+// A schedule over the memory home, on the suite's virtual clock: the
+// ticks it sends, the one it catches up, the ones it skips, and a clock
+// that steps back.
+use @std.queue.{queue}
+use @std.queue.schedule.{schedule, ScheduleError, tick_id}
+use @std.time.{Time, cron, mins, now_ns, parse_iso, secs, sleep}
+
+/// A wall clock that reads `iso` when it is made and runs on with the
+/// suite's clock.
+fn wall_from(iso: string) -> fn() -> Time {
+    let base = parse_iso(iso)!.ns
+    let origin = now_ns()
+    () -> Time { ns: base + now_ns() - origin }
+}
+
+fn at(iso: string) -> Time {
+    parse_iso(iso)!
+}
+
+fn said(r: Result<int, ScheduleError>) -> string {
+    match r {
+        .Ok(n) -> "sent ${n}",
+        .Err(e) -> match e {
+            .NoQueue -> "no queue",
+            .NoTick -> "no tick",
+            .TwoTicks -> "two ticks",
+            .Line(why) -> why.text(),
+            .Home(_) -> "home failed",
+        },
+    }
+}
+
+fn clock_of(t: Time) -> string {
+    t.iso().substring(11, 19)
+}
+
+/// A schedule `every` span from `iso`, run for `span` seconds.
+fn beating(iso: string, span: int) -> string {
+    let sent: Cell<List<string>> = Cell.new([])
+    queue<int> beats {}
+    schedule beat {
+        name: "beat"
+        every: secs(10)
+        sends: beats
+        item: 1
+        catch_up: secs(1)
+        clock: wall_from(iso)
+        sent: (tick: Time, _id: string) -> sent.push(clock_of(tick))
+    }
+    let r = spawn beat.run()
+    sleep(secs(span))
+    beat.stop()
+    "${said(r.await)} | ${sent.get().join(" ")} | depth ${beats.home().depth() catch 0 - 1}"
+}
+
+/// A nightly line from `iso`, run for `span` minutes under `catch_up`.
+fn nightly(iso: string, span: int, catch_up: int) -> string {
+    let sent: Cell<List<string>> = Cell.new([])
+    let missed: Cell<List<string>> = Cell.new([])
+    queue<int> reports {}
+    schedule night {
+        name: "night"
+        at: cron("0 3 * * *")
+        sends: reports
+        item: 7
+        catch_up: mins(catch_up)
+        clock: wall_from(iso)
+        sent: (tick: Time, _id: string) -> sent.push(clock_of(tick))
+        missed: (tick: Time) -> missed.push(clock_of(tick))
+    }
+    let r = spawn night.run()
+    sleep(mins(span))
+    night.stop()
+    "${said(r.await)} | sent ${sent.get().join(" ")} | missed ${missed.get().join(" ")}"
+}
+
+/// A quarter-hour line from `iso`, run for `span` minutes.
+fn quarters(iso: string, span: int) -> string {
+    let ids: Cell<List<string>> = Cell.new([])
+    queue<int> q {}
+    schedule quarter {
+        name: "quarter"
+        at: cron("*/15 * * * *")
+        sends: q
+        item: 1
+        catch_up: secs(1)
+        clock: wall_from(iso)
+        sent: (tick: Time, _id: string) -> ids.push(tick_id("quarter", tick))
+    }
+    let r = spawn quarter.run()
+    sleep(mins(span))
+    quarter.stop()
+    let items: Cell<List<int>> = Cell.new([])
+    mut d = q.home().take() catch null
+    while d != null {
+        items.push(d!.item)
+        let _ = q.home().ack(d!)
+        d = q.home().take() catch null
+    }
+    "${said(r.await)} | ${ids.get().map(it.substring(8, 27)).join(" ")} | items ${items.get().length}"
+}
+
+/// Run, stop, and run the same schedule again over the same instant.
+fn twice_in_one_process() -> string {
+    queue<int> q {}
+    schedule night {
+        name: "night"
+        at: cron("0 3 * * *")
+        sends: q
+        item: 7
+        clock: () -> at("2026-11-18T03:20:00Z")
+    }
+    night.stop()
+    let first = night.run()
+    night.stop()
+    let second = night.run()
+    "${said(first)} then ${said(second)} | depth ${q.home().depth() catch 0 - 1}"
+}
+
+/// A clock held in a cell: the schedule sends the 03:00 tick, then the
+/// clock steps back over it and the run goes on.
+fn stepped_back() -> string {
+    let wall: Cell<int> = Cell.new(at("2026-11-18T03:00:01Z").ns)
+    let sent: Cell<int> = Cell.new(0)
+    queue<int> q {}
+    schedule night {
+        name: "night"
+        at: cron("0 3 * * *")
+        sends: q
+        item: 7
+        clock: () -> Time { ns: wall.get() }
+        sent: (_tick: Time, _id: string) -> sent.set(sent.get() + 1)
+    }
+    let r = spawn night.run()
+    sleep(mins(2))
+    wall.set(at("2026-11-18T02:59:00Z").ns)
+    sleep(mins(5))
+    wall.set(at("2026-11-18T03:00:30Z").ns)
+    sleep(mins(5))
+    night.stop()
+    "${said(r.await)} | sends heard ${sent.get()} | depth ${q.home().depth() catch 0 - 1}"
+}
+
+/// A clock held in a cell that jumps from before the 03:00 tick to two
+/// hours after it while the run waits, as a machine that slept would.
+fn jumped() -> string {
+    let wall: Cell<int> = Cell.new(at("2026-11-18T02:50:00Z").ns)
+    let missed: Cell<List<string>> = Cell.new([])
+    queue<int> q {}
+    schedule night {
+        name: "night"
+        at: cron("0 3 * * *")
+        sends: q
+        item: 7
+        clock: () -> Time { ns: wall.get() }
+        missed: (tick: Time) -> missed.push(clock_of(tick))
+    }
+    let r = spawn night.run()
+    sleep(mins(2))
+    wall.set(at("2026-11-18T05:00:00Z").ns)
+    sleep(mins(2))
+    night.stop()
+    "${said(r.await)} | missed ${missed.get().join(" ")} | depth ${q.home().depth() catch 0 - 1}"
+}
+
+/// A schedule whose line arrives at run time, so no check saw it.
+fn lined(line: string) -> string {
+    queue<int> q {}
+    schedule s {
+        name: "s"
+        at: cron(line)
+        sends: q
+        item: 1
+    }
+    s.stop()
+    said(s.run())
+}
+
+/// A schedule whose span arrives at run time.
+fn spanned(n: int) -> string {
+    queue<int> q {}
+    schedule s {
+        name: "s"
+        every: secs(n)
+        sends: q
+        item: 1
+    }
+    s.stop()
+    said(s.run())
+}
+
+/// What a schedule's check says over settings handed in, so no
+/// compile-time check speaks first: each refusal's words, split by `|`.
+fn checked(name: string, line: string?, span: int?, catch_up: int) -> string {
+    queue<int> q {}
+    let s = schedule<int> {
+        name: name
+        at: if line == null { null } else { cron(line!) }
+        every: if span == null { null } else { secs(span!) }
+        sends: q
+        item: 1
+        catch_up: secs(catch_up)
+    }
+    s.check().map(it.message).join("|")
+}
+
+spec "std/queue — a schedule" {
+    given "its check" {
+        then "a named schedule on one cron line is accepted" {
+            checked("nightly", "0 3 * * *", null, 60) == ""
+        }
+        then "a schedule with no name is refused, the name being the id of its ticks" {
+            checked("", "0 3 * * *", null, 60) == "a schedule is named — its name heads the id of every tick it sends — and this has no `name:`"
+        }
+        then "a schedule that names no tick, or both kinds, is refused" {
+            checked("s", null, null, 60) == "a schedule names when it ticks, `at:` a cron line or `every:` a span, and this names neither" &&
+                checked("s", "0 3 * * *", 10, 60) == "a schedule ticks `at:` a cron line or `every:` a span, and this names both"
+        }
+        then "a cron line that is no line is refused in the line's own words" {
+            checked("s", "0 3 * * 8", null, 60) == "`at:` is no cron line: a day of the week is 0 to 7, and this is 8"
+        }
+        then "a span of nothing, and a catch_up of nothing, are refused" {
+            checked("s", null, 0, 60) == "a schedule's `every:` is longer than nothing, and this is 0ms" &&
+                checked("s", null, 10, 0) == "a schedule sends a tick no later than `catch_up:` after it, and this is 0ms, so it sends none"
+        }
+    }
+    given "every: a span" {
+        then "sends the tick it starts on and one per span after, each once" {
+            beating("2026-11-18T00:00:00Z", 35) == "sent 4 | 00:00:00 00:00:10 00:00:20 00:00:30 | depth 4"
+        }
+        then "a start between ticks waits for the next" {
+            beating("2026-11-18T00:00:05Z", 20) == "sent 2 | 00:00:10 00:00:20 | depth 2"
+        }
+    }
+    given "at: a cron line" {
+        then "ticks on its line, each under the schedule's name and the tick" {
+            quarters("2026-11-18T00:05:00Z", 31) == "sent 2 | 2026-11-18T00:15:00 2026-11-18T00:30:00 | items 2"
+        }
+        then "a tick missed while nothing ran is sent once on starting within catch_up" {
+            nightly("2026-11-18T03:20:00Z", 5, 60) == "sent 1 | sent 03:00:00 | missed "
+        }
+        then "a tick older than catch_up when the run starts is skipped, and no run is there to call it missed" {
+            nightly("2026-11-18T05:00:00Z", 5, 60) == "sent 0 | sent  | missed "
+        }
+        then "a wall that jumps past a tick by more than catch_up while the run waits skips it and says so" {
+            jumped() == "sent 0 | missed 03:00:00 | depth 0"
+        }
+        then "a run that sleeps through a tick and wakes within catch_up sends it once" {
+            nightly("2026-11-18T02:50:00Z", 20, 60) == "sent 1 | sent 03:00:00 | missed "
+        }
+        then "a day's run sends the next night's tick too" {
+            nightly("2026-11-18T02:50:00Z", 60 * 25, 60) == "sent 2 | sent 03:00:00 03:00:00 | missed "
+        }
+    }
+    given "one process" {
+        then "a schedule run again over the same tick sends nothing more" {
+            twice_in_one_process() == "sent 1 then sent 0 | depth 1"
+        }
+        then "a clock that steps back over a sent tick sends it no second time" {
+            stepped_back() == "sent 1 | sends heard 1 | depth 1"
+        }
+    }
+    given "settings only a run sees" {
+        then "a line that is no line is the run's error" {
+            lined("0 3 * *") == "a cron line has five fields — minute, hour, day of the month, month, day of the week — and this has 4"
+        }
+        then "a span of nothing is no tick, and the run says so" {
+            spanned(0) == "no tick"
+        }
+    }
+}

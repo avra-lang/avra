@@ -1,0 +1,52 @@
+#!/bin/sh
+# THE COMPILER'S SOURCE, as paths: packages/cli plus every std package its
+# `use @std.x` graph reaches, the runtime, the backend, the seed and the
+# Makefile. ONE definition — a lane's Sprite (`tools/work`) and the checks'
+# compiler cache both ask it, so "did the compiler change" has one answer.
+#
+#   sh tools/compiler_paths.sh [<root>]          # one path per line
+#   sh tools/compiler_paths.sh --key [<root>]    # a hash of what git holds there
+#
+# A package's tests/ are never the compiler's: a build never reads them, and
+# the key leaves them out. The key reads the INDEX, so it names a commit's
+# tree; a caller hashing a dirty tree walks the paths itself.
+set -eu
+key=0
+[ "${1:-}" != --key ] || { key=1; shift; }
+cd "${1:-.}"
+# the text of every `.av` source under `$1` git tracks, so nothing a build or a run leaves there adds a
+# package; outside a git tree, every `.av` there
+sources() {
+    if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        git ls-files -- "$1" | grep '\.av$' | while IFS= read -r f; do [ ! -f "$f" ] || cat "$f"; done
+    else
+        find "$1" -name '*.av' -type f -exec cat {} +
+    fi
+}
+paths() {
+    pending="cli"
+    seen=""
+    while [ -n "$pending" ]; do
+        d=${pending%% *}
+        case $pending in *' '*) pending=${pending#* } ;; *) pending= ;; esac
+        case " $seen " in *" $d "*) continue ;; esac
+        seen="$seen $d"
+        [ -d "packages/$d/src" ] || continue
+        for dep in $(sources "packages/$d/src" | grep -hoE 'use +@std\.[A-Za-z0-9_]+' | sed -E 's/^use +@std\.//' | sort -u); do
+            pending="$pending std-$dep"
+        done
+    done
+    {
+        for d in $seen; do [ ! -d "packages/$d/src" ] || echo "packages/$d"; done
+        printf '%s\n' Makefile backend runtime bootstrap packages/std-prelude
+    } | sort -u
+}
+if [ "$key" = 1 ]; then
+    # A listing that failed or came back empty names no tree: refuse, never
+    # hash nothing into a key every tree would share.
+    files=$(git ls-files -s -- $(paths) ':(exclude,glob)**/tests/**')
+    [ -n "$files" ] || { echo "compiler_paths: git lists no compiler source here" >&2; exit 1; }
+    printf '%s\n' "$files" | git hash-object --stdin
+else
+    paths
+fi

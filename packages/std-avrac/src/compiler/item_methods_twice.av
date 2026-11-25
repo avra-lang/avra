@@ -1,0 +1,154 @@
+//! WHERE A TYPE'S METHOD NAME IS TAKEN TWICE: a type's methods are one namespace — one impl owns
+//! each name, statics and methods alike, across every impl block of its package, in declaration
+//! order (a file's path, then its items). A generic trait's member owns its name AT the trait's
+//! arguments, so `show<int>` and `show<string>` are two members, and a plain method of that name is
+//! refused beside them. Read off the impls' syntax and the package's impl index.
+use core.{StmtId, SyntaxArena, flatten, some_list}
+use compiler.laws.{Found, law}
+use diagnostics.{Voice}
+use features.{member_and_method, method_twice}
+use @std.meta.{derive}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.saved_derive.{Saved}
+use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+use @std.text.{text_before}
+
+/// A method declared where its name is already taken on its type: where, the type, the name it owns
+/// (with a generic trait's arguments), and whether it's a plain method beside a generic trait's
+/// member of that name, or one of those beside a plain one.
+@derive(Saved)
+type TakenAt = { at: FindingAt?, owner: string, key: string, shared: bool }
+
+impl TakenAt {
+    /// The method as its law finds it, its voice handed the type and the name.
+    fn found() -> Found { Found { at: span_of(self.at), args: [self.owner, self.key] } }
+}
+
+/// Every method in one written item whose name is already taken on its type.
+@derive(Saved)
+type ItemTaken = { rows: List<TakenAt> }
+
+/// A method as its type's namespace holds it: the name it owns, its plain name, whether its impl
+/// implements a generic trait, and where it's declared.
+type Owned = { key: string, name: string, generic: bool, stmt: StmtId }
+
+/// Every method the written item `at` of `file` declares whose name an earlier one of its type
+/// already took.
+fn item_methods_taken(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemTaken {
+    if !item_held(engine, file, at) { return methods_taken_made(engine, file, at) }
+    methods_taken_seen(item_view(engine, file, at))
+}
+
+/// What `item_methods_taken` answers through the item's `view`, made the first time it is asked.
+fn methods_taken_seen(view: ItemView) -> ItemTaken {
+    let held? = view.methods_taken.get() else {
+        let made = methods_taken_made(view.engine, view.file, view.at)
+        view.methods_taken.set(made)
+        return made
+    }
+    held
+}
+
+/// What `item_methods_taken` answers, made.
+fn methods_taken_made(engine: QueryEngine, file: SourceFileAddress, at: int) -> ItemTaken {
+    if !item_held(engine, file, at) { return ItemTaken { rows: [] } }
+    let item = read_item(engine, file, at)
+    let blocks = [s for s in item.stmts if item.store.impl_parts(s) != null]
+    if blocks.is_empty() { return ItemTaken { rows: [] } }
+    let filed = item_written_impls(engine, file, at)
+    ItemTaken {
+        rows: flatten(
+            [taken_in(engine, file, at, item.store, s, filed[j]) for j, s in blocks if j < filed.length],
+        ),
+    }
+}
+
+/// The methods the impl `s` declares whose name is already taken on its type: by an impl of the
+/// type declared earlier in the package, or by an earlier method of `s` itself.
+fn taken_in(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    at: int,
+    store: SyntaxArena,
+    s: StmtId,
+    i: ItemImpl,
+) -> List<TakenAt> {
+    let d? = impl_target(engine, file, i) else { return [] }
+    let earlier = flatten(
+        [owned_by(engine, f.at) for f in impls_in(package_impls_part(engine, file.package_name, d.name), d.file) if declared_before(engine, f.at, file, at)],
+    )
+    let mine = owned_in(store, s)
+    [r! for k, m in mine for r in [taken(earlier.concat(mine.take(k)), m, i.target, store)] if r != null]
+}
+
+/// The method `m` refused against `before`, every method its type declared ahead of it: its name
+/// taken, or a plain method and a generic trait's member sharing it; absent where it's free.
+fn taken(before: List<Owned>, m: Owned, owner: string, store: SyntaxArena) -> TakenAt? {
+    let at = kept_at(store.stmt_span(m.stmt))
+    if before.any(it.key == m.key) { return TakenAt { at: at, owner: owner, key: m.key, shared: false } }
+    if !before.any(it.name == m.name && it.generic != m.generic) { return null }
+    TakenAt { at: at, owner: owner, key: m.name, shared: true }
+}
+
+/// The methods the impl the written item `a` holds declares, as its type's namespace holds them.
+fn owned_by(engine: QueryEngine, a: ImplAt) -> List<Owned> {
+    let item = read_item(engine, a.file, a.item)
+    flatten([owned_in(item.store, s) for s in some_list(impl_stmt_at(item, a))])
+}
+
+/// The methods and statics the impl `s` declares, each owning its name at the arguments of the
+/// trait `s` implements.
+fn owned_in(store: SyntaxArena, s: StmtId) -> List<Owned> {
+    let args = [a.text() for a in store.impl_parts(s)?.of_args ?? []]
+    let at_args = if args.is_empty() { "" } else { "<${args.join(", ")}>" }
+    [Owned { key: "${f!.name}${at_args}", name: f!.name, generic: !args.is_empty(), stmt: m } for m in store.impl_parts(s)?.fns ?? [] for f in [store.fn_parts(m)] if f != null]
+}
+
+/// Whether the impl at `a` is declared before the written item `at` of `file`: in a file whose path
+/// comes first, or earlier in the same file.
+fn declared_before(engine: QueryEngine, a: ImplAt, file: SourceFileAddress, at: int) -> bool {
+    if same_file(a.file, file) { item_order(engine, file, a.item) < item_order(engine, file, at) } else { text_before(a.file.path_in_package, file.path_in_package) }
+}
+
+/// Whether a written item of `file` declares a method whose name its type already took: a build that
+/// reaches the file fails on it.
+export fn takes_method_names(engine: QueryEngine, file: SourceFileAddress) -> bool {
+    file_found_by(engine, file, ["method_declared_twice", "member_named_as_method"])
+}
+
+/// Every method of the written item `view` shows declared where its name is already taken.
+fn names_taken(view: ItemView) -> List<Found> {
+    [r.found() for r in methods_taken_seen(view).rows if !r.shared]
+}
+
+/// Every method of the written item `view` shows sharing its name between a plain method and a
+/// generic trait's member.
+fn names_shared(view: ItemView) -> List<Found> {
+    [r.found() for r in methods_taken_seen(view).rows if r.shared]
+}
+
+/// one impl owns each method name on a type
+export law method_declared_twice {
+    kind: "type.impl"
+    reads_view: names_taken
+    voice: twice_words
+    witness: "type M = { n: int }\n\nimpl M {\n    fn switched(k: int) -> int { self.n + k }\n}\n\nimpl M {\n    fn switched(k: int, j: int) -> int { k + j }\n}\n"
+}
+
+/// a generic trait's members own their name on a type
+export law member_named_as_method {
+    kind: "type.impl"
+    reads_view: names_shared
+    voice: shared_words
+    witness: "type M = { n: int }\n\ntrait Shows<T> {\n    fn show(t: T) -> int\n}\n\nimpl Shows<int> for M {\n    fn show(t: int) -> int { t }\n}\n\nimpl M {\n    fn show(t: int) -> int { t }\n}\n"
+}
+
+fn twice_words(a: List<string>) -> Voice { method_twice(a[0], a[1]) }
+
+fn shared_words(a: List<string>) -> Voice { member_and_method(a[0], a[1]) }
+
+collect listed_taken_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries the method-name laws are read through, for a process to hand its engine.
+export fn taken_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_taken_facts) }

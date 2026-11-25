@@ -1,0 +1,218 @@
+//! The typing rules of a call and `return`. A call: each argument checks against its seat, and the
+//! call is what the fn answers. A declared fn's type parameters are the call's, filled by its
+//! arguments (`Checking.fills`); a fn the body holds names the body's own, which nothing fills, and
+//! carries no default: each of its seats is written.
+use core.{
+    LambdaFault,
+    Checking,
+    Checks,
+    CalleeNamed,
+    ExprId,
+    Expected,
+    FilledByName,
+    OwnType,
+    ReadAs,
+    Refused,
+    Seating,
+    SignedType,
+    StmtChecks,
+    StmtId,
+    TypeHead,
+    Unhanded,
+    owned_type,
+}
+use core.expr.{Call, Named}
+use core.stmt.{FnDecl, Return}
+
+impl Checks for Call {
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let callee = cx.read(e, self.callee.of)
+        let written? = callee else {
+            return crossed(cx, e, self.callee.of, self.args) ?? unanswered_call(
+                cx,
+                e,
+                self.callee.of,
+                self.args,
+                !self.pins.is_empty(),
+            )
+        }
+        let seat_of = (at: int) -> Seating.Argument(self.callee.of, at)
+        if cx.local(self.callee.of) != null {
+            if cx.value_call_refused(e, self.callee.of, written, !self.pins.is_empty()) { return cx.unfilled(self.args) }
+            let held? = cx.program.called_as(written) else { return cx.unfilled(self.args) }
+            if cx.seats_named(e, held, self.args, 0, self.callee.of) { return null }
+            let answer = cx
+                .rigidly_called(
+                    held with { seats: [s with { defaulted: false } for s in held.seats] },
+                    self.args,
+                    seat_of,
+                )
+            seats_written(cx, e, self, held)
+            return answer
+        }
+        if !(written.head is .Function) { return cx.unfilled(self.args) }
+        let declares = (cx.program.type_params_named)(self.callee.of, cx.home_of(e))
+        if declares != null &&
+            cx.pins_refused(e, self.callee.of, declares!.length, self.pins.length, self.args) { return null }
+        mut pinned: Map<string, SignedType> = {}
+        for at, pin in self.pins { pinned.set("${at}", cx.written(pin)) }
+        if cx.seats_named(e, written, self.args, 0, self.callee.of) { return null }
+        let answer = cx
+            .called(
+                written,
+                self.args,
+                expected,
+                seat_of,
+                pinned,
+                (cx.program.bounds_named)(self.callee.of, cx.home_of(e)),
+                if declares == null {
+                    null
+                } else {
+                    CalleeNamed {
+                        name: self.callee.of,
+                        type_params: declares!,
+                        defaults: (cx.program.defaults_named)(self.callee.of, cx.home_of(e)),
+                    }
+                },
+            )
+        if !named_into_extern(cx, e, self) { seats_written(cx, e, self, written) }
+        answer
+    }
+}
+
+/// Whether `call` names a seat of an extern, whose seats are called by position: its first named
+/// argument refused where it does.
+fn named_into_extern(mut cx: Checking, e: ExprId, call: Call) -> bool {
+    let named? = call.args.find((a) -> cx.store.names_its_seat(a)) else { return false }
+    if !(cx.program.external)(call.callee.of, cx.home_of(e)) { return false }
+    cx.unplaced(named, call.callee.of, cx.store.arg_label(named) ?? "")
+    true
+}
+
+/// Each argument `call` hands a `mut` or a `state` seat of the declared fn of type `f`, by the seat
+/// it fills — its name's, else its place's — judged as the place the seat writes through, an
+/// extern's as the cell C writes through, a `state` seat's as the `state` it shares; a place one
+/// call hands two `mut` seats is refused at the call.
+fn seats_written(mut cx: Checking, e: ExprId, call: Call, f: SignedType) {
+    if !f.seats.any(it.mutable || it.state || it.settled || it.unshared) { return }
+    if call.args.any((a) -> cx.store.spread_operand(a) != null) { return spread_seats(cx, call, f) }
+    if !f.seats.any(it.mutable || it.state) { return }
+    let names = [s.name ?? "" for s in f.seats]
+    let plan = if names.any(it.is_empty()) { [if j < call.args.length { j } else { 0 - 1 } for j in 0..f.seats.length] } else { cx.store.seat_plan(call.args, names) }
+    let external = (cx.program.external)(call.callee.of, cx.home_of(e))
+    mut roots: List<string> = []
+    for j, at in plan {
+        if at >= 0 && f.seats[j].state {
+            cx
+                .state_seat_handed(
+                    cx.store.unnamed(call.args[at]),
+                    f.seats[j].ty,
+                    call.callee.of,
+                    j,
+                    if cx.local(call.callee.of) == null { f.seats[j].name ?? "" } else { "" },
+                    Unhanded.Stateless,
+                )
+        } else if at >= 0 && f.seats[j].mutable {
+            let a = cx.store.unnamed(call.args[at])
+            cx.seat_written(a, f.seats[j].ty, call.callee.of, j, external)
+            let root? = cx.written_root(a) else { continue }
+            if roots.contains(root) { cx.handed_twice(e, call.callee.of, root) }
+            roots = roots.concat([root])
+        }
+    }
+}
+
+/// Each field a spread argument of `call` carries into a seat of `f` that takes a place or a settled
+/// value, which no field is.
+fn spread_seats(mut cx: Checking, call: Call, f: SignedType) {
+    for a in call.args {
+        let operand? = cx.store.spread_operand(a) else { continue }
+        let t? = cx.type_of(operand) else { continue }
+        let record? = cx.record_of(cx.seen(t) ?? t) else { continue }
+        for field in record.fields {
+            let seat? = f.seats.find(it.name == field.name) else { continue }
+            if !(seat.mutable || seat.state || seat.settled || seat.unshared) { continue }
+            cx
+                .refused
+                .push(
+                    Refused {
+                        at: a,
+                        want: seat.ty,
+                        found: seat.ty,
+                        seat: Seating.SpreadPlace(call.callee.of, field.name),
+                    },
+                )
+        }
+    }
+}
+
+impl StmtChecks for Return {
+    /// `return` checks its value against what the fn answers: none where the fn answers nothing, and
+    /// none at all where no fn encloses it; a bare one stands only where the fn answers nothing.
+    fn stmt_checked(mut cx: Checking, s: StmtId) {
+        if cx.fnless {
+            if self.value != null { let _ = cx.check(self.value!, Expected.Free) }
+            return returned_refused(cx, Seating.Fnless(s.index), null)
+        }
+        let want = cx.answer
+        let answers_nothing = want?.owns(OwnType.Void) ?? false && !(want?.nullable() ?? false)
+        let value? = self.value else {
+            if want != null && !answers_nothing { returned_refused(cx, Seating.Bare(s.index), want) }
+            return
+        }
+        if !answers_nothing { return checked_return(cx, s, value, want) }
+        let found? = cx.check(value, Expected.Free) else { return }
+        if found.owns(OwnType.Void) { return }
+        cx
+            .refused
+            .push(Refused { at: value, want: want!, found: found, seat: Seating.Return(s.index) })
+    }
+}
+
+/// The value `value` of the `return` statement `s`, checked against what the fn answers.
+fn checked_return(mut cx: Checking, s: StmtId, value: ExprId, want: SignedType?) {
+    let _ = cx.check_seated(value, want, Seating.Return(s.index))
+}
+
+/// The `return` statement `s` refused at `seat`, the fn answering `want` where it answers anything.
+fn returned_refused(mut cx: Checking, seat: Seating, want: SignedType?) {
+    let ty = want ?? owned_type("void")
+    cx.refused.push(Refused { at: ExprId { index: 0 }, want: ty, found: ty, seat: seat })
+}
+
+/// `Name(value)`: a value crossing into the named type `Name`, checked against the shape it is
+/// written over, one name down, as the one argument of a call of the name; any other count of
+/// arguments is refused as a call's. Absent, nothing checked, for a call of any other name.
+fn crossed(mut cx: Checking, e: ExprId, callee: string, args: List<ExprId>) -> SignedType? {
+    if cx.local(callee) != null { return null }
+    let named? = cx.type_value(callee, cx.home_of(e))?.described() else { return null }
+    let shape? = cx.named_next(named) else { return null }
+    let _ = cx.seals(e, named, "converted into here")
+    if args.length != 1 {
+        cx.crossing_miscounted(e, callee, args)
+        return named
+    }
+    let _ = cx.check_seated(args[0], shape, Seating.Argument(callee, 0))
+    named
+}
+
+/// A call of `callee` that no conversion takes: its arguments checked against nothing, and the
+/// callee noted as unanswered where nothing binds it and the program gives it no type — and, where
+/// the call pins type arguments on it, refused as a fn value pinned.
+fn unanswered_call(mut cx: Checking, e: ExprId, callee: string, args: List<ExprId>, pinned: bool) -> SignedType? {
+    if cx.local(callee) == null && cx.type_value(callee, cx.home_of(e)) == null {
+        cx.unbound_read(e, callee, ReadAs.Call)
+        if pinned { let _ = cx.lambda_faulted(e, LambdaFault.Pinned(callee)) }
+    }
+    cx.unfilled(args)
+}
+
+impl StmtChecks for FnDecl {
+    /// A fn declared in a body binds its name there; its own body is typed as its own declaration.
+    fn stmt_checked(mut cx: Checking, s: StmtId) { cx.bind(self.name.of, null) }
+}
+
+impl Checks for Named {
+    /// A named argument is its value, checked against what its seat wants.
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? { cx.check(self.value, expected) }
+}

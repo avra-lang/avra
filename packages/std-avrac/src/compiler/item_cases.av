@@ -1,0 +1,245 @@
+//! A SUITE'S CASES ON THE PROGRAM LAYER. Each `then` a `spec` writes is a case: a body answering a
+//! bool, typed and lowered as a unit of its own, read off its spec's item alone — so an edit of one
+//! spec's item re-lowers that spec's cases, and no other's. A file's cases are said with their
+//! spec's, group's and own names and the line each stands on, as the suite's runner says them.
+use core.{BoxKind, CalledFn, Ins, Layout, Level, Reg, TypeId, TypeRegistry, flatten, owned_type}
+use compiler.lower.{Lowered}
+use @std.testing.{CaseRef, words}
+use @std.meta.{derive}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.saved_derive.{Saved}
+use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+use @std.program.source_facts.{source_text}
+
+/// One case a file writes: the item its spec stands in, its place among that spec's cases, its
+/// spec's, group's and own names, and the line its `then` stands on.
+@derive(Saved)
+export type CaseAt = { item: int, index: int, suite: string, group: string, name: string, line: int }
+
+/// Every case a file writes, in the order it writes them.
+@derive(Saved)
+export type FileCases = { cases: List<CaseAt> }
+
+/// Every case `file` writes, in its items' order and each spec's own.
+@query
+export fn file_cases(engine: QueryEngine, file: SourceFileAddress) -> FileCases {
+    let text = source_text(engine, file) ?? ""
+    FileCases {
+        cases: flatten(
+            [item_cases(engine, file, read_item(engine, file, at), at, text) for at in item_ids(engine, file)],
+        ),
+    }
+}
+
+/// The cases the item `at` of `file`, whose text is `text`, writes in its spec.
+fn item_cases(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, at: int, text: string) -> List<
+    CaseAt,
+> {
+    flatten(
+        [[CaseAt {
+            item: at,
+            index: k,
+            suite: parts!.name,
+            group: c.group,
+            name: c.name,
+            line: line_at(
+                text,
+                file_placed(
+                    engine,
+                    file,
+                    at,
+                    FindingAt { lo: c.span?.lo ?? 0, hi: c.span?.lo ?? 0 },
+                )
+                    .lo,
+            ),
+        } for k, c in parts!.cases] for s in item.stmts for parts in [item.store.spec_parts(s)] if parts != null],
+    )
+}
+
+/// The line, counted from one, the offset `at` of `text` stands on.
+fn line_at(text: string, at: int) -> int { text.substring(0, if at < text.length { at } else { text.length }).split("\n").length }
+
+/// The symbol a case's unit is known by: its file's and its place among the file's cases.
+export fn case_symbol(file: SourceFileAddress, k: int) -> string { "case\$${file.package_name}/${file.path_in_package}\$${k}" }
+
+/// A case's own source: its body's text, the place in its spec's item the case's reading of it
+/// starts at, and the words its spec's item reads under.
+@derive(Saved)
+type CaseSource = { start: int, text: string, context: Bytes }
+
+/// What a case's body is read as: a fn of no seats answering a bool, its body the case's.
+const CASE_HEAD: string = "fn case_body() -> bool "
+
+/// The source of the case `index` the spec in the item `at` of `file` writes: what its unit is read
+/// from, so an edit elsewhere in its spec reads it again and asks nothing more of it.
+@query
+fn case_source(engine: QueryEngine, file: SourceFileAddress, at: int, index: int) -> CaseSource? {
+    let item = read_item(engine, file, at)
+    let stmt? = item.stmts.find((s) -> item.store.spec_parts(s) != null) else { return null }
+    let parts? = item.store.spec_parts(stmt) else { return null }
+    if index >= parts.cases.length { return null }
+    let span? = item.store.expr_span(parts.cases[index].body) else { return null }
+    let under = item_under(engine, file, at)
+    CaseSource {
+        start: span.lo - CASE_HEAD.length,
+        text: CASE_HEAD + under.text.substring(span.lo, span.hi),
+        context: under.context,
+    }
+}
+
+/// The case `index` the spec in the item `at` of `file` writes, read from its own source as a fn,
+/// its body signed: no seats, a bool answered.
+fn case_signed(engine: QueryEngine, file: SourceFileAddress, at: int, index: int) -> SignedBody? {
+    let src? = case_source(engine, file, at, index) else { return null }
+    let under = ItemUnder { text: src.text, context: src.context }
+    let item = held_read(
+        written_key(file, at, src.start, src.text),
+        () -> placed_item(engine, file, under, src.start),
+        at,
+    )
+    let stmt? = item.stmts.find((s) -> item.store.fn_parts(s) != null) else { return null }
+    SignedBody {
+        signature: value_signature(owned_type("bool")),
+        item: item,
+        body: item.store.fn_parts(stmt)!.body,
+        stmt: stmt,
+        case: true,
+    }
+}
+
+/// Each case the spec in the item `at` of `file` writes, signed as its unit reads it: none for an
+/// item that writes no spec.
+export fn case_bodies(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<SignedBody> {
+    let item = read_item(engine, file, at)
+    let count = flatten(
+        [parts!.cases for s in item.stmts for parts in [item.store.spec_parts(s)] if parts != null],
+    )
+        .length
+    [b! for k in 0..count for b in [case_signed(engine, file, at, k)] if b != null]
+}
+
+/// The case `index` the spec in the item `at` of `file` writes, lowered as the unit `symbol`, its
+/// lambdas `framed` carrying their frame of contexts.
+@query
+export fn lowered_case(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    at: int,
+    index: int,
+    symbol: string,
+    framed: List<string>,
+) -> LoweredFn? {
+    let signed? = case_signed(engine, file, at, index) else { return null }
+    lowered_signed(engine, file, signed, symbol, null, [], framed)
+}
+
+collect listed_case_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries a suite's cases are read through, for a process to hand its engine.
+export fn case_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_case_facts) }
+
+/// A suite made on the program layer: the program whose entry runs each case under the runner and
+/// says the tally, and each case as the entry calls it.
+export type MadeSuite = { lowered: Lowered, cases: List<CaseCall> }
+
+/// The suite of every case `files` write, made: each case's body reached and lowered as a unit, the
+/// bodies they reach made with them, and the entry the suite's runner builds — the one every build
+/// of a suite shares — over the cases in the files' order. Absent where it isn't made yet, said why.
+export fn made_suite(
+    engine: QueryEngine,
+    files: List<SourceFileAddress>,
+    placed: fn(SourceFileAddress) -> string,
+) -> Result<MadeSuite, string> {
+    let found = flatten(
+        [[CaseFound { file: f, at: c, k: k } for k, c in file_cases(engine, f).cases] for f in files],
+    )
+    let calls = [found_called(c) for c in found]
+    let root = suite_root(calls)
+    let survey = task_survey(engine)
+    let made = made_reaching(
+        survey,
+        root,
+        ENTRY,
+        [],
+        scheduled_by(survey, root),
+        null,
+        null,
+        [],
+        files.first()?.package_name,
+        framing: files,
+    )
+    let lowered = match made {
+        .Made(l) -> l,
+        .Unmade(why, at) -> { fail "${why}, at ${at}" },
+        .Refused(fs) -> { fail "a body it reaches holds a node its seat refused, in ${[spelled_file(f) for f in fs].join(", ")}" },
+    }
+    let cases = [CaseCall { symbol: c.called.symbol, label: c.label } for c in [CaseLabelled { called: calls[i], label: case_label(found[i], placed) } for i in 0..found.length]]
+    let main = suite_entry(lowered.types, cases, [])
+    .Ok(
+        MadeSuite {
+            lowered: lowered with { entry: main.body with { layouts: [layout_of_entry(main.types, t) for t in main.body.reg_types], seats: [], answer: Layout.Word }, externs: lowered.externs.concat(runner_rows) },
+            cases: cases,
+        },
+    )
+}
+
+/// A case a file writes, beside the file and its place among the file's cases.
+type CaseFound = { file: SourceFileAddress, at: CaseAt, k: int }
+
+/// A case's call beside the line its verdict prints.
+type CaseLabelled = { called: CalledFn, label: string }
+
+/// The call a suite's entry makes of the case `c`.
+fn found_called(c: CaseFound) -> CalledFn {
+    CalledFn {
+        file: c.file,
+        name: case_symbol(c.file, c.k),
+        symbol: case_symbol(c.file, c.k),
+        external: false,
+        plain: true,
+        case_item: c.at.item,
+        case_index: c.at.index,
+    }
+}
+
+/// The case as the suite's runner names it: its spec, its group and its own name, then where it
+/// stands, its file as `placed` places it.
+fn case_label(c: CaseFound, placed: fn(SourceFileAddress) -> string) -> string {
+    words(
+        CaseRef {
+            suite: c.at.suite,
+            group: c.at.group,
+            name: c.at.name,
+            file: placed(c.file),
+            line: c.at.line,
+        },
+    )
+}
+
+/// The root a suite's walk starts from: a body that answers nothing and calls each case.
+fn suite_root(calls: List<CalledFn>) -> LoweredFn {
+    LoweredFn {
+        params: [],
+        answer: Layout.Word,
+        ins: [
+            Ins.ScopeEnter(Level.Application),
+            Ins.ConstInt(Reg { index: 0 }, 0),
+            Ins.ScopeExit(null),
+            Ins.Ret(0),
+        ],
+        layouts: [Layout.Word],
+        callees: calls,
+        missing: [],
+        lifts: [],
+        statics: [],
+    }
+}
+
+/// What a register of the suite's entry holds, as the type the runner's builder minted it as: an int,
+/// a bool, or a text.
+fn layout_of_entry(types: TypeRegistry, t: TypeId) -> Layout {
+    if t == types.type(bool) { return Layout.Truth }
+    if t == types.type(string) { return Layout.Boxed(BoxKind.Text) }
+    Layout.Word
+}

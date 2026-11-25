@@ -1,0 +1,86 @@
+//! `fail`'s semantics: the enclosing fn answers its FAILURE channel
+//! right here. Typing demands a Result-promising fn and a value the
+//! err side accepts; lowering wraps the value as the built-in
+//! enum's `.Err` and exits — `FnExit` settles every open scope's
+//! debts at the site, exactly as `return` does.
+use core.{StmtId, TypeId, Reg, Ins}
+use core.stmt.{Fail}
+use features.{StmtSemantics, ResolveCx, TypeCx, LowerCx}
+use diagnostics.{Voice, said_as}
+
+impl StmtSemantics for Fail {
+    fn resolve_stmt(mut cx: ResolveCx, s: StmtId) {
+        cx.walk_value(s)
+    }
+
+    fn type_stmt(mut cx: TypeCx, s: StmtId) {
+        cx.walk_value(s)
+        check_fail(cx, s)
+    }
+
+    fn lower_stmt(mut cx: LowerCx, s: StmtId) -> Reg? {
+        lower_fail(cx, s)
+    }
+}
+
+/// `fail v` — legal only inside a fn promising a `Result`, with `v`
+/// ACCEPTED by the err side (widening recorded, like every slot).
+fn check_fail(mut cx: TypeCx, s: StmtId) {
+    let v? = cx.view.store.stmt_value(s) else { return }
+    let ret: TypeId? = cx.enclosing_ret()
+    if ret == null {
+        cx.emit(said_as("type.fail", cx.stmt_loc(s), fail_unenclosed()))
+        return
+    }
+    let promised = ret!
+    if cx.errored_ty(promised) { return }
+    let sides? = cx.view.types.res_parts(promised) else { return not_fallible(cx, s, cx.view.types.name_of(promised)) }
+    if cx.errored(v) { return }
+    if cx.accepts(v, sides.err) { return }
+    let gn = cx.name_at(v)
+    cx
+        .emit(
+            cx
+                .seat_mismatch(
+                    "type.fail",
+                    cx.stmt_loc(s),
+                    v,
+                    "`fail` raises a `${cx.view.types.name_of(sides.err)}`, this is `${gn}`",
+                    sides.err,
+                ),
+        )
+}
+
+/// The failure wrapped and exited — the open frames' `defer`s and
+/// `errdefer`s run first; the memory pass settles every open scope
+/// at the site; other paths continue.
+fn lower_fail(mut cx: LowerCx, s: StmtId) -> Reg? {
+    let v? = cx.lower_value(s) else { return null }
+    let ret: TypeId? = cx.enclosing_ret()
+    if ret == null {
+        cx.defect("a `fail` without an enclosing fn survived typing")
+        return null
+    }
+    cx.fail_exit(cx.failed(ret!, v))
+    null
+}
+
+fn not_fallible(mut cx: TypeCx, s: StmtId, promise: string) { cx.emit(said_as("type.fail", cx.stmt_loc(s), fail_unfallible(promise))) }
+
+/// A `fail` no fn encloses.
+export fn fail_unenclosed() -> Voice {
+    Voice {
+        message: "a `fail` raises to a caller, and there is none enclosing",
+        label: "raised here",
+        help: "at the top level there is no failure channel",
+    }
+}
+
+/// A `fail` in a fn promising `promise`, which is no `Result`.
+export fn fail_unfallible(promise: string) -> Voice {
+    Voice {
+        message: "`fail` raises on a `Result`'s failure channel, and this fn promises `${promise}`",
+        label: "raised here",
+        help: "declare the answer fallible — `-> Result<${promise}, E>`",
+    }
+}

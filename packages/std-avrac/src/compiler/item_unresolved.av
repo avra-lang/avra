@@ -1,0 +1,346 @@
+//! WHERE A NAME IS READ THAT NOTHING ANSWERS: no binding in the body, and no declaration — written,
+//! imported, or a generator's — where the read stands. Kept by the walk that types an item's bodies
+//! (`item_refusals`); a build fails on any body it reaches that reads one.
+use core.{ParseRefusal, ReadAs, Span}
+use compiler.laws.{Aside, Found, law}
+use diagnostics.{Voice, guessed}
+use features.{apart_read}
+use compiler.resolve.{
+    call_unbound,
+    member_unbound,
+    pronoun_unbound,
+    Receiverless,
+    receiverless,
+    record_names_fn,
+    record_unbound,
+    runtime_bound,
+    used_before,
+    value_unbound,
+}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.saved_query.{ListedQuery, cut_query, definitions_of, query_definition}
+
+/// Every name the written item `at` of `file` reads that nothing answers, read as `read`: a word that
+/// can be no name aside, which the naming laws refuse, a name its module's files keep apart, and one
+/// a re-export with nothing behind it binds.
+fn unread_in(engine: QueryEngine, file: SourceFileAddress, at: int, read: ReadAs) -> List<
+    UnreadName,
+> {
+    [u for u in unread_as(engine, file, at, read) if !cannot_name(u.name)]
+}
+
+/// Every name the written item `at` of `file` reads as `read` that nothing answers, a word that can
+/// be no name among them: a record literal's name is refused by no naming law. None where a generator
+/// over the file's declarations failed, or a builder refused a statement of the file: the names they
+/// would make are unknown, and their failure is what a build says.
+fn unread_as(engine: QueryEngine, file: SourceFileAddress, at: int, read: ReadAs) -> List<
+    UnreadName,
+> {
+    if !file_generated(engine, file).said.is_empty() || read_refused(engine, file) { return [] }
+    let unread = [u for u in item_refusals(engine, file, at).unread if u.read == read &&
+        apart_files(engine, file, u.name).is_empty() &&
+        !reexport_unreached_read(engine, file, u.name)]
+    if unread.is_empty() { return [] }
+    let refused = imports_refused(engine, file)
+    [u for u in unread if !refused.contains(u.name)]
+}
+
+/// Whether a statement of `file` failed to build what it read: a builder refused its shape, so the
+/// names it would make are unknown. A statement the grammar refused is read past. One answer a file,
+/// cut off where it comes out the same, so an item's laws read it and none of the file's other items.
+@cut_query
+fn read_refused(engine: QueryEngine, file: SourceFileAddress) -> bool {
+    item_ids(engine, file).any((i: int) -> item_read_refused(engine, file, i))
+}
+
+/// Whether `r` is a builder's refusal of what the grammar read.
+fn builder_refused(r: ParseRefusal) -> bool {
+    match r { .Builder(_, _, _, _) -> true, .Grammar(cause, _, _, _, _) -> cause is .Builder }
+}
+
+/// A name nothing answers, its voice handed the name and, where the read is written here, the names
+/// it may have meant.
+fn unread_found(u: UnreadName, candidates: List<string>) -> Found {
+    Found { at: span_of(u.at), args: [u.name].concat(if u.written_here { candidates } else { [] }) }
+}
+
+/// A name nothing answers in `file`, as `unread_found` says it, behind the parse refusal of a file of
+/// its module where one holds: the name may be declared where nothing could be read.
+fn unread_behind_found(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    u: UnreadName,
+    candidates: List<string>,
+) -> Found {
+    unread_found(u, candidates) with { unread: unread_here(engine, file, u.name) }
+}
+
+/// Every value read nothing answers, beside the names the file defines at its top level; a member
+/// of a record its file declares, read bare in an impl, is a member's law, and a binding the file's
+/// statements make, the run-time binding's.
+fn values_unread(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    let unread = [u for u in unread_in(engine, file, at, ReadAs.Value) if !member_read_bare(engine, file, at, u.name)]
+    if unread.is_empty() { return [] }
+    let defined = top_level_defined(engine, file)
+    [unread_behind_found(engine, file, u, defined) for u in unread if !defined.contains(u.name)]
+}
+
+/// Every value read nothing answers that a binding of the file's top level makes, in a declaration
+/// or an impl where `declared` — a run-time value a body only declarations reach reads — else in a statement
+/// the file runs before the one that binds it.
+fn top_level_reads(engine: QueryEngine, file: SourceFileAddress, at: int, declared: bool) -> List<
+    Found,
+> {
+    if (file_declares_at(engine, file, at).names.any(it.item == at) ||
+        !impls_at(engine, file, at).is_empty()) != declared { return [] }
+    let unread = [u for u in unread_in(engine, file, at, ReadAs.Value) if !member_read_bare(engine, file, at, u.name)]
+    if unread.is_empty() { return [] }
+    let defined = top_level_defined(engine, file)
+    [unread_found(u, []) for u in unread if defined.contains(u.name)]
+}
+
+fn runtime_reads(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> { top_level_reads(engine, file, at, true) }
+
+fn early_reads(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    [f with { aside: defined_at(engine, file, f.args[0]) } for f in top_level_reads(engine, file, at, false)]
+}
+
+/// Where the statement of `file`'s top level that binds `name` stands, said beside a read of it: in
+/// its own item.
+fn defined_at(engine: QueryEngine, file: SourceFileAddress, name: string) -> Aside {
+    let found = [Aside { label: "defined here", at: sp!, item: i } for i in item_ids(engine, file) for item in [read_item(engine, file, i)] for s in item.stmts if item.store.let_name(s) == name for sp in [item.store.stmt_span(s)] if sp != null]
+    found.first() ?? Aside { label: "defined here", at: null }
+}
+
+/// Every `self` read in the written item `view` shows where no method's receiver stands, beside
+/// where: a seat's default, else a `static fn`, else a fn that is no method.
+fn receivers_unread(view: ItemView) -> List<Found> {
+    let unread = [u for u in item_refusals(view.engine, view.file, view.at).unread if u.read is .Receiver]
+    if unread.is_empty() { return [] }
+    let item = view.item
+    [Found { at: span_of(u.at), args: [receiverless_word(item, u.at)] } for u in unread]
+}
+
+/// Where the `self` at `read` stands in `item` with no receiver, as its voice's word.
+fn receiverless_word(item: ReadItem, read: FindingAt?) -> string {
+    let lo? = read?.lo else { return FN_WORD }
+    let fns = [s for s in item.store.stmt_ids() if item.store.fn_parts(s) != null]
+    let defaulted = fns
+        .any(
+            (s) -> item.store.fn_parts(s)!
+                .params
+                .any((p) -> p.default != null && item.store.expr_span(p.default!)?.holds(lo) ?? false),
+        )
+    if defaulted { return DEFAULT_WORD }
+    if fns.any((s) -> item.store.is_static(s) && item.store.stmt_span(s)?.holds(lo) ?? false) { STATIC_WORD } else { FN_WORD }
+}
+
+const FN_WORD: string = "fn"
+
+const STATIC_WORD: string = "static"
+
+const DEFAULT_WORD: string = "default"
+
+/// Every member of a record the file declares, read bare in an impl the written item `at` holds.
+fn members_unread(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    [unread_found(u, []) for u in unread_in(engine, file, at, ReadAs.Value) if member_read_bare(engine, file, at, u.name)]
+}
+
+/// Every call of a fn nothing declares, beside the values the file's names hold.
+fn calls_unread(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    let unread = unread_in(engine, file, at, ReadAs.Call)
+    if unread.is_empty() { return [] }
+    let names = names_seen(engine, file, Space.Value)
+    [unread_behind_found(engine, file, u, names) for u in unread]
+}
+
+/// Every record literal of a type nothing declares, beside the types the file's names hold; one
+/// whose name declares a fn is that law's.
+fn records_unread(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    let unread = [u for u in unread_as(engine, file, at, ReadAs.Record) if !names_fn(engine, file, u.name)]
+    if unread.is_empty() { return [] }
+    let names = names_seen(engine, file, Space.Type)
+    [unread_behind_found(engine, file, u, names) for u in unread]
+}
+
+/// Every record literal whose name declares a fn and no type.
+fn records_naming_fns(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    [unread_found(u, []) for u in unread_in(engine, file, at, ReadAs.Record) if names_fn(engine, file, u.name)]
+}
+
+/// Every `it` read where no call binds the pronoun.
+fn pronouns_unread(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    [unread_found(u, []) for u in unread_in(engine, file, at, ReadAs.Pronoun)]
+}
+
+/// Whether `name`, read bare in the written item `at` of `file`, is a member: the item is an impl,
+/// and a record the file declares has a field of that name.
+fn member_read_bare(engine: QueryEngine, file: SourceFileAddress, at: int, name: string) -> bool {
+    if impls_at(engine, file, at).is_empty() { return false }
+    records_with_field(engine, file, name)
+}
+
+/// Whether a record `file` declares has a field `name`: one answer per name, which an edit that
+/// declares no record field leaves standing.
+@cut_query
+fn records_with_field(engine: QueryEngine, file: SourceFileAddress, name: string) -> bool {
+    file_declares(engine, file)
+        .names
+        .any(it.kind == ItemKind.Record && field_named(engine, file, it.name, name))
+}
+
+/// Whether the record `file` declares as `record` has a field `name`.
+fn field_named(engine: QueryEngine, file: SourceFileAddress, record: string, name: string) -> bool {
+    (record_signature(engine, file, record)?.fields ?? []).any(it.name == name)
+}
+
+/// Whether `name` from `file` declares a fn.
+fn names_fn(engine: QueryEngine, file: SourceFileAddress, name: string) -> bool {
+    resolved(engine, file, Space.Value, name).named()?.kind == ItemKind.Fn
+}
+
+/// The names bound in `space` that `file` sees by name: its module's, then its own — its imports and
+/// the names it keeps apart.
+fn names_seen(engine: QueryEngine, file: SourceFileAddress, space: Space) -> List<string> {
+    let shared = module_bindings(engine, file.package_name, module_segments(file), true)
+        .shared
+        .names_in(space)
+    let scope? = file_scope(engine, file) else { return shared }
+    shared.concat(scope.own.names_in(space))
+}
+
+/// The names `file` binds at its top level, statement by statement: one answer a file, which every
+/// item's law reads and an edit that binds no top-level name leaves standing.
+@cut_query
+fn top_level_defined(engine: QueryEngine, file: SourceFileAddress) -> List<string> { [n for i in item_ids(engine, file) for n in item_lets(engine, file, i)] }
+
+/// a name read that nothing binds or declares
+export law value_unresolved {
+    kind: "resolve.unresolved"
+    reads: values_unread
+    voice: value_words
+    witness: "fn f() -> int { nowhere }\n"
+}
+
+/// a body reads a run-time binding of the top level
+export law runtime_binding_read {
+    kind: "resolve.runtime_binding"
+    reads: runtime_reads
+    voice: runtime_words
+    witness: "let fonts: List<int> = []\n\nfn f() -> int { fonts.length }\n"
+}
+
+/// a statement reads a name the file binds only later
+export law used_before_defined {
+    kind: "resolve.use_before_def"
+    reads: early_reads
+    voice: early_words
+    witness: "x\nlet x = 1\n"
+}
+
+/// The files of `file`'s module beside it that each declare `name` privately, by their file names.
+fn apart_files(engine: QueryEngine, file: SourceFileAddress, name: string) -> List<string> {
+    let scope? = file_scope(engine, file) else { return [] }
+    [d.file.path_in_package.split("/").last() ?? "" for d in scope.siblings if d.name == name]
+}
+
+/// Every value or call the written item `at` of `file` reads that its module's files each keep
+/// private, beside those files.
+fn apart_reads(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<Found> {
+    [Found { at: span_of(u.at), args: [u.name].concat(apart) } for u in item_refusals(engine, file, at).unread if u.read is .Value || u.read is .Call for apart in [apart_files(engine, file, u.name)] if !apart.is_empty()]
+}
+
+/// a name two files of a module each declare privately is each file's own
+export law kept_apart_read {
+    kind: "resolve.kept_apart"
+    reads: apart_reads
+    voice: apart_words
+    witness: "use util.{g}\ng()\n"
+    witness_files: {
+        "src/util/a.av": "fn h() -> int { 1 }\n",
+        "src/util/b.av": "fn h() -> int { 2 }\n",
+        "src/util/c.av": "export fn g() -> int { h() }\n",
+    }
+}
+
+/// a call of a fn nothing declares
+export law call_unresolved {
+    kind: "resolve.unresolved"
+    reads: calls_unread
+    voice: call_words
+    witness: "fn reached() -> int { misspeled(1) }\n\nfn misspelled(n: int) -> int { n }\n"
+}
+
+/// a record literal of a type nothing declares
+export law record_unresolved {
+    kind: "resolve.unresolved"
+    reads: records_unread
+    voice: record_words
+    witness: "type Point = { x: int }\n\nfn f() -> int { Pont { x: 1 }.x }\n"
+}
+
+/// a record literal whose name declares a fn
+export law record_names_a_fn {
+    kind: "resolve.unresolved"
+    reads: records_naming_fns
+    voice: record_fn_words
+    witness: "fn g() -> int { 1 }\n\nfn f() -> int { g { x: 1 }.x }\n"
+}
+
+/// `it` read where no method call's block binds it
+export law pronoun_unresolved {
+    kind: "resolve.unresolved"
+    reads: pronouns_unread
+    voice: pronoun_words
+    witness: "fn f() -> int { it }\n"
+}
+
+/// `self` read where no method's receiver stands
+export law receiver_unresolved {
+    kind: "resolve.receiver"
+    reads_view: receivers_unread
+    voice: receiver_words
+    witness: "fn f() -> int { self.n }\n"
+}
+
+/// a member of the receiver read bare
+export law member_unresolved {
+    kind: "resolve.unresolved"
+    reads: members_unread
+    voice: member_words
+    witness: "type P = { n: int }\n\nimpl P {\n    fn get() -> int { n }\n}\n"
+}
+
+fn value_words(a: List<string>) -> Voice { guessed(value_unbound(a[0]), a[0], a.drop(1)) }
+
+fn early_words(a: List<string>) -> Voice { used_before(a[0]) }
+
+fn runtime_words(a: List<string>) -> Voice { runtime_bound(a[0]) }
+
+fn apart_words(a: List<string>) -> Voice { apart_read(a[0], a.drop(1)) }
+
+fn call_words(a: List<string>) -> Voice { guessed(call_unbound(a[0]), a[0], a.drop(1)) }
+
+fn record_words(a: List<string>) -> Voice { guessed(record_unbound(a[0]), a[0], a.drop(1)) }
+
+fn record_fn_words(a: List<string>) -> Voice { record_names_fn(a[0]) }
+
+fn pronoun_words(_a: List<string>) -> Voice { pronoun_unbound() }
+
+fn receiver_words(a: List<string>) -> Voice {
+    receiverless(
+        when {
+            a[0] == DEFAULT_WORD -> Receiverless.Default
+            a[0] == STATIC_WORD -> Receiverless.Static
+            _ -> Receiverless.Fn
+        },
+    )
+}
+
+fn member_words(a: List<string>) -> Voice { member_unbound(a[0]) }
+
+collect listed_unresolved_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries the unresolved-name laws are read through, for a process to hand its engine.
+export fn unresolved_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_unresolved_facts) }

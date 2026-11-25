@@ -1,0 +1,1050 @@
+//! The method laws. A call resolves through the RECEIVER'S TYPE —
+//! its name keys the impl table — and the found sig judges the
+//! arguments exactly as a fn call's does, `self` excluded (the
+//! subject rides that seat).
+use core.{ExprId, StmtId, Type, TypeId, DeclId, same_type, counted}
+use features.{
+    TypeCx,
+    FnSig,
+    this_is,
+    MethodCall,
+    RunChoice,
+    Placed,
+    no_pins,
+    unpinned_of,
+    tparams_refused,
+    method_row,
+}
+use diagnostics.{Voice, refusal, said_as}
+use features.maps.{map_unknowable}
+use @std.errors.{Loc}
+
+fn methoded(mut cx: TypeCx, e: ExprId, subject: ExprId, name: string, args: List<ExprId>) -> TypeId {
+    cx.settled_call(e, args, method_answer(cx, e, subject, name, args))
+}
+
+/// THE ONE DOT-CALL SURFACE: who answers is decided once (callee.av)
+/// and every kind judges the call in its own law.
+fn method_answer(mut cx: TypeCx, e: ExprId, subject: ExprId, name: string, args: List<ExprId>) -> TypeId {
+    if cx.errored(subject) { return cx.error_type }
+    let callee = subject_callee(cx.view, cx.names, subject, cx.type_at(subject), name)
+    if !seats_named(callee) && !cx.nameless(name, args) { return cx.error_type }
+    match callee {
+        .Variant(decl, tname) -> if cx.view.store.is_type_lit(e) { no_interned(cx, e, tname) } else { cx.construct_variant(e, decl, tname, name, args) },
+        .Static(m, tname) -> static_call(cx, e, m, tname, name, args),
+        .Bounded(decl, j, tname) -> bounded_call(cx, e, subject, decl, j, tname, name, args),
+        .BoundStatic(decl, j, tname) -> bound_static_call(cx, e, subject, decl, j, tname, name, args),
+        .Contract(tdecl, tname) -> dyn_call(cx, e, subject, tdecl, tname, name, args),
+        .FnField(_, fty) -> fielded_call(cx, e, name, fty, args),
+        .Row(r) -> r.check(cx, MethodCall { e: e, subject: subject, args: args }),
+        .Declared(decl, tname) -> declared_call(cx, e, subject, decl, tname, name, args),
+        .Nameless -> form_refusal(cx, e, cx.name_at(subject), name) ?? empty_map_verb(cx, e, subject, name) ?? no_methods_here(
+            cx,
+            subject,
+            name,
+        ),
+    }
+}
+
+/// Whether a dot-call's callee names its seats: a declared method's
+/// and a static's do; a variant's payload, a contract's member, a fn
+/// field and a runtime row take arguments by position.
+fn seats_named(c: Callee) -> bool {
+    match c {
+        .Static(_, _) or .Declared(_, _) -> true,
+        .Variant(_, _) or .Bounded(_, _, _) or .BoundStatic(_, _, _) or .Contract(_, _) or .FnField(_, _) or .Row(_) or .Nameless -> false,
+    }
+}
+
+/// The impl table's judgment: the found sig, instantiated for the
+/// receiver, judges arity and every seat; the inout laws follow.
+fn declared_call(
+    mut cx: TypeCx,
+    e: ExprId,
+    subject: ExprId,
+    decl: DeclId,
+    target: string,
+    name: string,
+    args: List<ExprId>,
+) -> TypeId {
+    let many = cx.view.decls.methods_named(decl, name)
+    let choosing = distinct_keys(cx, many) > 1
+    let picked = if choosing { chosen_member(cx, e, target, name, many, args) } else { cx.view.decls.method(decl, name) }
+    let m? = picked else {
+        if choosing { return cx.error_type }
+        return form_refusal(cx, e, target, name) ?? no_such_method(
+            cx,
+            e,
+            target,
+            name,
+            members_of(cx, decl),
+        )
+    }
+    let found? = cx.view.decls.sig(m)?.fn_sig() else {
+        return form_refusal(cx, e, target, name) ?? no_such_method(
+            cx,
+            e,
+            target,
+            name,
+            members_of(cx, decl),
+        )
+    }
+    // a member chosen at run answers what every member answers; its
+    // arguments are judged as any call's, the `dyn` one as itself
+    let run = if choosing { cx.facts.dispatch_at(e) } else { null }
+    if run != null { return dispatched_answer(cx, target, name, run!, found, args) }
+    let at = generic_default_at(cx, e, subject, m, found, args)
+    if at.refused { return cx.error_type }
+    let sig = selfed_sig(cx, subject, m, instantiated_sig(cx, e, subject, decl, found), at.args)
+    let placed? = cx.placed(e, "${target}.${name}", m, args, seats_of(sig).params) else { return cx.error_type }
+    if placed.args.length != placed.wants.length {
+        return wrong_method_arity(cx, e, target, name, placed.wants.length, placed.args.length)
+    }
+    for j, a in placed.args {
+        if !cx.accepts(a, placed.wants[j]) { wrong_method_argument(cx, target, name, j, placed.wants[j], a) }
+    }
+    if !seat_laws(cx, e, subject, "${target}.${name}", name, m, placed.args, 1) { return cx.error_type }
+    sig.ret
+}
+
+/// A static call has no receiver seat. Its owner's type parameters
+/// bind from the arguments and expected answer; seats start at zero.
+fn static_call(
+    mut cx: TypeCx,
+    e: ExprId,
+    m: DeclId,
+    target: string,
+    name: string,
+    args: List<ExprId>,
+) -> TypeId {
+    let statics = statics_named(cx, m, name)
+    let many = statics.members
+    let picked? = (if distinct_keys(cx, many) > 1 { chosen_member(cx, e, target, name, many, args, 0) } else { m }) else {
+        return cx.error_type
+    }
+    let found? = cx.view.decls.sig(picked)?.fn_sig() else { return form_refusal(cx, e, target, name) ?? no_such_method(cx, e, target, name, []) }
+    let placed? = cx.placed(e, "${target}.${name}", picked, args, found.params) else { return cx.error_type }
+    if placed.args.length != placed.wants.length { return wrong_static_arity(cx, e, target, name, placed.wants.length, placed.args.length) }
+    if statics.owner != null && !cx.tparams(statics.owner!).is_empty() {
+        return generic_static_call(
+            cx,
+            e,
+            picked,
+            statics.owner!,
+            "${target}.${name}",
+            placed,
+            found,
+        )
+    }
+    for j, a in placed.args {
+        if !cx.accepts(a, placed.wants[j]) { wrong_method_argument(cx, target, name, j, placed.wants[j], a) }
+    }
+    if !cx.seat_contracts(e, "${target}.${name}", picked, 0, placed.args, null) { return cx.error_type }
+    found.ret
+}
+
+/// A static's type parameters are its owner's; arguments and the
+/// expected answer bind them exactly as a generic function's seats do.
+fn generic_static_call(
+    mut cx: TypeCx,
+    e: ExprId,
+    method: DeclId,
+    owner: DeclId,
+    callee: string,
+    placed: Placed,
+    sig: FnSig,
+) -> TypeId {
+    let names = cx.tparams(owner)
+    if tparams_refused(names) { return cx.error_type }
+    mut bound = no_pins(names.length)
+    mut refused = false
+    for j, a in placed.args {
+        if !cx.agreed(a, placed.wants[j], owner, bound) {
+            cx.wrong_argument(callee, j, cx.as_bound(placed.wants[j], owner, bound), a)
+            refused = true
+        }
+    }
+    for pin in placed.pins {
+        if !cx.unify(pin.want, pin.have, owner, bound) {
+            let _ = cx.spread_field_type(pin.at, callee, pin.name, pin.have, pin.want)
+            refused = true
+        }
+    }
+    if refused { return cx.error_type }
+    let want = cx.want_at(e)
+    if unpinned_of(names, bound) != null && want != null {
+        let _ = cx.unify(sig.ret, want!, owner, bound)
+    }
+    let missing = unpinned_of(names, bound)
+    if missing != null {
+        if placed.args.any((a) -> cx.errored(a) && (!cx.facts.hungry_at(a) || cx.starving)) { return cx.error_type }
+        if !cx.starving { return cx.hungry(e) }
+        return static_unbound(cx, e, callee, missing!)
+    }
+    let concrete = cx.bound_closed(bound)
+    let bad = [cx.unlawful_side(cx.view.types.substituted(t, owner, concrete)) for t in sig.params.concat([sig.ret])]
+        .find(it != null)
+    if bad != null { return static_unholdable(cx, e, callee, bad!) }
+    if !cx.seat_contracts(e, callee, method, 0, placed.args, null) { return cx.error_type }
+    cx.record_subst(e, owner, concrete, cx.subst_at(e)?.consts ?? [])
+    cx.view.types.substituted(sig.ret, owner, concrete)
+}
+
+/// The static members of `m`'s type that share its name — one per
+/// impl of a generic trait, or `m` alone.
+type Statics = { owner: DeclId?, members: List<DeclId> }
+
+fn statics_named(cx: TypeCx, m: DeclId, name: string) -> Statics {
+    let block? = cx.view.decls.decl(m).parent else { return Statics { owner: null, members: [m] } }
+    let owner = cx.view.decls.target_of(block)
+    Statics {
+        owner: owner,
+        members: if owner == null { [m] } else { [s for s in cx.view.decls.methods_named(owner!, name) if cx.view.decls.is_static_of(s)] },
+    }
+}
+
+/// A trait member's sig on THIS receiver: the trait's `Self` is the
+/// receiver's type — in every seat and the answer. A signatory's
+/// own method names no `Self`, so it passes through.
+fn selfed_sig(cx: TypeCx, subject: ExprId, m: DeclId?, sig: FnSig, trait_args: List<TypeId> = []) -> FnSig {
+    if m == null { return sig }
+    let contract? = cx.view.decls.decl(m!).parent else { return sig }
+    if !cx.view.decls.is_trait(contract) { return sig }
+    // a trait's own parameters stand for themselves where no call supplies them —
+    // inside its default bodies, typed once over the trait
+    let own = cx.view.decls.instance_vars(contract).slice(1, cx.view.decls.tparams(contract).length)
+    let args = [cx.type_at(subject)].concat(if trait_args.is_empty() { own } else { trait_args })
+    FnSig {
+        params: [cx.view.types.substituted(p, contract, args) for p in sig.params],
+        ret: cx.view.types.substituted(sig.ret, contract, args),
+    }
+}
+
+/// A generic trait's DEFAULT at one call: its parameters read off the
+/// call's arguments (then the wanted answer), and the receiver shown to
+/// implement the trait there — the instantiation recorded for lowering.
+/// Any other callee passes through with no arguments.
+fn generic_default_at(
+    mut cx: TypeCx,
+    e: ExprId,
+    subject: ExprId,
+    m: DeclId,
+    sig: FnSig,
+    args: List<ExprId>,
+) -> DefaultAt {
+    let contract? = cx.view.decls.decl(m).parent else { return plain_at() }
+    if !cx.view.decls.is_trait(contract) { return plain_at() }
+    let takes = cx.view.decls.tparams(contract).length - 1
+    if takes == 0 { return plain_at() }
+    let unbound: List<TypeId?> = [null for _j in 0..takes]
+    let by_seats = folded_binds(
+        cx,
+        contract,
+        [sig.params[j + 1] for j, _a in args if j + 1 < sig.params.length],
+        [cx.type_at(a) for a in args],
+        unbound,
+    )
+    let want = cx.want_at(e)
+    let binds = if want == null { by_seats } else { bound(cx, contract, sig.ret, want!, by_seats) }
+    let name = cx.view.decls.decl(contract).name
+    if binds.any(it == null) {
+        default_unbound(cx, e, name)
+        return refused_at()
+    }
+    let trait_args = [b! for b in binds]
+    let recv = cx.type_at(subject)
+    if !cx.view.decls.implements_at(recv, contract, trait_args) {
+        default_unimplemented(
+            cx,
+            e,
+            name,
+            cx.view.types.name_of(recv),
+            [cx.view.types.name_of(t) for t in trait_args],
+        )
+        return refused_at()
+    }
+    cx.record_subst(e, contract, [recv].concat(trait_args), [])
+    DefaultAt { args: trait_args, refused: false }
+}
+
+/// A generic trait's arguments at one call, or its refusal.
+type DefaultAt = { args: List<TypeId>, refused: bool }
+
+fn plain_at() -> DefaultAt { DefaultAt { args: [], refused: false } }
+
+fn refused_at() -> DefaultAt { DefaultAt { args: [], refused: true } }
+
+/// Each seat's type bound against its argument's, in order.
+fn folded_binds(
+    cx: TypeCx,
+    g: DeclId,
+    params: List<TypeId>,
+    got: List<TypeId>,
+    binds: List<TypeId?>,
+) -> List<TypeId?> {
+    mut out = binds
+    for j, p in params { out = bound(cx, g, p, got[j], out) }
+    out
+}
+
+/// `binds` with every parameter of `g` that `param` names bound to the
+/// matching part of `arg` — the first binding wins.
+fn bound(cx: TypeCx, g: DeclId, param: TypeId, arg: TypeId, binds: List<TypeId?>) -> List<TypeId?> {
+    let types = cx.view.types
+    match types.shape_of(param) {
+        // LICENSED structs.index_compared: DECLARATION identity — whose Var this is
+        .Var(d, j, _) -> if d.index == g.index && j > 0 && binds[j - 1] == null { [if k == j - 1 { arg } else { b } for k, b in binds] } else { binds },
+        .List(p) -> match types.shape_of(arg) { .List(a) -> bound(cx, g, p, a, binds), _ -> binds },
+        .Opt(p) -> match types.shape_of(arg) {
+            .Opt(a) -> bound(cx, g, p, a, binds),
+            _ -> bound(cx, g, p, arg, binds),
+        },
+        .Cell(p) -> match types.shape_of(arg) { .Cell(a) -> bound(cx, g, p, a, binds), _ -> binds },
+        .Map(pk, pv) -> match types.shape_of(arg) {
+            .Map(ak, av) -> bound(cx, g, pv, av, bound(cx, g, pk, ak, binds)),
+            _ -> binds,
+        },
+        .Res(po, pe) -> match types.shape_of(arg) {
+            .Res(ao, ae) -> bound(cx, g, pe, ae, bound(cx, g, po, ao, binds)),
+            _ -> binds,
+        },
+        _ -> binds,
+    }
+}
+
+/// THE INOUT LAWS at a call: a writing callee needs a `mut` place
+/// receiver, and its `mut` seats need `mut` places, no two on one
+/// root. Seats count from `base` (1 past a method's own receiver).
+fn seat_laws(
+    mut cx: TypeCx,
+    e: ExprId,
+    subject: ExprId,
+    callee: string,
+    name: string,
+    m: DeclId,
+    args: List<ExprId>,
+    base: int,
+) -> bool {
+    let writes = cx.view.decls.writes_receiver(m)
+    cx.receiver_law(e, subject, name, writes)
+    cx.seat_contracts(e, callee, m, base, args, if writes { subject } else { null })
+}
+
+/// Among a type's same-named members — one generic trait implemented
+/// at several arguments — the ONE whose seats fit the arguments,
+/// recorded for lowering. None, or several, is refused.
+fn chosen_member(
+    mut cx: TypeCx,
+    e: ExprId,
+    target: string,
+    name: string,
+    many: List<DeclId>,
+    args: List<ExprId>,
+    at: int = 1,
+) -> DeclId? {
+    let by_args = [m for m in many if seats_fit(cx, m, args, at)]
+    if by_args.is_empty() {
+        // a run-time choice reads a receiver's members, never a type's statics
+        let d? = (if at == 1 { dispatch_of(cx, many, args) } else { null }) else {
+            no_member_fits(cx, e, target, name, [cx.view.decls.method_key(m) for m in many])
+            return null
+        }
+        let unmet = unrealized(cx, d, args)
+        if !unmet.is_empty() {
+            members_incomplete(cx, e, target, name, unmet)
+            return null
+        }
+        cx.record_dispatch(e, d)
+        return d.members[0]
+    }
+    let want = cx.want_at(e)
+    let fits = if by_args.length > 1 && want != null { [m for m in by_args if answers_fit(cx, m, want!)] } else { by_args }
+    // members sharing one key are one member declared twice, refused there
+    if fits.length == 1 || fits.length > 1 && distinct_keys(cx, fits) == 1 {
+        cx.record_chosen(e, fits[0])
+        return fits[0]
+    }
+    let keys = (ms: List<DeclId>) -> [cx.view.decls.method_key(m) for m in ms]
+    if fits.is_empty() { no_member_fits(cx, e, target, name, keys(many)) } else { members_ambiguous(cx, e, target, name, keys(fits)) }
+    null
+}
+
+/// A run-time-chosen call's judgment: every argument but the `dyn`
+/// one fills its seat; the `dyn` one is accepted as what it is.
+fn dispatched_answer(
+    mut cx: TypeCx,
+    target: string,
+    name: string,
+    run: RunChoice,
+    found: FnSig,
+    args: List<ExprId>,
+) -> TypeId {
+    for j, a in args {
+        let want = if j == run.seat { cx.type_at(a) } else { found.params[j + 1] }
+        if !cx.accepts(a, want) { wrong_method_argument(cx, target, name, j, want, a) }
+    }
+    found.ret
+}
+
+/// The members one `dyn` argument's run-time type chooses among: that
+/// argument is the only `dyn`, every other fits every member, each
+/// member's seat there implements its trait, and all answer one type.
+fn dispatch_of(cx: TypeCx, many: List<DeclId>, args: List<ExprId>) -> RunChoice? {
+    let dyns = [j for j, a in args if cx.view.types.dyn_trait(cx.type_at(a)) != null]
+    if dyns.length != 1 { return null }
+    let k = dyns[0]
+    let tr = cx.view.types.dyn_trait(cx.type_at(args[k]))!
+    let sigs = [cx.view.decls.sig(m)?.fn_sig() for m in many]
+    if !sigs.all((s) -> s != null && takes_dispatched(cx, s!, args, k, tr)) { return null }
+    let answer = sigs[0]!.ret
+    if sigs.any(!same_type(it!.ret, answer)) { return null }
+    RunChoice { seat: k, members: many }
+}
+
+/// Whether a member takes the call with its `k`th seat an implementor
+/// of `tr`, every other seat fitting its argument.
+fn takes_dispatched(cx: TypeCx, s: FnSig, args: List<ExprId>, k: int, tr: DeclId) -> bool {
+    s.params.length == args.length + 1 &&
+        [j for j, a in args if j != k && cx.types_disagree(cx.type_at(a), s.params[j + 1])]
+            .is_empty() &&
+        implements_at(cx, s.params[k + 1], tr)
+}
+
+/// THE COMPLETENESS LAW: every type in the program that implements the
+/// `dyn` argument's trait has a member here — so a value that reaches
+/// this call is one some member takes, and the run-time choice never
+/// misses. Answers the names of the types left without one.
+fn unrealized(cx: TypeCx, d: RunChoice, args: List<ExprId>) -> List<string> {
+    let tr = cx.view.types.dyn_trait(cx.type_at(args[d.seat]))!
+    let taken = [seat_decl(cx, m, d.seat) for m in d.members]
+    [cx.view.decls.decl(t).name for t in cx.view.decls.implementors_of(tr) if !taken.any((x) -> same_decl_as(t, x))]
+}
+
+/// The declaration of the type a member takes at a seat.
+fn seat_decl(cx: TypeCx, m: DeclId, seat: int) -> DeclId? {
+    let sig? = cx.view.decls.sig(m)?.fn_sig() else { return null }
+    cx.view.decls.implementor(sig.params[seat + 1])
+}
+
+fn same_decl_as(t: DeclId, d: DeclId?) -> bool {
+    // LICENSED structs.index_compared: DECLARATION identity
+    d != null && d!.index == t.index
+}
+
+fn implements_at(cx: TypeCx, ty: TypeId, tr: DeclId) -> bool {
+    let d? = cx.view.decls.implementor(ty) else { return false }
+    cx.view.decls.implements(d, tr)
+}
+
+/// How many members the names share, a generic trait's arguments
+/// telling them apart — one when a name is simply declared twice.
+fn distinct_keys(cx: TypeCx, many: List<DeclId>) -> int {
+    let keys = [cx.view.decls.method_key(m) for m in many]
+    [k for j, k in keys if keys.index_of(k) == j].length
+}
+
+/// Whether the member's answer fits what the call's seat wants.
+fn answers_fit(cx: TypeCx, m: DeclId, want: TypeId) -> bool {
+    let sig? = cx.view.decls.sig(m)?.fn_sig() else { return false }
+    !cx.types_disagree(sig.ret, want)
+}
+
+/// Whether every argument's type fits the member's seat — seat 0 is
+/// the receiver.
+fn seats_fit(cx: TypeCx, m: DeclId, args: List<ExprId>, at: int = 1) -> bool {
+    let sig? = cx.view.decls.sig(m)?.fn_sig() else { return false }
+    sig.params.length == args.length + at &&
+        [j for j, a in args if cx.types_disagree(cx.type_at(a), sig.params[j + at])].is_empty()
+}
+
+/// The declared type a receiver answers to, or absence. Generic
+/// receivers wait for T2 (the impl's own tparams).
+/// A method's sig on THIS receiver: a generic type's Vars replaced
+/// by the receiver's arguments, the instantiation recorded so the
+/// call names the body lowered for it.
+fn instantiated_sig(mut cx: TypeCx, e: ExprId, subject: ExprId, decl: DeclId, sig: FnSig) -> FnSig {
+    let args = cx.view.types.args_of(cx.type_at(subject))
+    if args.is_empty() { return sig }
+    cx.record_subst(e, decl, args, [])
+    FnSig {
+        params: [cx.view.types.substituted(p, decl, args) for p in sig.params],
+        ret: cx.view.types.substituted(sig.ret, decl, args),
+    }
+}
+
+/// An unanswered dot-call of a map's verb on `{}`, whose values
+/// nothing says, refuses in the words every map verb there has. Null
+/// for any other call.
+fn empty_map_verb(mut cx: TypeCx, e: ExprId, subject: ExprId, name: string) -> TypeId? {
+    if !(cx.seen_at(subject) is .EmptyMap) { return null }
+    let maps? = cx.view.decls.builtins.get().find((b) -> cx.view.decls.decl(b).name == "Map") else { return null }
+    let verbed = method_row(cx.view.lang.methods, name, Type.Map(cx.error_type, cx.error_type)) != null ||
+        cx.view.decls.method(maps, name) != null
+    if !verbed { return null }
+    cx.spoken(said_as("type.map_value", cx.loc_of(e), map_unknowable(name)))
+}
+
+/// An unanswered dot-call that is a grammar FORM refuses in the
+/// form's words — a type literal's, or a keyword-named call's, the
+/// form it failed to be. Null for an ordinary call: the caller's
+/// own words apply.
+fn form_refusal(mut cx: TypeCx, e: ExprId, target: string, name: string) -> TypeId? {
+    if cx.view.store.is_type_lit(e) { return no_interned(cx, e, target) }
+    if cx.keywords.contains(name) { return keyword_form(cx, e, name) }
+    null
+}
+
+// ── The voices ──
+
+fn no_methods_here(mut cx: TypeCx, subject: ExprId, name: string) -> TypeId {
+    let n = cx.name_at(subject)
+    cx
+        .spoken(
+            cx
+                .nearest(
+                    said_as("type.method", cx.loc_of(subject), methodless(n, name)),
+                    subject,
+                    name,
+                    cx.answers_to(cx.type_at(subject)),
+                ),
+        )
+}
+
+/// A method call of `name` on a value of `found`, a type no method of that name is given to.
+export fn methodless(found: string, name: string) -> Voice {
+    Voice {
+        message: "`.${name}(…)` calls a method, and `${found}` has none",
+        label: this_is(found),
+        help: "methods live on lists, maps, and declared types with an `impl`",
+    }
+}
+
+/// A method call naming a method the declared type `target` doesn't have.
+export fn no_method_on(target: string, name: string) -> Voice {
+    Voice {
+        message: "`${target}` has no method `${name}`",
+        label: "called here",
+        help: "declare it — `impl ${target} { fn ${name}(…) -> … }`",
+    }
+}
+
+/// The names a declared type's impls give it.
+fn members_of(cx: TypeCx, decl: DeclId) -> List<string> {
+    [cx.view.decls.decl(m).name for m in cx.view.decls.methods_of(decl)]
+}
+
+fn no_such_method(mut cx: TypeCx, e: ExprId, target: string, name: string, near: List<string>) -> TypeId {
+    cx
+        .spoken(
+            cx
+                .nearest(
+                    said_as("type.method", cx.loc_of(e), no_method_on(target, name)),
+                    cx.receiver_of(e),
+                    name,
+                    near,
+                ),
+        )
+}
+
+/// A dot-call named by a KEYWORD is a grammar form that did not match
+/// — no method can wear the name, so the remedy is the form's.
+fn keyword_form(mut cx: TypeCx, e: ExprId, name: string) -> TypeId { cx.spoken(said_as("type.method", cx.loc_of(e), keyword_called(name))) }
+
+/// A dot-call named by the keyword `name`, which no method can wear.
+export fn keyword_called(name: string) -> Voice {
+    Voice {
+        message: "`.${name}(…)` names no method — `${name}` is a keyword, and the grammar's form did not match",
+        label: "written here",
+        help: "a type literal is `.type(T)` over a TYPE: `int?`, `List<T>`, `fn(int) -> bool`, or a name holding an id",
+    }
+}
+
+fn no_interned(mut cx: TypeCx, e: ExprId, target: string) -> TypeId {
+    cx.spoken(said_as("type.method", cx.loc_of(e), literal_uninterned(target)))
+}
+
+/// A type literal over a receiver of `target`, which has no `interned` to intern it into.
+export fn literal_uninterned(target: string) -> Voice {
+    Voice {
+        message: "`.type(…)` interns into its receiver, and `${target}` has no `interned`",
+        label: "written here",
+        help: "declare `interned` on `${target}` — its seat is the enum the literal spells, its answer the id — or name a table that has one: `cx.type(…)`",
+    }
+}
+
+fn wrong_method_arity(
+    mut cx: TypeCx,
+    e: ExprId,
+    target: string,
+    name: string,
+    wants: int,
+    found: int,
+) -> TypeId {
+    cx.spoken(said_as("type.method", cx.loc_of(e), method_arity_missed(target, name, wants, found)))
+}
+
+fn unbounded_call(mut cx: TypeCx, e: ExprId, decl: DeclId, tname: string) -> TypeId {
+    cx
+        .spoken(
+            said_as(
+                "type.method",
+                cx.loc_of(e),
+                unbounded_method(tname, bound_remedy(cx, decl, tname)),
+            ),
+        )
+}
+
+/// A method called on a value of the type parameter `tname`, which carries no bound: `remedy` says
+/// how to give it one.
+export fn unbounded_method(tname: string, remedy: string) -> Voice {
+    Voice { message: "`${tname}` has no known methods", label: "called here", help: remedy }
+}
+
+fn receiver_through(mut cx: TypeCx, e: ExprId, trait_name: string, name: string, tname: string) -> TypeId {
+    cx.spoken(said_as("type.method", cx.loc_of(e), receiver_through_type(trait_name, name, tname)))
+}
+
+/// The method `name` of the bound `trait_name`, which takes a receiver, called through the type
+/// parameter `tname` itself.
+export fn receiver_through_type(trait_name: string, name: string, tname: string) -> Voice {
+    Voice {
+        message: "`${trait_name}.${name}` takes a receiver, and `${tname}` names a type — call it on a value of `${tname}`",
+        label: "called here",
+        help: "a type parameter calls its bound's `static fn`s alone",
+    }
+}
+
+fn no_trait_method(mut cx: TypeCx, e: ExprId, trait_name: string, name: string, tname: string) -> TypeId {
+    cx.spoken(said_as("type.method", cx.loc_of(e), bound_lacks_method(trait_name, name, tname)))
+}
+
+/// The method `name` called on a value of the type parameter `tname`, whose bound `trait_name`
+/// declares none.
+export fn bound_lacks_method(trait_name: string, name: string, tname: string) -> Voice {
+    Voice {
+        message: "`${trait_name}` has no method `${name}`",
+        label: "called here",
+        help: "the bound decides what `${tname}` can do",
+    }
+}
+
+fn no_dyn_method(mut cx: TypeCx, e: ExprId, tname: string, name: string) -> TypeId {
+    cx.spoken(said_as("type.method", cx.loc_of(e), contract_lacks(tname, name)))
+}
+
+/// The method `name` called on a `dyn` value of the trait `tname`, which declares none.
+export fn contract_lacks(tname: string, name: string) -> Voice {
+    Voice {
+        message: "`${tname}` has no method `${name}`",
+        label: "called here",
+        help: "the contract decides what a `dyn ${tname}` can do",
+    }
+}
+
+fn wrong_static_arity(
+    mut cx: TypeCx,
+    e: ExprId,
+    target: string,
+    name: string,
+    wants: int,
+    found: int,
+) -> TypeId {
+    cx.spoken(said_as("type.method", cx.loc_of(e), static_arity_missed(target, name, wants, found)))
+}
+
+/// A call of the method `name` of `target`, whose seats beside `self` take `wants`, writing `found`.
+export fn method_arity_missed(target: string, name: string, wants: int, found: int) -> Voice {
+    Voice {
+        message: "`${target}.${name}` takes ${counted(wants, "argument")} beside `self`, found ${found}",
+        label: "this call",
+        help: "pass exactly that many — `avra docs ${target}.${name}` shows the signature",
+    }
+}
+
+/// A call of the static `name` of `target`, whose seats take `wants`, writing `found`.
+export fn static_arity_missed(target: string, name: string, wants: int, found: int) -> Voice {
+    Voice {
+        message: "`${target}.${name}` takes ${seat_word(wants)}, found ${found}",
+        label: "this call",
+        help: "a `static fn` has no receiver — every seat is written",
+    }
+}
+
+fn seat_word(n: int) -> string {
+    if n == 1 { "1 argument" } else { "${n} arguments" }
+}
+
+fn wrong_method_argument(
+    mut cx: TypeCx,
+    target: string,
+    name: string,
+    j: int,
+    want: TypeId,
+    a: ExprId,
+) {
+    let n = cx.name_at(a)
+    cx
+        .emit(
+            cx
+                .seat_mismatch(
+                    "type.method",
+                    cx.loc_of(a),
+                    a,
+                    "argument ${j + 1} of `${target}.${name}` wants `${cx.view.types.name_of(want)}`, found `${n}`",
+                    want,
+                ),
+        )
+}
+
+/// A dot-call on a FN-TYPED FIELD — the capability-record pattern:
+/// `cx.walk(v)` calls the value the field holds; the field's arrow
+/// judges the seats.
+fn fielded_call(mut cx: TypeCx, e: ExprId, name: string, fty: TypeId, args: List<ExprId>) -> TypeId {
+    let arrow? = cx.view.types.arrow_parts(fty) else { return cx.error_type }
+    cx.seats_judged(e, name, arrow.seats, arrow.marks, arrow.answer, args)
+}
+
+/// A method on a BOUNDED type parameter: the bound's trait supplies
+/// the sig (no receiver seat — the receiver fills it trivially);
+/// mono resolves the concrete impl per specialization. An UNBOUNDED
+/// T refuses with the spec's own remedy.
+fn bounded_call(
+    mut cx: TypeCx,
+    e: ExprId,
+    subject: ExprId,
+    decl: DeclId,
+    j: int,
+    tname: string,
+    name: string,
+    args: List<ExprId>,
+) -> TypeId {
+    let trait_name = cx.bound_name(decl, j)
+    if trait_name == "" { return unbounded_call(cx, e, decl, tname) }
+    trait_judged(cx, e, subject, trait_name, name, args, cx.view.decls.bound_args(decl, j)) ?? no_trait_method(
+        cx,
+        e,
+        trait_name,
+        name,
+        tname,
+    )
+}
+
+/// A STATIC through a bounded type parameter: the bound's trait
+/// supplies the member, which must be static — a member with a
+/// receiver reads a value, and a type parameter names none. Mono
+/// resolves the concrete static per specialization.
+fn bound_static_call(
+    mut cx: TypeCx,
+    e: ExprId,
+    subject: ExprId,
+    decl: DeclId,
+    j: int,
+    tname: string,
+    name: string,
+    args: List<ExprId>,
+) -> TypeId {
+    let trait_name = cx.bound_name(decl, j)
+    if trait_name == "" { return unbounded_call(cx, e, decl, tname) }
+    let tdecl? = cx.bound_trait(decl, trait_name) else { return cx.error_type }
+    let member? = cx.view.decls.trait_member(tdecl, name) else { return no_trait_method(cx, e, trait_name, name, tname) }
+    if !cx.view.decls.is_static_of(member) { return receiver_through(cx, e, trait_name, name, tname) }
+    let found? = cx.view.decls.sig(member)?.fn_sig() else { return cx.error_type }
+    if !cx.seat_contracts(e, "${trait_name}.${name}", member, 0, args, null) { return cx.error_type }
+    let sig = selfed_sig(cx, subject, member, found, cx.view.decls.bound_args(decl, j))
+    placed_judged(cx, e, trait_name, name, member, args, sig)
+}
+
+/// A REMEDY NAMES A FORM THAT PARSES. A bound is written on a fn's
+/// and a component's type parameters and nowhere else — a type's and
+/// an impl's refuse it at the `<` — so telling every unbounded
+/// parameter to add one sends half of them at a form the grammar has
+/// no rule for.
+fn bound_remedy(cx: TypeCx, decl: DeclId, tname: string) -> string {
+    if cx.view.decls.component_parts_of(decl) != null { return bound_written(tname) }
+    match cx.view.decls.decl(decl).kind {
+        .Record or .Named or .Alias or .Enum or .Impl or .CollectEnum or .State -> typewide_remedy(tname),
+        .Fn or .Method or .Trait or .Default or .Case or .Main or .Const or .Syntax or .Builtin or .Collect -> bound_written(tname),
+    }
+}
+
+/// The remedy for a type's or an impl's parameter `tname`, which takes no bound.
+export fn typewide_remedy(tname: string) -> string {
+    "a type's and an impl's parameters take no bound yet — a bounded generic is a free `fn<${tname}: SomeTrait>` for now"
+}
+
+export fn bound_written(tname: string) -> string { "add a bound — `<${tname}: SomeTrait>`" }
+
+/// A method on a CONTRACT value: the trait's sig judges (self
+/// omitted — the boxed value fills that seat at dispatch); the
+/// runtime answers through the box.
+fn dyn_call(
+    mut cx: TypeCx,
+    e: ExprId,
+    subject: ExprId,
+    tdecl: DeclId,
+    tname: string,
+    name: string,
+    args: List<ExprId>,
+) -> TypeId {
+    let member? = cx.view.decls.trait_member(tdecl, name) else { return no_dyn_method(cx, e, tname, name) }
+    contract_judged(cx, e, subject, tname, name, args, member)
+}
+
+/// The contract's own laws, then its judgment: the member's word
+/// decides the receiver and the seats for every signatory.
+fn contract_judged(
+    mut cx: TypeCx,
+    e: ExprId,
+    subject: ExprId,
+    trait_name: string,
+    name: string,
+    args: List<ExprId>,
+    member: DeclId,
+    trait_args: List<TypeId> = [],
+) -> TypeId {
+    let found? = cx.view.decls.sig(member)?.fn_sig() else { return cx.error_type }
+    let writes = cx.view.decls.declares_writing(member)
+    cx.receiver_law(e, subject, name, writes)
+    if !cx
+        .seat_contracts(e, "${trait_name}.${name}", member, 1, args, if writes { subject } else { null }) {
+        return cx.error_type
+    }
+    let sig = seats_of(selfed_sig(cx, subject, member, found, trait_args))
+    placed_judged(cx, e, trait_name, name, member, args, sig)
+}
+
+/// A method sig past its receiver — what the arguments fill.
+fn seats_of(sig: FnSig) -> FnSig {
+    FnSig { params: sig.params.slice(1, sig.params.length), ret: sig.ret }
+}
+
+/// The contract's judgment, shared by the bound and dyn halves:
+/// the trait's sig judges arity and every seat — or absence when
+/// the trait lacks the method (each caller speaks its own remedy).
+fn trait_judged(
+    mut cx: TypeCx,
+    e: ExprId,
+    subject: ExprId,
+    trait_name: string,
+    name: string,
+    args: List<ExprId>,
+    trait_args: List<TypeId> = [],
+) -> TypeId? {
+    let tdecl? = cx.view.decls.trait_named(cx.names, trait_name) else { return null }
+    let member? = cx.view.decls.trait_member(tdecl, name) else { return null }
+    contract_judged(cx, e, subject, trait_name, name, args, member, trait_args)
+}
+
+/// A trait member's judgment: the arguments placed against its seats and
+/// defaults, then judged as the placed sig.
+fn placed_judged(
+    mut cx: TypeCx,
+    e: ExprId,
+    trait_name: string,
+    name: string,
+    member: DeclId,
+    args: List<ExprId>,
+    sig: FnSig,
+) -> TypeId {
+    let placed? = cx.placed(e, "${trait_name}.${name}", member, args, sig.params) else { return cx.error_type }
+    sig_judged(cx, e, trait_name, name, placed.args, FnSig { params: placed.wants, ret: sig.ret })
+}
+
+/// A method sig's judgment — its seats past the receiver — over the
+/// arguments.
+fn sig_judged(
+    mut cx: TypeCx,
+    e: ExprId,
+    trait_name: string,
+    name: string,
+    args: List<ExprId>,
+    sig: FnSig,
+) -> TypeId {
+    if args.length != sig.params.length {
+        return wrong_method_arity(cx, e, trait_name, name, sig.params.length, args.length)
+    }
+    for j, a in args {
+        if !cx.accepts(a, sig.params[j]) { wrong_method_argument(cx, trait_name, name, j, sig.params[j], a) }
+    }
+    sig.ret
+}
+
+/// The subject's tparam name and its bound ("" unbounded), when the
+/// subject is a Var.
+
+// ── The derive contract, where a trait declares it ──
+
+/// A TRAIT'S `derive` IS HELD TO ITS CONTRACT WHERE IT IS WRITTEN —
+/// `static fn derive(t: Type) -> List<Directive>` (or `Declared`, the
+/// same effect with problems to speak), and a `marks`
+/// beside it `static fn marks(t: Type) -> List<string>` — so the
+/// library's author hears it at their own build, never first at a
+/// user's `@derive`. `Fn` or `Named` may stand for `Type`.
+export fn derive_contract(mut cx: TypeCx, s: StmtId) {
+    let tr? = cx.view.decls.decl_of(cx.view.file, s) else { return }
+    if !(cx.view.decls.decl(tr).kind is .Trait) { return }
+    let derive? = cx.view.decls.trait_derive(tr) else { return }
+    if !member_fits(cx, derive, (ret: TypeId) -> derive_answer(cx, ret)) { derive_shape(cx, derive) }
+    let marks? = cx.view.decls.trait_marks(tr) else { return }
+    if !member_fits(cx, marks, (ret: TypeId) -> same_type(ret, cx.type(List<string>))) { marks_shape(cx, marks) }
+}
+
+/// Whether a trait member is static, takes one declaration, and
+/// answers what `answers` accepts.
+fn member_fits(cx: TypeCx, m: DeclId, answers: fn(TypeId) -> bool) -> bool {
+    let sig? = cx.view.decls.sig(m)?.fn_sig() else { return true }
+    let x = cx.view.decls.decl(m)
+    cx.view.decls.store_of(x.file).is_static(x.stmt) &&
+        sig.params.length == 1 &&
+        cx.view.decls.takes_a_decl(sig.params[0]) &&
+        answers(sig.ret)
+}
+
+/// Whether an answer makes declarations — `@std.meta`'s
+/// `List<Directive>`, or its `Declared`, the same effect with room to
+/// speak problems about the shape it generated from.
+fn derive_answer(cx: TypeCx, ret: TypeId) -> bool {
+    match cx.view.types.shape_of(ret) {
+        .List(e) -> cx.view.decls.meta_type(e, "Directive"),
+        .Struct(_, _) -> cx.view.decls.meta_type(ret, "Declared"),
+        _ -> false,
+    }
+}
+
+fn derive_shape(mut cx: TypeCx, m: DeclId) {
+    cx.emit(said_as("type.derive_contract", member_loc(cx, m), derive_unshaped()))
+}
+
+fn marks_shape(mut cx: TypeCx, m: DeclId) {
+    cx.emit(said_as("type.derive_contract", member_loc(cx, m), marks_unshaped()))
+}
+
+/// A trait's `derive` that isn't `static`, takes no one declaration, or answers no declarations.
+export fn derive_unshaped() -> Voice {
+    Voice {
+        message: "a trait's `derive` answers the declarations it makes",
+        label: "declared here",
+        help: "take the declaration (`t: Type`, `f: Fn` or `n: Named`) and answer `List<Directive>` (or `Declared`) as a `static fn`",
+    }
+}
+
+/// A trait's `marks` that isn't `static fn marks(t: Type) -> List<string>`.
+export fn marks_unshaped() -> Voice {
+    Voice {
+        message: "a trait's `marks` is `static fn marks(t: Type) -> List<string>`",
+        label: "declared here",
+        help: "take the same declaration its `derive` takes, and answer the mark names it reads",
+    }
+}
+
+fn member_loc(cx: TypeCx, m: DeclId) -> Loc? {
+    cx.view.stmt_loc(cx.view.decls.decl(m).stmt)
+}
+
+fn no_member_fits(mut cx: TypeCx, e: ExprId, target: string, name: string, keys: List<string>) {
+    cx.emit(said_as("type.method", cx.loc_of(e), no_member_takes(target, name, keys)))
+}
+
+/// A call of `target.name`, a member several impls of one generic trait give, that none of the
+/// members `keys` takes.
+export fn no_member_takes(target: string, name: string, keys: List<string>) -> Voice {
+    Voice {
+        message: "no `${target}.${name}` takes these arguments",
+        label: "called here",
+        help: "`${target}` declares ${keys.join(", ")} — pass an argument one of them takes",
+    }
+}
+
+fn members_ambiguous(mut cx: TypeCx, e: ExprId, target: string, name: string, keys: List<string>) {
+    cx
+        .emit(
+            refusal(
+                "type.method",
+                cx.loc_of(e),
+                "`${target}.${name}` fits these arguments as ${keys.join(" and as ")}",
+                "called here",
+                "a call names one member — make an argument's type, or the answer's wanted type, say which",
+            ),
+        )
+}
+
+fn members_incomplete(mut cx: TypeCx, e: ExprId, target: string, name: string, unmet: List<string>) {
+    cx.emit(said_as("type.method", cx.loc_of(e), members_incomplete_said(target, name, unmet)))
+}
+
+/// A call of `target.name` a `dyn` argument's run-time type chooses a member of, where no member
+/// takes the types `unmet` that implement the argument's trait.
+export fn members_incomplete_said(target: string, name: string, unmet: List<string>) -> Voice {
+    Voice {
+        message: "`${target}.${name}` is chosen by a `dyn` argument's type, and no member takes ${unmet.join(", ")}",
+        label: "called here",
+        help: "every type that can reach this call needs a member — implement it for ${unmet.join(", ")}",
+    }
+}
+
+fn default_unbound(mut cx: TypeCx, e: ExprId, trait_name: string) {
+    cx
+        .emit(
+            refusal(
+                "type.method",
+                cx.loc_of(e),
+                "this call to a `${trait_name}` default does not say what its type parameters are",
+                "called here",
+                "pass an argument whose type names them, or bind the answer to a typed `let`",
+            ),
+        )
+}
+
+fn static_unbound(mut cx: TypeCx, e: ExprId, callee: string, parameter: string) -> TypeId {
+    cx.spoken(said_as("type.method", cx.loc_of(e), static_unpinned(callee, parameter)))
+}
+
+/// A call of the static `callee` whose type parameter `parameter` neither its arguments nor its
+/// wanted answer fill.
+export fn static_unpinned(callee: string, parameter: string) -> Voice {
+    Voice {
+        message: "`${callee}` needs a type for `${parameter}` from its arguments or expected answer",
+        label: "no type binds this parameter",
+        help: "give the call a typed argument or an annotated answer",
+    }
+}
+
+fn static_unholdable(mut cx: TypeCx, e: ExprId, callee: string, side: TypeId) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.method",
+                cx.loc_of(e),
+                "`${callee}` instantiates a slot as `${cx.view.types.name_of(side)}`, which no slot holds",
+                "this call",
+                "instantiate the type parameter with a value a slot can hold",
+            ),
+        )
+}
+
+fn default_unimplemented(
+    mut cx: TypeCx,
+    e: ExprId,
+    trait_name: string,
+    recv: string,
+    args: List<string>,
+) {
+    cx
+        .emit(
+            said_as(
+                "type.method",
+                cx.loc_of(e),
+                default_impl_missing(recv, "${trait_name}<${args.join(", ")}>"),
+            ),
+        )
+}
+
+/// A trait's own body called on a value of `recv` at `applied`, the trait at the arguments the call
+/// fills it with, which `recv` doesn't implement.
+export fn default_impl_missing(recv: string, applied: string) -> Voice {
+    Voice {
+        message: "`${recv}` does not implement `${applied}`",
+        label: "called here",
+        help: "a default runs through the impl at its arguments — implement `${applied}` for `${recv}`",
+    }
+}

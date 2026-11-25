@@ -1,0 +1,102 @@
+// Items over the empty file, blank lines, attached lines, holders and bodies that hold nothing.
+use source_items.{ItemBody, SourceItem, item_name, source_items}
+use tests.support.spelled_tokens.{spelled_columns}
+
+fn items_of(spelled: string) -> List<SourceItem> { source_items(spelled_columns(spelled)) }
+
+fn runs(items: List<SourceItem>) -> string { [run(item) for item in items].join(" ") }
+
+fn run(item: SourceItem) -> string {
+    let range = "${item.first}-${item.end}"
+    match item.body {
+        .Nothing -> range,
+        .Deferred(opener) -> "${range}<${opener}>",
+        .Members(opener, members) -> "${range}[${opener}: ${runs(members)}]",
+    }
+}
+
+fn name_of(spelled: string) -> string {
+    let columns = spelled_columns(spelled)
+    item_name(columns, source_items(columns)[0])
+}
+
+spec "source_items — a file's items from its tokens" {
+    given "no tokens" {
+        then "there are no items" { items_of("").is_empty() }
+    }
+    given "only separators" {
+        then "there are no items" { items_of(";;;").is_empty() }
+    }
+    given "two lines with blank lines around them" {
+        then "each line is an item" { runs(items_of(";ww;;w;")) == "1-3 5-6" }
+    }
+    given "a separator inside a body" {
+        then "it doesn't end the item" { runs(items_of("w{w;w};w")) == "0-6 7-8" }
+    }
+    given "no separator at the end" {
+        then "the last item ends with the file" { runs(items_of("w;ww")) == "0-1 2-4" }
+    }
+    given "an attached line" {
+        then "it joins the item below" { runs(items_of("@;w;w")) == "0-3 4-5" }
+    }
+    given "an attached line with a bracket pair" {
+        then "it joins the item below" { runs(items_of("@(w;w);w;w")) == "0-8 9-10" }
+    }
+    given "an attached token followed by a word and nothing else" {
+        then "the line is an item of its own" { runs(items_of("@w;w")) == "0-2 3-4" }
+    }
+    given "attached lines in a row" {
+        then "they all join the item below" { runs(items_of("@;@();w")) == "0-7" }
+    }
+    given "an attached token with more on its line" {
+        then "the line is an item of its own" { runs(items_of("@ww;w")) == "0-3 4-5" }
+    }
+    given "an attached line ending the file" {
+        then "it is an item of its own" { runs(items_of("w;@")) == "0-1 2-3" }
+    }
+    given "a holder" {
+        then "its members are items, inside its run" { runs(items_of("h{;w;@;w;};w")) == "0-10[1: 3-4 5-8] 11-12" }
+    }
+    given "a holder with an empty body" {
+        then "it has no members" { runs(items_of("h{}")) == "0-3[1: ]" }
+    }
+    given "a deferred token and a body at the item's end" {
+        then "that pair is the body" { runs(items_of("fw(w){w;w}")) == "0-10<5>" }
+    }
+    given "a record before the body" {
+        then "the last pair is the body" { runs(items_of("f{w}{w}")) == "0-7<4>" }
+    }
+    given "a deferred token with nothing after it in brackets" {
+        then "there's no body" { runs(items_of("fw")) == "0-2" }
+    }
+    given "a deferred token ending on a plain pair" {
+        then "there's no body" { runs(items_of("fw()")) == "0-4" }
+    }
+    given "a member of a holder with a body" {
+        then "the member's body is its own" { runs(items_of("h{;f{w};}")) == "0-9[1: 3-7<4>]" }
+    }
+    given "a holder token after the first body" {
+        then "the item holds nothing" { runs(items_of("w{w;w}h")) == "0-7" }
+    }
+    given "a body that isn't a holder's" {
+        then "it has no members" { runs(items_of("w{w;w}")) == "0-6" }
+    }
+    given "brackets that don't balance" {
+        then "the whole file is one item" { runs(items_of("w;(w;w")) == "0-6" }
+    }
+    given "a declaring word" {
+        then "the item is called by the token after it" { name_of("fa{}") == "a" && name_of("ka=b") == "a" }
+    }
+    given "attached lines above a declaration" {
+        then "they aren't its name" { name_of("@;@();fa{}") == "a" }
+    }
+    given "declaring words in a row" {
+        then "the item is called by the token after the last" { name_of("kfa") == "a" }
+    }
+    given "a holder that a later word would seem to declare" {
+        then "it's called by its head" { name_of("hakb{}") == "h a k b" }
+    }
+    given "an item declaring nothing" {
+        then "it's called by the tokens before its first bracket" { name_of("hb{}") == "h b" && name_of("wx(y)") == "w x" }
+    }
+}

@@ -1,0 +1,58 @@
+// `spliced`: LOSSLESS BY CONSTRUCTION — every byte outside an edit's
+// span is copied verbatim, edits apply last-to-first so an earlier
+// one's offsets never move under a later one, and two edits that
+// touch or cross refuse the whole splice rather than guess.
+use @std.errors.{Edit, Loc}
+use @std.avrac.diagnostics.{spliced}
+
+fn edit(lo: int, hi: int, text: string) -> Edit {
+    Edit { loc: Loc { file: "app.av", lo: lo, hi: hi }, replacement: text }
+}
+
+spec "spliced" {
+    given "one edit in the middle of the text" {
+        then "everything outside the span is untouched" {
+            spliced("let v = OLD\n", [edit(8, 11, "NEW")]) == "let v = NEW\n"
+        }
+    }
+    given "two non-overlapping edits, written in source order" {
+        then "both apply — the callee sorts, the caller need not" {
+            spliced("AA BB CC", [edit(0, 2, "xx"), edit(6, 8, "zz")]) == "xx BB zz"
+        }
+    }
+    given "an edit at offset 0" {
+        then "the text before it (nothing) and after it both stay exact" {
+            spliced("OLD rest", [edit(0, 3, "NEW")]) == "NEW rest"
+        }
+    }
+    given "an edit ending exactly at the text's length" {
+        then "it applies — the span may close at the end" {
+            spliced("head OLD", [edit(5, 8, "NEW")]) == "head NEW"
+        }
+    }
+    given "two edits whose spans overlap" {
+        then "the whole splice is refused" {
+            spliced("ABCDEF", [edit(0, 3, "x"), edit(2, 5, "y")]) == null
+        }
+    }
+    given "two edits whose spans merely touch (hi == lo)" {
+        then "both apply — adjacent is not overlapping" {
+            spliced("ABCDEF", [edit(0, 2, "x"), edit(2, 4, "y")]) == "xyEF"
+        }
+    }
+    given "an edit reaching past the text's own length" {
+        then "the splice is refused" {
+            spliced("short", [edit(3, 9, "x")]) == null
+        }
+    }
+    given "an edit whose lo is past its own hi" {
+        then "the splice is refused" {
+            spliced("short", [edit(4, 1, "x")]) == null
+        }
+    }
+    given "no edits at all" {
+        then "the text comes back exactly" {
+            spliced("unchanged", []) == "unchanged"
+        }
+    }
+}

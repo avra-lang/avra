@@ -1,0 +1,33 @@
+// proves: a stateful composition's props are cells of its instance, so a write
+// to the state its parent passes patches the one text that reads the prop, and
+// a sibling's write patches only the sibling. Under `AVRA_EXACT=check` every
+// answer is compared with the full paint's.
+use @std.ui.components.{column, text}
+use @std.ui.realize.dom.live.{live}
+use @std.ui.style.theme.{default_theme}
+
+component badge(label: string) {
+    state n: int = 0
+    text "${self.n}"
+}
+
+state title: string = "a"
+state beside: int = 1
+
+fn view() -> column {
+    column {
+        badge title
+        text "beside ${beside}"
+    }
+}
+
+let page = live()
+let first = page.paint_view(view(), default_theme)
+title = "b"
+let after_prop = page.paint_view(view(), default_theme)
+println(page.exact_why())
+beside = 2
+let after_beside = page.paint_view(view(), default_theme)
+println("${first.length > 0} ${after_prop.length > 0} ${after_beside.length > 0}")
+println(page.exact_counts())
+println(page.exact_why())

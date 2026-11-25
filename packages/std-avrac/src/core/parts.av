@@ -1,0 +1,873 @@
+//! THE STORE'S PROJECTIONS — what a statement declares or carries,
+//! read once and handed out as parts: a binding's name and written
+//! type, a statement's value, a declaration's kind, name, type
+//! parameters and bounds, and the parts a fn, trait, impl, struct,
+//! enum, spec or lambda is made of. Projections are DATA about
+//! variants — one arm per feature's node, no dispatch — and every
+//! pass reads them here, never by matching a node itself.
+
+/// The name a VALUE spread wears inside a literal: a record literal's
+/// field entry, or the `Named` node wrapping a list element.
+export const spread_entry: string = ".."
+
+impl SyntaxArena {
+    /// A destructuring `let` still waiting for its block, when the statement is one.
+    fn open_let(s: StmtId) -> LetParts? {
+        let v? = self.stmt_value(s) else { return null }
+        match self.expr(v) {
+            .LetPattern(pat, subject, otherwise, held) -> if held == null { LetParts { pat: pat, subject: subject, otherwise: otherwise } } else { null },
+            _ -> null,
+        }
+    }
+
+    /// A list pattern's parts, when the pattern is one.
+    fn seq_parts(p: PatId) -> SeqParts? {
+        match self.pat(p) {
+            .Seq(before, middle, after) -> SeqParts { before: before, rest: middle, after: after },
+            _ -> null,
+        }
+    }
+
+    /// A record pattern's parts, when the pattern is one.
+    fn fields_parts(p: PatId) -> FieldsParts? {
+        match self.pat(p) {
+            .Fields(name, fields, rests) -> FieldsParts {
+                name: name.of,
+                fields: [f.name.of for f in fields],
+                args: [f.pat for f in fields],
+                open: !rests.is_empty(),
+                rests: rests,
+            },
+            _ -> null,
+        }
+    }
+
+    /// The value a list element spreads, when the element is a spread.
+    fn spread_operand(e: ExprId) -> ExprId? {
+        match self.expr(e) {
+            .Named(name, value) -> if name.of == spread_entry { value } else { null },
+            _ -> null,
+        }
+    }
+
+    /// A statement's bound name, when it binds one. A PROJECTION
+    /// registry beside the semantics map: one arm per binding
+    /// feature, zero dispatch cost — projections are DATA about
+    /// variants; the trait carries behavior.
+    fn let_name(s: StmtId) -> string? {
+        match self.stmt(s) {
+            .Let(name, _, _) or .MutLet(name, _, _) or .ConstDecl(name, _, _) or .ForEach(_, name, _, _) or .LetElse(name, _, _) or .Collect(name, _, _, _, _, _) -> name.of,
+            .Assign(_, _) or .ExprStmt(_) or .Discard(_) or .Use(_, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .Return(_) or .Fail(_) or .StructDecl(_, _, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _, _, _) or .TraitDecl(_, _, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .ComponentDecl(_, _, _, _, _, _) or .Spec(_, _) or .Defer(_, _) or .CtxDecl(_, _, _) or .CtxSet(_, _) or .CollectEnum(_, _, _, _, _) or .Jump(_, _) or .Error -> null,
+        }
+    }
+
+    /// A CONST's value, when the statement is one. A const has no
+    /// slot: the compiler settled the value, so every read of the
+    /// name lowers the value itself.
+    fn const_value(s: StmtId) -> ExprId? {
+        match self.stmt(s) { .ConstDecl(_, _, v) -> v, _ -> null }
+    }
+
+    /// A BINDING's written type, when one was declared — `let` and
+    /// `mut` alike.
+    fn binding_ty(s: StmtId) -> TypeRef? {
+        match self.stmt(s) {
+            .Let(_, t, _) or .MutLet(_, t, _) or .ConstDecl(_, t, _) -> t,
+            .Collect(_, t, _, _, _, _) or .CtxDecl(_, t, _) -> t,
+            .CtxSet(_, _) or .Assign(_, _) or .ExprStmt(_) or .Discard(_) or .Use(_, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .StructDecl(_, _, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _, _, _) or .TraitDecl(_, _, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .ComponentDecl(_, _, _, _, _, _) or .Spec(_, _) or .Defer(_, _) or .CollectEnum(_, _, _, _, _) or .Jump(_, _) or .Error -> null,
+        }
+    }
+
+    /// An assignment's TARGET — the place written; null for every
+    /// other statement.
+    fn assign_target(s: StmtId) -> ExprId? {
+        match self.stmt(s) { .Assign(t, _) -> t, _ -> null }
+    }
+
+    /// An expression that only NAMES a value — a literal, a name,
+    /// `self`, a lambda: running it does nothing. What `defer` will
+    /// not run alone; anything else may act.
+    fn inert(e: ExprId) -> bool {
+        match self.expr(e) {
+            .IntLit(_) or .StrLit(_) or .BoolLit(_) or .NullLit or .Ident(_) or .Receiver or .CtxRead(_) or .Lambda(_, _) -> true,
+            _ -> false,
+        }
+    }
+
+    /// A construction's pieces, when the expression is one.
+    fn struct_lit_parts(e: ExprId) -> StructLitParts? {
+        match self.expr(e) {
+            .StructLit(name, fields, values) -> StructLitParts { name: name.of, fields: [f.of for f in fields], values: values },
+            _ -> null,
+        }
+    }
+
+    /// A construction's type name, when the expression is one.
+    fn struct_lit_name(e: ExprId) -> string? {
+        self.struct_lit_parts(e)?.name
+    }
+
+    /// A functional update's pieces, when the expression is one.
+    fn with_parts(e: ExprId) -> WithParts? {
+        match self.expr(e) {
+            .With(subject, fields, values) -> WithParts { subject: subject, fields: [f.of for f in fields], values: values },
+            _ -> null,
+        }
+    }
+
+    /// A list literal's elements, when the expression is one.
+    fn list_lit_values(e: ExprId) -> List<ExprId>? {
+        match self.expr(e) { .ListLit(elems) -> elems, _ -> null }
+    }
+
+    /// A property read's pieces, when the expression is one.
+    fn prop_parts(e: ExprId) -> PropParts? {
+        match self.expr(e) {
+            .Prop(subject, name) -> PropParts { subject: subject, name: name.of },
+            _ -> null,
+        }
+    }
+
+    /// The two sides an `==` compares, when the expression is one.
+    fn equated(e: ExprId) -> List<ExprId>? {
+        match self.expr(e) {
+            .Binary(op, l, r) -> if op == BinOp.Eq { [l, r] } else { null },
+            _ -> null,
+        }
+    }
+
+    /// A condition's conjuncts, `&&` flattened, in written order.
+    fn conjuncts(e: ExprId) -> List<ExprId> {
+        match self.expr(e) {
+            .Binary(op, l, r) -> if op == BinOp.And { self.conjuncts(l).concat(self.conjuncts(r)) } else { [e] },
+            _ -> [e],
+        }
+    }
+
+    /// The task an `.await` reads, when the expression is one: a read whose failure, the task ending
+    /// cancelled, is its own rather than a `Result`'s.
+    fn awaited_task(e: ExprId) -> ExprId? {
+        let p? = self.prop_parts(e) else { return null }
+        if p.name == "await" { p.subject } else { null }
+    }
+
+    /// The callee and the arguments of each annotation `s` wears, which are read as expressions are:
+    /// its source's own annotations, a rule's example marks aside, which name no fn.
+    fn annotation_exprs(s: StmtId) -> List<ExprId> {
+        flatten(
+            [[a.callee].concat(a.args) for a in self.annotations_of(s) if !example_marks(a.name) && self.foreign_of(a.callee) == null],
+        )
+    }
+
+    /// Whether the expression is `self`.
+    fn is_receiver(e: ExprId) -> bool {
+        self.expr(e) is .Receiver
+    }
+
+    /// A method call's pieces, when the expression is one.
+    fn method_parts(e: ExprId) -> MethodParts? {
+        match self.expr(e) {
+            .MethodCall(subject, name, args) -> MethodParts { subject: subject, name: name.of, args: args },
+            _ -> null,
+        }
+    }
+
+    /// A `return`'s own value, when the statement is one — `stmt_value`
+    /// answers a `Let`'s and an `Assign`'s value too, so a reader that
+    /// needs specifically a RETURN (compiler/consumes.av's early-exit
+    /// evidence) asks here instead.
+    fn return_value(s: StmtId) -> ExprId? {
+        match self.stmt(s) { .Return(v) -> v, _ -> null }
+    }
+
+    /// What a statement SHOWS as a program's answer: an expression
+    /// statement's expression, nothing else's — a binding, a loop
+    /// and an assignment show nothing.
+    fn shown_value(s: StmtId) -> ExprId? {
+        match self.stmt(s) { .ExprStmt(v) -> v, _ -> null }
+    }
+
+    /// A statement's value expression at its OWN position. A body
+    /// that runs later, under a frame, is NOT a value.
+    fn stmt_value(s: StmtId) -> ExprId? { self.stmt_values.at(s.index) }
+
+    /// The value a statement HOLDS for the rest of its scope: a binding's,
+    /// or a value computed and dropped — which its statement list then
+    /// holds until it ends. Null where the value leaves (`return`,
+    /// `fail`), replaces (`=`), or runs later (`defer`).
+    fn owned_value(s: StmtId) -> ExprId? {
+        match self.stmt(s) {
+            .Let(_, _, v) or .MutLet(_, _, v) or .ExprStmt(v) or .Discard(v) -> v,
+            .ConstDecl(_, _, _) or .Assign(_, _) or .Fail(_) or .LetElse(_, _, _) or .Defer(_, _) or .CtxDecl(_, _, _) or .CtxSet(_, _) or .Return(_) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .ForEach(_, _, _, _) or .Use(_, _) or .StructDecl(_, _, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _, _, _) or .TraitDecl(_, _, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .ComponentDecl(_, _, _, _, _, _) or .Spec(_, _) or .Collect(_, _, _, _, _, _) or .CollectEnum(_, _, _, _, _) or .Jump(_, _) or .Error -> null,
+        }
+    }
+
+    /// A declaration's type parameters — whichever kind declares;
+    /// empty when plain. The ordinal IS the Var identity.
+    fn decl_tparams(s: StmtId) -> List<string> {
+        match self.stmt(s) {
+            .FnDecl(_, tparams, _, _, _) or .ComponentDecl(_, tparams, _, _, _, _) or .StructDecl(_, tparams, _, _) or .NamedType(_, tparams, _) or .Alias(_, tparams, _) or .EnumDecl(_, tparams, _) -> [t.name.of for t in tparams],
+            .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .ExprStmt(_) or .Discard(_) or .Use(_, _) or .While(_, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .ExternFn(_, _, _) or .ImplDecl(_, _, _, _, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .Spec(_, _) or .Defer(_, _) or .CtxDecl(_, _, _) or .CtxSet(_, _) or .Collect(_, _, _, _, _, _) or .CollectEnum(_, _, _, _, _) or .Jump(_, _) or .Error -> [],
+            .TraitDecl(_, tparams, _) -> [t.of for t in tparams],
+        }
+    }
+
+    /// The type parameters a statement brings into scope for its body:
+    /// its own, and an impl's target's.
+    fn tparams_in_scope(s: StmtId) -> List<string> {
+        self.decl_tparams(s).concat([t.of for t in self.impl_tparams_of(s)?.target ?? []])
+    }
+
+    /// A declaration's type parameters as written, with their bounds and defaults — the written
+    /// twin of decl_tparams; empty for every kind that declares none.
+    fn decl_tbounds(s: StmtId) -> List<Param> {
+        match self.stmt(s) {
+            .FnDecl(_, tparams, _, _, _) or .ComponentDecl(_, tparams, _, _, _, _) or .StructDecl(_, tparams, _, _) or .NamedType(_, tparams, _) or .Alias(_, tparams, _) or .EnumDecl(_, tparams, _) -> tparams,
+            .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .ExprStmt(_) or .Discard(_) or .Use(_, _) or .While(_, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .ExternFn(_, _, _) or .ImplDecl(_, _, _, _, _) or .TraitDecl(_, _, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .Spec(_, _) or .Defer(_, _) or .CtxDecl(_, _, _) or .CtxSet(_, _) or .Collect(_, _, _, _, _, _) or .CollectEnum(_, _, _, _, _) or .Jump(_, _) or .Error -> [],
+        }
+    }
+
+    /// A block that LEAVES: a last statement that diverges, or a tail
+    /// that is a leaving block — it answers nothing, so it joins with
+    /// anything.
+    fn leaves(e: ExprId) -> bool {
+        match self.expr(e) {
+            .Block(stmts) -> {
+                let tail? = self.tail_of(e) else { return stmts.last() != null && self.diverges(stmts.last()!) }
+                self.leaves(tail)
+            },
+            _ -> false,
+        }
+    }
+
+    /// Whether control LEAVES through this statement — the line
+    /// after it never runs. A REGISTRY spelling every arm: a new
+    /// statement kind must answer here, so a diverging one cannot
+    /// slip in as a silent `false`.
+    fn diverges(s: StmtId) -> bool {
+        match self.stmt(s) {
+            .Return(_) or .Fail(_) or .Jump(_, _) -> true,
+            .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .ExprStmt(_) or .Discard(_) or .Use(_, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .ForEach(_, _, _, _) or .LetElse(_, _, _) or .StructDecl(_, _, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _, _, _) or .TraitDecl(_, _, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .ComponentDecl(_, _, _, _, _, _) or .Spec(_, _) or .Defer(_, _) or .CtxDecl(_, _, _) or .CtxSet(_, _) or .Collect(_, _, _, _, _, _) or .CollectEnum(_, _, _, _, _) or .Error -> false,
+        }
+    }
+
+    /// Whether control leaves the FN through this statement — the
+    /// answer a leaving block wears is the fn's promise; a jump leaves
+    /// only its loop's turn.
+    fn leaves_fn(s: StmtId) -> bool {
+        match self.stmt(s) {
+            .Return(_) or .Fail(_) -> true,
+            .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .ExprStmt(_) or .Discard(_) or .Use(_, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .ForEach(_, _, _, _) or .LetElse(_, _, _) or .StructDecl(_, _, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _, _, _) or .TraitDecl(_, _, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .ComponentDecl(_, _, _, _, _, _) or .Spec(_, _) or .Defer(_, _) or .CtxDecl(_, _, _) or .CtxSet(_, _) or .Collect(_, _, _, _, _, _) or .CollectEnum(_, _, _, _, _) or .Jump(_, _) or .Error -> false,
+        }
+    }
+
+    /// A lambda's pieces, when the expression is one.
+    fn applied_parts(e: ExprId) -> AppliedParts? {
+        match self.expr(e) {
+            .CallValue(subject, args) -> AppliedParts { subject: subject, args: args },
+            _ -> null,
+        }
+    }
+
+    /// An instance's component word, when the expression is one.
+    fn instance_word(e: ExprId) -> string? {
+        match self.expr(e) { .Component(word, _, _, _, _, _) -> word, _ -> null }
+    }
+
+    /// Whether the expression is a comprehension: its element is made once
+    /// per turn.
+    fn repeats(e: ExprId) -> bool {
+        match self.expr(e) { .Comp(_, _) -> true, _ -> false }
+    }
+
+    /// An instance's word and its block as written, when the expression
+    /// is one.
+    fn instance_parts(e: ExprId) -> InstanceParts? {
+        match self.expr(e) {
+            .Component(word, _, heads, body, _, _) -> InstanceParts { word: word, heads: heads, body: body },
+            _ -> null,
+        }
+    }
+
+    /// A `match`'s arms, when the expression is one.
+    fn match_arms(e: ExprId) -> List<Arm>? {
+        match self.expr(e) { .Match(_, arms) -> arms, _ -> null }
+    }
+
+    /// Every component instance a statement holds, in source order.
+    fn instances_in(s: StmtId) -> List<ExprId> {
+        [e for e in flatten([self.every_expr(k) for k in self.stmts_exprs([s])]) if self.instance_word(e) != null]
+    }
+
+    /// What each sugar a statement holds says it means, in source order.
+    fn means_in(s: StmtId) -> List<string> {
+        let notes = [self.means_note(e) for e in flatten([self.every_expr(k) for k in self.stmts_exprs([s])])]
+        [n! for n in notes if n != null && !n!.is_empty()]
+    }
+
+    /// A block's statements, all of them, when the expression is one.
+    fn block_stmts(e: ExprId) -> List<StmtId>? {
+        match self.expr(e) { .Block(stmts) -> stmts, _ -> null }
+    }
+
+    /// The statements a block walks before its answer.
+    fn lead_of(e: ExprId) -> List<StmtId> {
+        self.lead_stmts(self.block_stmts(e) ?? [])
+    }
+
+    /// A setting's field and value, when the statement is one.
+    fn setting_parts(s: StmtId) -> SettingParts? {
+        match self.stmt(s) {
+            .Setting(name, value) -> SettingParts { name: name.of, value: value },
+            _ -> null,
+        }
+    }
+
+    /// A call by name: its callee and its arguments.
+    fn call_parts(e: ExprId) -> CallParts? {
+        match self.expr(e) {
+            .Call(callee, _, args) -> CallParts { callee: callee.of, args: args },
+            _ -> null,
+        }
+    }
+
+    /// The closure an instance's body stands as: a fn written whole, or the
+    /// one a body written as arms means.
+    fn body_fn(b: ExprId) -> ExprId? {
+        let meant = self.meant(b)
+        when {
+            self.lambda_parts(b) != null -> b
+            meant != null && self.lambda_parts(meant!) != null -> meant
+            _ -> null
+        }
+    }
+
+    /// The lambda a call argument stands as: the closure itself, or the
+    /// one a sugar written in its place means.
+    fn closure_parts(e: ExprId) -> LambdaParts? {
+        let f? = self.body_fn(e) else { return null }
+        self.lambda_parts(f)
+    }
+
+    /// The expression a call argument's closure is: itself, or the lambda
+    /// a sugar in its place means.
+    fn closure_of(e: ExprId) -> ExprId { self.body_fn(e) ?? e }
+
+    fn lambda_parts(e: ExprId) -> LambdaParts? {
+        match self.expr(e) {
+            .Lambda(params, body) -> LambdaParts { params: params, body: body },
+            _ -> null,
+        }
+    }
+
+    /// A trait declaration's pieces, when the statement is one.
+    fn trait_parts(s: StmtId) -> TraitParts? {
+        match self.stmt(s) {
+            .TraitDecl(name, _, fns) -> TraitParts { name: name.of, fns: fns },
+            _ -> null,
+        }
+    }
+
+    /// The one expression a block answers when it holds nothing else
+    /// — a body that IS its value.
+    fn lone_value(e: ExprId) -> ExprId? {
+        match self.expr(e) {
+            .Block(stmts) -> if self.lead_of(e).is_empty() { self.tail_of(e) } else { null },
+            _ -> null,
+        }
+    }
+
+    /// The value a block answers — absent for one that leaves or ends on
+    /// a statement. Every reader asks here, so where a value lives is
+    /// one decision.
+    fn tail_of(e: ExprId) -> ExprId? {
+        match self.expr(e) { .Block(stmts) -> self.tail_value(stmts), _ -> null }
+    }
+
+    /// A component declaration's pieces, when the statement is one.
+    fn component_parts(s: StmtId) -> ComponentParts? {
+        match self.stmt(s) {
+            .ComponentDecl(name, tparams, head, members, fns, spreads) -> ComponentParts {
+                name: name.of,
+                tparams: [t.name.of for t in tparams],
+                head: head,
+                members: [member_of(p) for p in members],
+                holders: members,
+                fns: fns,
+                spreads: spreads,
+            },
+            _ -> null,
+        }
+    }
+
+    /// A component's BODY: the quote of the statements it is made of,
+    /// among its members — absent for a component that holds none.
+    fn component_body(s: StmtId) -> ExprId? {
+        let c? = self.component_parts(s) else { return null }
+        [e for m in c.fns for e in some_list(self.body_member(m))].first()
+    }
+
+    /// The quote a component's body member holds — null for a `fn` and
+    /// for a recovery's hole.
+    fn body_member(m: StmtId) -> ExprId? {
+        match self.stmt(m) {
+            .ExprStmt(e) -> if self.expr(e).body_of() == null { null } else { e },
+            _ -> null,
+        }
+    }
+
+    /// A component's member as the statements it was WRITTEN as: its
+    /// body's, for the member that folds them; else itself.
+    fn member_stmts(m: StmtId) -> List<StmtId> {
+        let q? = self.body_member(m) else { return [m] }
+        let body? = self.expr(q).body_of() else { return [m] }
+        match body.view { .Verbatim(stmts, _) -> stmts, .None or .Expanded(_) -> [m] }
+    }
+
+    /// The fns a declaration holds as its own members — a trait's, or
+    /// a component's methods. A component's body is a member and no fn.
+    fn member_fns(s: StmtId) -> List<StmtId> {
+        self.trait_parts(s)?.fns ?? [m for m in self.component_parts(s)?.fns ?? [] if self.body_member(m) == null]
+    }
+
+    /// A sublanguage declaration's pieces, when the statement is one.
+    fn syntax_parts(s: StmtId) -> SyntaxParts? {
+        match self.stmt(s) {
+            .SyntaxDecl(name, text) -> SyntaxParts { name: name.of, text: text },
+            _ -> null,
+        }
+    }
+
+    /// An impl block's pieces, when the statement is one.
+    fn impl_parts(s: StmtId) -> ImplParts? {
+        match self.stmt(s) {
+            .ImplDecl(of, of_args, target, _, fns) -> ImplParts { of: of?.of, of_args: of_args, target: target.of, fns: fns },
+            _ -> null,
+        }
+    }
+
+    /// A member a block of methods may hold besides its other parts: a
+    /// `fn`, or a recovery's hole.
+    fn holds_a_member(s: StmtId) -> bool {
+        self.fn_parts(s) != null || self.hole_stmt(s) != null
+    }
+
+    /// A fn declaration's pieces, when the statement is one — ONE
+    /// projection for the whole variant; callers pick fields.
+    fn fn_parts(s: StmtId) -> FnParts? { self.fn_parts_filed.at(s.index) }
+
+    /// A type declaration's NAME, when the statement declares one —
+    /// records and enums share the ONE type namespace.
+    fn type_decl_name(s: StmtId) -> string? {
+        match self.stmt(s) {
+            .StructDecl(name, _, _, _) or .NamedType(name, _, _) or .Alias(name, _, _) or .EnumDecl(name, _, _) or .ComponentDecl(name, _, _, _, _, _) or .CollectEnum(name, _, _, _, _) -> name.of,
+            .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .ExprStmt(_) or .Discard(_) or .Use(_, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .ImplDecl(_, _, _, _, _) or .TraitDecl(_, _, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .Spec(_, _) or .Defer(_, _) or .CtxDecl(_, _, _) or .CtxSet(_, _) or .Collect(_, _, _, _, _, _) or .Jump(_, _) or .Error -> null,
+        }
+    }
+
+    /// An enum declaration's pieces, when the statement is one.
+    fn enum_parts(s: StmtId) -> EnumParts? {
+        match self.stmt(s) {
+            .EnumDecl(name, tparams, variants) -> EnumParts { name: name.of, tparams: [t.name.of for t in tparams], variants: variants },
+            _ -> null,
+        }
+    }
+
+    /// A NAMED TYPE's pieces, when the statement is one.
+    fn named_parts(s: StmtId) -> NamedParts? {
+        match self.stmt(s) {
+            .NamedType(name, tparams, of) -> name_over(name, tparams, of),
+            _ -> null,
+        }
+    }
+
+    /// An ALIAS's pieces, when the statement is one.
+    fn alias_parts(s: StmtId) -> NamedParts? {
+        match self.stmt(s) { .Alias(name, tparams, of) -> name_over(name, tparams, of), _ -> null }
+    }
+
+    /// A record's `..R` entries among its fields: each after the fields
+    /// written before it.
+    fn placed(fields: List<Param>, spreads: List<TypeRef>) -> List<Spread> {
+        [Spread {
+            at: [f for f in fields if self.written_lo(f) < lo_of(t)].length,
+            of: t,
+            lo: lo_of(t),
+        } for t in spreads]
+    }
+
+    /// Where a field was written.
+    fn written_lo(p: Param) -> int { self.param_id_span(p.id)?.lo ?? 0 }
+
+    /// The `..R` entries of the record `s` declares, placed.
+    fn spreads_of(s: StmtId) -> List<Spread> { self.struct_parts(s)?.spreads ?? [] }
+
+    /// A struct declaration's pieces, when the statement is one.
+    fn struct_parts(s: StmtId) -> StructParts? {
+        match self.stmt(s) {
+            .StructDecl(name, tparams, fields, spreads) -> StructParts {
+                name: name.of,
+                tparams: [t.name.of for t in tparams],
+                fields: fields,
+                spreads: self.placed(fields, spreads),
+            },
+            .ComponentDecl(name, tparams, head, fields, _, spreads) -> StructParts {
+                name: name.of,
+                tparams: [t.name.of for t in tparams],
+                fields: head.concat(fields),
+                spreads: [x with { at: x.at + head.length } for x in self.placed(fields, spreads)],
+            },
+            .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .ExprStmt(_) or .Discard(_) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .Return(_) or .Fail(_) or .ImplDecl(_, _, _, _, _) or .TraitDecl(_, _, _) or .LetElse(_, _, _) or .Use(_, _) or .ForEach(_, _, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .Spec(_, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .Defer(_, _) or .CtxDecl(_, _, _) or .CtxSet(_, _) or .Collect(_, _, _, _, _, _) or .CollectEnum(_, _, _, _, _) or .Jump(_, _) or .Error -> null,
+        }
+    }
+
+    /// What a top-level statement DECLARES, or absence — an impl's
+    /// methods are minted by the impl walk, not here.
+    fn declared_kind(s: StmtId) -> DeclKind? {
+        if self.is_module_state(s) { return DeclKind.State }
+        if self.fn_parts(s) != null || self.extern_parts(s) != null { return DeclKind.Fn }
+        if self.enum_parts(s) != null { return DeclKind.Enum }
+        if self.struct_parts(s) != null { return DeclKind.Record }
+        if self.named_parts(s) != null { return DeclKind.Named }
+        if self.alias_parts(s) != null { return DeclKind.Alias }
+        if self.trait_parts(s) != null { return DeclKind.Trait }
+        if self.syntax_parts(s) != null { return DeclKind.Syntax }
+        if self.collect_parts(s) != null { return DeclKind.Collect }
+        if self.collect_enum_parts(s) != null { return DeclKind.CollectEnum }
+        null
+    }
+
+    /// A declaration's declared SEATS — a fn's parameters, or an
+    /// extern's. THROUGH THE PARTS, never by matching the node: this
+    /// file's whole contract is that a pass reads a statement HERE,
+    /// and three hand-written twins of these had grown in a driver.
+    fn declared_params(s: StmtId) -> List<Param> {
+        self.fn_parts(s)?.params ?? self.extern_parts(s)?.params ?? []
+    }
+
+    /// A record's declared fields, empty for every other statement.
+    fn declared_fields(s: StmtId) -> List<Param> {
+        self.struct_parts(s)?.fields ?? []
+    }
+
+    /// An enum's declared variants, empty for every other statement.
+    fn declared_variants(s: StmtId) -> List<Variant> {
+        self.enum_parts(s)?.variants ?? []
+    }
+
+    /// Every MARK written on a declaration's members — a record's
+    /// fields, an enum's variants and their payloads. A mark on the
+    /// declaration ITSELF is an annotation, and answers elsewhere.
+    fn marks_written(s: StmtId) -> List<Mark> {
+        let vs = self.declared_variants(s)
+        flatten([f.marks for f in self.declared_fields(s)])
+            .concat(flatten([v.marks.concat(flatten([q.marks for q in v.payloads])) for v in vs]))
+    }
+
+    /// A declaring statement's name.
+    fn declared_name(s: StmtId) -> string? {
+        if self.is_module_state(s) { return self.let_name(s) }
+        self.fn_parts(s)?.name ?? self.extern_parts(s)?.name ?? self.type_decl_name(s) ?? self
+            .trait_parts(s)?.name ?? self.syntax_parts(s)?.name ?? self.collect_parts(s)?.name ?? self
+            .ctx_declared(s)
+    }
+
+    /// The name a `ctx` declaration declares, when the statement is one.
+    fn ctx_declared(s: StmtId) -> string? {
+        match self.stmt(s) { .CtxDecl(name, _, _) -> name.of, _ -> null }
+    }
+
+    /// The context a `ctx.name` reads, when the expression is one.
+    fn ctx_read(e: ExprId) -> string? {
+        match self.expr(e) { .CtxRead(name) -> name.of, _ -> null }
+    }
+
+    /// The context a `ctx name = v` sets, when the statement is one.
+    fn ctx_set(s: StmtId) -> string? {
+        match self.stmt(s) { .CtxSet(name, _) -> name.of, _ -> null }
+    }
+
+    /// The name a statement gives the file: what it declares, or what its `const` binds.
+    fn named_by(s: StmtId) -> string? { self.declared_name(s) ?? if self.const_value(s) != null { self.let_name(s) } else { null } }
+
+    /// A statement that declares rather than runs: a declaration,
+    /// an impl block, a `use` line, a spec, a `const` — a settled
+    /// value the program never computes — or a context, whose default
+    /// its first read builds.
+    fn is_declaration(s: StmtId) -> bool {
+        self.declared_kind(s) != null ||
+            self.impl_parts(s) != null ||
+            self.use_parts(s) != null ||
+            self.spec_parts(s) != null ||
+            self.const_value(s) != null ||
+            self.ctx_declared(s) != null
+    }
+
+    /// An extern fn's pieces, when the statement is one — a bodiless one
+    /// that names a symbol, or a host fn that defines one.
+    fn extern_parts(s: StmtId) -> ExternParts? {
+        match self.stmt(s) {
+            .ExternFn(name, params, ret) -> extern_of(name, params, ret),
+            .FnDecl(name, _, params, ret, _) -> if self.is_host_fn(s) { extern_of(name, params, ret ?? named_ref("void")) } else { null },
+            _ -> null,
+        }
+    }
+
+    /// A spec's pieces, when the statement is one.
+    fn spec_parts(s: StmtId) -> SpecParts? {
+        match self.stmt(s) {
+            .Spec(name, groups) -> SpecParts {
+                name: name,
+                cases: flatten([[c with { group: g.name } for c in g.cases] for g in groups]),
+                groups: groups,
+            },
+            _ -> null,
+        }
+    }
+
+    /// A collect's pieces, when the statement is one — `head` split
+    /// into its three words, `proj_names`/`proj_paths` zipped into
+    /// the fields a reader wants.
+    fn collect_parts(s: StmtId) -> CollectParts? {
+        match self.stmt(s) {
+            .Collect(name, ty, kind, scope, proj, order) -> CollectParts {
+                name: name.of,
+                ty: ty,
+                kind: kind,
+                scope: scope,
+                proj: proj,
+                order: order,
+                dense: self.is_collect_dense(s),
+            },
+            _ -> null,
+        }
+    }
+
+    /// A collect's declared scope, in either form — what it gathers from.
+    fn collect_scope(s: StmtId) -> CollectScope? {
+        self.collect_parts(s)?.scope ?? self.collect_enum_parts(s)?.scope
+    }
+
+    /// A collect enum's pieces, when the statement is one — `Collect`'s
+    /// twin with no projection: every variant is the bare member.
+    fn collect_enum_parts(s: StmtId) -> CollectEnumParts? {
+        match self.stmt(s) {
+            .CollectEnum(name, kind, scope, order, traits) -> CollectEnumParts {
+                name: name.of,
+                kind: kind,
+                scope: scope,
+                order: order,
+                dense: self.is_collect_dense(s),
+                traits: traits,
+            },
+            _ -> null,
+        }
+    }
+
+    /// Every written type this statement's own signature carries: a
+    /// binding's annotation (`binding_ty` already answers `Collect`'s
+    /// too), a type parameter's bound, a seat's or a field's type, a
+    /// record it spreads in, a variant's payloads, the shape a
+    /// `type`/`alias` names. Empty for a statement that declares no
+    /// type at all — through the EXISTING projections, never a second
+    /// match over the enum.
+    /// The bounds a statement's type parameters wear, as written.
+    fn bound_roots(s: StmtId) -> List<TypeRef> { param_types(self.decl_tbounds(s)) }
+
+    fn type_roots(s: StmtId) -> List<TypeRef> {
+        flatten(
+            [
+                some_list(self.binding_ty(s)),
+                self.bound_roots(s),
+                param_types(self.declared_params(s)),
+                some_list(self.fn_parts(s)?.ret),
+                some_list(self.extern_parts(s)?.ret),
+                param_types(self.declared_fields(s)),
+                [sp.of for sp in self.spreads_of(s)],
+                variant_types(self.declared_variants(s)),
+                some_list(self.named_parts(s)?.of),
+                some_list(self.alias_parts(s)?.of),
+            ],
+        )
+    }
+}
+
+/// A seat list's own written types — absent for an untyped one (a
+/// unit enum variant, an unbounded type parameter, an unannotated
+/// param).
+fn param_types(ps: List<Param>) -> List<TypeRef> {
+    flatten([some_list(p.ty) for p in ps])
+}
+
+/// Every variant's own payload types, folded across the whole enum.
+fn variant_types(vs: List<Variant>) -> List<TypeRef> {
+    flatten([param_types(v.payloads) for v in vs])
+}
+
+/// What an extern fn declares, projected once.
+export type ExternParts = { name: string, params: List<Param>, ret: TypeRef }
+
+/// An extern's pieces under its written name.
+fn extern_of(name: Scoped, params: List<Param>, ret: TypeRef) -> ExternParts {
+    ExternParts { name: name.of, params: params, ret: ret }
+}
+
+/// What a lambda carries, projected once.
+export type LambdaParts = { params: List<Param>, body: ExprId }
+
+/// A setting in an instance's body, projected once.
+export type SettingParts = { name: string, value: ExprId }
+
+/// An instance as written: its component's word, and its block when it
+/// wrote one.
+export type InstanceParts = { word: string, heads: List<ExprId>, body: ExprId? }
+
+/// A call by name, projected once.
+export type CallParts = { callee: string, args: List<ExprId> }
+
+/// A call on an EXPRESSION's projection: the fn value applied and
+/// its arguments.
+export type AppliedParts = { subject: ExprId, args: List<ExprId> }
+
+/// A construction's pieces, projected once.
+export type StructLitParts = { name: string, fields: List<string>, values: List<ExprId> }
+
+/// A functional update's pieces, projected once.
+export type WithParts = { subject: ExprId, fields: List<string>, values: List<ExprId> }
+
+/// What a trait declaration carries, projected once.
+export type TraitParts = { name: string, fns: List<StmtId> }
+
+/// A component declaration: its word, its head (filled by position),
+/// its other members in written order, and its methods. `holders` is
+/// every member as the record field that holds it — what the record's
+/// own laws read; a reader of what a component DECLARES asks `fields`
+/// or `events`, and each answers one kind of member alone.
+export type ComponentParts = {
+    name: string,
+    tparams: List<string>,
+    head: List<Param>,
+    members: List<Member>,
+    holders: List<Param>,
+    fns: List<StmtId>,
+    spreads: List<TypeRef> = [],
+}
+
+/// One member a component declares beside its head: a field, or an event
+/// an instance may hear.
+export enum Member {
+    Field(p: Param)
+    Event(e: EventParts)
+}
+
+/// Whether a component holding a body, whose own fields are `own`, carries the fields `carried` its
+/// composing trait names, after its own: unless it already holds every one, spread in itself.
+export fn carries_composed(own: List<string>, carried: List<string>) -> bool { !carried.all((n) -> own.contains(n)) }
+
+/// An event a component declares: its word, the seats its handler is
+/// told, and the field that holds the handler.
+export type EventParts = { name: string, says: List<Param>, holder: Param }
+
+/// A declared seat as the member it is: an event when it says its seats,
+/// a field otherwise.
+export fn member_of(p: Param) -> Member {
+    let says? = p.says else { return Member.Field(p) }
+    Member.Event(EventParts { name: p.name.of, says: says, holder: p })
+}
+
+impl ComponentParts {
+    /// The fields it declares beside its head — never an event.
+    fn fields() -> List<Param> { [p for m in self.members for p in field_in(m)] }
+
+    /// The events it declares.
+    fn events() -> List<EventParts> { [e for m in self.members for e in event_in(m)] }
+}
+
+fn field_in(m: Member) -> List<Param> {
+    match m { .Field(p) -> [p], .Event(_) -> [] }
+}
+
+fn event_in(m: Member) -> List<EventParts> {
+    match m { .Event(e) -> [e], .Field(_) -> [] }
+}
+
+/// A sublanguage declaration: its block word and its grammar's text.
+export type SyntaxParts = { name: string, text: string }
+
+/// What an impl block carries, projected once.
+export type ImplParts = { of: string?, of_args: List<TypeRef>, target: string, fns: List<StmtId> }
+
+/// What a fn declaration carries, projected once.
+export type FnParts = { name: string, tparams: List<Param>, params: List<Param>, ret: TypeRef, body: ExprId }
+
+/// What a struct declaration carries, projected once.
+export type StructParts = { name: string, tparams: List<string>, fields: List<Param>, spreads: List<Spread> = [] }
+
+/// A `..R` entry in a record's fields: R's fields stand after the
+/// first `at` written fields; `lo` is where its `..` was written.
+export type Spread = { at: int, of: TypeRef, lo: int }
+
+/// Where a written type begins.
+fn lo_of(t: TypeRef) -> int { t.span?.lo ?? 0 }
+
+/// What a NAMED TYPE declaration carries, projected once.
+export type NamedParts = { name: string, tparams: List<string>, of: TypeRef }
+
+/// What a spec carries, projected once.
+/// A spec's groups as written, and its cases each stamped with its group.
+export type SpecParts = { name: string, cases: List<Case>, groups: List<Given> }
+
+/// What a collect declaration carries, projected once. `proj_names[j]`
+/// and `proj_paths[j]` zip: the field it fills, and the `it` path it
+/// reads (`""` for the bare declaration — a fn value).
+export type CollectParts = { name: string, ty: TypeRef, kind: CollectKind, scope: CollectScope, proj: Projection, order: List<Plain>, dense: bool }
+
+/// What a collect enum declaration carries, projected once —
+/// `CollectParts`' twin with no declared type and no projection: an
+/// enum's variants are the members themselves.
+export type CollectEnumParts = { name: string, kind: CollectKind, scope: CollectScope, order: List<Plain>, dense: bool, traits: List<ExprId> }
+
+/// What an enum declaration carries, projected once.
+export type EnumParts = { name: string, tparams: List<string>, variants: List<Variant> }
+
+/// A name over a written shape — a named type's pieces, or an alias's.
+fn name_over(name: Scoped, tparams: List<Param>, of: TypeRef) -> NamedParts {
+    NamedParts { name: name.of, tparams: [t.name.of for t in tparams], of: of }
+}
+
+export type SeqParts = { before: List<PatId>, rest: List<PatId>, after: List<PatId> }
+export type FieldsParts = { name: string, fields: List<string>, args: List<PatId>, open: bool, rests: List<PatId> }
+
+export type LetParts = { pat: PatId, subject: ExprId, otherwise: ExprId? }
+
+/// Whether an annotation's NAME is one `rule`'s instance reads
+/// itself, never resolved as an ordinary call — there is no `fn
+/// fixes`, no `fn keeps`, no `fn law`.
+export fn example_marks(name: string) -> bool {
+    name == "fixes" || name == "keeps" || name == "law" || name == "says"
+}
+
+impl Stmt {
+    /// A fn declaration's pieces (`fn_parts`), read off the node.
+    fn fn_parts() -> FnParts? {
+        match self {
+            .FnDecl(name, tparams, params, ret, body) -> FnParts {
+                name: name.of,
+                tparams: tparams,
+                params: params,
+                ret: ret ?? named_ref("void"),
+                body: body,
+            },
+            _ -> null,
+        }
+    }
+
+    /// The statement's value expression at its OWN position (`stmt_value`), read off the node.
+    fn value() -> ExprId? {
+        match self {
+            .Let(_, _, v) or .MutLet(_, _, v) or .ConstDecl(_, _, v) or .Assign(_, v) or .ExprStmt(v) or .Discard(v) or .Fail(v) or .LetElse(_, v, _) or .Defer(v, _) or .CtxSet(_, v) -> v,
+            .Return(v) or .CtxDecl(_, _, v) -> v,
+            .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .ForEach(_, _, _, _) or .Use(_, _) or .StructDecl(_, _, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _, _, _) or .TraitDecl(_, _, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .ComponentDecl(_, _, _, _, _, _) or .Spec(_, _) or .Collect(_, _, _, _, _, _) or .CollectEnum(_, _, _, _, _) or .Jump(_, _) or .Error -> null,
+        }
+    }
+}
