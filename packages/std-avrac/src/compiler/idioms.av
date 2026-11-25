@@ -35,6 +35,22 @@ export rule helpless_refusal {
     quote { refusal(${kind}, ${at}, ${msg}, ${label}, null) } -> helpless(kind, "refusal"),
 }
 
+@keeps("1 + 1")
+@says("probe")
+export rule climb_probe { quote { ${u} } if !probe_rows(u).is_empty() -> climb_probe_found(u) }
+
+fn probe_rows(u: Code) -> List<string> {
+    if !u.of.view.source.file.contains("/std-avrac/src/compiler/idioms.av") { return [] }
+    match u.at {
+        .Stmt(id) -> [u.of.view.decls.module_of(r.decl) + " | " + u.of.view.decls.file(r.file).path for r in u.import_rows_at(id)],
+        rest -> [],
+    }
+}
+
+fn climb_probe_found(u: Code) -> Fix {
+    Fix.Say(said(u.loc(), "PROBE ${probe_rows(u).join(" ; ")} :: own file ${u.of.view.source.file}", "this use", null))
+}
+
 /// `helpless_refusal`'s twin for a warning: it blocks nothing, and states
 /// no less.
 @keeps("warning(\"k\", at, \"m\", \"l\", \"what to do\")")
