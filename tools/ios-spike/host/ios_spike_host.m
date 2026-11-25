@@ -117,6 +117,7 @@ static void sources_armed(void) {
 @property(nonatomic, strong) UIColor* ink;
 @property(nonatomic) CGFloat pad_start;
 @property(nonatomic) CGFloat pad_top;
+@property(nonatomic, strong) NSMutableArray<NSNumber*>* kids;
 @end
 @implementation SpikeNode
 @end
@@ -131,6 +132,7 @@ static NSCountedSet<NSString*>* g_unused;
 static double g_first_frame_ms = -1;
 static double g_apply_s;
 static NSInteger g_measures;
+static NSInteger g_reused;
 static double g_measure_s;
 static BOOL g_toggling;
 static double g_started_ms;
@@ -453,7 +455,14 @@ static void fact_dropped(SpikeNode* n, int code) {
 // An element goes into its parent's view; the solver's `rect` says where.
 static void placed(SpikeNode* n, NSInteger parent, NSInteger after) {
     if (!n) return;
+    SpikeNode* was = g_nodes[@(n.parent)];
+    if (was) [was.kids removeObject:@(n.nid)];
     n.parent = parent;
+    SpikeNode* into = g_nodes[@(parent)];
+    if (into) {
+        if (!into.kids) into.kids = [NSMutableArray new];
+        [into.kids addObject:@(n.nid)];
+    }
     if (is(n, @"dialog")) return;
     SpikeNode* holder = g_nodes[@(parent)];
     if (holder && holder.control) {
@@ -519,7 +528,8 @@ static SpikeScrollWatch* g_scroll_watch;
 // A paint reached the views: what it cost the host, and the instrument told.
 static void painted(void) {
     if (NSProcessInfo.processInfo.environment[@"AVRA_SPIKE_BENCH"])
-        said([NSString stringWithFormat:@"host apply_us=%.0f measures=%ld measure_us=%.0f", g_apply_s * 1e6, (long)g_measures, g_measure_s * 1e6]);
+        said([NSString stringWithFormat:@"host apply_us=%.0f measures=%ld measure_us=%.0f reused=%ld", g_apply_s * 1e6, (long)g_measures, g_measure_s * 1e6, (long)g_reused]);
+    g_reused = 0;
     g_apply_s = 0;
     g_measures = 0;
     g_measure_s = 0;
@@ -529,6 +539,62 @@ static void painted(void) {
         list_found();
         if (g_row_h > 0) dispatch_async(dispatch_get_main_queue(), ^{ window_asked(); });
     }
+}
+
+// THE POOL: a removed element's view, and every view under it, waits by its
+// prim for the next create of that prim, as a table's cells wait for reuse.
+static NSMutableDictionary<NSString*, NSMutableArray<SpikeNode*>*>* g_pool;
+// A pooled element as a fresh one of its prim: everything a fact could have set, unset.
+static void reset(SpikeNode* n) {
+    UIView* v = n.view;
+    v.backgroundColor = nil;
+    v.layer.cornerRadius = 0;
+    v.hidden = NO;
+    v.accessibilityLabel = nil;
+    if (n.title) { [n.title removeFromSuperview]; n.title = nil; }
+    if (n.label) { n.label.text = nil; n.label.textColor = UIColor.labelColor; n.label.accessibilityLabel = nil; }
+    if ([n.control isKindOfClass:[UIButton class]]) [(UIButton*)n.control setTitle:nil forState:UIControlStateNormal];
+    if ([n.control isKindOfClass:[UIControl class]]) ((UIControl*)n.control).enabled = YES;
+    if ([n.control isKindOfClass:[UISwitch class]]) ((UISwitch*)n.control).on = NO;
+    if ([n.control isKindOfClass:[UITextField class]]) { ((UITextField*)n.control).text = nil; ((UITextField*)n.control).placeholder = nil; }
+    n.control.accessibilityLabel = nil;
+    n.ink = nil;
+    n.pad_start = n.pad_top = 0;
+    n.seat = n.said_seat = 0;
+    n.max = n.amount = 0;
+    n.parent = 0;
+    [n.kids removeAllObjects];
+}
+
+// An element of `prim` numbered `nid`: from the pool when one waits, else made.
+static SpikeNode* taken(NSString* prim, NSInteger nid) {
+    SpikeNode* n = [g_pool[prim] lastObject];
+    if (n) {
+        [g_pool[prim] removeLastObject];
+        reset(n);
+        g_reused++;
+    } else {
+        n = [SpikeNode new];
+        n.prim = prim;
+        made(n);
+    }
+    n.nid = nid;
+    n.view.tag = nid;
+    n.control.tag = nid;
+    n.view.accessibilityIdentifier = [NSString stringWithFormat:@"avra-%ld", (long)nid];
+    return n;
+}
+
+// `n` and every element under it leave the page for their prims' pools.
+static void pooled(SpikeNode* n) {
+    if (!n) return;
+    for (NSNumber* k in [n.kids copy]) pooled(g_nodes[k]);
+    if (n.sheet) dialog_shown(n, NO);
+    [n.view removeFromSuperview];
+    [g_nodes removeObjectForKey:@(n.nid)];
+    if (!g_pool) g_pool = [NSMutableDictionary new];
+    if (!g_pool[n.prim]) g_pool[n.prim] = [NSMutableArray new];
+    [g_pool[n.prim] addObject:n];
 }
 
 static NSString* rest(NSArray<NSString*>* w, NSUInteger from) {
@@ -543,11 +609,7 @@ static void applied(NSString* frame) {
         NSInteger nid = w[1].integerValue;
         SpikeNode* n = g_nodes[@(nid)];
         if ([op isEqualToString:@"create"]) {
-            SpikeNode* m = [SpikeNode new];
-            m.nid = nid;
-            m.prim = w[2];
-            made(m);
-            g_nodes[@(nid)] = m;
+            g_nodes[@(nid)] = taken(w[2], nid);
         } else if ([op isEqualToString:@"fact"] && w.count >= 5) {
             fact_set(n, w[2].intValue, w[3], w[4], rest(w, 5));
         } else if ([op isEqualToString:@"drop"]) {
@@ -555,9 +617,9 @@ static void applied(NSString* frame) {
         } else if ([op isEqualToString:@"place"]) {
             placed(n, w[2].integerValue, w[3].integerValue);
         } else if ([op isEqualToString:@"remove"]) {
-            if (n.sheet) dialog_shown(n, NO);
-            [n.view removeFromSuperview];
-            [g_nodes removeObjectForKey:@(nid)];
+            SpikeNode* above = g_nodes[@(n.parent)];
+            if (above) [above.kids removeObject:@(nid)];
+            pooled(n);
         } else if ([op isEqualToString:@"listen"]) {
             if ([w[3] isEqualToString:@"button"] || [w[3] isEqualToString:@"link"] || [w[3] isEqualToString:@"dialog"]) n.seat = w[2].integerValue;
             else n.said_seat = w[2].integerValue;

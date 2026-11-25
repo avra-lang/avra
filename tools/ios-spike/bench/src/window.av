@@ -1,0 +1,32 @@
+//! A one-row window move, headless: the windowed list painted at rows 0–40,
+//! then at 1–41, and the second paint's patches said one a line.
+use rows.{fill, windowed_view}
+use @std.ui.realize.native.live.{native_live}
+use @std.ui.realize.native.patch.{NativePatch}
+
+fn word(p: NativePatch) -> string {
+    match p {
+        .Create(id, prim) -> "create ${id.n} ${prim.word()}",
+        .SetFact(id, f) -> "fact ${id.n} ${f.what.code()}",
+        .DropFact(id, w, _) -> "drop ${id.n} ${w.code()}",
+        .Place(id, parent, after) -> "place ${id.n} in ${parent?.n ?? -1} after ${after?.n ?? -1}",
+        .Remove(id) -> "remove ${id.n}",
+        .Listen(id, _) -> "listen ${id.n}",
+        .Unlisten(id, _) -> "unlisten ${id.n}",
+    }
+}
+
+/// The patches a one-row move says, after a first paint at `from`.
+export fn moved(from: int) -> List<string> {
+    fill(10000)
+    let page = native_live()
+    page.stands.first_rows(40)
+    let _ = page.patches(page.drawn(windowed_view()))
+    let path? = page.stands.windows().first() else { return ["no window"] }
+    let list? = page.stands.find(path) else { return ["no list"] }
+    list.measured(40)
+    list.windowed(from, from + 40)
+    let _ = page.patches(page.drawn(windowed_view()))
+    list.windowed(from + 1, from + 41)
+    [word(p) for p in page.patches(page.drawn(windowed_view()))]
+}
