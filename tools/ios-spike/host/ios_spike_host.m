@@ -139,6 +139,7 @@ static UIColor* placeholder_rows(void);
 static NSInteger g_reused;
 static double g_parse_s;
 static double g_pair_s;
+static NSMutableDictionary<NSString*, NSNumber*>* g_row_op_s;
 static NSInteger g_rows_reused;
 static NSMutableDictionary<NSString*, NSNumber*>* g_op_s;
 static double g_measure_s;
@@ -154,13 +155,6 @@ static double g_started_ms;
 
 static SpikeTarget* g_target;
 
-static UIStackView* stack(UILayoutConstraintAxis axis) {
-    UIStackView* s = [UIStackView new];
-    s.axis = axis;
-    s.alignment = axis == UILayoutConstraintAxisHorizontal ? UIStackViewAlignmentCenter : UIStackViewAlignmentLeading;
-    s.spacing = 8;
-    return s;
-}
 
 static UILabel* label(UIFontTextStyle style) {
     UILabel* l = [UILabel new];
@@ -197,13 +191,12 @@ static void made(SpikeNode* n) {
         UITextField* f = [UITextField new];
         f.borderStyle = UITextBorderStyleRoundedRect;
         f.tag = n.nid;
-        [f.widthAnchor constraintGreaterThanOrEqualToConstant:200].active = YES;
         [f addTarget:g_target action:@selector(typed:) forControlEvents:UIControlEventEditingChanged];
         [f addTarget:g_target action:@selector(returned:) forControlEvents:UIControlEventEditingDidEndOnExit];
-        UIStackView* s = stack(UILayoutConstraintAxisVertical);
+        UIView* s = [UIView new];
         n.label = label(UIFontTextStyleBody);
-        [s addArrangedSubview:n.label];
-        [s addArrangedSubview:f];
+        [s addSubview:n.label];
+        [s addSubview:f];
         n.control = f;
         n.view = s;
     } else if ([p isEqualToString:@"switch"] || [p isEqualToString:@"checkbox"]) {
@@ -211,28 +204,25 @@ static void made(SpikeNode* n) {
         w.tag = n.nid;
         [w addTarget:g_target action:@selector(flipped:) forControlEvents:UIControlEventValueChanged];
         w.isAccessibilityElement = YES;
-        UIStackView* s = stack(UILayoutConstraintAxisHorizontal);
+        UIView* s = [UIView new];
         n.label = label(UIFontTextStyleBody);
-        [s addArrangedSubview:w];
-        [s addArrangedSubview:n.label];
+        [s addSubview:w];
+        [s addSubview:n.label];
         n.control = w;
         n.view = s;
     } else if ([p isEqualToString:@"progress"] || [p isEqualToString:@"slider"]) {
         UIView* c;
         if ([p isEqualToString:@"progress"]) c = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleDefault];
         else c = [UISlider new];
-        [c.widthAnchor constraintEqualToConstant:200].active = YES;
-        UIStackView* s = stack(UILayoutConstraintAxisVertical);
+        UIView* s = [UIView new];
         n.label = label(UIFontTextStyleBody);
-        [s addArrangedSubview:n.label];
-        [s addArrangedSubview:c];
+        [s addSubview:n.label];
+        [s addSubview:c];
         n.control = c;
         n.view = s;
     } else if ([p isEqualToString:@"divider"]) {
         UIView* d = [UIView new];
         d.backgroundColor = UIColor.separatorColor;
-        [d.heightAnchor constraintEqualToConstant:1.0 / UIScreen.mainScreen.scale].active = YES;
-        [d.widthAnchor constraintEqualToConstant:300].active = YES;
         n.view = d;
     } else if ([p isEqualToString:@"spinner"]) {
         UIActivityIndicatorView* a = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
@@ -481,7 +471,7 @@ static void placed(SpikeNode* n, NSInteger parent, NSInteger after) {
         return;
     }
     UIView* into_view = holder ? holder.view : g_root;
-    n.view.hidden = NO;
+    if (n.view.hidden) n.view.hidden = NO;
     if (n.view.superview == into_view) return;
     [n.view removeFromSuperview];
     [into_view addSubview:n.view];
@@ -489,6 +479,21 @@ static void placed(SpikeNode* n, NSInteger parent, NSInteger after) {
 
 // The solver's box for an element, relative to its parent's; a container's
 // title stands at the top of its own content.
+// A composed control's parts laid out by frames inside its box: no stack, no constraints.
+static void composed(SpikeNode* n, CGFloat w, CGFloat h) {
+    if (!n.control || !n.label || n.control == n.view) return;
+    CGFloat line = ceil(n.label.font.lineHeight);
+    if ([n.control isKindOfClass:[UISwitch class]]) {
+        CGSize sw = n.control.intrinsicContentSize;
+        n.control.frame = CGRectMake(0, floor((h - sw.height) / 2), sw.width, sw.height);
+        n.label.frame = CGRectMake(sw.width + 8, 0, MAX(0, w - sw.width - 8), h);
+    } else {
+        n.label.frame = CGRectMake(0, 0, w, line);
+        CGFloat ch = [n.control isKindOfClass:[UITextField class]] ? h - line - 8 : n.control.intrinsicContentSize.height;
+        n.control.frame = CGRectMake(0, line + 8, w, MAX(0, ch));
+    }
+}
+
 static void framed(SpikeNode* n, CGFloat x, CGFloat y, CGFloat w, CGFloat h) {
     if (!n) return;
     if (is(n, @"dialog") && n.sheet) {
@@ -496,6 +501,7 @@ static void framed(SpikeNode* n, CGFloat x, CGFloat y, CGFloat w, CGFloat h) {
         return;
     }
     n.view.frame = CGRectMake(x, y, w, h);
+    composed(n, w, h);
     if (n.title) {
         CGSize s = [n.title sizeThatFits:CGSizeMake(w, CGFLOAT_MAX)];
         n.title.frame = CGRectMake(n.pad_start, n.pad_top, w - 2 * n.pad_start, s.height);
@@ -603,6 +609,13 @@ static void painted(void) {
         for (NSString* k in g_op_s) [ops appendFormat:@" %@_us=%.0f", k, g_op_s[k].doubleValue * 1e6];
         if (NSProcessInfo.processInfo.environment[@"AVRA_SPIKE_BENCH"])
             said([NSString stringWithFormat:@"host apply_us=%.0f measures=%ld measure_us=%.0f reused=%ld rows_reused=%ld pair_us=%.0f parse_us=%.0f layout_us=%.0f%@", g_apply_s * 1e6, (long)g_measures, g_measure_s * 1e6, (long)g_reused, (long)g_rows_reused, g_pair_s * 1e6, g_parse_s * 1e6, layout_s * 1e6, ops]);
+        if (g_rows_reused > 0) {
+            NSMutableString* per = [NSMutableString new];
+            double all = 0;
+            for (NSString* k in g_row_op_s) { [per appendFormat:@" %@_us=%.1f", k, g_row_op_s[k].doubleValue * 1e6 / g_rows_reused]; all += g_row_op_s[k].doubleValue; }
+            said([NSString stringWithFormat:@"host per recycled row: records_us=%.1f pair_us=%.1f layout_share_us=%.1f%@", all * 1e6 / g_rows_reused, g_pair_s * 1e6 / g_rows_reused, layout_s * 1e6 / MAX(1, (NSInteger)g_nodes.count / 3), per]);
+        }
+        [g_row_op_s removeAllObjects];
         g_rows_reused = 0;
         g_pair_s = 0;
         [g_op_s removeAllObjects];
@@ -683,6 +696,8 @@ static NSString* shape_of(SpikeNode* n) {
 // THE ROW POOL: a removed subtree waits whole, hidden where it stood, keyed by
 // its shape, for a create of the same shape — as a table's cell is reused whole.
 static NSMutableDictionary<NSString*, NSMutableArray<SpikeNode*>*>* g_rows;
+// The rows pooled this frame: hidden at its end if no new row took them.
+static NSMutableArray<SpikeNode*>* g_pooled_now;
 
 // What the pools keep: a window move's worth, no more; the rest is released.
 static const NSUInteger row_pool_cap = 8;
@@ -699,8 +714,9 @@ static void preorder(SpikeNode* n, NSMutableArray<SpikeNode*>* out) {
 static void pooled(SpikeNode* n) {
     if (!n) return;
     if (n.sheet) dialog_shown(n, NO);
-    n.view.hidden = YES;
     if (n.kid_nodes.count > 0) {
+        if (!g_pooled_now) g_pooled_now = [NSMutableArray new];
+        [g_pooled_now addObject:n];
         NSString* shape = shape_of(n);
         NSMutableArray<SpikeNode*>* all = [NSMutableArray new];
         preorder(n, all);
@@ -711,6 +727,7 @@ static void pooled(SpikeNode* n) {
         [g_rows[shape] addObject:n];
         return;
     }
+    n.view.hidden = YES;
     [g_nodes removeObjectForKey:@(n.nid)];
     if (!g_pool) g_pool = [NSMutableDictionary new];
     if (!g_pool[n.prim]) g_pool[n.prim] = [NSMutableArray new];
@@ -810,8 +827,15 @@ static void apply_records(NSArray<NSArray<NSString*>*>* records) {
             if (!n.facts) n.facts = [NSMutableDictionary new];
             [n.fresh addObject:key];
             if (![n.facts[key] isEqualToString:value]) {
+                double f0 = CACurrentMediaTime();
                 fact_set(n, w[2].intValue, w[3], w[4], rest(w, 5));
                 n.facts[key] = value;
+                if ([carried containsObject:@(nid)]) {
+                    NSString* fk = [NSString stringWithFormat:@"fact%@_%@", w[2], n.prim];
+                    g_row_op_s[fk] = @([g_row_op_s[fk] doubleValue] + CACurrentMediaTime() - f0);
+                }
+            } else if ([carried containsObject:@(nid)]) {
+                g_row_op_s[@"facts_same"] = @([g_row_op_s[@"facts_same"] doubleValue] + 1e-6);
             }
         } else if ([op isEqualToString:@"drop"]) {
             [n.facts removeObjectForKey:[NSString stringWithFormat:@"%@|%@", w[2], w.count > 3 ? w[3] : @"-"]];
@@ -838,7 +862,12 @@ static void apply_records(NSArray<NSArray<NSString*>*>* records) {
             [g_unused addObject:op];
         }
         if (!g_op_s) g_op_s = [NSMutableDictionary new];
-        g_op_s[op] = @([g_op_s[op] doubleValue] + CACurrentMediaTime() - t1);
+        double spent = CACurrentMediaTime() - t1;
+        g_op_s[op] = @([g_op_s[op] doubleValue] + spent);
+        if ([carried containsObject:@(nid)]) {
+            if (!g_row_op_s) g_row_op_s = [NSMutableDictionary new];
+            g_row_op_s[op] = @([g_row_op_s[op] doubleValue] + spent);
+        }
     }
     for (NSNumber* id in carried) {
         SpikeNode* m = g_nodes[id];
@@ -849,6 +878,10 @@ static void apply_records(NSArray<NSArray<NSString*>*>* records) {
         }
         m.fresh = nil;
     }
+    for (SpikeNode* r in g_pooled_now) {
+        for (NSArray* pool in g_rows.allValues) if ([pool containsObject:r]) { r.view.hidden = YES; break; }
+    }
+    [g_pooled_now removeAllObjects];
     [CATransaction commit];
 }
 

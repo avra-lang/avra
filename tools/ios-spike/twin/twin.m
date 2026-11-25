@@ -156,7 +156,11 @@
 
 - (NSInteger)tableView:(UITableView*)t numberOfRowsInSection:(NSInteger)s { return self.tasks.count; }
 
+static double g_cell_s;
+static NSInteger g_cells;
+
 - (UITableViewCell*)tableView:(UITableView*)t cellForRowAtIndexPath:(NSIndexPath*)p {
+    double c0 = CACurrentMediaTime();
     TaskCell* c = [t dequeueReusableCellWithIdentifier:@"task" forIndexPath:p];
     Task* task = self.tasks[p.row];
     c.title.text = task.title;
@@ -176,6 +180,13 @@
         [me counted];
         [me.table deleteRowsAtIndexPaths:@[ [NSIndexPath indexPathForRow:at inSection:0] ] withRowAnimation:UITableViewRowAnimationAutomatic];
     };
+    [c layoutIfNeeded];
+    g_cell_s += CACurrentMediaTime() - c0;
+    if (++g_cells % 50 == 0) {
+        printf("bench: twin per cell (dequeue, configure, layout): %.1f us over 50\n", g_cell_s * 1e6 / 50);
+        fflush(stdout);
+        g_cell_s = 0;
+    }
     return c;
 }
 @end
