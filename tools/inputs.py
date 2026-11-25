@@ -409,7 +409,7 @@ def baseline():
 
 HEADER = """# WORLD READS OUTSIDE THE INPUT DOOR, one TAB-separated site per line: the
 # subsystem it is counted under, its file, and its own source line
-# trimmed. This file only ever SHRINKS — `make inputs-accept` prunes what
+# trimmed. This file only ever SHRINKS — `./wisp cost inputs --accept` prunes what
 # a move through the door made gone, and no path through it ADDS a line:
 # a new read goes through the door, or is licensed at its site.
 """
@@ -560,7 +560,7 @@ def main():
         print(f"inputs: {f}", file=sys.stderr)
     left = gone(sites, held)
     if left and "--accept" not in sys.argv:
-        print(f"inputs: {len(left)} baseline site(s) are gone — `make inputs-accept` prunes them")
+        print(f"inputs: {len(left)} baseline site(s) are gone — `./wisp cost inputs --accept` prunes them")
     if new or faults:
         sys.exit(f"inputs: refused — {len(new)} new site(s), {len(faults)} unclassified; "
                  "route the read through the door, or license it at the site")

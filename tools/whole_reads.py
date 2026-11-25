@@ -113,7 +113,7 @@ def judge(found, baseline):
 HEADER = """\
 # WHOLE-PROGRAM READS NOT YET LICENSED COLD, one TAB-separated site per line:
 # its file and its own source line trimmed. This file only ever SHRINKS —
-# `make whole-reads-accept` prunes what a fix made gone, and no path through it
+# `./wisp cost whole-reads --accept` prunes what a fix made gone, and no path through it
 # ADDS a line: a new whole read is narrowed to the rows it needs, or licensed
 # `// LICENSED whole.cold: <why>` at its site (tools/whole_reads.py).
 """

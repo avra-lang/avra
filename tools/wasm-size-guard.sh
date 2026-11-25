@@ -72,7 +72,7 @@ baseline=${WASM_SIZE_BASELINE:-$here/wasm-size.baseline}
 want() { sed -n "s/^$1 //p" "$baseline" | head -1; }
 if [ "${1:-}" = --accept ]; then
     {
-        echo "# THE LAST ACCEPTED WASM FOOTPRINT, written by \`make wasm-size-accept\`."
+        echo "# THE LAST ACCEPTED WASM FOOTPRINT, written by \`./wisp cost wasm-size --accept\`."
         echo "floor_bytes $fb"
         echo "floor_globals $fg"
         [ -n "$board" ] && echo "board_bytes $bb"

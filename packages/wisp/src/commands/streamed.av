@@ -1,0 +1,23 @@
+//! A CHILD WHOSE WORDS ARE THE READER'S: run over the invoker's environment, its streams straight
+//! through, judged by its exit alone. The keepers and the ratchets run their steps so — each step's
+//! own recipe owns what it reads, until it is a verb of its own.
+use @std.process.{EnvPair, Exit, Outcome, ProcessError, cmd, tool, inherited}
+
+/// One argv run with `sets` laid over the invoker's environment; true when it exits clean.
+export fn streamed(argv: List<string>, sets: List<EnvPair>) -> bool {
+    match tool(argv[0]) {
+        .Ok(t) -> clean(
+            (cmd(t, argv.drop(1)) with { env: sets.fold(inherited(), (e, p) -> e.with_var(p.name, p.value)), streams: .Inherited })
+                .outcome(),
+        ),
+        .Err(_) -> false,
+    }
+}
+
+fn clean(o: Result<Outcome, ProcessError>) -> bool {
+    match o { .Ok(done) -> exited_clean(done.exit), .Err(_) -> false }
+}
+
+fn exited_clean(e: Exit) -> bool {
+    match e { .Clean -> true, .Code(_) or .Signal(_, _) -> false }
+}

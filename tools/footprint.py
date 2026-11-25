@@ -287,13 +287,13 @@ def gate(accept):
             say(f"{name} {now[0]} bytes (accepted {base[0]}), text {now[1]} (accepted {base[1]}), cap +{CEILING}%")
             for words in over(now, base):
                 say(f"{name} GREW: {words} — a floor that creeps is every program's cost; "
-                    f"`make footprint-accept` if it is meant")
+                    f"`./wisp cost footprint --accept` if it is meant")
                 fail = 1
     if accept and not fail:
         kept = {k: v for k, v in accepted.items() if k[:2] != here}
         kept.update({here + (name,): now for name, now in sizes.items()})
         with open(BASELINE, "w") as out:
-            out.write("# THE LAST ACCEPTED FOOTPRINT, written by `make footprint-accept`:\n"
+            out.write("# THE LAST ACCEPTED FOOTPRINT, written by `./wisp cost footprint --accept`:\n"
                       "# <platform> <program> <stripped bytes> <code bytes> <toolchain>. No row, no cap.\n")
             for (plat, tools, name), (size, code) in sorted(kept.items()):
                 out.write(f"{plat} {name} {size} {code} {tools}\n")

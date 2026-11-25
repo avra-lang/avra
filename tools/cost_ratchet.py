@@ -19,7 +19,7 @@ row), so a change that trades warm work for cold is seen. Counts are exact and m
 the runtime counts operations, never time.
 
 A COUNTER OVER ITS ROW BY MORE THAN THE TOLERANCE FAILS, naming the workload, the counter and both
-numbers. A counter under its row stays until `make cost-accept` lowers it; an accept never raises a
+numbers. A counter under its row stays until `./wisp cost cost --accept` lowers it; an accept never raises a
 row over the same snapshot. Moving the snapshot is an accept with `COST_SNAPSHOT=<sha>`, which records
 the new commit and every count it measured. A run that printed no count for a row FAILS.
 """
@@ -50,7 +50,7 @@ def verdicts_lost(run_dir):
 
 CANDIDATES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cost.candidates")
 CANDIDATES_HEAD = """\
-# THE ZERO-COST CANDIDATES THE LAST `make cost-accept` SAW: each `<technique> <fn>` that stood in its
+# THE ZERO-COST CANDIDATES THE LAST `./wisp cost cost --accept` SAW: each `<technique> <fn>` that stood in its
 # technique's top sites (`avra census --candidates`, docs/ZERO_COST.md). `make cost` names every
 # candidate this file lacks; a candidate is a registry row or a ticket at discovery.
 """
@@ -58,8 +58,8 @@ TOLERANCE_PPM = 500
 HEAD = """\
 # THE EXACT-COUNT BASELINE: what the census compiler does, cold, on each fixed workload of the pinned
 # snapshot (`make cost`, tools/cost.sh, tools/cost_ratchet.py). Exact and machine-independent. A row
-# more than 0.05% over FAILS the gate; a row only falls, through `make cost-accept`; a new snapshot is
-# `COST_SNAPSHOT=<sha> make cost-accept`, which records the commit and every count.
+# more than 0.05% over FAILS the gate; a row only falls, through `./wisp cost cost --accept`; a new snapshot is
+# `COST_SNAPSHOT=<sha> ./wisp cost cost --accept`, which records the commit and every count.
 """
 # Each census line the runtime prints at exit, and the counters it carries, in order.
 PRINTED = (
@@ -209,7 +209,7 @@ def judge(now, base):
             failed.append("cost: %s %s: %d -> %d (%s, over the %g%% tolerance)"
                           % (key[0], key[1], old, new, percent(old, new), TOLERANCE_PPM / 10000))
         elif (old - new) * 1_000_000 > old * FALL_PPM:
-            fell.append("cost: %s %s fell: %d -> %d (%s) — `make cost-accept` records it"
+            fell.append("cost: %s %s fell: %d -> %d (%s) — `./wisp cost cost --accept` records it"
                         % (key[0], key[1], old, new, percent(old, new)))
     return failed, fell
 

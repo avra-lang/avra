@@ -8,7 +8,6 @@
 //! a refusal mid-stream scrolls away under the ones after it. Exit 0 all held, 1 one refused,
 //! 2 usage.
 use @std.cli.{CliResult, Runnable, arg, command, flag, option}
-use @std.process.{Exit, Outcome, ProcessError, cmd, tool, inherited}
 use @std.time.{now_ms}
 
 /// Which CI leg runs a keeper. `Alone` keepers are held to a clock, so nothing shares their
@@ -206,23 +205,9 @@ fn timed(name: string, held: fn(string) -> bool) -> bool {
     ok
 }
 
-/// One keeper, run by its Make target with the invoker's environment: the recipe owns what it reads.
+/// One keeper, run by its Make target.
 fn ran(name: string) -> bool {
-    match tool("make") {
-        .Ok(make) -> clean(
-            (cmd(make, ["-s", "-o", "avra", name]) with { env: inherited(), streams: .Inherited })
-                .outcome(),
-        ),
-        .Err(_) -> false,
-    }
-}
-
-fn clean(o: Result<Outcome, ProcessError>) -> bool {
-    match o { .Ok(done) -> exited_clean(done.exit), .Err(_) -> false }
-}
-
-fn exited_clean(e: Exit) -> bool {
-    match e { .Clean -> true, .Code(_) or .Signal(_, _) -> false }
+    streamed(["make", "-s", "-o", "avra", name], [])
 }
 
 // ── voices ──

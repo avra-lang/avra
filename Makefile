@@ -390,11 +390,6 @@ wasm-size-guard:
 wasm-routes-size:
 	sh tools/wasm-routes-size.sh
 
-# Re-accept the footprint deliberately (the guard prints the rise first).
-# not a keeper — re-accepts the wasm footprint deliberately
-wasm-size-accept:
-	sh tools/wasm-size-guard.sh --accept
-
 # THE ARCHIVE'S LAW: never carries a fiber or a core.
 wasm-archive:
 	sh tools/wasm-archive.sh
@@ -407,8 +402,8 @@ wasm-archive:
 # `$(shell)` runs on every make, `try` included.
 SUITES = $(shell ./wisp suites 2>/dev/null)
 
-.PHONY: compiler-key pool-check ready dev-server cost cost-accept trap-marks speed-note llvm-libs libs-self-test read-lists db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz exact-patches ui-board ui-browser ui-browser-skip host-events layout-oracle wasm-host-check wasm-tasks-mutations h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules rule-examples idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns parser witnesses libs libscope families-left layers hooks-released inputs inputs-accept whole-reads whole-reads-accept read-cost \
-        native-check avra suites install sprite sprite-check codecs codecs-static keepers voices voices-accept defects tool-witnesses pipeline-status pipeline-doc ci-invariants pr-watcher wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept wasm-routes-size speed-ratchet speed-accept wall-ratchet wall-accept warm-edit warm-accept work-accept
+.PHONY: compiler-key pool-check ready dev-server cost trap-marks speed-note llvm-libs libs-self-test read-lists db-corpus try edit-loop footprint tick-object no-threads flow-gate ui-host ui-host-test ui-fuzz exact-patches ui-board ui-browser ui-browser-skip host-events layout-oracle wasm-host-check wasm-tasks-mutations h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules rule-examples idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns parser witnesses libs libscope families-left layers hooks-released inputs whole-reads read-cost \
+        native-check avra suites install sprite sprite-check codecs codecs-static keepers voices voices-accept defects tool-witnesses pipeline-status pipeline-doc ci-invariants pr-watcher wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-routes-size speed-ratchet wall-ratchet warm-edit
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
 # tree only.
@@ -686,7 +681,6 @@ quoted = '$(subst ','\'',$1)'
 stamp_args = $(call quoted,build/$1.sha) $(call quoted,$(or $(SHA_SRC_$1),$2)) $(call quoted,$(SECTIONS) $(CFLAGS_$1))
 build/%.sha: ;
 
-
 # THE RUNTIME'S OWN TESTS: C programs under runtime/tests/, each linked
 # against the runtime's objects and run, for what no Avra program can
 # reach yet — a row the language does not spell. GLOBBED, so a new test
@@ -828,7 +822,6 @@ wave-share-attack: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 # CLEARS the store it builds through, as the attacks above do.
 code-hash-attacks: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/code_hash_attacks.sh
-
 
 # Exact refcount and list-write counts; the shipping runtime is put
 # back on every exit.   make census CMD="check packages/std-avrac"
@@ -990,18 +983,12 @@ inputs:
 clock-holds:
 	@python3 tools/clock_holds.py
 
-inputs-accept:
-	@python3 tools/inputs.py --accept
-
 # EVERY WHOLE-PROGRAM READ IS A COUNTED SITE: a call that reads all of a relation's
 # rows is licensed cold at its site or listed in tools/whole_reads.baseline, which
 # only falls (tools/whole_reads.py). The run's own count is `check --counts`.
 whole-reads:
 	@python3 tools/whole_reads.py --self-test >/dev/null
 	@python3 tools/whole_reads.py
-
-whole-reads-accept:
-	@python3 tools/whole_reads.py --accept
 
 # A RECORDED READ HAS A BUDGET: retains, releases and list reads and writes
 # per read, counted on the census runtime, never over read_cost.budget.
@@ -1015,29 +1002,23 @@ read-cost: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 # LEAST of warm one-edit rounds (tools/speed_measure.sh), run on the
 # machine the keeper stands on; on macOS it goes to the lane's Sprite
 # (`tools/work run`), since a loaded Mac supplies no number. The gate's
-# fixtures prove the gate before it judges. `speed-accept` lowers the
+# fixtures prove the gate before it judges. `./wisp cost speed --accept` lowers the
 # ceilings to what was measured and never raises one.
 speed-ratchet:
 	@python3 tools/speed_ratchet.py --self-test >/dev/null
 	@python3 tools/speed_ratchet.py
-speed-accept:
-	@python3 tools/speed_ratchet.py --self-test >/dev/null
-	@python3 tools/speed_ratchet.py --accept
 
 # THE WALL-CLOCK RATCHET: a PR check's per-job and whole wall time, held in
 # the same tools/speed.budget the phase ratchet reads (ONE file, ONE reader),
 # measured by tools/ci_wall.sh from a run's own jobs and judged in the `test`
 # job of every PR run. A ceiling may only fall: this lowers it to a run's
 # measured times and never raises one. Point it at a run's metrics with
-# `make wall-accept WALL=<file>`, where the file is
+# `./wisp cost wall --accept --file <file>`, where the file is
 # `sh tools/ci_wall.sh --repo <o/r> --run <id> collect`.
 WALL ?= wall.metrics
 wall-ratchet:
 	@python3 tools/speed_ratchet.py --self-test >/dev/null
 	@python3 tools/speed_ratchet.py --wall --raw "$(WALL)"
-wall-accept:
-	@python3 tools/speed_ratchet.py --self-test >/dev/null
-	@python3 tools/speed_ratchet.py --wall --accept --raw "$(WALL)"
 
 # THE DB 07 WARM-EDIT GATE (avra-8sb5.57.176): an unchanged
 # `check packages/cli` and one body edit, wall, on a warm store. The
@@ -1055,29 +1036,18 @@ wall-accept:
 # On macOS the measurement goes to the lane's Sprite, as speed-ratchet does.
 # THE EXACT-COUNT GATE: the census compiler of this tree, cold, over fixed workloads whose sources are
 # the commit tools/cost.baseline pins; every counter held to its row within 0.05% (tools/cost.sh,
-# tools/cost_ratchet.py). A row only falls, through `make cost-accept`; `COST_SNAPSHOT=<sha> make
-# cost-accept` moves the snapshot and records every count over it.
+# tools/cost_ratchet.py). A row only falls, through `./wisp cost cost --accept`; `COST_SNAPSHOT=<sha> ./wisp
+# cost cost --accept` moves the snapshot and records every count over it.
 cost:
 	@python3 tools/cost_ratchet.py --self-test >/dev/null
 	@sh tools/cost.sh
 	@python3 tools/cost_ratchet.py --judge build/cost
-cost-accept:
-	@COST_ACCEPTING=1 sh tools/cost.sh
-	@python3 tools/cost_ratchet.py --accept build/cost
 
 warm-edit:
 	@python3 tools/ratchet_rows.py --self-test >/dev/null
 	@python3 tools/speed_ratchet.py --self-test >/dev/null
 	@python3 tools/work_ratchet.py --self-test >/dev/null
 	@sh tools/warm_edit_bench.sh
-warm-accept:
-	@python3 tools/speed_ratchet.py --self-test >/dev/null
-	@WARM_EDIT_ACCEPT=1 sh tools/warm_edit_bench.sh
-# The work-count ceilings only fall: this lowers each to what the compiler counted
-# (and seeds a new counter), never raises one. Review the diff of tools/work.budget.
-work-accept:
-	@python3 tools/work_ratchet.py --self-test >/dev/null
-	@WORK_ACCEPT=1 sh tools/warm_edit_bench.sh
 
 idioms:
 	@STATUS=0; CHECKED=0; \
@@ -1207,10 +1177,6 @@ footprint: $(RUNTIME_LIB)
 	@python3 tools/footprint.py --self-test
 	@python3 tools/footprint.py
 
-# Re-accept this platform's sizes deliberately.
-footprint-accept: $(RUNTIME_LIB)
-	@python3 tools/footprint.py --accept
-
 # THE FLOW G1 GATE: the scheduler's transition rows (a gate round trip,
 # spawn+join, a cold parked spawn) against tools/flow_bench/gate.baseline,
 # refusing past 2x. A change under runtime/ can cost the transition hot
@@ -1222,9 +1188,6 @@ footprint-accept: $(RUNTIME_LIB)
 flow-gate:
 	@python3 tools/flow_bench/gate.py --self-test
 	@sh tools/flow_bench/run.sh --gate $(FLOW_GATE_ARGS)
-# Re-accept this machine's rows deliberately (FLOW_RUNTIME for another tree).
-flow-gate-accept:
-	@sh tools/flow_bench/run.sh --record
 
 # THE TICK'S TWO KEEPERS. `tick-object` holds the hosted source's
 # undefined symbols to the no-lock set a forked child may inherit;
@@ -1488,7 +1451,6 @@ SQLITE_FLAGS := \
   -DSQLITE_DEFAULT_MMAP_SIZE=268435456 -DSQLITE_MAX_MMAP_SIZE=1099511627776 \
   -DSQLITE_DEFAULT_CACHE_SIZE=-8000 -DSQLITE_DEFAULT_WORKER_THREADS=0 \
   -DNDEBUG=1
-
 
 # THE WIDTH WITNESS: the Avra reader and a C reader of the same object agree
 # (`wisp oracle`, its case in packages/wisp/src/commands/oracle_cases.av).

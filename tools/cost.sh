@@ -4,7 +4,7 @@
 # kept as build/cost/<workload>.out; and warm after each edit of a fixed set, the answers it worked out
 # again kept as build/cost/edit-<kind>.out. tools/cost_ratchet.py judges them.
 #   sh tools/cost.sh                      the baseline's snapshot
-#   COST_SNAPSHOT=<sha> sh tools/cost.sh  another snapshot (what `make cost-accept` records)
+#   COST_SNAPSHOT=<sha> sh tools/cost.sh  another snapshot (what `./wisp cost cost --accept` records)
 #   COST_COMPILER=<file> sh tools/cost.sh a census compiler already built from this tree
 #
 # A FIXED INPUT MEASURES THE COMPILER: the snapshot is exported whole, std included, and the census
@@ -26,7 +26,7 @@ snapshot=${COST_SNAPSHOT:-$(awk '$1 == "snapshot" { print $2 }' tools/cost.basel
 git cat-file -e "$snapshot^{commit}" 2> /dev/null || git fetch -q --depth=1 origin "$snapshot" 2> /dev/null || :
 git cat-file -e "$snapshot^{commit}" 2> /dev/null || {
     echo "cost: snapshot $snapshot is not in this clone and could not be fetched"; exit 1; }
-# AN ACCEPT PINS ONLY WHAT THE GATE CAN FETCH (`make cost-accept` sets COST_ACCEPTING): the gate's clone
+# AN ACCEPT PINS ONLY WHAT THE GATE CAN FETCH (`./wisp cost cost --accept` sets COST_ACCEPTING): the gate's clone
 # fetches the snapshot from origin by its sha, so a commit only this clone holds — a local one, or a
 # branch's own sha where origin holds its mirror — passes here and reds every gate. It is asked of
 # origin in a scratch repository, so this clone never turns shallow.

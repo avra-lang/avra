@@ -1,0 +1,183 @@
+//! `wisp cost [<ratchet>…] [--accept] [--file <path>]` — THE RATCHETS, ONE REGISTRY. A ratchet holds
+//! a measured cost to a committed baseline that may only fall: the run's speed, its counted work,
+//! a binary's footprint, the reads outside the doors. Each is a row: the keeper that judges it (a
+//! Make target, run by `wisp cost <name>`), the file it is held to, and the steps that record a
+//! lower baseline (`--accept`, which names its ratchets — an accept is never a sweep). Exit 0 held
+//! or recorded, 1 a ratchet refused, 2 usage.
+use @std.cli.{CliResult, Runnable, arg, command, flag, option}
+use @std.process.{EnvPair}
+
+/// One step of an accept: its words, the variables it sets over the invoker's environment, and
+/// whether the file `--file` names is its last word.
+export type Step = { argv: List<string>, sets: List<EnvPair> = [], file: bool = false }
+
+/// A ratchet: its name, the keeper that judges it, the baseline it is held to, and the steps an
+/// accept records a lower one by.
+export type Ratchet = { name: string, keeper: string, baseline: string, accept: List<Step> }
+
+/// The speed ratchet proves itself before it records anything.
+const SPEED_SELF_TEST: Step = Step { argv: ["python3", "tools/speed_ratchet.py", "--self-test"] }
+
+/// Every ratchet, by name.
+export const RATCHETS: List<Ratchet> = [
+    Ratchet {
+        name: "cost",
+        keeper: "cost",
+        baseline: "tools/cost.baseline",
+        accept: [
+            Step {
+                argv: ["sh", "tools/cost.sh"],
+                sets: [EnvPair { name: "COST_ACCEPTING", value: "1" }],
+            },
+            Step { argv: ["python3", "tools/cost_ratchet.py", "--accept", "build/cost"] },
+        ],
+    },
+    Ratchet {
+        name: "speed",
+        keeper: "speed-ratchet",
+        baseline: "tools/speed.budget",
+        accept: [SPEED_SELF_TEST, Step { argv: ["python3", "tools/speed_ratchet.py", "--accept"] }],
+    },
+    Ratchet {
+        name: "wall",
+        keeper: "wall-ratchet",
+        baseline: "tools/speed.budget",
+        accept: [
+            SPEED_SELF_TEST,
+            Step {
+                argv: ["python3", "tools/speed_ratchet.py", "--wall", "--accept", "--raw"],
+                file: true,
+            },
+        ],
+    },
+    Ratchet {
+        name: "warm",
+        keeper: "warm-edit",
+        baseline: "tools/speed.budget",
+        accept: [
+            SPEED_SELF_TEST,
+            Step {
+                argv: ["sh", "tools/warm_edit_bench.sh"],
+                sets: [EnvPair { name: "WARM_EDIT_ACCEPT", value: "1" }],
+            },
+        ],
+    },
+    Ratchet {
+        name: "work",
+        keeper: "warm-edit",
+        baseline: "tools/work.budget",
+        accept: [
+            Step { argv: ["python3", "tools/work_ratchet.py", "--self-test"] },
+            Step {
+                argv: ["sh", "tools/warm_edit_bench.sh"],
+                sets: [EnvPair { name: "WORK_ACCEPT", value: "1" }],
+            },
+        ],
+    },
+    Ratchet {
+        name: "footprint",
+        keeper: "footprint",
+        baseline: "tools/footprint.baseline",
+        accept: [
+            Step { argv: ["make", "-s", "build/libavra_runtime.a"] },
+            Step { argv: ["python3", "tools/footprint.py", "--accept"] },
+        ],
+    },
+    Ratchet {
+        name: "inputs",
+        keeper: "inputs",
+        baseline: "tools/inputs.baseline",
+        accept: [Step { argv: ["python3", "tools/inputs.py", "--accept"] }],
+    },
+    Ratchet {
+        name: "whole-reads",
+        keeper: "whole-reads",
+        baseline: "tools/whole_reads.baseline",
+        accept: [Step { argv: ["python3", "tools/whole_reads.py", "--accept"] }],
+    },
+    Ratchet {
+        name: "flow-gate",
+        keeper: "flow-gate",
+        baseline: "tools/flow_bench/gate.baseline",
+        accept: [Step { argv: ["sh", "tools/flow_bench/run.sh", "--record"] }],
+    },
+    Ratchet {
+        name: "wasm-size",
+        keeper: "wasm-size-guard",
+        baseline: "tools/wasm-size.baseline",
+        accept: [Step { argv: ["sh", "tools/wasm-size-guard.sh", "--accept"] }],
+    },
+]
+
+type CostCmd = {}
+
+impl Runnable for CostCmd {
+    fn run(args: CliResult) -> int {
+        let named = args.args_of("ratchets")
+        let unknown = named.filter((n) -> !RATCHETS.any(it.name == n))
+        if !unknown.is_empty() {
+            eprintln(no_ratchet(unknown))
+            return 2
+        }
+        let accepting = args.has_flag("accept")
+        if accepting && named.is_empty() {
+            eprintln(accept_names_none())
+            return 2
+        }
+        let file = args.option("file")
+        let chosen = RATCHETS.filter((r) -> named.is_empty() || named.contains(r.name))
+        let failed = chosen
+            .filter((r) -> !if accepting { accepted(r, file) } else { judged(r, file) })
+        if failed.is_empty() {
+            0
+        } else {
+            eprintln(refused(failed.map(it.name)))
+            1
+        }
+    }
+}
+
+export command cost {
+    description: "Judge the ratchets, or record a lower baseline for the ones named (--accept)"
+    arg ratchets {
+        description: "the ratchets, by name; none judges every one"
+        variadic: true
+    }
+    flag accept { description: "record what was measured as the new baseline; a baseline only falls" }
+    option file { description: "the measured file a ratchet reads (`wall`: the CI run's wall metrics)" }
+    run: CostCmd {}
+}
+
+/// The ratchet's keeper, run by its Make target.
+fn judged(r: Ratchet, file: string) -> bool {
+    let wall = if file == "" { [] } else { ["WALL=${file}"] }
+    streamed(["make", "-s", "-o", "avra", r.keeper].concat(wall), [])
+}
+
+/// Each accept step in order; the first that fails stops the rest.
+fn accepted(r: Ratchet, file: string) -> bool {
+    eprintln(accepting(r))
+    r.accept.all((s) -> ran(s, file))
+}
+
+fn ran(s: Step, file: string) -> bool {
+    streamed(if s.file { s.argv.concat([file]) } else { s.argv }, s.sets)
+}
+
+// ── voices ──
+
+fn accepting(r: Ratchet) -> string {
+    "cost: ${r.name}: recording a lower baseline in ${r.baseline} — review its diff"
+}
+
+fn refused(names: List<string>) -> string {
+    "cost: REFUSED: ${names.join(" ")}"
+}
+
+fn no_ratchet(names: List<string>) -> string {
+    "cost: no ratchet named ${names.map("`${it}`").join(", ")}; the ratchets are ${RATCHETS.map(it.name).join(", ")}"
+}
+
+fn accept_names_none() -> string {
+    "cost: --accept names the ratchets it records — an accept is never a sweep"
+}

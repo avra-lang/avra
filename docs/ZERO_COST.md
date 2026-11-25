@@ -15,7 +15,7 @@ human reading code.
 | **census sites** | the runtime's exact per-site counters (boxes, retains, releases, clones, opens of an empty literal, string compares, list writes) over the fixed workloads | the hottest sites, each CLASSIFIED to the technique that would remove its cost (below) | `avra census --candidates` |
 | **missed-optimization remarks** | the compiler at the moment a technique declines to fire | WHY a site paid, as a TYPED reason per technique (`Declined`: `DeferDecline`, `ProbeDecline`, `SettleDecline`, `ConsumeDecline`, `DynDecline`, `PackDecline`), its words rendered by one voice fn | `avra explain --cost @fn`, grouped by reason and counted; `cost_remarks` is a query, so the remarks are facts in the DB. A build never notes them: zero cost unless asked |
 | **shape rules** | the source, as `rule` declarations `avra check` finds | the patterns that cost by construction | `avra check`, ratcheted like idioms |
-| **exact-count gate** | the census totals per cold workload, and the answers a warm run works out again after each fixed edit, over one pinned snapshot, against `tools/cost.baseline` | regressions: any counter that rose past tolerance, cold or warm | a gate slice (`make cost`); lowering a counter needs `make cost-accept` |
+| **exact-count gate** | the census totals per cold workload, and the answers a warm run works out again after each fixed edit, over one pinned snapshot, against `tools/cost.baseline` | regressions: any counter that rose past tolerance, cold or warm | a gate slice (`make cost`); lowering a counter needs `./wisp cost cost --accept` |
 
 **The classifier** is what makes candidates automatic. A census site's SHAPE names its technique:
 
@@ -40,7 +40,7 @@ diffed against the last run is how a NEW candidate appears without anyone lookin
 `make cost` runs every compiler workload with the site tables on (`cold-with-store-fill` measures the store, not the compiler, and takes none), resolves each site to its symbol and
 writes `build/cost/candidates.txt` (`avra census --candidates [--root <tree>] <report>…`, the top
 ten per technique). A `(technique, fn)` that `tools/cost.candidates` lacks is NAMED, never failed;
-`make cost-accept` rewrites that record. Deforestation and devirtualization have no census hook
+`./wisp cost cost --accept` rewrites that record. Deforestation and devirtualization have no census hook
 yet, and borrows across quiet calls are found by the memory pass's own tally (`AVRA_RC_REASONS`), so
 the classifier reads the other eight shapes.
 

@@ -2038,7 +2038,7 @@ Wall time on our machines is noise: one binary measured 4.0 s and 6.2 s. The
 compiler can count its own work exactly, so a performance claim is held as a
 COUNT — files loaded and parsed, modules and files minted, queries computed,
 store KiB written (`check --counts`, compiler/work.av) — against a ceiling
-that may only fall (tools/work.budget, `make work-accept`). A count is the same
+that may only fall (tools/work.budget, `./wisp cost work --accept`). A count is the same
 on every machine, needs no ratio or slack, and a regression names the counter
 that grew. A clock stays a report; a ceiling is a count. A new unit of work
 gets its tally where it is done, a row in the budget, and the ratchet holds it.

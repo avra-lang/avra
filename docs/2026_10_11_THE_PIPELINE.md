@@ -493,7 +493,7 @@ than a red one. Note `--refs origin/main` does not work on a Sprite (no
 `packages/cli`'s own build and check against a recorded ceiling in
 `tools/speed.budget`, and refuses past it, naming the phase, its ceiling
 and what it measured. The phases are `analyze`, `lower`, `keep`, `emit`,
-`link`. A ceiling **may only fall**: `make speed-accept` writes a
+`link`. A ceiling **may only fall**: `./wisp cost speed --accept` writes a
 measured value only when it is lower than the ceiling already there, and
 a raise is a human edit of `tools/speed.budget`, whose diff is the
 review. A host with no row is measured and printed, never gated.
@@ -702,7 +702,7 @@ auto-merge (§0). None of these is a command to run.
 | `make keepers-a` / `make keepers-b` | the two keeper halves a run splits across runners |
 | `make seed-check` | the committed seed must compile HEAD |
 | `make speed-ratchet` | hold each build/check phase under its ceiling |
-| `make speed-accept` | lower a ceiling to what was measured (never raises) |
+| `./wisp cost speed --accept` | lower a ceiling to what was measured (never raises) |
 | `make idioms` | the idiom ratchet over every package |
 | `make fmt-lossless` | `fmt(x) == x` over every `.av` file |
 | `make attack` | the accepted-mutant baseline |

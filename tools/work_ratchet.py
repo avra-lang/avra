@@ -21,7 +21,7 @@ judged (INFORMATIONAL). The unchanged scenario stays absolute: nothing at all.
 A ceiling MAY ONLY FALL. `--accept` lowers each row to what was measured,
 seeds a counter that has no row yet, and never raises one; a raise is a human
 edit of the budget and the diff is the review. A run under its ceiling says so
-and names the command that lowers it (`make work-accept`).
+and names the command that lowers it (`./wisp cost work --accept`).
 """
 import os
 import re
@@ -49,7 +49,7 @@ HEAD = """\
 # carries no host and the gate allows no slack. Read by `tools/work_ratchet.py`
 # (`make warm-edit`, `tools/warm_edit_bench.sh`).
 #
-# A ceiling MAY ONLY FALL: `make work-accept` lowers each row to what a run
+# A ceiling MAY ONLY FALL: `./wisp cost work --accept` lowers each row to what a run
 # measured and never raises one. A raise is a human edit of this file, and the
 # diff is the review. `unchanged` is a check of a tree the store already holds;
 # `edit` is the check after one string literal in one body moved. A `_ppm` row is per
@@ -84,14 +84,14 @@ def judge(measured, ceilings):
     for key in sorted(measured):
         name = "%s %s" % key
         if key not in ceilings:
-            refusals.append((name, "measured %d with no ceiling row — record it with `make work-accept`" % measured[key]))
+            refusals.append((name, "measured %d with no ceiling row — record it with `./wisp cost work --accept`" % measured[key]))
             continue
         now, was = measured[key], ceilings[key]
         limit = was + (PPM_SLACK if key[0] == "edit" and key[1].endswith("_ppm") else 0)
         if now > limit:
             refusals.append((name, "%d against a ceiling of %d (over by %d)" % (now, was, now - limit)))
         elif now < was:
-            words.append("%s: %d under a ceiling of %d — `make work-accept` lowers it" % (name, now, was))
+            words.append("%s: %d under a ceiling of %d — `./wisp cost work --accept` lowers it" % (name, now, was))
         elif now > was:
             words.append("%s: %d, %d over its ceiling and inside the growth slack" % (name, now, now - was))
         else:
@@ -150,7 +150,7 @@ def self_test():
     assert len(judge(m, {("edit", "files_parsed"): 2})[0]) == 1  # no row for unchanged
     assert len(judge(m, {**held, ("edit", "files_minted"): 1})[0]) == 1  # row nothing measured
     under = judge({("edit", "files_parsed"): 1, ("unchanged", "files_parsed"): 0}, held)
-    assert under[0] == [] and "make work-accept" in under[1][0]
+    assert under[0] == [] and "./wisp cost work --accept" in under[1][0]
     ppm = {("edit", "files_minted_ppm"): 996131, ("unchanged", "files_minted_ppm"): 0}
     assert judge({("edit", "files_minted_ppm"): 996146, ("unchanged", "files_minted_ppm"): 0}, ppm)[0] == [], "growth slack"
     assert len(judge({("edit", "files_minted_ppm"): 999000, ("unchanged", "files_minted_ppm"): 0}, ppm)[0]) == 1
