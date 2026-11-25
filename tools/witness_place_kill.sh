@@ -1,5 +1,4 @@
 #!/bin/sh
-# tool-witness: owed by wrong-answers — a build killed between placing its binary and saving its store placed the unedited binary (the store's place/save path)
 # A BUILD KILLED BETWEEN PLACING ITS BINARY AND SAVING ITS STORE LEAVES BOTH RIGHT. A build places
 # its binary first and saves its store after; this kills one between the two (AVRA_KILL_AFTER_PLACE)
 # and asks of what it leaves: the binary it placed is the cold build's of the edited tree; the store
@@ -34,7 +33,12 @@ built() { "$avra" build packages/cli >"$tmp/log" 2>&1 || { echo "witness_place_k
 # reads and the next store opened removes once its process is gone, left out
 held() { (cd "$store" && find . -type f ! -path './tapes-build/*' ! -name '*.draft' -exec cksum {} + | sort -k3); }
 drafts() { find "$store" -name '*.draft' ! -path '*/tapes-build/*' | wc -l | tr -d ' '; }
-edit() { sed 's/compiler(s) kept/compiler(s) held/' "$tmp/orig.av" >"$file"; }
+# the edit: a literal of cache.av's own (its usage line), so the edited cli is another binary; an
+# edit that changed nothing proves nothing, and is refused as its target moved
+edit() {
+    sed 's/avra cache: `clean`, `log`/avra cache: `clean`, `list`/' "$tmp/orig.av" >"$file"
+    ! cmp -s "$tmp/orig.av" "$file" || { echo "witness_place_kill: the edit target moved — cache.av holds no \`avra cache: \`clean\`, \`log\`\`"; exit 1; }
+}
 
 afresh
 built "the cold build"
