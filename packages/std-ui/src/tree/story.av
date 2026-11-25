@@ -63,6 +63,12 @@ export type Story = { owner: string, module: string, told_by: string, based: boo
 /// A case beside whether it draws exactly what the base does.
 export type Varied = { case: Case, same: bool }
 
+/// The place a story hands a component's flag, as a caller hands its own.
+state handed_flag: bool = true
+
+/// The place a story hands a component's text, as a caller hands its own.
+state handed_words: string = sample_text
+
 /// Whether a case draws a control with no words: a control always has a name, so no story draws one.
 export fn draws_unnamed(v: dyn View) -> bool { nameless(tree_of(v)).length > 0 }
 
@@ -87,8 +93,8 @@ export fn story(f: Fn, fixed: string = "") -> Declared {
     let problems = told_problems(f, t)
         .concat([no_member(f, t, w) for w in kept if !t.fields.any(it.name == w)])
     if !problems.is_empty() { return nothing_made(problems) }
-    let cases = [written(f, "base")]
-        .concat([c for m in t.fields if !kept.contains(m.name) for c in derived(f.name, m)])
+    let varying = [m for m in t.fields if !kept.contains(m.name)]
+    let cases = [written(f, "base")].concat([c for m in varying for c in derived(f.name, m)])
     Declared { made: [told(f, t, true, cases)] }
 }
 
@@ -210,13 +216,24 @@ fn set_to(base: string, m: Field, word: string, value: Code, spelled: string) ->
     )
 }
 
-/// A place handed in: a flag given the other way from the base, a text given the sample.
+/// A place handed in: one the stories share, holding a set flag or the sample, which the case
+/// shares as a caller's place is shared; dropped where the base already shows that.
 fn placed(base: string, m: Field, inner: Kind) -> List<Code> {
     match inner {
-        .Bool -> [flipped(base, m, " given")],
-        .Str -> [given_text(base, m)],
+        .Bool -> [handed(base, m, quote { handed_flag }, "handed_flag")],
+        .Str -> [handed(base, m, quote { handed_words }, "handed_words")],
         .Int or .Float or .Ptr or .Void or .List(_) or .Cell(_) or .Map(_, _) or .Opt(_) or .Result(_, _) or .Named(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) or .Bytes -> [],
     }
+}
+
+/// The base handed `place` for its member `m`.
+fn handed(base: string, m: Field, place: Code, spelled: string) -> Code {
+    varied(
+        literal("${m.name} given"),
+        quote { b with { ${m.name}: ${place} } },
+        literal(spelling(base, m.name, spelled)),
+        quote { b.${m.name} == ${place} },
+    )
 }
 
 /// A flag drawn the other way from the base, named by the member and `word`.

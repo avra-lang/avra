@@ -470,3 +470,18 @@ legibility as data already (`inactive` in the claims table).
 **A finding on the way:** after an edit to the story generator, `check` and `avra dev` trapped with
 `index 19 is out of bounds (length 15)` until the packages' `.avra-cache` was emptied. A store entry
 made under the old generator's shape was read under the new one.
+
+### On program e02d71ab
+
+- **A place is handed as a place.** The compiler now refuses a value in a `state` seat even
+  through `with` (`type.seat`), so a story's `given` case hands one of two places the stories share
+  (`handed_flag`, `handed_words` in `tree/story.av`), as a caller hands its own. A gesture on one
+  given case moves the others, so `tools/storyboard` tells its stories once (`once fn told`) and
+  draws the cases it was first told.
+- **The seed defect is fixed upstream:** a place seeded through `with { initial: … }` now draws
+  seeded, so `checkbox`, `switch` and `dialog`'s `initial` and `field`'s `initial given` are drawn,
+  and one case is set aside (shape_inputs' `prefix given`), down from five. The golden's field lines
+  moved with the field's new HTML: 122 snapshots.
+- Firefox 158: 570 frames, 21 failures, all under the 9 pins; every mutant caught; the row 78 s.
+- `avra fmt` loses `export` on an `export state` (it refuses, "a comment was lost"), so the shared
+  places are private to `story.av`, which is where a template's static names resolve.
