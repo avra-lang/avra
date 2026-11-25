@@ -17,7 +17,7 @@ built=$(cd "$tree" && "$avra" build --target arm64-apple-ios-simulator tools/ios
 [ -d "$work/Spike.app" ] || fail "run tools/ios_spike_witness.sh once first: it writes Spike.app"
 mv "$built" "$work/Spike.app/spike"
 codesign -f -s - "$work/Spike.app" > /dev/null 2>&1 || fail "the app could not be signed"
-udid=$(xcrun simctl list devices available | awk '/^-- iOS (26|18)/ { on = 1; next } /^--/ { on = 0 } on && /iPhone/' |
+udid=$(xcrun simctl list devices available | awk '/^-- iOS (26|18)/ { on = 1; next } /^--/ { on = 0 } on && $0 ~ dev' dev="${AVRA_BOARD_DEVICE:-iPhone}" |
     sed -n 's/.*(\([0-9A-F-]\{36\}\)).*/\1/p' | head -n 1)
 xcrun simctl boot "$udid" 2> /dev/null
 xcrun simctl bootstatus "$udid" > /dev/null 2>&1 || :

@@ -11,6 +11,7 @@ use @std.ui.tree.node.{Node, Said}
 use @std.ui.tree.seats.{seat_numbered}
 use @std.ui.tree.view.{View}
 use frame.{neutral}
+use kit.{rects}
 
 extern fn avra_spike_attach()
 extern fn avra_spike_frame(records: string)
@@ -22,6 +23,13 @@ once fn page() -> Cell<fn(int, int) -> bool> { Cell.new((_id: int, _seat: int) -
 /// The host's echo: the node numbered `id` (one more than the page's) spoke
 /// at seat `seat`. Its handler runs as a turn the program's loop takes.
 extern fn avra_spike_tapped(id: int, seat: int) { let _ = (page().get())(id, seat) }
+
+/// What a host's change of size reaches: the last tree placed again.
+once fn replaced() -> Cell<fn() -> bool> { Cell.new(() -> false) }
+
+/// The host's measures went stale — its width, its text size, an inset — so
+/// the page is placed again as a turn of the program's loop.
+extern fn avra_spike_resized() { let _ = (replaced().get())() }
 
 /// What a control said: the page's echo for a typed or flipped control.
 once fn heard() -> Cell<fn(int, int, Said?) -> bool> { Cell.new((_id: int, _seat: int, _s: Said?) -> false) }
@@ -69,6 +77,16 @@ export fn read_once(route: string) -> string? {
     match based(r) { .Ok(reply) -> reply.body.text_lossy(), .Err(_) -> null }
 }
 
+/// The last tree the page showed.
+once fn shown_root() -> Cell<List<Node>> { Cell.new([]) }
+
+/// The last tree placed again in the host's width.
+fn placed_again(at: NativeLive) -> bool {
+    let root? = shown_root().get().first() else { return false }
+    avra_spike_frame(rects(root, at.page.get()))
+    false
+}
+
 /// Nothing to do between turns.
 fn idle() {}
 
@@ -83,6 +101,8 @@ export fn mount<V: View>(view: fn() -> V) {
             let patches = at.patches(root)
             on_screen.set(at.owners())
             if !patches.is_empty() { avra_spike_frame(neutral(patches)) }
+            avra_spike_frame(rects(root, at.page.get()))
+            shown_root().set([root])
         },
         on_screen,
         at.stands,
@@ -91,6 +111,7 @@ export fn mount<V: View>(view: fn() -> V) {
     let inbox = opened(app, based)
     page().set((id: int, seat: int) -> tapped(app, at, NodeId { n: id - 1 }, seat))
     heard().set((id: int, seat: int, s: Said?) -> spoke(app, at, NodeId { n: id - 1 }, seat, s))
+    replaced().set(() -> app.post_unowned(() -> placed_again(at)))
     app.paint()
     served(app, inbox, idle)
 }

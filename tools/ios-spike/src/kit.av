@@ -1,0 +1,78 @@
+//! UIKit answers std-ui's solver: a control's size is what UIKit fits it to,
+//! asked of the host inside the turn, and the boxes the solver returns go to
+//! the host as `rect` records, each relative to its parent, matched to the
+//! native elements by path.
+use @std.ui.place.measure.{Measure, Extent, fine}
+use @std.ui.place.solve.{Placed, place}
+use @std.ui.realize.native.element.{Native}
+use @std.ui.realize.tui.layout.{closed_node, holds_children}
+use @std.ui.style.theme.{default_theme}
+use @std.ui.style.tokens.{Size}
+use @std.ui.tree.node.{Node, Attribute}
+
+/// The size UIKit fits a control of `prim` with these words to, `avail` points
+/// across, as `w * 1000000 + h` in sixtieths of a point.
+extern fn avra_spike_measure(prim: string, words: string, placeholder: string, avail: int) -> int
+
+/// The widest word of `words` in a control of `prim`, in sixtieths of a point.
+extern fn avra_spike_narrowest(prim: string, words: string) -> int
+
+/// The width the host has for the page, in points.
+extern fn avra_spike_width() -> int
+
+/// The placeholder a field shows, if any.
+fn placeholder_of(n: Node) -> string {
+    let words = [t for a in n.attrs for t in placeholder_in(a)]
+    words.first() ?? ""
+}
+
+fn placeholder_in(a: Attribute) -> List<string> {
+    match a { .Placeholder(t) -> [t], rest -> [] }
+}
+
+/// The words a node shows: its own, or a container's title.
+fn shown_words(n: Node) -> string {
+    if n.words() != "" { return n.words() }
+    [t for a in n.attrs for t in title_in(a)].first() ?? ""
+}
+
+fn title_in(a: Attribute) -> List<string> {
+    match a { .Title(t) -> [t], rest -> [] }
+}
+
+/// What a node's own content asks of UIKit: a container's is its title.
+fn asked(n: Node, avail: int) -> Extent {
+    let packed = avra_spike_measure(n.prim.word(), shown_words(n), placeholder_of(n), avail / fine)
+    Extent { w: packed / 1000000, h: packed % 1000000 }
+}
+
+/// UIKit's answers, in points.
+export type Kit = { focus: string = "" }
+
+impl Measure for Kit {
+    fn own(n: Node, avail: int) -> Extent { asked(n, avail) }
+    fn kept(n: Node, path: string) -> int { 0 }
+    fn hidden(n: Node) -> bool { closed_node(n) || n.prim is .Key }
+    fn holds(n: Node) -> bool { holds_children(n) }
+    fn min_own(n: Node) -> int { avra_spike_narrowest(n.prim.word(), shown_words(n)) }
+    fn gap_x(z: Size) -> int { default_theme.space.at(z) }
+    fn gap_y(z: Size) -> int { default_theme.space.at(z) }
+    fn pad_x(z: Size) -> int { default_theme.space.at(z) }
+    fn pad_y(z: Size) -> int { default_theme.space.at(z) }
+}
+
+/// The page placed in the host's width: one record per element, its box
+/// relative to its parent's, the root's height last as `content`.
+export fn rects(root: Node, page: List<Native>) -> string {
+    let placed = place(root, Kit {}, avra_spike_width())
+    let top? = page.first() else { return "" }
+    rect_lines(top, placed, 0, 0).concat(["content ${placed.rect.w} ${placed.rect.h}"]).join("\n")
+}
+
+/// `e`'s box at `p`, relative to its parent's corner (`x`, `y`), then its
+/// children's under it.
+fn rect_lines(e: Native, p: Placed, x: int, y: int) -> List<string> {
+    let r = p.rect
+    ["rect ${e.id.n + 1} ${r.x - x} ${r.y - y} ${r.w} ${r.h}"]
+        .concat([l for j, k in e.kids if j < p.kids.length for l in rect_lines(k, p.kids[j], r.x, r.y)])
+}

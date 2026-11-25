@@ -20,6 +20,7 @@ void avra_host_resume(void);
 void avra_trap(const char* words);
 
 void avra_spike_tapped(int64_t id, int64_t seat);
+void avra_spike_resized(void);
 void avra_spike_said(int64_t id, int64_t seat, int64_t flag, const char* words);
 int64_t avra_spike_sync(int64_t waits);
 
@@ -117,7 +118,9 @@ static void sources_armed(void) {
 @end
 
 static NSMutableDictionary<NSNumber*, SpikeNode*>* g_nodes;
-static UIStackView* g_root;
+static UIView* g_root;
+static UIScrollView* g_scroll;
+static CGFloat g_width;
 static UIViewController* g_vc;
 static NSMutableArray<NSString*>* g_pending;
 static NSCountedSet<NSString*>* g_unused;
@@ -159,8 +162,9 @@ static BOOL is_any(SpikeNode* n, NSArray<NSString*>* prims) { return [prims cont
 static void made(SpikeNode* n) {
     NSString* p = n.prim;
     if ([p isEqualToString:@"button"] || [p isEqualToString:@"link"]) {
-        UIButton* b = [UIButton buttonWithType:UIButtonTypeSystem];
-        b.titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+        UIButtonConfiguration* cfg = [UIButtonConfiguration plainButtonConfiguration];
+        cfg.contentInsets = NSDirectionalEdgeInsetsMake(6, 12, 6, 12);
+        UIButton* b = [UIButton buttonWithConfiguration:cfg primaryAction:nil];
         b.tag = n.nid;
         [b addTarget:g_target action:@selector(tapped:) forControlEvents:UIControlEventTouchUpInside];
         b.isAccessibilityElement = YES;
@@ -223,7 +227,7 @@ static void made(SpikeNode* n) {
         n.view = [UIView new];
         n.view.hidden = YES;
     } else if ([@[ @"row", @"column", @"surface", @"list", @"item", @"card", @"form", @"fieldset", @"alert", @"dialog" ] containsObject:p]) {
-        n.view = stack([p isEqualToString:@"row"] ? UILayoutConstraintAxisHorizontal : UILayoutConstraintAxisVertical);
+        n.view = [UIView new];
     } else {
         UILabel* l = label(UIFontTextStyleCaption1);
         l.textColor = UIColor.systemRedColor;
@@ -235,10 +239,10 @@ static void made(SpikeNode* n) {
 
 // A container's title stands above its children.
 static void titled(SpikeNode* n, NSString* words) {
-    if (![n.view isKindOfClass:[UIStackView class]]) return;
+    if (n.control || n.label) return;
     if (!n.title) {
         n.title = label(is(n, @"card") ? UIFontTextStyleTitle3 : UIFontTextStyleHeadline);
-        [(UIStackView*)n.view insertArrangedSubview:n.title atIndex:0];
+        [n.view addSubview:n.title];
     }
     n.title.text = words;
     n.title.accessibilityLabel = words;
@@ -384,13 +388,6 @@ static void fact_set(SpikeNode* n, int code, NSString* under, NSString* kind, NS
     case AVRA_FACT_fill: {
         UIColor* c = tone_colour(value);
         v.backgroundColor = c;
-        if ([n.control isKindOfClass:[UIButton class]]) {
-            UIButton* b = (UIButton*)n.control;
-            UIButtonConfiguration* cfg = [UIButtonConfiguration plainButtonConfiguration];
-            cfg.contentInsets = NSDirectionalEdgeInsetsMake(6, 12, 6, 12);
-            cfg.title = [b titleForState:UIControlStateNormal];
-            b.configuration = cfg;
-        }
         break;
     }
     case AVRA_FACT_ink: {
@@ -441,23 +438,35 @@ static void fact_dropped(SpikeNode* n, int code) {
     }
 }
 
+// An element goes into its parent's view; the solver's `rect` says where.
 static void placed(SpikeNode* n, NSInteger parent, NSInteger after) {
     if (!n) return;
     n.parent = parent;
     if (is(n, @"dialog")) return;
     SpikeNode* holder = g_nodes[@(parent)];
-    UIStackView* into = holder ? (UIStackView*)holder.view : g_root;
-    if (![into isKindOfClass:[UIStackView class]] || (holder && holder.control)) {
+    if (holder && holder.control) {
         [g_unused addObject:[NSString stringWithFormat:@"a child placed in %@", holder.prim]];
         return;
     }
     [n.view removeFromSuperview];
-    NSUInteger at = holder.title ? 1 : 0;
-    if (after) {
-        NSUInteger i = [into.arrangedSubviews indexOfObject:g_nodes[@(after)].view];
-        at = i == NSNotFound ? into.arrangedSubviews.count : i + 1;
+    [(holder ? holder.view : g_root) addSubview:n.view];
+}
+
+// The solver's box for an element, relative to its parent's; a container's
+// title stands at the top of its own content.
+static void framed(SpikeNode* n, CGFloat x, CGFloat y, CGFloat w, CGFloat h) {
+    if (!n) return;
+    if (is(n, @"dialog") && n.sheet) {
+        n.view.frame = CGRectMake(16, 24, w, h);
+        return;
     }
-    [into insertArrangedSubview:n.view atIndex:at];
+    n.view.frame = CGRectMake(x, y, w, h);
+    if (n.title) {
+        CGSize s = [n.title sizeThatFits:CGSizeMake(w, CGFLOAT_MAX)];
+        CGFloat inset = 0;
+        for (UIView* k in n.view.subviews) if (k != n.title) inset = inset == 0 ? k.frame.origin.x : MIN(inset, k.frame.origin.x);
+        n.title.frame = CGRectMake(inset, inset, w - 2 * inset, s.height);
+    }
 }
 
 static NSString* rest(NSArray<NSString*>* w, NSUInteger from) {
@@ -490,6 +499,11 @@ static void applied(NSString* frame) {
         } else if ([op isEqualToString:@"listen"]) {
             if ([w[3] isEqualToString:@"button"] || [w[3] isEqualToString:@"link"] || [w[3] isEqualToString:@"dialog"]) n.seat = w[2].integerValue;
             else n.said_seat = w[2].integerValue;
+        } else if ([op isEqualToString:@"rect"] && w.count >= 6) {
+            framed(n, w[2].doubleValue, w[3].doubleValue, w[4].doubleValue, w[5].doubleValue);
+        } else if ([op isEqualToString:@"content"] && w.count >= 3) {
+            g_root.frame = CGRectMake(16, 16, w[1].doubleValue, w[2].doubleValue);
+            g_scroll.contentSize = CGSizeMake(g_scroll.bounds.size.width, w[2].doubleValue + 32);
         } else if ([op isEqualToString:@"unlisten"]) {
         } else {
             [g_unused addObject:op];
@@ -698,6 +712,70 @@ static void witnessed(UIWindow* w) {
     });
 }
 
+// The page's width changed — a rotation, a split, a resize — so the
+// program's measures are stale and it places again.
+@interface SpikeVC : UIViewController
+@end
+@implementation SpikeVC
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    CGFloat w = g_scroll.bounds.size.width - 32;
+    if (w <= 0 || w == g_width) return;
+    BOOL first = g_width == 0;
+    g_width = w;
+    if (first) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (!avra_host_idling()) return;
+        avra_spike_resized();
+        resumed();
+    });
+}
+@end
+
+// The width the page has, in points: the scroll view's less its margins,
+// the screen's before it stands.
+int64_t avra_spike_width(void) {
+    if (g_width > 0) return (int64_t)g_width;
+    return (int64_t)(UIScreen.mainScreen.bounds.size.width - 32);
+}
+
+// A throwaway control of `prim` with these words, fitted to `avail` across.
+static UIView* sample(NSString* prim, NSString* words, NSString* placeholder) {
+    SpikeNode* n = [SpikeNode new];
+    n.prim = prim;
+    made(n);
+    if (words.length) worded(n, words);
+    if (placeholder.length && [n.control isKindOfClass:[UITextField class]]) ((UITextField*)n.control).placeholder = placeholder;
+    return n.title ?: n.view;
+}
+
+static int64_t sixtieths(CGFloat points) { return (int64_t)llround(points * 60); }
+
+int64_t avra_spike_measure(const char* prim, const char* words, const char* placeholder, int64_t avail) {
+    NSString* p = [NSString stringWithUTF8String:prim];
+    NSString* s = [NSString stringWithUTF8String:words];
+    BOOL container = [@[ @"row", @"column", @"surface", @"list", @"item", @"card", @"form", @"fieldset", @"dialog" ] containsObject:p];
+    if (container && s.length == 0) return 0;
+    UIView* v = sample(p, s, [NSString stringWithUTF8String:placeholder]);
+    CGSize fit = [v systemLayoutSizeFittingSize:CGSizeMake(avail, UILayoutFittingCompressedSize.height) withHorizontalFittingPriority:UILayoutPriorityFittingSizeLevel verticalFittingPriority:UILayoutPriorityFittingSizeLevel];
+    if ([v isKindOfClass:[UILabel class]] || [v isKindOfClass:[UIButton class]]) fit = [v sizeThatFits:CGSizeMake(avail, CGFLOAT_MAX)];
+    CGFloat w = MIN(ceil(fit.width), (CGFloat)avail);
+    return sixtieths(w) * 1000000 + sixtieths(ceil(fit.height));
+}
+
+int64_t avra_spike_narrowest(const char* prim, const char* words) {
+    NSString* s = [NSString stringWithUTF8String:words];
+    UIFont* f = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+    CGFloat widest = 0;
+    for (NSString* word in [s componentsSeparatedByCharactersInSet:NSCharacterSet.whitespaceCharacterSet])
+        widest = MAX(widest, ceil([word sizeWithAttributes:@{NSFontAttributeName : f}].width));
+    NSString* p = [NSString stringWithUTF8String:prim];
+    if ([p isEqualToString:@"switch"] || [p isEqualToString:@"checkbox"]) widest += 59;
+    if ([p isEqualToString:@"button"] || [p isEqualToString:@"link"]) widest += 25;
+    if ([p isEqualToString:@"field"] || [p isEqualToString:@"progress"] || [p isEqualToString:@"slider"]) widest = MAX(widest, 120);
+    return sixtieths(widest);
+}
+
 // ── The app ─────────────────────────────────────────────────────
 
 @interface SpikeScene : UIResponder <UIWindowSceneDelegate>
@@ -707,26 +785,20 @@ static void witnessed(UIWindow* w) {
 @implementation SpikeScene
 - (void)scene:(UIScene*)scene willConnectToSession:(UISceneSession*)session options:(UISceneConnectionOptions*)options {
     UIWindow* w = [[UIWindow alloc] initWithWindowScene:(UIWindowScene*)scene];
-    UIViewController* vc = [UIViewController new];
+    UIViewController* vc = [SpikeVC new];
     vc.view.backgroundColor = UIColor.systemBackgroundColor;
-    g_root = [UIStackView new];
-    g_root.axis = UILayoutConstraintAxisVertical;
-    g_root.alignment = UIStackViewAlignmentLeading;
-    g_root.translatesAutoresizingMaskIntoConstraints = NO;
+    g_root = [UIView new];
     UIScrollView* sv = [UIScrollView new];
     sv.translatesAutoresizingMaskIntoConstraints = NO;
     [vc.view addSubview:sv];
     [sv addSubview:g_root];
+    g_scroll = sv;
     UILayoutGuide* safe = vc.view.safeAreaLayoutGuide;
     [NSLayoutConstraint activateConstraints:@[
         [sv.topAnchor constraintEqualToAnchor:safe.topAnchor],
         [sv.bottomAnchor constraintEqualToAnchor:vc.view.bottomAnchor],
-        [sv.leadingAnchor constraintEqualToAnchor:vc.view.leadingAnchor],
-        [sv.trailingAnchor constraintEqualToAnchor:vc.view.trailingAnchor],
-        [g_root.topAnchor constraintEqualToAnchor:sv.contentLayoutGuide.topAnchor constant:16],
-        [g_root.bottomAnchor constraintEqualToAnchor:sv.contentLayoutGuide.bottomAnchor constant:-16],
-        [g_root.leadingAnchor constraintEqualToAnchor:sv.frameLayoutGuide.leadingAnchor constant:16],
-        [g_root.trailingAnchor constraintLessThanOrEqualToAnchor:sv.frameLayoutGuide.trailingAnchor constant:-16],
+        [sv.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor],
+        [sv.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor],
     ]];
     w.rootViewController = vc;
     g_vc = vc;
