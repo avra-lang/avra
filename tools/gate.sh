@@ -342,7 +342,6 @@ avrac() {
     [ -z "$files" ] || share_row std-avrac@files $files
     [ "$rows_held" -gt "$rows_empty" ] || judged std-avrac-held-no-proof 1
 }
-# one share row: `tested`, an empty scope counted as no proof here rather than a failure
 # one row of a suite share: `tested`, an empty scope counted as no proof here rather than a failure, and
 # the row's seconds said beside its path (`fact path <path> <n>`), which tools/gate/path.seconds keeps
 share_row() {
@@ -421,6 +420,21 @@ tested() {
     grep '^avra: while running ' "$out/$name.log" | sed 's/ @ .*//; s/^avra: while running //' | sort -u >"$out/$name.trapped"
     listed "tools/gate/$pkg.traps" >"$out/$name.traps"
     comm -23 "$out/$name.trapped" "$out/$name.traps" >"$out/$name.untrapped"
+    # a printing program the row does not prove — unmade, trapped in the making, or apart from its text —
+    # by its path under src/; each must be one tools/gate/<package>.unproved pins, since the suite's exit
+    # is passed over once any case fails by a pinned name
+    sed -n "s|^packages/$pkg/src/\([^ :]*\): .*|\1|p" "$out/$name.log" | sort -u >"$out/$name.programs"
+    sed -n "s|^packages/$pkg/src/\([^ :]*\): .* == expected\$|\1|p" "$out/$name.log" | sort -u >"$out/$name.proved"
+    comm -23 "$out/$name.programs" "$out/$name.proved" >"$out/$name.unproved"
+    pinned_programs "tools/gate/$pkg.unproved" >"$out/$name.owed"
+    comm -23 "$out/$name.unproved" "$out/$name.owed" >"$out/$name.unowed"
+    comm -12 "$out/$name.proved" "$out/$name.owed" >"$out/$name.struck"
+    if [ -s "$out/$name.unowed" ] || [ -s "$out/$name.struck" ]; then
+        sed "s|^|gate: unproved $pkg |" "$out/$name.unowed"
+        sed "s|^\(.*\)\$|gate: proved $pkg \1 — strike its line from tools/gate/$pkg.unproved|" "$out/$name.struck"
+        judged "$name" "$(( $(wc -l <"$out/$name.unowed") + $(wc -l <"$out/$name.struck") + $(wc -l <"$out/$name.untrapped") + $(wc -l <"$out/$name.unpinned") ))"
+        return
+    fi
     if [ -s "$out/$name.untrapped" ]; then judged "$name" "$(wc -l <"$out/$name.untrapped" | tr -d ' ')"; return; fi
     # a scope that holds no proof, where the caller counts that as none here: refused by that voice alone
     if [ "$ran" != 0 ] && [ -n "${EMPTY_SCOPE_PASSES:-}" ] && [ ! -s "$out/$name.failed" ] && [ ! -s "$out/$name.trapped" ] &&
@@ -429,14 +443,17 @@ tested() {
         judged "$name" 0
         return
     fi
-    # a run that fails no case and ends none must have exited clean; one that fails only pinned cases
-    # or ends at a listed one stopped on them
-    if [ ! -s "$out/$name.failed" ] && [ ! -s "$out/$name.trapped" ]; then judged "$name" "$ran"; return; fi
+    # a run that fails no case, ends none and leaves no program unproved must have exited clean; one
+    # that fails only pinned cases, ends at a listed one or leaves only pinned programs stopped on them
+    if [ ! -s "$out/$name.failed" ] && [ ! -s "$out/$name.trapped" ] && [ ! -s "$out/$name.unproved" ]; then judged "$name" "$ran"; return; fi
     judged "$name" "$(wc -l <"$out/$name.unpinned" | tr -d ' ')"
 }
 
 # the lines the pin file `$1` lists, sorted, each once; none where there is no such file
 listed() { if [ -f "$1" ]; then grep -v '^#' "$1" | sort -u; fi; }
+
+# the programs the pin file `$1` owes, their first word each; none where there is no such file
+pinned_programs() { if [ -f "$1" ]; then grep -v '^#' "$1" | awk 'NF { print $1 }' | sort -u; fi; }
 
 # THE CLI'S SUITE: the one suite that runs the compiler as a child; every other test row holds what it
 # runs in-process.
