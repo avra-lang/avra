@@ -124,10 +124,10 @@ jobs:
     needs: [seed]
     runs-on: ubuntu-latest
     container: *gate-image
-    # a slice's wall budget is tools/gate.sh's own (900 s, its verdict OVER, the slice named); the
+    # a slice's wall budget is tools/gate.sh's own (900 s, an edit-f or edit-g part 1500 s, its verdict OVER, the slice named); the
     # runner's bound stands just past it, so the gate names the slice before the runner kills the job —
     # a job of several slices past the budget of all of them
-    timeout-minutes: ${{ startsWith(matrix.slice, 'jobs-') && 75 || 20 }}
+    timeout-minutes: ${{ startsWith(matrix.slice, 'jobs-') && 75 || (startsWith(matrix.slice, 'edit-f-') || startsWith(matrix.slice, 'edit-g-')) && 32 || 20 }}
     strategy:
       fail-fast: false
       matrix:
@@ -165,7 +165,7 @@ jobs:
       # down afresh before every slice after the first. Verdicts and a failing slice's words are kept in
       # gate-kept/, which no slice's tree holds.
       - name: ${{ matrix.slice }}
-        timeout-minutes: ${{ startsWith(matrix.slice, 'jobs-') && 72 || 16 }}
+        timeout-minutes: ${{ startsWith(matrix.slice, 'jobs-') && 72 || (startsWith(matrix.slice, 'edit-f-') || startsWith(matrix.slice, 'edit-g-')) && 28 || 16 }}
         run: |
           members=$(sh tools/gate.sh jobs | awk -v j="${{ matrix.slice }}" '$1 == j { $1 = ""; print }')
           [ -n "$members" ] || { echo "gate: tools/gate.sh jobs names no job ${{ matrix.slice }}"; exit 1; }

@@ -6,7 +6,7 @@
 # stores a cold row reads, bounds every command, keeps each row's words under build/gate/<slice>/, and
 # ends with ONE line:
 #   GATE <slice> <sha8> PASS|FAIL|OVER rows=<n> failed=<n> <seconds>s
-# exiting 0 on PASS, 1 on FAIL or OVER. A SLICE HAS A WALL BUDGET (GATE_SLICE_SECS, 900 s), its
+# exiting 0 on PASS, 1 on FAIL or OVER. A SLICE HAS A WALL BUDGET (GATE_SLICE_SECS, 900 s; 1500 s for an edit-f or edit-g part), its
 # compiler build included: one past it is stopped, its rows say `row <slice> OVER`, its verdict OVER.
 #
 #   sh tools/gate.sh list               each slice, one a line, with what it holds
@@ -186,7 +186,11 @@ sha8=$(git rev-parse --short=8 HEAD)
 # THE WALL BUDGET: the slice runs again inside it, under tools/bounded.sh; past it, the slice is named.
 # Every process the slice starts carries its budget's token in its environment, so a row's own bound
 # (another `timeout`, another process group) is stopped with it, not left running past the verdict.
-SLICE_SECS=${GATE_SLICE_SECS:-900}
+# A whole- or layered-mode edit part makes three cli builds, two of them cold, one alone in a process:
+# 640-780 s on the fastest runner, past 900 s on a slower one with nothing failing, so its budget is
+# its own.
+case $slice in edit-f-* | edit-g-*) slice_budget=1500 ;; *) slice_budget=900 ;; esac
+SLICE_SECS=${GATE_SLICE_SECS:-$slice_budget}
 if [ -z "${GATE_IN_BUDGET:-}" ] && [ "$slice" != pack ]; then
     started=$(date +%s)
     token="$slice-$$"
