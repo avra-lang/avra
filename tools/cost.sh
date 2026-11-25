@@ -318,13 +318,100 @@ reached() {
     printf '%s\n' $seen
 }
 
+# THE WARM-EDIT MATRIX: every kind of edit a person makes, and its taking back, met by a check and by
+# a build of the cli, with the std answers laid beside the compiler and without — each part
+# (`matrix-<check|build>-<laid|bare>`) a slice of its own. A part starts its command cold over the
+# snapshot, then makes each edit and runs the command warm, then takes it back and runs it again,
+# every run uncounted with `--passes --passes-rows`: its pass rows are the rows of
+# `matrix-<command>-<laid|bare>-<kind>` (and `…-back-<kind>`), its wall in ms said in the ledger's
+# markdown, never a row, a wall over WARM_FLAG_MS flagged. A run the compiler refuses (the broken
+# edit) is measured as it stands: its wall said, its rows kept where it printed them.
+# kind|file|text|becomes: `text` stands in the file once and becomes `becomes` (`\n` a line
+# break; several places apart by `&&&`); `renamed` renames the word through the file; `newfile`
+# writes `becomes` as a file that wasn't there; `none` edits nothing.
+WARM_FLAG_MS=300
+matrix_edits() {
+    cat << 'EOF'
+none|packages/cli/src/commands/cache.av||
+body|packages/cli/src/commands/cache.av|    let shared? = machine_layer() else { return 0 }|    let shared? = machine_layer() else { return 0 }\n    let _ = cache_dir().length
+signature|packages/cli/src/commands/cache.av|fn octets_of(packs: List<PackListed>) -> int {|fn octets_of(packs: List<PackListed>, most: int = 0) -> int {
+added|packages/cli/src/commands/cache.av|fn cache_dir() -> string {|fn cache_unused() -> int { 3 }\n\nfn cache_dir() -> string {
+deleted|packages/cli/src/commands/cache.av|fn octets_of(packs: List<PackListed>) -> int { packs.fold(0, (sum, p) -> sum + p.octets) }&&&${octets_of(before)} → ${octets_of(after)}|&&&${before.fold(0, (sum, p) -> sum + p.octets)} → ${after.fold(0, (sum, p) -> sum + p.octets)}
+renamed|packages/cli/src/commands/cache.av|octets_of|octets_in
+newfile|packages/cli/src/commands/cache_note.av||/// A note the cache command keeps.\nexport fn cache_note() -> int { 1 }
+fanout|packages/std-avrac/src/core/span.av|export type Span = { lo: int, hi: int }|export type Span = { lo: int, hi: int, mark: int = 0 }
+std|packages/std-text/src/text.av|    s + repeat(" ", width - cells(s))|    let room = width - cells(s)\n    s + repeat(" ", room)
+broken|packages/cli/src/commands/cache.av|fn cache_dir() -> string { joined_path(package_root(here()) ?? here(), ".avra-cache/tapes") }|fn cache_dir() -> string { joined_path(package_root(here()) ?? here(), ".avra-cache/tapes")
+EOF
+}
+
+# cell <name> <command…>: one run of the matrix, uncounted, past the stamp window and on one core as a
+# counted run is: its pass rows to <name>.out (and <name> among the workloads where it printed any),
+# its wall in `$cell_ms`
+cell() {
+    ran=$1; shift
+    machine=0
+    [ "${store:-off}" = off ] || machine=1
+    sleep 3
+    mkdir -p "$cache/home"
+    t0=$(date +%s%N)
+    st=0
+    (cd "$src" && unset AVRA_MACHINE_STORE_DIR && \
+        HOME="$cache/home" AVRA_MACHINE_STORE=$machine AVRA_WORK_AHEAD_OFF=1 AVRA_PROGRAM_NET=0 AVRA_CACHE_DIR="$cache" AVRA_STORE_KEPT_HERE=1 \
+        taskset -c 0 build/avra "$@" > /dev/null 2> "$root/$out/$ran.ledger") || st=$?
+    cell_ms=$((($(date +%s%N) - t0) / 1000000))
+    if grep '^pass-row' "$out/$ran.ledger" > "$out/$ran.out"; then echo "$ran" >> "$out/workloads"; else rm -f "${out:?}/${ran:?}.out"; fi
+    [ "$st" = 0 ] || cell_said=" (refused, exit $st)"
+    rm -f "${out:?}/${ran:?}.ledger"
+}
+
+# `<ms>` with the flag a wall over WARM_FLAG_MS wears
+walled() { if [ "$1" -gt "$WARM_FLAG_MS" ]; then printf '**%s ms ⚠**' "$1"; else printf '%s ms' "$1"; fi; }
+
+# one part of the matrix: `matrix-<check|build>-<laid|bare>`
+matrix() {
+    verb=${1#matrix-}; verb=${verb%-*}
+    lay=${1##*-}
+    store=off
+    case $verb in check | build) ;; *) echo "cost: no matrix part $1"; exit 2 ;; esac
+    bare
+    if [ "$lay" = laid ]; then store=laid; laid; else unlaid; fi
+    cell_said=""
+    cell "matrix-$verb-$lay-cold" "$verb" --passes --passes-rows packages/cli
+    rm -f "${out:?}/matrix-${verb:?}-${lay:?}-cold.out"
+    sed -i "/^matrix-$verb-$lay-cold\$/d" "$out/workloads"
+    printf '\n#### %s %s — %s cold, `%s packages/cli`\n\n| edit | warm | taken back |\n|---|---|---|\n' \
+        "$verb" "$lay" "$(walled "$cell_ms")" "$verb" >> "$out/ledger.md"
+    matrix_edits | while IFS='|' read -r kind file text becomes; do
+        name="matrix-$verb-$lay-$kind"
+        cell_said=""
+        case $kind in
+            none) ;;
+            newfile) printf '%b\n' "$becomes" > "$src/$file" ;;
+            renamed) cp -p "$src/$file" "$out/matrix.orig" && python3 "$root/tools/cost_ratchet.py" --edit "$src/$file" rename "$text" "$becomes" ;;
+            *) cp -p "$src/$file" "$out/matrix.orig" && python3 "$root/tools/cost_ratchet.py" --edit "$src/$file" "$kind" "$text" "$becomes" ;;
+        esac
+        cell "$name" "$verb" --passes --passes-rows packages/cli
+        edit_ms=$cell_ms; edit_said=$cell_said
+        if [ "$kind" = none ]; then
+            printf '| %s | %s%s | — |\n' "$kind" "$(walled "$edit_ms")" "$edit_said" >> "$out/ledger.md"
+            continue
+        fi
+        if [ "$kind" = newfile ]; then rm -f "${src:?}/${file:?}"; else cp -p "$out/matrix.orig" "$src/$file"; fi
+        cell_said=""
+        cell "matrix-$verb-$lay-back-$kind" "$verb" --passes --passes-rows packages/cli
+        printf '| %s | %s%s | %s%s |\n' "$kind" "$(walled "$edit_ms")" "$edit_said" "$(walled "$cell_ms")" "$cell_said" >> "$out/ledger.md"
+    done
+    rm -f "${out:?}/matrix.orig"
+}
+
 # the parts this run measures, in the order named, and every workload they measure — what
 # tools/cost_ratchet.py judges. Several parts in one run (`COST_PART="laid ledger-cold"`) meet in one
 # measurement as the whole run's do, so a run that depends on another before it shows.
 part=${COST_PART:-all}
 for p in $part; do
-    case $p in all | cold-a | cold-b | laid | warm | ledger-cold | ledger-cold-a | ledger-cold-b | ledger-warm) ;;
-        *) echo "cost: COST_PART names all, cold-a, cold-b, laid, warm, ledger-cold, ledger-cold-a, ledger-cold-b or ledger-warm, never $p"; exit 2 ;; esac
+    case $p in all | cold-a | cold-b | laid | warm | ledger-cold | ledger-cold-a | ledger-cold-b | ledger-warm | matrix-check-bare | matrix-check-laid | matrix-build-bare | matrix-build-laid) ;;
+        *) echo "cost: COST_PART names all, cold-a, cold-b, laid, warm, ledger-cold, ledger-cold-a, ledger-cold-b, ledger-warm or a matrix-<check|build>-<laid|bare>, never $p"; exit 2 ;; esac
 done
 if [ -n "${COST_EDITS:-}" ]; then printf '%s edits %s\n' "$part" "$COST_EDITS"; else printf '%s\n' "$part"; fi > "$out/part"
 : > "$out/workloads"
@@ -369,12 +456,13 @@ measure() {
     done
 }
 # the ledger's markdown names the program it measured and the snapshot it measured over
-case " $part " in *" all "* | *" ledger-"*) ;; *) false ;; esac &&
+case " $part " in *" all "* | *" ledger-"* | *" matrix-"*) ;; *) false ;; esac &&
     printf '### The pass ledger — %s\n\nprogram `%s`, over the snapshot `%s`%s\n\n' "$part" \
         "$(git rev-parse --short=8 HEAD)" "$(printf '%.8s' "$snapshot")" "${COST_EDITS:+, edits $COST_EDITS}" > "$out/ledger.md"
 for p in $part; do
     case $p in
         ledger-*) measure ledgered "$p" ;;
+        matrix-*) matrix "$p" ;;
         all)
             measure counted all
             measure ledgered all

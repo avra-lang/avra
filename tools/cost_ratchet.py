@@ -110,9 +110,21 @@ def counts_of(text):
     return got
 
 
+# an edit of several places, each `old` beside its `new` in turn
+EDITS_APART = "&&&"
+
+
 def edited(text, kind, old, new):
     """`text` with one edit made: `old`, which stands in it once, becomes `new`; a `rename` renames the
-    word `old` wherever it stands. Raises where the edit does not stand as written."""
+    word `old` wherever it stands; several olds and news apart by EDITS_APART are made in turn. Raises
+    where the edit does not stand as written."""
+    if EDITS_APART in old:
+        olds, news = old.split(EDITS_APART), new.split(EDITS_APART)
+        if len(olds) != len(news):
+            raise ValueError("%d places and %d edits of them" % (len(olds), len(news)))
+        for o, n in zip(olds, news):
+            text = edited(text, kind, o, n)
+        return text
     new = new.replace("\\n", "\n")
     if kind == "rename":
         word = re.compile(r"\b%s\b" % re.escape(old))
@@ -160,11 +172,11 @@ def run_part(run_dir):
 
 def unprinted(now):
     """Each counter a run owed and printed no count for: every census counter of a cold workload, and
-    the answers an edit's warm run worked out again; a ledger's run (`ledger-<workload>`) is counted by
-    no census, and owes only the pass rows it printed."""
+    the answers an edit's warm run worked out again; a ledger's run (`ledger-<workload>`) and a cell of
+    the warm-edit matrix (`matrix-…`) are counted by no census, and owe only the pass rows they printed."""
     owed = {}
     for workload, _ in now:
-        if workload.startswith("ledger-"):
+        if workload.startswith("ledger-") or workload.startswith("matrix-"):
             owed[workload] = ()
         else:
             owed[workload] = ("worked",) + WARM_COUNTERS if workload.startswith("edit-") else CENSUS
@@ -410,6 +422,8 @@ def self_test():
         except ValueError:
             pass
     assert edited("f(x) f fg\n", "rename", "f", "g") == "g(x) g fg\n"
+    # several places edited in turn, each standing once
+    assert edited("a b\n", "deleted", "a&&&b", "x&&&y") == "x y\n"
     sha = "a" * 40
     snap, rows = read_baseline(render(sha, {("w", "boxes"): 1000, ("w", "retains"): 10}))
     assert snap == sha and rows == {("w", "boxes"): 1000, ("w", "retains"): 10}
