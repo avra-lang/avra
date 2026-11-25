@@ -1,0 +1,27 @@
+use commands.{ceiling_refusal, markers_in}
+
+spec "families — the hand-written count may not rise" {
+    then "at the ceiling and fallen are accepted" {
+        ceiling_refusal(42, 42) == null && ceiling_refusal(41, 42) == null
+    }
+    then "a rise is refused and says how far" {
+        let said = ceiling_refusal(43, 42) ?? ""
+        said.starts_with("families-left: 43 family marker(s)") && said.contains("ceiling 42")
+    }
+    then "a marker is a line that begins with @family(, indented or not" {
+        markers_in(
+            [
+                "@family(\"a\")",
+                "    @family(\"b\")",
+                "// @family(\"c\")",
+                "let x = 1",
+                "",
+                "\t@family(\"d\")",
+            ]
+                .join("\n"),
+        ) == 3
+    }
+    then "no text holds no marker" {
+        markers_in("") == 0
+    }
+}

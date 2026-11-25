@@ -1,0 +1,51 @@
+// `@facet(table)` — a field's value leaves the gathered payload for the
+// side table the mark names; the field stays on the record, and the
+// write is part of what the node is. `@local` is the sibling: out of
+// identity, the value stays on the node. Both are read through the ONE
+// registry, never the mark's own word.
+use @std.meta.{Field, Mark}
+use @std.avrac.compiler.{Parsed, parse_source}
+use @std.avrac.core.{StmtId, node_payload_rows, row_for, facet_table, reached, carried}
+
+fn seed_of(p: Parsed) -> StmtId? {
+    [s for s in p.stmts if p.store.fn_parts(s)?.name == "seed"].first()
+}
+
+fn field(name: string, marks: List<Mark>) -> Field {
+    Field { name: name, ty: "int", at: null, marks: marks }
+}
+
+fn mark_of(word: string, args: List<string>) -> Mark { Mark { name: word, args: args, at: null } }
+
+spec "core/facet — a field's mark" {
+    given "the registry" {
+        then "a plain field is reached and carried" {
+            reached(field("x", [])) && carried(field("x", []))
+        }
+        then "a `@local` field is reached from neither fold, but stays on the node" {
+            !reached(field("x", [mark_of("local", [])])) &&
+                carried(field("x", [mark_of("local", [])]))
+        }
+        then "a `@facet(table)` field is carried by neither, and names its table" {
+            let f = field("x", [mark_of("facet", ["once"])])
+            !reached(f) && !carried(f) && facet_table(f) == "once"
+        }
+    }
+    given "`@facet(once)` on `FnDecl`" {
+        then "stays on the record, so the grammar's payload row still names it" {
+            let row = row_for(node_payload_rows(), "Stmt", "FnDecl")
+            (row?.payloads ?? []).any(it.name == "is_once")
+        }
+        then "writes the side table, and the write tells the node from a plain `fn`" {
+            let once_src = parse_source("once fn seed() -> int { 7 }")
+            let plain_src = parse_source("fn seed() -> int { 7 }")
+            let once_id = seed_of(once_src)
+            let plain_id = seed_of(plain_src)
+            once_id != null &&
+                plain_id != null &&
+                once_src.store.is_once(once_id!) &&
+                !plain_src.store.is_once(plain_id!) &&
+                once_src.store.stmt_fingerprint(once_id!) != plain_src.store.stmt_fingerprint(plain_id!)
+        }
+    }
+}

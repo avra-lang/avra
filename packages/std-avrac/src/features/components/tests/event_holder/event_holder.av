@@ -1,0 +1,23 @@
+// proves: an event's field holds its handler as a nullable fn — read, unwrapped and called in a
+// generic fn, absent where the instance sets none — in both engines. The instance is a declaration,
+// so its handler writes a module `state`, never a run-time binding of the top level.
+component tray<T> {
+    label: string = "x"
+    on took(item: T)
+}
+
+fn fed<T>(t: tray<T>, x: T) -> int {
+    if t.took != null { (t.took!)(x) }
+    1
+}
+
+state seen: int = 0
+
+fn add(n: int) { seen = seen + n }
+
+tray<int> t {
+    label: "y"
+    on took { n -> add(n) }
+}
+tray<int> quiet { label: "q" }
+"${fed(t, 4)} ${fed(t, 5)} ${fed(quiet, 6)} ${seen}"

@@ -1,0 +1,43 @@
+//! HYGIENE: a template's binders and the names its holes bring never capture each other. Code a
+//! template wrote and code a hole brought land in one block; a name each side writes reads what its
+//! own side binds.
+
+impl SyntaxArena {
+    /// THE HYGIENE LAW over the block `stmts`: each `let` that a later read of its name written by
+    /// another hand stands after is renamed apart, with every later read of it its own hand wrote.
+    /// A hand is the home of the template that wrote a node; a node a hole brought, or one the file
+    /// the code lands in wrote (`here`), is the landing's own.
+    fn lets_kept_apart(stmts: List<StmtId>, here: string?) {
+        for j, s in stmts {
+            let n? = self.let_name(s) else { continue }
+            let renamed? = let_renamed(self.stmt(s), apart_name(n)) else { continue }
+            let hand = hand_of(self.seat_home(s, LandedSeat.Names), here)
+            let reads = [x for x in flatten([self.every_expr(k) for k in self.stmts_exprs(stmts.drop(j + 1))]) if self.ident_name(x) == n]
+            let own = [x for x in reads if hand_of(self.home_of(x), here) == hand]
+            if own.length == reads.length { continue }
+            for x in own { self.exprs.replaced(x.index, Expr.Ident(scoped(apart_name(n)))) }
+            self.stmt_replaced(s, renamed)
+        }
+    }
+
+    /// The hygiene law over every block under `root`.
+    fn kept_apart_under(root: ExprId, here: string?) {
+        for e in self.every_expr(root) { for b in some_list(self.block_stmts(e)) { self.lets_kept_apart(b, here) } }
+    }
+}
+
+/// The hand a node of `home` was written by: its template's home, or the landing's own (absent) for
+/// a node a hole brought or the landing file wrote.
+fn hand_of(home: string?, here: string?) -> string? { if home == here { null } else { home } }
+
+/// The `let` or `mut` statement `s`, binding `name` instead; absent for any other statement.
+export fn let_renamed(s: Stmt, name: string) -> Stmt? {
+    match s {
+        .Let(_, ty, value) -> Stmt.Let(scoped(name), ty, value),
+        .MutLet(_, ty, value) -> Stmt.MutLet(scoped(name), ty, value),
+        rest -> null,
+    }
+}
+
+/// The name a binder is renamed apart to, which no written name can take.
+export fn apart_name(name: string) -> string { "${name}\$template" }

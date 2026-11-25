@@ -1,0 +1,191 @@
+// A durable job: one declaration whose queue and letter are rows of the
+// program's database, whose handler stands in the transaction that acks
+// its item, and whose items and letters outlive the process. The cases
+// run on the suite's virtual clock, and the store's clock is set to it.
+use @std.io.{list_dir, make_dirs, remove}
+use @std.queue.{Dead, Delivery, DrainError, Fate, HomeError}
+use @std.queue.job.{job}
+use @std.sqlite.{Db, sql}
+use @std.time.{Time, ms, now_ns, sleep, stamp}
+use durable.{db, stored_with}
+use fault.{homed}
+use letters.{dead_wire, text_wire}
+use tx.{transaction}
+use @std.queue.tests.support.letters.{first_letter}
+use tests.support.wires.{int_wire}
+
+fn ticking() -> Time {
+    Time { ns: now_ns() }
+}
+
+fn counted(text: string) -> Result<int, HomeError> {
+    homed((homed(ctx.db.scalar(sql(text)))?).int())
+}
+
+/// The handler: a negative item fails, and every other writes its row
+/// through the context.
+fn recorded(d: Delivery<int>) -> Result<int, string> {
+    if d.item < 0 { fail "negative ${d.item}" }
+    let _ = ctx.db.run(sql("INSERT INTO \"done\" (\"n\") VALUES (?1)", [.Int(d.item)])) catch 0
+    d.item
+}
+
+fn drained(r: Result<int, DrainError>) -> int {
+    match r { .Ok(n) -> n, .Err(_) -> 0 - 1 }
+}
+
+fn fate_of(f: Fate<string>) -> string {
+    match f { .Failed(e) -> e, .Unanswered -> "unanswered" }
+}
+
+fn shown(r: Result<string, HomeError>) -> string {
+    match r {
+        .Ok(told) -> told,
+        .Err(why) -> match why {
+            .Refused(w) -> "refused: ${w}",
+            .Unreachable(_) -> "unreachable",
+            .TooBig(_, _) -> "too big",
+            .Shape(_) -> "shape",
+            .Denied -> "denied",
+        },
+    }
+}
+
+/// A durable job over a memory database: a send alone, one in the
+/// caller's transaction and one rolled back, a failure buried in the
+/// job's own durable letter, the handlers run `in_tx`.
+fn in_one_commit() -> Result<string, HomeError> {
+    ctx db = homed(Db.memory())?
+    let _ = homed(ctx.db.run(sql("CREATE TABLE \"done\" (\"n\" INTEGER)")))?
+    job<int, int, string> recording {
+        name: "recording"
+        durable: stored_with(int_wire(), clock: ticking)
+        letter: stored_with(dead_wire(int_wire(), text_wire()), clock: ticking)
+        retries: 1
+        in_tx: true
+        each: recorded
+    }
+    let _ = recording.send(1)?
+    let kept = transaction(ctx.db)?
+    let _ = recording.send(2, tx: kept)?
+    let _ = kept.commit()?
+    let undone = transaction(ctx.db)?
+    let _ = recording.send(3, tx: undone)?
+    let _ = undone.rollback()
+    let _ = recording.send(0 - 4)?
+    let n = drained(recording.drain())
+    let gone? = first_letter(recording.letters()) else { return "no letter" }
+    "settled ${n} | rows ${counted("SELECT count(*) FROM \"done\"")?} | left ${recording.depth()?} | ${gone.item} ${fate_of(gone.fate)} via ${gone.path.join(" > ")}"
+}
+
+/// A delayed send to a durable job waits for its instant.
+fn delayed() -> Result<string, HomeError> {
+    ctx db = homed(Db.memory())?
+    let _ = homed(ctx.db.run(sql("CREATE TABLE \"done\" (\"n\" INTEGER)")))?
+    job<int, int, string> later {
+        name: "later"
+        durable: stored_with(int_wire(), clock: ticking)
+        letter: stored_with(dead_wire(int_wire(), text_wire()), clock: ticking)
+        each: recorded
+    }
+    let _ = later.send(5, after: ms(50))?
+    let early = drained(later.drain())
+    sleep(ms(60))
+    "before ${early} | after ${drained(later.drain())}"
+}
+
+/// A job declared over the file at `path`: what it sends, then what a
+/// second declaration over the reopened file finds and settles.
+fn sent_then_reopened(path: string) -> Result<string, HomeError> {
+    let sent = sent_and_closed(path)?
+    ctx db = homed(Db.open(path))?
+    job<int, int, string> recording {
+        name: "recording"
+        durable: stored_with(int_wire(), clock: ticking)
+        letter: stored_with(dead_wire(int_wire(), text_wire()), clock: ticking)
+        retries: 1
+        each: recorded
+    }
+    let kept = recording.depth()?
+    let n = drained(recording.drain())
+    let letters = recording.letters().home().depth()?
+    let _ = ctx.db.close()
+    "sent ${sent} | kept ${kept} | settled ${n} | letters ${letters}"
+}
+
+fn sent_and_closed(path: string) -> Result<int, HomeError> {
+    ctx db = homed(Db.open(path))?
+    let _ = homed(ctx.db.run(sql("CREATE TABLE \"done\" (\"n\" INTEGER)")))?
+    job<int, int, string> recording {
+        name: "recording"
+        durable: stored_with(int_wire(), clock: ticking)
+        letter: stored_with(dead_wire(int_wire(), text_wire()), clock: ticking)
+        each: recorded
+    }
+    for i in [1, 2, 0 - 3] { let _ = recording.send(i)? }
+    let depth = recording.depth()?
+    let _ = ctx.db.close()
+    depth
+}
+
+/// What a restart keeps, over a database file no other case names.
+fn restarted() -> string {
+    let dir = "/tmp/avra-queue-job/${stamp()}"
+    let _ = make_dirs(dir)
+    let told = shown(sent_then_reopened("${dir}/queue.db"))
+    for name in list_dir(dir) catch [] { let _ = remove("${dir}/${name}") }
+    let _ = remove(dir)
+    let _ = remove("/tmp/avra-queue-job")
+    told
+}
+
+/// Two durable jobs of one name on one database are one queue: an item
+/// sent to either is handed to whichever job's handler drains first.
+fn one_name() -> Result<string, HomeError> {
+    ctx db = homed(Db.memory())?
+    let _ = homed(ctx.db.run(sql("CREATE TABLE \"done\" (\"n\" INTEGER)")))?
+    let seen: Cell<List<string>> = Cell.new([])
+    job<int, int, string> first {
+        name: "twin"
+        durable: stored_with(int_wire(), clock: ticking)
+        letter: stored_with(dead_wire(int_wire(), text_wire()), clock: ticking)
+        each: (d: Delivery<int>) -> {
+            seen.push("first ${d.item}")
+            recorded(d)
+        }
+    }
+    job<int, int, string> second {
+        name: "twin"
+        durable: stored_with(int_wire(), clock: ticking)
+        letter: stored_with(dead_wire(int_wire(), text_wire()), clock: ticking)
+        each: (d: Delivery<int>) -> {
+            seen.push("second ${d.item}")
+            recorded(d)
+        }
+    }
+    let _ = second.send(1)?
+    let _ = second.send(2)?
+    let _ = drained(first.drain())
+    "${seen.get().join(" | ")} | second owes ${second.depth()?}"
+}
+
+spec "std/queue_store — a durable job" {
+    given "one declaration over the program's database" {
+        then "a send in a transaction delivers on its commit and none on its rollback, each handler's write is one commit with its ack, and a failure is buried in the job's own durable letter" {
+            shown(in_one_commit()) == "settled 2 | rows 2 | left 0 | -4 negative -4 via recording > recording/dead"
+        }
+        then "a delayed send waits for its instant" {
+            shown(delayed()) == "before 0 | after 1"
+        }
+    }
+    given "a restart" {
+        then "the job declared again over the reopened file finds what was sent, and its letter keeps what it buried" {
+            restarted() == "sent 3 | kept 3 | settled 2 | letters 1"
+        }
+    }
+    given "two jobs of one name" {
+        then "are one queue on one database: either's handler takes what was sent to the other" {
+            shown(one_name()) == "first 1 | first 2 | second owes 0"
+        }
+    }
+}

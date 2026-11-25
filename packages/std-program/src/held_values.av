@@ -1,0 +1,129 @@
+//! VALUES HELD FOR THE PROCESS BY A CONTENT HASH, UNDER ONE BYTE BUDGET. A value held by the hash of
+//! the bytes it was read from is exact by construction: the same hash is the same value, so nothing
+//! held ever goes stale and nothing needs invalidating. A query's answers are not held here: its
+//! wrapper keeps each answer it read for the run (saved_query.av), unbounded, as a run needs them. What bounds them is
+//! memory alone: every table counts the bytes of what it holds into one budget for the process, and
+//! where the budget is passed every table turns — what it held since its last turn becomes its old
+//! generation, and its old one is let go — so a value asked again since the last turn stays, and one
+//! not asked for two turns is read again where it's next asked. A value found in the old generation
+//! is held anew in the young one. A value is held bare, and a hit is one read of one table.
+use answer_record.{ContentHash}
+use hash_keyed_table.{HashKeyedTable, hash_keyed_table}
+use @std.io.{env}
+use @std.meta.{identity}
+use @std.text.{parse_int}
+
+/// The bytes of held values every table together may count before each turns, unless
+/// `AVRA_HELD_VALUES_BYTES` sets another bound: of what each value was read from, a measure of it
+/// rather than its size in memory.
+const HELD_BYTES: int = 536870912
+
+/// The bound the tables turn at.
+fn held_bound() -> int {
+    // LICENSED input.debug_flag: a debug flag is the process's own, not an input
+    parse_int(env("AVRA_HELD_VALUES_BYTES") ?? "") ?? HELD_BYTES
+}
+
+/// One table of held values of one type, in two generations, each a plain table holding the values
+/// bare, and the bytes each counts: a value found young is one read of one table.
+@identity
+export type HeldValues<V> = {
+    young: HashKeyedTable<V>,
+    old: HashKeyedTable<V>,
+    young_bytes: Cell<int>,
+    old_bytes: Cell<int>,
+}
+
+/// What every table of the process counts together: the bytes they may hold before they turn, the
+/// bytes held, the most ever held at once, how many times the tables turned, and each table's turn.
+type HeldBudget = { bound: int, held: Cell<int>, peak: Cell<int>, turns: Cell<int>, turners: Cell<List<fn()>> }
+
+/// The process's one budget.
+once fn held_budget() -> HeldBudget {
+    let turners: Cell<List<fn()>> = Cell.new([])
+    HeldBudget {
+        bound: held_bound(),
+        held: Cell.new(0),
+        peak: Cell.new(0),
+        turns: Cell.new(0),
+        turners: turners,
+    }
+}
+
+/// A table of held values, counted into the process's one budget.
+export fn held_values<V>() -> HeldValues<V> {
+    let young: HashKeyedTable<V> = hash_keyed_table()
+    let old: HashKeyedTable<V> = hash_keyed_table()
+    let made = HeldValues {
+        young: young,
+        old: old,
+        young_bytes: Cell.new(0),
+        old_bytes: Cell.new(0),
+    }
+    let budget = held_budget()
+    budget.turners.set(budget.turners.get().concat([() -> made.turned()]))
+    made
+}
+
+impl HeldValues<V> {
+    /// The value held under `key`, absent where none is: one found in the old generation is held
+    /// anew in the young one, counting its share of the old generation's bytes.
+    fn get(key: ContentHash) -> V? {
+        let young = self.young.get(key)
+        if young != null { return young }
+        let old? = self.old.get(key) else { return null }
+        let count = self.old.values().length
+        self.held_anew(key, old, if count == 0 { 0 } else { self.old_bytes.get() / count })
+        old
+    }
+
+    /// `value` held under `key`, counting `bytes`; a key held already keeps what it holds.
+    fn put(key: ContentHash, value: V, bytes: int) {
+        if self.young.first_put(key, value) { self.counted(bytes) }
+    }
+
+    /// `value` held under `key` in place of whatever it held, counting `bytes`: a value worked out
+    /// again where the one held no longer stands.
+    fn replace(key: ContentHash, value: V, bytes: int) { self.held_anew(key, value, bytes) }
+
+    /// `value` in the young generation, its bytes counted.
+    fn held_anew(key: ContentHash, value: V, bytes: int) {
+        self.young.put(key, value)
+        self.counted(bytes)
+    }
+
+    /// `bytes` more held young, every table turned where the budget is passed.
+    fn counted(bytes: int) {
+        self.young_bytes.set(self.young_bytes.get() + bytes)
+        let budget = held_budget()
+        budget.held.set(budget.held.get() + bytes)
+        if budget.held.get() > budget.peak.get() { budget.peak.set(budget.held.get()) }
+        if budget.held.get() > budget.bound { every_table_turned(budget) }
+    }
+
+    /// The old generation let go, the young one old: its values moved across, once a turn.
+    fn turned() {
+        let budget = held_budget()
+        budget.held.set(budget.held.get() - self.old_bytes.get())
+        self.old.clear()
+        let highs = self.young.high_words.get()
+        let lows = self.young.low_words.get()
+        for i, v in self.young.values() { self.old.put_at(highs[i], lows[i], v) }
+        self.young.clear()
+        self.old_bytes.set(self.young_bytes.get())
+        self.young_bytes.set(0)
+    }
+}
+
+/// Every table turned, once.
+fn every_table_turned(budget: HeldBudget) {
+    budget.turns.set(budget.turns.get() + 1)
+    for turn in budget.turners.get() { turn() }
+}
+
+/// What the process's held values came to: the most bytes held at once, and how often the tables
+/// turned.
+export fn held_spoken() -> string {
+    let budget = held_budget()
+    "held: ${budget.peak.get()} bytes at most, ${budget.held.get()} now, ${budget.turns.get()} turns"
+}

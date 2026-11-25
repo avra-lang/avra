@@ -1,0 +1,244 @@
+//! The list vocabulary's LOWERING — the walks (find, any, all: one
+//! loop skeleton, three aftermaths; `map`/`filter` fold through
+//! `chain.av` and the pipeline instead), the scans
+//! (contains, index_of: the same skeleton, no fn box), the growth
+//! words (push, pop, set), the edges (first, last), the measure
+//! (is_empty) and the copies (concat, slice, join — one runtime
+//! call each), each a row's rule. A walk emits the same brackets
+//! `for` does, calls the fn box once per element, and lets the
+//! memory pass own every count (owned element reads, retain-at-pack
+//! pushes, cell settlement — nothing here spells a retain).
+//! Early exit is the BREAK IDIOM: store the index past the length
+//! and the condition ends the loop.
+use core.{ExprId, Reg, Ins, Type, TypeId, BinOp}
+use features.{LowerCx, MethodCall}
+
+// ── The rows' rules ──
+
+export fn lower_map(mut cx: LowerCx, mc: MethodCall) -> Reg { chained(cx, mc) }
+
+export fn lower_filter(mut cx: LowerCx, mc: MethodCall) -> Reg { chained(cx, mc) }
+
+export fn lower_take(mut cx: LowerCx, mc: MethodCall) -> Reg { chained(cx, mc) }
+export fn lower_drop(mut cx: LowerCx, mc: MethodCall) -> Reg { chained(cx, mc) }
+export fn lower_take_while(mut cx: LowerCx, mc: MethodCall) -> Reg { chained(cx, mc) }
+export fn lower_drop_while(mut cx: LowerCx, mc: MethodCall) -> Reg { chained(cx, mc) }
+export fn lower_filter_map(mut cx: LowerCx, mc: MethodCall) -> Reg { chained(cx, mc) }
+export fn lower_flat_map(mut cx: LowerCx, mc: MethodCall) -> Reg { chained(cx, mc) }
+export fn lower_flatten(mut cx: LowerCx, mc: MethodCall) -> Reg { chained(cx, mc) }
+
+/// `s.chars()` — the string walks as `int` codepoints, one loop.
+export fn lower_chars(mut cx: LowerCx, mc: MethodCall) -> Reg { chained(cx, mc) }
+
+export fn lower_find(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    let seat? = seat_of(cx, mc) else { return seatless(cx, mc) }
+    found_chain(cx, mc, seat)
+}
+
+export fn lower_find_last(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    let seat? = seat_of(cx, mc) else { return seatless(cx, mc) }
+    find_last_chain(cx, mc, seat)
+}
+
+export fn lower_find_map(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    let seat? = seat_of(cx, mc) else { return seatless(cx, mc) }
+    find_map_chain(cx, mc, seat)
+}
+
+export fn lower_find_index(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    let seat? = seat_of(cx, mc) else { return seatless(cx, mc) }
+    found_at_chain(cx, mc, seat)
+}
+
+export fn lower_any(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    let seat? = seat_of(cx, mc) else { return seatless(cx, mc) }
+    judged_chain(cx, mc, seat, false)
+}
+
+export fn lower_all(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    let seat? = seat_of(cx, mc) else { return seatless(cx, mc) }
+    judged_chain(cx, mc, seat, true)
+}
+
+export fn lower_contains(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    let seat? = seat_of(cx, mc) else { return seatless(cx, mc) }
+    contains_chain(cx, mc, seat)
+}
+
+export fn lower_index_of(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    let seat? = seat_of(cx, mc) else { return seatless(cx, mc) }
+    index_of_chain(cx, mc, seat)
+}
+
+export fn lower_fold(mut cx: LowerCx, mc: MethodCall) -> Reg { fold_chain(cx, mc) }
+export fn lower_count(mut cx: LowerCx, mc: MethodCall) -> Reg { count_chain(cx, mc) }
+export fn lower_sum(mut cx: LowerCx, mc: MethodCall) -> Reg { sum_chain(cx, mc) }
+export fn lower_min(mut cx: LowerCx, mc: MethodCall) -> Reg { extreme_chain(cx, mc, true) }
+export fn lower_max(mut cx: LowerCx, mc: MethodCall) -> Reg { extreme_chain(cx, mc, false) }
+export fn lower_min_by(mut cx: LowerCx, mc: MethodCall) -> Reg { keyed_extreme_chain(cx, mc, true) }
+export fn lower_max_by(mut cx: LowerCx, mc: MethodCall) -> Reg { keyed_extreme_chain(cx, mc, false) }
+
+export fn lower_push(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    let first? = mc.args.first() else { return cx.lower_defect(mc.e, "a push without its value survived typing") }
+    let box = cx.unique_box(mc.subject)
+    cx.push_slot(box, cx.reg_of(first))
+    nothing_reg(cx, mc.e)
+}
+
+/// `xs.pop()` — the place opens unique, the runtime removes the
+/// last slot (the memory pass hands a managed one over as owned).
+export fn lower_pop(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    let box = cx.unique_box(mc.subject)
+    cx.popped(box, cx.type_at(mc.e))
+}
+
+/// `xs.set(i, v)` — the place opens unique, the runtime rewrites
+/// the slot (retain-at-pack is the memory pass's).
+export fn lower_set(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    let box = cx.unique_box(mc.subject)
+    cx.slot_write(box, cx.reg_of(mc.args[0]), cx.reg_of(mc.args[1]))
+    nothing_reg(cx, mc.e)
+}
+
+/// `xs.is_empty()` — the length against zero.
+export fn lower_first(mut cx: LowerCx, mc: MethodCall) -> Reg { edge(cx, mc, false) }
+export fn lower_last(mut cx: LowerCx, mc: MethodCall) -> Reg { edge(cx, mc, true) }
+
+export fn lower_concat(mut cx: LowerCx, mc: MethodCall) -> Reg { cx.array_concat(cx.shape_at(mc.e), cx.reg_of(mc.subject), cx.reg_of(mc.args[0])) }
+
+/// `xs.removed_at(i)` — a copy without the element at `i`: the head
+/// before it, then the tail after it.
+export fn lower_removed_at(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    let sh = cx.shape_at(mc.e)
+    let xs = cx.reg_of(mc.subject)
+    let at = cx.reg_of(mc.args[0])
+    let len = cx.measure_of(mc.subject, xs, cx.type_at(mc.subject))
+    let head = cx.array_slice(sh, xs, cx.const_int(0), at)
+    let next = cx.bin(Type.Int, BinOp.Add, at, cx.const_int(1))
+    let tail = cx.array_slice(sh, xs, next, len)
+    cx.array_concat(sh, head, tail)
+}
+
+/// `xs.inserted(i, v)` — a copy with `v` at `i`: head, `[v]`, tail.
+export fn lower_inserted(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    let sh = cx.shape_at(mc.e)
+    let xs = cx.reg_of(mc.subject)
+    let at = cx.reg_of(mc.args[0])
+    let v = cx.reg_of(mc.args[1])
+    let len = cx.measure_of(mc.subject, xs, cx.type_at(mc.subject))
+    let head = cx.array_slice(sh, xs, cx.const_int(0), at)
+    let tail = cx.array_slice(sh, xs, at, len)
+    let mid = cx.grown_box(sh, cx.box_size(1), [v])
+    cx.array_concat(sh, cx.array_concat(sh, head, mid), tail)
+}
+export fn lower_slice(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    cx
+        .array_slice(cx.shape_at(mc.e), cx.reg_of(mc.subject), cx.reg_of(mc.args[0]), cx.reg_of(mc.args[1]))
+}
+export fn lower_join(mut cx: LowerCx, mc: MethodCall) -> Reg { cx.str_join(cx.shape_at(mc.e), cx.reg_of(mc.subject), cx.reg_of(mc.args[0])) }
+
+/// `xs.enumerate()` is the list — the paired `for` head does the
+/// pairing.
+export fn lower_enumerate(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    cx.reg_of(mc.subject)
+}
+
+/// What typing seated a row with: the element the receiver holds
+/// and the first argument — a walk's fn, a scan's needle. Absent
+/// only when a seatless row survived typing — a defect.
+type Seat = { elem: TypeId, arg: ExprId }
+
+fn seat_of(cx: LowerCx, mc: MethodCall) -> Seat? {
+    let first? = mc.args.first() else { return null }
+    let seat = Seat { elem: cx.elem_of(mc.subject), arg: first }
+    seat
+}
+
+fn seatless(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    cx.lower_defect(mc.e, "a row without its seat survived typing")
+}
+
+// ── The walks ──
+
+/// A walk's fn: the box and its code pointer (read once —
+/// loop-invariant).
+type Box = { f: Reg, fp: Reg }
+
+/// `xs.first()` / `xs.last()` — an Opt cell seeded absent, the edge
+/// slot adopted when the list has one.
+fn edge(mut cx: LowerCx, mc: MethodCall, last: bool) -> Reg {
+    let opt = cx.type_at(mc.e)
+    let xs = cx.reg_of(mc.subject)
+    let cell = absent_cell(cx, opt)
+    let len = cx.measure_of(mc.subject, xs, cx.type_at(mc.subject))
+    let zero = cx.const_int(0)
+    cx
+        .void_region(cx.bin(Type.Bool, BinOp.Lt, zero, len)) { cx ->
+            adopt_slot(cx, cell, opt, xs, if last { decremented(cx, len) } else { zero })
+        }
+    cx.loaded(mc.e, cell)
+}
+
+/// `xs.get(i)` — the same cell, the slot adopted when `i` stands
+/// inside the list.
+export fn lower_get(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    let opt = cx.type_at(mc.e)
+    let xs = cx.reg_of(mc.subject)
+    let at = cx.reg_of(mc.args[0])
+    let cell = absent_cell(cx, opt)
+    let len = cx.measure_of(mc.subject, xs, cx.type_at(mc.subject))
+    cx
+        .void_region(cx.bin(Type.Bool, BinOp.Ge, at, cx.const_int(0))) { cx ->
+            cx
+                .void_region(cx.bin(Type.Bool, BinOp.Lt, at, len)) { c2 -> adopt_slot(c2, cell, opt, xs, at) }
+        }
+    cx.loaded(mc.e, cell)
+}
+
+/// The slot at `at` stored present into an Opt cell.
+fn adopt_slot(mut cx: LowerCx, cell: Reg, opt: TypeId, xs: Reg, at: Reg) {
+    let raw = cx.elem_read(xs, at, cx.carried_type(opt))
+    cx.emit(Ins.Store(cell, cx.adopted(opt, false, raw)))
+}
+
+// ── The skeleton ────────────────────────────────────────────────
+
+/// The fn box and its code pointer, minted before the walk opens.
+fn boxed(mut cx: LowerCx, f: ExprId) -> Box {
+    let box = cx.reg_of(f)
+    Box { f: box, fp: cx.slot_read(box, 0, null) }
+}
+
+/// What `map` answers per element — the result list's own element,
+/// or the node's own type on the absorbing path.
+fn mapped_to(cx: LowerCx, e: ExprId) -> TypeId {
+    let elem: TypeId? = cx.view.types.element(cx.type_at(e))
+    elem ?? cx.type_at(e)
+}
+
+fn bool_ty(cx: LowerCx) -> TypeId {
+    cx.type(bool)
+}
+
+// ── The small mints ─────────────────────────────────────────────
+
+fn decremented(mut cx: LowerCx, n: Reg) -> Reg {
+    cx.bin(Type.Int, BinOp.Sub, n, cx.const_int(1))
+}
+
+fn bool_cell(mut cx: LowerCx, seed: bool) -> Reg {
+    cx.seeded_cell(bool_ty(cx), cx.const_bool(seed))
+}
+
+fn int_cell(mut cx: LowerCx, seed: int) -> Reg {
+    cx.seeded_cell(cx.type(int), cx.const_int(seed))
+}
+
+fn absent_cell(mut cx: LowerCx, opt: TypeId) -> Reg {
+    cx.seeded_cell(opt, cx.absent_of(opt))
+}
+
+/// The answer of a word that answers nothing.
+fn nothing_reg(mut cx: LowerCx, e: ExprId) -> Reg {
+    cx.zero(e)
+}

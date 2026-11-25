@@ -1,0 +1,368 @@
+//! WHERE A HOLE FORGETS THE NEXT VARIANT: a `match` over an enum whose arms answer for two or more
+//! variants before an unguarded hole is a REGISTRY, and the hole silently takes whatever variant is
+//! added next. One answering arm is a projection, whose hole is honest; `rest ->` says the remainder
+//! is deliberate. Read over a written item's bodies as the program layer types them; a generated
+//! item has no place in the file, so it has no hole here.
+use core.{
+    Arm,
+    EnumShape,
+    ExprId,
+    PatId,
+    SignedType,
+    StmtId,
+    SyntaxArena,
+    VariantSeat,
+    flatten,
+    some_list,
+}
+use compiler.laws.{Found, law}
+use diagnostics.{Voice}
+use @std.meta.{derive}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.saved_derive.{Saved}
+use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+
+/// An unguarded hole after two or more answering arms of a `match` over an enum: where it stands,
+/// whether it binds what it takes, and each variant no arm before it takes whole.
+@derive(Saved)
+type Hole = { at: FindingAt?, binds: bool, hidden: List<string> }
+
+/// Every hole one written item's `match`es leave in a registry.
+@derive(Saved)
+type ItemHoles = { holes: List<Hole> }
+
+/// What a `match`'s coverage reads: the item's store, the type a node has, the enum a type is, and
+/// whether a bare name in a pattern compares with a value rather than binds.
+type Cover = {
+    store: SyntaxArena,
+    type_at: fn(int) -> SignedType?,
+    enum_of: fn(SignedType) -> EnumShape?,
+    compares: fn(PatId, string) -> bool,
+}
+
+/// A row of patterns, one per column, absence standing for a hole.
+type PatRow = { pats: List<PatId?> }
+
+impl Hole {
+    /// The hole as its law finds it, its voice handed the hidden variants.
+    fn found() -> Found { Found { at: span_of(self.at), args: self.hidden } }
+}
+
+/// Every hole in the item `view` shows that takes the rest of a registry without binding it.
+fn taking_holes(view: ItemView) -> List<Found> {
+    [h.found() for h in registry_holes_seen(view).holes if !h.binds]
+}
+
+/// Every hole in the item `view` shows that binds the rest of a registry.
+fn binding_holes(view: ItemView) -> List<Found> {
+    [h.found() for h in registry_holes_seen(view).holes if h.binds]
+}
+
+/// Every hole the written item `at` of `file`'s `match`es leave in a registry, in node order, both its
+/// laws reading the one answer: each `match`'s subject typed as the body that holds it types it, and
+/// an item with no `match` typing nothing.
+fn registry_holes(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemHoles {
+    if !item_held(engine, file, at) { return holes_made(engine, file, at) }
+    registry_holes_seen(item_view(engine, file, at))
+}
+
+/// What `registry_holes` answers through the item's `view`, made the first time it is asked.
+fn registry_holes_seen(view: ItemView) -> ItemHoles {
+    let held? = view.holes.get() else {
+        let made = holes_made(view.engine, view.file, view.at)
+        view.holes.set(made)
+        return made
+    }
+    held
+}
+
+/// What `registry_holes` answers, made.
+fn holes_made(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemHoles {
+    if !item_held(engine, file, at) { return ItemHoles { holes: [] } }
+    let item = read_item(engine, file, at)
+    let matches = [e for i in 0..item.store.exprs.count() for e in [ExprId { index: i }] if match_at(item.store, e) != null]
+    if matches.is_empty() { return ItemHoles { holes: [] } }
+    let typed = item_node_types(engine, file, at, item)
+    let compared = item_refusals(engine, file, at).compared
+    let cover = Cover {
+        store: item.store,
+        type_at: typed,
+        enum_of: (ty: SignedType) -> enum_shape(engine, ty),
+        compares: (p: PatId, n: string) -> pattern_compares(engine, file, compared, item.store, p, n),
+    }
+    ItemHoles { holes: [h! for e in matches for h in [cover.hole_in(e)] if h != null] }
+}
+
+/// The type the node `k` of the written item `at` of `file` has: as the fn body that holds it types it,
+/// else as the statements the file runs type it.
+export fn item_node_types(engine: QueryEngine, file: SourceFileAddress, at: ItemId, item: ReadItem) -> fn(int) -> SignedType? {
+    let bodies = [b.types for b in item_bodies(engine, file, at, item)]
+    let entry = entry_types(engine, file)
+    let base = entry.bases.find(it.at == at)?.base
+    (k: int) -> first_typed(bodies, k) ?? entry_typed(entry, base, k)
+}
+
+/// The type the statements the entry runs give the node `k` of an item whose nodes begin at `base` in
+/// the entry's store; absent where the entry doesn't hold it.
+fn entry_typed(entry: EntryTypes, base: int?, k: int) -> SignedType? {
+    let b? = base else { return null }
+    node_type(entry.types, k + b)
+}
+
+/// Every body the written item `at` of `file` holds, typed over the item's own store: each fn's
+/// as it is written, then each impl's methods and statics.
+export fn item_bodies(engine: QueryEngine, file: SourceFileAddress, at: ItemId, item: ReadItem) -> List<
+    TypedBody,
+> {
+    [b.typed for b in item_stated_bodies(engine, file, at, item)]
+}
+
+/// A body an item holds, typed, beside the statement declaring the fn whose body it is.
+export type StatedBody = { stmt: StmtId, typed: TypedBody }
+
+/// Every body the written item `at` of `file` holds, as `item_bodies` types it, each beside the
+/// statement that declares it.
+fn stated_bodies_read(engine: QueryEngine, file: SourceFileAddress, at: ItemId, item: ReadItem) -> List<
+    StatedBody,
+> {
+    let fns = [StatedBody { stmt: s, typed: b! } for s in item.stmts for p in [item.store.fn_parts(s)] if p != null for b in [written_typed(engine, file, p!.name)] if b != null]
+    fns
+        .concat([b for a in impls_at(engine, file, at) for b in typed_impl_bodies(engine, a)])
+        .concat(item_trait_bodies(engine, file, item))
+}
+
+/// The body the fn `file` declares as `name` writes, typed as it is written: an annotation that wraps
+/// a fn has its wrapper typed under the fn's name, over the nodes of another store, and the body it
+/// moves beside it is no written item's. Absent when it declares none with a body.
+@query("typing")
+fn written_typed(engine: QueryEngine, file: SourceFileAddress, name: string) -> TypedBody? {
+    if annotated_body(engine, file, name).wrapper == null { return typed_fn(engine, file, name) }
+    let signature? = fn_signature(engine, file, name) else { return null }
+    let item? = declaring_item(engine, file, name, ItemKind.Fn) else { return null }
+    let stmt? = item.stmts.find((s) -> item.store.fn_parts(s)?.name == name) else { return null }
+    let written = SignedBody {
+        signature: signature,
+        item: item,
+        body: item.store.fn_parts(stmt)!.body,
+        stmt: stmt,
+    }
+    typed_under(engine, file, written)
+}
+
+/// The type a body gives the node at `k`, the first that gives it one.
+fn first_typed(bodies: List<List<SignedType?>>, k: int) -> SignedType? {
+    bodies.find_map(if k < it.length { it[k] } else { null })
+}
+
+/// The impls the written item `at` of `file` holds, each as a method's typing reaches it, each query
+/// they stand on asked.
+fn item_impls_read(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<ImplAt> {
+    [ImplAt { file: file, item: at, params: impl_params(engine, i, d!), nth: nth } for nth, i in impls_of_item(engine, file, at) for d in [impl_target(engine, file, i)] if d != null]
+}
+
+/// Each method's and static's body an impl writes, typed, beside its statement.
+export fn typed_impl_bodies(engine: QueryEngine, a: ImplAt) -> List<StatedBody> {
+    let item = read_item(engine, a.file, a.item)
+    let fns = [f for s in some_list(impl_stmt_at(item, a)) for f in item.store.impl_parts(s)!.fns]
+    [StatedBody {
+        stmt: s,
+        typed: method_body_typed(engine, a, item.store.fn_parts(s)!.name, item.store.is_static(s)),
+    } for s in fns if item.store.fn_parts(s) != null]
+}
+
+impl Cover {
+    /// The hole the `match` at `e` leaves in a registry over an enum; absent for any other node.
+    fn hole_in(e: ExprId) -> Hole? {
+        let m? = match_at(self.store, e) else { return null }
+        let ty? = (self.type_at)(m.subject.index) else { return null }
+        if ty.nullable() { return null }
+        let shape? = (self.enum_of)(ty) else { return null }
+        let k? = self.catching(m.arms) else { return null }
+        let hole = self.hole_of(m.arms[k].pats)!
+        if self.store.pat(hole) is .Rest || self.answering(m.arms.take(k)) < 2 { return null }
+        let before = flatten([a.pats for a in m.arms.take(k) if a.guard == null])
+        let hidden = [v.name for v in shape.variants if !self
+            .covered(self.specialized([PatRow { pats: [held(p)] } for p in before], v), payload_types(v))]
+        if hidden.is_empty() { return null }
+        Hole {
+            at: kept_at(self.store.pat_span(hole)),
+            binds: binds(self.store, hole),
+            hidden: hidden,
+        }
+    }
+
+    /// How many arms test a variant.
+    fn answering(arms: List<Arm>) -> int { [a for a in arms if a.pats.any((p) -> tests_variant(self.store, p))].length }
+
+    /// The first of `arms` that, unguarded, takes every value, by its place; absent where none does.
+    fn catching(arms: List<Arm>) -> int? { arms.find_index((a) -> a.guard == null && self.hole_of(a.pats) != null) }
+
+    /// The first pattern among `pats` that takes every value.
+    fn hole_of(pats: List<PatId>) -> PatId? { pats.find((p) -> self.catches(p)) }
+
+    /// Whether a pattern takes every value: a hole, a binder that compares with nothing, a record
+    /// pattern whose fields each do.
+    fn catches(p: PatId) -> bool {
+        let fields? = self.store.fields_parts(p) else { return self.store.irrefutable(p) && !self.compared(p) }
+        [a for a in fields.args if !self.catches(a)].is_empty()
+    }
+
+    /// Whether a bare name in a pattern names a value it compares with.
+    fn compared(p: PatId) -> bool {
+        match self.store.pat(p) {
+            .Bind(n) -> (self.compares)(p, n.text()),
+            .Wild or .Rest or .Variant(_, _) or .Member(_, _) or .Lit(_) or .Format(_, _) or .Quote(_) or .Typed(_, _) or .Seq(_, _, _) or .Fields(_, _, _) -> false,
+        }
+    }
+
+    /// Whether the rows take every value of the columns' types: in the first column, each variant the
+    /// rows test is covered by the rows testing it over its payloads then the rest, and every other
+    /// value falls to the rows whose first column is a hole.
+    fn covered(rows: List<PatRow>, tys: List<SignedType?>) -> bool {
+        if tys.is_empty() { return !rows.is_empty() }
+        let rest = tys.drop(1)
+        let defaults = [PatRow { pats: r.pats.drop(1) } for r in rows if self.hole_first(r)]
+        let shape? = self.column_enum(tys[0]) else { return self.covered(defaults, rest) }
+        let tested = [v.name for v in shape.variants if rows.any((r) -> self.names_variant(r.pats[0], v.name))]
+        if tested.is_empty() { return self.covered(defaults, rest) }
+        [v for v in shape.variants if !self.variant_covered(rows, v, tested, defaults, rest)]
+            .is_empty()
+    }
+
+    /// Whether the variant `v` of a column is covered over the columns after it.
+    fn variant_covered(
+        rows: List<PatRow>,
+        v: VariantSeat,
+        tested: List<string>,
+        defaults: List<PatRow>,
+        rest: List<SignedType?>,
+    ) -> bool {
+        if tested.contains(v.name) { self.covered(self.specialized(rows, v), payload_types(v).concat(rest)) } else { self.covered(defaults, rest) }
+    }
+
+    /// The enum a column's type is, absent for one that's none.
+    fn column_enum(ty: SignedType?) -> EnumShape? {
+        let t? = ty else { return null }
+        if t.nullable() { null } else { (self.enum_of)(t) }
+    }
+
+    /// Whether a row's first pattern is a hole.
+    fn hole_first(r: PatRow) -> bool {
+        let head? = r.pats[0] else { return true }
+        self.catches(head)
+    }
+
+    /// Whether a pattern tests the variant `name`.
+    fn names_variant(p: PatId?, name: string) -> bool {
+        let at? = p else { return false }
+        match self.store.pat(at) {
+            .Variant(n, _) or .Member(n, _) -> n.of == name,
+            .Wild or .Rest or .Bind(_) or .Lit(_) or .Format(_, _) or .Quote(_) or .Typed(_, _) or .Seq(_, _, _) or .Fields(_, _, _) -> false,
+        }
+    }
+
+    /// The rows that test the variant `v` in the first column, each with its payload patterns spread
+    /// into the columns; a hole there tests every variant, its payloads unread.
+    fn specialized(rows: List<PatRow>, v: VariantSeat) -> List<PatRow> { [s! for r in rows for s in [self.special(r, v)] if s != null] }
+
+    /// A row tested against the variant `v`: its payload patterns before the rest, or absent where it
+    /// tests another.
+    fn special(r: PatRow, v: VariantSeat) -> PatRow? {
+        let tail = r.pats.drop(1)
+        let head? = r.pats[0] else { return PatRow { pats: blanks(v.payloads.length).concat(tail) } }
+        if self.catches(head) { return PatRow { pats: blanks(v.payloads.length).concat(tail) } }
+        let args? = self.variant_args(head, v.name, v.payloads.length) else { return null }
+        PatRow { pats: args.concat(tail) }
+    }
+
+    /// A pattern's payload patterns, one per payload, where it tests the variant `name`.
+    fn variant_args(p: PatId, name: string, arity: int) -> List<PatId?>? {
+        match self.store.pat(p) {
+            .Variant(n, args) if n.of == name -> [held(a) for a in args.take(arity)].concat(blanks(arity - args.take(arity).length)),
+            .Member(n, _) if n.of == name -> blanks(arity),
+            .Variant(_, _) or .Member(_, _) or .Wild or .Rest or .Bind(_) or .Lit(_) or .Format(_, _) or .Quote(_) or .Typed(_, _) or .Seq(_, _, _) or .Fields(_, _, _) -> null,
+        }
+    }
+}
+
+/// A `match`'s subject and its arms.
+type MatchAt = { subject: ExprId, arms: List<Arm> }
+
+/// The `match` at `e`, absent for any other node.
+fn match_at(store: SyntaxArena, e: ExprId) -> MatchAt? {
+    match store.expr(e) {
+        .Match(subject, arms) -> MatchAt { subject: subject, arms: arms },
+        _ -> null,
+    }
+}
+
+/// Whether a pattern binds what it takes.
+fn binds(store: SyntaxArena, p: PatId) -> bool {
+    match store.pat(p) {
+        .Bind(_) -> true,
+        .Wild or .Rest or .Variant(_, _) or .Member(_, _) or .Lit(_) or .Format(_, _) or .Quote(_) or .Typed(_, _) or .Seq(_, _, _) or .Fields(_, _, _) -> false,
+    }
+}
+
+/// Whether a pattern tests a variant.
+fn tests_variant(store: SyntaxArena, p: PatId) -> bool {
+    match store.pat(p) {
+        .Variant(_, _) or .Member(_, _) -> true,
+        .Wild or .Rest or .Bind(_) or .Lit(_) or .Format(_, _) or .Quote(_) or .Typed(_, _) or .Seq(_, _, _) or .Fields(_, _, _) -> false,
+    }
+}
+
+/// Each payload's type of a variant.
+fn payload_types(v: VariantSeat) -> List<SignedType?> { [p.ty for p in v.payloads] }
+
+/// `n` holes.
+fn blanks(n: int) -> List<PatId?> {
+    let none: PatId? = null
+    [none for _i in 0..n]
+}
+
+/// A pattern as a column holds it.
+fn held(p: PatId) -> PatId? { p }
+
+/// arms answer for several variants and this hole takes the rest
+export law registry_hole {
+    kind: "type.registry_hole"
+    reads_view: taking_holes
+    voice: hole_taking
+    warns: true
+    witness: "enum Q { A B C D }\n\nfn f(q: Q) -> int {\n    match q {\n        .A -> 1\n        .B -> 2\n        _ -> 0\n    }\n}\n"
+}
+
+/// arms answer for several variants and this hole binds the rest
+export law registry_hole_bound {
+    kind: "type.registry_hole"
+    reads_view: binding_holes
+    voice: hole_binding
+    warns: true
+    witness: "enum Q { A B C D }\n\nfn f(q: Q) -> int {\n    match q {\n        .A -> 1\n        .C -> 3\n        other -> 0\n    }\n}\n"
+}
+
+fn hole_taking(hidden: List<string>) -> Voice {
+    Voice {
+        message: "arms answer for several variants and this hole takes the rest: ${variants_spelled(hidden)}",
+        label: "matches them all",
+        help: "spell each arm so the next variant lands visibly, or write `rest ->` for a deliberate remainder",
+    }
+}
+
+fn hole_binding(hidden: List<string>) -> Voice {
+    Voice {
+        message: "arms answer for several variants and this hole binds the rest: ${variants_spelled(hidden)}",
+        label: "binds them all",
+        help: "spell each arm so the next variant lands visibly — `rest` binds nothing, so it cannot stand here",
+    }
+}
+
+/// Variants as a voice lists them.
+fn variants_spelled(names: List<string>) -> string { [".${n}" for n in names].join(", ") }
+
+collect listed_hole_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries the registry laws are read through, for a process to hand its engine.
+export fn hole_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_hole_facts) }

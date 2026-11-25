@@ -1,0 +1,26 @@
+use @std.meta.{Type, Directive, Decls}
+
+/// `${t}.made(x)` builds a FULL struct literal of the annotated type
+/// — every field named — copied out of an existing instance, and
+/// `.moved(y)` builds a copy-update of `self`. A struct literal's head
+/// resolves in the ANNOTATED type's own file: it is CONSTRUCTED there,
+/// not in the derive's.
+export trait Ctor {
+    static fn derive(t: Type) -> List<Directive> {
+        [Directive { twin: "", name: t.name, at: t.at, source: whole(t) }]
+    }
+}
+
+fn whole(t: Type) -> Decls {
+    let fs = t.fields
+    quote {
+        impl ${t} {
+            static fn made(x: ${t}) -> ${t} {
+                ${t} { ${fs[0].name}: x.${fs[0].name}, ${fs[1].name}: x.${fs[1].name} }
+            }
+            fn moved(y: ${fs[1].ty}) -> ${t} {
+                self with { ${fs[1].name}: y }
+            }
+        }
+    }
+}

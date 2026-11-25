@@ -1,0 +1,92 @@
+// `@anchor` — the payload whose WRITTEN span a node wears. The record
+// declares it, the grammar's labels are its payload names, and the
+// assembly refuses what cannot be honoured: two anchors on one node, an
+// argument, a presence, a payload the rule states.
+use @std.grammar.{Grammar, Diagnostic}
+use @std.meta.{Field, Kind, Mark}
+use @std.avrac.grammar.{parse_grammar}
+use @std.avrac.features.{bind_nodes}
+use @std.avrac.core.{PayloadRow, has_anchor}
+
+fn anchor_mark(args: List<string>) -> Mark { Mark { name: "anchor", args: args, at: null } }
+
+/// One payload of the model row, marked or not.
+fn slot(name: string, kind: Kind, marks: List<Mark>) -> Field {
+    Field { name: name, ty: "string", at: null, kind: kind, marks: marks }
+}
+
+/// The model one case binds against: every payload the row declares.
+fn model(payloads: List<Field>) -> List<PayloadRow> {
+    [PayloadRow { owner: "E", variant: "At", payloads: payloads }]
+}
+
+fn defects_of(src: string, rows: List<PayloadRow>) -> List<Diagnostic> {
+    let built = parse_grammar(src).built ?? Grammar {
+        name: "unparsed",
+        start: "unparsed",
+        rules: [],
+    }
+    bind_nodes(built, rows).defects
+}
+
+fn refuses(src: string, rows: List<PayloadRow>, words: string) -> bool {
+    defects_of(src, rows).any(it.message.contains(words))
+}
+
+spec "features/anchor" {
+    given "the mark names a payload, and the registry reads it" {
+        then "a payload marked `@anchor` is its node's anchor" {
+            has_anchor(slot("place", .Str, [anchor_mark([])]))
+        }
+        then "an unmarked payload is not" {
+            !has_anchor(slot("place", .Str, []))
+        }
+        then "the mark's word is the only thing asked — no argument decides" {
+            has_anchor(slot("place", .Str, [anchor_mark(["other"])]))
+        }
+    }
+    given "ONE payload anchors a node" {
+        then "one alone refuses nothing" {
+            let rows = model([slot("place", .Str, [anchor_mark([])])])
+            defects_of("r = place:STRING -> E.At\n", rows).is_empty()
+        }
+        then "a second refuses, naming both" {
+            let rows = model(
+                [slot("place", .Str, [anchor_mark([])]), slot("other", .Str, [anchor_mark([])])],
+            )
+            refuses(
+                "r = place:STRING other:STRING -> E.At\n",
+                rows,
+                "anchored at `place` and `other`",
+            )
+        }
+        then "and the law states that a node begins in ONE place" {
+            let rows = model(
+                [slot("place", .Str, [anchor_mark([])]), slot("other", .Str, [anchor_mark([])])],
+            )
+            refuses("r = place:STRING other:STRING -> E.At\n", rows, "a node begins in ONE place")
+        }
+    }
+    given "an anchor that could never be honoured" {
+        then "an argument refuses — the payload it marks IS the place" {
+            let rows = model([slot("place", .Str, [anchor_mark(["other"])])])
+            refuses("r = place:STRING -> E.At\n", rows, "`@anchor` takes no argument")
+        }
+        then "a `bool` payload refuses — a presence is no place to begin" {
+            let rows = model([slot("on", .Bool, [anchor_mark([])])])
+            refuses("r = on:NAME -> E.At\n", rows, "a presence is no place to begin")
+        }
+        then "a value the rule STATES refuses — an anchor names a CAPTURE" {
+            let rows = model([slot("place", .Str, [anchor_mark([])])])
+            refuses(
+                "r = \"x\" -> E.At(place = \"y\")\n",
+                rows,
+                "an anchor names a payload the rule CAPTURES",
+            )
+        }
+        then "a stated word that IS the branch's label is that capture, not a value" {
+            let rows = model([slot("place", .Str, [anchor_mark([])])])
+            defects_of("r = place:STRING -> E.At(place = place)\n", rows).is_empty()
+        }
+    }
+}

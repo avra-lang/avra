@@ -1,0 +1,91 @@
+// A program test is a program, not a module file: the entry's law over
+// every other file exempts one with its proof beside it, and still
+// refuses any other file that runs statements. Asked of the program
+// layer: a build from either program test as its entry, and a check of
+// the whole package. `ran_as` is workspace_test.av's own: this module
+// shares one namespace.
+use @std.avrac.testing.{held_at, empty_store, Held}
+
+const ALPHA: string = "/w/src/alpha/alpha.av"
+const BETA: string = "/w/src/beta/beta.av"
+const GAMMA: string = "/w/src/gamma/gamma.av"
+
+/// A library, two program tests and a refusal test, in one package.
+fn program_files() -> Map<string, string> {
+    {
+        "/w/avra.toml": "[package]\nname = \"w\"\nversion = \"0.1.0\"\n",
+        "/w/src/lib.av": "export fn double(n: int) -> int {\n    n * 2\n}\n",
+        "/w/src/alpha/alpha.av": "use lib.{double}\ndouble(21)\n",
+        "/w/src/alpha/alpha.expected": "42\n",
+        "/w/src/beta/beta.av": "use lib.{double}\nlet n = double(4)\nn + 1\n",
+        "/w/src/beta/beta.expected": "9\n",
+        "/w/src/trap/trap.av": "let missing: int? = null\nmissing!\n",
+        "/w/src/trap/trap.refuses": "unwrapped an absent value\n",
+    }
+}
+
+fn programs_held() -> Held { held_at(program_files(), "/w") }
+
+/// The package with `gamma.av` added, a run-time statement in it, and `proof` beside it when there
+/// is one; `alpha.av` reaching it when `reached`.
+fn programs_with_gamma(proof: string?, reached: bool = false) -> Held {
+    mut fs = program_files()
+    fs.set(GAMMA, "use lib.{double}\nexport fn one() -> int { 1 }\ndouble(1)\n")
+    if reached { fs.set(ALPHA, "use lib.{double}\nuse gamma.gamma.{one}\ndouble(21) + one() - 1\n") }
+    if proof != null { fs.set(proof!, "x\n") }
+    held_at(fs, "/w")
+}
+
+/// The words of the law that keeps statements to the entry `entry`.
+fn entry_law(entry: string) -> string { "only the entry `${entry}` runs statements" }
+
+/// What a check of the whole package says.
+fn package_check(held: Held) -> string { held.checked_over(empty_store()) }
+
+spec "compiler/program files" {
+    given "two program tests and a refusal test beside a library" {
+        then "each program test runs as its own entry and answers its own text" {
+            ran_as(programs_held().judged_at(ALPHA).run(), "42") &&
+                ran_as(programs_held().judged_at(BETA).run(), "9")
+        }
+        then "the entry's law finds nothing to refuse, whichever program is the entry" {
+            programs_held().judged_at(ALPHA).clean() && programs_held().judged_at(BETA).clean()
+        }
+        then "a build checks clean with either as the entry" {
+            programs_held().judged_at(ALPHA).checked() is .Ok &&
+                programs_held().judged_at(BETA).checked() is .Ok
+        }
+        then "a check of the whole package refuses none of them" {
+            !package_check(programs_held()).contains("runs statements")
+        }
+    }
+    given "a file with no proof beside it" {
+        then "reached from the entry, a run-time statement in it is refused, naming the entry" {
+            programs_with_gamma(null, reached: true)
+                .judged_at(ALPHA)
+                .report()
+                .contains(entry_law(ALPHA))
+        }
+        then "a check of the whole package refuses it too" {
+            package_check(programs_with_gamma(null)).contains("runs statements")
+        }
+        then "a proof beside another file's stem does not mark it" {
+            package_check(programs_with_gamma("/w/src/gamma/other.expected"))
+                .contains("runs statements")
+        }
+    }
+    given "a proof beside a file" {
+        then "an `.expected` makes its statements the file's own program" {
+            !package_check(programs_with_gamma("/w/src/gamma/gamma.expected"))
+                .contains("runs statements")
+        }
+        then "a `.refuses` does the same" {
+            !package_check(programs_with_gamma("/w/src/gamma/gamma.refuses"))
+                .contains("runs statements")
+        }
+        then "and so does a `.verdict`" {
+            !package_check(programs_with_gamma("/w/src/gamma/gamma.verdict"))
+                .contains("runs statements")
+        }
+    }
+}

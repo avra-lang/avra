@@ -1,0 +1,31 @@
+// proves: under a cancel a `defer` runs whole — both of its calls, and
+// each fn they call past the point where it lets others run
+use @std.task.{open_channel}
+use @std.time.{ms, secs, sleep}
+
+fn step(seen: Cell<int>) {
+    seen.set(seen.get() + 1)
+    sleep(ms(0))
+    seen.set(seen.get() + 10)
+}
+
+fn outer(seen: Cell<int>) {
+    step(seen)
+    seen.set(seen.get() + 100)
+}
+
+let seen = Cell.new(0)
+let up = open_channel<int>(1)
+let t = spawn {
+    defer {
+        outer(seen)
+        outer(seen)
+    }
+    let _ = up.sink.post(1)
+    sleep(secs(60))
+    0
+}
+let _ = up.source.next()
+t.cancel()
+let _ = t.await catch c -> 0
+"${t.done} ${seen.get()}"

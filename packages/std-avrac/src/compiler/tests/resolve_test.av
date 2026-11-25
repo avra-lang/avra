@@ -1,0 +1,143 @@
+// The first pass: uses resolve to definition sites, shadowing takes
+// the latest, and an unresolved name earns the milestone error —
+// kind, code, window, pointer, and a graded suggestion.
+use @std.avrac.compiler.{parse_source}
+use @std.avrac.testing.{judged, shown, refused_with}
+use @std.errors.{Confidence}
+
+spec "compiler/resolve" {
+    given "resolution facts" {
+        then "a use resolves to its definition site" {
+            judged("let x = 1\nx").diagnostics.is_empty() && shown("let x = 7\nx") == "7"
+        }
+        then "a later let shadows an earlier one" {
+            shown("let x = 1\nlet x = 2\nx") == "2"
+        }
+    }
+    given "the shadowing chain — the lookup ORDER is the law" {
+        then "innermost outward: an inner scope beats a param" {
+            shown(
+                "let n = 1\nfn f(n: int) -> int {\n    if true {\n        let n = 100\n        n\n    } else { n }\n}\nf(10) + n",
+            ) == "101"
+        }
+        then "a param binds when no inner scope speaks" {
+            shown("let n = 1\nfn f(n: int) -> int { n }\nf(41) + n") == "42"
+        }
+        then "the chain ends at the body floor — the top level's bindings are not a rung" {
+            refused_with(
+                "let n = 1\nfn f() -> int {\n    n\n}\nf()",
+                "run-time binding of the top level",
+            )
+        }
+        then "each scope's name dies at its exit" {
+            shown(
+                "let n = 1\nfn f(n: int) -> int {\n    if true {\n        let n = 100\n        n\n    } else { 0 } + n\n}\nf(41)",
+            ) == "141"
+        }
+    }
+    given "unresolved names" {
+        then "a use before its definition names the remedy" {
+            let r = judged("x\nlet x = 1")
+            r.diagnostics.length == 1 &&
+                r.diagnostics[0].kind == "resolve.use_before_def" &&
+                r.diagnostics[0].help != null
+        }
+        then "a typo one edit away suggests with High confidence" {
+            let r = judged("let value = 1 + valu")
+            r.diagnostics.length == 1 &&
+                r.diagnostics[0].kind == "resolve.unresolved" &&
+                r.diagnostics[0].suggestions.length == 1 &&
+                r.diagnostics[0].suggestions[0].confidence == Confidence.High &&
+                r.diagnostics[0].suggestions[0].edits.length == 1 &&
+                r.diagnostics[0].suggestions[0].edits[0].replacement == "value"
+        }
+        then "two edits away is Medium; far away is silent" {
+            let rn = judged("let value = 1\nvlaue")
+            let rf = judged("let alpha = 1\nzz")
+            rn.diagnostics[0].suggestions[0].confidence == Confidence.Medium &&
+                rf.diagnostics[0].suggestions.is_empty() &&
+                !(rf.diagnostics[0].help ?? "").contains("did you mean")
+        }
+    }
+    given "reserved words" {
+        then "binding one is refused as reserved" {
+            let r = judged("let systems = 1")
+            r.diagnostics.length == 1 && r.diagnostics[0].kind == "resolve.reserved"
+        }
+        then "binding a grammar keyword refuses — the list derives from the grammar" {
+            let r = judged("let while = 1")
+            r.diagnostics.length == 1 && r.diagnostics[0].message == "`while` is a keyword"
+        }
+        then "USING one as a value is a keyword, not a missing name" {
+            let r = judged("let y = 1\ny + while")
+            r.diagnostics.length == 1 && r.diagnostics[0].message == "`while` is a keyword"
+        }
+        then "CALLING one is reserved too — `fn if` can never exist" {
+            let r = judged("if()")
+            r.diagnostics.length == 1 && r.diagnostics[0].message == "`if` is a keyword"
+        }
+        then "the absence PARSES in callee position — typing refuses it" {
+            // the applied level takes `()` after any primary; the
+            // not-callable refusal now speaks with a NAME (the
+            // closures tests pin its words).
+            parse_source("null()").voices.list.is_empty()
+        }
+        then "a BUILT-IN type name cannot be redeclared" {
+            let r = judged("type int = { x: bool }")
+            r.diagnostics.length == 1 && r.diagnostics[0].message == "`int` is a built-in type"
+        }
+        then "a type CONSTRUCTOR name is protected too" {
+            let r = judged("type List = { x: int }")
+            r.diagnostics.length == 1 && r.diagnostics[0].message == "`List` is a built-in type"
+        }
+        then "every built-in name is protected, enums too" {
+            let r = judged("enum bool {\n    a\n}")
+            r.diagnostics.length == 1 && r.diagnostics[0].message == "`bool` is a built-in type"
+        }
+        then "using one is reserved, never a typo hunt" {
+            let r = judged("spawn")
+            r.diagnostics.length == 1 && r.diagnostics[0].kind == "resolve.reserved"
+        }
+        then "the rendering names the future keyword" {
+            let expected = """error[resolve.reserved]: `bare` is reserved for a future Avra feature
+  ╭─[<source>:1:1]
+1 │ let bare = 1
+  · ┬
+  · ╰── cannot be a name
+──╯
+help: pick another name — `bare` becomes a keyword"""
+            judged("let bare = 1").report() == expected
+        }
+    }
+    given "use before definition, rendered" {
+        then "both places show: the use and the definition" {
+            let expected = """error[resolve.use_before_def]: `x` is used before its definition
+  ╭─[<source>:1:1]
+1 │ x
+  · ┬
+  · ╰── used here
+──╯
+  ╭─[<source>:2:1]
+2 │ let x = 1
+  · ┬
+  · ╰── defined here
+──╯
+help: move the definition above this use"""
+            judged("x\nlet x = 1").report() == expected
+        }
+    }
+    given "the milestone gate" {
+        then "avra check renders the world-class error" {
+            let expected = """error[resolve.unresolved]: `y` is not defined
+  ╭─[<source>:1:13]
+1 │ let x = 1 + y
+  ·             ┬
+  ·             ╰── not defined anywhere in this program
+──╯
+help: did you mean `x`?
+fix (high): replace `y` with `x`
+  x"""
+            judged("let x = 1 + y").report() == expected
+        }
+    }
+}

@@ -1,0 +1,34 @@
+//! What every std-http suite and program test shares: `use
+//! tests.support.{…}`. A response's `date` line is the one field a
+//! test cannot know ahead of the second it runs in, and a declared
+//! server comes up through one door.
+use @std.net.{NetError}
+use @std.http.server.{Server, Stateless, server}
+
+/// The wire with its `date` line dropped.
+export fn dateless(t: string) -> string {
+    let b = t.bytes()
+    let at = b.index_of("\r\ndate: ".bytes(), 0)
+    if at < 0 { return t }
+    let end = b.index_of("\r\n".bytes(), at + 2)
+    b.slice(0, at).concat(b.slice(end, b.length)).text() ?? t
+}
+
+/// The wire with each `date` value shown as `<now>` — an IMF-fixdate is
+/// 29 characters, always.
+export fn undated(t: string) -> string {
+    let at = t.index_of("date: ")
+    if at < 0 { return t }
+    t.substring(0, at) + "date: <now>" + undated(t.substring(at + 35, t.length))
+}
+
+/// A declared server up, a fault in its route table reported as the one
+/// error these programs speak: what a test drives is the network, and a
+/// table it declared wrong is a count of faults rather than a reason.
+export fn up(app: server) -> Result<Server<Stateless>, NetError> {
+    match app.listening() {
+        .Ok(s) -> .Ok(s),
+        .Err(.Net(e)) -> .Err(e),
+        .Err(.Routes(found)) -> .Err(NetError { verb: "start", subject: "${found.length} route faults", errno: 22 }),
+    }
+}

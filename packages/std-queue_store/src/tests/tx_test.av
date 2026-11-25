@@ -1,0 +1,305 @@
+// A send that joins the caller's transaction: one commit keeps the
+// caller's rows and the item, one rollback leaves neither, and a
+// transaction that does not stand on the queue's connection is refused.
+use @std.queue.{queue, worker, run, Dead, Delivery, DrainError, HomeError}
+use @std.relation.stable.{Reader, Writer}
+use @std.sqlite.{Db, sql}
+use @std.time.{Time, mins, ms, now_ns, sleep}
+use durable.{db, stored_with}
+use fault.{homed}
+use tx.{Tx, transaction}
+use queue_store.{wire_of}
+use tests.support.wires.{int_wire}
+
+fn ticking() -> Time {
+    Time { ns: now_ns() }
+}
+
+/// A count read straight from the database.
+fn counted(db: Db, text: string) -> Result<int, HomeError> {
+    homed((homed(db.scalar(sql(text)))?).int())
+}
+
+fn made_users(db: Db) -> Result<int, HomeError> {
+    homed(db.run(sql("CREATE TABLE \"users\" (\"name\" TEXT)")))
+}
+
+fn saved(tx: Tx, name: string) -> Result<int, HomeError> {
+    homed(tx.db.run(sql("INSERT INTO \"users\" (\"name\") VALUES (?1)", [.Text(name)])))
+}
+
+/// A case's answer, or the words of the error that ended it.
+fn shown(r: Result<string, HomeError>) -> string {
+    match r {
+        .Ok(told) -> told,
+        .Err(why) -> match why {
+            .Refused(w) -> "refused: ${w}",
+            .Unreachable(_) -> "unreachable",
+            .TooBig(_, _) -> "too big",
+            .Shape(_) -> "shape",
+            .Denied -> "denied",
+        },
+    }
+}
+
+fn refusal<V>(r: Result<V, HomeError>) -> string {
+    match r { .Err(.Refused(why)) -> why, rest -> "not refused" }
+}
+
+/// A user saved and their item sent in one transaction, committed.
+fn committed() -> Result<string, HomeError> {
+    ctx db = homed(Db.memory())?
+    let _ = made_users(ctx.db)?
+    queue<int> jobs {
+        name: "jobs"
+        durable: stored_with(int_wire(), clock: ticking)
+    }
+    let _ = jobs.home().depth()?
+    let tx = transaction(ctx.db)?
+    let _ = saved(tx, "ada")?
+    let id = jobs.send(7, id: "welcome-ada", tx: tx)?
+    let again = jobs.send(7, id: "welcome-ada", tx: tx)?
+    let _ = tx.commit()?
+    let d = jobs.home().take()?
+    "one id ${id != null && id == again} | users ${counted(ctx.db, "SELECT count(*) FROM \"users\"")?} | depth ${jobs.home().depth()?} | item ${d?.item ?? 0}"
+}
+
+/// The same, rolled back: no user, no item, and the name is free again.
+fn rolled_back() -> Result<string, HomeError> {
+    ctx db = homed(Db.memory())?
+    let _ = made_users(ctx.db)?
+    queue<int> jobs {
+        name: "jobs"
+        durable: stored_with(int_wire(), clock: ticking)
+    }
+    let _ = jobs.home().depth()?
+    let tx = transaction(ctx.db)?
+    let _ = saved(tx, "ada")?
+    let _ = jobs.send(7, id: "welcome-ada", tx: tx)?
+    let undone = tx.rollback()
+    let inside = jobs.home().depth()?
+    let fresh = jobs.send(8, id: "welcome-ada")?
+    "undone ${undone} | users ${counted(ctx.db, "SELECT count(*) FROM \"users\"")?} | depth ${inside} | the name sends anew ${fresh != null} | item ${(jobs.home().take()?)?.item ?? 0}"
+}
+
+/// Sends naming a transaction that ended — while a newer one stands on
+/// the same connection — one on another connection, and one on a queue
+/// with no durable home: each refused, none filed.
+fn refused() -> Result<string, HomeError> {
+    ctx db = homed(Db.memory())?
+    queue<int> jobs {
+        name: "jobs"
+        durable: stored_with(int_wire(), clock: ticking)
+    }
+    queue<int> plain {
+        name: "plain"
+    }
+    let _ = jobs.home().depth()?
+    let kept = transaction(ctx.db)?
+    let _ = kept.commit()?
+    let gone = transaction(ctx.db)?
+    let _ = gone.rollback()
+    let other_db = homed(Db.memory())?
+    let other = transaction(other_db)?
+    let open = transaction(ctx.db)?
+    let stale = refusal(jobs.send(1, tx: kept))
+    let undone = refusal(jobs.send(1, id: "n", tx: gone))
+    let foreign = refusal(jobs.send(1, tx: other))
+    let unhomed = refusal(plain.send(1, tx: open))
+    let _ = open.commit()?
+    let _ = other.rollback()
+    "${stale} | ${undone} | ${foreign} | ${unhomed} | depth ${jobs.home().depth()?}"
+}
+
+/// A transaction ends once: a second commit is refused, and a rollback
+/// after a commit undoes nothing.
+fn ends_once() -> Result<string, HomeError> {
+    let db = homed(Db.memory())?
+    let _ = made_users(db)?
+    let tx = transaction(db)?
+    let _ = saved(tx, "ada")?
+    let _ = tx.commit()?
+    let twice = refusal(tx.commit())
+    let undone = tx.rollback()
+    "${twice} | undone ${undone} | users ${counted(db, "SELECT count(*) FROM \"users\"")?} | open ${db.in_transaction()}"
+}
+
+/// A transaction asked for while another stands on the connection waits
+/// for it, and past its patience the connection is unreachable.
+fn waits_its_patience() -> Result<string, HomeError> {
+    let db = homed(Db.memory())?
+    let outer = transaction(db)?
+    let inner = match transaction(db, patience: ms(20)) {
+        .Err(.Unreachable(_)) -> "unreachable",
+        rest -> "began",
+    }
+    let still = outer.stands()
+    let _ = outer.rollback()
+    let after = transaction(db, patience: ms(20))
+    let began = match after { .Ok(t) -> t.stands(), .Err(_) -> false }
+    "nested ${inner} | outer stands ${still} | free again ${began}"
+}
+
+/// A queue first used inside a transaction: on a database whose home
+/// tables stand it opens there and its send joins; on a fresh one it is
+/// refused, the transaction's own work is kept, and it opens after.
+fn first_use_inside() -> Result<string, HomeError> {
+    ctx db = homed(Db.memory())?
+    let _ = made_users(ctx.db)?
+    queue<int> seen_before {
+        name: "a"
+        durable: stored_with(int_wire(), clock: ticking)
+    }
+    let tx = transaction(ctx.db)?
+    let _ = saved(tx, "ada")?
+    let refused = refusal(seen_before.send(1, tx: tx))
+    let still = tx.stands()
+    let _ = tx.commit()?
+    let opened = seen_before.send(3)?
+    queue<int> later {
+        name: "b"
+        durable: stored_with(int_wire(), clock: ticking)
+    }
+    let again = transaction(ctx.db)?
+    let joined = later.send(2, tx: again)?
+    let _ = again.rollback()
+    "${refused} | tx stands ${still} | users ${counted(ctx.db, "SELECT count(*) FROM \"users\"")?} | opened inside ${joined != null} | b ${later.home().depth()?} | a opens after ${opened != null}"
+}
+
+/// A queue of a new item shape first opened inside a transaction that
+/// is rolled back: the shape's row goes with it, and the next send
+/// outside a transaction writes it again.
+fn shape_after_rollback() -> Result<string, HomeError> {
+    ctx db = homed(Db.memory())?
+    queue<int> ints {
+        name: "ints"
+        durable: stored_with(int_wire(), clock: ticking)
+    }
+    queue<string> texts {
+        name: "texts"
+        durable: stored_with(
+            wire_of<string>(
+                77,
+                "text",
+                (w: Writer, s: string) -> w.text(s),
+                (r: Reader) -> r.text(),
+            ),
+            clock: ticking,
+        )
+    }
+    let _ = ints.home().depth()?
+    let tx = transaction(ctx.db)?
+    let _ = texts.send("a", tx: tx)?
+    let inside = counted(ctx.db, "SELECT count(*) FROM \"FlowShape\"")?
+    let _ = tx.rollback()
+    let undone = counted(ctx.db, "SELECT count(*) FROM \"FlowShape\"")?
+    let _ = texts.send("b")?
+    "inside ${inside} | undone ${undone} | after a send ${counted(ctx.db, "SELECT count(*) FROM \"FlowShape\" WHERE \"hash\" = 77")?} | depth ${texts.home().depth()?}"
+}
+
+fn noted(seen: Cell<List<int>>, d: Delivery<int>) -> Result<int, string> {
+    seen.push(d.item)
+    d.item
+}
+
+/// A delayed send in a transaction: rolled back it leaves no item and
+/// frees its name; committed it is one item, held back until its
+/// instant and due then.
+fn delayed_in_tx() -> Result<string, HomeError> {
+    ctx db = homed(Db.memory())?
+    let at = Cell.new(1000)
+    queue<int> reminders {
+        name: "reminders"
+        durable: stored_with(int_wire(), clock: () -> Time { ns: at.get() })
+    }
+    let _ = reminders.home().depth()?
+    let undone = transaction(ctx.db)?
+    let _ = reminders.send(1, id: "remind", after: mins(10), tx: undone)?
+    let _ = undone.rollback()
+    let gone = reminders.home().depth()?
+    let kept = transaction(ctx.db)?
+    let id = reminders.send(2, id: "remind", after: mins(10), tx: kept)?
+    let _ = kept.commit()?
+    let q = reminders.home()
+    let owed = q.depth()?
+    let early = q.take()?
+    at.set(1000 + mins(10).ns)
+    let due = (q.take()?)?.item ?? 0
+    "rolled back ${gone} | the name sends anew ${id != null} | owed ${owed} | early ${early == null} | due ${due}"
+}
+
+/// A worker of this process while a sender holds a transaction open
+/// across a park: it takes nothing the transaction has not committed.
+fn uncommitted_unseen() -> Result<string, HomeError> {
+    ctx db = homed(Db.memory())?
+    let seen: Cell<List<int>> = Cell.new([])
+    queue<int> jobs {
+        name: "jobs"
+        durable: stored_with(int_wire(), clock: ticking)
+    }
+    queue<Dead<int, string>> letters {}
+    worker crew {
+        reads: jobs
+        each: (d: Delivery<int>) -> noted(seen, d)
+        dead: letters
+    }
+    let _ = jobs.home().depth()?
+    let serving = spawn run(crew)
+    let undone = transaction(ctx.db)?
+    let _ = jobs.send(1, tx: undone)?
+    sleep(ms(30))
+    let _ = undone.rollback()
+    let kept = transaction(ctx.db)?
+    let _ = jobs.send(2, tx: kept)?
+    sleep(ms(30))
+    let before = seen.get().length
+    let _ = kept.commit()?
+    sleep(ms(30))
+    crew.stop()
+    let settled = match serving.await { .Ok(n) -> n, .Err(_) -> 0 - 1 }
+    "before commit ${before} | handled ${["${i}" for i in seen.get()].join(" ")} | settled ${settled}"
+}
+
+spec "std/queue_store a send in the caller's transaction" {
+    given "a user saved and an item sent in one transaction" {
+        then "the commit keeps both, and a name sent twice in it is one item" {
+            shown(committed()) == "one id true | users 1 | depth 1 | item 7"
+        }
+        then "the rollback leaves neither, and the name sends anew" {
+            shown(rolled_back()) == "undone 1 | users 0 | depth 0 | the name sends anew true | item 8"
+        }
+    }
+    given "a send naming a transaction it cannot join" {
+        then "an ended one, one on another connection and one on a queue with no durable home are refused, and nothing is filed" {
+            shown(refused()) == "a send joins a transaction that stands, and this one was committed or rolled back | a send joins a transaction that stands, and this one was committed or rolled back | a send joins a transaction on its queue's own connection, and `jobs` stands on another | a send joins a transaction only on a durable queue, and `plain` stands on none | depth 0"
+        }
+    }
+    given "a transaction" {
+        then "a second commit is refused and a rollback after the commit undoes nothing" {
+            shown(ends_once()) == "a transaction ends once, and this one was committed or rolled back | undone 0 | users 1 | open false"
+        }
+        then "one asked for while another stands is unreachable past its patience" {
+            shown(waits_its_patience()) == "nested unreachable | outer stands true | free again true"
+        }
+    }
+    given "a durable queue first used inside a transaction" {
+        then "is refused on a fresh database without touching the transaction, opens inside on one whose tables stand, and opens after" {
+            shown(first_use_inside()) == "a home's tables are made outside a transaction, and this connection holds one — open the queue before the transaction begins | tx stands true | users 1 | opened inside true | b 0 | a opens after true"
+        }
+    }
+    given "a queue of a new shape opened inside a transaction that rolls back" {
+        then "the next send outside one keeps the shape's row" {
+            shown(shape_after_rollback()) == "inside 2 | undone 1 | after a send 1 | depth 1"
+        }
+    }
+    given "a delayed send in a transaction" {
+        then "a rollback leaves no item and frees the name, and a commit holds one item back until its instant" {
+            shown(delayed_in_tx()) == "rolled back 0 | the name sends anew true | owed 1 | early true | due 2"
+        }
+    }
+    given "a worker running while a sender's transaction stands across a park" {
+        then "takes only what was committed" {
+            shown(uncommitted_unseen()) == "before commit 0 | handled 2 | settled 1"
+        }
+    }
+}

@@ -1,0 +1,353 @@
+// A worker run `in_tx`: each handler stands in the transaction that acks
+// its item, so its writes stand exactly when the item settles — never on
+// a failure, a trap, a lease run out or a hold lost by the ack, and never
+// twice however many handlers run at once.
+use @std.queue.{queue, worker, drain, run, key, Dead, Delivery, DrainError, HomeError}
+use @std.sqlite.{Db, sql}
+use @std.time.{Time, ms, now_ns, sleep}
+use durable.{db, stored_with}
+use fault.{homed}
+use tx.{transaction}
+use @std.queue.tests.support.letters.{first_letter}
+use tests.support.wires.{int_wire}
+
+fn ticking() -> Time {
+    Time { ns: now_ns() }
+}
+
+fn counted(db: Db, text: string) -> Result<int, HomeError> {
+    homed((homed(db.scalar(sql(text)))?).int())
+}
+
+fn done_rows(db: Db) -> Result<int, HomeError> {
+    counted(db, "SELECT count(*) FROM \"done\"")
+}
+
+fn made_done(db: Db) -> Result<int, HomeError> {
+    homed(db.run(sql("CREATE TABLE \"done\" (\"n\" INTEGER)")))
+}
+
+/// The handler's own write: one row naming the item.
+fn wrote(db: Db, d: Delivery<int>) -> bool {
+    (db.run(sql("INSERT INTO \"done\" (\"n\") VALUES (?1)", [.Int(d.item)])) catch 0) == 1
+}
+
+fn shown(r: Result<string, HomeError>) -> string {
+    match r {
+        .Ok(told) -> told,
+        .Err(why) -> match why {
+            .Refused(w) -> "refused: ${w}",
+            .Unreachable(_) -> "unreachable",
+            .TooBig(_, _) -> "too big",
+            .Shape(_) -> "shape",
+            .Denied -> "denied",
+        },
+    }
+}
+
+fn settled(r: Result<int, DrainError>) -> int {
+    match r { .Ok(n) -> n, .Err(_) -> 0 - 1 }
+}
+
+fn stands(d: Delivery<int>) -> bool {
+    let tx? = d.tx else { return false }
+    tx.stands()
+}
+
+/// Write, then answer as `fails` says; whether the handler stood in a
+/// transaction is noted.
+fn handled(db: Db, d: Delivery<int>, fails: bool, inside: Cell<List<bool>>) -> Result<int, string> {
+    inside.push(stands(d))
+    let _ = wrote(db, d)
+    if fails { fail "no ${d.item}" }
+    d.item
+}
+
+/// Two items drained in one transaction each: one answered, one failing
+/// until it is buried.
+fn drained() -> Result<string, HomeError> {
+    ctx db = homed(Db.memory())?
+    let _ = made_done(ctx.db)?
+    let inside: Cell<List<bool>> = Cell.new([])
+    queue<int> jobs {
+        name: "jobs"
+        durable: stored_with(int_wire(), clock: ticking)
+        retries: 2
+    }
+    queue<Dead<int, string>> letters {}
+    worker crew {
+        reads: jobs
+        in_tx: true
+        each: (d: Delivery<int>) -> handled(ctx.db, d, d.item == 2, inside)
+        dead: letters
+    }
+    let _ = jobs.send(1)?
+    let _ = jobs.send(2)?
+    let n = settled(drain(crew))
+    let more = settled(drain(crew))
+    let gone = first_letter(letters)
+    "settled ${n + more} | rows ${done_rows(ctx.db)?} | row of ${counted(ctx.db, "SELECT min(\"n\") FROM \"done\"")?} | stood ${inside.get().all(it)} | buried ${gone?.item ?? 0} | depth ${jobs.home().depth()?} | open ${ctx.db.in_transaction()}"
+}
+
+/// A handler that writes and then traps on its first start, run by a
+/// worker in another task, reading the database from the context: the
+/// first write is rolled back, and the next start's stands alone.
+fn trapped() -> Result<string, HomeError> {
+    ctx db = homed(Db.memory())?
+    let _ = made_done(ctx.db)?
+    let starts: Cell<int> = Cell.new(0)
+    queue<int> jobs {
+        name: "jobs"
+        durable: stored_with(int_wire(), clock: ticking)
+        lease: ms(40)
+        backoff: ms(1)
+        retries: 5
+    }
+    queue<Dead<int, string>> letters {}
+    worker crew {
+        reads: jobs
+        in_tx: true
+        each: (d: Delivery<int>) -> unlucky(ctx.db, d, starts)
+        dead: letters
+    }
+    let _ = jobs.send(1)?
+    let _ = jobs.send(2)?
+    let serving = spawn run(crew)
+    sleep(ms(200))
+    crew.stop()
+    let n = settled(serving.await)
+    "settled ${n} | starts ${starts.get()} | rows ${done_rows(ctx.db)?} | ones ${counted(ctx.db, "SELECT count(*) FROM \"done\" WHERE \"n\" = 1")?} | depth ${jobs.home().depth()?} | open ${ctx.db.in_transaction()}"
+}
+
+/// Item 1 traps after its write on its first start.
+fn unlucky(db: Db, d: Delivery<int>, starts: Cell<int>) -> Result<int, string> {
+    starts.set(starts.get() + 1)
+    let _ = wrote(db, d)
+    if d.attempt == 0 && d.item == 1 { return [0][d.item] }
+    d.item
+}
+
+/// Handlers that park mid-transaction, three at once: every item's row
+/// is written once.
+fn many_at_once() -> Result<string, HomeError> {
+    ctx db = homed(Db.memory())?
+    let _ = made_done(ctx.db)?
+    queue<int> jobs {
+        name: "jobs"
+        durable: stored_with(int_wire(), clock: ticking)
+        order: .by_key
+    }
+    queue<Dead<int, string>> letters {}
+    worker crew {
+        reads: jobs
+        in_tx: true
+        at_once: 3
+        each: (d: Delivery<int>) -> parked(ctx.db, d)
+        dead: letters
+    }
+    for i in 1..7 { let _ = jobs.send(i, under: key("k${i}"))? }
+    let serving = spawn run(crew)
+    sleep(ms(300))
+    crew.stop()
+    let n = settled(serving.await)
+    "settled ${n} | rows ${done_rows(ctx.db)?} | distinct ${counted(ctx.db, "SELECT count(DISTINCT \"n\") FROM \"done\"")?} | depth ${jobs.home().depth()?}"
+}
+
+fn parked(db: Db, d: Delivery<int>) -> Result<int, string> {
+    let _ = wrote(db, d)
+    sleep(ms(5))
+    let _ = wrote(db, d with { item: 0 - d.item })
+    d.item
+}
+
+/// A handler that sends onward in its own transaction: the onward item
+/// is kept with the ack, and rolled back with a failure.
+fn onward() -> Result<string, HomeError> {
+    ctx db = homed(Db.memory())?
+    queue<int> next {
+        name: "next"
+        durable: stored_with(int_wire(), clock: ticking)
+    }
+    queue<int> jobs {
+        name: "jobs"
+        durable: stored_with(int_wire(), clock: ticking)
+        retries: 1
+    }
+    queue<Dead<int, string>> letters {}
+    worker crew {
+        reads: jobs
+        in_tx: true
+        each: (d: Delivery<int>) -> passed(next, d)
+        dead: letters
+    }
+    let _ = next.home().depth()?
+    let _ = jobs.send(1)?
+    let _ = jobs.send(2)?
+    let n = settled(drain(crew))
+    "settled ${n} | onward ${next.home().depth()?} | item ${(next.home().take()?)?.item ?? 0} | buried ${first_letter(letters)?.item ?? 0}"
+}
+
+fn passed(next: queue<int>, d: Delivery<int>) -> Result<int, string> {
+    let _ = next.send(d.item * 10, tx: d.tx) catch null
+    if d.item == 2 { fail "no" }
+    d.item
+}
+
+/// A handler that gives its own hold back before the ack: the ack finds
+/// the hold lost, so the handler's write is rolled back and the item
+/// stays where the take left it.
+fn lost_at_ack() -> Result<string, HomeError> {
+    ctx db = homed(Db.memory())?
+    let _ = made_done(ctx.db)?
+    queue<int> jobs {
+        name: "jobs"
+        durable: stored_with(int_wire(), clock: ticking)
+    }
+    queue<Dead<int, string>> letters {}
+    worker crew {
+        reads: jobs
+        in_tx: true
+        each: (d: Delivery<int>) -> gave_back(ctx.db, jobs, d)
+        dead: letters
+    }
+    let _ = jobs.send(1)?
+    let n = settled(drain(crew))
+    "settled ${n} | rows ${done_rows(ctx.db)?} | depth ${jobs.home().depth()?} | open ${ctx.db.in_transaction()}"
+}
+
+fn gave_back(db: Db, jobs: queue<int>, d: Delivery<int>) -> Result<int, string> {
+    let _ = wrote(db, d)
+    let _ = jobs.home().ack(d) catch false
+    d.item
+}
+
+/// Two workers in_tx over one queue on one connection, two handlers
+/// each, parking mid-transaction: every item's writes stand once.
+fn two_workers() -> Result<string, HomeError> {
+    ctx db = homed(Db.memory())?
+    let _ = made_done(ctx.db)?
+    queue<int> jobs {
+        name: "jobs"
+        durable: stored_with(int_wire(), clock: ticking)
+        order: .by_key
+    }
+    queue<Dead<int, string>> letters {}
+    worker one {
+        reads: jobs
+        in_tx: true
+        at_once: 2
+        each: (d: Delivery<int>) -> parked(ctx.db, d)
+        dead: letters
+    }
+    worker two {
+        reads: jobs
+        in_tx: true
+        at_once: 2
+        each: (d: Delivery<int>) -> parked(ctx.db, d)
+        dead: letters
+    }
+    for i in 1..9 { let _ = jobs.send(i, under: key("k${i}"))? }
+    let a = spawn run(one)
+    let b = spawn run(two)
+    sleep(ms(400))
+    one.stop()
+    two.stop()
+    let n = settled(a.await) + settled(b.await)
+    "settled ${n} | rows ${done_rows(ctx.db)?} | distinct ${counted(ctx.db, "SELECT count(DISTINCT \"n\") FROM \"done\"")?} | depth ${jobs.home().depth()?}"
+}
+
+/// A handler that asks for a transaction of its own inside the one it
+/// stands in: none nests, so the ask is unreachable and the handler's
+/// failure rolls its write back.
+fn nested() -> Result<string, HomeError> {
+    ctx db = homed(Db.memory())?
+    let _ = made_done(ctx.db)?
+    queue<int> jobs {
+        name: "jobs"
+        durable: stored_with(int_wire(), clock: ticking)
+        retries: 1
+    }
+    queue<Dead<int, string>> letters {}
+    worker crew {
+        reads: jobs
+        in_tx: true
+        each: (d: Delivery<int>) -> nesting(ctx.db, d)
+        dead: letters
+    }
+    let _ = jobs.send(1)?
+    let n = settled(drain(crew))
+    "settled ${n} | rows ${done_rows(ctx.db)?} | buried ${first_letter(letters)?.item ?? 0} | open ${ctx.db.in_transaction()}"
+}
+
+fn nesting(db: Db, d: Delivery<int>) -> Result<int, string> {
+    let _ = wrote(db, d)
+    match transaction(db, patience: ms(10)) {
+        .Ok(_) -> d.item,
+        .Err(_) -> .Err("no nested transaction"),
+    }
+}
+
+/// A worker `in_tx` over a memory queue: no transaction, and each item
+/// settles as a plain worker's would.
+fn in_memory() -> string {
+    let inside: Cell<List<bool>> = Cell.new([])
+    queue<int> jobs {}
+    queue<Dead<int, string>> letters {}
+    worker crew {
+        reads: jobs
+        in_tx: true
+        each: (d: Delivery<int>) -> noted(d, inside)
+        dead: letters
+    }
+    let _ = jobs.send(1)
+    let n = settled(drain(crew))
+    "settled ${n} | stood ${inside.get().any(it)} | depth ${jobs.home().depth() catch 0 - 1}"
+}
+
+fn noted(d: Delivery<int>, inside: Cell<List<bool>>) -> Result<int, string> {
+    inside.push(stands(d))
+    d.item
+}
+
+spec "std/queue_store a worker in_tx" {
+    given "items drained in_tx" {
+        then "an answered handler's write stands with its ack, a failing one's never does, and each stood in a transaction" {
+            shown(drained()) == "settled 1 | rows 1 | row of 1 | stood true | buried 2 | depth 0 | open false"
+        }
+    }
+    given "a handler run by a worker's own task that writes through the context and traps" {
+        then "its write is rolled back, the next start's stands alone, and nothing is left open" {
+            shown(trapped()) == "settled 2 | starts 3 | rows 2 | ones 1 | depth 0 | open false"
+        }
+    }
+    given "three handlers at once that park inside their transactions" {
+        then "every item's writes stand once" {
+            shown(many_at_once()) == "settled 6 | rows 12 | distinct 12 | depth 0"
+        }
+    }
+    given "a handler that sends onward with its delivery's transaction" {
+        then "the onward item stands with the ack and is rolled back with a failure" {
+            shown(onward()) == "settled 1 | onward 1 | item 10 | buried 2"
+        }
+    }
+    given "a handler whose hold is lost by its ack" {
+        then "its write is rolled back and the item stays" {
+            shown(lost_at_ack()) == "settled 0 | rows 0 | depth 1 | open false"
+        }
+    }
+    given "two workers in_tx over one queue on one connection" {
+        then "every item's writes stand once" {
+            shown(two_workers()) == "settled 8 | rows 16 | distinct 16 | depth 0"
+        }
+    }
+    given "a handler that asks for a transaction of its own" {
+        then "the ask is unreachable and the handler's write is rolled back" {
+            shown(nested()) == "settled 0 | rows 0 | buried 1 | open false"
+        }
+    }
+    given "a worker in_tx over a memory queue" {
+        then "stands in no transaction and settles plainly" {
+            in_memory() == "settled 1 | stood false | depth 0"
+        }
+    }
+}

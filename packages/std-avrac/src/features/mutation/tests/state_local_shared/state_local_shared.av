@@ -1,0 +1,54 @@
+// proves: a fn's own `state` is one Cell every lambda that reaches it shares — a
+// counter made by a fn keeps counting after the fn returns, two counters made
+// by two calls count apart, a lambda's push and whole write land where the fn
+// reads, a lambda inside a lambda reaches the same Cell, and a `mut` a lambda
+// captures stays a copy.
+type R = { xs: List<string> }
+
+fn counter() -> fn() -> int {
+    state n = 0
+    () -> {
+        n = n + 1
+        n
+    }
+}
+
+fn shared_writes() -> string {
+    state r: R = R { xs: ["a"] }
+    let push = () -> {
+        r.xs.push("b")
+        0
+    }
+    let reset = () -> {
+        r = R { xs: ["z"] }
+        0
+    }
+    let _ = push()
+    let pushed = r.xs.length
+    let _ = reset()
+    "${pushed} ${r.xs[0]}"
+}
+
+fn nested() -> int {
+    state k = 0
+    let outer = () -> {
+        let inner = () -> { k = k + 10 }
+        inner()
+        inner()
+    }
+    outer()
+    k
+}
+
+fn copied() -> int {
+    mut m = 1
+    let f = () -> m + 1
+    m = 5
+    f()
+}
+
+let a = counter()
+let b = counter()
+let _ = a()
+let _ = a()
+"${a()} ${b()} | ${shared_writes()} | ${nested()} | ${copied()}"

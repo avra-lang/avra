@@ -1,0 +1,31 @@
+//! proves: `signals([.Usr1])` waits on the platform's OWN SIGUSR1. A
+//! child signals the program, and the parked wait wakes with `.Usr1`. On
+//! Darwin a table of Linux's numbers arms SIGBUS (10) instead, so the
+//! real SIGUSR1 takes its default action and this fails before the number
+//! is the runtime's to answer.
+use @std.task.{signals, Sig, Signals}
+use @std.process.{Tool, ProcessError, tool, cmd}
+
+/// A child that signals the program that started it: `$PPID` is this
+/// process, and a process-directed SIGUSR1 is what a task's wait takes.
+fn killer(sh: Tool) -> string {
+    match cmd(sh, ["-c", "kill -USR1 \$PPID"]).outcome() { .Ok(_) -> "sent", .Err(e) -> "failed" }
+}
+
+fn sig_word(s: Sig) -> string {
+    match s { .Usr1 -> "usr1", _ -> "other" }
+}
+
+fn run() -> string {
+    let sh = match tool("sh") { .Ok(t) -> t, .Err(e) -> { return "no sh" } }
+    let quit: Signals = signals([.Usr1])
+    let k = spawn killer(sh)
+    let got = quit.next()
+    let _ = k.await
+    match got {
+        s? -> sig_word(s)
+        null -> "none"
+    }
+}
+
+run()

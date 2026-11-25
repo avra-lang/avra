@@ -1,0 +1,19 @@
+//! The lowering rule of a `when`: one region per arm, each later condition read inside the arm before
+//! it where that one's condition doesn't hold, and past the last, the `_` arm.
+use core.{ExprId, Layout, Lowering, Lowers, Reg}
+use core.expr.{When}
+
+impl Lowers for When {
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        if self.defaults.is_empty() || self.conds.length != self.values.length { return cx.unlowered(e) }
+        arm_lowered(cx, self, cx.layout_at(e), 0)
+    }
+}
+
+/// Arm `i` onward: its value where its condition holds, else the arms after it; past the last arm, the
+/// `_` arm's value. Each region answers a value of layout `l`.
+fn arm_lowered(mut cx: Lowering, w: When, l: Layout, i: int) -> Reg {
+    if i == w.conds.length { return cx.lower(w.defaults[0]) }
+    cx
+        .region(cx.lower(w.conds[i]), l) { cx -> cx.lower(w.values[i]) } else { cx -> arm_lowered(cx, w, l, i + 1) }
+}

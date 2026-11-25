@@ -1,0 +1,38 @@
+// proves: a generic fn whose type parameter carries a bound asks that
+// parameter what the bound promises of the very type filling it — two types
+// of one layout, each its own impl, never sharing a unit — through a method,
+// a static, an interpolation hole and a `dyn` box.
+trait Named {
+    fn name() -> string
+    static fn kind() -> string
+}
+
+type Cat = { lives: int }
+
+type Dog = { legs: int }
+
+impl Named for Cat {
+    fn name() -> string { "cat ${self.lives}" }
+    static fn kind() -> string { "feline" }
+}
+
+impl Named for Dog {
+    fn name() -> string { "dog ${self.legs}" }
+    static fn kind() -> string { "canine" }
+}
+
+fn called<T: Named>(x: T) -> string { x.name() }
+
+fn kind_of<T: Named>(_x: T) -> string { T.kind() }
+
+fn shown<T: Named>(x: T) -> string { "<${x.name()}>" }
+
+fn boxed<T: Named>(x: T) -> string {
+    let d: dyn Named = x
+    d.name()
+}
+
+let c = Cat { lives: 9 }
+let d = Dog { legs: 4 }
+
+"${called(c)} ${called(d)} ${kind_of(c)} ${kind_of(d)} ${shown(c)} ${shown(d)} ${boxed(c)} ${boxed(d)}"

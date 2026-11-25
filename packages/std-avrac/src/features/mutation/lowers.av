@@ -1,0 +1,30 @@
+//! The lowering rules of `mut` and assignment: a `mut` lives in a cell wearing its binding's type,
+//! seeded with its value, and keeps whether that value was read from a place; a write to its name
+//! stores into the cell, and one along a path lands where the path's opened place says. A task, or a
+//! list of them, the cell holds is joined as its scope ends: what it holds then. A `state` local
+//! lives in a Cell of its own, the one place every lambda that reaches it shares.
+use core.{Bound, Lowering, StmtId, StmtLowers, cell_of}
+use core.stmt.{Assign, MutLet}
+
+impl StmtLowers for MutLet {
+    fn stmt_lowered(mut cx: Lowering, s: StmtId) {
+        let v = cx.lower(self.value)
+        let ty? = cx.binding_type(self.ty, self.value, s) else { return cx.missed("an untyped `mut`") }
+        if cx.store.is_state_stmt(s) {
+            return cx
+                .bind(self.name.text(), Bound.Shared(cx.celled(v, ty, cx.laid_out(cell_of(ty))), ty))
+        }
+        let cell = cx.seeded_cell(cx.laid_out(ty), v)
+        cx.seed_kept(cell, cx.read_from_place(self.value))
+        cx.bind(self.name.text(), Bound.Slot(cell, ty))
+        cx.owns_cell(cell, ty)
+    }
+}
+
+impl StmtLowers for Assign {
+    /// The value first, then the write where its target names.
+    fn stmt_lowered(mut cx: Lowering, s: StmtId) {
+        let v = cx.lower(self.value)
+        cx.written_to(self.target, v)
+    }
+}

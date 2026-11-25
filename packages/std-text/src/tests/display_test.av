@@ -1,0 +1,92 @@
+// Text as a terminal draws it: clusters are never split, and each takes
+// the cells a cluster-aware terminal gives it.
+use @std.text.{graphemes, cells, from_codepoints, codepoints, pad_left, pad_right}
+
+fn made(codes: List<int>) -> string { from_codepoints(codes) }
+
+fn pieces(s: string) -> string { graphemes(s).join("|") }
+
+fn counts(s: string) -> string { ["${codepoints(g).length}" for g in graphemes(s)].join(",") }
+
+spec "std/text — graphemes and cells" {
+    given "plain text" {
+        then "ASCII is a cluster and a cell each" { cells("hello") == 5 && graphemes("hello").length == 5 }
+        then "a precomposed letter is one cell" { cells("é") == 1 }
+        then "empty text has no clusters and no cells" { graphemes("").is_empty() && cells("") == 0 }
+    }
+    given "marks" {
+        then "a letter and its combining mark are one cluster of one cell" {
+            counts(made([101, 769])) == "2" && cells(made([101, 769])) == 1
+        }
+        then "a mark with no base takes no cell" { cells(made([769])) == 0 }
+        then "a mark on a wide glyph leaves it two cells" { cells(made([20013, 769])) == 2 }
+        then "an Indic conjunct is one cluster of its first letter's cell" {
+            counts(made([2325, 2381, 2359])) == "3" && cells(made([2325, 2381, 2359])) == 1
+        }
+        then "a Hangul syllable of jamo is one cluster of two cells" {
+            counts(made([4352, 4449, 4520])) == "3" && cells(made([4352, 4449, 4520])) == 2
+        }
+    }
+    given "wide glyphs" {
+        then "Han, Hangul syllables and fullwidth letters take two cells" {
+            cells("中文") == 4 && cells("한") == 2 && cells("Ａ") == 2
+        }
+        then "halfwidth kana, Greek and box drawing take one" { cells("ｶ") == 1 && cells("α") == 1 && cells("─") == 1 }
+        then "a noncharacter and an unassigned point outside the ideograph blocks take one" {
+            cells(made([65535])) == 1 && cells(made([1114111])) == 1 && cells(made([262144])) == 1
+        }
+        then "a plane-two Han glyph takes two" { cells(made([131072])) == 2 }
+    }
+    given "emoji" {
+        then "an emoji takes two cells" { cells(made([128512])) == 2 }
+        then "a ZWJ family is one cluster of two cells" {
+            let family = made([128104, 8205, 128105, 8205, 128103])
+            counts(family) == "5" && cells(family) == 2
+        }
+        then "a skin tone joins its emoji" {
+            let thumb = made([128077, 127997])
+            counts(thumb) == "2" && cells(thumb) == 2
+        }
+        then "two regional indicators are one flag of two cells, a third starts another, two cells alone" {
+            let flags = made([127471, 127477, 127482])
+            counts(flags) == "2,1" && cells(flags) == 4
+        }
+        then "a text-style symbol takes one cell, with the emoji selector two, with the text selector one" {
+            cells(made([10084])) == 1 &&
+                cells(made([10084, 65039])) == 2 &&
+                cells(made([9728, 65038])) == 1
+        }
+        then "a keycap is one cluster of two cells" { counts(made([49, 65039, 8419])) == "3" && cells(made([49, 65039, 8419])) == 2 }
+        then "a flag of tag characters is one cluster" {
+            counts(made([127988, 917607, 917602, 917619, 917603, 917620, 917631])) == "7"
+        }
+    }
+    given "zero-width and control characters" {
+        then "a ZWJ, a zero-width space and a byte-order mark take no cell" {
+            cells(made([8205])) == 0 && cells(made([8203])) == 0 && cells(made([65279])) == 0
+        }
+        then "a soft hyphen takes one cell" { cells(made([173])) == 1 }
+        then "a control character takes no cell and is its own cluster" {
+            counts(made([97, 1, 98])) == "1,1,1" && cells(made([97, 1, 98])) == 2
+        }
+        then "CR LF is one cluster" { counts(made([13, 10])) == "2" }
+    }
+    given "segmentation" {
+        then "clusters rejoin to the text" { pieces("a" + made([101, 769]) + "中") == "a|" + made([101, 769]) + "|中" }
+        then "no cluster is empty and together they are the text" {
+            let s = "x" + made([128104, 8205, 128105]) + "é" + made([2325, 2381, 2359]) + "!"
+            graphemes(s).join("") == s && graphemes(s).all(it != "")
+        }
+    }
+    given "padding" {
+        then "padding fills to the width in cells" {
+            pad_right("中", 4) == "中  " &&
+                pad_left("中", 4) == "  中" &&
+                cells(pad_right("中", 4)) == 4
+        }
+        then "a mark takes no room and a wide text is left alone" {
+            let e = made([101, 769])
+            pad_right(e, 3) == e + "  " && pad_right("中文", 3) == "中文"
+        }
+    }
+}

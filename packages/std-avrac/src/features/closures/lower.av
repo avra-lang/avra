@@ -1,0 +1,18 @@
+//! The lambda's lowering — the ONE meaning: creation mints the fn
+//! box through values.av's verbs (the memory pass owns
+//! retain-at-pack for managed captures); the LIFT itself is the
+//! driver's worklist job.
+use core.{ExprId, Reg}
+use features.{LowerCx}
+
+fn call_value_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, args: List<ExprId>) -> Reg {
+    cx.called_through(e, cx.reg_of(subject), [cx.reg_of(a) for a in args])
+}
+
+fn lambda_reg(mut cx: LowerCx, e: ExprId) -> Reg {
+    let name = cx.lift(e)
+    let caps = cx.capture_regs(e)
+    if caps.is_empty() { return cx.static_fn_box(cx.shape_at(e), name) }
+    let size = cx.box_size(1 + caps.length)
+    cx.fn_box(cx.shape_at(e), size, name, caps)
+}

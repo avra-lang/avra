@@ -1,0 +1,137 @@
+//! `Decl` — the declaration table's relation. Every declaration the compiler
+//! mints is one row here, filed once at `mint` and reseated by `set_decl`,
+//! read everywhere through `Decls.decl`, never a hand-kept table. The type
+//! stands alone in its file: the relation derive types this file while the
+//! files that use `Decl` are still registering.
+//!
+//! `id` is `@dense`, so it names a slot in this process alone. `file`,
+//! `stmt`, `parent`, `root`, `lo`, `hi`, `home`, `external`, `bucket` and
+//! `standing` are
+//! process-local (`@dense` ids, arena indexes, offsets, a fact a record
+//! carries elsewhere) and `@local`, so none enters the stable hash.
+//! The key is indexed first, then `name`, `word`, `marks`,
+//! `home` and `external`, each in field
+//! order: a lookup reads a bucket, never a hand-kept table.
+//!
+//! A READ OF A ROW IS A READ OF ITS NAME'S BUCKET (`Decls.decl`): the
+//! bucket's hash folds every same-named row's stable hash, `told`
+//! included, so a reader re-runs when a row it read moves or a sibling
+//! under its name appears, and never for a row of another name.
+//!
+//! A FILE'S ADMISSION OWNS ITS ROWS: every write of a homed row is stamped
+//! with that file's run, so admitting the file again replaces them in one
+//! step — what the new run did not mint is removed from every bucket, its
+//! id left a tombstone.
+//!
+//! A ROW'S NAME IS ITS KEY: its file's name, its kind, its owner, what
+//! generated it, the declaration it is nested in, its own name, and its place
+//! among the declarations of that file sharing all six. A declaration written above another moves the other's
+//! name only when it shares them. `id` is where the name stands in this
+//! process: `mint` finds the id its key already has, and `set_decl` reseats by id.
+use core.{DeclId, FileId, StmtId, ExprId, DeclKind, SideTable, IndexRange}
+use @std.relation.{relation, side}
+
+/// One declaration: where it lives, what it is, the expression its body IS (a
+/// fn's, a default's; absent for the rest), and the expression range [lo, hi)
+/// that body occupies in its file's arena — a method or a default also names
+/// the type it serves.
+@relation
+export type Decl = {
+    id: DeclId,
+    /// Its file's name: its package, then its path within it.
+    @key path: string,
+    @local file: FileId,
+    @local stmt: StmtId,
+    @key @index name: string,
+    @key kind: DeclKind,
+    exported: bool,
+    @key owner: string,
+    /// What generated it — an annotation's tag; empty for a written one.
+    @key maker: string,
+    /// The declaration whose body it is nested in, by its key without the
+    /// path; empty for one at the top of its file.
+    @key enclosing: string,
+    /// Its place among the declarations of one file that share its kind,
+    /// owner, maker, encloser and name, counted as the file is admitted.
+    @key sibling: int,
+    @local parent: DeclId?,
+    @local root: ExprId?,
+    @local lo: int,
+    @local hi: int,
+    /// The declaration's own STATEMENT range, written once per file in
+    /// `range_bodies` beside the expression range: every statement of its
+    /// subtree, the declaring statement last. A nested declaration is no
+    /// range owner, so its statements land on the body that types them. A
+    /// negative `stmt_lo` means none was computed — a generated
+    /// declaration — and its statement-keyed columns stay whole-file.
+    @local stmt_lo: int,
+    @local stmt_hi: int,
+    /// The component a declared instance instances; absent for every other kind.
+    @index word: string?,
+    /// Every `@name` the declaration wears, filed once per distinct name.
+    @index marks: List<string>,
+    /// The file whose admission owns the row: its rows, filed here, are
+    /// what a re-admission replaces. A builtin is no file's.
+    @local @index home: FileId?,
+    /// Whether its facts call it an `extern fn`, filed so the externs are
+    /// one bucket.
+    @local @index external: bool,
+    /// Its bucket in the name index — the cell a read of the row records.
+    @local bucket: int,
+    /// Where its file's rows stand, as `Decls.rows_state` says — minting (0),
+    /// settled (1), held (2) — carried so a read asks the row, never a file
+    /// table. A builtin's stays 0: the language's own rows are constants no
+    /// reader records.
+    @local standing: int,
+    /// What a reader can tell of it past the columns above: its parse
+    /// facts with every position nulled, and its home's path. Stable, so
+    /// its name's bucket moves whenever a reader's answer could.
+    told: int,
+}
+
+/// A declaration's key as the text its index files it under.
+export fn decl_key_text(
+    path: string,
+    name: string,
+    kind: DeclKind,
+    owner: string,
+    maker: string,
+    enclosing: string,
+    sibling: int,
+) -> string {
+    Decl
+        .key_text(
+            DeclKey {
+                path: path,
+                name: name,
+                kind: kind,
+                owner: owner,
+                maker: maker,
+                enclosing: enclosing,
+                sibling: sibling,
+            },
+        )
+}
+
+/// A node's declaration, in its file's own partition at the node's
+/// dense id — shared by every per-file, per-node decl lookup: an
+/// expression's owning decl (the smallest range-owning decl whose
+/// span holds it, written once per node where `Decl.lo`/`hi` are
+/// computed, `range_bodies` in features/decls_mint.av) and a
+/// statement's own declaration, when it makes one (`decl_ids`). A
+/// later ask is an O(1) read of the file's partition instead of a
+/// rescan.
+@relation
+@side
+export type DeclAt = { decl: DeclId? }
+
+impl Decl {
+    /// Whether it is declared inside another declaration's body.
+    fn nested() -> bool { self.enclosing != "" }
+
+    /// The window its body's expressions occupy: what every law that reads "the body" scans.
+    fn body() -> IndexRange { IndexRange { lo: self.lo, hi: self.hi } }
+
+    /// Its body's expressions, in arena order.
+    fn body_exprs() -> List<ExprId> { self.body().exprs() }
+}

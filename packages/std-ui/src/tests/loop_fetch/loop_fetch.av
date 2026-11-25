@@ -1,0 +1,98 @@
+// proves: a request is data both targets send. The headless screen runs the
+// sequence web/tests/mount runs against a page — ask, answer, an answer
+// dropped as a repeat, an older ask answering late, a failure, a control that
+// leaves mid-request — and prints the same states, with the screen's own
+// network answering after the waits the URL names, eval == native.
+// The real loop (`looped`), not the driven one: the network waits inside a task, and a request cancelled mid-wait must stop.
+use @std.ui.app.{Async, Fetch, fetch, fetched}
+use @std.ui.components.{button, item}
+use @std.ui.headless.{headless}
+use @std.http_message.message.{Reply, Request}
+use @std.text.{parse_int}
+use @std.time.{ms, sleep}
+
+state profile: Fetch<int> = fetch()
+state showing: int = 1
+state finished: int = 0
+
+fn words(a: Async<int>) -> string {
+    match a {
+        .Idle -> "idle",
+        .Loading -> "loading",
+        .Failed(m) -> "failed ${m}",
+        .Ready(v) -> "ready ${v}",
+    }
+}
+
+/// The network: "<wait>/<answer>", the answer `down` being no answer at all.
+/// `finished` counts the requests that ran to their end.
+fn network(r: Request) -> Result<Reply, string> {
+    let parts = r.url.split("/")
+    sleep(ms(parse_int(parts[0]) ?? 0))
+    finished = finished + 1
+    if parts[1] == "down" { return .Err("the request failed") }
+    .Ok(Reply { status: 200, body: parts[1].bytes() })
+}
+
+fn parsed(r: Reply) -> Result<int, string> {
+    if r.body.text() == "bad" { return .Err("unparsable") }
+    .Ok(r.body.length)
+}
+
+/// The wait the next press asks for, and its answer.
+state next: string = "30/abc"
+
+fn load() {
+    let _ = fetched(profile, Request.get(next), parsed)
+}
+
+fn view() -> item {
+    item { items: [button "Load" { on press { load() } } for _n in 0..showing] }
+}
+
+fn set(url: string) -> bool {
+    next = url
+    true
+}
+
+fn hide() -> bool {
+    showing = 0
+    true
+}
+
+let screen = headless(view)
+screen.wired(network)
+screen
+    .looped(
+        () -> {
+            let _ = screen.press("Load")
+            println("asked: ${words(profile.state())}")
+            screen.advance(ms(50))
+            println("answered: ${words(profile.state())}")
+            let _ = screen.turn(() -> set("80/abcd"))
+            let _ = screen.press("Load")
+            let _ = screen.turn(() -> set("20/xy"))
+            let _ = screen.press("Load")
+            screen.advance(ms(40))
+            println("the newer answered first: ${words(profile.state())}")
+            screen.advance(ms(100))
+            println("the older answered late and was dropped: ${words(profile.state())}")
+            let _ = screen.turn(() -> set("20/down"))
+            let _ = screen.press("Load")
+            screen.advance(ms(40))
+            println("no answer: ${words(profile.state())}")
+            let _ = screen.turn(() -> set("10/bad"))
+            let _ = screen.press("Load")
+            screen.advance(ms(40))
+            println("a reply parse refuses: ${words(profile.state())}")
+            let _ = screen.turn(() -> set("200/late"))
+            let before = finished
+            let _ = screen.press("Load")
+            screen.advance(ms(20))
+            let _ = screen.turn(hide)
+            screen.advance(ms(400))
+            println(
+                "the control left mid-request: ${words(profile.state())}, ${finished - before} ran to the end",
+            )
+        },
+    )

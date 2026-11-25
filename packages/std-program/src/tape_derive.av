@@ -1,0 +1,590 @@
+//! A node written to a tape and read back, and a root's schema, generated from declarations, so no
+//! field can be forgotten and the writer, the reader and the schema can't disagree: all three read
+//! a type through `Reading`, each shape's way onto a tape and its way back are one definition, and
+//! a variant's layout is worked out once for both. A language names its tree, its trait and how
+//! an id reaches its tree (`TapeLanguage`); everything else is generated here, ids included.
+use @std.meta.{
+    Arms,
+    Code,
+    Declared,
+    Decls,
+    Diagnostic,
+    Field,
+    Kind,
+    Stmts,
+    Type as MetaType,
+    Variant as MetaVariant,
+    beside,
+    literal,
+    name,
+    nothing_made,
+    refuse,
+}
+use syntax_tape.{FLAGS_PER_NUMBER, flag_mask}
+use value_shapes.{
+    NAME_TYPE,
+    OFFSET_MARK,
+    Reading,
+    ShapedVariant,
+    ValueShape,
+    Wrapper,
+    declared_variants,
+    path_of,
+    tag_made,
+    tag_number,
+}
+
+/// What a language tells the tape derive: its tree's type, how it reads its declarations, and how an
+/// id reaches its tree.
+export type TapeLanguage = { tree: string, reading: Reading, verbs: TreeVerbs }
+
+/// How generated code reaches a language's tree from an id. Each is handed the tree, then what it
+/// works on, then the name of the node type the id names.
+export type TreeVerbs = {
+    /// The node an id names.
+    node: fn(Code, Code, string) -> Code,
+    /// Where the node an id names was written: a `TapePlace?`.
+    place: fn(Code, Code, string) -> Code,
+    /// A node read back, put in the tree where it was written, answering its id.
+    added: fn(Code, Code, Code, string) -> Code,
+    /// What the tree keeps beside the node an id names, written after the node: handed the tree,
+    /// the tape and the id.
+    facts_written: fn(Code, Code, Code, string) -> Stmts,
+    /// Those read back onto the id just made.
+    facts_read: fn(Code, Code, Code, string) -> Stmts,
+}
+
+/// The field marks every language's tape derive takes: `@offset`.
+export fn tape_marks() -> List<string> { [OFFSET_MARK] }
+
+/// What generated code calls the tree and the tape it's handed, an id it follows, and where a node
+/// read back was written.
+export const TREE_NAME: string = "tree"
+export const TAPE_NAME: string = "tape"
+const PLACE_NAME: string = "place"
+const ID_NAME: string = "id"
+
+fn tape() -> Code { name(TAPE_NAME) }
+
+fn tree() -> Code { name(TREE_NAME) }
+
+/// What generated code calls a variant's flags once they're read.
+const FLAGS_NAME: string = "flags"
+
+/// `@derive` of a language's trait on a node type: its writer and its reader, or the fields the
+/// reader can't make, named.
+export fn taped_declared(t: MetaType, language: TapeLanguage) -> Declared {
+    let layouts = laid_out(t, language.reading)
+    let unmade = unmade_fields(t, layouts)
+    if !unmade.is_empty() { return nothing_made(unmade) }
+    let reader = quote {
+        static fn untaped(${TREE_NAME}: ${language.tree}, ${TAPE_NAME}: TapeReader) -> ${t} { ${untaped_body(t, layouts)} }
+    }
+    node_declared(t, language, layouts, [reader])
+}
+
+/// `@derive` of a language's root: its nodes' writer, which says which of its variants each is, its
+/// id's writer and reader, and its schema. Its id is the one its own nodes hold, and a node of it is
+/// only ever read through that id.
+export fn root_declared(t: MetaType, language: TapeLanguage) -> Declared {
+    let id? = own_id(t, language.reading) else { return nothing_made([no_own_id(t)]) }
+    let declared_id? = language.reading.declared(id) else { return nothing_made([no_own_id(t)]) }
+    let index? = index_field(declared_id) else { return nothing_made([not_one_index(declared_id)]) }
+    let layouts = laid_out(t, language.reading)
+    let unmade = unmade_fields(t, layouts)
+    if !unmade.is_empty() { return nothing_made(unmade) }
+    node_declared(
+        t,
+        language,
+        layouts,
+        [id_methods(RootId { type_name: id, index: index }, t, layouts, language)],
+    )
+}
+
+/// The id naming a root's nodes, and the name of the one number it holds.
+type RootId = { type_name: string, index: string }
+
+/// The one field of an id, which numbers its node: absent when the id isn't one number.
+fn index_field(id: MetaType) -> string? {
+    if id.fields.length != 1 || !is_int(id.fields[0].kind) { return null }
+    id.fields[0].name
+}
+
+fn is_int(k: Kind) -> bool {
+    match k { .Int -> true, rest -> false }
+}
+
+/// The fields a node's value holds that nothing reads back, and those it writes with no bytes,
+/// each refused: a tape holds everything its tree does.
+fn unmade_fields(t: MetaType, layouts: List<Layout>) -> List<Diagnostic> {
+    [no_bytes(t, f) for layout in layouts for f in layout.shapeless]
+        .concat(
+            [unmade(t, h.field) for layout in layouts for h in layout.held if h.read == null && !layout.shapeless.any(it.name == h.field.name)],
+        )
+}
+
+/// A field and its shape, once it's known to have one.
+type ShapedValue = { field: Field, shape: ValueShape }
+
+/// A node type's writer and the readers handed in, beside the type.
+fn node_declared(
+    t: MetaType,
+    language: TapeLanguage,
+    layouts: List<Layout>,
+    beside_them: List<Decls>,
+) -> Declared {
+    let source = quote {
+        impl ${t} {
+            fn taped(${TREE_NAME}: ${language.tree}, mut ${TAPE_NAME}: TapeWriter) { ${taped_body(t, layouts)} }
+
+            ${beside_them}
+        }
+    }
+    Declared { made: [beside(t, source)] }
+}
+
+/// The id naming a root's nodes, as its nodes hold it: absent when none does.
+fn own_id(root: MetaType, reading: Reading) -> string? {
+    [id for v in reading.variants_of(root) for shape in v.shapes() for id in ids_naming(shape, root.name)]
+        .first()
+}
+
+/// The ids within a shape that name nodes of `node`.
+fn ids_naming(shape: ValueShape, node: string) -> List<string> {
+    match shape {
+        .Id(id, named, _) -> if named == node { [id] } else { [] },
+        rest -> [id for child in shape.children() for id in ids_naming(child, node)],
+    }
+}
+
+/// An id on a tape is the node it names, placed where that was written, then what the tree keeps
+/// beside it: its writer follows it to the node, and its reader puts the node read back in the
+/// tree. A node the tape already holds, as a meaning holds the nodes its sugar was written with,
+/// is written again as how far back it stands, past the root's last variant, so a tree that
+/// shares a node reads back sharing it, and a node written once costs nothing more. Both are the
+/// root's, so an id keeps no seat of its own and stays as flat as it's declared.
+fn id_methods(id: RootId, root: MetaType, layouts: List<Layout>, language: TapeLanguage) -> Decls {
+    let verbs = language.verbs
+    let node = root.name
+    let kind = literal(node)
+    let variants = layouts.length
+    let id_name = name(ID_NAME)
+    let index = quote { ${id_name}.${id.index} }
+    let read_node = quote { ${name(node)}.untaped_variant(${tree()}, ${tape()}, ${name(LEAD_NAME)}) }
+    let added = (verbs.added)(tree(), read_node, name(PLACE_NAME), node)
+    let facts_written = (verbs.facts_written)(tree(), tape(), id_name, node)
+    let facts_read = (verbs.facts_read)(tree(), tape(), id_name, node)
+    let chosen_seat = if says_its_variant(layouts) { LEAD_NAME } else { "_${LEAD_NAME}" }
+    let lone_variant: List<Stmts> = if says_its_variant(layouts) { [] } else { [quote { ${tape()}.choice(0) }] }
+    quote {
+        static fn taped_id(${TREE_NAME}: ${language.tree}, mut ${TAPE_NAME}: TapeWriter, ${ID_NAME}: ${id.type_name}) {
+            if !${tape()}.referred_to(${variants}, ${kind}, ${index}) {
+                let number = ${tape()}.entered(${(verbs.place)(tree(), id_name, node)})
+                ${tape()}.wrote(${kind}, ${index}, number)
+                ${lone_variant}
+                ${(verbs.node)(tree(), id_name, node)}.taped(${tree()}, ${tape()})
+                ${facts_written}
+                ${tape()}.left()
+            }
+        }
+
+        static fn untaped_variant(${TREE_NAME}: ${language.tree}, ${TAPE_NAME}: TapeReader, ${chosen_seat}: int) -> ${root} {
+            ${untaped_chosen(root, layouts, name(LEAD_NAME))}
+        }
+
+        static fn untaped_id(${TREE_NAME}: ${language.tree}, ${TAPE_NAME}: TapeReader) -> ${id.type_name} {
+            let ${LEAD_NAME} = ${tape()}.count()
+            let earlier = ${tape()}.reference(${name(LEAD_NAME)}, ${variants})
+            if earlier != null { return ${id.type_name} { ${id.index}: earlier! } }
+            let ${PLACE_NAME} = ${tape()}.place()
+            let number = ${tape()}.numbered()
+            let ${ID_NAME} = ${added}
+            ${tape()}.made_at(number, ${index})
+            ${facts_read}
+            ${id_name}
+        }
+
+    }
+}
+
+/// What generated code calls the number leading a node an id reaches.
+const LEAD_NAME: string = "lead"
+
+/// Generated statements writing `t` as one node, parents first: its variant when it has more than
+/// one, its flags, then its fields.
+fn taped_body(t: MetaType, layouts: List<Layout>) -> Stmts {
+    if !t.variants.is_empty() {
+        let arms: List<Arms> = [variant_written(layout, at, says_its_variant(layouts)) for at, layout in layouts]
+        return quote { match self { ${arms} } }
+    }
+    let record = layouts[0]
+    let fields = something_written(
+        fields_written([quote { self.${f.field.name} } for f in record.fields], record),
+    )
+    quote { ${fields} }
+}
+
+/// Generated statements reading one node of `t` back, in the order `taped_body` wrote it, and
+/// answering it.
+fn untaped_body(t: MetaType, layouts: List<Layout>) -> List<Stmts> {
+    untaped_chosen(t, layouts, quote { ${tape()}.choice(${layouts.length}) })
+}
+
+/// `untaped_body` with the variant `chosen` says, which is read only when the type has more than one.
+fn untaped_chosen(t: MetaType, layouts: List<Layout>, chosen: Code) -> List<Stmts> {
+    if t.variants.is_empty() {
+        let record = layouts[0]
+        let inits = [quote { Record { ${h.field.name}: ${h.read!} } } for h in record.held]
+        return [..flags_read(record), quote { ${t} { ..${inits} } }]
+    }
+    let made = [variant_read(t, layout) for layout in layouts]
+    if !says_its_variant(layouts) { return made[0] }
+    let last = made.length - 1
+    let arms: List<Arms> = [if at == last { quote { _ -> { ${read} } } } else { quote { ${at} -> { ${read} } } } for at, read in made]
+    [quote { match ${chosen} { ${arms} } }]
+}
+
+/// Whether a node of a type with these variants says which it is.
+fn says_its_variant(layouts: List<Layout>) -> bool { layouts.length > 1 }
+
+/// One match arm writing one variant. Its payload binds under names no generated code uses, and a
+/// field kept off the tape binds as unread.
+fn variant_written(layout: Layout, at: int, has_choice: bool) -> Arms {
+    let choice: List<Stmts> = if has_choice { [quote { ${tape()}.choice(${at}) }] } else { [] }
+    let binders = [if layout.writes(h.field) { "held_${h.field.name}" } else { "_${h.field.name}" } for h in layout.held]
+    let values = [name("held_${f.field.name}") for f in layout.fields]
+    let body = something_written([..choice, ..fields_written(values, layout)])
+    let declared = layout.declared
+    if binders.is_empty() { return quote { .${declared} -> { ${body} } } }
+    quote { .${declared}(${binders}) -> { ${body} } }
+}
+
+/// Generated statements reading one variant back and answering it, made from the fields its value
+/// holds.
+fn variant_read(t: MetaType, layout: Layout) -> List<Stmts> {
+    let values = [h.read! for h in layout.held]
+    let variant = layout.declared.name
+    let made: Stmts = if values.is_empty() { quote { ${name(t.name)}.${variant} } } else { quote { ${name(t.name)}.${variant}(..${values}) } }
+    [..flags_read(layout), made]
+}
+
+/// How one variant lies on a tape, worked out once for its writer, its reader and its refusals: the
+/// fields its value holds, each field written in order with the flag it leads with, and how many
+/// flags there are.
+type Layout = { declared: MetaVariant, held: List<Held>, fields: List<LaidField>, flag_count: int, shapeless: List<Field> }
+
+/// A field a variant's value holds, and the generated code reading it back: from the tape, or made
+/// without it. Absent when nothing makes one.
+type Held = { field: Field, read: Code? }
+
+/// A field written, how it lies, and the flag it leads with, if it does.
+/// A body field is left out of a face.
+type LaidField = { field: Field, shape: ValueShape, led: Led?, body: bool }
+
+/// A field leading with a flag: how, and which of the variant's flags is its.
+type Led = { form: FlagLed, number: int }
+
+/// Each variant of `t` laid out: a record is one, named as the type is.
+fn laid_out(t: MetaType, reading: Reading) -> List<Layout> {
+    let shaped = reading.variants_of(t)
+    [laid(
+        reading,
+        v,
+        if t.variants.is_empty() { t.fields } else { reading.carried_fields(v) },
+        shaped[at],
+    ) for at, v in declared_variants(t)]
+}
+
+fn laid(reading: Reading, declared: MetaVariant, held: List<Field>, v: ShapedVariant) -> Layout {
+    let shaped = [ShapedValue { field: f.field, shape: f.shape! } for f in v.fields if f.shape != null]
+    let forms = [flag_led(f.shape) for f in shaped]
+    let numbers = [[form for form in forms.take(at) if form != null].length for at, _form in forms]
+    let fields = [LaidField {
+        field: f.field,
+        shape: f.shape,
+        led: led_numbered(forms[at], numbers[at]),
+        body: reading.is_body(f.field),
+    } for at, f in shaped]
+    let flag_count = [form for form in forms if form != null].length
+    Layout {
+        declared: declared,
+        held: [Held { field: f, read: held_read(fields, flag_count, f) } for f in held],
+        fields: fields,
+        flag_count: flag_count,
+        shapeless: [f.field for f in v.fields if f.shape == null],
+    }
+}
+
+impl Layout {
+    /// Whether a field's value is written on the tape, so the writer reads it.
+    fn writes(f: Field) -> bool { self.fields.any(it.field.name == f.name) }
+}
+
+fn led_numbered(form: FlagLed?, number: int) -> Led? {
+    let led? = form else { return null }
+    Led { form: led, number: number }
+}
+
+/// Generated statements writing a variant's fields, each from its value: the flags first.
+fn fields_written(values: List<Code>, layout: Layout) -> List<Stmts> {
+    let flag_values = [(f.led!.form.flag)(values[at]) for at, f in layout.fields if f.led != null]
+    let leading: List<Stmts> = if flag_values.is_empty() { [] } else { [quote { ${tape()}.flags([..${flag_values}]) }] }
+    leading
+        .concat([statement for at, f in layout.fields for statement in field_written(f, values[at])])
+}
+
+/// The statement reading a variant's flags, when it has any.
+/// Flags that fit one number are read as it, and tested bit by bit.
+fn flags_read(layout: Layout) -> List<Stmts> {
+    if layout.flag_count == 0 { return [] }
+    if in_one_number(layout.flag_count) { return [quote { let ${FLAGS_NAME} = ${tape()}.count() }] }
+    [quote { let ${FLAGS_NAME} = ${tape()}.flags(${layout.flag_count}) }]
+}
+
+fn in_one_number(flag_count: int) -> bool { flag_count <= FLAGS_PER_NUMBER }
+
+/// Generated code reading flag `number` of a variant's `flag_count`.
+fn flag_read(flag_count: int, number: int) -> Code {
+    if in_one_number(flag_count) { return quote { (${name(FLAGS_NAME)} & ${flag_mask(number)}) != 0 } }
+    quote { ${name(FLAGS_NAME)}[${number}] }
+}
+
+/// Statements that say something, so a block of them is never read as an empty map.
+fn something_written(statements: List<Stmts>) -> List<Stmts> {
+    if statements.is_empty() { [quote { let _ = ${tape()} }] } else { statements }
+}
+
+/// A field after the flags: what's left of a flagged one, and the rest whole.
+fn field_written(f: LaidField, value: Code) -> List<Stmts> {
+    let whole = field_written_whole(f, value)
+    if !f.body { return whole }
+    [quote { if !${tape()}.facing { ${whole} } }]
+}
+
+fn field_written_whole(f: LaidField, value: Code) -> List<Stmts> {
+    let led? = f.led else { return [written(f.shape, value, 0)] }
+    (led.form.rest_written)(value)
+}
+
+/// A field's value read back: a flagged one from its flag, the rest whole, and one the tape doesn't
+/// hold, being carried or having no bytes, its default.
+fn held_read(fields: List<LaidField>, flag_count: int, f: Field) -> Code? {
+    let laid? = fields.find(it.field.name == f.name) else { return f.default }
+    let led? = laid.led else { return read(laid.shape, 0) }
+    (led.form.rest_read)(flag_read(flag_count, led.number))
+}
+
+/// How one shape of value is written to a tape and read back, in generated code. The two halves
+/// are one definition, so a shape can't gain a way on without a way back. `depth` names the
+/// binders of the walks a value is inside.
+type TapeForm = { written: fn(Code, int) -> Stmts, read: fn(int) -> Code }
+
+fn written(shape: ValueShape, value: Code, depth: int) -> Stmts { (tape_form(shape).written)(value, depth) }
+
+/// Generated code writing one value of `shape`, where `tree` and `tape` are bound.
+export fn value_written(shape: ValueShape, value: Code) -> Stmts { written(shape, value, 0) }
+
+/// Generated code reading one value of `shape` back.
+export fn value_read(shape: ValueShape) -> Code { read(shape, 0) }
+
+fn read(shape: ValueShape, depth: int) -> Code { (tape_form(shape).read)(depth) }
+
+fn tape_form(shape: ValueShape) -> TapeForm {
+    match shape {
+        .Int -> TapeForm {
+            written: (value: Code, _depth: int) -> quote { ${tape()}.int(${value}) },
+            read: (_depth: int) -> quote { ${tape()}.int() },
+        },
+        .Offset -> TapeForm {
+            written: (value: Code, _depth: int) -> quote { ${tape()}.offset(${value}) },
+            read: (_depth: int) -> quote { ${tape()}.offset() },
+        },
+        .Tags(type_name, _, variants) -> tags_form(type_name, variants),
+        .Float -> TapeForm {
+            written: (value: Code, _depth: int) -> quote { ${tape()}.float(${value}) },
+            read: (_depth: int) -> quote { ${tape()}.float() },
+        },
+        .Bool -> TapeForm {
+            written: (value: Code, _depth: int) -> quote { ${tape()}.flag(${value}) },
+            read: (_depth: int) -> quote { ${tape()}.flag() },
+        },
+        .Text -> TapeForm {
+            written: (value: Code, _depth: int) -> quote { ${tape()}.text(${value}) },
+            read: (_depth: int) -> quote { ${tape()}.text() },
+        },
+        .Octets -> TapeForm {
+            written: (value: Code, _depth: int) -> quote { ${tape()}.octets(${value}) },
+            read: (_depth: int) -> quote { ${tape()}.octets() },
+        },
+        .Optional(inner) -> TapeForm {
+            written: (value: Code, depth: int) -> quote {
+                if ${value} == null { ${tape()}.flag(false) } else {
+                    ${tape()}.flag(true)
+                    ${written(inner, quote { ${value}! }, depth)}
+                }
+            },
+            read: (depth: int) -> quote { if ${tape()}.flag() { ${read(inner, depth)} } else { null } },
+        },
+        .Listed(inner) -> TapeForm {
+            written: (value: Code, depth: int) -> {
+                let item = "item_${depth}"
+                quote {
+                    ${tape()}.count(${value}.length)
+                    for ${item} in ${value} { ${written(inner, name(item), depth + 1)} }
+                }
+            },
+            read: (depth: int) -> quote { [${read(inner, depth + 1)} for ${"_item_${depth}"} in 0..${tape()}.count()] },
+        },
+        .Celled(_) or .Renamed(_, _) -> wrapped_form(shape.wrapper()!),
+        .Entries(key, held) -> entries_form(key, held),
+        .Sides(ok, err) -> sides_form(ok, err),
+        .Declared(type_name, _) -> if type_name == NAME_TYPE {
+            name_form()
+        } else {
+            TapeForm {
+                written: (value: Code, _depth: int) -> quote { ${value}.taped(${tree()}, ${tape()}) },
+                read: (_depth: int) -> quote { ${name(type_name)}.untaped(${tree()}, ${tape()}) },
+            }
+        },
+        .Placed(from, to) -> TapeForm {
+            written: (value: Code, _depth: int) -> quote { let _ = ${tape()}.placed_within(${tree()}.${to}(${value})) },
+            read: (_depth: int) -> quote { ${tree()}.${from}(${tape()}.place()) },
+        },
+        .Id(_, node, _) -> TapeForm {
+            written: (value: Code, _depth: int) -> quote { ${name(node)}.taped_id(${tree()}, ${tape()}, ${value}) },
+            read: (_depth: int) -> quote { ${name(node)}.untaped_id(${tree()}, ${tape()}) },
+        },
+    }
+}
+
+/// A name lies on a tape as its text, and is read back interned.
+fn name_form() -> TapeForm {
+    TapeForm {
+        written: (value: Code, _depth: int) -> quote { ${tape()}.name(${value}) },
+        read: (_depth: int) -> quote { ${tape()}.name() },
+    }
+}
+
+/// A cell or a name over a shape lies on a tape as what it wraps.
+fn wrapped_form(w: Wrapper) -> TapeForm {
+    TapeForm {
+        written: (value: Code, depth: int) -> written(w.inner, (w.opened)(value), depth),
+        read: (depth: int) -> (w.closed)(read(w.inner, depth)),
+    }
+}
+
+/// A map is its length, then each key and its value, in its order.
+fn entries_form(key: ValueShape, held: ValueShape) -> TapeForm {
+    TapeForm {
+        written: (value: Code, depth: int) -> {
+            let key_name = "key_${depth}"
+            let held_name = "value_${depth}"
+            let pair = [
+                written(key, name(key_name), depth + 1),
+                written(held, name(held_name), depth + 1),
+            ]
+            quote {
+                ${tape()}.count(${value}.length)
+                for ${key_name}, ${held_name} in ${value} { ${pair} }
+            }
+        },
+        read: (depth: int) -> {
+            let entry = quote { Entry { key: ${read(key, depth + 1)}, value: ${read(held, depth + 1)} } }
+            quote { entries_map([${entry} for ${"_entry_${depth}"} in 0..${tape()}.count()]) }
+        },
+    }
+}
+
+/// A result is which side it is, then that side.
+/// An enum whose variants hold nothing lies as which one it is, when it has more than one.
+fn tags_form(type_name: string, variants: List<string>) -> TapeForm {
+    TapeForm {
+        written: (value: Code, _depth: int) -> tag_written(value, variants),
+        read: (_depth: int) -> if variants.length < 2 { quote { ${name(type_name)}.${variants[0]} } } else { tag_made(type_name, variants, quote { ${tape()}.choice(${variants.length}) }) },
+    }
+}
+
+fn tag_written(value: Code, variants: List<string>) -> Stmts {
+    if variants.length < 2 { return quote { let _ = ${value} } }
+    let number = tag_number(value, variants)
+    quote { ${tape()}.choice(${number}) }
+}
+
+fn sides_form(ok: ValueShape, err: ValueShape) -> TapeForm {
+    TapeForm {
+        written: (value: Code, depth: int) -> {
+            let ok_name = "ok_${depth}"
+            let err_name = "err_${depth}"
+            quote {
+                match ${value} {
+                    .Ok(${ok_name}) -> {
+                        ${tape()}.choice(0)
+                        ${written(ok, name(ok_name), depth + 1)}
+                    },
+                    .Err(${err_name}) -> {
+                        ${tape()}.choice(1)
+                        ${written(err, name(err_name), depth + 1)}
+                    },
+                }
+            }
+        },
+        read: (depth: int) -> quote {
+            if ${tape()}.choice(2) == 0 { .Ok(${read(ok, depth + 1)}) } else { .Err(${read(err, depth + 1)}) }
+        },
+    }
+}
+
+/// A value that leads its variant with a flag, as a bool and an optional value do: the flag, the
+/// statements writing what's left of it after the flags, and that read back from the flag.
+type FlagLed = { flag: fn(Code) -> Code, rest_written: fn(Code) -> List<Stmts>, rest_read: fn(Code) -> Code }
+
+fn flag_led(shape: ValueShape) -> FlagLed? {
+    match shape {
+        .Bool -> FlagLed {
+            flag: (value: Code) -> value,
+            rest_written: nothing_after,
+            rest_read: (flag: Code) -> flag,
+        },
+        .Optional(inner) -> FlagLed {
+            flag: (value: Code) -> quote { ${value} != null },
+            rest_written: (value: Code) -> [
+                quote { if ${value} != null { ${written(inner, quote { ${value}! }, 0)} } },
+            ],
+            rest_read: (flag: Code) -> quote { if ${flag} { ${read(inner, 0)} } else { null } },
+        },
+        .Celled(_) or .Renamed(_, _) -> led_through(shape.wrapper()!),
+        .Int or .Offset or .Float or .Text or .Octets or .Listed(_) or .Entries(_, _) or .Sides(_, _) or .Declared(_, _) or .Id(_, _, _) or .Placed(_, _) or .Tags(_, _, _) -> null,
+    }
+}
+
+/// A wrapper leads with the flag of what it wraps.
+fn led_through(w: Wrapper) -> FlagLed? {
+    let led? = flag_led(w.inner) else { return null }
+    FlagLed {
+        flag: (value: Code) -> (led.flag)((w.opened)(value)),
+        rest_written: (value: Code) -> (led.rest_written)((w.opened)(value)),
+        rest_read: (flag: Code) -> (w.closed)((led.rest_read)(flag)),
+    }
+}
+
+fn nothing_after(_value: Code) -> List<Stmts> { [] }
+
+fn unmade(t: MetaType, f: Field) -> Diagnostic {
+    refuse("`${t.name}.${f.name}` isn't on its tape, so reading it back needs a default")
+}
+
+fn no_bytes(t: MetaType, f: Field) -> Diagnostic {
+    refuse(
+        "`${t.name}.${f.name}` holds a `${f.kind.spelled()}`, which has no bytes, so a tape can't hold its node",
+    )
+}
+
+fn not_one_index(id: MetaType) -> Diagnostic {
+    refuse("`${id.name}` names a node, so it's one int, the node's number")
+}
+
+fn no_own_id(root: MetaType) -> Diagnostic {
+    refuse(
+        "no node of `${root.name}` holds an id naming one, so nothing says how its nodes are reached",
+    )
+}

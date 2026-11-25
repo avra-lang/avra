@@ -1,0 +1,329 @@
+// A job over the memory home: its laws, the queue and worker it
+// declares, and its verbs as theirs.
+use @std.queue.{
+    queue,
+    open_memory,
+    key,
+    Dead,
+    Delivery,
+    DrainError,
+    Durable,
+    Fate,
+    Guarantee,
+    HomeError,
+    Lasting,
+    Order,
+    Overflow,
+    Terms,
+}
+use @std.queue.job.{job}
+use @std.time.{Duration, mins, ms, secs, sleep}
+use tests.support.letters.{first_letter}
+
+fn doubled(d: Delivery<int>) -> Result<int, string> {
+    if d.item < 0 { fail "negative ${d.item}" }
+    d.item * 2
+}
+
+/// A home that outlives the process and never opens.
+fn unopenable<V>() -> Durable<V> {
+    Durable { open: (_n: string, _t: Terms, _d: Duration) -> shut<V>() }
+}
+
+fn shut<V>() -> Result<Lasting<V>, HomeError> {
+    .Err(HomeError.Refused("closed"))
+}
+
+fn said(j: job<int, int, string>) -> string {
+    j.check().map(it.message).join(" | ")
+}
+
+/// The laws a job of these terms is held to. Built from parameters,
+/// so its check is read where it stands.
+fn laws_of(capacity: int, retries: int, delivery: Guarantee, overflow: Overflow, at_once: int) -> string {
+    said(
+        job<int, int, string> {
+            each: doubled
+            capacity: capacity
+            retries: retries
+            delivery: delivery
+            overflow: overflow
+            at_once: at_once
+        },
+    )
+}
+
+/// The laws a job is held to whose letter, the program's, overflows
+/// with `o`.
+fn spilled(o: Overflow) -> string {
+    let spill = queue<Dead<int, string>> {
+        name: "spill"
+        overflow: o
+    }
+    said(
+        job<int, int, string> {
+            each: doubled
+            buries_in: spill
+        },
+    )
+}
+
+/// The laws a job named `name` is held to over the homes and the
+/// letter it names.
+fn lettered(
+    name: string,
+    durable: Durable<int>?,
+    letter: Durable<Dead<int, string>>?,
+    theirs: queue<Dead<int, string>>?,
+) -> string {
+    said(
+        job<int, int, string> {
+            name: name
+            each: doubled
+            durable: durable
+            letter: letter
+            buries_in: theirs
+        },
+    )
+}
+
+fn fate_of(f: Fate<string>) -> string {
+    match f { .Failed(e) -> e, .Unanswered -> "unanswered" }
+}
+
+fn drained(r: Result<int, DrainError>) -> int {
+    match r { .Ok(n) -> n, .Err(_) -> 0 - 1 }
+}
+
+/// A job of every term named away from its default, read back from
+/// the queue and the worker it declares.
+fn every_term() -> Result<string, HomeError> {
+    let home = open_memory<int>(
+        Terms {
+            capacity: 5,
+            lease: secs(7),
+            retries: 4,
+            dead: "given",
+            overflow: Overflow.fail,
+            order: Order.by_key,
+        },
+    )?
+    let j = job<int, int, string> {
+        name: "terms"
+        each: doubled
+        capacity: 5
+        lease: secs(7)
+        delivery: Guarantee.exactly_once
+        retries: 4
+        backoff: ms(3)
+        backoff_cap: ms(9)
+        overflow: Overflow.fail
+        order: Order.by_key
+        homed: home.home()
+        dedupe: mins(2)
+        at_once: 3
+        in_tx: true
+    }
+    let q = j.inbox()
+    let w = j.crew()
+    let _ = j.send(1)
+    [
+        q.name,
+        "${q.capacity}",
+        q.lease.text(),
+        "${q.delivery == Guarantee.exactly_once}",
+        "${q.retries}",
+        q.backoff.text(),
+        q.backoff_cap.text(),
+        "${q.overflow == Overflow.fail}",
+        "${q.order == Order.by_key}",
+        q.dedupe.text(),
+        "${home.depth()}",
+        "${w.at_once}",
+        "${w.in_tx}",
+        j.letters().name,
+    ]
+        .join(" ")
+}
+
+/// Two items through a job's drain: one settles, one is buried in the
+/// job's own letter.
+fn drained_once() -> string {
+    job<int, int, string> doubling {
+        name: "doubling"
+        retries: 1
+        each: doubled
+    }
+    let _ = doubling.send(2)
+    let _ = doubling.send(0 - 1)
+    let n = drained(doubling.drain())
+    let gone? = first_letter(doubling.letters()) else { return "no letter" }
+    "settled ${n} | left ${doubling.depth() catch 0 - 1} | ${gone.item} ${fate_of(gone.fate)} via ${gone.path.join(" > ")}"
+}
+
+/// A job whose buried items go to a letter the program declares.
+fn shared_letter() -> string {
+    queue<Dead<int, string>> undeliverable { name: "undeliverable" }
+    job<int, int, string> a {
+        name: "a"
+        retries: 1
+        each: doubled
+        buries_in: undeliverable
+    }
+    job<int, int, string> b {
+        name: "b"
+        retries: 1
+        each: doubled
+        buries_in: undeliverable
+    }
+    let _ = a.send(0 - 1)
+    let _ = b.send(0 - 2)
+    let _ = a.drain()
+    let _ = b.drain()
+    let one? = first_letter(undeliverable) else { return "none" }
+    let two? = first_letter(undeliverable) else { return "one" }
+    "${one.path[0]} ${one.item} | ${two.path[0]} ${two.item} | own ${a.letters().name}"
+}
+
+/// The events a job declares, each fired where its queue's or its
+/// worker's fires.
+fn events() -> string {
+    let seen: Cell<List<string>> = Cell.new([])
+    job<int, int, string> watched {
+        name: "watched"
+        retries: 1
+        each: doubled
+        took: (d: Delivery<int>) -> seen.push("took ${d.item}")
+        acked: (d: Delivery<int>) -> seen.push("acked ${d.item}")
+        failed: (d: Delivery<int>, e: string) -> seen.push("failed ${d.item}: ${e}")
+        buried: (gone: Dead<int, string>) -> seen.push("buried ${gone.item}")
+    }
+    let _ = watched.send(1)
+    let _ = watched.send(0 - 1)
+    let _ = watched.drain()
+    seen.get().join(" | ")
+}
+
+/// A job run for as long as its scope stands, then stopped.
+fn running() -> string {
+    job<int, int, string> serving {
+        name: "serving"
+        at_once: 2
+        each: doubled
+    }
+    let r = spawn serving.run()
+    for i in 0..5 { let _ = serving.send(i) }
+    sleep(ms(20))
+    serving.stop()
+    "settled ${drained(r.await)} | left ${serving.depth() catch 0 - 1}"
+}
+
+/// A delayed send to a job is taken only once it is due.
+fn delayed() -> string {
+    job<int, int, string> later {
+        name: "later"
+        each: doubled
+    }
+    let _ = later.send(1, after: ms(50))
+    let early = drained(later.drain())
+    sleep(ms(60))
+    "before ${early} | after ${drained(later.drain())}"
+}
+
+/// A job read through two copies and two asks is one queue and one
+/// worker.
+fn one_crew() -> string {
+    job<int, int, string> single {
+        name: "single"
+        each: doubled
+    }
+    let copy = single
+    let _ = copy.send(1)
+    let _ = single.inbox().send(2)
+    "${single.depth() catch 0 - 1} ${copy.depth() catch 0 - 1} ${drained(copy.drain())} ${single.depth() catch 0 - 1}"
+}
+
+/// Two jobs of one name in memory are two queues: the name is a
+/// durable home's to share.
+fn one_name_in_memory() -> string {
+    job<int, int, string> first {
+        name: "twin"
+        each: doubled
+    }
+    job<int, int, string> second {
+        name: "twin"
+        each: doubled
+    }
+    let _ = first.send(1)
+    "${first.depth() catch 0 - 1} ${second.depth() catch 0 - 1}"
+}
+
+spec "std/queue — a job" {
+    given "its check" {
+        then "a job of a handler alone is accepted" {
+            said(job<int, int, string> { each: doubled }) == ""
+        }
+        then "holds the queue's laws over the terms it names" {
+            laws_of(0, 0 - 1, Guarantee.exactly_once, Overflow.latest, 1) == "a queue holds at least one item, and this holds 0 | a queue attempts an item at least never, and this attempts -1 | a queue that drops on overflow cannot promise exactly once, and this drops with `overflow: latest`"
+        }
+        then "holds the worker's laws over the terms it names" {
+            laws_of(1, 3, Guarantee.at_least_once, Overflow.park, 0) == "a worker runs at least one handler at once, and this runs 0"
+        }
+        then "refuses a letter of the program's that drops, in that letter's name" {
+            spilled(Overflow.drop_newest) == "a letter never drops an item, and `spill` overflows with `drop_newest`" &&
+                spilled(Overflow.fail) == ""
+        }
+        then "refuses a durable job with no name, and a job whose own letter is durable with none" {
+            lettered("", unopenable<int>(), unopenable<Dead<int, string>>(), null) == "a durable queue is named, and this has no `name:`" &&
+                lettered("", null, unopenable<Dead<int, string>>(), null) == "a durable queue is named, and this has no `name:`"
+        }
+        then "refuses a durable job whose buried items would go to memory" {
+            lettered("resize", unopenable<int>(), null, null) == "a durable job's letter outlives the process too, and `resize` buries into memory — name `letter:` or `buries_in:`"
+        }
+        then "takes a durable job whose letter is its own and durable, or the program's" {
+            lettered("resize", unopenable<int>(), unopenable<Dead<int, string>>(), null) == "" &&
+                lettered(
+                    "resize",
+                    unopenable<int>(),
+                    null,
+                    queue<Dead<int, string>> { name: "theirs" },
+                ) == ""
+        }
+        then "refuses a job that names a letter of the program's and one of its own" {
+            lettered(
+                "both",
+                null,
+                unopenable<Dead<int, string>>(),
+                queue<Dead<int, string>> { name: "theirs" },
+            ) == "a job's buried items go to `buries_in:` or to its own `letter:`, and this names both"
+        }
+    }
+    given "the queue and worker it declares" {
+        then "every term the job names is its queue's or its worker's, and the home it names is the one sent to" {
+            (every_term() catch "no home") == "terms 5 7.0s true 4 3ms 9ms true true 2m00s 1 3 true terms/dead"
+        }
+        then "a job read through a copy and asked twice is one queue and one worker" {
+            one_crew() == "2 2 2 0"
+        }
+        then "two memory jobs of one name are two queues" {
+            one_name_in_memory() == "1 0"
+        }
+    }
+    given "its verbs" {
+        then "a drain settles what its handler answers and buries what fails in the job's own letter, `<name>/dead`" {
+            drained_once() == "settled 1 | left 0 | -1 negative -1 via doubling > doubling/dead"
+        }
+        then "a letter the program declares takes the buried items of every job that names it" {
+            shared_letter() == "a -1 | b -2 | own undeliverable"
+        }
+        then "fires the queue's and the worker's events where they fire" {
+            events() == "took 1 | acked 1 | took -1 | failed -1: negative -1 | buried -1"
+        }
+        then "a run settles what is sent while it stands, and a stop ends it" {
+            running() == "settled 5 | left 0"
+        }
+        then "a delayed send is handed out once it is due" {
+            delayed() == "before 0 | after 1"
+        }
+    }
+}

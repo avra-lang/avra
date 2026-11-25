@@ -1,0 +1,228 @@
+//! The driver's code table: which engine cause projects to which
+//! kind, meaning what. Kinds attach HERE — the engine stays
+//! kind-free — and every projected kind is checked against the
+//! assembled registry. Passes never pass through this table: they
+//! emit Diag directly with their own registered kinds.
+use core.{flatten, ParseRefusal, loc_span}
+use @std.errors.{Loc}
+use @std.grammar.{Diagnostic, Cause}
+use diagnostics.{Diag, DiagCode, Remedy, error_at, registered, loc_at, defect_at, defect_kind}
+
+/// One engine cause's projection row.
+type EngineCode = { cause: Cause, kind: string, summary: string }
+
+fn engine_codes() -> List<EngineCode> {
+    let rows = [
+        EngineCode {
+            cause: Cause.Lex,
+            kind: "lex.error",
+            summary: "a character or string the lexer cannot accept",
+        },
+        EngineCode {
+            cause: Cause.Expected,
+            kind: "parse.expected",
+            summary: "the parse needed a token that is not there",
+        },
+        EngineCode {
+            cause: Cause.Builder,
+            kind: "build.failed",
+            summary: "a builder rejected its captures",
+        },
+        EngineCode {
+            cause: Cause.Defect,
+            kind: "language.defect",
+            summary: "the language definition itself is defective",
+        },
+        EngineCode {
+            cause: Cause.Block,
+            kind: "block.parse",
+            summary: "a sublanguage block parses by its grammar",
+        },
+    ]
+    rows
+}
+
+/// Codes the driver's passes emit.
+fn pass_codes() -> List<DiagCode> {
+    let rows = [
+        DiagCode {
+            kind: "resolve.unresolved",
+            summary: "a name is not defined",
+            remedy: Remedy.Fix,
+        },
+        DiagCode { kind: "resolve.use_before_def", summary: "a name is used before its definition" },
+        DiagCode {
+            kind: "resolve.hole_bound",
+            summary: "a binder named through a hole is read through one",
+        },
+        DiagCode {
+            kind: "resolve.reserved",
+            summary: "the name is a keyword — today's or a future one",
+        },
+        DiagCode {
+            kind: "lower.no_projection",
+            summary: "the program's answer has no text projection",
+        },
+        DiagCode {
+            kind: "lower.entry_only",
+            summary: "run-time statements belong to the entry file",
+        },
+        DiagCode {
+            kind: "lower.code_hash_const",
+            summary: "a const's value holds no code hash — at compile time the program is only what the const reaches",
+        },
+        DiagCode {
+            kind: "lower.host_fn_twice",
+            summary: "a host fn's name is a symbol, and a symbol has one body in a program",
+        },
+        DiagCode {
+            kind: "lower.host_fn_shadows",
+            summary: "a host fn's name is no symbol the platform already defines",
+        },
+        DiagCode {
+            kind: "lower.host_fn_answers",
+            summary: "a bodiless extern is answered by the package that names it, or by the program's own",
+        },
+        DiagCode {
+            kind: "lower.host_fn_unasked",
+            summary: "a dependency's host fn is a program's export only when the program's own sources import that dependency",
+        },
+        DiagCode {
+            kind: "lower.host_fn_unhosted",
+            summary: "a dependency's host fn names the host that calls it, so a build exports it only beside that host",
+        },
+        DiagCode { kind: "type.type_value", summary: "a type name is not a value" },
+        DiagCode { kind: "resolve.nested_type", summary: "type declarations live at the top level" },
+        DiagCode {
+            kind: "resolve.builtin_type",
+            summary: "a built-in type name cannot be redeclared",
+        },
+        DiagCode {
+            kind: "resolve.paired",
+            summary: "a pairing loop names its index and element apart",
+        },
+        DiagCode {
+            kind: "resolve.runtime_binding",
+            summary: "a fn body cannot read the top level's run-time bindings",
+            remedy: Remedy.Fix,
+        },
+    ]
+    rows
+}
+
+/// Engine and pass rows as one registry, for assembly and `avra docs`.
+export const builtin_codes: List<DiagCode> = [DiagCode { kind: r.kind, summary: r.summary } for r in engine_codes()]
+    .concat(pass_codes())
+
+/// The dotted kind an engine cause projects to — a defect when the
+/// registry has no row for it.
+fn kind_for(c: Cause) -> string {
+    // A parse that stops short is the expectation it breaks.
+    let said = match c { .Trailing -> Cause.Expected, rest -> c }
+    engine_codes().find(it.cause == said)?.kind ?? defect_kind
+}
+
+/// One engine diagnostic in language currency. A defect names its
+/// subject up front; a parse voice states the law and, where it has one,
+/// its help.
+export fn project(d: Diagnostic, file: string?) -> Diag {
+    error_at(kind_for(d.cause), loc_at(file, loc_span(d.loc)), message_of(d)) with { help: help_of(d) }
+}
+
+/// More alternatives than a reader weighs at a glance — the message
+/// then states the law and the help lists the leading ones.
+const crowded: int = 8
+
+/// The words a reader gets: a defect with its rule, a crowded
+/// expectation as the law it breaks, every other cause as the engine said it.
+fn message_of(d: Diagnostic) -> string {
+    match d.cause {
+        .Defect -> in_rule(d),
+        .Expected -> if d.expected.length > crowded { "this cannot start or continue a `${d.in_rule}`" } else { d.message },
+        .Lex or .Trailing or .Builder or .Block -> d.message,
+    }
+}
+
+/// What the reader can do. A builder's own words are its claim and a
+/// defect is the compiler's, so neither is advised here; a block is the
+/// grammar its word declares, which says what it wants.
+fn help_of(d: Diagnostic) -> string? {
+    match d.cause {
+        .Lex -> "no token starts with this character — remove it, or put it inside a string",
+        .Expected -> expected_help(d),
+        .Trailing -> "the program ended before this — an extra closing `}` or `)` is the usual cause",
+        .Block -> "the block is parsed by the grammar its word declares — write the shape that grammar names",
+        .Builder or .Defect -> null,
+    }
+}
+
+fn expected_help(d: Diagnostic) -> string {
+    if d.expected.length <= crowded {
+        return "the parse stopped here — a missing or misplaced token just before this point is the usual cause"
+    }
+    let more = d.expected.length - crowded
+    "it could begin with ${d.expected.take(crowded).join(", ")} — and ${more} more"
+}
+
+/// An engine message with the rule it came from up front.
+fn in_rule(d: Diagnostic) -> string {
+    "`${d.in_rule}`: ${d.message}"
+}
+
+/// Every engine diagnostic projected, then the net: a kind the
+/// registry does not know becomes a loud defect of its own.
+export fn project_all(ds: List<Diagnostic>, file: string?, codes: List<DiagCode>) -> List<Diag> {
+    flatten([netted(project(d, file), codes) for d in ds])
+}
+
+/// What a parse refused, each in its registered kind through the same net: the lexer's, then the
+/// grammar's, then the blocks', then the builders'.
+export fn refusals_spoken(rs: List<ParseRefusal>, file: string?, codes: List<DiagCode>) -> List<
+    Diag,
+> {
+    flatten(
+        [refusal_spoken(r, file, codes) for group in 0..4 for r in rs if refusal_group(r) == group],
+    )
+}
+
+/// Where a refusal is said among a parse's: the lexer's, the grammar's, a block's, a builder's.
+fn refusal_group(r: ParseRefusal) -> int {
+    match r {
+        .Grammar(cause, _, _, _, _) -> match cause { .Lex -> 0, .Expected or .Trailing or .Builder or .Defect -> 1, .Block -> 2 },
+        .Builder(_, _, _, _) -> 3,
+    }
+}
+
+fn refusal_spoken(r: ParseRefusal, file: string?, codes: List<DiagCode>) -> List<Diag> {
+    match r {
+        .Grammar(cause, message, span, expected, in_rule) -> netted(
+            project(
+                Diagnostic {
+                    cause: cause,
+                    message: message,
+                    loc: span?.engine_loc(),
+                    expected: expected,
+                    in_rule: in_rule,
+                },
+                file,
+            ),
+            codes,
+        ),
+        .Builder(kind, message, help, span) -> netted(error_at(kind, loc_at(file, span), message) with { help: help }, codes),
+    }
+}
+
+/// The projected diagnostic — plus the net's defect when its kind
+/// is unregistered.
+fn netted(p: Diag, codes: List<DiagCode>) -> List<Diag> {
+    if !registered(codes, p.kind) {
+        return [p, defect_at(null, "`${p.kind}`: diagnostic kind is not registered")]
+    }
+    [p]
+}
+
+/// Assembly problems are language defects regardless of engine cause —
+/// their spans reference composed grammar text, not user source.
+export fn as_defects(ds: List<Diagnostic>) -> List<Diag> {
+    [defect_at(null, in_rule(d)) for d in ds]
+}

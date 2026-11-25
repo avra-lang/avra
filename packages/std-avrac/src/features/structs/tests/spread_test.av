@@ -1,0 +1,64 @@
+// Field spread, by its laws: a record's fields placed where `..R` is
+// written, and every misuse refused in one message.
+use @std.avrac.testing.{shown, refused_with}
+
+spec "features/structs — field spread" {
+    given "a spread" {
+        then "its fields stand beside the record's own, in written order" {
+            shown(
+                "type A = { a: int }\ntype B = { ..A, b: int }\nlet x = B { a: 1, b: 2 }\nx.a * 10 + x.b",
+            ) == "12"
+        }
+        then "a spread may sit between written fields" {
+            shown(
+                "type A = { a: int }\ntype B = { z: int, ..A, b: int }\nlet x = B { z: 5, a: 1, b: 2 }\nx.z + x.a + x.b",
+            ) == "8"
+        }
+        then "a spread's default fills an unwritten field" {
+            shown("type A = { a: int = 7 }\ntype B = { ..A, b: int }\nB { b: 1 }.a") == "7"
+        }
+        then "a generic spread takes its arguments" {
+            shown(
+                "type P<T> = { v: T }\ntype B = { ..P<string>, n: int }\nlet x = B { v: \"s\", n: 1 }\nx.v",
+            ) == "s"
+        }
+        then "a spreader is its own type — a spread relates nothing" {
+            refused_with(
+                "type A = { a: int }\ntype B = { ..A }\nfn f(x: A) -> int { x.a }\nf(B { a: 1 })",
+                "argument 1 of `f` wants `A`, found `B`",
+            )
+        }
+    }
+    given "refusals" {
+        then "a record cannot spread itself" {
+            refused_with("type A = { ..A, x: int }\n1", "`A` spreads itself")
+        }
+        then "two records cannot spread each other" {
+            refused_with(
+                "type A = { ..B }\ntype B = { ..A }\n1",
+                "spreads a record that spreads this one",
+            )
+        }
+        then "an enum is no record to spread" {
+            refused_with("enum E { X }\ntype A = { ..E }\n1", "`..E` spreads no record")
+        }
+        then "a scalar is no record to spread" {
+            refused_with("type A = { ..int }\n1", "`..int` spreads no record")
+        }
+        then "a named type is no record to spread" {
+            refused_with("type Id = int\ntype A = { ..Id }\n1", "`..Id` spreads no record")
+        }
+        then "a spread field and a written field cannot share a name" {
+            refused_with(
+                "type C = { x: int }\ntype A = { ..C, x: int }\n1",
+                "`A` declares `x` more than once",
+            )
+        }
+        then "two spreads cannot bring one name twice" {
+            refused_with(
+                "type C = { x: int }\ntype D = { x: int }\ntype A = { ..C, ..D }\n1",
+                "`A` declares `x` more than once",
+            )
+        }
+    }
+}

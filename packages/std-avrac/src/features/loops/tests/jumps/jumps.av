@@ -1,0 +1,112 @@
+// proves: `break` and `continue` end a loop's turn — the innermost, or
+// the `for` a label names — from inside `if`, `match`, a `let … else`,
+// a nested loop and a spawned task's loop; the turn's `defer`s run and
+// what the turn owns is settled on every way out
+fn first_over(xs: List<int>, n: int) -> int {
+    mut found = -1
+    for x in xs {
+        if x > n {
+            found = x
+            break
+        }
+    }
+    found
+}
+
+fn odd_sum(n: int) -> int {
+    mut s = 0
+    mut i = 0
+    while i < n {
+        i = i + 1
+        if i % 2 == 0 { continue }
+        s = s + i
+    }
+    s
+}
+
+fn pair_at(rows: List<List<int>>, want: int) -> string {
+    mut at = "none"
+    for r, row in rows {
+        for c, v in row {
+            if v == want {
+                at = "${r},${c}"
+                break row
+            }
+        }
+    }
+    at
+}
+
+fn positive_rows(rows: List<List<int>>) -> int {
+    mut s = 0
+    for row in rows {
+        for v in row {
+            if v < 0 { continue row }
+            s = s + v
+        }
+    }
+    s
+}
+
+fn until_stop(cmds: List<string>) -> int {
+    mut n = 0
+    for c in cmds {
+        match c { "stop" -> { break }, "skip" -> { continue }, _ -> { n = n + 1 } }
+    }
+    n
+}
+
+fn defers_run() -> string {
+    let log = Cell.new("")
+    for i in 0..5 {
+        defer log.set(log.get() + "d${i}")
+        if i == 1 { continue }
+        if i == 3 { break }
+        log.set(log.get() + "b${i}")
+    }
+    log.get()
+}
+
+fn tasked() -> int {
+    let t = spawn {
+        mut s = 0
+        for i in 0..100 {
+            if i == 10 { break }
+            s = s + i
+        }
+        s
+    }
+    t.await
+}
+
+fn countdown(n: int) -> int {
+    mut k = n
+    mut turns = 0
+    while true {
+        if k == 0 { break }
+        k = k - 1
+        turns = turns + 1
+    }
+    turns
+}
+
+fn present_sum(xs: List<int?>) -> int {
+    mut s = 0
+    for x in xs {
+        let v? = x else { continue }
+        s = s + v
+    }
+    s
+}
+
+fn joined_until(words: List<string>) -> string {
+    mut out = ""
+    for w in words {
+        let up = w + "!"
+        if up == "end!" { break }
+        out = out + up
+    }
+    out
+}
+
+"${first_over([1, 5, 9], 4)} ${odd_sum(7)} ${pair_at([[1, 2], [3, 4]], 4)} ${positive_rows([[1, 2], [3, -1, 50], [4]])} ${until_stop(["a", "skip", "b", "stop", "c"])} ${defers_run()} ${tasked()} ${countdown(3)} ${present_sum([1, null, 2])} ${joined_until(["a", "b", "end", "c"])}"

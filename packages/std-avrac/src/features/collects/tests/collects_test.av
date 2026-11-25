@@ -1,0 +1,1230 @@
+//! `collect`'s own laws (docs/2026_09_22_COLLECTIONS.md §4), proved
+//! against a program importing one test component (`widget`) — each
+//! refusal fired ALONE, on an otherwise-honest declaration, so the
+//! count pins which law spoke. A collect's kind is a component's
+//! own name, so a scratch (lone) source — with no import graph —
+//! answers `UnknownKind` for any word at all; these run through
+//! `provided()` instead, the one door that gives a scratch program a
+//! real component to name.
+use @std.avrac.testing.held.{Judged, held_at}
+use @std.avrac.testing.{refused_in, refused_n, shown, provided, answered, vendored_meta, Module}
+
+fn ui() -> string {
+    "export component widget {\n    run: fn(int) -> int?\n}\n"
+}
+
+fn built(main: string) -> Judged {
+    provided("use @x.c.{widget}\n" + main, ui())
+}
+
+/// A trivial marker annotation, needed by every `@name`-kind test:
+/// `@std/meta`'s own `Named` is the only receiver a scratch program
+/// can name (`Fn`/`Type` narrow to what `declared_kind` answers, and
+/// `Named` takes every declaration alike), so this is the one fn
+/// every `@tag(...)` site below crosses.
+fn tag_decl() -> string {
+    "use @std.meta.{Named}\nfn tag(what: Named, label: string) -> void {}\n"
+}
+
+/// The ORM's own two annotations: `@model_shape` and `@model` are
+/// separate marks a type may wear independently — pairing them is
+/// the ORM's OWN law, never `collect`'s. `model`'s receiver is
+/// `Type`, not `Named`: it is what lets `it` cross WHOLE.
+fn orm_decl() -> string {
+    "use @std.meta.{Type}\nfn model_shape(what: Type) -> void {}\nfn model(what: Type) -> void {}\n"
+}
+
+/// An int-taking annotation: `@numbered(n)` carries an ordinal a
+/// `by it.mark.args[0]` key reads, and `dense` checks for uniqueness
+/// and gaplessness.
+fn numbered_decl() -> string {
+    "use @std.meta.{Named}\nfn numbered(what: Named, ordinal: int) -> void {}\n"
+}
+
+/// An annotation whose seat takes ANY implementor of a local trait, so
+/// ONE column may carry an int and a string — the mixed-kind witness.
+fn mark_decl() -> string {
+    "use @std.meta.{Named}\ntrait Mark {\n    fn label() -> string\n}\nimpl Mark for int {\n    fn label() -> string { \"i\" }\n}\nimpl Mark for string {\n    fn label() -> string { self }\n}\nfn mark(what: Named, label: dyn Mark) -> void {}\n"
+}
+
+/// A gathered enum of two records: one empty, one of two fields.
+fn shapes() -> string {
+    "@numbered(0)\ntype Dot = {}\n@numbered(1)\ntype Line = { from: int, to: int }\ncollect enum Shape = @numbered in self by it.mark.args[0] dense\n"
+}
+
+/// A mark fn: its answer is `Marker`, so a reader gives it meaning.
+fn flag_decl() -> string { "use @std.meta.{Marker}\nfn flag(what: Named) -> Marker { Marker {} }\n" }
+
+/// `shapes()` with `Dot` wearing `extra` beside its gathering mark.
+fn member_marked(extra: string) -> string {
+    "@numbered(0)\n" +
+        extra +
+        "\ntype Dot = {}\n@numbered(1)\ntype Line = { from: int }\ncollect enum Shape = @numbered in self by it.mark.args[0] dense\n"
+}
+
+/// A derive reading each variant's marks, claiming `flag`.
+fn claimer() -> string {
+    "use @std.meta.{Type, Directive, literal}\nexport trait Claimer {\n    static fn derive(t: Type) -> List<Directive> {\n        [Directive { twin: \"\", name: t.name, at: t.at, source: quote { impl \${t} { static fn said() -> string { \${literal([v.name + \"/\" + [m.name for m in v.marks].join(\"+\") for v in t.variants].join(\" \"))} } } } }]\n    }\n    static fn marks(t: Type) -> List<string> { [\"flag\"] }\n}\n"
+}
+
+/// A DERIVING trait a `collect enum` fills its members' impl from:
+/// `Size.derive` writes the member's own `impl Size`, `size` its field
+/// count — so a derived member is told from a written one.
+fn sizer() -> string {
+    "use @std.meta.{Type, Directive}\nexport trait Size {\n    fn size() -> int\n    static fn derive(t: Type) -> List<Directive> {\n        [Directive { twin: \"\", name: t.name, at: t.at, source: quote { impl Size for \${t} { fn size() -> int { \${t.fields.length} } } } }]\n    }\n}\n"
+}
+
+fn ui2() -> string {
+    "export component widget {\n    run: fn(int) -> int?\n}\nexport component gadget {\n    run: fn(int) -> int?\n}\n"
+}
+
+fn built2(main: string) -> Judged {
+    provided("use @x.c.{widget, gadget}\n" + main, ui2())
+}
+
+/// A second dependency package, `@y/d`, whose `orphan` module (never
+/// `d.av` itself) instances `widget` — `app` names `@y/d` as a
+/// dependency regardless, so this is a witness of FILE reachability,
+/// never of PACKAGE linkage.
+fn cross_package(import_orphan: bool) -> string? {
+    let files = vendored_meta(
+        {
+            "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@x/c\" = { path = \"vendor/c\" }\n\"@y/d\" = { path = \"vendor/d\" }\n",
+            "/w/src/main.av": "use @x.c.{widget}\n" +
+                if import_orphan { "use @y.d.orphan.{marker}\n" } else { "" } +
+                "type Entry = { name: string }\ncollect xs: List<Entry> = widget in closure as Entry { name: it.name } by it.name\nxs.length",
+            "/w/vendor/c/avra.toml": "[package]\nname = \"@x/c\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n",
+            "/w/vendor/c/src/c.av": "use @std.meta.{Code}\n" + ui(),
+            "/w/vendor/d/avra.toml": "[package]\nname = \"@y/d\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@x/c\" = { path = \"../c\" }\n",
+            "/w/vendor/d/src/d.av": "export const marker0: int = 0\n",
+            "/w/vendor/d/src/orphan/orphan.av": "use @x.c.{widget}\nexport const marker: int = 1\nexport widget orphaned { n -> null }\n",
+        },
+    )
+    let paths = [
+        "/w/avra.toml",
+        "/w/src/main.av",
+        "/w/vendor/c/avra.toml",
+        "/w/vendor/c/src/c.av",
+        "/w/vendor/d/avra.toml",
+        "/w/vendor/d/src/d.av",
+        "/w/vendor/d/src/orphan/orphan.av",
+    ]
+    let ws = held_at(files, "/w")
+    match ws.judged_at("/w/src/main.av").run() { .Ok(v) -> v, .Err(_) -> null }
+}
+
+/// A DEPENDENCY's own `collect in package`, its one member in a module
+/// nothing ever imports. `package` means every file of the package —
+/// as it does for the root, whose files are all analyzed — never the
+/// files something else happened to reach.
+fn package_scope_in_dependency() -> string? {
+    let files = vendored_meta(
+        {
+            "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@x/c\" = { path = \"vendor/c\" }\n\"@y/d\" = { path = \"vendor/d\" }\n",
+            "/w/src/main.av": "use @y.d.{count}\ncount()",
+            "/w/vendor/c/avra.toml": "[package]\nname = \"@x/c\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n",
+            "/w/vendor/c/src/c.av": "use @std.meta.{Code}\n" + ui(),
+            "/w/vendor/d/avra.toml": "[package]\nname = \"@y/d\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@x/c\" = { path = \"../c\" }\n",
+            "/w/vendor/d/src/d.av": "use @x.c.{widget}\ntype Entry = { name: string }\ncollect xs: List<Entry> = widget in package as Entry { name: it.name } by it.name\nexport fn count() -> int { xs.length }\n",
+            "/w/vendor/d/src/orphan/orphan.av": "use @x.c.{widget}\nexport widget orphaned { n -> null }\n",
+        },
+    )
+    let paths = [
+        "/w/avra.toml",
+        "/w/src/main.av",
+        "/w/vendor/c/avra.toml",
+        "/w/vendor/c/src/c.av",
+        "/w/vendor/d/avra.toml",
+        "/w/vendor/d/src/d.av",
+        "/w/vendor/d/src/orphan/orphan.av",
+    ]
+    let ws = held_at(files, "/w")
+    match ws.judged_at("/w/src/main.av").run() { .Ok(v) -> v, .Err(_) -> null }
+}
+
+/// A PACKAGE STANDING UNDER A DIRECTORY NAMED `tests`: its own files
+/// are its code, so `in package` gathers a member from a module
+/// nothing imports and a `use` of a sibling module resolves.
+fn package_under_tests_dir() -> string? {
+    let files = vendored_meta(
+        {
+            "/w/tests/app/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../../vendor/meta\" }\n",
+            "/w/tests/app/src/main.av": "use parts.{tag, here}\ntype Entry = { name: string }\ncollect xs: List<Entry> = @tag in package as Entry { name: it.name } by it.name\n\"\${[x.name for x in xs].join(\",\")} \${here()}\"",
+            "/w/tests/app/src/parts/parts.av": "use @std.meta.{Named}\nexport fn tag(_what: Named, _label: string) {}\n@tag(\"a\")\nfn one() {}\nexport fn here() -> int { 7 }\n",
+            "/w/tests/app/src/far/far.av": "use parts.{tag}\n@tag(\"b\")\nfn two() {}\n",
+        },
+    )
+    let paths = [
+        "/w/tests/app/avra.toml",
+        "/w/tests/app/src/main.av",
+        "/w/tests/app/src/parts/parts.av",
+        "/w/tests/app/src/far/far.av",
+    ]
+    let ws = held_at(files, "/w/tests/app")
+    match ws.judged_at("/w/tests/app/src/main.av").run() { .Ok(v) -> v, .Err(_) -> null }
+}
+
+/// `cross_package`'s `.Annotated` twin, widened for the EXPORT law
+/// (§4.4): `@acme/parts` is always reached (`app` imports its
+/// `Widget`) and carries both an exported `Widget` and a PRIVATE
+/// `Secret`, both `@tag`ged — `Secret` must never join, reached or
+/// not, since it is neither the collect's own package nor exported.
+/// `@acme/extra`'s exported `Orphan` joins only once `app` reaches it
+/// at all — file reachability, same as `cross_package`'s `orphan`.
+fn annotated_cross_package(import_extra: bool) -> string? {
+    let files = vendored_meta(
+        {
+            "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@acme/parts\" = { path = \"vendor/parts\" }\n\"@acme/extra\" = { path = \"vendor/extra\" }\n",
+            "/w/src/main.av": "use @acme.parts.{Widget}\n" +
+                if import_extra { "use @acme.extra.{Orphan}\n" } else { "" } +
+                "type Entry = { name: string }\ncollect xs: List<Entry> = @tag in closure as Entry { name: it.name } by it.name\nxs.length",
+            "/w/vendor/parts/avra.toml": "[package]\nname = \"@acme/parts\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n",
+            "/w/vendor/parts/src/parts.av": tag_decl() +
+                "@tag(\"widget\")\nexport type Widget = { label: string }\n@tag(\"secret\")\ntype Secret = { label: string }\n",
+            "/w/vendor/extra/avra.toml": "[package]\nname = \"@acme/extra\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n",
+            "/w/vendor/extra/src/extra.av": tag_decl() + "@tag(\"ghost\")\nexport type Orphan = { label: string }\n",
+        },
+    )
+    let paths = [
+        "/w/avra.toml",
+        "/w/src/main.av",
+        "/w/vendor/parts/avra.toml",
+        "/w/vendor/parts/src/parts.av",
+        "/w/vendor/extra/avra.toml",
+        "/w/vendor/extra/src/extra.av",
+    ]
+    let ws = held_at(files, "/w")
+    match ws.judged_at("/w/src/main.av").run() { .Ok(v) -> v, .Err(_) -> null }
+}
+
+/// `annotated_cross_package`'s ORM twin: the same shape — a reached
+/// `@acme/parts` carrying an exported `User` and a private `Secret`,
+/// an unreached-until-asked `@acme/extra` carrying an exported
+/// `Gadget` — but `it` crosses WHOLE as `@std/meta`'s `Type`, the
+/// ORM's own program.
+fn orm_cross_package(import_extra: bool) -> string? {
+    let files = vendored_meta(
+        {
+            "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@acme/parts\" = { path = \"vendor/parts\" }\n\"@acme/extra\" = { path = \"vendor/extra\" }\n",
+            "/w/src/main.av": "use @acme.parts.{User}\n" +
+                if import_extra { "use @acme.extra.{Gadget}\n" } else { "" } +
+                "use @std.meta.{Type}\ntype ModelEntry = { model: Type, name: string }\ncollect models: List<ModelEntry> = @model in closure as ModelEntry { model: it, name: it.name } by it.name\n[m.name + \":\" + \"\${m.model.fields.length}\" for m in models].join(\" \")",
+            "/w/vendor/parts/avra.toml": "[package]\nname = \"@acme/parts\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n",
+            "/w/vendor/parts/src/parts.av": orm_decl() +
+                "@model\nexport type User = { id: int, name: string }\n@model\ntype Secret = { note: string }\n",
+            "/w/vendor/extra/avra.toml": "[package]\nname = \"@acme/extra\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n",
+            "/w/vendor/extra/src/extra.av": orm_decl() + "@model\nexport type Gadget = { label: string }\n",
+        },
+    )
+    let paths = [
+        "/w/avra.toml",
+        "/w/src/main.av",
+        "/w/vendor/parts/avra.toml",
+        "/w/vendor/parts/src/parts.av",
+        "/w/vendor/extra/avra.toml",
+        "/w/vendor/extra/src/extra.av",
+    ]
+    let ws = held_at(files, "/w")
+    match ws.judged_at("/w/src/main.av").run() { .Ok(v) -> v, .Err(_) -> null }
+}
+
+spec "collect's own laws" {
+    given "the order law" {
+        then "a collect with no `by` refuses" {
+            refused_in(
+                built(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = widget in closure as Entry { name: it.name }\n1",
+                ),
+                "a collection declares its order",
+            )
+        }
+        then "a collect WITH `by` does not refuse for order" {
+            !refused_in(
+                built(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = widget in closure as Entry { name: it.name } by it.name\n1",
+                ),
+                "a collection declares its order",
+            )
+        }
+    }
+    given "the kind law" {
+        then "an unknown declaration kind refuses" {
+            refused_in(
+                built(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = spell in closure as Entry { name: it.name } by it.name\n1",
+                ),
+                "is not a declaration kind",
+            )
+        }
+    }
+    given "the scope law" {
+        then "an unknown scope word refuses" {
+            refused_in(
+                built(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = widget in everywhere as Entry { name: it.name } by it.name\n1",
+                ),
+                "is not a collect scope",
+            )
+        }
+    }
+    given "the projection law" {
+        then "a projected type that disagrees with the declared element refuses" {
+            refused_in(
+                built(
+                    "type Entry = { name: string }\ntype Other = { name: string }\ncollect xs: List<Entry> = widget in closure as Other { name: it.name } by it.name\n1",
+                ),
+                "disagrees with the declared element",
+            )
+        }
+        then "a field the projection leaves unfilled refuses" {
+            refused_in(
+                built(
+                    "type Entry = { name: string, module: string }\ncollect xs: List<Entry> = widget in closure as Entry { name: it.name } by it.name\n1",
+                ),
+                "not each filled exactly once",
+            )
+        }
+        then "a field the declared type does not have refuses" {
+            refused_in(
+                built(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = widget in closure as Entry { name: it.name, extra: it.module } by it.name\n1",
+                ),
+                "not each filled exactly once",
+            )
+        }
+    }
+    given "the field vocabulary law" {
+        // A `.Component` kind now answers ANY single segment (its own
+        // field, read at lowering — `component_field_reg`,
+        // compiler/lower/lower.av) — the grammar itself caps a
+        // projection's path at one segment, so there is no written
+        // form left that names a path outside a component kind's
+        // vocabulary; a name that is not a real field is `field_named`'s
+        // DEFECT at lowering, not a type-time refusal.
+        then "a component's own field, not one of the generic four, still projects" {
+            !refused_in(
+                built(
+                    "type Entry = { name: string, ran: fn(int) -> int? }\ncollect xs: List<Entry> = widget in closure as Entry { name: it.name, ran: it.run } by it.name",
+                ),
+                "is not a field this kind's declarations answer",
+            )
+        }
+    }
+    given "the self-read cycle law (§4.2)" {
+        // A member reading its own collection while compiling: a
+        // cycle, since the collection's value IS this member's own
+        // synthesis. `consts/check.av`'s `self_collect_read` keys it
+        // off `SyntaxArena.instance_of` (the instance's own component
+        // word) matching the referenced collect's `CollectKind`
+        // word — general over every `.Component` kind, `widget`
+        // among them, not a `rule` special case.
+        then "an instance reading the collection it is itself gathered into refuses" {
+            refused_in(
+                built(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = widget in closure as Entry { name: it.name } by it.name\nexport widget cyclic { n -> if xs.length > n { n } else { null } }\n1",
+                ),
+                "`cyclic` is collected into `xs`",
+            )
+        }
+        then "a different collect of the same kind is STILL a self-read — every collect of that word gathers this instance too" {
+            refused_in(
+                built(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = widget in closure as Entry { name: it.name } by it.name\ncollect ys: List<Entry> = widget in closure as Entry { name: it.name } by it.name\nexport widget reads_ys { n -> if ys.length > n { n } else { null } }\n1",
+                ),
+                "`reads_ys` is collected into `ys`",
+            )
+        }
+        then "an instance reading a DIFFERENT kind's collection is fine — no cycle" {
+            !refused_in(
+                built2(
+                    "type Entry = { name: string }\ncollect zs: List<Entry> = gadget in closure as Entry { name: it.name } by it.name\nexport widget reads_gadgets { n -> if zs.length > n { n } else { null } }\n1",
+                ),
+                "collected into",
+            )
+        }
+        then "an ordinary const naming no component reads any collect clean" {
+            !refused_in(
+                built(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = widget in closure as Entry { name: it.name } by it.name\nfn count() -> int { xs.length }\n1",
+                ),
+                "collected into",
+            )
+        }
+    }
+    given "collected means reachable (docs/2026_09_22_COLLECTIONS.md §5)" {
+        // A CROSS-PACKAGE witness: `@y/d`'s `orphan` module (a
+        // second file, never `d.av`'s own) instances a `widget` —
+        // gathered under `closure` scope only once `app` actually
+        // imports something from it. `@y/d` is a real dependency
+        // package either way (app's own avra.toml names it), so this
+        // is never about LINKING the package — only about reaching
+        // the one FILE the instance sits in.
+        then "an unimported module's instance is not collected" {
+            cross_package(false) == "0"
+        }
+        then "importing that module's own name collects its instance" {
+            cross_package(true) == "1"
+        }
+        then "a dependency's `in package` collect gathers a module nothing imports" {
+            package_scope_in_dependency() == "1"
+        }
+        then "a package under a directory named `tests` gathers its own modules and resolves them" {
+            package_under_tests_dir() == "one,two 7"
+        }
+    }
+    given "the `@name` kind (docs/2026_09_22_COLLECTIONS.md §2)" {
+        // `@tag` in the kind slot is `CollectKind.Annotated`, never
+        // resolved against the component list — every declaration
+        // wearing `@tag`, of any DeclKind (`type` here, unlike
+        // `.Component`'s always-a-const instances), gathered by the
+        // written name alone. `it.mark` answers the MATCHED
+        // annotation's own name and its literal arguments.
+        then "every declaration wearing the annotation is gathered, `it.mark` reads its name and args" {
+            answered(
+                provided(
+                    tag_decl() +
+                        "@tag(\"widget\")\nexport type Widget = { label: string }\n@tag(\"gadget\")\nexport type Gadget = { label: string }\ntype MarkInfo = { name: string, args: List<string> }\ntype Entry = { name: string, mark: MarkInfo }\ncollect models: List<Entry> = @tag in self as Entry { name: it.name, mark: it.mark } by it.name\n[e.name + \":\" + e.mark.name + \"(\" + e.mark.args.join(\",\") + \")\" for e in models].join(\" \")",
+                    ui(),
+                ),
+            ) == "Gadget:tag(gadget) Widget:tag(widget)"
+        }
+        then "a bare word still resolves against the component list, never against annotations" {
+            !refused_in(
+                built(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = widget in closure as Entry { name: it.name } by it.name\n1",
+                ),
+                "is not a declaration kind",
+            )
+        }
+        then "a declaration wearing the annotation twice is gathered once" {
+            answered(
+                provided(
+                    tag_decl() +
+                        "@tag(\"a\")\n@tag(\"b\")\nexport type Widget = { label: string }\ntype Entry = { name: string }\ncollect models: List<Entry> = @tag in self as Entry { name: it.name } by it.name\n[e.name for e in models].join(\" \")",
+                    ui(),
+                ),
+            ) == "Widget"
+        }
+        then "a collect enum over a declaration wearing its annotation twice declares one variant" {
+            answered(
+                provided(
+                    tag_decl() +
+                        "@tag(\"x\")\n@tag(\"y\")\nfn build() {}\n" +
+                        "collect enum Command = @tag in self by it.name\n" +
+                        "\"\${Command.build.ordinal}\"",
+                    ui(),
+                ),
+            ) == "0"
+        }
+        then "an annotation's word and a component's word are two buckets" {
+            answered(
+                built(
+                    "export widget w { n -> null }\ntype Entry = { name: string }\n" +
+                        "collect xs: List<Entry> = @widget in self as Entry { name: it.name } by it.name\n" +
+                        "collect ys: List<Entry> = widget in self as Entry { name: it.name } by it.name\n" +
+                        "\"\${xs.length} \${ys.length}\"",
+                ),
+            ) == "0 1"
+        }
+        then "a path past `mark` on an `.Annotated` kind refuses — it has no instance value to read a field off" {
+            refused_in(
+                provided(
+                    tag_decl() +
+                        "@tag(\"widget\")\nexport type Widget = { label: string }\ntype Entry = { name: string }\ncollect xs: List<Entry> = @tag in self as Entry { name: it.label } by it.name\n1",
+                    ui(),
+                ),
+                "is not a field this kind's declarations answer",
+            )
+        }
+    }
+    given "the self-read cycle law (§4.2), over an `.Annotated` kind" {
+        // The same cycle `.Component` refuses, keyed off every
+        // `@name` the reading declaration itself wears
+        // (`self_collect_words`, features/consts/check.av) rather
+        // than `SyntaxArena.instance_of` — an annotated member need
+        // not be a component instance at all.
+        then "a const wearing the annotation the collect gathers by, reading that collect, refuses" {
+            refused_in(
+                provided(
+                    tag_decl() +
+                        "type Entry = { name: string }\ncollect xs: List<Entry> = @tag in closure as Entry { name: it.name } by it.name\n@tag(\"cyclic\")\nexport const cyclic: int = xs.length\n1",
+                    ui(),
+                ),
+                "`cyclic` is collected into `xs`",
+            )
+        }
+        then "a const wearing a DIFFERENT annotation reads the collect clean — no cycle" {
+            !refused_in(
+                provided(
+                    tag_decl() +
+                        "use @std.meta.{Named}\nfn other(what: Named) -> void {}\ntype Entry = { name: string }\ncollect xs: List<Entry> = @tag in closure as Entry { name: it.name } by it.name\n@other\nexport const reads_xs: int = xs.length\n1",
+                    ui(),
+                ),
+                "collected into",
+            )
+        }
+    }
+    given "the export law across packages (§4.4)" {
+        // `Secret` is private and lives in a DIFFERENT package than
+        // the collect's own file — it must never join, reached or
+        // not; `Widget` (exported, same foreign package) always
+        // does; `Orphan` (exported, a SEPARATE package) joins only
+        // once `app` reaches it at all, `cross_package`'s law again.
+        then "an exported declaration in a reached foreign package joins, a private one there does not" {
+            annotated_cross_package(false) == "1"
+        }
+        then "reaching the second package too admits its own exported declaration as well" {
+            annotated_cross_package(true) == "2"
+        }
+    }
+    given "the ORM's exact shape — `it` as the whole `@std/meta` `Type` value" {
+        // `type ModelEntry = { model: Type, name: string }` / `as
+        // ModelEntry { model: it, name: it.name }`: a bare `it` whose
+        // SEAT names `@std/meta`'s `Type` crosses the WHOLE
+        // declaration (fields, variants, at, doc, annotations) —
+        // `Decls.takes_a_decl`, the same door an annotation's own
+        // receiver crosses through — never the fn-value door `run:
+        // it` uses for a component's own field.
+        then "`it` carries the type's own fields and name, `it.name` orders `by`" {
+            answered(
+                provided(
+                    orm_decl() +
+                        "@model\nexport type User = { id: int, name: string }\n@model\nexport type Gadget = { label: string }\ntype ModelEntry = { model: Type, name: string }\ncollect models: List<ModelEntry> = @model in self as ModelEntry { model: it, name: it.name } by it.name\n[m.name + \":\" + m.model.name + \":\" + \"\${m.model.fields.length}\" for m in models].join(\" \")",
+                    ui(),
+                ),
+            ) == "Gadget:Gadget:1 User:User:2"
+        }
+        // Matching is EXACT — pairing `@model_shape` with `@model` is
+        // the ORM's own law, never `collect`'s.
+        then "a type wearing both `@model_shape` and `@model` is collected" {
+            answered(
+                provided(
+                    orm_decl() +
+                        "@model_shape\n@model\nexport type User = { id: int, name: string }\ntype ModelEntry = { model: Type, name: string }\ncollect models: List<ModelEntry> = @model in self as ModelEntry { model: it, name: it.name } by it.name\nmodels.length",
+                    ui(),
+                ),
+            ) == "1"
+        }
+        then "a type wearing only `@model_shape` is NOT collected" {
+            answered(
+                provided(
+                    orm_decl() +
+                        "@model_shape\nexport type User = { id: int, name: string }\ntype ModelEntry = { model: Type, name: string }\ncollect models: List<ModelEntry> = @model in self as ModelEntry { model: it, name: it.name } by it.name\nmodels.length",
+                    ui(),
+                ),
+            ) == "0"
+        }
+        then "a type wearing only `@model`, with no `@model_shape`, IS collected" {
+            answered(
+                provided(
+                    orm_decl() +
+                        "@model\nexport type User = { id: int, name: string }\ntype ModelEntry = { model: Type, name: string }\ncollect models: List<ModelEntry> = @model in self as ModelEntry { model: it, name: it.name } by it.name\nmodels.length",
+                    ui(),
+                ),
+            ) == "1"
+        }
+        // Closure across packages, exported only (§4.4) — with `it`
+        // crossing WHOLE.
+        then "an exported model in a reached foreign package joins, a private one there does not" {
+            orm_cross_package(false) == "User:2"
+        }
+        then "reaching the second package too admits its own exported model as well" {
+            orm_cross_package(true) == "Gadget:1 User:2"
+        }
+    }
+    given "the `it`/`by` words" {
+        then "an ordinary `it` still means the pronoun, unreserved by the new grammar" {
+            shown("[1, 2, 3].any(it > 1)") == "true"
+        }
+        then "an ordinary `by` still names an identifier, unreserved by the new grammar" {
+            shown("fn f(by: int) -> int { by + 1 }\nf(2)") == "3"
+        }
+    }
+    given "collect enum (docs/2026_09_22_COLLECTIONS.md's step 4)" {
+        // The kind/scope/order laws are `collect`'s own — `check_collect_enum`
+        // (features/collects/check.av) calls the same `checked_kind`/
+        // `checked_scope`/`order_required` a value collect does.
+        then "an unknown declaration kind refuses" {
+            refused_in(
+                built("collect enum X = spell in package by it.name\n1"),
+                "is not a declaration kind",
+            )
+        }
+        then "an unknown scope refuses" {
+            refused_in(
+                built("collect enum X = widget in everywhere by it.name\n1"),
+                "is not a collect scope",
+            )
+        }
+        then "no `by` refuses — order is declared, same as a value collect" {
+            refused_in(
+                built("collect enum X = widget in package\n1"),
+                "a collection declares its order",
+            )
+        }
+        then "a gathering of no member refuses at its declaration — an enum names at least one variant" {
+            refused_in(
+                built("collect enum X = widget in package by it.name\n1"),
+                "`X` gathers no member",
+            )
+        }
+        then "every gathered member is one payload-free variant, named by its own declaration name, in `by` order" {
+            answered(
+                provided(
+                    tag_decl() +
+                        "@tag(\"x\")\nfn build() {}\n@tag(\"y\")\nfn init() {}\n" +
+                        "collect enum Command = @tag in self by it.name\n" +
+                        "fn describe(c: Command) -> string { match c { .build -> \"build\", .init -> \"init\" } }\n" +
+                        "\"\${describe(Command.build)} \${describe(Command.init)} \${Command.build.ordinal} \${Command.init.ordinal}\"",
+                    ui(),
+                ),
+            ) == "build init 0 1"
+        }
+        then "a gathered variant carries its member record's fields, in field order" {
+            answered(
+                provided(
+                    numbered_decl() +
+                        shapes() +
+                        "match Shape.Line(1, 4) { .Dot -> 0, .Line(a, b) -> b - a }",
+                    ui(),
+                ),
+            ) == "3"
+        }
+        then "a match missing a gathered variant names it" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        shapes() +
+                        "fn f(s: Shape) -> int { match s { .Dot -> 0 } }\n1",
+                    ui(),
+                ),
+                "must handle `.Line`",
+            )
+        }
+        then "a member record naming an unknown type refuses once, at the member" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "@numbered(0)\ntype Dot = { at: Nowhere }\n" +
+                        "collect enum Shape = @numbered in self by it.mark.args[0] dense\n" +
+                        "match Shape.Dot(1) { .Dot(_) -> 0 }",
+                    ui(),
+                ),
+                "`Nowhere` names no type",
+            )
+        }
+        then "a member naming its own enum carries that field when the member is signed first" {
+            answered(
+                provided(
+                    numbered_decl() +
+                        "@numbered(0)\ntype Dot = {}\n@numbered(1)\ntype Neg = { inner: Shape? }\n" +
+                        "collect enum Shape = @numbered in self by it.mark.args[0] dense\n" +
+                        "match Shape.Neg(Shape.Neg(null)) { .Dot -> 0, .Neg(inner) -> if inner == null { 1 } else { 2 } }",
+                    ui(),
+                ),
+            ) == "2"
+        }
+        then "an enum gathering `in closure` refuses" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "@numbered(0)\ntype Dot = {}\ncollect enum Shape = @numbered in closure by it.mark.args[0] dense\n1",
+                    ui(),
+                ),
+                "gathers `in closure`",
+            )
+        }
+        then "an enum with no `by` is refused once, for its order" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "@numbered(0)\ntype Dot = {}\n@numbered(1)\ntype Line = { to: int }\n" +
+                        "collect enum Shape = @numbered in self\n1",
+                    ui(),
+                ),
+                "a collection declares its order",
+            )
+        }
+        then "two members sharing an order key refuse" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "@numbered(0)\ntype Dot = {}\n@numbered(0)\ntype Line = { to: int }\n" +
+                        "collect enum Shape = @numbered in self by it.mark.args[0]\n1",
+                    ui(),
+                ),
+                "two members share a key",
+            )
+        }
+        then "a member record taking type parameters refuses" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "@numbered(0)\ntype Wrap<T> = { held: T }\n" +
+                        "collect enum Shape = @numbered in self by it.mark.args[0] dense\n1",
+                    ui(),
+                ),
+                "`Wrap` takes type parameters",
+            )
+        }
+        then "a member record spreading another's fields refuses" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "type Base = { id: int }\n@numbered(0)\ntype Line = { ..Base, to: int }\n" +
+                        "collect enum Shape = @numbered in self by it.mark.args[0] dense\n1",
+                    ui(),
+                ),
+                "`Line` spreads another record's",
+            )
+        }
+        then "a record field of the collect enum's own type, and a fn matching it exhaustively, both resolve — written BEFORE the collect enum's own declaration, pinning `sig_rank`'s order" {
+            answered(
+                provided(
+                    "type Holder = { c: Command }\n" +
+                        "fn label(h: Holder) -> string { match h.c { .build -> \"build\", .init -> \"init\" } }\n" +
+                        tag_decl() +
+                        "@tag(\"x\")\nfn build() {}\n@tag(\"y\")\nfn init() {}\n" +
+                        "collect enum Command = @tag in self by it.name\n" +
+                        "label(Holder { c: Command.build })",
+                    ui(),
+                ),
+            ) == "build"
+        }
+        then "adding a member the match does not handle refuses — a new member breaks every match, on purpose" {
+            refused_in(
+                provided(
+                    tag_decl() +
+                        "@tag(\"x\")\nfn build() {}\n@tag(\"y\")\nfn init() {}\n@tag(\"z\")\nfn clean() {}\n" +
+                        "collect enum Command = @tag in self by it.name\n" +
+                        "fn describe(c: Command) -> string { match c { .build -> \"build\", .init -> \"init\" } }\n" +
+                        "describe(Command.build)",
+                    ui(),
+                ),
+                "must handle",
+            )
+        }
+        then "two members that would name the same variant refuse, naming the collect and the variant" {
+            refused_in(
+                provided(
+                    tag_decl() + "collect enum Command = @tag in package by it.name\n1",
+                    ui(),
+                    modules: [
+                        Module { name: "a", text: tag_decl() + "@tag(\"one\")\nfn run() {}\n" },
+                        Module { name: "b", text: tag_decl() + "@tag(\"two\")\nfn run() {}\n" },
+                    ],
+                ),
+                "`Command` declares `run` more than once",
+            )
+        }
+        // NOT a claim that `package` scope needs no import on real disk —
+        // it does (a file nothing reaches is tree-shaken out, law 7); this
+        // harness's `memory_host` admits every given module regardless,
+        // so what this proves is narrower: once two modules ARE part of
+        // the program, `in package` gathers across the module boundary
+        // with no `use` between them, which `in self` could not.
+        then "a member in another module, already part of the program, joins under `in package` with no `use` between the two" {
+            answered(
+                provided(
+                    "collect enum Command = @tag in package by it.name\n" +
+                        "fn describe(c: Command) -> string { match c { .build -> \"build\", .other -> \"other\" } }\n" +
+                        "describe(Command.build) + \" \" + describe(Command.other)",
+                    ui(),
+                    modules: [
+                        Module { name: "a", text: tag_decl() + "@tag(\"x\")\nfn build() {}\n" },
+                        Module { name: "b", text: tag_decl() + "@tag(\"y\")\nfn other() {}\n" },
+                    ],
+                ),
+            ) == "build other"
+        }
+    }
+    given "a gathered member's marks are its variant's" {
+        then "a member's mark no reader claims is refused" {
+            refused_in(
+                provided(numbered_decl() + flag_decl() + member_marked("@flag") + "1", ui()),
+                "nothing on `Shape`, which gathers this, reads it",
+            )
+        }
+        then "a member's field mark no reader claims is refused" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "@numbered(0)\ntype Dot = { @key at: int }\ncollect enum Shape = @numbered in self by it.mark.args[0] dense\n1",
+                    ui(),
+                ),
+                "nothing on `Shape`, which gathers this, reads it",
+            )
+        }
+        then "a misspelled member mark is unresolved, never a mark" {
+            refused_in(
+                provided(numbered_decl() + flag_decl() + member_marked("@flga") + "1", ui()),
+                "is not defined",
+            )
+        }
+        then "the gathering annotation is no mark" {
+            answered(provided(numbered_decl() + shapes() + "1", ui())) == "1"
+        }
+        then "a user's own `Marker` makes no mark — the answer must be @std/meta's" {
+            let p = provided(
+                numbered_decl() +
+                    "type Marker = {}\nfn flag(what: Named) -> Marker { Marker {} }\n" +
+                    member_marked("@flag") +
+                    "1",
+                ui(),
+            )
+            refused_in(p, "an annotation answers an effect") &&
+                !refused_in(p, "which gathers this, reads it")
+        }
+        then "a member's void annotation stays the record's" {
+            answered(
+                provided(
+                    numbered_decl() +
+                        "fn noted(what: Named) -> void {\n    let _n = 1\n}\n" +
+                        member_marked("@noted") +
+                        "1",
+                    ui(),
+                ),
+            ) == "1"
+        }
+        then "a member's validating annotation stays the record's" {
+            answered(
+                provided(
+                    numbered_decl() +
+                        "use @std.meta.{Diagnostic}\nfn vetted(what: Named) -> List<Diagnostic> { [] }\n" +
+                        member_marked("@vetted") +
+                        "1",
+                    ui(),
+                ),
+            ) == "1"
+        }
+        then "a member gathered twice is held to each enum's readers: claimed by one, refused by the other" {
+            refused_in(
+                provided(
+                    "use @x.c.{Claimer}\nuse @std.meta.{derive}\n" +
+                        numbered_decl() +
+                        flag_decl() +
+                        "@numbered(0)\n@flag\ntype Dot = {}\n@derive(Claimer)\ncollect enum Read = @numbered in self by it.mark.args[0] dense\ncollect enum Unread = @numbered in self by it.mark.args[0] dense\n1",
+                    claimer(),
+                ),
+                "nothing on `Unread`, which gathers this, reads it",
+            )
+        }
+        then "a member two enums leave unread is refused once by each, each naming its enum" {
+            let p = provided(
+                numbered_decl() +
+                    flag_decl() +
+                    "@numbered(0)\n@flag\ntype Dot = {}\ncollect enum A = @numbered in self by it.mark.args[0] dense\ncollect enum B = @numbered in self by it.mark.args[0] dense\n1",
+                ui(),
+            )
+            refused_n(p, "nothing on `A`, which gathers this", 2) &&
+                p.report().contains("nothing on `B`, which gathers this")
+        }
+        then "a mark fn is never run" {
+            answered(
+                provided(
+                    "use @x.c.{Claimer}\nuse @std.meta.{derive, Marker}\n" +
+                        numbered_decl() +
+                        "fn flag(what: Named) -> Marker {\n    let xs: List<int> = []\n    let _boom = xs[3]\n    Marker {}\n}\n@numbered(0)\n@flag\ntype Dot = {}\n@derive(Claimer)\ncollect enum Shape = @numbered in self by it.mark.args[0] dense\nShape.said()",
+                    claimer(),
+                ),
+            ) == "Dot/flag"
+        }
+        then "a claimed member mark reaches the enum's derive" {
+            answered(
+                provided(
+                    "use @x.c.{Claimer}\nuse @std.meta.{derive}\n" +
+                        numbered_decl() +
+                        flag_decl() +
+                        "@numbered(0)\n@flag\ntype Dot = {}\n@numbered(1)\ntype Line = { from: int }\n@derive(Claimer)\ncollect enum Shape = @numbered in self by it.mark.args[0] dense\nShape.said()",
+                    claimer(),
+                ),
+            ) == "Dot/flag Line/"
+        }
+    }
+    given "a declaration's own mark, with no collect gathering it" {
+        then "a private type's mark is read by nothing, and refused" {
+            refused_in(
+                provided(numbered_decl() + flag_decl() + "@flag\ntype T = {}\n1", ui()),
+                "nothing on this declaration reads it",
+            )
+        }
+        then "a private fn's mark is refused alike" {
+            refused_in(
+                provided(numbered_decl() + flag_decl() + "@flag\nfn g() -> int { 1 }\ng()", ui()),
+                "nothing on this declaration reads it",
+            )
+        }
+        then "an exported declaration's mark stands — a package outside the build may gather it" {
+            answered(provided(numbered_decl() + flag_decl() + "@flag\nexport type T = {}\n1", ui())) == "1"
+        }
+        then "a gathered declaration's marks are its collect's to hold, never its own voice's" {
+            let p = provided(
+                numbered_decl() +
+                    flag_decl() +
+                    "@numbered(0)\n@flag\ntype T = {}\ncollect enum E = @numbered in self by it.mark.args[0] dense\n1",
+                ui(),
+            )
+            refused_in(p, "which gathers this") &&
+                !refused_in(p, "nothing on this declaration reads it")
+        }
+    }
+    given "a gathered payload is held to the slot law" {
+        then "a void field is refused once, by its record, and its payload reads as nothing to bind" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "@numbered(0)\ntype Dot = { v: void }\ncollect enum Shape = @numbered in self by it.mark.args[0] dense\nlet y: int = match Shape.Dot(1) { .Dot(x) -> x }\ny",
+                    ui(),
+                ),
+                "a struct field cannot hold nothing",
+            )
+        }
+        then "a task field is refused once, by its record" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "@numbered(0)\ntype Dot = { t: Task<int> }\ncollect enum Shape = @numbered in self by it.mark.args[0] dense\n1",
+                    ui(),
+                ),
+                "a task cannot outlive the block that spawned it",
+            )
+        }
+        then "a misspelled field type is refused once, by the name law" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "@numbered(0)\ntype Dot = { v: Nope }\ncollect enum Shape = @numbered in self by it.mark.args[0] dense\n1",
+                    ui(),
+                ),
+                "Nope",
+            )
+        }
+        then "a member gathered by two enums is refused once" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "@numbered(0)\ntype Dot = { v: void }\ncollect enum A = @numbered in self by it.mark.args[0] dense\ncollect enum B = @numbered in self by it.mark.args[0] dense\n1",
+                    ui(),
+                ),
+                "a struct field cannot hold nothing",
+            )
+        }
+        then "a nullable field crosses as a payload unchanged" {
+            answered(
+                provided(
+                    numbered_decl() +
+                        "@numbered(0)\ntype Dot = { v: int? }\ncollect enum Shape = @numbered in self by it.mark.args[0] dense\nmatch Shape.Dot(null) { .Dot(x) -> x ?? 7 }",
+                    ui(),
+                ),
+            ) == "7"
+        }
+    }
+    given "a field default rides its owner's statement and wears none of its annotations" {
+        then "a record with a defaulted field gathers as one variant" {
+            answered(
+                provided(
+                    numbered_decl() +
+                        "@numbered(0)\ntype Dot = { v: int = 0 }\ncollect enum Shape = @numbered in self by it.mark.args[0] dense\nmatch Shape.Dot(1) { .Dot(x) -> x }",
+                    ui(),
+                ),
+            ) == "1"
+        }
+        then "a state field with a default gathers as one variant" {
+            answered(
+                provided(
+                    numbered_decl() +
+                        "@numbered(0)\ntype Dot = {\n    state n: int = 0\n}\ncollect enum Shape = @numbered in self by it.mark.args[0] dense\nmatch Shape.Dot(1) { .Dot(x) -> x }",
+                    ui(),
+                ),
+            ) == "1"
+        }
+        then "a derive over a record with a defaulted field runs once" {
+            answered(
+                provided(
+                    "use @x.c.{Claimer}\nuse @std.meta.{derive}\n@derive(Claimer)\ntype Dot = { v: int = 0 }\n\"[\${Dot.said()}]\"",
+                    claimer(),
+                ),
+            ) == "[]"
+        }
+        then "a validator over a record with a defaulted field speaks once" {
+            refused_in(
+                provided(
+                    "use @std.meta.{Named, Diagnostic}\nfn vetted(what: Named) -> List<Diagnostic> { [Diagnostic { message: \"vetted says no\", help: null, at: null }] }\n@vetted\ntype Dot = { v: int = 0, w: int = 1 }\n1",
+                    ui(),
+                ),
+                "vetted says no",
+            )
+        }
+    }
+    given "`collect enum E: T` — every member implements the trait" {
+        then "a member with no impl is refused once, where it is declared" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "trait Size {\n    fn size() -> int\n}\n@numbered(0)\ntype Dot = {}\nimpl Size for Dot {\n    fn size() -> int { 1 }\n}\n@numbered(1)\ntype Line = { from: int }\ncollect enum Shape: Size = @numbered in self by it.mark.args[0] dense\n1",
+                    ui(),
+                ),
+                "`Line` is gathered into `Shape` and has no `impl Size for Line`",
+            )
+        }
+        then "a method taking `Self` and answering another type than `bool` is refused at the trait" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "trait Rank {\n    fn versus(other: Self) -> int\n}\n@numbered(0)\ntype Dot = { at: int }\nimpl Rank for Dot {\n    fn versus(other: Dot) -> int { self.at - other.at }\n}\ncollect enum Item: Rank = @numbered in self by it.mark.args[0] dense\n1",
+                    ui(),
+                ),
+                "`Rank.versus` takes `Self` and answers `int` — members of different variants have no such answer",
+            )
+        }
+        then "a deriving trait fills a member with no impl, and the enum reaches it" {
+            answered(
+                provided(
+                    "use @x.c.{Size}\n" +
+                        numbered_decl() +
+                        "@numbered(0)\ntype Dot = {}\n@numbered(1)\ntype Line = { from: int }\ncollect enum Shape: Size = @numbered in self by it.mark.args[0] dense\n\"\${Shape.Dot.size()} \${Shape.Line(5).size()}\"",
+                    sizer(),
+                ),
+            ) == "0 1"
+        }
+        then "a member's own impl wins over the derive" {
+            answered(
+                provided(
+                    "use @x.c.{Size}\n" +
+                        numbered_decl() +
+                        "@numbered(0)\ntype Dot = {}\nimpl Size for Dot {\n    fn size() -> int { 9 }\n}\n@numbered(1)\ntype Line = { from: int }\ncollect enum Shape: Size = @numbered in self by it.mark.args[0] dense\n\"\${Shape.Dot.size()} \${Shape.Line(5).size()}\"",
+                    sizer(),
+                ),
+            ) == "9 1"
+        }
+        then "a `@delegates` trait's member with no impl is refused once, and the method still resolves" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "use @std.meta.{delegates}\n@delegates(Shape)\ntrait Size {\n    fn size() -> int\n}\n@numbered(0)\ntype Dot = {}\nimpl Size for Dot {\n    fn size() -> int { 1 }\n}\n@numbered(1)\ntype Line = { from: int }\ncollect enum Shape = @numbered in self by it.mark.args[0] dense\nShape.Dot.size()",
+                    ui(),
+                ),
+                "`Line` is gathered into `Shape` and has no `impl Size for Line`",
+            )
+        }
+        then "a declared name that is no trait is refused once" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "type Nope = {}\n@numbered(0)\ntype Dot = {}\ncollect enum Shape: Nope = @numbered in self by it.mark.args[0] dense\n1",
+                    ui(),
+                ),
+                "`Nope` names no trait here",
+            )
+        }
+        then "an undefined name is resolve's alone" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "@numbered(0)\ntype Dot = {}\ncollect enum Shape: Nope = @numbered in self by it.mark.args[0] dense\n1",
+                    ui(),
+                ),
+                "`Nope` is not defined",
+            )
+        }
+        then "a same-named record's impl in another module does not stand for the member's" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "use shapes.{Size}\n@numbered(0)\ntype Line = { from: int }\ncollect enum Shape: Size = @numbered in self by it.mark.args[0] dense\n1",
+                    ui(),
+                    [
+                        Module {
+                            name: "shapes",
+                            text: "export trait Size {\n    fn size() -> int\n}\n",
+                        },
+                        Module {
+                            name: "other",
+                            text: "use shapes.{Size}\ntype Line = { from: int }\nimpl Size for Line {\n    fn size() -> int { 1 }\n}\n",
+                        },
+                    ],
+                ),
+                "`Line` is gathered into `Shape` and has no `impl Size for Line`",
+            )
+        }
+    }
+    given "the order's currency law" {
+        // The `by` key's own TYPE is its currency: a literal read at
+        // its value (never lexed), a whole mark/list/field refused at
+        // check — never a silent fall back to file order.
+        then "a `by` key reads the int literal's own value, so source order does not decide" {
+            answered(
+                provided(
+                    numbered_decl() +
+                        "@numbered(9)\nfn a() {}\n@numbered(2)\nfn b() {}\n" +
+                        "type MarkInfo = { name: string, args: List<string> }\ntype Entry = { name: string, mark: MarkInfo }\ncollect xs: List<Entry> = @numbered in self as Entry { name: it.name, mark: it.mark } by it.mark.args[0]\n[x.mark.args[0] for x in xs].join(\" \")",
+                    ui(),
+                ),
+            ) == "2 9"
+        }
+        then "a duplicate ordinal under `dense` refuses" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "@numbered(0)\nfn a() {}\n@numbered(0)\nfn b() {}\n" +
+                        "type MarkInfo = { name: string, args: List<string> }\ntype Entry = { name: string, mark: MarkInfo }\ncollect xs: List<Entry> = @numbered in self as Entry { name: it.name, mark: it.mark } by it.mark.args[0] dense\n1",
+                    ui(),
+                ),
+                "not unique and gap-free from 0",
+            )
+        }
+        then "a gap under `dense` refuses" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "@numbered(0)\nfn a() {}\n@numbered(2)\nfn b() {}\n" +
+                        "type MarkInfo = { name: string, args: List<string> }\ntype Entry = { name: string, mark: MarkInfo }\ncollect xs: List<Entry> = @numbered in self as Entry { name: it.name, mark: it.mark } by it.mark.args[0] dense\n1",
+                    ui(),
+                ),
+                "not unique and gap-free from 0",
+            )
+        }
+        then "a column mixing an int and a string refuses — never lexed as text" {
+            refused_in(
+                provided(
+                    mark_decl() +
+                        "@mark(\"a\")\nfn alpha() {}\n@mark(1)\nfn beta() {}\n" +
+                        "type Entry = { name: string }\ncollect xs: List<Entry> = @mark in self as Entry { name: it.name } by it.mark.args[0]\n1",
+                    ui(),
+                ),
+                "mixes int and string",
+            )
+        }
+        then "a whole mark is not comparable — the path must reach a literal" {
+            refused_in(
+                provided(
+                    tag_decl() +
+                        "@tag(\"a\")\nexport type Widget = { label: string }\ntype Entry = { name: string }\ncollect xs: List<Entry> = @tag in self as Entry { name: it.name } by it.mark\n1",
+                    ui(),
+                ),
+                "is not a value a `by` key can compare",
+            )
+        }
+        then "a whole args list is not comparable" {
+            refused_in(
+                provided(
+                    tag_decl() +
+                        "@tag(\"a\")\nexport type Widget = { label: string }\ntype Entry = { name: string }\ncollect xs: List<Entry> = @tag in self as Entry { name: it.name } by it.mark.args\n1",
+                    ui(),
+                ),
+                "is not a value a `by` key can compare",
+            )
+        }
+        then "`it.mark.name` is comparable — the annotation's own name" {
+            !refused_in(
+                provided(
+                    tag_decl() +
+                        "@tag(\"a\")\nexport type Widget = { label: string }\ntype Entry = { name: string }\ncollect xs: List<Entry> = @tag in self as Entry { name: it.name } by it.mark.name\n1",
+                    ui(),
+                ),
+                "is not a value a `by` key can compare",
+            )
+        }
+        then "a component's own field is not comparable — only its generic words are" {
+            refused_in(
+                built(
+                    "type Entry = { name: string, ran: fn(int) -> int? }\ncollect xs: List<Entry> = widget in closure as Entry { name: it.name, ran: it.run } by it.run\n1",
+                ),
+                "is not a value a `by` key can compare",
+            )
+        }
+    }
+    given "a malformed declaration names the missing part" {
+        then "a missing `=` names the `=`" {
+            refused_in(
+                built(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> widget in closure as Entry { name: it.name } by it.name\n1",
+                ),
+                "expected `=` after a collect's type",
+            )
+        }
+        then "a missing `in` names the scope" {
+            refused_in(
+                built(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = widget closure as Entry { name: it.name } by it.name\n1",
+                ),
+                "expected `in` and a scope",
+            )
+        }
+        then "a missing `as` names the projection" {
+            refused_in(
+                built(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = widget in closure Entry { name: it.name } by it.name\n1",
+                ),
+                "expected `as` and the projected type",
+            )
+        }
+        then "a missing `{` names the projection's fields" {
+            refused_in(
+                built(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = widget in closure as Entry name: it.name } by it.name\n1",
+                ),
+                "expected `{` to open the projection",
+            )
+        }
+        then "a field without its `:` names the `:`" {
+            refused_in(
+                built(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = widget in closure as Entry { name it.name } by it.name\n1",
+                ),
+                "expected `:` after a projection field's name",
+            )
+        }
+        then "a missing `}` names the `}`" {
+            refused_in(
+                built(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = widget in closure as Entry { name: it.name by it.name\n1",
+                ),
+                "expected `}` to close the projection",
+            )
+        }
+        then "a stray word inside the projection speaks once" {
+            refused_in(
+                built(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = widget in closure as Entry { name: it.name extra } by it.name\n1",
+                ),
+                "expected `}` to close the projection",
+            )
+        }
+        then "a word after the order names the line's end" {
+            refused_in(
+                built(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = widget in closure as Entry { name: it.name } by it.name extra\n1",
+                ),
+                "expected the line to end after the collect",
+            )
+        }
+        then "a nameless `collect enum` names the name" {
+            refused_in(
+                built("collect enum = widget in package by it.name\n1"),
+                "expected the collected enum's name",
+            )
+        }
+        then "a `collect enum` missing `=` names it" {
+            refused_in(
+                built("collect enum K widget in package by it.name\n1"),
+                "expected `=` after the collected enum's name",
+            )
+        }
+        then "a `collect enum` missing `in` names the scope" {
+            refused_in(
+                built("collect enum K = widget package by it.name\n1"),
+                "expected `in` and a scope",
+            )
+        }
+        then "a word after a `collect enum`'s order names the line's end" {
+            refused_in(
+                built("collect enum K = widget in package by it.name extra\n1"),
+                "expected the line to end after the collect",
+            )
+        }
+        then "a `collect { … }` expression still parses as one" {
+            !refused_in(built("fn f() -> List<int> { collect { 1 } }\nf().length"), "expected")
+        }
+    }
+}

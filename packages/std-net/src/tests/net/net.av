@@ -1,0 +1,50 @@
+//! proves: @std.net on loopback — a listener on the kernel's port, a
+//! connect, an accept, a read through the connection's own source, a
+//! write, the echo back, EOF after the client closes, and the peer
+//! named as the loopback address.
+use @std.net.{listen, connect, Read, Conn, NetError}
+use @std.time.{secs, Duration, quiet}
+
+fn shown(r: Read) -> string {
+    match r { .Data(b) -> b.text() ?? "<bytes>", .Eof -> "<eof>", .Pending -> "<pending>" }
+}
+
+/// The chunk the connection hands over within `budget`, null once the
+/// wait runs out or the peer has finished.
+fn arrived(c: Conn, budget: Duration) -> Result<Bytes?, NetError> {
+    let src = c.reads()
+    select {
+        b in src -> .Ok(b)
+        quiet(budget) -> .Ok(null)
+        src.ended -> .Ok(null)
+    }
+}
+
+fn size_of(b: Bytes?) -> int {
+    match b {
+        v? -> v.length
+        null -> 0
+    }
+}
+
+fn exchange() -> Result<string, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let client = connect("127.0.0.1", l.port, secs(2))?
+    let server = l.accept()?
+    let quiet = shown(server.try_read(64)?)
+    let hello = "GET / HTTP/1.1\r\n".bytes()
+    let put = client.try_write(hello, 0)?
+    let got = arrived(server, secs(2))?
+    let echoed = server.try_write(hello, 0)?
+    let back = arrived(client, secs(2))?
+    let peer = server.peer().starts_with("127.0.0.1:")
+    client.close()?
+    let eof = arrived(server, secs(2))?
+    server.close()?
+    l.close()?
+    .Ok(
+        "${l.port > 0} ${size_of(got)} ${quiet} ${put} ${echoed} ${size_of(back)} ${peer} ${eof == null}",
+    )
+}
+
+match exchange() { .Ok(line) -> line, .Err(e) -> "failed: ${e.verb} ${e.subject}" }

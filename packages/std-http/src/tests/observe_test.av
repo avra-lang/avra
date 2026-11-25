@@ -1,0 +1,130 @@
+// Observing: a trace joined or started, the handler handed this
+// server's span, a request id kept or minted and echoed, and one log
+// record per request.
+use @std.http.http.{Request, Unrouted, Response, Handler, text}
+use @std.http.observe.{Observe, Served, observing, parent_of, access_json}
+use @std.json.{parse}
+
+/// The layer logging into `log`, around a handler that answers what it
+/// saw of the trace and the id.
+fn watched(log: Cell<List<Served>>, fields: string) -> Response {
+    let o = Observe { log: (s: Served) -> log.set(log.get().concat([s])) }
+    (observing(o))(
+        framed_from("GET /ideas?x=1 HTTP/1.1\r\nHost: h\r\n${fields}\r\n".bytes())!,
+        context_seen,
+    )
+}
+
+fn context_seen(q: Request<Unrouted>) -> Response {
+    text(
+        200,
+        "${q.header("traceparent") ?? "-"} ${q.header("x-request-id") ?? "-"} ${q.headers("traceparent").length}",
+    )
+}
+
+/// A log that keeps nothing.
+fn unlogged(_s: Served) {}
+
+fn caller() -> string { "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01" }
+
+spec "std/http — observing" {
+    given "the empty case, written first" {
+        then "no context: a trace starts and its id is the request id" {
+            let log: Cell<List<Served>> = Cell.new([])
+            let r = watched(log, "")
+            let s = log.get()[0]
+            s.parent == null &&
+                s.trace.length == 32 &&
+                s.span.length == 16 &&
+                s.id == s.trace &&
+                r.header("x-request-id") == s.trace
+        }
+    }
+    given "a trace context" {
+        then "joined beneath the caller" {
+            let log: Cell<List<Served>> = Cell.new([])
+            let _ = watched(log, "traceparent: ${caller()}\r\n")
+            let s = log.get()[0]
+            s.trace == "0af7651916cd43dd8448eb211c80319c" &&
+                s.parent == "b7ad6b7169203331" &&
+                s.span != "b7ad6b7169203331"
+        }
+        then "the handler sees this server's span, once" {
+            let log: Cell<List<Served>> = Cell.new([])
+            let said = watched(log, "traceparent: ${caller()}\r\n").body.text() ?? ""
+            said.starts_with("00-0af7651916cd43dd8448eb211c80319c-${log.get()[0].span}-01 ") &&
+                said.ends_with(" 1")
+        }
+        then "a malformed context starts a new trace" {
+            let bad = [
+                "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331",
+                "01-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+                "00-00000000000000000000000000000000-b7ad6b7169203331-01",
+                "00-0af7651916cd43dd8448eb211c80319c-0000000000000000-01",
+                "00-0AF7651916CD43DD8448EB211C80319C-b7ad6b7169203331-01",
+                "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-0g",
+            ]
+            bad.all(parent_of(it) == null)
+        }
+        then "a well-formed one parses" { parent_of(" ${caller()} ")?.span == "b7ad6b7169203331" }
+    }
+    given "the request id" {
+        then "a plain one is kept, context_seen and echoed" {
+            let log: Cell<List<Served>> = Cell.new([])
+            let r = watched(log, "X-Request-Id: req-42.a_b\r\n")
+            log.get()[0].id == "req-42.a_b" &&
+                r.header("x-request-id") == "req-42.a_b" &&
+                (r.body.text() ?? "").contains(" req-42.a_b ")
+        }
+        then "one with other characters is replaced" {
+            let log: Cell<List<Served>> = Cell.new([])
+            let _ = watched(log, "X-Request-Id: a b\r\n")
+            log.get()[0].id == log.get()[0].trace
+        }
+        then "one of 65 characters is replaced" {
+            let log: Cell<List<Served>> = Cell.new([])
+            let _ = watched(log, "X-Request-Id: ${["a" for _i in 0..65].join("")}\r\n")
+            log.get()[0].id == log.get()[0].trace
+        }
+    }
+    given "the record" {
+        then "method, target, status and size" {
+            let log: Cell<List<Served>> = Cell.new([])
+            let r = watched(log, "")
+            let s = log.get()[0]
+            s.method == "GET" &&
+                s.target == "/ideas?x=1" &&
+                s.status == 200 &&
+                s.size == r.body.length &&
+                s.handled_ns >= 0
+        }
+        then "ids differ request to request" {
+            let log: Cell<List<Served>> = Cell.new([])
+            let _ = watched(log, "")
+            let _ = watched(log, "")
+            log.get()[0].trace != log.get()[1].trace && log.get()[0].span != log.get()[1].span
+        }
+        then "server-timing only when asked" {
+            let o = Observe { log: unlogged, timing: true }
+            let r = (observing(o))(
+                framed_from("GET / HTTP/1.1\r\nHost: h\r\n\r\n".bytes())!,
+                (_q) -> text(200, "ok"),
+            )
+            (r.header("server-timing") ?? "").starts_with("app;dur=")
+        }
+    }
+    given "the access line" {
+        then "a target carrying quotes and a backslash stays one JSON value" {
+            let log: Cell<List<Served>> = Cell.new([])
+            let o = Observe { log: (s: Served) -> log.set(log.get().concat([s])) }
+            let _ = (observing(o))(
+                framed_from("GET /a\"b\\c HTTP/1.1\r\nHost: h\r\n\r\n".bytes())!,
+                context_seen,
+            )
+            match parse(access_json(log.get()[0])) {
+                .Ok(j) -> j.member("target").text() == "/a\"b\\c",
+                .Err(_) -> false,
+            }
+        }
+    }
+}

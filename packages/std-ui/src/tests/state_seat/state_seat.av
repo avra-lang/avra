@@ -1,0 +1,91 @@
+// proves: a component's `state` head seat is the caller's PLACE — the
+// instance holds the caller's Cell, so a write through `self.n` is a write
+// to the caller's state, seen by every other reader of it. A place is a
+// module `state` (here passed from inside a fn), or a `state` field by any
+// path: a list element is a copy, and a copy shares its record's Cells, so
+// an edit rides its row through a keyed reorder, and a row that leaves
+// takes only its own node. One place handed two seats is one Cell.
+use @std.ui.components.{button, column, field, text}
+use @std.ui.headless.{Screen, headless}
+
+type Todo = { id: int, state title: string }
+
+state count: int = 0
+state todos: List<Todo> = [Todo { id: 1, title: "milk" }, Todo { id: 2, title: "eggs" }]
+
+component stepper(state n: int) {
+    button "+" {
+        on press {
+            self.n = self.n + 1
+        }
+    }
+}
+
+component pair(state a: int, state b: int) {
+    text "a ${self.a} b ${self.b}"
+    button "a+" {
+        on press {
+            self.a = self.a + 1
+        }
+    }
+}
+
+component editor(state words: string) {
+    id: int = 0
+    field "title ${self.id}" {
+        value: self.words
+        on input { typed ->
+            self.words = typed
+        }
+    }
+}
+
+component board {
+    column {
+        text "count ${count}"
+        stepper count
+        pair count { b: count }
+        button "reverse" {
+            on press {
+                todos = [todos[1], todos[0]]
+            }
+        }
+        button "drop 1" {
+            on press {
+                todos = todos.filter(it.id != 1)
+            }
+        }
+        for t in todos {
+            editor t.title {
+                key: "${t.id}"
+                id: t.id
+            }
+        }
+    }
+}
+
+fn page() -> board { board {} }
+
+fn shown(s: Screen) -> string {
+    [l.trim() for l in s.text().split("\n") if l.trim() != ""].join(" | ")
+}
+
+fn titles() -> string { [t.title for t in todos].join(",") }
+
+let s = headless(page)
+println(shown(s))
+println("press ${s.press("+")} ${s.press("+")}")
+println("count ${count}")
+println("pair ${s.press("a+")}")
+println(shown(s))
+println("fill ${s.fill("title 1", "oat milk")}")
+println("titles ${titles()}")
+let kept = todos[0]
+println("reverse ${s.press("reverse")} ${titles()}")
+println(shown(s))
+println("fill again ${s.fill("title 1", "oat milk!")}")
+println("titles ${titles()}")
+println("drop ${s.press("drop 1")} ${titles()} kept ${kept.title}")
+println(shown(s))
+println("fill left ${s.fill("title 2", "brown eggs")}")
+println(shown(s))

@@ -1,0 +1,76 @@
+// The cores' rows: one process per core, sharing nothing. A group is
+// handled as an int; every row answers at once, and a caller that must
+// wait parks on the descriptor a row names.
+#ifndef AVRA_CORES_H
+#define AVRA_CORES_H
+
+#include <stdint.h>
+
+// The cores this process may run on — its affinity mask where the
+// system has one.
+int64_t avra_cores_online(void);
+
+// A group of `n` cores, not yet forked; the handle, or -errno.
+int64_t avra_cores_group(int64_t n);
+
+// A package's PREPARE hook for the cores' fork: asked once, in the parent, before the first
+// fork. It readies the package's process-global state to be rebuilt on either side, or answers
+// nonzero with its words in `*why`, and then no core forks (the fork answers -EBUSY).
+void avra_fork_hook(int (*prepare)(const char** why));
+
+// Forks the group's cores. Answers the core's index (0..n-1) in each
+// core, `n` in the supervisor, or -errno. A core keeps the calling task
+// alone and no descriptor but the standard three and `serving`.
+int64_t avra_cores_fork(int64_t g, int64_t serving);
+
+// A core's side: the descriptor to park on until the group stops, and
+// 1 once it has — or the supervisor is gone — else 0.
+int64_t avra_cores_stop_fd(int64_t g);
+int64_t avra_cores_stopped(int64_t g);
+
+// A core's open connections published; the supervisor's sum of them.
+void avra_cores_count(int64_t g, int64_t core, int64_t live);
+int64_t avra_cores_live(int64_t g);
+
+// A core leaves: what it accepted and the errno it failed with (0 when
+// it stopped as asked) kept for the supervisor, the process exited.
+// Never returns.
+int64_t avra_cores_leave(int64_t g, int64_t core, int64_t accepted, int64_t err);
+
+// The supervisor's side: the descriptor that ends when core `core`
+// does, to park on; 0 once it has ended (reaped), else -EAGAIN.
+int64_t avra_cores_end_fd(int64_t g, int64_t core);
+int64_t avra_cores_heard(int64_t g, int64_t core);
+
+// Core `core` killed when it has not ended, and reaped; 0 once it has ended.
+int64_t avra_cores_killed(int64_t g, int64_t core);
+
+// Every core told to stop. Only the supervisor can; elsewhere nothing.
+void avra_cores_stop(int64_t g);
+
+// Once every core has ended: the connections they accepted, or -errno
+// for the first that failed. A core that trapped or was killed traps
+// here, naming it. The group is gone after.
+int64_t avra_cores_result(int64_t g);
+int64_t avra_cores_finished(int64_t g);
+int64_t avra_cores_stderr_to(const char* path);
+int64_t avra_cores_claimed(int64_t g);
+// What a reader maps a shared table's octets as: the shape `avra_mmap_word_at` reads.
+typedef struct { const char* base; int64_t len; } AvraSharedView;
+void* avra_shared_made(int64_t slots, int64_t room);
+void avra_shared_ended(void* h);
+void* avra_shared_view(void* h);
+int64_t avra_shared_kept(void* h, int64_t kind, int64_t hi, int64_t lo, const char* p, int64_t n);
+int64_t avra_shared_start(void* h, int64_t kind, int64_t hi, int64_t lo);
+int64_t avra_shared_end(void* h, int64_t kind, int64_t hi, int64_t lo);
+void* avra_shared_apart_view(void* h);
+int64_t avra_shared_logged(void* h, int64_t kind);
+int64_t avra_shared_logged_start(void* h, int64_t kind, int64_t at);
+int64_t avra_shared_logged_end(void* h, int64_t kind, int64_t at);
+int64_t avra_shared_claimed(void* h, int64_t hi, int64_t lo);
+int64_t avra_shared_let_go(void* h, int64_t hi, int64_t lo);
+int64_t avra_shared_awaited(void* h, int64_t hi, int64_t lo, int64_t holder);
+int64_t avra_cores_heir(int64_t quiet);
+int64_t avra_cores_heir_gone(void);
+
+#endif

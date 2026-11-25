@@ -1,0 +1,40 @@
+// proves: a trap a guard catches puts back the frame the guard was entered under, however many sets
+// stood between them; a record context reads whole, and a set of one copies nothing it reads later
+use @std.meta.{contained}
+
+extern fn avra_puts(s: string)
+
+type Look = { shade: string, width: int }
+
+ctx look: Look = Look { shade: "plain", width: 80 }
+
+fn shown() -> string { "${ctx.look.shade}/${ctx.look.width}" }
+
+fn risky(n: int) -> int {
+    ctx look = ctx.look with { width: n }
+    let xs = [1]
+    if n > 2 { return deeper(n) }
+    xs[n]
+}
+
+fn deeper(n: int) -> int {
+    ctx look = ctx.look with { shade: "deep" }
+    avra_puts(shown())
+    let xs = [1]
+    xs[n]
+}
+
+fn words(r: Result<int, string>) -> string {
+    match r { .Ok(n) -> "ok ${n}", .Err(_) -> "trapped" }
+}
+
+fn run() -> string {
+    ctx look = ctx.look with { shade: "dark" }
+    avra_puts(words(contained(() -> risky(0))))
+    avra_puts(shown())
+    avra_puts(words(contained(() -> risky(5))))
+    avra_puts(shown())
+    shown()
+}
+
+run()

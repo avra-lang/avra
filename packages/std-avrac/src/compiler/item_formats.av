@@ -1,0 +1,342 @@
+//! WHAT A FORMAT GIVES ITS RECORD: a record a grammar reads — a `grammar R = "…"`, a route's
+//! pattern — gets `pattern`, `parts`, `parse` of text, `parse_octets` and, where every hole binds,
+//! `print`, written as an `impl` of the record and made an item of its file as a generator's are.
+//! The scan is the prelude's `format_spans`; each hole's value is its span cut from the text, an
+//! `int` hole's read by `format_int`, and a hole of any other type read through that type's own
+//! `from_text_form` and printed through its `text_form`.
+use core.{
+    FROM_TEXT_FORM,
+    FormatPart,
+    GrammarSpec,
+    Hole,
+    HoleReading,
+    SignedType,
+    Span,
+    TEXT_FORM,
+    binds,
+    flatten,
+    hole_reading,
+    named_ref,
+    template_home,
+}
+use compiler.laws.{Found, law, no_findings}
+use diagnostics.{Voice}
+use features.formats.{hole_unread, pattern_text}
+use @std.meta.{Decls as MetaDecls, Directive, Node as MetaNode}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+
+/// What the records `file` declares with a grammar are given, each one's `impl` an item of the file.
+fn format_generated(engine: QueryEngine, file: SourceFileAddress) -> List<GeneratedItems> {
+    // each item a grammar makes stands beside the record that declares it: a mistake of the record's is
+    // said there, and what was made of it is never judged again (item_judged)
+    [kept with { items: [g with { site: f.item, owner: f.name } for g in kept.items] } for f in format_records(engine, file) for kept in [items_spliced(engine, file, f.name, [format_directive(file, f)])]]
+}
+
+/// A record a grammar reads: its name, the format, where it's declared, and how each hole reads its
+/// span, its written type resolved in the record's file.
+type FormatRecord = { name: string, item: ItemId, format: GrammarSpec, at: int, readings: List<HoleReading> }
+
+/// Each record `file` declares with a grammar, in the order declared.
+fn format_records(engine: QueryEngine, file: SourceFileAddress) -> List<FormatRecord> {
+    [r! for d in file_declares(engine, file).names if d.kind == ItemKind.Record for r in [format_record(engine, d)] if r != null]
+}
+
+/// The record `d` declares where a grammar reads it; absent for any other.
+fn format_record(engine: QueryEngine, d: DeclaredName) -> FormatRecord? {
+    let item = read_item(engine, d.file, d.item)
+    let s? = item.stmts.find((x) -> item.store.declared_name(x) == d.name) else { return null }
+    let format? = item.store.grammar_of(s) else { return null }
+    let written = item.store.stmt_span(s) ?? Span { lo: 0, hi: 0 }
+    let signing = signing_in(engine, d.file, [])
+    FormatRecord {
+        name: d.name,
+        item: d.item,
+        format: format,
+        at: span_in_file(engine, d.file, item, written).lo,
+        readings: readings_of(format, signing),
+    }
+}
+
+/// Whether the hole `h`, its type written in `file` and signed by `signing`, reads its span as a type
+/// that crosses text: none or `string`, an `int`, or a type that implements `@std/text`'s `TextForm`.
+export fn read_as_text(engine: QueryEngine, file: SourceFileAddress, signing: Signing, h: Hole) -> bool {
+    let written? = h.ty else { return true }
+    match hole_reading(signing.signed(written)) {
+        .Text or .Int -> true,
+        .Form(ty) -> crosses_text(engine, file, ty),
+    }
+}
+
+/// Whether a value of `ty` crosses text: its type implements `@std/text`'s `TextForm`, the trait
+/// asked by the declaration that package exports, never by its name.
+export fn crosses_text(engine: QueryEngine, reader: SourceFileAddress, ty: SignedType) -> bool {
+    let home? = dotted_file(engine, TEXT_MODULE) else { return false }
+    let d? = resolved(engine, home, Space.Type, TEXT_FORM_TRAIT).named() else { return false }
+    if d.kind != ItemKind.Trait { return false }
+    let bound = signing_in(engine, d.file, []).signed(named_ref(d.name))
+    implements(engine, reader.package_name, ty, bound) ?? false
+}
+
+/// The module that declares the trait a type crosses text through.
+const TEXT_MODULE: List<string> = ["@std", "text"]
+
+/// The trait a type crosses text through, as that module declares it.
+const TEXT_FORM_TRAIT: string = "TextForm"
+
+/// Every hole of a grammar the written item `at` of `file` declares that reads its span as a type
+/// crossing no text, found at the declaration; handed the hole and the type.
+fn grammar_holes_unread(view: ItemView) -> List<Found> {
+    let engine = view.engine
+    let file = view.file
+    let item = view.item
+    if !item.stmts.any((s) -> item.store.grammar_of(s) != null) { return no_findings() }
+    let signing = signing_in(engine, file, [])
+    [Found { at: item.store.stmt_span(s), args: [p.hole.name, p.hole.ty!.name] } for s in item.stmts for format in [item.store.grammar_of(s)] if format != null for p in [q for q in format!.parts if !read_as_text(engine, file, signing, q.hole)].take(1)]
+}
+
+/// a grammar's hole reads its span as a type that crosses text
+export law grammar_hole_read_as_text {
+    kind: "type.format_parse"
+    reads_view: grammar_holes_unread
+    voice: grammar_hole_words
+    witness: "grammar Item = \"/items/{n: float}\"\n"
+}
+
+fn grammar_hole_words(a: List<string>) -> Voice { hole_unread(a[0], a[1]) }
+
+/// The `impl` a format gives its record, as a template of `file` at the record.
+fn format_directive(file: SourceFileAddress, f: FormatRecord) -> Directive {
+    let written = woven_code(format_impl(f))
+    Directive {
+        twin: "",
+        name: f.name,
+        at: null,
+        source: MetaDecls {
+            node: MetaNode.Template(template_home(file), f.at, written.parts, written.fills),
+        },
+    }
+}
+
+/// A run of generated code: its text, or a hole a node fills.
+enum Piece {
+    Code(text: string)
+    Hole(node: MetaNode)
+}
+
+/// A template's text runs and the nodes between them.
+type Woven = { parts: List<string>, fills: List<MetaNode> }
+
+/// `pieces` as a template: each hole between the code around it.
+fn woven_code(pieces: List<Piece>) -> Woven {
+    mut parts: List<string> = [""]
+    mut fills: List<MetaNode> = []
+    // LICENSED loops.push_loop: a hole closes the run before it, so the runs are known only in order
+    for p in pieces {
+        match p {
+            .Code(text) -> parts.set(parts.length - 1, parts.last()! + text),
+            .Hole(node) -> {
+                fills.push(node)
+                parts.push("")
+            },
+        }
+    }
+    Woven { parts: parts, fills: fills }
+}
+
+fn code(text: string) -> Piece { Piece.Code(text) }
+
+fn text_hole(text: string) -> Piece { Piece.Hole(MetaNode.Text(text)) }
+
+fn name_hole(name: string) -> Piece { Piece.Hole(MetaNode.Name(name)) }
+
+/// The statics a grammar's declaration gives its record.
+const FORMAT_STATICS: List<string> = ["pattern", "parts", "parse", "parse_octets", "print"]
+
+/// Whether `file` declares `name` as a grammar.
+fn format_declared(engine: QueryEngine, file: SourceFileAddress, name: string) -> bool {
+    file_declares_named(engine, file, name)
+        .names
+        .any((d) -> d.name == name && format_record(engine, d) != null)
+}
+
+/// The `impl`: `pattern`, `parts`, `parse` of text and of octets, and `print` where every hole binds.
+fn format_impl(f: FormatRecord) -> List<Piece> {
+    let printed = if f.format.parts.all((p) -> binds(p.hole)) { print_fn(f) } else { [] }
+    [
+        code("impl "),
+        name_hole(f.name),
+        code(" {\n    static fn pattern() -> string { "),
+        text_hole(pattern_text(f.format.head, f.format.parts)),
+        code(" }\n"),
+    ]
+        .concat(parts_fn(format_shape(f.format, f.readings)))
+        .concat(parse_fn(f, "parse(text: string)", "text.bytes()", []))
+        .concat(
+            parse_fn(
+                f,
+                "parse_octets(octets: Bytes)",
+                "octets",
+                [code("        let text? = octets.text() else { return null }\n")],
+            ),
+        )
+        .concat(printed)
+        .concat([code("}\n")])
+}
+
+/// `parts`: the format's shape, written as the literal of its value.
+fn parts_fn(shape: FormatShape) -> List<Piece> {
+    [
+        code("    static fn parts() -> FormatShape {\n        FormatShape { head: "),
+        text_hole(shape.head),
+        code(", holes: ["),
+    ]
+        .concat(flatten([hole_literal(h) for h in shape.holes]))
+        .concat([code("] }\n    }\n")])
+}
+
+/// One hole of a shape as its literal.
+fn hole_literal(h: FormatHole) -> List<Piece> {
+    [
+        code("FormatHole { name: "),
+        text_hole(h.name),
+        code(", ty: "),
+        text_hole(h.ty),
+        code(", reads: HoleRead.${read_word(h.reads)}, greedy: ${h.greedy}, piece: "),
+        text_hole(h.piece),
+        code(" }, "),
+    ]
+}
+
+/// A hole's reading as its variant is written.
+fn read_word(r: HoleRead) -> string {
+    match r { .Text -> "Text", .Int -> "Int", .Form -> "Form" }
+}
+
+/// A format's shape as a program reads it: the head, and each hole by its name, the type it reads
+/// as written (`string` where none is) and how it reads it (`readings`, one a hole), its greed and
+/// the literal after it — one reading of the declaration's parts, for its `parts()` and every judge
+/// of formats.
+export fn format_shape(format: GrammarSpec, readings: List<HoleReading>) -> FormatShape {
+    FormatShape {
+        head: format.head,
+        holes: [FormatHole {
+            name: p.hole.name,
+            ty: p.hole.ty?.name ?? "string",
+            reads: hole_read(readings[j]),
+            greedy: p.hole.greedy,
+            piece: p.piece,
+        } for j, p in format.parts],
+    }
+}
+
+/// A hole's reading as a format's shape carries it.
+fn hole_read(r: HoleReading) -> HoleRead {
+    match r { .Text -> HoleRead.Text, .Int -> HoleRead.Int, .Form(_) -> HoleRead.Form }
+}
+
+/// How each hole of `format` reads its span, its written type resolved by `signing`.
+fn readings_of(format: GrammarSpec, signing: Signing) -> List<HoleReading> {
+    [hole_reading(if p.hole.ty == null { null } else { signing.signed(p.hole.ty!) }) for p in format.parts]
+}
+
+/// A `parse` reading `scanned`, its seat `seat`, each hole's value cut from `text` once `before` has run.
+fn parse_fn(f: FormatRecord, seat: string, scanned: string, before: List<Piece>) -> List<Piece> {
+    [
+        code("    static fn ${seat} -> "),
+        name_hole(f.name),
+        code("? {\n        let spans? = format_spans(${scanned}, "),
+    ]
+        .concat(scan_args(f.format))
+        .concat([code(") else { return null }\n")])
+        .concat(before)
+        .concat([code("        "), name_hole(f.name), code(" { ")])
+        .concat(
+            flatten(
+                [[code("${p.hole.name}: ${hole_value(p, j, f.readings[j])}, ")] for j, p in f.format.parts if binds(p.hole)],
+            ),
+        )
+        .concat([code("}\n    }\n")])
+}
+
+/// What `format_spans` is handed past the subject: the head, each piece, and which holes are greedy.
+fn scan_args(format: GrammarSpec) -> List<Piece> {
+    [text_hole(format.head), code(".bytes(), [")]
+        .concat(flatten([[text_hole(p.piece), code(".bytes(), ")] for p in format.parts]))
+        .concat(
+            [
+                code(
+                    "], [${[if p.hole.greedy { "true" } else { "false" } for p in format.parts].join(", ")}]",
+                ),
+            ],
+        )
+}
+
+/// What the hole of part `j` holds: its span of the text, read as an `int` where it's one, or through
+/// its type's text form.
+fn hole_value(p: FormatPart, j: int, reading: HoleReading) -> string {
+    let span = "text.substring(spans[${2 * j}], spans[${2 * j + 1}])"
+    match reading {
+        .Text -> span,
+        .Int -> "format_int(${span})?",
+        .Form(_) -> "${p.hole.ty!.name}.${FROM_TEXT_FORM}(${span})?",
+    }
+}
+
+/// `print`: each field woven between the format's literals, absent where a value would move the split
+/// a parse of the woven text makes.
+fn print_fn(f: FormatRecord) -> List<Piece> {
+    let parts = f.format.parts
+    let kept = [survives(parts, f.readings, j) for j in 0..parts.length - 1]
+    let guard = if kept.is_empty() {
+        []
+    } else {
+        [code("        if !(")]
+            .concat(flatten(joined_with(kept, code(" && "))))
+            .concat([code(") { return null }\n")])
+    }
+    [code("    static fn print(r: "), name_hole(f.name), code(") -> string? {\n")]
+        .concat(guard)
+        .concat([code("        "), text_hole(f.format.head)])
+        .concat(
+            flatten(
+                [[code(" + ${printed_field(p, f.readings[k])} + "), text_hole(p.piece)] for k, p in parts],
+            ),
+        )
+        .concat([code("\n    }\n")])
+}
+
+/// Each run, `between` between them.
+fn joined_with(runs: List<List<Piece>>, between: Piece) -> List<List<Piece>> {
+    [if j == 0 { r } else { [between].concat(r) } for j, r in runs]
+}
+
+/// A field as the text its hole prints: itself, an `int`'s digits, or its type's text form.
+fn printed_field(p: FormatPart, reading: HoleReading) -> string {
+    match reading {
+        .Text -> "r.${p.hole.name}",
+        .Int -> "\"\${r.${p.hole.name}}\"",
+        .Form(_) -> "r.${p.hole.name}.${TEXT_FORM}()",
+    }
+}
+
+/// Whether hole `j`'s value survives a parse of the woven text: a lazy hole's literal first stands
+/// where the value ends; a greedy one's appears nowhere in what is printed after its own.
+fn survives(parts: List<FormatPart>, readings: List<HoleReading>, j: int) -> List<Piece> {
+    let piece = parts[j].piece
+    if !parts[j].hole.greedy {
+        return [
+            code("(${printed_field(parts[j], readings[j])} + "),
+            text_hole(piece),
+            code(").bytes().index_of("),
+            text_hole(piece),
+            code(".bytes(), 0) == (${printed_field(parts[j], readings[j])}).length"),
+        ]
+    }
+    let after = flatten(
+        [[code(" + ${printed_field(p, readings[k])} + "), text_hole(p.piece)] for k, p in parts if k > j],
+    )
+    [code("("), text_hole(piece)]
+        .concat(after)
+        .concat([code(").bytes().index_of("), text_hole(piece), code(".bytes(), 1) < 0")])
+}

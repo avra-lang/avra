@@ -1,0 +1,36 @@
+// A template whose head has two seats, its instance writing one value: the second seat is taken
+// by name in the block, and one the block leaves unset is refused by name — its package held at a
+// root and a name of its own, so no package a run held before under the shared ones stands in for it.
+use @std.avrac.testing.{refused_in, provided_files}
+use @std.avrac.testing.held.{Judged, held_at}
+
+/// `main` over the provider `provider`, as `provided` judges it, its package held at `/heads` and
+/// its provider named `@x/twoseat`.
+fn judged_apart(main: string, provider: string) -> Judged {
+    mut files: Map<string, string> = {}
+    for k, v in provided_files(main, provider, []) {
+        files
+            .set(apart(k), v.replace("@x/c", "@x/twoseat").replace("vendor/c\"", "vendor/twoseat\""))
+    }
+    held_at(files, "/heads").judged_at("/heads/src/main.av")
+}
+
+/// A path of `provided`'s files where this file's package keeps it.
+fn apart(k: string) -> string {
+    let held = if k.starts_with("/w/") { "/heads/${k.substring(3, k.length)}" } else { k }
+    held.replace("/vendor/c/", "/vendor/twoseat/").replace("/src/c.av", "/src/twoseat.av")
+}
+
+spec "features/components/template — a head of two seats" {
+    given "an instance that writes the first seat and leaves the second unset" {
+        then "the second seat is asked for by name, in the instance's block" {
+            refused_in(
+                judged_apart(
+                    "use @x.twoseat.{paired}\npaired 1 { 2 }",
+                    "export component paired(a: Code, b: Code) {\n    body: Code\n    fn expand() -> Code { quote { \${self.body} } }\n}\n",
+                ),
+                "`paired` takes `b` by name in its block, after its head value — write `b: …`",
+            )
+        }
+    }
+}

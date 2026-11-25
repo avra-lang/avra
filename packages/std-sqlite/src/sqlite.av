@@ -1,0 +1,193 @@
+//! SQLite, vendored and compiled in: the database is a file and the
+//! driver is in the binary.
+//!
+//! The WALL is `c/` — every `sqlite3_*` entry point this build can
+//! declare, by its own name. The FACE is here, written in the wall's
+//! terms, so dropping from one to the other is a continuation rather
+//! than an escape.
+//!
+//! THE MODULES, and what each one owns:
+//!
+//! ```
+//! c/          the WALL — the `sqlite3_*` entry points, by their own
+//!             names, in five files by family
+//! error.av    the failure VALUE: the 34-arm `Cause` registry, the map
+//!             from a result code to it, and the two projections a
+//!             caller branches on
+//! open.av     the CONNECTION — `Db`, `open`, `open_read`, `memory`,
+//!             `open_with`, `close` — and opening's PURE half: the
+//!             config, the flag word it becomes, the judgement of the
+//!             path
+//! stmt.av     the STATEMENT — `prepare`, `step`, `reset`, `finalize`,
+//!             `run`, every bind, and the column reads
+//! tx.av       the TRANSACTION — `begin`, `begin_read`, `commit`,
+//!             `rollback`, `finish`, `in_transaction`
+//! script.av   a script divided into statements, by asking the PARSER
+//!             where each one ends rather than scanning for `;`
+//! boundary.av what the guards must see: why a NUL must be refused at
+//!             the extern seat, which is the only place it truncates
+//! sql.av      THE ERGONOMIC FACE — `Sql`, `Row`, `SqlValue`, and
+//!             `Db`'s `run`/`exec`/`one`/`first`/`all`/`scalar`, built
+//!             from the statement's own prepare/step/finalize
+//! sqlite.av   this file — the library-wide face
+//! ```
+//!
+//! CONNECTIONS AND STATEMENTS ARE HERE — `open`/`close`, `prepare`/
+//! `step`/`finalize`, the binds and the transaction verbs all land. A
+//! ROW ANSWERS EVERY STORAGE CLASS — `sql.av`'s `SqlValue` carries an
+//! integer, a real, text or `Bytes`, or NULL — copied out of the
+//! statement at the row's own width before it steps again.
+//!
+//! THE FAILURE TYPES ARE REACHED THROUGH THEIR MODULE, not through this
+//! file: `use @std.sqlite.error.{SqlError, Cause}`. The design spells
+//! them at the package root, and the one line that would do it is
+//! refused — `export use error.{SqlError, Cause}` is `F3014: 'export
+//! use' — a re-export — arrives with a later slice`. This is the
+//! wanting site; the spelling changes to the design's the day it lands,
+//! and no caller's code changes but its import.
+
+use script.{completes}
+use @std.text.{has_nul}
+use error.{Cause, SqlError}
+use c.{
+    sqlite3_libversion,
+    sqlite3_libversion_number,
+    sqlite3_sourceid,
+    sqlite3_compileoption_used,
+    sqlite3_compileoption_get,
+    sqlite3_threadsafe,
+    sqlite3_errstr,
+    sqlite3_keyword_count,
+    sqlite3_keyword_check,
+    sqlite3_strlike,
+    sqlite3_strglob,
+    sqlite3_stricmp,
+    sqlite3_memory_used,
+    sqlite3_memory_highwater,
+}
+
+/// The vendored SQLite's version — "3.53.4".
+export fn version() -> string { sqlite3_libversion() }
+
+/// The version as one number: `X*1000000 + Y*1000 + Z`.
+export fn version_number() -> int { sqlite3_libversion_number() }
+
+/// The check-in this build came from.
+export fn source_id() -> string { sqlite3_sourceid() }
+
+/// Whether this build carries an option, named without its
+/// `SQLITE_` prefix — `compiled_with("ENABLE_FTS5")`.
+export fn compiled_with(option: string) -> Result<bool, SqlError> {
+    let _ = nul_free(option, "compiled_with")?
+    sqlite3_compileoption_used(option) != 0
+}
+
+/// Every option this build reports, in the library's own order. The
+/// flags the BINARY holds, not the flags a build file claims.
+export fn compile_options() -> List<string> {
+    [option_at(i) for i in 0..option_count()]
+}
+
+/// Where the option list ends — the library answers absence rather
+/// than a count.
+fn option_count() -> int {
+    mut n = 0
+    while sqlite3_compileoption_get(n) != null { n = n + 1 }
+    n
+}
+
+/// The Nth option. Every index below `option_count()` has one.
+fn option_at(i: int) -> string { sqlite3_compileoption_get(i) ?? "" }
+
+/// Whether the library carries its mutexes — false only when the
+/// mutexing code was omitted.
+export fn threadsafe() -> bool { sqlite3_threadsafe() != 0 }
+
+/// Whether the text ends in a complete, terminated SQL statement.
+/// A partial statement and an allocation failure both answer false.
+///
+/// TEXT HOLDING A NUL IS REFUSED, because this verb cannot answer
+/// truthfully about it. `sqlite3_complete` takes a `const char*` with no
+/// length, so it reads only the bytes before the first NUL and would
+/// answer about a PREFIX — measured: `"select 1;<NUL>junk!!"` is
+/// sixteen bytes and it answers `true` about the first nine.
+///
+/// Its twin `script.statements` already refuses those bytes, and two
+/// face verbs over one C function cannot disagree about whether the
+/// boundary is safe. The WALL still truncates, which is C's behaviour
+/// and is asserted directly against `sqlite3_complete` in the
+/// adversarial suite; the FACE is where the law is kept.
+export fn is_complete(sql: string) -> Result<bool, SqlError> {
+    if has_nul(sql) {
+        fail SqlError
+            .refused(
+                Cause.HoldsNul,
+                "this text holds a NUL, and `sqlite3_complete` reads only the bytes before it — the answer would be about a prefix",
+            )
+    }
+    completes(sql)
+}
+
+/// English text for a primary or extended result code.
+export fn describe(code: int) -> string { sqlite3_errstr(code) }
+
+/// How many keywords this build recognises.
+export fn keyword_count() -> int { sqlite3_keyword_count() }
+
+/// Whether the word is one of SQLite's keywords.
+export fn is_keyword(word: string) -> bool { sqlite3_keyword_check(word.bytes(), word.length) != 0 }
+
+/// SQLite's own LIKE, with no escape character.
+///
+/// THE TRIGGER FIRED. These three were `bool` and NUL-TRUNCATING
+/// KNOWINGLY, pinned in the adversarial suite rather than refused,
+/// with the note: "TRIGGER for revisiting: a `Bytes` value, or a
+/// caller who meets it." A `Bytes` value is landing, so they refuse
+/// now. They are C string calls with NO LENGTH, so a NUL cuts both
+/// arguments short and the answer is about a PREFIX — which is a
+/// silently wrong answer, not a trap, and the worst outcome this
+/// driver can produce.
+///
+/// A LIBRARY REFUSES BEFORE THE LANGUAGE TRAPS: the extern seam now
+/// traps on an interior NUL at a `string` seat, and a trap inside a
+/// package that owns a cause for it is a bug in the guards. The cause
+/// existed (`is_complete` used it); these five did not reach for it.
+export fn like(pattern: string, text: string) -> Result<bool, SqlError> {
+    let _ = nul_free(pattern, "like")?
+    let _ = nul_free(text, "like")?
+    sqlite3_strlike(pattern, text, 0) == 0
+}
+
+/// SQLite's own GLOB.
+export fn glob(pattern: string, text: string) -> Result<bool, SqlError> {
+    let _ = nul_free(pattern, "glob")?
+    let _ = nul_free(text, "glob")?
+    sqlite3_strglob(pattern, text) == 0
+}
+
+/// SQLite's NOCASE comparison — ASCII case folding only, as the
+/// collation itself does.
+export fn equal_nocase(a: string, b: string) -> Result<bool, SqlError> {
+    let _ = nul_free(a, "equal_nocase")?
+    let _ = nul_free(b, "equal_nocase")?
+    sqlite3_stricmp(a, b) == 0
+}
+
+/// The one refusal these five share: text bound for a `const char*`
+/// seat that carries NO length, where C stops at the first NUL and the
+/// answer would be about a prefix.
+fn nul_free(s: string, verb: string) -> Result<int, SqlError> {
+    if has_nul(s) { fail SqlError.refused(Cause.HoldsNul, holds_nul_words(verb)) }
+    0
+}
+
+fn holds_nul_words(verb: string) -> string {
+    "`${verb}` hands this text to a C call that carries no length, so it stops at the first NUL — the answer would be about the bytes before it, not the text you passed"
+}
+
+/// Bytes the library holds. Zero under `DEFAULT_MEMSTATUS=0` unless
+/// a connection turned the counters on.
+export fn memory_used() -> int { sqlite3_memory_used() }
+
+/// The high-water mark in bytes, left standing.
+export fn memory_highwater() -> int { sqlite3_memory_highwater(0) }

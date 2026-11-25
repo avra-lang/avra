@@ -1,0 +1,26 @@
+// A `Bytes` const settles at compile time and lays out as the binary's
+// own immortal box — the layout text shares. Each const is read back:
+// a literal's octets, the empty value, octets that are not UTF-8, a
+// list of them, a record field, a table computed by a fn, and one read
+// by many calls (it must never be released).
+type Framed = { mark: Bytes, n: int }
+
+fn class_of(admit: fn(int) -> bool) -> Bytes { [if admit(i) { 1 } else { 0 } for i in 0..256].bytes() ?? "".bytes() }
+fn digitish(c: int) -> bool { c >= 48 && c <= 57 }
+
+const T: Bytes = "abc".bytes()
+const E: Bytes = "".bytes()
+const RAW: Bytes = [200, 0, 255, 7].bytes() ?? "".bytes()
+const L: List<Bytes> = ["x".bytes(), "yz".bytes()]
+const F: Framed = Framed { mark: "\r\n".bytes(), n: 2 }
+const DIGITS: Bytes = class_of(digitish)
+
+fn digits_in(s: string) -> int { s.bytes().run(0, DIGITS) }
+
+fn many() -> int {
+    mut total = 0
+    for i in 0..1000 { total = total + T.length + DIGITS.length }
+    total
+}
+
+"${T.text() ?? "?"} ${E.length} ${RAW.length} ${RAW.at(0)} ${RAW.at(1)} ${RAW.at(2)} ${L[1].text() ?? "?"} ${F.mark.length} ${F.n} ${digits_in("123x")} ${many()}"

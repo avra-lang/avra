@@ -1,0 +1,65 @@
+//! `judged` answers a verdict's exit code and, for a non-green one,
+//! speaks why — on the same stdout a passing suite's own cases print
+//! through. A spec calling `judged` with a failing status would speak
+//! that failure's words even though the spec itself passes, so the
+//! CONTRACT (every non-green status answers non-zero) and the WORDS
+//! a verdict owes are pinned here through `exit_of`/`voice_of`, the
+//! pure halves `judged` composes — neither one prints.
+use @std.avrac.compiler.{verdict_of}
+use stage.{judged, exit_of, voice_of}
+
+spec "judged answers every verdict, and never silently" {
+    given "a green run" {
+        then "answers 0, silently" {
+            judged("suite", 0) == 0
+        }
+    }
+    given "a red run — some case or program failed" {
+        then "still answers non-zero" {
+            exit_of(verdict_of(1)) == 1
+        }
+    }
+    given "a binary that could not start" {
+        then "still answers non-zero" {
+            exit_of(verdict_of(127)) == 1
+        }
+    }
+    given "a binary that died — a trap or a signal" {
+        then "still answers non-zero" {
+            exit_of(verdict_of(9)) == 1
+        }
+    }
+}
+
+spec "the words a non-green verdict owes the reader" {
+    given "a green verdict" {
+        then "speaks nothing" {
+            voice_of("suite", .Green, false) == null
+        }
+    }
+    given "a red verdict" {
+        then "names the binary and says the suite stops" {
+            voice_of("suite", .Red, false) == "STOPPED — suite reported a failure above; the rest of the suite never ran"
+        }
+    }
+    given "a red verdict in a run that goes on" {
+        then "names the binary and says the suites after it run on" {
+            voice_of("suite", .Red, true) == "suite reported a failure above; every suite after it runs on (AVRA_SUITE_ALL=1)"
+        }
+    }
+    given "a binary that died in a run that goes on" {
+        then "says the case or program trapped and the suites after it run on" {
+            voice_of("suite", .Died, true) == "the case or program named above trapped; every suite after it runs on (AVRA_SUITE_ALL=1)"
+        }
+    }
+    given "a binary that could not start" {
+        then "says the link answered a path that does not run" {
+            voice_of("suite", .CouldNotStart, false) == "the binary could not start — the link answered a path that does not run"
+        }
+    }
+    given "a binary that died" {
+        then "says the case or program named above trapped" {
+            voice_of("suite", .Died, false) == "STOPPED — the case or program named above trapped, and everything after it never ran"
+        }
+    }
+}

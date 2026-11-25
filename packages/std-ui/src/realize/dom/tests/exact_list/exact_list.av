@@ -1,0 +1,30 @@
+// proves: a state list grown by `concat` is written into its cell, so the
+// page patches the one text that reads it and the patch is the full paint's
+// own — run under `AVRA_EXACT=check`, the two are compared every turn and a
+// disagreement traps, so this program printing at all is the comparison.
+use @std.ui.components.{column, text}
+use @std.ui.realize.dom.live.{live}
+use @std.ui.style.theme.{default_theme}
+
+state items: List<int> = []
+
+fn view() -> column {
+    column {
+        text "items=${items.length}"
+        text "fixed"
+    }
+}
+
+let page = live()
+let first = page.paint_view(view())
+let still = page.paint_view(view())
+items = items.concat([1])
+let after_one = page.paint_view(view())
+items = items.concat([2])
+items = items.concat([3])
+let after_three = page.paint_view(view())
+let again = page.paint_view(view())
+println(
+    "${first.length > 0} ${after_one.length > still.length} ${after_three.length > still.length} ${again.length == still.length}",
+)
+println(page.exact_counts())
