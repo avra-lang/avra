@@ -2863,7 +2863,9 @@ void* avra_array_pop_owned(void* arr) {
 
 // `src`'s slots from lo up to hi appended to `out`, owned ones
 // retained — a copy holds its own references.
+static void* g_append_site;
 static void array_append(void* out, AvraArray* src, int64_t lo, int64_t hi) {
+    CENSUS(if (g_sites_census) { Site* st = site_in(g_copy_sites, &g_copy_slots, g_append_site ? g_append_site : (void*)1); if (st) st->made += hi - lo; });
     for (int64_t i = lo; i < hi; i++) {
         if (src->marks[i] & MARK_OWNED) {
             avra_array_push_owned(out, (void*)(uintptr_t)src->data[i]);
@@ -2876,6 +2878,7 @@ static void array_append(void* out, AvraArray* src, int64_t lo, int64_t hi) {
 
 // A fresh list: `a`'s slots, then `b`'s. Owned.
 void* avra_array_concat(void* a, void* b) {
+    CENSUS(g_append_site = g_clone_site ? g_clone_site : AVRA_CALLER());
     CENSUS(note_copy(AVRA_CALLER()));
     void* site = g_clone_site ? g_clone_site : AVRA_CALLER();
     g_clone_site = site;
@@ -2889,6 +2892,7 @@ void* avra_array_concat(void* a, void* b) {
 // A fresh list of the slots from lo up to hi, clamped to the list;
 // nothing when lo is not below hi. Owned.
 void* avra_array_slice(void* arr, int64_t lo, int64_t hi) {
+    CENSUS(g_append_site = g_clone_site ? g_clone_site : AVRA_CALLER());
     AvraArray* a = (AvraArray*)arr;
     if (lo < 0) lo = 0;
     if (hi > a->len) hi = a->len;
@@ -2932,6 +2936,7 @@ void* avra_array_slice_reusing(void* arr, int64_t lo, int64_t hi) {
 
 // `a`'s slots then `b`'s, onto `a` when it is held alone.
 void* avra_array_concat_reusing(void* a, void* b) {
+    CENSUS(g_append_site = g_clone_site ? g_clone_site : AVRA_CALLER());
     if (a == b || !sole_array(a)) {
         g_clone_site = AVRA_CALLER();
         void* out = avra_array_concat(a, b);
@@ -2948,6 +2953,7 @@ void* avra_array_concat_reusing(void* a, void* b) {
 // `src`'s slots appended to `dst`, owned ones retained; `dst` is
 // grown once, for all of them.
 void avra_array_extend(void* dst, void* src) {
+    CENSUS(g_append_site = g_clone_site ? g_clone_site : AVRA_CALLER());
     AvraArray* s = (AvraArray*)src;
     avra_array_reserve(dst, s->len);
     array_append(dst, s, 0, s->len);
