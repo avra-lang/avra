@@ -1,0 +1,102 @@
+//! `@derive(Facts)` — ONE PER-NODE FACT TABLE, written as a declaration. A record whose fields are
+//! the facts a kind of node answers, each with the value a node no one set it for reads, and the
+//! kind named by `@facts_over("StmtId")`, is the whole of a table:
+//!
+//!     @derive(Facts)
+//!     @facts_over("StmtId")
+//!     type StmtFacts = { docs: DocGroup? = null, annotations: List<Annotation> = no_annotations() }
+//!
+//! makes `StmtFactsTable`: one identity holding one cell, the cell one row of columns, a column
+//! absent until its first value and then a table of only the nodes that hold one. So a table costs
+//! one record however many facts it keeps, a fact no node holds costs nothing, and a node costs what
+//! it holds. Each fact is read and written by its own typed door, `docs(s)` and `set_docs(s, v)`, and
+//! `docs_held()` names the nodes holding one; `forked()` is the table as it stands, each column
+//! copied out on its first write.
+//!
+//! A fact with no default is refused where it is declared: a node never set must read something.
+//!
+//! It stands ALONE in this file on purpose (CLAUDE.md).
+use @std.meta.{Type as MetaType, Field, Declared, Diagnostic, Decls, beside, nothing_made}
+
+const over_word = "facts_over"
+
+/// The compiler's derive for a table of per-node facts.
+export trait Facts {
+    static fn marks(_t: MetaType) -> List<string> { [over_word] }
+
+    static fn derive(t: MetaType) -> Declared {
+        let over? = over_of(t) else { return nothing_made([unkeyed(t)]) }
+        let unset = [f for f in t.fields if f.default == null]
+        if !unset.is_empty() { return nothing_made([undefaulted(f) for f in unset]) }
+        let fields = [quote { type _ = { ${f.name}: IndexTable<${f.ty}>? } } for f in t.fields]
+        let none = [quote { W { ${f.name}: null } } for f in t.fields]
+        let forked = [quote { W { ${f.name}: held.${f.name}?.forked() } } for f in t.fields]
+        Declared {
+            made: [
+                beside(
+                    t,
+                    quote {
+                        export type ${t}Columns = { ..${fields} }
+
+                        @identity
+                        export type ${t}Table = { columns: Cell<${t}Columns> }
+
+                        impl ${t}Table {
+                            /// A table holding no fact for any node.
+                            static fn empty() -> ${t}Table { ${t}Table { columns: Cell.new(${t}Columns { ..${none} }) } }
+
+                            /// The table as it stands, each column copied out on its first write.
+                            fn forked() -> ${t}Table {
+                                let held = self.columns.get()
+                                ${t}Table { columns: Cell.new(${t}Columns { ..${forked} }) }
+                            }
+
+                            ${[doors(f, over) for f in t.fields]}
+                        }
+                    },
+                ),
+            ],
+        }
+    }
+}
+
+/// A fact's three doors: its value at a node, its value at a node set, the nodes holding one.
+fn doors(f: Field, id: string) -> Decls {
+    let default = f.default ?? quote { a_fact_with_no_default() }
+    quote {
+        fn ${f.name}(at: ${id}) -> ${f.ty} { self.columns.get().${f.name}?.at(at.index) ?? ${default} }
+
+        fn ${"set_${f.name}"}(at: ${id}, v: ${f.ty}) {
+            let held? = self.columns.get().${f.name} else {
+                return self.columns.set(self.columns.get() with { ${f.name}: index_table_of(at.index, v) })
+            }
+            held.put(at.index, v)
+        }
+
+        fn ${"${f.name}_held"}() -> List<int> { self.columns.get().${f.name}?.held_indexes() ?? [] }
+    }
+}
+
+/// The id kind `@facts_over` names, its quotes taken off.
+fn over_of(t: MetaType) -> string? {
+    let a? = t.annotations.find(it.name == over_word) else { return null }
+    let written? = a.args.first() else { return null }
+    let id = written.replace("\"", "")
+    if id.is_empty() { null } else { id }
+}
+
+fn unkeyed(t: MetaType) -> Diagnostic {
+    Diagnostic {
+        message: "`${t.name}` keeps facts by no node",
+        help: "name the id its facts are kept by: `@facts_over(\"StmtId\")`",
+        at: t.at,
+    }
+}
+
+fn undefaulted(f: Field) -> Diagnostic {
+    Diagnostic {
+        message: "the fact `${f.name}` has no default",
+        help: "a node no one set it for must read something: write `${f.name}: ${f.ty} = …`",
+        at: f.at,
+    }
+}
