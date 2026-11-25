@@ -150,7 +150,18 @@ export type Command = {
     ok_exits: List<int> = [0],
     stop_grace: Duration = secs(5),
     own_group: bool = true,
+    hidden: List<Hidden> = [],
+    hidden_vars: List<string> = [],
 }
+
+/// An argument no projection of its command shows — the plan, a
+/// script's match, an error — known by the word itself, so a word moved
+/// among the arguments stays hidden; the value it carries; and the word
+/// shown in its place.
+export type Hidden = { word: string, value: string, shown: string }
+
+/// What a hidden value shows as.
+const hidden_mark: string = "<hidden>"
 
 /// A child's exit — a verdict, never a count. `.Code(0)` is never built:
 /// a zero is `.Clean`.
@@ -556,6 +567,42 @@ impl Command {
         }
         self with { args: self.args.concat([t!]).concat(words) }
     }
+    /// An option and its value as one word, as `flag` makes it, whose
+    /// value no projection of this command shows: they read
+    /// `--name=<hidden>`. The way a secret reaches a child's argv.
+    fn hidden_flag(name: string, value: string) -> Command {
+        let word = fused(name, value)
+        self with { args: self.args.concat([word]), hidden: self.hidden.concat([Hidden { word: word, value: value, shown: fused(name, hidden_mark) }]) }
+    }
+    /// A variable set to a value no projection shows: `NAME=<hidden>`.
+    /// The way a secret reaches a child's environment.
+    fn hidden_var(name: string, value: string) -> Command {
+        self with { env: self.env.with_var(name, value), hidden_vars: self.hidden_vars.concat([name]) }
+    }
+    /// The words as every projection shows them, each hidden one in its
+    /// mark.
+    fn shown_args() -> List<string> { [self.hidden.find(it.word == w)?.shown ?? w for w in self.args] }
+    /// What the child said with every hidden value it echoed in its
+    /// mark: what an error carries, since an error is what reaches a log.
+    fn scrubbed(o: Output) -> Output {
+        let values = self.hidden_values()
+        Output {
+            stdout: masked(o.stdout, values),
+            stderr: masked(o.stderr, values),
+            truncated: o.truncated,
+        }
+    }
+    /// Every hidden value, an argument's and a variable's, the empty one
+    /// aside — it marks nothing.
+    fn hidden_values() -> List<string> {
+        [h.value for h in self.hidden]
+            .concat([self.env.get(n) ?? "" for n in self.hidden_vars])
+            .filter(!it.is_empty())
+    }
+    /// The environment's words as every projection shows them.
+    fn shown_env() -> List<string> {
+        [if self.hidden_vars.contains(p.name) { "${p.name}=${hidden_mark}" } else { "${p.name}=${p.value}" } for p in self.env.pairs()]
+    }
     /// A bare positional; one that begins with `-` belongs after the
     /// options and is refused here.
     fn word(w: string) -> Result<Command, ProcessError> {
@@ -669,8 +716,11 @@ fn bad_env_name(n: string) -> bool {
 /// truncated. Stdin is the one string that MAY hold a NUL, because it
 /// is a byte stream rather than a name.
 fn holed(c: Command) -> ProcessError? {
-    let bad? = [c.tool.path, c.cwd ?? ""].concat(c.args).concat(c.env.words()).find(nul_at(it) >= 0) else { return null }
-    ProcessError.Holed(bad, nul_at(bad))
+    let words = [c.tool.path, c.cwd ?? ""].concat(c.args).concat(c.env.words())
+    let shown = [c.tool.path, c.cwd ?? ""].concat(c.shown_args()).concat(c.shown_env())
+    let at = [i for i, w in words if nul_at(w) >= 0].first() ?? -1
+    if at < 0 { return null }
+    ProcessError.Holed(shown[at], nul_at(words[at]))
 }
 
 // ── A running child ─────────────────────────────────────────────
@@ -1226,11 +1276,19 @@ fn abandoned(live: List<Stage>) {
 
 /// An outcome judged by its command's `ok_exits`.
 fn judged(c: Command, o: Outcome) -> Result<Output, ProcessError> {
-    if !c.accepts(o.exit) { fail ProcessError.Failed(o.exit, o.out) }
+    if !c.accepts(o.exit) { fail ProcessError.Failed(o.exit, c.scrubbed(o.out)) }
     o.out
 }
 
+/// `text` with each of `values` in the hidden mark.
+fn masked(text: string, values: List<string>) -> string { values.fold(text, (t: string, v: string) -> t.replace(v, hidden_mark)) }
+
 impl Pipeline {
+    /// Each stage's outcome with its own command's hidden values marked.
+    fn scrubbed(outs: List<Outcome>) -> List<Outcome> {
+        [o with { out: self.stages[i].scrubbed(o.out) } for i, o in outs]
+    }
+
     fn pipe(next: Command) -> Pipeline {
         Pipeline { stages: self.stages.concat([next]) }
     }
@@ -1241,7 +1299,7 @@ impl Pipeline {
     fn run() -> Result<Output, ProcessError> {
         let po = self.outcome()?
         for i, o in po.stages {
-            if !self.stages[i].accepts(o.exit) && !self.consumer_left(i, po) { fail ProcessError.StageFailed(i, o.exit, po.stages) }
+            if !self.stages[i].accepts(o.exit) && !self.consumer_left(i, po) { fail ProcessError.StageFailed(i, o.exit, self.scrubbed(po.stages)) }
         }
         po.stages.last()!.out
     }
@@ -1425,8 +1483,9 @@ export fn host() -> dyn Runner {
     r
 }
 
-/// One scripted answer: the tool's name and its words, joined by a
-/// space, and what the child would have said.
+/// One scripted answer: the tool's name and its words as the command
+/// shows them — a hidden one in its mark — joined by a space, and what
+/// the child would have said.
 export type Script = { program: string, args: string, exit: Exit, stdout: string, stderr: string }
 
 type ScriptedRunner = { rows: List<Script> }
@@ -1437,7 +1496,7 @@ fn answers(row: Script, program: string, spelled: string) -> bool {
 
 impl Runner for ScriptedRunner {
     fn outcome(c: Command) -> Result<Outcome, ProcessError> {
-        let spelled = c.args.join(" ")
+        let spelled = c.shown_args().join(" ")
         let hit? = self.rows.find(answers(it, c.tool.name, spelled)) else { fail ProcessError.Unscripted(c.tool.name, spelled) }
         Outcome {
             exit: hit.exit,
@@ -1458,7 +1517,7 @@ type PlanRunner = {}
 
 impl Runner for PlanRunner {
     fn outcome(c: Command) -> Result<Outcome, ProcessError> {
-        avra_puts("would run: ${c.tool.path} ${c.args.join(" ")}")
+        avra_puts("would run: ${c.tool.path} ${c.shown_args().join(" ")}")
         Outcome {
             exit: Exit.Clean,
             out: Output { stdout: "", stderr: "", truncated: false },

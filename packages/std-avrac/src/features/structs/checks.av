@@ -283,12 +283,28 @@ fn written(mut cx: Checking, subject: SignedType?, v: ExprId, name: string) {
 }
 
 impl Checks for With {
-    /// `r with { f: v }` is `r`'s record, each value checked against its field.
+    /// `r with { f: v }` is `r`'s record, each value checked against its field; a component's `state`
+    /// seat or member written takes a place, as the instance's own block writes it.
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
         let subject = cx.check(self.subject, Expected.Free)
         let _ = cx.seals(e, subject, "copied with new fields here")
         if cx.fields_repeated([f.of for f in self.fields], self.values, spread_entry) { return subject }
         for at, v in self.values { written(cx, subject, v, self.fields[at].of) }
+        let record = if subject == null { null } else { cx.record_of(subject!) }
+        let fields = record?.fields ?? []
+        for at, f in self.fields {
+            let seat? = fields.find(it.name == f.of && it.placed) else { continue }
+            let ty? = seat.ty else { continue }
+            cx
+                .state_seat_handed(
+                    cx.store.unnamed(self.values[at]),
+                    ty,
+                    subject!.spelled(),
+                    at,
+                    f.of,
+                    Unhanded.Unshared,
+                )
+        }
         subject
     }
 }

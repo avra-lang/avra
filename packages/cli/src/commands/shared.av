@@ -1,7 +1,15 @@
 //! What every command shares: the host externs, the argued source
 //! file, the analyze-or-refuse step, and what every file command takes.
 use @std.cli.{CliResult, flag, arg}
-use @std.avrac.compiler.{default_opt, avra, stage_words, Toolchain, BuildError}
+use @std.avrac.compiler.{
+    default_opt,
+    avra,
+    stage_words,
+    Toolchain,
+    BuildError,
+    platform_of,
+    triple_settled,
+}
 use @std.avrac.core.{joined, distinct, some_list}
 use @std.path.{dir_of, under_dir, joined_path, is_absolute, normalized}
 use @std.process.{Tool, tool_at, cmd, Command, Exit, Streams, inherited, ProcessError, exit}
@@ -25,11 +33,14 @@ fn runtime_library() -> string {
     toolchain_files(["libavra_runtime.a", "../lib/avra/libavra_runtime.a"]).find(exists(it)) ?? "build/libavra_runtime.a"
 }
 
-/// The wasm runtime archive, under the native one's own directory.
-fn wasm_runtime_library() -> string {
-    let at = joined_path(dir_of(runtime_library()), "wasm32/libavra_runtime.a")
-    if exists(at) { at } else { joined_path("build", "wasm32/libavra_runtime.a") }
+/// A target's runtime archive, in the directory `dir` under the native one's own.
+fn target_runtime_library(dir: string) -> string {
+    let at = joined_path(dir_of(runtime_library()), "${dir}/libavra_runtime.a")
+    if exists(at) { at } else { joined_path("build", "${dir}/libavra_runtime.a") }
 }
+
+/// The wasm runtime archive.
+fn wasm_runtime_library() -> string { target_runtime_library("wasm32") }
 
 /// The triples a toolchain may spell the WASI target, the one this compiler
 /// named first leading.
@@ -402,8 +413,7 @@ export fn toolchain_with(
     fallback: bool,
 ) -> Result<Toolchain, int> {
     if target == "" {
-        let word = chosen(look, "CC", "clang")
-        let host? = (look.tool)(word) else { return .Err(refused_by_host(ProcessError.NotFound(word, (look.env)("PATH") ?? ""))) }
+        let host = match host_compiler(look) { .Ok(h) -> h, .Err(code) -> { return .Err(code) } }
         let ld = if links_with_ld64() { null } else { fast_linker(look, host) }
         return .Ok(
             Toolchain {
@@ -414,6 +424,11 @@ export fn toolchain_with(
                 ld: ld?.path ?? "",
             },
         )
+    }
+    match platform_of(target) {
+        .Apple(sdk) -> { return apple_toolchain(look, triple_settled(target), sdk) },
+        .Native -> { return .Err(unequipped(no_target_platform(target))) },
+        .Wasm -> {},
     }
     let wasm = match wasm_tools(look, target) {
         .Ok(w) -> w,
@@ -432,6 +447,42 @@ export fn toolchain_with(
         wasm_opt: wasm_opt.path,
         fallback: fallback,
     }
+}
+
+/// The C compiler `CC` names, else `clang` — or the exit code of the refusal that says it is not
+/// there.
+fn host_compiler(look: ToolLookup) -> Result<Stamp, int> {
+    let word = chosen(look, "CC", "clang")
+    let host? = (look.tool)(word) else { return .Err(refused_by_host(ProcessError.NotFound(word, (look.env)("PATH") ?? ""))) }
+    host
+}
+
+/// THE TOOLS A BUILD FOR AN APPLE SDK LINKS WITH: the host's C compiler, the root `xcrun` names
+/// for `sdk`, and the runtime archive built for that SDK — or the exit code of the refusal that
+/// says which is missing.
+fn apple_toolchain(look: ToolLookup, triple: string, sdk: string) -> Result<Toolchain, int> {
+    let host = match host_compiler(look) { .Ok(h) -> h, .Err(code) -> { return .Err(code) } }
+    let sysroot? = sdk_root(look, sdk) else { return .Err(unequipped(no_apple_sdk(sdk))) }
+    let runtime = target_runtime_library(sdk)
+    if !exists(runtime) { return .Err(unequipped(no_apple_runtime(runtime, sdk))) }
+    Toolchain {
+        opt: default_opt(triple),
+        runtime: runtime,
+        linker: host.path,
+        tools: [host],
+        target: triple,
+        sysroot: sysroot,
+    }
+}
+
+/// The root of the SDK `sdk`, as `xcrun` names it; absent where it names none.
+fn sdk_root(look: ToolLookup, sdk: string) -> string? {
+    let xcrun? = (look.tool)("xcrun") else { return null }
+    let said = match cmd(ran(xcrun), ["--sdk", sdk, "--show-sdk-path"]).outcome() {
+        .Ok(o) -> o.out.stdout.trim(),
+        .Err(_) -> { return null },
+    }
+    if is_absolute(said) && exists(said) { said } else { null }
 }
 
 /// A build this machine has no tools for, spoken: exit 2 — nothing was
@@ -505,6 +556,18 @@ export arg file {
 
 fn no_wasm_toolchain(asked: List<string>, triples: List<string>) -> string {
     "no C compiler here links a wasm module: ${if asked.is_empty() { "none was found" } else { asked.join(", ") }} ${if asked.length > 1 { "have" } else { "has" }} no WASI libc for ${triples.join(" or ")} — set `CC` to a clang whose `--target=${triples.last() ?? ""} -print-file-name=crt1.o` names a file, or `LLVM_PREFIX` to an LLVM whose `bin/clang` does"
+}
+
+fn no_target_platform(target: string) -> string {
+    "`${target}` names no platform this compiler builds for — it builds for its host (no `--target`), `wasm`, and Apple SDK triples such as `arm64-apple-ios-simulator`"
+}
+
+fn no_apple_sdk(sdk: string) -> string {
+    "no Apple SDK `${sdk}` here — `xcrun --sdk ${sdk} --show-sdk-path` names none; install Xcode and its ${sdk} platform"
+}
+
+fn no_apple_runtime(at: string, sdk: string) -> string {
+    "no ${sdk} runtime archive at ${at} — `make apple-runtime APPLE_SDK=${sdk}` builds it"
 }
 
 fn no_wasm_opt() -> string {

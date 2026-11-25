@@ -18,7 +18,7 @@
 //! listener closes, the parked accept wakes, and the port is left. The
 //! loop turns on the program's first task and the server answers on
 //! another.
-use @std.http_message.message.{Header, Method}
+use @std.http_message.message.{Method}
 use @std.cli.{CliResult, Runnable, command, option, flag, arg}
 use @std.avrac.compiler.{Toolchain}
 use @std.http.http.{Request, Unrouted, Response, text}
@@ -37,7 +37,7 @@ use @std.io.{IoError, read_text, stamp}
 use @std.io.watch.{Watch, watch}
 use @std.task.{signals, Signals as Supply}
 use @std.path.{joined_path, file_name}
-use @std.process.{Tool, cmd, inherited}
+use @std.process.{Tool, EnvPair, cmd, inherited}
 use @std.text.{parse_int}
 use @std.time.{Duration, ms, quiet, sleep, now_ms}
 
@@ -516,6 +516,7 @@ impl Page {
         }
         self.standing.set(now)
         self.scripts.set(glue_hosted(self.glue))
+        self.backend?.told(self.page_env())
         if now.failure != "" { eprintln(now.failure) }
         // LICENSED input.clock: this turn's build duration is timing, never an input of what is built
         println(build_line(now, now_ms() - began))
@@ -552,20 +553,50 @@ impl Page {
         )
     }
 
-    /// The page: the glue's own, titled, naming the module it is about to
-    /// load, every file it will fetch, and the dev client.
-    fn page() -> Response {
-        let module = self.standing.get().module.name
-        let fetched = [h.name for h in self.scripts.get()]
-            .concat(if module == "" { [] } else { [module] })
-        unkept(
-            "text/html; charset=utf-8",
-            dev_document(self.glue, module)
-                .replace("<!--TITLE-->", file_name(self.root).replace("&", "&amp;").replace("<", "&lt;"))
-                .replace("<!--MODULE-->", if module == "" { "" } else { "./${module}" })
-                .replace("<!--FETCHED-->", fetched_tags(["./${f}" for f in fetched]))
-                .bytes(),
+    /// THE PAGE: the one the page's server draws, when it has a server that
+    /// draws one — the first paint is the server's, the module adopts it —
+    /// else the glue's own. Either carries the dev client and is never kept.
+    fn page(q: Request<Unrouted>) -> Response {
+        let drawn? = self.backend?.drawn(q) else { return document_answer(q, self.glue_page()) }
+        document_answer(
+            q,
+            (drawn.body.text() ?? "")
+                .replace("</body>", "${dev_tags(self.standing.get().module.name)}</body>"),
         )
+    }
+
+    /// The files the page fetches, as the page's server is told them: the
+    /// module, the glue's place, and every file asked for as the document
+    /// arrives.
+    fn page_env() -> List<EnvPair> {
+        let module = self.standing.get().module.name
+        [
+            EnvPair {
+                name: "AVRA_PAGE_MODULE",
+                value: if module == "" { "" } else { "/${module}" },
+            },
+            EnvPair { name: "AVRA_PAGE_HOST", value: "" },
+            EnvPair {
+                name: "AVRA_PAGE_FETCHED",
+                value: ["/${f}" for f in self.fetched_names()].join(" "),
+            },
+        ]
+    }
+
+    /// The names of every file the page fetches as its document arrives.
+    fn fetched_names() -> List<string> {
+        let module = self.standing.get().module.name
+        [h.name for h in self.scripts.get()].concat(if module == "" { [] } else { [module] })
+    }
+
+    /// The glue's own page, titled, naming the module it is about to
+    /// load, every file it will fetch, and the dev client.
+    fn glue_page() -> string {
+        let module = self.standing.get().module.name
+        dev_document(self.glue, module)
+            .replace("<!--TITLE-->", file_name(self.root).replace("&", "&amp;").replace("<", "&lt;"))
+            .replace("<!--MODULE-->", if module == "" { "" } else { "./${module}" })
+            .replace("<!--FETCHED-->", fetched_tags(["./${f}" for f in self.fetched_names()]))
     }
 
     /// What the page's walk said, shown beside dev's own words: each warning once a module, since
@@ -611,7 +642,7 @@ impl Page {
     /// The page, the channel and the files the page fetches.
     export fn routes() -> List<Route> {
         [
-            fixed(Method.Get, "/", (_q: Request<Unrouted>) -> self.page()),
+            fixed(Method.Get, "/", (q: Request<Unrouted>) -> self.page(q)),
             fixed(Method.Get, "/@dev/events", (_q: Request<Unrouted>) -> self.events()),
             fixed(Method.Post, "/@dev/said", (q: Request<Unrouted>) -> self.heard(q)),
         ]
@@ -678,15 +709,22 @@ fn asked_by(source: string) -> List<string> {
 /// Whether the text before a quoted `./name` asks for it.
 fn asks(before: string) -> bool { ["import(", "from ", "src="].any((word) -> before.ends_with(word)) }
 
-/// An answer no cache keeps: the next ask reads what stands then.
-fn unkept(kind: string, body: Bytes) -> Response {
-    Response {
-        headers: [
-            Header { name: "content-type", value: kind },
-            Header { name: "cache-control", value: "no-store" },
-        ],
-        body: body,
-    }
+/// A document as dev answers it: coded, and asked again each time — a
+/// browser that holds it as it stands is answered 304.
+fn document_answer(q: Request<Unrouted>, html: string) -> Response {
+    let octets = html.bytes()
+    asset_answer(
+        q,
+        precoded(
+            Hosted {
+                name: "",
+                media: "text/html; charset=utf-8",
+                octets: octets,
+                kept: false,
+                tag: blake3_hex(octets).substring(0, 32),
+            },
+        ),
+    )
 }
 
 /// What the dev page carries that a production page does not.

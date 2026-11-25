@@ -77,6 +77,8 @@ export type CheckedProgram = {
     owner: fn(SignedType) -> bool,
     /// The module that seals `ty`, where it is one other than the body's own; absent for any other.
     sealed_home: fn(SignedType) -> string?,
+    /// Whether a type wears `@unbranched`: a value of it is read, never chosen by.
+    unbranched: fn(SignedType) -> bool,
     /// Whether the type is declared in the file being checked.
     declared_here: fn(SignedType) -> bool,
     /// Whether a value's name, read where the template that wrote the read stands (its home) before
@@ -148,9 +150,11 @@ export type RecordShape = { params: int, fields: List<FieldSeat>, defaults: List
 /// component's `state` seat or member — where a record's is its own, and whether its default reads
 /// the instance (`self`), so it is made once the inputs it reads stand. A record's signature saves its
 /// fields as these, and typing reads them as saved. `over` is the place a member marked `@over(x)`
-/// is shown over: `x`, absent for a member not so marked.
+/// is shown over: `x`, absent for a member not so marked. `needed` says a `state` member of a type
+/// `@seeded_at_need` holds no cell until its state is first needed; `rank` orders such seeds, each
+/// after every one its own seed reads.
 @derive(Saved)
-export type FieldSeat = { name: string, ty: SignedType?, state: bool = false, placed: bool = false, made: bool = false, over: string? = null }
+export type FieldSeat = { name: string, ty: SignedType?, state: bool = false, placed: bool = false, made: bool = false, over: string? = null, needed: bool = false, rank: int = 0 }
 
 impl FieldSeat {
     /// What the field's slot holds: its type, or the cell its value lives in for a `state` field;
@@ -518,6 +522,8 @@ export enum Uncompared {
     Unasked
     /// Both sides are `null`.
     Absent
+    /// The side's type wears `@unbranched`, whose value is read and never chosen by.
+    Unbranched(name: string)
 }
 
 /// What a value offered where a value that compares was wanted is, by what to reach for instead.
@@ -1781,6 +1787,24 @@ impl Checking {
             rest -> null,
         } else { return }
         self.refused.push(Refused { at: e, want: s, found: got, seat: Seating.Unmatched, pat: p })
+    }
+
+    /// THE UNBRANCHED LAW. A value whose type wears `@unbranched` (`@std/meta`) is read and never
+    /// chosen by: `op` — `==`, `!=` or `match` — over it at `at` is refused. Answers whether it was.
+    mut fn branched_on(at: ExprId, op: string, ty: SignedType?) -> bool {
+        let t? = ty else { return false }
+        if !(self.program.unbranched)(t) { return false }
+        self
+            .refused
+            .push(
+                Refused {
+                    at: at,
+                    want: t,
+                    found: t,
+                    seat: Seating.Compared(op, Uncompared.Unbranched(t.spelled())),
+                },
+            )
+        true
     }
 
     /// THE PATTERN'S COMPARING. The pattern `p` of the match `e` that names a const compares the

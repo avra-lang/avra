@@ -1,7 +1,8 @@
 //! The lowering rule of `with`: the record, then each written value in the order written; a flat
 //! record packed afresh from what's written and what it held, a boxed one copied whole and each
-//! written field written over. A `state` field written is held in a cell of its own, minted here;
-//! one left unwritten is the cell the record held, shared.
+//! written field written over. A component's `state` written is the place written there, its cell;
+//! any other `state` field written is held in a cell of its own, minted here; one left unwritten is
+//! the cell the record held, shared.
 use core.{ExprId, FieldSeat, Lowering, Lowers, Reg}
 use core.expr.{With}
 
@@ -15,8 +16,9 @@ impl Lowers for With {
         let written = [f.of for f in self.fields]
         let l = cx.laid_out(ty)
         let src = cx.lower(self.subject)
-        let lowered = [keyed(cx, fields, self.fields[j].of, v) for j, v in self.values]
-        let values = [celled_as(cx, fields, w, lowered[k]) for k, w in written]
+        let cells = [if fields.any(it.name == self.fields[j].of && it.placed) { cx.place_cell(v) } else { null } for j, v in self.values]
+        let lowered = [cells[j] ?? keyed(cx, fields, self.fields[j].of, v) for j, v in self.values]
+        let values = [if cells[k] != null { lowered[k] } else { celled_as(cx, fields, w, lowered[k]) } for k, w in written]
         match l {
             .Boxed(_) -> {
                 let dst = cx.record_copied(l, src, laid)

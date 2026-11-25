@@ -1,0 +1,119 @@
+// A hidden argument reaches the child as written and shows nowhere else: the words a projection
+// reads, a script's match and its refusal, and a NUL's refusal all carry the mark in its place.
+use @std.process.{
+    Command,
+    Script,
+    Exit,
+    ProcessError,
+    Pipeline,
+    cmd,
+    tool_at,
+    scripted,
+    run_through,
+}
+use @std.errors.{Error}
+use @std.text.{from_codepoint}
+
+fn base() -> Command { cmd(tool_at("curl", "/usr/bin/curl"), ["-s"]) }
+
+fn unscripted_words(c: Command) -> string {
+    match run_through(scripted([]), c) { .Ok(_) -> "ran", .Err(e) -> e.describe().message }
+}
+
+fn scripted_answer(c: Command, rows: List<Script>) -> string {
+    match run_through(scripted(rows), c) { .Ok(o) -> o.stdout, .Err(e) -> e.describe().message }
+}
+
+/// The words this suite set, among the minimal environment's own.
+fn ours(words: List<string>) -> string { words.filter(it.starts_with("TOKEN=") || it.starts_with("MODE=")).join(" ") }
+
+/// The word a NUL's refusal names: the guard runs before anything is spawned.
+fn holed_word(c: Command) -> string {
+    match (c with { tool: tool_at("true", "/bin/true") }).run() {
+        .Ok(_) -> "ran",
+        .Err(e) -> match e { .Holed(w, _) -> w, _ -> e.describe().message },
+    }
+}
+
+fn plain_beside_hidden() -> Command {
+    let c = base().hidden_var("TOKEN", "s3cret")
+    c with { env: c.env.with_var("MODE", "x") }
+}
+
+/// What a failing child's refusal says, the child echoing the variable it was handed.
+fn echoed(c: Command) -> string {
+    match c.run() { .Ok(_) -> "ran", .Err(e) -> e.describe().message }
+}
+
+fn echoing() -> Command {
+    cmd(tool_at("sh", "/bin/sh"), ["-c", "echo bad token \$TOKEN >&2; exit 3"])
+        .hidden_var("TOKEN", "s3cret")
+}
+
+/// The stderr a failing pipeline's stage carries.
+fn staged_echo() -> string {
+    let p = Pipeline { stages: [echoing()] }
+    match p.run() {
+        .Ok(_) -> "ran",
+        .Err(e) -> match e { .StageFailed(_, _, outs) -> outs[0].out.stderr, _ -> e.describe().message },
+    }
+}
+
+fn prefixed() -> Command {
+    let c = base().hidden_flag("--token", "s3cret")
+    c with { args: ["-v"].concat(c.args) }
+}
+
+fn row(args: string) -> Script { Script { program: "curl", args: args, exit: Exit.Clean, stdout: "answered", stderr: "" } }
+
+spec "std/process hidden words" {
+    given "a hidden flag" {
+        then "the child's argv holds the value" { base().hidden_flag("--token", "s3cret").args.join(" ") == "-s --token=s3cret" }
+        then "every projection shows the mark" {
+            base().hidden_flag("--token", "s3cret").shown_args().join(" ") == "-s --token=<hidden>"
+        }
+        then "a one-letter option shows its mark fused" { base().hidden_flag("-p", "s3cret").shown_args().join(" ") == "-s -p<hidden>" }
+        then "a later word keeps its own place" {
+            base().hidden_flag("--token", "s3cret").flag("--out", "f").shown_args().join(" ") == "-s --token=<hidden> --out=f"
+        }
+        then "no hidden word shows as itself" { base().shown_args().join(" ") == "-s" }
+    }
+    given "a script reads what the command shows" {
+        then "a refusal names the mark, never the value" {
+            unscripted_words(base().hidden_flag("--token", "s3cret")) == "no script answers `curl -s --token=<hidden>`"
+        }
+        then "a row is written against the mark" {
+            scripted_answer(base().hidden_flag("--token", "s3cret"), [row("-s --token=<hidden>")]) == "answered"
+        }
+        then "a row spelling the value answers nothing" {
+            scripted_answer(base().hidden_flag("--token", "s3cret"), [row("-s --token=s3cret")]) == "no script answers `curl -s --token=<hidden>`"
+        }
+    }
+    given "a hidden variable" {
+        then "the child's environment holds the value" { base().hidden_var("TOKEN", "s3cret").env.get("TOKEN") == "s3cret" }
+        then "every projection shows the mark" { ours(base().hidden_var("TOKEN", "s3cret").shown_env()) == "TOKEN=<hidden>" }
+        then "a plain variable shows as itself" { ours(plain_beside_hidden().shown_env()) == "TOKEN=<hidden> MODE=x" }
+    }
+    given "a hidden word moved among the arguments" {
+        then "stays hidden, and the word beside it shows" { prefixed().shown_args().join(" ") == "-v -s --token=<hidden>" }
+    }
+    given "a child that echoes what it was handed" {
+        then "its failure carries the mark, never the value" { echoed(echoing()) == "the child exited with code 3: bad token <hidden>" }
+        then "a pipeline stage's outcome carries the mark" { staged_echo() == "bad token <hidden>\n" }
+        then "an empty hidden value marks nothing" {
+            echoed(
+                cmd(tool_at("sh", "/bin/sh"), ["-c", "echo said >&2; exit 3"])
+                    .hidden_var("TOKEN", ""),
+            ) == "the child exited with code 3: said"
+        }
+    }
+    given "a NUL's refusal" {
+        then "names the mark of a hidden word" {
+            holed_word(base().hidden_flag("--token", "s3" + from_codepoint(0) + "cret")) == "--token=<hidden>"
+        }
+        then "names the mark of a hidden variable" {
+            holed_word(base().hidden_var("TOKEN", "s3" + from_codepoint(0) + "cret")) == "TOKEN=<hidden>"
+        }
+        then "names a plain word as itself" { holed_word(base().flag("--out", "a" + from_codepoint(0) + "b")) == "--out=a" + from_codepoint(0) + "b" }
+    }
+}
