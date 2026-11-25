@@ -81,11 +81,32 @@ only its own caches and the default branch's: no gate ever restores
 another gate's, so the cache has never answered — 45507002101's compiler
 stood as landed and the answers still took 444 s. Two ways out, either
 dropping cost-laid from ~9.6 to ~2.5 min:
-- a 16-core runner for cost-laid alone (the answers already run one job
-  a core; the counted check runs on core 0 either way);
-- the answers published beside the `gate-builder` release, keyed as the
-  cache is, which every gate can read (a hit only where the compiler
-  stood — 12% — so the runner is the general fix).
+- TAKEN: the answers kept beside the `gate-builder` release
+  (`cost-answers.tar.gz`), which every gate reads; the slice uploads what
+  it stood on as `gate-cost-answers` for a landing to publish. It hits
+  where the census compiler's bytes are the landed one's — the compiler
+  key held, ~12% of landings — and a miss costs what it cost before.
+- FALLBACK, a spend: a 16-core runner for cost-laid alone (the answers
+  already run one job a core; the counted check is on core 0 either way).
+  At ~$0.042/min (Linux x64 16-core, 2026 list, to be confirmed) and ~4
+  billed min a gate, ~$0.17 a gate; at the measured 14 gates in 3.3 h,
+  30-100 gates a day, **~$150-500 a month**. Larger runners carry no free
+  minutes, public repository or not.
+
+### Why the answers' key cannot be narrower
+
+The store a check reads is partitioned by the compiler's PRINT, the
+digest of its own binary (compiler/build.av `digest_of_binary`, store.av
+`pack_at(root, print)`): answers another binary made are not stale to
+the census compiler, they are invisible to it. Narrowing the key to "the
+answer-shaping code" would mean the compiler trusting answers worked out
+by different analysis code — the hazard CLAUDE.md names (a cache filled
+by a binary of another shape is wrong, and traps). And it would buy
+nothing measured: every one of the 52 landings that moved the compiler
+key touched compiler-core source (std-avrac, std-relation, std-program,
+std-grammar, std-meta, std-prelude, cli, runtime, backend, Makefile). A
+per-query-family code fingerprint inside the compiler is the only sound
+narrower key, and it is a compiler project, not a gate change.
 
 ### The census compiler belongs to the seed
 
@@ -126,3 +147,32 @@ uploaded apart, and the one matrix lists the cost slices first.
 | these commits | ~20–21 (avrac-d and cost-laid now bound it) |
 | + avrac redealt to ≤5 min, cost-laid answers in the census job | ~15–16 |
 | + lever 1 where gen-2 == gen-1 | ~12–13 |
+
+## Train21 (45520921593): the cli's cold build, not the runner
+
+Wall 29.7 min. The seed took 871 s: gen-1 281, libs 45, gen-2 269, census
+257 (earlier runs: 192 / 60 / 181 / 96). The rows did not move together
+against 45499487807: std-avrac's suites ran ×0.6–0.7, while every row
+that builds the cli cold ran ×2–2.7 (edit-b 224→614 s, edit-f-2
+275→740, warnings-a 98→218, needs-2 128→270, the census 2.7×). A slower
+runner moves everything; this moved the cli's cold build. Train21 made
+the cli reach `@std/compress` and `@std/http_compress` (the vendored
+zlib and brotli, 3 MB of C), and the `.av` its build reads grew 0.3%.
+That attribution wants a census of `build packages/cli` at b5a71497
+against d7cd84d9. The cost ratchet cannot see it, because it measures a
+pinned snapshot, never the tree's own cli.
+
+It bounds the gate from below: an edit slice is one case (a cold
+product, the edit, a warm build, the edited tree built cold), three to
+four cold cli builds, so ~10–12 min at train21's speed; and the seed
+builds the cli twice. Until the cli's cold build is what it was, a gate
+whose compiler moved is ≥ ~22 min on these runners.
+
+`fact gen2-is-gen1 no` at equal sizes (105905264 bytes): lever 1 had
+nothing to start on there. The seed now says where they differ.
+
+At 257 s the census in the seed held every slice back 4.3 min; it is its
+own job beside the slices again, which the job packing makes safe. The
+warm suite store was dropped: it saves ~20 runner-min, but in every
+layout where it is not hidden behind the census it costs the suite
+slices more wall than it gives them.

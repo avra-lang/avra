@@ -3,10 +3,11 @@
 # trunk's — so the workflow is the pushed commit's own and nothing touches main; the idioms slices
 # take that parent (HEAD~1) as the base their diff starts at.
 #
-#   seed    `sh tools/gate.sh seed`: HEAD's compiler of generation 2, packed with its objects; then
-#           `sh tools/gate.sh census`: the census compiler, built once by it, for every cost slice
-#   slice   one job a slice: the pack unpacked (a cost slice's census compiler beside it), the slice run,
-#           its words kept where it fails
+#   seed    `sh tools/gate.sh seed`: HEAD's compiler of generation 2, packed with its objects
+#   census  `sh tools/gate.sh census`: the census compiler, built once by the seed's, beside the slices
+#   slice   the runner jobs `tools/gate.sh jobs` deals, each slice alone in its tree, its words kept where
+#           it fails
+#   cost    the same of the cost slices, after the census, its compiler unpacked beside the seed's
 #   verdict one table: slice, PASS or FAIL, seconds
 name: gate
 
@@ -37,6 +38,8 @@ jobs:
     timeout-minutes: 75
     outputs:
       slices: ${{ steps.slices.outputs.list }}
+      jobs: ${{ steps.slices.outputs.jobs }}
+      costs: ${{ steps.slices.outputs.costs }}
       sha8: ${{ steps.slices.outputs.sha8 }}
     steps:
       - uses: actions/checkout@v4
@@ -55,17 +58,31 @@ jobs:
           # `unpack` refuses, and the release's compiler is the builder of this one.
           sh tools/gate.sh unpack gate-builder.tar.gz || tar xzf gate-builder.tar.gz build/avra
           build/avra --version
+          # WHERE THE SOURCE MOVED, GENERATION 1 IS BUILT OVER THE BUILDER'S OWN STORES, kept beside it by
+          # the landing (the landed gate's build slice packs them): a pack holding anything but the cli's
+          # stores and a machine store is refused, and a miss builds as before
+          if [ ! -f build/gate/.unpacked ] && curl -fsSL --retry 3 -o builder-store.tar.gz https://github.com/avra-lang/avra/releases/download/gate-builder/builder-store.tar.gz \
+              && tar -tzf builder-store.tar.gz | awk '$0 !~ /^(packages\/cli\/(.*\/)?\.avra-cache|build\/gate\/[^\/]+\/machine)(\/|$)/ || $0 ~ /(^|\/)\.\.(\/|$)/ { bad = 1 } END { exit bad }'; then
+            mkdir -p build/gate/builder-store && tar -xzf builder-store.tar.gz -C build/gate/builder-store && echo "builder stores: laid aside for generation 1"
+          else
+            echo "builder stores: none this seed reads — generation 1 builds cold"
+          fi
       - name: seed
         timeout-minutes: 70
         run: |
-          sh tools/gate.sh seed && sh tools/gate.sh census && exit 0
-          find build/gate/pack build/gate/census -type f -exec sh -c 'echo "== $1"; tail -80 "$1"' _ {} \;
+          sh tools/gate.sh seed && exit 0
+          find build/gate/pack -type f -exec sh -c 'echo "== $1"; tail -80 "$1"' _ {} \;
           exit 1
       - name: slices
         id: slices
         run: |
-          # THE COST SLICES ARE QUEUED FIRST: they are the longest chains, and a matrix is queued in its order
-          echo "list=$({ sh tools/gate.sh list | awk '$1 ~ /^cost-/ { print $1 }'; sh tools/gate.sh list | awk '$1 !~ /^cost-/ { print $1 }'; } | python3 -c 'import json, sys; print(json.dumps(sys.stdin.read().split()))')" >> "$GITHUB_OUTPUT"
+          json() { python3 -c 'import json, sys; print(json.dumps(sys.stdin.read().split()))'; }
+          echo "list=$(sh tools/gate.sh list | awk '{ print $1 }' | json)" >> "$GITHUB_OUTPUT"
+          # THE RUNNER JOBS, dealt by measured seconds (tools/gate.sh jobs); a cost slice is a job alone, run
+          # after the census
+          echo "jobs=$(sh tools/gate.sh jobs | awk '$1 !~ /^cost-/ { print $1 }' | json)" >> "$GITHUB_OUTPUT"
+          echo "costs=$(sh tools/gate.sh jobs | awk '$1 ~ /^cost-/ { print $1 }' | json)" >> "$GITHUB_OUTPUT"
+          sh tools/gate.sh jobs | sed 's/^/gate: job /'
           echo "sha8=$(git rev-parse --short=8 HEAD)" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
         with:
@@ -73,6 +90,29 @@ jobs:
           path: build/gate/compiler-*.tar.gz
           retention-days: 3
           if-no-files-found: error
+
+  # THE CENSUS COMPILER IS ITS OWN JOB, BESIDE THE SLICES: it took 257 s on train21 (45520921593), and in
+  # the seed every slice waited for it; jobs dealt by seconds leave the cost jobs a runner when it ends
+  census:
+    needs: [seed]
+    runs-on: ubuntu-latest
+    container: *gate-image
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 2 }
+      - name: safe directory
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - uses: actions/download-artifact@v4
+        with: { name: gate-pack, path: pack }
+      - name: unpack
+        run: sh tools/gate.sh unpack pack/compiler-${{ needs.seed.outputs.sha8 }}.tar.gz
+      - name: census
+        timeout-minutes: 16
+        run: |
+          sh tools/gate.sh census && exit 0
+          find build/gate/census -type f -exec sh -c 'echo "== $1"; tail -80 "$1"' _ {} \;
+          exit 1
       - uses: actions/upload-artifact@v4
         with:
           name: gate-census
@@ -85,13 +125,14 @@ jobs:
     runs-on: ubuntu-latest
     container: *gate-image
     # a slice's wall budget is tools/gate.sh's own (900 s, its verdict OVER, the slice named); the
-    # runner's bound stands just past it, so the gate names the slice before the runner kills the job
-    timeout-minutes: 20
+    # runner's bound stands just past it, so the gate names the slice before the runner kills the job —
+    # a job of several slices past the budget of all of them
+    timeout-minutes: ${{ startsWith(matrix.slice, 'jobs-') && 75 || 20 }}
     strategy:
       fail-fast: false
       matrix:
-        slice: ${{ fromJSON(needs.seed.outputs.slices) }}
-    steps:
+        slice: ${{ fromJSON(needs.seed.outputs.jobs) }}
+    steps: &slice-steps
       - uses: actions/checkout@v4
         with: { fetch-depth: 2 }
       - name: safe directory
@@ -107,60 +148,105 @@ jobs:
       - name: census compiler
         if: startsWith(matrix.slice, 'cost-')
         run: tar -xzf census/census-${{ needs.seed.outputs.sha8 }}.tar.gz
-      # THE SNAPSHOT'S STD ANSWERS, KEPT ACROSS GATE RUNS for the cost-laid slice (tools/cost.sh `laid`):
-      # keyed by the compiler source its census compiler is built from and the snapshot it measures. An
-      # older key's answers are restored too; the writer's own key says whether they stand, and writes
-      # them again where they don't, and only then are they saved.
-      - name: cost answers key
-        id: cost-answers
+      # THE SNAPSHOT'S STD ANSWERS FOR cost-laid (tools/cost.sh `laid`), KEPT BESIDE THE BUILDER: the release
+      # `gate-builder` carries the landed run's answers, which every gate can read (a cache cannot cross
+      # gate/** branches). Laid down, they are judged by the writer's own key — the census compiler's
+      # bytes, the snapshot's std — and written again where it is not theirs.
+      - name: cost answers
         if: matrix.slice == 'cost-laid'
-        run: echo "key=cost-answers-$(sh tools/work built-from . | cut -d' ' -f1)-$(awk '$1 == "snapshot" { print $2 }' tools/cost.baseline)" >> "$GITHUB_OUTPUT"
-      - if: matrix.slice == 'cost-laid'
-        uses: actions/cache/restore@v4
-        with:
-          path: build/cost-answers
-          key: ${{ steps.cost-answers.outputs.key }}
-          restore-keys: cost-answers-
-      - name: ${{ matrix.slice }}
-        timeout-minutes: 16
         run: |
-          case "${{ matrix.slice }}" in idioms*|fmt) base=$(git rev-parse HEAD~1) ;; *) base="" ;; esac
+          if curl -fsSL --retry 3 -o cost-answers.tar.gz https://github.com/avra-lang/avra/releases/download/gate-builder/cost-answers.tar.gz \
+              && tar -tzf cost-answers.tar.gz | awk '$0 !~ /^cost-answers(\/|$)/ { bad = 1 } END { exit bad }'; then
+            mkdir -p build && tar -xzf cost-answers.tar.gz -C build && echo "cost answers: the release's, laid down"
+          else
+            echo "cost answers: the release holds none this gate can read — the slice writes them"
+          fi
+      # EACH SLICE OF A JOB RUNS ALONE, IN A TREE OF ITS OWN: the tree as unpacked is kept aside, and laid
+      # down afresh before every slice after the first. Verdicts and a failing slice's words are kept in
+      # gate-kept/, which no slice's tree holds.
+      - name: ${{ matrix.slice }}
+        timeout-minutes: ${{ startsWith(matrix.slice, 'jobs-') && 72 || 16 }}
+        run: |
+          members=$(sh tools/gate.sh jobs | awk -v j="${{ matrix.slice }}" '$1 == j { $1 = ""; print }')
+          [ -n "$members" ] || { echo "gate: tools/gate.sh jobs names no job ${{ matrix.slice }}"; exit 1; }
+          pristine="$RUNNER_TEMP/gate-pristine"
+          set -- $members
+          [ "$#" = 1 ] || cp -a . "$pristine"
+          mkdir -p gate-kept/verdict gate-kept/failed
+          first=1
           st=0
-          sh tools/gate.sh "${{ matrix.slice }}" $base > gate.out 2>&1 || st=$?
-          cat gate.out
-          mkdir -p verdict
-          line=$(grep '^GATE ' gate.out | tail -1)
-          [ -n "$line" ] || line="GATE ${{ matrix.slice }} ${{ needs.seed.outputs.sha8 }} FAIL rows=0 failed=0 0s (no GATE line, exit $st)"
-          echo "$line" > "verdict/${{ matrix.slice }}"
-          echo "$line"
-          # THE PASS LEDGER TRAVELS WITH THE VERDICT: its rows exactly as the run measured them, and its
-          # tables as markdown a landing posts
-          case "${{ matrix.slice }}" in cost-ledger-*)
-              [ ! -f build/cost/ledger.md ] || cp build/cost/ledger.md "verdict/${{ matrix.slice }}.md"
-              [ ! -f build/cost/snapshot ] || python3 tools/cost_ratchet.py --rows build/cost > "verdict/${{ matrix.slice }}.rows" || : ;;
-          esac
+          for s in $members; do
+            if [ "$first" = 0 ]; then
+              find . -mindepth 1 -maxdepth 1 ! -name gate-kept -exec find {} -delete \;
+              cp -a "$pristine/." .
+              echo "gate: the tree laid down afresh for $s"
+            fi
+            first=0
+            case "$s" in idioms*|fmt) base=$(git rev-parse HEAD~1) ;; *) base="" ;; esac
+            one=0
+            sh tools/gate.sh "$s" $base > gate.out 2>&1 || one=$?
+            cat gate.out
+            line=$(grep '^GATE ' gate.out | tail -1)
+            [ -n "$line" ] || line="GATE $s ${{ needs.seed.outputs.sha8 }} FAIL rows=0 failed=0 0s (no GATE line, exit $one)"
+            echo "$line" > "gate-kept/verdict/$s"
+            echo "$line"
+            # THE PASS LEDGER TRAVELS WITH THE VERDICT: its rows exactly as the run measured them, and its
+            # tables as markdown a landing posts
+            case "$s" in cost-ledger-*)
+                [ ! -f build/cost/ledger.md ] || cp build/cost/ledger.md "gate-kept/verdict/$s.md"
+                [ ! -f build/cost/snapshot ] || python3 tools/cost_ratchet.py --rows build/cost > "gate-kept/verdict/$s.rows" || : ;;
+            esac
+            if [ "$one" != 0 ]; then
+              st=1
+              [ ! -d "build/gate/$s" ] || cp -a "build/gate/$s" "gate-kept/failed/$s"
+            fi
+          done
           exit "$st"
-      - if: always() && matrix.slice == 'cost-laid' && hashFiles('build/cost-answers.fresh') != ''
-        uses: actions/cache/save@v4
+      # THE BUILDER'S STORES THIS RUN LEAVES, for a landing to publish beside the builder as builder-store.tar.gz
+      - if: success() && matrix.slice == 'build'
+        uses: actions/upload-artifact@v4
         with:
-          path: build/cost-answers
-          key: ${{ steps.cost-answers.outputs.key }}
+          name: gate-builder-store
+          path: build/gate/builder-store.tar.gz
+          retention-days: 7
+          if-no-files-found: ignore
+      # THE ANSWERS THIS RUN STANDS ON, for a landing to publish beside the builder as cost-answers.tar.gz
+      - if: success() && matrix.slice == 'cost-laid'
+        run: tar -czf cost-answers.tar.gz -C build cost-answers
+      - if: success() && matrix.slice == 'cost-laid'
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-cost-answers
+          path: cost-answers.tar.gz
+          retention-days: 7
+          if-no-files-found: ignore
       - if: always()
         uses: actions/upload-artifact@v4
         with:
           name: gate-verdict-${{ matrix.slice }}
-          path: verdict/
+          path: gate-kept/verdict/
           retention-days: 7
       - if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: gate-${{ matrix.slice }}
-          path: build/gate/${{ matrix.slice }}/
+          path: gate-kept/failed/
           retention-days: 7
           if-no-files-found: ignore
 
+  cost:
+    needs: [seed, census]
+    runs-on: ubuntu-latest
+    container: *gate-image
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        slice: ${{ fromJSON(needs.seed.outputs.costs) }}
+    steps: *slice-steps
+
   verdict:
-    needs: [seed, slice]
+    needs: [seed, census, slice, cost]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -170,6 +256,7 @@ jobs:
       - name: table
         run: |
           [ "${{ needs.seed.result }}" = success ] || { echo "gate: the seed did not build — ${{ needs.seed.result }}"; exit 1; }
+          [ "${{ needs.census.result }}" = success ] || echo "gate: the census compiler did not build — ${{ needs.census.result }}; every cost slice fails"
           printf '%-14s %-5s %s\n' slice verdict seconds
           failed=0
           for s in $(echo '${{ needs.seed.outputs.slices }}' | tr -d '[]",' ); do

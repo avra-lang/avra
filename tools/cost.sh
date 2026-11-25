@@ -253,7 +253,7 @@ bare() {
 # runs, as it runs, outside any count: a package the compiler refuses (the snapshot's own compiler,
 # under today's laws) ships its answers and no verdict. Only the std packages the cli's sources reach
 # are written: the others the check never reads, and writing them is most of the slice's wall.
-# THEY ARE KEPT ACROSS RUNS at COST_ANSWERS_KEPT (a runner's cache restores and saves it): laid beside
+# THEY ARE KEPT ACROSS RUNS at COST_ANSWERS_KEPT (a gate lays the landed run's from the builder's release): laid beside
 # the census compiler first, they stand where the writer's key (the compiler's bytes, the paths, every
 # file judged) is theirs, and are written again only where it isn't — then kept again, with
 # `<kept>.fresh` beside them saying so.

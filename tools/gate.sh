@@ -10,6 +10,7 @@
 # compiler build included: one past it is stopped, its rows say `row <slice> OVER`, its verdict OVER.
 #
 #   sh tools/gate.sh list               each slice, one a line, with what it holds
+#   sh tools/gate.sh jobs               the runner jobs: each job, then the slices it runs, dealt by seconds
 #   sh tools/gate.sh <slice> [arg]      one slice; the idioms slices take the base sha their diff starts at
 #   sh tools/gate.sh seed               build/gate/compiler-<sha8>.tar.gz: HEAD's compiler of generation 2,
 #                                       built here first where none of HEAD's stands, and every object a
@@ -144,10 +145,38 @@ unpacked() {
     exit 0
 }
 
+# THE RUNNER JOBS: the slices dealt into jobs by their measured seconds (tools/gate/slice.seconds; a slice
+# it does not name weighs 300), heaviest first, each into the first job it fits under the budget
+# (GATE_JOB_SECS, 420 s) — a slice past the budget is a job alone, and so is a cost slice, which holds
+# the one measuring directory and the census compiler. One a line: the job, then its slices;
+# a job of one slice is named by it, a job of several `jobs-<n>`. Each slice of a job still runs alone,
+# in a tree of its own (gate.yml lays the unpacked tree down afresh before each).
+jobs() {
+    budget=${GATE_JOB_SECS:-420}
+    slices | awk '{ print $1 }' | awk -v budget="$budget" '
+        NR == FNR { if ($0 !~ /^#/ && NF == 2) secs[$1] = $2; next }
+        { n++; name[n] = $1; w[n] = ($1 in secs) ? secs[$1] : 300 }
+        END {
+            # heaviest first; ties by name, so a tree deals one way
+            for (i = 1; i <= n; i++) for (j = i + 1; j <= n; j++)
+                if (w[j] > w[i] || (w[j] == w[i] && name[j] < name[i])) { t = w[i]; w[i] = w[j]; w[j] = t; t = name[i]; name[i] = name[j]; name[j] = t }
+            bins = 0
+            for (i = 1; i <= n; i++) {
+                placed = 0
+                alone = (w[i] >= budget || name[i] ~ /^cost-/)
+                if (!alone) for (b = 1; b <= bins; b++) if (open[b] && load[b] + w[i] <= budget) { load[b] += w[i]; held[b] = held[b] " " name[i]; count[b]++; placed = 1; break }
+                if (!placed) { bins++; load[bins] = w[i]; held[bins] = name[i]; count[bins] = 1; open[bins] = !alone }
+            }
+            k = 0
+            for (b = 1; b <= bins; b++) if (count[b] == 1) print held[b], held[b]; else print "jobs-" (++k), held[b]
+        }' "$root/tools/gate/slice.seconds" -
+}
+
 [ $# -ge 1 ] || { echo "gate: name a slice, or \`list\`" >&2; exit 2; }
 slice=$1
 shift
 if [ "$slice" = list ]; then slices; exit 0; fi
+if [ "$slice" = jobs ]; then jobs; exit 0; fi
 if [ "$slice" = unpack ]; then unpacked "$@"; fi
 [ "$slice" = seed ] && slice=pack
 [ "$slice" = pack ] || [ "$slice" = census ] || slices | awk '{ print $1 }' | grep -qx "$slice" || { echo "gate: no slice \`$slice\` — \`sh tools/gate.sh list\` names them" >&2; exit 2; }
@@ -192,6 +221,14 @@ export AVRA_CACHE_DIR="$out/machine"
 # answers; the build slice's timing rows alone leave the save to an heir, as a user's build does
 export AVRA_STORE_KEPT_HERE=1
 mkdir -p "$AVRA_CACHE_DIR"
+# THE SEED'S GENERATION 1 READS THE BUILDER'S OWN STORES where the landing kept them (gate.yml lays them at
+# build/gate/builder-store): the cli's in place, the machine's into this run's
+if [ "$slice" = pack ] && [ -d build/gate/builder-store ]; then
+    laid=$(find build/gate/builder-store -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')
+    for d in build/gate/builder-store/packages/cli/.avra-cache; do [ ! -d "$d" ] || { mkdir -p packages/cli/.avra-cache && cp -R "$d/." packages/cli/.avra-cache/; }; done
+    for d in build/gate/builder-store/build/gate/*/machine; do [ ! -d "$d" ] || cp -R "$d/." "$AVRA_CACHE_DIR/"; done
+    echo "fact builder-store laid ($laid part(s))" >>"$out/rows"
+fi
 began=$(date +%s)
 rows=0
 failed=0
@@ -259,6 +296,13 @@ cli_built() {
 slice_build() {
     row try make try
     row avra-a env AVRA_STD_ANSWERS=0 make avra && cp build/avra "$out/avra-a"
+    # THE NEXT GATE'S GENERATION 1 STARTS WARM: this gate's compiler of generation 2 is what landing makes
+    # the next gate's builder, and the cli's stores it has just filled building the cli are the ones that
+    # builder reads first (a store answers only the compiler whose print it holds); the landing keeps them
+    # beside the builder as builder-store.tar.gz
+    { find packages/cli -name .avra-cache -type d -prune; echo "${AVRA_CACHE_DIR#"$root"/}"; } > "$out/stores"
+    row builder-store tar -czf build/gate/builder-store.tar.gz -T "$out/stores" &&
+        echo "fact builder-store $(du -k build/gate/builder-store.tar.gz | cut -f1) KB" >>"$out/rows"
     cold cli
     row avra-b env AVRA_STD_ANSWERS=0 make avra && { cmp -s build/avra "$out/avra-a"; judged fixed-point $?; }
     cli_built
@@ -586,6 +630,20 @@ edit_part() {
     judged edit-walk-check "$([ -s "$trips" ] && echo 1 || echo 0)"
 }
 
+# where two binaries differ: `<bytes differing> first=<offset> in <section>`, the sections by readelf
+differs_at() {
+    n=$(cmp -l "$1" "$2" 2>/dev/null | wc -l | tr -d ' ')
+    first=$(cmp "$1" "$2" 2>/dev/null | awk '{ sub(/,$/, "", $5); print $5 - 1 }')
+    sect=$(readelf -S -W "$2" 2>/dev/null | python3 -c '
+import re, sys
+at = int(sys.argv[1])
+for line in sys.stdin:
+    m = re.match(r"\s*\[\s*\d+\]\s+(\S+)\s+\S+\s+[0-9a-f]+\s+([0-9a-f]+)\s+([0-9a-f]+)", line)
+    if m and int(m.group(2), 16) <= at < int(m.group(2), 16) + int(m.group(3), 16):
+        print(m.group(1)); break' "${first:-0}")
+    echo "$n first=${first:-?} in ${sect:-?}"
+}
+
 # WHAT THIS MACHINE IS, the first line of the slice's rows: its cores as a process may use them and as
 # the machine has them, its cgroup's cpu and memory bounds, its load, the memory pool's slot files,
 # and what one process costs to start — a plain one, and the compiler asked its version, a program
@@ -596,7 +654,7 @@ facts() {
     t1=$(date +%s%N)
     for _ in 1 2 3 4 5 6 7 8 9 10; do build/avra --version >/dev/null 2>&1; done
     t2=$(date +%s%N)
-    echo "facts cores=$(nproc) of $(nproc --all) cpu.max=$(cat /sys/fs/cgroup/cpu.max 2>/dev/null || echo -)" \
+    echo "facts cpu=$(awk -F': ' '/^model name/ { gsub(/ +/, "_", $2); print $2; exit }' /proc/cpuinfo 2>/dev/null) cores=$(nproc) of $(nproc --all) cpu.max=$(cat /sys/fs/cgroup/cpu.max 2>/dev/null || echo -)" \
         "memory.max=$(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo -) load=$(cut -d' ' -f1-3 /proc/loadavg)" \
         "pool-slots=$(find "/tmp/avra-$(id -u)/avra-pool" -name 'slot-*' 2>/dev/null | wc -l)" \
         "start=$(( (t1 - t0) / 10000000 ))ms avra-version=$(( (t2 - t1) / 10000000 ))ms" >>"$out/rows"
@@ -617,6 +675,9 @@ if compiler; then
             if [ -f "$out/avra-gen1" ]; then
                 if cmp -s build/avra "$out/avra-gen1"; then same=yes; else same=no; fi
                 echo "fact gen2-is-gen1 $same $(wc -c < "$out/avra-gen1" | tr -d ' ') $(wc -c < build/avra | tr -d ' ')" >>"$out/rows"
+                # WHERE THEY DIFFER: how many bytes, the first, and the ELF section it falls in — a stamp or one
+                # constant reads otherwise than a lowering that moved
+                [ "$same" = yes ] || echo "fact gen2-differs $(differs_at "$out/avra-gen1" build/avra)" >>"$out/rows"
                 find "$out/avra-gen1" -delete
             else
                 echo "fact gen2-is-gen1 - (the seed stood at generation 2)" >>"$out/rows"
