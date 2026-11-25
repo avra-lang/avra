@@ -439,3 +439,34 @@ fail no more, and the baseline falls to `# at most 15`. Every other failure was 
 read `fail` for a family whose failures were all pinned, and that hid the real cause, so a family now
 reads `ok`, `pinned` (n failures, each on its ruling) or `FAIL`. Firefox 158 here: 585 frames, 51
 failures, all pinned, every mutant caught, exit 0 (86 s with the mutants).
+
+### Ruling (1), a control always has a name (avra-8sb5.109.9)
+
+| Part | Done |
+|---|---|
+| a computed empty name is a `ui:` dev warning | `tree/named.av`: `names_itself` (a registry over `Prim`: button, link, field, checkbox, switch, slider) and `nameless(tree)`; the app's paint says each once: "a `button` is drawn with no words, and a control's words are its name: give it a label that is not empty" (`tree/tests/named_test.av`) |
+| the registry derives no `empty` case for a control's name | a text member's `empty` case is dropped where it would draw a control with no words, judged on the drawn node, not on the member's spelling: the six controls lose `label empty`, while dialog, card, alert and spinner keep theirs (124 → 118 cases; the golden loses exactly those six lines) |
+| a LITERAL `""` refused where written | built as each control's `fn check()` and NOT landed. A component that has a `check` loses its row `key` to the repeated-rows law (`features/repeated.av`'s `rows_under` reads `store.walked(e)`, which answers the judged form). Repro and route sent to the lead |
+| the six `named` pins | gone; the baseline is `# at most 9` |
+
+### Ruling (2), text takes an ink subset (avra-8sb5.109.13): how ink reaches words
+
+| Seat | What it inks | Today |
+|---|---|---|
+| `Style.color: Ink?` (style/style.av) | the words of any primitive | all ten inks |
+| `Wear.ink: Ink?` (style/look.av) | a theme's default words for a primitive | all ten |
+| `error_text.ink: Ink = .Danger` (`@style(color)`, laid over `Style.color`) | its message | all ten, and the derivation draws each |
+| `Wear.line: Ink?` (style/look.av) | a primitive's line: a field's edge (`.Field`), a border, the focus ring | all ten; this is where Border, Field and Focus belong |
+
+So the subset is the inks WORDS wear: `Style.color`, `Wear.ink` and `error_text.ink` take it, and
+`Wear.line` keeps the whole `Ink`. Proposed spelling for the warm lane: name the subset over the one
+enum, so no variant is copied and a value stays an `Ink` (no conversion, one `color_word` table):
+`alias Words = Ink.{Text, Muted, Disabled, Danger, Success, Warning, Link}`. A seat of `Words`
+refuses a literal outside it; a computed `Ink` crosses by a match. The derivation's enum rule reads
+the subset's variants once `type_named` answers them for such an alias, so `error_text`'s `ink
+Border/Field/Focus` cases go and the last `legible` pin goes with them. Disabled is exempt from
+legibility as data already (`inactive` in the claims table).
+
+**A finding on the way:** after an edit to the story generator, `check` and `avra dev` trapped with
+`index 19 is out of bounds (length 15)` until the packages' `.avra-cache` was emptied. A store entry
+made under the old generator's shape was read under the new one.

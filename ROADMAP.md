@@ -3818,12 +3818,14 @@ its own ticket. The wanting site of both is the storyboard (`docs/2026_11_24_STO
   head's literal takes the `with`, so the instance is written `(alert "Saved") with { … }`.
   `Callsite:` `scratch-probes/storyboard/p7/src/main.av` (`(alert "Saved") with { urgency: .Assertive }`).
 
-- **For the layout study: a wrapping row whose items hold a least width.** A row that wraps moves
-  an item to a line of its own once the row is narrower than the item's least width, so frames stand
-  side by side on a wide page and one a row on a phone, with no width written per screen. Today
-  `Layout` sizes a box by `Hug`, `Fill`, `Fixed` or `Percent`, none of which a wrapping row breaks
-  at. `Callsite:` `@std/ui_gallery`'s storyboard frames (`frame`, `storyboard.av`), where "one frame
-  a row" is a reader's checkbox meanwhile.
+- **For the layout study: a wrapping row whose items hold a least width** (avra-8sb5.109.12, P3,
+  a study, not built now). A row that wraps moves an item to a line of its own once the row is
+  narrower than the item's least width, so frames stand side by side on a wide page and one a row
+  on a phone, with no width written per screen. Prior art: CSS flex wrap with a basis and a minimum
+  (`flex: 1 1 280px`), SwiftUI's adaptive grid (`GridItem(.adaptive(minimum:))`), Compose's
+  `FlowRow`. Today `Layout` sizes a box by `Hug`, `Fill`, `Fixed` or `Percent`, and a wrapping row
+  breaks at none of them. `Callsite:` `@std/ui_gallery`'s storyboard frames (`frame`,
+  `storyboard.av`); the interim is one frame a row, a reader's checkbox.
 
 ### Interim record — the tasks server was unreachable at landing
 

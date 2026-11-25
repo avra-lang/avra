@@ -36,7 +36,8 @@ use @std.meta.{
     type_named,
     refuse_as_at,
 }
-use tree.view.{View, makes_view}
+use tree.view.{View, makes_view, tree_of}
+use tree.named.{nameless}
 use tree.story_text.{long_text, unbroken_text, sample_text}
 
 /// One drawn state of a view: what it is called, the view, and the spelling that made it.
@@ -61,6 +62,9 @@ export type Story = { owner: string, module: string, told_by: string, based: boo
 
 /// A case beside whether it draws exactly what the base does.
 export type Varied = { case: Case, same: bool }
+
+/// Whether a case draws a control with no words: a control always has a name, so no story draws one.
+export fn draws_unnamed(v: dyn View) -> bool { nameless(tree_of(v)).length > 0 }
 
 /// The cases that draw something the base does not.
 export fn differing(varied: List<Varied>) -> List<Case> { [v.case for v in varied if !v.same] }
@@ -178,10 +182,16 @@ fn derived(base: string, m: Field) -> List<Code> {
     }
 }
 
-/// A required text drawn empty, long and unbroken.
+/// A required text drawn empty, long and unbroken; empty is dropped where it draws a control with
+/// no words, which a control never is.
 fn required_text(base: string, m: Field) -> List<Code> {
     [
-        set_to(base, m, "empty", quote { "" }, "\"\""),
+        varied(
+            literal("${m.name} empty"),
+            quote { b with { ${m.name}: "" } },
+            literal(spelling(base, m.name, "\"\"")),
+            quote { b.${m.name} == "" || draws_unnamed(b with { ${m.name}: "" }) },
+        ),
         set_to(base, m, "long", quote { long_text }, "long_text"),
         set_to(base, m, "unbroken", quote { unbroken_text }, "unbroken_text"),
     ]
