@@ -56,6 +56,36 @@ jobs:
         with:
           path: build/avra
           key: ${{ steps.key.outputs.key }}
+      # main's compiler by its commit, the base a train's speed is judged against
+      - if: github.event_name == 'push'
+        uses: actions/cache/save@v4
+        with:
+          path: build/avra
+          key: avra-main-${{ github.sha }}
+
+  speed:
+    needs: compiler
+    if: github.event_name == 'merge_group'
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/avra-lang/avra-ci:llvm22
+      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache/restore@v4
+        with:
+          path: build/avra
+          key: avra-main-${{ github.event.merge_group.base_sha }}
+          restore-keys: avra-main-
+          fail-on-cache-miss: true
+      - run: mv build/avra build/avra.base
+      - uses: actions/cache/restore@v4
+        with:
+          path: build/avra
+          key: ${{ needs.compiler.outputs.key }}
+          fail-on-cache-miss: true
+      - run: sh tools/warm_speed.sh build/avra.base build/avra
 
   lint:
     needs: compiler
@@ -105,12 +135,12 @@ jobs:
       - run: build/avra test ${{ matrix.package }}
 
   test:
-    needs: [compiler, lint, suite]
+    needs: [compiler, lint, suite, speed]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - run: |
           [ "${{ github.event_name }}" = pull_request ] && exit 0
-          for r in "${{ needs.compiler.result }}" "${{ needs.lint.result }}" "${{ needs.suite.result }}"; do
+          for r in "${{ needs.compiler.result }}" "${{ needs.lint.result }}" "${{ needs.suite.result }}" "${{ needs.speed.result }}"; do
             case $r in success|skipped) ;; *) echo "a check failed: $r"; exit 1 ;; esac
           done
