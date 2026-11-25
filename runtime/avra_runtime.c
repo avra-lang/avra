@@ -436,6 +436,10 @@ static Pair g_move_pairs[SITE_PAIRS];
 static int64_t g_move_slots = 0;
 static Pair g_reuse_pairs[SITE_PAIRS];
 static int64_t g_reuse_slots = 0;
+// A TEXT COMPARE BY ITS CALLER AND ITS CALLER'S CALLER: a compare a map's probe makes is the map row's,
+// and the row's caller is the fn that asked by text — the identity-by-text census.
+static Pair g_streq_pairs[SITE_PAIRS];
+static int64_t g_streq_pair_slots = 0;
 static void* g_retained_box = NULL;
 static void* g_retained_at = NULL;
 static void* g_freed_at = NULL;
@@ -719,6 +723,7 @@ static void acc_report(void) {
         report_made("empty-open", g_empty_open_sites, top ? (int)avra_number(top, 10) : 30, slide);
         report_pairs("move", g_move_pairs, SITE_PAIRS, slide);
         report_pairs("reuse", g_reuse_pairs, SITE_PAIRS, slide);
+        report_pairs("streq-pair", g_streq_pairs, SITE_PAIRS, slide);
     }
     const char* types_top = getenv("AVRA_CENSUS_TYPES_TOP");
     report_types(types_top ? (int)avra_number(types_top, 10) : 40);
@@ -1963,6 +1968,10 @@ int64_t avra_streq(const char* a, const char* b) {
     if (g_sites_census) {
         Site* s = site_in(g_streq_sites, &g_streq_slots, AVRA_CALLER());
         if (s) s->made++;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wframe-address"
+        pair_in(g_streq_pairs, SITE_PAIRS, &g_streq_pair_slots, AVRA_CALLER(), __builtin_return_address(1), 0);
+#pragma clang diagnostic pop
     }
 #endif
     // one box is one text: a literal compared at its own call site is
