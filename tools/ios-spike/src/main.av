@@ -18,11 +18,16 @@ extern fn avra_spike_attach()
 extern fn avra_spike_frame(records: string)
 extern fn avra_spike_tick(n: int)
 
+/// The count the button raises.
+once fn taps() -> Cell<int> { Cell.new(0) }
+
 component counter(label: string) {
-    state n: int = 0
-    text "${self.label}: ${self.n}"
-    button "${self.label}+" { on press { self.n = self.n + 1 } }
+    text "${self.label}: ${taps().get()}"
+    button "${self.label}+" { on press { taps().set(taps().get() + 1) } }
 }
+
+/// The one screen.
+fn shown() -> counter { counter "taps" }
 
 /// What a tap reaches: the page the program paints, once it stands.
 once fn page() -> Cell<fn(int, int) -> bool> { Cell.new((_id: int, _seat: int) -> false) }
@@ -57,6 +62,9 @@ fn spun() -> int {
     x
 }
 
+/// Nothing to do between turns.
+fn idle() {}
+
 /// A tap on `node` at `seat`, left as a turn for the program's loop.
 fn tapped(app: App, at: Live, node: NodeId, seat: int) -> bool {
     let s? = seat_numbered(seat) else { return false }
@@ -69,7 +77,7 @@ let spinner = if env("AVRA_SPIKE_SPIN") == "1" { spawn spun() } else { spawn 0 }
 let at = live()
 let on_screen: Cell<List<Owner>> = Cell.new([])
 let app = owned_app(
-    () -> counter "taps",
+    shown,
     (root: Node) -> {
         let patches = at.patches_drawn(root, null)
         on_screen.set(at.owners())
@@ -82,5 +90,5 @@ stood(app)
 let inbox = opened(app, unwired)
 page().set((id: int, seat: int) -> tapped(app, at, NodeId { n: id - 1 }, seat))
 app.paint()
-served(app, inbox, () -> {})
+served(app, inbox, idle)
 println("served ${ticker.await} ${spinner.await}")

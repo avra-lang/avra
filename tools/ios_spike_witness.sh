@@ -86,12 +86,19 @@ launched() {
 holds() { grep -qF "$2" "$work/$1.out" || fail "$1: expected \"$2\""; said "ok — $1: \"$2\""; }
 
 # THE ROUND TRIP, with a screenshot of the label once the presses landed
-( launched roundtrip SIMCTL_CHILD_AVRA_SPIKE_WITNESS=1 SIMCTL_CHILD_AVRA_SPIKE_PRESS=3 ) &
-for _ in $(seq 1 100); do
-    grep -q "a11y after" "$work/roundtrip.out" 2> /dev/null && break
-    sleep 0.1
-done
-xcrun simctl io "$udid" screenshot "$work/slice1.png" > /dev/null 2>&1 && said "screenshot: $work/slice1.png"
+: > "$work/roundtrip.out"
+( launched roundtrip SIMCTL_CHILD_AVRA_SPIKE_WITNESS=1 SIMCTL_CHILD_AVRA_SPIKE_PRESS=3 SIMCTL_CHILD_AVRA_SPIKE_PAUSE=2 ) &
+# shot <line> <file>: a screenshot once the run's console says <line>
+shot() {
+    for _ in $(seq 1 150); do
+        grep -q "$1" "$work/roundtrip.out" 2> /dev/null && break
+        sleep 0.1
+    done
+    sleep 0.5
+    xcrun simctl io "$udid" screenshot "$work/$2" > /dev/null 2>&1 && said "screenshot: $work/$2"
+}
+shot "a11y before" slice1-before.png
+shot "a11y after" slice1-after.png
 wait
 holds roundtrip "a11y before: label: taps: 0 | button: taps+"
 holds roundtrip "a11y after 3 presses: label: taps: 3 | button: taps+"

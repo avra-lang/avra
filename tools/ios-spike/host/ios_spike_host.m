@@ -125,8 +125,10 @@ static void run_shown(SpikeNode* run) {
         holder.view.accessibilityLabel = run.words;
     } else if ([holder.prim isEqualToString:@"heading"]) {
         ((UILabel*)holder.view).text = run.words;
+        holder.view.accessibilityLabel = run.words;
     } else {
         ((UILabel*)run.view).text = run.words;
+        run.view.accessibilityLabel = run.words;
     }
 }
 
@@ -137,10 +139,14 @@ static UIView* made_view(NSString* prim, NSInteger nid) {
         b.titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleTitle2];
         b.tag = nid;
         [b addTarget:g_target action:@selector(tapped:) forControlEvents:UIControlEventTouchUpInside];
+        b.isAccessibilityElement = YES;
+        b.accessibilityTraits = UIAccessibilityTraitButton;
         v = b;
     } else if ([prim isEqualToString:@"text"] || [prim isEqualToString:@"heading"]) {
         UILabel* l = [UILabel new];
         l.font = [UIFont preferredFontForTextStyle:UIFontTextStyleTitle1];
+        l.isAccessibilityElement = YES;
+        l.accessibilityTraits = UIAccessibilityTraitStaticText;
         v = l;
     } else {
         UIStackView* s = [UIStackView new];
@@ -169,6 +175,7 @@ static void placed(SpikeNode* n, NSInteger parent, NSInteger after) {
         at = i == NSNotFound ? into.arrangedSubviews.count : i + 1;
     }
     [into insertArrangedSubview:n.view atIndex:at];
+    if ([n.prim isEqualToString:@"text"] && n.words) run_shown(n);
 }
 
 static void applied(NSString* frame) {
@@ -205,6 +212,7 @@ void avra_spike_frame(const char* records) {
         [g_pending addObject:frame];
         return;
     }
+    if (NSProcessInfo.processInfo.environment[@"AVRA_SPIKE_FRAMES"]) said([@"frame: " stringByAppendingString:[frame stringByReplacingOccurrencesOfString:@"\n" withString:@" ; "]]);
     applied(frame);
     if (g_first_frame_ms < 0) {
         [g_root.window layoutIfNeeded];
@@ -286,14 +294,17 @@ void avra_spike_tick(int64_t n) {
 
 static void witnessed(UIWindow* w) {
     NSString* press = NSProcessInfo.processInfo.environment[@"AVRA_SPIKE_PRESS"];
+    double pause = NSProcessInfo.processInfo.environment[@"AVRA_SPIKE_PAUSE"].doubleValue;
     after(0.5, ^{
         said([NSString stringWithFormat:@"a11y before: %@", [a11y_said() componentsJoinedByString:@" | "]]);
+        if (pause > 0) [[NSRunLoop mainRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:pause]];
         for (int i = 0; i < press.intValue; i++) {
             UIView* b = a11y_find(g_root, @"taps+");
             if (![b accessibilityActivate]) [(UIButton*)b sendActionsForControlEvents:UIControlEventTouchUpInside];
         }
         after(0.3, ^{
             said([NSString stringWithFormat:@"a11y after %d presses: %@", press.intValue, [a11y_said() componentsJoinedByString:@" | "]]);
+            if (pause > 0) [[NSRunLoop mainRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:pause]];
             NSInteger before = g_ticks;
             // a scroll's tracking mode, held for half a second: the program's sources stand in it too
             [[NSRunLoop mainRunLoop] runMode:UITrackingRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.5]];
@@ -364,7 +375,8 @@ static void witnessed(UIWindow* w) {
 
 static void host_loop(void) {
     @autoreleasepool {
-        UIApplicationMain(0, NULL, nil, NSStringFromClass([SpikeApp class]));
+        static char* argv0[] = {"spike", NULL};
+        UIApplicationMain(1, argv0, nil, NSStringFromClass([SpikeApp class]));
     }
 }
 
