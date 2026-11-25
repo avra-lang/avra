@@ -32,6 +32,9 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root" || exit 1
 unset AVRA_PROGRAM AVRA_PROGRAM_MODE
 export AVRA_SUITE_ALL=1
+# the tools package is built by HEAD's compiler, the one this gate seeds: avra_tools would otherwise
+# take main's published compiler on a Linux runner, a stranger to this tree's laws
+export AVRA_TOOLS_COMPILER="${AVRA_TOOLS_COMPILER:-$root/build/avra}"
 
 # the bound of one row, and of a compiler build
 ROW_SECS=${GATE_ROW_SECS:-2400}
@@ -75,7 +78,7 @@ edit-e     witness_program_edit, WITNESS_ONLY=rename, the frontier walk checked
 keepers-a1 every keeper of KEEPERS_A1 no other slice runs, a row each
 keepers-a2 the same of KEEPERS_A2
 keepers-wasm the same of KEEPERS_WASM, the browser's libraries beside it
-keepers-clock clock-holds, alone on its runner
+keepers-clock clock-holds and speed-ratchet, the keepers that read a stopwatch, alone on their runner
 EOF
     splits | while IFS='|' read -r family parts what; do
         n=1
@@ -686,24 +689,41 @@ features() { find packages/std-avrac/src/features -mindepth 1 -maxdepth 1 -type 
 # THE KEEPERS ON THE GATE: every keeper the Makefile's KEEPERS names, each a row `keeper-<name>` run as
 # checks.yml runs it (`make -s -o avra <name>`), in the slice of its own list. Those another slice
 # already runs, as the same target over the same tree, are its rows and are not run twice.
-KEEPERS_RUN_ELSEWHERE="cost flow-trace rt-header rt-ns ui-host ui-host-test ui-board beside-attack heir-save-attack share-merge-attack wave-share-attack"
+KEEPERS_RUN_ELSEWHERE="speed-ratchet cost flow-trace rt-header rt-ns ui-host ui-host-test ui-board beside-attack heir-save-attack share-merge-attack wave-share-attack"
 # the keepers the Makefile's list `$1` names, those run elsewhere left out, one a line
 keepers_of() {
     make -s -pn 2>/dev/null | awk -v v="$1" '$1 == v && $2 == "=" { $1 = ""; $2 = ""; print; exit }' | tr ' ' '\n' | grep . |
         grep -vxF "$(printf '%s\n' $KEEPERS_RUN_ELSEWHERE)"
 }
-# each keeper named, a row; an owed one (tools/gate/keepers.owed) is judged by its line, not its run
+# what a keeper's checks.yml job sets beside it, one `NAME=value` a word: speed-ratchet's budgets are
+# keyed to the one stable host name, and its warm store stands at .avra-cache (speed_measure warms it)
+keeper_env() {
+    case $1 in
+        speed-ratchet) mkdir -p .avra-cache && echo SPEED_HOST=ci-warm ;;
+    esac
+}
+# what a keeper wants built before it: dev-server serves a page, so the wasm runtime and packages
+# stand first; the tools' witnesses build with build/avra-try, the generation after the builder, which
+# the seed's generation-2 compiler already is
+keeper_wants() {
+    case $1 in
+        dev-server) make -s -o avra wasm-runtime wasm-packages >"$out/keeper-$1.wants.log" 2>&1 ;;
+        tool-witnesses) [ -x build/avra-try ] || cp build/avra build/avra-try ;;
+    esac
+}
+# each keeper named, a row, under the words `keeper_via` names before its make; an owed one (tools/gate/keepers.owed) is judged by its line, not its run
 keepers_run() {
     for k in "$@"; do
+        keeper_wants "$k" || { judged "keeper-$k-wants" 1; continue; }
         owed=$(awk -v k="$k" '$1 == k { print $2; exit }' "$root/tools/gate/keepers.owed")
         if [ -z "$owed" ]; then
-            row "keeper-$k" env AVRA_NO_SUPERVISOR_TESTS=1 UI_BROWSER_ENGINES="firefox webkit webkit-iphone" make -s -o avra "$k"
+            row "keeper-$k" env AVRA_NO_SUPERVISOR_TESTS=1 UI_BROWSER_ENGINES="firefox webkit webkit-iphone" $(keeper_env "$k") ${keeper_via:-} make -s -o avra "$k"
             continue
         fi
         # OWED: run as any keeper, its words kept; red is the owner's debt, green means strike the line
         rows=$((rows + 1))
         t0=$(date +%s)
-        if sh tools/bounded.sh "$ROW_SECS" env AVRA_NO_SUPERVISOR_TESTS=1 UI_BROWSER_ENGINES="firefox webkit webkit-iphone" make -s -o avra "$k" >"$out/keeper-$k.log" 2>&1; then
+        if sh tools/bounded.sh "$ROW_SECS" env AVRA_NO_SUPERVISOR_TESTS=1 UI_BROWSER_ENGINES="firefox webkit webkit-iphone" $(keeper_env "$k") ${keeper_via:-} make -s -o avra "$k" >"$out/keeper-$k.log" 2>&1; then
             failed=$((failed + 1))
             failures="$failures keeper-$k"
             echo "row keeper-$k FAIL $(( $(date +%s) - t0 ))s (passes, and tools/gate/keepers.owed still owes it — strike its line)" >>"$out/rows"
@@ -746,7 +766,8 @@ part_of() {
         keepers-alone)
             names=$(keepers_of KEEPERS_ALONE)
             [ -n "$names" ] || { judged "keepers-alone-named" 1; return; }
-            for k in $names; do row "keeper-$k" env AVRA_NO_SUPERVISOR_TESTS=1 MUTATION_SHARD="$(($2 - 1))/$3" sh tools/memcap.sh 6000 make -s -o avra "$k"; done
+            export MUTATION_SHARD="$(($2 - 1))/$3"
+            keeper_via="sh tools/memcap.sh 6000" keepers_run $names
             ;;
     esac
 }
@@ -863,7 +884,7 @@ if compiler; then
         keepers-a1) keepers_list KEEPERS_A1 ;;
         keepers-a2) keepers_list KEEPERS_A2 ;;
         keepers-wasm) keepers_list KEEPERS_WASM ;;
-        keepers-clock) keepers_run clock-holds ;;
+        keepers-clock) keepers_run clock-holds speed-ratchet ;;
         *) part_of "${slice%-*}" "${slice##*-}" "$(splits | awk -F'|' -v f="${slice%-*}" '$1 == f { print $2 }')" ;;
     esac
 fi
