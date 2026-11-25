@@ -1,0 +1,77 @@
+diff --git a/packages/std-avrac/src/compiler/item_names.av b/packages/std-avrac/src/compiler/item_names.av
+index b65c4e560..b692ac23a 100644
+--- a/packages/std-avrac/src/compiler/item_names.av
++++ b/packages/std-avrac/src/compiler/item_names.av
+@@ -77,16 +77,12 @@ fn item_kind(store: SyntaxArena, s: StmtId) -> ItemKind? {
+     }
+ }
+ 
+-/// Writes what `s` declares on `tape`, if anything: its name, kind and face. The face is all
+-/// reading the declaration back can tell its readers, so a declaration whose item does not read
+-/// back whole — its parse found errors (`misparsed`), or `store` holds a refusal — wears another
+-/// face than the same words in an item that does.
+-export fn declare_on(store: SyntaxArena, mut tape: TapeWriter, s: StmtId, misparsed: bool = false) {
++/// Writes what `s` declares on `tape`, if anything: its name, kind and face.
++export fn declare_on(store: SyntaxArena, mut tape: TapeWriter, s: StmtId) {
+     let kind? = item_kind(store, s) else { return }
+     let name? = store.declared_name(s) ?? store.let_name(s) else { return }
+     mut face = face_writer()
+     Stmt.taped_id(store, face, s)
+-    if misparsed || !store.refusals().is_empty() { face.count(1) }
+     let number = ITEM_KINDS.index_of(kind)
+     if number < 0 { defect(kind_unnumbered()) }
+     tape.declared(name, number, store.is_exported(s), face.face())
+diff --git a/packages/std-avrac/src/compiler/item_signatures.av b/packages/std-avrac/src/compiler/item_signatures.av
+index 5aa585343..9692da1ec 100644
+--- a/packages/std-avrac/src/compiler/item_signatures.av
++++ b/packages/std-avrac/src/compiler/item_signatures.av
+@@ -98,10 +98,7 @@ fn faced_signature(
+     engine.recorded_again()
+     // Where the item read back holds no fn of the name (gone from its file, or another standing
+     // at its id), the answer rests on that read: whether the item stands, and what it declares.
+-    let written? = written_fn(item.store, item.stmts, name) else {
+-        if item_held(engine, file, at) { let _ = file_declares_at(engine, file, at) }
+-        return null
+-    }
++    let written? = written_fn(item.store, item.stmts, name) else { return null }
+     declared_signature(engine, file, written)
+ }
+ 
+diff --git a/packages/std-avrac/src/compiler/item_tapes.av b/packages/std-avrac/src/compiler/item_tapes.av
+index 49ba787a6..b96f21b11 100644
+--- a/packages/std-avrac/src/compiler/item_tapes.av
++++ b/packages/std-avrac/src/compiler/item_tapes.av
+@@ -2,7 +2,7 @@
+ //! own text, its refusals among what it keeps, and a file's tree put back together from its items'
+ //! tapes.
+ use core.{ForeignOrigin, ParseRefusal, SyntaxArena, Stmt, StmtId, new_node_store}
+-use diagnostics.{has_errors, new_source_file}
++use diagnostics.{new_source_file}
+ use grammar.{avra_lexeme, lex_source}
+ use @std.program.address.{DirectoryAddress, SourceFileAddress}
+ use @std.program.answer_record.{content_hash}
+@@ -102,21 +102,17 @@ export fn avra_columns(text: string) -> TokenColumns { token_columns(text, lex_s
+ /// what its file keeps of it, its refusals among them.
+ export fn avra_item_tape(item_text: string, context: Bytes) -> SyntaxTape {
+     let parsed = parse_program(avra(), new_source_file("<item>", item_text), context_words(context))
+-    tape_of_item(
+-        parsed.store,
+-        [s for s in parsed.stmts if !parsed.store.is_hoisted(s)],
+-        has_errors(parsed.voices.list),
+-    )
++    tape_of_item(parsed.store, [s for s in parsed.stmts if !parsed.store.is_hoisted(s)])
+ }
+ 
+ /// An item's tape: its statements, what its file keeps of it, and every name it declares, what it
+ /// hoisted among them, each with its face.
+-export fn tape_of_item(store: SyntaxArena, stmts: List<StmtId>, misparsed: bool = false) -> SyntaxTape {
++export fn tape_of_item(store: SyntaxArena, stmts: List<StmtId>) -> SyntaxTape {
+     mut tape = tape_writer()
+     tape.count(stmts.length)
+     for s in stmts { Stmt.taped_id(store, tape, s) }
+     SyntaxArena.tape_item_tables(store, tape)
+-    for s in stmts.concat(store.hoisted_decls()) { declare_on(store, tape, s, misparsed) }
++    for s in stmts.concat(store.hoisted_decls()) { declare_on(store, tape, s) }
+     tape.said_about(item_about(store, stmts))
+     tape.finished()
+ }
