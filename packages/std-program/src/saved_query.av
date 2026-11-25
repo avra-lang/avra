@@ -31,7 +31,7 @@ use saved_derive.{
     slot_read,
     slot_written,
 }
-use saved_layout.{SavedSlot, SavedSlots, saved_layout_writer}
+use saved_layout.{SavedList, SavedRecord, SavedSlot, SavedSlots, saved_layout_writer}
 
 /// Marks a generated fn answering a query's definition, for a `collect` to list.
 export fn query_definition(_f: Named) {}
@@ -64,6 +64,7 @@ fn remembered(f: Fn, is_input: bool, also_made: List<Directive>) -> Declared {
         declares(definition_door(f), f.at, definition_of(f, is_input)),
         declares(known_door(f), f.at, known_answer_door(f)),
     ]
+        .concat(in_place_door(f))
     Declared { made: made.concat(also_made), problems: [] }
 }
 
@@ -141,6 +142,32 @@ fn known_answer_door(f: Fn) -> Decls {
         export fn ${known_door(f)}(..${seats_of(f)}) -> bool {
             ${engine_of(f)}.store.question_known_as(${question_of(f)}.known_as) != null
         }
+    }
+}
+
+/// `<name>_saved(engine, …)`: an answer that's a record or a list, where it lies, so a reader of
+/// some of it reads that alone (a record's `<field>_in`, a list's `length` or one item) and decodes
+/// nothing else.
+fn in_place_door(f: Fn) -> List<Directive> {
+    let door = "${f.name}_saved"
+    match saved_shape(f.answers)! {
+        .Declared(_, _) -> {
+            let source = quote {
+                export fn ${door}(..${seats_of(f)}) -> SavedRecord {
+                    ${engine_of(f)}.answer_to(${question_of(f)}).root().record_at(0)!
+                }
+            }
+            [declares(door, f.at, source)]
+        },
+        .Listed(_) -> {
+            let source = quote {
+                export fn ${door}(..${seats_of(f)}) -> SavedList {
+                    ${engine_of(f)}.answer_to(${question_of(f)}).root().list_at(0)!
+                }
+            }
+            [declares(door, f.at, source)]
+        },
+        .Int or .Offset or .Float or .Bool or .Text or .Octets or .Optional(_) or .Celled(_) or .Renamed(_, _) or .Entries(_, _) or .Sides(_, _) or .Tags(_, _, _) or .Id(_, _, _) or .Placed(_, _) -> [],
     }
 }
 

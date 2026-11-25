@@ -24,7 +24,8 @@ use @std.program.answer_record.{ContentHash, content_hash}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
 use @std.program.saved_derive.{Saved}
 use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
-use @std.program.source_facts.{PlacedTape, file_context, item_tape}
+use @std.program.saved_layout.{SavedRecord}
+use @std.program.source_facts.{PlacedTape, item_tape, item_tape_saved}
 use @std.program.syntax_tape.{SyntaxTape, tape_writer}
 
 /// What an item means by besides its text: the components its instances name, as its file's
@@ -33,7 +34,12 @@ type ItemNeeds = { components: List<WordShape>, blocks: List<string> }
 
 /// An item's needs, as its tape keeps them.
 fn item_needs(engine: QueryEngine, item_text: string, context: Bytes) -> ItemNeeds {
-    let about = about_of(item_tape(engine, item_text, context).about)
+    needs_on(item_tape_saved(engine, item_text, context), context)
+}
+
+/// The needs the tape saved at `tape` keeps, of an item read under `context`, read where they lie.
+fn needs_on(tape: SavedRecord, context: Bytes) -> ItemNeeds {
+    let about = about_of(SyntaxTape.about_in(tape))
     let shapes = WordShapes.from_saved_bytes(context).components
     ItemNeeds {
         components: [s! for w in about.instance_words for s in [shapes.find(it.word == w)] if s != null],
@@ -129,14 +135,14 @@ fn readied_all(grammars: List<GrammarWord>) -> List<BlockGrammar> { [g! for g in
 
 fn component_name(c: ComponentAt) -> string { "${spelled_file(c.home)}#${c.declared}" }
 
-/// A component's declaring item: its text, where it starts in its file, and the context its file
-/// reads under.
+/// A component's declaring item: its text, where it starts in its file, and the context it reads
+/// under.
 type Declaration = { item_text: string, start: int, context: Bytes }
 
 fn declaration(engine: QueryEngine, home: SourceFileAddress, declared: string) -> Declaration? {
     let word? = file_words(engine, home).components.find(it.shape.declared == declared) else { return null }
-    let item = file_items(engine, home)[word.item]
-    Declaration { item_text: item.text, start: item.start, context: file_context(engine, home) }
+    let item = items_under(engine, home)[word.item]
+    Declaration { item_text: item.text, start: item.start, context: item.context }
 }
 
 /// A component handed whole: its declaring item read back as its file reads it, each instance it
@@ -217,21 +223,21 @@ fn item_expanded(engine: QueryEngine, item_text: string, context: Bytes, inputs:
 /// written tape elsewhere.
 @query
 export fn file_meant(engine: QueryEngine, file: SourceFileAddress) -> List<PlacedTape> {
-    let context = file_context(engine, file)
-    [PlacedTape { start: item.start, tape: meant_tape(engine, file, item.text, context) } for item in file_items(engine, file)]
+    [PlacedTape { start: item.start, tape: SyntaxTape.read_from(meant_tape(engine, file, item)) } for item in items_under(engine, file)]
 }
 
-/// An item's tape for what it means: expanded where it names a component or a block word, written
-/// elsewhere.
-fn meant_tape(engine: QueryEngine, file: SourceFileAddress, item_text: string, context: Bytes) -> SyntaxTape {
-    let needs = item_needs(engine, item_text, context)
-    if needs.components.is_empty() && needs.blocks.is_empty() { return item_tape(engine, item_text, context) }
+/// An item's tape for what it means, where it lies: expanded where it names a component or a block
+/// word, written elsewhere.
+fn meant_tape(engine: QueryEngine, file: SourceFileAddress, item: ItemUnder) -> SavedRecord {
+    let written = item_tape_saved(engine, item.text, item.context)
+    let needs = needs_on(written, item.context)
+    if needs.components.is_empty() && needs.blocks.is_empty() { return written }
     let inputs = ExpansionInputs {
         components: [component_key(engine, u.home, u.declared) for u in needs.components],
         grammars: grammars_named(engine, file, needs.blocks),
         instances: file_instances(engine, file),
     }
-    item_expanded(engine, item_text, context, inputs.saved_bytes())
+    item_expanded_saved(engine, item.text, item.context, inputs.saved_bytes())
 }
 
 collect listed_expansion_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name

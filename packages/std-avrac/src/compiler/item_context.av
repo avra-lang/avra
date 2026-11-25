@@ -15,7 +15,8 @@ use @std.meta.{derive}
 use @std.path.{dir_of, under_dir}
 use @std.program.address.{DirectoryAddress, SourceFileAddress}
 use @std.program.saved_derive.{Saved}
-use @std.program.source_facts.{file_context, item_spans, item_tape, listed, source_text}
+use @std.program.source_facts.{file_context, item_spans, item_tape_saved, listed, source_text}
+use @std.program.syntax_tape.{SyntaxTape}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
 use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
 
@@ -45,6 +46,27 @@ export fn avra_context(engine: QueryEngine, file: SourceFileAddress) -> Bytes { 
 
 /// What reading an item depends on when it depends on nothing but its text.
 export fn no_context() -> Bytes { WordShapes { components: [], grammars: [] }.saved_bytes() }
+
+impl WordShapes {
+    /// What reading `text` depends on of these words: only those it could name. A word it never
+    /// spells can't change how it reads, so an item that spells none reads as one with no words.
+    fn named_in(text: string) -> Bytes {
+        WordShapes {
+            components: [c for c in self.components if text.contains(c.word)],
+            grammars: [g for g in self.grammars if text.contains(g.word)],
+        }
+            .saved_bytes()
+    }
+}
+
+/// One item of a file, and the context it reads under: its file's words it could name.
+export type ItemUnder = { start: int, text: string, context: Bytes }
+
+/// A file's items, each with the context it reads under.
+export fn items_under(engine: QueryEngine, file: SourceFileAddress) -> List<ItemUnder> {
+    let shapes = WordShapes.from_saved_bytes(file_context(engine, file))
+    [ItemUnder { start: item.start, text: item.text, context: shapes.named_in(item.text) } for item in file_items(engine, file)]
+}
 
 /// The words a parse under `context` reads by, each known by its shape alone.
 export fn context_words(context: Bytes) -> BlockWords {
@@ -157,7 +179,7 @@ export fn file_items(engine: QueryEngine, file: SourceFileAddress) -> List<ItemT
 
 /// What each item of a file keeps for its words, read with no words of its own.
 fn file_abouts(engine: QueryEngine, file: SourceFileAddress) -> List<ItemAbout> {
-    [about_of(item_tape(engine, item.text, no_context()).about) for item in file_items(engine, file)]
+    [about_of(SyntaxTape.about_in(item_tape_saved(engine, item.text, no_context()))) for item in file_items(engine, file)]
 }
 
 fn about_of(octets: Bytes?) -> ItemAbout {
@@ -249,8 +271,7 @@ fn line_shapes(engine: QueryEngine, file: SourceFileAddress, u: UseLine) -> Line
 /// tokens against its words, then those each `use` line imports.
 @query
 export fn file_instances(engine: QueryEngine, file: SourceFileAddress) -> List<NamedInstance> {
-    let context = file_context(engine, file)
-    let own = [i.listed() for item in file_items(engine, file) for i in about_of(item_tape(engine, item.text, context).about).instances]
+    let own = [i.listed() for item in items_under(engine, file) for i in about_of(SyntaxTape.about_in(item_tape_saved(engine, item.text, item.context))).instances]
     own
         .concat([i for u in file_words(engine, file).uses for i in line_shapes(engine, file, u).instances])
 }

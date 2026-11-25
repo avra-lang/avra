@@ -9,10 +9,9 @@ use @std.program.address.{SourceFileAddress}
 use @std.program.answer_record.{ContentHash}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
 use @std.program.saved_derive.{Saved}
-use @std.program.source_facts.{file_context}
 use @std.program.answer_parts.{AnswerParts, NamedValue, answer_parts}
 use @std.program.saved_query.{ListedQuery, definitions_of, parted_query, query, query_definition}
-use @std.program.syntax_tape.{TapeWriter, face_writer}
+use @std.program.syntax_tape.{SyntaxTape, TapeWriter, face_writer}
 
 /// What a top-level item declares.
 @derive(Saved)
@@ -100,7 +99,6 @@ export type Declarations = { names: List<DeclaredName> }
 /// What a file declares.
 @query
 export fn file_declares(engine: QueryEngine, file: SourceFileAddress) -> Declarations {
-    let context = file_context(engine, file)
     Declarations {
         names: [DeclaredName {
             name: n.name,
@@ -109,7 +107,7 @@ export fn file_declares(engine: QueryEngine, file: SourceFileAddress) -> Declara
             item: at,
             exported: n.exported,
             face: n.face,
-        } for at, item in file_items(engine, file) for n in meant_tape(engine, file, item.text, context).declares],
+        } for at, item in items_under(engine, file) for n in SyntaxTape.declares_in(meant_tape(engine, file, item))],
     }
 }
 
