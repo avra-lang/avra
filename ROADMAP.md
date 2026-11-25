@@ -3803,6 +3803,30 @@ left is ceremony and one silent hole.
   Today: none; `@std/config` keeps a private ASCII `shouted`.
   `Callsite:` the env source's variable names.
 
+### Interim record — the storyboard's asks
+
+Filed here because this session's tasks server holds no `avra-8sb5.10`; each moves to that epic as
+its own ticket. The wanting site of both is the storyboard (`docs/2026_11_24_STORYBOARD.md`).
+
+- **A build-time law over a settled value.** A const or a collection whose check refuses the BUILD,
+  naming what it found: here, a gathered declaration of one kind with no partner of another (a view
+  `@viewed` gathers that no `@case_of` story tells). `Example:` a law over `views` and `stories` that
+  refuses `checkbox has no story` where the build stands. Today the check is a suite's `then`, red
+  in the gate but green in a build. `Callsite:` `@std/ui_gallery`'s coverage test (`untold`).
+- **An instance followed by `with` binds `with` to the instance.** `Example:` `alert "Saved" with {
+  urgency: .Assertive }`. Today: `type.with_struct` ("`with` copies a struct, found `string`") — the
+  head's literal takes the `with`, so the instance is written `(alert "Saved") with { … }`.
+  `Callsite:` `scratch-probes/storyboard/p7/src/main.av` (`(alert "Saved") with { urgency: .Assertive }`).
+
+- **For the layout study: a wrapping row whose items hold a least width** (avra-8sb5.109.12, P3,
+  a study, not built now). A row that wraps moves an item to a line of its own once the row is
+  narrower than the item's least width, so frames stand side by side on a wide page and one a row
+  on a phone, with no width written per screen. Prior art: CSS flex wrap with a basis and a minimum
+  (`flex: 1 1 280px`), SwiftUI's adaptive grid (`GridItem(.adaptive(minimum:))`), Compose's
+  `FlowRow`. Today `Layout` sizes a box by `Hug`, `Fill`, `Fixed` or `Percent`, and a wrapping row
+  breaks at none of them. `Callsite:` `@std/ui_gallery`'s storyboard frames (`frame`,
+  `storyboard.av`); the interim is one frame a row, a reader's checkbox.
+
 ### Interim record — the tasks server was unreachable at landing
 
 The two asks of `docs/2026_10_01_FIRST_OF_AND_IS_BINDING.md`

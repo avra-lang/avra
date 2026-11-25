@@ -1,0 +1,12 @@
+//! A wasm module's own data begins past the low 64 KiB the runtime reads as holding no box
+//! (`AVRA_NULL_PAGE`): a static box laid lower is taken for none, and a write meant for a copy of it
+//! lands in the binary's data. Every wasm link says where data begins, so no linker's default does.
+use compiler.link.{wasm_link_head, DATA_BASE}
+
+spec "compiler/link — where a wasm module's own data begins" {
+    then "every wasm link, reactor or command, stripped or not, names the base" {
+        [wasm_link_head("wasm32-wasip1", reactor, debug) for reactor in [false, true] for debug in [false, true]]
+            .all(it.contains("-Wl,--global-base=${DATA_BASE}"))
+    }
+    then "the base is the runtime's null page: 64 KiB" { DATA_BASE == 65536 }
+}

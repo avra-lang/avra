@@ -1,0 +1,37 @@
+//! A control always has a name: six primitives name themselves by their words, a paint that draws
+//! one with no words says so once, naming the control, and one with words says nothing of it.
+use @std.ui.components.{button, column, text}
+use @std.ui.headless.{headless}
+use @std.ui.tree.node.{Prim}
+use @std.ui.tree.named.{names_itself, nameless}
+use @std.ui.tree.view.{tree_of}
+
+/// A button labelled with words the caller computes, never written here.
+fn labelled(words: string) -> button { button words }
+
+fn held(words: string) -> column {
+    column {
+        text "Above"
+        labelled(words)
+    }
+}
+
+/// What a paint of `held(words)` says of unnamed controls.
+fn said(words: string) -> List<string> { [w for w in headless(() -> held(words)).warnings() if w.contains("drawn with no words")] }
+
+spec "std/ui a control always has a name" {
+    given "the primitives" {
+        then "six name themselves by their words" {
+            [p.word() for p in Prim.every() if names_itself(p)].join(" ") == "button link field checkbox switch slider"
+        }
+    }
+    given "a button whose label is computed empty" {
+        then "the tree names it once, nested where it stands" { nameless(tree_of(held(""))).length == 1 }
+        then "the paint says so, naming the control" {
+            said("").join(" | ") == "a `button` is drawn with no words, and a control's words are its name: give it a label that is not empty"
+        }
+    }
+    given "a button with words" {
+        then "the paint says nothing of names" { said("Save").is_empty() }
+    }
+}

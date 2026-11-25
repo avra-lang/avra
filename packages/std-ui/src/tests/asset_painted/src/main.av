@@ -1,0 +1,21 @@
+// proves: a bundled picture — its octets the binary's own static data — is drawn by a page's first
+// paint: one frame draws the image, its source the asset's served name and its words said, and the asset
+// is left as it was. What the frame says is asserted, never its length, which every look changes.
+use @std.assets.{Picture, served_name}
+use @std.ui.components.{image}
+use @std.ui.realize.dom.live.{live}
+use @std.ui.realize.dom.page.{paged}
+
+asset logo: Picture = "art/logo.png"
+
+let frames: Cell<List<Bytes>> = Cell.new([])
+let on = paged(() -> image logo { alt: "Logo" }, live(), (sent: Bytes) -> frames.push(sent))
+on.app.paint()
+on.app.paint()
+let sizes = match logo {
+    .Bundled(_, w, h, _, _, octets) -> "${w}x${h} ${octets.length}",
+    .Remote(_, _, _) -> "remote",
+}
+let first = frames.get()[0].text_lossy()
+let src = "/assets/${served_name(logo)}"
+"${frames.get().length} frame(s); src ${first.contains(src)}; alt ${first.contains("Logo")}; ${sizes}"

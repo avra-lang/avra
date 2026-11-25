@@ -1,0 +1,97 @@
+// The storyboard's shelves: a view per row the View derive wrote, each with the cases its stories
+// tell, names unique on the view, and the varied cases that draw what their base draws set aside.
+use @std.ui.components.{button, text}
+use @std.ui.tree.story.{Case, Story, Told}
+use @std.ui.tree.view.{tree_of}
+use @std.ui.realize.tui.tui.{render}
+use @std.ui.env.{Env}
+use @std.text.{cells}
+use @std.ui.tree.viewed.{ViewRow, Viewed, views}
+use @std.ui.tree.story.{stories}
+use @std.ui_gallery.{Shelf, Pin, shelves, untold, matching, pins_of}
+
+fn all() -> List<Shelf> { shelves(views, stories) }
+
+fn of(name: string) -> Shelf? { all().find(it.viewed.name == name) }
+
+fn names(name: string) -> string { [c.name for c in of(name)?.cases ?? []].join(", ") }
+
+fn row(name: string) -> Viewed { Viewed { row: ViewRow { name: name, module: "here" } } }
+
+fn told(by: string, based: bool, cases: List<string>) -> Told {
+    Told {
+        tell: () -> Story {
+            owner: "x",
+            module: "here",
+            told_by: by,
+            based: based,
+            doc: "",
+            cases: [Case { name: n, view: text n } for n in cases],
+        },
+    }
+}
+
+fn twice() -> Shelf {
+    shelves(
+        [row("x")],
+        [told("first", true, ["base", "one"]), told("second", true, ["base", "two"])],
+    )[0]
+}
+
+fn count(s: Shelf?) -> int {
+    let held? = s else { return -1 }
+    held.cases.length
+}
+
+fn pin_said(pins: List<Pin>) -> string { [[p.family, p.view, p.case, p.dial, p.why, p.waits].join(" ") for p in pins].join(" | ") }
+
+/// The cases whose terminal drawing at `width` columns holds a line wider than that, in the
+/// terminal's own cells (an ideograph two, an emoji its joiner holds one glyph).
+fn overflowing(width: int) -> List<string> {
+    ["${s.viewed.name}/${c.name}" for s in all() for c in s.cases if render(tree_of(c.view), Env {}, width).split("\n").any(cells(it) > width)]
+}
+
+fn says_unbroken(s: Shelf) -> bool { s.cases.all(it.name.contains("unbroken")) }
+
+spec "@std/ui_gallery storyboard" {
+    given "the views and stories std-ui declares" {
+        then "every view has a shelf, in the views' order" { all().length == views.length && all()[0].viewed.name == "alert" }
+        then "every view is told by a story" { untold(all()).join(", ") == "" }
+        then "a button's cases open on its base, never draw it nameless, and close on its named one" {
+            names("button") == "base, label long, label unbroken, disabled, loading, submits, busy"
+        }
+        then "a place's seed given after the base was built seeds the place, so the case is drawn" {
+            names("dialog").contains("initial") && (of("dialog")?.alike ?? []).is_empty()
+        }
+    }
+    given "two stories of one view" {
+        then "a later story's case takes its fn's name where the first's took it" {
+            [c.name for c in twice().cases].join(", ") == "base, one, second: base, two"
+        }
+    }
+    given "a view no story tells" {
+        then "is named as untold" { untold(shelves([row("lone")], [])).join(", ") == "lone" }
+    }
+    given "the terminal, held to a narrow width" {
+        then "no case std-ui's stories tell draws a line wider than 24 columns at 24" { overflowing(24).join(", ") == "" }
+        then "nor at 12" { overflowing(12).join(", ") == "" }
+    }
+    given "the claims' baseline" {
+        then "a pin line names its family, view, case, dial, why and what ends it" {
+            pin_said(pins_of("named button/label empty/ — no name — waits on: ruling (1)")) == "named button label empty  no name ruling (1)"
+        }
+        then "a pin under one dial names it" { pin_said(pins_of("contained field/base/narrow — past — waits on: ruling 2")) == "contained field base narrow past ruling 2" }
+        then "a comment, a line with no ruling and a path with no case are no pins" {
+            pins_of("# at most 3\nnamed button/x/ — why\nnamed button — why — waits on: y")
+                .is_empty()
+        }
+    }
+    given "the filter" {
+        then "an empty query keeps every shelf" { matching(all(), "").length == all().length }
+        then "a view's name keeps its shelf whole, whatever the case" { count(matching(all(), "BUTTON").first()) == count(of("button")) }
+        then "a case's name keeps only the cases that name it" {
+            matching(all(), "unbroken").length > 10 &&
+                matching(all(), "unbroken").all(says_unbroken(it))
+        }
+    }
+}
