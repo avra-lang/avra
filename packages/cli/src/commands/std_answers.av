@@ -21,6 +21,7 @@ use @std.avrac.compiler.{
     spelled_file,
     verdict_package,
 }
+use @std.avrac.compiler.backend.{disk_free_at}
 use @std.avrac.core.{digest_of}
 use @std.io.{IoError, append_bytes, drafted, env, exists, link, make_dirs, read_bytes, remove}
 use @std.path.{joined_path}
@@ -135,8 +136,12 @@ fn store_unusable(directory: string, e: IoError) -> string {
     "the machine's store at ${directory} can't stand (${e.describe().message}), so this build shares nothing across packages"
 }
 
+/// Why the toolchain's std answers couldn't be laid in the machine's store at `directory`: the file and
+/// the cause `e` says, and what the disk holding the store had free, as the store's own save says it.
 fn answers_unlaid(directory: string, e: IoError) -> string {
-    "the toolchain's std answers couldn't be laid in ${directory} (${e.describe().message}), so this build works std out itself"
+    let free = disk_free_at(directory)
+    let room = if free == null { "" } else { ", ${free!} bytes free there" }
+    "the toolchain's std answers couldn't be laid in ${directory} (${e.describe().message}${room}), so this build works std out itself"
 }
 
 /// Where the toolchain keeps its verdict on its std, for the binary printed `print`.
