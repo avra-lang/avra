@@ -1,4 +1,5 @@
 #!/bin/sh
+# tool-witness: run by the gate's witness-b slice (tools/gate.sh), never twice
 # `avra fix` SAYS AND WRITES ON THE PROGRAM LAYER WHAT IT DID ON THE OLD PATH. Each case under
 # tools/program-fixes/ is a package of its own (tools/lib/cases.sh), copied cold. Held word for word
 # to its `fix.expected` — the old path's last word on it, frozen at cbc437f4 before its deletion:
