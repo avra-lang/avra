@@ -125,12 +125,15 @@ fn seated(mut cx: Checking, v: ExprId, seat: SignedType, name: string) {
     cx.refused.push(Refused { at: v, want: seat, found: made, seat: field_seating(cx, v, name) })
 }
 
-/// The seat the value `v` of the field `name` fills: the handler of the event a setting names, else
-/// the field.
+/// The seat the value `v` of the field `name` fills: the handler of the event a setting names, the
+/// setting an instance of a component writes, else the field.
 fn field_seating(cx: Checking, v: ExprId, name: string) -> Seating {
-    let heard? = cx.store.on_handler(v) else { return Seating.Field(name) }
+    let heard? = cx.store.on_handler(v) else { return if setting_value(cx, v) { Seating.Setting(name) } else { Seating.Field(name) } }
     Seating.Heard(heard.event)
 }
+
+/// Whether `v` is the value a setting writes, as an instance of a component's block does.
+fn setting_value(cx: Checking, v: ExprId) -> bool { cx.store.stmt_ids().any((s) -> cx.store.setting_parts(s)?.value == v) }
 
 /// Each entry of the literal `e`, what an instance means, writing a field that takes its writer's
 /// place, held to the place law once its value is typed. A literal the compiler makes for itself
