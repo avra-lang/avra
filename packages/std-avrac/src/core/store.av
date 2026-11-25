@@ -3,6 +3,7 @@
 use @std.meta.{derive, identity, plain_field}
 use @std.relation.engine.{list_cell}
 use @std.program.dense_window.{DenseWindow, dense_window}
+use core.marks.{facts_over}
 
 /// How a sugar's meaning is minted beside it: the language's own door,
 /// since only the language reads a template. It answers the nodes it
@@ -216,10 +217,20 @@ fn binding_payload(asked: PatId) -> PayloadIs { PayloadIs { pat: asked } }
 /// (`field` is -1) or its field `field`.
 export type SeatFill = { arg: int, field: int }
 
+/// WHAT A STATEMENT IS KNOWN TO BE BESIDE ITS NODE, one table: each fact read by its own door, a
+/// statement no one set it for reading its default.
+@derive(Facts)
+@facts_over("StmtId")
+export type StmtFacts = {
+    // a collect's `dense` mark: its order is data, unique and gap-free from 0
+    @copied(stmt, wear_collect_dense) collect_dense: bool = false,
+}
+
 /// ONE IDENTITY: every arena and side table is a `Cell`, so a copy of
 /// the store allocates into the same arenas as the original.
 @identity
 @plain_field("file")
+@plain_field("stmt_facts")
 @derive(Copied)
 export type SyntaxArena = {
     exprs: Arena<Expr>,
@@ -276,9 +287,8 @@ export type SyntaxArena = {
     // a call written as a PIPE (`x |> f(a)`), its first argument
     // a call written as a TYPE LITERAL (`v.type(T)`)
     // a record's `..R` entries, by its statement
-    // a collect's `dense` mark, by its statement: its order is data,
-    // unique and gap-free from 0
-    @copied(stmt, wear_collect_dense) collect_dense: SideColumn<bool>,
+    // every per-statement fact, one table (`StmtFacts`)
+    stmt_facts: StmtFactsTable,
     // a Match a trailing-block ARM sugar synthesized — never one a
     // program wrote — so a missing arm under a nullable seat answers
     // `null` instead of refusing; the mark is the ONE way the checker
@@ -374,7 +384,7 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         param_spans: list_cell(),
         param_elsewhere: list_cell(),
         expr_marks: side_column(unmarked_expr()),
-        collect_dense: side_column(false),
+        stmt_facts: StmtFactsTable.empty(),
         sugar_matches: side_column(false),
         minted_by: side_column<ExprId?>(null),
         mints: side_column(no_expr_ids()),
@@ -427,7 +437,7 @@ impl SyntaxArena {
             param_spans: Cell.new(self.param_spans.get()),
             param_elsewhere: Cell.new(self.param_elsewhere.get()),
             expr_marks: self.expr_marks.forked(),
-            collect_dense: self.collect_dense.forked(),
+            stmt_facts: self.stmt_facts.forked(),
             sugar_matches: self.sugar_matches.forked(),
             minted_by: self.minted_by.forked(),
             mints: self.mints.forked(),
@@ -671,13 +681,13 @@ impl SyntaxArena {
     /// A collect's `dense` mark — part of the statement's identity, so
     /// two collects differing only in it do not share a fingerprint.
     fn mark_collect_dense(s: StmtId, on: bool) {
-        self.collect_dense.set_at(s.index, on)
+        self.stmt_facts.set_collect_dense(s, on)
         if on {
             self.stamp(s, 187, 0)
         }
     }
 
-    fn is_collect_dense(s: StmtId) -> bool { self.collect_dense.at(s.index) }
+    fn is_collect_dense(s: StmtId) -> bool { self.stmt_facts.collect_dense(s) }
 
     fn is_run_hole(e: ExprId) -> bool {
         self.expr_marks_at(e).is_run_hole
