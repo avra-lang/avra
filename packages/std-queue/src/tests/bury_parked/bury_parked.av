@@ -5,11 +5,11 @@ use @std.queue.{open_queue, bury, key, Dead, Delivery, Fate, Order, Overflow, Qu
 use @std.task.{open_channel, Sink}
 use @std.time.{ms, sleep}
 
-fn interred(q: Queue<int>, d: Delivery<int>, dead: Sink<Dead<int, string>>) -> bool {
+fn interred(q: Queue<int>, d: Delivery<int>, dead: Sink<Dead<int>>) -> bool {
     bury(q, d, Fate.Failed("spent"), dead) catch false
 }
 
-fn why(f: Fate<string>) -> string {
+fn why(f: Fate) -> string {
     match f { .Failed(e) -> e, .Unanswered -> "unanswered" }
 }
 
@@ -29,7 +29,7 @@ fn opened() -> Queue<int>? {
 }
 
 let q = opened()!
-let letters = open_channel<Dead<int, string>>(1)
+let letters = open_channel<Dead<int>>(1)
 let _ = letters.sink.send(Dead { item: 0, fate: Fate.Failed("filler"), path: [] })
 let _ = q.send(7, key("k"))
 let held = q.take() catch null

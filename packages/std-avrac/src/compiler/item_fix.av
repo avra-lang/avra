@@ -161,7 +161,9 @@ impl Fixing {
         Application { kind: kind, edits: sg.edits, proved: proved, by_law: by_law }
     }
 
-    /// Each certain suggestion of an error among `diags`, accepted where it clears the error.
+    /// Each certain suggestion of an error among `diags`, accepted where it clears the error; and of a
+    /// warning whose registry row owes a fix — a spelling on its way out, `annotation.derive_spelled`
+    /// — accepted where it silences that warning and mints no error.
     fn repairs(diags: List<Diag>) -> List<Application> {
         let was = errors_spoken(diags)
         flatten(
@@ -170,9 +172,20 @@ impl Fixing {
                 edits: sg.edits,
                 proved: false,
                 by_law: null,
-                repaired: self.clears(was, sg.edits),
-            } for sg in d.suggestions if repairable(self.store, sg)] for d in diags if is_error(d)],
+                repaired: if is_error(d) { self.clears(was, sg.edits) } else { self.silences(was, d, diags, sg.edits) },
+            } for sg in d.suggestions if repairable(self.store, sg)] for d in diags if is_error(d) || fix_owed(d)],
         )
+    }
+
+    /// Whether `edits` leave the file saying the warning `d` fewer times than `diags` do, and no error
+    /// the errors `was` lists don't.
+    fn silences(was: List<string>, d: Diag, diags: List<Diag>, edits: List<Edit>) -> bool {
+        let after? = self.after(edits) else { return false }
+        let now = file_law_diags(after, self.h)
+        (self.restored)()
+        let said = said_as_words(d)
+        now.filter(said_as_words(it) == said).length < diags.filter(said_as_words(it) == said).length &&
+            errors_spoken(now).all((e) -> was.contains(e))
     }
 
     /// Whether `edits` leave the program erring nowhere, or its file with fewer of the errors `was`
@@ -194,3 +207,12 @@ impl Fixing {
         (self.edited)(text)
     }
 }
+
+/// Whether `avra fix --repair` takes the warning `d`: its registry row owes a fix.
+fn fix_owed(d: Diag) -> bool {
+    let row? = avra().rows.codes.find(it.kind == d.kind) else { return false }
+    match row.remedy { .Fix -> true, .Help -> false }
+}
+
+/// A diagnostic as its kind and words.
+fn said_as_words(d: Diag) -> string { d.kind + " " + d.message }

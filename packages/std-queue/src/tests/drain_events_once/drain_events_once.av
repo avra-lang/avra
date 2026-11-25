@@ -11,7 +11,7 @@ fn pay(d: Delivery<Job>) -> Result<int, string> {
 }
 
 state seen: Cell<List<string>> = Cell.new([])
-queue<Dead<Job, string>> letters {}
+queue<Dead<Job>> letters {}
 queue<Job> jobs {
     capacity: 8
     lease: ms(60000)
@@ -24,7 +24,7 @@ worker settle {
     each: pay
     dead: letters
     failed: (d: Delivery<Job>, e: string) -> seen.push("failed ${d.item.n}/${d.attempt} ${e}")
-    buried: (gone: Dead<Job, string>) -> seen.push("buried ${gone.item.n}")
+    buried: (gone: Dead<Job>) -> seen.push("buried ${gone.item.n}")
 }
 for i in 1..4 { let _ = jobs.home().send(Job { n: i }, key("k${i}")) }
 let settled = drain(settle) catch 0 - 1

@@ -1,0 +1,117 @@
+// Keyed fields — a query's or a form's, already decoded — read into one
+// value and decoded under `Lax`: absent, bare, empty and repeated stay four
+// answers until a field's own reader judges them, and an empty value is
+// absence to every reader but text's.
+use @std.meta.{derive}
+use @std.validate.{Decode, Keyed, Coercion, from_keyed}
+
+@derive(Decode)
+type Page = {
+    limit: int = 50,
+    after: string? = null,
+    tags: List<string> = [],
+    verbose: bool = false,
+    ratio: float = 1.0,
+}
+
+@derive(Decode)
+type Needs = { q: string }
+
+@derive(Decode)
+type Inner = { n: int }
+
+@derive(Decode)
+type Nested = { inner: Inner? = null }
+
+fn sent(k: string, t: string) -> Keyed { Keyed { key: k, text: t } }
+
+fn flag(k: string) -> Keyed { Keyed { key: k, text: null } }
+
+fn page(fields: List<Keyed>) -> string {
+    match Page.decode(from_keyed(fields), Coercion.Lax) {
+        .Ok(p) -> "${p.limit} ${p.after ?? "-"} [${p.tags.join(",")}] ${p.verbose} ${p.ratio}",
+        .Err(e) -> [i.path.text() + " " + i.message for i in e.all].join("; "),
+    }
+}
+
+fn needs(fields: List<Keyed>) -> string {
+    match Needs.decode(from_keyed(fields), Coercion.Lax) {
+        .Ok(n) -> "q=${n.q}",
+        .Err(e) -> [i.path.text() + " " + i.message for i in e.all].join("; "),
+    }
+}
+
+fn inner(fields: List<Keyed>) -> string {
+    match Inner.decode(from_keyed(fields), Coercion.Lax) {
+        .Ok(i) -> "n=${i.n}",
+        .Err(e) -> [i.path.text() + " " + i.message for i in e.all].join("; "),
+    }
+}
+
+fn strict_inner(t: string) -> string {
+    match Inner.decode(from_keyed([sent("n", t)]), Coercion.Strict) {
+        .Ok(i) -> "n=${i.n}",
+        .Err(e) -> [i.path.text() + " " + i.message for i in e.all].join("; "),
+    }
+}
+
+spec "std/validate — keyed fields" {
+    given "the empty cases, written first" {
+        then "no fields is an empty map" { from_keyed([]).shown() == "{}" }
+        then "no fields takes every default" { page([]) == "50 - [] false 1.0" }
+        then "no fields refuses a required field" { needs([]) == "q is required" }
+        then "an empty value is text, never absence" { needs([sent("q", "")]) == "q=" }
+        then "an empty number is absent, and takes its default" { page([sent("limit", "")]) == "50 - [] false 1.0" }
+        then "a blank number is absent too" { page([sent("ratio", "  ")]) == "50 - [] false 1.0" }
+        then "an empty truth is absent, and takes its default" { page([sent("verbose", "")]) == "50 - [] false 1.0" }
+        then "an empty optional text is still text" { page([sent("after", "")]) == "50  [] false 1.0" }
+        then "an empty required number is required" { inner([sent("n", "")]) == "n is required" }
+        then "an empty value under `Strict` is the wrong kind" { strict_inner("") == "n must be an integer, not text" }
+        then "a list of none is its default" { page([]).contains("[]") }
+    }
+    given "the shape" {
+        then "one key is its text" { from_keyed([sent("a", "1")]).shown() == "{\"a\": \"1\"}" }
+        then "a bare key is true" { from_keyed([flag("a")]).shown() == "{\"a\": true}" }
+        then "a repeat is a list in order" { from_keyed([sent("a", "1"), sent("b", "x"), sent("a", "2")]).shown() == "{\"a\": [\"1\", \"2\"], \"b\": \"x\"}" }
+        then "keys keep first appearance" { from_keyed([sent("b", "1"), sent("a", "2"), sent("b", "3")]).shown() == "{\"b\": [\"1\", \"3\"], \"a\": \"2\"}" }
+        then "a key that prefixes another is its own" { from_keyed([sent("a", "1"), sent("ab", "2")]).shown() == "{\"a\": \"1\", \"ab\": \"2\"}" }
+    }
+    given "decoded as a record" {
+        then "text spells a number" { page([sent("limit", "7")]) == "7 - [] false 1.0" }
+        then "text spells a float" { page([sent("ratio", "0.25")]) == "50 - [] false 0.25" }
+        then "`nan` is no float" { page([sent("ratio", "nan")]) == "ratio must be a number, not text" }
+        then "a float past the largest is refused, never infinite" { page([sent("ratio", "1e999")]) == "ratio must be a number, not text" }
+        then "a number padded with spaces reads, as `Lax` trims" { page([sent("limit", " 7 ")]) == "7 - [] false 1.0" }
+        then "a float that is not one is refused" { page([sent("ratio", "x")]) == "ratio must be a number, not text" }
+        then "order is free" { page([sent("after", "k"), sent("limit", "3")]) == page([sent("limit", "3"), sent("after", "k")]) }
+        then "a scalar sent twice is refused" { page([sent("limit", "1"), sent("limit", "2")]) == "limit must be an integer, not a list" }
+        then "one value is a list of one" { page([sent("tags", "a")]) == "50 - [a] false 1.0" }
+        then "a list keeps its order" { page([sent("tags", "b"), sent("tags", "a")]) == "50 - [b,a] false 1.0" }
+        then "a bare flag is true" { page([flag("verbose")]) == "50 - [] true 1.0" }
+        then "a bare key is no text" { needs([flag("q")]) == "q must be text, not a boolean" }
+        then "a bare key is no number, and no default stands in" { page([flag("limit")]) == "limit must be an integer, not a boolean" }
+        then "a bare element of a list is refused at its index" { page([sent("tags", "a"), flag("tags")]) == "tags[1] must be text, not a boolean" }
+        then "an optional reads its text" { page([sent("after", "x")]) == "50 x [] false 1.0" }
+        then "every issue at once" { page([sent("limit", "x"), sent("ratio", "y")]) == "limit must be an integer, not text; ratio must be a number, not text" }
+        then "a field nobody names is passed by" { page([sent("utm", "x")]) == "50 - [] false 1.0" }
+        then "a record has no keyed spelling" {
+            match Nested.decode(from_keyed([sent("inner", "1")]), Coercion.Lax) {
+                .Ok(_) -> false,
+                .Err(e) -> e.all[0].message == "must be an object, not text",
+            }
+        }
+    }
+    given "at size" {
+        then "ten thousand values of one list" {
+            let many = [sent("tags", "t${i}") for i in 0..10000]
+            match Page.decode(from_keyed(many), Coercion.Lax) {
+                .Ok(p) -> p.tags.length == 10000 && p.tags[9999] == "t9999",
+                .Err(_) -> false,
+            }
+        }
+        then "ten thousand keys, each once" {
+            let many = [sent("k${i}", "v") for i in 0..10000]
+            page(many) == "50 - [] false 1.0"
+        }
+    }
+}

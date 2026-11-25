@@ -13,7 +13,9 @@
 //!     POST   /{id}/restore  restore       only for `@soft_delete`
 //!
 //! A body is JSON and is decoded by the model's own rules: a row that breaks
-//! one is refused with all of them (422), never one at a time.
+//! one is refused with all of them (422), never one at a time. A create's body
+//! is the model's draft — no key, nothing the store sets — so one naming the
+//! key is refused like any field the draft does not hold.
 use @std.errors.{Error}
 use @std.http_message.message.{FEED, Header, Method, READS, STAND, Version, WROTE, named_field}
 use @std.http_message.route.{Nothing, Route as Described, Routes}
@@ -24,6 +26,7 @@ use @std.net.{Bell}
 use @std.text.{parse_int}
 use @std.time.{Duration, ms, now_ms, secs}
 use @std.http.route.{Route, Mounted, fixed, routed, mounted}
+use @std.http.typed.{created, problem}
 use @std.json.{Json, Field, field, to_text}
 use @std.db.apply.{commits, last_of, touched}
 use @std.db.reads.{observing}
@@ -31,7 +34,7 @@ use @std.db.error.{ModelError}
 use @std.db.scope.{Op, Where}
 use @std.sqlite.{Db, SqlValue}
 use @std.sqlite.error.{SqlError}
-use @std.validate.{Issue, Issues}
+use @std.validate.{Issues}
 
 grammar Whole = "/{id: int}"
 grammar Restored = "/{id: int}/restore"
@@ -263,10 +266,10 @@ fn described_at<A, T>(d: Door, soft: bool, without: List<Door>, base: string) ->
 
 /// The doors a mount answers, as data: the same declaration (`soft`, `without`) the router is built from, so the
 /// two cannot name different doors.
-export fn described<T>(soft: bool, without: List<Door>, base: string) -> Routes<T> {
+export fn described<T, D>(soft: bool, without: List<Door>, base: string) -> Routes<T, D> {
     let list: Described<Nothing, List<T>>? = described_at(.List, soft, without, base)
     let find: Described<int, T>? = described_at(.Find, soft, without, base)
-    let create: Described<T, T>? = described_at(.Create, soft, without, base)
+    let create: Described<D, T>? = described_at(.Create, soft, without, base)
     let update: Described<T, T>? = described_at(.Update, soft, without, base)
     let remove: Described<int, Nothing>? = described_at(.Remove, soft, without, base)
     let trash: Described<Nothing, List<T>>? = described_at(.Trash, soft, without, base)
@@ -327,7 +330,7 @@ fn opened(w: Wire, access: Access?, held: Hub) -> List<Opened> {
                 (q: Request<Unrouted>) -> scoped(
                     access,
                     q,
-                    (sc) -> nudged(held, () -> created(q, (body: string) -> w.create(sc, body))),
+                    (sc) -> nudged(held, () -> made_from(q, (body: string) -> w.create(sc, body))),
                 ),
             ),
         },
@@ -512,7 +515,7 @@ fn bodied<P>(q: Request<P>, read: fn(string) -> Result<Json, Failure>) -> Respon
 
 /// A door that makes a row: the body read as the row, answered 201 with the
 /// new row's address under the path it was posted to.
-fn created<P>(q: Request<P>, read: fn(string) -> Result<Json, Failure>) -> Response {
+fn made_from<P>(q: Request<P>, read: fn(string) -> Result<Json, Failure>) -> Response {
     match q.json() { .Ok(doc) -> located(q, read(to_text(doc))), .Err(refusal) -> refusal }
 }
 
@@ -522,9 +525,7 @@ fn located<P>(q: Request<P>, r: Result<Json, Failure>) -> Response {
 
 fn placed(row: Json, path: string) -> Response {
     let at = if path.ends_with("/") { path } else { "${path}/" }
-    let key = keyed(row.get("id"))
-    let body = Response.json(row)
-    body with { status: 201, headers: body.headers.concat([Header { name: "location", value: at + key }]) }
+    created(row, at + keyed(row.get("id")))
 }
 
 /// A row's key as the text an address ends in; empty for a row with none.
@@ -535,26 +536,11 @@ fn keyed(id: Json?) -> string {
 
 fn refused(f: Failure) -> Response {
     match f {
-        .Invalid(issues) -> Response.json(issues_json(issues)) with { status: 422 },
+        .Invalid(issues) -> problem(issues),
         .Missing -> status(404),
         .Conflict(why) -> text(409, why),
         .Broken(why) -> text(500, why),
     }
-}
-
-fn issues_json(all: Issues) -> Json {
-    Json.Obj([field("issues", Json.Arr([issue_json(i) for i in all.all]))])
-}
-
-fn issue_json(i: Issue) -> Json {
-    Json
-        .Obj(
-            [
-                field("path", Json.Str(i.path.text())),
-                field("rule", Json.Str(i.rule)),
-                field("message", Json.Str(i.message)),
-            ],
-        )
 }
 
 // ── What a model's derive calls ─────────────────────────────────
@@ -577,12 +563,13 @@ fn shown_or_missing<T>(row: T?, show: fn(T) -> Json) -> Result<Json, Failure> {
     .Ok(show(r))
 }
 
-/// A body read and written as a new row.
-export fn made<T>(read: Result<T, Issues>, put: fn(T) -> Result<T, ModelError>, show: fn(T) -> Json) -> Result<
-    Json,
-    Failure,
-> {
-    match read { .Ok(row) -> written(put(row), show), .Err(issues) -> .Err(.Invalid(issues)) }
+/// A body read as a draft and written as a new row.
+export fn made<D, T>(
+    read: Result<D, Issues>,
+    put: fn(D) -> Result<T, ModelError>,
+    show: fn(T) -> Json,
+) -> Result<Json, Failure> {
+    match read { .Ok(draft) -> written(put(draft), show), .Err(issues) -> .Err(.Invalid(issues)) }
 }
 
 fn written<T>(r: Result<T, ModelError>, show: fn(T) -> Json) -> Result<Json, Failure> {

@@ -5,7 +5,7 @@
 //! node no rule lowers yet is named, never guessed at.
 use @std.meta.{derive}
 use @std.program.saved_derive.{Saved}
-use @std.program.address.{SourceFileAddress}
+use @std.program.address.{SourceFileAddress, source_file}
 
 /// What a lowering reads of the program: what the checked program answers, what a top-level name
 /// the body reads or calls is, the declared method a value of a type has by a name, and the static
@@ -83,6 +83,9 @@ export type LoweredProgram = {
     /// Where a node was written, as a task's site names it to a trace — its file and its line — absent
     /// for a node no source line wrote.
     written_at: fn(ExprId) -> string? = written_nowhere,
+    /// The identity a trait a body names takes, read as `named` reads a value — the key `marks` asks
+    /// an annotation's derive by; absent where the name names no trait.
+    trait_key: fn(string, string?) -> string? = no_trait_key,
     /// Whether a pattern's bare name names a top-level value it compares with, read among written
     /// names alone where the pattern reads its names (`home`, a template's file, else the body's own):
     /// a binder's question never asks what generators make, so it's absent for a name only a
@@ -1532,10 +1535,7 @@ export fn decl_keyed(key: string) -> DeclKeyed? {
     let head = if scoped { 2 } else { 1 }
     if parts.length <= head { return null }
     DeclKeyed {
-        file: SourceFileAddress {
-            package_name: parts.take(head).join("/"),
-            path_in_package: parts.drop(head).join("/"),
-        },
+        file: source_file(parts.take(head).join("/"), parts.drop(head).join("/")),
         name: dotted.last()!,
     }
 }
@@ -1565,10 +1565,7 @@ export fn template_home(file: SourceFileAddress) -> string { "${file.package_nam
 export fn template_file(home: string) -> SourceFileAddress? {
     let at = home.index_of(":")
     if at < 0 { return null }
-    SourceFileAddress {
-        package_name: home.substring(0, at),
-        path_in_package: home.substring(at + 1, home.length),
-    }
+    source_file(home.substring(0, at), home.substring(at + 1, home.length))
 }
 
 /// A const a body declares that settled, as a const after it that reads it is handed it: its name,
@@ -1577,5 +1574,7 @@ export type ConstSeed = { name: string, ty: SignedType, value: NamedValue }
 
 /// A program that settles no const a body declares.
 fn written_nowhere(_e: ExprId) -> string? { null }
+
+fn no_trait_key(_name: string, _home: string?) -> string? { null }
 
 fn unsettled_in_body(_s: StmtId, _ty: SignedType, _seeds: List<ConstSeed>) -> NamedValue { NamedValue.Unsettled("a const a body declares, which this program doesn't settle") }

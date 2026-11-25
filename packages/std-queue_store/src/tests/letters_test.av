@@ -14,16 +14,16 @@ use tests.support.wires.{int_wire}
 @codec
 type Email = { to: string, subject: string }
 
-fn why(f: Fate<string>) -> string {
+fn why(f: Fate) -> string {
     match f { .Failed(e) -> "failed: ${e}", .Unanswered -> "unanswered" }
 }
 
-fn told(d: Dead<int, string>?) -> string {
+fn told(d: Dead<int>?) -> string {
     let l? = d else { return "none" }
     "${l.item} ${why(l.fate)} ${l.path.join(">")}"
 }
 
-fn crossed(d: Dead<int, string>) -> string {
+fn crossed(d: Dead<int>) -> string {
     let w = dead_wire(int_wire(), text_wire())
     told((w.decode)((w.encode)(d)))
 }
@@ -42,7 +42,7 @@ fn buried(path: string) -> Result<int, HomeError> {
         durable: stored<Email>()
         retries: 1
     }
-    queue<Dead<Email, string>> undeliverable {
+    queue<Dead<Email>> undeliverable {
         name: "undeliverable"
         durable: stored_dead<Email>()
     }
@@ -62,7 +62,7 @@ fn buried(path: string) -> Result<int, HomeError> {
 /// The letter of the same file, reopened and read.
 fn reread(path: string) -> Result<string, HomeError> {
     ctx db = homed(Db.open(path))?
-    queue<Dead<Email, string>> undeliverable {
+    queue<Dead<Email>> undeliverable {
         name: "undeliverable"
         durable: stored_dead<Email>()
     }

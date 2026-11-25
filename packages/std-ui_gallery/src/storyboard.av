@@ -1,0 +1,358 @@
+//! `storyboard.av` — THE STORYBOARD: every view a program declares, in every case its stories
+//! tell, each drawn in the light and the dark scheme side by side. Both lists are the compiler's:
+//! the views are what the View derive made (`@std.ui.tree.viewed`), the cases what each `@story`
+//! and `@case` derived (`@std.ui.tree.story`). A program shows its own with three lines:
+//!
+//!     use @std.ui.tree.viewed.{views}
+//!     use @std.ui.tree.story.{stories}
+//!     mount(() -> storyboard shelves(views, stories))
+//!
+//! A view no story tells stands on the index in the danger ink. A case that draws exactly what
+//! its base draws is set aside by name, never drawn twice.
+use @std.text.{ascii_lower}
+use @std.ui.components.{button, card, checkbox, column, field, heading, key, row, surface, text}
+use @std.ui.realize.html.html.{fragment}
+use @std.ui.realize.html.css.{worn_by}
+use @std.ui.style.layout.{Layout, Sizing, around}
+use @std.ui.style.style.{Style}
+use @std.ui.style.theme.{Mode, Contrast, Theme, plain, theme}
+use @std.ui.style.tokens.{Ink, TypeSizes}
+use @std.ui.tree.node.{Node}
+use @std.ui.tree.outline.{outline}
+use @std.ui.tree.story.{Case, Story, Told, heard_all}
+use @std.ui.tree.view.{View, tree_of}
+use @std.ui.tree.viewed.{ViewRow, Viewed}
+
+/// A view, what its stories say of it, the cases they draw, and the names of the cases that draw
+/// exactly what the base does.
+export type Shelf = { viewed: ViewRow, doc: string, cases: List<Case>, alike: List<string> }
+
+/// Every view, in the views' order, with the cases its stories tell.
+export fn shelves(views: List<Viewed>, stories: List<Told>) -> List<Shelf> {
+    let told = [t.tell() for t in stories]
+    let ordered = [s for s in told if s.based].concat([s for s in told if !s.based])
+    [shelf(v.row, [s for s in ordered if tells(s, v.row)]) for v in views]
+}
+
+/// The views no story tells.
+export fn untold(shelves: List<Shelf>) -> List<string> { [s.viewed.name for s in shelves if s.cases.is_empty()] }
+
+fn tells(s: Story, r: ViewRow) -> bool { s.owner == r.name && s.module == r.module }
+
+/// One view's shelf: what its stories (never its lone cases) say of it, every story's cases under names unique on the view, a varied case that draws
+/// what its own base draws named among the alike and not drawn.
+fn shelf(r: ViewRow, told: List<Story>) -> Shelf {
+    let named = [s with { cases: renamed(s, told.slice(0, j)) } for j, s in told]
+    Shelf {
+        viewed: r,
+        doc: [s.doc for s in told if s.based && !s.doc.is_empty()].join(" "),
+        cases: [c for s in named for c in unlike(s, true)],
+        alike: [c.name for s in named for c in unlike(s, false)],
+    }
+}
+
+/// A story's cases, each a name an earlier story on the view already took wearing its fn's name.
+fn renamed(s: Story, earlier: List<Story>) -> List<Case> {
+    let taken = [c.name for e in earlier for c in e.cases]
+    [if taken.contains(c.name) { c with { name: "${s.told_by}: ${c.name}" } } else { c } for c in s.cases]
+}
+
+/// A story's cases that draw other than its base (`kept`), or the varied ones that draw the same
+/// (not `kept`). A lone `@case` has no base, so all of it is kept.
+fn unlike(s: Story, kept: bool) -> List<Case> {
+    if !s.based { return if kept { s.cases } else { [] } }
+    let base = drawn(s.cases[0].view)
+    [c for k, c in s.cases if (k == 0 || drawn(c.view) != base) == kept]
+}
+
+/// What a view draws, as the web and an outline say it.
+fn drawn(v: dyn View) -> string {
+    let n = tree_of(v)
+    "${fragment(n)}\n${outline(n)}"
+}
+
+/// The shelves whose view or a case of it names `query`, whatever the ASCII letters' case, each
+/// holding the cases that do.
+export fn matching(shelves: List<Shelf>, query: string) -> List<Shelf> {
+    if query.is_empty() { return shelves }
+    let q = ascii_lower(query)
+    [s with { cases: [c for c in s.cases if said(s.viewed.name, q) || said(c.name, q)] } for s in shelves if names(s, q)]
+}
+
+fn names(s: Shelf, q: string) -> bool { said(s.viewed.name, q) || s.cases.any(said(it.name, q)) }
+
+/// Whether `words` hold `q`, a query already lowered.
+fn said(words: string, q: string) -> bool { ascii_lower(words).contains(q) }
+
+// ── The pins ────────────────────────────────────────────────────
+
+/// A failure a ruling still owes, as the claims' baseline names it: the claim family, the view and
+/// the case it fails on (every dial, or the one named), why, and what ends it.
+export type Pin = { family: string, view: string, case: string, dial: string, why: string, waits: string }
+
+/// The pins a baseline's text holds: `<family> <view>/<case>/[dial] — <why> — waits on: <ruling>` a
+/// line, `#` lines aside; a line of any other shape is no pin.
+export fn pins_of(baseline: string) -> List<Pin> { [p for l in baseline.split("\n") for p in pin_of(l)] }
+
+fn pin_of(line: string) -> List<Pin> {
+    let parts = line.split(" — ")
+    if line.starts_with("#") || parts.length != 3 || !parts[2].starts_with("waits on: ") { return [] }
+    let gap = parts[0].index_of(" ")
+    if gap < 1 { return [] }
+    let path = parts[0].substring(gap + 1, parts[0].length).split("/")
+    if path.length < 2 { return [] }
+    [
+        Pin {
+            family: parts[0].substring(0, gap),
+            view: path[0],
+            case: path[1],
+            dial: if path.length > 2 { path[2] } else { "" },
+            why: parts[1],
+            waits: parts[2].substring(10, parts[2].length),
+        },
+    ]
+}
+
+/// The pins on one case of one view.
+fn pins_on(pins: List<Pin>, view: string, c: Case) -> List<Pin> { [p for p in pins if p.view == view && p.case == c.name] }
+
+/// A pin in words, as the page shows it under its case.
+fn pin_words(p: Pin) -> string {
+    let under = if p.dial.is_empty() { "" } else { " under ${p.dial}" }
+    "pinned: ${p.family}${under} — ${p.why} — waits on ${p.waits}"
+}
+
+// ── The dials and the snapshots ─────────────────────────────────
+
+/// One setting of the dials a case is drawn under: the scheme, the contrast and the text size (a
+/// percent of the theme's own) the reader's system turns, and the width of the frame — one that
+/// grows to the room the page gives it (`Fill`), never past it, or one held narrow, where an
+/// overflow is real. A dial varies one from the first
+/// row, as a case varies one member from its base.
+export type Dialed = { name: string, mode: Mode, contrast: Contrast, text_size: int, width: Sizing }
+
+/// The dials every case is drawn under.
+export const dials = table<Dialed> {
+    name     | mode       | contrast          | text_size | width
+    "light"  | Mode.Light | Contrast.Standard | 100       | Sizing.Fill
+    "dark"   | Mode.Dark  | Contrast.Standard | 100       | Sizing.Fill
+    "more"   | Mode.Light | Contrast.More     | 100       | Sizing.Fill
+    "large"  | Mode.Light | Contrast.Standard | 200       | Sizing.Fill
+    "narrow" | Mode.Light | Contrast.Standard | 100       | Sizing.Fixed(320)
+}
+
+/// The dials the page shows until the reader chooses others.
+const shown_first: List<string> = ["light", "dark"]
+
+/// The theme a dial draws in: the one in force, under the dial's scheme, contrast and text size.
+fn dialed(t: Theme, d: Dialed) -> Theme { t with { mode: d.mode, contrast: d.contrast, text_size: scaled(t.text_size, d.text_size) } }
+
+fn scaled(s: TypeSizes<int>, percent: int) -> TypeSizes<int> {
+    TypeSizes {
+        display: s.display * percent / 100,
+        headline: s.headline * percent / 100,
+        title: s.title * percent / 100,
+        body: s.body * percent / 100,
+        label: s.label * percent / 100,
+    }
+}
+
+/// Every case of every shelf, snapshot on each target.
+export fn shelf_snapshots(shelves: List<Shelf>) -> List<Snapshot> {
+    snapshots([Entry { view: s.viewed.name, cases: s.cases } for s in shelves])
+}
+
+/// The sheet a page wears under each dial: what a dial changes is the sheet, never a case's HTML.
+export fn sheet_snapshots() -> List<Snapshot> { [sheet_snapshot(d) for d in dials] }
+
+fn sheet_snapshot(d: Dialed) -> Snapshot {
+    let sheet = worn_by(dialed(plain(), d))
+    Snapshot {
+        view: "sheet",
+        case: d.name,
+        html: sheet,
+        outline: "",
+        terminal: "",
+        digest: digest_of([sheet]),
+    }
+}
+
+// ── The page ────────────────────────────────────────────────────
+
+/// The whole board: a count, the dials to draw under, a filter, the index, and a shelf per view
+/// the filter admits. An entry of the index is pressed to show its view alone, under the index, so
+/// the index is never far on a phone. Frames stand one a row until the reader asks for them side
+/// by side: a frame cannot know the page is narrow, and two frames on a phone leave a field's input
+/// wider than its frame.
+export component storyboard(shelves: List<Shelf>) {
+    pins: List<Pin> = []
+    state query: string = ""
+    state picked: string = ""
+    state chosen: List<string> = shown_first
+    state stacked: bool = true
+    column {
+        layout: Layout { gap: .L, pad: around(.M) }
+        heading "Storyboard" { rank: 1 }
+        text tally(self.shelves) { style: Style { color: .Muted } }
+        text heard_words() { style: Style { color: .Muted } }
+        row {
+            layout: wrapping()
+            for d in dials {
+                checkbox d.name {
+                    key: d.name
+                    shown: self.chosen.contains(d.name)
+                    on change { on -> self.chosen = toggled(self.chosen, d.name, on) }
+                }
+            }
+        }
+        checkbox "one frame a row" {
+            shown: self.stacked
+            on change { on -> self.stacked = on }
+        }
+        field "Filter" {
+            value: self.query
+            placeholder: "a view or a case"
+        }
+        row {
+            layout: Layout { gap: .S, wrap: .Wrap }
+            button "All" {
+                on press {
+                    self.query = ""
+                    self.picked = ""
+                }
+            }
+            for s in self.shelves {
+                button index_words(s) {
+                    on press { self.picked = s.viewed.name }
+                    style: Style { color: count_ink(s) }
+                }
+            }
+        }
+        for s in picked_out(matching(self.shelves, self.query), self.picked) { shelf_view s { dials: [d for d in dials if self.chosen.contains(d.name)], stacked: self.stacked, pins: self.pins } }
+    }
+}
+
+/// A run of things side by side that wraps where the page is narrower than they are.
+fn wrapping() -> Layout { Layout { gap: .M, wrap: .Wrap } }
+
+/// The one shelf the index picked, or every shelf while it picks none.
+fn picked_out(shelves: List<Shelf>, picked: string) -> List<Shelf> {
+    if picked.is_empty() { shelves } else { [s for s in shelves if s.viewed.name == picked] }
+}
+
+/// The chosen dials, with `name` on or off, in the table's order.
+fn toggled(chosen: List<string>, name: string, on: bool) -> List<string> {
+    [d.name for d in dials if if d.name == name { on } else { chosen.contains(d.name) }]
+}
+
+/// How many views and cases there are, how many are set aside and why, and how many views no
+/// story tells, in words.
+fn tally(shelves: List<Shelf>) -> string {
+    let cases = [s.cases.length for s in shelves].fold(0, (a, n) -> a + n)
+    let aside = [s.alike.length for s in shelves].fold(0, (a, n) -> a + n)
+    let none = untold(shelves).length
+    "${shelves.length} views · ${cases} cases drawn · ${aside} set aside, drawing exactly what their base draws · ${none} with no story"
+}
+
+/// Every event a case's view has heard, and how often, in words: what a gesture on a frame reached.
+fn heard_words() -> string {
+    let all = heard_all()
+    if all.is_empty() { return "heard: nothing yet" }
+    "heard: ${[e.key + " " + "${e.value}" for e in all].join(" · ")}"
+}
+
+/// A view's entry on the index: its name, its count of cases, and its set-aside ones.
+fn index_words(s: Shelf) -> string {
+    if s.alike.is_empty() { "${s.viewed.name} ${s.cases.length}" } else { "${s.viewed.name} ${s.cases.length} +${s.alike.length} aside" }
+}
+
+/// A view no story tells wears the danger ink.
+fn count_ink(s: Shelf) -> Ink { if s.cases.is_empty() { .Danger } else { .Text } }
+
+/// One view: its name, what its story says, each case, and the cases that drew as the base did.
+component shelf_view(shelf: Shelf) {
+    dials: List<Dialed>
+    stacked: bool
+    pins: List<Pin>
+    card self.shelf.viewed.name {
+        layout: Layout { gap: .M, pad: around(.M) }
+        text self.shelf.doc
+        for c in self.shelf.cases { case_view self.shelf.viewed.name { case: c, dials: self.dials, stacked: self.stacked, pins: pins_on(self.pins, self.shelf.viewed.name, c) } }
+        if !self.shelf.alike.is_empty() {
+            text "set aside, drawing exactly what the base draws: ${self.shelf.alike.join(", ")}" { style: Style { color: .Muted } }
+        }
+    }
+}
+
+/// The one layer the page raises: a case that opens a layer (an open dialog) takes the focus and
+/// stands over the page while it is drawn, so it is drawn when asked for, one at a time, under one
+/// dial. Empty while none is.
+state raised: string = ""
+
+/// One case: its name, its spelling, what of it a ruling still owes, and a frame of its view under each dial chosen, side by side
+/// where they fit and one under another where they do not.
+component case_view(owner: string, case: Case) {
+    dials: List<Dialed>
+    stacked: bool
+    pins: List<Pin>
+    column {
+        layout: Layout { gap: .S }
+        heading self.case.name { rank: 3 }
+        text self.case.spelling { style: Style { face: .Mono, color: .Muted } }
+        for p in self.pins { text pin_words(p) { style: Style { color: .Warning } } }
+        row {
+            layout: wrapping()
+            for d in self.dials {
+                if !layered(tree_of(self.case.view)) ||
+                    raised == raise_key(self.owner, self.case, d) {
+                    frame d { shows: self.case.view, width: standing(d, self.stacked) }
+                } else {
+                    button "Raise under ${d.name}" {
+                        on press { raised = raise_key(self.owner, self.case, d) }
+                    }
+                }
+            }
+        }
+        key "escape" {
+            on press { raised = "" }
+        }
+    }
+}
+
+/// How wide a frame stands: one a dial grows to the room it is given stands the whole row when frames
+/// stand one a row; one a dial holds to a width keeps it.
+fn standing(d: Dialed, stacked: bool) -> Sizing { if stacked && d.width is .Fill { Sizing.Percent(100.0) } else { d.width } }
+
+/// Whether a tree opens a layer anywhere in it.
+fn layered(n: Node) -> bool { n.open() || n.children.any(layered(it)) }
+
+/// What names one case raised under one dial.
+fn raise_key(owner: string, c: Case, d: Dialed) -> string { "${owner}/${c.name}/${d.name}" }
+
+/// A view drawn under one dial, named by it: an edge in the dial's neutral tone around the dial's
+/// canvas, so the frame's extent shows on a page of the same colour. `width` is how wide it stands
+/// among its siblings: the dial's own, or the whole row's when frames stand one a row.
+component frame(dial: Dialed) {
+    shows: dyn View
+    width: Sizing
+    column {
+        layout: Layout { gap: .Xs, width: self.width }
+        text self.dial.name { style: Style { color: .Muted, text_size: .Label } }
+        dialed_frame self.dial { shows: self.shows }
+    }
+}
+
+/// The frame itself, in the dial's own theme.
+component dialed_frame(dial: Dialed) {
+    shows: dyn View
+    ctx theme = dialed(ctx.theme, self.dial)
+    surface {
+        style: Style { fill: .Neutral, radius: .M }
+        layout: Layout { pad: around(.Xs) }
+        surface {
+            style: Style { fill: .Canvas, radius: .S }
+            layout: Layout { pad: around(.M) }
+            [self.shows]
+        }
+    }
+}

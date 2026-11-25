@@ -40,8 +40,9 @@ KEYWORDS = {"if", "while", "for", "switch", "return", "sizeof", "defined", "__bu
 # compiler's builtins, the runtime's own macros, the two C function-pointer
 # params (`text`, `source`) that only ever name C fns, and the core's hooks the
 # scheduler names (`avra_unwind_running`, `avra_shield_entered`, `avra_shield_left`),
-# which only ever name its own bookkeeping. A callee not here and not defined in
-# the runtime is a call out, which may trap.
+# which only ever name its own bookkeeping. `proc_pidinfo` is macOS libproc's read
+# of a process's record: it runs no Avra code and holds no lock of ours. A callee
+# not here and not defined in the runtime is a call out, which may trap.
 SAFE = set("""
 __atomic_add_fetch __atomic_compare_exchange_n __atomic_load_n __atomic_store_n __builtin_bswap64 __builtin_add_overflow __builtin_ctzll __builtin_memcpy
 __builtin_mul_overflow __builtin_return_address __builtin_sub_overflow _dyld_get_image_header _dyld_image_count
@@ -50,7 +51,7 @@ dl_iterate_phdr epoll_wait fclose fcntl fflush flock fopen fork fprintf fputc fp
 fstat fstatat ftell ftruncate fwrite getenv geteuid getpid getsectiondata isfinite kevent kill longjmp
 madvise mallinfo2 malloc malloc_size malloc_trim malloc_usable_size malloc_zone_pressure_relief
 malloc_zone_statistics memchr memcmp memcpy memmem memmove memset mkdir mmap munmap nanosleep open
-opendir pipe pread pwrite qsort raise read readdir realloc sched_getaffinity sched_yield setjmp snprintf strchr
+opendir pipe pread proc_pidinfo pwrite qsort raise read readdir realloc sched_getaffinity sched_yield setjmp snprintf strchr
 strcmp strerror strlen strtod strtoll sysconf sysctlbyname utimes va_arg va_end va_start waitpid
 write
 AVRA_CALLER CENSUS CPU_COUNT IS_IMMORTAL KIND_IMMORTAL KIND_SHAPE MB S_ISDIR S_ISLNK S_ISREG

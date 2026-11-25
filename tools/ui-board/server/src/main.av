@@ -1,10 +1,15 @@
 //! The task board's server: its tasks as a model and the model's doors as
-//! routes, over a database file kept under `.avra/`. `avra dev` runs this
-//! beside the page (`[dev] server = "server"`) and forwards every path the
-//! page does not own, so the page asks `/tasks` of its own origin.
+//! routes, over a database file kept under `.avra/`, and the board's page
+//! DRAWN HERE, its tasks in it, for the module to adopt. `avra dev` runs this
+//! beside the page (`[dev] server = "server"`), tells it the page's files,
+//! and forwards every path the page does not own, so the page asks `/tasks`
+//! of its own origin.
 use @ui.board_model.model.{Todo}
+use @ui.board.{view, ship_state, tasks_written}
+use @std.json.typed.{array_of}
+use @std.ui_http.{Document, app_page}
 use @std.errors.{Error}
-use @std.http.route.{group, Mounted}
+use @std.http.route.{get, group, Mounted}
 use @std.http.server.{server}
 use @std.io.{env_or, make_dirs}
 use @std.sqlite.{Db}
@@ -23,9 +28,19 @@ fn opened() -> Result<Db, string> {
     }
 }
 
+/// The board's page as it stands now: the tasks read from the database are
+/// the answer of the page's own ask, so the page is drawn with them.
+fn drawn(db: Db) -> Document {
+    let listed = match Todo.all(db) { .Ok(all) -> all, .Err(_) -> [] }
+    let _ = tasks_written(array_of([t.json_text() for t in listed]))
+    app_page("Tasks", view())
+}
+
 fn serving() -> Result<int, string> {
     let db = opened()?
+    ship_state()
     server board {
+        get "/" { _req -> drawn(db) }
         group "/tasks" { Todo.routes(db) }
     }
     match board.run() { .Ok(n) -> .Ok(n), .Err(e) -> .Err(e.describe().message) }

@@ -1,0 +1,44 @@
+//! `@story` and `@case` over what they cannot tell: an answer that is no component, a record that
+//! draws nothing, a fixed member the component lacks, a fn that takes arguments, and a case with
+//! no name — each refused once, where it stands, in the library's own words, while a composition's
+//! story beside them is accepted. `avra_ran` and `scratch_dir` are the neighbouring tests' own: this
+//! module shares one namespace.
+use @std.io.{make_dirs, write_text}
+use @std.meta.{embed}
+use @std.time.{stamp}
+
+/// One mistake per story, and one story told right.
+const told: string = embed("story_refused/main.txt")
+
+/// What stands for a run that never answered: no line of it is a refusal.
+const never_ran = "the check did not run"
+
+/// What `avra check` says about the package, once.
+once fn said() -> string {
+    let root = "${scratch_dir()}/story_refused_${stamp()}"
+    let _ = make_dirs("${root}/src")
+    let _ = write_text(
+        "${root}/avra.toml",
+        "[package]\nname = \"story_refused\"\nversion = \"0.1.0\"\n",
+    )
+    let _ = write_text("${root}/src/main.av", told)
+    match avra_ran(["check", root]) { .Ok(o) -> o.out.stdout, .Err(_) -> never_ran }
+}
+
+/// Every refusal the run spoke, in order.
+fn spoken() -> List<string> { [l for l in said().split("\n") if l.starts_with("error[")] }
+
+/// Every refusal the fixture owes, one per mistake, in the order written.
+const owed = [
+    "error[@std/ui:story-answer]: a story's fn answers the component it tells — `tells_a_number` answers `int`",
+    "error[@std/ui:story-view]: a story tells a view — `Plain` is no component that draws",
+    "error[@std/ui:story-fixed]: `nosuch` names no member of `button`, so there is nothing to keep fixed",
+    "error[@std/ui:story-seated]: a story's fn takes no arguments — its base is the one value it answers",
+    "error[@std/ui:story-unnamed]: a case is named — `@case` on `names_no_case` names none",
+]
+
+spec "@story and @case — what they cannot tell" {
+    given "one mistake per story" {
+        then "is refused once per mistake, in these words and no others" { spoken().join("\n") == owed.join("\n") }
+    }
+}
