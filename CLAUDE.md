@@ -381,8 +381,8 @@ registry is the idiom engine's spec, written by dogfooding.
   5 GB where either alone is 2.2. Three holders keep one alive, and
   each needs its own answer. THE STACK: a caller's binding stands for
   the whole call, so the derivation that is superseded is bound in a
-  HELPER that returns the next attempt and dies (`heard`,
-  `tried_anew`), never in the fn that asks again. THE HOOKS:
+  HELPER that returns the next attempt and dies, never in the fn
+  that asks again. THE HOOKS:
   `Workspace.discarded()` ends every one, the registry's declare hook
   among them — it captures the table that holds the registry, and
   EVERY HOOK A `Decls` ARMS is cleared in `let_go`: the four producer
@@ -554,7 +554,7 @@ registry is the idiom engine's spec, written by dogfooding.
   linker, turns a call of the name into a call of the body
   (`hosted_within`).
   AND A SYMBOL IS THE WHOLE LINK'S, so three things are held where the
-  host fn stands (compiler/whole.av's `host_fn_owes`). WHO OPENS IT: a
+  host fn stands (compiler/hosts.av's `host_fn_owed`). WHO OPENS IT: a
   dependency's host fn is the program's export only when the program's
   OWN sources import that package (lower.host_fn_unasked), and a build
   lists each as `host fn: <package> <name>`, fresh or kept. AND A
@@ -1533,8 +1533,8 @@ registry is the idiom engine's spec, written by dogfooding.
   string, style.raw_mint_emit the raw mint-then-emit split, and the vocabulary grows
   with the next shared shape.
 - A DERIVE RUN TYPES THE DERIVE FN AND WHAT IT REACHES, NEVER ITS FILE.
-  A compile-time run lowers its unit against `analyzed_decl` (only
-  `typed(d)`), so a derive's file may hold fns that call methods of the
+  A compile-time run lowers its unit over what it reaches alone, so a
+  derive's file may hold fns that call methods of the
   type it annotates, and a trait may name that file's types in its
   signatures (`Identity` names `SyntaxArena`; `@derive(Identity)` stands
   on `Arm` in nodes.av). The old law — a derive standing ALONE with
@@ -1943,9 +1943,9 @@ doctrine it expands.
   that agree hide the one that forks.
 - A `check` HIT ON `.avra-cache` EXAMINES NOTHING, AND A SECOND
   BINARY ON UNCHANGED SOURCE CAN SILENTLY HIT THE FIRST'S ENTRY.
-  `Workspace.checked`/`build_program` key their store by the
-  COMPILER'S OWN BYTES digest (`compiler_print`, compiler/build.av)
-  beside a `.avra-cache` directory, so building or checking with a
+  The program layer keys its store by the COMPILER'S OWN BYTES
+  digest (`compiler_identity`, cli/commands/tapes.av) beside a
+  `.avra-cache` directory, so building or checking with a
   SECOND binary over the SAME source can read the FIRST binary's
   kept warnings or kept binary outright — a differential build
   (any two-binary comparison over one source) silently compares one binary's real run against the

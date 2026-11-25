@@ -150,7 +150,7 @@ server, a recipient of requests, or the library's writer can break.
 | 75 | 8.6 | no CL in 1xx or 204 | C › "a 204 states no length"; C › "a 1xx is interim, never an answer, so it is not sendable" |
 | 76 | 8.6 | no CL in a 2xx to CONNECT | C › "a handler's 2xx to CONNECT goes out as the server's 500, with no tunnel promised" |
 | 77 | 8.6 | large CL numerals never overflow | FA › "NINETEEN DIGITS ARE REFUSED AS A NUMBER, never wrapped" |
-| 86 | 9.1 | support GET and HEAD | C › "a HEAD no HEAD route answers is answered by the GET route"; C › "a HEAD route answers before the GET route"; C › "only a HEAD falls back — a POST is never answered by a GET route" |
+| 86 | 9.1 | support GET and HEAD | C › "a HEAD no HEAD route answers is answered by the GET route"; C › "a HEAD route answers before the GET route"; C › "only a HEAD falls back — a POST a GET route's path takes is a 405 (RFC 9110 §15.5.6)" |
 | 89 | 9.3.2 | no content in a HEAD's answer | S › "a HEAD carries the body's length and none of its bytes"; SA › "AND SO DOES A HEAD — the body it strips is the WRITTEN response's, never the handler's" |
 | 95 | 9.3.6 | reject CONNECT with an empty or invalid port | C › "CONNECT with no port is refused", "CONNECT with an empty port is refused", "CONNECT with a port that is not digits is refused", "CONNECT with no host is refused" |
 | 97 | 9.3.6 | no TE/CL in a 2xx to CONNECT | as row 76 |
