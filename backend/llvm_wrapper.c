@@ -558,6 +558,11 @@ LLVMTypeRef avra_llvm_return_type_of(LLVMValueRef fn_val) {
     return LLVMGetReturnType(avra_llvm_fn_type_of(fn_val));
 }
 
+/* the type a value has: one per context, so two are the same type exactly when they are equal */
+LLVMTypeRef avra_llvm_type_of(LLVMValueRef v) {
+    return LLVMTypeOf(v);
+}
+
 // ── Globals ──
 
 // ── Basic blocks ──

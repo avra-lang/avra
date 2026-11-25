@@ -87,7 +87,12 @@ impl Lowering {
             body.opened()
             body.frame_entered()
         }
-        let value = body.lower(lam.body)
+        let lowered = body.lower(lam.body)
+        // A LAMBDA THAT ANSWERS NOTHING answers nothing, whatever its tail: a value written last
+        // (`() -> counter "taps"`) is the body's to drop at its close, never the fn's answer, which
+        // every target's verifier holds to the fn type's.
+        let value = if ty.answer!.owns(OwnType.Void) &&
+            !(body.layouts.get()[lowered.index] is .Void) { body.hollow_of(ty.answer!) } else { lowered }
         ended(body)
         if framed { body.closed() }
         let r = if tasked { body.answer_cell(value) } else { value }
