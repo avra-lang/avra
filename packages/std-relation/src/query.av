@@ -155,7 +155,7 @@ export fn query_known_db(_f: Named) {}
 /// its spelling — only a lasting query's, so a restore asks none of the process's own work.
 fn known_door(f: Fn) -> List<Directive> {
     let asks = named_by(f)
-    if !lasting(f) || asks.is_empty() { return [] }
+    if !outlives(f) || asks.is_empty() { return [] }
     let first = f.params[0]
     let seat = [quote { fn _(${first.name}: ${first.ty}) {} }]
     let door = "${f.name}_known"
@@ -184,7 +184,7 @@ fn known_door(f: Fn) -> List<Directive> {
 fn kept_source(f: Fn, kept: string) -> Decls {
     quote {
         once fn ${kept}() -> Answers<${f.answer}> {
-            answers(${literal(durable_name(f))}, ${literal(f.name)}, ${as_code(bool_node(keyed_densely(f)))}, ${as_code(bool_node(lasting(f)))}, ${literal(key_seat(f))})
+            answers(${literal(durable_name(f))}, ${literal(f.name)}, ${as_code(bool_node(keyed_densely(f)))}, ${as_code(bool_node(outlives(f)))}, ${literal(key_seat(f))})
         }
     }
 }
@@ -194,7 +194,7 @@ fn kept_source(f: Fn, kept: string) -> Decls {
 fn key_seat(f: Fn) -> string { if f.params.length == 2 { f.params[1].ty } else { "" } }
 
 /// Whether a query's answers outlive the process: saved through its record, and no fixpoint's.
-fn lasting(f: Fn) -> bool { saved(f) && fixpoint_words(f) == null }
+fn outlives(f: Fn) -> bool { saved(f) && fixpoint_words(f) == null }
 
 /// Whether a call is keyed by a dense number of the process's own.
 fn keyed_densely(f: Fn) -> bool { f.params.slice(1, f.params.length).any(dense_field(it.kind) != null) }
@@ -384,6 +384,11 @@ export fn scoped_by(f: Fn, by: Fn) -> List<Diagnostic> {
     []
 }
 
+/// `@lasting`: a context query that outlives the process although nothing in its key names the
+/// context. The mark is the author's word that the body reads only recorded inputs, or pure
+/// functions of them, and each marked query states why at its site.
+export fn lasting(f: Fn) -> List<Diagnostic> { if queried(f) { [] } else { [mark_alone(f, "lasting")] } }
+
 /// `@recursive`: a call re-entered before it settles computes again — the smaller view.
 export fn recursive(f: Fn) -> List<Diagnostic> { if queried(f) { [] } else { [mark_alone(f, "recursive")] } }
 
@@ -453,10 +458,14 @@ fn opened(f: Fn) -> Code {
 /// recorded and its key names the same call in the next one — the `Db` alone as its first
 /// seat, every argument a stable encoding, an answer that reads back. Nothing declares it. A
 /// context's call is named past the process only by its scope, so a context query whose seats
-/// and answer are plain numbers and text names nothing of the context and stays in the process.
+/// and answer are plain numbers and text names nothing of the context and stays in the process
+/// unless it wears `@lasting`.
 fn saved(f: Fn) -> bool {
     let ctx = !is_db(f.params[0].kind)
-    (!ctx || scoped(f) || !coded(f).is_empty()) &&
+    (!ctx ||
+            scoped(f) ||
+            !coded(f).is_empty() ||
+            f.annotations.any((a: Annotation) -> a.name == "lasting")) &&
         f
             .params
             .slice(1, f.params.length)

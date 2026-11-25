@@ -1300,6 +1300,30 @@ elif [ $((sp_h * 2)) -lt "$sp_t" ]; then fail "sp: the second program held only 
 else [ -n "${VERBOSE:-}" ] && echo "ok    sp: the second program held $sp_h of $sp_t files"; holds=$((holds+1)); fi
 fi
 
+if section xt; then
+# TWO TREES, ONE STORE, NO BORROWED ANSWER. `xt1` and `xt2` have the same package, module and file
+# names and different texts; they share this run's store. A text digest or a module listing kept
+# for one tree must never be taken for the other's: each tree prints its own text, builds that
+# agree with the evaluator, and an edit in one leaves the other's answer alone.
+for t in xt1 xt2; do mkdir -p $R/$t/src/m; printf '[package]\nname = "rt-xt"\nversion = "0.1.0"\n' > $R/$t/avra.toml; done
+printf 'export fn word() -> string { "one" }\n' > $R/xt1/src/m/a.av
+printf 'export fn word() -> string { "two" }\n' > $R/xt2/src/m/a.av
+printf '// first\n' > $R/xt1/src/m/b.av
+printf 'export fn extra() -> int { 2 }\n' > $R/xt2/src/m/b.av
+printf 'use m.{word}\nprintln("xt ${word()}")\n' > $R/xt1/src/main.av
+printf 'use m.{word}\nprintln("xt ${word()}")\n' > $R/xt2/src/main.av
+xt_want() { # xt_want <label> <text>: the binary the last S built
+    steps=$((steps+1)); xt_got=$("$bin" 2>&1)
+    if [ "$xt_got" = "$2" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    $1 -> $xt_got"; else fail "$1: printed '$xt_got', wanted '$2'"; fi
+}
+S "xt: the first tree" xt1;                     xt_want "xt: first tree, first sight" "xt one"
+S "xt: the second tree, same names" xt2;        xt_want "xt: second tree is its own" "xt two"
+S "xt: the first tree again" xt1;               xt_want "xt: first tree stands" "xt one"
+printf 'export fn word() -> string { "uno" }\n' > $R/xt1/src/m/a.av
+S "xt: the first tree edited" xt1;              xt_want "xt: first tree follows its edit" "xt uno"
+S "xt: the second tree after" xt2;              xt_want "xt: second tree is unmoved" "xt two"
+fi
+
 echo "cache-attacks: $steps builds through one store, $holds under a hold, $fails failed"
     [ "$holds" -gt 0 ] || { echo "cache-attacks: no step ran under a hold — the sections named examined nothing"; exit 1; }
     [ "$fails" -eq 0 ]; exit $?
