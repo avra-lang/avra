@@ -4,7 +4,7 @@
 use core.{Span}
 use compiler.laws.{Found, law}
 use diagnostics.{Voice}
-use features.components.{composerless}
+use features.components.{composed_twice, composerless}
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryEngine}
 
@@ -35,3 +35,23 @@ export law component_composed {
 }
 
 fn none_words(a: List<string>) -> Voice { composerless(a[0]) }
+
+/// Every component with a body more than one composing trait the file reaches would say: none of
+/// them composes it, so each is named, never one picked.
+fn composed_by_several(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
+    let bodied = bodied_in(engine, file, at)
+    if bodied.is_empty() { return [] }
+    let by = composers(engine, file)
+    if by.length < 2 { return [] }
+    [Found { at: b.at, args: [b.name].concat([t.name for t in by]) } for b in bodied]
+}
+
+/// a component's body is made of what one composing trait says, never two
+export law component_composed_once {
+    kind: "type.component_body"
+    reads: composed_by_several
+    voice: twice_words
+    witness: "use @std.meta.{Type, Declared, composes}\n\nexport type A = { a: int = 0 }\n\nexport type B = { b: int = 0 }\n\n@composes(A)\nexport trait Ta {\n    static fn derive(t: Type) -> Declared { Declared { made: [] } }\n}\n\n@composes(B)\nexport trait Tb {\n    static fn derive(t: Type) -> Declared { Declared { made: [] } }\n}\n\ncomponent made {\n    1\n}\n"
+}
+
+fn twice_words(a: List<string>) -> Voice { composed_twice(a[0], a.drop(1)) }
