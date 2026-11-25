@@ -1,0 +1,43 @@
+//! the shapes a deadline-as-cancel would change, read as they answer today
+use @std.net.{listen, connect, Conn, NetError}
+use @std.time.{within, ms, secs, sleep}
+
+fn told(r: Result<Bytes?, NetError>) -> string {
+    match r { .Ok(_) -> "data", .Err(_) -> "timed out" }
+}
+
+// a child spawned under a `within` parks on a silent socket, inheriting
+// the limit; its spawner awaits it
+fn inherited() -> Result<string, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let c = connect("127.0.0.1", l.port, secs(2))?
+    let s = l.accept()?
+    let r = within ms(30) {
+        let t = spawn { told(s.read(64)) }
+        t.await
+    }
+    c.close()?
+    .Ok("child ${r}")
+}
+
+// a join of a task that outlives the limit
+fn joined() -> int {
+    within ms(10) {
+        let t = spawn {
+            sleep(ms(50))
+            7
+        }
+        t.await
+    }
+}
+
+// a sleep that outlives the limit
+fn slept() -> int {
+    within ms(10) {
+        sleep(ms(30))
+        1
+    }
+}
+
+let a = inherited() catch e -> "net error"
+"${a}, join ${joined()}, sleep ${slept()}"

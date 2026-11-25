@@ -1,0 +1,957 @@
+diff --git a/packages/std-avrac/src/compiler/cache_walk.av b/packages/std-avrac/src/compiler/cache_walk.av
+index 27d3e0c..2a8f68f 100644
+--- a/packages/std-avrac/src/compiler/cache_walk.av
++++ b/packages/std-avrac/src/compiler/cache_walk.av
+@@ -78,7 +78,7 @@ fn keyed_by(f: Family) -> KeyedBy {
+         .Namespace or .HeldSig -> KeyedBy.Module,
+         .Sig or .Methods or .Typed or .ConstTyped or .Raised or .Syntax or .Names or .Marks or .DeclReads -> KeyedBy.Decl,
+         .Manifest -> KeyedBy.Package,
+-        .Receivers or .References or .Failures or .ReadReach -> KeyedBy.Program,
++        .Receivers or .References or .Failures or .ReadReach or .CancelReach -> KeyedBy.Program,
+         .Lowered or .LiftLowered or .Lifted or .Settled -> KeyedBy.Unit,
+         .Named -> KeyedBy.Name,
+         .Input or .BlockScan or .ComponentScan or .ComponentNames -> KeyedBy.Input,
+diff --git a/packages/std-avrac/src/compiler/cancel_reach.av b/packages/std-avrac/src/compiler/cancel_reach.av
+new file mode 100644
+index 0000000..909bf6f
+--- /dev/null
++++ b/packages/std-avrac/src/compiler/cancel_reach.av
+@@ -0,0 +1,266 @@
++//! WHETHER A CALL MAY REACH A CANCEL POINT — the fact a caller's test
++//! after the call is emitted by. A fn MAY REACH when its body calls a
++//! runtime row that may switch the task out (`RtSig.waits`), reads a
++//! property or calls a vocabulary method that may (`waits` on the
++//! row), spawns (the task is joined where its owner's scope ends),
++//! holds a `while` (its back-edge is a cancel point), or calls through
++//! a value — a closure, a fn-typed field, a contract or a bounded
++//! parameter, any of which may be anything — or calls a fn that may.
++//! A lambda's body counts as its maker's: where it runs, it runs
++//! inside a call the maker made, and where it runs elsewhere that call
++//! is through a value. A WHOLE-PROGRAM PASS: each member surveyed ONCE
++//! from its typed facts (a method call's callee is the one `callee_of`
++//! dispatches to) into its own evidence and the members it calls, then
++//! the answer spreads from every member with evidence to its callers —
++//! linear in the call graph. A held fn answers from its interface,
++//! where the bit is contract (`interface_form`): a callee that starts
++//! to wait moves its dependents' key.
++use core.{DeclId, DeclKind, ExprId, Stmt, TypeId, fp, fp_list, rt_waits, flatten}
++use features.{NameFacts, TypeFacts, FileView, Decls, bound_decl_of, property_row, declaring_decl}
++use features.impls.{callee_of}
++use compiler.families.{Family}
++use @std.relation.engine.{Table, new_table}
++
++/// One member's survey: whether its own body may reach a cancel point,
++/// and the members it calls, whose answers it takes.
++type CancelSummary = { own: bool, callees: List<DeclId> }
++
++/// What one call answers a survey: known now, or a member's answer.
++enum CallAnswer {
++    Known(may: bool)
++    Via(member: DeclId)
++}
++
++impl Workspace {
++    /// The pass: every member's answer, settled once per program state
++    /// and keyed by `Family.CancelReach`.
++    fn cancel_reach() -> int {
++        // A pass that ran inside a resolve would read a half-built
++        // namespace; the caller answers conservatively instead.
++        if self.db.family_active(Family.Resolved.ordinal) { return 0 }
++        let k = key(Family.CancelReach, 0)
++        if !(self.db.ask(k) is .Compute) { return 0 }
++        self.db.begin(k)
++        let fns = [x.id for x in self.decls.all_decls() if self.cancel_member(x.id)]
++        self.decls.clear_cancels(fns)
++        self.decls.spread_cancels(fns, [self.cancel_summary(d) for d in fns])
++        self.db.settle(k, fp(1, [fp_list([cancel_word(self.decls.cancel_bit(d)) for d in fns])]))
++        fns.length
++    }
++
++    /// Whether a call to `d` may reach a cancel point. A member the
++    /// pass could not settle (asked mid-resolve) answers that it may.
++    fn reaches_cancel(d: DeclId) -> bool {
++        if !self.cancel_member(d) { return self.callee_cancels(d) }
++        let _ = self.cancel_reach()
++        if self.db.value_hash_of(key(Family.CancelReach, 0)) == null { return true }
++        self.decls.cancel_bit(d) ?? true
++    }
++
++    /// A declaration the pass surveys: a body this compile holds.
++    fn cancel_member(d: DeclId) -> bool {
++        let x = self.decls.decl(d)
++        if x.external || x.root == null || self.is_held(x.file) { return false }
++        match x.kind {
++            .Fn or .Method or .Default or .Main or .Case -> true,
++            .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Collect or .CollectEnum or .Impl or .Const or .State or .Builtin -> false,
++        }
++    }
++
++    /// What a call to a declaration that is no member answers: a
++    /// runtime row by its column, a held fn by its interface, a sig
++    /// with no body as a value would. A value bound to a name may be
++    /// any fn; a type answers no call that waits.
++    fn callee_cancels(g: DeclId) -> bool {
++        let x = self.decls.decl(g)
++        match x.kind {
++            .Fn or .Method or .Default or .Main or .Case -> when {
++                // a row by its column; any other extern is package C,
++                // which never switches a task out — it reaches the
++                // scheduler only through a row
++                x.external -> rt_waits(x.name)
++                self.is_held(x.file) -> self.decls.cancel_bit(g) ?? true
++                _ -> true
++            },
++            .Const or .State -> true,
++            .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Collect or .CollectEnum or .Impl or .Builtin -> false,
++        }
++    }
++
++    /// A call's answer to a survey: a member's, through the spread;
++    /// any other declaration's, now.
++    fn call_answer(g: DeclId) -> CallAnswer {
++        if self.cancel_member(g) { CallAnswer.Via(g) } else { CallAnswer.Known(self.callee_cancels(g)) }
++    }
++
++    /// One member surveyed: its own evidence, and the members it calls.
++    fn cancel_summary(d: DeclId) -> CancelSummary {
++        let x = self.decls.decl(d)
++        let s = CancelSurvey {
++            ws: self,
++            view: file_view(self.lang, self.parsed(x.file), self.decls, x.file),
++            names: self.names_of(d),
++            facts: self.typed(d),
++            lo: x.lo,
++            hi: x.hi,
++        }
++        let answers = s.answers()
++        CancelSummary {
++            own: s.spins() || answers.any(known_true),
++            callees: flatten([via_member(a) for a in answers]),
++        }
++    }
++}
++
++impl Decls {
++    /// Every member's bit falls before the pass re-earns it; a held
++    /// fn's bit is its interface's, never the pass's.
++    fn clear_cancels(fns: List<DeclId>) {
++        for d in fns { self.record_cancel(d, false) }
++    }
++
++    /// Each member with evidence may reach, and so does every member
++    /// that calls one — breadth first over the callers, each set once.
++    fn spread_cancels(fns: List<DeclId>, sums: List<CancelSummary>) {
++        let callers: Table<List<DeclId>> = new_table<List<DeclId>>()
++        for j, d in fns {
++            for c in sums[j].callees { callers.keep(c.index, (callers.at(c.index) ?? []).concat([d])) }
++        }
++        mut reached = [d for j, d in fns if sums[j].own]
++        for d in reached { self.record_cancel(d, true) }
++        mut at = 0
++        while at < reached.length {
++            for c in callers.at(reached[at].index) ?? [] {
++                if !(self.cancel_bit(c) ?? false) {
++                    self.record_cancel(c, true)
++                    reached.push(c)
++                }
++            }
++            at = at + 1
++        }
++    }
++}
++
++/// What one member's survey reads: its file, its names, its typed
++/// facts, its expression range — a lambda's nodes among them.
++type CancelSurvey = { ws: Workspace, view: FileView, names: NameFacts, facts: TypeFacts, lo: int, hi: int }
++
++impl CancelSurvey {
++    fn within(e: ExprId) -> bool {
++        e.index >= self.lo && e.index < self.hi
++    }
++
++    /// A `while` whose condition stands in the range.
++    fn spins() -> bool {
++        let store = self.view.store
++        let tag = store.tag_stmt(Stmt.While(ExprId { index: 0 }, []))
++        store.stmts_by_kind(0, store.stmts.count(), tag).any((s) -> self.spins_at(store.stmt(s)))
++    }
++
++    fn spins_at(s: Stmt) -> bool {
++        match s { .While(cond, _) -> self.within(cond), rest -> false }
++    }
++
++    /// Every node in the range answered — a lambda's, a `defer`'s and
++    /// a component instance's expansion among them.
++    fn answers() -> List<CallAnswer> {
++        flatten([self.node_answers(ExprId { index: i }) for i in self.lo..self.hi])
++    }
++
++    /// What one node may reach. EVERY VARIANT IS SPELLED: a node added
++    /// later breaks the build here, and never answers "cannot" unasked.
++    fn node_answers(e: ExprId) -> List<CallAnswer> {
++        match self.view.store.expr(e) {
++            .Call(_, _, _) -> [self.named_call(e)].concat(self.defaults_of_call(e)),
++            .MethodCall(_, _, _) -> [self.method_call(e)],
++            // a call on a value that is no name — `make()()` — may be any fn
++            .CallValue(_, _) -> [CallAnswer.Known(true)],
++            // the task is joined where its owner's scope ends
++            .Spawn(_) -> [CallAnswer.Known(true)],
++            .Prop(subject, name) -> [CallAnswer.Known(self.row_waits(self.facts.type_at(subject), name.of))],
++            .Chain(subject, name) -> [CallAnswer.Known(self.chain_waits(subject, name.of))],
++            // a record literal runs the defaults of the fields it leaves out
++            .StructLit(_, _, _) -> self.defaults_of_record(e),
++            // the expansion stands in the instance's place, inside this
++            // range, and is answered node by node
++            .Component(_, _, _, _, _) -> [],
++            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .Ident(_) or .Receiver or .Binary(_, _, _) or .Not(_) or .ListLit(_) or .Comp(_, _) or .MapLit(_, _) or .Index(_, _) or .Body(_, _, _, _) or .If(_, _, _) or .When(_, _, _) or .Block(_, _) or .Named(_, _) or .With(_, _, _) or .Match(_, _) or .NullLit or .Coalesce(_, _) or .MatchOpt(_, _, _, _) or .Lambda(_, _) or .Force(_) or .Is(_, _) or .VariantLit(_, _) or .Propagate(_) or .Catch(_, _, _, _) or .Error or .Collect(_) or .BytesLit(_) or .Range(_, _) or .Env(_) -> [],
++        }
++    }
++
++    /// Whether reading `name` off a value of `ty` waits — `t.await`.
++    fn row_waits(ty: TypeId, name: string) -> bool {
++        property_row(self.ws.lang.rows.properties, name, self.view.types.shape_of(ty))?.waits ?? false
++    }
++
++    /// A chain reads its member off what the nullable carries —
++    /// `t?.await` as `t.await` does.
++    fn chain_waits(subject: ExprId, name: string) -> bool {
++        let held? = self.view.types.carried(self.facts.type_at(subject)) else { return false }
++        self.row_waits(held, name)
++    }
++
++    /// A call may leave any of its callee's seats to their defaults,
++    /// which run in the caller.
++    fn defaults_of_call(e: ExprId) -> List<CallAnswer> {
++        let g? = bound_decl_of(self.names, e) else { return [] }
++        self.defaults_of(g)
++    }
++
++    fn defaults_of_record(e: ExprId) -> List<CallAnswer> {
++        let r? = declaring_decl(self.view.types.shape_of(self.facts.type_at(e))) else { return [] }
++        self.defaults_of(r)
++    }
++
++    fn defaults_of(owner: DeclId) -> List<CallAnswer> {
++        [self.ws.call_answer(c) for c in self.view.decls.children_of(owner) if is_default(self.view.decls.decl(c).kind)]
++    }
++
++    /// A call by name: its declaration's answer, or — bound to a local,
++    /// a parameter or a capture — a value's.
++    fn named_call(e: ExprId) -> CallAnswer {
++        let g? = bound_decl_of(self.names, e) else { return CallAnswer.Known(true) }
++        self.ws.call_answer(g)
++    }
++
++    /// A dot-call, by the callee its receiver's type dispatches to.
++    fn method_call(e: ExprId) -> CallAnswer {
++        let mp? = self.view.store.method_parts(e) else { return CallAnswer.Known(false) }
++        match callee_of(self.view, self.facts.type_at(mp.subject), mp.name) {
++            .Static(m, _) -> self.ws.call_answer(m),
++            .Declared(decl, _) -> self.declared_answer(decl, mp.name),
++            .Row(r) -> CallAnswer.Known(r.waits),
++            .Bounded(_, _, _) or .Contract(_, _) or .FnField(_, _) -> CallAnswer.Known(true),
++            .Variant(_, _) or .Nameless -> CallAnswer.Known(false),
++        }
++    }
++
++    /// A method the impl table answers, or — none found under the
++    /// declaration — one the survey cannot name, which may.
++    fn declared_answer(decl: DeclId, name: string) -> CallAnswer {
++        let m? = self.view.decls.method(decl, name) else { return CallAnswer.Known(true) }
++        self.ws.call_answer(m)
++    }
++}
++
++/// A seat's or a field's default — the one kind whose body a caller runs.
++fn is_default(k: DeclKind) -> bool {
++    match k {
++        .Default -> true,
++        .Fn or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Method or .Impl or .Main or .Case or .Builtin or .Const or .Collect or .CollectEnum or .State -> false,
++    }
++}
++
++fn known_true(a: CallAnswer) -> bool {
++    match a { .Known(may) -> may, .Via(_) -> false }
++}
++
++fn via_member(a: CallAnswer) -> List<DeclId> {
++    match a { .Known(_) -> [], .Via(m) -> [m] }
++}
++
++/// A bit as the settled fingerprint reads it — an unsettled one as `2`.
++fn cancel_word(bit: bool?) -> int {
++    let b? = bit else { return 2 }
++    if b { 1 } else { 0 }
++}
+diff --git a/packages/std-avrac/src/compiler/families/families.av b/packages/std-avrac/src/compiler/families/families.av
+index cdbe6ba..b60b626 100644
+--- a/packages/std-avrac/src/compiler/families/families.av
++++ b/packages/std-avrac/src/compiler/families/families.av
+@@ -166,4 +166,10 @@ type ComponentScan = {}
+ @family(35, "int", "List<string>")
+ type ComponentNames = {}
+ 
++/// The whole-program cancel-reach pass: which declarations may reach a
++/// cancel point through the calls their bodies make, solved once per
++/// program state.
++@family(36, "unit", "int")
++type CancelReach = {}
++
+ export collect enum Family = @family in self by it.mark.args[0] dense
+diff --git a/packages/std-avrac/src/compiler/interface.av b/packages/std-avrac/src/compiler/interface.av
+index 274f990..f02275c 100644
+--- a/packages/std-avrac/src/compiler/interface.av
++++ b/packages/std-avrac/src/compiler/interface.av
+@@ -380,6 +380,8 @@ impl Workspace {
+                 facts!,
+             )
+         self.decls.held_joins(f, id, kind! is .Main, row.item)
++        // the cancel bit is read before any signature is asked, so it lands with the row
++        self.decls.record_cancel(id, row.waits())
+         id
+     }
+ 
+@@ -435,7 +437,8 @@ impl Workspace {
+             .type_wire(self.decls.type_of_const(d.file, d.stmt) ?? self.decls.types.intern(Type.Error))
+     }
+ 
+-    /// A fn's or a method's shape: its signature, then its seats' contracts and written bits.
++    /// A fn's or a method's shape: its signature, then its seats' contracts and written
++    /// bits, its bounds, and whether a call to it may reach a cancel point.
+     fn fn_shape(d: Decl) -> string {
+         let sig? = self.sig(d.id) else { return "opaque" }
+         // THE SEATS' CONTRACTS AND WHAT THE BODY WROTE are parse facts a held file
+@@ -457,7 +460,9 @@ impl Workspace {
+             [if self.decls.seat_written(d.id, j) { "1" } else { "0" } for j in 0..n],
+             "",
+         )
+-        "${shape_line(self, sig, "")}\t${marks}\t${writes}\t${self.bounds_wire(d.id)}"
++        // a record is kept once the build has lowered every body, never inside a resolve,
++        // so the cancel bit is the settled pass's and not its conservative stand-in
++        "${shape_line(self, sig, "")}\t${marks}\t${writes}\t${self.bounds_wire(d.id)}\t${if self.reaches_cancel(d.id) { "1" } else { "0" }}"
+     }
+ 
+     /// A type's shape from its signature — `opaque` for a declaration that has none.
+diff --git a/packages/std-avrac/src/compiler/record.av b/packages/std-avrac/src/compiler/record.av
+index cac9124..9452df7 100644
+--- a/packages/std-avrac/src/compiler/record.av
++++ b/packages/std-avrac/src/compiler/record.av
+@@ -190,8 +190,9 @@ fn shape_of(word: string) -> Shape? {
+ 
+ /// ONE DECLARATION LINE, DECODED — named fields over `record_line`'s columns
+ /// (interface.av, the one writer). `payload` is what is left past the facts
+-/// block: one field for most shapes, four for `Fn`/`Extern` (seats, return,
+-/// marks, written bits), read through `Row`'s own verbs below.
++/// block: one field for most shapes, six for `Fn`/`Extern` (seats, return,
++/// marks, written bits, bounds, whether it may reach a cancel point), read
++/// through `Row`'s own verbs below.
+ type Row = { shape: Shape, path: string, ordinal: int, stmt: int, exported: bool, name: string, kind: string, owner: string, parent_at: int, within: string, root: int, item: bool, facts: string, payload: List<string> }
+ 
+ /// A declaration row, decoded from its already-split fields — null for a
+@@ -253,6 +254,9 @@ impl Row {
+ 
+     /// `Fn`'s bounded seats' trait arguments, one `seat=wire|wire` each.
+     fn bounds() -> List<string> { self.list_at(4) }
++
++    /// `Fn`/`Extern`'s cancel bit: a record that says nothing says it may.
++    fn waits() -> bool { self.field(5) != "0" }
+ }
+ 
+ /// A record as this build now knows it: its words, its lines and their fields.
+@@ -352,7 +356,8 @@ export fn iface_digest(items: List<string>) -> string {
+ }
+ 
+ /// ONE DECLARATION'S CONTRACT, as one line: the fields a caller can see, and never the
+-/// span, the statement/expression indices, or the `writes` bits.
++/// span, the statement/expression indices, or the `writes` bits. A fn's cancel bit IS
++/// contract: a caller's code tests after the call by it.
+ // LICENSED compiler.free_state_verb: a pure PROJECTION — a record line in, its contract out.
+ fn interface_form(line: string) -> string {
+     let p = line.split("\t")
+@@ -364,7 +369,7 @@ fn interface_form(line: string) -> string {
+     let seen = if facts.length >= 8 { facts.slice(0, 3).concat(facts.slice(5, 10)) } else { facts }
+     [p[0], p[2], p[4], p[5], p[6], p[7], p[8], p[11], seen.join(";")]
+         .concat(p.slice(13, 16))
+-        .concat(p.slice(17, 18))
++        .concat(p.slice(17, 19))
+         .join("\t")
+ }
+ 
+diff --git a/packages/std-avrac/src/compiler/tests/cancel_reach_test.av b/packages/std-avrac/src/compiler/tests/cancel_reach_test.av
+new file mode 100644
+index 0000000..15d9c81
+--- /dev/null
++++ b/packages/std-avrac/src/compiler/tests/cancel_reach_test.av
+@@ -0,0 +1,355 @@
++// Whether a call may reach a cancel point (`Family.CancelReach`): a
++// whole-program fixpoint over the calls each body makes, seeded by a
++// row that may switch the task out, a read that waits, a spawn, a
++// `while`, and a call through a value. A held fn answers from its
++// interface, where the bit is contract.
++use @std.avrac.compiler.{avra, new_workspace}
++use compiler.{Workspace}
++use compiler.host.{memory_host}
++use compiler.record.{read_fields, iface_digest}
++use core.{DeclId}
++use @std.avrac.testing.{provided}
++use @std.avrac.compiler.{Program}
++
++const REACH_PATH: string = "/w/src/main.av"
++
++fn reach_workspace(main: string) -> Workspace {
++    new_workspace(
++        memory_host(
++            {
++                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
++                "/w/src/main.av": main,
++            },
++            ["/w/avra.toml", REACH_PATH],
++        ),
++        "/w",
++        avra(),
++    )
++}
++
++fn reach_decl(ws: Workspace, name: string) -> DeclId {
++    [x.id for x in ws.decls.all_decls() if x.name == name][0]
++}
++
++/// The program analysed, then each named fn's answer, `name=0|1`.
++fn reaching(lines: List<string>, names: List<string>) -> string {
++    let ws = reach_workspace(lines.concat([""]).join("\n"))
++    let _ = ws.analyze_file(REACH_PATH)
++    [reach_word(ws, n) for n in names].join(" ")
++}
++
++fn reach_word(ws: Workspace, name: string) -> string {
++    "${name}=${if ws.reaches_cancel(reach_decl(ws, name)) { 1 } else { 0 }}"
++}
++
++/// A sleeping fn, the seed most cases call.
++fn napping() -> List<string> {
++    ["extern fn avra_fiber_sleep(ms: int)", "fn nap() { avra_fiber_sleep(1) }"]
++}
++
++spec "compiler/cancel_reach — a row that may switch the task out" {
++    then "the fn calling it, its caller and its caller's caller answer 1; a fn calling neither answers 0" {
++        reaching(
++            napping()
++                .concat(
++                    [
++                        "fn later() {",
++                        "    nap()",
++                        "}",
++                        "fn later_still() { later() }",
++                        "fn plain() -> int { 1 }",
++                        "plain()",
++                    ],
++                ),
++            ["nap", "later", "later_still", "plain"],
++        ) == "nap=1 later=1 later_still=1 plain=0"
++    }
++    then "a row that cannot switch the task out reaches nothing" {
++        reaching(
++            ["extern fn avra_now_ns() -> int", "fn clock() -> int { avra_now_ns() }", "clock()"],
++            ["clock"],
++        ) == "clock=0"
++    }
++}
++
++spec "compiler/cancel_reach — loops" {
++    then "a fn holding a `while` answers 1" {
++        reaching(
++            [
++                "fn spin(n: int) -> int {",
++                "    mut i = 0",
++                "    while i < n { i = i + 1 }",
++                "    i",
++                "}",
++                "spin(3)",
++            ],
++            ["spin"],
++        ) == "spin=1"
++    }
++    then "a fn holding only a `for` over a range answers 0" {
++        reaching(
++            [
++                "fn count(n: int) -> int {",
++                "    mut s = 0",
++                "    for i in 0..n { s = s + i }",
++                "    s",
++                "}",
++                "count(3)",
++            ],
++            ["count"],
++        ) == "count=0"
++    }
++    then "a `while` in one fn is not another fn's" {
++        reaching(
++            [
++                "fn spin(n: int) -> int {",
++                "    mut i = 0",
++                "    while i < n { i = i + 1 }",
++                "    i",
++                "}",
++                "fn beside() -> int { 2 }",
++                "spin(3) + beside()",
++            ],
++            ["beside"],
++        ) == "beside=0"
++    }
++}
++
++spec "compiler/cancel_reach — calls through a value" {
++    then "a fn calling its fn-typed parameter answers 1" {
++        reaching(["fn run(f: fn() -> int) -> int { f() }", "run(() -> 1)"], ["run"]) == "run=1"
++    }
++    then "a lambda's call is its maker's: a maker handing a sleeping lambda to a list method answers 1" {
++        reaching(
++            napping()
++                .concat(
++                    [
++                        "fn napped(x: int) -> bool {",
++                        "    nap()",
++                        "    x > 1",
++                        "}",
++                        "fn any_napped(xs: List<int>) -> bool { xs.any((x: int) -> napped(x)) }",
++                        "any_napped([1])",
++                    ],
++                ),
++            ["any_napped"],
++        ) == "any_napped=1"
++    }
++    then "a call on a call's answer answers 1, though the first call reaches nothing" {
++        reaching(
++            ["fn make() -> fn() -> int { () -> 1 }", "fn calls() -> int { make()() }", "calls()"],
++            ["make", "calls"],
++        ) == "make=0 calls=1"
++    }
++    then "a call through a fn-typed field answers 1" {
++        reaching(
++            [
++                "type Cx = { get: fn() -> int }",
++                "fn fielded(c: Cx) -> int { c.get() }",
++                "fielded(Cx { get: () -> 1 })",
++            ],
++            ["fielded"],
++        ) == "fielded=1"
++    }
++    then "a contract's method answers 1, whatever its impls do" {
++        reaching(
++            [
++                "trait Show {",
++                "    fn show() -> string",
++                "}",
++                "type P = { n: int }",
++                "impl Show for P {",
++                "    fn show() -> string { \"p\" }",
++                "}",
++                "fn shown(s: dyn Show) -> string { s.show() }",
++                "shown(P { n: 1 })",
++            ],
++            ["shown"],
++        ) == "shown=1"
++    }
++}
++
++spec "compiler/cancel_reach — methods" {
++    then "a call to a declared method answers that method's answer" {
++        reaching(
++            napping()
++                .concat(
++                    [
++                        "type Clock = { n: int }",
++                        "impl Clock {",
++                        "    fn tick() { nap() }",
++                        "    fn read() -> int { self.n }",
++                        "}",
++                        "fn ticks(c: Clock) { c.tick() }",
++                        "fn reads(c: Clock) -> int { c.read() }",
++                        "reads(Clock { n: 1 })",
++                    ],
++                ),
++            ["tick", "read", "ticks", "reads"],
++        ) == "tick=1 read=0 ticks=1 reads=0"
++    }
++}
++
++spec "compiler/cancel_reach — tasks" {
++    then "a spawner answers 1: its task is joined where its scope ends" {
++        reaching(
++            [
++                "fn work(n: int) -> int { n * 2 }",
++                "fn spawner() {",
++                "    let t = spawn work(2)",
++                "}",
++                "spawner()",
++            ],
++            ["work", "spawner"],
++        ) == "work=0 spawner=1"
++    }
++    then "an `.await` answers 1 and a `.done` answers 0, with no spawn beside either" {
++        reaching(
++            [
++                "fn work(n: int) -> int { n * 2 }",
++                "fn awaits(t: Task<int>) -> int { t.await }",
++                "fn reader(t: Task<int>) -> bool { t.done }",
++                "fn spawner() -> int {",
++                "    let t = spawn work(2)",
++                "    awaits(t)",
++                "}",
++                "spawner()",
++            ],
++            ["awaits", "reader"],
++        ) == "awaits=1 reader=0"
++    }
++}
++
++spec "compiler/cancel_reach — recursion" {
++    then "a cycle that reaches nothing settles at 0" {
++        reaching(
++            [
++                "fn a(n: int) -> int { if n > 0 { b(n - 1) } else { 0 } }",
++                "fn b(n: int) -> int { a(n) }",
++                "a(3)",
++            ],
++            ["a", "b"],
++        ) == "a=0 b=0"
++    }
++    then "a cycle with a row in it answers 1 at every member" {
++        reaching(
++            napping()
++                .concat(
++                    [
++                        "fn a(n: int) -> int { if n > 0 { b(n - 1) } else { 0 } }",
++                        "fn b(n: int) -> int {",
++                        "    nap()",
++                        "    a(n)",
++                        "}",
++                        "a(3)",
++                    ],
++                ),
++            ["a", "b"],
++        ) == "a=1 b=1"
++    }
++}
++
++/// The record lines of the program's file, and a fresh workspace
++/// that holds the file from them alone.
++fn held_from(lines: List<string>) -> Workspace {
++    let source = lines.concat([""]).join("\n")
++    let parsed = reach_workspace(source)
++    let _ = parsed.analyze_file(REACH_PATH)
++    let f? = parsed.decls.known_file_id(REACH_PATH) else { return parsed }
++    let records = [parsed.record_line(parsed.decls.raw_decl(d), ordinal, false) for ordinal, d in parsed.decls.decls_of_file(f)]
++    let held = reach_workspace(source)
++    held.hold_only(REACH_PATH)
++    held.mint_file(REACH_PATH, [read_fields(line) for line in records], {})
++    held
++}
++
++/// One fn's record line, with its cancel bit set to `bit`.
++fn line_with(lines: List<string>, name: string, bit: string) -> string {
++    let ws = reach_workspace(lines.concat([""]).join("\n"))
++    let _ = ws.analyze_file(REACH_PATH)
++    let d = reach_decl(ws, name)
++    let fields = ws.record_line(ws.decls.raw_decl(d), 0, false).split("\t")
++    fields.slice(0, fields.length - 1).concat([bit]).join("\t")
++}
++
++spec "compiler/cancel_reach — the interface" {
++    then "a held fn answers the bit its record carries" {
++        let held = held_from(napping().concat(["fn plain() -> int { 1 }", "plain()"]))
++        [reach_word(held, n) for n in ["nap", "plain"]].join(" ") == "nap=1 plain=0"
++    }
++    then "the record line's last field is the bit" {
++        let lines = napping().concat(["nap()"])
++        let ws = reach_workspace(lines.concat([""]).join("\n"))
++        let _ = ws.analyze_file(REACH_PATH)
++        ws.record_line(ws.decls.raw_decl(reach_decl(ws, "nap")), 0, false) == line_with(lines, "nap", "1")
++    }
++    then "the bit moves the interface digest, so a caller keyed on it is rebuilt" {
++        let lines = napping().concat(["nap()"])
++        iface_digest([line_with(lines, "nap", "1")]) != iface_digest([line_with(lines, "nap", "0")])
++    }
++}
++
++/// A provider whose component's template calls a fn that sleeps.
++fn napping_provider() -> string {
++    [
++        "extern fn avra_fiber_sleep(ms: int)",
++        "export fn rest(ms: int) { avra_fiber_sleep(ms) }",
++        "export component napped(limit: Code) {",
++        "    body: Code",
++        "    fn expand() -> Code {",
++        "        quote {",
++        "            {",
++        "                rest(\${self.limit})",
++        "                \${self.body}",
++        "            }",
++        "        }",
++        "    }",
++        "}",
++        "",
++    ]
++        .join("\n")
++}
++
++fn provided_word(p: Program, name: string) -> string {
++    let d = [x.id for x in p.ws.decls.all_decls() if x.name == name][0]
++    "${name}=${if p.ws.reaches_cancel(d) { 1 } else { 0 }}"
++}
++
++spec "compiler/cancel_reach — nodes that call without a call node" {
++    then "a fn whose only wait is inside a component instance it makes answers 1" {
++        let p = provided(
++            "use @x.c.{napped}\nfn waits_inside() -> int { napped 1 { 2 } }\nfn plain() -> int { 3 }\nwaits_inside() + plain()\n",
++            napping_provider(),
++        )
++        provided_word(p, "waits_inside") + " " + provided_word(p, "plain") == "waits_inside=1 plain=0"
++    }
++    then "a `?.await` answers 1, and a `?.done` answers 0" {
++        reaching(
++            [
++                "fn maybe(t: Task<int>?) -> int? { t?.await }",
++                "fn peek(t: Task<int>?) -> bool? { t?.done }",
++                "1",
++            ],
++            ["maybe", "peek"],
++        ) == "maybe=1 peek=0"
++    }
++    then "a call that leaves a seat to its default answers that default's answer" {
++        reaching(
++            napping()
++                .concat(
++                    [
++                        "fn slept() -> int {",
++                        "    nap()",
++                        "    1",
++                        "}",
++                        "fn f(n: int = slept()) -> int { n }",
++                        "fn g() -> int { f() }",
++                        "fn h(n: int = 2) -> int { n }",
++                        "fn k() -> int { h() }",
++                        "g() + k()",
++                    ],
++                ),
++            ["g", "k"],
++        ) == "g=1 k=0"
++    }
++}
+diff --git a/packages/std-avrac/src/compiler/tests/family_reflect_test.av b/packages/std-avrac/src/compiler/tests/family_reflect_test.av
+index 016fe74..50a4227 100644
+--- a/packages/std-avrac/src/compiler/tests/family_reflect_test.av
++++ b/packages/std-avrac/src/compiler/tests/family_reflect_test.av
+@@ -39,7 +39,7 @@ spec "family declarations reflect as a collected enum" {
+                 Family.Named.ordinal == 29
+         }
+         then "each answers the word it was declared with, in rank order" {
+-            [f.name for f in Family.all()].join(",") == "Source,Parsed,Items,Namespace,Visible,Resolved,Sig,Methods,Typed,ConstTyped,Folded,Analysis,Settled,Lowered,Lifted,Manifest,Receivers,Expanded,Plain,References,Failures,HeldSig,Raised,MethodDiags,LiftLowered,Syntax,Names,Marks,Admitted,Named,ReadReach,DeclReads,Input,BlockScan,ComponentScan,ComponentNames"
++            [f.name for f in Family.all()].join(",") == "Source,Parsed,Items,Namespace,Visible,Resolved,Sig,Methods,Typed,ConstTyped,Folded,Analysis,Settled,Lowered,Lifted,Manifest,Receivers,Expanded,Plain,References,Failures,HeldSig,Raised,MethodDiags,LiftLowered,Syntax,Names,Marks,Admitted,Named,ReadReach,DeclReads,Input,BlockScan,ComponentScan,ComponentNames,CancelReach"
+         }
+     }
+ }
+diff --git a/packages/std-avrac/src/compiler/workspace.av b/packages/std-avrac/src/compiler/workspace.av
+index 84eeb40..4de7a4d 100644
+--- a/packages/std-avrac/src/compiler/workspace.av
++++ b/packages/std-avrac/src/compiler/workspace.av
+@@ -524,7 +524,7 @@ fn syntax_hash(store: SyntaxArena, x: Decl) -> int {
+ fn reads_rows_whole(f: Family) -> bool {
+     match f {
+         .Lowered or .LiftLowered or .Lifted or .Settled -> true,
+-        .Source or .Parsed or .Items or .Namespace or .Visible or .Resolved or .Sig or .Methods or .Typed or .ConstTyped or .Folded or .Analysis or .Manifest or .Receivers or .Expanded or .Plain or .References or .Failures or .HeldSig or .Raised or .MethodDiags or .Syntax or .Names or .Marks or .Admitted or .Named or .ReadReach or .DeclReads or .Input or .BlockScan or .ComponentScan or .ComponentNames -> false,
++        .Source or .Parsed or .Items or .Namespace or .Visible or .Resolved or .Sig or .Methods or .Typed or .ConstTyped or .Folded or .Analysis or .Manifest or .Receivers or .Expanded or .Plain or .References or .Failures or .HeldSig or .Raised or .MethodDiags or .Syntax or .Names or .Marks or .Admitted or .Named or .ReadReach or .DeclReads or .Input or .BlockScan or .ComponentScan or .ComponentNames or .CancelReach -> false,
+     }
+ }
+ 
+@@ -914,6 +914,7 @@ impl Workspace {
+             .BlockScan -> touch(file_lexes_block(self, self.input_names.get()[arg].key)),
+             .ComponentScan -> touch(file_declares_component(self, self.input_names.get()[arg].key)),
+             .ComponentNames -> touch(component_names(self, self.input_names.get()[arg].key)),
++            .CancelReach -> touch(self.cancel_reach()),
+         }
+         self.db.changed_at(key(f, arg))
+     }
+diff --git a/packages/std-avrac/src/core/ir.av b/packages/std-avrac/src/core/ir.av
+index 81e7761..5910c87 100644
+--- a/packages/std-avrac/src/core/ir.av
++++ b/packages/std-avrac/src/core/ir.av
+@@ -962,9 +962,13 @@ export enum RtHost {
+ /// the once cache's, the seat `!` was handed — retained on the way
+ /// out, never minted. Together they are every count a row's body
+ /// moves, so an engine that hosts the row moves the same ones.
++///
++/// `waits` says the body may switch the calling task out — a CANCEL
++/// POINT: a cancel or a deadline standing there is heard there, so
++/// every caller that may reach the row tests for one after the call.
+ export enum Reach { Pure, Embed, Lookup, World }
+ 
+-export type RtSig = { name: string, ret: RtKind, params: List<RtKind>, owns_result: bool, has_owned_twin: bool, host: RtHost, lends: bool = false, keeps: List<bool> = [], writes: List<bool> = [], aliases_arg0: bool = false, cells: List<RtKind> = [], reach: Reach = Reach.Pure, boxes: List<Box> = [], answer: Box = Box.Any, inert: bool = false, has_reusing_twin: bool = false, has_moving_twin: bool = false, wasm: bool = true, takes: Takes = Takes.Never, stood: bool = false }
++export type RtSig = { name: string, ret: RtKind, params: List<RtKind>, owns_result: bool, has_owned_twin: bool, host: RtHost, lends: bool = false, keeps: List<bool> = [], writes: List<bool> = [], aliases_arg0: bool = false, cells: List<RtKind> = [], reach: Reach = Reach.Pure, boxes: List<Box> = [], answer: Box = Box.Any, inert: bool = false, has_reusing_twin: bool = false, has_moving_twin: bool = false, wasm: bool = true, takes: Takes = Takes.Never, stood: bool = false, waits: bool = false }
+ 
+ /// WHEN A ROW'S BODY TAKES ITS OWN REFERENCE to a seat it keeps — the
+ /// `avra_rc_retain` the C makes, as data. `keeps` says a seat escapes;
+diff --git a/packages/std-avrac/src/core/runtime_api.av b/packages/std-avrac/src/core/runtime_api.av
+index 0888016..0af2f30 100644
+--- a/packages/std-avrac/src/core/runtime_api.av
++++ b/packages/std-avrac/src/core/runtime_api.av
+@@ -1496,6 +1496,7 @@ export once fn rt_sigs() -> List<RtSig> {
+         // an owner's scope ends: its task, or each in its list, joined
+         RtSig {
+             name: "avra_task_settle",
++            waits: true,
+             wasm: false,
+             ret: RtKind.Void,
+             params: [RtKind.Ptr],
+@@ -1522,6 +1523,7 @@ export once fn rt_sigs() -> List<RtSig> {
+         },
+         RtSig {
+             name: "avra_task_settle_all",
++            waits: true,
+             wasm: false,
+             ret: RtKind.Void,
+             params: [RtKind.Ptr],
+@@ -1534,6 +1536,7 @@ export once fn rt_sigs() -> List<RtSig> {
+         },
+         RtSig {
+             name: "avra_task_join",
++            waits: true,
+             stood: true,
+             wasm: false,
+             ret: RtKind.Ptr,
+@@ -1558,6 +1561,7 @@ export once fn rt_sigs() -> List<RtSig> {
+         },
+         RtSig {
+             name: "avra_fiber_yield",
++            waits: true,
+             wasm: false,
+             ret: RtKind.Void,
+             params: [],
+@@ -1569,6 +1573,7 @@ export once fn rt_sigs() -> List<RtSig> {
+         },
+         RtSig {
+             name: "avra_fiber_sleep",
++            waits: true,
+             wasm: false,
+             ret: RtKind.Void,
+             params: [RtKind.I64],
+@@ -1580,6 +1585,7 @@ export once fn rt_sigs() -> List<RtSig> {
+         },
+         RtSig {
+             name: "avra_fiber_park_fd",
++            waits: true,
+             wasm: false,
+             ret: RtKind.I64,
+             params: [RtKind.I64, RtKind.I64, RtKind.I64],
+@@ -1677,6 +1683,7 @@ export once fn rt_sigs() -> List<RtSig> {
+         },
+         RtSig {
+             name: "avra_wait_park",
++            waits: true,
+             ret: RtKind.I64,
+             params: [],
+             has_owned_twin: false,
+@@ -2279,6 +2286,12 @@ export once fn rt_index() -> Map<string, RtSig> {
+     index
+ }
+ 
++/// True when the row may switch the calling task out — a cancel point.
++export fn rt_waits(name: string) -> bool {
++    let sig: RtSig? = rt_index().get(name)
++    sig != null && sig!.waits
++}
++
+ /// True when the subject STILL HOLDS what the callee answered, so
+ /// the answer may be BORROWED rather than taken through the owned
+ /// twin. False for every row that hands its answer over.
+diff --git a/packages/std-avrac/src/features/decls.av b/packages/std-avrac/src/features/decls.av
+index f5f0a1c..11a455a 100644
+--- a/packages/std-avrac/src/features/decls.av
++++ b/packages/std-avrac/src/features/decls.av
+@@ -656,6 +656,9 @@ export type Decls = {
+     // structurally resolve — a refusal, never a silently missing member
+     inferred_unresolved: Table<bool>,
+     ensure_failures: Cell<fn() -> void>,
++    // whether a call to each fn may reach a cancel point — a held fn's
++    // as its interface recorded it, every other as the pass found it
++    cancels: Table<bool>,
+ }
+ 
+ /// Where no workspace stands behind the table, nothing lifts.
+@@ -818,6 +821,7 @@ export fn new_decls() -> Decls {
+         inferred_errs: new_table(),
+         inferred_unresolved: new_table(),
+         ensure_failures: Cell.new(no_failures_ensure),
++        cancels: new_table(),
+         consumed: Cell.new(empty_consumed),
+         ensure_consumed: Cell.new(no_ensure),
+         lifter: Cell.new(no_lifter),
+@@ -2014,6 +2018,16 @@ impl Decls {
+         self.inferred_unresolved.at(d.index) ?? false
+     }
+ 
++    /// Whether a call to `d` may reach a cancel point, recorded.
++    fn record_cancel(d: DeclId, may: bool) {
++        self.cancels.keep(d.index, may)
++    }
++
++    /// The recorded answer — null where nothing has said.
++    fn cancel_bit(d: DeclId) -> bool? {
++        self.cancels.at(d.index)
++    }
++
+     fn mark_inferred_unresolved(d: DeclId) {
+         self.inferred_unresolved.keep(d.index, true)
+     }
+diff --git a/packages/std-avrac/src/features/mod.av b/packages/std-avrac/src/features/mod.av
+index ab9ab81..de2068c 100644
+--- a/packages/std-avrac/src/features/mod.av
++++ b/packages/std-avrac/src/features/mod.av
+@@ -61,7 +61,8 @@ export type MethodCall = { e: ExprId, subject: ExprId, args: List<ExprId> }
+ /// and its typing and lowering rules. THE METHOD VOCABULARY is
+ /// these rows — declared by the feature that owns the receiver,
+ /// assembled with the language, queried by the dot-call — never
+-/// a chain of forks.
++/// a chain of forks. `waits`: the call may switch the task out — a
++/// cancel point, as a row's is.
+ export enum ReceiverEffect {
+     Read
+     /// a read answering a value the receiver HOLDS (`c.get()`,
+@@ -71,7 +72,7 @@ export enum ReceiverEffect {
+     Shared
+ }
+ 
+-export type MethodRow = { name: string, takes: fn(Type) -> bool, check: fn(mut TypeCx, MethodCall) -> TypeId, lower: fn(mut LowerCx, MethodCall) -> Reg, effect: ReceiverEffect, answers: fn(TypeRegistry, TypeId) -> TypeId? }
++export type MethodRow = { name: string, takes: fn(Type) -> bool, check: fn(mut TypeCx, MethodCall) -> TypeId, lower: fn(mut LowerCx, MethodCall) -> Reg, effect: ReceiverEffect, answers: fn(TypeRegistry, TypeId) -> TypeId?, waits: bool = false }
+ 
+ /// What a row answers on a receiver of this type, told from the
+ /// receiver alone — for a pass that types no body. Null when only the
+@@ -129,8 +130,9 @@ export type TypeArgs = { parts: List<TypeId> }
+ /// One PROPERTY a receiver shape answers (`.length` and its kin):
+ /// both rules take the read and the receiver's TYPE, the lowering
+ /// its REGISTER too — the chain holds a carried value and no
+-/// subject node, and one registry answers both readers.
+-export type PropertyRow = { name: string, takes: fn(Type) -> bool, check: fn(mut TypeCx, ExprId, TypeId) -> TypeId, lower: fn(mut LowerCx, ExprId, Reg, TypeId) -> Reg }
++/// subject node, and one registry answers both readers. `waits`: the
++/// read may switch the task out — a cancel point, as a row's is.
++export type PropertyRow = { name: string, takes: fn(Type) -> bool, check: fn(mut TypeCx, ExprId, TypeId) -> TypeId, lower: fn(mut LowerCx, ExprId, Reg, TypeId) -> Reg, waits: bool = false }
+ 
+ /// The constructor a name selects; null when the language owns none.
+ export fn type_row(rows: List<TypeRow>, name: string) -> TypeRow? {
+diff --git a/packages/std-avrac/src/features/tasks/mod.av b/packages/std-avrac/src/features/tasks/mod.av
+index 1ced010..c632804 100644
+--- a/packages/std-avrac/src/features/tasks/mod.av
++++ b/packages/std-avrac/src/features/tasks/mod.av
+@@ -29,9 +29,9 @@ export fn tasks() -> LanguageFeature {
+         "spawn" | build_spawn
+     }
+     let properties = table<PropertyRow> {
+-        name    | takes   | check       | lower
+-        "await" | on_task | check_await | lower_await
+-        "done"  | on_task | check_done  | lower_done
++        name    | takes   | check       | lower       | waits
++        "await" | on_task | check_await | lower_await | true
++        "done"  | on_task | check_done  | lower_done  | false
+     }
+     let codes = table<DiagCode> {
+         kind               | summary
