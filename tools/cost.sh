@@ -356,6 +356,12 @@ measure() {
         # shellcheck disable=SC2086
         $how "$lname" $command
         [ "$how" = ledgered ] || [ "$census" = none ] || resolved "$name"
+        # THE LAID NOOP: the laid check again over the store it left, the std answers still laid
+        # beside the compiler — what a user's second `avra check` does, the toolchain's std vouched for
+        if [ "$lname" = check-cli-laid ]; then
+            echo laid-noop >> "$out/workloads"
+            counted laid-noop check --counts packages/cli
+        fi
         [ "$name" != check-cli ] || [ "$how" = ledgered ] || noop_kept
         [ "$name" != check-cli ] || warm_edits
         # the warm edits' runs name themselves (`counted`), so the workload is known by `lname` after them
