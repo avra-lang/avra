@@ -133,6 +133,8 @@ static double g_first_frame_ms = -1;
 static double g_apply_s;
 static NSInteger g_measures;
 static NSInteger g_reused;
+static double g_parse_s;
+static NSMutableDictionary<NSString*, NSNumber*>* g_op_s;
 static double g_measure_s;
 static BOOL g_toggling;
 static double g_started_ms;
@@ -528,7 +530,17 @@ static SpikeScrollWatch* g_scroll_watch;
 // A paint reached the views: what it cost the host, and the instrument told.
 static void painted(void) {
     if (NSProcessInfo.processInfo.environment[@"AVRA_SPIKE_BENCH"])
-        said([NSString stringWithFormat:@"host apply_us=%.0f measures=%ld measure_us=%.0f reused=%ld", g_apply_s * 1e6, (long)g_measures, g_measure_s * 1e6, (long)g_reused]);
+    {
+        double l0 = CACurrentMediaTime();
+        [g_scroll layoutIfNeeded];
+        double layout_s = CACurrentMediaTime() - l0;
+        NSMutableString* ops = [NSMutableString new];
+        for (NSString* k in g_op_s) [ops appendFormat:@" %@_us=%.0f", k, g_op_s[k].doubleValue * 1e6];
+        if (NSProcessInfo.processInfo.environment[@"AVRA_SPIKE_BENCH"])
+            said([NSString stringWithFormat:@"host apply_us=%.0f measures=%ld measure_us=%.0f reused=%ld parse_us=%.0f layout_us=%.0f%@", g_apply_s * 1e6, (long)g_measures, g_measure_s * 1e6, (long)g_reused, g_parse_s * 1e6, layout_s * 1e6, ops]);
+        [g_op_s removeAllObjects];
+        g_parse_s = 0;
+    }
     g_reused = 0;
     g_apply_s = 0;
     g_measures = 0;
@@ -602,12 +614,18 @@ static NSString* rest(NSArray<NSString*>* w, NSUInteger from) {
 }
 
 static void applied(NSString* frame) {
-    for (NSString* line in [frame componentsSeparatedByString:@"\n"]) {
+    double s0 = CACurrentMediaTime();
+    NSArray<NSString*>* lines = [frame componentsSeparatedByString:@"\n"];
+    g_parse_s += CACurrentMediaTime() - s0;
+    for (NSString* line in lines) {
+        double p0 = CACurrentMediaTime();
         NSArray<NSString*>* w = [line componentsSeparatedByString:@" "];
         if (w.count < 2) continue;
         NSString* op = w[0];
         NSInteger nid = w[1].integerValue;
         SpikeNode* n = g_nodes[@(nid)];
+        double t1 = CACurrentMediaTime();
+        g_parse_s += t1 - p0;
         if ([op isEqualToString:@"create"]) {
             g_nodes[@(nid)] = taken(w[2], nid);
         } else if ([op isEqualToString:@"fact"] && w.count >= 5) {
@@ -635,6 +653,8 @@ static void applied(NSString* frame) {
         } else {
             [g_unused addObject:op];
         }
+        if (!g_op_s) g_op_s = [NSMutableDictionary new];
+        g_op_s[op] = @([g_op_s[op] doubleValue] + CACurrentMediaTime() - t1);
     }
 }
 

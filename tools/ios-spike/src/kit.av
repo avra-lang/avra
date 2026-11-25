@@ -10,6 +10,7 @@ use @std.ui.style.theme.{default_theme}
 use @std.ui.style.tokens.{Size}
 use @std.ui.tree.node.{Node, Attribute}
 use remembered.{Remembered}
+use @std.time.{now_ns}
 
 /// The size UIKit fits a control of `prim` with these words to, `avail` points
 /// across, as `w * 1000000 + h` in sixtieths of a point.
@@ -55,6 +56,12 @@ fn asked(n: Node, avail: int) -> Extent {
     Extent { w: packed / 1000000, h: packed % 1000000 }
 }
 
+/// What else the last `rects` spent, as words.
+export once fn rects_split() -> Cell<string> { Cell.new("") }
+
+/// How long the last `place` took, in nanoseconds.
+export once fn solve_ns() -> Cell<int> { Cell.new(0) }
+
 /// UIKit's answers, remembered for the whole run.
 export once fn remembered() -> Remembered { Remembered { inner: Kit {} } }
 
@@ -76,9 +83,19 @@ impl Measure for Kit {
 /// The page placed in the host's width: one record per element, its box
 /// relative to its parent's, the root's height last as `content`.
 export fn rects(root: Node, page: List<Native>) -> string {
-    let placed = place(root, remembered(), avra_spike_width())
+    let p0 = now_ns()
+    let measure = remembered()
+    let width = avra_spike_width()
+    let p1 = now_ns()
+    let placed = place(root, measure, width)
+    let p2 = now_ns()
+    solve_ns().set(p2 - p1)
     let top? = page.first() else { return "" }
-    rect_lines(top, placed, 0, 0).concat(["content ${placed.rect.w} ${placed.rect.h}"]).join("\n")
+    let said = rect_lines(top, placed, 0, 0)
+        .concat(["content ${placed.rect.w} ${placed.rect.h}"])
+        .join("\n")
+    rects_split().set("pre_us=${(p1 - p0) / 1000} lines_us=${(now_ns() - p2) / 1000}")
+    said
 }
 
 /// `e`'s box at `p`, relative to its parent's corner (`x`, `y`), then its

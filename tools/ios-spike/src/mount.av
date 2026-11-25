@@ -15,7 +15,7 @@ use @std.ui.tree.identity.{Stand}
 use @std.ui.realize.native.patch.{NativePatch, moves_boxes}
 use @std.time.{now_ns}
 use frame.{neutral}
-use kit.{rects, remembered}
+use kit.{rects, remembered, solve_ns, rects_split}
 
 extern fn avra_spike_attach()
 extern fn avra_spike_frame(records: string)
@@ -111,9 +111,12 @@ export fn mount<V: View>(view: fn() -> V, first_rows: int = 0) {
             on_screen.set(at.owners())
             let said = neutral(patches)
             let t2 = now_ns()
-            if !patches.is_empty() { avra_spike_frame(said) }
-            let placed = if moves_boxes(patches) || shown_root().get().is_empty() { rects(root, at.page.get()) } else { "content still" }
+            let r0 = now_ns()
+            let standing_page = at.page.get()
+            page_get_ns().set(now_ns() - r0)
+            let placed = if moves_boxes(patches) || shown_root().get().is_empty() { rects(root, standing_page) } else { "content still" }
             let t3 = now_ns()
+            if !patches.is_empty() { avra_spike_frame(said) }
             avra_spike_frame(placed)
             shown_root().set([root])
             avra_spike_log(paint_line(patches, t1 - t0, t2 - t1, t3 - t2, avra_mem_live() - live0))
@@ -148,7 +151,7 @@ export fn mount<V: View>(view: fn() -> V, first_rows: int = 0) {
 fn paint_line(patches: List<NativePatch>, lower: int, serialize: int, place: int, bytes: int) -> string {
     let facts = [p for p in patches if is_fact(p)].length
     let made = [p for p in patches if is_create(p)].length
-    "paint tree_us=${tree_ns().get() / 1000} lower_diff_us=${lower / 1000} serialize_us=${serialize / 1000} place_us=${place / 1000} patches=${patches.length} facts=${facts} creates=${made} ${remembered().tally()} live_bytes_delta=${bytes}"
+    "paint tree_us=${tree_ns().get() / 1000} lower_diff_us=${lower / 1000} serialize_us=${serialize / 1000} place_us=${place / 1000} patches=${patches.length} facts=${facts} creates=${made} page_get_us=${page_get_ns().get() / 1000} solve_us=${solve_ns().get() / 1000} ${rects_split().get()} rows_built=${built_rows().get()} nodes=${node_count(shown_root().get())} ${remembered().tally()} live_bytes_delta=${bytes}"
 }
 
 fn is_fact(p: NativePatch) -> bool {
@@ -165,6 +168,15 @@ fn is_create(p: NativePatch) -> bool {
     }
 }
 
+/// How long reading the page took, in nanoseconds.
+once fn page_get_ns() -> Cell<int> { Cell.new(0) }
+
+/// How many rows windowed lists built in the last walk.
+once fn built_rows() -> Cell<int> { Cell.new(0) }
+
+/// The nodes in the trees shown.
+fn node_count(roots: List<Node>) -> int { roots.fold(0, (a: int, n: Node) -> a + 1 + node_count(n.children)) }
+
 /// How long the last tree took to build, in nanoseconds.
 once fn tree_ns() -> Cell<int> { Cell.new(0) }
 
@@ -178,6 +190,7 @@ impl View for Timed {
         let t = now_ns()
         let drawn = self.inner.describe(at)
         tree_ns().set(now_ns() - t)
+        built_rows().set(at.built())
         drawn
     }
 }

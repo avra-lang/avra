@@ -5,6 +5,7 @@
 use @std.ui.place.measure.{Measure, Extent}
 use @std.ui.style.tokens.{Size}
 use @std.ui.tree.node.{Node, Attribute}
+use @std.time.{now_ns}
 
 /// What a node's size can depend on: its primitive, its words, its rank, the
 /// attributes that carry text or room, and its type. Two nodes with one key
@@ -34,6 +35,8 @@ export type Remembered = {
     narrowest: Cell<Map<string, int>> = Cell.new({}),
     hits: Cell<int> = Cell.new(0),
     misses: Cell<int> = Cell.new(0),
+    key_ns: Cell<int> = Cell.new(0),
+    inner_ns: Cell<int> = Cell.new(0),
 }
 
 impl Remembered {
@@ -45,19 +48,26 @@ impl Remembered {
 
     /// The asks answered from memory and from `inner` since the last read, as words.
     fn tally() -> string {
-        let said = "hits=${self.hits.get()} misses=${self.misses.get()}"
+        let said = "hits=${self.hits.get()} misses=${self.misses.get()} key_us=${self.key_ns.get() / 1000} inner_us=${self.inner_ns.get() / 1000}"
         self.hits.set(0)
         self.misses.set(0)
+        self.key_ns.set(0)
+        self.inner_ns.set(0)
         said
     }
 }
 
 impl Measure for Remembered {
     fn own(n: Node, avail: int) -> Extent {
+        let k0 = now_ns()
         let key = "${size_key(n)}@${avail}"
-        let kept? = self.owns.get().get(key) else {
+        let found = self.owns.get().get(key)
+        self.key_ns.set(self.key_ns.get() + now_ns() - k0)
+        let kept? = found else {
             self.misses.set(self.misses.get() + 1)
+            let i0 = now_ns()
             let fresh = self.inner.own(n, avail)
+            self.inner_ns.set(self.inner_ns.get() + now_ns() - i0)
             self.owns.put(key, fresh)
             return fresh
         }
@@ -66,10 +76,15 @@ impl Measure for Remembered {
     }
 
     fn min_own(n: Node) -> int {
+        let k0 = now_ns()
         let key = size_key(n)
-        let kept? = self.narrowest.get().get(key) else {
+        let found = self.narrowest.get().get(key)
+        self.key_ns.set(self.key_ns.get() + now_ns() - k0)
+        let kept? = found else {
             self.misses.set(self.misses.get() + 1)
+            let i0 = now_ns()
             let fresh = self.inner.min_own(n)
+            self.inner_ns.set(self.inner_ns.get() + now_ns() - i0)
             self.narrowest.put(key, fresh)
             return fresh
         }
