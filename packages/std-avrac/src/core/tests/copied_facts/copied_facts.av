@@ -1,0 +1,46 @@
+// proves: `@derive(Copied)` reads a `@derive(Facts)` table's facts as it reads the arena's own
+// tables: a copy carries each `@copied` fact through its verb, beside a side column, and leaves the
+// nodes it did not copy unset
+
+use @std.meta.{derive}
+use @std.avrac.core.{
+    Copied,
+    Facts,
+    ExprId,
+    StmtId,
+    PatId,
+    IndexTable,
+    SideColumn,
+    index_table_of,
+    side_column,
+}
+use @std.avrac.core.marks.{facts_over}
+use @std.program.syntax_tape.{TapeReader, TapeWriter}
+
+@derive(Facts)
+@facts_over("ExprId")
+type Notes = { @copied(expr, wear_note) note: string? = null, @not_copied("made where it stands") @remade("made where it stands") weight: int = 1 }
+
+@derive(Copied)
+type Mini = { @copied(expr, wear_flag) flags: SideColumn<bool>, notes: NotesTable }
+
+impl Mini {
+    fn wear_flag(e: ExprId, v: bool) { if v { self.flags.set_at(e.index, v) } }
+
+    fn wear_note(e: ExprId, v: string?) { if v != null { self.notes.set_note(e, v) } }
+
+    fn remade_expr(_e: ExprId) {}
+}
+
+fn mini() -> Mini { Mini { flags: side_column(false), notes: NotesTable.empty() } }
+
+let src = mini()
+let dst = mini()
+src.flags.set_at(2, true)
+src.notes.set_note(ExprId { index: 2 }, "two")
+src.notes.set_weight(ExprId { index: 2 }, 5)
+src.notes.set_note(ExprId { index: 3 }, "three")
+src.copy_expr_tables(ExprId { index: 2 }, dst, ExprId { index: 7 })
+println(
+    "copied ${dst.notes.note(ExprId { index: 7 }) ?? "none"} ${dst.flags.at(7)} ; uncopied ${dst.notes.weight(ExprId { index: 7 })} ; held ${dst.notes.note_held().map("${it}").join(",")}",
+)
