@@ -1,0 +1,3966 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="generator" content="serif">
+<title>Build-time sources — files, folders and specs as typed values (v2.1)</title>
+<script>
+/* Set theme before first paint to avoid a flash. */
+(function () {
+  try {
+    var t = localStorage.getItem("serif-theme");
+    if (t !== "light" && t !== "dark") {
+      t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    }
+    document.documentElement.setAttribute("data-theme", t);
+  } catch (e) {}
+})();
+</script>
+<style>
+/* ==========================================================================
+   serif — typography-first stylesheet
+   Goals: maximum readability, comfortable long-form reading, calm color.
+   https://github.com/tristanMatthias/serif
+   ========================================================================== */
+
+/* ---- Theme tokens -------------------------------------------------------- */
+
+:root {
+  color-scheme: light dark;
+
+  /* Type */
+  --font-serif: "Charter", "Iowan Old Style", "Palatino Linotype", "Palatino",
+    "Book Antiqua", Georgia, "Times New Roman", serif;
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+    Arial, sans-serif;
+  --font-mono: "SF Mono", "JetBrains Mono", "Fira Code", ui-monospace,
+    "Menlo", "Consolas", "Liberation Mono", monospace;
+
+  /* Light theme — warm paper, calm blue accent */
+  --bg: #fbfaf8;
+  --surface: #f3f0ea;
+  --surface-2: #ece8df;
+  --text: #22201d;
+  --muted: #6b655d;
+  --border: #e6e1d7;
+  --accent: #1a56c4;
+  --accent-strong: #103e94;
+  --quote-bar: #d8d2c6;
+  --mark: #fbe6a2;
+  --selection: rgba(26, 86, 196, 0.18);
+  --shadow: 0 1px 2px rgba(30, 25, 18, 0.05);
+}
+
+html[data-theme="dark"] {
+  --bg: #171614;
+  --surface: #201e1b;
+  --surface-2: #292722;
+  --text: #e7e3db;
+  --muted: #9d968a;
+  --border: #322f2a;
+  --accent: #82b1ff;
+  --accent-strong: #adceff;
+  --quote-bar: #3a362f;
+  --mark: #5b4f28;
+  --selection: rgba(130, 177, 255, 0.22);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+}
+
+/* No-JS fallback: follow the OS preference when no explicit theme is set. */
+@media (prefers-color-scheme: dark) {
+  html:not([data-theme]) {
+    --bg: #171614;
+    --surface: #201e1b;
+    --surface-2: #292722;
+    --text: #e7e3db;
+    --muted: #9d968a;
+    --border: #322f2a;
+    --accent: #82b1ff;
+    --accent-strong: #adceff;
+    --quote-bar: #3a362f;
+    --mark: #5b4f28;
+    --selection: rgba(130, 177, 255, 0.22);
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  }
+}
+
+/* ---- Base ---------------------------------------------------------------- */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-serif);
+  font-size: clamp(18px, 1.02rem + 0.35vw, 21px);
+  line-height: 1.72;
+  font-weight: 400;
+  font-kerning: normal;
+  font-variant-ligatures: common-ligatures contextual;
+  font-variant-numeric: oldstyle-nums proportional-nums;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  hanging-punctuation: first allow-end last;
+  transition: background-color 0.25s ease, color 0.25s ease;
+}
+
+::selection {
+  background: var(--selection);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 3px;
+}
+
+/* ---- Layout -------------------------------------------------------------- */
+
+.page {
+  width: 100%;
+  max-width: 46rem;
+  margin-inline: auto;
+  padding: clamp(1.75rem, 3vw + 1rem, 4.5rem) clamp(1.15rem, 5vw, 2.75rem)
+    clamp(4rem, 8vw, 7rem);
+}
+
+.prose {
+  overflow-wrap: break-word;
+}
+
+.prose > *:first-child {
+  margin-top: 0;
+}
+
+/* ---- Headings ------------------------------------------------------------ */
+
+.prose h1,
+.prose h2,
+.prose h3,
+.prose h4,
+.prose h5,
+.prose h6 {
+  font-family: var(--font-sans);
+  font-weight: 700;
+  line-height: 1.2;
+  color: var(--text);
+  scroll-margin-top: 1.5rem;
+  text-wrap: balance;
+}
+
+.prose h1 {
+  font-size: clamp(2.05rem, 1.5rem + 2.4vw, 3rem);
+  line-height: 1.08;
+  letter-spacing: -0.021em;
+  font-weight: 760;
+  margin: 0 0 0.6em;
+}
+
+.prose h2 {
+  font-size: clamp(1.5rem, 1.25rem + 1vw, 1.95rem);
+  letter-spacing: -0.013em;
+  margin: 2.4em 0 0.7em;
+  padding-bottom: 0.28em;
+  border-bottom: 1px solid var(--border);
+}
+
+.prose h3 {
+  font-size: clamp(1.25rem, 1.1rem + 0.6vw, 1.5rem);
+  letter-spacing: -0.008em;
+  margin: 2em 0 0.55em;
+}
+
+.prose h4 {
+  font-size: 1.15rem;
+  margin: 1.7em 0 0.5em;
+}
+
+.prose h5 {
+  font-size: 1rem;
+  margin: 1.6em 0 0.5em;
+}
+
+.prose h6 {
+  font-size: 0.9rem;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 1.6em 0 0.5em;
+}
+
+/* Clickable heading anchors (added by JS) */
+.prose :is(h2, h3, h4) .anchor {
+  opacity: 0;
+  margin-left: 0.4em;
+  color: var(--muted);
+  font-weight: 400;
+  text-decoration: none;
+  transition: opacity 0.15s ease, color 0.15s ease;
+}
+
+.prose :is(h2, h3, h4):hover .anchor {
+  opacity: 0.45;
+}
+
+.prose .anchor:hover {
+  opacity: 1;
+  color: var(--accent);
+}
+
+/* ---- Text ---------------------------------------------------------------- */
+
+.prose p {
+  margin: 0 0 1.3em;
+  text-wrap: pretty;
+}
+
+.prose a {
+  color: var(--accent);
+  text-decoration-line: underline;
+  text-decoration-thickness: 0.06em;
+  text-underline-offset: 0.18em;
+  text-decoration-color: color-mix(in srgb, var(--accent) 38%, transparent);
+  transition: color 0.15s ease, text-decoration-color 0.15s ease;
+}
+
+.prose a:hover {
+  color: var(--accent-strong);
+  text-decoration-color: currentColor;
+}
+
+.prose strong {
+  font-weight: 700;
+}
+
+.prose em {
+  font-style: italic;
+}
+
+.prose mark {
+  background: var(--mark);
+  color: inherit;
+  padding: 0.05em 0.2em;
+  border-radius: 0.2em;
+}
+
+.prose abbr[title] {
+  text-decoration: underline dotted;
+  cursor: help;
+}
+
+.prose small {
+  font-size: 0.85em;
+  color: var(--muted);
+}
+
+/* ---- Lists --------------------------------------------------------------- */
+
+.prose ul,
+.prose ol {
+  margin: 0 0 1.3em;
+  padding-left: 1.45em;
+}
+
+.prose li {
+  margin: 0.35em 0;
+}
+
+.prose li::marker {
+  color: var(--muted);
+}
+
+.prose li > ul,
+.prose li > ol {
+  margin: 0.35em 0;
+}
+
+/* Task lists (GFM) */
+.prose ul:has(> li > input[type="checkbox"]),
+.prose li:has(> input[type="checkbox"]) {
+  list-style: none;
+}
+
+.prose li > input[type="checkbox"] {
+  margin: 0 0.5em 0 -1.45em;
+  vertical-align: middle;
+  accent-color: var(--accent);
+}
+
+.prose dl {
+  margin: 0 0 1.3em;
+}
+
+.prose dt {
+  font-weight: 700;
+  font-family: var(--font-sans);
+}
+
+.prose dd {
+  margin: 0 0 0.7em 1.4em;
+  color: var(--muted);
+}
+
+/* ---- Blockquote ---------------------------------------------------------- */
+
+.prose blockquote {
+  margin: 1.6em 0;
+  padding: 0.2em 0 0.2em 1.15em;
+  border-left: 3px solid var(--quote-bar);
+  color: var(--muted);
+  font-style: normal;
+}
+
+.prose blockquote p:last-child {
+  margin-bottom: 0;
+}
+
+.prose blockquote blockquote {
+  margin: 0.8em 0;
+}
+
+/* ---- Code ---------------------------------------------------------------- */
+
+.prose code {
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  font-variant-ligatures: none;
+  background: var(--surface);
+  padding: 0.15em 0.4em;
+  border-radius: 0.35em;
+  border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+}
+
+.prose pre {
+  margin: 1.6em 0;
+  padding: 1em 1.15em;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.65em;
+  overflow-x: auto;
+  font-size: 0.86em;
+  line-height: 1.62;
+  tab-size: 4;
+  box-shadow: var(--shadow);
+  -webkit-overflow-scrolling: touch;
+}
+
+.prose pre code {
+  background: none;
+  border: 0;
+  padding: 0;
+  font-size: inherit;
+  border-radius: 0;
+}
+
+/* chroma wrapper */
+.prose .chroma {
+  background: none;
+}
+
+/* ---- Tables -------------------------------------------------------------- */
+
+.prose table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1.8em 0;
+  font-size: 0.94em;
+  font-variant-numeric: lining-nums tabular-nums;
+  display: block;
+  overflow-x: auto;
+}
+
+.prose th,
+.prose td {
+  padding: 0.5em 0.85em;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+.prose thead th {
+  font-family: var(--font-sans);
+  font-weight: 600;
+  border-bottom: 2px solid var(--border);
+}
+
+.prose tbody tr:nth-child(even) {
+  background: color-mix(in srgb, var(--surface) 55%, transparent);
+}
+
+/* ---- Media & rules ------------------------------------------------------- */
+
+.prose img,
+.prose video,
+.prose svg {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 1.8em auto;
+  border-radius: 0.5em;
+}
+
+.prose figure {
+  margin: 1.8em 0;
+}
+
+.prose figcaption {
+  font-family: var(--font-sans);
+  font-size: 0.85em;
+  color: var(--muted);
+  text-align: center;
+  margin-top: 0.6em;
+}
+
+.prose hr {
+  border: 0;
+  height: 1px;
+  background: var(--border);
+  margin: 3em 0;
+}
+
+/* ---- Footnotes ----------------------------------------------------------- */
+
+.prose .footnotes {
+  margin-top: 3.5em;
+  padding-top: 1.2em;
+  border-top: 1px solid var(--border);
+  font-size: 0.9em;
+  color: var(--muted);
+}
+
+.prose .footnotes ol {
+  padding-left: 1.2em;
+}
+
+/* ---- Theme toggle -------------------------------------------------------- */
+
+.theme-toggle {
+  position: fixed;
+  top: max(1rem, env(safe-area-inset-top));
+  right: max(1rem, env(safe-area-inset-right));
+  z-index: 10;
+  width: 2.5rem;
+  height: 2.5rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg) 78%, transparent);
+  color: var(--muted);
+  cursor: pointer;
+  -webkit-backdrop-filter: blur(8px) saturate(1.2);
+  backdrop-filter: blur(8px) saturate(1.2);
+  box-shadow: var(--shadow);
+  transition: color 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+}
+
+.theme-toggle:hover {
+  color: var(--text);
+  border-color: var(--muted);
+}
+
+.theme-toggle:active {
+  transform: scale(0.94);
+}
+
+.theme-toggle svg {
+  width: 1.15rem;
+  height: 1.15rem;
+}
+
+.theme-toggle .icon-sun {
+  display: none;
+}
+.theme-toggle .icon-moon {
+  display: inline-flex;
+}
+html[data-theme="dark"] .theme-toggle .icon-sun {
+  display: inline-flex;
+}
+html[data-theme="dark"] .theme-toggle .icon-moon {
+  display: none;
+}
+
+/* ---- Footer -------------------------------------------------------------- */
+
+.page-footer {
+  margin-top: 4rem;
+  padding-top: 1.4rem;
+  border-top: 1px solid var(--border);
+  font-family: var(--font-sans);
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.page-footer a {
+  color: inherit;
+}
+
+/* ---- Motion & print ------------------------------------------------------ */
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+
+@media print {
+  .theme-toggle {
+    display: none;
+  }
+  body {
+    background: #fff;
+    color: #000;
+    font-size: 11.5pt;
+  }
+  .page {
+    max-width: none;
+    padding: 0;
+  }
+  .prose a {
+    color: #000;
+    text-decoration-color: #666;
+  }
+  .prose pre,
+  .prose code {
+    background: #f5f5f5;
+    border-color: #ddd;
+  }
+  .prose h2 {
+    border-bottom-color: #ccc;
+  }
+  .prose h1,
+  .prose h2,
+  .prose h3,
+  .prose h4 {
+    break-after: avoid;
+  }
+  .prose pre,
+  .prose blockquote,
+  .prose table,
+  .prose figure {
+    break-inside: avoid;
+  }
+}
+
+
+/* ---- syntax highlighting (chroma) ---- */
+html[data-theme="light"] .bg { background-color: #f7f7f7;}
+html[data-theme="light"] .chroma { background-color: #f7f7f7; -webkit-text-size-adjust: none;}
+html[data-theme="light"] .chroma .err { color: #f6f8fa; background-color: #82071e}
+html[data-theme="light"] .chroma .lnlinks { outline: none; text-decoration: none; color: inherit}
+html[data-theme="light"] .chroma .lntd { vertical-align: top; padding: 0; margin: 0; border: 0;}
+html[data-theme="light"] .chroma .lntable { border-spacing: 0; padding: 0; margin: 0; border: 0;}
+html[data-theme="light"] .chroma .hl { background-color: #dedede}
+html[data-theme="light"] .chroma .lnt { white-space: pre; -webkit-user-select: none; user-select: none; margin-right: 0.4em; padding: 0 0.4em 0 0.4em;color: #7f7f7f}
+html[data-theme="light"] .chroma .ln { white-space: pre; -webkit-user-select: none; user-select: none; margin-right: 0.4em; padding: 0 0.4em 0 0.4em;color: #7f7f7f}
+html[data-theme="light"] .chroma .line { display: flex;}
+html[data-theme="light"] .chroma .k { color: #cf222e}
+html[data-theme="light"] .chroma .kc { color: #cf222e}
+html[data-theme="light"] .chroma .kd { color: #cf222e}
+html[data-theme="light"] .chroma .kn { color: #cf222e}
+html[data-theme="light"] .chroma .kp { color: #cf222e}
+html[data-theme="light"] .chroma .kr { color: #cf222e}
+html[data-theme="light"] .chroma .kt { color: #cf222e}
+html[data-theme="light"] .chroma .na { color: #1f2328}
+html[data-theme="light"] .chroma .nc { color: #1f2328}
+html[data-theme="light"] .chroma .no { color: #0550ae}
+html[data-theme="light"] .chroma .nd { color: #0550ae}
+html[data-theme="light"] .chroma .ni { color: #6639ba}
+html[data-theme="light"] .chroma .nl { color: #990000; font-weight: bold}
+html[data-theme="light"] .chroma .nn { color: #24292e}
+html[data-theme="light"] .chroma .nx { color: #1f2328}
+html[data-theme="light"] .chroma .nt { color: #0550ae}
+html[data-theme="light"] .chroma .nb { color: #6639ba}
+html[data-theme="light"] .chroma .bp { color: #6a737d}
+html[data-theme="light"] .chroma .nv { color: #953800}
+html[data-theme="light"] .chroma .vc { color: #953800}
+html[data-theme="light"] .chroma .vg { color: #953800}
+html[data-theme="light"] .chroma .vi { color: #953800}
+html[data-theme="light"] .chroma .vm { color: #953800}
+html[data-theme="light"] .chroma .nf { color: #6639ba}
+html[data-theme="light"] .chroma .fm { color: #6639ba}
+html[data-theme="light"] .chroma .s { color: #0a3069}
+html[data-theme="light"] .chroma .sa { color: #0a3069}
+html[data-theme="light"] .chroma .sb { color: #0a3069}
+html[data-theme="light"] .chroma .sc { color: #0a3069}
+html[data-theme="light"] .chroma .dl { color: #0a3069}
+html[data-theme="light"] .chroma .sd { color: #0a3069}
+html[data-theme="light"] .chroma .s2 { color: #0a3069}
+html[data-theme="light"] .chroma .se { color: #0a3069}
+html[data-theme="light"] .chroma .sh { color: #0a3069}
+html[data-theme="light"] .chroma .si { color: #0a3069}
+html[data-theme="light"] .chroma .sx { color: #0a3069}
+html[data-theme="light"] .chroma .sr { color: #0a3069}
+html[data-theme="light"] .chroma .s1 { color: #0a3069}
+html[data-theme="light"] .chroma .ss { color: #032f62}
+html[data-theme="light"] .chroma .m { color: #0550ae}
+html[data-theme="light"] .chroma .mb { color: #0550ae}
+html[data-theme="light"] .chroma .mf { color: #0550ae}
+html[data-theme="light"] .chroma .mh { color: #0550ae}
+html[data-theme="light"] .chroma .mi { color: #0550ae}
+html[data-theme="light"] .chroma .il { color: #0550ae}
+html[data-theme="light"] .chroma .mo { color: #0550ae}
+html[data-theme="light"] .chroma .o { color: #0550ae}
+html[data-theme="light"] .chroma .ow { color: #0550ae}
+html[data-theme="light"] .chroma .or { color: #0550ae}
+html[data-theme="light"] .chroma .p { color: #1f2328}
+html[data-theme="light"] .chroma .c { color: #57606a}
+html[data-theme="light"] .chroma .ch { color: #57606a}
+html[data-theme="light"] .chroma .cm { color: #57606a}
+html[data-theme="light"] .chroma .c1 { color: #57606a}
+html[data-theme="light"] .chroma .cs { color: #57606a}
+html[data-theme="light"] .chroma .cp { color: #57606a}
+html[data-theme="light"] .chroma .cpf { color: #57606a}
+html[data-theme="light"] .chroma .gd { color: #82071e; background-color: #ffebe9}
+html[data-theme="light"] .chroma .ge { color: #1f2328}
+html[data-theme="light"] .chroma .gi { color: #116329; background-color: #dafbe1}
+html[data-theme="light"] .chroma .go { color: #1f2328}
+html[data-theme="light"] .chroma .gl { text-decoration: underline}
+html[data-theme="light"] .chroma .w { color: #ffffff}
+html[data-theme="dark"] .bg { color: #e6edf3; background-color: #0d1117;}
+html[data-theme="dark"] .chroma { color: #e6edf3; background-color: #0d1117; -webkit-text-size-adjust: none;}
+html[data-theme="dark"] .chroma .err { color: #f85149}
+html[data-theme="dark"] .chroma .lnlinks { outline: none; text-decoration: none; color: inherit}
+html[data-theme="dark"] .chroma .lntd { vertical-align: top; padding: 0; margin: 0; border: 0;}
+html[data-theme="dark"] .chroma .lntable { border-spacing: 0; padding: 0; margin: 0; border: 0;}
+html[data-theme="dark"] .chroma .hl { background-color: #6e7681}
+html[data-theme="dark"] .chroma .lnt { white-space: pre; -webkit-user-select: none; user-select: none; margin-right: 0.4em; padding: 0 0.4em 0 0.4em;color: #737679}
+html[data-theme="dark"] .chroma .ln { white-space: pre; -webkit-user-select: none; user-select: none; margin-right: 0.4em; padding: 0 0.4em 0 0.4em;color: #6e7681}
+html[data-theme="dark"] .chroma .line { display: flex;}
+html[data-theme="dark"] .chroma .k { color: #ff7b72}
+html[data-theme="dark"] .chroma .kc { color: #79c0ff}
+html[data-theme="dark"] .chroma .kd { color: #ff7b72}
+html[data-theme="dark"] .chroma .kn { color: #ff7b72}
+html[data-theme="dark"] .chroma .kp { color: #79c0ff}
+html[data-theme="dark"] .chroma .kr { color: #ff7b72}
+html[data-theme="dark"] .chroma .kt { color: #ff7b72}
+html[data-theme="dark"] .chroma .nc { color: #f0883e; font-weight: bold}
+html[data-theme="dark"] .chroma .no { color: #79c0ff; font-weight: bold}
+html[data-theme="dark"] .chroma .nd { color: #d2a8ff; font-weight: bold}
+html[data-theme="dark"] .chroma .ni { color: #ffa657}
+html[data-theme="dark"] .chroma .ne { color: #f0883e; font-weight: bold}
+html[data-theme="dark"] .chroma .nl { color: #79c0ff; font-weight: bold}
+html[data-theme="dark"] .chroma .nn { color: #ff7b72}
+html[data-theme="dark"] .chroma .py { color: #79c0ff}
+html[data-theme="dark"] .chroma .nt { color: #7ee787}
+html[data-theme="dark"] .chroma .nv { color: #79c0ff}
+html[data-theme="dark"] .chroma .vc { color: #79c0ff}
+html[data-theme="dark"] .chroma .vg { color: #79c0ff}
+html[data-theme="dark"] .chroma .vi { color: #79c0ff}
+html[data-theme="dark"] .chroma .vm { color: #79c0ff}
+html[data-theme="dark"] .chroma .nf { color: #d2a8ff; font-weight: bold}
+html[data-theme="dark"] .chroma .fm { color: #d2a8ff; font-weight: bold}
+html[data-theme="dark"] .chroma .l { color: #a5d6ff}
+html[data-theme="dark"] .chroma .ld { color: #79c0ff}
+html[data-theme="dark"] .chroma .s { color: #a5d6ff}
+html[data-theme="dark"] .chroma .sa { color: #79c0ff}
+html[data-theme="dark"] .chroma .sb { color: #a5d6ff}
+html[data-theme="dark"] .chroma .sc { color: #a5d6ff}
+html[data-theme="dark"] .chroma .dl { color: #79c0ff}
+html[data-theme="dark"] .chroma .sd { color: #a5d6ff}
+html[data-theme="dark"] .chroma .s2 { color: #a5d6ff}
+html[data-theme="dark"] .chroma .se { color: #79c0ff}
+html[data-theme="dark"] .chroma .sh { color: #79c0ff}
+html[data-theme="dark"] .chroma .si { color: #a5d6ff}
+html[data-theme="dark"] .chroma .sx { color: #a5d6ff}
+html[data-theme="dark"] .chroma .sr { color: #79c0ff}
+html[data-theme="dark"] .chroma .s1 { color: #a5d6ff}
+html[data-theme="dark"] .chroma .ss { color: #a5d6ff}
+html[data-theme="dark"] .chroma .m { color: #a5d6ff}
+html[data-theme="dark"] .chroma .mb { color: #a5d6ff}
+html[data-theme="dark"] .chroma .mf { color: #a5d6ff}
+html[data-theme="dark"] .chroma .mh { color: #a5d6ff}
+html[data-theme="dark"] .chroma .mi { color: #a5d6ff}
+html[data-theme="dark"] .chroma .il { color: #a5d6ff}
+html[data-theme="dark"] .chroma .mo { color: #a5d6ff}
+html[data-theme="dark"] .chroma .o { color: #ff7b72; font-weight: bold}
+html[data-theme="dark"] .chroma .ow { color: #ff7b72; font-weight: bold}
+html[data-theme="dark"] .chroma .or { color: #ff7b72; font-weight: bold}
+html[data-theme="dark"] .chroma .c { color: #8b949e; font-style: italic}
+html[data-theme="dark"] .chroma .ch { color: #8b949e; font-style: italic}
+html[data-theme="dark"] .chroma .cm { color: #8b949e; font-style: italic}
+html[data-theme="dark"] .chroma .c1 { color: #8b949e; font-style: italic}
+html[data-theme="dark"] .chroma .cs { color: #8b949e; font-weight: bold; font-style: italic}
+html[data-theme="dark"] .chroma .cp { color: #8b949e; font-weight: bold; font-style: italic}
+html[data-theme="dark"] .chroma .cpf { color: #8b949e; font-weight: bold; font-style: italic}
+html[data-theme="dark"] .chroma .gd { color: #ffa198; background-color: #490202}
+html[data-theme="dark"] .chroma .ge { font-style: italic}
+html[data-theme="dark"] .chroma .gr { color: #ffa198}
+html[data-theme="dark"] .chroma .gh { color: #79c0ff; font-weight: bold}
+html[data-theme="dark"] .chroma .gi { color: #56d364; background-color: #0f5323}
+html[data-theme="dark"] .chroma .go { color: #8b949e}
+html[data-theme="dark"] .chroma .gp { color: #8b949e}
+html[data-theme="dark"] .chroma .gs { font-weight: bold}
+html[data-theme="dark"] .chroma .gu { color: #79c0ff}
+html[data-theme="dark"] .chroma .gt { color: #ff7b72}
+html[data-theme="dark"] .chroma .gl { text-decoration: underline}
+html[data-theme="dark"] .chroma .w { color: #6e7681}
+@media (prefers-color-scheme: light) {
+html:not([data-theme]) .bg { background-color: #f7f7f7;}
+html:not([data-theme]) .chroma { background-color: #f7f7f7; -webkit-text-size-adjust: none;}
+html:not([data-theme]) .chroma .err { color: #f6f8fa; background-color: #82071e}
+html:not([data-theme]) .chroma .lnlinks { outline: none; text-decoration: none; color: inherit}
+html:not([data-theme]) .chroma .lntd { vertical-align: top; padding: 0; margin: 0; border: 0;}
+html:not([data-theme]) .chroma .lntable { border-spacing: 0; padding: 0; margin: 0; border: 0;}
+html:not([data-theme]) .chroma .hl { background-color: #dedede}
+html:not([data-theme]) .chroma .lnt { white-space: pre; -webkit-user-select: none; user-select: none; margin-right: 0.4em; padding: 0 0.4em 0 0.4em;color: #7f7f7f}
+html:not([data-theme]) .chroma .ln { white-space: pre; -webkit-user-select: none; user-select: none; margin-right: 0.4em; padding: 0 0.4em 0 0.4em;color: #7f7f7f}
+html:not([data-theme]) .chroma .line { display: flex;}
+html:not([data-theme]) .chroma .k { color: #cf222e}
+html:not([data-theme]) .chroma .kc { color: #cf222e}
+html:not([data-theme]) .chroma .kd { color: #cf222e}
+html:not([data-theme]) .chroma .kn { color: #cf222e}
+html:not([data-theme]) .chroma .kp { color: #cf222e}
+html:not([data-theme]) .chroma .kr { color: #cf222e}
+html:not([data-theme]) .chroma .kt { color: #cf222e}
+html:not([data-theme]) .chroma .na { color: #1f2328}
+html:not([data-theme]) .chroma .nc { color: #1f2328}
+html:not([data-theme]) .chroma .no { color: #0550ae}
+html:not([data-theme]) .chroma .nd { color: #0550ae}
+html:not([data-theme]) .chroma .ni { color: #6639ba}
+html:not([data-theme]) .chroma .nl { color: #990000; font-weight: bold}
+html:not([data-theme]) .chroma .nn { color: #24292e}
+html:not([data-theme]) .chroma .nx { color: #1f2328}
+html:not([data-theme]) .chroma .nt { color: #0550ae}
+html:not([data-theme]) .chroma .nb { color: #6639ba}
+html:not([data-theme]) .chroma .bp { color: #6a737d}
+html:not([data-theme]) .chroma .nv { color: #953800}
+html:not([data-theme]) .chroma .vc { color: #953800}
+html:not([data-theme]) .chroma .vg { color: #953800}
+html:not([data-theme]) .chroma .vi { color: #953800}
+html:not([data-theme]) .chroma .vm { color: #953800}
+html:not([data-theme]) .chroma .nf { color: #6639ba}
+html:not([data-theme]) .chroma .fm { color: #6639ba}
+html:not([data-theme]) .chroma .s { color: #0a3069}
+html:not([data-theme]) .chroma .sa { color: #0a3069}
+html:not([data-theme]) .chroma .sb { color: #0a3069}
+html:not([data-theme]) .chroma .sc { color: #0a3069}
+html:not([data-theme]) .chroma .dl { color: #0a3069}
+html:not([data-theme]) .chroma .sd { color: #0a3069}
+html:not([data-theme]) .chroma .s2 { color: #0a3069}
+html:not([data-theme]) .chroma .se { color: #0a3069}
+html:not([data-theme]) .chroma .sh { color: #0a3069}
+html:not([data-theme]) .chroma .si { color: #0a3069}
+html:not([data-theme]) .chroma .sx { color: #0a3069}
+html:not([data-theme]) .chroma .sr { color: #0a3069}
+html:not([data-theme]) .chroma .s1 { color: #0a3069}
+html:not([data-theme]) .chroma .ss { color: #032f62}
+html:not([data-theme]) .chroma .m { color: #0550ae}
+html:not([data-theme]) .chroma .mb { color: #0550ae}
+html:not([data-theme]) .chroma .mf { color: #0550ae}
+html:not([data-theme]) .chroma .mh { color: #0550ae}
+html:not([data-theme]) .chroma .mi { color: #0550ae}
+html:not([data-theme]) .chroma .il { color: #0550ae}
+html:not([data-theme]) .chroma .mo { color: #0550ae}
+html:not([data-theme]) .chroma .o { color: #0550ae}
+html:not([data-theme]) .chroma .ow { color: #0550ae}
+html:not([data-theme]) .chroma .or { color: #0550ae}
+html:not([data-theme]) .chroma .p { color: #1f2328}
+html:not([data-theme]) .chroma .c { color: #57606a}
+html:not([data-theme]) .chroma .ch { color: #57606a}
+html:not([data-theme]) .chroma .cm { color: #57606a}
+html:not([data-theme]) .chroma .c1 { color: #57606a}
+html:not([data-theme]) .chroma .cs { color: #57606a}
+html:not([data-theme]) .chroma .cp { color: #57606a}
+html:not([data-theme]) .chroma .cpf { color: #57606a}
+html:not([data-theme]) .chroma .gd { color: #82071e; background-color: #ffebe9}
+html:not([data-theme]) .chroma .ge { color: #1f2328}
+html:not([data-theme]) .chroma .gi { color: #116329; background-color: #dafbe1}
+html:not([data-theme]) .chroma .go { color: #1f2328}
+html:not([data-theme]) .chroma .gl { text-decoration: underline}
+html:not([data-theme]) .chroma .w { color: #ffffff}
+}
+@media (prefers-color-scheme: dark) {
+html:not([data-theme]) .bg { color: #e6edf3; background-color: #0d1117;}
+html:not([data-theme]) .chroma { color: #e6edf3; background-color: #0d1117; -webkit-text-size-adjust: none;}
+html:not([data-theme]) .chroma .err { color: #f85149}
+html:not([data-theme]) .chroma .lnlinks { outline: none; text-decoration: none; color: inherit}
+html:not([data-theme]) .chroma .lntd { vertical-align: top; padding: 0; margin: 0; border: 0;}
+html:not([data-theme]) .chroma .lntable { border-spacing: 0; padding: 0; margin: 0; border: 0;}
+html:not([data-theme]) .chroma .hl { background-color: #6e7681}
+html:not([data-theme]) .chroma .lnt { white-space: pre; -webkit-user-select: none; user-select: none; margin-right: 0.4em; padding: 0 0.4em 0 0.4em;color: #737679}
+html:not([data-theme]) .chroma .ln { white-space: pre; -webkit-user-select: none; user-select: none; margin-right: 0.4em; padding: 0 0.4em 0 0.4em;color: #6e7681}
+html:not([data-theme]) .chroma .line { display: flex;}
+html:not([data-theme]) .chroma .k { color: #ff7b72}
+html:not([data-theme]) .chroma .kc { color: #79c0ff}
+html:not([data-theme]) .chroma .kd { color: #ff7b72}
+html:not([data-theme]) .chroma .kn { color: #ff7b72}
+html:not([data-theme]) .chroma .kp { color: #79c0ff}
+html:not([data-theme]) .chroma .kr { color: #ff7b72}
+html:not([data-theme]) .chroma .kt { color: #ff7b72}
+html:not([data-theme]) .chroma .nc { color: #f0883e; font-weight: bold}
+html:not([data-theme]) .chroma .no { color: #79c0ff; font-weight: bold}
+html:not([data-theme]) .chroma .nd { color: #d2a8ff; font-weight: bold}
+html:not([data-theme]) .chroma .ni { color: #ffa657}
+html:not([data-theme]) .chroma .ne { color: #f0883e; font-weight: bold}
+html:not([data-theme]) .chroma .nl { color: #79c0ff; font-weight: bold}
+html:not([data-theme]) .chroma .nn { color: #ff7b72}
+html:not([data-theme]) .chroma .py { color: #79c0ff}
+html:not([data-theme]) .chroma .nt { color: #7ee787}
+html:not([data-theme]) .chroma .nv { color: #79c0ff}
+html:not([data-theme]) .chroma .vc { color: #79c0ff}
+html:not([data-theme]) .chroma .vg { color: #79c0ff}
+html:not([data-theme]) .chroma .vi { color: #79c0ff}
+html:not([data-theme]) .chroma .vm { color: #79c0ff}
+html:not([data-theme]) .chroma .nf { color: #d2a8ff; font-weight: bold}
+html:not([data-theme]) .chroma .fm { color: #d2a8ff; font-weight: bold}
+html:not([data-theme]) .chroma .l { color: #a5d6ff}
+html:not([data-theme]) .chroma .ld { color: #79c0ff}
+html:not([data-theme]) .chroma .s { color: #a5d6ff}
+html:not([data-theme]) .chroma .sa { color: #79c0ff}
+html:not([data-theme]) .chroma .sb { color: #a5d6ff}
+html:not([data-theme]) .chroma .sc { color: #a5d6ff}
+html:not([data-theme]) .chroma .dl { color: #79c0ff}
+html:not([data-theme]) .chroma .sd { color: #a5d6ff}
+html:not([data-theme]) .chroma .s2 { color: #a5d6ff}
+html:not([data-theme]) .chroma .se { color: #79c0ff}
+html:not([data-theme]) .chroma .sh { color: #79c0ff}
+html:not([data-theme]) .chroma .si { color: #a5d6ff}
+html:not([data-theme]) .chroma .sx { color: #a5d6ff}
+html:not([data-theme]) .chroma .sr { color: #79c0ff}
+html:not([data-theme]) .chroma .s1 { color: #a5d6ff}
+html:not([data-theme]) .chroma .ss { color: #a5d6ff}
+html:not([data-theme]) .chroma .m { color: #a5d6ff}
+html:not([data-theme]) .chroma .mb { color: #a5d6ff}
+html:not([data-theme]) .chroma .mf { color: #a5d6ff}
+html:not([data-theme]) .chroma .mh { color: #a5d6ff}
+html:not([data-theme]) .chroma .mi { color: #a5d6ff}
+html:not([data-theme]) .chroma .il { color: #a5d6ff}
+html:not([data-theme]) .chroma .mo { color: #a5d6ff}
+html:not([data-theme]) .chroma .o { color: #ff7b72; font-weight: bold}
+html:not([data-theme]) .chroma .ow { color: #ff7b72; font-weight: bold}
+html:not([data-theme]) .chroma .or { color: #ff7b72; font-weight: bold}
+html:not([data-theme]) .chroma .c { color: #8b949e; font-style: italic}
+html:not([data-theme]) .chroma .ch { color: #8b949e; font-style: italic}
+html:not([data-theme]) .chroma .cm { color: #8b949e; font-style: italic}
+html:not([data-theme]) .chroma .c1 { color: #8b949e; font-style: italic}
+html:not([data-theme]) .chroma .cs { color: #8b949e; font-weight: bold; font-style: italic}
+html:not([data-theme]) .chroma .cp { color: #8b949e; font-weight: bold; font-style: italic}
+html:not([data-theme]) .chroma .cpf { color: #8b949e; font-weight: bold; font-style: italic}
+html:not([data-theme]) .chroma .gd { color: #ffa198; background-color: #490202}
+html:not([data-theme]) .chroma .ge { font-style: italic}
+html:not([data-theme]) .chroma .gr { color: #ffa198}
+html:not([data-theme]) .chroma .gh { color: #79c0ff; font-weight: bold}
+html:not([data-theme]) .chroma .gi { color: #56d364; background-color: #0f5323}
+html:not([data-theme]) .chroma .go { color: #8b949e}
+html:not([data-theme]) .chroma .gp { color: #8b949e}
+html:not([data-theme]) .chroma .gs { font-weight: bold}
+html:not([data-theme]) .chroma .gu { color: #79c0ff}
+html:not([data-theme]) .chroma .gt { color: #ff7b72}
+html:not([data-theme]) .chroma .gl { text-decoration: underline}
+html:not([data-theme]) .chroma .w { color: #6e7681}
+}
+
+</style>
+</head>
+<body>
+<button id="theme-toggle" class="theme-toggle" type="button"
+        aria-label="Toggle light and dark theme" title="Toggle light / dark (T)">
+  <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+       stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+  </svg>
+  <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+       stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <circle cx="12" cy="12" r="4.2"></circle>
+    <path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M19.1 4.9l-1.8 1.8M6.7 17.3l-1.8 1.8"></path>
+  </svg>
+</button>
+
+
+<main class="page">
+  <article class="prose">
+<h1 id="build-time-sources--files-folders-and-specs-as-typed-values-v21">Build-time sources — files, folders and specs as typed values (v2.1)</h1>
+<blockquote>
+<p>2026-10-05. Design only; no compiler code. Branch <code>sources-design</code>, base <code>bd36bf7</code>.
+v2 answered the first review; v2.1 answers the second (of <code>4c0ff43</code>). §13 holds both tables.
+<strong>§1 is PENDING THE DB LEAD</strong> on the points it marks. The author-side items are settled here.
+Labels: <strong>PROBED</strong> (I ran it; Appendix C), <strong>READ</strong> (I opened it, file:line), <strong>READ(agent)</strong> (a survey agent opened it), <strong>ASSUMED</strong>.
+Probes ran <code>avra-ui-assets-design/build/avra</code> (0b5bd64, one PR behind this base). Scratch: <code>/tmp/sources-probe/</code>.
+<strong>Nothing under <code>@std/source</code> exists.</strong> §14 lists every NEW name this design introduces. Code that uses one is design code.</p>
+</blockquote>
+<h2 id="0-page-one">0. Page one</h2>
+<p>The owner&rsquo;s sketch, as written:</p>
+<pre><code class="language-avra">use @std.source.{dir, file}
+use @std.image.{resize, webp}
+use @std.openapi.{openapi}
+
+const photos = dir(&quot;./photos&quot;) |&gt; resize(width: 320) |&gt; webp(quality: 80)
+const api    = file(&quot;./petstore.yaml&quot;) |&gt; openapi
+
+image(photos.hero)             // photos.heor is a compile error listing the members
+api.pets.get(id: 3)?           // typed request, typed errors
+icon(icons.close, color: .red)
+</code></pre>
+<p><strong>What it is made of — nothing new as a declaration kind:</strong></p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>what</th>
+<th>built on</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>a source is an input</td>
+<td><code>file(&quot;…&quot;)</code>, <code>dir(&quot;…&quot;)</code>, <code>url(&quot;…&quot;)</code> name bytes outside the program; each read is a compiler input with a content digest</td>
+<td><code>embed</code>, generalized and fixed</td>
+</tr>
+<tr>
+<td>a transform is a fn</td>
+<td><code>x |&gt; f(a)</code> is <code>f(x, a)</code>. <code>resize</code> takes a file, a folder, a picture or a set of pictures</td>
+<td>generic traits (landed)</td>
+</tr>
+<tr>
+<td>heavy work runs native</td>
+<td>bytes are read in a <code>@step</code>; a small one runs in the evaluator, a big one in its package&rsquo;s tool — a child process built once, handed only bytes</td>
+<td><code>avra build</code>; <code>@query</code>&rsquo;s wrapper shape</td>
+</tr>
+<tr>
+<td>a folder is a set</td>
+<td><code>photos.hero</code> is a member read, settled at compile time</td>
+<td><code>const</code> settlement</td>
+</tr>
+<tr>
+<td>a spec declares</td>
+<td>a <code>const</code> whose provider answers declarations beside it</td>
+<td>Declares annotations</td>
+</tr>
+</tbody>
+</table>
+<p><strong>What makes line 5 run exactly as written:</strong> one language rule that does not exist yet — a trait says its result type is decided by the implementing type (§4.5, C8, Q3). Today it needs one more stage, <code>dir(&quot;./photos&quot;) |&gt; pictures |&gt; resize(…)</code>, and that form is PROBED to run (C.14).</p>
+<p><strong>The order (§11):</strong> the two infrastructure doors first (§1), because every law and every cost below stands on them. <code>|&gt;</code> is an independent track.</p>
+<hr>
+<h2 id="1-the-infrastructure-answer">1. The infrastructure answer</h2>
+<p>The owner asked: is there ONE general, lovely DB mechanism for a consumer like this? <strong>No. There are two half-doors and five persistence paths. This section says what the one input door and the one persisted-fact door are, what each replaces, and where that agrees with the DB campaign.</strong></p>
+<h3 id="11-what-exists-opened-first-hand">1.1 What exists (opened first-hand)</h3>
+<p><strong>Inputs — seven ways to read the outside:</strong></p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>reader</th>
+<th>where</th>
+<th>tracked how</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>Source</code> family: a <code>.av</code> file&rsquo;s text</td>
+<td><code>workspace.av:1123–1136</code>, via <code>host.read</code></td>
+<td>kernel input, <code>fp_str(text)</code></td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>Manifest</code> family: <code>avra.toml</code></td>
+<td><code>packages.av:48–71</code> (READ(agent))</td>
+<td>kernel input</td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>text_digest(path)</code></td>
+<td><code>build.av:608</code></td>
+<td>read and hashed fresh, memoized per process; what <code>KeyParts</code> and kept lines compare</td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>digest_of_binary</code> — the compiler, linked objects</td>
+<td><code>build.av:296–304, 598</code></td>
+<td>fresh; names the store root</td>
+</tr>
+<tr>
+<td>5</td>
+<td><code>current_listing_digest</code>, <code>current_file_digest</code></td>
+<td><code>db.av:660–680</code></td>
+<td>hand witness of the durable <code>Decl</code> row</td>
+</tr>
+<tr>
+<td>6</td>
+<td><code>@input fn file_text</code>, <code>env_value</code> (N7, landed)</td>
+<td><code>inputs.av:21–31</code>, reading <code>@std.io</code> directly</td>
+<td>relation input; one caller, none</td>
+</tr>
+<tr>
+<td>7</td>
+<td><code>embed</code></td>
+<td><code>interp.av:845–859</code>: <code>avra_selfhost_read_file</code>, bypassing <code>Host</code></td>
+<td>pushed to <code>embeds</code>, then <code>touch(self.source(self.file_id(path)))</code> — a <code>FileId</code> minted in the SOURCE table (<code>workspace_analysis.av:576–581</code>)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Persisted facts — five paths:</strong></p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>path</th>
+<th>key / witness</th>
+<th>where</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>P1</td>
+<td><strong>the hold</strong>: a file&rsquo;s record, object, warnings, asks</td>
+<td><code>KeyParts = { module, path, text, runs, seen }</code> — the file&rsquo;s text, &ldquo;the digest of each text its compile-time runs read&rdquo;, each module it sees</td>
+<td><code>record.av:1092–1113</code></td>
+</tr>
+<tr>
+<td>P2</td>
+<td><strong>named rows</strong> through <code>Db.insert</code> (<code>Decl</code>, <code>Sig</code>, <code>Warn</code>, <code>Scan</code>, <code>Canon</code>, <code>Licenses</code>, <code>Findings</code>, <code>Answer</code>)</td>
+<td>validity &ldquo;in the caller&rsquo;s key&rdquo;, except <code>Decl</code>&rsquo;s hand listing + file witness</td>
+<td><code>db.av:590–662</code></td>
+</tr>
+<tr>
+<td>P3</td>
+<td><strong><code>Db.answers</code></strong>: a <code>@query</code> answer under a file&rsquo;s <code>KeyParts</code></td>
+<td>built and tested; <strong>no caller outside tests</strong> (PROBED grep)</td>
+<td><code>answers.av:12–20</code></td>
+</tr>
+<tr>
+<td>P4</td>
+<td><strong>kept settlements</strong>: a const&rsquo;s verdict + a <code>#lines</code> row of <code>u</code>/<code>c</code>/<code>m</code>/<code>f</code>/<code>b</code> lines, each with its own &ldquo;stands&rdquo; check</td>
+<td>hand-written per-run witness; unseated consts only (<code>ask.seats.is_empty()</code>)</td>
+<td><code>kept_settle.av:38–41, 137–179</code></td>
+</tr>
+<tr>
+<td>P5</td>
+<td><strong>kept binary / check verdict / suite</strong>: &ldquo;path, length, digest of every input in the closure&rdquo;</td>
+<td><code>build_inputs</code>: <code>.av</code> files, manifests, engine sources</td>
+<td><code>build.av:475</code>, <code>modules.av:275–289</code></td>
+</tr>
+</tbody>
+</table>
+<p>18 direct <code>Store.keep*</code> call sites (PROBED grep: 6 <code>Unit</code>, 4 <code>Warn</code>, 2 <code>Obj</code>, 1 <code>Bin</code>, 1 <code>Rows</code>, 4 multi-line). <code>Db.insert</code> (<code>db.av:593</code>) is one of them and the funnel for P2. Keys share <code>node_key</code> (<code>store.av:78</code>). What differs per site is the wire and the validity rule.</p>
+<p><strong>The two tables above are not complete, and v2 said they were.</strong></p>
+<ul>
+<li>Readers: the second review counts nearer <strong>fifteen read shapes</strong> (READ(agent)): existence and <code>is_dir</code> probes (module resolution <code>modules.av:102–106</code>, manifest presence <code>packages.av:81</code>, the <code>.git</code> root <code>build.av:412</code>, program-test markers <code>suite.av:143–158</code>); environment reads (<code>${NAME}</code> in a <code>[link]</code> row <code>whole.av:482</code>, <code>CC</code>, <code>WASM_OPT</code>, <code>AVRA_CWD</code>, <code>AVRA_SOUND_CHECK</code>); the manifest read in four places; four hand listing witnesses, not two (<code>current_listing_digest</code>, the <code>m</code> line, <code>SeenPart.files</code>, <code>build_inputs</code>).</li>
+<li>Kept rows that fit none of P1–P5 (READ(agent)): <code>interface.av:66, 85</code> (a second kept-const path), <code>build.av:719</code> (the links row), <code>derive.av:200</code> (the remembered closure), <code>derive.av:530</code> (<code>clean_key</code>), <code>suite.av:128</code> (<code>proved_key</code>).</li>
+<li>P4&rsquo;s witness is <strong>transitive</strong>, not direct: its <code>m</code>/<code>f</code> lines come from <code>import_closure</code>, &ldquo;to a fixed point&rdquo;, one <code>f</code> line per file of every module in it (READ <code>kept_settle.av:144–149, 197–203</code>). Its <code>u</code>, <code>c</code> and <code>f</code> lines each stand by their own rule (a text digest, OR a declaration&rsquo;s syntax, OR a re-lowered shape; a const&rsquo;s verdict re-asked), not by one hash.</li>
+</ul>
+<p><strong>Never persisted:</strong> <code>Lifted</code> and <code>Expanded</code> — every annotation and derive (READ <code>expand.av:93–116</code>). A seated settlement.</p>
+<p><strong>A correctness defect found on the way (PROBED, C.23):</strong> <code>const TEXT: string = embed(&quot;x.txt&quot;)</code>, build, edit <code>x.txt</code>, build again → the binary still prints the old length. <code>avra run</code> prints the new one. It stays stale after an edit to the <code>.av</code> file too. Cause, READ: <code>build_inputs</code> lists no embedded file (P5), and a kept settlement has no line for one (P4). &ldquo;A hold bug costs time, never a wrong answer&rdquo; (COMPILER.md §2 law 6) does not hold for an embedded file today.</p>
+<h3 id="12-where-the-db-campaign-already-decided-to-go">1.2 Where the DB campaign already decided to go</h3>
+<p>READ in <code>2026_09_26_COMPILER_DB_TOWNHALL.md</code>, <code>2026_09_21_COMPILER.md</code> and the tickets.</p>
+<table>
+<thead>
+<tr>
+<th>decision</th>
+<th>text</th>
+<th>this design</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>townhall §4.3</td>
+<td>&ldquo;A durable row&rsquo;s witness covers everything it read, plus the producing compiler&rsquo;s digest.&rdquo;</td>
+<td>follows</td>
+</tr>
+<tr>
+<td>§4.5</td>
+<td>&ldquo;A witness is a list of (stable name, value hash). Never a dense id.&rdquo;</td>
+<td>follows — it is the shape of door 2</td>
+</tr>
+<tr>
+<td>§4.7</td>
+<td>&ldquo;A row and its witness settle in one step.&rdquo;</td>
+<td>follows; P4 breaks it today (two <code>store.keep</code> calls, <code>kept_settle.av:150–151</code>)</td>
+</tr>
+<tr>
+<td>§6.5a</td>
+<td>&ldquo;kernel grain cannot persist… The durable witness is the hold path&rsquo;s <code>KeyParts</code>… Kernel-grain deps stay in-process.&rdquo; Measured: 2.54 M keys, 51.6 M direct deps on one <code>check</code>.</td>
+<td>follows: nothing here persists a kernel edge</td>
+</tr>
+<tr>
+<td>avra-8sb5.57.6</td>
+<td>CLOSED 2026-10-01; M3&rsquo;s flattened witness was a library, never wired, then deleted</td>
+<td>v1 cited it as the door. <strong>Wrong.</strong> Removed.</td>
+</tr>
+<tr>
+<td>avra-8sb5.57.101.12</td>
+<td>OPEN, unowned: &ldquo;write a cell&rsquo;s deps as (stable name, hash) into a durable row… validity is re-ask+compare&rdquo; — for a COARSE thing (a module&rsquo;s view)</td>
+<td>door 2 is a SIBLING of it, not the same ticket: that one wants a kernel cell&rsquo;s deps re-asked through the kernel for a kept module view; a kept run has no view member. Folding them would close .101.12 without unblocking .101.11.</td>
+</tr>
+<tr>
+<td>N7 <code>@input</code> (avra-8sb5.57.15)</td>
+<td>landed; its comment: &ldquo;<code>Memo.input</code> reads the host ONCE per file per Workspace&rdquo;</td>
+<td>door 1 is <code>@input</code>, moved onto <code>Host</code></td>
+</tr>
+<tr>
+<td>avra-8sb5.57.4.7</td>
+<td>CLOSED: <code>File</code>/<code>Module</code>/<code>Decl</code> relations armed through the kernel; a late write is REFUSED (<code>moved: !late</code>, <code>workspace.av:580</code>)</td>
+<td>door 1 keeps inputs OUT of the <code>File</code> relation — that late write is <code>embed</code>&rsquo;s compiler trap (C.5)</td>
+</tr>
+<tr>
+<td>COMPILER.md §2</td>
+<td>&ldquo;A store is ONE compiler&rsquo;s.&rdquo;</td>
+<td>follows for every row. Departs for raw bytes (§1.5).</td>
+</tr>
+<tr>
+<td><code>build.av:275–294, 600–608</code></td>
+<td>a stamp-keyed digest shortcut was tried twice and removed: &ldquo;A stamp match is a claim about the bytes, never the bytes&rdquo; (avra-8sb5.57.25, .57.19)</td>
+<td>follows. <strong>v1 proposed an mtime fast path. Removed.</strong></td>
+</tr>
+<tr>
+<td>COMPILER.md §8</td>
+<td>&ldquo;A resident compiler — no daemon; the owner&rsquo;s word.&rdquo;</td>
+<td>follows (§8.4). v1&rsquo;s dev server contradicted it. Removed.</td>
+</tr>
+<tr>
+<td>avra-8sb5.57.12 (N3)</td>
+<td><code>Family</code> as a <code>collect enum</code>; landed for the language, &ldquo;apply to Family/DbKind&rdquo; remains</td>
+<td>cited, not re-ticketed</td>
+</tr>
+</tbody>
+</table>
+<h3 id="13-door-1--one-way-an-outside-thing-becomes-an-input">1.3 Door 1 — ONE way an outside thing becomes an input</h3>
+<pre><code class="language-avra">// compiler/inputs.av — the only readers of the outside, all through Host
+export enum InputKind { Text, Bytes, Range, Listing, Exists, Env, Pin, Tool, Target }
+/// What a read WAS: the kind, a stable name, and the digest of exactly what was read.
+export type Part = { kind: InputKind, name: string, hash: string }
+
+@input fn input_text(db: Db, at: Place) -&gt; Text          // a .av file, avra.toml, a spec
+@input fn input_bytes(db: Db, at: Place) -&gt; Bytes
+@input fn input_range(db: Db, at: Place, lo: int, hi: int) -&gt; Bytes
+@input fn input_listing(db: Db, at: Place) -&gt; List&lt;Entry&gt;   // names and kinds, recursive, sorted; no content
+@input fn input_exists(db: Db, at: Place) -&gt; Entry           // Missing | File | Dir — a probe of a missing path IS a part
+@input fn input_env(db: Db, name: string) -&gt; string?         // the compiler's OWN reads only; never a program's
+@input fn input_pin(db: Db, address: string) -&gt; Bytes       // from the lock, never the network
+@input fn input_tool(db: Db, name: string) -&gt; string        // a binary's digest: the compiler, clang, wasm-opt
+@input fn input_target(db: Db) -&gt; Target
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>rule</th>
+<th>why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A name is STABLE: <code>package-name:relative/path</code>, a URL, a tool&rsquo;s manifest name. Never absolute, never a <code>FileId</code>.</td>
+<td>§4.5; two machines agree</td>
+</tr>
+<tr>
+<td>The hash is of exactly what was read. A header read is a <code>Range</code> part; the whole file is hashed only when the whole file is read.</td>
+<td>a 10 GB video folder with 64-byte header reads hashes 64 bytes per file</td>
+</tr>
+<tr>
+<td>A listing&rsquo;s hash covers entry NAMES and KINDS only. Content rides each file&rsquo;s own part.</td>
+<td>add a file → the listing moves; edit a file → only its part moves</td>
+</tr>
+<tr>
+<td>Read and hashed fresh in each process, memoized per process. No stamp shortcut.</td>
+<td>the standing law (§1.2)</td>
+</tr>
+<tr>
+<td>Every read goes through <code>Host</code> (<code>read_bytes</code> and a typed <code>list</code> are NEW on it; <code>host.av:8</code> has only <code>read: fn(string) -&gt; string</code>).</td>
+<td>a memory host can serve a test; no second door</td>
+</tr>
+<tr>
+<td>Inputs are cells of their own, created on first read. They are NOT rows of the <code>File</code> relation.</td>
+<td>a row minted late in <code>File</code> is refused (C.5). <strong>Which mechanism this is — PENDING THE DB LEAD (D2).</strong> <code>kernel.av:320–325</code> is <code>Memo.input</code>&rsquo;s path, addressed by a dense int; <code>@input</code> as landed (<code>std-relation/src/db.av:625–648</code>, READ(agent)) records no read and marks its reader a writer. v2 wrote as if they were one thing. They are not.</td>
+</tr>
+<tr>
+<td><code>Exists</code> and <code>Env</code> are kinds.</td>
+<td>The existence probes and the env reads listed in §1.1 are inputs today and tracked by nothing. <code>Env</code> covers what changes a kept row (<code>${NAME}</code> in <code>[link]</code>, <code>CC</code>, <code>WASM_OPT</code>, <code>AVRA_SOUND_CHECK</code>). It stays OUT for what changes no kept row (<code>AVRA_QTRACE</code>, <code>AVRA_DEP_AUDIT</code>, <code>AVRA_LIGHT</code>) and for <code>AVRA_CWD</code>/<code>PWD</code>, which decide where the command stands, not what a file means. A compile-time RUN still has no env row (L2).</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Every compile-time run reports the parts it read</strong> (today: <code>Settled.embeds</code>, a list of paths). The parts then go to exactly three places:</p>
+<ol>
+<li>in process: a kernel dep on each (as <code>touch</code> does today for an embed);</li>
+<li>the reading file&rsquo;s <code>KeyParts.runs</code>, which becomes <code>List&lt;Part&gt;</code> instead of text digests;</li>
+<li>the run&rsquo;s own kept witness (door 2).</li>
+</ol>
+<p>And the kept binary&rsquo;s key (P5) must fold every part a kept record names — closing C.23. <strong>How — PENDING THE DB LEAD (D4):</strong> <code>kept_binary</code> runs before anything is parsed (<code>build.av:475</code>), so the parts must be REMEMBERED from the last derivation, the shape the closure row has (<code>derive.av:200</code>). One sentence in v2 hid that.</p>
+<p><strong>What door 1 replaces:</strong></p>
+<table>
+<thead>
+<tr>
+<th>today</th>
+<th>becomes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>reader 7: <code>embed</code>&rsquo;s <code>avra_selfhost_read_file</code>, <code>admit_embeds</code>&rsquo; callee matched by the STRING <code>&quot;embed&quot;</code> (READ <code>whole.av:382</code>; a user fn named <code>embed</code> matches it — C.35), the <code>FileId</code> mint, the two path bases</td>
+<td><code>input_text</code>; <code>embed(p)</code> is <code>file(p).text()</code></td>
+</tr>
+<tr>
+<td>reader 2: the <code>Manifest</code> loader</td>
+<td><code>input_text(avra.toml)</code></td>
+</tr>
+<tr>
+<td>reader 5 + kept settlements&rsquo; <code>m</code> lines: two hand-hashed listings</td>
+<td><code>input_listing</code></td>
+</tr>
+<tr>
+<td>reader 3: <code>text_digest</code></td>
+<td><code>input_text(…).hash</code> — one memo</td>
+</tr>
+<tr>
+<td>reader 4, and the keys avra-8sb5.68/.69 say are missing (wasm-opt, the linker)</td>
+<td><code>input_tool</code></td>
+</tr>
+<tr>
+<td>reader 6: <code>file_text</code> over <code>@std.io</code></td>
+<td>the same <code>@input</code>, over <code>Host</code></td>
+</tr>
+<tr>
+<td>reader 1</td>
+<td>stays the <code>.av</code> reader; its loader calls <code>input_text</code></td>
+</tr>
+</tbody>
+</table>
+<p>About fifteen read shapes → one door with nine kinds.</p>
+<h3 id="14-door-2--one-way-a-derived-fact-is-kept">1.4 Door 2 — ONE way a derived fact is kept</h3>
+<p><strong>A kept run.</strong> It is P4, made general.</p>
+<pre><code class="language-avra">// compiler/kept.av — P4's verbs, one witness shape
+/// A run's stable name: what kind of run, where it is declared, what it was asked.
+export type RunName = { kind: RunKind, home: string, name: string, asked: string }
+export enum RunKind { Const, Seated, Lift, Model, Action, Answer, Verdict }
+
+impl Workspace {
+    /// The kept value, when every part of its witness still stands.
+    fn kept(run: RunName) -&gt; Kept?
+    /// Value and witness in ONE commit — the store's `read` slot IS the witness.
+    fn keep(run: RunName, value: string, witness: List&lt;Part&gt;)
+}
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>question</th>
+<th>answer</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>keyed by</td>
+<td>the run&rsquo;s stable name — declaring path, declaration name, the arguments&rsquo; fingerprint. Never <code>const$&lt;FileId&gt;$&lt;StmtId&gt;</code>.</td>
+</tr>
+<tr>
+<td>witness</td>
+<td><strong>the atom is PENDING THE DB LEAD (D8).</strong> <code>Part = { kind, name, hash }</code> holds an INPUT. It does not hold P4&rsquo;s <code>u</code>, <code>c</code> and <code>f</code> lines as they are: each stands by a tiered rule, and collapsing one to a hash loses &ldquo;a body edit elsewhere in the file still stands&rdquo;. The honest atom is either an input part or a derived-fact line with its own stands rule.</td>
+</tr>
+<tr>
+<td>kept across runs</td>
+<td><code>Store.keep(family, key, bytes, read)</code> has an edges slot. Five non-test callers pass real edges (READ <code>build.av:717–726</code>: <code>[key]</code> three times; <code>interface.av:64–72</code>: <code>[obj_key_of(…)]</code> twice); the rest pass <code>[]</code>. <strong>Not ready to be the witness — PENDING THE DB LEAD (D9):</strong> no verb reads edges back; <code>Keeping.Aside</code> drops them (<code>store.av:129–132</code>); two processes can leave one&rsquo;s data beside the other&rsquo;s edges. And townhall §6.6 wants one packed file per package, never a file per row — unbuilt; ask.</td>
+</tr>
+<tr>
+<td>cut off</td>
+<td>a re-run that answers the same verdict fingerprint leaves its readers&rsquo; <code>c</code> lines standing (exists: <code>verdict_fp</code>, <code>kept_settle.av:319</code>)</td>
+</tr>
+<tr>
+<td>invalidated</td>
+<td>re-ask each part&rsquo;s current hash; a missing part is a mismatch (§6.5a&rsquo;s rule)</td>
+</tr>
+<tr>
+<td>inspected</td>
+<td><code>avra cache why &lt;run&gt;</code> prints the part that moved — <code>PartMoved { part, was, now }</code> exists for file keys (<code>record.av:1366–1373</code>)</td>
+</tr>
+<tr>
+<td>the compiler&rsquo;s digest</td>
+<td>the row lives in this compiler&rsquo;s store (<code>.avra-cache/&lt;print&gt;/</code>), so it is in every witness by position</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Why §6.5a&rsquo;s measurement should not apply — UNMEASURED.</strong> That measured kernel grain: 2.54 M keys. A kept run is one row per compile-time RUN, the grain <code>kept_settle.av</code> already persists. But P4&rsquo;s witness is transitive (§1.1), so &ldquo;tens of parts&rdquo; was wrong; lines per kept run on <code>check packages/cli</code> must be measured before this argument is made (D8).</p>
+<p><strong>What door 2 replaces:</strong></p>
+<table>
+<thead>
+<tr>
+<th>today</th>
+<th>becomes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>P4&rsquo;s <code>#lines</code> row and its five hand &ldquo;stands&rdquo; checks</td>
+<td>the witness slot; one <code>stands</code> per <code>InputKind</code>/line kind</td>
+</tr>
+<tr>
+<td>nothing (a seated settlement is never kept)</td>
+<td><code>RunKind.Seated</code></td>
+</tr>
+<tr>
+<td>nothing (<code>Lifted</code>/<code>Expanded</code> are memory only)</td>
+<td><code>RunKind.Lift</code> — a derive&rsquo;s answer survives the process AND an unrelated edit to its file</td>
+</tr>
+<tr>
+<td>P3 <code>Db.answers</code>, unarmed</td>
+<td><code>RunKind.Answer</code> — but NOT before avra-8sb5.57.4.6&rsquo;s recorded deadline is paid: &ldquo;a query DECLARED in an imported module whose body changes without its interface moving is read back stale… Close it by keying on the declaring file&rsquo;s parts too before any consumer arms Db.answers&rdquo; (READ(agent)). PENDING (D10).</td>
+</tr>
+<tr>
+<td>P2 <code>Decl</code>&rsquo;s hand listing + file witness (<code>still_valid</code>)</td>
+<td>a witness of <code>Listing</code> + <code>Text</code> parts</td>
+</tr>
+<tr>
+<td>P5&rsquo;s input list</td>
+<td>a <code>Verdict</code> run whose witness is the closure&rsquo;s parts — proposed; see question D4</td>
+</tr>
+<tr>
+<td>—</td>
+<td>new consumers: a provider&rsquo;s model (<code>Model</code>), a native step&rsquo;s result (<code>Action</code>)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Count, corrected.</strong> Today: P1–P5 and the five rows of §1.1 that fit none. After: P1 (its <code>runs</code> typed), the kept run — and those five rows still, until the DB lead says which fold in (D11). Fewer than today; not yet two.</p>
+<p>Raw bytes are not a path of facts: §1.5.</p>
+<h3 id="15-bytes">1.5 Bytes</h3>
+<p>A made image is megabytes, and it is not a claim about the program. It is stored by the SHA-256 of its own content: <code>~/.avra/cache/bytes/&lt;k2&gt;/&lt;sha256&gt;</code>, written by staged rename (<code>staged_beside</code>/<code>published</code>, <code>build.av:251–259</code>). <code>AVRA_CACHE_DIR</code> moves it.</p>
+<ul>
+<li>A content name carries no compiler&rsquo;s belief, so sharing it across compilers and worktrees departs from &ldquo;a store is one compiler&rsquo;s&rdquo; only in letter. The row that says <em>which</em> bytes an action made stays in the compiler&rsquo;s store.</li>
+<li>A hit is verified by re-hashing on first use in a process.</li>
+<li><code>avra cache gc</code> keeps what any kept action row or <code>assets.json</code> under the machine&rsquo;s known trees names; a size cap evicts oldest-read first.</li>
+<li>SHA-256 is NEW as a runtime row (only <code>avra_tls_hmac_sha256</code> exists — READ <code>std-tls/src/c/std_tls_mac.c:20</code>). The tree&rsquo;s own digest (<code>core/digest.av</code>) stays for keys; SHA-256 is for content, because a shipped name and an SRI value need it.</li>
+</ul>
+<h3 id="16-hostile-cases">1.6 Hostile cases</h3>
+<table>
+<thead>
+<tr>
+<th>case</th>
+<th>which key moves</th>
+<th>what re-runs</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>add <code>new.svg</code> to <code>./icons</code></td>
+<td><code>Listing(app:icons)</code>. <code>a.av</code> (holding <code>const icons</code>) carries it in <code>KeyParts.runs</code> → not held. Its kept run fails on that part → re-settled → new verdict.</td>
+<td><code>b.av</code> reading <code>icons.new</code>: its key follows <code>a</code>&rsquo;s const exactly as it follows any cross-module const today (PROBED C.24: a body edit in <code>data.av</code> changes what <code>main</code> prints)</td>
+</tr>
+<tr>
+<td>edit <code>close.svg</code></td>
+<td><code>Range</code>/<code>Bytes(app:icons/close.svg)</code></td>
+<td>only runs that read it</td>
+</tr>
+<tr>
+<td>insert a line ABOVE the anchor</td>
+<td>the file&rsquo;s text → it is read, not held. Its <code>Lift</code> run must be found by a name with no offset in it, and its answer must hold no absolute span. <strong>Neither is true as designed — PENDING THE DB LEAD (D5).</strong> Today the name is <code>lift$&lt;file&gt;$&lt;call&gt;$&lt;decl&gt;</code>, three dense ids (<code>workspace_analysis.av:695</code>), and every <code>@std/meta</code> value carries <code>at: Loc?</code> byte offsets (<code>meta.av:137–212</code>). v2&rsquo;s receipt was &ldquo;append a comment&rdquo;, the one edit that moves no offset.</td>
+<td>the target: nothing runs. Today: 0.04 s → 0.25 s for 1,000 generated types on a comment (PROBED C.26)</td>
+</tr>
+<tr>
+<td>edit the provider&rsquo;s source</td>
+<td>the <code>u</code> line of the unit entered</td>
+<td>that provider&rsquo;s runs</td>
+</tr>
+<tr>
+<td>edit an embedded file</td>
+<td><code>Text(app:x.txt)</code> in <code>runs</code>, in the kept run, in the closure</td>
+<td>the const, and the binary (today: neither — C.23)</td>
+</tr>
+<tr>
+<td>swap <code>WASM_OPT</code></td>
+<td><code>Tool(wasm-opt)</code></td>
+<td>the wasm link (today: nothing — avra-8sb5.68)</td>
+</tr>
+<tr>
+<td>two processes at once</td>
+<td>PENDING (D9): two processes can see different inputs, so &ldquo;both wrote the same thing&rdquo; is an assumption</td>
+<td>—</td>
+</tr>
+<tr>
+<td>a row with an old witness shape</td>
+<td>the store root is the compiler&rsquo;s print (<code>build.av:199–206</code>), so a new wire reads no old row. (No per-row shape header exists; v2 said one did.)</td>
+<td>re-run</td>
+</tr>
+<tr>
+<td>delete <code>./icons</code></td>
+<td><code>Listing</code> is missing → mismatch, never &ldquo;nothing to check&rdquo;</td>
+<td>refusal at the literal</td>
+</tr>
+</tbody>
+</table>
+<h3 id="17-pending-the-db-lead">1.7 PENDING THE DB LEAD</h3>
+<p>Nothing below is redesigned here. Each row is the exact question §1 waits on.</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>waits on</th>
+<th>the reviewer&rsquo;s reading</th>
+<th>my default</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>D1</td>
+<td>Is the kept run its own ticket beside avra-8sb5.57.101.12?</td>
+<td>a sibling</td>
+<td>a sibling</td>
+</tr>
+<tr>
+<td>D2</td>
+<td><strong>Which mechanism is door 1:</strong> <code>@input</code> rebuilt over kernel cells with a stable-name → arg table, or <code>Memo.input</code> given <code>@input</code>&rsquo;s face?</td>
+<td>they are two things today</td>
+<td>the DB lead&rsquo;s call</td>
+</tr>
+<tr>
+<td>D3</td>
+<td><code>KeyParts.runs: List&lt;string&gt;</code> → typed parts: one compiler generation?</td>
+<td>yes — the store root is the compiler&rsquo;s print</td>
+<td>one generation</td>
+</tr>
+<tr>
+<td>D4</td>
+<td>The kept-binary fast path runs before analysis. Where are a build&rsquo;s input parts remembered so it can fold them (the C.23 fix)?</td>
+<td>the closure row&rsquo;s shape</td>
+<td>beside <code>derive.av:200</code>&rsquo;s row</td>
+</tr>
+<tr>
+<td>D5</td>
+<td><strong>A kept lift must be span-free:</strong> a name without dense ids or offsets; spans stored relative to the declaration and re-based on load; the run&rsquo;s <code>Reach.Lookup</code> reads (<code>type_named</code>) in its witness. Is that the shape?</td>
+<td>yes; unsafe as v2 wrote it</td>
+<td>yes</td>
+</tr>
+<tr>
+<td>D6</td>
+<td>Fresh hashing of large byte inputs each process. <code>digest_bytes</code> is an Avra loop (READ(agent) <code>core/digest.av:82–95</code>); 1 GB/s is ASSUMED.</td>
+<td>measure; speed alone does not reopen the stamp shortcut</td>
+<td>measure</td>
+</tr>
+<tr>
+<td>D7</td>
+<td>Raw bytes in a content-named store outside the tree.</td>
+<td>nothing forbids it; it must stay outside <code>.avra-cache</code>, which <code>rolled</code> sweeps (<code>build.av:388–392</code>)</td>
+<td>also the owner&rsquo;s (Q11)</td>
+</tr>
+<tr>
+<td>D8</td>
+<td><strong>The witness atom.</strong> An input part, or a derived-fact line with its own stands rule? And: lines per kept run on <code>check packages/cli</code>.</td>
+<td><code>Part</code> cannot hold P4&rsquo;s lines</td>
+<td>measure first</td>
+</tr>
+<tr>
+<td>D9</td>
+<td>The store&rsquo;s <code>read</code> slot as the witness: a read verb; <code>Keeping.Aside</code>; two concurrent writers; per-row <code>.deps</code> vs §6.6&rsquo;s pack.</td>
+<td>not ready</td>
+<td>—</td>
+</tr>
+<tr>
+<td>D10</td>
+<td>avra-8sb5.57.4.6 before <code>Db.answers</code> is armed.</td>
+<td>a recorded deadline</td>
+<td>pay it first</td>
+</tr>
+<tr>
+<td>D11</td>
+<td>Which of the five rows outside P1–P5 fold into the kept run.</td>
+<td>at least five stay</td>
+<td>—</td>
+</tr>
+<tr>
+<td>D12</td>
+<td>A per-process <code>input_tool</code> memo keyed by name is the shape <code>build.av:287</code> refused (&ldquo;a path is the same kind of claim as a stamp&rdquo;). Safe within one command?</td>
+<td>state why or drop</td>
+<td>drop the memo; hash per ask</td>
+</tr>
+<tr>
+<td>D13</td>
+<td>Who owns the two doors.</td>
+<td>the DB campaign</td>
+<td>the DB campaign, this design its first consumer (Q12)</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="2-what-an-author-writes">2. What an author writes</h2>
+<pre><code class="language-avra">use @std.source.{file, dir}
+</code></pre>
+<p><strong>1. A folder of icons.</strong></p>
+<pre><code class="language-avra">const icons = dir(&quot;./icons&quot;) |&gt; vectors
+icon(icons.close, color: .red)
+</code></pre>
+<p><strong>2. Photos.</strong> A transform takes one thing or a folder of them.</p>
+<pre><code class="language-avra">const photos = dir(&quot;./photos&quot;) |&gt; resize(width: 320) |&gt; webp(quality: 80)
+const hero   = file(&quot;./photos/hero.jpg&quot;) |&gt; resize(width: 320) |&gt; webp(quality: 80)
+image(photos.hero, alt: &quot;The harbour&quot;)
+</code></pre>
+<p><strong>3. A pipeline is a fn.</strong> <code>each</code> runs any per-item fn.</p>
+<pre><code class="language-avra">fn thumb(p: Picture) -&gt; Picture { p |&gt; resize(width: 320) |&gt; webp(quality: 80) |&gt; home(.Bundle) }
+const photos = dir(&quot;./photos&quot;) |&gt; pictures |&gt; each(thumb)      // `each` is the set's own
+</code></pre>
+<p><strong>4. Variants.</strong> They live inside the picture; the target picks.</p>
+<pre><code class="language-avra">const photos = dir(&quot;./photos&quot;) |&gt; widths([320, 640, 1280]) |&gt; formats([.Avif, .Webp])
+</code></pre>
+<p><strong>5. An OpenAPI client.</strong></p>
+<pre><code class="language-avra">const api = file(&quot;./petstore.yaml&quot;) |&gt; openapi
+let pet = api.pets.get(id: 3)?          // Result&lt;ApiPet, ApiPetsGetError&gt;
+fn show(p: ApiPet) -&gt; string { p.name }
+</code></pre>
+<p>A large spec says what it wants — <code>openapi(only: [&quot;pets&quot;, &quot;store&quot;])</code>. Expansion is whole and stops near 4,000 declarations today (§4.6).</p>
+<p><strong>6. A manifest as typed config.</strong></p>
+<pre><code class="language-avra">const config = file(&quot;./app.toml&quot;) |&gt; toml
+listen(config.server.port)              // int; config.server.prot is a compile error
+</code></pre>
+<p><strong>7. SQL.</strong> One anchor may read another.</p>
+<pre><code class="language-avra">const db      = dir(&quot;./migrations&quot;) |&gt; schema
+const queries = dir(&quot;./queries&quot;) |&gt; sql(db)
+</code></pre>
+<p><strong>8. Catalogs, fonts, shaders, tables, schemas, pages.</strong></p>
+<pre><code class="language-avra">const messages = dir(&quot;./locales&quot;) |&gt; catalogs(base: &quot;en&quot;)
+const inter    = file(&quot;./Inter.var.ttf&quot;) |&gt; typeface
+const blur     = file(&quot;./blur.wgsl&quot;) |&gt; wgsl
+const cities   = file(&quot;./cities.csv&quot;) |&gt; csv
+const events   = file(&quot;./events.schema.json&quot;) |&gt; json_schema
+const pages    = dir(&quot;./pages&quot;) |&gt; markdown
+</code></pre>
+<p><strong>9. Environment — declared, never read at build.</strong></p>
+<pre><code class="language-avra">const env = file(&quot;./env.toml&quot;) |&gt; environment      // names and types; no values
+let e = env.load()?                                 // reads the process at RUN time
+</code></pre>
+<p>A compile-time run has no row that reads the environment (<code>Reach.World</code> is refused — PROBED C.3), so no build can bake a secret in.</p>
+<p><strong>10. External bytes.</strong> Three cases (§9.1).</p>
+<pre><code class="language-avra">const spec  = url(&quot;https://example.com/v3/openapi.json&quot;) |&gt; openapi                 // fetched once, pinned, then local
+const intro = url(&quot;https://cdn.acme.dev/intro.mp4&quot;) |&gt; video |&gt; home(.Origin)       // facts known at build; the program fetches
+image(remote(https(&quot;img.acme.dev/u/42.jpg&quot;), width: 96, height: 96), alt: user.name) // nothing known but what is written
+</code></pre>
+<h3 id="what-the-reader-sees">What the reader sees</h3>
+<pre><code>error[type.unknown_member]: `icons` has no member `clsoe`
+  ╭─[src/app.av:9:12]
+9 │ icon(icons.clsoe, color: .red)
+  ·            ──┬──
+help: the members are `arrow_left`, `close`, `menu` — from ./icons (3 files)
+</code></pre>
+<pre><code>error[@std/openapi:ref]: `#/components/schemas/Pett` is not declared
+   ╭─[petstore.yaml:41:19]
+41 │           $ref: '#/components/schemas/Pett'
+   ├─ through `const api`, src/store.av:3
+help: the schemas are `Error`, `Order`, `Pet`
+</code></pre>
+<pre><code>$ avra docs photos.hero --target web
+Picture 320×180 webp — app:photos/hero.jpg (2400×1350 jpeg, 412 KB)
+  steps   @std.image.resized → @std.image.webp_made      tool @std/image (built 0.7 s, kept) · 14 ms · kept
+  action  7c1e…                                           content b41d02aa… (17 KB)
+  home    .Bundle — 17 KB is over the 4 KiB line (target rule: web)
+  ships   build/web/assets/hero.b41d02aa.webp
+</code></pre>
+<p><code>avra docs &lt;name&gt;</code> and <code>avra expand &lt;file&gt;</code> exist. <code>avra explain</code> does not (PROBED C.18), though CLAUDE.md documents it in three places. Every output above is a proposal for <code>avra docs</code>.</p>
+<p>Go-to-definition on <code>ApiPet</code> lands on <code>petstore.yaml:52</code>: the provider gives each declaration the place it came from (<code>Directive.at</code> exists, <code>meta.av:467</code>).</p>
+<hr>
+<h2 id="3-">3. <code>|&gt;</code></h2>
+<p><strong>The spec</strong> (old tree <code>2026_04_18_FULL_SPEC.md</code> §28.7 — READ(agent)): &ldquo;<code>x |&gt; f</code> desugars to <code>f(x)</code>&rdquo;; &ldquo;<code>x |&gt; f(y, z)</code> desugars to <code>f(x, y, z)</code>&rdquo;; &ldquo;Binds tighter than assignment, looser than arithmetic and comparison.&rdquo; Its examples start lines with <code>|&gt;</code>; its own newline rule says continuation is a trailing operator.</p>
+<p><strong>Today:</strong> PROBED <code>expected BREAK</code> (C.1). Unlexable: <code>two_char_of</code> has no arm for it (READ <code>grammar/lexer.av:525–549</code>).</p>
+<table>
+<thead>
+<tr>
+<th>question</th>
+<th>decided</th>
+<th>example</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>meaning</td>
+<td>parse-time sugar into a <code>Call</code>, the left value first</td>
+<td><code>x |&gt; f(a, k: v)</code> is <code>f(x, a, k: v)</code></td>
+</tr>
+<tr>
+<td>a stage</td>
+<td>a callee name, optional arguments, optional trailing block, optional <code>?</code></td>
+<td><code>x |&gt; parse(strict: true)?</code> is <code>parse(x, strict: true)?</code></td>
+</tr>
+<tr>
+<td>not a stage</td>
+<td>a method, a lambda, any other expression — refused, naming the fix</td>
+<td><code>x |&gt; .trim()</code> → &ldquo;write <code>x.trim()</code>&rdquo;</td>
+</tr>
+<tr>
+<td>precedence</td>
+<td>tighter than comparison and <code>??</code>, looser than arithmetic and bitwise — between <code>coalescing</code> and <code>bitwise</code> on the ladder (<code>expr_spine/mod.av:54–60</code>). This DEPARTS from the spec&rsquo;s &ldquo;looser than comparison&rdquo;, on purpose: a stage is a call, so the looser reading makes the rows below errors.</td>
+<td><code>a + b |&gt; f</code> is <code>f(a + b)</code></td>
+</tr>
+<tr>
+<td></td>
+<td></td>
+<td><code>x |&gt; f ?? d</code> is <code>f(x) ?? d</code></td>
+</tr>
+<tr>
+<td></td>
+<td></td>
+<td><code>xs |&gt; count &gt; 3</code> is <code>count(xs) &gt; 3</code></td>
+</tr>
+<tr>
+<td></td>
+<td></td>
+<td><code>a ?? b |&gt; f</code> is <code>a ?? f(b)</code> — parenthesize the left to pipe both</td>
+</tr>
+<tr>
+<td><code>x |&gt; f + 1</code></td>
+<td>refused: &ldquo;a stage is a call — write <code>(x |&gt; f) + 1</code>&rdquo;</td>
+<td></td>
+</tr>
+<tr>
+<td>associativity</td>
+<td>left</td>
+<td><code>x |&gt; f |&gt; g</code> is <code>g(f(x))</code></td>
+</tr>
+<tr>
+<td>in a head (<code>if</code>, <code>while</code>, <code>match</code>)</td>
+<td>a stage with a trailing block is parenthesized, as every call there is</td>
+<td>CLAUDE.md &ldquo;A TRAILING BLOCK IN A HEAD&rdquo;</td>
+</tr>
+<tr>
+<td>in a table cell</td>
+<td>not parsed (cells parse at <code>additive</code>, and <code>|</code> separates columns). The table&rsquo;s refusal says: &ldquo;bind the pipeline above the table&rdquo;.</td>
+<td></td>
+</tr>
+<tr>
+<td>lines</td>
+<td><strong>a line may END in <code>|&gt;</code>.</strong> No leading form. CLAUDE.md&rsquo;s law stands unchanged: &ldquo;A CONTINUING OPERATOR TRAILS, IT NEVER LEADS&rdquo;. <code>|&gt;</code> joins <code>continuing_op</code> (<code>lexer.av:720</code>).</td>
+<td></td>
+</tr>
+<tr>
+<td><code>_</code> placeholder</td>
+<td>not now</td>
+<td></td>
+</tr>
+<tr>
+<td><code>it</code></td>
+<td>unchanged — and <code>it</code> does NOT bind at a free fn&rsquo;s seat today (PROBED C.13: <code>each(s, it * 2)</code> → &ldquo;<code>it</code> rides a METHOD call&rsquo;s arguments&rdquo;). <code>xs |&gt; filter(it.valid)</code> therefore does not work until that lands. The channels design writes that form (<code>2026_10_05_CHANNELS.md:183</code>).</td>
+<td></td>
+</tr>
+<tr>
+<td>the formatter</td>
+<td>a parse-owned mark on the <code>Call</code>, as <code>trailing</code> is (<code>core/store.av:271</code>). Like <code>trailing</code>, it restamps the node&rsquo;s fingerprint: the parsed value holds the mark, so its hash must (CLAUDE.md &ldquo;AN EARLY-CUTOFF HASH MUST COVER THE WHOLE VALUE&rdquo;). So <code>x |&gt; f</code> and <code>f(x)</code> type alike and fingerprint apart.</td>
+<td></td>
+</tr>
+<tr>
+<td>munching</td>
+<td>safe. No valid program has <code>|</code> directly before <code>&gt;</code> (PROBED C.19). The <code>&gt;&gt;</code> law is about a closer; <code>|&gt;</code> closes nothing.</td>
+<td></td>
+</tr>
+<tr>
+<td>the channel send</td>
+<td>settled: &ldquo;<code>|&gt;</code> is plain application… a send is <code>orders.send(order)</code>&rdquo; (READ <code>avra-channels-design</code> 3390b90, <code>CHANNELS.md:395</code>)</td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<pre><code class="language-avra">const photos = dir(&quot;./photos&quot;) |&gt;
+    resize(width: 320) |&gt;
+    webp(quality: 80)
+</code></pre>
+<hr>
+<h2 id="4-semantics">4. Semantics</h2>
+<h3 id="41-sources-and-capabilities">4.1 Sources and capabilities</h3>
+<pre><code class="language-avra">export fn file(path: string) -&gt; File      // a LITERAL
+export fn dir(path: string) -&gt; Files      // a LITERAL; recursive
+export fn url(address: string) -&gt; File    // a LITERAL; pinned in avra.lock
+
+export type File  = { package: string, rel: string, name: string, size: int }
+export type Files = { package: string, rel: string, names: List&lt;string&gt;, items: List&lt;File&gt; }
+</code></pre>
+<p><strong>A handle is a NAME, not a key to a lock.</strong> PROBED C.25: any package can forge another package&rsquo;s exported record, with <code>with</code> or by reusing a private-typed field. Avra has no opaque type (ROADMAP.md:1796: &ldquo;<code>opaque type Db</code> is F0100&rdquo;). So authority cannot ride the value. It rides the DECLARATION:</p>
+<blockquote>
+<p>A compile-time run may read exactly what the source literals <strong>in the declaration it is settling</strong> name — and what the consts it reads were granted. Every read is checked by the compiler against that grant set.</p>
+</blockquote>
+<table>
+<thead>
+<tr>
+<th>case</th>
+<th>decided</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>a forged <code>File { package: &quot;app&quot;, rel: &quot;secrets/key&quot; }</code> inside a library fn</td>
+<td>refused at the read: no literal in the settling declaration covers it</td>
+</tr>
+<tr>
+<td><code>file(&quot;/etc/hosts&quot;)</code>, <code>file(&quot;../../x&quot;)</code></td>
+<td>refused at the literal: a path is relative, normalized, inside the package of the file that spells it (today <code>embed(&quot;/etc/hosts&quot;)</code> answers 256 — C.2)</td>
+</tr>
+<tr>
+<td>a path literal inside a <code>quote</code> a dependency splices into the app</td>
+<td>its root is the package of the file that WROTE the quote — the dependency&rsquo;s. Same law as spans (CLAUDE.md &ldquo;A COPIED TEMPLATE&rsquo;S SPANS ARE ITS ORIGIN FILE&rsquo;S&rdquo;).</td>
+</tr>
+<tr>
+<td>the app hands <code>dir(&quot;./assets&quot;)</code> to a library fn</td>
+<td>the library may read under <code>app:assets/</code>, nothing else</td>
+</tr>
+<tr>
+<td><code>File.package</code>, <code>File.rel</code></td>
+<td>the package&rsquo;s NAME and a <code>/</code>-separated relative path. Never absolute: a handle is fingerprinted into keys.</td>
+</tr>
+<tr>
+<td>a symlink, as the literal or as an entry</td>
+<td>refused at the literal, naming it. A build must not depend on where a link points.</td>
+</tr>
+<tr>
+<td>nested folders</td>
+<td><code>dir</code> lists recursively; <code>items</code> holds direct files; <code>d.sub(&quot;guide&quot;)</code> is the sub-folder, from the listing already read</td>
+</tr>
+<tr>
+<td><code>.DS_Store</code>, <code>.gitkeep</code></td>
+<td>names starting with <code>.</code> are never listed</td>
+</tr>
+<tr>
+<td><code>a.svg~</code>, <code>Thumbs.db</code></td>
+<td>listed. A reader filters by kind (<code>files(ext: &quot;svg&quot;)</code>); a reader that meets a file it cannot read refuses, naming it</td>
+</tr>
+<tr>
+<td>the literal&rsquo;s case differs from the entry&rsquo;s (<code>./Icons</code> for <code>icons/</code>)</td>
+<td>refused, on every host: the literal is compared to the listed name, so a case-folding disk cannot pass what Linux fails</td>
+</tr>
+<tr>
+<td>the callee</td>
+<td>recognized by what the file IMPORTS (<code>use @std.source.{file}</code>), never by the string of its name</td>
+</tr>
+</tbody>
+</table>
+<p>When opaque types land, <code>File</code> should become one; the check stays.</p>
+<h3 id="42-reading-and-native-steps">4.2 Reading, and native steps</h3>
+<pre><code class="language-avra">f.text()   f.bytes()   f.head(n)     // each a `Reach.Source` row; each reports the Part it read
+f.blob()                             // `Blob.Source(f)` — a reference; reads NOTHING
+f.loc(offset)                        // a Loc inside the file, for diagnostics
+</code></pre>
+<p><code>@step</code> marks a fn that reads or makes bytes (§7.4 says where it runs). It is an ordinary Declares annotation with <code>wraps: true</code> — the shape <code>@query</code> has (READ <code>std-relation/src/query.av:47–62</code>). The written body moves to a private sibling; the written name becomes a wrapper:</p>
+<table>
+<thead>
+<tr>
+<th>the step answers</th>
+<th>the wrapper</th>
+<th>when the body runs</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Blob</code></td>
+<td>answers <code>Blob.Pending(action)</code> — a recipe, as data. Runs nothing.</td>
+<td>when the build ships it, or another step reads it</td>
+</tr>
+<tr>
+<td>a value (a model, facts)</td>
+<td>asks the compiler to run it (§7.4) and decodes the answer</td>
+<td>now — <code>check</code> needs it</td>
+</tr>
+</tbody>
+</table>
+<h3 id="43-blobs-a-reference-a-recipe-or-bytes">4.3 Blobs: a reference, a recipe, or bytes</h3>
+<pre><code class="language-avra">export enum Blob {
+    /// A file's bytes, not yet read. Its digest exists when something reads it.
+    Source(file: File)
+    /// Bytes someone can make: the action that makes them.
+    Pending(action: Action)
+    /// Bytes that exist: their SHA-256 and length.
+    Made(content: string, size: int)
+}
+export type Action = { step: string, args: Bytes, inputs: List&lt;Blob&gt; }
+</code></pre>
+<p>Planning a set builds <code>Source</code> and <code>Pending</code> values only. <strong>Nothing in a plan reads a whole file</strong> (v2&rsquo;s reader wrote <code>f.content()</code> on every item, which did).</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>action key</th>
+<th>content digest</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>is</td>
+<td>digest of (compiler digest, the tool&rsquo;s source closure, the step&rsquo;s stable name, the arguments, each input&rsquo;s CONTENT digest, the target if read)</td>
+<td>SHA-256 of the bytes</td>
+</tr>
+<tr>
+<td>computed</td>
+<td>when the build is about to make it — for a reached member only, because it needs its inputs&rsquo; digests</td>
+<td>when the bytes are read or made</td>
+</tr>
+<tr>
+<td>names</td>
+<td>the kept <code>Action</code> run: action key → content digest + size</td>
+<td>the bytes in the store; <strong>the shipped file; the SRI value</strong></td>
+</tr>
+<tr>
+<td>moves when</td>
+<td>the compiler, the tool, an argument or an input moves</td>
+<td>the bytes move</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li>A compiler upgrade moves every action key and re-runs every step once (&ldquo;Adopting a compiler costs one cold build&rdquo; — COMPILER.md §2). It does not rename a shipped file whose bytes came out the same.</li>
+<li><strong>Residue, stated:</strong> the key folds the tool&rsquo;s whole source closure, so editing one step re-runs every step of its package. Per-step keys need a per-step closure fingerprint; later, if measured.</li>
+<li>The shipped name is needed only by <code>build</code>, when the bytes exist. <code>check</code> ships nothing.</li>
+<li>A remote cache: bytes by content digest are verified on arrival; an action row from someone else is believed (§8.5).</li>
+</ul>
+<p><strong>Who may read what, outside a declaration.</strong></p>
+<table>
+<thead>
+<tr>
+<th>read</th>
+<th>the grant</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>the make phase reads a <code>Blob.Source(app:photos/hero.jpg)</code></td>
+<td><strong>the const it was reached through.</strong> The build reaches an artifact through a settled const; that const&rsquo;s grant set — the roots its declaration&rsquo;s literals name, kept with its verdict — is the make phase&rsquo;s grant for it. A <code>Source</code> outside it is refused at make, naming the const. A forged <code>Pending</code> gains nothing: its inputs are checked the same way.</td>
+</tr>
+<tr>
+<td>any read of <code>Blob.Made(&lt;sha&gt;)</code></td>
+<td><strong>a digest is not a grant.</strong> The bytes are readable only when THIS build&rsquo;s own runs read or made that digest (a per-build set, filled by the parts read under grants and the answers of this build&rsquo;s actions, kept ones included once validated). A digest that came from nowhere is refused — the machine-wide store cannot leak another project&rsquo;s bytes into this program.</td>
+</tr>
+<tr>
+<td>a const reading another const (<code>@dep.walk(photos)</code>)</td>
+<td>everything <code>photos</code> was granted — intended. So the env law (§2 ex. 9) reads: no build can bake in a secret from outside what the app&rsquo;s own consts name.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="44-sets-and-members">4.4 Sets and members</h3>
+<p>Sets are <strong>strict, nominal records</strong>: <code>Files</code>, <code>Pictures</code>, <code>Vectors</code>. Each is <code>{ names, items, … }</code> and declares one ordinary method:</p>
+<pre><code class="language-avra">impl Pictures { fn member(name: string) -&gt; Picture? { … } }
+</code></pre>
+<blockquote>
+<p><code>c.name</code>, where <code>c</code> is a top-level <code>const</code> (or a member of one) whose type has no field <code>name</code> and has <code>member</code>, is the expression <code>c.member(&quot;name&quot;)</code> <strong>settled at compile time</strong>. Absent → <code>type.unknown_member</code> at the read, listing <code>c.names</code>.</p>
+</blockquote>
+<ul>
+<li>The mechanism is &ldquo;settle this expression&rdquo;, which lowering already does for a component&rsquo;s <code>check()</code> (READ <code>features/components/lower.av:66–71</code>, <code>SettleRoot.Expr</code>).</li>
+<li>PROBED C.27: <code>const menu: Icon? = icons.member(&quot;menu&quot;)</code> over a generic <code>Set&lt;T&gt;</code> with an ordinary method settles in 0.04 s; a wrong name settles to <code>null</code>. No <code>const</code> seat, no <code>const self</code>, no generic unit — the three things v1 leaned on and probes refused (C.8b, C.8c).</li>
+<li>A name that is no identifier: <code>c.member(&quot;2fa&quot;)</code> with a literal. One hatch.</li>
+<li><code>x.name</code> where <code>x</code> is not a const (a <code>Pictures</code> parameter): refused — &ldquo;a member is read from a <code>const</code>; pass the member, or walk <code>x.items</code>&rdquo;.</li>
+<li>Reserved by the contract: the fields <code>names</code> and <code>items</code>. A file whose member name is one of them is read <code>c.member(&quot;items&quot;)</code>, and the reader warns at the literal. Methods do not collide: a method without <code>()</code> is already a refused property read.</li>
+</ul>
+<p><strong>What is lazy, truthfully:</strong></p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>whole set</th>
+<th>per reached member</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>the listing (names)</td>
+<td>one read</td>
+<td>—</td>
+</tr>
+<tr>
+<td>facts (size, format, a view box)</td>
+<td>planned once, in ONE step over the folder, kept. The step is one run with one <code>Range</code> part per file: when one file moves the whole step re-runs (32 ms of reads for 2,000 — C.30).</td>
+<td>—</td>
+</tr>
+<tr>
+<td>a transform&rsquo;s plan (new size, a <code>Pending</code> action)</td>
+<td>arithmetic per item in the evaluator</td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>bytes read in full, made, shipped</strong></td>
+<td>—</td>
+<td><strong>only these</strong></td>
+</tr>
+</tbody>
+</table>
+<p>PROBED cost of the strict plan: 2,000 items built, mapped by a transform and one member read — <strong>0.06 s, inside the default 600,000-step budget</strong> (C.28). The same 2,000 with a 400-iteration fn per item blows the budget (C.29) — that work belongs in a <code>@step</code>. OS cost of listing and reading 512 bytes of 2,000 files: 32 ms (C.30, Python).</p>
+<p>v1&rsquo;s &ldquo;2,000 icons, 3 used → 3 planned&rdquo; was false. The true law is L5 (§5).</p>
+<h3 id="45-one-transform-four-inputs">4.5 One transform, four inputs</h3>
+<pre><code class="language-avra">// @std/image
+export trait Shots&lt;Out&gt; { fn shot(f: fn(Picture) -&gt; Picture) -&gt; Out }
+impl Shots&lt;Picture&gt;  for File     { … }      // decode the header, then f
+impl Shots&lt;Pictures&gt; for Files    { … }
+impl Shots&lt;Picture&gt;  for Picture  { … }
+impl Shots&lt;Pictures&gt; for Pictures { … }
+
+export fn resize&lt;Out, S: Shots&lt;Out&gt;&gt;(s: S, width: int) -&gt; Out { s.shot((p: Picture) -&gt; resized_to(p, width)) }
+</code></pre>
+<ul>
+<li>Generic traits parse and dispatch today. <code>Out</code> is not inferred from the bound: PROBED C.31 &ldquo;<code>O</code> is not pinned by the arguments&rdquo;.</li>
+<li><strong>v2&rsquo;s rule — &ldquo;a bound with exactly one fitting impl pins its argument&rdquo; — is unsound, and is CUT.</strong> One type may implement a generic trait at two arguments (PROBED C.36: two impls check clean), so &ldquo;exactly one&rdquo; is a fact about today&rsquo;s program. A library adding a second impl would break every caller that never named it.</li>
+<li><strong>The sound rule (C8):</strong> the TRAIT declares that the implementing type decides <code>Out</code>. A second impl of it for one type is then refused where it is written, and a bound pins <code>Out</code> from the declaration. Proposed spelling, the language lead&rsquo;s to settle: <code>trait Shots&lt;Out&gt; for one { … }</code>.</li>
+<li>Without it, today: <code>fn resize&lt;P: Each&gt;(p: P, width: int) -&gt; P</code> over <code>Picture</code> and <code>Pictures</code> runs (C.14), and a folder says its kind once: <code>dir(&quot;./photos&quot;) |&gt; pictures |&gt; resize(…)</code>. A typed binding also pins it today (<code>let p: P = made(F { n: 1 })</code> → <code>2</code>, C.36).</li>
+<li>Fan-out stays inside the item (<code>widths</code>, <code>formats</code> fill <code>Picture.variants</code>). Fan-in is a fn from a set (<code>sprite(icons) -&gt; Sheet</code>). <code>each(f)</code> maps any per-item fn; <code>filtered { … }</code> drops items.</li>
+<li>Order: a set is in name-byte order and that is the only order that reaches output.</li>
+</ul>
+<h3 id="46-providers">4.6 Providers</h3>
+<blockquote>
+<p>A top-level <code>const</code> whose initializer is <code>SOURCE |&gt; provider(args)</code> — the callee&rsquo;s declared answer is <code>Provided</code> — is an <strong>anchor</strong>. The provider runs as a Declares annotation over that const: what it <code>made</code> is declared beside the const, and its <code>value</code> becomes the const&rsquo;s initializer.</p>
+</blockquote>
+<pre><code class="language-avra">// @std/meta — NEW
+export type Provided = { value: Code, made: List&lt;Decls&gt;, problems: List&lt;Diagnostic&gt; = [] }
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>question</th>
+<th>decided</th>
+<th>stands on</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>how resolve knows, before typing</td>
+<td>prefilter at the parse: a top-level const whose initializer&rsquo;s head is a source literal (the callee an import from <code>@std.source</code>). Then the LAST stage&rsquo;s callee is looked up in what the file sees and its signature&rsquo;s answer is asked — exactly how an annotation&rsquo;s fn is found today</td>
+<td>READ <code>workspace.av:1577</code> (<code>has_declares</code>), <code>expand.av:107</code> (<code>declared_work(f, d, p, vis)</code>, <code>w.ret</code>)</td>
+</tr>
+<tr>
+<td>what the initializer may hold</td>
+<td>one source literal, one provider call, literal arguments, and the NAMES of other anchors. No stage between the source and the provider — compose inside the provider.</td>
+<td>today&rsquo;s law: arguments are source-spelled or a declaration&rsquo;s name (READ <code>expand.av:125–129</code>)</td>
+</tr>
+<tr>
+<td>an anchor argument (<code>sql(db)</code>)</td>
+<td>crosses as that anchor&rsquo;s kept model. Asking it is a kept-run lookup, so order in the file does not matter.</td>
+<td>door 2</td>
+</tr>
+<tr>
+<td>a cycle between anchors</td>
+<td>the kernel&rsquo;s cycle answer, spoken as <code>const.cycle</code> naming both</td>
+<td>exists for consts</td>
+</tr>
+<tr>
+<td>when it runs</td>
+<td>inside the resolve it serves, WHOLE, before any table is sized. Eager.</td>
+<td>READ <code>workspace.av:1512–1518</code> &ldquo;THE ARENA IS COMPLETE BEFORE ANY TABLE IS SIZED&rdquo;</td>
+</tr>
+<tr>
+<td>kept</td>
+<td>the provider&rsquo;s answer is a <code>Lift</code> run, kept by content (door 2). A comment edit re-splices; it does not re-run.</td>
+<td>§1.6</td>
+</tr>
+<tr>
+<td>names</td>
+<td><strong>under the anchor</strong>: <code>api</code> declares <code>ApiPet</code>, <code>ApiOrder</code>, <code>ApiPetsGetError</code>; <code>config</code> declares <code>Config</code>, <code>ConfigServer</code>. A spec that adds a schema named <code>Error</code> adds <code>ApiError</code>. It cannot clash with a name nobody prefixed.</td>
+<td>Q2 asks about spelling it <code>api.Pet</code></td>
+</tr>
+<tr>
+<td>a clash anyway (a written <code>ApiPet</code>)</td>
+<td><code>annotation.generated_taken</code> at the anchor (exists), naming the spec line</td>
+<td></td>
+</tr>
+<tr>
+<td>traits on a provided type</td>
+<td>the provider writes <code>@json</code> / <code>@derive(…)</code> in its template — which is silently DROPPED today (PROBED C.16). Fixing that is in C7.</td>
+<td></td>
+</tr>
+<tr>
+<td>export</td>
+<td>follows the anchor</td>
+<td><code>generated_export</code>, <code>modules.av:378</code> (READ(agent))</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Eager, with the costs on the table (PROBED C.26):</strong></p>
+<table>
+<thead>
+<tr>
+<th>generated</th>
+<th><code>check</code></th>
+<th>peak</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>200 record types</td>
+<td>0.16 s</td>
+<td>60 MB</td>
+</tr>
+<tr>
+<td>1,000 record types</td>
+<td>0.24 s</td>
+<td>120 MB (~75 KB per declaration)</td>
+</tr>
+<tr>
+<td>1,000 types + 1,000 fns (reviewer&rsquo;s probe)</td>
+<td>0.78 s</td>
+<td>282 MB (~140 KB each)</td>
+</tr>
+<tr>
+<td>4,000</td>
+<td>refused: the 5 MiB lifted budget</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li><strong>75–140 KB of compiler memory per generated declaration is an infrastructure smell</strong>, whoever generates them: <code>@relation</code> and <code>@json</code> pay it too. Proposed ticket (§12, I3).</li>
+<li>So a 5,000-endpoint spec does not expand whole in v1. The provider takes what to declare: <code>openapi(only: [&quot;pets&quot;, &quot;store&quot;])</code>. That is honest, source-spelled, and what generators in other ecosystems offer.</li>
+<li><strong>Per-name materialization is CUT from this design.</strong> It contradicts the arena invariant above; nothing per-name exists (<code>generated_named</code> expands the file whole — READ <code>workspace.av:1557</code>). Revisit after I3, with a measurement.</li>
+</ul>
+<h3 id="47-which-one-do-i-write">4.7 Which one do I write?</h3>
+<table>
+<thead>
+<tr>
+<th>the data is</th>
+<th>write</th>
+<th>generates</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>many things of one kind</td>
+<td>a reader <code>fn (Files) -&gt; Pictures</code></td>
+<td>nothing</td>
+</tr>
+<tr>
+<td>one thing</td>
+<td>a reader <code>fn (File) -&gt; Typeface</code></td>
+<td>nothing</td>
+</tr>
+<tr>
+<td>a shape the data decides (config, spec, schema, columns, keys)</td>
+<td>a provider</td>
+<td>types and fns</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="5-laws">5. Laws</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>law</th>
+<th>hostile case</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>L1</td>
+<td><strong>Reads are granted by the declaration.</strong> A run reads what its declaration&rsquo;s source literals name; a literal stays in its own package.</td>
+<td>a forged handle; <code>file(&quot;/etc/hosts&quot;)</code>; a spliced template&rsquo;s literal; a symlink — §4.1</td>
+</tr>
+<tr>
+<td>L2</td>
+<td><strong>No world.</strong> No env, clock, network, process at build.</td>
+<td><code>@std.io.env</code> in a const → <code>const.reach</code> naming the chain (exists, C.3)</td>
+</tr>
+<tr>
+<td>L3</td>
+<td><strong>A witness is what was read</strong>, by stable name and content digest. Never a stamp, an ordinal, an absolute path.</td>
+<td>touch a file → nothing; reorder declarations → nothing; add a file → the listing; C.23&rsquo;s embed edit → the binary</td>
+</tr>
+<tr>
+<td>L4</td>
+<td><strong>A shipped name is the content&rsquo;s digest.</strong> The action key names the cache row, never a file.</td>
+<td>a compiler upgrade: steps re-run, names stand unless bytes moved</td>
+</tr>
+<tr>
+<td>L5</td>
+<td><strong>Facts are planned for the set; bytes are made per reached member.</strong></td>
+<td>2,000 icons, 3 used: 2,000 headers read once (one step, kept), 3 files read in full and shipped</td>
+</tr>
+<tr>
+<td>L6</td>
+<td><strong><code>check</code> makes what a type or a diagnostic needs; <code>build</code> makes what ships.</strong> A value that depends on made bytes (<code>trimmed(p).width</code>) forces that step under <code>check</code>. A <code>Blob</code> nothing reads is never made by <code>check</code>.</td>
+<td>a broken encoder: <code>check</code> clean while nothing reads its output&rsquo;s facts; <code>build</code> refuses at the file, through the member, at the reading site</td>
+</tr>
+<tr>
+<td>L7</td>
+<td><strong>Errors point home</strong>: into the data, then name the anchor.</td>
+<td>a bad <code>$ref</code> → <code>petstore.yaml:41</code> (needs C7: today an unknown file renders a window of the FIRST source — READ(agent) <code>diagnostics/render.av:154</code>)</td>
+</tr>
+<tr>
+<td>L8</td>
+<td><strong>No name by run-time text.</strong> A member is a literal.</td>
+<td><code>icons.member(user_input)</code> → refused: the argument does not settle</td>
+</tr>
+<tr>
+<td>L9</td>
+<td><strong>Order is the name&rsquo;s.</strong></td>
+<td>a host listing in inode order → same output</td>
+</tr>
+<tr>
+<td>L10</td>
+<td><strong>Whether <code>a.bytes()</code> compiles depends on the DECLARED home</strong>, never on a made size.</td>
+<td>a logo grows past the line: delivery may move (web) or refuse (CLI); no program&rsquo;s legality changes</td>
+</tr>
+<tr>
+<td>L11</td>
+<td><strong>No silent drop.</strong></td>
+<td><code>@derive</code> in a provider template (dropped today — C.16)</td>
+</tr>
+<tr>
+<td>L12</td>
+<td><strong>Every provided name and shipped file answers &ldquo;where from&rdquo;.</strong></td>
+<td><code>avra docs ApiPet</code>, <code>avra expand</code>, <code>assets.json</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="51-the-empty-case-first">5.1 The empty case, first</h3>
+<table>
+<thead>
+<tr>
+<th>encoding</th>
+<th>empty</th>
+<th>decided</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>a folder with no entries</td>
+<td><code>names: [], items: []</code></td>
+<td>legal, silent. A MISSING folder is an error at the literal (git carries no empty folder).</td>
+</tr>
+<tr>
+<td>a 0-byte file</td>
+<td><code>size: 0</code>; <code>text()</code> is <code>&quot;&quot;</code>, present</td>
+<td>legal for <code>file</code>. <code>resize</code> refuses &ldquo;0 bytes is no picture&rdquo; at the file.</td>
+</tr>
+<tr>
+<td><code>Blob.Made(&quot;e3b0c4…&quot;, 0)</code></td>
+<td>bytes that exist and are empty</td>
+<td>distinct from <code>Pending</code> by VARIANT, not by a nullable (v1 used <code>size: int?</code>)</td>
+</tr>
+<tr>
+<td>a step that answers 0 bytes</td>
+<td>kept as made</td>
+<td>never re-run as &ldquo;missing&rdquo;</td>
+</tr>
+<tr>
+<td>a provider that declares nothing</td>
+<td><code>made: []</code></td>
+<td>legal, silent</td>
+</tr>
+<tr>
+<td>a listing&rsquo;s hash</td>
+<td>digest of (count, then per entry: name digest, kind)</td>
+<td>ARITY: <code>[&quot;ab&quot;,&quot;c&quot;]</code> and <code>[&quot;a&quot;,&quot;bc&quot;]</code> differ. Names and kinds only (§1.3).</td>
+</tr>
+<tr>
+<td>an action key</td>
+<td>digest of (…, count, each argument&rsquo;s digest, count, each input&rsquo;s digest)</td>
+<td>two counted runs, never spliced</td>
+</tr>
+<tr>
+<td>a witness with no parts</td>
+<td>a run that read nothing</td>
+<td>stands always — a pure const</td>
+</tr>
+<tr>
+<td>a <code>Range(lo, lo)</code></td>
+<td>an empty read</td>
+<td>a part whose hash is the empty digest; still names the file, so deleting it is a mismatch</td>
+</tr>
+</tbody>
+</table>
+<h3 id="52-names">5.2 Names</h3>
+<table>
+<thead>
+<tr>
+<th>case</th>
+<th>decided</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>a path that is also a glob (<code>dir(&quot;./icons/*.svg&quot;)</code>)</td>
+<td>split the verb: <code>dir</code> takes a folder; <code>*</code>, <code>?</code>, <code>[</code> are refused with the fix. Filtering is a typed seat: <code>files(ext: &quot;svg&quot;)</code>.</td>
+</tr>
+<tr>
+<td><code>icon-close.svg</code></td>
+<td>member <code>icon_close</code> (<code>-</code>, space, <code>.</code> read as <code>_</code>)</td>
+</tr>
+<tr>
+<td><code>2fa.svg</code>, <code>type.svg</code>, <code>café.svg</code></td>
+<td>no identifier (PROBED C.17: digit-led is a parse error, <code>type</code> is <code>resolve.reserved</code>, non-ASCII is <code>lex.error</code>). Read <code>icons.member(&quot;2fa&quot;)</code>. One hatch for all three.</td>
+</tr>
+<tr>
+<td><code>hero@2x.png</code></td>
+<td><code>@</code> is not mapped; the core lists it under its raw stem. <code>@std/image</code> claims <code>@2x</code>/<code>@3x</code> as a density of <code>hero</code>.</td>
+</tr>
+<tr>
+<td><code>Close.svg</code> and <code>close.svg</code></td>
+<td>refused naming both</td>
+</tr>
+<tr>
+<td><code>logo.svg</code> and <code>logo.png</code>; <code>a-b.svg</code> and <code>a_b.svg</code></td>
+<td>one member, two files: refused naming both; <code>files(ext:)</code> picks</td>
+</tr>
+<tr>
+<td><code>names.svg</code>, <code>items.svg</code></td>
+<td>§4.4</td>
+</tr>
+<tr>
+<td>two names equal under Unicode normalization</td>
+<td>non-ASCII names are compared by the bytes the host lists. A build on two hosts that normalize differently differs — stated, not solved; the listing digest in the receipt shows it.</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="6-safety">6. Safety</h2>
+<table>
+<thead>
+<tr>
+<th>what runs</th>
+<th>where</th>
+<th>can reach</th>
+<th>by</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>glue: a pipeline&rsquo;s plan, a member read, model → declarations</td>
+<td>the evaluator, in the compiler</td>
+<td>what its declaration was granted</td>
+<td><code>Reach</code> (exists), budgets (exist)</td>
+</tr>
+<tr>
+<td>a <code>@step</code> of a package that declares NO extern</td>
+<td>the evaluator or the tool (§7.4)</td>
+<td>the bytes the compiler sends it</td>
+<td>the reach check at tool build, and the process boundary</td>
+</tr>
+<tr>
+<td>a <code>@step</code> that reaches package C</td>
+<td>the tool, always</td>
+<td>the bytes it is sent — plus whatever its C does that the OS does not stop</td>
+<td>the process boundary; the OS sandbox where one is real (§7.6)</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li><strong>A tool that links C runs only when the ROOT manifest names its package</strong> — <code>[build] native = [&quot;@acme/avif&quot;]</code>; the toolchain&rsquo;s own <code>@std/*</code> are implicit. v2 said no grant was needed because &ldquo;its C already runs in your program&rdquo;. That is not the same trust: build-time C runs on the developer&rsquo;s and CI&rsquo;s machine with their credentials, and includes dependencies whose C never ships. The list goes away for a host where §7.6&rsquo;s last row is real. (Q5.)</li>
+<li><strong>External tools (ffmpeg): no.</strong> Unpinned, different per machine. The hatch, unbuilt until needed: a <code>[process.tools]</code> row (exists, <code>cli/avra.toml:8</code>) with a pinned digest, read through <code>input_tool</code>.</li>
+<li><strong>Budgets.</strong> The evaluator&rsquo;s glue keeps the root&rsquo;s <code>[lifted]</code> budget (only the root raises it — READ(agent) <code>packages.av:74–78</code>). A step that outgrows it moves to its tool by rule (§7.4), so a heavy third-party provider needs no budget line in every app.</li>
+</ul>
+<p><strong>URLs and the lock.</strong></p>
+<pre class="chroma"><code><span class="line"><span class="cl"><span class="c"># avra.lock — written by `avra lock`; committed</span>
+</span></span><span class="line"><span class="cl"><span class="p">[[</span><span class="nx">source</span><span class="p">]]</span>
+</span></span><span class="line"><span class="cl"><span class="nx">url</span>    <span class="p">=</span> <span class="s2">&#34;https://example.com/v3/openapi.json&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nx">sha256</span> <span class="p">=</span> <span class="s2">&#34;9f2c…&#34;</span>
+</span></span><span class="line"><span class="cl"><span class="nx">size</span>   <span class="p">=</span> <span class="mi">5310022</span>
+</span></span></code></pre><p><code>avra lock</code> fetches what the sources spell and the lock lacks. <code>avra lock --update &lt;url&gt;</code> re-fetches and shows the change. <code>check</code> and <code>build</code> never touch the network: a miss says &ldquo;run <code>avra lock</code>&rdquo;. <code>--frozen</code> refuses a lock that would change. Bytes live in the content store (§1.5).</p>
+<hr>
+<h2 id="7-native-steps">7. Native steps</h2>
+<h3 id="71-the-numbers">7.1 The numbers</h3>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>evaluator</th>
+<th>native</th>
+<th>ratio</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>a loop iteration (<code>t = t + i % 7</code>)</td>
+<td>2.4 µs (C.11)</td>
+<td>—</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>@std/json</code>: parse + print</td>
+<td>19 KB in 0.48 s ≈ <strong>40 KB/s</strong> (C.12)</td>
+<td>5.47 MB in 0.27 s user ≈ <strong>20 MB/s</strong> (C.32)</td>
+<td><strong>~500×</strong></td>
+</tr>
+<tr>
+<td>build the native program</td>
+<td>—</td>
+<td><strong>0.68 s</strong> cold, 0.05 s warm (C.32)</td>
+<td></td>
+</tr>
+<tr>
+<td>start a process</td>
+<td>—</td>
+<td><strong>2.9 ms</strong> (200 runs in 0.57 s, C.33)</td>
+<td></td>
+</tr>
+<tr>
+<td>a 5 MB spec, cold</td>
+<td>~2 minutes</td>
+<td>0.7 s build + 0.3 s</td>
+<td></td>
+</tr>
+<tr>
+<td>a 12 MP image</td>
+<td>hours</td>
+<td>the codec&rsquo;s speed</td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h3 id="72-the-decision-a-steps-package-is-compiled-for-the-host-and-run-as-a-child">7.2 The decision: a step&rsquo;s package is compiled for the host and run as a child</h3>
+<p><strong>Chosen over &ldquo;fix the evaluator to 20×&rdquo;.</strong> No profile stands behind 20×. At 20× JSON is still 25× slower than native, and pixels still need C — which, called from the evaluator, would run INSIDE the compiler with no boundary at all. P4 outranks minimalism.</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>how</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>the tool</td>
+<td>the package&rsquo;s <code>@step</code> fns behind one generated entry: read a request, run the step, write the answer. Collected the way <code>rules</code> are (READ <code>compiler/rules_table.av:102</code>).</td>
+</tr>
+<tr>
+<td>built by</td>
+<td>a child <code>avra build --tool &lt;package&gt;</code>, for the HOST. Kept like any binary (warm: 0.05 s).</td>
+</tr>
+<tr>
+<td>built when</td>
+<td>the first time a step of that package must run in its tool (§7.4)</td>
+</tr>
+<tr>
+<td>reads</td>
+<td><strong>the tool opens nothing.</strong> A read is a message the compiler checks against the grant (L1), answers, and records as a <code>Part</code>. The witness is the compiler&rsquo;s own; a tool cannot under-report it.</td>
+</tr>
+<tr>
+<td>answers</td>
+<td>a value in the settled wire (<code>settlement_wire.av</code>, &ldquo;S2&rdquo;, exists compiler-side; the tool side needs a derived codec — NEW std code), or bytes, stored by content</td>
+</tr>
+<tr>
+<td>batching</td>
+<td>one process, many requests. No batch API; <code>@batched</code> is CUT.</td>
+</tr>
+<tr>
+<td>parallel</td>
+<td>N processes of one tool fed from one queue. The compiler stays single-threaded; it multiplexes N children&rsquo;s pipes (NEW: a poll loop). N defaults to half the cores, at most 8.</td>
+</tr>
+<tr>
+<td>cross-compilation</td>
+<td>tools build for the HOST. An answer is per TARGET only where the step read <code>target()</code>.</td>
+</tr>
+<tr>
+<td>pending inputs</td>
+<td>the compiler makes an action&rsquo;s inputs first, then sends bytes. A tool never asks for a tool.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>What stays in the evaluator:</strong> the plan (arithmetic, <code>Source</code> and <code>Pending</code> records), a set of a few thousand mapped (C.28), a member read, model → templates, and small steps (§7.4).</p>
+<h3 id="73-two-prerequisites-v2-did-not-state">7.3 Two prerequisites v2 did not state</h3>
+<p><strong>(a) <code>avra build</code> cannot compile a package&rsquo;s C.</strong> READ <code>Makefile:46–51</code>: &ldquo;A MANIFEST SAYS WHAT TO LINK, NEVER HOW TO BUILD IT, and this rule is the how&rdquo;. READ <code>compiler/host/manifest.av:175</code>: <code>[link]</code> takes <code>objects</code>, <code>wasm_objects</code>, <code>search</code>, <code>libs</code>, <code>dynamic_symbols</code> — no sources. A tool that links C therefore builds only where <code>make</code> already built that object: in the toolchain&rsquo;s own tree, and for no third-party package at all.</p>
+<table>
+<thead>
+<tr>
+<th>works WITHOUT it</th>
+<th>waits on it (Q9)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>every pure-Avra tool: JSON, YAML, TOML, CSV, OpenAPI, JSON Schema, SQL, catalogs, markdown, SVG (<code>vectors</code>), WGSL as text</td>
+<td><code>@std/image</code> (resize, WebP, AVIF), font tables read in C, any third-party codec</td>
+</tr>
+</tbody>
+</table>
+<p>So slices 1–5 and the provider half of slice 6 do not wait. The photo pipeline does.</p>
+<p><strong>(b) A tool build must not need a tool.</strong> Case: package P declares <code>@step fn a</code>, and a file in the tool&rsquo;s closure holds <code>const x = file(&quot;./x&quot;) |&gt; a</code>. Building P&rsquo;s tool resolves that file, which needs P&rsquo;s tool. CLAUDE.md records this shape at 986 processes (&ldquo;A SELF-TEST MUST NOT BE REACHABLE FROM THE ENTRY POINT IT EXERCISES&rdquo;; &ldquo;THE FIX IS THE SHAPE, never a depth counter&rdquo;).</p>
+<blockquote>
+<p><strong>A tool is built with no tool door.</strong> Under <code>avra build --tool</code>, the row a step&rsquo;s wrapper calls does not exist: a settlement or an expansion that needs a step to RUN is refused where it stands — &ldquo;<code>x</code> needs the step <code>a</code> while <code>@acme/p</code>&rsquo;s tool is being built; a tool&rsquo;s own closure settles in the evaluator alone&rdquo;. The make phase does not run either: a tool ships no artifact.</p>
+</blockquote>
+<p>Recursion is unreachable, not bounded: the mode has no way to start a process. The cost is a rule for tool authors — the files a tool&rsquo;s steps reach hold no const that runs a step — and its refusal says so.</p>
+<h3 id="74-one-way-to-write-it-a-rule-picks-where-it-runs">7.4 One way to write it; a rule picks where it runs</h3>
+<p>An author writes ONE thing:</p>
+<blockquote>
+<p><strong>Bytes are read in a <code>@step</code>.</strong> <code>text()</code>, <code>bytes()</code>, <code>head()</code> outside a step&rsquo;s reach are refused, naming <code>@step</code>.</p>
+</blockquote>
+<p>Where a step runs is the compiler&rsquo;s rule, never the author&rsquo;s choice and never discovered in someone else&rsquo;s app:</p>
+<table>
+<thead>
+<tr>
+<th>the step</th>
+<th>runs</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>reaches package C</td>
+<td>its tool</td>
+</tr>
+<tr>
+<td>pure Avra, and the bytes its grant covers total ≤ 64 KiB</td>
+<td>the evaluator, in the compiler</td>
+</tr>
+<tr>
+<td>pure Avra, over that</td>
+<td>its tool</td>
+</tr>
+<tr>
+<td>pure Avra, in the evaluator, and it trips the step budget</td>
+<td>its tool — the trip falls through; it is not an error</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li>Both engines answer the same value (the gate&rsquo;s own law, eval == native), and the action key does not name the engine. One kept row serves both.</li>
+<li>So <code>const config = file(&quot;./app.toml&quot;) |&gt; toml</code> needs no tool and no linker. A 5 MB spec does.</li>
+<li>The 64 KiB line is a guess to measure: at ~40 KB/s (C.12) it is ~1.5 s of evaluator, about two tool builds.</li>
+</ul>
+<p><strong><code>check</code> and tools (Q10).</strong> A value a type or a diagnostic needs must exist under <code>check</code>. When the rule above says &ldquo;its tool&rdquo;:</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>cold cost</td>
+<td>one <code>avra build --tool</code> per package with such a step: ~0.7 s each for a small one (C.32), run one after another unless designed otherwise; then kept</td>
+</tr>
+<tr>
+<td>needs</td>
+<td>a linker on the machine. Today <code>check</code> needs none.</td>
+</tr>
+<tr>
+<td>where it cannot work</td>
+<td>a compiler that cannot spawn (hosted as wasm, a playground), a machine with no linker: <code>check</code> refuses there, naming the step and its input&rsquo;s size. Windows is not addressed anywhere in this tree (ASSUMED: no Windows host).</td>
+</tr>
+</tbody>
+</table>
+<h3 id="75-the-pipe-protocol">7.5 The pipe protocol</h3>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>decided</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>descriptors</td>
+<td>requests on fd 3, answers on fd 4. stdin is <code>/dev/null</code>. <strong>stdout is pointed at stderr</strong>, so a C library that prints cannot corrupt the stream. stderr is captured, bounded, shown only on a failure.</td>
+</tr>
+<tr>
+<td>framing</td>
+<td>every message is <code>kind (u32) · request id (u64) · length (u64) · bytes</code>. Kinds: <code>Hello</code>, <code>Call</code>, <code>Read</code>, <code>Bytes</code>, <code>Refused</code>, <code>Answer</code>, <code>Failed</code>. One request open per process at a time.</td>
+</tr>
+<tr>
+<td>needs</td>
+<td>a bytes-clean framed read and a full-write loop. Both NEW: <code>@std/process</code>&rsquo;s long-lived child is text and lines (READ(agent) <code>process.av:644, 706, 719</code>).</td>
+</tr>
+<tr>
+<td>a crash (exit, or EOF inside a frame)</td>
+<td>the open request is blamed: &ldquo;<code>@std/image</code>&rsquo;s tool exited 139 while <code>resized</code> ran on <code>app:photos/hero.jpg</code>&rdquo;, with the stderr tail. The rest of that process&rsquo;s queue is re-queued ONCE to a fresh process. A second crash on the same action is its refusal; other actions go on.</td>
+</tr>
+<tr>
+<td>a hang</td>
+<td>a wall-clock limit per request (default 60 s; <code>[build] step_seconds</code>). The parent kills the process; the open request is refused as timed out; the rest re-queue.</td>
+</tr>
+<tr>
+<td>partial output</td>
+<td>a frame is whole or absent. Bytes enter the store only after the frame closes and the compiler has hashed them.</td>
+</tr>
+<tr>
+<td>stray prints</td>
+<td>cannot reach fd 4</td>
+</tr>
+<tr>
+<td>version skew</td>
+<td>impossible by construction: the tool&rsquo;s key folds the compiler&rsquo;s digest. <code>Hello</code> carries it anyway; a mismatch is a compiler defect and traps.</td>
+</tr>
+<tr>
+<td>a nondeterministic tool</td>
+<td>one content digest is recorded and shown in the receipt; nothing detects it</td>
+</tr>
+</tbody>
+</table>
+<h3 id="76-what-is-real-about-the-sandbox">7.6 What is real about the sandbox</h3>
+<p><strong>The reach check, as it must become.</strong> Today any extern not in the registry is World (READ <code>interp.av:535–542</code>), so the check as it stands refuses every C-calling step. At tool build:</p>
+<table>
+<thead>
+<tr>
+<th>a step&rsquo;s closure reaches</th>
+<th>ruling</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>registry rows marked <code>Pure</code>, <code>Lookup</code>, <code>Source</code></td>
+<td>allowed</td>
+</tr>
+<tr>
+<td>a <code>World</code> row</td>
+<td>refused, with the call chain (exists for settlements)</td>
+</tr>
+<tr>
+<td>a package&rsquo;s own <code>extern fn</code>, DEFINED by an object its manifest names</td>
+<td>allowed in the tool only; counts as &ldquo;reaches package C&rdquo; (§7.4) and needs the root&rsquo;s <code>native</code> list (§6)</td>
+</tr>
+<tr>
+<td>an <code>extern fn</code> nothing in the package&rsquo;s objects defines (<code>system</code>, <code>getenv</code> from libc)</td>
+<td>refused. NEW: read from the objects&rsquo; symbol tables at tool build (<code>tools/externs.py</code> does the source half today).</td>
+</tr>
+</tbody>
+</table>
+<p>&ldquo;Real for Avra code&rdquo; therefore means: for a package that declares no extern at all.</p>
+<table>
+<thead>
+<tr>
+<th>limit</th>
+<th>macOS</th>
+<th>Linux</th>
+<th>status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Avra code: no ambient file, env or network</td>
+<td>the reach check above</td>
+<td>same</td>
+<td>real, by the compiler</td>
+</tr>
+<tr>
+<td>the tool opens nothing; every read is a checked message</td>
+<td>yes</td>
+<td>yes</td>
+<td>real, ours to write</td>
+</tr>
+<tr>
+<td>wall-clock limit</td>
+<td>the parent kills</td>
+<td>the parent kills</td>
+<td>real, ours to write</td>
+</tr>
+<tr>
+<td>memory ceiling</td>
+<td>the parent polls and kills. <code>setrlimit</code> on address space is not enforced (ASSUMED).</td>
+<td><code>RLIMIT_AS</code> (ASSUMED)</td>
+<td>macOS: a poll, not a wall. Nothing exists today (C.34).</td>
+</tr>
+<tr>
+<td><strong>package C</strong> opening a file or a socket</td>
+<td>a pure-computation sandbox profile at tool start (ASSUMED available; deprecated API)</td>
+<td>a seccomp filter at tool start (ASSUMED)</td>
+<td><strong>convention only until built</strong> — which is why §6 asks the root to name such packages</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="8-performance">8. Performance</h2>
+<h3 id="81-the-cost-model">8.1 The cost model</h3>
+<table>
+<thead>
+<tr>
+<th>phase</th>
+<th>cold</th>
+<th>nothing changed</th>
+<th>one photo edited</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>read and hash inputs</td>
+<td>each part read: ranges for facts, whole files for what ships</td>
+<td>the same reads, fresh (the law, §1.2). 500 MB of reached photos ≈ 0.5 s at ~1 GB/s (ASSUMED; D6).</td>
+<td>the same</td>
+</tr>
+<tr>
+<td>listings</td>
+<td>one per <code>dir</code></td>
+<td>the same</td>
+<td>the same</td>
+</tr>
+<tr>
+<td>plan a set</td>
+<td>one facts step (native) + glue: 2,000 items ≈ 32 ms of reads (C.30) + 0.06 s (C.28)</td>
+<td>0: the const is a kept run</td>
+<td>the facts step re-reads one range; glue re-runs (0.06 s)</td>
+</tr>
+<tr>
+<td>a provider</td>
+<td>tool build 0.7 s once per compiler; parse at ~20 MB/s; splice ~0.2 ms and ~75 KB per declaration (C.26)</td>
+<td>0 runs; re-splice only if its file was read</td>
+<td>0</td>
+</tr>
+<tr>
+<td>make (build only)</td>
+<td>each reached action, N tools in parallel</td>
+<td>0: kept actions</td>
+<td>that photo&rsquo;s actions</td>
+</tr>
+<tr>
+<td>emit</td>
+<td>write each reached file</td>
+<td>skipped when the output holds the name</td>
+<td>1 file</td>
+</tr>
+</tbody>
+</table>
+<p>Every &ldquo;0&rdquo; in the middle columns is door 2. Without it each is the cold number, per process (PROBED C.26: 0.04 s → 0.25 s on a comment).</p>
+<h3 id="82-memory">8.2 Memory</h3>
+<p>Blob bytes never enter the kernel: values hold a 32-byte digest or a recipe. A tool&rsquo;s memory is its own process&rsquo;s. A 4 MB text const today is static data in the binary (C.10: <code>check</code> 0.27 s, 66 MB); with blobs it is a handle unless <code>home(.Program)</code>.</p>
+<h3 id="83-reachability">8.3 Reachability</h3>
+<p>avra-8sb5.76 (compile only what is reached) and L5 are the same demand at two grains.</p>
+<h3 id="84-avra-dev">8.4 <code>avra dev</code></h3>
+<p><strong>No resident compiler.</strong> The dev loop is: a file event → a one-shot <code>avra build</code> → the running app reloads. The build is fast because of door 2 and kept actions, not because anything stays alive. v1&rsquo;s &ldquo;the dev server forces a blob on first request&rdquo; put the compiler in a long-lived process, against COMPILER.md §8. Removed. (<code>avra dev</code> lives on branches <code>ui-dev</code> and <code>os-watch</code>, not in this tree; whether it already works this way is not READ.)</p>
+<h3 id="85-a-remote-cache">8.5 A remote cache</h3>
+<p>One hook, later: <code>[build] cache = &quot;https://…&quot;</code>, asked on a local miss. Bytes are verified by content. Action rows are believed — so the cache is written only by builders you trust. Nothing else in the design changes when it lands.</p>
+<hr>
+<h2 id="9-outputs-and-targets">9. Outputs and targets</h2>
+<h3 id="91-local-or-external--who-has-the-bytes">9.1 Local or external — who has the bytes</h3>
+<table>
+<thead>
+<tr>
+<th>the bytes are</th>
+<th>spelled</th>
+<th>the build</th>
+<th>the program at run time</th>
+<th>needs</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>local</strong></td>
+<td><code>file</code>, <code>dir</code></td>
+<td>reads them</td>
+<td>has them, at its home</td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>pinned external</strong></td>
+<td><code>url(…)</code></td>
+<td>fetches once; pinned; then local</td>
+<td>has them, at its home</td>
+<td><code>url</code> + the lock</td>
+</tr>
+<tr>
+<td><strong>external, facts known at build</strong></td>
+<td><code>url(…) |&gt; video |&gt; home(.Origin)</code></td>
+<td>fetches once to learn size, format, dimensions, SHA-256; ships nothing</td>
+<td>fetches from the origin; verifies the digest (SRI on web)</td>
+<td><code>url</code> + the lock</td>
+</tr>
+<tr>
+<td><strong>remote</strong></td>
+<td><code>remote(https(&quot;…&quot;), width: 96, height: 96)</code></td>
+<td>reads nothing</td>
+<td>fetches; the author wrote the facts; no digest</td>
+<td>only artifacts (§11 slice 5)</td>
+</tr>
+</tbody>
+</table>
+<p>The owner&rsquo;s &ldquo;external asset with typed facts known at build&rdquo; is row three. <strong>It cannot land before <code>url</code> and the lock.</strong> Until then only row four exists, with hand-typed facts. Q6.</p>
+<h3 id="92-where-a-local-asset-lives">9.2 Where a local asset lives</h3>
+<pre><code class="language-avra">export enum Home { Inline, Program, Bundle, Cdn(origin: string), Origin }
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>home</th>
+<th>the build writes</th>
+<th>the program holds</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>.Inline</code></td>
+<td>nothing</td>
+<td>the content in what draws it</td>
+</tr>
+<tr>
+<td><code>.Program</code></td>
+<td>static data in the binary or the wasm module</td>
+<td>name, size, the bytes</td>
+</tr>
+<tr>
+<td><code>.Bundle</code></td>
+<td><code>build/&lt;target&gt;/assets/&lt;stem&gt;.&lt;content8&gt;.&lt;ext&gt;</code></td>
+<td>name, size</td>
+</tr>
+<tr>
+<td><code>.Cdn(o)</code></td>
+<td>the file, for <code>avra deploy</code></td>
+<td>name, size, origin</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Two separate things:</strong></p>
+<ol>
+<li><strong>The declared home</strong> — written with <code>home(…)</code> or <code>[assets]</code>. Known at <code>check</code>. <code>a.bytes()</code> compiles <strong>only</strong> when the declared home is <code>.Program</code>. (L10.)</li>
+<li><strong>Delivery</strong>, when nothing was declared — the build&rsquo;s choice, by made size and target. It decides how <code>image(…)</code> and <code>icon(…)</code> reach the bytes. It never makes <code>a.bytes()</code> legal or illegal.</li>
+</ol>
+<p><strong>The delivery rule:</strong></p>
+<table>
+<thead>
+<tr>
+<th>target</th>
+<th>under the line</th>
+<th>over the line</th>
+<th>the line</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>web</td>
+<td>in the module (a vector may be inlined in markup)</td>
+<td>a hashed file</td>
+<td>4 KiB per asset, 64 KiB per module</td>
+</tr>
+<tr>
+<td>CLI, TUI, server</td>
+<td>in the binary</td>
+<td><strong>the build stops</strong>: &ldquo;<code>hero</code> is 1.4 MiB — say <code>home(.Bundle)</code> or <code>home(.Program)</code>&rdquo;</td>
+<td>1 MiB</td>
+</tr>
+<tr>
+<td>iOS, Android</td>
+<td>the bundle, always</td>
+<td>—</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li><strong>Who leaves when the module total is exceeded:</strong> candidates sorted by size ascending, then name; admitted while the total fits; the rest are files. Deterministic, and in the receipt.</li>
+<li>On web a crossing moves an asset and the build prints it. On CLI/server it stops the build: that changes what must be deployed.</li>
+</ul>
+<p><strong>One override, three scopes:</strong></p>
+<pre><code class="language-avra">const logo = file(&quot;./logo.png&quot;) |&gt; home(.Program)                             // per asset
+fn thumb(p: Picture) -&gt; Picture { p |&gt; resize(width: 320) |&gt; home(.Bundle) }  // per pipeline
+</code></pre>
+<pre class="chroma"><code><span class="line"><span class="cl"><span class="p">[</span><span class="nx">assets</span><span class="p">]</span>            <span class="c"># per project — the ROOT avra.toml</span>
+</span></span><span class="line"><span class="cl"><span class="nx">inline_under</span> <span class="p">=</span> <span class="mi">4096</span>
+</span></span><span class="line"><span class="cl"><span class="p">[</span><span class="nx">assets</span><span class="p">.</span><span class="nx">web</span><span class="p">]</span>
+</span></span><span class="line"><span class="cl"><span class="nx">home</span> <span class="p">=</span> <span class="s2">&#34;bundle&#34;</span>
+</span></span></code></pre><p>Precedence: the asset&rsquo;s own <code>home</code> (last wins) → <code>[assets.&lt;target&gt;]</code> → <code>[assets]</code> → the delivery rule.</p>
+<h3 id="93-the-web-case-both-ways">9.3 The web case, both ways</h3>
+<pre><code>$ avra docs icons.close --target web
+Vector 24×24 — app:icons/close.svg (612 B)
+  home      none declared → delivery: in app.wasm (612 B &lt; 4 KiB; module assets 1.8 of 64 KiB)
+  requests  0
+
+$ avra docs photos.hero --target web
+Picture 320×180 webp — app:photos/hero.jpg
+  home      none declared → delivery: build/web/assets/hero.b41d02aa.webp (17 KB &gt; 4 KiB)
+  requests  1, lazy; size known at build
+
+$ avra docs photos.hero --target web          # after `[assets.web] home = &quot;program&quot;`
+  home      .Program — declared by [assets.web], avra.toml:14
+  ships     inside app.wasm (+17 KB)
+</code></pre>
+<h3 id="94-reconciled-with-2026-10-05-ui-assetsmd">9.4 Reconciled with <code>2026_10_05_UI_ASSETS.md</code></h3>
+<table>
+<thead>
+<tr>
+<th>that design</th>
+<th>here</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>asset art = &quot;art&quot; { hero { dark: &quot;…&quot; } }</code></td>
+<td>replaced by <code>const</code> + pipeline; a variant is an argument</td>
+</tr>
+<tr>
+<td>kind sniffed from bytes; <code>trait Asset</code> collected program-wide</td>
+<td>the reader is named in the pipeline; a mixed folder is a provider</td>
+</tr>
+<tr>
+<td>laws 3, 5, 8, 10, 14, 15, 17</td>
+<td>kept (L8, L1, facts in the value, L5, library, library, L6)</td>
+</tr>
+<tr>
+<td>law 9: &ldquo;A file&rsquo;s public name is its KEY (source bytes ⊕ recipe ⊕ codec version)&rdquo;</td>
+<td><strong>changed</strong>: the public name is the CONTENT digest (§4.3). That design rejected &ldquo;public names from output bytes — unknown until an encoder ran&rdquo;; but only <code>build</code> ships, and <code>build</code> has the bytes.</td>
+</tr>
+<tr>
+<td><code>at &lt;home&gt;</code></td>
+<td><code>home(…)</code>, a fn</td>
+</tr>
+<tr>
+<td>receipt, <code>explain</code>, homes, <code>remote</code></td>
+<td>kept</td>
+</tr>
+<tr>
+<td>fonts: subsetting, shaping</td>
+<td>untouched</td>
+</tr>
+</tbody>
+</table>
+<p><code>2026_10_05_UI_ARCHITECTURE.md</code>: <code>src</code> carries a <code>Url</code> (READ(agent) :161–171); a <code>Picture</code> projects to a <code>Url.Local</code> on web.</p>
+<hr>
+<h2 id="10-the-same-mechanism-other-consumers">10. The same mechanism, other consumers</h2>
+<table>
+<thead>
+<tr>
+<th>consumer</th>
+<th>today</th>
+<th>fits</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>embed</code></td>
+<td>reader 7</td>
+<td>door 1; it shrinks to <code>file(p).text()</code> and its four defects go (C.2, C.5, C.9, C.23)</td>
+</tr>
+<tr>
+<td>every derive and annotation (<code>@json</code>, <code>@model</code>, <code>@relation</code>, <code>@form</code>, <code>@derive(View)</code>)</td>
+<td>re-run per process, and per edit of their file</td>
+<td>door 2, as <code>Lift</code> runs. The compiler&rsquo;s own tree is the first beneficiary.</td>
+</tr>
+<tr>
+<td><code>@query</code> answers</td>
+<td><code>Db.answers</code>, unarmed</td>
+<td>door 2, as <code>Answer</code> runs</td>
+</tr>
+<tr>
+<td>the <code>Decl</code> row behind <code>avra docs</code></td>
+<td>hand listing + file witness</td>
+<td>door 2</td>
+</tr>
+<tr>
+<td>wasm-opt and linker identity (avra-8sb5.68, .69)</td>
+<td>no key</td>
+<td>door 1, <code>Tool</code></td>
+</tr>
+<tr>
+<td><code>wire.gen.js</code>, <code>avra_rt.h</code> (generate, check in, <code>cmp</code>)</td>
+<td>make targets</td>
+<td>an outbound artifact: <code>placed(blob(host_table().bytes()), …)</code>. Needs slice 5 only.</td>
+</tr>
+<tr>
+<td><code>features/rt.av</code> from <code>rt_sigs()</code></td>
+<td>the same loop</td>
+<td>should NOT fit: it is the compiler&rsquo;s own source; generating it at compile time is a bootstrap cycle</td>
+</tr>
+<tr>
+<td>sublanguages</td>
+<td>parse-time</td>
+<td>should not fit: syntax, not data</td>
+</tr>
+<tr>
+<td><code>@std/openapi</code></td>
+<td>emits a spec from routes at run time</td>
+<td>the reader is a new provider beside it</td>
+</tr>
+<tr>
+<td>the docs <code>site</code></td>
+<td>string literals</td>
+<td>example 8</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="11-build-order">11. Build order</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>slice</th>
+<th>usable at the end</th>
+<th>needs</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>1</strong></td>
+<td><strong>door 1</strong> (with the DB lead): typed parts, <code>Host.read_bytes</code> and a typed listing, <code>@input</code> over <code>Host</code>, <code>KeyParts.runs</code> typed, <code>build_inputs</code> folds them, the SHA-256 row; <code>embed</code> on top; grants</td>
+<td><code>embed</code> correct (C.2, C.5, C.9, C.23 closed); <code>const cfg = parse_toml(file(&quot;./app.toml&quot;).text())</code>; wasm-opt keyed</td>
+<td>D2, D3</td>
+</tr>
+<tr>
+<td><strong>2</strong></td>
+<td><strong>door 2</strong> (with the DB lead): the kept run; <code>Seated</code>, <code>Lift</code>, <code>Answer</code> on it; one-commit witness</td>
+<td>a comment edit re-runs no derive (receipt: C.26&rsquo;s 0.25 s → the 0.04 s floor); the compiler&rsquo;s own cold <code>check</code> stops re-running every derive</td>
+<td>D1, D4, D5</td>
+</tr>
+<tr>
+<td>3</td>
+<td>members; <code>Files</code>; a reader&rsquo;s set</td>
+<td><code>icons.close</code> over a real folder — names and facts, no bytes</td>
+<td>1</td>
+</tr>
+<tr>
+<td>4</td>
+<td>provider anchors, eager and kept; diagnostics into a non-<code>.av</code> input; annotations inside generated code; <code>toml</code>, <code>csv</code>, <code>environment</code>, <code>json_schema</code></td>
+<td>typed config, tables, env</td>
+<td>1, 2</td>
+</tr>
+<tr>
+<td>5</td>
+<td>the content store; artifacts; homes; <code>target()</code>; <code>remote(…)</code>; web, html, tui, headless</td>
+<td><code>icon(icons.close)</code> ships; <code>assets.json</code>; <code>wire.gen.js</code> as an artifact</td>
+<td>1, 3</td>
+</tr>
+<tr>
+<td>6a</td>
+<td>tools for pure-Avra steps: <code>@step</code>, the protocol, <code>avra build --tool</code>, the engine rule, actions as kept runs, N processes</td>
+<td>a real spec parsed in under a second; <code>vectors</code> over a big folder</td>
+<td>2, 5; Q10</td>
+</tr>
+<tr>
+<td>6b</td>
+<td>tools that link C; <code>@std/image</code></td>
+<td>the photo pipeline</td>
+<td>6a; <strong>Q9 (who builds package C)</strong>; Q5</td>
+</tr>
+<tr>
+<td>7</td>
+<td>the bound rule (C8)</td>
+<td>the sketch as written</td>
+<td>—</td>
+</tr>
+<tr>
+<td>8</td>
+<td><code>url</code>, <code>avra.lock</code>, <code>avra lock</code></td>
+<td>pinned specs; external-with-facts (§9.1 row 3)</td>
+<td>5</td>
+</tr>
+<tr>
+<td>9</td>
+<td>the C sandbox per OS; the remote cache hook; iOS/Android delivery</td>
+<td></td>
+<td>6</td>
+</tr>
+<tr>
+<td>—</td>
+<td><strong>independent track:</strong> <code>|&gt;</code> (C1)</td>
+<td>pipelines everywhere</td>
+<td>—</td>
+</tr>
+<tr>
+<td>—</td>
+<td><strong>deferred:</strong> per-name provider laziness</td>
+<td></td>
+<td>I3 fixed and measured</td>
+</tr>
+</tbody>
+</table>
+<p>Slices 1 and 2 are the gate. Nothing in §8 is true before 2.</p>
+<hr>
+<h2 id="12-compiler-changes-re-sized">12. Compiler changes, re-sized</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>what</th>
+<th>where</th>
+<th>size</th>
+<th>landings</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>C1</td>
+<td><code>|&gt;</code></td>
+<td><code>grammar/lexer.av</code> (one arm, <code>continuing_op</code>), <code>features/expr_spine/{mod,builders}.av</code> (one rule between <code>coalescing</code> and <code>bitwise</code>, the desugar, three refusals), <code>core/store.av</code> (a mark that restamps), <code>compiler/format/source_text.av</code>, <code>features/tables</code> (refusal text)</td>
+<td>~250 + tests</td>
+<td>1 PR under the syntax-change protocol (<code>avra.pre</code>, two builds); a seed refresh before the tree writes it</td>
+</tr>
+<tr>
+<td>C2</td>
+<td>door 1</td>
+<td><code>compiler/inputs.av</code>, <code>host/host.av</code> (+ the CLI&rsquo;s disk host), <code>record.av</code> (<code>KeyParts.runs</code>), <code>kept_settle.av</code> (an input line), <code>modules.av</code> (<code>build_inputs</code>), <code>interp.av</code> (source rows report parts; grants), <code>core/ir.av</code> (<code>Reach.Source</code> — a registry enum, every consumer spelled, <code>make vocab</code>), <code>whole.av</code> (delete <code>admit_embeds</code>), a SHA-256 row, new <code>packages/std-source</code></td>
+<td>~900</td>
+<td>3: the runtime rows alone first (the row-then-declaration ladder: the compiler&rsquo;s own closure will name them); then the door; then <code>embed</code> moved. A record wire change (D3).</td>
+</tr>
+<tr>
+<td>C3</td>
+<td>door 2</td>
+<td>new <code>compiler/kept.av</code> from <code>kept_settle.av</code>; <code>expand.av</code>/<code>workspace_analysis.av</code> (<code>Lifted</code> asked through it); <code>answers.av</code>; <code>db.av</code> (<code>still_valid</code>)</td>
+<td>~600, mostly moved</td>
+<td>2; every step under <code>cache_attacks</code></td>
+</tr>
+<tr>
+<td>C4</td>
+<td>members</td>
+<td>typing of a property read (the fallback when the field is absent), lowering (<code>SettleRoot.Expr</code>), two voices</td>
+<td>~350</td>
+<td>1</td>
+</tr>
+<tr>
+<td>C5</td>
+<td>artifacts and homes</td>
+<td><code>compiler/lower</code> (reached statics of an artifact type), <code>build.av</code>/<code>link.av</code> (the emit step, the receipt), <code>target()</code> in <code>@std/meta</code> (promised in COMPILER.md §7d, never built)</td>
+<td>~500</td>
+<td>1–2</td>
+</tr>
+<tr>
+<td>C6</td>
+<td>tools</td>
+<td>the tool row and its evaluator arm (the row-then-declaration ladder); a child <code>avra build --tool</code> with no tool door (§7.3b); the framed pipe protocol (runtime C + Avra, both new); <code>@step</code> and the seat codec (std code); the engine rule; the reach check over objects&rsquo; symbols; a poll loop over N children; the make phase</td>
+<td><strong>not sized.</strong> v2 said ~2,500 lines in 4–5 landings; the reviewer calls the landing count low and I agree. Size it after Q9 and Q10.</td>
+<td>6a then 6b</td>
+</tr>
+<tr>
+<td>C10</td>
+<td><strong><code>avra build</code> compiles a package&rsquo;s C</strong> (Q9)</td>
+<td><code>compiler/host/manifest.av</code> (<code>[link] sources</code>, flags), <code>build.av</code>/<code>link.av</code> (a C driver through the declared <code>clang</code> tool), the <code>Makefile</code>&rsquo;s one rule retired for packages</td>
+<td>not sized</td>
+<td>a prerequisite of 6b only</td>
+</tr>
+<tr>
+<td>C7</td>
+<td>providers, eager</td>
+<td><code>expand.av</code> (the anchor prefilter and work; a source literal as an argument; <code>value</code> spliced as the initializer), <code>@std/meta</code> (<code>Provided</code> — growth; the first READER owes the seed refresh), <code>diagnostics/render.av</code> (a non-<code>.av</code> source; no <code>sources[0]</code> fallback), annotations inside generated declarations</td>
+<td>~700</td>
+<td>2</td>
+</tr>
+<tr>
+<td>C8</td>
+<td>a trait declares that the implementing type decides a parameter; a second impl for one type is refused; a bound then pins it</td>
+<td>the traits feature&rsquo;s grammar and impl law; generic call pinning</td>
+<td>not sized (not read)</td>
+<td>1; a language decision (Q3)</td>
+</tr>
+<tr>
+<td>C9</td>
+<td><code>url</code>, the lock, <code>avra lock</code></td>
+<td>a new command file, <code>std-source</code></td>
+<td>~400</td>
+<td>its own slice</td>
+</tr>
+</tbody>
+</table>
+<p>Not on the list: a JIT; parallel settlement; a new keyword; a new IR instruction; a resident compiler.</p>
+<p><strong>Infrastructure tickets proposed</strong> (beyond the two doors, which are C2 and C3):</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>what</th>
+<th>evidence</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>I1</td>
+<td><strong>an embedded file&rsquo;s edit is invisible to <code>build</code></strong> — a wrong answer today</td>
+<td>PROBED C.23; reproduced by the reviewer; filed as avra-8sb5.57.164.</td>
+</tr>
+<tr>
+<td>I2</td>
+<td><code>embed</code>: escape (in flight elsewhere), nested-call compiler trap, unlocated traps, callee matched by string, text only, a run-time trap instead of a refusal</td>
+<td>PROBED C.2, C.5, C.9; READ <code>whole.av:382</code> (and C.35). Closed by C2.</td>
+</tr>
+<tr>
+<td>I3</td>
+<td><strong>75–140 KB of compiler memory per generated declaration</strong></td>
+<td>PROBED C.26 and the reviewer&rsquo;s probe. Blocks any large provider; taxes every derive.</td>
+</tr>
+<tr>
+<td>I4</td>
+<td>an annotation inside generated declarations is dropped silently</td>
+<td>PROBED C.16</td>
+</tr>
+<tr>
+<td>I5</td>
+<td>a diagnostic naming an unknown file renders a window of the first source</td>
+<td>READ(agent) <code>diagnostics/render.av:154</code></td>
+</tr>
+<tr>
+<td>I6</td>
+<td><code>avra_str_parses_float</code> has no registry row, so <code>@std/json</code> cannot settle</td>
+<td>PROBED C.4; it is runtime C (READ(agent) <code>runtime/avra_runtime.c:1240</code>). One row.</td>
+</tr>
+<tr>
+<td>I7</td>
+<td>a <code>const</code>-seat lookup with a wrong name is <code>check</code>-clean and traps at run time; a method&rsquo;s inner <code>const</code> reading <code>self</code> reports a compiler defect</td>
+<td>the reviewer&rsquo;s probes of C.8b; not needed by this design any more, still defects</td>
+</tr>
+<tr>
+<td>I8</td>
+<td><code>it</code> does not bind at a free fn&rsquo;s seat</td>
+<td>PROBED C.13; blocks <code>xs |&gt; filter(it.valid)</code></td>
+</tr>
+<tr>
+<td>I9</td>
+<td>no opaque type</td>
+<td>PROBED C.25; ROADMAP.md:1796</td>
+</tr>
+<tr>
+<td>I10</td>
+<td>the evaluator: 2.4 µs per loop iteration; a <code>Map</code> filled in a loop is quadratic in memory (avra-8sb5.73)</td>
+<td>PROBED C.11. No longer on this design&rsquo;s path; still worth a profile.</td>
+</tr>
+<tr>
+<td>I11</td>
+<td><code>avra explain</code> is documented and absent</td>
+<td>PROBED C.18</td>
+</tr>
+<tr>
+<td>I12</td>
+<td>no process limit of any kind in the runtime</td>
+<td>PROBED C.34. Built in C6.</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="13-the-reviews-flaws">13. The review&rsquo;s flaws</h2>
+<table>
+<thead>
+<tr>
+<th>flaw</th>
+<th>status</th>
+<th>where</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>B1 / H1</strong> the infrastructure answer is a new cache beside the old; cites a closed ticket; ignores <code>KeyParts</code>, <code>Db.answers</code></td>
+<td><strong>FIXED</strong></td>
+<td>§1: two doors, what each replaces, the campaign&rsquo;s decisions followed; .57.6 removed, .57.101.12 cited; five paths → two; seven readers → one; D1–D7 for the DB lead</td>
+</tr>
+<tr>
+<td>B1&rsquo;s hostile case (add <code>new.svg</code>)</td>
+<td>FIXED</td>
+<td>§1.3, §1.6: a <code>Listing</code> part in <code>KeyParts.runs</code></td>
+</tr>
+<tr>
+<td><strong>B2 / H3, H4</strong> laziness laws false; member rule contradicted by probes</td>
+<td><strong>FIXED</strong></td>
+<td>§4.4: strict nominal sets; the member rule is a settled expression over an ordinary method (PROBED C.27); L5 restated; the 2,000 case re-run: 0.06 s (C.28), and 32 ms of reads (C.30)</td>
+</tr>
+<tr>
+<td>B2: <code>Dir</code> hashes every byte</td>
+<td>FIXED</td>
+<td>§1.3: a <code>Range</code> part; digest on read</td>
+</tr>
+<tr>
+<td>B2: §2.1&rsquo;s reader blows the budget at 2,000</td>
+<td>FIXED</td>
+<td>facts are one native step (§4.4, §7)</td>
+</tr>
+<tr>
+<td><strong>B3 / H2</strong> <code>Blob.key</code> is two things</td>
+<td><strong>FIXED</strong></td>
+<td>§4.3: action key and content digest; names and SRI from content; the compiler digest in the action key only</td>
+</tr>
+<tr>
+<td><strong>B4 / H5</strong> providers vs resolve</td>
+<td><strong>FIXED</strong></td>
+<td>§4.6: the anchor rule (parse prefilter + the last stage&rsquo;s signature, as annotations are found), order and cycles, eager and kept, costs on the table, names under the anchor</td>
+</tr>
+<tr>
+<td>B4: per-name materialization</td>
+<td><strong>CUT</strong></td>
+<td>§4.6; deferred behind I3</td>
+</tr>
+<tr>
+<td>B4: the struct-literal name hole in a template</td>
+<td>not re-probed</td>
+<td>noted for C7</td>
+</tr>
+<tr>
+<td><strong>B5 / H6</strong> forgeable handles; open cases</td>
+<td><strong>FIXED</strong></td>
+<td>§4.1: authority rides the declaration, not the value (PROBED C.25); template root, <code>File.rel</code>, symlinks, nested folders, case, droppings all decided</td>
+</tr>
+<tr>
+<td>B5: &ldquo;enforced by the OS&rdquo;</td>
+<td>FIXED</td>
+<td>§7.6 says what is real and what is convention</td>
+</tr>
+<tr>
+<td>B5: where granted C runs at <code>check</code></td>
+<td>FIXED</td>
+<td>always in the tool; never in the compiler process</td>
+</tr>
+<tr>
+<td><strong>B6 / H7</strong> performance is a hope; workers misread</td>
+<td><strong>FIXED</strong></td>
+<td>§7: native tools decided on numbers (C.32, C.33); <code>stage.av</code> claim deleted; <code>@batched</code> CUT; budgets (§6)</td>
+</tr>
+<tr>
+<td><strong>B7 / H8</strong> homes</td>
+<td><strong>FIXED</strong></td>
+<td>§9.2: <code>a.bytes()</code> follows the declared home (L10); the module total rule; L6 for <code>check</code>; §8.4 no daemon; §9.1 says row three needs <code>url</code></td>
+</tr>
+<tr>
+<td><strong>B8 / H9</strong> the surface</td>
+<td><strong>FIXED</strong></td>
+<td>§0 is the sketch as written; C8 is the one rule it needs (PROBED C.31); today&rsquo;s form stated</td>
+</tr>
+<tr>
+<td>H9: precedence, the line form, the channel collision</td>
+<td>FIXED</td>
+<td>§3</td>
+</tr>
+<tr>
+<td><strong>H10</strong> survey corrections</td>
+<td><strong>FIXED</strong></td>
+<td>C.6 and C.8b restated in Appendix C; 18 sites counted first-hand; &ldquo;no KERNEL family persists; <code>Db.answers</code> does, unarmed&rdquo;; <code>trailing</code> and <code>continued_by</code> described as READ; §14 lists every invented name</td>
+</tr>
+<tr>
+<td>F: <code>at</code> with three meanings</td>
+<td>FIXED</td>
+<td><code>home(…)</code>, <code>f.loc(…)</code>, <code>member</code></td>
+</tr>
+<tr>
+<td>F: <code>Dir.files</code> field and method</td>
+<td>FIXED</td>
+<td><code>Files.items</code>; <code>files(ext:)</code> is the only method</td>
+</tr>
+<tr>
+<td>F: <code>icons</code> vs <code>vectors</code> in the example</td>
+<td>FIXED</td>
+<td>Appendix A</td>
+</tr>
+<tr>
+<td>F: three hatches for one problem</td>
+<td>FIXED</td>
+<td>one: <code>.member(&quot;…&quot;)</code></td>
+</tr>
+<tr>
+<td>F: <code>Blob.size: int?</code></td>
+<td>FIXED</td>
+<td>an enum</td>
+</tr>
+<tr>
+<td>F: listing key</td>
+<td>FIXED</td>
+<td>§1.3, said once</td>
+</tr>
+<tr>
+<td>F: SHA-256 placement</td>
+<td>FIXED</td>
+<td>slice 1</td>
+</tr>
+<tr>
+<td>F: <code>Provided</code> asks four methods</td>
+<td>FIXED</td>
+<td>one record, no trait</td>
+</tr>
+<tr>
+<td>F: L10 and the CLI line were two statements</td>
+<td>FIXED</td>
+<td>§9.2 only</td>
+</tr>
+<tr>
+<td>F: adding a field to a set type breaks folders</td>
+<td>FIXED</td>
+<td>two reserved names (§4.4)</td>
+</tr>
+<tr>
+<td>G: build order</td>
+<td>FIXED</td>
+<td>§11</td>
+</tr>
+<tr>
+<td>D: mtime fast path (not flagged; found re-reading the code)</td>
+<td>CUT</td>
+<td>§1.2 — it contradicted a standing law</td>
+</tr>
+<tr>
+<td><strong>DISPUTED</strong></td>
+<td>none</td>
+<td>every re-run probe agreed with the review. One number differs, not a finding: my provider probe mints types only, 75 KB each; the reviewer&rsquo;s mints a type and a fn, 140 KB each.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="131-the-second-review-of-4c0ff43">13.1 The second review (of <code>4c0ff43</code>)</h3>
+<table>
+<thead>
+<tr>
+<th>item</th>
+<th>status</th>
+<th>where</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>three inaccuracies under H10: the <code>read</code> slot&rsquo;s callers; <code>kernel.av:320–325</code>; P4&rsquo;s witness &ldquo;direct&rdquo;</td>
+<td><strong>FIXED</strong> (facts corrected)</td>
+<td>§1.1, §1.3, §1.4</td>
+</tr>
+<tr>
+<td>D1 is a sibling of .57.101.12</td>
+<td>FIXED</td>
+<td>§1.2, §1.7</td>
+</tr>
+<tr>
+<td>the reader count; the five kept rows outside &ldquo;five → two&rdquo;</td>
+<td>FIXED (facts corrected)</td>
+<td>§1.1, §1.4</td>
+</tr>
+<tr>
+<td>N7: no input kind for existence or env</td>
+<td><strong>FIXED</strong></td>
+<td>§1.3: <code>Exists</code>, <code>Env</code>, and what stays out</td>
+</tr>
+<tr>
+<td>N1 the witness atom · C.3 the store&rsquo;s read verb and concurrent writers · C.5 .57.4.6 · C.6 which mechanism door 1 is · C.7 the fast-path fix and the outside rows · §6.6&rsquo;s pack</td>
+<td><strong>PENDING THE DB LEAD</strong> — not redesigned here</td>
+<td>§1.7 D2, D4, D8–D11</td>
+</tr>
+<tr>
+<td>N4: a kept lift and spans</td>
+<td>receipt restated; mechanism PENDING</td>
+<td>§1.6, D5</td>
+</tr>
+<tr>
+<td><strong>N2</strong>: <code>avra build</code> cannot compile package C</td>
+<td><strong>FIXED</strong> as a stated prerequisite; put to the owner</td>
+<td>§7.3a, C10, Q9</td>
+</tr>
+<tr>
+<td><strong>N3</strong>: a tool build can need a tool</td>
+<td><strong>FIXED</strong>, by shape</td>
+<td>§7.3b: a tool is built with no tool door</td>
+</tr>
+<tr>
+<td>D.3: <code>check</code> builds and runs native code</td>
+<td><strong>FIXED</strong>: stated, costed, put to the owner</td>
+<td>§7.4, Q10</td>
+</tr>
+<tr>
+<td>D.4: the protocol is named, not specified</td>
+<td><strong>FIXED</strong></td>
+<td>§7.5</td>
+</tr>
+<tr>
+<td>D.4: the reach check refuses every C-calling step as it stands</td>
+<td><strong>FIXED</strong></td>
+<td>§7.6</td>
+</tr>
+<tr>
+<td>D.5: two ways to write a provider</td>
+<td><strong>FIXED</strong>: one way; a compiler rule picks the engine; a budget trip falls through</td>
+<td>§7.4</td>
+</tr>
+<tr>
+<td>D.6: C6&rsquo;s size</td>
+<td><strong>CUT</strong> — not sized until Q9 and Q10</td>
+<td>§12</td>
+</tr>
+<tr>
+<td><strong>N5</strong>: Appendix A&rsquo;s reader read every file</td>
+<td><strong>FIXED</strong></td>
+<td><code>Blob.Source</code>; <code>f.blob()</code>; Appendix A</td>
+</tr>
+<tr>
+<td>E.2: the grant for the make phase; a read by digest</td>
+<td><strong>FIXED</strong></td>
+<td>§4.3</td>
+</tr>
+<tr>
+<td>B3 residue: one step&rsquo;s edit re-runs the package&rsquo;s steps</td>
+<td>stated</td>
+<td>§4.3</td>
+</tr>
+<tr>
+<td><strong>N6</strong>: C8 unsound</td>
+<td><strong>FIXED</strong>: the &ldquo;one fitting impl&rdquo; rule CUT; the declared form in its place</td>
+<td>§4.5, Q3, C.36</td>
+</tr>
+<tr>
+<td>E.3: the 4,000 ceiling beside example 5; the facts step re-runs whole</td>
+<td>FIXED</td>
+<td>§2, §4.4</td>
+</tr>
+<tr>
+<td>Q5: the reviewer&rsquo;s option</td>
+<td><strong>adopted</strong></td>
+<td>§6, Q5</td>
+</tr>
+<tr>
+<td>Q9–Q12</td>
+<td>added</td>
+<td>§15</td>
+</tr>
+<tr>
+<td>the template struct-literal hole</td>
+<td>still not probed by me</td>
+<td>noted for C7</td>
+</tr>
+<tr>
+<td><strong>DISPUTED</strong></td>
+<td>none</td>
+<td>C.36 reproduces the reviewer&rsquo;s two probes</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="14-every-new-name-in-this-document">14. Every NEW name in this document</h2>
+<p>Nothing in this table exists. Everything else named in the doc does.</p>
+<table>
+<thead>
+<tr>
+<th>package</th>
+<th>names</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>@std/source</code> (new package)</td>
+<td><code>file</code>, <code>dir</code>, <code>url</code>, <code>File</code>, <code>Files</code>, <code>Blob</code> (<code>Source</code>, <code>Pending</code>, <code>Made</code>), <code>Action</code>, <code>blob</code>, <code>each</code>, <code>filtered</code>, <code>Artifact</code>, <code>Home</code>, <code>home</code>, <code>placed</code>, <code>remote</code>, <code>step</code></td>
+</tr>
+<tr>
+<td><code>@std/meta</code> (growth)</td>
+<td><code>Provided</code>, <code>refused</code>, <code>target</code>, <code>Target</code></td>
+</tr>
+<tr>
+<td><code>@std/image</code> (new package)</td>
+<td><code>Picture</code>, <code>Pictures</code>, <code>Shots</code>, <code>pictures</code>, <code>resize</code>, <code>webp</code>, <code>widths</code>, <code>formats</code>, <code>Vector</code>, <code>vectors</code></td>
+</tr>
+<tr>
+<td>providers (new)</td>
+<td><code>openapi</code> as a reader, <code>toml</code> as a provider, <code>csv</code>, <code>json_schema</code>, <code>environment</code>, <code>schema</code>, <code>sql</code>, <code>catalogs</code>, <code>typeface</code>, <code>wgsl</code>, <code>markdown</code>, <code>video</code></td>
+</tr>
+<tr>
+<td>the compiler</td>
+<td><code>InputKind</code>, <code>Part</code>, <code>input_*</code>, <code>RunName</code>, <code>RunKind</code>, <code>kept</code>/<code>keep</code>, <code>Reach.Source</code>, the tool row, <code>Host.read_bytes</code>, a typed <code>Host.list</code>, a SHA-256 row, the framed pipe read and write</td>
+</tr>
+<tr>
+<td>the language</td>
+<td><code>trait T&lt;Out&gt; for one</code> (C8; the spelling is a proposal)</td>
+</tr>
+<tr>
+<td>the CLI</td>
+<td><code>avra lock</code>, <code>avra build --tool</code>, <code>avra cache gc</code>, <code>[assets]</code>, <code>[build] native</code>, <code>[build] step_seconds</code>, <code>[build] cache</code>, <code>[link] sources</code> (Q9), <code>avra.lock</code></td>
+</tr>
+</tbody>
+</table>
+<p>Exists and is used as it is: <code>quote</code>, <code>Directive</code>, <code>Declared</code>, <code>Decls</code>, <code>Code</code>, <code>Diagnostic</code>, <code>refuse_at</code>, <code>literal</code>, <code>wraps: true</code>, <code>collect</code>, generic traits, named arguments, trailing blocks, <code>const</code> settlement, <code>SettleRoot.Expr</code>, <code>Reach</code>, <code>Store.keep</code>&rsquo;s <code>read</code> slot, <code>KeyParts</code>, <code>Db.answers</code>, <code>@input</code>, <code>avra expand</code>, <code>avra docs</code>, <code>avra cache why</code>.</p>
+<hr>
+<h2 id="15-for-the-owner">15. For the owner</h2>
+<p>Only decisions. Two options each, then my pick.</p>
+<p><strong>Q1. Heavy build work: native tools, or a faster evaluator?</strong></p>
+<ul>
+<li>A: a step&rsquo;s package is compiled for the host and run as a child process (§7). ~500× the evaluator on a parser today.</li>
+<li>B: profile and speed up the evaluator; codecs as C called from inside the compiler.</li>
+<li>Pick <strong>A</strong> — and for anything with C in it, A depends on Q9.</li>
+</ul>
+<p><strong>Q2. What is a provided type called?</strong></p>
+<ul>
+<li>A: <code>ApiPet</code> — the anchor&rsquo;s name as a prefix. No language work; a spec edit cannot clash with your names.</li>
+<li>B: <code>api.Pet</code> — a type path through the anchor. Reads better; needs a type-path rule and a literal form.</li>
+<li>Pick <strong>A now</strong>, B as its own design.</li>
+</ul>
+<p><strong>Q3. The sketch as written: <code>dir(&quot;./photos&quot;) |&gt; resize(width: 320)</code>.</strong></p>
+<ul>
+<li>A: land a trait form where the implementing type decides the result (<code>trait Shots&lt;Out&gt; for one</code>); the sketch then types as he wrote it.</li>
+<li>B: no language change; a folder says its kind — <code>dir(&quot;./photos&quot;) |&gt; pictures |&gt; resize(width: 320)</code>. Runs today.</li>
+<li>Pick <strong>A</strong>, and write B until it lands. Not v2&rsquo;s &ldquo;one fitting impl&rdquo; rule: a library adding an impl would break callers.</li>
+</ul>
+<p><strong>Q4. Where does a local asset live when nobody says?</strong></p>
+<ul>
+<li>A: by size — small in the program, large beside it (web 4 KiB; CLI/server stops the build over 1 MiB and asks).</li>
+<li>B: by target only — web always a file, CLI always embedded.</li>
+<li>Pick <strong>A</strong>; the numbers are guesses to measure.</li>
+</ul>
+<p><strong>Q5. A tool that links C, before an OS sandbox exists (§7.6).</strong></p>
+<ul>
+<li>A: runs for any dependency, in a child with two pipes and a time limit.</li>
+<li>B: runs only for packages the ROOT manifest lists; <code>@std/*</code> implicit.</li>
+<li>Pick <strong>B</strong> (the reviewer&rsquo;s; I had A). Build-time C runs with the developer&rsquo;s and CI&rsquo;s credentials, and includes dependencies whose C never ships.</li>
+</ul>
+<p><strong>Q6. <code>url</code> and the lock: in this campaign?</strong></p>
+<ul>
+<li>A: yes, minimal (https, SHA-256, <code>avra.lock</code>, <code>avra lock</code>) — &ldquo;external asset, facts known at build&rdquo; cannot land without it.</li>
+<li>B: wait for package transport; until then <code>remote(…)</code> with hand-written facts.</li>
+<li>Pick <strong>A</strong>, as slice 8.</li>
+</ul>
+<p><strong>Q7. <code>avra dev</code>.</strong></p>
+<ul>
+<li>A: one-shot builds on file events; the compiler never stays alive.</li>
+<li>B: a resident compiler that makes an asset on first request.</li>
+<li>Pick <strong>A</strong>; B reopens &ldquo;no daemon&rdquo;.</li>
+</ul>
+<p><strong>Q8. A compiler upgrade re-runs every step once.</strong></p>
+<ul>
+<li>A: yes — the action key folds the compiler&rsquo;s digest. Shipped names do not move.</li>
+<li>B: key steps by the tool&rsquo;s source only, and trust that codegen did not change behaviour.</li>
+<li>Pick <strong>A</strong>.</li>
+</ul>
+<p><strong>Q9. Who builds a package&rsquo;s C?</strong></p>
+<ul>
+<li>A: the manifest learns sources and flags, and <code>avra build</code> compiles them (P13, P14: no Makefile between a package and its binary).</li>
+<li>B: packages ship prebuilt objects per host; <code>make</code> stays the builder for the toolchain&rsquo;s own.</li>
+<li>Pick <strong>A</strong>. Without it no third-party package with C can have a tool, and <code>@std/image</code> works only in the toolchain&rsquo;s tree. Pure-Avra tools do not wait (§7.3a).</li>
+</ul>
+<p><strong>Q10. May <code>check</code> build and run a native tool?</strong></p>
+<ul>
+<li>A: yes, when the rule says a step is too big for the evaluator (§7.4): the first <code>check</code> pays ~0.7 s per such package and needs a linker.</li>
+<li>B: no — <code>check</code> runs everything in the evaluator; only <code>build</code> uses tools.</li>
+<li>Pick <strong>A</strong>. Under B a 5 MB spec is two minutes per cold <code>check</code>. Small sources never need a tool either way.</li>
+</ul>
+<p><strong>Q11. A machine-wide, content-named byte store outside the tree (<code>~/.avra/cache/bytes</code>).</strong></p>
+<ul>
+<li>A: yes — the first toolchain state outside a checkout; made bytes are shared by worktrees and survive a compiler upgrade.</li>
+<li>B: bytes stay under the tree&rsquo;s <code>.avra-cache</code>; every worktree and every compiler re-makes its own.</li>
+<li>Pick <strong>A</strong>, for bytes only. Rows stay per compiler, per tree.</li>
+</ul>
+<p><strong>Q12. Who owns the two doors (§1)?</strong></p>
+<ul>
+<li>A: the DB campaign, with this design as the first consumer.</li>
+<li>B: this campaign builds them.</li>
+<li>Pick <strong>A</strong>. Both doors change <code>KeyParts</code>, the kept-settle wire and the hold.</li>
+</ul>
+<hr>
+<h1 id="appendix-a--three-things-an-author-writes">Appendix A — three things an author writes</h1>
+<p>Design code (§14). Every language form in it is one that exists.</p>
+<p><strong>A reader.</strong></p>
+<pre><code class="language-avra">//! @acme/icons — a folder of SVGs as a set of icons.
+use @std.source.{Files, File, Blob, step}
+use @std.meta.{refuse_at, refused}
+
+export type Vector  = { name: string, width: int, height: int, shape: Blob }
+export type Vectors = { names: List&lt;string&gt;, items: List&lt;Vector&gt; }
+
+impl Vectors {
+    fn member(name: string) -&gt; Vector? {
+        let i = self.names.index_of(name)
+        if i &lt; 0 { return null }
+        self.items[i]
+    }
+}
+
+/// Every `.svg` under the folder, by its stem. ONE step for the whole folder, 512 bytes read per file.
+@step
+export fn vectors(d: Files) -&gt; Vectors {
+    let svgs = d.files(ext: &quot;svg&quot;)
+    Vectors { names: svgs.names, items: [vector(f) for f in svgs.items] }
+}
+
+fn vector(f: File) -&gt; Vector {
+    let box = view_box(f.head(512)) ?? refused(refuse_at(f.loc(0), &quot;`${f.rel}` has no `viewBox`&quot;, &quot;an icon says its own size&quot;))
+    Vector { name: f.name, width: box.w, height: box.h, shape: f.blob() }   // a reference: only 512 bytes of this file are read
+}
+</code></pre>
+<p><strong>A transform.</strong></p>
+<pre><code class="language-avra">//! @std/image (excerpt)
+/// No wider than `width`, shape kept. The plan is arithmetic; the pixels are a recipe.
+fn resized_to(p: Picture, width: int) -&gt; Picture {
+    if width &gt;= p.width { return p }
+    let height = max(1, p.height * width / p.width)
+    p with { width: width, height: height, pixels: resized(p.pixels, width, height) }
+}
+
+/// Bytes in, bytes out. Runs in the tool, when something needs the bytes.
+@step
+fn resized(src: Blob, width: int, height: int) -&gt; Blob {
+    let out = with_room(width * height * 4)
+    blob(out.slice(0, avra_img_resize(src.bytes(), width, height, out)))
+}
+
+extern fn avra_img_resize(src: Bytes, width: int, height: int, out: Bytes) -&gt; int
+</code></pre>
+<p><code>out: Bytes</code> is a seat, never an answer: an extern answering <code>Bytes</code> is <code>type.host_seat</code> (PROBED C.20).</p>
+<p><strong>A provider</strong> — typed TOML. <code>@std/toml</code> runs at compile time today (C.5b) and its entries carry spans (<code>toml.av:23</code>).</p>
+<pre><code class="language-avra">//! @std/toml (addition) — a manifest as a typed record.
+use @std.meta.{Provided, Decls, Code, Diagnostic, refuse_at, literal}
+use @std.source.{File}
+
+export fn toml(f: File) -&gt; Provided {
+    let doc = parse_toml(f.text())
+    let made = [record_of(doc, s) for s in doc.sections()]
+    Provided {
+        value: value_of(doc),
+        made: [root_of(doc)].concat(made),
+        problems: [refuse_at(f.loc(e.lo), e.message, null) for e in doc.errors],
+    }
+}
+
+/// `[server]` under `const config` is `type ConfigServer = { port: int, … }`.
+fn record_of(doc: TomlDoc, section: string) -&gt; Decls {
+    let fields = [quote { type _ = { ${e.key}: ${spelled(e.value)} } } for e in doc.entries_of(section)]
+    let n = &quot;Config${camel(section)}&quot;
+    quote { export type ${n} = { ..${fields} } }
+}
+</code></pre>
+<p><code>root_of</code>, <code>value_of</code>, <code>spelled</code> and <code>camel</code> are ordinary fns omitted here. The anchor&rsquo;s name (<code>Config</code> above) reaches the provider as its first seat does for an annotation today; the exact crossing is C7&rsquo;s.</p>
+<h1 id="appendix-b--every-compile-time-mechanism-today">Appendix B — every compile-time mechanism today</h1>
+<table>
+<thead>
+<tr>
+<th>mechanism</th>
+<th>lives</th>
+<th>runs</th>
+<th>mints names?</th>
+<th>reads</th>
+<th>kept across runs</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>const</code> settlement</td>
+<td><code>workspace_analysis.av:451,568</code>; <code>interp.av:352</code></td>
+<td>after typing; lazy under <code>check</code> (C.3b)</td>
+<td>no</td>
+<td>pure code; <code>embed</code></td>
+<td>P4, unseated only; P1 when the file is held</td>
+</tr>
+<tr>
+<td><code>const</code> seats</td>
+<td><code>features/fns/mod.av:51</code>, <code>checks.av:1627</code></td>
+<td>a unit per settled value</td>
+<td>no</td>
+<td>—</td>
+<td>no</td>
+</tr>
+<tr>
+<td>annotations: Validates / Records</td>
+<td><code>features/annotations/check.av:27,168</code></td>
+<td>at typing</td>
+<td>no</td>
+<td>the declaration</td>
+<td>no</td>
+</tr>
+<tr>
+<td>annotations: Declares / Derives</td>
+<td><code>expand.av:93,124</code>; <code>workspace.av:1518</code></td>
+<td><strong>inside resolve</strong>, whole file</td>
+<td><strong>yes</strong></td>
+<td>the declaration from the parse; source-spelled arguments; <code>type_named</code></td>
+<td>no (P1 when held)</td>
+</tr>
+<tr>
+<td><code>quote</code></td>
+<td><code>features/quote/mod.av:13</code></td>
+<td>parsed where written; spliced in expansion</td>
+<td>via a directive</td>
+<td>—</td>
+<td>—</td>
+</tr>
+<tr>
+<td>sublanguages</td>
+<td><code>features/sublang/mod.av:24</code></td>
+<td>at the parse</td>
+<td>no</td>
+<td>the provider module&rsquo;s plain parse</td>
+<td>—</td>
+</tr>
+<tr>
+<td>components</td>
+<td><code>features/components/mod.av:22</code></td>
+<td>a one-<code>quote</code> <code>expand</code> at the parse; <code>check()</code> settled at lowering</td>
+<td>no</td>
+<td><code>self</code></td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>collect</code></td>
+<td><code>features/collects/mod.av:37</code></td>
+<td>lowering</td>
+<td>variants (<code>collect enum</code>)</td>
+<td>declarations of a kind</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>embed</code></td>
+<td><code>meta.av:311</code>; <code>interp.av:845</code></td>
+<td>at settlement</td>
+<td>no</td>
+<td>one text file, any path</td>
+<td><code>KeyParts.runs</code> when held; <strong>not</strong> in P4 or P5 (C.23)</td>
+</tr>
+<tr>
+<td>the extern host</td>
+<td><code>interp.av:1360</code></td>
+<td><code>avra run</code> only</td>
+<td>—</td>
+<td>a package&rsquo;s <code>.dylib</code></td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>asked</th>
+<th>answer</th>
+<th>receipt</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Can a <code>const</code> hold a record whose fields came from data?</td>
+<td>Through a Declares annotation that generates the type and the const — the MINTING works. The names in my probe were hard-coded; the annotation cannot read the folder.</td>
+<td>C.6, C.7</td>
+</tr>
+<tr>
+<td>Can a compile-time fn read a file?</td>
+<td>Only <code>embed</code>: a literal, text, in a const.</td>
+<td>C.3, C.4, C.7</td>
+</tr>
+<tr>
+<td>Can an annotation&rsquo;s argument be a path?</td>
+<td>It is a string like any other; the annotation cannot read it.</td>
+<td>C.6</td>
+</tr>
+<tr>
+<td>What does <code>@std/openapi</code> do?</td>
+<td>Emits a spec from routes at run time. No reader.</td>
+<td>READ(agent) <code>openapi.av:26–76</code></td>
+</tr>
+<tr>
+<td>Does any query family persist?</td>
+<td>No KERNEL family does. <code>Db.answers</code> persists <code>@query</code> answers and has no caller outside tests.</td>
+<td>READ <code>answers.av</code>; PROBED grep</td>
+</tr>
+<tr>
+<td>Is settlement parallel?</td>
+<td>No. Object emission is, 4 threads (<code>llvm.av:179</code>).</td>
+<td>READ</td>
+</tr>
+</tbody>
+</table>
+<h1 id="appendix-c--probe-log">Appendix C — probe log</h1>
+<p>Binary <code>avra-ui-assets-design/build/avra</code> (0b5bd64), <code>LLVM_PREFIX=/opt/homebrew/opt/llvm</code>. <code>run</code>/<code>check</code> of scratch files, plus single-file <code>build</code> where marked.</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>probe</th>
+<th>output</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>C.1</td>
+<td><code>const k = 3 |&gt; dbl</code></td>
+<td><code>error[parse.expected]: expected BREAK while parsing 'stmt'</code></td>
+</tr>
+<tr>
+<td>C.2</td>
+<td><code>embed(&quot;/etc/hosts&quot;)</code></td>
+<td><code>256</code></td>
+</tr>
+<tr>
+<td>C.3</td>
+<td><code>const T = read_text(…)</code>, read</td>
+<td><code>error[const.reach] … 'T' reaches 'avra_io_open'</code></td>
+</tr>
+<tr>
+<td>C.3b</td>
+<td>the same const, unread, <code>check</code></td>
+<td>clean</td>
+</tr>
+<tr>
+<td>C.4</td>
+<td><code>const DOC = parse(embed(&quot;data.json&quot;))</code></td>
+<td><code>const.reach … reaches 'avra_str_parses_float' in '@std.text.parse_float'</code></td>
+</tr>
+<tr>
+<td>C.5</td>
+<td><code>parse_toml(embed(&quot;cfg.toml&quot;))</code> in one const</td>
+<td><code>avra: a 'File' write moved the whole relation after a compiler query (reader 936) read it this revision</code></td>
+</tr>
+<tr>
+<td>C.5b</td>
+<td>through a named text const</td>
+<td><code>2 name 2</code></td>
+</tr>
+<tr>
+<td>C.6</td>
+<td><code>@folder(&quot;icons&quot;) type Icons = {}</code>, a Declares annotation minting <code>type ${t}Set = { ..${fields} }</code> and a const; <strong>the member names were a hard-coded list — the path literal was unused</strong></td>
+<td><code>icons/close.svg 24</code>, 0.14 s; typo → <code>no field 'clsoe' on 'IconsSet' … the fields are 'close', 'menu'</code>; <code>avra expand</code> prints both with their template line</td>
+</tr>
+<tr>
+<td>C.7</td>
+<td>the same annotation calling <code>embed</code></td>
+<td><code>… this compile-time call cannot return build inputs</code></td>
+</tr>
+<tr>
+<td>C.8</td>
+<td><code>fn at(const s: Set, const name: string)</code> with an inner <code>const</code>; a wrong name</td>
+<td><code>error[const.trap] … index -1 is out of bounds</code>, at the library&rsquo;s line</td>
+</tr>
+<tr>
+<td>C.8b</td>
+<td><code>impl Set&lt;T&gt; { fn member(const name: string) -&gt; T }</code>; <code>s.member(&quot;b&quot;)</code></td>
+<td><code>20</code>. <strong>Passing case only.</strong> The reviewer ran the wrong name: <code>check</code> clean, <code>run</code> traps. This form is no longer used (§4.4).</td>
+</tr>
+<tr>
+<td>C.8c</td>
+<td>a generic const-seat fn with an inner <code>const</code>; <code>at(at(outer, &quot;in&quot;), &quot;x&quot;)</code></td>
+<td><code>const.form … declares 'T'</code>; <code>type.const_seat … computed at run time</code></td>
+</tr>
+<tr>
+<td>C.9</td>
+<td><code>embed</code> of a PNG; of a missing file</td>
+<td><code>avra: '…/a.png' is not UTF-8 — byte 0</code>; <code>avra: '…/nope.txt' does not exist</code> — no location</td>
+</tr>
+<tr>
+<td>C.10</td>
+<td>a 4.1 MB text file as a const</td>
+<td><code>check</code> 0.27 s, 66 MB peak</td>
+</tr>
+<tr>
+<td>C.11</td>
+<td><code>for i in 0..n { t = t + i % 7 }</code>, <code>avra run</code></td>
+<td>n = 0.5M, 1M, 2M, 20M: 1.19 s, 2.42 s, 4.89 s, 47.6 s. Default budget refuses at 1M: <code>took more than 600000 steps</code></td>
+</tr>
+<tr>
+<td>C.12</td>
+<td><code>parse_toml</code> over 17.4 KB; <code>@std/json</code> parse + print over 19 KB, <code>avra run</code></td>
+<td>0.74 s; 0.48 s</td>
+</tr>
+<tr>
+<td>C.13</td>
+<td><code>each(s) { dbl(it, by: 3) }</code>; <code>each(s, it * 2)</code></td>
+<td>runs; <code>error[resolve.unresolved]: 'it' rides a METHOD call's arguments — nothing binds it here</code></td>
+</tr>
+<tr>
+<td>C.14</td>
+<td><code>trait Pictures { fn each(f: fn(Image) -&gt; Image) -&gt; Self }</code>, impls for an item and a nominal set, <code>fn resize&lt;P: Pictures&gt;(p: P, width: int) -&gt; P</code></td>
+<td><code>3 4</code></td>
+</tr>
+<tr>
+<td>C.15</td>
+<td>generic <code>each&lt;A, B&gt;(s: Set&lt;A&gt;, f: fn(A) -&gt; B)</code> in a const, a named fn</td>
+<td><code>2,4</code></td>
+</tr>
+<tr>
+<td>C.16</td>
+<td><code>@derive(Show)</code> inside a Declares template</td>
+<td><code>'Pet' has no method 'show'</code> — dropped, no word</td>
+</tr>
+<tr>
+<td>C.17</td>
+<td>a field named <code>type</code>; <code>let café</code>; a field <code>2fa</code></td>
+<td><code>resolve.reserved</code>; <code>lex.error</code>; <code>parse.expected</code></td>
+</tr>
+<tr>
+<td>C.18</td>
+<td><code>avra explain icons</code></td>
+<td><code>avra: unknown command: explain</code></td>
+</tr>
+<tr>
+<td>C.19</td>
+<td><code>grep '|&gt;'</code> over every <code>.av</code> in <code>packages/</code>, comments removed</td>
+<td>nothing</td>
+</tr>
+<tr>
+<td>C.20</td>
+<td>main&rsquo;s 09-30 binary over main&rsquo;s packages</td>
+<td><code>type.host_seat: the answer of 'avra_bytes_with_room' wears 'Bytes', which cannot cross to C</code></td>
+</tr>
+<tr>
+<td>C.21</td>
+<td>a const record holding a fn</td>
+<td><code>error[const.form]</code></td>
+</tr>
+<tr>
+<td>C.22</td>
+<td><code>webp(1, lossless: true)</code> with defaulted seats</td>
+<td><code>1 q80 true</code></td>
+</tr>
+<tr>
+<td><strong>C.23</strong></td>
+<td>package <code>ks</code>: <code>const TEXT: string = embed(&quot;x.txt&quot;)</code>, <code>println</code> its length. <code>build</code>, run → <code>3</code>. Edit <code>x.txt</code> to 8 bytes, <code>build</code>, run. Then also append a comment to <code>main.av</code>, edit to 12 bytes, <code>build</code>, run. Then park <code>.avra-cache</code> and <code>build</code>.</td>
+<td><code>3</code>; <code>3</code>; <strong><code>3</code></strong>; with the cache parked: the true length. Repeated: edit to 8 → <code>build</code> prints <code>2</code> (stale), <code>avra run</code> prints <code>8</code>.</td>
+</tr>
+<tr>
+<td>C.24</td>
+<td><code>data/data.av</code>: <code>export const K: int = made(3)</code>; <code>main.av</code> prints <code>K</code>. <code>build</code>, run; change <code>made</code>&rsquo;s body; <code>build</code>, run</td>
+<td><code>30</code>; <code>33</code></td>
+</tr>
+<tr>
+<td>C.25</td>
+<td>package <code>cap</code>: a lib exports <code>type Handle = { path: string, seal: Seal }</code> with <code>Seal</code> private. Outside: <code>a with { path: &quot;/etc/hosts&quot; }</code>; <code>Handle { path: &quot;/etc/passwd&quot;, seal: a.seal }</code></td>
+<td><code>read /etc/hosts 7 | read /etc/passwd 7</code> — both forgeries accepted</td>
+</tr>
+<tr>
+<td>C.26</td>
+<td>a Declares annotation minting N record types, <code>check</code></td>
+<td>N=200: 0.16 s, 60 MB. N=1000: 0.24 s, 120 MB. Unchanged re-check: 0.04 s. One comment appended: 0.25 s. N=4000: <code>annotation.unsettled</code> (budget)</td>
+</tr>
+<tr>
+<td>C.27</td>
+<td><code>impl Set&lt;T&gt; { fn member(name: string) -&gt; T? }</code>; <code>const menu: Icon? = icons.member(&quot;menu&quot;)</code>; <code>const typo: Icon? = icons.member(&quot;clsoe&quot;)</code></td>
+<td><code>m.svg absent</code>, 0.04 s</td>
+</tr>
+<tr>
+<td>C.28</td>
+<td>a 2,000-item nominal set built, mapped by <code>resized</code>, one member read as a const</td>
+<td><code>320</code>, 0.06 s, default budget</td>
+</tr>
+<tr>
+<td>C.29</td>
+<td>a 2,000-item set where each item runs a 400-iteration fn; one member read</td>
+<td><code>error[const.budget]: … 'icons' took more than 600000 steps</code></td>
+</tr>
+<tr>
+<td>C.30</td>
+<td>Python: list 2,000 files and read 512 bytes of each; SHA-256 each whole</td>
+<td>31.8 ms; 34.4 ms</td>
+</tr>
+<tr>
+<td>C.31</td>
+<td><code>trait Shots&lt;Out&gt;</code>, four impls, <code>fn resize&lt;O, S: Shots&lt;O&gt;&gt;(s: S, width: int) -&gt; O</code>; <code>resize(File {…}, 3)</code></td>
+<td><code>error[type.mismatch]: 'O' is not pinned by the arguments</code></td>
+</tr>
+<tr>
+<td>C.32</td>
+<td>package <code>nt</code>: read a 5.47 MB JSON, <code>parse</code>, <code>to_text</code>, print the length. <code>avra build</code>; run; rebuild</td>
+<td>build 0.68 s; run 0.27 s user (0.72 s wall, first exec), 128 MB peak; warm rebuild 0.05 s</td>
+</tr>
+<tr>
+<td>C.33</td>
+<td>200 runs of a tiny native Avra binary in a shell loop</td>
+<td>0.57 s</td>
+</tr>
+<tr>
+<td>C.34</td>
+<td><code>grep RLIMIT|setrlimit|sandbox_init|seccomp</code> over <code>runtime/*.c</code> and every package&rsquo;s C</td>
+<td>nothing</td>
+</tr>
+<tr>
+<td>C.35</td>
+<td>a user <code>fn embed(p: string) -&gt; int { p.length }</code>, called with a literal</td>
+<td><code>19</code>, no refusal. That <code>admit_embeds</code> treats this call as an embed is READ (<code>whole.av:382</code>: <code>callee.of != &quot;embed&quot;</code>), not observed: minting a <code>FileId</code> for a missing file prints nothing.</td>
+</tr>
+</tbody>
+</table>
+<p>| C.36 | <code>trait Shots&lt;Out&gt;</code>; <code>impl Shots&lt;P&gt; for F</code> AND <code>impl Shots&lt;Q&gt; for F</code>; <code>fn made&lt;O, S: Shots&lt;O&gt;&gt;(s: S) -&gt; O</code>; <code>let p: P = made(F { n: 1 })</code> | <code>2</code>, exit 0 — two impls for one type are legal, and a typed binding pins <code>O</code> |</p>
+<p>Not probed: the struct-literal name hole the reviewer hit in a template; whether <code>avra dev</code> on its branches is already one-shot; lines per kept run on <code>check packages/cli</code> (D8); hashing speed (D6).</p>
+
+  </article>
+  <footer class="page-footer">2026_10_05_BUILD_TIME_SOURCES.md &middot; typeset with <a href="https://github.com/tristanMatthias/serif">serif</a></footer>
+</main>
+
+<script>
+(function () {
+  var root = document.documentElement;
+
+  function setTheme(t) {
+    root.setAttribute("data-theme", t);
+    try { localStorage.setItem("serif-theme", t); } catch (e) {}
+  }
+
+  function toggle() {
+    setTheme(root.getAttribute("data-theme") === "dark" ? "light" : "dark");
+  }
+
+  var btn = document.getElementById("theme-toggle");
+  if (btn) btn.addEventListener("click", toggle);
+
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "t" && !e.metaKey && !e.ctrlKey && !e.altKey &&
+        !/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName) &&
+        !document.activeElement.isContentEditable) {
+      toggle();
+    }
+  });
+})();
+
+(function () {
+  /* Add clickable anchors to headings that have ids. */
+  document.querySelectorAll(".prose h2[id], .prose h3[id], .prose h4[id]").forEach(function (h) {
+    var a = document.createElement("a");
+    a.className = "anchor";
+    a.href = "#" + h.id;
+    a.textContent = "#";
+    a.setAttribute("aria-label", "Link to this section");
+    h.appendChild(a);
+  });
+})();
+</script>
+</body>
+</html>
