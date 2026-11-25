@@ -1148,7 +1148,7 @@ help: key by text — `Map<string, …>`
 
 ## annotation.callee
 
-an annotation names a fn over a declaration
+an annotation names a fn or a trait
 
 ```avra
 const tag: int = 1
@@ -1158,13 +1158,13 @@ g()
 ```
 
 ```
-error[annotation.callee]: an annotation names a fn over a declaration
+error[annotation.callee]: an annotation names a fn or a trait
   ╭─[<source>:2:1]
 2 │ @tag
   · ┬
-  · ╰── `@tag` names no fn
+  · ╰── `@tag` names no fn and no trait
 ──╯
-help: write `fn tag(f: Fn) -> List<Diagnostic>` — or `t: Type` for a record or enum — and import it
+help: write `fn tag(f: Fn) -> List<Diagnostic>` — or `t: Type` for a record or enum — or a trait `tag` that declares `derive`, and import it
 ```
 
 ## annotation.receiver
@@ -1379,6 +1379,39 @@ error[annotation.derive]: an annotation derives through a trait that declares `d
 help: `@derive` names a trait — `trait X { static fn derive(t: Type) -> List<Directive> }`
 ```
 
+## annotation.ambiguous
+
+a word an annotation wears names one thing: a fn or a trait, never both
+
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "vendor/meta" }
+
+// /w/src/main.av
+use @std.meta.{Named, Diagnostic}
+trait Pair { fn left() -> int }
+fn Pair(_d: Named) -> List<Diagnostic> { [] }
+@Pair
+type T = { x: int }
+0
+
+```
+
+```
+error[annotation.ambiguous]: a word an annotation wears names one thing: a fn or a trait, never both
+  ╭─[/w/src/main.av:4:1]
+4 │ @Pair
+  · ┬
+  · ╰── `@Pair` names both the fn `Pair` and the trait `Pair`
+──╯
+help: import one of the two under another name, so the word names one thing
+```
+
 ## annotation.unsettled
 
 an annotation could not run
@@ -1394,17 +1427,16 @@ version = "0.1.0"
 "@x/c" = { path = "vendor/c" }
 
 // /w/src/main.av
-use @std.meta.{derive}
 use @x.c.{Traps}
-@derive(Traps)
+@Traps
 type T = { x: int }
 0
 ```
 
 ```
 error[annotation.unsettled]: an annotation could not run
-  ╭─[/w/src/main.av:3:1]
-3 │ @derive(Traps)
+  ╭─[/w/src/main.av:2:1]
+2 │ @Traps
   · ┬
   · ╰── `derive` index 3 is out of bounds (length 0)
 ──╯
@@ -1453,17 +1485,16 @@ version = "0.1.0"
 "@x/c" = { path = "vendor/c" }
 
 // /w/src/main.av
-use @std.meta.{derive}
 use @x.c.{Fields}
-@derive(Fields)
+@Fields
 type T = { x: int }
 0
 ```
 
 ```
 error[annotation.unplaceable]: a hole was filled with something no seat can hold
-  ╭─[/w/src/main.av:3:1]
-3 │ @derive(Fields)
+  ╭─[/w/src/main.av:2:1]
+2 │ @Fields
   · ┬
   · ╰── a field run takes `type _ = { … }` or `fn _(…)` templates, and the one from @x/c:src/c.av carries no fields
 ──╯
@@ -1528,10 +1559,9 @@ version = "0.1.0"
 "@std/meta" = { path = "vendor/meta" }
 
 // /w/src/main.av
-use @std.meta.{derive}
 use kit.{Reads}
 
-@derive(Reads)
+@Reads
 type R = { @flag n: int }
 0
 
@@ -1549,8 +1579,8 @@ export trait Reads {
 
 ```
 error[annotation.unimported]: a mark names a fn its file imports — the `use` shows where it comes from
-  ╭─[/w/src/main.av:5:12]
-5 │ type R = { @flag n: int }
+  ╭─[/w/src/main.av:4:12]
+4 │ type R = { @flag n: int }
   ·            ┬
   ·            ╰── `@flag` is imported nowhere here
 ──╯
@@ -1558,6 +1588,48 @@ help: import it — `use kit.{flag}`
 fix (high): import `flag` — `use kit.{flag}`
   use kit.{flag}
 
+```
+
+## annotation.derive_spelled
+
+`@derive(X)` is `@X`: a trait's word is its derive
+
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "vendor/meta" }
+
+// /w/src/main.av
+use @std.meta.{derive}
+use kit.{Plain}
+
+@derive(Plain)
+type R = { n: int }
+0
+
+// /w/src/kit/kit.av
+use @std.meta.{Type, Directive}
+
+export trait Plain {
+    static fn derive(t: Type) -> List<Directive> { [] }
+}
+
+```
+
+```
+warning[annotation.derive_spelled]: `@derive(X)` is `@X`: a trait's word is its derive
+  ╭─[/w/src/main.av:4:1]
+4 │ @derive(Plain)
+  · ┬
+  · ╰── `@derive(Plain)` is `@Plain`
+──╯
+help: write `@Plain` — `avra fix --repair` writes it
+fix (high): write `@Plain`
+  @Plain
 ```
 
 ## resolve.no_module
