@@ -1,0 +1,146 @@
+//! WHAT ONE RECORDED READ AND ONE ROW WRITTEN COST, COUNTED. `DBM_MODE`
+//! picks the read or the write and `DBM_N` how many; run under a census
+//! runtime at N and at 2N, the difference is N of them and nothing else
+//! (tools/db_measure/read_cost.sh).
+//!
+//!   kernel.last     the key the query appended last, again
+//!   kernel.earlier  a key the query read before, another read between
+//!   kernel.new      a key the query has not read: a new edge
+//!   row.unheard     a relation row by its key, no query open
+//!   row.repeat      the same, inside one query, a hundred keys in turn
+//!   row.new         the same, a new query every hundred reads
+//!   ask.int         a `@query` asked again, its answer standing, by an int
+//!   ask.text        the same, by a text
+//!   write.unowned   a keyless row inserted, no one's, on a Db no query read
+//!   write.owned     the same row filed by id for a named owner
+//!   write.replaced  the same rows handed to a named owner as one value
+//!   write.over      the same, then handed over again: each row filed and
+//!                   one removed from a bucket a tenth of them share
+//!   write.given     `write.replaced` in a Db its owner's kernel holds, the
+//!                   relation read by no query
+//!   write.heard     the same, a settled query having read the relation and
+//!                   one of its buckets a revision before
+use @std.relation.{relation, query}
+use @std.relation.db.{Db, new_db}
+use @std.relation.engine.{Kernel, Key, new_kernel}
+use @std.io.{env_or}
+use @std.text.{parse_int}
+
+@relation
+type Row = { @key name: string, @index tag: string, n: int }
+
+@relation
+type Wrote = { @index tag: string, n: int }
+
+/// `n` rows written the way `mode` writes them.
+fn writes(mode: string, n: int) -> int {
+    if mode == "write.given" || mode == "write.heard" { return given_writes(mode == "write.heard", n) }
+    let db = new_db()
+    if mode == "write.over" {
+        let _ = Wrote.replaced(db, "bench", [Wrote { tag: "t${i % 10}", n: i } for i in 0..n])
+        return Wrote.replaced(db, "bench", [Wrote { tag: "t${i % 10}", n: i } for i in 0..n]).length
+    }
+    if mode == "write.replaced" { return Wrote.replaced(db, "bench", [Wrote { tag: "t${i % 10}", n: i } for i in 0..n]).length }
+    if mode == "write.unowned" {
+        for i in 0..n { let _ = Wrote.insert(db, tag: "t${i % 10}", n: i) }
+        return Wrote.all(db).length
+    }
+    let rs = Wrote.rows_in(db)
+    let owner = db.owner_named("bench")
+    for i in 0..n {
+        let row = Wrote { tag: "t${i % 10}", n: i }
+        rs.put_owned(db, "Wrote", rs.next_id(), row, row.stable_hash(), row.index_keys(), owner)
+    }
+    Wrote.all(db).length
+}
+
+/// `n` rows handed to a named owner as one value, in a Db an owner's
+/// kernel holds.
+fn given_writes(heard: bool, n: int) -> int {
+    let kernel = new_kernel()
+    let queries = kernel.family((_arg: int) -> 0)
+    let db = new_db()
+    db.given_to(kernel)
+    kernel.begin(asking(queries, 0))
+    let read = if heard { Wrote.all(db).length + Wrote.by_tag(db, "t0").length } else { 0 }
+    kernel.settle(asking(queries, 0), 1)
+    kernel.bump()
+    read + Wrote.replaced(db, "bench", [Wrote { tag: "t${i % 10}", n: i } for i in 0..n]).length
+}
+
+/// The query cell a bench frame is opened under.
+fn asking(queries: int, q: int) -> Key { Key { family: queries, arg: q } }
+
+fn kernel_reads(mode: string, n: int) -> int {
+    let kernel = new_kernel()
+    let queries = kernel.family((_arg: int) -> 0)
+    let cells = kernel.family((_arg: int) -> 0)
+    if mode == "kernel.new" {
+        for q in 0..n / 1000 {
+            kernel.begin(asking(queries, q))
+            for i in 0..1000 { kernel.record_at(cells, (q * 37 + i) % 50000) }
+            kernel.settle(asking(queries, q), 1)
+        }
+        return kernel.deps_of(asking(queries, 0)).length
+    }
+    let one = asking(queries, 0)
+    kernel.begin(one)
+    let spread = if mode == "kernel.earlier" { 2 } else { 1 }
+    for i in 0..n { kernel.record_at(cells, 7 + i % spread) }
+    kernel.settle(one, 1)
+    kernel.deps_of(one).length
+}
+
+fn filled(kernel: Kernel, names: List<string>) -> Db {
+    let db = new_db()
+    db.given_to(kernel)
+    for i, name in names { let _ = Row.insert(db, name: name, tag: "t${i % 10}", n: i) }
+    db
+}
+
+fn row_reads(mode: string, n: int) -> int {
+    let kernel = new_kernel()
+    let queries = kernel.family((_arg: int) -> 0)
+    let names = ["r${i}" for i in 0..100]
+    let db = filled(kernel, names)
+    mut sum = 0
+    if mode == "row.unheard" {
+        for i in 0..n { sum = sum + (Row.by_key(db, RowKey { name: names[i % 100] })?.n ?? 0) }
+        return sum
+    }
+    let per_query = if mode == "row.new" { 100 } else { n }
+    for q in 0..n / per_query {
+        kernel.begin(asking(queries, q))
+        for i in 0..per_query { sum = sum + (Row.by_key(db, RowKey { name: names[i % 100] })?.n ?? 0) }
+        kernel.settle(asking(queries, q), 1)
+    }
+    sum + kernel.deps_of(asking(queries, 0)).length
+}
+
+@query
+fn after(_db: Db, n: int) -> int { n + 1 }
+
+@query
+fn measure(_db: Db, name: string) -> int { name.length }
+
+/// A hundred calls asked once, then `n` asks of them again.
+fn asks(mode: string, n: int) -> int {
+    let db = new_db()
+    let names = ["a_declaration_named_${i}" for i in 0..100]
+    mut sum = 0
+    for i in 0..100 { sum = sum + after(db, i) + measure(db, names[i]) }
+    if mode == "ask.int" {
+        for i in 0..n { sum = sum + after(db, i % 100) }
+        return sum
+    }
+    for i in 0..n { sum = sum + measure(db, names[i % 100]) }
+    sum
+}
+
+fn ran(mode: string, n: int) -> int {
+    if mode.starts_with("kernel.") { return kernel_reads(mode, n) }
+    if mode.starts_with("write.") { return writes(mode, n) }
+    if mode.starts_with("ask.") { asks(mode, n) } else { row_reads(mode, n) }
+}
+
+println("${ran(env_or("DBM_MODE", "kernel.last"), parse_int(env_or("DBM_N", "0")) ?? 0)}")
