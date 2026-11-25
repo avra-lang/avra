@@ -34,7 +34,7 @@ use features.{ReadFacts, StatePlace, site_places_in, structural_places_in}
 use features.lists.{walk_reads}
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
-use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+use @std.program.saved_query.{ListedQuery, cut_query, definitions_of, query, query_definition}
 
 /// A body's names on the program layer: its tree, its reads as typing resolved them, what a name the
 /// program declares names read from a home, and what a call of a declared fn reaches. Where its
@@ -254,7 +254,7 @@ fn place_said(p: StatePlace) -> string {
 /// What the fn `file` declares as `name` reads of the program's state by its own body, and the fns,
 /// methods and verbs it calls, each by its key: what it reads at paint time that no reading answers
 /// for where `structural`. A fn with no body to read reads what nothing names.
-@query("laws")
+@cut_query("reads")
 export fn fn_reads(engine: QueryEngine, file: SourceFileAddress, name: string, structural: bool) -> NodeReads {
     let body? = elaborated_fn(engine, file, name) else { return unnamed_reads() }
     let seats = [p.state for p in fn_signature(engine, file, name)?.params ?? []]
@@ -264,7 +264,7 @@ export fn fn_reads(engine: QueryEngine, file: SourceFileAddress, name: string, s
 /// What the method, or where `statics` the static fn, `name` of the type `file` declares as `owner`
 /// reads, as `fn_reads` says it, its impl's as the package `reader` sees it. One no single impl
 /// writes reads what nothing names.
-@query("laws")
+@cut_query("reads")
 export fn method_reads(
     engine: QueryEngine,
     file: SourceFileAddress,
@@ -431,8 +431,7 @@ fn prop_parts(store: SyntaxArena, e: ExprId) -> PropParts? {
 /// Where the path `e` starts: down its field reads and its index reads to the node they read from.
 fn path_root(store: SyntaxArena, e: ExprId) -> ExprId {
     match store.expr(e) {
-        .Prop(subject, _) -> path_root(store, subject),
-        .Index(subject, _) -> path_root(store, subject),
+        .Prop(subject, _) or .Index(subject, _) -> path_root(store, subject),
         rest -> e,
     }
 }
@@ -468,7 +467,7 @@ fn called(calls: Cell<List<string>>, c: CalledFn) -> List<StatePlace> {
 
 /// What the fn `file` declares as `name` reaches, by its own body and every fn it calls through any
 /// cycle, each place by its key; a body's own `state` is one no caller can name.
-@query("laws")
+@cut_query("reads")
 export fn fn_reaches(engine: QueryEngine, file: SourceFileAddress, name: string, structural: bool) -> List<
     string,
 > {
