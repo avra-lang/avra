@@ -4,6 +4,8 @@
 #ifndef AVRA_PLATFORM_H
 #define AVRA_PLATFORM_H
 
+#include <stdint.h>
+
 // The caller's own address, where the accounting names a site. A
 // WebAssembly module has no return-address read, so the instruments
 // that use it carry no site there rather than fail to compile.
@@ -40,5 +42,10 @@
 // the scheduler (D7).
 void avra_tick_armed(void);
 void avra_tick_stood_down(void);
+// How many times the arm's own reader has taken the process id — one per
+// cold arm. A test holds the hot arm to taking none: the count stands
+// still across it. It counts THIS reader; a pid taken elsewhere in the
+// source is not its business.
+uint64_t avra_tick_cold_pid_reads(void);
 
 #endif

@@ -39,6 +39,17 @@ spec "features/fns" {
         then "a plain `int` seat is untouched by that law" {
             extern_shape("extern fn c_plain(v: int) -> int\nc_plain(1)", "c_plain") == "i64 -> i64"
         }
+        then "a callback seat answering a pointer is refused by name" {
+            let a = analyze_source("extern fn c_on(cb: fn(int) -> ptr)")
+            a.diagnostics.length == 2 &&
+                a
+                    .report()
+                    .contains("is a callback under a cancel, and it answers a pointer the C would follow")
+        }
+        then "a callback seat answering a word draws no callback refusal" {
+            let a = analyze_source("extern fn c_on(cb: fn(int) -> int)")
+            a.diagnostics.length == 1 && !a.report().contains("callback_pointer")
+        }
         then "the call site spells nothing — the `mut` lives on the declaration" {
             ir_has(
                 "extern fn c_open(mut out: ptr) -> int\nextern fn c_null() -> ptr\nmut d: ptr = c_null()\nc_open(d)",
@@ -179,10 +190,14 @@ spec "features/fns" {
             shown("extern fn avra_int_and(a: int, b: int) -> int\navra_int_and(6, 3)") == "2"
         }
         then "and its seats obey the uniform frame's law — a fn value does not cross" {
-            refused_with(
+            let a = analyze_source(
                 "extern fn avra_rc_retain(p: fn() -> string)\navra_rc_retain(() -> \"hi\")\n1",
-                "seat 1 of `avra_rc_retain`",
             )
+            a.diagnostics.length == 2 &&
+                a.report().contains("seat 1 of `avra_rc_retain`") &&
+                a
+                    .report()
+                    .contains("is a callback under a cancel, and it answers a pointer the C would follow")
         }
         then "a PACKAGE's C keeps the capability — a nullable seat it may test" {
             refusals("extern fn zz(name: string?, p: ptr?, n: int?) -> int\n1") == 0

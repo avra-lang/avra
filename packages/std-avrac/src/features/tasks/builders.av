@@ -1,8 +1,16 @@
 //! Parse-time lowering: `spawn e` is a task over the zero-seat lambda
 //! `e` becomes, so its captures are a closure's — copies, taken here.
-use core.{Expr}
+//! `within limit body` reads the limit's own `ms` field — the span the
+//! runtime arms a scope with — so one field read serves typing and
+//! lowering alike.
+use core.{Expr, Plain}
 use features.{LangNode, Builder}
 
 fn build_spawn(b: Builder) -> Result<LangNode, string> {
     b.make_expr(Expr.Spawn(b.expr_node(Expr.Lambda([], b.expr(0)?))))
+}
+
+fn build_within(b: Builder) -> Result<LangNode, string> {
+    let limit = b.expr_node(Expr.Prop(b.expr(0)?, Plain("ms")))
+    b.make_expr(Expr.Within(limit, b.expr(1)?))
 }

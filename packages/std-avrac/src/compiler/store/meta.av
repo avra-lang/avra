@@ -1,0 +1,191 @@
+//! THE FAMILY META REGION — one record's fixed columns, laid out
+//! column-major so VERIFICATION READS NO VALUE.
+//!
+//! §6.1's per-record columns (action key, name id, value digest, set id,
+//! changed_at, verified_at, durability, codec shape fingerprint, producer
+//! code hash) are each a fixed width, and one column stands contiguous
+//! over the run. A record's meta is offset arithmetic from its index
+//! alone — no value byte is touched, which is the S5 point: a reader
+//! verifies a digest and a revision without paging the values region.
+//!
+//! EVERY FIELD IS FIXED-WIDTH BY CHOICE. The four digests are already
+//! 32-byte content addresses, so a fixed slot costs no indirection; an id
+//! into the names region would couple a meta read to that region and add
+//! a lookup for nothing. The region is self-contained, and `span()` is
+//! where the family's values begin.
+use @std.relation.stable.{reader, writer, Reader, Writer}
+
+const META_MAGIC: string = "AVRAMETA"
+const META_VERSION: int = 1
+
+/// Bytes of one content digest — BLAKE3's, the store's one hash.
+const DIGEST: int = 32
+
+const W_ACTION: int = DIGEST
+const W_NAME: int = 4
+const W_VALUE: int = DIGEST
+const W_SET: int = 4
+const W_CHANGED: int = 8
+const W_VERIFIED: int = 8
+const W_DURABILITY: int = 1
+const W_SHAPE: int = DIGEST
+const W_CODE: int = DIGEST
+
+// The columns' places within one record, and the record's stride. They
+// are derived from the widths above so the layout has one spelling.
+const O_ACTION: int = 0
+const O_NAME: int = O_ACTION + W_ACTION
+const O_VALUE: int = O_NAME + W_NAME
+const O_SET: int = O_VALUE + W_VALUE
+const O_CHANGED: int = O_SET + W_SET
+const O_VERIFIED: int = O_CHANGED + W_CHANGED
+const O_DURABILITY: int = O_VERIFIED + W_VERIFIED
+const O_SHAPE: int = O_DURABILITY + W_DURABILITY
+const O_CODE: int = O_SHAPE + W_SHAPE
+
+/// The stride every record wears — the region is `span` long.
+const META_RECORD: int = O_CODE + W_CODE
+
+/// A durability tier (§6.5): a workspace's own sources, or a pinned
+/// `@std`/dependency package.
+export enum Durability {
+    Low
+    High
+}
+
+/// One record's columns, before they are laid out.
+export type RecordMeta = {
+    action_key: Bytes,
+    name_id: int,
+    value_digest: Bytes,
+    set_id: int,
+    changed_at: int,
+    verified_at: int,
+    durability: Durability,
+    shape_fp: Bytes,
+    code_hash: Bytes,
+}
+
+/// A run of records as the bytes they spell, or nothing when a digest is
+/// not exactly `DIGEST` — a short slot would misalign every column after
+/// it, so the encoder refuses rather than writes one.
+export fn encode_meta(rows: List<RecordMeta>) -> Bytes? {
+    let w = writer()
+    w.text(META_MAGIC)
+    w.int(META_VERSION)
+    w.int(META_RECORD)
+    w.count(rows.length)
+    for r in rows { if !write_digest(w, r.action_key) { return null } }
+    for r in rows { write_word(w, r.name_id, W_NAME) }
+    for r in rows { if !write_digest(w, r.value_digest) { return null } }
+    for r in rows { write_word(w, r.set_id, W_SET) }
+    for r in rows { write_word(w, r.changed_at, W_CHANGED) }
+    for r in rows { write_word(w, r.verified_at, W_VERIFIED) }
+    for r in rows { w.byte(durability_byte(r.durability)) }
+    for r in rows { if !write_digest(w, r.shape_fp) { return null } }
+    for r in rows { if !write_digest(w, r.code_hash) { return null } }
+    w.bytes()
+}
+
+/// How wide one record's meta is — where a caller places the values
+/// region, without decoding a thing.
+export fn record_width() -> int { META_RECORD }
+
+/// The run the bytes spell, or nothing when the header is foreign, the
+/// stride is not this module's, or the column region is not a whole
+/// number of records of the declared count.
+export fn decode_meta(b: Bytes) -> Meta? {
+    let r = reader(b)
+    let magic? = read_text(r) else { return null }
+    if magic != META_MAGIC { return null }
+    let version? = read_int(r) else { return null }
+    if version != META_VERSION { return null }
+    let stride? = read_int(r) else { return null }
+    if stride != META_RECORD { return null }
+    let count? = read_count(r) else { return null }
+    let at = r.at.get()
+    let region = b.length - at
+    if region % META_RECORD != 0 { return null }
+    if region / META_RECORD != count { return null }
+    Meta { count: count, at: at, body: b }
+}
+
+/// A decoded meta region — the whole bytes and the header's end. Every
+/// field is a slice computed from the index, so verification reads the
+/// meta region and nothing else.
+export type Meta = { count: int, at: int, body: Bytes }
+
+impl Meta {
+    fn records() -> int { self.count }
+
+    /// Where this region ends — the family's values start here.
+    fn span() -> int { self.at + self.count * META_RECORD }
+
+    fn action_key(i: int) -> Bytes { self.field(i, O_ACTION, W_ACTION) }
+
+    fn name_id(i: int) -> int { read_word(self.field(i, O_NAME, W_NAME)) }
+
+    fn value_digest(i: int) -> Bytes { self.field(i, O_VALUE, W_VALUE) }
+
+    fn set_id(i: int) -> int { read_word(self.field(i, O_SET, W_SET)) }
+
+    fn changed_at(i: int) -> int { read_word(self.field(i, O_CHANGED, W_CHANGED)) }
+
+    fn verified_at(i: int) -> int { read_word(self.field(i, O_VERIFIED, W_VERIFIED)) }
+
+    fn durability(i: int) -> Durability? {
+        durability_of(read_word(self.field(i, O_DURABILITY, W_DURABILITY)))
+    }
+
+    fn shape_fp(i: int) -> Bytes { self.field(i, O_SHAPE, W_SHAPE) }
+
+    fn code_hash(i: int) -> Bytes { self.field(i, O_CODE, W_CODE) }
+
+    /// The `width` bytes of record `i`'s column at `offset` within the
+    /// record: the column's `count` slots stand contiguous, so the index
+    /// alone finds it.
+    fn field(i: int, offset: int, width: int) -> Bytes {
+        let lo = self.at + self.count * offset + i * width
+        self.body.slice(lo, lo + width)
+    }
+}
+
+// ── Fixed-width words ──
+
+/// One column's element little-endian, `width` bytes.
+fn write_word(w: Writer, v: int, width: int) {
+    for k in 0..width { w.byte((v >> 8 * k) & 255) }
+}
+
+fn read_word(b: Bytes) -> int {
+    mut v = 0
+    for k in 0..b.length { v = v | (b.at(k) << 8 * k) }
+    v
+}
+
+/// One digest laid down raw — already the fixed width, never length-prefixed.
+fn write_digest(w: Writer, d: Bytes) -> bool {
+    if d.length != DIGEST { return false }
+    for k in 0..d.length { w.byte(d.at(k)) }
+    true
+}
+
+fn durability_byte(d: Durability) -> int {
+    match d { .Low -> 0, .High -> 1 }
+}
+
+fn durability_of(b: int) -> Durability? {
+    match b { 0 -> Durability.Low, 1 -> Durability.High, rest -> null }
+}
+
+fn read_text(r: Reader) -> string? {
+    match r.text() { .Ok(v) -> v, .Err(_) -> null }
+}
+
+fn read_int(r: Reader) -> int? {
+    match r.int() { .Ok(v) -> v, .Err(_) -> null }
+}
+
+fn read_count(r: Reader) -> int? {
+    match r.count() { .Ok(v) -> v, .Err(_) -> null }
+}

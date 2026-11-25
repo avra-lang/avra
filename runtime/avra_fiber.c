@@ -1357,6 +1357,7 @@ static int world_waited_virtually(void) {
 static void fiber_start(void);
 static int case_deadlocked(void);
 static int run_deadlocked(void);
+static void deadlock_reported(void);
 static void tasks_answered(void);
 typedef struct DoorNames DoorNames;
 static void listing_written(int dfd, const DoorNames* names);
@@ -1547,6 +1548,7 @@ static Fiber* next_with_world(void) {
         if (g_timers_len == 0 && g_parked_fds == 0) {
             if (case_deadlocked()) continue;
             if (run_deadlocked()) { g_in_world = 0; return NULL; }
+            deadlock_reported();
             avra_trap("every task is waiting — deadlock");
         }
         pool_trim();
@@ -2334,7 +2336,7 @@ int64_t avra_vtask_next(void) {
     g_vnext_asking = 1;
     Fiber* next = next_ready();
     g_vnext_asking = 0;
-    if (!next) return 0;
+    if (!next) { deadlock_reported(); return 0; }
     if (!next->virtual) avra_trap("defect: the evaluator's scheduler met a compiled task");
     next->state = FIBER_RUNNING;
     return (int64_t)(uintptr_t)next;
@@ -2437,6 +2439,9 @@ typedef long long (*Numbered)(const Fiber*);
 // A task's number in its case: 0 the case's own, then in spawn order.
 static long long case_id(const Fiber* f) { return (long long)((uint64_t)id_of(f) - g_case_first - 1); }
 
+// A task's number in its process: the order it was spawned, `main` at 0.
+static long long process_id(const Fiber* f) { return (long long)id_of(f); }
+
 // What a waiter waits on, in words, its task numbered by `no`.
 static void waiter_said(FILE* out, Numbered no, const Fiber* f, const Waiter* w) {
     if (!w->filed) return;
@@ -2481,6 +2486,35 @@ static void waits_said(FILE* out, Numbered no, const Fiber* f) {
     }
     for (uint32_t i = 0; i < f->held_n; i++) waiter_said(out, no, f, &f->held[i]);
     for (const Over* o = f->more; o; o = o->next) waiter_said(out, no, f, &o->w);
+}
+
+// A DEADLOCK NAMES ITS TASKS: the header the case report uses, then one
+// line per live task, oldest first — who it is, where it was spawned and
+// each thing it waits on. The SAME two writers the case report uses, so
+// the walk exists once. A cold path: stderr only, no allocation, so it
+// is legal where `avra_trap` is called. `main` is static and not on
+// `g_all`, so a compiled run names it first; an evaluated run has no
+// `main` among its tasks.
+__attribute__((noinline, cold))
+static void deadlock_reported(void) {
+    fputs("avra: every task is waiting, and nothing can wake one:\n", stderr);
+    int evaluated = 0;
+    for (const Fiber* f = g_all; f; f = f->all_next) evaluated |= f->virtual;
+    if (!evaluated) {
+        fputs("  ", stderr);
+        task_said(stderr, process_id, &g_main);
+        waits_said(stderr, process_id, &g_main);
+        fputc('\n', stderr);
+    }
+    const Fiber* last = g_all;
+    while (last && last->all_next) last = last->all_next;
+    for (const Fiber* f = last; f; f = f->all_prev) {
+        if (f->state == FIBER_DONE) continue;
+        fputs("  ", stderr);
+        task_said(stderr, process_id, f);
+        waits_said(stderr, process_id, f);
+        fputc('\n', stderr);
+    }
 }
 
 // A TASK ABANDONED LEAVES EVERY PLACE IT IS FILED and never runs again:

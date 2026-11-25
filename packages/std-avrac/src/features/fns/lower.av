@@ -1,6 +1,19 @@
 //! The call's lowering rule: argument registers, then one Call —
 //! the memory pass owns the retains the ABI demands.
-use core.{ExprId, Reg, Ins, StmtId, DeclId, SeatMark, TypeId, Arrow, mut_mark, state_mark, no_marks}
+use core.{
+    ExprId,
+    Reg,
+    Ins,
+    StmtId,
+    DeclId,
+    SeatMark,
+    TypeId,
+    Arrow,
+    mut_mark,
+    state_mark,
+    no_marks,
+    rt_waits,
+}
 use features.{LowerCx, bound_decl_of}
 
 /// `code_hash(f)` over a declared fn: the hash of `f`'s code, which the
@@ -135,9 +148,11 @@ export fn lower_return(mut cx: LowerCx, s: StmtId) -> Reg? {
 fn extern_call_reg(mut cx: LowerCx, e: ExprId, symbol: string, regs: List<Reg>) -> Reg {
     if cx.shape_at(e) is .Void {
         cx.emit(Ins.CallRtVoid(symbol, regs))
+        cx.unwound_after(rt_waits(symbol))
         return cx.zero(e)
     }
     let dst = cx.result(e)
     cx.emit(Ins.CallRt(dst, symbol, regs))
+    cx.unwound_after(rt_waits(symbol))
     dst
 }

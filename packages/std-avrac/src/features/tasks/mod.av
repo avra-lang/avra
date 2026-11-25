@@ -4,8 +4,8 @@
 //! so none outlives the block it was made in. A `Tasks` owner holds
 //! tasks whose answers nobody reads — `conns.push(spawn serve(c))` —
 //! shedding each as it finishes, so a loop that never ends owns only
-//! the tasks still running. A deadline is `@std/time`'s `within`
-//! component, over the scheduler's rows.
+//! the tasks still running. `within limit { body }` gives the body a
+//! deadline, over the scheduler's rows.
 use features.{
     LanguageFeature,
     BuilderRow,
@@ -15,6 +15,7 @@ use features.{
     TypeRow,
     no_law,
     no_variants,
+    no_view,
     TypeArgs,
     unknown_answer,
     void_answer,
@@ -25,13 +26,14 @@ use diagnostics.{DiagCode}
 
 export fn tasks() -> LanguageFeature {
     let rows = table<BuilderRow> {
-        name    | build
-        "spawn" | build_spawn
+        name          | build
+        "spawn"       | build_spawn
+        "within_expr" | build_within
     }
     let properties = table<PropertyRow> {
-        name    | takes   | check       | lower       | waits
-        "await" | on_task | check_await | lower_await | true
-        "done"  | on_task | check_done  | lower_done  | false
+        name    | takes   | check       | lower       | waits | view
+        "await" | on_task | check_await | lower_await | true  | await_view
+        "done"  | on_task | check_done  | lower_done  | false | no_view
     }
     let codes = table<DiagCode> {
         kind               | summary
@@ -39,9 +41,10 @@ export fn tasks() -> LanguageFeature {
         "flow.broken"      | "an `@unbroken` fn lets no other task run"
     }
     let methods = table<MethodRow> {
-        name   | takes         | check      | lower      | effect                | answers
-        "new"  | on_tasks_type | check_new  | lower_new  | ReceiverEffect.Read   | unknown_answer
-        "push" | on_tasks      | check_push | lower_push | ReceiverEffect.Shared | void_answer
+        name     | takes         | check        | lower        | effect                | answers
+        "new"    | on_tasks_type | check_new    | lower_new    | ReceiverEffect.Read   | unknown_answer
+        "push"   | on_tasks      | check_push   | lower_push   | ReceiverEffect.Shared | void_answer
+        "cancel" | on_task       | check_cancel | lower_cancel | ReceiverEffect.Shared | void_answer
     }
     let types = table<TypeRow> {
         name    | arity | slots | judge  | builds      | variants
@@ -51,6 +54,7 @@ export fn tasks() -> LanguageFeature {
     LanguageFeature tasks {
         gram: grammar {
             primary = "spawn" v:expression -> spawn(v)
+            primary = "within" l:expression b:block -> within_expr(l, b) @head(l)
         }
         builders: rows
         properties: properties

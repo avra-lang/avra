@@ -1426,6 +1426,7 @@ impl SourceText {
                 parent,
             ),
             .Block(stmts, value) -> grouped(self.block_expr(stmts, value, id, depth), atom_tier, parent),
+            .Within(limit, body) -> grouped(self.within_group(limit, body, id, depth, c), atom_tier, parent),
             .Collect(body) -> grouped(self.instance("collect", [body], null, depth), loosest_tier, parent),
             .Call(callee, pins, args) -> {
                 let head = "${source_name(callee.of)}${self.pins(pins)}"
@@ -1884,6 +1885,21 @@ impl SourceText {
     mut fn if_group_else(no: ExprId, one: bool, depth: int) -> string {
         let chain? = self.chained_if(no, depth) else { return self.block(no, one, depth) }
         chain
+    }
+
+    /// `within limit { … }` — a head keeping its brace, the limit
+    /// spelled back as the span the writer wrote rather than the `ms`
+    /// field the builder read off it.
+    mut fn within_group(limit: ExprId, body: ExprId, id: ExprId, depth: int, col: int) -> string {
+        let one = self.span_flat(self.store.expr_span(id))
+        let shown = self.span_written(limit)
+        "within ${self.expression(shown, loosest_tier, depth, resolved_col(col, depth) + 7)} ${self.block(body, one, depth)}"
+    }
+
+    /// The expression a limit was written as: the builder read its `ms`
+    /// field, so the printer spells back what stands under that read.
+    fn span_written(limit: ExprId) -> ExprId {
+        match self.store.expr(limit) { .Prop(subject, _) -> subject, rest -> limit }
     }
 
     mut fn chained_if(no: ExprId, depth: int) -> string? {

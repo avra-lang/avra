@@ -8,8 +8,10 @@
 // `within` the same switches while one deadline stands filed;
 // `gate` a round trip between two tasks over two gates — a claim and a
 // park each way, NO value moved and no lock taken — bare, then with a
-// `within` opened around each wait; `hold <n> <ms>` parks n tasks on one
-// gate for that long and prints its pid, for a reader outside.
+// `within` opened around each wait; `g1` the runtime change gate's own
+// rows (the cold parked spawn, spawn+join, a bare round trip), the least
+// of five; `hold <n> <ms>` parks n tasks on one gate for that long and
+// prints its pid, for a reader outside.
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -91,14 +93,14 @@ static void* ponger(void* self) {
     return answer(n);
 }
 
-static double rally(int bounded) {
+static double rally(int64_t n, int bounded) {
     g_bounded = bounded;
     g_ping = avra_gate_new();
     g_pong = avra_gate_new();
-    void* other = spawn1(ponger, TURNS);
+    void* other = spawn1(ponger, n);
     avra_fiber_yield();
     double t0 = now_ns();
-    for (int i = 0; i < TURNS; i++) {
+    for (int64_t i = 0; i < n; i++) {
         avra_gate_claim(g_ping);
         waited(g_pong);
     }
@@ -118,13 +120,43 @@ static double alive(void) {
     return now_ns() - t0;
 }
 
+// THE RUNTIME CHANGE GATE'S ROWS, in ONE process: the transition edges a
+// runtime change can tax — the cold parked spawn (first allocation of
+// the process), spawn+join one at a time, and a gate round trip (two
+// empty ready-queue edges). The counts are smaller than the bench's so
+// the gate fits a PR's minute; a ratio of per-unit times is independent
+// of the count. A row that only measured a warm process would miss the
+// cold cost, so the parked row runs FIRST.
+static void g1_rows(const char* tag) {
+    enum { G1_TRIPS = 200000 };
+    printf("%s_spawn_parked_cold %.0f %d\n", tag, parked(), MANY);
+    double one = 1e18;
+    for (int r = 0; r < 5; r++) {
+        double t0 = now_ns();
+        for (int i = 0; i < MANY; i++) joined(spawn1(square, i));
+        double t1 = now_ns();
+        if (t1 - t0 < one) one = t1 - t0;
+    }
+    printf("%s_spawn_one %.0f %d\n", tag, one, MANY);
+    double bare = 1e18;
+    for (int r = 0; r < 5; r++) {
+        double b = rally(G1_TRIPS, 0);
+        if (b < bare) bare = b;
+    }
+    printf("%s_gate_round_trip %.0f %d\n", tag, bare, G1_TRIPS);
+}
+
 int main(int argc, char** argv) {
     const char* tag = argc > 1 ? argv[1] : "c";
     int switches_only = argc > 2 && strcmp(argv[2], "switch") == 0;
+    if (argc > 2 && strcmp(argv[2], "g1") == 0) {
+        g1_rows(tag);
+        return 0;
+    }
     if (argc > 2 && strcmp(argv[2], "gate") == 0) {
         double bare = 1e18, bounded = 1e18;
         for (int r = 0; r < 5; r++) {
-            double b = rally(0), w = rally(1);
+            double b = rally(TURNS, 0), w = rally(TURNS, 1);
             if (b < bare) bare = b;
             if (w < bounded) bounded = w;
         }

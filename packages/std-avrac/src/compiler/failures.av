@@ -105,7 +105,7 @@ export type ErrorSite = {
     @local @index owner: DeclId,
     how: SiteHow,
     @local @index callee: DeclId?,
-    @local within: ExprId?,
+    @local enclosing: ExprId?,
     @local errors: List<TypeId>,
 }
 
@@ -370,26 +370,26 @@ fn built_error_sites(fs: FailSurvey, decls: Decls, d: DeclId, store: SyntaxArena
     fails.concat(props).concat(catches)
 }
 
-fn fail_error_site(fs: FailSurvey, d: DeclId, v: ExprId, within: ExprId?) -> ErrorSite {
+fn fail_error_site(fs: FailSurvey, d: DeclId, v: ExprId, enclosing: ExprId?) -> ErrorSite {
     let c = fail_contribution(fs, v)
     ErrorSite {
         at: v,
         owner: d,
         how: SiteHow.Fail,
         callee: edge_callee(c),
-        within: within,
+        enclosing: enclosing,
         errors: some_list(direct_ty(c)),
     }
 }
 
-fn propagate_error_site(fs: FailSurvey, decls: Decls, d: DeclId, v: ExprId, within: ExprId?) -> ErrorSite? {
+fn propagate_error_site(fs: FailSurvey, decls: Decls, d: DeclId, v: ExprId, enclosing: ExprId?) -> ErrorSite? {
     let c? = propagate_contribution(fs, decls, v) else { return null }
     ErrorSite {
         at: v,
         owner: d,
         how: SiteHow.Propagate,
         callee: edge_callee(c),
-        within: within,
+        enclosing: enclosing,
         errors: some_list(direct_ty(c)),
     }
 }
@@ -410,7 +410,7 @@ fn catch_error_site(
     d: DeclId,
     store: SyntaxArena,
     c: ExprId,
-    within: ExprId?,
+    enclosing: ExprId?,
 ) -> ErrorSite {
     match store.expr(c) {
         .Catch(subject, _, _, _) -> {
@@ -420,16 +420,23 @@ fn catch_error_site(
                 owner: d,
                 how: SiteHow.Catch,
                 callee: contribution_callee(contribution),
-                within: within,
+                enclosing: enclosing,
                 errors: contribution_errors(contribution),
             }
         },
-        rest -> ErrorSite { at: c, owner: d, how: SiteHow.Catch, callee: null, within: within, errors: [] },
+        rest -> ErrorSite {
+            at: c,
+            owner: d,
+            how: SiteHow.Catch,
+            callee: null,
+            enclosing: enclosing,
+            errors: [],
+        },
     }
 }
 
-fn within_is(within: ExprId?, c: ExprId) -> bool {
-    let w? = within else { return false }
+fn within_is(enclosing: ExprId?, c: ExprId) -> bool {
+    let w? = enclosing else { return false }
     same_expr(w, c)
 }
 
@@ -643,7 +650,7 @@ impl Workspace {
     /// fix, since it would index across files by a number that means
     /// nothing outside one).
     fn error_sites_within(owner: DeclId, c: ExprId) -> List<ErrorSite> {
-        [x for x in ErrorSite.by_owner(self.decls.rows_db.get(), owner) if within_is(x.within, c)]
+        [x for x in ErrorSite.by_owner(self.decls.rows_db.get(), owner) if within_is(x.enclosing, c)]
     }
 
     /// The error topology's own worked example (design doc §6.7,
