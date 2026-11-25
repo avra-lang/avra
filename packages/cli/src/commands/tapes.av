@@ -669,7 +669,7 @@ fn binary_asked(
         engine,
         "link words",
         Pass.Link,
-        () -> linked_words(engine, disk, false, t.target),
+        () -> linked_words(engine, disk, false, t.target, disk.file_at(bin)),
     )
     BinaryAsked {
         entry: disk.file_at(bin),
@@ -750,7 +750,7 @@ fn native_asked(engine: QueryEngine, disk: Disk, bin: string, stem: string, mode
         engine,
         "link words",
         Pass.Link,
-        () -> linked_words(engine, disk, mode.shared),
+        () -> linked_words(engine, disk, mode.shared, "", disk.file_at(bin)),
     )
         .concat(stack_words(mode.opt))
         .concat(pool_words(instruments))
@@ -2589,11 +2589,16 @@ fn entry_ran(engine: QueryEngine, disk: Disk, argv: string) -> int {
     }
 }
 
-/// The objects and flags the packages a program on `disk` reaches link with, read off their
-/// manifests, the packages in name order: for a non-host `target`, the wasm objects each names.
-fn linked_words(engine: QueryEngine, disk: Disk, shared: bool = false, target: string = "") -> List<
-    string,
-> {
+/// The objects and flags the packages a program on `disk` links with, read off their manifests, the
+/// packages in name order: for a non-host `target`, the wasm objects each names; for the program
+/// `entry`, only the packages whose externs it calls.
+fn linked_words(
+    engine: QueryEngine,
+    disk: Disk,
+    shared: bool = false,
+    target: string = "",
+    entry: SourceFileAddress? = null,
+) -> List<string> {
     program_link_words(
         engine,
         disk.name,
@@ -2605,6 +2610,7 @@ fn linked_words(engine: QueryEngine, disk: Disk, shared: bool = false, target: s
         },
         shared,
         target,
+        entry,
     )
 }
 

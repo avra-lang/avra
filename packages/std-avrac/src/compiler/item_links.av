@@ -3,6 +3,7 @@
 use core.{flatten}
 use compiler.host.{Manifest, read_manifest}
 use diagnostics.{Diag, SourceFile}
+use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryEngine}
 use @std.program.sorted.{sorted_by}
 use @std.text.{text_before}
@@ -14,6 +15,16 @@ export type LinkRead = { root_of: fn(string) -> string, manifest_of: fn(string) 
 /// The packages the program rooted at `package` reaches, in name order.
 export fn program_packages(engine: QueryEngine, package: string) -> List<string> {
     sorted_by(package_reach(engine, package).packages, (a, b) -> text_before(a, b))
+}
+
+/// THE PACKAGES A LINK CARRIES: a package's objects define the externs it declares, so its row rides
+/// only a program that calls one of them — the root package's own always, and every package the
+/// program reaches where no `entry` is named or its program isn't made.
+fn linked_packages(engine: QueryEngine, package: string, entry: SourceFileAddress?) -> List<string> {
+    let reached = program_packages(engine, package)
+    let e? = entry else { return reached }
+    let called? = externs_called(engine, e) else { return reached }
+    [p for p in reached if p == package || called.any(it.external && it.file.package_name == p)]
 }
 
 /// Every hole inside a longer `[link]` word of the manifests the program rooted at `package`
@@ -30,17 +41,18 @@ export fn program_unset_holes(
     )
 }
 
-/// The objects and flags the packages the program rooted at `package` reaches link with, read off
-/// their manifests, the packages in name order: for a wasm `target`, the wasm objects each
-/// names.
+/// The objects and flags the packages the program rooted at `package` links with, read off their
+/// manifests, the packages in name order (`linked_packages`): for a wasm `target`, the wasm objects
+/// each names.
 export fn program_link_words(
     engine: QueryEngine,
     package: string,
     read: LinkRead,
     shared: bool = false,
     target: string = "",
+    entry: SourceFileAddress? = null,
 ) -> List<string> {
-    let reached = program_packages(engine, package)
+    let reached = linked_packages(engine, package, entry)
     let wasm = match platform_of(target) { .Wasm -> true, .Native or .Apple(_) -> false }
     if wasm {
         return flatten(

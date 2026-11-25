@@ -1128,11 +1128,12 @@ export fn program_calls(engine: QueryEngine, file: SourceFileAddress) -> Program
 export fn externs_reached(engine: QueryEngine, file: SourceFileAddress, package: string) -> List<
     string,
 > {
-    let reached = match program_reached(engine, file) {
-        .Program(p) -> p,
-        .Unmade(_why, _at) -> { return [] },
-    }
-    [c.symbol for c in reached.externs if c.external && c.file.package_name == package]
+    [c.symbol for c in externs_called(engine, file) ?? [] if c.external && c.file.package_name == package]
+}
+
+/// The externs the program `file` runs reaches; absent for a program not made.
+export fn externs_called(engine: QueryEngine, file: SourceFileAddress) -> List<CalledFn>? {
+    match program_reached(engine, file) { .Program(p) -> p.externs, .Unmade(_why, _at) -> null }
 }
 
 /// THE SHAPE FOLDED FORWARD from `last` over the walk as it stands (`program_walked`): each unit the

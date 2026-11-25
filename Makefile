@@ -449,7 +449,7 @@ wasm-archive:
 # `$(shell)` runs on every make, `try` included.
 SUITES = $(shell ./wisp suites 2>/dev/null)
 
-.PHONY: compiler-key pool-check ready dev-server cost cost-accept cost-snapshot trap-marks llvm-libs libs-self-test read-lists db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz exact-patches ui-board ui-browser ui-browser-skip host-events layout-oracle wasm-host-check wasm-tasks-mutations h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks test tested clean seed-check gate externs idioms fuzz-http soak-http dogfooding-rules rule-examples idioms-accept bench bench-collections bench-build fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns parser witnesses libs libscope layers pre-commit-hook inputs inputs-accept read-cost \
+.PHONY: ui-board-native compiler-key pool-check ready dev-server cost cost-accept cost-snapshot trap-marks llvm-libs libs-self-test read-lists db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz exact-patches ui-board ui-browser ui-browser-skip host-events layout-oracle wasm-host-check wasm-tasks-mutations h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks test tested clean seed-check gate externs idioms fuzz-http soak-http dogfooding-rules rule-examples idioms-accept bench bench-collections bench-build fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns parser witnesses libs libscope layers pre-commit-hook inputs inputs-accept read-cost \
         check run ir emit build-native native-check avra suites install sprite sprite-check codecs-static keepers voices voices-accept defects tool-witnesses ci-invariants wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept wasm-routes-size speed-ratchet speed-accept wall-ratchet wall-accept warm-edit warm-accept work-accept
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -1155,6 +1155,12 @@ exact-patches: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 ui-board:
 	@sh tools/ui_board.sh
 
+# THE BOARD'S NATIVE BINARY CARRIES ONLY THE C IT CALLS: its terminal program
+# built --release holds no sqlite3_ symbol and stays within native.budget
+# (tools/ui_board_native.sh).
+ui-board-native:
+	@sh tools/bounded.sh 600 sh tools/ui_board_native.sh
+
 # A PAGE'S SERVER RUNS BESIDE IT UNDER `avra dev`: a page package naming
 # `[dev] server` is served with that package's program on one origin, and a
 # save to the server's source is served without a restart (tools/dev_server_check.sh).
@@ -1443,7 +1449,7 @@ witness: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 # refuses in that case, which is honest and not a gate failure, so
 # its status is discarded here.
 # not a keeper — a lane's local union of keepers; CI runs each in its own job
-gate: llvm-libs seed-check stems vocab fingerprints ui-host ui-host-test ui-board ui-browser layers pre-commit-hook codecs-static rt-header rt-ns parser witnesses externs idioms dogfooding-rules fmt-lossless attack tested runtime-tests traps compile-slots witness tool-witnesses cache-attacks
+gate: llvm-libs seed-check stems vocab fingerprints ui-host ui-host-test ui-board ui-board-native ui-browser layers pre-commit-hook codecs-static rt-header rt-ns parser witnesses externs idioms dogfooding-rules fmt-lossless attack tested runtime-tests traps compile-slots witness tool-witnesses cache-attacks
 	@sh tools/gate_receipt.sh write || true
 
 tested: $(COMPILER_OBJS) $(PACKAGE_OBJS) libs
