@@ -1,0 +1,31 @@
+// A trait default that loops over `fields(Self)` is a shape, read per
+// implementer; any other default is an ordinary body.
+use @std.avrac.compiler.{parse_source}
+use @std.avrac.core.{StmtId}
+
+/// Whether the first member of the program's one trait is shaped.
+fn first_shaped(source: string) -> bool {
+    let p = parse_source(source)
+    let members = p.store.member_fns(p.stmts[0])
+    p.voices.list.is_empty() && p.store.shaped(members[0])
+}
+
+spec "features/impls — a shaped trait default" {
+    given "a default" {
+        then "that folds `fields(Self)` is shaped" {
+            first_shaped("trait T {\n    fn n() -> int { [1 for f in fields(Self)].length }\n}")
+        }
+        then "that filters the fields is shaped" {
+            first_shaped("trait T {\n    fn n() -> int { [1 for f in fields(Self) if f.ok].length }\n}")
+        }
+        then "with an ordinary comprehension is not" {
+            !first_shaped("trait T {\n    fn n() -> int { [x for x in [1, 2]].length }\n}")
+        }
+        then "over another call is not" {
+            !first_shaped("trait T {\n    fn n() -> int { [x for x in fields(self)].length }\n}")
+        }
+        then "with no body is not" {
+            !first_shaped("trait T {\n    fn n() -> int\n}")
+        }
+    }
+}
