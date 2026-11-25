@@ -1,0 +1,91 @@
+// `@memo`: an answer with no saved shape, held as a value for the process and read as its working-out
+// read. A question that takes it depends on what the memo read; a later engine of the same process
+// takes the held answer only where those reads hold there.
+use tests.support.store_in_memory.{StoreInMemory, store_in_memory}
+use answer_record.{question}
+use query_engine.{QueryDefinition, QueryEngine, query_engine}
+use saved_query.{memo}
+
+/// What the memo answers: words and a fn, which no saved shape holds.
+type Heard = { words: string, again: fn() -> string }
+
+/// How many times the memo's written body has run in this process.
+once fn bodies_run() -> Cell<int> { Cell.new(0) }
+
+fn ask_text(engine: QueryEngine, query_name: string, argument: string) -> string {
+    engine.answer_to(question(query_name, "code", argument.bytes())).copied().text() ?? ""
+}
+
+/// The source's text for `word`, heard once a process where its read holds.
+@memo
+fn heard(engine: QueryEngine, word: string) -> Heard {
+    bodies_run().set(bodies_run().get() + 1)
+    let said = "${word}: ${ask_text(engine, "source", word)}"
+    Heard { words: said, again: () -> said }
+}
+
+/// `source` is an input; `first` answers what the memo heard for its argument.
+fn definitions(world: Cell<string>) -> List<QueryDefinition> {
+    [
+        QueryDefinition {
+            query_name: "source",
+            code_hash: "code",
+            is_input: true,
+            compute: (_e, _a) -> world.get().bytes(),
+        },
+        QueryDefinition {
+            query_name: "first",
+            code_hash: "code",
+            is_input: false,
+            compute: (e, a) -> (heard(e, a.text() ?? "").again)().bytes(),
+        },
+    ]
+}
+
+/// One engine asking `first` about `word` while the world says `text`.
+fn engine_asking(store: StoreInMemory, text: string, word: string) -> QueryEngine {
+    let engine = query_engine(store, definitions(Cell.new(text)))
+    let _ = ask_text(engine, "first", word)
+    engine.frontier_kept()
+    engine
+}
+
+spec "memo — an answer with no saved shape, read as its working-out read" {
+    given "a question that read the memo, and a later process" {
+        then "nothing edited, the later process works nothing out" {
+            let store = store_in_memory()
+            let _ = engine_asking(store, "same", "stands")
+            engine_asking(store, "same", "stands").worked_count() == 0
+        }
+        then "an edit of what the memo read reaches its reader, which answers from the edit" {
+            let store = store_in_memory()
+            let _ = engine_asking(store, "old", "moves")
+            let later = engine_asking(store, "new", "moves")
+            later.computed_queries().any(it == "first") &&
+                ask_text(later, "first", "moves") == "moves: new"
+        }
+    }
+    given "one process whose engines over one store see an edit between them, as the dev server's do" {
+        then "the later engine works the memo out again from the edit" {
+            let before = bodies_run().get()
+            let store = store_in_memory()
+            let _ = engine_asking(store, "old", "edited")
+            let later = engine_asking(store, "new", "edited")
+            bodies_run().get() == before + 2 && ask_text(later, "first", "edited") == "edited: new"
+        }
+        then "with nothing edited, the later engine takes the held answer without working it out" {
+            let before = bodies_run().get()
+            let store = store_in_memory()
+            let _ = engine_asking(store, "kept", "held")
+            let later = query_engine(store, definitions(Cell.new("kept")))
+            heard(later, "held").words == "held: kept" && bodies_run().get() == before + 1
+        }
+        then "within one engine the memo's body runs once, however often it is asked" {
+            let before = bodies_run().get()
+            let engine = query_engine(store_in_memory(), definitions(Cell.new("once")))
+            let a = heard(engine, "twice").words
+            let b = heard(engine, "twice").words
+            bodies_run().get() == before + 1 && a == b
+        }
+    }
+}

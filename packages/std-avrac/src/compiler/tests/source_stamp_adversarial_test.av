@@ -1,0 +1,53 @@
+// A SOURCE'S EDIT IS ALWAYS READ AS ONE. The program layer reads a file through its stamp, so the
+// attack is the edit a stamp can't see: the same size, in the same instant, between two processes
+// over one store on disk. The next process answers the edit every time, and an unedited file
+// answers alike and works nothing out.
+use @std.avrac.testing.held.{Pass, held_on_disk}
+use @std.io.{make_dirs, write_text}
+use @std.path.{dir_of}
+use @std.time.{stamp}
+
+/// A scratch package nothing has ever written to, its store beside it.
+fn stamp_root(name: string) -> string {
+    let root = "/tmp/avra-srcstamp-test/${name}-${stamp()}"
+    let _ = make_dirs("${root}/src")
+    let _ = write_text("${root}/avra.toml", "[package]\nname = \"app\"\nversion = \"0.1.0\"\n")
+    root
+}
+
+/// `text` written as the package's entry, then one process over the store beside it.
+fn stamp_pass(root: string, text: string) -> Pass {
+    let path = "${root}/src/main.av"
+    let _ = make_dirs(dir_of(path))
+    let _ = write_text(path, text)
+    held_on_disk(root).passed_on_disk(path, "${root}/.store")
+}
+
+spec "compiler/build — an edit is read through the stamp, never past it" {
+    given "a source file edited between two processes, the same size, at once" {
+        then "the second process answers the edit" {
+            let root = stamp_root("edit")
+            stamp_pass(root, "1\n").ran == "1" && stamp_pass(root, "2\n").ran == "2"
+        }
+        then "three successive edits are each answered" {
+            let root = stamp_root("edit3")
+            stamp_pass(root, "1\n").ran == "1" &&
+                stamp_pass(root, "2\n").ran == "2" &&
+                stamp_pass(root, "3\n").ran == "3"
+        }
+        then "an edit and its undoing are each answered" {
+            let root = stamp_root("undo")
+            stamp_pass(root, "1\n").ran == "1" &&
+                stamp_pass(root, "2\n").ran == "2" &&
+                stamp_pass(root, "1\n").ran == "1"
+        }
+    }
+    given "an UNEDITED file, read by two processes" {
+        then "the second answers alike and works nothing out" {
+            let root = stamp_root("stable")
+            let _ = stamp_pass(root, "1\n")
+            let again = stamp_pass(root, "1\n")
+            again.ran == "1" && again.worked.is_empty()
+        }
+    }
+}

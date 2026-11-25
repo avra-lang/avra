@@ -1,0 +1,61 @@
+//! The dev relay's event stream: each piece the server writes reaches the reader while the server's
+//! stream is still open, and ending the relayed stream closes the server's request.
+use @std.net.{listen}
+use @std.time.{ms, secs, sleep, now_ms}
+use @std.http.frame.{framed, limits}
+use @std.http.http.{Request, Unrouted, Response, Pulled, Stream}
+use @std.http.body.{Body}
+use @std.http.sse.{Event, Feed, Next, Source, Resume, feed, event_stream}
+use @std.http.server.{served, timing}
+use commands.dev_backend.{relayed}
+
+type App = {}
+
+fn requested() -> Request<Unrouted>? {
+    let raw = "GET /events HTTP/1.1\r\nHost: h\r\nAccept: text/event-stream\r\n\r\n".bytes()
+    match framed(raw, 0, 0, limits()) {
+        .Complete(head) -> Request { raw: raw, head: head, body: Body.Empty, peer: "t", params: Unrouted {} },
+        .Partial or .Refused(_) -> null,
+    }
+}
+
+/// The backend's stream over `f`, `gone` set when its request ends.
+fn watching(f: Feed, gone: Cell<bool>) -> Response {
+    let from = f.resumed(null).source()
+    event_stream(.From(Source { next: (w) -> from.next(w), ended: () -> gone.set(true) }), secs(10))
+}
+
+fn text_of(p: Pulled) -> string {
+    match p { .Data(b) -> b.text() ?? "?", .End -> "end", .Failed -> "failed" }
+}
+
+/// Each piece pulled as it is published, then the backend's end.
+fn shown() -> string {
+    let l = match listen("127.0.0.1", 0) { .Ok(x) -> x, .Err(_) -> { return "no port" } }
+    let f = feed(16)
+    let gone = Cell.new(false)
+    let s = served(l, () -> App {}, limits(), timing()) { _app, _q -> watching(f, gone) }
+    spawn s.run(cores: 1)
+    defer s.stop()
+    let q? = requested() else { return "no request" }
+    let r = relayed(l.port, "backend", q)
+    let st? = r.stream else { return "no stream" }
+    let _ = f.publish(Event { data: "one" })
+    let first = text_of(st.pull())
+    let _ = f.publish(Event { data: "two" })
+    let second = text_of(st.pull())
+    let open = !gone.get()
+    st.ended()
+    let until = now_ms() + 2000
+    while !gone.get() && now_ms() < until {
+        let _ = f.publish(Event { data: "after" })
+        sleep(ms(20))
+    }
+    "${r.status} ${first.contains("data: one")} ${second.contains("data: two")} open=${open} closed=${gone.get()}"
+}
+
+spec "dev relay" {
+    given "a server stream the page reads through the relay" {
+        then "pieces arrive as written and ending it ends the server's request" { shown() == "200 true true open=true closed=true" }
+    }
+}

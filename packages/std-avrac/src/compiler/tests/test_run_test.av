@@ -1,0 +1,34 @@
+// The light phase's pure parts: the hand-off's words, and what a status
+// means. Attacked at the edges: the stage word alone, the old command's
+// spelling, the statuses a trap, a signal and a missing binary produce.
+use @std.avrac.compiler.{verdict_of, stage_words, staged_binaries}
+
+spec "the hand-off" {
+    given "a fresh image's words" {
+        then "the binaries a hand-off wrote are the binaries it reads" {
+            (staged_binaries(stage_words(["build/a", "build/b"])) ?? []).join(",") == "build/a,build/b"
+        }
+        then "a command line is no hand-off" {
+            staged_binaries(["test", "packages/x"]) == null
+        }
+        then "the old `staged` command's line is no hand-off" {
+            staged_binaries(["staged", "build/a"]) == null
+        }
+        then "the stage word alone is no hand-off" {
+            staged_binaries(stage_words([])) == null
+        }
+        then "an empty line is no hand-off" {
+            staged_binaries([]) == null
+        }
+    }
+}
+
+spec "the verdict" {
+    given "a status" {
+        then "0 is green" { verdict_of(0) is .Green }
+        then "1 is red" { verdict_of(1) is .Red }
+        then "127 is a binary that could not start" { verdict_of(127) is .CouldNotStart }
+        then "a trap's 2 is a death" { verdict_of(2) is .Died }
+        then "a signal's 128+9 is a death" { verdict_of(137) is .Died }
+    }
+}

@@ -1,0 +1,52 @@
+// THE DERIVE AGAINST ITS OWN DECLARATIONS: one row is pinned as the text
+// the record declares, so a derive that misreads a payload is told; a copy
+// of the rows made by the same derive could never disagree.
+//
+// ORDER IS THE CONTRACT: a build's arguments are filled in payload
+// order, so `Pair.Two` carries two SAME-TYPED payloads — without that
+// case an order check proves nothing, since every other fixture is
+// told apart by its types alone.
+use @std.avrac.core.{PayloadRow, node_payload_rows, row_for, Grammar}
+use @std.meta.{derive, Field}
+// LICENSED modules.unused_import: the derive's generated grammar_payloads names Loc, one place per payload
+use @std.errors.{Loc}
+
+@derive(Grammar)
+enum Pair { Two(first: int, second: int) }
+
+/// ONE rendering, applied to both sides — a second spelling would
+/// compare a copy with itself.
+fn rendered(rows: List<PayloadRow>, owner: string, variant: string) -> string {
+    let r? = row_for(rows, owner, variant) else { return "<no such variant>" }
+    "${r.owner}.${r.variant}(${[payload_shown(p) for p in r.payloads].join(", ")})"
+}
+
+fn payload_shown(p: Field) -> string { "${p.name}: ${p.ty}" }
+
+spec "core/grammar_derive" {
+    given "the derived rows" {
+        then "`Expr.Body` reads as the record declares it" {
+            rendered(node_payload_rows(), "Expr", "Body") == "Expr.Body(word: string, parts: List<string>, holes: List<ExprId>, view: BodyView)"
+        }
+        then "a variant the model does not declare reads as absent" {
+            rendered(node_payload_rows(), "Expr", "NoSuchVariant") == "<no such variant>"
+        }
+        then "a variant carrying NOTHING is PRESENT — the empty case is not the missing one" {
+            rendered(node_payload_rows(), "Pat", "Wild") == "Pat.Wild()"
+        }
+    }
+    given "two payloads of the SAME type" {
+
+        then "declaration order is what the row carries" {
+            rendered(grammar_payloads_Pair(), "Pair", "Two") == "Pair.Two(first: int, second: int)"
+        }
+    }
+    given "the union" {
+
+        then "it reaches all three node enums" {
+            row_for(node_payload_rows(), "Expr", "StrLit") != null &&
+                row_for(node_payload_rows(), "Stmt", "MutLet") != null &&
+                row_for(node_payload_rows(), "Pat", "Bind") != null
+        }
+    }
+}

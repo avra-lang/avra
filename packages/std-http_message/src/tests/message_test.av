@@ -1,0 +1,87 @@
+use @std.http_message.message.{Body, Header, Method, Reply, Request}
+use @std.time.{ms}
+
+spec "a request is a value" {
+    given "the constructors" {
+        then "get names its URL and carries nothing" {
+            let r = Request.get("https://example.test/a")
+            r.method == Method.Get &&
+                r.url == "https://example.test/a" &&
+                r.headers.is_empty() &&
+                r.body is .Empty &&
+                r.timeout == null &&
+                r.retries == 0
+        }
+        then "post, put and patch carry their body, delete none" {
+            let p = Request.post("/p", Body.Text("hi"))
+            let u = Request.put("/u", Body.Json("{}"))
+            let c = Request.patch("/c", Body.Empty)
+            let d = Request.delete("/d")
+            p.method == Method.Post &&
+                u.method == Method.Put &&
+                c.method == Method.Patch &&
+                d.method == Method.Delete &&
+                d.body is .Empty
+        }
+    }
+    given "a request refined with `with`" {
+        then "the timeout and the retries are set, the rest kept" {
+            let r = Request.get("/x") with { timeout: ms(2500), retries: 2 }
+            r.timeout == ms(2500) && r.retries == 2 && r.url == "/x"
+        }
+        then "a field is added after those it has, in order" {
+            let r = Request.get("/x").header("accept", "text/plain").header("x-id", "7")
+            r.headers.length == 2 && r.headers[0].name == "accept" && r.headers[1].value == "7"
+        }
+    }
+    given "two requests built alike" {
+        then "their fields agree, so a request replays" {
+            let a = Request.post("/p", Body.Form([Header { name: "k", value: "v" }]))
+            let b = Request.post("/p", Body.Form([Header { name: "k", value: "v" }]))
+            a.url == b.url && a.method == b.method && a.body is .Form
+        }
+    }
+    given "a method spelled out" {
+        then "each of the nine writes its request-line word" {
+            [
+                Method.Get.word(),
+                Method.Head.word(),
+                Method.Post.word(),
+                Method.Put.word(),
+                Method.Delete.word(),
+                Method.Patch.word(),
+                Method.Options.word(),
+                Method.Connect.word(),
+                Method.Trace.word(),
+            ]
+                .join(" ") == "GET HEAD POST PUT DELETE PATCH OPTIONS CONNECT TRACE"
+        }
+    }
+    given "a reply" {
+        then "carries a status and a whole body, with no fields unless it names some" {
+            let r = Reply { status: 200, body: "ok".bytes() }
+            r.status == 200 && r.headers.is_empty() && r.body.length == 2
+        }
+    }
+    given "a body as it travels" {
+        then "text names its charset, json is its text, octets bring their type, empty has none" {
+            let t = Body.Text("héllo").encoded()
+            let j = Body.Json("{}").encoded()
+            let o = Body.Octets("xy".bytes(), "application/x-test").encoded()
+            let e = Body.Empty.encoded()
+            t.kind == "text/plain; charset=utf-8" &&
+                t.bytes.length == 6 &&
+                j.kind == "application/json" &&
+                j.bytes.text() == "{}" &&
+                o.kind == "application/x-test" &&
+                e.kind == "" &&
+                e.bytes.length == 0
+        }
+        then "a form is percent-encoded as parameters joined by &" {
+            let f = Body
+                .Form([Header { name: "a b", value: "1&2" }, Header { name: "c", value: "=" }])
+                .encoded()
+            f.kind == "application/x-www-form-urlencoded" && f.bytes.text() == "a%20b=1%262&c=%3D"
+        }
+    }
+}

@@ -1,0 +1,149 @@
+// A `Bytes` field is a BLOB column: octets go in and come back as they
+// were, an empty run stays a value and only NULL is absence.
+use @std.db.{model}
+use @std.db.apply.{MigrateError}
+use @std.db.error.{ModelError, modeled}
+use @std.errors.{Error}
+use @std.sqlite.{Db, sql}
+use @std.sqlite.error.{SqlError}
+use @std.text.{from_codepoint, hex, repeat}
+
+@model
+type Blob = {
+    id: int = 0,
+    body: Bytes,
+    extra: Bytes?,
+}
+
+/// The line `extra` adds to `Blob`'s shape text.
+const WITHOUT_EXTRA: string = "\nextra|BLOB|null|-|-|-|-|-"
+
+fn seeded() -> Result<Db, SqlError> {
+    let db = Db.memory()?
+    Blob.create_table(db)?
+    db
+}
+
+/// What a row holds, absence and emptiness told apart.
+fn held(r: Blob) -> string { "${hex(r.body)}/${r.body.length}|${shown(r.extra)}" }
+
+fn shown(b: Bytes?) -> string {
+    let octets? = b else { return "absent" }
+    "${hex(octets)}/${octets.length}"
+}
+
+/// A row written and found again.
+fn kept(body: Bytes, extra: Bytes?) -> Result<string, ModelError> {
+    let db = modeled(seeded())?
+    let made = Blob { body: body, extra: extra }.insert(db)?
+    let found? = modeled(Blob.find(db, made.id))? else { return "gone" }
+    held(found)
+}
+
+/// What the database itself calls the two columns of the first row.
+fn classes(body: Bytes, extra: Bytes?) -> Result<string, ModelError> {
+    let db = modeled(seeded())?
+    let _ = Blob { body: body, extra: extra }.insert(db)?
+    let row? = modeled(
+        db.first(sql("SELECT typeof(body), typeof(extra), length(body) FROM \"Blob\"")),
+    )? else { return "none" }
+    "${row.values[0].text() catch "?"} ${row.values[1].text() catch "?"} ${row.values[2].int() catch -1}"
+}
+
+fn large() -> Result<string, ModelError> {
+    let body = repeat("0123456789abcdef", 65536).bytes()
+    let db = modeled(seeded())?
+    let made = Blob { body: body, extra: null }.insert(db)?
+    let found? = modeled(Blob.find(db, made.id))? else { return "gone" }
+    "${found.body.length} ${found.body.at(0)} ${found.body.at(1048575)} ${hex(found.body) == hex(body)}"
+}
+
+fn changed() -> Result<string, ModelError> {
+    let db = modeled(seeded())?
+    let made = Blob { body: "one".bytes(), extra: "x".bytes() }.insert(db)?
+    let n = (made with { body: "".bytes(), extra: null }).update(db)?
+    let emptied = held(modeled(Blob.find(db, made.id))?!)
+    let _ = (made with { body: "two".bytes(), extra: "".bytes() }).update(db)?
+    "${n} ${emptied} ${held(modeled(Blob.find(db, made.id))?!)}"
+}
+
+fn filtered() -> Result<string, ModelError> {
+    let db = modeled(seeded())?
+    let _ = Blob { body: "a".bytes(), extra: null }.insert(db)?
+    let _ = Blob { body: "b".bytes(), extra: "".bytes() }.insert(db)?
+    let _ = Blob { body: "b".bytes(), extra: "z".bytes() }.insert(db)?
+    let by_body = (modeled(Blob.where(db, body: "b".bytes()))?).length
+    let absent = [r.id for r in modeled(Blob.where(db, extra: .Is(null)))?]
+    let empty = [r.id for r in modeled(Blob.where(db, extra: .Is("".bytes())))?]
+    "${by_body} ${absent.length}:${absent[0]} ${empty.length}:${empty[0]}"
+}
+
+fn kind_of(r: Result<int, MigrateError>) -> string {
+    match r { .Ok(n) -> "ok ${n}", .Err(e) -> e.describe().kind }
+}
+
+/// A table made before the model held `extra`, then grown to hold it.
+fn grown_to_hold() -> Result<string, SqlError> {
+    let db = Db.memory()?
+    let _ = kind_of(Blob.migrate(db))
+    let _ = db.run(sql("ALTER TABLE \"Blob\" DROP COLUMN \"extra\""))?
+    let _ = db
+        .run(
+            sql(
+                "UPDATE \"__avra_models__\" SET shape = ? WHERE table_name = 'Blob'",
+                [.Text(Blob.shape().replace(WITHOUT_EXTRA, ""))],
+            ),
+        )?
+    let _ = db.run(sql("INSERT INTO \"Blob\" (body) VALUES (x'00ff')"))?
+    let steps = kind_of(Blob.migrate(db))
+    let rows = Blob.all(db)?
+    "${steps} ${held(rows[0])} ${kind_of(Blob.migrate(db))}"
+}
+
+fn said(r: Result<string, ModelError>) -> string {
+    match r { .Ok(t) -> t, .Err(_) -> "failed" }
+}
+
+spec "std/db a Bytes field" {
+    given "the model's table" {
+        then "holds a BLOB column, required or not as the field says" {
+            Blob.create_table_sql().contains("\"body\" BLOB NOT NULL, \"extra\" BLOB,")
+        }
+        then "and records both under that word" {
+            Blob.shape().contains("body|BLOB|notnull") && Blob.shape().contains(WITHOUT_EXTRA)
+        }
+    }
+    given "octets written" {
+        then "come back as they were" { said(kept("hi".bytes(), "yo".bytes())) == "6869/2|796f/2" }
+        then "an octet of zero is one octet among the rest" {
+            said(kept("a${from_codepoint(0)}b".bytes(), null)) == "610062/3|absent"
+        }
+        then "a megabyte comes back whole" { said(large()) == "1048576 48 102 true" }
+        then "and the database holds them as blobs" { said(classes("hi".bytes(), "yo".bytes())) == "blob blob 2" }
+    }
+    given "no octets at all" {
+        then "an empty run is a value: it comes back empty, never absent" {
+            said(kept("".bytes(), "".bytes())) == "/0|/0"
+        }
+        then "and the database holds an empty blob, not NULL" { said(classes("".bytes(), "".bytes())) == "blob blob 0" }
+        then "while an absent one is NULL and comes back absent" {
+            said(kept("".bytes(), null)) == "/0|absent" &&
+                said(classes("".bytes(), null)) == "blob null 0"
+        }
+    }
+    given "a row updated" {
+        then "its octets are replaced, to empty and to absent and back" {
+            said(changed()) == "1 /0|absent 74776f/3|/0"
+        }
+    }
+    given "a filter" {
+        then "matches octets by equality, and tells the absent from the empty" {
+            said(filtered()) == "2 1:1 1:2"
+        }
+    }
+    given "a table made before the model held the field" {
+        then "grows the column, and the rows already there hold nothing in it" {
+            (grown_to_hold() catch e -> "failed: ${e.message}") == "ok 1 00ff/2|absent ok 0"
+        }
+    }
+}

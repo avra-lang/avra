@@ -1,0 +1,950 @@
+// The store home's own laws: the empty cases, names, the terms a full
+// queue is judged by, the hold, and a row no item can be read from.
+use @std.queue.{Dead, Delivery, HomeError, Order, Overflow, Parcel, Terms, key}
+use @std.relation.stable.{CodecFault, Reader, Writer}
+use @std.sqlite.{Db, sql}
+use @std.sqlite.c.{sqlite3_stmt_status}
+use @std.sqlite.error.{SqlError}
+use @std.text.{from_codepoint, repeat}
+use @std.time.{Time, ms, secs}
+use fault.{homed}
+use queue_store.{Store, Wire, bury_in, store_home_with, wire_of}
+use rows.{take_next}
+use unread.{Unread}
+use @std.queue.tests.support.laws.{terms}
+use tests.support.wires.{int_wire}
+
+/// A record of no fields.
+type Nothing = {}
+
+/// A wire of no octets.
+fn nothing_wire() -> Wire<Nothing> {
+    wire_of<Nothing>(2, "Nothing", nothing_written, nothing_read)
+}
+
+fn nothing_written(_w: Writer, _n: Nothing) {}
+
+fn nothing_read(_r: Reader) -> Result<Nothing, CodecFault> {
+    Nothing {}
+}
+
+/// Text as its own octets.
+fn text_wire() -> Wire<string> {
+    Wire {
+        shape: 3,
+        descriptor: "string",
+        encode: (s: string) -> s.bytes(),
+        decode: (b: Bytes) -> b.text(),
+    }
+}
+
+fn fifo() -> Terms {
+    terms(60000, Order.fifo)
+}
+
+fn ints(db: Db, queue: string, t: Terms) -> Result<Store<int>, HomeError> {
+    store_home_with<int>(db, queue, t, int_wire())
+}
+
+fn fresh(t: Terms) -> Result<Store<int>, HomeError> {
+    ints(homed(Db.memory())?, "jobs", t)
+}
+
+/// A count read straight from the database.
+fn rows(db: Db, text: string) -> Result<int, HomeError> {
+    homed((homed(db.scalar(sql(text)))?).int())
+}
+
+// ── The empty cases ──
+
+fn empty_body() -> Result<bool, HomeError> {
+    let q = store_home_with<Nothing>(homed(Db.memory())?, "jobs", fifo(), nothing_wire())?
+    let _ = q.send(Nothing {}, key("a"))?
+    let stored = rows(
+        q.db,
+        "SELECT count(*) FROM \"FlowItem\" WHERE typeof(\"body\") = 'blob' AND length(\"body\") = 0",
+    )?
+    let d? = q.take()? else { return false }
+    stored == 1 && q.ack(d)? && q.depth()? == 0
+}
+
+fn empty_key() -> Result<bool, HomeError> {
+    let q = fresh(terms(60000, Order.by_key))?
+    let _ = q.send(1, key(""))?
+    let _ = q.send(2, key(""))?
+    let d? = q.take()? else { return false }
+    d.key.text == "" && q.take()? == null
+}
+
+fn empty_queue_name() -> Result<bool, HomeError> {
+    let db = homed(Db.memory())?
+    let unnamed = ints(db, "", fifo())?
+    let named = ints(db, "jobs", fifo())?
+    let _ = unnamed.send(7, key("a"))?
+    let d? = unnamed.take()? else { return false }
+    d.item == 7 && named.depth()? == 0 && named.take()? == null
+}
+
+fn empty_name() -> Result<bool, HomeError> {
+    let q = fresh(fifo())?
+    let first = q.send_as(1, key("a"), "")?
+    let again = q.send_as(2, key("a"), "")?
+    let _ = q.send(3, key("a"))?
+    let _ = q.send(4, key("a"))?
+    first != null && first == again && q.depth()? == 3
+}
+
+// ── What crosses to SQLite ──
+
+fn nul_body() -> Result<bool, HomeError> {
+    let q = store_home_with<string>(homed(Db.memory())?, "jobs", fifo(), text_wire())?
+    let holed = "a" + from_codepoint(0) + "b"
+    let _ = q.send(holed, key("a"))?
+    let d? = q.take()? else { return false }
+    d.item == holed && d.item.length == 3 && d.item != "a"
+}
+
+fn nul_leads_body() -> Result<bool, HomeError> {
+    let q = store_home_with<string>(homed(Db.memory())?, "jobs", fifo(), text_wire())?
+    let holed = from_codepoint(0) + "b"
+    let _ = q.send(holed, key("a"))?
+    let stored = rows(q.db, "SELECT length(\"body\") FROM \"FlowItem\"")?
+    let d? = q.take()? else { return false }
+    stored == 2 && d.item == holed
+}
+
+fn large_body() -> Result<bool, HomeError> {
+    let q = store_home_with<string>(homed(Db.memory())?, "jobs", fifo(), text_wire())?
+    let big = repeat("0123456789abcdef", 65536)
+    let _ = q.send(big, key("a"))?
+    let stored = rows(q.db, "SELECT length(\"body\") FROM \"FlowItem\"")?
+    let d? = q.take()? else { return false }
+    stored == 1048576 && d.item == big
+}
+
+fn nul_key_and_queue() -> Result<bool, HomeError> {
+    let db = homed(Db.memory())?
+    let holed = "jobs" + from_codepoint(0) + "x"
+    let q = ints(db, holed, fifo())?
+    let prefix = ints(db, "jobs", fifo())?
+    let _ = q.send(1, key(holed))?
+    let d? = q.take()? else { return false }
+    d.key.text == holed && prefix.depth()? == 0 && q.depth()? == 1
+}
+
+// ── Names ──
+
+fn named_once() -> Result<bool, HomeError> {
+    let q = fresh(fifo())?
+    let first = q.send_as(1, key("a"), "welcome-1")?
+    let again = q.send_as(2, key("a"), "welcome-1")?
+    let other = q.send_as(3, key("a"), "welcome-2")?
+    let d? = q.take()? else { return false }
+    first != null &&
+        first == again &&
+        other != first &&
+        q.depth()? == 2 &&
+        d.item == 1 &&
+        d.id == first!
+}
+
+fn named_past_window() -> Result<bool, HomeError> {
+    let q = fresh(fifo())? with { dedupe: ms(0) }
+    let first = q.send_as(1, key("a"), "welcome-1")?
+    let again = q.send_as(2, key("a"), "welcome-1")?
+    first != again && q.depth()? == 2 && rows(q.db, "SELECT count(*) FROM \"FlowSeen\"")? == 1
+}
+
+fn named_per_queue() -> Result<bool, HomeError> {
+    let db = homed(Db.memory())?
+    let a = ints(db, "a", fifo())?
+    let b = ints(db, "b", fifo())?
+    let _ = a.send_as(1, key("k"), "n")?
+    let _ = b.send_as(2, key("k"), "n")?
+    a.depth()? == 1 && b.depth()? == 1
+}
+
+fn named_after_settle() -> Result<bool, HomeError> {
+    let q = fresh(fifo())?
+    let first = q.send_as(1, key("a"), "n")?
+    let d? = q.take()? else { return false }
+    let _ = q.ack(d)?
+    q.send_as(2, key("a"), "n")? == first && q.depth()? == 0
+}
+
+// ── A full queue ──
+
+fn full(o: Overflow) -> Result<Store<int>, HomeError> {
+    let q = fresh(fifo() with { capacity: 2, overflow: o })?
+    let _ = q.send(1, key("a"))?
+    let _ = q.send(2, key("b"))?
+    q
+}
+
+fn overflow_fail() -> Result<bool, HomeError> {
+    let q = full(Overflow.fail)?
+    q.send(3, key("c"))? == null && q.depth()? == 2
+}
+
+fn overflow_park() -> Result<bool, HomeError> {
+    let q = full(Overflow.park)?
+    let asked_back = match q.send(3, key("c")) { .Err(.Unreachable(_)) -> true, rest -> false }
+    asked_back && q.depth()? == 2
+}
+
+fn overflow_drop_newest() -> Result<bool, HomeError> {
+    let q = full(Overflow.drop_newest)?
+    let id = q.send(3, key("c"))?
+    let d? = q.take()? else { return false }
+    id != null && id != d.id && d.item == 1 && q.depth()? == 2
+}
+
+fn overflow_drop_oldest() -> Result<bool, HomeError> {
+    let q = full(Overflow.drop_oldest)?
+    let _ = q.send(3, key("c"))?
+    let d? = q.take()? else { return false }
+    d.item == 2 && q.depth()? == 2
+}
+
+fn overflow_latest() -> Result<bool, HomeError> {
+    let q = full(Overflow.latest)?
+    let _ = q.send(3, key("b"))?
+    let first? = q.take()? else { return false }
+    let _ = q.ack(first)?
+    let second? = q.take()? else { return false }
+    first.item == 1 && second.item == 3 && q.depth()? == 1
+}
+
+fn room_counts_waiting() -> Result<bool, HomeError> {
+    let q = full(Overflow.fail)?
+    let d? = q.take()? else { return false }
+    q.send(3, key("c"))? != null && q.send(4, key("d"))? == null && q.depth()? == 3
+}
+
+// ── Many at once ──
+
+fn parcels(n: int) -> List<Parcel<int>> {
+    [Parcel { item: i, key: key("k${i}") } for i in 0..n]
+}
+
+fn send_all_judges_each() -> Result<bool, HomeError> {
+    let q = fresh(fifo() with { capacity: 2, overflow: Overflow.fail })?
+    let ids = q.send_all(parcels(3))?
+    ids.length == 3 && ids[0] != null && ids[1] != null && ids[2] == null && q.depth()? == 2
+}
+
+fn send_all_keeps_none_of_a_failure() -> Result<bool, HomeError> {
+    let q = fresh(fifo() with { capacity: 2, overflow: Overflow.park })?
+    let asked_back = match q.send_all(parcels(3)) { .Err(.Unreachable(_)) -> true, rest -> false }
+    asked_back && q.depth()? == 0 && rows(q.db, "SELECT count(*) FROM \"FlowItem\"")? == 0
+}
+
+fn counts_follow_the_rows() -> Result<bool, HomeError> {
+    let q = fresh(terms(60000, Order.by_key) with { capacity: 64 })?
+    let _ = q.send_all(parcels(5))?
+    let held = q.taken(3)?
+    let _ = q.ack_all([held[0], held[1]])?
+    let _ = q.release(held[2], ms(60000))?
+    let _ = homed(q.db.run(sql("DELETE FROM \"FlowItem\" WHERE \"id\" = 5")))?
+    rows(q.db, "SELECT \"waiting\" FROM \"FlowRoom\"")? == 1 &&
+        rows(q.db, "SELECT \"owed\" FROM \"FlowRoom\"")? == 2 &&
+        q.depth()? == 2
+}
+
+fn counts_standing_rows_once() -> Result<bool, HomeError> {
+    let db = homed(Db.memory())?
+    let q = ints(db, "jobs", fifo())?
+    let _ = q.send_all(parcels(3))?
+    let _ = q.take()?
+    let _ = homed(db.run(sql("DELETE FROM \"FlowRoom\"")))?
+    let again = ints(db, "jobs", fifo())?
+    again.depth()? == 3 && rows(db, "SELECT \"waiting\" FROM \"FlowRoom\"")? == 2
+}
+
+// ── What a verb costs ──
+
+/// SQLite's own count for every statement the connection keeps, summed:
+/// `op` 4 is the steps its machine took, 5 the times it compiled a
+/// statement again, 6 the programs it ran — a statement and each
+/// trigger it fired. `text` names one statement by its start; empty
+/// names them all.
+fn spent(db: Db, op: int, text: string) -> int {
+    db
+        .cache
+        .get()
+        .fold(
+            0,
+            (sum: int, c) -> if c.text.starts_with(text) { sum + sqlite3_stmt_status(c.stmt.h()!, op, 0) } else { sum },
+        )
+}
+
+/// A queue of `n` waiting items, each under a key of its own.
+fn waiting(n: int, order: Order) -> Result<Store<int>, HomeError> {
+    let q = fresh(terms(60000, order) with { capacity: 100000, overflow: Overflow.fail })?
+    let _ = q.send_all(parcels(n))?
+    q
+}
+
+fn send_runs_five_programs() -> Result<bool, HomeError> {
+    let q = waiting(1, Order.fifo)?
+    let _ = q.send(1, key("a"))?
+    let ran = spent(q.db, 6, "")
+    let began = spent(q.db, 6, "BEGIN")
+    for i in 0..100 { let _ = q.send(i, key("k"))? }
+    spent(q.db, 6, "") - ran == 500 && spent(q.db, 6, "BEGIN") - began == 100
+}
+
+fn take_and_ack_run_nine_programs() -> Result<bool, HomeError> {
+    let q = waiting(200, Order.fifo)?
+    let warm? = q.take()? else { return false }
+    let _ = q.ack(warm)?
+    let ran = spent(q.db, 6, "")
+    for _i in 0..100 {
+        let d? = q.take()? else { return false }
+        let _ = q.ack(d)?
+    }
+    spent(q.db, 6, "") - ran == 900
+}
+
+fn a_batch_is_one_transaction() -> Result<bool, HomeError> {
+    let q = waiting(100, Order.by_key)?
+    let _ = q.ack_all(q.taken(100)?)?
+    let ran = spent(q.db, 6, "")
+    let began = spent(q.db, 6, "BEGIN")
+    let _ = q.send_all(parcels(100))?
+    let held = q.taken(100)?
+    let _ = q.ack_all(held)?
+    held.length == 100 && spent(q.db, 6, "") - ran == 907 && spent(q.db, 6, "BEGIN") - began == 3
+}
+
+fn statements_are_compiled_once() -> Result<bool, HomeError> {
+    let q = waiting(100, Order.by_key)?
+    let _ = q.ack_all(q.taken(100)?)?
+    let kept = q.db.cache.get().length
+    let again = spent(q.db, 5, "")
+    for i in 0..20 {
+        let _ = q.send_all(parcels(10))?
+        let _ = q.send(i, key("k"))?
+        let _ = q.ack_all(q.taken(10)?)?
+        let d? = q.take()? else { return false }
+        let _ = q.ack(d)?
+    }
+    q.db.cache.get().length == kept && spent(q.db, 5, "") == again
+}
+
+/// The steps SQLite's machine takes for one send into a queue of `n`.
+fn send_steps(n: int) -> Result<int, HomeError> {
+    let q = waiting(n, Order.fifo)?
+    let before = spent(q.db, 4, "")
+    let _ = q.send(1, key("a"))?
+    spent(q.db, 4, "") - before
+}
+
+/// The steps one take costs over `n` waiting items with `held` of them
+/// under a live lease, and whether it was handed an item.
+fn take_steps(n: int, held: int, order: Order) -> Result<int, HomeError> {
+    let q = waiting(n, order)?
+    let _ = q.taken(held)?
+    let before = spent(q.db, 4, "UPDATE \"FlowItem\" SET \"reader\"")
+    let _ = q.take()?
+    spent(q.db, 4, "UPDATE \"FlowItem\" SET \"reader\"") - before
+}
+
+/// The steps `drop_oldest` takes to give up the oldest waiting item of a
+/// full queue past `n` released rows that back off, and whether the one
+/// given up was that item, no backing-off row among the gone.
+fn dropping_steps(n: int) -> Result<int, HomeError> {
+    let db = homed(Db.memory())?
+    let wide = ints(
+        db,
+        "jobs",
+        terms(60000, Order.by_key) with { capacity: 100000, overflow: Overflow.drop_oldest },
+    )?
+    let _ = wide.send_all(parcels(n))?
+    for d in wide.taken(n)? { let _ = wide.release(d, secs(60))? }
+    let full = ints(
+        db,
+        "jobs",
+        terms(60000, Order.by_key) with { capacity: 2, overflow: Overflow.drop_oldest },
+    )?
+    let _ = full.send(1, key("a"))?
+    let _ = full.send(2, key("b"))?
+    let before = spent(db, 4, drop_text)
+    let _ = full.send(3, key("c"))?
+    let gone = rows(db, "SELECT count(*) FROM \"FlowItem\" WHERE \"key\" = 'a'")? == 0 &&
+        rows(db, "SELECT count(*) FROM \"FlowItem\" WHERE \"epoch\" > 0")? == n
+    if !gone { return 0 - 1 }
+    spent(db, 4, drop_text) - before
+}
+
+/// A row sent `after:` under terms that allow it, older than the line,
+/// is the oldest waiting item once the terms give up the oldest.
+fn delayed_row_is_given_up_first() -> Result<bool, HomeError> {
+    let db = homed(Db.memory())?
+    let wide = ints(
+        db,
+        "jobs",
+        terms(60000, Order.by_key) with { capacity: 100000, overflow: Overflow.fail },
+    )?
+    let _ = wide.send_after(1, key("a"), secs(60))?
+    let _ = wide.send(2, key("b"))?
+    let full = ints(
+        db,
+        "jobs",
+        terms(60000, Order.by_key) with { capacity: 2, overflow: Overflow.drop_oldest },
+    )?
+    let _ = full.send(3, key("c"))?
+    rows(db, "SELECT count(*) FROM \"FlowItem\" WHERE \"key\" = 'a'")? == 0 &&
+        rows(db, "SELECT count(*) FROM \"FlowItem\"")? == 2
+}
+
+/// The start of `drop_oldest`'s statement.
+const drop_text: string = "DELETE FROM \"FlowItem\" WHERE \"id\" = (SELECT min"
+
+fn dropping_walks_no_backing_off_row() -> Result<bool, HomeError> {
+    let few = dropping_steps(10)?
+    few > 0 && dropping_steps(2000)? == few
+}
+
+fn send_cost_is_the_same_at_any_depth() -> Result<bool, HomeError> {
+    send_steps(5000)? == send_steps(10)?
+}
+
+fn take_passes_no_held_row() -> Result<bool, HomeError> {
+    take_steps(5000, 2000, Order.by_key)? == take_steps(5000, 10, Order.by_key)?
+}
+
+fn take_walks_no_waiting_row() -> Result<bool, HomeError> {
+    take_steps(5000, 0, Order.fifo)? == take_steps(10, 0, Order.fifo)?
+}
+
+fn blocked_take_walks_no_waiting_row() -> Result<bool, HomeError> {
+    take_steps(5000, 1, Order.fifo)? == take_steps(10, 1, Order.fifo)?
+}
+
+// ── The take's plan ──
+
+/// How SQLite plans the take, its steps joined.
+fn take_plan() -> Result<string, HomeError> {
+    let q = fresh(fifo())?
+    let steps = homed(
+        q
+            .db
+            .all(
+                sql(
+                    "EXPLAIN QUERY PLAN " + take_next,
+                    [.Text(""), .Int(0), .Text("jobs"), .Int(0), .Int(1), .Int(0)],
+                ),
+            ),
+    )?
+    [homed(step.text(3))? for step in steps].join("; ")
+}
+
+fn take_sorts_nothing() -> Result<bool, HomeError> {
+    let plan = take_plan()?
+    !plan.contains("TEMP B-TREE") &&
+        plan.contains("USING INDEX FlowItem_index(queue) present(in_line) (queue=?)") &&
+        plan
+            .contains(
+                "USING INDEX FlowItem_index(queue,leased_until) present(leased_until) (queue=? AND leased_until<?)",
+            ) &&
+        plan.contains("FlowItem_taken")
+}
+
+// ── The hold ──
+
+fn stale(q: Store<int>) -> Result<Delivery<int>, HomeError> {
+    let _ = q.send(1, key("a"))?
+    let first? = q.take()? else { return .Err(HomeError.Refused("nothing to take")) }
+    let _ = q.release(first, ms(0))?
+    let _ = q.take()?
+    first
+}
+
+fn stale_bury_asks_no_letter() -> Result<bool, HomeError> {
+    let q = fresh(fifo())?
+    let old = stale(q)?
+    let asked: Cell<int> = Cell.new(0)
+    let buried = q
+        .bury(
+            old,
+            (n: int) -> {
+                asked.set(asked.get() + 1)
+                true
+            },
+        )?
+    !buried && asked.get() == 0 && q.depth()? == 1
+}
+
+fn foreign_id_holds_nothing() -> Result<bool, HomeError> {
+    let q = fresh(fifo())?
+    let _ = q.send(1, key("a"))?
+    let d? = q.take()? else { return false }
+    !q.ack(d with { id: "welcome" })? && !q.ack(d with { id: "" })? && q.ack(d)?
+}
+
+fn other_queue_holds_nothing() -> Result<bool, HomeError> {
+    let db = homed(Db.memory())?
+    let a = ints(db, "a", fifo())?
+    let b = ints(db, "b", fifo())?
+    let _ = a.send(1, key("k"))?
+    let d? = a.take()? else { return false }
+    !b.ack(d)? && a.depth()? == 1
+}
+
+fn lease_runs_out() -> Result<bool, HomeError> {
+    let at: Cell<int> = Cell.new(1000)
+    let q = fresh(terms(1, Order.fifo))? with { clock: () -> Time { ns: at.get() } }
+    let _ = q.send(1, key("a"))?
+    let first? = q.take()? else { return false }
+    let early = q.take()?
+    at.set(1000 + ms(1).ns)
+    let second? = q.take()? else { return false }
+    early == null && second.epoch == first.epoch + 1 && !q.ack(first)? && q.ack(second)?
+}
+
+fn reader_named() -> Result<bool, HomeError> {
+    let q = fresh(fifo())? with { reader: "w1" }
+    let _ = q.send(1, key("a"))?
+    let d? = q.take()? else { return false }
+    let held = rows(q.db, "SELECT count(*) FROM \"FlowItem\" WHERE \"reader\" = 'w1'")?
+    let _ = q.release(d, ms(0))?
+    held == 1 && rows(q.db, "SELECT count(*) FROM \"FlowItem\" WHERE \"reader\" IS NULL")? == 1
+}
+
+// ── One transaction ──
+
+fn joins_callers_transaction() -> Result<bool, HomeError> {
+    let q = fresh(fifo())?
+    let _ = homed(q.db.begin())?
+    let _ = q.send(1, key("a"))?
+    let inside = q.depth()?
+    let _ = homed(q.db.rollback())?
+    inside == 1 && q.depth()? == 0
+}
+
+fn letter(db: Db) -> Result<Store<string>, HomeError> {
+    store_home_with<string>(
+        db,
+        "jobs/dead",
+        fifo() with { capacity: 1, overflow: Overflow.fail },
+        text_wire(),
+    )
+}
+
+fn bury_in_moves() -> Result<bool, HomeError> {
+    let q = fresh(fifo())?
+    let dead = letter(q.db)?
+    let _ = q.send(1, key("a"))?
+    let d? = q.take()? else { return false }
+    let moved = bury_in(q, d, dead, "job 1 failed")?
+    let l? = dead.take()? else { return false }
+    moved && q.depth()? == 0 && l.item == "job 1 failed" && l.key.text == "a"
+}
+
+fn bury_in_stale_moves_nothing() -> Result<bool, HomeError> {
+    let q = fresh(fifo())?
+    let dead = letter(q.db)?
+    let old = stale(q)?
+    !bury_in(q, old, dead, "late")? && dead.depth()? == 0 && q.depth()? == 1
+}
+
+fn bury_in_full_letter_keeps_hold() -> Result<bool, HomeError> {
+    let q = fresh(fifo())?
+    let dead = letter(q.db)?
+    let _ = dead.send("standing", key("z"))?
+    let _ = q.send(1, key("a"))?
+    let d? = q.take()? else { return false }
+    !bury_in(q, d, dead, "job 1 failed")? && q.depth()? == 1 && dead.depth()? == 1 && q.ack(d)?
+}
+
+fn forgets_unreadable_before() -> Result<bool, HomeError> {
+    let at: Cell<int> = Cell.new(1000)
+    let q = fresh(fifo())? with { clock: () -> Time { ns: at.get() } }
+    let other = ints(q.db, "other", fifo())?
+    let none = q.forget_unreadable(Time { ns: 5000 })?
+    let _ = file_no_int(q.db)?
+    let _ = q.take()?
+    at.set(2000)
+    let _ = file_no_int(q.db)?
+    let _ = q.take()?
+    let early = q.forget_unreadable(Time { ns: 1000 })?
+    let theirs = other.forget_unreadable(Time { ns: 5000 })?
+    let first = q.forget_unreadable(Time { ns: 2000 })?
+    let left = q.unreadable()?
+    none == 0 &&
+        early == 0 &&
+        theirs == 0 &&
+        first == 1 &&
+        left.length == 1 &&
+        left[0].at.ns == 2000 &&
+        q.forget_unreadable(Time { ns: 2001 })? == 1 &&
+        q.unreadable_count()? == 0
+}
+
+/// A bury into a full letter of one under `overflow`: whether it was
+/// refused in the letter's own words, with the item still held and the
+/// letter's standing item still its own.
+fn dropping_letter_is_refused(overflow: Overflow, word: string) -> Result<bool, HomeError> {
+    let q = fresh(fifo())?
+    let dead = letter(q.db)? with { terms: fifo() with { capacity: 1, overflow: overflow } }
+    let _ = dead.send("standing", key("z"))?
+    let _ = q.send(1, key("a"))?
+    let d? = q.take()? else { return false }
+    let refused = match bury_in(q, d, dead, "job 1 failed") {
+        .Err(.Refused(why)) -> why == "a letter never drops an item, and `jobs/dead` overflows with `${word}`",
+        rest -> false,
+    }
+    refused &&
+        q.depth()? == 1 &&
+        (dead.take()?)?.item == "standing" &&
+        dead.depth()? == 1 &&
+        q.ack(d)?
+}
+
+fn no_letter_drops() -> Result<bool, HomeError> {
+    dropping_letter_is_refused(Overflow.drop_newest, "drop_newest")? &&
+        dropping_letter_is_refused(Overflow.drop_oldest, "drop_oldest")? &&
+        dropping_letter_is_refused(Overflow.latest, "latest")?
+}
+
+fn parked_letter_keeps_hold() -> Result<bool, HomeError> {
+    let q = fresh(fifo())?
+    let dead = letter(q.db)? with { terms: fifo() with { capacity: 1, overflow: Overflow.park } }
+    let _ = dead.send("standing", key("z"))?
+    let _ = q.send(1, key("a"))?
+    let d? = q.take()? else { return false }
+    let back = match bury_in(q, d, dead, "job 1 failed") {
+        .Err(.Unreachable(_)) -> true,
+        rest -> false,
+    }
+    back && q.depth()? == 1 && dead.depth()? == 1 && q.ack(d)?
+}
+
+// ── A row no item can be read from ──
+
+/// A row filed under the int shape whose body is the SQL literal
+/// `body`.
+fn file_raw(db: Db, body: string) -> Result<int, HomeError> {
+    homed(
+        db
+            .run(
+                sql(
+                    "INSERT INTO \"FlowItem\" (\"queue\", \"key\", \"shape\", \"body\", \"sent_at\", \"ready_at\", \"attempt\", \"epoch\") VALUES ('jobs', 'p', 1, ${body}, 0, 0, 0, 0)",
+                ),
+            ),
+    )
+}
+
+/// A row filed under the int shape with octets that are no int.
+fn file_no_int(db: Db) -> Result<int, HomeError> {
+    file_raw(db, "x''")
+}
+
+/// The reasons a queue's set-aside items carry, in order.
+fn reasons(q: Store<int>) -> Result<string, HomeError> {
+    [reason_word(u.why) for u in q.unreadable()?].join(" ")
+}
+
+fn reason_word(why: Unread) -> string {
+    match why { .Shape -> "shape", .Octets -> "octets", .Other(_) -> "other" }
+}
+
+fn nothing_aside_at_first() -> Result<bool, HomeError> {
+    let q = fresh(fifo())?
+    q.unreadable_count()? == 0 && (q.unreadable()?).is_empty()
+}
+
+fn empty_body_that_decodes_is_read() -> Result<bool, HomeError> {
+    let q = store_home_with<Nothing>(homed(Db.memory())?, "jobs", fifo(), nothing_wire())?
+    let _ = q.send(Nothing {}, key("a"))?
+    q.take()? != null && q.unreadable_count()? == 0
+}
+
+fn other_shape_between() -> Result<bool, HomeError> {
+    let db = homed(Db.memory())?
+    let numbers = ints(db, "jobs", fifo())?
+    let _ = numbers.send(1, key("a"))?
+    let texts = store_home_with<string>(db, "jobs", fifo(), text_wire())?
+    let poison = texts.send("poison", key("p"))?
+    let _ = numbers.send(2, key("b"))?
+    let first? = numbers.take()? else { return false }
+    let before = numbers.depth()?
+    let _ = numbers.ack(first)?
+    let second? = numbers.take()? else { return false }
+    let aside = numbers.unreadable()?
+    first.item == 1 &&
+        before == 3 &&
+        second.item == 2 &&
+        numbers.depth()? == 1 &&
+        aside.length == 1 &&
+        aside[0].id == poison! &&
+        aside[0].key.text == "p" &&
+        aside[0].shape == 3 &&
+        aside[0].body.text() == "poison" &&
+        reasons(numbers)? == "shape"
+}
+
+fn one_take_passes_poison() -> Result<bool, HomeError> {
+    let q = fresh(terms(60000, Order.by_key))?
+    let _ = q.send(1, key("a"))?
+    let _ = file_no_int(q.db)?
+    let _ = q.send(2, key("b"))?
+    let got = q.taken(3)?
+    got.length == 2 &&
+        got[0].item == 1 &&
+        got[1].item == 2 &&
+        q.depth()? == 2 &&
+        reasons(q)? == "octets"
+}
+
+fn only_poison() -> Result<bool, HomeError> {
+    let q = fresh(fifo())?
+    let _ = file_no_int(q.db)?
+    let _ = file_no_int(q.db)?
+    q.take()? == null &&
+        q.depth()? == 0 &&
+        q.unreadable_count()? == 2 &&
+        reasons(q)? == "octets octets"
+}
+
+fn aside_is_per_queue() -> Result<bool, HomeError> {
+    let db = homed(Db.memory())?
+    let jobs = ints(db, "jobs", fifo())?
+    let other = ints(db, "other", fifo())?
+    let _ = file_no_int(db)?
+    let _ = jobs.take()?
+    jobs.unreadable_count()? == 1 &&
+        other.unreadable_count()? == 0 &&
+        (other.unreadable()?).is_empty()
+}
+
+fn aside_joins_callers_transaction() -> Result<bool, HomeError> {
+    let q = fresh(fifo())?
+    let _ = file_no_int(q.db)?
+    let _ = homed(q.db.begin())?
+    let _ = q.take()?
+    let inside = q.unreadable_count()?
+    let _ = homed(q.db.rollback())?
+    inside == 1 && q.unreadable_count()? == 0 && q.depth()? == 1
+}
+
+fn text_body_is_judged_as_octets() -> Result<bool, HomeError> {
+    let q = fresh(fifo())?
+    let _ = file_raw(q.db, "'words'")?
+    let _ = q.send(7, key("b"))?
+    let d? = q.take()? else { return false }
+    d.item == 7 && q.unreadable()?[0].body.text() == "words"
+}
+
+// ── Shapes and opening ──
+
+fn opens_twice() -> Result<bool, HomeError> {
+    let db = homed(Db.memory())?
+    let first = ints(db, "jobs", fifo())?
+    let _ = first.send(1, key("a"))?
+    let second = ints(db, "jobs", fifo())?
+    second.depth()? == 1 && rows(db, "SELECT count(*) FROM \"FlowShape\"")? == 1
+}
+
+fn closed_database() -> Result<bool, HomeError> {
+    let q = fresh(fifo())?
+    let _ = q.db.close()
+    match q.send(1, key("a")) { .Err(.Refused(_)) -> true, rest -> false }
+}
+
+spec "std/queue_store" {
+    given "an empty case" {
+        then "an empty body is a body" {
+            empty_body() catch false
+        }
+        then "an empty key is a key, and orders its items" {
+            empty_key() catch false
+        }
+        then "a queue named nothing is a queue of its own" {
+            empty_queue_name() catch false
+        }
+        then "an empty name is a name, and no name is none" {
+            empty_name() catch false
+        }
+    }
+    given "a NUL" {
+        then "rides a body whole" {
+            nul_body() catch false
+        }
+        then "leads a body, stored at its own length" {
+            nul_leads_body() catch false
+        }
+        then "rides a key and a queue's name whole" {
+            nul_key_and_queue() catch false
+        }
+    }
+    given "a body of a megabyte" {
+        then "is stored at its own length and read back whole" {
+            large_body() catch false
+        }
+    }
+    given "a named send" {
+        then "is one item and one answer within the window" {
+            named_once() catch false
+        }
+        then "is a new item past the window" {
+            named_past_window() catch false
+        }
+        then "is its own in each queue" {
+            named_per_queue() catch false
+        }
+        then "answers the same after its item settled" {
+            named_after_settle() catch false
+        }
+    }
+    given "a full queue" {
+        then "turns a send away under fail" {
+            overflow_fail() catch false
+        }
+        then "asks the sender back later under park" {
+            overflow_park() catch false
+        }
+        then "discards the arriving item behind its own id under drop_newest" {
+            overflow_drop_newest() catch false
+        }
+        then "gives up its oldest waiting item under drop_oldest" {
+            overflow_drop_oldest() catch false
+        }
+        then "gives up the waiting item of the same key under latest" {
+            overflow_latest() catch false
+        }
+        then "counts only the items no take has reached" {
+            room_counts_waiting() catch false
+        }
+    }
+    given "many at once" {
+        then "a send_all answers each item as the terms judge it" {
+            send_all_judges_each() catch false
+        }
+        then "a send_all that fails keeps none of its items" {
+            send_all_keeps_none_of_a_failure() catch false
+        }
+    }
+    given "a queue's counts" {
+        then "follow a send, a take, an ack, a release and a row deleted by hand" {
+            counts_follow_the_rows() catch false
+        }
+        then "are taken from the rows where no count stands" {
+            counts_standing_rows_once() catch false
+        }
+    }
+    given "what a verb costs" {
+        then "a send into a queue with room runs five programs: begin, the row and its two triggers, commit" {
+            send_runs_five_programs() catch false
+        }
+        then "a take and an ack run nine programs: six and three" {
+            take_and_ack_run_nine_programs() catch false
+        }
+        then "a hundred sent, taken and acked at once run 907 programs in three transactions" {
+            a_batch_is_one_transaction() catch false
+        }
+        then "twenty rounds of every verb keep no new statement and compile none again" {
+            statements_are_compiled_once() catch false
+        }
+        then "a send takes the same steps into a queue of 5000 as into one of 10" {
+            send_cost_is_the_same_at_any_depth() catch false
+        }
+        then "drop_oldest gives up a delayed row older than the line, sent before its terms gave up the oldest" {
+            delayed_row_is_given_up_first() catch false
+        }
+        then "drop_oldest gives up its oldest waiting item in the same steps past 2000 backing-off rows as past 10" {
+            dropping_walks_no_backing_off_row() catch false
+        }
+        then "a take takes the same steps past 2000 held rows as past 10" {
+            take_passes_no_held_row() catch false
+        }
+        then "a take takes the same steps over 5000 waiting rows as over 10" {
+            take_walks_no_waiting_row() catch false
+        }
+        then "a take a standing delivery blocks takes the same steps over 5000 waiting as over 10" {
+            blocked_take_walks_no_waiting_row() catch false
+        }
+    }
+    given "the take's plan" {
+        then "sorts nothing, and reads standing rows from their own index" {
+            take_sorts_nothing() catch false
+        }
+    }
+    given "a hold" {
+        then "a stale bury asks no letter" {
+            stale_bury_asks_no_letter() catch false
+        }
+        then "an id the store never minted holds nothing" {
+            foreign_id_holds_nothing() catch false
+        }
+        then "another queue's delivery holds nothing" {
+            other_queue_holds_nothing() catch false
+        }
+        then "ends when its lease runs out, and not before" {
+            lease_runs_out() catch false
+        }
+        then "names its reader until it is released" {
+            reader_named() catch false
+        }
+    }
+    given "a transaction" {
+        then "a send inside the caller's is undone with it" {
+            joins_callers_transaction() catch false
+        }
+        then "a bury into a letter of the same database moves the item" {
+            bury_in_moves() catch false
+        }
+        then "a stale bury into a letter moves nothing" {
+            bury_in_stale_moves_nothing() catch false
+        }
+        then "a letter that turns the item away leaves the hold" {
+            bury_in_full_letter_keeps_hold() catch false
+        }
+        then "a full letter that parks asks the bury back and leaves the hold" {
+            parked_letter_keeps_hold() catch false
+        }
+        then "a bury into a letter that drops on overflow is refused under each dropping term" {
+            no_letter_drops() catch false
+        }
+    }
+    given "a row no item can be read from" {
+        then "a fresh queue has none set aside" {
+            nothing_aside_at_first() catch false
+        }
+        then "an empty body that decodes is delivered and not set aside" {
+            empty_body_that_decodes_is_read() catch false
+        }
+        then "of another shape between two items is set aside, and both are delivered in order" {
+            other_shape_between() catch false
+        }
+        then "is passed within one take of several" {
+            one_take_passes_poison() catch false
+        }
+        then "alone leaves an empty queue and a take of nothing" {
+            only_poison() catch false
+        }
+        then "is listed under its own queue alone" {
+            aside_is_per_queue() catch false
+        }
+        then "is back in its queue when the caller's transaction is undone" {
+            aside_joins_callers_transaction() catch false
+        }
+        then "with a text cell for a body is set aside with that text's octets" {
+            text_body_is_judged_as_octets() catch false
+        }
+    }
+    given "the items set aside" {
+        then "are forgotten before an instant, none where none stand, and only their queue's" {
+            forgets_unreadable_before() catch false
+        }
+    }
+    given "a database" {
+        then "opens the same queue twice" {
+            opens_twice() catch false
+        }
+        then "refuses once it is closed" {
+            closed_database() catch false
+        }
+    }
+}

@@ -1,0 +1,110 @@
+//! THE FOLD — a tag and its parts as one number, shared by every
+//! fingerprint space in the compiler. It stands in its own file
+//! because `@derive(Fingerprint)` CALLS it: a derive's file is typed
+//! while the annotated file is still registering, so the fold living
+//! beside the node model would make annotating the node model a
+//! silent half-registration.
+
+use @std.relation.stable.{Scope}
+use @std.program.names.{text_fold}
+
+/// A variant tag folded with its parts, in order — THE fingerprint
+/// fold, for nodes and for every query value's hash alike.
+export fn fp(tag: int, parts: List<int>) -> int {
+    mut h = fp_mix(tag, parts.length)
+    for p in parts { h = fp_mix(h, p) }
+    h
+}
+
+/// A SEQUENCE FOLDS TO ONE VALUE, so a payload's ARITY is fixed and
+/// the boundary between two of them cannot move. Spliced flat,
+/// `f<A>(B)` and `f<A, B?>()` wore one fingerprint — a pinned type
+/// and an argument are the same value in a flat list. SHARED across
+/// every fold space, so tag 105 is claimed wherever it is called.
+export fn fp_list(parts: List<int>) -> int { fp(105, parts) }
+
+/// In-process rolling hash; both operands normalized under a prime so
+/// mixing never overflows, negative payloads included. The crypto
+/// tier arrives with the on-disk cache.
+fn fp_mix(h: int, v: int) -> int {
+    mut nv = v % 1000000007
+    if nv < 0 { nv = nv + 1000000007 }
+    (h * 131 + nv + 7) % 1000000007
+}
+
+/// A text's fold: its bytes eight to a word, the tail byte by byte, then its length — the one a
+/// name's print is.
+export fn fp_str(s: string) -> int { text_fold(s) }
+
+/// HOW AN ARENA ID FOLDS: by the durable name its owner gives its index, so a value that
+/// reaches an id folds the same in every process. Each door takes the id's index.
+export type Ids = { decl: fn(int) -> int, ty: fn(int) -> int, file: fn(int) -> int, expr: fn(int) -> int, stmt: fn(int) -> int }
+
+impl Ids {
+    fn of_decl(index: int) -> int {
+        (self.decl)(index)
+    }
+
+    fn of_type(index: int) -> int {
+        (self.ty)(index)
+    }
+
+    fn of_file(index: int) -> int {
+        (self.file)(index)
+    }
+
+    fn of_expr(index: int) -> int {
+        (self.expr)(index)
+    }
+
+    fn of_stmt(index: int) -> int {
+        (self.stmt)(index)
+    }
+
+    /// The same ids with expressions and statements each counted from their own base.
+    fn windowed(expr_base: int, stmt_base: int) -> Ids {
+        self with { expr: (i: int) -> i - expr_base, stmt: (i: int) -> i - stmt_base }
+    }
+}
+
+/// The ids folded by their index, which only this process reads the same.
+export fn indexed_ids() -> Ids {
+    Ids {
+        decl: (i: int) -> i,
+        ty: (i: int) -> i,
+        file: (i: int) -> i,
+        expr: (i: int) -> i,
+        stmt: (i: int) -> i,
+    }
+}
+
+/// THE IDS AS A SCOPE: a fold handed to a codec's digest spells each dense id as the fold
+/// reaches it, so a value folded by its codec and one folded field by field read the same ids.
+/// A fold reads nothing back, so every inverse answers absent.
+type IdsScope = { ids: Ids }
+
+impl Ids {
+    /// These ids, as the scope a codec's digest is taken under.
+    fn as_scope() -> dyn Scope { IdsScope { ids: self } }
+}
+
+impl Scope for IdsScope {
+    fn spelled(kind: string, index: int) -> string {
+        let ids = self.ids
+        let folded = match kind {
+            "DeclId" -> ids.of_decl(index),
+            "TypeId" -> ids.of_type(index),
+            "FileId" -> ids.of_file(index),
+            "ExprId" -> ids.of_expr(index),
+            "StmtId" -> ids.of_stmt(index),
+            _ -> index,
+        }
+        "${folded}"
+    }
+
+    fn unspelled(kind: string, text: string) -> int? { null }
+
+    fn placed(file: string, lo: int, hi: int) -> List<int>? { [lo, hi] }
+
+    fn unplaced(file: string, at: List<int>) -> List<int>? { null }
+}

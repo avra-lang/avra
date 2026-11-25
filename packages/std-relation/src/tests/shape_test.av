@@ -1,0 +1,512 @@
+// A coded type's shape as data: its descriptor survives its own spelling, `verdict` answers
+// every row of the reader-against-writer table, and `decoded_known` reads what a verdict let
+// through.
+use @std.relation.{Storable, codec}
+use @std.relation.shape.{
+    Descriptor,
+    Form,
+    ShapeReach,
+    ShapeSlot,
+    Verdict,
+    descriptor_unspelled,
+    verdict,
+}
+use @std.relation.stable.{CodecFault, indexed_scope}
+use @std.text.{from_codepoint}
+
+/// One type as two builds declare it: the later holds two more slots, each with a default.
+@codec
+type MailOld = { to: string }
+
+@codec
+type MailNew = { to: string, n: int = 7, tags: List<string> = [] }
+
+@codec
+enum FateOld {
+    Sent
+    Bounced(why: string)
+}
+
+@codec
+enum FateNew {
+    Sent
+    Bounced(why: string)
+    Lost
+}
+
+@codec
+type Nothing = {}
+
+@codec
+type Knot = { name: string, kids: List<Knot> }
+
+type Inner = { a: int }
+
+@codec
+type Outer = { inner: Inner, @file path: string }
+
+/// A record a coded one reaches by its own codec, and one it reaches by its helpers.
+@codec
+type Carried = { n: int }
+
+type Flat = { a: int, b: string }
+
+@codec
+type Holder = { f: Flat, c: Carried, fs: List<Flat>, o: Flat? }
+
+@codec
+enum Branch {
+    Tip
+    Fork(kids: List<Branch>)
+}
+
+fn described<T: Storable>() -> Descriptor { descriptor_unspelled(T.codec_descriptor())! }
+
+fn kept<T: Storable>(v: T) -> Bytes { v.encoded_in(indexed_scope()) }
+
+fn known<T: Storable>(b: Bytes, slots: int) -> Result<T, CodecFault> {
+    T.decoded_known(indexed_scope(), b, slots)
+}
+
+fn slot(name: string, ty: string) -> ShapeSlot { ShapeSlot { name: name, ty: ty } }
+
+fn filled(name: string, ty: string) -> ShapeSlot { ShapeSlot { name: name, ty: ty, defaulted: true } }
+
+fn record(hash: int, slots: List<ShapeSlot>) -> Descriptor {
+    Descriptor { hash: hash, format: 3, tagged: false, slots: slots, reached: [] }
+}
+
+fn tagged(hash: int, slots: List<ShapeSlot>) -> Descriptor {
+    Descriptor { hash: hash, format: 3, tagged: true, slots: slots, reached: [] }
+}
+
+fn reaching(d: Descriptor, name: string, shape: int) -> Descriptor {
+    d with { reached: [ShapeReach { name: name, shape: shape }] }
+}
+
+fn same(a: Descriptor, b: Descriptor?) -> bool {
+    let d? = b else { return false }
+    a.hash == d.hash &&
+        a.format == d.format &&
+        a.tagged == d.tagged &&
+        a.slots.length == d.slots.length &&
+        (0..a.slots.length).all((i: int) -> same_slot(a.slots[i], d.slots[i])) &&
+        a.name == d.name &&
+        a.scoped == d.scoped &&
+        a.reached.length == d.reached.length &&
+        (0..a.reached.length).all((i: int) -> same_reach(a.reached[i], d.reached[i]))
+}
+
+fn same_reach(a: ShapeReach, b: ShapeReach) -> bool {
+    a.name == b.name &&
+        a.shape == b.shape &&
+        form_word(a.form) == form_word(b.form) &&
+        a.slots.length == b.slots.length &&
+        (0..a.slots.length).all((i: int) -> same_slot(a.slots[i], b.slots[i]))
+}
+
+fn form_word(f: Form) -> string {
+    match f {
+        .Unsaid -> "unsaid",
+        .Record -> "record",
+        .Variants -> "variants",
+        .Over -> "over",
+        .Dense -> "dense",
+        .Coded(hash, scoped, tagged) -> "coded ${hash} ${scoped} ${tagged}",
+    }
+}
+
+fn reach(name: string, shape: int, form: Form, slots: List<ShapeSlot>) -> ShapeReach {
+    ShapeReach { name: name, shape: shape, form: form, slots: slots }
+}
+
+/// Every form a reach takes, the empty ones first: a record of no slots,
+/// a slot of no name, a coded record of no slots.
+fn every_form() -> Descriptor {
+    record(3, [slot("", "Empty"), slot("o", "Over")]) with { name: "", scoped: true, reached: [
+        reach("Empty", 1, Form.Record, []),
+        reach("Over", 2, Form.Over, [slot("", "string")]),
+        reach("Tone", 3, Form.Variants, [slot("Low", ""), slot("Pay", "int,Map<string, int>")]),
+        reach("Id", 4, Form.Dense, []),
+        reach("Own", 5, Form.Coded(-9, true, false), []),
+        reach("Loc", 6, Form.Unsaid, []),
+    ] }
+}
+
+fn same_slot(a: ShapeSlot, b: ShapeSlot) -> bool {
+    a.name == b.name && a.ty == b.ty && a.defaulted == b.defaulted
+}
+
+fn says(v: Verdict, want: Verdict) -> bool { v == want }
+
+fn two() -> List<ShapeSlot> { [slot("a", "int"), slot("b", "string")] }
+
+fn fault<T>(r: Result<T, CodecFault>) -> string {
+    match r { .Ok(_) -> "", .Err(f) -> f.word() }
+}
+
+spec "std/relation — a descriptor survives its spelling" {
+    given "a record's, an enum's and an empty record's" {
+        then "each reads back as it was written" {
+            let wide = reaching(
+                record(-5, [slot("a", "int"), filled("b", "List<string> @file")]),
+                "Inner",
+                9,
+            )
+            let plain = tagged(4, [slot("Dot", ""), slot("Sq", "int")])
+            same(wide, descriptor_unspelled(wide.spelled())) &&
+                same(plain, descriptor_unspelled(plain.spelled())) &&
+                same(record(0, []), descriptor_unspelled(record(0, []).spelled()))
+        }
+        then "every form a reach takes reads back as it was written, its empty cases among them" {
+            same(every_form(), descriptor_unspelled(every_form().spelled()))
+        }
+        then "a reach's slots and the reach after it spell apart, and each reads back" {
+            let one = record(1, []) with { reached: [reach("X", 5, Form.Record, [slot("u", "9")])] }
+            let two = record(1, []) with { reached: [reach("X", 5, Form.Record, []), reach("u", 9, Form.Unsaid, [])] }
+            one.spelled() != two.spelled() &&
+                same(one, descriptor_unspelled(one.spelled())) &&
+                same(two, descriptor_unspelled(two.spelled()))
+        }
+        then "a name holding the separator or the escape's own mark is one part still" {
+            let odd = record(1, [slot("a|b", "x%7Cy"), slot("", "%")])
+            same(odd, descriptor_unspelled(odd.spelled()))
+        }
+    }
+    given "a text no descriptor spells" {
+        then "free text, an empty text and a spelling cut short each read as none" {
+            let whole = record(1, two()).spelled()
+            descriptor_unspelled("a Job, by hand") == null &&
+                descriptor_unspelled("") == null &&
+                descriptor_unspelled(whole.substring(0, whole.length - 2)) == null &&
+                descriptor_unspelled("${whole}|extra") == null &&
+                descriptor_unspelled(whole.replace("|2|", "|9|")) == null
+        }
+        then "a reach of an unknown form, a count past its parts, or a coded reach cut short reads as none" {
+            let whole = every_form().spelled()
+            descriptor_unspelled(whole.replace("|d|", "|z|")) == null &&
+                descriptor_unspelled(whole.replace("|6|Empty", "|7|Empty")) == null &&
+                descriptor_unspelled(whole.replace("|6|Empty", "|99999999999999|Empty")) == null &&
+                descriptor_unspelled(whole.replace("|6|Empty", "|-1|Empty")) == null &&
+                descriptor_unspelled(whole.replace("|c|-9|1|0|", "|c|-9|1|")) == null
+        }
+    }
+    given "a descriptor an earlier build wrote" {
+        then "it reads with no name and each reached type its fingerprint alone" {
+            let d = descriptor_unspelled("avra.shape.1|7|3|0|1|i|Inner|0|1|Inner|5")
+            d != null &&
+                d!.name == "" &&
+                !d!.scoped &&
+                d!.slots.length == 1 &&
+                same_reach(d!.reached[0], ShapeReach { name: "Inner", shape: 5 })
+        }
+        then "a reader of this build judges it by the fingerprints as before" {
+            let theirs = descriptor_unspelled("avra.shape.1|8|3|0|2|i|Inner|0|n|int|0|1|Inner|5")!
+            let mine = record(7, [slot("i", "Inner")]) with { name: "R", reached: [reach("Inner", 5, Form.Record, [slot("a", "int")])] }
+            says(verdict(mine, theirs), Verdict.Grew) &&
+                says(
+                    verdict(mine, theirs with { reached: [ShapeReach { name: "Inner", shape: 6 }] }),
+                    Verdict.Moved,
+                )
+        }
+    }
+}
+
+spec "std/relation — a reader's verdict on a writer's shape" {
+    given "the same fingerprint" {
+        then "the shapes are the same, whatever else the descriptors say" {
+            says(verdict(record(1, two()), record(1, [])), Verdict.Same) &&
+                says(verdict(record(1, []), record(1, [])), Verdict.Same)
+        }
+    }
+    given "a writer with more trailing slots" {
+        then "it grew: the reader's own slots stand first, spelled alike" {
+            says(verdict(record(1, two()), record(2, [..two(), slot("c", "bool")])), Verdict.Grew)
+        }
+        then "a reader of no slots sees any record as grown" {
+            says(verdict(record(1, []), record(2, two())), Verdict.Grew)
+        }
+        then "an enum with more trailing variants grew" {
+            says(
+                verdict(
+                    tagged(1, [slot("Dot", "")]),
+                    tagged(2, [slot("Dot", ""), slot("Sq", "int")]),
+                ),
+                Verdict.Grew,
+            )
+        }
+    }
+    given "a writer with fewer trailing slots" {
+        then "defaults fill when every missing slot declares one" {
+            says(
+                verdict(
+                    record(1, [..two(), filled("c", "bool"), filled("d", "int")]),
+                    record(2, two()),
+                ),
+                Verdict.Fills,
+            )
+        }
+        then "a writer of no slots is filled by a reader of defaults alone" {
+            says(verdict(record(1, [filled("a", "int")]), record(2, [])), Verdict.Fills)
+        }
+        then "one missing slot with no default moves the shape" {
+            says(
+                    verdict(
+                        record(1, [..two(), filled("c", "bool"), slot("d", "int")]),
+                        record(2, two()),
+                    ),
+                    Verdict.Moved,
+                ) &&
+                says(verdict(record(1, [slot("a", "int")]), record(2, [])), Verdict.Moved)
+        }
+        then "an enum with fewer trailing variants reads whole: a variant needs no default" {
+            says(
+                verdict(
+                    tagged(1, [slot("Dot", ""), slot("Sq", "int")]),
+                    tagged(2, [slot("Dot", "")]),
+                ),
+                Verdict.Fills,
+            )
+        }
+    }
+    given "a slot that is not where the reader holds it" {
+        then "renamed, reordered or retyped, the shape moved" {
+            let mine = record(1, two())
+            says(
+                    verdict(mine, record(2, [slot("a", "int"), slot("c", "string")])),
+                    Verdict.Moved,
+                ) &&
+                says(
+                    verdict(mine, record(2, [slot("b", "string"), slot("a", "int")])),
+                    Verdict.Moved,
+                ) &&
+                says(
+                    verdict(mine, record(2, [slot("a", "int"), slot("b", "string?")])),
+                    Verdict.Moved,
+                ) &&
+                says(
+                    verdict(
+                        mine,
+                        record(2, [slot("a", "bool"), slot("b", "string"), slot("c", "int")]),
+                    ),
+                    Verdict.Moved,
+                )
+        }
+        then "a variant whose payload changed moved, more variants behind it or not" {
+            let mine = tagged(1, [slot("Dot", ""), slot("Sq", "int")])
+            says(
+                    verdict(mine, tagged(2, [slot("Dot", ""), slot("Sq", "int,int")])),
+                    Verdict.Moved,
+                ) &&
+                says(
+                    verdict(
+                        mine,
+                        tagged(2, [slot("Dot", ""), slot("Sq", "string"), slot("Tri", "")]),
+                    ),
+                    Verdict.Moved,
+                )
+        }
+    }
+    given "slots spelled alike under another fingerprint" {
+        then "the same slots moved: something they do not spell changed" {
+            says(verdict(record(1, two()), record(2, two())), Verdict.Moved) &&
+                says(verdict(record(1, []), record(2, [])), Verdict.Moved)
+        }
+        then "a reached type declared otherwise moved, a grown writer included" {
+            let mine = reaching(record(1, [slot("i", "Inner")]), "Inner", 5)
+            let grown = [slot("i", "Inner"), slot("n", "int")]
+            says(verdict(mine, reaching(record(2, grown), "Inner", 6)), Verdict.Moved) &&
+                says(verdict(mine, reaching(record(2, grown), "Inner", 5)), Verdict.Grew) &&
+                says(
+                    verdict(
+                        reaching(record(1, grown), "Inner", 5),
+                        reaching(record(2, [slot("i", "Inner")]), "Inner", 6),
+                    ),
+                    Verdict.Moved,
+                )
+        }
+        then "a nested record that grew moves the shape, whatever its reach describes" {
+            let mine = reaching(record(1, [slot("i", "Inner")]), "Inner", 5) with { reached: [reach("Inner", 5, Form.Record, [slot("a", "int")])] }
+            let grown = reaching(record(2, [slot("i", "Inner"), slot("z", "int")]), "Inner", 6) with { reached: [reach("Inner", 6, Form.Record, [slot("a", "int"), slot("b", "int")])] }
+            says(verdict(mine, grown), Verdict.Moved) && says(verdict(grown, mine), Verdict.Moved)
+        }
+        then "a type only one of them reaches judges nothing" {
+            let mine = reaching(record(1, two()), "Inner", 5)
+            says(
+                verdict(mine, reaching(record(2, [..two(), slot("o", "Other")]), "Other", 1)),
+                Verdict.Grew,
+            )
+        }
+        then "a record against an enum, or another byte layout, moved" {
+            says(verdict(record(1, []), tagged(2, [slot("Dot", "")])), Verdict.Moved) &&
+                says(
+                    verdict(
+                        record(1, two()),
+                        record(2, [..two(), slot("c", "int")]) with { format: 4 },
+                    ),
+                    Verdict.Moved,
+                )
+        }
+    }
+}
+
+spec "std/relation — a coded type describes itself" {
+    given "a record and an enum" {
+        then "a record's slots are its wire's fields, a default marked on each that declares one" {
+            let d = described<MailNew>()
+            d.hash == MailNew.codec_shape() &&
+                !d.tagged &&
+                d.slots.length == 3 &&
+                same_slot(d.slots[0], slot("to", "string")) &&
+                same_slot(d.slots[1], filled("n", "int")) &&
+                same_slot(d.slots[2], filled("tags", "List<string>"))
+        }
+        then "an enum's slots are its variants, each over its payload" {
+            let d = described<FateOld>()
+            d.tagged &&
+                d.slots.length == 2 &&
+                same_slot(d.slots[0], slot("Sent", "")) &&
+                same_slot(d.slots[1], slot("Bounced", "string"))
+        }
+        then "a record of no fields has no slot" {
+            described<Nothing>().slots.is_empty() && described<Nothing>().reached.is_empty()
+        }
+    }
+    given "what a type reaches" {
+        then "a nested record is reached by name, and a mark is part of a slot's spelling" {
+            let d = described<Outer>()
+            d.reached.length == 1 && d.reached[0].name == "Inner" && d.slots[1].ty == "string @file"
+        }
+        then "a nested record is described by its fields, and one that wears its own codec by its header too" {
+            let d = described<Holder>()
+            d.name == "Holder" &&
+                d.scoped &&
+                d.reached.length == 2 &&
+                same_reach(
+                    d.reached[0],
+                    reach(
+                        "Flat",
+                        d.reached[0].shape,
+                        Form.Record,
+                        [slot("a", "int"), slot("b", "string")],
+                    ),
+                ) &&
+                same_reach(
+                    d.reached[1],
+                    reach(
+                        "Carried",
+                        d.reached[1].shape,
+                        Form.Coded(Carried.codec_shape(), false, false),
+                        [slot("n", "int")],
+                    ),
+                )
+        }
+        then "an enum that reaches itself is named for itself, never reached" {
+            let d = described<Branch>()
+            d.name == "Branch" && d.reached.is_empty() && d.slots[1].ty == "List<Branch>"
+        }
+        then "a record reaches itself only when its wire does" {
+            described<Knot>().reached.any(it.name == "Knot") &&
+                !described<MailOld>().reached.any(it.name == "MailOld")
+        }
+    }
+    given "two builds of one type" {
+        then "the later reads the earlier as filled, the earlier the later as grown" {
+            says(verdict(described<MailNew>(), described<MailOld>()), Verdict.Fills) &&
+                says(verdict(described<MailOld>(), described<MailNew>()), Verdict.Grew) &&
+                says(verdict(described<FateOld>(), described<FateNew>()), Verdict.Grew) &&
+                says(verdict(described<FateNew>(), described<FateOld>()), Verdict.Fills) &&
+                says(verdict(described<MailOld>(), described<MailOld>()), Verdict.Same)
+        }
+    }
+}
+
+spec "std/relation — octets of another shape are read as far as they are known" {
+    given "a writer with fewer slots" {
+        then "each slot it lacks takes its default" {
+            let back: Result<MailNew, CodecFault> = known(kept(MailOld { to: "a" }), 1)
+            match back { .Ok(m) -> m.to == "a" && m.n == 7 && m.tags.is_empty(), .Err(_) -> false }
+        }
+        then "a writer of no slots leaves a reader of defaults alone nothing to read" {
+            let back: Result<MailNew, CodecFault> = known(
+                kept(MailNew { to: "z", n: 1, tags: ["t"] }),
+                3,
+            )
+            let short: Result<MailNew, CodecFault> = known(kept(Nothing {}), 0)
+            match back { .Ok(m) -> m.n == 1 && m.tags.length == 1, .Err(_) -> false } &&
+                fault(short) == "truncated"
+        }
+    }
+    given "a writer with more slots" {
+        then "the slots known are read and the rest passed by" {
+            let holed = "a${from_codepoint(0)}b"
+            let back: Result<MailOld, CodecFault> = known(
+                kept(MailNew { to: holed, n: 3, tags: ["x", ""] }),
+                3,
+            )
+            let empty: Result<Nothing, CodecFault> = known(kept(MailOld { to: "" }), 1)
+            match back { .Ok(m) -> m.to == holed, .Err(_) -> false } && empty is .Ok
+        }
+        then "octets past a writer that holds no more than the reader are refused" {
+            let back: Result<MailOld, CodecFault> = known(
+                kept(MailNew { to: "a", n: 3, tags: [] }),
+                1,
+            )
+            fault(back) == "trailing"
+        }
+    }
+    given "an enum that grew" {
+        then "a variant the reader knows is read, and one it does not is no variant" {
+            let read: Result<FateOld, CodecFault> = known(kept(FateNew.Bounced("full")), 3)
+            let lost: Result<FateOld, CodecFault> = known(kept(FateNew.Lost), 3)
+            let filled: Result<FateNew, CodecFault> = known(kept(FateOld.Bounced("")), 2)
+            match read { .Ok(.Bounced(why)) -> why == "full", .Ok(.Sent) or .Err(_) -> false } &&
+                fault(lost) == "not_variant" &&
+                filled is .Ok
+        }
+    }
+    given "octets of the reader's own shape" {
+        then "they read as `decoded_in` reads them" {
+            let back: Result<MailNew, CodecFault> = known(
+                kept(MailNew { to: "q", n: 2, tags: [] }),
+                3,
+            )
+            match back { .Ok(m) -> m.to == "q" && m.n == 2, .Err(_) -> false }
+        }
+    }
+}
+
+/// What the earlier build answered for this file's types.
+const shaped: List<string> = [
+    "MailOld 1359977906918761375 avra.shape.2|MailOld|1359977906918761375|3|0|0|1|to|string|0|0",
+    "MailNew 7395136162138828099 avra.shape.2|MailNew|7395136162138828099|3|0|0|3|to|string|0|n|int|1|tags|List<string>|1|0",
+    "FateOld 2144963009077994787 avra.shape.2|FateOld|2144963009077994787|3|1|0|2|Sent||0|Bounced|string|0|0",
+    "FateNew 4773017036970451601 avra.shape.2|FateNew|4773017036970451601|3|1|0|3|Sent||0|Bounced|string|0|Lost||0|0",
+    "Nothing 1789382861883097014 avra.shape.2|Nothing|1789382861883097014|3|0|0|0|0",
+    "Knot -34060003838690477 avra.shape.2|Knot|-34060003838690477|3|0|0|2|name|string|0|kids|List<Knot>|0|1|Knot|8658809001476369743|r|2|name|string|0|kids|List<Knot>|0",
+    "Outer 9190811200980001150 avra.shape.2|Outer|9190811200980001150|3|0|0|2|inner|Inner|0|path|string @file|0|1|Inner|1564037675704848136|r|1|a|int|0",
+    "Carried 5493037709475690248 avra.shape.2|Carried|5493037709475690248|3|0|0|1|n|int|0|0",
+    "Holder 277581421559416015 avra.shape.2|Holder|277581421559416015|3|0|1|4|f|Flat|0|c|Carried|0|fs|List<Flat>|0|o|Flat?|0|2|Flat|4469051907505579806|r|2|a|int|0|b|string|0|Carried|7680775025887039877|c|5493037709475690248|0|0|1|n|int|0",
+    "Branch 2072741311312935173 avra.shape.2|Branch|2072741311312935173|3|1|0|2|Tip||0|Fork|List<Branch>|0|0",
+]
+
+fn shape_lines() -> List<string> {
+    [
+        "MailOld ${MailOld.codec_shape()} ${MailOld.codec_descriptor()}",
+        "MailNew ${MailNew.codec_shape()} ${MailNew.codec_descriptor()}",
+        "FateOld ${FateOld.codec_shape()} ${FateOld.codec_descriptor()}",
+        "FateNew ${FateNew.codec_shape()} ${FateNew.codec_descriptor()}",
+        "Nothing ${Nothing.codec_shape()} ${Nothing.codec_descriptor()}",
+        "Knot ${Knot.codec_shape()} ${Knot.codec_descriptor()}",
+        "Outer ${Outer.codec_shape()} ${Outer.codec_descriptor()}",
+        "Carried ${Carried.codec_shape()} ${Carried.codec_descriptor()}",
+        "Holder ${Holder.codec_shape()} ${Holder.codec_descriptor()}",
+        "Branch ${Branch.codec_shape()} ${Branch.codec_descriptor()}",
+    ]
+}
+
+spec "std/relation — a coded type's shape is what an earlier build defined" {
+    given "the coded types these tests declare" {
+        then "each answers its earlier shape and descriptor" { shape_lines().join("\n") == shaped.join("\n") }
+    }
+}

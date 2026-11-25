@@ -1,0 +1,46 @@
+// proves: a context reads its default where nothing set it; a set reaches every read under it, through
+// any call; and the end of its block, a `return` and the end of a loop's turn take it back
+extern fn avra_puts(s: string)
+
+ctx depth: int = 0
+ctx name: string = "none"
+
+fn shown() -> string { "${ctx.name}@${ctx.depth}" }
+
+fn nested() {
+    ctx depth = ctx.depth + 1
+    avra_puts(shown())
+    if ctx.depth < 3 { nested() }
+    avra_puts(shown())
+}
+
+fn early(n: int) -> int {
+    ctx depth = 40 + n
+    if n > 0 { return ctx.depth }
+    ctx.depth
+}
+
+fn turns() {
+    for i in 0..3 {
+        ctx depth = i * 10 + 5
+        avra_puts(shown())
+    }
+    avra_puts(shown())
+}
+
+fn run() -> string {
+    avra_puts(shown())
+    nested()
+    avra_puts(shown())
+    ctx name = "outer"
+    avra_puts("${early(1)} ${early(0)}")
+    avra_puts(shown())
+    turns()
+    if ctx.depth == 0 {
+        ctx name = "inner"
+        avra_puts(shown())
+    }
+    shown()
+}
+
+run()

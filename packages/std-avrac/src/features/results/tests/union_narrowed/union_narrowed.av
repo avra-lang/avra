@@ -1,0 +1,42 @@
+// proves: a selective `catch` whose remainder is ONE member leaves
+// that member as the plain error it is — the caller reads its payload,
+// from a register and from a list's slot alike.
+enum Missing { Missing(name: string) }
+enum Slow { Slow(ms: int) }
+enum Strayed { Strayed(names: List<string>) }
+
+fn two(kind: int) -> Result<int, Missing or Slow> {
+    if kind == 0 { fail Missing.Missing("widget") }
+    if kind == 1 { fail Slow.Slow(30) }
+    42
+}
+
+fn selective(kind: int) -> Result<int, Slow> {
+    let v = two(kind) catch .Missing(e) -> -1
+    v
+}
+
+fn waited(r: Result<int, Slow>) -> int {
+    match r { .Ok(v) -> v, .Err(t) -> match t { .Slow(ms) -> ms } }
+}
+
+// the remainder's payload is a box: the narrowed error keeps it
+fn boxed(kind: int) -> Result<int, Missing or Strayed> {
+    if kind == 0 { fail Missing.Missing("widget") }
+    if kind == 1 { fail Strayed.Strayed(["a", "b"]) }
+    7
+}
+
+fn remaining(kind: int) -> Result<int, Strayed> {
+    let v = boxed(kind) catch .Missing(e) -> -1
+    v
+}
+
+fn lost(kind: int) -> string {
+    match remaining(kind) {
+        .Ok(v) -> "${v}",
+        .Err(l) -> match l { .Strayed(names) -> names.join("+") },
+    }
+}
+
+"${waited(selective(0))} ${waited(selective(1))} ${waited(selective(2))} ${waited([selective(1)][0])} ${lost(0)} ${lost(1)} ${lost(2)}"

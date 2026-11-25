@@ -1,0 +1,176 @@
+// A schedule over the store home with no leader: two runs of one
+// schedule over one database each send the same tick, and the queue's
+// dedupe makes one item of it. The runs wait on the suite's virtual
+// clock, and every clock is set to it.
+use @std.queue.{Dead, Delivery, HomeError, queue, run, worker}
+use @std.queue.schedule.{schedule, ScheduleError}
+use @std.sqlite.{Db, sql}
+use @std.time.{Time, cron, mins, now_ns, parse_iso, sleep}
+use durable.{db, stored_with}
+use fault.{homed}
+use tests.support.wires.{int_wire}
+
+/// A wall clock that read 02:50 when the case began and runs on with
+/// the suite's clock.
+fn ten_to_three() -> fn() -> Time {
+    let base = parse_iso("2026-11-18T02:50:00Z")!.ns
+    let origin = now_ns()
+    () -> Time { ns: base + now_ns() - origin }
+}
+
+fn counted(r: Result<int, ScheduleError>) -> int {
+    match r { .Ok(n) -> n, .Err(_) -> 0 - 1 }
+}
+
+/// Two processes' worth of one nightly schedule over one database: each
+/// its own queue declaration and its own schedule of the same name.
+fn two_runs() -> Result<string, HomeError> {
+    ctx db = homed(Db.memory())?
+    let wall = ten_to_three()
+    let store_clock = () -> Time { ns: now_ns() }
+    queue<int> mine {
+        name: "reports"
+        durable: stored_with(int_wire(), clock: store_clock)
+    }
+    queue<int> theirs {
+        name: "reports"
+        durable: stored_with(int_wire(), clock: store_clock)
+    }
+    schedule here {
+        name: "nightly"
+        at: cron("0 3 * * *")
+        sends: mine
+        item: 7
+        clock: wall
+    }
+    schedule there {
+        name: "nightly"
+        at: cron("0 3 * * *")
+        sends: theirs
+        item: 7
+        clock: wall
+    }
+    // each home opens at its first use, here where the context is set
+    let _ = mine.home().depth()?
+    let _ = theirs.home().depth()?
+    let a = spawn here.run()
+    let b = spawn there.run()
+    sleep(mins(20))
+    here.stop()
+    there.stop()
+    "here ${counted(a.await)} | there ${counted(b.await)} | items ${mine.home().depth()?}"
+}
+
+/// A process that sent the 03:00 tick, and one started after it within
+/// `catch_up`, over the same database.
+fn restarted() -> Result<string, HomeError> {
+    ctx db = homed(Db.memory())?
+    let store_clock = () -> Time { ns: now_ns() }
+    let after_three = () -> parse_iso("2026-11-18T03:30:00Z")!
+    queue<int> first {
+        name: "reports"
+        durable: stored_with(int_wire(), clock: store_clock)
+    }
+    queue<int> second {
+        name: "reports"
+        durable: stored_with(int_wire(), clock: store_clock)
+    }
+    schedule before {
+        name: "nightly"
+        at: cron("0 3 * * *")
+        sends: first
+        item: 7
+        clock: after_three
+    }
+    schedule again {
+        name: "nightly"
+        at: cron("0 3 * * *")
+        sends: second
+        item: 7
+        clock: after_three
+    }
+    before.stop()
+    let one = counted(before.run())
+    again.stop()
+    let two = counted(again.run())
+    "first ${one} | second ${two} | items ${first.home().depth()?}"
+}
+
+/// A nightly schedule over a queue whose worker runs in_tx, each report
+/// written as a row in the commit that acks it.
+fn worked_in_tx() -> Result<string, HomeError> {
+    ctx db = homed(Db.memory())?
+    let _ = homed(ctx.db.run(sql("CREATE TABLE \"reported\" (\"n\" INTEGER)")))?
+    let store_clock = () -> Time { ns: now_ns() }
+    queue<int> reports {
+        name: "reports"
+        durable: stored_with(int_wire(), clock: store_clock)
+    }
+    queue<Dead<int>> letters {}
+    worker writer {
+        reads: reports
+        in_tx: true
+        each: (d: Delivery<int>) -> reported(ctx.db, d)
+        dead: letters
+    }
+    schedule nightly {
+        name: "nightly"
+        at: cron("0 3 * * *")
+        sends: reports
+        item: 7
+        clock: ten_to_three()
+    }
+    let _ = reports.home().depth()?
+    let serving = spawn run(writer)
+    let ticking = spawn nightly.run()
+    sleep(mins(20))
+    nightly.stop()
+    writer.stop()
+    let sent = counted(ticking.await)
+    let settled = match serving.await { .Ok(n) -> n, .Err(_) -> 0 - 1 }
+    let rows = homed((homed(ctx.db.scalar(sql("SELECT count(*) FROM \"reported\"")))?).int())?
+    "ticks ${sent} | settled ${settled} | rows ${rows} | depth ${reports.home().depth()?} | open ${ctx.db.in_transaction()}"
+}
+
+fn reported(db: Db, d: Delivery<int>) -> Result<int, string> {
+    let _ = db.run(sql("INSERT INTO \"reported\" (\"n\") VALUES (?1)", [.Int(d.item)])) catch 0
+    d.item
+}
+
+/// A schedule's check over a durable queue that remembers a name for
+/// `dedupe` minutes, the schedule catching up `catch_up` minutes.
+fn within_dedupe(dedupe: int, catch_up: int) -> string {
+    queue<int> q {
+        name: "reports"
+        durable: stored_with(int_wire())
+        dedupe: mins(dedupe)
+    }
+    let s = schedule<int> {
+        name: "nightly"
+        at: cron("0 3 * * *")
+        sends: q
+        item: 7
+        catch_up: mins(catch_up)
+    }
+    s.check().map(it.message).join("|")
+}
+
+spec "std/queue_store — a schedule with no leader" {
+    given "its check" {
+        then "a catch_up longer than the queue's dedupe is refused: a restart past it would send a tick twice" {
+            within_dedupe(30, 60) == "a tick may be sent 60m00s late and the queue forgets its id after 30m00s, so a restart past that would send it twice — keep `catch_up:` within `dedupe:`" &&
+                within_dedupe(60, 60) == ""
+        }
+    }
+    given "one database" {
+        then "two runs of one schedule each send the tick, and the queue holds one item" {
+            (two_runs() catch "failed") == "here 1 | there 1 | items 1"
+        }
+        then "a run started after another sent the tick sends it again by name, and the queue holds one" {
+            (restarted() catch "failed") == "first 1 | second 1 | items 1"
+        }
+        then "a tick read by a worker in_tx is one row written in the commit that acks it" {
+            (worked_in_tx() catch "failed") == "ticks 1 | settled 1 | rows 1 | depth 0 | open false"
+        }
+    }
+}

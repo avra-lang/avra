@@ -1,0 +1,64 @@
+//! THE CHECK VERDICT: what `check` said of a program, kept as ONE saved answer whose read
+//! list is what it stood on — the compiler, the covered packages and their files, every
+//! source, embed and object, each with the digest it was read at. It stands while every
+//! read does (`get_standing`); nothing is folded into its key.
+//!
+//! A SOURCE IS READ TWO-LEVEL: its text, and when the text moved, its SHAPE — what its
+//! tokens say (`shape_digest`). A text that moved and kept its shape leaves every answer
+//! standing but the places printed, so the files that point into it are said again from
+//! their facts rows, placed against a lex of the text now; nothing is parsed.
+use core.{FileId, sorted_texts, touch}
+use compiler.families.{Family}
+use compiler.host.{InputKind}
+use features.{FileInfo}
+use core.{digest_of, joined, flatten, distinct, some_list}
+use @std.text.{hex, unhex}
+use @std.errors.{Loc}
+use grammar.{Token, LexResult}
+use @std.relation.engine.{list_cell, map_cell}
+use @std.relation.stable.{Writer, Reader, writer, decoded_with, written_list, CodecFault}
+use diagnostics.{Diag, SourceFile, new_source_file, render_among}
+use compiler.store.{Store, Stored, Reading, node_key, read_spelled}
+use features.{tree_saved, tree_unsaved}
+use compiler.findings.{Finding, finding_line, findings_read}
+
+/// One read the verdict stands on, by the door that answers it.
+export enum VerdictRead {
+    Compiler
+    Closure(named: string)
+    Files(dir: string)
+    Text(path: string)
+    Shape(path: string)
+    Lined(path: string)
+    Embed(path: string)
+    Object(path: string)
+}
+
+/// How a source is read: an Avra file by its shape, anything else by its text.
+fn source_read(path: string, lined: bool) -> VerdictRead {
+    if !path.ends_with(".av") { return VerdictRead.Text(path) }
+    if lined { VerdictRead.Lined(path) } else { VerdictRead.Shape(path) }
+}
+
+/// WHAT `check` SAID, AS DATA: the program's own voices and the files they point into, then
+/// each file's part, in file order.
+export type CheckSaid = { voices: string, voice_files: List<string>, files: List<FileSpoke> = [], moved_since: List<string> = [] }
+
+/// One file's part: its warnings as printed (empty where the program does not reach it),
+/// whether it is reached, its rule findings and its stale license lines.
+export type FileSpoke = { path: string, reached: bool, said: string, findings: List<Finding>, licenses: List<string> }
+
+impl CheckSaid {
+    fn warnings() -> string { spoken([self.voices].concat([f.said for f in self.files])) }
+
+    fn licenses() -> string { joined(flatten([f.licenses for f in self.files]), "\n") }
+
+    fn findings() -> List<Finding> { flatten([f.findings for f in self.files]) }
+}
+
+/// A file's shape as it is kept: the digest, the words its text was lexed under, and whether
+/// its docs' words are in it.
+export type Shaped = { digest: string, words: LexWords, docs: bool }
+
+/// A saved answer's bytes, and the files whose text moved under it and kept their shape.
+type Standing = { key: string, bytes: string, moved: List<string> }

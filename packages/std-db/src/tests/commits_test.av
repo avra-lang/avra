@@ -1,0 +1,92 @@
+// The commit counter: one row in the database that every write to a model's table moves, from any
+// connection, raw SQL included — so it is persisted with the data, only rises, and means the same to every
+// process that reads the file. A table the counter does not yet watch is watched once it is claimed again.
+use @std.db.{model}
+use @std.db.apply.{commits}
+use @std.sqlite.{Db, sql}
+use @std.sqlite.error.{SqlError}
+
+@model
+type Mark = {
+    id: int = 0,
+    note: string,
+}
+
+/// `body` over a fresh in-memory database with the model's table; false when none opens.
+fn made(body: fn(Db) -> bool) -> bool {
+    match Db.memory() {
+        .Ok(db) -> match Mark.create_table(db) { .Ok(_) -> body(db), .Err(_) -> false },
+        .Err(_) -> false,
+    }
+}
+
+fn count(db: Db) -> int { commits(db) catch -1 }
+
+/// Whether a database call answered.
+fn ran<T>(r: Result<T, SqlError>) -> bool {
+    match r { .Ok(_) -> true, .Err(_) -> false }
+}
+
+fn run(db: Db, text: string) -> bool {
+    match db.run(sql(text)) { .Ok(_) -> true, .Err(_) -> false }
+}
+
+spec "the commit counter" {
+    given "a database a model has claimed" {
+        then "it starts at nothing and holds still while nothing is written" {
+            made((db) -> count(db) == 0 && count(db) == 0)
+        }
+        then "each row written, changed or removed moves it, raw SQL included" {
+            made(
+                (db) -> {
+                    let start = count(db)
+                    let inserted = run(db, "INSERT INTO \"Mark\" (\"note\") VALUES ('a'), ('b')")
+                    let after_insert = count(db)
+                    let updated = run(db, "UPDATE \"Mark\" SET \"note\" = 'c' WHERE \"id\" = 1")
+                    let after_update = count(db)
+                    let removed = run(db, "DELETE FROM \"Mark\" WHERE \"id\" = 2")
+                    inserted &&
+                        updated &&
+                        removed &&
+                        after_insert == start + 2 &&
+                        after_update == start + 3 &&
+                        count(db) == start + 4
+                },
+            )
+        }
+        then "a read leaves it where it was" {
+            made(
+                (db) -> {
+                    let _ = run(db, "INSERT INTO \"Mark\" (\"note\") VALUES ('a')")
+                    let before = count(db)
+                    let _ = db.all(sql("SELECT \"note\" FROM \"Mark\""))
+                    count(db) == before
+                },
+            )
+        }
+        then "claiming the table again changes nothing and loses nothing" {
+            made(
+                (db) -> {
+                    let _ = run(db, "INSERT INTO \"Mark\" (\"note\") VALUES ('a')")
+                    let before = count(db)
+                    let again = Mark.create_table(db)
+                    ran(again) && count(db) == before
+                },
+            )
+        }
+    }
+    given "a database whose table was made before the counter" {
+        then "claiming it gives it the counter, and writes are counted from then" {
+            match Db.memory() {
+                .Ok(db) -> {
+                    let _ = run(db, Mark.create_table_sql())
+                    let before = !ran(commits(db))
+                    let _ = Mark.create_table(db)
+                    let _ = run(db, "INSERT INTO \"Mark\" (\"note\") VALUES ('a')")
+                    before && count(db) == 1
+                },
+                .Err(_) -> false,
+            }
+        }
+    }
+}

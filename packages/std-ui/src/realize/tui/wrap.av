@@ -1,0 +1,35 @@
+//! `realize/tui/wrap.av` — text as lines of a width. A cell is a terminal
+//! column, so a wide glyph takes two and a combining mark none; a cluster
+//! (`@std.text.graphemes`) is never split across lines.
+use @std.text.{cells, codepoints, from_codepoints}
+use place.lines.{lines_in, cut_in}
+
+/// The picture a control code point is shown as, so no byte of a tree
+/// can drive the terminal: C0 and DEL as their control pictures, C1 as
+/// the replacement character. A newline stays, the one break a text
+/// carries; every other code point is itself.
+fn shown_code(c: int) -> int {
+    when {
+        c == 10 -> c
+        c < 32 -> 9216 + c
+        c == 127 -> 9249
+        c >= 128 && c < 160 -> 65533
+        _ -> c
+    }
+}
+
+/// `s` with each control shown as its picture.
+export fn shown(s: string) -> string { from_codepoints([shown_code(c) for c in codepoints(s)]) }
+
+/// A width below one reads as one.
+export fn at_least_one(n: int) -> int { if n < 1 { 1 } else { n } }
+
+/// The text as lines of at most `width` cells, breaking at spaces. A
+/// newline starts a fresh paragraph, a blank one keeping its blank line;
+/// runs of spaces collapse; a word longer than the line is cut at the
+/// width. "" has no lines.
+export fn wrap(text: string, width: int) -> List<string> { lines_in(text, at_least_one(width), cells) }
+
+/// `s` in runs of at most `width` cells, cut between clusters; whole when
+/// it already fits. A cluster wider than the line stands alone.
+export fn cut(s: string, width: int) -> List<string> { cut_in(s, at_least_one(width), cells) }

@@ -1,0 +1,207 @@
+//! @std.queue.schedule — a recurring send. A schedule names a queue, an
+//! item and when it falls due: `at:` a cron line, or `every:` a span.
+//!
+//!     schedule nightly {
+//!         name: "nightly"
+//!         at: cron("0 3 * * *")
+//!         sends: reports
+//!         item: Report { kind: "daily" }
+//!     }
+//!     let ticking = spawn nightly.run()
+//!
+//! NO LEADER: every process that runs the schedule reads the same wall
+//! clock, finds the same tick and sends it under the id
+//! `<name>@<tick>`, so a durable queue's dedupe makes one item of it
+//! however many processes run. A memory queue dedupes nothing: run one
+//! schedule of a name per process.
+//!
+//! A tick is sent when it is the newest one due and the clock is no more
+//! than `catch_up` past it, so a process started soon after a tick it
+//! missed still sends it, and ticks missed for longer are skipped,
+//! never piled up. A clock that steps back sends no tick twice.
+use queue.{HomeError, queue}
+use @std.meta.{Diagnostic, refuse}
+use @std.task.{Channel, open_channel}
+use @std.time.{Cron, CronError, Duration, Time, after as due_in, hours, mins, ms, now}
+
+/// Why a schedule could not run: it sends to no queue, names no tick or
+/// two kinds of them, its cron line is no line, or its queue's home
+/// could not answer.
+export enum ScheduleError { NoQueue, NoTick, TwoTicks, Line(why: CronError), Home(why: HomeError) }
+
+/// A schedule's declaration. `name` heads the id of every tick it sends.
+/// `at` is a cron line and `every` a span, each tick a whole number of
+/// it past the epoch; exactly one is named. `catch_up` is how late a
+/// tick may still be sent. `clock` is the wall it reads. `sent` fires
+/// once a tick's item is in the queue, `missed` for the newest tick that
+/// came due too long ago to send.
+export component schedule<T> {
+    name: string = ""
+    at: Result<Cron, CronError>? = null
+    every: Duration? = null
+    sends: queue<T>?
+    item: T
+    catch_up: Duration = hours(1)
+    clock: fn() -> Time = now
+    state halt: Channel<bool> = open_channel<bool>(1)
+    state fired: Cell<int?> = Cell.new(null)
+    on sent(tick: Time, id: string)
+    on missed(tick: Time)
+    /// The value laws of a schedule, over the settings one instance states.
+    fn check() -> List<Diagnostic> {
+        mut said: List<Diagnostic> = []
+        if self.name == "" { said.push(refuse(unnamed_schedule())) }
+        if self.at == null && self.every == null { said.push(refuse(no_tick())) }
+        if self.at != null && self.every != null { said.push(refuse(two_ticks())) }
+        let fault = line_fault(self.at)
+        if fault != null { said.push(refuse(bad_line(fault!))) }
+        if self.every?.ns ?? 1 <= 0 { said.push(refuse(no_period(self.every!))) }
+        if self.catch_up.ns <= 0 { said.push(refuse(no_catch_up(self.catch_up))) }
+        let q? = self.sends else { return said }
+        if q.durable != null && self.catch_up.ns > q.dedupe.ns { said.push(refuse(outlives_dedupe(self.catch_up, q.dedupe))) }
+        said
+    }
+    /// The first tick strictly after `t`; absent past the range of
+    /// instants.
+    fn next_tick(t: Time) -> Result<Time?, ScheduleError> {
+        if self.at != null && self.every != null { return .Err(ScheduleError.TwoTicks) }
+        let span? = self.every else { return self.line_after(t) }
+        if span.ns <= 0 { return .Err(ScheduleError.NoTick) }
+        .Ok(span.next_after(t))
+    }
+    fn line_after(t: Time) -> Result<Time?, ScheduleError> {
+        let line? = self.at else { return .Err(ScheduleError.NoTick) }
+        match line { .Ok(c) -> .Ok(c.next_after(t)), .Err(e) -> .Err(ScheduleError.Line(e)) }
+    }
+    /// The newest tick no later than `t` and later than `since`.
+    fn newest(since: Time, t: Time) -> Result<Time?, ScheduleError> {
+        mut last = since
+        mut next = self.next_tick(since)?
+        while next != null && next!.ns <= t.ns {
+            last = next!
+            next = self.next_tick(last)?
+        }
+        .Ok(if last.ns == since.ns { null } else { last })
+    }
+    /// Send the item of `tick` under the tick's id, once per tick in this
+    /// instance; the id the queue answered, or absent when its terms
+    /// turned the item away.
+    fn sent_for(tick: Time) -> Result<string?, ScheduleError> {
+        if self.fired.get() ?? tick.ns - 1 >= tick.ns { return .Ok(null) }
+        let q? = self.sends else { return .Err(ScheduleError.NoQueue) }
+        let answered = homed(q.send(self.item, id: tick_id(self.name, tick)))?
+        self.fired.set(tick.ns)
+        let id? = answered else { return .Ok(null) }
+        if self.sent != null { (self.sent!)(tick, id) }
+        .Ok(id)
+    }
+    /// The newest tick after `since` due by now, sent when it is no more
+    /// than `catch_up` old; whether one was sent.
+    fn caught_up(since: Time) -> Result<bool, ScheduleError> {
+        let t = (self.clock)()
+        let tick? = self.newest(since, t)? else { return .Ok(false) }
+        if t.ns - tick.ns > self.catch_up.ns {
+            if self.missed != null { (self.missed!)(tick) }
+            self.fired.set(tick.ns)
+            return .Ok(false)
+        }
+        .Ok(self.sent_for(tick)? != null)
+    }
+    /// The instant after which no tick is owed: the last one sent, or
+    /// `floor` when that is later or none was.
+    fn fired_or(floor: int) -> Time {
+        let f = self.fired.get() ?? floor
+        Time { ns: if f > floor { f } else { floor } }
+    }
+    /// Send every tick as it falls due, for as long as the scope stands
+    /// or until `stop()`: first the newest tick missed within `catch_up`,
+    /// then each next one. Answers how many ticks were sent.
+    fn run() -> Result<int, ScheduleError> {
+        if self.sends == null { return .Err(ScheduleError.NoQueue) }
+        let _ = self.next_tick(Time { ns: 0 })?
+        let start = (self.clock)()
+        mut count = if self.caught_up(Time { ns: start.ns - self.catch_up.ns - 1 })? { 1 } else { 0 }
+        while true {
+            let from = self.fired_or((self.clock)().ns)
+            let next? = self.next_tick(from)? else { return count }
+            if !self.waited(next) { return count }
+            if self.caught_up(from)? { count = count + 1 }
+        }
+        count
+    }
+    /// Park until the wall reads `tick`, asking it again at least every
+    /// minute so a clock that steps is heard; `false` once a stop was
+    /// asked.
+    fn waited(tick: Time) -> bool {
+        while (self.clock)().ns < tick.ns {
+            let left = tick.ns - (self.clock)().ns
+            if !self
+                .paused(if left > ask_every.ns { ask_every } else { ms((left + 999999) / 1000000) }) { return false }
+        }
+        true
+    }
+    /// Park for `span`; `false` once a stop was asked.
+    fn paused(span: Duration) -> bool {
+        let limit = due_in(span)
+        select {
+            _ in self.halt.source -> false
+            self.halt.source.ended -> false
+            limit -> true
+        }
+    }
+    /// Ask the schedule's `run` to end: the one standing, or the next to
+    /// start.
+    fn stop() {
+        let _ = self.halt.sink.post(true)
+    }
+}
+
+/// What is wrong with a cron line, or absent for a line that ticks or
+/// none named.
+fn line_fault(at: Result<Cron, CronError>?) -> CronError? {
+    let line? = at else { return null }
+    match line { .Ok(_) -> null, .Err(e) -> e }
+}
+
+/// A queue's answer as a schedule's.
+fn homed<V>(r: Result<V, HomeError>) -> Result<V, ScheduleError> {
+    match r { .Ok(v) -> .Ok(v), .Err(why) -> .Err(ScheduleError.Home(why)) }
+}
+
+/// The longest a waiting schedule goes without reading its clock.
+const ask_every: Duration = mins(1)
+
+/// The id a tick is sent under: the schedule's name and the tick.
+export fn tick_id(name: string, tick: Time) -> string {
+    "${name}@${tick.iso()}"
+}
+
+// ── The voices ──
+
+fn unnamed_schedule() -> string {
+    "a schedule is named — its name heads the id of every tick it sends — and this has no `name:`"
+}
+
+fn no_tick() -> string {
+    "a schedule names when it ticks, `at:` a cron line or `every:` a span, and this names neither"
+}
+
+fn two_ticks() -> string {
+    "a schedule ticks `at:` a cron line or `every:` a span, and this names both"
+}
+
+fn bad_line(e: CronError) -> string {
+    "`at:` is no cron line: ${e.text()}"
+}
+
+fn no_period(d: Duration) -> string {
+    "a schedule's `every:` is longer than nothing, and this is ${d.text()}"
+}
+
+fn no_catch_up(d: Duration) -> string {
+    "a schedule sends a tick no later than `catch_up:` after it, and this is ${d.text()}, so it sends none"
+}
+
+fn outlives_dedupe(c: Duration, d: Duration) -> string {
+    "a tick may be sent ${c.text()} late and the queue forgets its id after ${d.text()}, so a restart past that would send it twice — keep `catch_up:` within `dedupe:`"
+}

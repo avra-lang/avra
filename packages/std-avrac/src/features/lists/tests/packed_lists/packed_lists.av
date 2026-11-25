@@ -1,0 +1,109 @@
+// proves: a list of plain scalars (int, float, bool, a word enum) is laid out packed — its cells and no
+// marks — and reads, writes and frees cell for cell as any other list: one generic body instanced at
+// int and at string, a packed list concatenated and sliced with packed lists and with a list a map
+// hands back, a packed list held inside a list of lists, a sort by swaps in place and pops, a list
+// shared by two holders opened by the one that writes, fills, empty literals grown, a `collect`, and
+// a list of nullable ints beside them, which is never packed.
+enum Dir { N, E, S, W }
+
+/// One body for every `T`: `xs` doubled, then reversed by swaps in place.
+fn turned<T>(xs: List<T>) -> List<T> {
+    mut out = xs.concat(xs)
+    mut i = 0
+    mut j = out.length - 1
+    while i < j {
+        let t = out[i]
+        out[i] = out[j]
+        out[j] = t
+        i = i + 1
+        j = j - 1
+    }
+    out
+}
+
+/// `xs` in the order `before` answers, by insertion and swaps in place.
+fn sorted<T>(xs: List<T>, before: fn(T, T) -> bool) -> List<T> {
+    mut out: List<T> = []
+    for x in xs {
+        out.push(x)
+        mut k = out.length - 1
+        while k > 0 && before(out[k], out[k - 1]) {
+            let t = out[k]
+            out[k] = out[k - 1]
+            out[k - 1] = t
+            k = k - 1
+        }
+    }
+    out
+}
+
+fn total(xs: List<int>) -> int {
+    mut t = 0
+    for x in xs { t = t + x }
+    t
+}
+
+fn shown(xs: List<int>) -> string { xs.fold("", (at: string, x: int) -> if at == "" { "${x}" } else { "${at},${x}" }) }
+
+// the generic body at int and at string
+let ints = turned([1, 2, 3])
+let texts = turned(["a", "b", "c"])
+println("A ${shown(ints)} ${texts.fold("", (at: string, s: string) -> at + s)}")
+
+// fills, an empty literal grown past every buffer class, a word enum, floats, bools
+mut zeros = [0 for _k in 0..12]
+zeros[5] = 55
+zeros.push(-1)
+mut grown: List<int> = []
+// LICENSED loops.push_loop: the pushes ARE the attack — an empty packed literal opened, then grown past every buffer class
+for i in 0..300 { grown.push(i * 3) }
+let dirs = [Dir.E, Dir.W, Dir.N]
+let halves = [0.5 for _k in 2..6]
+mut flags = [false for _k in 0..5]
+flags[2] = true
+let none = [7 for _k in 4..1]
+println(
+    "B ${total(zeros)} ${zeros.length} ${grown.length} ${grown[299]} ${total(grown)} ${dirs.length} ${halves.length} ${halves[3]} ${flags[2]} ${flags[3]} ${none.length}",
+)
+
+// concat and slice: packed with packed, with a map's values, a slice of a slice
+let squares = [i * i for i in 0..8]
+let both = squares.concat(zeros)
+let counts: Map<string, int> = {"x": 4, "y": 9}
+let mixed = counts.values().concat(squares)
+let cut = both.slice(3, 15).slice(2, 6)
+println("C ${both.length} ${total(both)} ${shown(mixed)} ${shown(cut)}")
+
+// a packed list held in a list of lists, written through it, the original standing
+mut rows: List<List<int>> = []
+rows.push(squares)
+rows.push([5 for _k in 0..3])
+rows.push([])
+rows[2].push(42)
+rows[0][1] = 100
+rows[1].push(6)
+println("D ${shown(rows[0])} ${shown(rows[1])} ${shown(rows[2])} ${shown(squares)}")
+
+// a sort by swaps in place, then pops, at int and at string
+mut order = sorted([9, 3, 7, 1, 8, 2], (a: int, b: int) -> a < b)
+let top = order.pop()
+let next = order.pop()
+let words = sorted(["pear", "fig", "apple"], (a: string, b: string) -> a.length < b.length)
+println("E ${shown(order)} ${top} ${next} ${words[0]} ${words[2]}")
+
+// one list, two holders: the one that writes opens its own copy
+let first = [1, 2, 3, 4]
+mut second = first
+second[0] = -9
+second.push(5)
+mut third = second
+third[4] = 50
+println("F ${shown(first)} ${shown(second)} ${shown(third)}")
+
+// a collect of ints, and a list of nullable ints, which keeps its marks
+let gathered = collect {
+    for i in 0..5 { if i % 2 == 0 { i * 7 } }
+}
+let maybes: List<int?> = [1, null, 3]
+let present = maybes.filter_map((m: int?) -> m)
+println("G ${shown(gathered)} ${maybes.length} ${shown(present)}")

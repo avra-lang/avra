@@ -1,0 +1,200 @@
+//! The operating verbs as HTTP routes, answering JSON. Nothing serves
+//! them until a program mounts them, and the mount names who may ask:
+//! every route answers 403 to a request `allowed` refuses.
+//!
+//!     server app {
+//!         port: 8080
+//!         group "/admin/queues" { queue_admin(ctx.db, (q: Request<Unrouted>) -> q.header("authorization") == token) }
+//!     }
+//!
+//!     GET    /                         every queue, its terms and counts
+//!     GET    /{queue}                  one queue; 404
+//!     GET    /{queue}/items            its items, oldest first: `limit`, `after`; 422
+//!     POST   /{queue}/items/{id}/retry hand it out again now; 404, 409 held, 422
+//!     DELETE /{queue}/items/{id}       let it go; 404, 409 held
+//!
+//! A queue's name is one segment, percent-encoded where it holds a `/`
+//! (`resize%2Fdead`).
+use @std.http.http.{Request, Response, Unrouted, status, text}
+use @std.http.route.{Mounted, Route, delete, get, post}
+use @std.http.typed.{captured, either, found}
+use @std.json.{Json, field}
+use @std.meta.{derive}
+use @std.queue.{HomeError, order_word, overflow_word}
+use @std.sqlite.{Db}
+use @std.time.{Time, now}
+use @std.validate.{Decode, range}
+use operate.{Acted, Peeked, Stage, Standing, discard, peek, queue_named, queues, retry}
+
+/// The operating routes over `db`, each answering 403 to a request
+/// `allowed` refuses. `clock` is the instant a lease is judged against,
+/// the one the queues' homes read.
+export fn queue_admin(db: Db, allowed: fn(Request<Unrouted>) -> bool, clock: fn() -> Time = now) -> Mounted {
+    Mounted {
+        found: [guarded(r, allowed) for r in [
+            get "/" { _req -> either(listed(db, clock)) },
+            get "/{queue}" { req -> either(one(db, req.params.queue, clock)) },
+            get "/{queue}/items" { req -> either(page(db, req.params.queue, req.query_as(), clock)) },
+            post "/{queue}/items/{id}/retry" { req -> either(acted_on(db, req.params.queue, req.params.id, retry, clock)) },
+            delete "/{queue}/items/{id}" { req -> either(acted_on(db, req.params.queue, req.params.id, discard, clock)) },
+        ]],
+    }
+}
+
+/// `r`, answering 403 to every target it reads that `allowed` refuses.
+fn guarded(r: Route, allowed: fn(Request<Unrouted>) -> bool) -> Route {
+    r with { serve: (q: Request<Unrouted>, t: Bytes) -> if !r.reads(t) || allowed(q) { (r.serve)(q, t) } else { status(403) } }
+}
+
+/// A page's query: `limit` items, fifty unless asked, after the item
+/// `after` names.
+@derive(Decode)
+type Paging = { @range(0, 1000) limit: int = 50, after: string? = null }
+
+// ── The answers ──
+
+fn listed(db: Db, clock: fn() -> Time) -> Result<Response, Response> {
+    Response.json(Json.Arr([standing_json(s) for s in served(queues(db, clock))?]))
+}
+
+fn one(db: Db, raw: string, clock: fn() -> Time) -> Result<Response, Response> {
+    let name = captured(raw)?
+    found(served(queue_named(db, name, clock))?, standing_json, missing: text(404, no_queue(name)))
+}
+
+fn page(db: Db, raw: string, asked: Result<Paging, Response>, clock: fn() -> Time) -> Result<
+    Response,
+    Response,
+> {
+    let name = captured(raw)?
+    let p = asked?
+    let items = served(peek(db, name, limit: p.limit, after: p.after, clock: clock))?
+    Response.json(Json.Arr([peeked_json(i) for i in items]))
+}
+
+fn acted_on(
+    db: Db,
+    raw: string,
+    raw_id: string,
+    verb: fn(Db, string, string, fn() -> Time) -> Result<Acted, HomeError>,
+    clock: fn() -> Time,
+) -> Result<Response, Response> {
+    let name = captured(raw)?
+    let id = captured(raw_id)?
+    match served(verb(db, name, id, clock))? {
+        .Done(fresh) -> Response.json(Json.Obj([field("id", Json.Str(fresh))])),
+        .Missing -> text(404, no_item(name, id)),
+        .Held(until) -> Response { status: 409, body: held_words(until).bytes() },
+        .Unread -> text(422, unread_letter(id)),
+    }
+}
+
+/// What a home answered, or the status its failure earns.
+fn served<T>(r: Result<T, HomeError>) -> Result<T, Response> {
+    match r { .Ok(v) -> v, .Err(why) -> { fail failed(why) } }
+}
+
+fn failed(why: HomeError) -> Response {
+    match why {
+        .Unreachable(_) -> status(503),
+        .Refused(w) -> text(400, w),
+        .TooBig(_, _) or .Shape(_) -> status(500),
+        .Denied -> status(403),
+    }
+}
+
+// ── The records ──
+
+fn standing_json(s: Standing) -> Json {
+    Json
+        .Obj(
+            [
+                field("name", Json.Str(s.name)),
+                field("letter", Json.Bool(s.letter)),
+                field("terms", terms_json(s)),
+                field("waiting", Json.Int(s.waiting)),
+                field("owed", Json.Int(s.owed)),
+                field("held", Json.Int(s.held)),
+                field("delayed", Json.Int(s.delayed)),
+                field("unreadable", Json.Int(s.unreadable)),
+            ],
+        )
+}
+
+fn terms_json(s: Standing) -> Json {
+    let t? = s.terms else { return Json.Null }
+    Json
+        .Obj(
+            [
+                field("capacity", Json.Int(t.capacity)),
+                field("lease_ms", Json.Int(t.lease.ms())),
+                field("retries", Json.Int(t.retries)),
+                field("overflow", Json.Str(overflow_word(t.overflow))),
+                field("order", Json.Str(order_word(t.order))),
+                field(
+                    "dedupe_ms",
+                    if s.dedupe == null { Json.Null } else { Json.Int(s.dedupe!.ms()) },
+                ),
+                field("opened_at", instant(s.opened_at)),
+            ],
+        )
+}
+
+fn peeked_json(p: Peeked) -> Json {
+    Json
+        .Obj(
+            [
+                field("id", Json.Str(p.id)),
+                field("key", Json.Str(p.key)),
+                field("stage", Json.Str(stage_word(p.stage))),
+                field("attempt", Json.Int(p.attempt)),
+                field("epoch", Json.Int(p.epoch)),
+                field("sent_at", instant(p.sent_at)),
+                field("ready_at", instant(p.ready_at)),
+                field("leased_until", instant(p.leased_until)),
+                field("reader", str_or_null(p.reader)),
+                field("shape", Json.Int(p.shape)),
+                field("item", p.item ?? Json.Null),
+                field("read", Json.Bool(p.item != null)),
+                field("unread", str_or_null(p.unread)),
+            ],
+        )
+}
+
+fn str_or_null(s: string?) -> Json {
+    let v? = s else { return Json.Null }
+    Json.Str(v)
+}
+
+fn instant(t: Time?) -> Json {
+    let at? = t else { return Json.Null }
+    Json.Str(at.iso())
+}
+
+fn stage_word(s: Stage) -> string {
+    match s {
+        .Waiting -> "waiting",
+        .Delayed -> "delayed",
+        .Held -> "held",
+        .Lapsed -> "lapsed",
+        .Backing -> "backing",
+    }
+}
+
+// ── The voices ──
+
+fn no_queue(name: string) -> string {
+    "no queue `${name}` stands in this database"
+}
+
+fn no_item(name: string, id: string) -> string {
+    "no item `${id}` stands in `${name}`"
+}
+
+fn held_words(until: Time) -> string {
+    "a worker holds this item until ${until.iso()}; its lease decides it"
+}
+
+fn unread_letter(id: string) -> string {
+    "the letter `${id}` holds no item this database can read back"
+}

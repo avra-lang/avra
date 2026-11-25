@@ -1,0 +1,205 @@
+//! WHERE A COMPONENT'S SHAPE BREAKS ITS CONTRACT WITH THE COMPILER: its `check` answering other than
+//! `@std/meta`'s `List<Diagnostic>`, or taking a seat; a head spelled `Format` that names another type
+//! than `@std/meta`'s pattern. Read off the component's signature and its `check`'s.
+use core.{ComponentParts, ExprId, SignedType, StmtId, SyntaxArena, default_mark, flatten, some_list}
+use compiler.laws.{Found, law}
+use diagnostics.{Voice}
+use features.components.{check_unshaped, default_unmade, format_foreign, formats_of, slot_shadows}
+use features.{row_unkeyed}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+
+/// The fn a component writes that the compiler speaks at each instance.
+const CHECK: string = "check"
+
+/// What `@std/meta` names the type a component's `check` answers a list of, and a `Format` head is.
+const CHECK_ANSWERS: string = "Diagnostic"
+
+const FORMAT: string = "Format"
+
+/// Every component of the written item `view` shows whose `check` isn't shaped as one: where the
+/// `check` stands, and what it answers.
+fn checks_unshaped(view: ItemView) -> List<Found> {
+    let item = view.item
+    if !item.store.refusals().is_empty() { return [] }
+    [f! for a in impls_at(view.engine, view.file, view.at) for c in [impl_component_at(item, a)] if c != null for f in [check_found(view.engine, item.store, a, c!.fns)] if f != null]
+}
+
+/// The `check` among a component's `fns`, refused where it isn't shaped as one.
+fn check_found(engine: QueryEngine, store: SyntaxArena, a: ImplAt, fns: List<StmtId>) -> Found? {
+    let m? = fns.find((f: StmtId) -> store.fn_parts(f)?.name == CHECK) else { return null }
+    let sig? = method_signature(engine, a, CHECK) else { return null }
+    if sig.params.length <= 1 && diagnostics_answered(sig.answer) { return null }
+    if sig.answer.inferred() || sig.answer.generic() || sig.answer.head is .Unnamed { return null }
+    Found { at: store.stmt_span(m), args: [sig.answer.spelled()] }
+}
+
+/// Whether `ty` is a list of `@std/meta`'s `Diagnostic`s.
+fn diagnostics_answered(ty: SignedType) -> bool {
+    let element? = ty.listed() else { return false }
+    meta_named(element, CHECK_ANSWERS)
+}
+
+/// Every head spelled `Format` of a component the written item `view` shows declares that names
+/// another type than `@std/meta`'s: where the component stands, and the head.
+fn formats_foreign(view: ItemView) -> List<Found> {
+    let item = view.item
+    if !item.store.refusals().is_empty() { return [] }
+    [Found { at: item.store.stmt_span(s), args: [n] } for s in item.stmts for c in [item.store.component_parts(s)] if c != null for sig in [record_signature(view.engine, view.file, c!.name)] if sig != null for n in formats_of(c!) for seat in sig!.fields if seat.name == n &&
+        seat.ty != null &&
+        !(seat.ty!.head is .Unnamed) &&
+        !meta_named(seat.ty!, FORMAT)]
+}
+
+/// a component's `check` answers `List<Diagnostic>` and takes nothing
+export law component_check_shaped {
+    kind: "type.component_check"
+    reads_view: checks_unshaped
+    voice: unshaped_words
+    witness: "use @std.meta.{Diagnostic}\ncomponent box {\n    a: int\n    fn check() -> int { 1 }\n}\n0\n"
+}
+
+/// a component's `Format` head is `@std/meta`'s pattern type
+export law component_format_is_meta {
+    kind: "type.component_format"
+    reads_view: formats_foreign
+    voice: foreign_words
+    witness: "use @std.meta.{Code}\ntype Format = { n: int }\ncomponent loose(path: Format) {\n    body: Code\n    fn expand() -> Code {\n        quote { \${self.body} }\n    }\n}\n0\n"
+}
+
+fn unshaped_words(a: List<string>) -> Voice { check_unshaped(a[0]) }
+
+fn foreign_words(a: List<string>) -> Voice { format_foreign(a[0]) }
+
+/// Every unkeyed instance of a component that keeps state, made once a turn by a repetition the
+/// written item `view` shows writes — a comprehension's element, a loop's body — once each: where
+/// it stands, and its word.
+fn rows_unkeyed(view: ItemView) -> List<Found> {
+    let item = view.item
+    let store = item.store
+    if !store.refusals().is_empty() { return [] }
+    let made = flatten([turn_made(store, ExprId { index: i }) for i in 0..store.expr_count()])
+        .concat(
+            flatten(
+                [store.stmts_exprs(body_of_loop(store, StmtId { index: i })) for i in 0..store.stmts.count()],
+            ),
+        )
+    let all = [r.index for x in made for r in rows_under(store, x)]
+    let rows = [i for j, i in all if !all.take(j).contains(i)]
+    [Found { at: store.expr_span(e), args: [w] } for i in rows for e in [ExprId { index: i }] if store.home_of(e) == null for w in [store.instance_parts(e)?.word ?? ""] if keeps_state(view.engine, view.file, w)]
+}
+
+/// What one turn of the comprehension `e` makes: its element; none for any other node.
+fn turn_made(store: SyntaxArena, e: ExprId) -> List<ExprId> {
+    match store.expr(e) { .Comp(elem, _) -> [elem], rest -> [] }
+}
+
+/// The body a loop statement runs each turn; none for any other statement.
+fn body_of_loop(store: SyntaxArena, s: StmtId) -> List<StmtId> {
+    match store.stmt(s) { .While(_, stmts) or .ForEach(_, _, _, stmts) -> stmts, rest -> [] }
+}
+
+/// The unkeyed instances one turn makes at and under `e`: never into a fn it hands on, a nested
+/// comprehension — its own turn — or a keyed instance, whose key tells what is under it apart.
+fn rows_under(store: SyntaxArena, e: ExprId) -> List<ExprId> {
+    if store.lambda_parts(e) != null || store.repeats(e) { return [] }
+    if store.instance_parts(e) == null { return flatten([rows_under(store, k) for k in store.reached(e)]) }
+    let made = store.walked(e)
+    if made.any((x: ExprId) -> store.struct_lit_parts(x)?.fields?.contains("key") ?? false) { return [] }
+    [e].concat(flatten([rows_under(store, k) for k in made]))
+}
+
+/// Whether the component `word` names from `file` keeps state of its own.
+fn keeps_state(engine: QueryEngine, file: SourceFileAddress, word: string) -> bool {
+    let d? = resolved(engine, file, Space.Type, word).named() else { return false }
+    if d.kind != ItemKind.Component { return false }
+    let sig? = record_signature(engine, d.file, d.name) else { return false }
+    sig.fields.any(it.state)
+}
+
+/// Every read of the instance a component member's default makes, in the written item `view` shows,
+/// of a field that isn't one of the component's plain inputs — a `state` one, or one itself made from
+/// the instance: where it stands, the component, the member and the field read.
+fn defaults_unmade(view: ItemView) -> List<Found> {
+    let item = view.item
+    if !item.store.refusals().is_empty() { return [] }
+    flatten([unmade_reads(view.engine, view.file, item.store, s) for s in item.stmts])
+}
+
+/// The reads of the instance in the member defaults of the component `s` declares, of a field no
+/// default may read.
+fn unmade_reads(engine: QueryEngine, file: SourceFileAddress, store: SyntaxArena, s: StmtId) -> List<
+    Found,
+> {
+    let c? = store.component_parts(s) else { return [] }
+    let fields = record_signature(engine, file, c.name)?.fields ?? []
+    [Found { at: store.expr_span(r.at), args: [c.name, m.name.text(), r.field] } for m in c.holders if m.default != null for r in self_reads(store, m.default!) if fields.any(it.name == r.field && (it.placed || it.made))]
+}
+
+/// A read of a field of the instance: where it stands, and the field.
+type SelfRead = { at: ExprId, field: string }
+
+/// Every `self.<field>` read at and under `e`.
+fn self_reads(store: SyntaxArena, e: ExprId) -> List<SelfRead> {
+    let own = match store.expr(e) {
+        .Prop(subject, name) -> if store.expr(subject) is .Receiver { [SelfRead { at: e, field: name.of }] } else { [] },
+        _ -> [],
+    }
+    own.concat(flatten([self_reads(store, k) for k in store.walked(e)]))
+}
+
+/// a component member's default reads only the component's plain inputs, once, as the instance is made
+export law member_made_from_inputs {
+    kind: "type.component_default"
+    reads_view: defaults_unmade
+    voice: unmade_words
+    witness: "component tally(start: int) {\n    state n: int = self.start\n    state m: int = self.n\n}\n\nlet t = tally 1\n"
+}
+
+fn unmade_words(a: List<string>) -> Voice { default_unmade(a[0], a[1], a[2]) }
+
+/// Every instance in the written item `view` shows written in another instance's block under a word
+/// that names a slot of that instance's component: there the slot's name wins, and the component of
+/// that name is shadowed. Where it stands, the slot, and the component around it.
+fn slots_shadowing(view: ItemView) -> List<Found> {
+    let item = view.item
+    let store = item.store
+    if !store.refusals().is_empty() { return [] }
+    flatten(
+        [shadowed_in(view.engine, view.file, store, ExprId { index: i }) for i in 0..store.expr_count()],
+    )
+}
+
+/// The instances the block of the instance `e` holds whose word names one of its component's slots.
+fn shadowed_in(engine: QueryEngine, file: SourceFileAddress, store: SyntaxArena, e: ExprId) -> List<
+    Found,
+> {
+    let inst? = store.instance_parts(e) else { return [] }
+    let block? = inst.body else { return [] }
+    let outer = inst.word
+    let d? = resolved(engine, file, Space.Type, outer).named() else { return [] }
+    if d.kind != ItemKind.Component { return [] }
+    let slots = [f.name for f in record_signature(engine, d.file, d.name)?.fields ?? [] if f.ty?.listed() != null && !f.placed]
+    [Found { at: store.expr_span(v), args: [w, outer] } for s in store.block_stmts(block) ?? [] for v in some_list(store.stmt_value(s)) for w in some_list(store.instance_word(v)) if slots.contains(w)]
+}
+
+/// an instance's block names its component's slot, not a component of the slot's name
+export law slot_shadows_component {
+    kind: "type.slot_shadows"
+    reads_view: slots_shadowing
+    voice: shadow_words
+    warns: true
+    witness: "use @std.ui.components.{column, item, text}\nuse @std.ui.tree.view.{View}\n\ncomponent board {\n    item: List<dyn View> = []\n    column { self.item }\n}\n\nlet b = board {\n    item {\n        text \"x\"\n    }\n}\n"
+}
+
+fn shadow_words(a: List<string>) -> Voice { slot_shadows(a[0], a[1]) }
+
+/// a repeated component that keeps state wears a key
+export law repeated_row_keyed {
+    kind: "type.component_row"
+    reads_view: rows_unkeyed
+    voice: row_words
+    witness: "component tick(label: string) {\n    key: string? = null\n    state n: int = 0\n}\nlet rs = [\"a\", \"b\"]\n[tick r for r in rs].length\n"
+}
+
+fn row_words(a: List<string>) -> Voice { row_unkeyed(a[0]) }

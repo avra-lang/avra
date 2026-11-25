@@ -1,0 +1,68 @@
+//! proves a worker over a home that hears nothing asks it again once a
+//! lease and no oftener: ten leases of nothing to do are ten takes
+//! after the first, counted, and the clock is never polled between.
+use @std.queue.{
+    queue,
+    worker,
+    run,
+    open_memory,
+    Dead,
+    Delivery,
+    DrainError,
+    Home,
+    Order,
+    Overflow,
+    Terms,
+    asked_again,
+}
+use @std.time.{ms, secs, sleep}
+
+extern fn avra_clock_virtual(on: int)
+
+/// `under` as a home that cannot say when an item arrives, each take
+/// counted.
+fn deaf(under: Home<int>, takes: Cell<int>) -> Home<int> {
+    under with { take: (max: int) -> counted(takes, (under.take)(max)), waits: asked_again }
+}
+
+fn counted<V>(n: Cell<int>, answer: V) -> V {
+    n.set(n.get() + 1)
+    answer
+}
+
+fn fine(d: Delivery<int>) -> Result<int, string> {
+    d.item
+}
+
+fn said(r: Result<int, DrainError>) -> string {
+    match r { .Ok(n) -> "settled ${n}", .Err(_) -> "failed" }
+}
+
+/// The terms the queue's memory home is opened under.
+fn terms() -> Terms {
+    Terms {
+        capacity: 8,
+        lease: secs(1),
+        retries: 3,
+        dead: "jobs/dead",
+        overflow: Overflow.park,
+        order: Order.fifo,
+    }
+}
+
+avra_clock_virtual(1)
+state takes: Cell<int> = Cell.new(0)
+queue<Dead<int>> letters {}
+queue<int> jobs {
+    lease: secs(1)
+    homed: match open_memory<int>(terms()) { .Ok(m) -> deaf(m.home(), takes), .Err(_) -> null }
+}
+worker idle {
+    reads: jobs
+    each: fine
+    dead: letters
+}
+let r = spawn run(idle)
+sleep(ms(10500))
+idle.stop()
+"takes ${takes.get()} | ${said(r.await)}"

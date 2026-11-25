@@ -1,0 +1,55 @@
+// The memory home under attack: the cases every home withstands.
+use @std.queue.{HomeError, Order, Queue, Terms, memory_of, open_queue}
+use tests.support.attacks.{apart, beaten, deep_terms, roomless, run_terms, transcript}
+
+fn memory(t: Terms) -> Result<Queue<int>, HomeError> {
+    open_queue<int>("jobs", t)
+}
+
+/// A memory queue under terms known to hold an item.
+fn opened(t: Terms) -> Queue<int> {
+    Queue { name: "jobs", terms: t, home: memory_of<int>(t).home() }
+}
+
+/// The runs, of every term and seed, that broke the order's promise.
+fn broken_runs(all: List<Terms>, seeds: int, steps: int) -> List<string> {
+    mut said: List<string> = []
+    for i, t in all {
+        for seed in 1..seeds + 1 {
+            let seen = transcript(opened(t), seed, steps)
+            if seen.contains("!") { said.push("terms ${i} seed ${seed}: ${seen}") }
+        }
+    }
+    said
+}
+
+/// A queue that says `fifo` over a home that runs keys apart.
+fn lying() -> Queue<int> {
+    let t = run_terms()[4]
+    opened(t) with { terms: t with { order: Order.fifo } }
+}
+
+spec "std/queue — under attack" {
+    given "the memory home" {
+        then "withstands every attack" {
+            beaten(memory).join("; ") == ""
+        }
+        then "is refused at its opening under terms that hold no item" {
+            roomless(memory)
+        }
+        then "answers no delivery another memory home handed out" {
+            apart(memory)
+        }
+        then "keeps the order's promise over forty runs of four hundred chosen verbs" {
+            broken_runs(run_terms(), 5, 400).join("\n") == ""
+        }
+        then "keeps the order's promise over six runs of three thousand, two hundred deep" {
+            broken_runs(deep_terms(), 2, 3000).join("\n") == ""
+        }
+    }
+    given "a run over a home that breaks its queue's order" {
+        then "says so" {
+            transcript(lying(), 1, 400).contains("!crowded")
+        }
+    }
+}

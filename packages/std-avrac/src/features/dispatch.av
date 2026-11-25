@@ -1,0 +1,77 @@
+//! The semantics dispatch: every feature's pattern semantics boxed
+//! once, and the exhaustive map that selects a kind's. A new `Pat`
+//! variant breaks the map at compile time, and the impl it names owes
+//! every method, enforced by the trait. The walk order every pass
+//! shares lives here too. An expression's own kids and heirs are read off
+//! its record, or its record's `Kids`/`Heirs` impl, reached on the
+//! `Expr` value, exactly as its passes are its record's `Meaning`.
+use core.{ExprId, SyntaxArena, flatten, Pat, body_behavior, TypeId, Reg, Kids}
+use core.expr.{Body}
+use features.str_lit.{str_type, str_lower}
+use features.quote.{quote_type, quote_reg}
+use features.sublang.{block_type, block_reg}
+
+/// Every feature's boxed pattern semantics, built ONCE per assembly —
+/// the exhaustive map below only SELECTS. The language builds it (the
+/// boxing happens under typed lets there); every pass reaches a
+/// pattern's semantics through it, never by matching feature nodes.
+export type Dispatch = {
+    enumpats: dyn PatSemantics,
+    formatpats: dyn PatSemantics,
+    narrowpats: dyn PatSemantics,
+    quotepats: dyn PatSemantics,
+    listpats: dyn PatSemantics,
+    fieldpats: dyn PatSemantics,
+}
+
+/// The semantics of each PATTERN kind — the pattern ladder's twin
+/// of a node's own record `Meaning`. A new `Pat` variant breaks HERE
+/// at compile time, and the impl it names owes all three methods,
+/// enforced by the trait. An owner adds its arms here and nowhere
+/// else.
+export fn pat_semantics_of(d: Dispatch, p: Pat) -> dyn PatSemantics {
+    match p {
+        .Wild or .Rest or .Bind(_) or .Variant(_, _) or .Lit(_) or .Member(_, _) -> d.enumpats,
+        .Format(_, _) -> d.formatpats,
+        .Typed(_, _) -> d.narrowpats,
+        .Quote(_) -> d.quotepats,
+        .Seq(_, _, _) -> d.listpats,
+        .Fields(_, _, _) -> d.fieldpats,
+    }
+}
+
+/// Every node at and under `root`, children before owners — THE
+/// order every pass visits: facts a node reads exist before it
+/// speaks. Which nodes are a node's children is each feature's
+/// answer, reached through the dispatch.
+export fn post_order(d: Dispatch, store: SyntaxArena, root: ExprId) -> List<ExprId> {
+    flatten([post_order(d, store, k) for k in store.walked(root)]).concat([root])
+}
+
+impl Kids for Body {
+    fn kids() -> List<ExprId> {
+        match self.view { .Expanded(x) -> [x], rest -> self.holes }
+    }
+}
+
+impl Meaning for Body {
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
+        nothing()
+    }
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
+        let bp? = cx.view.store.expr(e).body_of() else { return cx.error_type }
+        match body_behavior(bp.word) {
+            .Text -> str_type(cx, e),
+            .Quote -> quote_type(cx, e),
+            .Foreign -> block_type(cx, e),
+        }
+    }
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
+        let bp? = cx.view.store.expr(e).body_of() else { return cx.lower_defect(e, "a body node without its parts") }
+        match body_behavior(bp.word) {
+            .Text -> str_lower(cx, e),
+            .Quote -> quote_reg(cx, e),
+            .Foreign -> block_reg(cx, e),
+        }
+    }
+}

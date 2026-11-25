@@ -1,0 +1,222 @@
+// The red team's findings against a config load, each a case that failed before its fix or held
+// when attacked: a secret through every channel, precedence at its edges, flags spelled every way,
+// provenance under a failing layer, and degenerate files.
+use @std.meta.{derive}
+use @std.io.{write_text, make_dirs, env_or}
+use @std.time.{stamp}
+use @std.text.{repeat}
+use @std.validate.{Decode}
+use @std.config.{Configured, Secret, file, env, flags, stage}
+
+once fn run_base() -> string { "${env_or("TMPDIR", "/tmp")}/avra-config-adversarial/${stamp()}" }
+
+/// Every fixture file, written once before the first case reads one.
+once fn written() -> string {
+    let d = run_base()
+    let _ = make_dirs(d)
+    let _ = write_text("${d}/base.toml", "[db]\npool = 1\n")
+    let _ = write_text("${d}/prod.toml", "[db]\npool = 40\n")
+    let _ = write_text("${d}/qa.toml", "[db]\npool = 7\n")
+    let _ = write_text("${d}/dup.toml", "pool = 2\npool = 3\n")
+    let _ = write_text("${d}/empty.toml", "")
+    let _ = write_text("${d}/one.json", "{\"pool\": 9}")
+    let _ = write_text("${d}/big.toml", "name = \"${repeat("é", 100000)}\"\nn = 1\n")
+    let _ = write_text("${d}/secret.toml", "password = \"file-pass\"\n")
+    d
+}
+
+@derive(Decode)
+type Db = { url: string = "u", pool: int = 10 }
+
+@derive(Decode)
+component One {
+    password: Secret<string>
+    env "A" { only: {"A__PASSWORD": "one-secret"} }
+}
+
+@derive(Decode)
+component Two {
+    password: Secret<string>
+    env "B" { only: {"B__PASSWORD": "two-secret"} }
+}
+
+@derive(Decode)
+component Shadowed {
+    password: Secret<string>
+    file "${written()}/secret.toml"
+    env "C" { only: {"C__PASSWORD": "env-pass"} }
+}
+
+@derive(Decode)
+component Staged {
+    db: Db = Db {}
+    file "${written()}/base.toml"
+    env "S" { only: {"S__DB__POOL": "5", "S_STAGE": "prod"} }
+    flags ["--stage=qa"]
+    stage prod {
+        file "${written()}/prod.toml"
+    }
+    stage qa {
+        file "${written()}/qa.toml"
+    }
+}
+
+@derive(Decode)
+component EnvStage {
+    db: Db = Db {}
+    file "${written()}/base.toml"
+    env "S" { only: {"S__DB__POOL": "5", "S_STAGE": "prod"} }
+    stage prod {
+        file "${written()}/prod.toml"
+    }
+}
+
+@derive(Decode)
+component Repeated {
+    port: int = 1
+    flags ["--port=2", "--port=3"]
+}
+
+@derive(Decode)
+component Spaced {
+    db: Db = Db {}
+    flags ["--db.pool", "20"]
+}
+
+@derive(Decode)
+component Whole {
+    db: Db = Db {}
+    flags ["--db=x", "--verbose", "--color=never"]
+}
+
+@derive(Decode)
+component Dup {
+    pool: int = 1
+    file "${written()}/dup.toml"
+}
+
+@derive(Decode)
+component Degenerate {
+    pool: int = 1
+    file "${written()}/empty.toml"
+    file "${written()}/none.toml"
+    file "${written()}/one.json"
+}
+
+@derive(Decode)
+component Big {
+    name: string = ""
+    n: int = 0
+    file "${written()}/big.toml"
+    env "BIG" { only: {"BIG__N": "99999999999999999999", "BIG__NOPE": "1"} }
+}
+
+@derive(Decode)
+component Huge {
+    name: string = ""
+    n: int = 0
+    file "${written()}/big.toml"
+}
+
+fn revealed(r: Result<Secret<string>, string>) -> string {
+    match r { .Ok(s) -> s.reveal((t: string) -> t), .Err(e) -> e }
+}
+
+fn password_of_one() -> Result<Secret<string>, string> {
+    match One.load() { .Ok(c) -> c.value.password, .Err(e) -> { fail e.report() } }
+}
+
+fn password_of_two() -> Result<Secret<string>, string> {
+    match Two.load() { .Ok(c) -> c.value.password, .Err(e) -> { fail e.report() } }
+}
+
+fn both() -> string {
+    let a = password_of_one()
+    let b = password_of_two()
+    "${revealed(a)} ${revealed(b)}"
+}
+
+fn staged() -> string { match Staged.load() { .Ok(c) -> "${c.stage} ${c.value.db.pool}", .Err(e) -> e.report() } }
+
+fn env_staged() -> string { match EnvStage.load() { .Ok(c) -> "${c.stage} ${c.value.db.pool}", .Err(e) -> e.report() } }
+
+fn shadowed() -> string {
+    match Shadowed.load() {
+        .Ok(c) -> c.explain().replace(run_base(), "<dir>"),
+        .Err(e) -> e.report(),
+    }
+}
+
+fn rule_of(report: string) -> string { report.split("  ").filter(it.starts_with("config.")).join(",") }
+
+spec "std/config adversarial" {
+    given "a secret through every channel" {
+        then "two configs with one field name keep two secrets" { both() == "one-secret two-secret" }
+        then "a shadowed secret's text is shown nowhere" { !shadowed().contains("file-pass") && !shadowed().contains("env-pass") }
+        then "a shadowed secret is still named as replaced" {
+            shadowed() == "password  <secret>  env  C__PASSWORD\npassword was also set by file <dir>/secret.toml, which a later source replaced"
+        }
+        then "a handle shows its path and generation, never its text" {
+            match password_of_one() {
+                .Ok(s) -> s.shown() == "<secret password v1>",
+                .Err(_) -> false,
+            }
+        }
+        then "value() carries the handle, never the text" {
+            match One.load() {
+                .Ok(c) -> c.value.value().shown() == "{\"password\": \"<secret password v1>\"}",
+                .Err(_) -> false,
+            }
+        }
+        then "matches takes the text and refuses its neighbours" {
+            match password_of_one() {
+                .Ok(s) -> s.matches("one-secret") &&
+                    !s.matches("one-secreT") &&
+                    !s.matches("one-secre") &&
+                    !s.matches(""),
+                .Err(_) -> false,
+            }
+        }
+    }
+    given "precedence at its edges" {
+        then "the environment beats a stage's file" { env_staged() == "prod 5" }
+        then "a flag's stage beats the environment's" { staged() == "qa 5" }
+        then "a later flag beats an earlier one" { match Repeated.load() { .Ok(c) -> c.value.port == 3, .Err(_) -> false } }
+        then "an empty file, a missing one and a JSON one stack" {
+            match Degenerate.load() { .Ok(c) -> c.value.pool == 9, .Err(_) -> false }
+        }
+    }
+    given "flags spelled every way" {
+        then "a dotted flag with no value is refused, never dropped" {
+            match Spaced.load() {
+                .Ok(_) -> false,
+                .Err(e) -> rule_of(e.report()) == "config.flag_unset",
+            }
+        }
+        then "a flag naming a record is refused, and another reader's flags are left alone" {
+            match Whole.load() {
+                .Ok(_) -> false,
+                .Err(e) -> rule_of(e.report()) == "config.flag_record",
+            }
+        }
+    }
+    given "provenance under a failing layer" {
+        then "a variable's issue names the variable, never the file beneath it" {
+            match Big.load() { .Ok(_) -> false, .Err(e) -> !e.report().contains("(file") }
+        }
+        then "a file's syntax issue names the file" {
+            match Dup.load() {
+                .Ok(_) -> false,
+                .Err(e) -> e.report().replace(run_base(), "<dir>").contains("<dir>/dup.toml"),
+            }
+        }
+    }
+    given "degenerate values" {
+        then "a hundred thousand accented letters read whole" {
+            match Huge.load() { .Ok(c) -> c.value.name.length == 200000, .Err(_) -> false }
+        }
+        then "a variable no field names is not refused yet (env_names is asked for)" {
+            match Big.load() { .Ok(_) -> false, .Err(e) -> !e.report().contains("NOPE") }
+        }
+    }
+}

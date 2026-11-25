@@ -1,0 +1,89 @@
+//! A record's field no value fills: what the compiler fills a field of a role with, or a call of the
+//! fn whose body is that field's default.
+
+/// What a field the compiler fills where a literal leaves it out holds, by its `@std/meta` type: the
+/// literal's own site, the words its instance says again, the cells those words read, the cells its
+/// frame reads at paint time, or whether that frame can't be placed.
+export enum FilledRole {
+    Site
+    Words
+    Cells
+    Structural
+    Opaque
+}
+
+impl Lowering {
+    /// The field `f` of the record `ty` that the literal `e` leaves out: what the compiler fills it with
+    /// where its type gives it a role, else its default.
+    mut fn field_left(e: ExprId, ty: SignedType, f: FieldSeat) -> Reg {
+        let role? = (self.program.roles)(ty, f.name) else { return self.field_default(ty, f) }
+        match role {
+            .Site -> self.const_int((self.program.site)(e)),
+            .Words -> {
+                let lam? = minted_closure(self.store, e) else { return self.field_default(ty, f) }
+                self.lower(lam)
+            },
+            .Cells -> self.cells_listed(f, self.placed_cells(e)),
+            .Structural -> self.cells_listed(f, self.structural_cells()),
+            .Opaque -> self.const_bool(self.opaque_frame()),
+        }
+    }
+
+    /// The cells `cells` as the list the field `f` holds.
+    mut fn cells_listed(f: FieldSeat, cells: List<Reg>) -> Reg { self.listed(f.ty!, cells, [false for _c in cells]) }
+
+    /// The default of the field `f` of the record `ty`, called: a generic record's whose field's type
+    /// names its type parameters as the unit the record's type arguments lay out. A field no default
+    /// the program declares fills isn't lowered yet.
+    mut fn field_default(ty: SignedType, f: FieldSeat) -> Reg {
+        let field? = f.ty else { return self.missed_as(untyped_left()) }
+        let declared? = (self.program.defaults)(ty, f.name) else { return self.missed_as(unfilled(self, ty)) }
+        if declared.type_params == 0 { return self.call_fn(self.laid_out(field), declared, []) }
+        let unit? = self.laid_unit(declared, ty.args, []) else { return self.missed_as(unfilled(self, ty)) }
+        self.call_fn(self.laid_out(field), unit, [])
+    }
+}
+
+impl Lowering {
+    /// The default of the field `f` of the record `ty` that reads the instance, called on `made`: the
+    /// instance as its inputs stand, read once, as it's made.
+    mut fn made_default(ty: SignedType, f: FieldSeat, made: Reg) -> Reg {
+        let field? = f.ty else { return self.missed_as(untyped_left()) }
+        let declared? = (self.program.defaults)(ty, f.name) else { return self.missed_as(unfilled(self, ty)) }
+        if declared.type_params != 0 { return self.missed_as("a generic component's member made from its inputs") }
+        self.call_fn(self.laid_out(field), declared, [made])
+    }
+
+    /// `v` written into the slot of the field `n` of the boxed record `r`, whose fields are `fields`.
+    mut fn slot_made(r: Reg, fields: List<FieldSeat>, n: int, v: Reg) {
+        let laid? = self.seat_layouts(fields) else {
+            let _ = self.missed_as("a record whose fields aren't laid out")
+            return
+        }
+        self.slot_written(r, self.const_int(slots_before(laid, n)), v, true)
+    }
+}
+
+/// The closure the builder minted beside the literal `e`: the node extending it that is a lambda.
+fn minted_closure(store: SyntaxArena, e: ExprId) -> ExprId? {
+    store.extended_by(e).find((v) -> store.minted_for(v) != null && store.lambda_parts(v) != null)
+}
+
+/// Why a field left to its default whose type isn't known isn't lowered yet.
+fn untyped_left() -> string { "an untyped field left to its default" }
+
+/// Why a field left to its default of the record `ty` isn't lowered yet.
+fn unfilled(cx: Lowering, ty: SignedType) -> string {
+    if cx.generic_declared(ty) { "a default of the generic `${ty.spelled()}`" } else { "a record literal leaving a field no declared default fills" }
+}
+
+/// The `@std/meta` type a field of the role `role` is written with.
+export fn filled_type(role: FilledRole) -> string {
+    match role {
+        .Site -> "Site",
+        .Words -> "Words",
+        .Cells -> "Cells",
+        .Structural -> "Structural",
+        .Opaque -> "Opaque",
+    }
+}

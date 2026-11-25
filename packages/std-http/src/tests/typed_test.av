@@ -1,0 +1,219 @@
+// Typed reads and answers: a body and a query read as declared records, a
+// capture decoded once, and the one 422 every refused record earns.
+use @std.http.body.{Body, whole}
+use @std.http.frame.{framed, limits}
+use @std.http.http.{Request, Unrouted, Response}
+use @std.http.route.{compiled, dispatch, post}
+use @std.http.typed.{captured, created, either, found, problem}
+use @std.json.{Json, field}
+use @std.meta.{derive}
+use @std.validate.{Decode, Issue, Issues, length, range, root}
+
+@derive(Decode)
+type Idea = { @length(1, 20) title: string, @range(0, 9) votes: int = 0 }
+
+@derive(Decode)
+type Page = { limit: int = 50, after: string? = null, tags: List<string> = [], verbose: bool = false }
+
+@derive(Decode)
+type Search = { q: string }
+
+@derive(Decode)
+type Inner = { n: int }
+
+@derive(Decode)
+type Deep = { inner: Inner? = null }
+
+/// A POST of `body` to `target` carrying `ct` as its content type, when
+/// there is one.
+fn posted(ct: string?, body: Bytes, target: string = "/v") -> Request<Unrouted> {
+    let typed = match ct {
+        t? -> "Content-Type: ${t}\r\n"
+        null -> ""
+    }
+    let q = framed_from(
+        "POST ${target} HTTP/1.1\r\nHost: h\r\n${typed}Content-Length: ${body.length}\r\n\r\n"
+            .bytes(),
+    )!
+    q with { body: whole(body) }
+}
+
+fn json_posted(body: string) -> Request<Unrouted> { posted("application/json", body.bytes()) }
+
+fn said(r: Response) -> string { "${r.status} ${r.body.text() ?? ""}" }
+
+fn idea(q: Request<Unrouted>) -> string {
+    let got: Result<Idea, Response> = q.body_as()
+    match got { .Ok(i) -> "idea ${i.title} ${i.votes}", .Err(r) -> said(r) }
+}
+
+fn page(target: string) -> string {
+    let q? = asked_get(target) else { return "unframed" }
+    let got: Result<Page, Response> = q.query_as()
+    match got {
+        .Ok(p) -> "${p.limit} ${p.after ?? "-"} [${p.tags.join(",")}] ${p.verbose}",
+        .Err(r) -> said(r),
+    }
+}
+
+fn search(target: string) -> string {
+    let q? = asked_get(target) else { return "unframed" }
+    let got: Result<Search, Response> = q.query_as()
+    match got { .Ok(s) -> "q=${s.q}", .Err(r) -> said(r) }
+}
+
+/// A GET of a target past the default line bound.
+fn long_get(target: string) -> Request<Unrouted>? {
+    let raw = ("GET " + target + " HTTP/1.1\r\nHost: h\r\n\r\n").bytes()
+    match framed(raw, 0, 0, limits() with { line: raw.length, head: raw.length }) {
+        .Complete(head) -> Request { raw: raw, head: head, body: Body.Empty, peer: "t", params: Unrouted {} },
+        .Partial or .Refused(_) -> null,
+    }
+}
+
+fn capture(raw: string) -> string {
+    match captured(raw) { .Ok(s) -> "ok ${s}", .Err(r) -> said(r) }
+}
+
+fn nothing() -> Idea? { null }
+
+fn shown(i: Idea) -> Json { Json.Obj([field("title", Json.Str(i.title))]) }
+
+fn refusal() -> Issues {
+    Issues {
+        all: [
+            Issue { path: root().field("a"), rule: "range", message: "must be between 1 and 9" },
+            Issue { path: root().field("b").index(2), rule: "required", message: "is required" },
+        ],
+    }
+}
+
+/// Added through `?`: the seat pins what the body is read as.
+fn added(sent: Result<Idea, Response>) -> Result<Response, Response> {
+    let i = sent?
+    created(shown(i), "/ideas/1")
+}
+
+fn ideas_posted(ct: string, body: string) -> string {
+    let routes = compiled([post "/ideas" { req -> either(added(req.body_as())) }])
+    said(dispatch(routes, posted(ct, body.bytes(), target: "/ideas")))
+}
+
+spec "std/http — typed reads and answers" {
+    given "the empty cases, written first" {
+        then "an empty body is not JSON" { idea(json_posted("")) == "400 the body is not JSON: unexpected the end of the text at byte 0" }
+        then "an empty object names every required field" { idea(json_posted("{}")) == "422 {\"title\":\"the request does not validate\",\"status\":422,\"issues\":[{\"path\":\"title\",\"rule\":\"required\",\"message\":\"is required\"}]}" }
+        then "no query takes every default" { page("/p") == "50 - [] false" }
+        then "an empty query takes every default" { page("/p?") == "50 - [] false" }
+        then "no query refuses a required field" { search("/p").contains("\"path\":\"q\",\"rule\":\"required\"") }
+        then "an empty value is text" { search("/p?q=") == "q=" }
+        then "an empty capture is empty text" { capture("") == "ok " }
+        then "no issues is still one problem" { said(problem(Issues { all: [] })) == "422 {\"title\":\"the request does not validate\",\"status\":422,\"issues\":[]}" }
+    }
+    given "a body" {
+        then "a whole idea" { idea(json_posted("{\"title\":\"go\",\"votes\":3}")) == "idea go 3" }
+        then "a default" { idea(json_posted("{\"title\":\"go\"}")) == "idea go 0" }
+        then "no content type is json's 415" { idea(posted(null, "{}".bytes())) == "415 the body must be `application/json`" }
+        then "text/plain is json's 415" { idea(posted("text/plain", "{\"title\":\"go\"}".bytes())) == "415 the body must be `application/json`" }
+        then "octets that are not UTF-8" { idea(posted("application/json", [123, 255, 125].bytes()!)) == "400 the body is not UTF-8" }
+        then "malformed JSON is json's 400, never a 422" { idea(json_posted("{\"title\":")) == "400 the body is not JSON: unexpected the end of the text at byte 9" }
+        then "every issue at once" {
+            idea(json_posted("{\"title\":\"\",\"votes\":12}")) == "422 {\"title\":\"the request does not validate\",\"status\":422,\"issues\":[{\"path\":\"title\",\"rule\":\"length\",\"message\":\"must be between 1 and 20 characters\"},{\"path\":\"votes\",\"rule\":\"range\",\"message\":\"must be between 0 and 9\"}]}"
+        }
+        then "a field it does not name is an issue" {
+            idea(json_posted("{\"title\":\"go\",\"tilte\":1}"))
+                .contains("\"path\":\"tilte\",\"rule\":\"unknown\"")
+        }
+        then "a field written twice is an issue" { idea(json_posted("{\"title\":\"a\",\"title\":\"b\"}")).contains("\"rule\":\"repeated\"") }
+        then "a wrong kind is an issue" {
+            idea(json_posted("{\"title\":7}"))
+                .contains("\"message\":\"must be text, not an integer\"")
+        }
+        then "an array is no record" { idea(json_posted("[]")).contains("\"message\":\"must be an object, not a list\"") }
+        then "what was received is never echoed" { !idea(json_posted("{\"title\":\"go\",\"votes\":99}")).contains("99") }
+        then "a NUL inside JSON text is text" { idea(json_posted("{\"title\":\"a\\u0000b\"}")) == "idea a${nul()}b 0" }
+        then "a body past the bound is the body's 413" {
+            let big = "{\"title\":\"" + ["x" for _i in 0..1048576].join("") + "\"}"
+            idea(json_posted(big)) == "413 the body is larger than this server takes"
+        }
+    }
+    given "a query" {
+        then "values decode once" { page("/p?after=a%2Fb") == "50 a/b [] false" }
+        then "an escape decodes once, never twice" { page("/p?after=%252F") == "50 %2F [] false" }
+        then "an escaped separator stays inside its value" { page("/p?after=a%26limit%3D3") == "50 a&limit=3 [] false" }
+        then "names decode too" { page("/p?lim%69t=4") == "4 - [] false" }
+        then "order is free" { page("/p?after=k&limit=3") == page("/p?limit=3&after=k") }
+        then "a plus is a plus, not a space" { page("/p?after=a+b") == "50 a+b [] false" }
+        then "a list in order" { page("/p?tags=b&tags=a") == "50 - [b,a] false" }
+        then "one value is a list of one" { page("/p?tags=b") == "50 - [b] false" }
+        then "a bare flag is true" { page("/p?verbose") == "50 - [] true" }
+        then "a bare number is refused, never defaulted" {
+            page("/p?limit")
+                .contains(
+                    "\"path\":\"limit\",\"rule\":\"type\",\"message\":\"must be an integer, not a boolean\"",
+                )
+        }
+        then "an empty number is refused, never defaulted" { page("/p?limit=").contains("must be an integer, not text") }
+        then "a scalar sent twice is refused" {
+            page("/p?limit=1&limit=2")
+                .contains(
+                    "\"path\":\"limit\",\"rule\":\"type\",\"message\":\"must be an integer, not a list\"",
+                )
+        }
+        then "a prefix of a name is its own name" { page("/p?limitx=1&limit=2") == "2 - [] false" }
+        then "a field it does not name is passed by" { page("/p?utm=x") == "50 - [] false" }
+        then "a record has no query spelling" {
+            let q? = asked_get("/p?inner=1") else { return false }
+            let got: Result<Deep, Response> = q.query_as()
+            match got { .Ok(_) -> false, .Err(r) -> r.status == 422 }
+        }
+        then "a malformed escape is a 400" { page("/p?after=%G1") == "400 the query's `after` is not percent-encoded text" }
+        then "a truncated escape is a 400" { page("/p?after=%2") == "400 the query's `after` is not percent-encoded text" }
+        then "an escaped NUL is a 400" { page("/p?after=a%00b") == "400 the query's `after` is not percent-encoded text" }
+        then "octets that are not UTF-8 are a 400" { page("/p?after=%FF") == "400 the query's `after` is not percent-encoded text" }
+        then "a malformed name is a 400" { page("/p?%zz=1") == "400 the query name `%zz` is not percent-encoded text" }
+        then "ten thousand values of one list" {
+            let q? = long_get("/p?" + ["tags=t${i}" for i in 0..10000].join("&")) else { return false }
+            let got: Result<Page, Response> = q.query_as()
+            match got {
+                .Ok(p) -> p.tags.length == 10000 && p.tags[9999] == "t9999",
+                .Err(_) -> false,
+            }
+        }
+    }
+    given "a capture" {
+        then "plain text is itself" { capture("orders") == "ok orders" }
+        then "an escaped slash is one segment's text" { capture("resize%2Fdead") == "ok resize/dead" }
+        then "decoded once" { capture("%252F") == "ok %2F" }
+        then "a malformed escape is a 400" { capture("a%2") == "400 the segment `a%2` is not percent-encoded text" }
+        then "an escaped NUL is a 400" { capture("a%00") == "400 the segment `a%00` is not percent-encoded text" }
+        then "octets that are not UTF-8 are a 400" { capture("%C3") == "400 the segment `%C3` is not percent-encoded text" }
+    }
+    given "the answers" {
+        then "found is 200 JSON" {
+            let some: Idea? = Idea { title: "go" }
+            let r = found(some, shown)
+            r.status == 200 &&
+                r.body.text() == "{\"title\":\"go\"}" &&
+                r.header("content-type") == "application/json"
+        }
+        then "found of nothing is a bare 404" { said(found(nothing(), shown)) == "404 " }
+        then "found of nothing says what it is told" {
+            found(nothing(), shown, missing: Response { status: 404, body: "gone".bytes() })
+                .body
+                .text() == "gone"
+        }
+        then "created is 201 at its address" {
+            let r = created(Json.Null, "/ideas/7")
+            r.status == 201 && r.header("location") == "/ideas/7" && r.body.text() == "null"
+        }
+        then "a problem names every issue in order" {
+            said(problem(refusal())) == "422 {\"title\":\"the request does not validate\",\"status\":422,\"issues\":[{\"path\":\"a\",\"rule\":\"range\",\"message\":\"must be between 1 and 9\"},{\"path\":\"b[2]\",\"rule\":\"required\",\"message\":\"is required\"}]}"
+        }
+        then "a problem says it is one" { problem(refusal()).header("content-type") == "application/problem+json" }
+    }
+    given "a route answering either side" {
+        then "the ok side" { ideas_posted("application/json", "{\"title\":\"go\"}") == "201 {\"title\":\"go\"}" }
+        then "the refusing side" { ideas_posted("text/plain", "{}") == "415 the body must be `application/json`" }
+    }
+}

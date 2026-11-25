@@ -1,0 +1,22 @@
+// AN ALIAS THAT NAMES ITSELF, READ: it stands for nothing and is refused once, where its loop comes
+// back, whatever seat is written with it.
+use @std.avrac.testing.{refused_with, shown}
+
+spec "features/structs (aliases naming themselves, read)" {
+    given "a seat written with the alias" {
+        then "two aliases naming each other refuse" {
+            refused_with(
+                "alias A = B\nalias B = A\nlet x: A = 1\n1",
+                "`A` is an alias that names itself",
+            )
+        }
+        then "an alias naming itself in an argument refuses" {
+            refused_with("alias A = List<A>\nlet x: A = []\n1", "`A` is an alias that names itself")
+        }
+        then "aliases naming other aliases still stand for their types" {
+            shown(
+                "alias Pair<T> = List<T>\nalias Rows = Pair<Pair<int>>\nalias F = fn(Rows) -> Rows\nlet f: F = (r) -> r\nf([[1, 2]])[0][1]",
+            ) == "2"
+        }
+    }
+}

@@ -1,0 +1,873 @@
+//! A DECLARATION AS `@std/meta` SEES IT, made of the program layer's facts alone: a record's fields
+//! and an enum's variants, each typed where the declaration stands and that type's shape a `Kind`; a
+//! named type's shape; and the annotations its item writes. The crossing's own writer
+//! (`meta_of_type`) lays the value out, so the rows it's held to are the one contract.
+use core.{
+    module_path,
+    literal_of,
+    template_home,
+    FieldSeat,
+    Annotation,
+    Expr,
+    ExprId,
+    Literal,
+    flatten,
+    CollectKind,
+    CollectScope,
+    distinct,
+    Mark,
+    Param,
+    Plain,
+    SignedType,
+    Span,
+    StmtId,
+    SyntaxArena,
+    TypeHead,
+    own_type_named,
+    Variant as VariantDecl,
+    faceted,
+    headed_type,
+    sorted_by,
+    spelled,
+    decl_key,
+    decl_keyed,
+}
+use features.{
+    Lifted,
+    MetaHeap,
+    MetaVal,
+    arg_lit,
+    meta_of_fn,
+    meta_of_named,
+    meta_of_type,
+    new_meta_heap,
+    written_slots,
+}
+use @std.errors.{Loc}
+use @std.meta.{
+    derive,
+    Annotation as MetaAnnotation,
+    Code as MetaCode,
+    Field as MetaField,
+    Fn as MetaFn,
+    Kind,
+    Mark as MetaMark,
+    Named as MetaNamed,
+    MarkArg as MetaMarkArg,
+    Node as MetaNode,
+    Param as MetaParam,
+    Seat as MetaSeat,
+    Stmts as MetaStmts,
+    Trait as MetaTrait,
+    Type as MetaType,
+    Variant as MetaVariant,
+}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.saved_query.{ListedQuery, cut_query, definitions_of, memo, query, query_definition}
+use @std.program.saved_derive.{Saved}
+use @std.program.source_facts.{source_text}
+use @std.text.{parse_int, text_before}
+
+/// The record, enum or named type `file` declares as `name`, as `@std/meta`'s `Type`; absent when it
+/// declares none of that name. Held for the process (`@memo`): a generator's run lifts one
+/// declaration many times, once each run that names it, and every one reads the same `Type`.
+@memo
+export fn meta_of_decl(engine: QueryEngine, file: SourceFileAddress, name: string) -> MetaType? {
+    [t! for d in file_declares_named(engine, file, name).names if d.name == name for t in [declared_meta(engine, d)] if t != null]
+        .first()
+}
+
+/// The fn `file` writes as `name`, as `@std/meta`'s `Fn`: each seat its name, its type as written
+/// and that type's shape, the promises it makes; its answer as written and as a shape; and the
+/// annotations it wears. Read as written, never as what an annotation on it made. Absent when it
+/// writes no fn of that name.
+export fn meta_of_fn_decl(engine: QueryEngine, file: SourceFileAddress, name: string) -> MetaFn? {
+    let d? = file_declares_named(engine, file, name)
+        .names
+        .find(it.name == name && it.kind == ItemKind.Fn) else { return null }
+    let item = read_item(engine, file, d.item)
+    let s? = item
+        .stmts
+        .find((x) -> item.store.fn_parts(x)?.name == name || item.store.extern_parts(x)?.name == name) else { return null }
+    let sig? = fn_signature(engine, file, name) else { return null }
+    fn_meta(engine, file, item, s, sig)
+}
+
+/// The method `name` the impl `m` writes, as `@std/meta`'s `Fn`, as a fn is read, its owner the type
+/// the impl is written for. Absent when the impl writes none of that name.
+export fn meta_of_method(engine: QueryEngine, m: MethodSite, name: string) -> MetaFn? {
+    let item = read_item(engine, m.at.file, m.at.item)
+    let held? = impl_stmt_at(item, m.at) else { return null }
+    let parts = item.store.impl_parts(held)!
+    let s? = parts
+        .fns
+        .find((x) -> item.store.fn_parts(x)?.name == name && item.store.is_static(x) == m.statics) else { return null }
+    let sig? = method_signature(engine, m.at, name) else { return null }
+    fn_meta(engine, m.at.file, item, s, sig) with { owner: parts.target }
+}
+
+/// The trait `file` declares as `name`, as `@std/meta`'s `Trait`: each method it declares, as a fn
+/// is read, its `Self` the trait. Absent when it declares none, or a method's signature doesn't sign.
+/// What a trait member's `Self` crosses as: the type variable it is, never the trait.
+const SELF: string = "Self"
+
+export fn meta_of_trait_decl(engine: QueryEngine, file: SourceFileAddress, name: string) -> MetaTrait? {
+    let item? = declaring_item(engine, file, name, ItemKind.Trait) else { return null }
+    let held = TraitAt { file: file, name: name }
+    let receiver = headed_type(TypeHead.Parameter(0, SELF))
+    let methods = [f for f in trait_fns(item) if !item.store.is_static(f) && item.store.fn_parts(f) != null]
+    let fns = [fn_meta(engine, file, item, f, s!) for f in methods for s in [trait_method_signature(engine, held, item.store.fn_parts(f)!.name, receiver)] if s != null]
+    if fns.length != methods.length { return null }
+    MetaTrait { name: name, at: trait_place(engine, file, item, name), fns: fns }
+}
+
+/// Where the trait `name` stands, as `@std/meta` hands a place: counted from its item's start, as every
+/// crossed place is.
+fn trait_place(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, name: string) -> Loc? {
+    let s? = item.stmts.find((x: StmtId) -> item.store.trait_parts(x)?.name == name) else { return null }
+    meta_place(engine, file, item, item.store.stmt_span(s))
+}
+
+/// A span of `file` as the place a meta value names: its file spelled by package and path.
+fn meta_place(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, span: Span?) -> Loc? {
+    let held? = span else { return null }
+    let own? = item.at else { return counted_in_item(engine, file, held) }
+    Loc { file: item_spelled(file, own), lo: held.lo, hi: held.hi }
+}
+
+/// A place `file` counts from its start, as a crossed place counts it: from the start of the item
+/// that holds it, and spelled with that item; absent where no item holds it.
+fn counted_in_item(engine: QueryEngine, file: SourceFileAddress, span: Span) -> Loc? {
+    let p? = placed_in_item(engine, file, FindingAt { lo: span.lo, hi: span.hi }) else { return null }
+    Loc { file: item_spelled(file, p.item), lo: p.at.lo, hi: p.at.hi }
+}
+
+/// The doc the statement `s` wears in `store`, its lines joined; absent where it wears none.
+fn doc_text(store: SyntaxArena, s: StmtId) -> string? { store.docs.at(s.index)?.lines?.join("\n") }
+
+/// The fn `s` writes in `store` of `file`, signed as `sig`, as a `Fn`.
+fn fn_meta(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    item: ReadItem,
+    s: StmtId,
+    sig: FnSignature,
+) -> MetaFn {
+    let store = item.store
+    let ext = store.extern_parts(s)
+    let parts = store.fn_parts(s)
+    let params = parts?.params ?? ext?.params ?? []
+    MetaFn {
+        name: parts?.name ?? ext?.name ?? "",
+        params: [param_meta(engine, file, item, p, sig.params[j].ty) for j, p in params],
+        answer: spelled(parts?.ret ?? ext!.ret),
+        at: meta_place(engine, file, item, store.stmt_span(s)),
+        doc: doc_text(store, s),
+        answers: signed_kind(sig.answer),
+        annotations: [annotation_meta(engine, file, item, a) for a in store.annotations_of(s)],
+    }
+}
+
+/// A fn's seat as a `Param`: its name, its type as written and `signed`'s shape, its promises.
+fn param_meta(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    item: ReadItem,
+    p: Param,
+    signed: SignedType?,
+) -> MetaParam {
+    param_kind_meta(
+        engine,
+        file,
+        item,
+        p,
+        if signed == null { Kind.Unspelled("") } else { signed_kind(signed!) },
+    )
+}
+
+/// A seat as a `Param`, of the kind `kind`.
+fn param_kind_meta(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    item: ReadItem,
+    p: Param,
+    kind: Kind,
+) -> MetaParam {
+    MetaParam {
+        name: p.name.text(),
+        ty: if p.ty == null { "" } else { spelled(p.ty!) },
+        mutable: p.promises.mutable,
+        settled: p.promises.settled,
+        at: meta_place(engine, file, item, item.store.param_id_span(p.id)),
+        kind: kind,
+    }
+}
+
+/// What an event member tells its handler, each seat of the kind the handler's seat is; absent on a
+/// member that is no event.
+fn says_meta(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, p: Param, kind: Kind) -> List<
+    MetaParam,
+>? {
+    let says? = p.says else { return null }
+    let kinds = told_kinds(kind)
+    [param_kind_meta(engine, file, item, s, kind_at(kinds, j)) for j, s in says]
+}
+
+/// The declaration `file` writes as `name` as `@std/meta`'s `Named` — its name and where it stands —
+/// laid out in `heap`; absent when the file declares none of that name.
+export fn named_handed(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    name: string,
+    mut heap: MetaHeap,
+) -> MetaVal? {
+    let d? = file_declares_named(engine, file, name).names.find(it.name == name) else { return null }
+    let item = read_item(engine, d.file, d.item)
+    let s? = item.stmts.find((x) -> item.store.named_by(x) == name) else { return null }
+    meta_of_named(
+        MetaNamed { name: name, at: meta_place(engine, file, item, item.store.stmt_span(s)) },
+        heap,
+    )
+}
+
+/// A declaration as a `Type`, absent for one that declares no type with fields, variants or a shape;
+/// the traits it implements are its written impls'.
+fn declared_meta(engine: QueryEngine, d: DeclaredName) -> MetaType? {
+    let item = read_item(engine, d.file, d.item)
+    let s? = item.stmts.find((x) -> item.store.declared_name(x) == d.name) else { return null }
+    let base = MetaType {
+        name: d.name,
+        fields: [],
+        variants: [],
+        at: meta_place(engine, d.file, item, item.store.stmt_span(s)),
+        doc: doc_text(item.store, s),
+        annotations: [annotation_meta(engine, d.file, item, a) for a in item.store.annotations_of(s)],
+        module: dotted_module(d.file),
+        impls: written_traits(engine, d.file, d.name),
+    }
+    match d.kind {
+        .Record or .Component -> {
+            let parts? = item.store.struct_parts(s) else { return null }
+            let signed = record_signature_written(engine, d.file, d.name)?.fields ?? []
+            base with { fields: [field_meta(
+                engine,
+                d.file,
+                item,
+                p,
+                field_kind(signed, p.name.text()),
+                written_default(engine, d.file, item, p),
+                field_cell(engine, signed, p),
+            ) for p in parts.fields], spreads: [spelled(x.of) for x in parts.spreads], body: body_meta(engine, d.file, item, s) }
+        },
+        .Enum -> {
+            let parts? = item.store.enum_parts(s) else { return null }
+            let signed = enum_signature(engine, d.file, d.name)?.variants ?? []
+            base with { variants: [variant_meta(engine, d.file, item, v, signed.find(it.name == v.name.of)?.payloads ?? []) for v in parts.variants] }
+        },
+        .Named -> {
+            let parts? = item.store.named_parts(s) else { return null }
+            base with { over: signed_kind(
+                Signing { engine: engine, file: d.file, type_params: parts.tparams }
+                    .signed(parts.of),
+            ) }
+        },
+        .CollectEnum -> {
+            let members? = members_of(engine, d.file, d.name, false, "") else { return null }
+            let derived = [t.name for t in gathered_traits(engine, d.file, d.name) if derives(engine, t)]
+            base with { variants: [gathered_variant(engine, m, derived) for m in members] }
+        },
+        .Fn or .Alias or .Trait or .Syntax or .Collect or .Const or .State or .Ctx -> null,
+    }
+}
+
+/// The declarations a `collect` or a `collect enum` written in `owner` gathers, in its order: each
+/// its kind takes in its scope, by its `by` keys and a tie by where it's declared; a member in a test
+/// file only for an owner in that file; what generators make among them when `made`, which an enum's
+/// gathering never reads, since generators read the enum's shape. A gathering `in closure` reads the
+/// files the package of the `program` it's read for reaches through imports — the owner's package's,
+/// where none is named — another package's exported members alone, the program's own every one.
+/// Absent for a key that isn't a member's name, its module or a literal its mark carries, and where
+/// a generator in a file it reads isn't made.
+fn gathered(
+    engine: QueryEngine,
+    owner: SourceFileAddress,
+    kind: CollectKind,
+    scope: CollectScope,
+    order: List<Plain>,
+    made: bool,
+    program: string,
+) -> List<DeclaredName>? {
+    let files? = gathered_files(engine, owner, scope, program) else { return null }
+    let keys = [k.of for k in order]
+    let declared = [declared_in(engine, f, made) for f in files]
+    if declared.any(it == null) { return null }
+    let found = [d for ds in declared for d in ds! if seen_from(d, owner, program) && takes_member(engine, kind, d)]
+    let keyed = [KeyedMember { d: d, values: [member_key(engine, kind, d, k) for k in keys] } for d in found]
+    if keyed.any((m) -> m.values.any(it == null)) { return null }
+    [m.d for m in sorted_by(keyed, member_before)]
+}
+
+/// The files a gathering written in `owner` over `scope`, read for the package `program` (none: the
+/// owner's), reads; absent for a scope no gathering has.
+fn gathered_files(
+    engine: QueryEngine,
+    owner: SourceFileAddress,
+    scope: CollectScope,
+    program: string,
+) -> List<SourceFileAddress>? {
+    let files = match scope {
+        .Self -> [owner],
+        .Package -> [owner with { path_in_package: p } for p in package_listed_sources(engine, owner.package_name).paths],
+        .Closure -> package_closure(engine, if program.is_empty() { owner.package_name } else { program }).files,
+        .UnknownScope(_) -> { return null },
+    }
+    [f for f in files if gathers_from(f, owner)]
+}
+
+/// Why what a gathering written in `owner` over `scope`, read for `program`, takes isn't known: a file it reads whose
+/// generators aren't made, and what they said. Absent where none is.
+export fn gathering_unmade(
+    engine: QueryEngine,
+    owner: SourceFileAddress,
+    scope: CollectScope,
+    program: string,
+) -> string? {
+    let files? = gathered_files(engine, owner, scope, program) else { return null }
+    let f? = files.find((x) -> !generators_made(engine, x)) else { return null }
+    unmade_gathering(spelled_file(f), file_generated(engine, f).said[0])
+}
+
+/// Whether every generator `file`'s declarations name made what it was asked, so what it declares
+/// is known.
+fn generators_made(engine: QueryEngine, file: SourceFileAddress) -> bool { file_generated(engine, file).said.is_empty() }
+
+/// A gathering over a file whose generators aren't made.
+fn unmade_gathering(file: string, said: string) -> string { "a gathering over `${file}`, whose generators say: ${said}" }
+
+/// A gathered member beside what it answers for each `by` key, absent for a key it doesn't answer.
+type KeyedMember = { d: DeclaredName, values: List<Literal?> }
+
+/// Whether a member another package declares is one a gathering in `owner`, read for the package
+/// `program`, sees: its own package's and the program's every declaration, another's exported ones.
+fn seen_from(d: DeclaredName, owner: SourceFileAddress, program: string) -> bool {
+    d.exported || d.file.package_name == owner.package_name || d.file.package_name == program
+}
+
+/// Whether a gathering of `kind` takes `d`: a declaration wearing its mark, or an instance of its
+/// component.
+fn takes_member(engine: QueryEngine, kind: CollectKind, d: DeclaredName) -> bool {
+    match kind {
+        .Annotated(mark) -> wears_mark(engine, d, mark),
+        .Component(word) -> instances_word(engine, d, word),
+    }
+}
+
+/// What `file` declares: what it writes, then what generators make there when `made`. Absent where a
+/// generator there isn't made, so what it declares isn't known.
+fn declared_in(engine: QueryEngine, file: SourceFileAddress, made: bool) -> List<DeclaredName>? {
+    let written = file_declares(engine, file).names
+    if !made { return written }
+    if !generators_made(engine, file) { return null }
+    written.concat(generated_declares(engine, file).names)
+}
+
+/// Whether a gathering written in `owner` reads `file`'s members: any file outside a module's tests,
+/// and a test file only its own.
+fn gathers_from(file: SourceFileAddress, owner: SourceFileAddress) -> bool {
+    !module_segments(file).contains(TESTS_DIR) || spelled_file(file) == spelled_file(owner)
+}
+
+/// The statement of `item` declaring `d`.
+fn declaring_stmt(item: ReadItem, d: DeclaredName) -> StmtId? {
+    item.stmts.find((x) -> item.store.declared_name(x) ?? item.store.let_name(x) == d.name)
+}
+
+/// Whether the declaration `d` is written wearing `@mark`.
+export fn wears_mark(engine: QueryEngine, d: DeclaredName, mark: string) -> bool { worn_by(engine, d, mark) != null }
+
+/// The marks a file's declarations are written wearing, each with its literals: what a gathering
+/// reads of a file, so an edit that moves no mark moves no gathering.
+@derive(Saved)
+type FileMarks = { worn: List<WornMark> }
+
+/// One mark a declaration wears: the declaration's name and item, the mark's name, and the literals
+/// it's written with — absent where one of its arguments is no literal.
+@derive(Saved)
+type WornMark = { name: string, item: ItemId, mark: string, literals: List<Literal>? }
+
+/// The marks `file`'s written declarations wear.
+@cut_query("summary")
+fn file_marks(engine: QueryEngine, file: SourceFileAddress) -> FileMarks {
+    FileMarks {
+        worn: flatten([declared_marks(engine, d) for d in file_declares(engine, file).names]),
+    }
+}
+
+/// The marks the declarations generators make in `file` wear: apart from its written ones', so a
+/// gathering that reads no generator's work never asks a generator.
+@query("summary")
+fn generated_marks(engine: QueryEngine, file: SourceFileAddress) -> FileMarks {
+    FileMarks {
+        worn: flatten([declared_marks(engine, d) for d in generated_declares(engine, file).names]),
+    }
+}
+
+/// The marks the declaration `d` is written wearing.
+fn declared_marks(engine: QueryEngine, d: DeclaredName) -> List<WornMark> {
+    if item_held(engine, d.file, d.item) && !(worn_in_item(engine, d)?.marked ?? false) { return [] }
+    let item = read_item(engine, d.file, d.item)
+    let s? = declaring_stmt(item, d) else { return [] }
+    [WornMark { name: d.name, item: d.item, mark: a.name, literals: literals_of(item.store, a.args) } for a in item.store.annotations_of(s)]
+}
+
+/// The literals `args` are, in order; absent where one is no literal.
+fn literals_of(store: SyntaxArena, args: List<ExprId>) -> List<Literal>? {
+    let lits = [literal_of(store.expr(e)) for e in args]
+    if lits.any(it == null) { null } else { [l! for l in lits] }
+}
+
+/// The first `@mark` the declaration `d` wears, absent where it wears none.
+fn worn_by(engine: QueryEngine, d: DeclaredName, mark: string) -> WornMark? {
+    let marks = if item_held(engine, d.file, d.item) { file_marks(engine, d.file) } else { generated_marks(engine, d.file) }
+    marks.worn.find(it.name == d.name && it.item == d.item && it.mark == mark)
+}
+
+/// Whether the `const` `d` instances the component `word` names.
+fn instances_word(engine: QueryEngine, d: DeclaredName, word: string) -> bool {
+    d.kind == ItemKind.Const &&
+        file_instances(engine, d.file).any(it.name == d.name && it.declared == word)
+}
+
+/// What a member's declaration answers for the `by` key `key`: its name, its module's last word, or
+/// the literal at `mark.args[i]` of the mark its gathering takes it by; absent for any other key.
+fn member_key(engine: QueryEngine, kind: CollectKind, d: DeclaredName, key: string) -> Literal? {
+    if key == NAME_KEY { return Literal.Text(d.name) }
+    if key == MODULE_KEY { return Literal.Text(short_module(d.file)) }
+    let at? = mark_arg_at(key) else { return null }
+    let mark? = match kind { .Annotated(m) -> m, .Component(_) -> null } else { return null }
+    let lits? = mark_literals(engine, d, mark) else { return null }
+    if at < lits.length { lits[at] } else { null }
+}
+
+/// The place `i` a `by` key `mark.args[i]` names; absent for any other key.
+fn mark_arg_at(key: string) -> int? {
+    if !key.starts_with(MARK_ARGS) || !key.ends_with("]") { return null }
+    parse_int(key.substring(MARK_ARGS.length, key.length - 1))
+}
+
+collect listed_meta_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries a gathering reads through, for a process to hand its engine.
+export fn meta_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_meta_facts) }
+
+/// The literals `d`'s `@mark` is written with, in order; absent where it wears no such mark, or one
+/// of its arguments is no literal.
+export fn mark_literals(engine: QueryEngine, d: DeclaredName, mark: string) -> List<Literal>? { worn_by(engine, d, mark)?.literals }
+
+/// The last word of the module a file stands in; empty at its package's root.
+fn short_module(file: SourceFileAddress) -> string { module_segments(file).last() ?? "" }
+
+/// Members by their keys, the first that differs deciding, a tie by where each is declared.
+fn member_before(a: KeyedMember, b: KeyedMember) -> bool {
+    let differs = (0..a.values.length).find((k) -> !same_key(a.values[k]!, b.values[k]!))
+    if differs != null { return key_before(a.values[differs!]!, b.values[differs!]!) }
+    if a.d.name != b.d.name { return text_before(a.d.name, b.d.name) }
+    text_before(dotted_module(a.d.file), dotted_module(b.d.file))
+}
+
+/// Whether two members answer one key alike.
+fn same_key(a: Literal, b: Literal) -> bool { !key_before(a, b) && !key_before(b, a) }
+
+/// Whether `a` comes before `b` under one key: numbers by value, text in order, a number before
+/// anything else, `false` before `true`; a float by its bits.
+fn key_before(a: Literal, b: Literal) -> bool { key_rank(a) < key_rank(b) || key_rank(a) == key_rank(b) && same_rank_before(a, b) }
+
+/// Which kind of key a literal is, in the order kinds sort.
+fn key_rank(l: Literal) -> int {
+    match l { .Int(_) -> 0, .Float(_) -> 1, .Bool(_) -> 2, .Text(_) -> 3 }
+}
+
+/// Whether `a` comes before `b`, two keys of one kind.
+fn same_rank_before(a: Literal, b: Literal) -> bool {
+    match a {
+        .Int(x) -> match b { .Int(y) -> x < y, rest -> false },
+        .Float(x) -> match b { .Float(y) -> x < y, rest -> false },
+        .Bool(x) -> match b { .Bool(y) -> !x && y, rest -> false },
+        .Text(x) -> match b { .Text(y) -> text_before(x, y), rest -> false },
+    }
+}
+
+/// The `by` key and projection word naming a member's name.
+const NAME_KEY: string = "name"
+
+/// The `by` key and projection word naming a member's module.
+const MODULE_KEY: string = "module"
+
+/// What a `by` key naming a literal of a member's mark starts with.
+const MARK_ARGS: string = "mark.args["
+
+/// The directory a module's tests stand in.
+const TESTS_DIR: string = "tests"
+
+/// A gathered member as a `Variant`: its name, its record's fields as the payload, each typed where
+/// the member stands, the marks it wears, every annotation it wears, and the traits it implements: its written impls', and each
+/// of `derived`, which its enum derives for a member that writes none.
+fn gathered_variant(engine: QueryEngine, m: DeclaredName, derived: List<string>) -> MetaVariant {
+    let item = read_item(engine, m.file, m.item)
+    let declaring = [s for s in item.stmts if item.store.declared_name(s) == m.name]
+    let fields = [p for s in declaring for p in item.store.struct_parts(s)?.fields ?? []]
+    let signed = record_signature_written(engine, m.file, m.name)?.fields ?? []
+    MetaVariant {
+        name: m.name,
+        payload: [if p.ty == null { "" } else { spelled(p.ty!) } for p in fields if !faceted(p.marks)],
+        at: null,
+        fields: [field_meta(
+            engine,
+            m.file,
+            item,
+            p,
+            field_kind(signed, p.name.text()),
+            written_default(engine, m.file, item, p),
+            field_cell(engine, signed, p),
+        ) for p in fields],
+        marks: [annotated_mark(engine, m.file, item, a) for s in declaring for a in item.store.annotations_of(s) if marks_a_member(engine, m.file, a.name)],
+        annotations: [annotation_meta(engine, m.file, item, a) for s in declaring for a in item.store.annotations_of(s)],
+        impls: distinct(written_traits(engine, m.file, m.name).concat(derived)),
+    }
+}
+
+/// An annotation a member wears that is a mark, as a `Mark`: its arguments as the literals they
+/// write.
+fn annotated_mark(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, a: Annotation) -> MetaMark {
+    let written = annotation_meta(engine, file, item, a)
+    MetaMark { name: written.name, args: written.args, at: written.at, named: written.named }
+}
+
+/// Whether the annotation `name`, read where `file` writes it, is a mark: its fn answers
+/// `@std/meta`'s `Marker`.
+fn marks_a_member(engine: QueryEngine, file: SourceFileAddress, name: string) -> bool {
+    let d? = written_resolution(engine, file, Space.Value, name).named() else { return false }
+    let sig? = fn_signature(engine, d.file, d.name) else { return false }
+    meta_named(sig.answer, MARKER)
+}
+
+/// What a mark's fn answers.
+const MARKER: string = "Marker"
+
+/// A gathered member's payload: its record's fields that are no facet, each typed where the member
+/// stands.
+fn member_payloads(engine: QueryEngine, m: DeclaredName) -> List<FieldSeat> {
+    let item = read_item(engine, m.file, m.item)
+    let carried = [p.name.text() for s in item.stmts if item.store.declared_name(s) == m.name for p in item.store.struct_parts(s)?.fields ?? [] if !faceted(p.marks)]
+    [f for f in record_signature_written(engine, m.file, m.name)?.fields ?? [] if carried.contains(f.name)]
+}
+
+/// A record's field or a variant's payload `file` writes as a `Field`: its name, its type as written
+/// and that type's shape, a `Cell` of it for a field that is a `cell`, its marks, and the code its
+/// default writes.
+fn field_meta(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    item: ReadItem,
+    p: Param,
+    kind: Kind,
+    default: MetaCode?,
+    cell: bool,
+) -> MetaField {
+    MetaField {
+        name: p.name.text(),
+        ty: if p.ty == null { "" } else { spelled(p.ty!) },
+        at: meta_place(engine, file, item, item.store.param_id_span(p.id)),
+        kind: if cell { Kind.Cell(kind) } else { kind },
+        marks: [mark_meta(engine, file, item, m) for m in p.marks],
+        annotations: [mark_as_annotation(engine, file, item, m) for m in p.marks],
+        defaulted: p.default != null,
+        says: says_meta(engine, file, item, p, kind),
+        default: default,
+        state: cell,
+        prop: p.prop,
+    }
+}
+
+/// Whether the field `p`, among `signed`, is a cell: written `state`, or a prop whose type compares by
+/// value, which its instance keeps as one though it wasn't written `state`.
+fn field_cell(engine: QueryEngine, signed: List<FieldSeat>, p: Param) -> bool {
+    p.state || p.prop && by_value(engine, signed.find((s) -> p.name.spells(s.name))?.ty)
+}
+
+/// Whether two values of `ty` compare by value: a number, a truth or text, an enum of no payloads, a
+/// record of one field that does, a named type over one, or a nullable of one of those.
+fn by_value(engine: QueryEngine, ty: SignedType?) -> bool {
+    let t? = ty else { return false }
+    if t.nullable() { return !t.unwrapped().nullable() && by_value(engine, t.unwrapped()) }
+    if t.dynamic || !t.args.is_empty() { return false }
+    match t.head {
+        .Owned(word) -> BY_VALUE.contains(word),
+        .Declared(file, name) -> {
+            let shape = named_over(engine, t)
+            if shape != null { return by_value(engine, shape) }
+            let e = enum_signature(engine, file, name)
+            if e != null { return e!.variants.all(it.payloads.is_empty()) }
+            let fields = record_signature_written(engine, file, name)?.fields ?? []
+            fields.length == 1 && !fields[0].state && by_value(engine, fields[0].ty)
+        },
+        rest -> false,
+    }
+}
+
+/// The language's own types whose values compare by value.
+const BY_VALUE: List<string> = ["int", "float", "bool", "string"]
+
+/// A component's body as the statements it writes: its quote, a template of `file` at its offset;
+/// absent for a declaration that writes none.
+fn body_meta(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, s: StmtId) -> MetaStmts? {
+    let store = item.store
+    let q? = store.component_body(s) else { return null }
+    let held? = store.expr_span(q) else { return null }
+    let at = span_in_file(engine, file, item, held)
+    let body? = store.expr(q).body_of() else { return null }
+    MetaStmts { node: MetaNode.Template(template_home(file), at.lo, body.parts, []) }
+}
+
+/// A field's default as the code that writes it: the source the declaration wrote, a template of
+/// `file` at its offset; absent where it writes none, where it's a quote, which holds its offset
+/// already, or where its node was copied from another file.
+fn written_default(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, p: Param) -> MetaCode? {
+    let store = item.store
+    let e? = p.default else { return null }
+    if store.foreign_of(e) != null { return null }
+    let held? = store.expr_span(e) else { return null }
+    if store.quote_at(held.lo) != null { return null }
+    let at = span_in_file(engine, file, item, held)
+    let text? = source_text(engine, file) else { return null }
+    MetaCode {
+        node: MetaNode.Template(template_home(file), at.lo, [text.substring(at.lo, at.hi)], []),
+    }
+}
+
+/// A variant as a `Variant`: its name, its payloads' spellings, and its payloads as fields.
+fn variant_meta(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    item: ReadItem,
+    v: VariantDecl,
+    signed: List<FieldSeat>,
+) -> MetaVariant {
+    MetaVariant {
+        name: v.name.of,
+        payload: [if p.ty == null { "" } else { spelled(p.ty!) } for p in v.payloads],
+        at: meta_place(engine, file, item, v.span),
+        fields: [field_meta(engine, file, item, p, field_kind(signed, p.name.text()), null, false) for p in v.payloads],
+        marks: [mark_meta(engine, file, item, m) for m in v.marks],
+    }
+}
+
+/// The shape of the field named `name` among `signed`; unspelled where it has no type.
+fn field_kind(signed: List<FieldSeat>, name: string) -> Kind {
+    let ty? = signed.find(it.name == name)?.ty else { return Kind.Unspelled("") }
+    signed_kind(ty)
+}
+
+/// A mark as a `Mark`.
+fn mark_meta(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, m: Mark) -> MetaMark {
+    MetaMark {
+        name: m.name,
+        args: m.args,
+        at: meta_place(engine, file, item, m.span),
+        named: named_args(m),
+    }
+}
+
+/// A mark's named arguments, each as its label and literal.
+fn named_args(m: Mark) -> List<MetaMarkArg> { [MetaMarkArg { label: n.label, value: n.value } for n in m.named] }
+
+/// A member's mark `file` writes as its own `Annotation`, with the call a rule splices and the
+/// identity of the fn its name resolves to.
+fn mark_as_annotation(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, m: Mark) -> MetaAnnotation {
+    MetaAnnotation {
+        name: m.name,
+        args: m.args,
+        at: meta_place(engine, file, item, m.span),
+        call: call_written(engine, file, item, m.name, m.span),
+        named: named_args(m),
+        key: key_of(named_decl(engine, file, m.name)),
+    }
+}
+
+/// An annotation a statement of `file` wears as an `Annotation`: each argument as the literal it
+/// writes, the call a rule splices where it is one, and the identity of the fn its name resolves to.
+fn annotation_meta(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, a: Annotation) -> MetaAnnotation {
+    let store = item.store
+    let named = named_decl(engine, file, a.name)
+    MetaAnnotation {
+        name: a.name,
+        key: key_of(named),
+        call: if rule_of(engine, named) { call_written(engine, file, item, a.name, a.span) } else { null },
+        args: [arg_lit(store, e).text for e in a.args if store.arg_label(e) == null],
+        at: meta_place(engine, file, item, a.span),
+        named: [MetaMarkArg { label: store.arg_label(e)!, value: arg_lit(store, store.unnamed(e)).text } for e in a.args if store.arg_label(e) != null],
+    }
+}
+
+/// The declaration an annotation `file` writes as `name` resolves to, read once for both its call
+/// and its identity; absent where it resolves to none.
+fn named_decl(engine: QueryEngine, file: SourceFileAddress, name: string) -> DeclaredName? {
+    let scope? = written_file_scope(engine, file) else { return null }
+    stratum_resolved(engine, scope, file, Space.Value, name).named()
+}
+
+/// The identity of the fn `d` is, which `decl` builds only when a derive asks; empty for no fn.
+fn key_of(d: DeclaredName?) -> string {
+    let held? = d else { return "" }
+    if held.kind != ItemKind.Fn { "" } else { decl_key(held.file, held.name) }
+}
+
+/// THE CALL LAW: an annotation whose fn's first seat takes a value is a rule and carries a call; one
+/// whose first seat takes a declaration runs at compile time and carries none.
+fn rule_of(engine: QueryEngine, named: DeclaredName?) -> bool {
+    let d? = named else { return true }
+    let sig? = fn_signature(engine, d.file, d.name) else { return true }
+    let first? = sig.params.first() else { return true }
+    !takes_a_declaration(first.ty)
+}
+
+/// The annotation `name` written in `file` at `at` as the template of its call: `name(`, the value
+/// a rule splices, then the arguments the annotation writes, `)`.
+fn call_written(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    item: ReadItem,
+    name: string,
+    at: Span?,
+) -> MetaCode? {
+    let held? = at else { return null }
+    let written = span_in_file(engine, file, item, held)
+    let args = written_args(
+        source_text(engine, file)?.substring(written.lo, written.hi) ?? "",
+        name,
+    )
+    let tail = if args.is_empty() { ")" } else { ", ${args})" }
+    MetaCode { node: MetaNode.Template(template_home(file), written.lo, ["${name}(", tail], []) }
+}
+
+/// What the parentheses of the annotation `@name(…)` that `text` opens with hold; empty where it
+/// writes none. A declaration's annotation is written over the declaration it stands before.
+fn written_args(text: string, name: string) -> string {
+    let call = text.trim()
+    let head = "@${name}("
+    if !call.starts_with(head) { return "" }
+    let close? = closing_paren(call, head.length) else { return "" }
+    call.substring(head.length, close).trim()
+}
+
+/// Where the parenthesis opened just before `from` in `text` closes: the first `)` past `from` that
+/// no other parenthesis or string literal holds; absent where none does.
+fn closing_paren(text: string, from: int) -> int? {
+    mut depth = 0
+    mut quoted = false
+    mut j = from
+    while j < text.length {
+        let c = text.char_code(j)
+        if quoted {
+            if c == BACKSLASH { j = j + 1 } else if c == QUOTE { quoted = false }
+        } else if c == QUOTE {
+            quoted = true
+        } else if c == OPEN_PAREN {
+            depth = depth + 1
+        } else if c == CLOSE_PAREN {
+            if depth == 0 { return j }
+            depth = depth - 1
+        }
+        j = j + 1
+    }
+    null
+}
+
+const OPEN_PAREN: int = 40
+
+const CLOSE_PAREN: int = 41
+
+const QUOTE: int = 34
+
+const BACKSLASH: int = 92
+
+/// The module a file stands in, dotted from its package.
+fn dotted_module(file: SourceFileAddress) -> string { [file.package_name.replace("/", ".")].concat(module_segments(file)).join(".") }
+
+/// The file of the module `dotted_module` spells as `segments`: a scoped package's head its first
+/// two words, any other package's its first; absent where no file stands there.
+fn dotted_file(engine: QueryEngine, segments: List<string>) -> SourceFileAddress? {
+    let m = module_path(segments)
+    let scoped = m.package()
+    let package? = scoped ?? segments.first() else { return null }
+    module_files(engine, package, if scoped == null { segments.drop(1) } else { m.local() }, false)
+        .first()
+}
+
+/// A type's shape as `@std/meta` spells it.
+export fn signed_kind(ty: SignedType) -> Kind {
+    if !ty.alternatives.is_empty() { return Kind.Unspelled(ty.spelled()) }
+    if ty.nulls > 0 { return Kind.Opt(signed_kind(ty with { nulls: ty.nulls - 1 })) }
+    match ty.head {
+        .Owned(word) -> owned_kind(word, ty),
+        .Declared(_, name) -> if ty.dynamic { Kind.Dyn(name) } else { Kind.Named(name, [signed_kind(a) for a in ty.args]) },
+        .Parameter(_, name) -> Kind.Var(name),
+        .Function -> Kind
+            .Fn(
+                [MetaSeat { kind: signed_kind(s.ty), mutable: s.mutable, settled: s.settled } for s in ty.seats],
+                if ty.answer == null { Kind.Void } else { signed_kind(ty.answer!) },
+            ),
+        .Union or .Unnamed(_) or .Inferred or .Never or .Meta -> Kind.Unspelled(ty.spelled()),
+    }
+}
+
+/// The shape of a type the language owns, named `word`; unspelled for one `Kind` has no word for.
+fn owned_kind(word: string, ty: SignedType) -> Kind {
+    let args = [signed_kind(a) for a in ty.args]
+    let own? = own_type_named(word) else { return Kind.Unspelled(ty.spelled()) }
+    match own {
+        .Int -> Kind.Int,
+        .Float -> Kind.Float,
+        .Bool -> Kind.Bool,
+        .Str -> Kind.Str,
+        .Ptr -> Kind.Ptr,
+        .Void -> Kind.Void,
+        .Bytes -> Kind.Bytes,
+        .List -> if args.length == 1 { Kind.List(args[0]) } else { Kind.Unspelled(ty.spelled()) },
+        .Cell -> if args.length == 1 { Kind.Cell(args[0]) } else { Kind.Unspelled(ty.spelled()) },
+        .Map -> if args.length == 2 { Kind.Map(args[0], args[1]) } else { Kind.Unspelled(ty.spelled()) },
+        .Result -> if args.length == 2 { Kind.Result(args[0], args[1]) } else { Kind.Unspelled(ty.spelled()) },
+        .Task or .Tasks -> Kind.Named(word, args),
+        .Range -> Kind.Unspelled(ty.spelled()),
+    }
+}
+
+/// What `type_named(name)` answers a generator run over a declaration of `file`: the type the name
+/// names from `file`'s top level, or a dotted name (`@std.avrac.core.Arm`) from its module's,
+/// crossed into a heap of its own; absent for one naming none.
+export fn named_lifted(engine: QueryEngine, file: SourceFileAddress, name: string) -> Lifted {
+    let path = name.split(".")
+    let last? = path.last() else { return absent_lifted() }
+    let reader? = (if path.length == 1 { file } else { dotted_file(engine, path.take(path.length - 1)) }) else { return absent_lifted() }
+    let scope? = written_file_scope(engine, reader) else { return absent_lifted() }
+    let d? = stratum_resolved(engine, scope, reader, Space.Type, last).named() else { return absent_lifted() }
+    lifted_decl(engine, d.file, d.name)
+}
+
+/// What `decl` answers a derive's run: the fn the key names, as `@std/meta`'s `Fn`, crossed into a
+/// heap of its own; absent where it names none. Made only when a derive asks.
+export fn declared_lifted(engine: QueryEngine, key: string) -> Lifted {
+    let at? = decl_keyed(key) else { return absent_lifted() }
+    let f? = meta_of_fn_decl(engine, at.file, at.name) else { return absent_lifted() }
+    mut heap = new_meta_heap()
+    Lifted { answer: meta_of_fn(f, written_slots("Fn"), heap), heap: heap }
+}
+
+/// The type `file` declares as `name`, crossed into a heap of its own; absent for none.
+fn lifted_decl(engine: QueryEngine, file: SourceFileAddress, name: string) -> Lifted {
+    let t? = meta_of_decl(engine, file, name) else { return absent_lifted() }
+    mut heap = new_meta_heap()
+    Lifted { answer: meta_of_type(t, heap), heap: heap }
+}
+

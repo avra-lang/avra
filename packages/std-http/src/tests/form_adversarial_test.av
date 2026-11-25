@@ -1,0 +1,156 @@
+// The red team's survivors against forms: hostile boundaries and
+// heads, line ends that are not CRLF, a peer that stops mid-file, a
+// preamble that never ends, and what follows a closing delimiter.
+use @std.http.body.{Body, measured}
+use @std.http.frame.{limits}
+use @std.http.http.{Request, Unrouted}
+use @std.http.form.{FormLimits}
+
+/// A POST whose peer promised `promised` octets and sent `body`, one
+/// read at a time `k` long.
+fn cut_post(ct: string, body: string, promised: int, k: int) -> Request<Unrouted> {
+    framed_from("POST /f HTTP/1.1\r\nHost: h\r\nContent-Type: ${ct}\r\n\r\n".bytes())! with { body: measured(
+        Trickle { body: body.bytes(), k: k, at: Cell.new(0) },
+        "".bytes(),
+        0,
+        promised,
+        "".bytes(),
+        null,
+        limits(),
+    ) }
+}
+
+fn one_field(value: string) -> string { "--XyZ\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\n${value}\r\n--XyZ--" }
+
+spec "std/http — forms, adversarial" {
+    given "hostile boundaries" {
+        then "a boundary named twice" {
+            multi(
+                "multipart/form-data; boundary=XyZ; boundary=Q",
+                one_field("1"),
+                99,
+                FormLimits {},
+            )
+                .starts_with("400 the multipart type")
+        }
+        then "the parameter's name folds" { multi("multipart/form-data; Boundary=XyZ", one_field("1"), 99, FormLimits {}) == "a=1  " }
+        then "an empty quoted boundary" {
+            multi("multipart/form-data; boundary=\"\"", one_field("1"), 99, FormLimits {})
+                .starts_with("400 the multipart type")
+        }
+        then "a boundary ending in a space" {
+            multi("multipart/form-data; boundary=\"XyZ \"", one_field("1"), 99, FormLimits {})
+                .starts_with("400 the multipart type")
+        }
+        then "a quoted boundary with an inner space" {
+            multi(
+                "multipart/form-data; boundary=\"a b\"",
+                "--a b\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\n1\r\n--a b--",
+                3,
+                FormLimits {},
+            ) == "a=1  "
+        }
+        then "a boundary of exactly 70" {
+            let b = ["b" for _i in 0..70].join("")
+            multi(
+                "multipart/form-data; boundary=${b}",
+                "--${b}\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\n1\r\n--${b}--",
+                9,
+                FormLimits {},
+            ) == "a=1  "
+        }
+    }
+    given "line ends that are not CRLF" {
+        then "LF alone after a delimiter" {
+            multi(
+                "multipart/form-data; boundary=XyZ",
+                "--XyZ\nContent-Disposition: form-data; name=\"a\"\n\n1\n--XyZ--",
+                99,
+                FormLimits {},
+            )
+                .starts_with("400 ")
+        }
+        then "a folded head line" {
+            multi(
+                "multipart/form-data; boundary=XyZ",
+                "--XyZ\r\nContent-Disposition: form-data;\r\n name=\"a\"\r\n\r\n1\r\n--XyZ--",
+                99,
+                FormLimits {},
+            )
+                .starts_with("400 a part's head")
+        }
+        then "a head line with no colon" {
+            multi(
+                "multipart/form-data; boundary=XyZ",
+                "--XyZ\r\nContent-Disposition: form-data; name=\"a\"\r\ngarbage\r\n\r\n1\r\n--XyZ--",
+                99,
+                FormLimits {},
+            )
+                .starts_with("400 a part's head")
+        }
+    }
+    given "what a part holds" {
+        then "a field that is not UTF-8" {
+            let log: Cell<List<string>> = Cell.new([])
+            let body = "--XyZ\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\n"
+                .bytes()
+                .concat([255].bytes()!)
+                .concat("\r\n--XyZ--".bytes())
+            match posted_as(mp(), body, 99).multipart(kept(log)) {
+                .Ok(_) -> false,
+                .Err(r) -> r.body.text() == "field `a` is not text",
+            }
+        }
+        then "a CRLF ending a field is its own" { multi("multipart/form-data; boundary=XyZ", one_field("x\r\n"), 2, FormLimits {}) == "a=x\r\n  " }
+        then "a field of exactly its bound" {
+            multi(
+                "multipart/form-data; boundary=XyZ",
+                one_field("abcd"),
+                1,
+                FormLimits { field: 4 },
+            ) == "a=abcd  "
+        }
+        then "a file of exactly its bound" {
+            multi(
+                "multipart/form-data; boundary=XyZ",
+                "--XyZ\r\nContent-Disposition: form-data; name=\"f\"; filename=\"x\"\r\n\r\n0123456789\r\n--XyZ--",
+                3,
+                FormLimits { file: 10 },
+            ) == " f/x/-#10 f<0123456789:whole"
+        }
+        then "exactly the most parts" { multi("multipart/form-data; boundary=XyZ", one_field("1"), 99, FormLimits { parts: 1 }) == "a=1  " }
+    }
+    given "the peer" {
+        then "it stops mid-file: refused, the sink told, the held-back tail never handed out" {
+            let log: Cell<List<string>> = Cell.new([])
+            let body = "--XyZ\r\nContent-Disposition: form-data; name=\"f\"; filename=\"x\"\r\n\r\npartial"
+            match cut_post("multipart/form-data; boundary=XyZ", body, body.length + 100, 7)
+                .multipart(kept(log)) {
+                .Ok(_) -> false,
+                .Err(r) -> r.status == 400 && log.get().join(",") == "f<p:cut",
+            }
+        }
+        then "a preamble that never ends is refused at its bound" {
+            multi(
+                "multipart/form-data; boundary=XyZ",
+                ["x" for _i in 0..300].join(""),
+                50,
+                FormLimits { head: 100 },
+            ) == "413 the multipart body runs past 100 octets before its first delimiter "
+        }
+        then "parts after the closing delimiter are not read" {
+            multi(
+                "multipart/form-data; boundary=XyZ",
+                one_field("1") +
+                    "\r\n--XyZ\r\nContent-Disposition: form-data; name=\"late\"\r\n\r\n2\r\n--XyZ--",
+                5,
+                FormLimits {},
+            ) == "a=1  "
+        }
+    }
+    given "urlencoded" {
+        then "an escaped NUL arrives as one" { form_said(urlencoded("a=x%00y")).length == 5 }
+        then "a thousand fields" { form_said(urlencoded(["k${i}=v" for i in 0..1000].join("&"))).split("|").length == 1000 }
+        then "an escaped `+` in a name" { form_said(urlencoded("a%2Bb=1")) == "a+b=1" }
+    }
+}

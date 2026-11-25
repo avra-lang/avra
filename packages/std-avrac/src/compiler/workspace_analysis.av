@@ -1,0 +1,65 @@
+//! The workspace's analysis and memo: parse/resolve/sig/typeck
+//! families and the lowered program. The core accessors live in
+//! workspace.av.
+use core.{
+    EmbedKind,
+    StmtId,
+    qtrace,
+    traced,
+    DeclId,
+    DeclKind,
+    FileId,
+    ExprId,
+    flatten,
+    distinct,
+    TypeId,
+    Type,
+    touch,
+    spelled,
+    module_path,
+    fp_str,
+    fp,
+    fp_list,
+    joined,
+    some_list,
+}
+use @std.path.{dir_of}
+use features.{Unsettled, nothing, place_key, StatePlace}
+use core.{StmtId, same_file, digest_of}
+use diagnostics.{Diag, no_voices, has_errors}
+use compiler.families.{Family}
+use compiler.backend.{run_crossed, run_lifted, run_settle, world_witness, world_reached}
+use compiler.store.{Store, Stored, node_key}
+use compiler.lower.{Lowered, Body, Unit, CodeFacts}
+use compiler.memory.{memory}
+use @std.relation.stable.{Scope}
+use @std.relation.engine.{FixpointRefusal, Key, spoken as fixpoint_spoken}
+
+/// How the bodies compile-time runs lowered are filed.
+
+/// An interned table's answer for one name: already there, or freshly
+/// minted at `next` (the table's own current length) — registered in
+/// `index` here, so the caller's own miss branch need only push the
+/// item its list holds. The shared shape `spec_id`, `settle_id` and
+/// `lifted` each close over: a name -> index `Map` beside a `List`,
+/// looked up in O(1) rather than scanned.
+enum Interned { Found(int), Fresh(int) }
+
+fn interned(index: Cell<Map<string, int>>, name: string, next: int) -> Interned {
+    let known? = index.get().get(name) else {
+        index.put(name, next)
+        return Interned.Fresh(next)
+    }
+    Interned.Found(known)
+}
+
+// ── The read-reach lattice ──
+
+/// The key of the place nothing names.
+fn unknown_key() -> int { place_key(StatePlace.Unknown) }
+
+/// A refusal that cut a settlement short, in the words it spoke and where it pointed.
+export fn trapped(d: Diag) -> Unsettled {
+    let at? = d.primary.label else { return Unsettled.Trap(d.message) }
+    Unsettled.Trap("${d.message}: ${at}")
+}

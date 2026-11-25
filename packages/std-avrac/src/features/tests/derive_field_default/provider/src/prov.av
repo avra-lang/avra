@@ -1,0 +1,25 @@
+//! A field's DEFAULT crosses as the code that wrote it: a derive
+//! splices it where it generates a value, and a field that declares
+//! none crosses absent.
+use @std.meta.{Type, Directive, Field, Code}
+
+export trait Defaults {
+    static fn derive(t: Type) -> List<Directive> {
+        [
+            Directive {
+                twin: "",
+                name: t.name,
+                at: t.at,
+                source: quote {
+            impl ${t} { static fn defaults() -> List<int> { ${as_list(t.fields.filter(it.default != null))} } }
+        },
+            },
+        ]
+    }
+}
+
+/// The defaults as one list literal, each element its field's own expression.
+fn as_list(fs: List<Field>) -> Code {
+    if fs.is_empty() { return quote { [] } }
+    quote { [${fs[0].default!}].concat(${as_list(fs.slice(1, fs.length))}) }
+}

@@ -1,0 +1,65 @@
+// Every route answers a page: the shell, the screen's heading, and a
+// 404 that is a page too.
+spec "site" {
+    given "the routes" {
+        then "the home screen carries the thesis in its shell" {
+            status_of("GET / HTTP/1.1") == 200 &&
+                document_at("/").contains("<title>Avra</title>") &&
+                document_at("/").contains("compiles itself")
+        }
+        then "why and principles answer their headings" {
+            document_at("/why").contains(">Why Avra exists</h1>") &&
+                document_at("/principles").contains("Collapse the paradox")
+        }
+        then "the principles are a keyed list" {
+            document_at("/principles").contains("<li data-key=\"Visible magic\">")
+        }
+        then "the navigation lists every screen, in order" {
+            let doc = document_at("/why")
+            doc.index_of("href=\"/\"") < doc.index_of("href=\"/why\"") &&
+                doc.index_of("href=\"/why\"") < doc.index_of("href=\"/principles\"")
+        }
+        then "an unknown address is a 404 page, in the shell" {
+            status_of("GET /nope HTTP/1.1") == 404 &&
+                document_at("/nope").contains(">Not found</h1>") &&
+                document_at("/nope").contains("href=\"/why\"")
+        }
+        then "no page ships a script" {
+            !document_at("/").contains("<script") && !document_at("/nope").contains("<script")
+        }
+    }
+}
+
+// The gallery screen: every view in every state, in the shell.
+spec "site gallery" {
+    given "GET /gallery" {
+        then "it answers 200 and is listed in the navigation" {
+            status_of("GET /gallery HTTP/1.1") == 200 &&
+                document_at("/why").contains("href=\"/gallery\"")
+        }
+        then "it names every view and every case" {
+            [
+                "home",
+                "why",
+                "proofs",
+                "missing",
+                "principles",
+                "as served",
+                "zero beliefs",
+                "one belief",
+                "five beliefs",
+                "pathological belief",
+            ]
+                .all(on_gallery(it))
+        }
+        then "a hostile belief is inert on it" {
+            !document_at("/gallery").contains("<script>alert") &&
+                document_at("/gallery").contains("&lt;script&gt;alert(1)")
+        }
+        then "it ships no script" {
+            !document_at("/gallery").contains("<script")
+        }
+    }
+}
+
+fn on_gallery(name: string) -> bool { document_at("/gallery").contains(name) }

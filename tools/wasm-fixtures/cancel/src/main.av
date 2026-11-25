@@ -1,0 +1,106 @@
+// Cancel and `within` across a host unwind, seven ways. Each line is one
+// claim and says what it saw; the answers are the same on every engine, and
+// `expected.txt` is the oracle all three could otherwise share a mistake with.
+use @std.time.{ms, secs, sleep}
+
+fn note(log: Cell<string>, what: string) { log.set(log.get() + what) }
+
+// 1. a task parked on a timer is cancelled: it resumes AT the park as
+// cancelled, its defer runs once, and nothing after the park runs.
+fn parked(log: Cell<string>) -> int {
+    defer note(log, "d")
+    sleep(secs(60))
+    note(log, "X")
+    0
+}
+
+// 2. a gate is opened and the cancel arrives before the waiter runs: the
+// cancel outranks the ready arm, so the waiter never reads the value.
+fn waiter(x: Task<int>, log: Cell<string>) -> int {
+    defer note(log, "d")
+    let v = select {
+        r in x -> r
+    }
+    note(log, "V")
+    v
+}
+
+// 3-5. a park at the bottom of a recursion; each frame defers a mark.
+fn deep(d: int, log: Cell<int>) -> int {
+    defer log.set(log.get() + 1)
+    if d == 0 {
+        sleep(secs(60))
+        return 1
+    }
+    1 + deep(d - 1, log)
+}
+
+// 6. a task parked inside a select over a child it spawned there.
+fn leaf(log: Cell<string>) -> int {
+    defer note(log, "l")
+    sleep(secs(60))
+    0
+}
+
+fn selecting(log: Cell<string>) -> int {
+    defer note(log, "s")
+    select {
+        r in spawn leaf(log) -> r
+    }
+}
+
+fn main() {
+    let l1 = Cell.new("")
+    let t1 = spawn parked(l1)
+    sleep(ms(2))
+    t1.cancel()
+    let r1 = t1.await catch c -> { -1 }
+    println("1 cancel_parked ${r1} [${l1.get()}]")
+
+    let l2 = Cell.new("")
+    let x = spawn {
+        sleep(ms(5))
+        7
+    }
+    let w = spawn waiter(x, l2)
+    let _ = x.await
+    w.cancel()
+    let r2 = w.await catch c -> { -1 }
+    println("2 cancel_beats_ready ${r2} [${l2.get()}]")
+
+    let r3 = within ms(30) {
+        sleep(secs(60))
+        "slept"
+    } catch _ -> "timed out"
+    println("3 within_cuts_park ${r3}")
+
+    let d4 = Cell.new(0)
+    let r4 = within secs(5) {
+        (within ms(20) { deep(200, d4) } catch _ -> -1) + 100
+    } catch _ -> -2
+    println("4 within_nested_deep ${r4} unwound ${d4.get()}")
+
+    let d5 = Cell.new(0)
+    let t5 = spawn deep(500, d5)
+    sleep(ms(2))
+    t5.cancel()
+    let r5 = t5.await catch c -> { -1 }
+    println("5 cancel_deep_stack ${r5} unwound ${d5.get()}")
+
+    let l6 = Cell.new("")
+    let t6 = spawn selecting(l6)
+    sleep(ms(2))
+    t6.cancel()
+    let r6 = t6.await catch c -> { -1 }
+    sleep(ms(2))
+    println("6 select_with_cancel ${r6} unwound ${l6.get().contains("s")}")
+
+    let t7 = spawn parked(Cell.new(""))
+    sleep(ms(2))
+    t7.cancel()
+    let a7 = t7.await catch c -> { -1 }
+    let b7 = t7.await catch c -> { -2 }
+    println("7 join_after_cancel ${a7} ${b7}")
+}
+
+main()

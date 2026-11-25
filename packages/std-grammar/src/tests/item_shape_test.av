@@ -1,0 +1,91 @@
+// Items read off a grammar's shape: nothing named by hand, and a grammar with no items says so.
+use @std.grammar.{Grammar, ItemShape, item_shape}
+
+fn joined(words: List<string>) -> string { words.join(" ") }
+
+fn shape_of(g: Grammar) -> ItemShape { item_shape(g) }
+
+spec "item_shape — items read off a grammar's rules" {
+    given "a grammar whose start rule repeats nothing" {
+        then "it has no item rule" {
+            let g = grammar {
+                only = NUMBER
+            }
+            shape_of(g).item_rule == null
+        }
+    }
+    given "a grammar with no rules" {
+        then "it has no item rule" { item_shape(Grammar { name: "t", start: "", rules: [] }).item_rule == null }
+    }
+    given "a branch that labels a name, one with a bracketed last rule, and one with neither" {
+        then "the repeated rule is the item rule" { shape_of(lines()).item_rule == "thing" }
+        then "the word before a name declares" { joined(shape_of(lines()).declaring_words) == "let fn" }
+        then "only the word before the bracketed rule's body can wait" { joined(shape_of(lines()).deferred_words) == "fn" }
+        then "the literal opening that rule opens a body" { joined(shape_of(lines()).body_openers) == "{" }
+    }
+    given "a bracket pair around a repeat of rules and the separator" {
+        then "its word holds members" { joined(shape_of(holders()).holder_words) == "impl" }
+    }
+    given "members held in a rule of their own" {
+        then "that rule's branches shape items too" {
+            let shape = shape_of(holders())
+            joined(shape.deferred_words) == "fn" && joined(shape.declaring_words) == "fn"
+        }
+    }
+    given "a word only some of whose branches hold members" {
+        then "it holds none, since its first token can't say which" {
+            let g = grammar {
+                file = ( s:thing | BREAK )* EOF
+                thing = "let" name:NAME "{" ( s:thing | BREAK )* "}" END | "let" name:NAME "=" value:NAME END
+            }
+            shape_of(g).holder_words.is_empty()
+        }
+    }
+    given "a bracket pair whose repeat holds more than rules and the separator" {
+        then "it holds no members" {
+            let g = grammar {
+                file = ( s:thing | BREAK )* EOF
+                thing = "enum" name:NAME "{" ( BREAK | "," | arms:NAME )* "}" END
+            }
+            shape_of(g).holder_words.is_empty()
+        }
+    }
+    given "a branch ending in an optional separator and an item" {
+        then "its first terminal attaches, and no word declares it" {
+            let g = grammar {
+                file = ( s:thing | BREAK )* EOF
+                thing = name:MARK BREAK? decl:thing | "let" name:NAME END
+            }
+            let shape = shape_of(g)
+            joined(shape.attached_classes) == "MARK" &&
+                joined(shape.attached_words) == "" &&
+                joined(shape.declaring_words) == "let"
+        }
+    }
+    given "a word that attaches" {
+        then "it's an attached word" {
+            let g = grammar {
+                file = ( s:thing | BREAK )* EOF
+                thing = "mark" BREAK? decl:thing | "let" name:NAME END
+            }
+            joined(shape_of(g).attached_words) == "mark"
+        }
+    }
+}
+
+fn lines() -> Grammar {
+    grammar {
+        file = ( s:thing | BREAK )* EOF
+        thing = "let" name:NAME "=" value:NAME END | "fn" name:NAME body:block END
+        block = "{" ( s:thing | BREAK )* "}"
+    }
+}
+
+fn holders() -> Grammar {
+    grammar {
+        file = ( s:thing | BREAK )* EOF
+        thing = "impl" target:NAME "{" ( fns:member | BREAK )* "}" END
+        member = "fn" name:NAME body:block END
+        block = "{" ( s:thing | BREAK )* "}"
+    }
+}

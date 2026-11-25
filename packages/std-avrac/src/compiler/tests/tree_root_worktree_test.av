@@ -1,0 +1,64 @@
+// A git WORKTREE's `.git` is a FILE, not a directory. `tree_root` stops at
+// the NEAREST ancestor carrying a `.git`, worktree or clone alike — never
+// climbs past it looking for a directory `.git`, and never lets a HIGHER
+// `avra.toml` outrank it. `avra.toml` only decides the root when no `.git`
+// stands anywhere above: the fallback for a tree with no git history yet.
+use @std.avrac.compiler.{tree_root_of}
+
+/// The checkout `root` stands in, among `files`.
+fn tree_among(files: Map<string, string>, root: string) -> string { tree_root_of(root, (p: string) -> files.has(p)) }
+
+spec "compiler/build — tree_root's checkout boundary" {
+    given "a worktree nested under a checkout, `.git` and `avra.toml` at both levels" {
+        then "the NEAREST `.git` wins — the worktree owns its own store, not the checkout above it" {
+            tree_among(
+                {
+                    "/root/.git": "",
+                    "/root/avra.toml": "[package]\nname = \"root\"\nversion = \"0.1.0\"\n",
+                    "/root/wt/.git": "gitdir: /root/.git/worktrees/wt\n",
+                    "/root/wt/avra.toml": "[package]\nname = \"wt\"\nversion = \"0.1.0\"\n",
+                    "/root/wt/pkg/avra.toml": "[package]\nname = \"pkg\"\nversion = \"0.1.0\"\n",
+                    "/root/wt/pkg/src/main.av": "fn a() { 1 }\n",
+                },
+                "/root/wt/pkg",
+            ) == "/root/wt"
+        }
+    }
+    given "a package subdirectory under a plain checkout" {
+        then "the checkout's `.git` is the root" {
+            tree_among(
+                {
+                    "/checkout/.git": "",
+                    "/checkout/pkg/avra.toml": "[package]\nname = \"pkg\"\nversion = \"0.1.0\"\n",
+                    "/checkout/pkg/src/main.av": "fn a() { 1 }\n",
+                },
+                "/checkout/pkg",
+            ) == "/checkout"
+        }
+    }
+    given "no `.git` anywhere in the ancestry" {
+        then "the HIGHEST `avra.toml` is the root" {
+            tree_among(
+                {
+                    "/top/avra.toml": "[package]\nname = \"top\"\nversion = \"0.1.0\"\n",
+                    "/top/mid/avra.toml": "[package]\nname = \"mid\"\nversion = \"0.1.0\"\n",
+                    "/top/mid/pkg/avra.toml": "[package]\nname = \"pkg\"\nversion = \"0.1.0\"\n",
+                    "/top/mid/pkg/src/main.av": "fn a() { 1 }\n",
+                },
+                "/top/mid/pkg",
+            ) == "/top"
+        }
+    }
+    given "a package whose own directory holds the `.git`, nested in another checkout" {
+        then "it is its own root — the nearest `.git` is its own" {
+            tree_among(
+                {
+                    "/outer/.git": "",
+                    "/outer/inner/.git": "",
+                    "/outer/inner/avra.toml": "[package]\nname = \"inner\"\nversion = \"0.1.0\"\n",
+                },
+                "/outer/inner",
+            ) == "/outer/inner"
+        }
+    }
+}

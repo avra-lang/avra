@@ -1,0 +1,43 @@
+// proves: a list answer that holds nothing — a slice past its end, a concat of two empty lists — is
+// the one empty list every such answer shares, and every write opens it: a push through a `mut`
+// binding, a cell, a `mut` seat, a record's field and a list's element each lands in a list of its
+// own, and no other holder of an empty answer ever sees it
+type Holder = { xs: List<int> }
+
+fn emptied(xs: List<int>) -> List<int> { xs.slice(xs.length, xs.length) }
+
+fn joined_empty() -> List<int> { emptied([1]).concat(emptied([2])) }
+
+fn pushed_in(mut xs: List<int>, v: int) { xs.push(v) }
+
+fn shown(xs: List<int>) -> string { "[${["${x}" for x in xs].join(",")}]" }
+
+let first = emptied([1, 2, 3])
+let second = joined_empty()
+
+mut bound = emptied([4])
+bound.push(1)
+bound.push(2)
+
+let cell: Cell<List<int>> = Cell.new(joined_empty())
+cell.push(3)
+
+mut seat = joined_empty()
+pushed_in(seat, 4)
+
+mut holder = Holder { xs: emptied([5]) }
+holder.xs.push(5)
+
+mut nested = [joined_empty(), emptied([6])]
+nested[1].push(6)
+
+mut grown = emptied([7])
+for i in 0..20 { grown = grown.concat([i]) }
+
+println("first ${shown(first)} second ${shown(second)}")
+println("bound ${shown(bound)} cell ${shown(cell.get())} seat ${shown(seat)}")
+println("holder ${shown(holder.xs)} nested ${shown(nested[0])} ${shown(nested[1])}")
+println("grown ${grown.length} last ${grown[19]}")
+println(
+    "still empty ${shown(emptied([8]))} ${shown(joined_empty())} ${first.length + second.length}",
+)

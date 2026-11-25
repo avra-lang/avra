@@ -1,0 +1,30 @@
+// a lent fn called through a value, from a list of fns, and in a spawned task
+type Node = { name: string, kids: List<string> }
+type Arena = { nodes: List<Node> }
+
+/// An arena of two run-time-named nodes.
+fn arena(tag: string) -> Arena {
+    Arena {
+        nodes: [
+            Node { name: ["${tag}", "0"].join(""), kids: [["k", tag].join("")] },
+            Node { name: ["${tag}", "1"].join(""), kids: [] },
+        ],
+    }
+}
+
+/// THE LENT ANSWER: every answer a view rooted at `a`.
+fn node_at(a: Arena, i: int) -> Node { a.nodes[i] }
+
+fn second(a: Arena, i: int) -> Node { node_at(a, i + 1) }
+
+fn run(n: int) -> string {
+    let f = node_at
+    let v = f(arena("f${n}"), 0)
+    let fs = [node_at, second]
+    let w = (fs[1])(arena("l${n}"), 0)
+    let a = arena("k${n}")
+    let t = spawn { node_at(a, 1) }
+    [v.name, w.name, t.await.name].join(" ")
+}
+
+run(8)

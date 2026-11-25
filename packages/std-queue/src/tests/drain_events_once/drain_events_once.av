@@ -1,0 +1,32 @@
+//! proves each event of a drain fires once for what it names: `took`
+//! once a delivery, `acked` once a settled one, `failed` once a failure
+//! and `buried` once an item the letter took.
+use @std.queue.{queue, worker, drain, key, Dead, Delivery}
+use @std.time.{ms}
+
+type Job = { n: int }
+
+fn pay(d: Delivery<Job>) -> Result<int, string> {
+    if d.item.n == 2 { .Err("no") } else { .Ok(d.item.n) }
+}
+
+state seen: Cell<List<string>> = Cell.new([])
+queue<Dead<Job>> letters {}
+queue<Job> jobs {
+    capacity: 8
+    lease: ms(60000)
+    retries: 2
+    took: (d: Delivery<Job>) -> seen.push("took ${d.item.n}/${d.attempt}")
+    acked: (d: Delivery<Job>) -> seen.push("acked ${d.item.n}")
+}
+worker settle {
+    reads: jobs
+    each: pay
+    dead: letters
+    failed: (d: Delivery<Job>, e: string) -> seen.push("failed ${d.item.n}/${d.attempt} ${e}")
+    buried: (gone: Dead<Job>) -> seen.push("buried ${gone.item.n}")
+}
+for i in 1..4 { let _ = jobs.home().send(Job { n: i }, key("k${i}")) }
+let settled = drain(settle) catch 0 - 1
+let again = drain(settle) catch 0 - 1
+"${settled} ${again} ${jobs.home().depth() catch 0 - 1} | ${seen.get().join(", ")}"

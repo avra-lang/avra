@@ -1,0 +1,16 @@
+//! The lowering rules of an expression standing as a statement, whose value is dropped where no
+//! `collect` gathers it, and of `let _ =`, whose value is made and dropped; a task either makes is
+//! joined where its scope ends.
+use core.{Lowering, StmtId, StmtLowers}
+use core.stmt.{Discard, ExprStmt}
+
+impl StmtLowers for ExprStmt {
+    fn stmt_lowered(mut cx: Lowering, s: StmtId) {
+        let j? = cx.joining(self.value) else { return cx.owns(cx.dropped(self.value), cx.type_at(cx.meaning_of(self.value))) }
+        cx.gathered_into(j, self.value, cx.lower(self.value))
+    }
+}
+
+impl StmtLowers for Discard {
+    fn stmt_lowered(mut cx: Lowering, s: StmtId) { cx.owns(cx.lower(self.value), cx.type_at(cx.meaning_of(self.value))) }
+}

@@ -1,0 +1,90 @@
+//! Mutation's typing laws: a mut binding may declare its type like
+//! `let` (the want the channel plants); an assignment lands on a
+//! PLACE whose type — read off the target — is the slot's law, the
+//! value ACCEPTED by it with widening recorded like every slot's.
+use core.{StmtId, ExprId, TypeId, TypeRef, Type}
+use features.{TypeCx}
+
+export fn check_mut(mut cx: TypeCx, s: StmtId) {
+    let v? = cx.view.store.stmt_value(s) else { return }
+    // The DECLARED type records BEFORE the value walks — it is the
+    // want the channel plants, and downstream reads of the name
+    // see the declaration even when the value refuses.
+    let ann: TypeRef? = cx.view.store.binding_ty(s)
+    let declared: TypeId? = if ann == null { null } else { cx.bind_declared(s, ann!) }
+    if declared != null { cx.plant_want(v, declared!) }
+    cx.walk(v)
+    if cx.refuses_type_value(v) { return }
+    if cx.refuses_void_value(v) { return }
+    if declared != null {
+        cx.declared_binding(v, cx.view.store.let_name(s) ?? "this binding", declared!)
+    }
+    publish_state(cx, s, v, declared)
+}
+
+/// An UNANNOTATED state still holds a Cell, so its binding wears one
+/// every read and write reaches through — as an annotated one does. A
+/// MODULE-LEVEL state's read type is a declaration's answer every body
+/// reads, so it also lands where a const's does — the one table
+/// `decl_type_of` and the lowerer share; a body-local state has no
+/// declaration and stays its own body's fact.
+fn publish_state(mut cx: TypeCx, s: StmtId, v: ExprId, declared: TypeId?) {
+    if !cx.view.store.is_state_stmt(s) { return }
+    let read_ty: TypeId = declared ?? cx.type_at(v)
+    if cx.errored_ty(read_ty) { return }
+    if declared == null { cx.record_binding(s, cx.view.types.intern(Type.Cell(read_ty))) }
+    if cx.view.decls.decl_of(cx.view.file, s) == null { return }
+    cx.facts.record_const_type(s, read_ty)
+}
+
+/// THE PLACE LAW's typing half: the target types as a READ — its
+/// type IS the slot's law — the want is planted so the value hears
+/// its seat, and acceptance WIDENS like every slot's.
+export fn check_assign(mut cx: TypeCx, s: StmtId) {
+    let held: ExprId? = cx.view.store.stmt_value(s)
+    let target: ExprId? = cx.view.store.assign_target(s)
+    if held == null || target == null { return }
+    let v = held!
+    let t = target!
+    cx.walk(t)
+    root_law(cx, s, t)
+    cx.seals_path(cx.stmt_loc(s), t)
+    let want = cx.type_at(t)
+    if cx.errored_ty(want) || !cx.place_lawful(t) {
+        cx.walk(v)
+        return
+    }
+    cx.plant_want(v, want)
+    cx.walk(v)
+    if cx.drops_task(cx.stmt_loc(s), want) { return }
+    if !cx.accepts(v, want) { slot_refused(cx, s, t, want, v) }
+}
+
+/// THE PLACE LAW's root half, for a PATH: a write through a `state`
+/// field lands in that field's cell, so it asks nothing of the root;
+/// any other path owes what its root's binding earns.
+fn root_law(mut cx: TypeCx, s: StmtId, t: ExprId) {
+    if cx.crosses_state(t) { return }
+    let owed? = owed_root(cx.view, cx.names, t, cx.stmt_loc(s)) else { return }
+    cx.emit(owed)
+}
+
+// ── The voices ──
+
+fn slot_refused(mut cx: TypeCx, s: StmtId, t: ExprId, want: TypeId, v: ExprId) {
+    let gn = cx.view.types.name_of(cx.type_at(v))
+    let root: ExprId? = cx.view.store.place_root(t)
+    let named = if root == null { "this place" } else { "`${cx.view.store.ident_name(root!) ?? "this place"}`" }
+    let spot = if cx.view.store.ident_name(t) == null { "a slot of ${named}" } else { named }
+    cx
+        .emit(
+            cx
+                .seat_mismatch(
+                    "type.mismatch",
+                    cx.stmt_loc(s),
+                    v,
+                    "assignment changes ${spot}: `${cx.view.types.name_of(want)}` to `${gn}`",
+                    want,
+                ),
+        )
+}

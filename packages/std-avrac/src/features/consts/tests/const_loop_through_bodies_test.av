@@ -1,0 +1,33 @@
+// A CONST THAT READS ITSELF THROUGH A BODY: the value's settling runs the methods, statics and fns
+// it calls, so one whose body reads the const back is the trap that settling would end in, refused
+// once where the const is declared.
+use @std.avrac.testing.{refused_with}
+
+spec "features/consts (a const reading itself through a body)" {
+    given "a typed const whose value calls into a body that reads it" {
+        then "through a method" {
+            refused_with(
+                "type P = { n: int }\nimpl P {\n    fn total() -> int { self.n + X }\n}\nconst X: int = P { n: 1 }.total()\nX",
+                "`X` asks for its own value while settling",
+            )
+        }
+        then "through a static" {
+            refused_with(
+                "type P = { n: int }\nimpl P {\n    static fn base() -> int { Y }\n}\nconst Y: int = P.base()\nY",
+                "`Y` asks for its own value while settling",
+            )
+        }
+        then "through a method that calls a fn" {
+            refused_with(
+                "type P = { n: int }\nimpl P {\n    fn one() -> int { two(self) }\n}\nfn two(p: P) -> int { p.n + LOOP }\nconst LOOP: int = P { n: 1 }.one()\nLOOP",
+                "`LOOP` asks for its own value while settling",
+            )
+        }
+        then "through a fn" {
+            refused_with(
+                "fn f() -> int {\n    X\n}\nconst X: int = f()\nX",
+                "`X` asks for its own value while settling",
+            )
+        }
+    }
+}

@@ -1,0 +1,173 @@
+//! WHAT A METHOD DOES, AS IR: the body an impl gives a type, lowered as a fn's is, its receiver the
+//! first seat; a static fn's has no receiver. Its unit is named for the type, then the method.
+use core.{LandedSeat, NodeNotes, ParameterLayout, Seating, SignedType, TypeHead, headed_type}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+
+/// The body of the method, or when `statics` the static fn, `name` the impl at `at` gives, lowered.
+/// Absent when it gives none with a body.
+export fn lowered_method(engine: QueryEngine, at: ImplAt, name: string, statics: bool) -> LoweredFn? { lowered_method_under(engine, at, name, statics, null, []) }
+
+/// The body of the method, or when `statics` the static fn, `name` the impl at `at` gives, lowered
+/// under `parameters`, one per type parameter its type declares then one per its own. Absent when it
+/// gives none with a body.
+@query("lower")
+export fn lowered_method_under(
+    engine: QueryEngine,
+    at: ImplAt,
+    name: string,
+    statics: bool,
+    parameters: List<ParameterLayout>?,
+    framed: List<string>,
+) -> LoweredFn? { method_lowered(engine, at, name, statics, parameters, framed) }
+
+/// The body of the method, or when `statics` the static fn, `name` the impl at `at` gives, lowered as
+/// `lowered_method_under` says, its lambdas `framed` carrying their frame of contexts, what it meets at
+/// each written node noted in `notes` where a law asks.
+fn method_lowered(
+    engine: QueryEngine,
+    at: ImplAt,
+    name: string,
+    statics: bool,
+    parameters: List<ParameterLayout>?,
+    framed: List<string> = [],
+    notes: NodeNotes? = null,
+) -> LoweredFn? {
+    let method? = signed_method(engine, at, name, statics) else { return null }
+    let receiver = method.signed.receiver ?? headed_type(TypeHead.Never)
+    let of = declared_at(receiver) ?? owned_at(receiver)
+    let written = !statics &&
+        of != null &&
+        receiver_use(engine, of!.file, of!.name, name, at.file.package_name).written()
+    let answered = answered_body(
+        engine,
+        InferringFn { file: at.file, name: name, impl_at: at },
+        method.signed,
+    )
+    let typed = method_body_typed(engine, at, name, statics)
+    lowered_signed(
+        engine,
+        at.file,
+        answered with { receiver_written: written, typed: typed, seats: seats_taken(at.file, answered) },
+        "${method.owner}.${name}",
+        parameters,
+        [],
+        framed,
+        notes,
+    )
+}
+
+/// The default the method, or when `statics` the static fn, `method` of the type `of` declares as
+/// `owner` writes for its seat `seat`, lowered as a fn of nothing answering the seat's type. Absent
+/// where no one impl gives the method, or it writes none.
+@query("lower")
+export fn lowered_method_seat_default(
+    engine: QueryEngine,
+    of: SourceFileAddress,
+    owner: string,
+    method: string,
+    seat: string,
+    statics: bool,
+) -> LoweredFn? {
+    let impls = impls_with(engine, of, owner, method, statics)
+    if impls.is_empty() && !statics { return trait_member_default(engine, of, owner, method, seat) }
+    if impls.length != 1 { return null }
+    let m? = signed_method(engine, impls[0], method, statics) else { return null }
+    let unit = "${owner}.${method}"
+    let own = seat_default_lowered(engine, impls[0].file, m.signed, unit, seat)
+    if own != null { return own }
+    let implemented = implemented_by(engine, impls[0])
+    let d? = trait_seat_default(engine, implemented, method, seat) else { return null }
+    let ty? = m.signed.signature.params.find(it.name == seat)?.ty else { return null }
+    signed_lowered(
+        engine,
+        implemented!.file,
+        default_signed(d, ty, seat),
+        "${unit}.${seat}\$default",
+        null,
+    )
+}
+
+/// The default a trait's own member writes for its seat `seat` of type `ty`, as a body of no seats
+/// answering it.
+fn default_signed(d: TraitDefault, ty: SignedType, seat: string) -> SignedBody {
+    SignedBody {
+        signature: value_signature(ty),
+        item: d.item,
+        body: d.value,
+        stmt: d.stmt,
+        seat: Seating.SeatDefault(seat),
+    }
+}
+
+/// The type the impl `at` in `item` gives its fns to: the type its target names, or the component
+/// whose own fns they are.
+fn method_owner(engine: QueryEngine, item: ReadItem, at: ImplAt) -> DeclaredAt? {
+    let held? = impl_stmt_at(item, at) else {
+        let c? = impl_component_at(item, at) else { return null }
+        return DeclaredAt { file: at.file, name: c.name }
+    }
+    let parts = item.store.impl_parts(held)!
+    declared_of(
+        target_named(engine, at.file, item.store.seat_home(held, LandedSeat.Target), parts.target),
+    ) ?? own_declared(parts.target)
+}
+
+/// A method's body signed, and the name of the type it's a method of.
+type SignedMethod = { signed: SignedBody, owner: string }
+
+/// The method, or when `statics` the static fn, `name` the impl at `at` gives — or the component `at`
+/// names writes among its own — its body signed under the impl's type parameters and its receiver
+/// the impl's target over them; absent when it gives none with a body. A method an annotation wraps
+/// is its wrapper.
+fn signed_method(engine: QueryEngine, at: ImplAt, name: string, statics: bool) -> SignedMethod? {
+    let written = read_item(engine, at.file, at.item)
+    let owner? = method_owner(engine, written, at) else { return null }
+    let wrap = wrapping(engine, at.file, name, MethodSite { at: at, statics: statics })
+    let item = wrap.wrapper ?? written
+    let fns = if wrap.wraps() { item.stmts } else { impl_fns_at(written, at) }
+    let stmt? = fns
+        .find((s) -> item.store.fn_parts(s)?.name == name && item.store.is_static(s) == statics) else { return null }
+    let signature? = method_signature(engine, at, name) else { return null }
+    let receiver = receiver_over(owner.file, owner.name, at.params)
+    SignedMethod {
+        signed: SignedBody {
+            signature: signature,
+            item: item,
+            body: item.store.fn_parts(stmt)!.body,
+            stmt: stmt,
+            receiver: if statics { null } else { receiver },
+            unmade: wrap.said.first(),
+        },
+        owner: owner.name,
+    }
+}
+
+/// The default the trait `file` declares as `owner` writes for the seat `seat` of its own member
+/// `method`, as a call through a `dyn` box leaving the seat out reaches it; absent for no trait, or
+/// a seat it writes none for.
+fn trait_member_default(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    owner: string,
+    method: string,
+    seat: string,
+) -> LoweredFn? {
+    let held = TraitAt { file: file, name: owner }
+    let d? = trait_seat_default(engine, held, method, seat) else { return null }
+    let receiver = headed_type(TypeHead.Declared(file, owner))
+    let ty? = trait_method_signature(engine, held, method, receiver)?.params?.find(it.name == seat)?.ty else { return null }
+    signed_lowered(
+        engine,
+        file,
+        default_signed(d, ty, seat),
+        "${owner}.${method}.${seat}\$default",
+        null,
+    )
+}
+
+collect listed_method_lowered_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries a method's lowering reads through, for a process to hand its engine.
+export fn method_lowered_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_method_lowered_facts) }

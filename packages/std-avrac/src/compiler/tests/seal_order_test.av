@@ -1,0 +1,35 @@
+// A `mut` SEAT WRITES THROUGH A RECORD, WHEREVER ITS FN IS DECLARED, asked of the program layer:
+// the fn lives in another file than the record and the record holding it, and a write through
+// the seat lands in the caller's record.
+use @std.avrac.testing.{held_at, Judged}
+
+/// The program over three files: the records, the fn seating one `mut`, and an entry `main`.
+fn sealed(main: string) -> Judged {
+    held_at(
+        {
+            "/w/avra.toml": "[package]\nname = \"w\"\nversion = \"0.1.0\"\n",
+            "/w/src/types.av": "export type Id = { n: int }\nexport type Holder = { id: Id }\n",
+            "/w/src/user.av": "use types.{Id}\nexport fn bump(mut x: Id) {\n    x.n = x.n + 1\n}\n",
+            "/w/src/main.av": main,
+        },
+        "/w",
+    )
+        .judged_at("/w/src/main.av")
+}
+
+spec "compiler — a mut seat in another file writes through a record" {
+    given "the program" {
+        then "it judges clean" { sealed("use types.{Holder}\nuse user.{bump}\nlet h = 1\n").clean() }
+    }
+    given "a record whose only `mut` seat is a fn of another file" {
+        then "a write through it lands in the record" {
+            sealed("use types.{Id}\nuse user.{bump}\nmut i = Id { n: 1 }\nbump(i)\ni.n\n").ran() == "2"
+        }
+        then "and in the record that holds it" {
+            sealed(
+                "use types.{Id, Holder}\nuse user.{bump}\nmut h = Holder { id: Id { n: 1 } }\nbump(h.id)\nh.id.n\n",
+            )
+                .ran() == "2"
+        }
+    }
+}

@@ -1,0 +1,195 @@
+//! The laws a type test keeps: its subject is a `dyn` (read through a
+//! name, as any read is), the type it names is ONE concrete type — a
+//! box's tag names a type with its arguments, so it tells no `dyn`,
+//! absence, type parameter or built-in generic apart, but it does tell one
+//! instance of a declared generic from another — and that type implements the
+//! `dyn`'s trait. The binder answers the named type, recorded on the
+//! pattern's read for lowering to test against.
+use core.{PatId, Type, TypeId, TypeRef, DeclId}
+use features.{TypeCx, this_is}
+use diagnostics.{Voice, defect_at, said_as}
+
+export fn narrow_types(mut cx: TypeCx, p: PatId, ty: TypeRef, expected: TypeId) -> List<TypeId> {
+    let tr? = cx.view.types.dyn_trait(cx.seen(expected)) else { return not_dyn(cx, p, expected) }
+    let to = cx.written_in_pattern(cx.view.origin_of_pat(p), cx.pat_loc(p), ty)
+    if cx.view.types.shape_of(to) is .Error { return [to] }
+    let fault? = untaggable(cx.view.types.shape_of(to)) else { return implementing(cx, p, to, tr, expected) }
+    refused_target(cx, p, fault, to, tr)
+}
+
+/// The named type, once the tag can tell it: it implements the trait.
+fn implementing(mut cx: TypeCx, p: PatId, to: TypeId, tr: DeclId, expected: TypeId) -> List<TypeId> {
+    if !cx.implements_decl(to, tr) { return not_implementor(cx, p, to, tr, expected) }
+    let read? = cx.view.store.name_read(p) else { return unread(cx, p, to) }
+    cx.facts.set_type(read, to)
+    [to]
+}
+
+/// Why a box's tag cannot tell a named type apart, or absence when it can.
+enum Untaggable {
+    Dyn
+    Absent(inner: TypeId)
+    Param
+    BuiltIn
+}
+
+fn untaggable(sh: Type) -> Untaggable? {
+    match sh {
+        .Dyn(_, _) -> .Dyn,
+        .Opt(inner) -> .Absent(inner),
+        .Var(_, _, _) -> .Param,
+        .List(_) or .Cell(_) or .Task(_) or .Map(_, _) or .Res(_, _) -> .BuiltIn,
+        .App(_, _, _) or .Int or .Float or .Bool or .Str or .Bytes or .Ptr or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Fn(_, _, _) or .Tasks or .Void or .Null or .EmptyList or .EmptyMap or .Union(_) or .Range or .Error -> null,
+    }
+}
+
+fn refused_target(mut cx: TypeCx, p: PatId, fault: Untaggable, to: TypeId, tr: DeclId) -> List<
+    TypeId,
+> {
+    match fault {
+        .Dyn -> dyn_target(cx, p, to, tr),
+        .Absent(inner) -> absent_target(cx, p, to, inner),
+        .Param -> param_target(cx, p, to),
+        .BuiltIn -> built_in_target(cx, p, to),
+    }
+}
+
+/// Whether a type may be absent and holds a `dyn` when present.
+fn absent_dyn(cx: TypeCx, ty: TypeId) -> bool {
+    match cx.view.types.shape_of(cx.seen(ty)) {
+        .Opt(inner) -> cx.view.types.dyn_trait(cx.seen(inner)) != null,
+        _ -> false,
+    }
+}
+
+fn not_dyn(mut cx: TypeCx, p: PatId, expected: TypeId) -> List<TypeId> {
+    if absent_dyn(cx, expected) { return absent_subject(cx, p, expected) }
+    plain_subject(cx, p, expected)
+}
+
+// ── The voices ──
+
+fn plain_subject(mut cx: TypeCx, p: PatId, expected: TypeId) -> List<TypeId> {
+    cx.emit(said_as("type.narrow", cx.pat_loc(p), narrow_plain(cx.view.types.name_of(expected))))
+    []
+}
+
+/// A type pattern over a value of `found`, which is no `dyn`.
+export fn narrow_plain(found: string) -> Voice {
+    Voice {
+        message: "a type pattern narrows a `dyn` — this is `${found}`",
+        label: this_is(found),
+        help: "only a `dyn` hides which type it holds; match this value by its own shape",
+    }
+}
+
+fn absent_subject(mut cx: TypeCx, p: PatId, expected: TypeId) -> List<TypeId> {
+    cx.emit(said_as("type.narrow", cx.pat_loc(p), narrow_absent(cx.view.types.name_of(expected))))
+    []
+}
+
+/// A type pattern over a value of `found`, which may be absent.
+export fn narrow_absent(found: string) -> Voice {
+    Voice {
+        message: "a type pattern narrows a `dyn`, and this `${found}` may be absent",
+        label: this_is(found),
+        help: "unwrap it first — a `v?` arm — then narrow the `dyn` it holds",
+    }
+}
+
+fn not_implementor(mut cx: TypeCx, p: PatId, to: TypeId, tr: DeclId, expected: TypeId) -> List<
+    TypeId,
+> {
+    let voice = narrow_unimplemented(
+        cx.view.types.name_of(to),
+        cx.view.decls.decl(tr).name,
+        cx.view.types.name_of(expected),
+    )
+    cx.emit(said_as("type.narrow", cx.pat_loc(p), voice))
+    []
+}
+
+/// A type pattern naming `t`, which doesn't implement the trait `trait_name` a `holder` boxes.
+export fn narrow_unimplemented(t: string, trait_name: string, holder: string) -> Voice {
+    Voice {
+        message: "`${t}` does not implement `${trait_name}`, so no `${holder}` holds one",
+        label: "narrowed here",
+        help: "narrow to a type with an `impl ${trait_name} for …`",
+    }
+}
+
+fn dyn_target(mut cx: TypeCx, p: PatId, to: TypeId, tr: DeclId) -> List<TypeId> {
+    cx
+        .emit(
+            said_as(
+                "type.narrow",
+                cx.pat_loc(p),
+                narrow_dyn_target(cx.view.types.name_of(to), cx.view.decls.decl(tr).name),
+            ),
+        )
+    []
+}
+
+/// A type pattern naming `t`, a box itself, over a box of the trait `trait_name`.
+export fn narrow_dyn_target(t: string, trait_name: string) -> Voice {
+    Voice {
+        message: "a type pattern names what a box holds, and `${t}` is a box itself",
+        label: "narrowed here",
+        help: "narrow to a type with an `impl ${trait_name} for …`",
+    }
+}
+
+fn absent_target(mut cx: TypeCx, p: PatId, to: TypeId, inner: TypeId) -> List<TypeId> {
+    cx
+        .emit(
+            said_as(
+                "type.narrow",
+                cx.pat_loc(p),
+                narrow_absent_target(cx.view.types.name_of(to), cx.view.types.name_of(inner)),
+            ),
+        )
+    []
+}
+
+/// A type pattern naming `t`, which may be absent, where `inner` is what it holds when present.
+export fn narrow_absent_target(t: string, inner: string) -> Voice {
+    Voice {
+        message: "a box never holds absence, so no value is a `${t}` here",
+        label: "narrowed here",
+        help: "narrow to `${inner}`",
+    }
+}
+
+fn param_target(mut cx: TypeCx, p: PatId, to: TypeId) -> List<TypeId> {
+    cx.emit(said_as("type.narrow", cx.pat_loc(p), narrow_param_target(cx.view.types.name_of(to))))
+    []
+}
+
+/// A type pattern naming `t`, a type parameter.
+export fn narrow_param_target(t: string) -> Voice {
+    Voice {
+        message: "a type pattern names one concrete type, and `${t}` is a type parameter",
+        label: "narrowed here",
+        help: "narrow to a declared type",
+    }
+}
+
+fn built_in_target(mut cx: TypeCx, p: PatId, to: TypeId) -> List<TypeId> {
+    cx
+        .emit(said_as("type.narrow", cx.pat_loc(p), narrow_built_in_target(cx.view.types.name_of(to))))
+    []
+}
+
+/// A type pattern naming `t`, an instance of a built-in generic.
+export fn narrow_built_in_target(t: string) -> Voice {
+    Voice {
+        message: "a type pattern names one concrete type, and `${t}` is an instance of a built-in generic, which no declaration of the program names — a box's tag tells no instance of it",
+        label: "narrowed here",
+        help: "narrow to a type of your own that holds it — `type Ints = { held: List<int> }`",
+    }
+}
+
+fn unread(mut cx: TypeCx, p: PatId, to: TypeId) -> List<TypeId> {
+    cx.emit(defect_at(cx.pat_loc(p), "a type pattern without its read reached typing"))
+    [to]
+}

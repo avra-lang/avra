@@ -1,0 +1,12 @@
+// proves: signed cookies and sessions, evaluated and native alike — an
+// HMAC-SHA256 tag written and opened, the same value refused under
+// another name, and a session opened before its expiry and not after.
+use @std.http_session.{Signer, Session}
+
+let s = Signer { key: "k".bytes() }
+let sealed = s.signed("id", "42")
+println(sealed)
+println("${s.opened("id", sealed) ?? "-"} ${s.opened("other", sealed) ?? "-"}")
+let session = Session { signer: s, max_age: 10 }
+let cookie = session.issued("user 7", 100).value
+"${session.opened(cookie, 105) ?? "-"} ${session.opened(cookie, 110) ?? "-"}"

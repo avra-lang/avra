@@ -1,0 +1,130 @@
+//! ANSWERS REMEMBERED BESIDE AN ENGINE, READ AS THE ENGINE READS THEM. An answer kept per id
+//! outside the query engine keeps the engine reads its working-out made, and every later answer
+//! makes them again for whoever asks: a question answered from the memo depends on what the
+//! working-out read, as it would had it worked the answer out itself.
+use answer_record.{ContentHash, RecordedRead}
+use hash_keyed_table.{HashKeyedTable, hash_keyed_table}
+use interned.{IdMemo, InternId, id_memo}
+use query_engine.{QueryEngine}
+use @std.meta.{identity}
+
+/// Answers kept per id, each with the reads that found it. An identity: every holder sees one memo.
+@identity
+export type ReadMemo<V> = {
+    /// Each id's kept answer.
+    answers: IdMemo<V>,
+    /// The reads each kept answer's working-out made.
+    reads: IdMemo<List<RecordedRead>>,
+    /// The reader each kept answer's reads last reached: one asking again under it has them.
+    reached: IdMemo<int>,
+}
+
+export fn read_memo<V>() -> ReadMemo<V> {
+    let answers: IdMemo<V> = id_memo()
+    let reads: IdMemo<List<RecordedRead>> = id_memo()
+    let reached: IdMemo<int> = id_memo()
+    ReadMemo { answers: answers, reads: reads, reached: reached }
+}
+
+impl ReadMemo<V> {
+    /// Whether `id`'s answer is kept.
+    fn known(id: InternId) -> bool { self.answers.known(id) }
+
+    /// The answer kept for `id`, its working-out's reads made again in `engine` by whoever asks
+    /// unless they reached that reader already.
+    fn held(engine: QueryEngine, id: InternId) -> V? {
+        let reader = engine.reader()
+        if self.reached.held(id) != reader {
+            engine.reads_made_again(self.reads.held(id) ?? [])
+            self.reached.keep(id, reader)
+        }
+        self.answers.held(id)
+    }
+
+    /// `compute`'s answer, kept for `id` with the reads it made in `engine`; those reads are the
+    /// asker's already.
+    fn worked_out(engine: QueryEngine, id: InternId, compute: fn() -> V?) -> V? {
+        engine.reads_begun()
+        let answer = compute()
+        let reads = engine.reads_gathered()
+        self.reads.keep(id, reads)
+        self.reached.keep(id, engine.reader())
+        self.answers.keep(id, answer)
+        answer
+    }
+
+    /// The answer for `id`: the kept one, else worked out by `compute` and kept.
+    fn answer(engine: QueryEngine, id: InternId, compute: fn() -> V?) -> V? {
+        if self.known(id) { self.held(engine, id) } else { self.worked_out(engine, id, compute) }
+    }
+}
+
+/// ANSWERS REMEMBERED PER QUESTION FOR THIS PROCESS ALONE, the table `@memo` keeps: each kept answer
+/// is a value, never bytes, held beside the reads its working-out made. Whoever asks takes the reads
+/// with the answer, so it depends on what the working-out read. An answer kept by an earlier engine
+/// of this process stands for a later one only where every read it made holds in that engine, else
+/// it is worked out again: an edit seen by the later engine reaches the memo through the same reads
+/// that reach its askers.
+@identity
+export type AskedMemo<V> = { answers: HashKeyedTable<MemoAnswer<V>> }
+
+/// A kept answer, the reads its working-out made, the reader those reads last reached, and the
+/// serial of the engine in which it last stood.
+type MemoAnswer<V> = { value: V, reads: List<RecordedRead>, reached: Cell<int>, stood_in: Cell<int> }
+
+export fn asked_memo<V>() -> AskedMemo<V> {
+    let answers: HashKeyedTable<MemoAnswer<V>> = hash_keyed_table()
+    AskedMemo { answers: answers }
+}
+
+impl AskedMemo<V> {
+    /// The answer for the question `asked`: the kept one where it stands in `engine`, else worked
+    /// out by `compute` and kept. Either way its reads are the asker's.
+    fn answer(engine: QueryEngine, asked: ContentHash, compute: fn() -> V) -> V {
+        let kept? = self.answers.get(asked) else { return self.worked_out(engine, asked, compute) }
+        if !stands_in(engine, kept) { return self.worked_out(engine, asked, compute) }
+        let reader = engine.reader()
+        if kept.reached.get() != reader {
+            engine.reads_made_again(kept.reads)
+            kept.reached.set(reader)
+        }
+        kept.value
+    }
+
+    /// `compute`'s answer, kept for `asked` with the reads it made in `engine`; those reads are the
+    /// asker's already.
+    fn worked_out(engine: QueryEngine, asked: ContentHash, compute: fn() -> V) -> V {
+        engine.reads_begun()
+        let value = compute()
+        let reads = engine.reads_gathered()
+        self
+            .answers
+            .put(
+                asked,
+                MemoAnswer {
+                    value: value,
+                    reads: reads,
+                    reached: Cell.new(engine.reader()),
+                    stood_in: Cell.new(engine.serial),
+                },
+            )
+        value
+    }
+}
+
+/// Whether `kept` stands in `engine`: kept or proved in it already, since a question settles once
+/// in an engine, else every read its working-out made still sees what it saw there.
+fn stands_in<V>(engine: QueryEngine, kept: MemoAnswer<V>) -> bool {
+    if kept.stood_in.get() == engine.serial { return true }
+    let holds = kept.reads.all((r) -> read_holds(engine, r))
+    if holds { kept.stood_in.set(engine.serial) }
+    holds
+}
+
+/// Whether the read `r` still sees in `engine` what it saw: its whole answer, or else the part of
+/// it the read took.
+fn read_holds(engine: QueryEngine, r: RecordedRead) -> bool {
+    if engine.answer_holds(r.question, r.whole_answer) { return true }
+    let part? = r.part else { return false }
+    engine.part_holds(r.question, part.part_name, part.part_hash)
+}

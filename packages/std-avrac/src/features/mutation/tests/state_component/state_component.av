@@ -1,0 +1,32 @@
+// proves: a component's `state` field is an identity too — a field, a nested
+// field, a `mut` seat, a writing method and a push through it land in its cell,
+// from a method and from a lambda the instance made.
+type In = { k: int }
+
+type T = { n: int, inner: In, xs: List<int> }
+
+impl T {
+    mut fn grow() { self.n = self.n + 1 }
+}
+
+fn seat(mut x: T) { x.n = x.n + 1 }
+
+component box {
+    state t: T = T { n: 0, inner: In { k: 0 }, xs: [] }
+    fn all() {
+        self.t.n = self.t.n + 1
+        self.t.inner.k = self.t.inner.k + 1
+        seat(self.t)
+        self.t.grow()
+        self.t.xs.push(1)
+    }
+    fn later() -> fn() -> void { () -> self.all() }
+    fn said() -> string { "${self.t.n} ${self.t.inner.k} ${self.t.xs.length}" }
+}
+
+box b
+b.all()
+let first = b.said()
+let f = b.later()
+f()
+"${first} | ${b.said()}"

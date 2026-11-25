@@ -1,0 +1,450 @@
+// Operating a queue with no program: the queues a database holds with
+// their terms and counts, their items read as records through the
+// descriptor each was written under, and an operator's retry and
+// discard. The cases run on the suite's virtual clock, and the store's
+// clock is set to it.
+use @std.json.{to_text}
+use @std.queue.{queue, worker, drain, key, Dead, Delivery, Fate, HomeError, Order}
+use @std.relation.{codec}
+use @std.sqlite.{Db, sql}
+use @std.time.{Time, mins, ms, nanos, now_ns, secs, sleep}
+use durable.{db, stored, stored_with}
+use fault.{homed}
+use letters.{stored_dead}
+use operate.{Acted, Peeked, Stage, Standing, discard, letters, peek, queue_named, queues, retry}
+use queue_store.{store_home_with, wire}
+use tests.support.wires.{int_wire}
+
+fn ticking() -> Time {
+    Time { ns: now_ns() }
+}
+
+@codec
+type Notice = { to: string, tries: int, tags: List<string>, cc: string? }
+
+/// `Notice` as a later build declares it: one field more at its end.
+@codec
+type Mail = { to: string, tries: int, tags: List<string>, cc: string?, urgent: bool = false }
+
+@codec
+type Unit = { name: string }
+
+/// A type that nests another, which wears its own codec.
+@codec
+type Reading = { unit: Unit }
+
+@codec
+enum Signal {
+    Quiet
+    Loud(level: int)
+}
+
+fn notice(to: string) -> Notice {
+    Notice { to: to, tries: 1, tags: ["x"], cc: null }
+}
+
+fn bounced(d: Delivery<Notice>) -> Result<int, string> {
+    if d.item.to.contains("@") { return 1 }
+    fail "no such address: ${d.item.to}"
+}
+
+/// `bounced` until `fixed` holds, then every email is sent.
+fn cured(fixed: Cell<bool>, d: Delivery<Notice>) -> Result<int, string> {
+    if fixed.get() { return 1 }
+    bounced(d)
+}
+
+fn acted(a: Acted) -> string {
+    match a {
+        .Done(id) -> "done ${id.split("-").last() ?? "?"}",
+        .Missing -> "missing",
+        .Held(_) -> "held",
+        .Unread -> "unread",
+    }
+}
+
+fn shown(r: Result<string, HomeError>) -> string {
+    match r {
+        .Ok(told) -> told,
+        .Err(why) -> match why {
+            .Refused(w) -> "refused: ${w}",
+            .Unreachable(_) -> "unreachable",
+            .TooBig(_, _) -> "too big",
+            .Shape(_) -> "shape",
+            .Denied -> "denied",
+        },
+    }
+}
+
+fn stage_word(s: Stage) -> string {
+    match s {
+        .Waiting -> "waiting",
+        .Delayed -> "delayed",
+        .Held -> "held",
+        .Lapsed -> "lapsed",
+        .Backing -> "backing",
+    }
+}
+
+fn item_text(p: Peeked) -> string {
+    let j? = p.item else { return "unread" }
+    to_text(j)
+}
+
+fn standing_text(s: Standing) -> string {
+    let t? = s.terms else { return "${s.name} no terms | waiting ${s.waiting} owed ${s.owed}" }
+    "${s.name} cap ${t.capacity} lease ${t.lease.text()} retries ${t.retries} by_key ${t.order == Order.by_key} dedupe ${s.dedupe?.text() ?? "-"} letter ${s.letter} | waiting ${s.waiting} owed ${s.owed} held ${s.held} delayed ${s.delayed} unreadable ${s.unreadable}"
+}
+
+/// The id a store mints for row `n` on `db`.
+fn id_of(n: int) -> Result<string, HomeError> {
+    .Ok("${homed((homed(ctx.db.scalar(sql("SELECT \"mark\" FROM \"FlowMark\"")))?).text())?}-${n}")
+}
+
+/// Four emails in their four stages and a letter, listed and peeked.
+fn listed() -> Result<string, HomeError> {
+    ctx db = homed(Db.memory())?
+    queue<Notice> emails {
+        name: "emails"
+        durable: stored<Notice>(clock: ticking)
+        capacity: 50
+        retries: 2
+        order: Order.by_key
+        dedupe: mins(60)
+    }
+    queue<Dead<Notice>> undeliverable {
+        name: "undeliverable"
+        durable: stored_dead<Notice>(clock: ticking)
+    }
+    worker sender {
+        reads: emails
+        each: bounced
+        dead: undeliverable
+    }
+    let _ = emails.send(notice("nobody"), under: key("n"))?
+    let _ = drain(sender)
+    let _ = drain(sender)
+    let _ = emails.send(notice("held@x"), under: key("a"))?
+    let _ = emails.send(notice("back@x"), under: key("b"))?
+    let _ = emails.send(notice("later@x"), under: key("c"), after: secs(60))?
+    let _ = emails.send(notice("wait@x"), under: key("d"))?
+    let held? = emails.home().take()? else { return "nothing to hold" }
+    let back? = emails.home().take()? else { return "nothing to release" }
+    let _ = emails.home().release(back, secs(60))?
+    let listing = (queues(ctx.db, ticking)?).map(standing_text(it)).join(" || ")
+    let items = ["${stage_word(p.stage)} ${p.attempt} ${p.key} ${item_text(p)}" for p in peek(ctx.db, "emails", clock: ticking)?]
+    let gone = [item_text(p) for p in peek(ctx.db, "undeliverable", clock: ticking)?]
+    "${listing}\n${items.join("\n")}\n${gone.join("\n")}\nletters ${(letters(ctx.db, ticking)?).map(it.name).join(",")} held ${held.item.to}"
+}
+
+/// A lease that ran out reads as lapsed, and a queue no home opened on
+/// a database reads as none.
+fn lapsed() -> Result<string, HomeError> {
+    ctx db = homed(Db.memory())?
+    queue<int> short {
+        name: "short"
+        durable: stored_with(int_wire(), clock: ticking)
+        lease: ms(5)
+    }
+    let _ = short.send(7)?
+    let _ = short.home().take()?
+    sleep(ms(10))
+    let p = peek(ctx.db, "short", clock: ticking)?
+    "${stage_word(p[0].stage)} ${item_text(p[0])} | unknown ${queue_named(ctx.db, "nope", ticking)? == null} ${(peek(ctx.db, "nope")?).length}"
+}
+
+/// A database no home opened: nothing to list, nothing to act on, and
+/// nothing made by asking.
+fn never_homed() -> Result<string, HomeError> {
+    ctx db = homed(Db.memory())?
+    let listed = (queues(ctx.db)?).length
+    let peeked = (peek(ctx.db, "emails")?).length
+    let tried = acted(retry(ctx.db, "emails", "x-1")?)
+    let gone = acted(discard(ctx.db, "emails", "x-1")?)
+    let tables = homed((homed(ctx.db.scalar(sql("SELECT count(*) FROM sqlite_master")))?).int())?
+    "${listed} ${peeked} ${tried} ${gone} tables ${tables}"
+}
+
+/// Items written by other builds and other shapes, read by their own
+/// descriptors: a grown record, an enum, a row whose shape the database
+/// never recorded, and a type that nests another.
+fn other_builds() -> Result<string, HomeError> {
+    ctx db = homed(Db.memory())?
+    queue<Notice> mixed {
+        name: "mixed"
+        durable: stored<Notice>(clock: ticking)
+    }
+    let _ = mixed.send(notice("old@x"))?
+    let later = store_home_with<Mail>(ctx.db, "mixed", mixed.home().terms, wire<Mail>())?
+    let _ = later
+        .send(Mail { to: "new@x", tries: 2, tags: [], cc: "boss@x", urgent: true }, key(""))?
+    let signals = store_home_with<Signal>(ctx.db, "mixed", mixed.home().terms, wire<Signal>())?
+    let _ = signals.send(Signal.Loud(3), key(""))?
+    let _ = signals.send(Signal.Quiet, key(""))?
+    let floats = store_home_with<Reading>(ctx.db, "mixed", mixed.home().terms, wire<Reading>())?
+    let _ = floats.send(Reading { unit: Unit { name: "c" } }, key(""))?
+    let _ = homed(
+        ctx.db
+            .run(
+                sql(
+                    "UPDATE \"FlowItem\" SET \"shape\" = 12345 WHERE \"id\" = (SELECT max(\"id\") FROM \"FlowItem\")",
+                ),
+            ),
+    )?
+    let _ = floats.send(Reading { unit: Unit { name: "f" } }, key(""))?
+    [item_text(p) for p in peek(ctx.db, "mixed")?].join("\n")
+}
+
+/// A backing-off item retried now, and a held one left to its lease.
+fn retried_live() -> Result<string, HomeError> {
+    ctx db = homed(Db.memory())?
+    queue<Notice> emails {
+        name: "emails"
+        durable: stored<Notice>(clock: ticking)
+    }
+    let _ = emails.send(notice("a@x"))?
+    let _ = emails.send(notice("b@x"), under: key("b"))?
+    let held? = emails.home().take()? else { return "none" }
+    let _ = emails.home().release(held, secs(60))?
+    let before = stage_word(peek(ctx.db, "emails", clock: ticking)?[0].stage)
+    let tried = acted(retry(ctx.db, "emails", held.id, ticking)?)
+    let after = stage_word(peek(ctx.db, "emails", clock: ticking)?[0].stage)
+    let again? = emails.home().take()? else { return "not handed out" }
+    let not_now = acted(retry(ctx.db, "emails", again.id, ticking)?)
+    let not_gone = acted(discard(ctx.db, "emails", again.id, ticking)?)
+    "${before} ${tried} ${after} | again ${again.item.to} attempt ${again.attempt} | leased: retry ${not_now} discard ${not_gone} ack ${emails.home().ack(again)?}"
+}
+
+/// A letter retried: its item goes back to the queue it was buried out
+/// of, a fresh item there, and a worker settles it.
+fn retried_letter() -> Result<string, HomeError> {
+    ctx db = homed(Db.memory())?
+    let fixed: Cell<bool> = Cell.new(false)
+    queue<Notice> emails {
+        name: "emails"
+        durable: stored<Notice>(clock: ticking)
+        retries: 1
+    }
+    queue<Dead<Notice>> undeliverable {
+        name: "undeliverable"
+        durable: stored_dead<Notice>(clock: ticking)
+    }
+    worker sender {
+        reads: emails
+        each: (d: Delivery<Notice>) -> cured(fixed, d)
+        dead: undeliverable
+    }
+    let _ = emails.send(notice("nobody"))?
+    let _ = drain(sender)
+    let letter = peek(ctx.db, "undeliverable")?[0]
+    let tried = acted(retry(ctx.db, "undeliverable", letter.id, ticking)?)
+    let moved = "letters ${undeliverable.home().depth()?} emails ${emails.home().depth()?}"
+    let back = peek(ctx.db, "emails")?[0]
+    fixed.set(true)
+    let n = drain(sender) catch 0 - 1
+    let twice = acted(retry(ctx.db, "undeliverable", letter.id, ticking)?)
+    "${tried} | ${moved} | back ${back.attempt} ${item_text(back)} | settled ${n} | again ${twice} | left ${emails.home().depth()?}"
+}
+
+/// A discard, twice; the name it was sent under is free again.
+fn discarded_twice() -> Result<string, HomeError> {
+    ctx db = homed(Db.memory())?
+    queue<Notice> emails {
+        name: "emails"
+        durable: stored<Notice>(clock: ticking)
+    }
+    let first? = emails.send(notice("a@x"), id: "welcome-a")? else { return "none" }
+    let first_time = acted(discard(ctx.db, "emails", first, ticking)?)
+    let twice = acted(discard(ctx.db, "emails", first, ticking)?)
+    let again? = emails.send(notice("a@x"), id: "welcome-a")? else { return "none" }
+    "${first_time} ${twice} | depth ${emails.home().depth()?} | a fresh send ${again != first}"
+}
+
+/// Ids an operator might be handed that name no item of the queue.
+fn hostile_ids() -> Result<string, HomeError> {
+    ctx db = homed(Db.memory())?
+    queue<Notice> emails {
+        name: "emails"
+        durable: stored<Notice>(clock: ticking)
+    }
+    queue<Notice> other {
+        name: "other"
+        durable: stored<Notice>(clock: ticking)
+    }
+    let mine? = emails.send(notice("a@x"))? else { return "none" }
+    let theirs? = other.send(notice("b@x"))? else { return "none" }
+    let row = mine.split("-").last() ?? ""
+    let mark = mine.substring(0, mine.length - row.length)
+    let ids = [
+        "",
+        "x",
+        row,
+        "${mark}0${row}",
+        "${mark}-${row}",
+        "${mark}+${row}",
+        "${mark}${row}0000000000000000000000",
+        "0000000000000000-${row}",
+        "${mark}${row}' OR 1=1 --",
+        theirs,
+    ]
+    let tried = [acted(retry(ctx.db, "emails", id, ticking)?) for id in ids].join(",")
+    let gone = [acted(discard(ctx.db, "emails", id, ticking)?) for id in ids].join(",")
+    let after = match peek(ctx.db, "emails", after: "x") {
+        .Ok(ps) -> "${ps.length}",
+        .Err(why) -> shown(.Err(why)),
+    }
+    "${tried} | ${gone} | ${after} | depth ${emails.home().depth()?} ${other.home().depth()?} | wrong queue ${acted(retry(ctx.db, "other", mine, ticking)?)}"
+}
+
+/// Peeking a page at a time.
+fn paged() -> Result<string, HomeError> {
+    ctx db = homed(Db.memory())?
+    queue<int> jobs {
+        name: "jobs"
+        durable: stored_with(int_wire(), clock: ticking)
+    }
+    for i in 0..5 { let _ = jobs.send(i * 10)? }
+    let first = peek(ctx.db, "jobs", limit: 2)?
+    let next = peek(ctx.db, "jobs", limit: 2, after: first[1].id)?
+    let last = peek(ctx.db, "jobs", limit: 2, after: next[1].id)?
+    let none = peek(ctx.db, "jobs", limit: 0 - 1)?
+    "${[item_text(p) for p in first].join(",")} | ${[item_text(p) for p in next].join(",")} | ${[item_text(p) for p in last].join(",")} | ${none.length}"
+}
+
+/// A terms row another build numbered: its terms read as none, never a
+/// guess, and its counts still stand.
+fn foreign_terms() -> Result<string, HomeError> {
+    ctx db = homed(Db.memory())?
+    queue<int> jobs {
+        name: "jobs"
+        durable: stored_with(int_wire(), clock: ticking)
+    }
+    let _ = jobs.send(1)?
+    let _ = homed(ctx.db.run(sql("UPDATE \"FlowTerms\" SET \"overflow\" = 99")))?
+    let odd = standing_text(queues(ctx.db)?[0])
+    let _ = homed(ctx.db.run(sql("UPDATE \"FlowTerms\" SET \"overflow\" = 1, \"lease\" = -1")))?
+    "${odd} || ${standing_text(queues(ctx.db)?[0])}"
+}
+
+/// Spans no whole number of milliseconds: the row keeps each exactly.
+fn exact_spans() -> Result<string, HomeError> {
+    ctx db = homed(Db.memory())?
+    queue<int> jobs {
+        name: "jobs"
+        durable: stored_with(int_wire(), clock: ticking)
+        lease: nanos(1500001)
+        dedupe: nanos(60000000007)
+    }
+    let _ = jobs.send(1)?
+    let s = queues(ctx.db)?[0]
+    "${s.terms?.lease?.ns ?? 0} ${s.dedupe?.ns ?? 0}"
+}
+
+/// Octets and descriptors no build of this one wrote: each reads as
+/// none and acts on nothing, and nothing traps.
+fn hostile_rows() -> Result<string, HomeError> {
+    ctx db = homed(Db.memory())?
+    queue<Notice> emails {
+        name: "emails"
+        durable: stored<Notice>(clock: ticking)
+    }
+    queue<Dead<Notice>> undeliverable {
+        name: "undeliverable"
+        durable: stored_dead<Notice>(clock: ticking)
+    }
+    let _ = emails.send(notice("a@x"))?
+    let _ = emails.send(notice("b@x"))?
+    let _ = emails.send(notice("c@x"))?
+    let _ = undeliverable
+        .send(Dead { item: notice("d@x"), fate: Fate.Unanswered, path: ["emails", "emails/dead"] })?
+    let _ = homed(
+        ctx.db
+            .run(
+                sql(
+                    "UPDATE \"FlowItem\" SET \"body\" = x'FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF' WHERE \"id\" = 1",
+                ),
+            ),
+    )?
+    let _ = homed(
+        ctx.db
+            .run(
+                sql(
+                    "UPDATE \"FlowItem\" SET \"body\" = substr(\"body\", 1, 10) || x'FFFFFFFF7F' WHERE \"id\" = 2",
+                ),
+            ),
+    )?
+    let _ = homed(ctx.db.run(sql("UPDATE \"FlowItem\" SET \"body\" = x'05' WHERE \"id\" = 4")))?
+    let items = [item_text(p) for p in peek(ctx.db, "emails")?].join(",")
+    let letter = peek(ctx.db, "undeliverable")?[0]
+    let tried = acted(retry(ctx.db, "undeliverable", letter.id, ticking)?)
+    let _ = homed(
+        ctx.db
+            .run(
+                sql(
+                    "UPDATE \"FlowShape\" SET \"descriptor\" = 'avra.dead.1|1|2|999|x' WHERE \"descriptor\" LIKE 'avra.dead.1|%'",
+                ),
+            ),
+    )?
+    let odd = [item_text(p) for p in peek(ctx.db, "undeliverable")?].join(",")
+    "${items} | letter ${item_text(letter)} retry ${tried} | ${odd} | still ${emails.home().depth()?} ${undeliverable.home().depth()?}"
+}
+
+spec "std/queue_store — operating a queue" {
+    given "the queues a database holds" {
+        then "each is listed with the terms its home was last opened under and its counts, its letter marked as one" {
+            shown(listed()).split("\n")[0] == "emails cap 50 lease 30.0s retries 2 by_key true dedupe 60m00s letter false | waiting 2 owed 4 held 1 delayed 1 unreadable 0 || undeliverable cap 1000 lease 30.0s retries 3 by_key false dedupe 1440m00s letter true | waiting 1 owed 1 held 0 delayed 0 unreadable 0"
+        }
+        then "a database no home opened holds none, and asking makes nothing" {
+            shown(never_homed()) == "0 0 missing missing tables 0"
+        }
+        then "a span short of a whole millisecond reads back to the nanosecond" {
+            shown(exact_spans()) == "1500001 60000000007"
+        }
+        then "a terms row another build numbered reads as no terms, and a span of less than nothing as none" {
+            shown(foreign_terms()) == "jobs no terms | waiting 1 owed 1 || jobs no terms | waiting 1 owed 1"
+        }
+    }
+    given "peeking" {
+        then "each item reads as its record, in its stage, oldest first" {
+            shown(listed()).split("\n").drop(1).take(4).join("\n") == "held 0 a {\"to\":\"held@x\",\"tries\":1,\"tags\":[\"x\"],\"cc\":null}\nbacking 0 b {\"to\":\"back@x\",\"tries\":1,\"tags\":[\"x\"],\"cc\":null}\ndelayed 0 c {\"to\":\"later@x\",\"tries\":1,\"tags\":[\"x\"],\"cc\":null}\nwaiting 0 d {\"to\":\"wait@x\",\"tries\":1,\"tags\":[\"x\"],\"cc\":null}"
+        }
+        then "a letter reads as its item, its fate and its path" {
+            shown(listed()).split("\n")[5] == "{\"item\":{\"to\":\"nobody\",\"tries\":1,\"tags\":[\"x\"],\"cc\":null},\"fate\":{\"failed\":\"no such address: nobody\"},\"path\":[\"emails\",\"emails/dead\"]}"
+        }
+        then "the letters are the queues whose items are letters" {
+            shown(listed()).split("\n")[6] == "letters undeliverable held held@x"
+        }
+        then "an item another build wrote reads by its own shape, one that nests reads whole, and one with no descriptor reads as none" {
+            shown(other_builds()) == "{\"to\":\"old@x\",\"tries\":1,\"tags\":[\"x\"],\"cc\":null}\n{\"to\":\"new@x\",\"tries\":2,\"tags\":[],\"cc\":\"boss@x\",\"urgent\":true}\n{\"Loud\":[3]}\n\"Quiet\"\nunread\n{\"unit\":{\"name\":\"f\"}}"
+        }
+        then "a lease that ran out reads as lapsed, and an unknown queue as none" {
+            shown(lapsed()) == "lapsed 7 | unknown true 0"
+        }
+        then "a page at a time, after the last id read" {
+            shown(paged()) == "0,10 | 20,30 | 40 | 0"
+        }
+    }
+    given "retry" {
+        then "a backing-off item is due now with its attempts kept, and a held one is the lease's" {
+            shown(retried_live()) == "backing done 1 waiting | again a@x attempt 0 | leased: retry held discard held ack true"
+        }
+        then "a letter's item goes back to the queue it was buried out of as a fresh item, once" {
+            shown(retried_letter()) == "done 3 | letters 0 emails 1 | back 0 {\"to\":\"nobody\",\"tries\":1,\"tags\":[\"x\"],\"cc\":null} | settled 1 | again missing | left 0"
+        }
+    }
+    given "discard" {
+        then "lets an item go once, and frees the name it was sent under" {
+            shown(discarded_twice()) == "done 1 missing | depth 1 | a fresh send true"
+        }
+    }
+    given "rows no build of this one wrote" {
+        then "octets that are no item and a letter's descriptor that is none read as none, a letter that is none is not retried, and nothing traps" {
+            shown(hostile_rows()) == "unread,unread,{\"to\":\"c@x\",\"tries\":1,\"tags\":[\"x\"],\"cc\":null} | letter unread retry unread | unread | still 3 1"
+        }
+    }
+    given "an id that names no item of the queue" {
+        then "is missing to retry and discard, acts on nothing, and is refused as a page's start" {
+            shown(hostile_ids()) == "missing,missing,missing,missing,missing,missing,missing,missing,missing,missing | missing,missing,missing,missing,missing,missing,missing,missing,missing,missing | refused: `after:` names an item of this database, and `x` is none | depth 1 1 | wrong queue missing"
+        }
+    }
+}

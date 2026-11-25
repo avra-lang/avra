@@ -1,0 +1,457 @@
+//! Name resolution — one file's names, a query value (`NameFacts`).
+//! The CONTEXT is the pass's state — scopes, statement order, the
+//! naming law — and the walk's verbs are its methods; what a NODE
+//! means for names lives in its owning feature's NodeSemantics, and
+//! a feature's own rules speak their diagnostics through the
+//! context.
+//! A symbol's identity is its definition site. Two namespaces, one
+//! pass: `let` visibility is sequential and a later `let` shadows an
+//! earlier one; `fn` names are program-wide, so recursion and mutual
+//! recursion are free. Inside a body, params bind innermost.
+//! ORIGIN HYGIENE: a generated node's binders and reads are KEYED by
+//! the file that wrote its text, so a template's `let tmp` and a
+//! hole's `tmp` never meet, and a template's module names resolve in
+//! the namespace of the file that wrote the quote.
+use core.{
+    StmtId,
+    ExprId,
+    FileId,
+    Param,
+    flatten,
+    some_list,
+    Binding,
+    Scoped,
+    scoped,
+    SyntaxArena,
+    Annotation,
+    same_expr,
+    expr_window,
+    stmt_window,
+}
+use core.{side_table, Binder, example_marks}
+use diagnostics.{refusal, Voices}
+use features.modules.{module_laws}
+use features.{
+    ResolveCx,
+    SelfSeat,
+    Def,
+    LFrame,
+    Dispatch,
+    Namespace,
+    NameFacts,
+    new_name_facts,
+    FileView,
+    written_seats,
+    post_order,
+    Elsewhere,
+    Bound,
+    ScopeKey,
+    OverlayHit,
+    OWN_WRITING,
+}
+
+/// Words the spec reserves for future levels, memory, and
+/// concurrency: refusing them as names today means they become
+/// keywords tomorrow without breaking any program. (Today's ACTUAL
+/// keywords derive from the grammar — `p.keywords` — never a list
+/// kept by hand.)
+export const reserved: List<string> = [
+    "systems",
+    "bare",
+    "hardware",
+    "owned",
+    "borrow",
+    "move",
+    "level",
+    "unsafe",
+    "extern",
+    "async",
+    "spawn",
+    "await",
+    "yield",
+    "channel",
+    "select",
+]
+
+export fn resolve(
+    dispatch: Dispatch,
+    keywords: List<string>,
+    view: FileView,
+    scope: Namespace,
+    elsewhere: Elsewhere,
+    generated: List<StmtId>,
+    members: List<StmtId>,
+) -> NameFacts {
+    let defs = defs_of(view.store, view.stmts)
+    mut r = ResolveCx {
+        view: view,
+        dispatch: dispatch,
+        keywords: keywords,
+        all_defs: defs,
+        facts: new_name_facts(view.store.exprs.count(), scope),
+        def_names: [d.name.text() for d in defs],
+        bind_names: [],
+        bind_origins: [],
+        binds: [],
+        overlays: [],
+        lframes: [],
+        floors: [],
+        receivers: [],
+        marks: [],
+        walked: side_table("walked", expr_window(0), view.store.exprs.count(), false),
+        scoped: side_table("scoped", stmt_window(0), view.store.stmts.count(), false),
+        scope_names: [],
+        scope_origins: [],
+        in_block: false,
+        tnames: [],
+        unseated: [],
+        elsewhere: elsewhere,
+    }
+    r.name_laws()
+    r.resolve_stmts(false, view.stmts)
+    // A GENERATED DECLARATION'S BODY IS WRITTEN TO THE ARENA, NOT TO
+    // THE PARSE TREE — its statement joins no `p.stmts`, so the walk
+    // above never reaches it. Resolve it here, after the written
+    // bodies, so its names are bound as any declared fn's are.
+    r.resolve_stmts(false, generated)
+    r.impl_stmts(members)
+    r.facts with { voices: Voices {
+        list: flatten(
+            [
+                scope.voices.list,
+                module_laws(view.store, view.source.file, view.stmts),
+                r.facts.voices.list,
+            ],
+        ),
+    } }
+}
+
+/// THE WALK — the context's own verbs, which every feature's rule
+/// reaches through the contract: statements in order through their
+/// StmtSemantics (the ONE statement loop, top level and blocks
+/// alike), a subtree's nodes in post-order through their
+/// NodeSemantics, and the scopes a rule opens. `scope` is the open
+/// fn body's seat names; `in_block` says the statement in hand
+/// stands inside a block.
+impl ResolveCx {
+    /// Statements in order, each through its own StmtSemantics.
+    mut fn resolve_stmts(in_block: bool, stmts: List<StmtId>) {
+        let was = self.in_block
+        self.in_block = in_block
+        for s in stmts {
+            let opened = self.open_tparams(s)
+            self.view.store.stmt(s).resolve_stmt(self, s)
+            self.close_tparams(opened)
+            // A rule's `@fixes`/`@keeps` NAME no declared fn — the callee
+            // is never resolved — but its ARGS are read at lowering as
+            // ordinary values (components/lower.av's `augmented`,
+            // core's `example_marks` names the two words),
+            // so they walk like any other expression's.
+            for a in self.view.store.annotations_of(s) {
+                if example_marks(a.name) { for e in a.args { self.walk(e) } } else { self.walk_annotation(a) }
+            }
+        }
+        self.in_block = was
+    }
+
+    /// The type parameters `s` declares come into scope — answering
+    /// where the scope stood, for `close_tparams`.
+    mut fn open_tparams(s: StmtId) -> int {
+        let at = self.tnames.length
+        // LICENSED loops.push_loop: pushing through the field alias — concat would rebind the local
+        for n in self.tparams_in_scope(s) { self.tnames.push(n) }
+        at
+    }
+
+    /// The type parameters `s` brings into scope: those it writes, and an
+    /// impl that writes none on a generic target serves the whole generic,
+    /// so its bodies see the target's own.
+    fn tparams_in_scope(s: StmtId) -> List<string> {
+        let written = self.view.store.tparams_in_scope(s)
+        if !written.is_empty() { return written }
+        let target? = self.view.store.impl_parts(s)?.target else { return [] }
+        let d? = self.facts.names.type_decl(target) else { return [] }
+        self.view.decls.tparams(d)
+    }
+
+    /// The scope back where it stood; a read of a type parameter that
+    /// no static call seated is refused as it leaves, and binds nothing
+    /// — so no later pass speaks about it again.
+    mut fn close_tparams(at: int) {
+        if self.tnames.length == at { return }
+        self.tnames = self.tnames.slice(0, at)
+        for e in self.unseated {
+            self.emit(type_param_value(self.loc_of(e), self.view.store.ident_name(e) ?? ""))
+            self.facts.bindings.set(e.index, null)
+        }
+        self.unseated = []
+    }
+
+    /// A type parameter read as the subject of a call: seated, so its
+    /// read stands.
+    mut fn seat_type_read(e: ExprId) {
+        self.unseated = [u for u in self.unseated if !same_expr(u, e)]
+    }
+
+    /// A statement list under its own overlay scope — a loop body.
+    mut fn scope_stmts(stmts: List<StmtId>) {
+        self.open_overlay()
+        self.resolve_stmts(true, stmts)
+        self.close_overlay()
+    }
+
+    /// A fresh scope where `s`'s own binding holds: the exprs walk
+    /// and the statements resolve inside it, and the binding dies at
+    /// exit — a loop variable's home. A scoped binder never counts
+    /// as a later definition: its name outside the scope is plainly
+    /// unknown.
+    mut fn bound_scope(s: StmtId, exprs: List<ExprId>, stmts: List<StmtId>) {
+        self.scoped.set(s.index, true)
+        self.open_overlay()
+        self.bound_body(s, exprs, stmts)
+        self.close_overlay()
+    }
+
+    /// Inside the bound scope: the binder holds, the exprs walk, the
+    /// statements resolve.
+    mut fn bound_body(s: StmtId, exprs: List<ExprId>, stmts: List<StmtId>) {
+        self.bind_checked(s)
+        self.bind_index(s)
+        for e in exprs { self.walk(e) }
+        self.resolve_stmts(true, stmts)
+    }
+
+    /// A block's statements under a fresh overlay scope: binds are
+    /// visible onward and restored at exit.
+    mut fn block_scope(stmts: List<StmtId>, value: ExprId?) {
+        self.open_overlay()
+        self.block_body(stmts, value)
+        self.close_overlay()
+    }
+
+    /// Inside a block's scope: the statements, then the value —
+    /// absent when the block leaves instead of answering.
+    mut fn block_body(stmts: List<StmtId>, value: ExprId?) {
+        self.resolve_stmts(true, stmts)
+        if value != null { self.walk(value!) }
+    }
+
+    /// One match arm's scope: its binds (in pattern order) hold for
+    /// the arm's guard AND value, and die with both — the first scope
+    /// in the language opened by an EXPRESSION rather than a
+    /// statement. An unguarded arm writes no guard.
+    mut fn arm_scope(binds: List<Bound>, value: ExprId, guard: ExprId? = null) {
+        self.open_overlay()
+        self.arm_body(binds, value, guard)
+        self.close_overlay()
+    }
+
+    mut fn arm_body(binds: List<Bound>, value: ExprId, guard: ExprId?) {
+        for j, b in binds {
+            if !self.refused_binder(b.name, self.loc_of(value), b.origin) { self.bind(keyed(scoped(b.name), b.origin), Binding.Pattern(value, j)) }
+        }
+        if guard != null { self.walk(guard!) }
+        self.walk(value)
+    }
+
+    /// Binders NAMED ON a node — a comprehension's, a catch's, a
+    /// nullable match's — wear the node's origin.
+    fn bound_at(e: ExprId, names: List<string>) -> List<Bound> {
+        let origin: FileId? = self.view.origin_of(e)
+        [Bound { name: n, origin: origin } for n in names]
+    }
+
+    /// A pattern's binders, each wearing the origin of its own text.
+    fn bound_pats(binders: List<Binder>) -> List<Bound> {
+        [Bound { name: b.name, origin: self.view.origin_of_pat(b.pat) } for b in binders]
+    }
+
+    /// A lambda's body under its own frame: params bind, outer names
+    /// capture, and the frame dies with the walk. A plain param keys by
+    /// the lambda's origin, or the body's when a sibling param named through
+    /// a hole made the lambda itself holed: the plain ones stay the template's.
+    mut fn lambda_scope(lam: ExprId, params: List<Param>, body: ExprId) {
+        // a refused param name still BINDS (declare the wreckage) — the
+        // body resolves quietly and the one refusal stands alone
+        for pp in params {
+            let _ = self.refused_binder(pp.name.text(), self.loc_of(lam), self.view.origin_of(lam))
+        }
+        let origin: FileId? = self.view.origin_of(lam) ?? self.view.origin_of(body)
+        // LICENSED compiler.bracket_ritual: this IS the bracket
+        self
+            .lframes
+            .push(
+                LFrame {
+                    lam: lam,
+                    param_names: [pp.name for pp in params],
+                    param_origins: [self.seat_origin(pp, origin) for pp in params],
+                    floor: self.overlays.length,
+                },
+            )
+        self.walk(body)
+        let _ = self.lframes.pop()
+    }
+
+    /// One subtree's resolution, children before owners.
+    /// An annotation's callee and arguments resolve as expressions do.
+    mut fn walk_annotation(a: Annotation) {
+        self.walk(a.callee)
+        for e in a.args { self.walk(e) }
+    }
+
+    mut fn walk(root: ExprId) {
+        for e in post_order(self.dispatch, self.view.store, root) { self.view.store.expr(e).resolve(self, e) }
+    }
+
+    /// An impl's or a trait's fns: `self` names a receiver for
+    /// exactly their resolution — member by member, because a
+    /// `static fn` among them has none.
+    mut fn impl_stmts(body: List<StmtId>) {
+        for s in body { self.impl_member(s) }
+    }
+
+    /// One member. A `static fn` resolves with NO receiver, so
+    /// `self` inside it refuses and its seats start at 0.
+    mut fn impl_member(s: StmtId) {
+        self
+            .receivers
+            .push(if self.view.store.is_static(s) { SelfSeat.Static } else { SelfSeat.Receiver })
+        self.resolve_stmts(false, [s])
+        let _ = self.receivers.pop()
+    }
+
+    /// Is the innermost enclosing fn a method — one WITH a receiver?
+    fn in_a_method() -> bool {
+        self.receivers.last() ?? SelfSeat.Static is .Receiver
+    }
+
+    /// A fn's body walks behind a FLOOR: the overlay depth at entry.
+    /// Bindings below it are the top level's run-time values, which
+    /// no body can see — a body sees declarations and its own
+    /// bindings. The seats' names and `mut` marks are in scope for
+    /// exactly the walk, so a read of a `mut` seat is recorded as
+    /// one.
+    /// A seat's default: a body of its own — no seats, and no
+    /// receiver though its owner is a method.
+    mut fn walk_default(body: ExprId) {
+        self.receivers.push(SelfSeat.Default)
+        self.walk_under([], body)
+        let _ = self.receivers.pop()
+    }
+
+    /// A seat's key: its fn's origin, unless its name came through a
+    /// hole — then it binds where the code lands, as a holed pattern's
+    /// binder does.
+    fn seat_origin(pp: Param, origin: FileId?) -> int {
+        origin_index(if self.view.holed_param(pp.id) { null } else { origin })
+    }
+
+    mut fn walk_under(ps: List<Param>, body: ExprId) {
+        let seats = written_seats(self.keywords, ps)
+        let outer_names = self.scope_names
+        let outer_origins = self.scope_origins
+        let origin: FileId? = self.view.origin_of(body)
+        // LICENSED compiler.bracket_ritual: this IS the bracket
+        self.floors.push(self.overlays.length)
+        self.marks.push([pp.promises for pp in seats])
+        self.scope_names = [pp.name for pp in seats]
+        self.scope_origins = [self.seat_origin(pp, origin) for pp in seats]
+        self.walk(body)
+        self.scope_names = outer_names
+        self.scope_origins = outer_origins
+        let _ = self.marks.pop()
+        let _ = self.floors.pop()
+    }
+}
+
+// ── The lambda frames ───────────────────────────────────────────
+// A lambda opens a FRAME: its params, and the overlay depth at
+// entry. A name inside resolves innermost-out — frame params and
+// frame-local overlays first, then the outer world, and every
+// frame crossed on the way out records a CAPTURE. Nesting chains
+// Capture through Capture; the stack lives on the context, so
+// blocks and arms inside a body need no threading at all.
+
+/// The innermost open overlay binding `key`, and its binding there: the
+/// latest binding at or past the first overlay's start, which shadows
+/// every earlier one.
+fn overlay_hit(cx: ResolveCx, key: ScopeKey) -> OverlayHit? {
+    let overlays = cx.overlays
+    let first? = overlays.first() else { return null }
+    let at? = held_at(cx, first, cx.binds.length, key) else { return null }
+    // LICENSED loops.index_walk: a REVERSE scan — the overlay opened last that starts at or before the hit
+    mut j = overlays.length - 1
+    while overlays[j] > at { j = j - 1 }
+    OverlayHit { overlay: j, binding: cx.binds[at] }
+}
+
+/// The latest place among the open bindings `from..until` that binds `key`, or absence.
+fn held_at(cx: ResolveCx, from: int, until: int, key: ScopeKey) -> int? {
+    let names = cx.bind_names
+    let origins = cx.bind_origins
+    // LICENSED loops.index_walk: a REVERSE scan — the latest binding wins
+    mut j = until - 1
+    while j >= from {
+        if names[j] == key.name && origins[j] == key.origin { return j }
+        j = j - 1
+    }
+    null
+}
+
+/// Where `key` first stands among the keys whose names and origins are `names` and `origins`, or absence.
+fn key_at(names: List<Scoped>, origins: List<int>, key: ScopeKey) -> int? {
+    for j, n in names {
+        if n == key.name && origins[j] == key.origin { return j }
+    }
+    null
+}
+
+/// The home of a name that lives OUTSIDE every lambda frame.
+const no_frame: int = 0 - 1
+
+/// The innermost frame whose FLOOR admits the overlay — the frame
+/// the overlay was opened inside.
+fn overlay_home(lframes: List<LFrame>, ohit: int) -> int {
+    // LICENSED loops.index_walk: a REVERSE scan — innermost frame first
+    mut k = lframes.length - 1
+    while k >= 0 {
+        if lframes[k].floor <= ohit { return k }
+        k = k - 1
+    }
+    no_frame
+}
+
+/// The innermost frame whose PARAMS hold `key`, or null.
+fn frame_param_hit(lframes: List<LFrame>, key: ScopeKey) -> int? {
+    // LICENSED loops.index_walk: a REVERSE scan — innermost frame first
+    mut k = lframes.length - 1
+    while k >= 0 {
+        if key_at(lframes[k].param_names, lframes[k].param_origins, key) != null { return k }
+        k = k - 1
+    }
+    null
+}
+
+/// Every let definition in the program, in order.
+fn defs_of(store: SyntaxArena, stmts: List<StmtId>) -> List<Def> {
+    // LICENSED compiler.repeated_projection: a comprehension's filter and element cannot share a
+    // binding — comprehension bindings are on the sugar backlog
+    [Def { name: n, stmt: s } for s in stmts for n in some_list(store.let_named(s))]
+}
+
+const receiver_key: string = "self"
+
+/// A binder's KEY in the scope tables: the name, marked with the file
+/// that wrote a template's text.
+fn keyed(name: Scoped, origin: FileId?) -> ScopeKey { ScopeKey { name: name, origin: origin_index(origin) } }
+
+/// The origin a key wears: the index of the file that wrote it, or `OWN_WRITING`.
+fn origin_index(origin: FileId?) -> int { if origin == null { OWN_WRITING } else { origin!.index } }
+
+/// A key as a capture set names it: the name, marked with the file that
+/// wrote it. `@` is unwritable, so a marked text collides with no
+/// written name.
+fn key_text(key: ScopeKey) -> string {
+    if key.origin == OWN_WRITING { return key.name.text() }
+    "${key.name.text()}@${key.origin}"
+}

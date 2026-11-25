@@ -1,0 +1,1664 @@
+//! THE ENGINE: asks questions and remembers the answers. A question is a query's name, a hash of
+//! its code and its arguments' bytes. While a query runs, every question it asks is recorded as a
+//! read, so no read can be forgotten. Asked again in a later process, an answer whose record still stands is reused
+//! without running anything, and a recomputed answer that comes out the same leaves its readers
+//! standing. Nothing here knows what the queries are about.
+use answer_parts.{AnswerParts, part_hash_seen, part_in_parts, part_in_saved_parts}
+use @std.io.{env, exists, stamp}
+use @std.path.{dir_of}
+use @std.time.{now_ms}
+use pass.{Pass, every_pass, pass_index}
+use sorted.{sorted_by}
+use @std.text.{from_codepoints, parse_int, text_before}
+use address.{SourceFileAddress}
+use frontier.{
+    CUT_MOVED,
+    CUT_STANDS,
+    EntryAt,
+    Frontier,
+    FrontierLearned,
+    HeldEntry,
+    NOT_CUT,
+    place_key,
+}
+use package_sets.{NO_NAMES, NameSets, name_sets}
+use input_stamps.{InputStamp, places_held}
+use defect.{defect}
+use hash_keyed_table.{HashKeyedTable, ReadTable, hash_keyed_table, read_table}
+use interned.{HIGH_LANE, LOW_LANE}
+use query_times.{QueryTimes, TimedSide, query_times}
+use saved_layout.{SavedBytes, SavedList, SavedSlots, SavedSource}
+use answer_record.{
+    AnswerRecord,
+    scoped_print,
+    ContentHash,
+    KeptRecord,
+    PartSeen,
+    Question,
+    RecordedRead,
+    content_hash,
+    keyed_question,
+    QUESTION_SHAPE,
+    question,
+    hashes_in,
+}
+
+/// The package named for a path no store places in one: no store shares it.
+const UNPLACED: string = "?"
+
+/// How a query runs.
+export type QueryDefinition = {
+    query_name: string,
+    /// A hash of the query's code and everything it calls. Empty where it can't be known, and
+    /// then its answers are never reused.
+    code_hash: string,
+    /// An input reads the outside world, so it runs once in every process, is never reused, and
+    /// its bytes aren't kept.
+    is_input: bool,
+    compute: fn(QueryEngine, Bytes) -> Bytes,
+    /// How its answer is worked out again where it was known before.
+    folding: Folding = Folding.Full,
+    /// Whether it CUTS a change off: a projection near the inputs whose answer often stands when what
+    /// it reads moved. Where a change reaches it, it is worked out as the frontier opens, and where
+    /// it comes out the same, the change reaches nothing past it.
+    cuts: bool = false,
+    /// The pass its work belongs to: every query an annotation declares names one, since the
+    /// annotation's seat is required; absent only for a definition written by hand, as an engine's
+    /// own tests write them.
+    pass: Pass? = null,
+}
+
+/// HOW A QUERY'S ANSWER IS WORKED OUT AGAIN: in full, or FOLDED forward by a step handed its
+/// arguments' bytes, its last answer's bytes and each read whose answer moved since,
+/// answering the new answer's bytes, or none where it doesn't fold that change.
+///
+/// THE FULL COMPUTATION IS THE ORACLE: a folded answer is byte for byte the answer the query's
+/// own body gives. A fold reads everything the last answer read, as it stands now, and whatever its
+/// step asks, so it never reads less than the body would. A query is folded only from its last
+/// answer in this binary's frontier, kept and read by the same code; on a cold store, a moved code
+/// hash or a step that answers none, the body runs. `AVRA_FOLD_OFF` runs every body in full, and
+/// `AVRA_FOLD_CHECK` runs both and traps naming the query where they differ.
+export enum Folding {
+    Full
+    By(step: fn(QueryEngine, Bytes, SavedBytes, List<MovedRead>) -> Bytes?)
+}
+
+/// A read whose answer moved since a folded answer was last worked out: its question, and the hash
+/// of the answer it gave then.
+export type MovedRead = { question: Question, was: ContentHash }
+
+impl QueryDefinition {
+    /// The question a call of this query asks.
+    fn question_about(arguments: Bytes) -> Question { question(self.query_name, self.code_hash, arguments) }
+
+    /// The question a call of this query asks, its arguments spelled as their keys.
+    fn question_keyed(arguments: Bytes) -> Question { keyed_question(self.query_name, self.code_hash, arguments) }
+}
+
+/// Where answers outlive a process. A question may hold several records, one per set of reads
+/// that answered it, so going back to an earlier state finds its earlier answer.
+/// THE ONE SEPARATION OF COMPILERS IN A STORE: what was kept under the print `kept` answers a store
+/// answering for `print` only where the two are one — a compiler reads no other's answers.
+export fn answers_print(print: string, kept: string) -> bool { kept == print }
+
+export trait AnswerStore {
+    /// The store answers for the binary printed `print` from here on, reading no other binary's
+    /// answers.
+    fn answering_for(print: string)
+
+    fn records_of(question: ContentHash) -> List<KeptRecord>
+
+    fn keep_record(asked: Question, record: AnswerRecord)
+
+    /// The question a hash stands for, absent when nothing is kept about it.
+    fn question_known_as(question: ContentHash) -> Question?
+
+    /// An answer's bytes where they lie, by their hash, absent when they aren't kept.
+    fn answer_bytes(answer: ContentHash) -> SavedBytes?
+
+    fn keep_answer_bytes(answer: ContentHash, bytes: Bytes)
+
+    /// An answer's bytes for this process alone, for what the next process reads afresh anyway.
+    fn hold_answer_bytes(answer: ContentHash, bytes: Bytes)
+
+    /// The frontier the binary printed `print` leaves here as it stands, absent when there's none.
+    fn frontier_of(print: string) -> Frontier?
+
+    /// Keeps what a process of the binary printed `print` learned beside the frontier it read, for
+    /// that binary's frontier, each file of it whole or not at all.
+    fn keep_frontier(print: string, learned: FrontierLearned)
+
+    /// Every input this store holds by a stamp.
+    fn input_stamps() -> List<InputStamp>
+
+    /// Keeps `stamps` as every input this store holds by a stamp, in place of those it held.
+    fn keep_input_stamps(stamps: List<InputStamp>)
+
+    /// The package whose sources hold `path`, absent where the store knows no package there.
+    fn package_at(_path: string) -> string? { null }
+
+    /// Whether the package `name` is one this store shares with every store beside it: none,
+    /// unless the store is layered over one that's shared.
+    fn shares_package(_name: string) -> bool { false }
+
+    /// `question` claimed by this process to work out, among processes working beside it: zero
+    /// where it holds the claim, else the living process that does.
+    fn claimed(_question: ContentHash) -> int { 0 }
+
+    /// Whether a question of the query `query_name` is one a process works out beside another that
+    /// is working it out, where it would wait for any other: an answer gathered from many
+    /// questions, each claimed on its own, so two that gather it share the work under it.
+    fn works_beside(_query_name: string) -> bool { false }
+
+    /// Waits while the process `holder` holds the claim of `question` and lives.
+    fn claim_awaited(_question: ContentHash, _holder: int) {}
+
+    /// This process's claim of `question` let go.
+    fn claim_let_go(_question: ContentHash) {}
+
+    /// A record of `asked` that stands, kept as this process's own with its answer where another
+    /// process working beside it holds the only copy.
+    fn adopted(_asked: Question, _record: KeptRecord) {}
+
+    /// `entry`, settled by this process as it learned it, kept where every process of its build
+    /// finds it.
+    fn entry_shared(_entry: HeldEntry) {}
+
+    /// The entry another process of this build learned of `question`, as it kept it; absent where
+    /// none did.
+    fn shared_entry(_question: ContentHash) -> HeldEntry? { null }
+
+    /// Every entry the processes of this build kept, or with `inputs` only those of inputs, in
+    /// question order.
+    fn shared_entries(_inputs: bool) -> List<HeldEntry> { [] }
+
+    /// Whether any package is one this store shares: where none is, every answer is kept in the one
+    /// store, whatever it read, and what packages an answer read decides nothing.
+    fn shares_any() -> bool { false }
+
+    /// Keeps a record of a SHARED question: one whose every input lies in packages this store shares.
+    fn keep_shared_record(asked: Question, record: AnswerRecord) { self.keep_record(asked, record) }
+
+    /// Keeps a shared question's answer's bytes.
+    fn keep_shared_answer_bytes(answer: ContentHash, bytes: Bytes) { self.keep_answer_bytes(answer, bytes) }
+
+    /// Whether an answer's bytes lie where a shared question's answer is kept.
+    fn shared_answer_kept(answer: ContentHash) -> bool { self.answer_bytes(answer) != null }
+}
+
+/// A run of a query: its answer's bytes and every read it made.
+type QueryRun = { bytes: Bytes, reads: ReadTable }
+
+/// Reads gathered for work remembered outside the engine, begun while `depth` questions were open:
+/// it gathers the reads made while just those are. `reader` is its own serial as a reader.
+type ReadsGathered = { depth: int, reads: ReadTable, reader: int }
+
+/// A question being answered, its query, and the reads it has made so far.
+type OpenQuestion = {
+    question: ContentHash,
+    query_name: string,
+    arguments: Bytes,
+    reads: ReadTable,
+    /// Its serial as a reader.
+    reader: int,
+}
+
+/// A question this process knows the answer to, by how it came to be known.
+enum SettledAnswer {
+    /// Learned by its query in this process, reused through a kept record that stands or worked out
+    /// from what it read: the answer as the frontier keeps it.
+    Learned(entry: HeldEntry)
+    /// Standing untouched at its place in this binary's frontier.
+    Standing(question: ContentHash, answer: ContentHash, frontier: Frontier, place: int)
+}
+
+impl SettledAnswer {
+    fn answer() -> ContentHash {
+        match self { .Learned(entry) -> entry.answer, .Standing(_, answer, _, _) -> answer }
+    }
+}
+
+/// The question a settled answer answers.
+fn settled_question(s: SettledAnswer) -> ContentHash {
+    match s { .Learned(entry) -> entry.question, .Standing(question, _, _, _) -> question }
+}
+
+/// How many questions a settled answer read.
+fn settled_read_count(s: SettledAnswer) -> int {
+    match s {
+        .Learned(entry) -> entry.read_count(),
+        .Standing(_, _, f, place) -> f.entry_at(place).read_count(),
+    }
+}
+
+/// One query's read lists over the answers a process settled: how many, and the longest.
+export type QueryReadList = { query: string, answers: int, longest: int }
+
+/// What this process knows of its binary's frontier.
+enum FrontierState {
+    /// Not read yet: nothing has been asked.
+    Unread
+    /// Read, and there's none.
+    Missing
+    /// Read, and its reads don't lie within it: none to take answers from.
+    Unusable
+    /// Its inputs are being asked, so none of its answers stands yet.
+    Opening
+    /// Open, its suspects known.
+    Open(open: OpenFrontier)
+}
+
+/// A frontier answers are taken from, the places of its inputs that changed, and whether a changed
+/// input reaches each of its answers, by place: what must be checked.
+type OpenFrontier = {
+    frontier: Frontier,
+    changed: List<int>,
+    suspects: List<bool>,
+    /// By place, whether it is stale.
+    stale: List<bool>,
+}
+
+/// What this process has learned so far. An identity: every holder asks through the one engine.
+export type QueryEngine = {
+    store: dyn AnswerStore,
+    definitions: Cell<Map<string, QueryDefinition>>,
+    /// The answer to each question settled in this process.
+    settled_answers: HashKeyedTable<SettledAnswer>,
+    /// The questions being answered now, innermost last.
+    open_questions: Cell<List<OpenQuestion>>,
+    /// The reads being gathered now, innermost last.
+    gathering: Cell<List<ReadsGathered>>,
+    /// How many questions were open where each read left unrecorded began, innermost last: a read
+    /// made with just that many open is no read of the asker's (`unrecorded_begun`).
+    unrecorded_at: Cell<List<int>>,
+    /// How many readers, questions opened or gatherings begun, this engine has made.
+    readers: Cell<int>,
+    /// The query each question this process computed belongs to, in the order they ran: what a
+    /// budget test reads.
+    computed: Cell<List<string>>,
+    /// The query each answer this process folded forward belongs to, in the order they were folded.
+    folded: Cell<List<string>>,
+    /// The kept records this process checked to reuse an answer: what an edit's cost is counted in.
+    records_checked: Cell<int>,
+    /// The answers this engine checked against a kept record and kept, by the pass of their family,
+    /// as `pass_index` numbers the passes: what a warm run verified rather than worked out.
+    rechecked: Cell<List<int>>,
+    /// What this process knows of its binary's frontier.
+    frontier: Cell<FrontierState>,
+    /// Whether the answers the other processes of this build learned are this process's, found
+    /// where they stand in the build's table and settled here the first time each is asked for.
+    adopted: Cell<bool>,
+    /// The questions asked with nobody asking: the roots, which keep what they read in the frontier.
+    asked_alone: HashKeyedTable<bool>,
+    /// THE QUESTIONS ASKED AGAIN TO SEE WHETHER A KEPT RECORD STANDS: a record whose reads lead back
+    /// to one being asked can't stand on it, so a walk over kept records that close a cycle ends at
+    /// the question it started from. One asked and answered is held from then on, and never asked
+    /// again here.
+    verifying: HashKeyedTable<bool>,
+    /// Where this process's asks spend their time, absent while they aren't timed.
+    times: Cell<QueryTimes?>,
+    /// The inputs the store held by a stamp, by question, once read.
+    stamps_kept: Cell<HashKeyedTable<InputStamp>?>,
+    /// The inputs this process read under one stamp, or found held by one, by question.
+    stamps_seen: HashKeyedTable<InputStamp>,
+    /// THE PACKAGES EACH QUESTION SETTLED HERE READ, as a set's id in `sets`: an input's, the package
+    /// holding each path it read; any other's, every package its reads read. Known by what was read,
+    /// never by who asked first or which way it settled.
+    read_sets: HashKeyedTable<int>,
+    /// How many answers the changed inputs reached, how many of them were proved to stand by reading
+    /// what they read, and how many reads that read.
+    reached: Cell<int>,
+    /// How many answers the frontier held.
+    held: Cell<int>,
+    proved: Cell<int>,
+    reads_checked: Cell<int>,
+    sets: NameSets,
+    /// Whether each set's every package is one the store shares, by the set's id.
+    sets_shared: HashKeyedTable<bool>,
+    /// Which engine of this process it is: no two engines a process makes share one. What a table
+    /// a caller keeps per engine, outside it, is keyed by.
+    serial: int,
+    /// THE PROGRAM THIS ENGINE ASKS FOR, its frontier's scope: one store may hold many programs'
+    /// answers, and each program reads and writes only its own frontier, so reading one costs what
+    /// that program asks, whatever else the store holds. Empty for an engine asking for no one
+    /// program.
+    program: string,
+}
+
+/// How many engines this process has made.
+once fn engines_made() -> Cell<int> { Cell.new(0) }
+
+/// A serial no engine of this process has had.
+fn next_serial() -> int {
+    let made = engines_made()
+    made.set(made.get() + 1)
+    made.get()
+}
+
+export fn query_engine(
+    store: dyn AnswerStore,
+    definitions: List<QueryDefinition>,
+    program: string = "",
+) -> QueryEngine {
+    let by_name: Map<string, QueryDefinition> = {}
+    let settled_answers: HashKeyedTable<SettledAnswer> = hash_keyed_table()
+    let open_questions: Cell<List<OpenQuestion>> = Cell.new([])
+    let gathering: Cell<List<ReadsGathered>> = Cell.new([])
+    let unrecorded_at: Cell<List<int>> = Cell.new([])
+    let computed: Cell<List<string>> = Cell.new([])
+    let folded: Cell<List<string>> = Cell.new([])
+    let asked_alone: HashKeyedTable<bool> = hash_keyed_table()
+    let verifying: HashKeyedTable<bool> = hash_keyed_table()
+    let times: Cell<QueryTimes?> = Cell.new(null)
+    let stamps_kept: Cell<HashKeyedTable<InputStamp>?> = Cell.new(null)
+    let stamps_seen: HashKeyedTable<InputStamp> = hash_keyed_table()
+    let read_sets: HashKeyedTable<int> = hash_keyed_table()
+    let reached: Cell<int> = Cell.new(0)
+    let held: Cell<int> = Cell.new(0)
+    let proved: Cell<int> = Cell.new(0)
+    let reads_checked: Cell<int> = Cell.new(0)
+    let engine = QueryEngine {
+        store: store,
+        definitions: Cell.new(by_name),
+        settled_answers: settled_answers,
+        adopted: Cell.new(false),
+        open_questions: open_questions,
+        gathering: gathering,
+        unrecorded_at: unrecorded_at,
+        readers: Cell.new(0),
+        computed: computed,
+        folded: folded,
+        records_checked: Cell.new(0),
+        rechecked: Cell.new([0 for _p in 0..every_pass().length]),
+        frontier: Cell.new(FrontierState.Unread),
+        asked_alone: asked_alone,
+        verifying: verifying,
+        times: times,
+        stamps_kept: stamps_kept,
+        stamps_seen: stamps_seen,
+        read_sets: read_sets,
+        reached: reached,
+        held: held,
+        proved: proved,
+        reads_checked: reads_checked,
+        sets: name_sets(),
+        sets_shared: hash_keyed_table(),
+        serial: next_serial(),
+        program: program,
+    }
+    for definition in definitions {
+        if engine.definitions.get().has(definition.query_name) { defect(two_queries_named(definition)) }
+        engine.definitions.put(definition.query_name, definition)
+    }
+    store.answering_for(engine.print())
+    engine
+}
+
+impl QueryEngine {
+    /// The answer's bytes where they lie, recorded as a read of the whole answer.
+    fn answer_to(asked: Question) -> SavedBytes {
+        self.answer_bytes_of(asked, self.hash_of_answer_to(asked))
+    }
+
+    /// An answer's bytes. A record may stand with its bytes no longer kept, and then it runs.
+    fn answer_bytes_of(asked: Question, answer: ContentHash) -> SavedBytes {
+        self.store.answer_bytes(answer) ?? self.store.answer_bytes(self.computed_answer(asked))!
+    }
+
+    /// The hash of the answer to the question known as `question`, recorded as a read of whoever is
+    /// asking, as `hash_of_answer_to` records it; absent where neither this process nor the store
+    /// knows the question.
+    fn hash_of_answer_known_as(question: ContentHash) -> ContentHash? {
+        self.frontier_read_once()
+        let settled? = self.settled_now(question) else { return null }
+        let answer = settled.answer()
+        self.whole_read(question, answer)
+        answer
+    }
+
+    /// The hash of the answer to `held`'s question, recorded as a read of whoever is asking, as
+    /// `hash_of_answer_to` records it: settled once in this engine, and read off `held` after.
+    fn hash_of_answer_held(held: HeldQuestion) -> ContentHash {
+        let answer = if held.settled_in.get() == self.serial { held.answer.get() } else { self.held_settled(held) }
+        self.whole_read(held.question.known_as, answer)
+        answer
+    }
+
+    /// The answer `held`'s question settles to in this engine, kept on `held`.
+    fn held_settled(held: HeldQuestion) -> ContentHash {
+        let answer = self.settled_answer(held.question)
+        held.answer.set(answer)
+        held.settled_in.set(self.serial)
+        answer
+    }
+
+    /// The hash of the answer, recorded as a read of whoever is asking. Nothing is decoded.
+    fn hash_of_answer_to(asked: Question) -> ContentHash {
+        let answer = self.settled_answer(asked)
+        self.whole_read(asked.known_as, answer)
+        answer
+    }
+
+    /// What this process knows the answer is, reusing a record that stands, or running the query.
+    /// The frontier is read before anything is looked up, so an input it holds is asked once.
+    fn settled_answer(asked: Question) -> ContentHash {
+        self.frontier_read_once()
+        self.settled_held(asked.known_as)?.answer() ?? self.settled_from_frontier(asked.known_as)?.answer() ?? self
+            .reused_answer(asked) ?? self.computed_answer(asked)
+    }
+
+    /// The answer of a record whose reads all still see what they saw. An input is read fresh in
+    /// every process, and a query whose code has no hash can't tell its old answers from new ones.
+    fn reused_answer(asked: Question) -> ContentHash? {
+        let definition = self.definition_of(asked)
+        if definition.is_input || definition.code_hash.is_empty() { return null }
+        let timed = self.times.get()
+        if timed != null { timed!.opened(asked.query_name, TimedSide.Reused, self.definition_of(asked).pass) }
+        let answer = self.standing_answer(asked)
+        self.times.get()?.closed()
+        if answer != null {
+            let pass = definition.pass
+            if pass != null {
+                let at = pass_index(pass!)
+                self.rechecked.set_at(at, self.rechecked.get()[at] + 1)
+            }
+        }
+        answer
+    }
+
+    /// The answer of a kept record of `asked` that stands, absent when none does.
+    fn standing_answer(asked: Question) -> ContentHash? {
+        let standing? = self
+            .store
+            .records_of(asked.known_as)
+            .find((record) -> self.stands_now(record)) else { return null }
+        self.store.adopted(asked, standing)
+        let reads = standing.read_question_words()
+        self.read_sets.put(asked.known_as, self.set_of_reads(reads))
+        self.learned(asked, standing.answer, reads)
+    }
+
+    /// Whether every read of a record still sees what it saw.
+    fn stands_now(record: KeptRecord) -> bool {
+        self.records_checked.set(self.records_checked.get() + 1)
+        record
+            .every_read(
+                (question, seen) -> self.whole_read_holds(question, seen),
+                (question, seen, part_name, part_hash) -> self
+                    .part_read_holds(question, seen, part_name, part_hash),
+            )
+    }
+
+    /// Whether a whole read of `question` still sees the answer `seen`.
+    fn whole_read_holds(question: ContentHash, seen: ContentHash) -> bool { self.answer_holds(question, seen) }
+
+    /// Whether a part read of `question` still sees what it saw: the whole answer `seen`, or the part
+    /// named `part_name` hashing `part_hash`, absence included.
+    fn part_read_holds(
+        question: ContentHash,
+        seen: ContentHash,
+        part_name: ContentHash,
+        part_hash: ContentHash,
+    ) -> bool {
+        self.answer_holds(question, seen) || self.part_holds(question, part_name, part_hash)
+    }
+
+    /// WHETHER A CHANGE THAT REACHED THE PLACE `by` MEETS ITS READER AT `reader`: unless the one
+    /// record the frontier's answer at `reader` stands on reads `by`'s question, and every read it
+    /// made of it still sees what it saw — the rule `stands_now` holds every read to — so a reader of
+    /// one part of an answer is met only where that part moved, or appeared. Met wherever that can't
+    /// be told: no record, or several standing on that answer. A READER THAT NO LONGER STANDS IS MET
+    /// WITHOUT ASKING: what it read is asked by nothing standing, and asking it would write an answer
+    /// back no root reaches.
+    fn meets(f: Frontier, reader: int, by: int) -> bool {
+        if !f.stands(reader) { return true }
+        let answer = f.answer_at(reader)
+        let held = self.store.records_of(f.question_at(reader)).filter(it.answer.same_as(answer))
+        if held.length != 1 { return true }
+        let record = held[0]
+        let of = f.question_at(by)
+        if !record.read_questions().any(it.same_as(of)) { return true }
+        !record
+            .every_read(
+                (question, seen) -> !question.same_as(of) || self.whole_read_holds(question, seen),
+                (question, seen, part_name, part_hash) -> !question.same_as(of) ||
+                    self.part_read_holds(question, seen, part_name, part_hash),
+            )
+    }
+
+    /// Whether a question's whole answer is still the one seen. A question nobody can ask now never
+    /// holds.
+    fn answer_holds(question: ContentHash, seen: ContentHash) -> bool {
+        let settled? = self.settled_now(question) else { return false }
+        settled.answer().same_as(seen)
+    }
+
+    /// Whether one part of a question's answer is still the one seen. An answer this process can't
+    /// read has no part to see.
+    fn part_holds(question: ContentHash, part_name: ContentHash, part_hash: ContentHash) -> bool {
+        let settled? = self.settled_now(question) else { return false }
+        let bytes? = self.settled_bytes(question, settled.answer()) else { return false }
+        part_hash_seen(part_in_saved_parts(bytes, part_name)).same_as(part_hash)
+    }
+
+    /// What this process says a question's answer is, settling it if it must, absent for a
+    /// question nobody can ask now. What's settled was asked by today's code, so it isn't rechecked.
+    fn settled_now(question: ContentHash) -> SettledAnswer? {
+        self.settled_held(question) ?? self.settled_from_frontier(question) ?? self
+            .settled_by_asking(question)
+    }
+
+    /// An answer this binary's frontier holds standing, settled as it stands: one no changed input
+    /// reaches, and one a change reaches whose every read is still what it read there. A change that
+    /// re-settles equal stops at its readers, and no record of theirs is read.
+    fn settled_from_frontier(question: ContentHash) -> SettledAnswer? {
+        let open? = self.frontier_open() else { return null }
+        let f = open.frontier
+        let at? = f.place_of(question) else { return null }
+        if open.stale[at] { return null }
+        let entry = f.entry_at(at)
+        if entry.input() { return null }
+        if open.suspects[at] && !self.reads_hold(open, entry) { return null }
+        self.stood_entry(f, at, entry)
+    }
+
+    /// How many inputs this binary's frontier read that no longer hold; absent without a frontier.
+    fn inputs_moved() -> int? {
+        let open? = self.frontier_open() else { return null }
+        open.changed.length
+    }
+
+    /// Whether every answer the frontier's `at` read is still the one it read there: a read no
+    /// change reaches holds where it stands, and one a change reaches is settled and compared.
+    fn reads_hold(open: OpenFrontier, entry: EntryAt) -> bool {
+        let reads? = entry.reads() else { return false }
+        self.proved.set(self.proved.get() + 1)
+        self.reads_checked.set(self.reads_checked.get() + reads.length)
+        reads.all((r) -> self.read_holds(open, r))
+    }
+
+    /// Whether the frontier's answer at `r` is still its answer.
+    fn read_holds(open: OpenFrontier, r: int) -> bool {
+        if !open.suspects[r] && !open.stale[r] { return true }
+        let entry = open.frontier.entry_at(r)
+        let settled? = self.settled_now(entry.question()) else { return false }
+        settled.answer().same_as(entry.answer())
+    }
+
+    /// The answer at `at` in `f`, settled as it stands there.
+    fn stood(f: Frontier, at: int) -> SettledAnswer { self.stood_entry(f, at, f.entry_at(at)) }
+
+    /// The answer `entry` holds at `at` in `f`, settled as it stands there.
+    fn stood_entry(f: Frontier, at: int, entry: EntryAt) -> SettledAnswer {
+        let question = entry.question()
+        let settled = SettledAnswer.Standing(question, entry.answer(), f, at)
+        self.settled_answers.put(question, settled)
+        settled
+    }
+
+    /// This binary's frontier with its suspects known; absent while there's none, or while its
+    /// inputs are being asked.
+    fn frontier_open() -> OpenFrontier? {
+        self.frontier_read_once()
+        match self.frontier.get() {
+            .Open(open) -> open,
+            .Unread or .Missing or .Unusable or .Opening -> null,
+        }
+    }
+
+    /// Reads this binary's frontier the first time anything is asked.
+    fn frontier_read_once() {
+        match self.frontier.get() {
+            .Unread -> self.frontier_opened(),
+            .Missing or .Unusable or .Opening or .Open(_) -> { return },
+        }
+    }
+
+    /// Reads this binary's frontier and asks its standing inputs first, so every answer a changed
+    /// input reaches is a suspect and each input that held stands — before any cut is decided, since
+    /// an input reads nothing and so is a suspect only where it changed. Opened with every answer a
+    /// change reaches a suspect, it decides the cutting answers the change meets, each worked out
+    /// through it, and opens again with only what a change reaches past the cuts that stand. A
+    /// frontier whose reads don't lie within it is none.
+    fn frontier_opened() {
+        self.frontier.set(FrontierState.Opening)
+        if self.unhashed() { return self.frontier.set(FrontierState.Missing) }
+        let f? = self.store.frontier_of(self.frontier_print()) else { return self.frontier.set(FrontierState.Missing) }
+        let inputs = f.standing_inputs()
+        let holds = [self.input_holds(f, at) for at in inputs]
+        let changed = [at for i, at in inputs if !holds[i]]
+        let reach? = f.reach_of(changed) else { return self.frontier.set(FrontierState.Unusable) }
+        let all? = f.settled(reach, (_at) -> NOT_CUT, (_reader, _by) -> true) else { return self.frontier.set(FrontierState.Unusable) }
+        let stale = f.stale_places()
+        self
+            .frontier
+            .set(
+                FrontierState
+                    .Open(OpenFrontier { frontier: f, changed: changed, suspects: all, stale: stale }),
+            )
+        for i, at in inputs { if holds[i] { let _ = self.stood(f, at) } }
+        let suspects? = self.suspects_of(f, reach) else { return self.frontier.set(FrontierState.Unusable) }
+        self.reached.set(suspects.filter(it).length)
+        self.held.set(f.length())
+        self
+            .frontier
+            .set(
+                FrontierState
+                    .Open(
+                        OpenFrontier {
+                            frontier: f,
+                            changed: changed,
+                            suspects: suspects,
+                            stale: stale,
+                        },
+                    ),
+            )
+    }
+
+    /// Whether the store held a frontier for this binary.
+    fn frontier_found() -> bool {
+        self.frontier_read_once()
+        match self.frontier.get() {
+            .Unread or .Missing -> false,
+            .Unusable or .Opening or .Open(_) -> true,
+        }
+    }
+
+    /// WHY `question` WAS WORKED OUT AGAIN, by the frontier it was taken from: a changed input first,
+    /// then each answer that read the one before, the question last. Absent where the frontier
+    /// doesn't hold it, nothing changed reaches it, or there was no frontier to take it from.
+    fn worked_out_because(question: ContentHash) -> List<Question>? {
+        let open? = self.frontier_open() else { return null }
+        let at? = open.frontier.place_of(question) else { return null }
+        if !open.suspects[at] { return null }
+        let way? = open.frontier.way_to(open.changed, at) else { return null }
+        let asked = [self.store.question_known_as(open.frontier.question_at(p)) for p in way]
+        if asked.any(it == null) { null } else { [q! for q in asked] }
+    }
+
+    /// How many answers the frontier held, how many of them the changed inputs reached past the cuts,
+    /// how many were proved to stand read by read, and how many reads that read.
+    fn cutoff_said() -> string {
+        "${self.held.get()} answers held, ${self.reached.get()} reached, ${self.proved.get()} proved, ${self.reads_checked.get()} reads checked"
+    }
+
+    /// Whether a change in `changed` reaches each answer of `f`; absent when its reads don't lie
+    /// within it.
+    fn suspects_of(f: Frontier, reach: FrontierReach) -> List<bool>? {
+        if reach.changed.is_empty() { return [false for _i in 0..f.length()] }
+        let decided: HashKeyedTable<int> = hash_keyed_table()
+        f
+            .settled(reach, (at) -> self.cut_at(f, at, decided), (reader, by) -> self.meets(f, reader, by))
+    }
+
+    /// How the answer at `at` meets a change: a cutting query's that comes out the same now, which
+    /// cuts the change off; one that moved; or one whose query doesn't cut. Each place is decided once.
+    fn cut_at(f: Frontier, at: int, decided: HashKeyedTable<int>) -> int {
+        let known? = decided.get(place_key(at)) else {
+            let found = self.cut_found(f, at)
+            decided.put(place_key(at), found)
+            return found
+        }
+        known
+    }
+
+    fn cut_found(f: Frontier, at: int) -> int {
+        let asked? = self.store.question_known_as(f.question_at(at)) else { return NOT_CUT }
+        let definition? = self.definitions.get().get(asked.query_name) else { return NOT_CUT }
+        if !definition.cuts ||
+            definition.code_hash.is_empty() ||
+            definition.code_hash != asked.code_hash { return NOT_CUT }
+        if self.settled_answer(asked).same_as(f.answer_at(at)) { CUT_STANDS } else { CUT_MOVED }
+    }
+
+    /// Whether the input at `at` answers now what it answered when the frontier was written.
+    fn input_holds(f: Frontier, at: int) -> bool {
+        if self.stamp_holds(f.question_at(at), f.answer_at(at)) { return true }
+        let asked? = self.store.question_known_as(f.question_at(at)) else { return false }
+        let definition? = self.definitions.get().get(asked.query_name) else { return false }
+        if definition.code_hash != asked.code_hash { return false }
+        self.settled_answer(asked).same_as(f.answer_at(at))
+    }
+
+    /// What tells this binary's queries apart from another's: each one's name, its code, and whether
+    /// it reads the world.
+    fn print() -> string {
+        let defined = ["${d.query_name}:${d.code_hash}:${d.is_input}" for d in self.definitions.get().values()]
+            .join("\n")
+        let h = content_hash("${QUESTION_SHAPE}\n${defined}".bytes())
+        "${h.high_word}_${h.low_word}"
+    }
+
+    /// What this binary's frontier for its program is known by: its print, and the program it asks
+    /// for as a hash, so no path reaches a file's name (`scoped_print`).
+    fn frontier_print() -> string {
+        if self.program.is_empty() { self.print() } else { scoped_print(self.print(), self.program) }
+    }
+
+    /// Leaves what this process learned beside the frontier it read, for its store to write as this
+    /// binary's frontier. Leaves nothing when it asked nothing.
+    fn frontier_kept() {
+        if self.unhashed() { return }
+        self.stamps_kept_now()
+        match self.frontier.get() {
+            .Unread or .Opening -> { return },
+            .Missing or .Unusable -> self.learned_kept(null),
+            .Open(open) -> self.learned_kept(open),
+        }
+    }
+
+    /// Hands the store every answer this process settled that may say what `open` doesn't, and the
+    /// places of the suspects it never settled; nothing when there's neither.
+    fn learned_kept(open: OpenFrontier?) {
+        self.lent_settled()
+        let entries = [h! for s in self.settled_answers.values() for h in [self.learned_entry(s)] if h != null]
+        let stale = self.unsettled_suspects(open)
+        if entries.is_empty() && stale.is_empty() { return }
+        self
+            .store
+            .keep_frontier(
+                self.frontier_print(),
+                FrontierLearned { on: open?.frontier, entries: entries, stale: stale },
+            )
+    }
+
+    /// The places of `open`'s suspects that stand and this process never settled: no longer known to
+    /// hold.
+    fn unsettled_suspects(open: OpenFrontier?) -> List<int> {
+        let o? = open else { return [] }
+        [at for at, suspect in o.suspects if suspect && o.frontier.stands(at) && self.settled_held(o.frontier.question_at(at)) == null]
+    }
+
+    /// WHETHER A QUERY OF THIS BINARY HAS NO CODE HASH: then nothing it answers can be told from an
+    /// older binary's, so the binary keeps no frontier and reads none — a frontier it can't trust
+    /// would re-ask questions by arguments written by other code.
+    fn unhashed() -> bool { self.definitions.get().values().any(!it.is_input && it.code_hash.is_empty()) }
+
+    /// Whether a query reads the outside world afresh in every process.
+    fn input_named(query_name: string) -> bool { self.definitions.get().get(query_name)?.is_input ?? false }
+
+    /// Whether a query's answers are worked out afresh in every process: an input's, and one whose
+    /// code has no hash, which can't tell its old answers from new ones. The frontier asks these
+    /// first, so what reads one is a suspect when it moved.
+    fn read_afresh(query_name: string) -> bool {
+        let d = self.definitions.get().get(query_name)
+        d == null || d!.is_input || d!.code_hash.is_empty()
+    }
+
+    /// A settled answer as the frontier may keep it: whatever this process worked out or reused,
+    /// a root when it was asked alone, and a root it asked that stood in the frontier without being
+    /// one there. Absent for any other answer that stood.
+    fn learned_entry(s: SettledAnswer) -> HeldEntry? {
+        match s {
+            .Learned(entry) -> if self.asked_alone.get(entry.question) == null { entry } else { entry.rooted() },
+            .Standing(question, _, f, place) -> if self.asked_alone.get(question) != null && !f.root_at(place) { f.held_at(place)?.rooted() } else { null },
+        }
+    }
+
+    /// The answer to a question the store knows, asked again as it was asked; absent where it can't
+    /// be asked now, or where its query has no code hash: such a question's stored arguments were
+    /// written by code nobody can say is today's, so they're never asked again.
+    fn settled_by_asking(question: ContentHash) -> SettledAnswer? {
+        let asked? = self.store.question_known_as(question) else { return null }
+        let definition? = self.definitions.get().get(asked.query_name) else { return null }
+        if definition.code_hash.is_empty() || definition.code_hash != asked.code_hash { return null }
+        // a dependency chain is verified recursively; its depth is bounded by the program's question depth, not by any cycle
+        // a question asked again while it is being asked again can't vouch for itself
+        // and once asked here it is held, so `settled_now` never comes back to this door for it
+        if !self.verifying.first_put(question, true) { return null }
+        let _ = self.settled_answer(asked)
+        self.settled_held(question)
+    }
+
+    /// A settled answer's bytes, worked out again as the store says the question was asked if
+    /// they're no longer kept; absent when the store keeps neither.
+    fn settled_bytes(question: ContentHash, answer: ContentHash) -> SavedBytes? {
+        let kept = self.store.answer_bytes(answer)
+        if kept != null { return kept }
+        let asked? = self.store.question_known_as(question) else { return null }
+        self.answer_bytes_of(asked, answer)
+    }
+
+    /// Holds the input being answered by the stamp of the path it just read, where that path wore
+    /// `before` when the read began and wears it still.
+    fn read_under(path: string, before: int?) {
+        let asker? = self.open_questions.get().last() else { return }
+        let held? = before else { return }
+        // LICENSED input.stamp: a stamp decides whether an input is read again, never what it answers
+        if stamp(path) != held { return }
+        self
+            .stamps_seen
+            .put(
+                asker.question,
+                InputStamp {
+                    question: asker.question,
+                    answer: unanswered(),
+                    path: path,
+                    stamp: held,
+                    places: places_held(),
+                },
+            )
+    }
+
+    /// Whether the input `question` still answers `answer` by the stamp the store holds it under:
+    /// it was read under the places this process reads under, and its path wears that stamp now.
+    fn stamp_holds(question: ContentHash, answer: ContentHash) -> bool {
+        let kept? = self.kept_stamps().get(question) else { return false }
+        if !kept.answer.same_as(answer) || kept.places != places_held() { return false }
+        // LICENSED input.stamp: a stamp decides whether an input is read again, never what it answers
+        if stamp(kept.path) != kept.stamp { return false }
+        self.stamps_seen.put(question, kept)
+        self.read_sets.put(question, self.set_at_path(kept.path))
+        true
+    }
+
+    /// The inputs the store holds by a stamp, read once.
+    fn kept_stamps() -> HashKeyedTable<InputStamp> {
+        let read? = self.stamps_kept.get() else {
+            let kept: HashKeyedTable<InputStamp> = hash_keyed_table()
+            for s in self.store.input_stamps() { kept.put(s.question, s) }
+            self.stamps_kept.set(kept)
+            return kept
+        }
+        read
+    }
+
+    /// Hands the store every input this process read under one stamp or found held by one, beside
+    /// the answer it settled; nothing when that is what the store holds.
+    fn stamps_kept_now() {
+        let now = [s with { answer: a! } for s in self.stamps_seen.values() for a in [self.settled_held(s.question)?.answer()] if a != null]
+        let kept = self.kept_stamps()
+        if now.length == kept.values().length &&
+            now.all((s) -> kept.get(s.question)?.same_as(s) ?? false) { return }
+        self.store.keep_input_stamps(now)
+    }
+
+    /// Times every ask from here on, by its query; an engine already timing keeps its clock.
+    fn time_queries() { if self.times.get() == null { self.times.set(query_times()) } }
+
+    /// Where this process's asks spent their time, absent while they aren't timed.
+    fn kept_times() -> QueryTimes? { self.times.get() }
+
+    /// Whether this process worked the question `asked` out while its asks were timed.
+    fn worked_here(asked: Question) -> bool {
+        let times? = self.times.get() else { return false }
+        times.worked.get(asked.known_as) != null
+    }
+
+    /// The query of each answer this process folded forward, in the order they were folded.
+    fn folded_queries() -> List<string> { self.folded.get() }
+
+    /// How many questions this process computed.
+    fn computed_count() -> int { self.computed.get().length }
+
+    /// How many answers this process worked out, inputs aside: what an unchanged world should leave at none.
+    fn worked_count() -> int { self.computed.get().filter((name) -> !self.input_named(name)).length }
+
+    /// How many kept records this process checked.
+    fn records_checked_count() -> int { self.records_checked.get() }
+
+    /// How many answers of the pass `p`'s families this engine checked against a kept record and kept.
+    fn rechecked_in(p: Pass) -> int { self.rechecked.get()[pass_index(p)] }
+
+    /// The query of each question this process computed, in the order they ran.
+    fn computed_queries() -> List<string> { self.computed.get() }
+
+    /// The pass the query named `query_name` belongs to, as its definition names it; absent for one
+    /// this engine doesn't define, or a definition written by hand.
+    fn pass_named(query_name: string) -> Pass? { self.definitions.get().get(query_name)?.pass }
+
+    /// HOW LONG THE READ LISTS ARE that the answers this process settled stand on, by query: how many
+    /// answers, and the most questions any one of them read — what asking whether it stands costs.
+    fn read_lists() -> List<QueryReadList> {
+        mut by_query: Map<string, QueryReadList> = {}
+        for s in self.settled_answers.values() {
+            let name = self.store.question_known_as(settled_question(s))?.query_name ?? "?"
+            let read = settled_read_count(s)
+            let held = by_query.get(name) ?? QueryReadList { query: name, answers: 0, longest: 0 }
+            by_query
+                .set(
+                    name,
+                    QueryReadList {
+                        query: name,
+                        answers: held.answers + 1,
+                        longest: if read > held.longest { read } else { held.longest },
+                    },
+                )
+        }
+        sorted_by(
+            by_query.values(),
+            (a, b) -> a.longest > b.longest ||
+                a.longest == b.longest && text_before(a.query, b.query),
+        )
+    }
+
+    /// Runs the query, keeps what came out, and answers its hash, timed when asks are. Where
+    /// another process working beside this one is working the question out, it is waited for and
+    /// its answer taken where its record stands here.
+    fn computed_answer(asked: Question) -> ContentHash {
+        if !self.definition_of(asked).is_input && !self.store.works_beside(asked.query_name) {
+            mut holder = self.store.claimed(asked.known_as)
+            while holder != 0 {
+                // LICENSED input.clock: a timing reads the clock, never an input of what is built
+                let from = now_ms()
+                self.store.claim_awaited(asked.known_as, holder)
+                // LICENSED input.clock: a timing reads the clock, never an input of what is built
+                let waited = now_ms() - from
+                if self.times.get() != null {
+                    waits()
+                        .put(asked.query_name, (waits().get().get(asked.query_name) ?? 0) + waited)
+                }
+                let reused = self.reused_answer(asked)
+                if reused != null { return reused! }
+                holder = self.store.claimed(asked.known_as)
+            }
+        }
+        let timed = self.times.get()
+        if timed != null {
+            timed!.opened(asked.query_name, TimedSide.Query, self.definition_of(asked).pass)
+            timed!.worked.put(asked.known_as, true)
+        }
+        let answer = self.worked_out(asked)
+        self.times.get()?.closed()
+        self.store.claim_let_go(asked.known_as)
+        answer
+    }
+
+    /// Runs the query, folded forward where it folds, keeps what came out, and answers its hash.
+    fn worked_out(asked: Question) -> ContentHash {
+        let run = self.checked_fold(asked, self.folded_run(asked)) ?? self.full_run(asked)
+        let bytes = run.bytes
+        let answer = content_hash(bytes)
+        let reads = run.reads.question_words()
+        let read = if self.definition_of(asked).is_input { self.read_sets.get(asked.known_as) ?? NO_NAMES } else { self.set_of_reads(reads) }
+        self.read_sets.put(asked.known_as, read)
+        let is_shared = self.set_shared(read)
+        let kept = if is_shared { self.store.shared_answer_kept(answer) } else { self.store.answer_bytes(answer) != null }
+        if !kept { self.keep_or_hold(asked, answer, bytes, is_shared) }
+        let record = run.reads.record_of(answer)
+        if !self.store.records_of(asked.known_as).any(it.same_as(record)) { self.record_kept(asked, record, is_shared) }
+        self.learned(asked, answer, reads)
+    }
+
+    /// An input's bytes are read afresh in every process, so only this process holds them.
+    fn keep_or_hold(asked: Question, answer: ContentHash, bytes: Bytes, is_shared: bool) {
+        when {
+            self.definition_of(asked).is_input -> self.store.hold_answer_bytes(answer, bytes)
+            is_shared -> self.store.keep_shared_answer_bytes(answer, bytes)
+            _ -> self.store.keep_answer_bytes(answer, bytes)
+        }
+    }
+
+    /// `record` kept for `asked`, beside the shared store where the question is shared.
+    fn record_kept(asked: Question, record: AnswerRecord, is_shared: bool) {
+        if is_shared { self.store.keep_shared_record(asked, record) } else { self.store.keep_record(asked, record) }
+    }
+
+    /// The set of packages every question `reads`' words name read; none asked where the store shares
+    /// no package, since then no set decides where anything is kept.
+    fn set_of_reads(reads: List<int>) -> int {
+        if !self.store.shares_any() { return NO_NAMES }
+        hashes_in(reads).fold(NO_NAMES, (set, q) -> self.sets.union(set, self.read_set_of(q)))
+    }
+
+    /// The set of packages the question known as `question` read: as settled here, else as it stands
+    /// in the frontier, read by read; a question this process can't tell read a package nobody shares.
+    fn read_set_of(question: ContentHash) -> int {
+        let known = self.read_sets.get(question)
+        if known != null { return known! }
+        let open? = self.frontier_open() else { return self.unplaced() }
+        let at? = open.frontier.place_of(question) else { return self.unplaced() }
+        let found = self.read_set_at(open.frontier, at)
+        self.read_sets.put(question, found)
+        found
+    }
+
+    /// The set of packages the frontier's answer at `at` read: an input's, the package holding the
+    /// path its stamp names; any other's, every package its places read.
+    fn read_set_at(f: Frontier, at: int) -> int {
+        if f.input_at(at) {
+            let kept? = self.kept_stamps().get(f.question_at(at)) else { return self.unplaced() }
+            return self.set_at_path(kept.path)
+        }
+        let places? = f.reads_at(at) else { return self.unplaced() }
+        places.fold(NO_NAMES, (set, r) -> self.sets.union(set, self.read_set_of(f.question_at(r))))
+    }
+
+    /// The set holding the package whose sources hold `path`.
+    fn set_at_path(path: string) -> int { self.sets.of([self.store.package_at(path) ?? UNPLACED]) }
+
+    /// The set holding only the package no store knows.
+    fn unplaced() -> int { self.sets.of([UNPLACED]) }
+
+    /// Whether every package of the set `id` is one the store shares.
+    fn set_shared(id: int) -> bool {
+        let known = self.sets_shared.get_at(id, id)
+        if known != null { return known! }
+        let shared = self.sets.members_of(id).all((name) -> self.store.shares_package(name))
+        self.sets_shared.put_at(id, id, shared)
+        shared
+    }
+
+    /// The packages the question known as `question` read, sorted: what decides which store keeps it
+    /// and which objects may be shared. Absent for a question this process hasn't settled.
+    fn packages_read(question: ContentHash) -> List<string>? {
+        let id? = self.read_sets.get(question) else { return null }
+        self.sets.members_of(id)
+    }
+
+    /// The input being answered read the path `path`: the package holding it joins what it read.
+    fn input_read_at(path: string) {
+        let asker? = self.open_questions.get().last() else { return }
+        self
+            .read_sets
+            .put(
+                asker.question,
+                self
+                    .sets
+                    .union(self.read_sets.get(asker.question) ?? NO_NAMES, self.set_at_path(path)),
+            )
+    }
+
+    /// The query's answer from its body, with every question it asks recorded.
+    fn full_run(asked: Question) -> QueryRun {
+        let reads: ReadTable = read_table()
+        let outer = self.opened(asked, reads)
+        let definition = self.definition_of(asked)
+        self.computed.push(definition.query_name)
+        let compute = definition.compute
+        let bytes = compute(self, asked.arguments)
+        self.open_questions.set(outer)
+        QueryRun { bytes: bytes, reads: reads }
+    }
+
+    /// `asked` opened as the innermost question, its reads recorded in `reads`; answers the
+    /// questions open before it. A question asked while it's being answered is the caller's defect.
+    fn opened(asked: Question, reads: ReadTable) -> List<OpenQuestion> {
+        let outer = self.open_questions.get()
+        if outer.any(it.question.same_as(asked.known_as)) { defect(asked_while_being_answered(asked, outer)) }
+        self
+            .open_questions
+            .push(
+                OpenQuestion {
+                    question: asked.known_as,
+                    query_name: asked.query_name,
+                    arguments: asked.arguments,
+                    reads: reads,
+                    reader: self.next_reader(),
+                },
+            )
+        outer
+    }
+
+    /// THE ANSWER FOLDED FORWARD from its last one in this binary's frontier: the step handed the
+    /// last answer's bytes and each read that moved, every read the last answer made carried as it
+    /// stands now. Absent where folding is off, the query doesn't fold, the frontier doesn't hold the
+    /// question standing or no longer keeps its answer, a read can't be asked now, or the step
+    /// answers none.
+    fn folded_run(asked: Question) -> QueryRun? {
+        if folds_off() != null { return null }
+        let step = match self.definition_of(asked).folding { .By(s) -> s, .Full -> { return null } }
+        let open? = self.frontier_open() else { return null }
+        let f = open.frontier
+        let at? = f.place_of(asked.known_as) else { return null }
+        if !f.stands(at) || f.input_at(at) { return null }
+        let last? = self.store.answer_bytes(f.answer_at(at)) else { return null }
+        let places? = f.reads_at(at) else { return null }
+        let now = [self.settled_now(f.question_at(r))?.answer() for r in places]
+        if now.any(it == null) { return null }
+        let moved = [self.moved_at(f, r) for i, r in places if !now[i]!.same_as(f.answer_at(r))]
+        if moved.any(it == null) { return null }
+        let reads: ReadTable = read_table()
+        for i, r in places {
+            reads.whole(f.question_at(r), now[i]!)
+        }
+        let outer = self.opened(asked, reads)
+        let timed = self.times.get()
+        if timed != null {
+            timed!.opened(asked.query_name, TimedSide.Folded, self.definition_of(asked).pass)
+            timed!.worked.put(asked.known_as, true)
+        }
+        let bytes = step(self, asked.arguments, last, [m! for m in moved])
+        self.times.get()?.closed()
+        self.open_questions.set(outer)
+        let folded? = bytes else { return null }
+        self.folded.push(asked.query_name)
+        QueryRun { bytes: folded, reads: reads }
+    }
+
+    /// The read at `f`'s `r` as moved: its question and the answer it gave there; absent where the
+    /// store no longer knows the question.
+    fn moved_at(f: Frontier, r: int) -> MovedRead? {
+        let q? = self.store.question_known_as(f.question_at(r)) else { return null }
+        MovedRead { question: q, was: f.answer_at(r) }
+    }
+
+    /// `folded`, held to the full computation where `AVRA_FOLD_CHECK` asks: the body runs too, and a
+    /// fold whose answer differs, or that forgot a read the body made, traps naming the query. The
+    /// body's run stands for the fold's then.
+    fn checked_fold(asked: Question, folded: QueryRun?) -> QueryRun? {
+        let run? = folded else { return null }
+        if folds_checked() == null { return run }
+        let full = self.full_run(asked)
+        if !content_hash(full.bytes).same_as(content_hash(run.bytes)) { defect(fold_differs(asked)) }
+        let forgot = full.reads.values().find((r) -> run.reads.get(r.question) == null)
+        if forgot != null {
+            defect(
+                fold_forgot(asked, self.store.question_known_as(forgot!.question)?.query_name ?? ""),
+            )
+        }
+        full
+    }
+
+    /// One part of the answer to `held`'s question, recorded as a read of that part alone, absent
+    /// when there's none: settled once in this engine, as `hash_of_answer_held` settles it, and each
+    /// part found kept on `held` beside the answer it was found in, under its name folded to two
+    /// words, so a second read of it looks nothing up, hashes nothing and makes no box.
+    fn part_of_answer_held(held: HeldQuestion, part_name: string) -> Bytes? { self.part_of_answer_settled(held, self.held_answer_now(held), part_name, null)?.value }
+
+    /// The answer `held`'s question settles to in this engine, recorded as no read: settled once in
+    /// this engine, and read off `held` after.
+    fn held_answer_now(held: HeldQuestion) -> ContentHash {
+        if held.settled_in.get() == self.serial { held.answer.get() } else { self.held_settled(held) }
+    }
+
+    /// One part of `answer`, the answer to `held`'s question, recorded as a read of that part alone,
+    /// as `part_of_answer_held` records it: found in `whole`, the answer this process made, where it
+    /// holds it — so an answer made here is never read back through its saved bytes — else in the
+    /// saved bytes of an answer that came from the store.
+    fn part_of_answer_settled(
+        held: HeldQuestion,
+        answer: ContentHash,
+        part_name: string,
+        whole: AnswerParts?,
+    ) -> KeptPart? {
+        let high = HIGH_LANE.finished(HIGH_LANE.text(HIGH_LANE.seed, part_name))
+        let low = LOW_LANE.finished(LOW_LANE.text(LOW_LANE.seed, part_name))
+        let found = held.part_found(answer, high, low, part_name) ?? held
+            .part_kept(answer, high, low, self.part_looked_up(held.question, answer, part_name, whole))
+        self.record_read(found.read)
+        found.kept
+    }
+
+    /// The part named by the hash `name` in `answer`, the answer to `asked`, looked up in its bytes.
+    fn part_looked_up(asked: Question, answer: ContentHash, part_name: string, whole: AnswerParts?) -> PartFound {
+        let name = content_hash(part_name.bytes())
+        let part = if whole != null { part_in_parts(whole!, name) } else { part_in_saved_parts(self.answer_bytes_of(asked, answer), name) }
+        PartFound {
+            name: part_name,
+            read: RecordedRead {
+                question: asked.known_as,
+                whole_answer: answer,
+                part: PartSeen { part_name: name, part_hash: part_hash_seen(part) },
+            },
+            kept: if part == null { null } else { KeptPart { value: part!.value, hash: part!.part_hash } },
+        }
+    }
+
+    /// Whoever is asking now has made this read; with nobody asking, the question is a root, which
+    /// the frontier keeps with what it reads.
+    fn record_read(read: RecordedRead) {
+        if !self.recording() { return }
+        self.gathered(read)
+        let asker? = self.open_questions.get().last() else { return self.asked_alone.put(read.question, true) }
+        asker.reads.put(read)
+    }
+
+    /// A read of the whole answer `answer` to the question known as `question`, recorded as
+    /// `record_read` records it: a table that holds this read already is left as it stands.
+    fn whole_read(question: ContentHash, answer: ContentHash) {
+        if !self.recording() { return }
+        let gathering = self.gathering.get()
+        if !gathering.is_empty() {
+            let depth = self.open_questions.get().length
+            for g in gathering {
+                if g.depth == depth { g.reads.whole(question, answer) }
+            }
+        }
+        let asker? = self.open_questions.get().last() else { return self.asked_alone.put(question, true) }
+        asker.reads.whole(question, answer)
+    }
+
+    /// Reads made from here on by whoever is asking now are none of its reads, until
+    /// `recorded_again`: for an answer whose question's arguments say all those reads could tell it,
+    /// as a face says all a declaration's reading back can. A question those reads ask records what
+    /// it reads as ever.
+    fn unrecorded_begun() { self.unrecorded_at.set(self.unrecorded_at.get().concat([self.open_questions.get().length])) }
+
+    /// Reads made by whoever is asking now are its reads again, as before the innermost
+    /// `unrecorded_begun`.
+    fn recorded_again() {
+        let at = self.unrecorded_at.get()
+        self.unrecorded_at.set(at.take(at.length - 1))
+    }
+
+    /// Whether a read made now is the asker's: false between `unrecorded_begun` and
+    /// `recorded_again`, with just the questions open that were open there.
+    fn recording() -> bool {
+        let at? = self.unrecorded_at.get().last() else { return true }
+        at != self.open_questions.get().length
+    }
+
+    /// `read`, made with the questions open now, gathered by each gathering begun with just those open.
+    fn gathered(read: RecordedRead) {
+        let gathering = self.gathering.get()
+        if gathering.is_empty() { return }
+        let depth = self.open_questions.get().length
+        for g in gathering {
+            if g.depth == depth { g.reads.put(read) }
+        }
+    }
+
+    /// Reads made from here on with the questions open now, gathered until `reads_gathered`: what
+    /// a remembered answer keeps of the work that found it.
+    fn reads_begun() {
+        let reads: ReadTable = read_table()
+        self
+            .gathering
+            .push(
+                ReadsGathered {
+                    depth: self.open_questions.get().length,
+                    reads: reads,
+                    reader: self.next_reader(),
+                },
+            )
+    }
+
+    /// A serial no reader of this engine has had.
+    fn next_reader() -> int {
+        self.readers.set(self.readers.get() + 1)
+        self.readers.get()
+    }
+
+    /// Who a read made now reaches, as one serial: the innermost gathering begun with the questions
+    /// open now, else the innermost question, else zero for none. Two reads under one serial reach
+    /// the same tables.
+    fn reader() -> int {
+        let open = self.open_questions.get()
+        let inner = self.gathering.get().last()
+        if inner?.depth ?? -1 == open.length { return inner?.reader ?? 0 }
+        open.last()?.reader ?? 0
+    }
+
+    /// The reads gathered since the innermost `reads_begun`, which ends there. Gathering none begun
+    /// is the caller's defect.
+    fn reads_gathered() -> List<RecordedRead> {
+        let all = self.gathering.get()
+        self.gathering.set(all.take(all.length - 1))
+        all.last()!.reads.values()
+    }
+
+    /// `reads` made again by whoever is asking now: a remembered answer read as its work read.
+    fn reads_made_again(reads: List<RecordedRead>) {
+        for read in reads { self.record_read(read) }
+    }
+
+    /// Remembers the answer for the rest of this process as the frontier keeps it, the questions
+    /// it read as `reads`' words, and answers it: an input when its query is read afresh.
+    fn learned(asked: Question, answer: ContentHash, reads: List<int>) -> ContentHash {
+        let entry = HeldEntry {
+            question: asked.known_as,
+            answer: answer,
+            reads: reads,
+            input: self.read_afresh(asked.query_name),
+            root: false,
+        }
+        self.settled_answers.put(asked.known_as, SettledAnswer.Learned(entry))
+        self.store.entry_shared(entry)
+        answer
+    }
+
+    /// What this process holds settled of `question`, an answer lent to it settled now where it
+    /// holds none of its own.
+    fn settled_held(question: ContentHash) -> SettledAnswer? {
+        let held = self.settled_answers.get(question)
+        if held != null { return held }
+        if !self.adopted.get() { return null }
+        let entry? = self.store.shared_entry(question) else { return null }
+        let settled = SettledAnswer.Learned(entry with { root: false })
+        self.settled_answers.put(question, settled)
+        settled
+    }
+
+    /// Every answer the build's other processes learned settled, each where this process holds none
+    /// of its own: what a reader of all it knows needs, which a build asks once, when it keeps its
+    /// frontier.
+    fn lent_settled() {
+        if !self.adopted.get() { return }
+        for entry in self.store.shared_entries(false) {
+            if self.settled_answers.get(entry.question) == null {
+                self
+                    .settled_answers
+                    .put(entry.question, SettledAnswer.Learned(entry with { root: false }))
+            }
+        }
+    }
+
+    /// THE ANSWERS THE BUILD'S OTHER PROCESSES LEARNED, TAKEN WHERE THEY STAND in the build's table:
+    /// each input one of them settled is settled here and its answer compared, with nothing of
+    /// theirs taken meanwhile; then each answer they keep there is this process's, read the first
+    /// time it is asked for. Absent where taken, else why not: where an input moved, none is taken,
+    /// and each answer is checked read by read as a kept one is. `proved` false takes them unproven,
+    /// for a witness that the proof is what catches an input that moved.
+    /// The answers in the build's table no longer this process's: each read there from now on is
+    /// checked read by read as a kept one is.
+    fn shared_let_go() { self.adopted.set(false) }
+
+    fn took_shared(proved: bool) -> string? {
+        self.adopted.set(false)
+        if proved {
+            for e in self.store.shared_entries(true) {
+                let here? = self.settled_now(e.question) else { return "an input it read is not one this process can read" }
+                if !here.answer().same_as(e.answer) { return "an input it read moved" }
+            }
+        }
+        self.adopted.set(true)
+        null
+    }
+
+    /// How many answers this process has settled: a mark, for what it settles after.
+    fn settled_count() -> int { self.settled_answers.values().length }
+
+    /// How a question's query runs. Asking a query nobody defined is the caller's defect.
+    fn definition_of(asked: Question) -> QueryDefinition { self.definitions.get().get(asked.query_name)! }
+}
+
+/// `read`'s answer, read from the file or directory at `path` for the input `engine` is answering:
+/// held by the stamp of where it stands (`standing_at`) where that wears one stamp before the read and
+/// the same after it, and nothing came to stand at `path` meanwhile.
+export fn read_stamped<T>(engine: QueryEngine, path: string, read: fn() -> T) -> T {
+    engine.input_read_at(path)
+    let at = standing_at(path)
+    // LICENSED input.stamp: a stamp decides whether an input is read again, never what it answers
+    let before = stamp(at)
+    let answer = read()
+    // LICENSED input.stamp: a stamp decides whether an input is read again, never what it answers
+    engine.read_under(at, if at == path || !exists(path) { before } else { null })
+    answer
+}
+
+/// What holds a read of `path`: the path, where something stands there; else the nearest directory
+/// above it that stands, since anything coming to stand below it moves that directory's stamp.
+fn standing_at(path: string) -> string {
+    mut at = path
+    // LICENSED input.stamp: a stamp decides whether an input is read again, never what it answers
+    while !exists(at) {
+        let up = dir_of(at)
+        if up.is_empty() { return path }
+        at = up
+    }
+    at
+}
+
+/// How long this process waited for another working beside it, in milliseconds, by the query it
+/// waited on: kept while asks are timed.
+once fn waits() -> Cell<Map<string, int>> {
+    let waited: Cell<Map<string, int>> = Cell.new({})
+    waited
+}
+
+/// Where this process's waits for the processes working beside it went: the queries it waited
+/// longest on, and how long in all.
+export fn waits_said() -> string {
+    let by_query = sorted_by(
+        [w for w, _ms in waits().get()],
+        (a, b) -> waits().get().get(a)! > waits().get().get(b)!,
+    )
+    let total = [ms for _w, ms in waits().get()].sum()
+    "waited ${total}ms: ${["${q} ${waits().get().get(q)!}ms" for q in by_query.take(6)].join(", ")}"
+}
+
+/// The entry a settled answer is as this process learned it; absent for one that stood in the
+/// frontier.
+fn learned_of(s: SettledAnswer) -> HeldEntry? {
+    match s { .Learned(entry) -> entry, .Standing(_, _, _, _) -> null }
+}
+
+/// The entry a settled answer is as it stood in the frontier, with no reads; absent for one this
+/// process learned.
+fn stood_of(s: SettledAnswer) -> HeldEntry? {
+    match s {
+        .Learned(_) -> null,
+        .Standing(question, answer, _, _) -> HeldEntry { question: question, answer: answer, reads: [], input: false, root: false },
+    }
+}
+
+/// The answer an input's stamp names until its question settles.
+fn unanswered() -> ContentHash { ContentHash { high_word: 0, low_word: 0 } }
+
+fn asked_while_being_answered(asked: Question, through: List<OpenQuestion>) -> string {
+    "`${asked.query_name}` (${arguments_spelled(asked.arguments)}) was asked while it was being answered, under ${[o.query_name for o in through].join(" -> ")}, from `${through.first()?.query_name ?? ""}` (${arguments_spelled(through.first()?.arguments ?? "".bytes())})"
+}
+
+/// A question's arguments as the text they carry: each run of printable octets, apart.
+fn arguments_spelled(arguments: Bytes) -> string {
+    mut runs: List<string> = []
+    mut run: List<int> = []
+    for at in 0..arguments.length {
+        let octet = arguments.at(at)
+        if octet >= 32 && octet < 127 {
+            run.push(octet)
+        } else if !run.is_empty() {
+            runs.push(from_codepoints(run))
+            run = []
+        }
+    }
+    if !run.is_empty() { runs.push(from_codepoints(run)) }
+    runs.join(" ")
+}
+
+fn fold_differs(asked: Question) -> string {
+    "`${asked.query_name}` folded forward answers otherwise than its body: a fold's answer is the body's, byte for byte"
+}
+
+fn fold_forgot(asked: Question, read: string) -> string {
+    "`${asked.query_name}` folded forward without a read of `${read}` its body makes: a fold reads all its body reads"
+}
+
+// LICENSED input.debug_flag: a debug flag is the process's own, not an input
+once fn folds_off() -> string? { env("AVRA_FOLD_OFF") }
+
+// LICENSED input.debug_flag: a debug flag is the process's own, not an input
+once fn folds_checked() -> string? { env("AVRA_FOLD_CHECK") }
+
+fn two_queries_named(definition: QueryDefinition) -> string {
+    "two queries are named `${definition.query_name}`, so their saved answers would collide"
+}
+
+/// A QUESTION A QUERY'S WRAPPER HOLDS, under the key its arguments fold to, with the answer it
+/// settled to in the engine whose serial `settled_in` holds: a question settles once in an engine,
+/// so a later ask of it in that engine reads the answer here and looks nothing up. A wrapper's
+/// table outlives an engine, and an answer settled in one is never another's.
+/// The parts read of its answer are kept beside the answer they were found in (`PartsFound`).
+export type HeldQuestion = { question: Question, settled_in: Cell<int>, answer: Cell<ContentHash>, parts: Cell<PartsFound?> }
+
+/// The parts of one answer read so far, by their names folded to a key's two words (`KeyLane`,
+/// which makes no box): kept for the answer they were found in alone, so an answer that moves finds
+/// every part afresh.
+type PartsFound = { answer: ContentHash, by_name: HashKeyedTable<PartFound> }
+
+/// A part found in an answer: what a read of it sees, and what it holds, absent for no such part.
+/// It's found under the name it's read by, which `AVRA_HELD_QUESTIONS_CHECK` compares at each read
+/// as it compares a held question's, and a read of it records `read`, the same at every read of it
+/// in this answer, so a read of a part found before makes nothing.
+type PartFound = { name: string, read: RecordedRead, kept: KeptPart? }
+
+/// A part as a read of it finds it: what it holds, and the hash of what it holds — the same for
+/// every part that holds the same, so a reader may keep what it decoded of one by that hash, and
+/// read it again for nothing. Made once, where the part is first found in an answer.
+export type KeptPart = { value: Bytes, hash: ContentHash }
+
+/// `question`, held, settled in no engine yet.
+fn held_question(question: Question) -> HeldQuestion {
+    let parts: Cell<PartsFound?> = Cell.new(null)
+    HeldQuestion {
+        question: question,
+        settled_in: Cell.new(-1),
+        answer: Cell.new(unanswered()),
+        parts: parts,
+    }
+}
+
+impl HeldQuestion {
+    /// The part named by the hash `name` found in `answer` before, absent when none was.
+    fn part_found(answer: ContentHash, high: int, low: int, name: string) -> PartFound? {
+        let found? = self.parts.get() else { return null }
+        if !found.answer.same_as(answer) { return null }
+        let part? = found.by_name.get_at(high, low) else { return null }
+        if held_questions_checked() != null && part.name != name { defect(part_folded_twice(name, part.name)) }
+        part
+    }
+
+    /// `part`, found in `answer`, kept for the reads of it after; the parts found in an answer
+    /// before it are let go.
+    fn part_kept(answer: ContentHash, high: int, low: int, part: PartFound) -> PartFound {
+        let was = self.parts.get()
+        let found = if was != null && was!.answer.same_as(answer) {
+            was!
+        } else {
+            let fresh = PartsFound { answer: answer, by_name: hash_keyed_table() }
+            self.parts.set(fresh)
+            fresh
+        }
+        found.by_name.put_at(high, low, part)
+        part
+    }
+}
+
+/// The question a query's wrapper holds under the key its arguments fold to, the key's two words;
+/// absent when it holds none, and always under `AVRA_HELD_QUESTIONS_CHECK`, so each ask makes its
+/// question again and `question_kept` compares the two.
+export fn question_at(held: HashKeyedTable<HeldQuestion>, high: int, low: int) -> HeldQuestion? {
+    if held_questions_checked() != null { return null }
+    held.get_at(high, low)
+}
+
+/// `made`, held under the key its arguments fold to, so a later ask of the same arguments makes
+/// nothing to know what it asks. A question held there already must be the one made.
+export fn question_kept(held: HashKeyedTable<HeldQuestion>, high: int, low: int, made: Question) -> HeldQuestion {
+    if !questions_held() { return held_question(made) }
+    let was? = held.get_at(high, low) else {
+        let fresh = held_question(made)
+        held.put_at(high, low, fresh)
+        return fresh
+    }
+    if !was.question.known_as.same_as(made.known_as) { defect(key_folded_twice(made.query_name)) }
+    was
+}
+
+fn part_folded_twice(name: string, was: string) -> string { "the parts `${name}` and `${was}` of one answer fold to one key: a part's key is its name folded on two lanes" }
+
+fn key_folded_twice(query: string) -> string { "two questions of `${query}` fold to one key: a held question's key is folded from every argument, each after a tag of its kind" }
+
+// LICENSED input.debug_flag: a debug flag is the process's own, not an input
+once fn held_questions_checked() -> string? { env("AVRA_HELD_QUESTIONS_CHECK") }
+
+/// Whether a query's wrapper holds each question it asked by its arguments' values: on, unless
+/// `AVRA_HELD_QUESTIONS_OFF` is set, which writes and hashes the arguments at every ask.
+export fn questions_held() -> bool { held_questions_off() == null }
+
+// LICENSED input.debug_flag: a debug flag is the process's own, not an input
+once fn held_questions_off() -> string? { env("AVRA_HELD_QUESTIONS_OFF") }
+
+/// A text argument as a question's key spells it: its kind, its length, then itself, so no two run
+/// together and none passes for another kind's key.
+export fn held_text(s: string) -> string { "s${s.length}:${s}" }
+
+/// A number argument as a question's key spells it: its kind, its digits, an end.
+export fn held_int(n: int) -> string { "i${n};" }
+
+/// A truth argument as a question's key spells it: a tag of its own, so no key of another kind
+/// begins as one does.
+export fn held_bool(b: bool) -> string { if b { "T" } else { "F" } }
+
+/// A file argument as a question's key spells it: its kind, then its package and its path, each a
+/// text, in one spelling.
+export fn held_file(a: SourceFileAddress) -> string { "fs${a.package_name.length}:${a.package_name}s${a.path_in_package.length}:${a.path_in_package}" }
+
+/// A question's arguments as its keys spell them, as the bytes it's known by and read back from.
+export fn keyed_arguments(keys: List<string>) -> Bytes { held_key_of(keys).bytes() }
+
+/// The keys a question's arguments were spelled as, read back in order.
+export type KeyReader = { keys: string, at: Cell<int> }
+
+/// A reader of the keys `arguments` spell, from the first.
+export fn key_reader(arguments: Bytes) -> KeyReader { KeyReader { keys: arguments.text() ?? "", at: Cell.new(0) } }
+
+impl KeyReader {
+    /// The next key, a text.
+    fn text() -> string {
+        let from = self.at.get() + 1
+        let colon = from + self.keys.substring(from, self.keys.length).index_of(":")
+        let length = self.counted(from, colon)
+        self.at.set(colon + 1 + length)
+        self.keys.substring(colon + 1, colon + 1 + length)
+    }
+
+    /// The next key, a number.
+    fn int() -> int {
+        let from = self.at.get() + 1
+        let end = from + self.keys.substring(from, self.keys.length).index_of(";")
+        self.at.set(end + 1)
+        self.counted(from, end)
+    }
+
+    /// The digits between `from` and `to`, as the number a key spelled; a key that spells none was
+    /// written by no wrapper.
+    fn counted(from: int, to: int) -> int {
+        let n? = parse_int(self.keys.substring(from, to)) else {
+            defect(unread_key(self.keys))
+            return 0
+        }
+        n
+    }
+
+    /// The next key, a truth.
+    fn truth() -> bool {
+        let at = self.at.get()
+        self.at.set(at + 1)
+        self.keys.substring(at, at + 1) == "T"
+    }
+
+    /// The next key, a file.
+    fn file() -> SourceFileAddress {
+        self.at.set(self.at.get() + 1)
+        let package = self.text()
+        SourceFileAddress { package_name: package, path_in_package: self.text() }
+    }
+}
+
+/// A question's key: its arguments' spellings, in order.
+export fn held_key_of(keys: List<string>) -> string { if keys.length == 1 { keys[0] } else { keys.join("") } }
+
+/// What an answer's bytes read back as, held by a query's wrapper for every later ask of that answer.
+export type HeldAnswer<T> = { value: T }
+
+/// Whether each answer held as computed is checked to read back as it was saved:
+/// `AVRA_HELD_ROUNDTRIP`.
+export fn round_trips_checked() -> bool { round_trip_flag() != null }
+
+// LICENSED input.debug_flag: a debug flag is the process's own, not an input
+once fn round_trip_flag() -> string? { env("AVRA_HELD_ROUNDTRIP") }
+
+/// An answer of `query` that read back as something else than it was saved from.
+export fn round_trip_broken(query: string) { defect(round_trip_voice(query)) }
+
+fn round_trip_voice(query: string) -> string { "an answer of `${query}` reads back as something other than the value it was saved from, so holding the value would differ from reading it" }
+
+/// How many answers this process's asks decoded from the store's bytes.
+export once fn answers_decoded() -> Cell<int> { Cell.new(0) }
+
+/// How many answers this process decoded, as a run says it.
+export fn decodes_said() -> string { "decoded: ${answers_decoded().get()} answers read back" }
+
+/// An answer a query's code just computed, and the arguments it was computed for.
+export type FreshAnswer<T> = { arguments: Bytes, value: T }
+
+/// Whether a query's wrapper holds what each answer reads back as: on, unless `AVRA_HELD_ANSWERS_OFF`
+/// is set, which reads every answer back at every ask — the same answers, decoded again.
+export fn answers_held() -> bool { held_answers_off() == null }
+
+// LICENSED input.debug_flag: a debug flag is the process's own, not an input
+once fn held_answers_off() -> string? { env("AVRA_HELD_ANSWERS_OFF") }
+
+fn unread_key(keys: string) -> string { "a question's keys don't read back as a wrapper spells them: ${keys}" }

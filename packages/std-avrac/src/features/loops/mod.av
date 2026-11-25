@@ -1,0 +1,32 @@
+//! Loops — `while c { statements }` and `for name in subject
+//! { statements }`, the subject a walk source or a counted range
+//! `lo..hi`, read once. Statements, no value; each body is a statement
+//! list under its own scope.
+//! `break` and `continue` end a turn early — the innermost loop's,
+//! or the `for` whose name follows the word (`break row`).
+use features.{LanguageFeature}
+use features.loops.{push_loop, index_walk, branched_push_loop}
+// LICENSED modules.unused_import: `Term` is named by GENERATED code, not by this file — a rule
+// that builds a node in place writes a `Term`. Resolve needs the name the source never spells.
+use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Fixed, Term, Expect, Recover}
+use diagnostics.{DiagCode}
+
+export fn loops() -> LanguageFeature {
+    let codes = table<DiagCode> {
+        kind         | summary
+        "loop.jump"  | "`break` and `continue` end a loop's turn, so a loop must enclose them"
+        "loop.label" | "a `break` or `continue` label is the name a `for` binds"
+    }
+    LanguageFeature loops {
+        gram: grammar {
+            stmt = "while" cond:expression "{" ( stmts:stmt | BREAK )* "}" END @recover(sync_to: "END") -> Stmt.While @head(cond) | "for" ( "(" index:NAME "," name:NAME ")" | index:NAME "," name:NAME | name:NAME ) "in" subject:expression "{" ( stmts:stmt | BREAK )* "}" END -> Stmt.ForEach @head(subject) | "for" name:NAME "in" subject:counted "{" ( stmts:stmt | BREAK )* "}" END @recover(sync_to: "END") -> Stmt.ForEach @head(subject)
+            counted = lo:expression ".." hi:expression -> Expr.Range @alias
+            stmt = "break" name:NAME END -> Stmt.Jump(label = Expr.Ident(name = name), again = false)
+            stmt = "break" END @expect("END", "`break` ends its line, or names its loop — `break row`") @recover(sync_to: "END") -> Stmt.Jump(again = false)
+            stmt = "continue" name:NAME END -> Stmt.Jump(label = Expr.Ident(name = name), again = true)
+            stmt = "continue" END @expect("END", "`continue` ends its line, or names its loop — `continue row`") @recover(sync_to: "END") -> Stmt.Jump(again = true)
+        }
+        diags: codes
+    }
+    loops
+}

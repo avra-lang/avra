@@ -1,0 +1,287 @@
+//! One parsed program: the tree, its source, and the owner map —
+//! which feature speaks for which node. Parsing and the statement
+//! spine live here; analysis stacks on top in analysis.av.
+use core.{
+    SyntaxArena,
+    loc_span,
+    new_node_store,
+    Stmt,
+    StmtId,
+    StmtStart,
+    statement_after,
+    ExprId,
+    Span,
+    Param,
+    Variant,
+    Case,
+    TypeRef,
+    TypeId,
+    flatten,
+    ParseRefusal,
+    FileId,
+    joined,
+    touch,
+    qtrace,
+    traced,
+}
+use @std.path.{joined_path, normalized}
+use @std.errors.{Loc}
+use compiler.lower.{Unit}
+use diagnostics.{no_voices, Diag, has_errors, rendered_among}
+use features.{Wanted}
+use @std.grammar.{
+    Captured,
+    RunOutcome,
+    run_grammar,
+    run_untold,
+    run_from,
+    lex_diagnostic,
+    Diagnostic,
+    Cause,
+}
+use grammar.{Token, DocComment, lex_source, TokenKind, avra_lexeme, avra_token_tables}
+use features.{
+    LangNode,
+    PatSemantics,
+    Dispatch,
+    build_named,
+    build_row,
+    list_at,
+    stmt_id_at,
+    type_ref_at,
+    BlockWords,
+}
+use features.quote.{QuotePatSemantics}
+use features.enums.{EnumPatSemantics}
+use features.lists.{ListPatSemantics}
+use features.structs.{FieldPatSemantics}
+use features.formats.{FormatPatSemantics}
+use features.narrows.{NarrowPatSemantics}
+
+use diagnostics.{SourceFile, Voices}
+use compiler.backend.{run_kept, Ended, Kept}
+use compiler.lower.{Lowered}
+use compiler.memory.{memory}
+
+/// One parsed source: the tree (holes included), the SourceFile it
+/// came from, and every diagnostic from lexing and parsing, in
+/// source order. THE value every later pass takes first.
+export type Parsed = {
+    store: SyntaxArena,
+    stmts: List<StmtId>,
+    source: SourceFile,
+    voices: Voices,
+}
+
+export fn new_dispatch() -> Dispatch {
+    let enumpats: dyn PatSemantics = EnumPatSemantics {}
+    let formatpats: dyn PatSemantics = FormatPatSemantics {}
+    let narrowpats: dyn PatSemantics = NarrowPatSemantics {}
+    let quotepats: dyn PatSemantics = QuotePatSemantics {}
+    let listpats: dyn PatSemantics = ListPatSemantics {}
+    let fieldpats: dyn PatSemantics = FieldPatSemantics {}
+    Dispatch {
+        enumpats: enumpats,
+        formatpats: formatpats,
+        narrowpats: narrowpats,
+        quotepats: quotepats,
+        listpats: listpats,
+        fieldpats: fieldpats,
+    }
+}
+
+/// Parse a source into a FRESH store — the whole-file entry — under
+/// the block words the file imports (`BlockWords {}` for a file that
+/// imports none). No default: an omitted `words` parses a NARROWER
+/// language than the file was written in, silently — the caller
+/// states which words it parses under, even when that answer is
+/// none.
+///
+/// THE UNTOLD RUN FIRST: a file that parses clean is parsed once, with no miss
+/// keeping its story. Anything spoken is spoken again by the telling run, over a
+/// store of its own — the builders wrote into the first.
+export fn parse_program(lang: Language, src: SourceFile, words: BlockWords) -> Parsed {
+    if traced() { qtrace("Q\tparse\t${src.file}\n") }
+    work_parsed()
+    let quiet = parsed_fresh(lang, src, words, false)
+    let p = if quiet.voices.list.is_empty() { quiet } else { parsed_fresh(lang, src, words, true) }
+    // A `state` at the top level is a DECLARATION, marked where the parse makes it, so
+    // every reader of the arena — an admission, a body typed from kept lines — sees it so.
+    // A state inside a body keeps its statement mark alone.
+    for s in p.stmts {
+        if p.store.is_state_stmt(s) { p.store.mark_module_state(s) }
+    }
+    p
+}
+
+/// The words a parse under `words` lexes by.
+fn words_lexed(words: BlockWords) -> LexWords {
+    LexWords {
+        grammars: [g.word for g in words.grammars],
+        components: [c.word for c in words.components if !c.own],
+        own: [c.word for c in words.components if c.own],
+    }
+}
+
+fn parsed_fresh(lang: Language, src: SourceFile, words: BlockWords, telling: bool) -> Parsed {
+    let store = new_node_store(src.file)
+    parsed_as(lang, store, src, words, telling)
+}
+
+fn parsed_as(lang: Language, store: SyntaxArena, src: SourceFile, words: BlockWords, telling: bool) -> Parsed {
+    if lang.syntax == null {
+        return Parsed {
+            store: store,
+            stmts: [],
+            source: src,
+            voices: Voices { list: lang.diagnostics },
+        }
+    }
+    let lexed = lexed_under(src.text, words_lexed(words), lang.keywords)
+    let door = words with { door: sugar_door(lang) }
+    let build = (name: string, args: List<Captured<Token, LangNode>>, loc: Loc?) -> build_named(
+        lang.builders,
+        store,
+        name,
+        args,
+        loc_span(loc),
+        src.text,
+        door,
+    )
+    let o = if telling { run_grammar<Token, LangNode>(lang.syntax!, lexed.tokens, avra_lexeme(), build) } else { quietly(lang, lexed.tokens, store, src.text, door, build) }
+    // a remark means nothing to any pass; it rides the store so the
+    // printer can put it back where it was written. Set before
+    // attach_docs: an orphaned doc group extends this list, and
+    // needs it already standing to merge into.
+    store.keep_remarks(lexed.remarks)
+    attach_docs(store, lexed.docs)
+    if !lexed.file_doc.is_empty() { store.document_file(lexed.file_doc) }
+    for e in lexed.errors { store.refuse(ParseRefusal.Grammar(Cause.Lex, e.message, e.span, [], "(lexing)")) }
+    for d in o.diagnostics {
+        store
+            .refuse(ParseRefusal.Grammar(d.cause, d.message, loc_span(d.loc), d.expected, d.in_rule))
+    }
+    let stmts = [store.declared_instance(s) for s in program_stmts(store, o)]
+        .concat(store.hoisted_decls())
+    store.settle_prints()
+    Parsed {
+        store: store,
+        stmts: stmts,
+        source: src,
+        voices: Voices { list: refusals_spoken(store.refusals(), src.file, lang.rows.codes) },
+    }
+}
+
+/// The untold run of `tokens`: the generated parser's where the language has it, the engine's
+/// otherwise.
+fn quietly(
+    lang: Language,
+    tokens: List<Token>,
+    store: SyntaxArena,
+    text: string,
+    door: BlockWords,
+    build: fn(string, List<Captured<Token, LangNode>>, Loc?) -> Result<Captured<Token, LangNode>, string>,
+) -> RunOutcome<Token, LangNode> {
+    let generated? = lang.untold else { return run_untold<Token, LangNode>(lang.syntax!, tokens, avra_lexeme(), build) }
+    let by_index: fn(int, List<Captured<Token, LangNode>>, Loc?) -> Result<Captured<Token, LangNode>, string> = (
+        ix,
+        args,
+        loc,
+    ) -> build_row(generated.rows[ix], avra_builders[ix], store, args, loc_span(loc), text, door)
+    avra_untold(
+        tokens,
+        avra_lexeme(),
+        avra_token_tables(tokens, avra_lits(), generated.kinds, generated.worn),
+        generated.kinds,
+        by_index,
+    )
+}
+
+/// A type SPELLING (`List<ExprId>?`) as the written type it spells —
+/// the meta contract carries types as their spellings, and a type
+/// hole filled from one reads it with the language's own rule. Null
+/// when the spelling is not a type.
+export fn parse_type_ref(lang: Language, text: string) -> TypeRef? {
+    if lang.syntax == null { return null }
+    let store = new_node_store()
+    let lexed = lex_source(text)
+    if !lexed.errors.is_empty() { return null }
+    let build = (name: string, args: List<Captured<Token, LangNode>>, loc: Loc?) -> build_named(
+        lang.builders,
+        store,
+        name,
+        args,
+        loc_span(loc),
+        text,
+        BlockWords {},
+    )
+    let o = run_from<Token, LangNode>(
+        lang.syntax!,
+        "type",
+        [t for t in lexed.tokens if t.kind != TokenKind.Break],
+        avra_lexeme(),
+        build,
+    )
+    if o.result == null || !o.diagnostics.is_empty() { return null }
+    type_ref_at([o.result!], 0)
+}
+
+/// Attach each source-ordered doc group to the declaration its
+/// prefix run opens — the nearest statement beginning after the
+/// group's anchor, but only where nothing besides that run (an
+/// `export`/marker keyword, or the annotations that wrap the
+/// statement) stands in between. This includes nested methods;
+/// annotations and `export` precede the declaration node's own
+/// span, so token equality is deliberately not required there. A
+/// group whose claim fails — its anchor was a MARK's `@word`, not
+/// an ANNOTATION's, and nothing else stands between it and the
+/// next real statement to redeem it — is not forced onto whatever
+/// statement happens to follow; it survives as a remark instead.
+fn attach_docs(store: SyntaxArena, docs: List<DocComment>) {
+    let starts = store.stmt_starts()
+    for doc in docs {
+        let target = doc_target(store, starts, doc)
+        if target == null {
+            store.orphan_doc(doc.lines, doc.line_ats)
+        } else {
+            store.document(target!, doc.lines, doc.at)
+        }
+    }
+}
+
+/// The statement `doc` opens, or null when its anchor cannot be
+/// claimed. A keyword anchor (`fn`, `export`, …) always opens a
+/// real declaration, however far `export` or an annotation run sits
+/// ahead of the statement's own span — those are the only things a
+/// keyword can precede. A `@word` anchor is ambiguous at the lexer,
+/// so it claims a statement only when the parse recorded an
+/// ANNOTATION starting at that exact offset; a MARK never does.
+fn doc_target(store: SyntaxArena, starts: List<StmtStart>, doc: DocComment) -> StmtId? {
+    if !doc.pkg { return statement_after(starts, doc.before) }
+    // A quote argument can hold statements before the declaration's own
+    // span. The annotation's exact owner, not the nearest such statement,
+    // claims its doc. A member mark has no annotation owner here.
+    starts
+        .find(
+            (s: StmtStart) -> store
+                .annotations_of(s.stmt)
+                .any(it.span != null && it.span!.lo == doc.before),
+        )?.stmt
+}
+
+/// The program's statements in order. A recovery hole becomes an
+/// explicit Stmt.Error node — the tree survives bad input visibly.
+fn program_stmts(store: SyntaxArena, o: RunOutcome<Token, LangNode>) -> List<StmtId> {
+    mut out: List<StmtId> = []
+    if o.result == null { return out }
+    let items = list_at([o.result!], 0)
+    for j in 0..items.length {
+        let sid: StmtId? = stmt_id_at(items, j)
+        if sid == null {
+            out.push(store.alloc_stmt(Stmt.Error))
+        } else {
+            out.push(sid!)
+        }
+    }
+    out
+}

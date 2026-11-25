@@ -1,0 +1,40 @@
+// proves: the one-probe write through every place a map stands in —
+// a `mut` seat, a type parameter, thawed static data, a field path —
+// and beside the shapes that keep two probes: another field, the key
+// read twice. A branch and an unwrap over the read fuse too.
+type Scores = Map<string, int>
+type Holder = { inner: Inner }
+type Inner = { m: Map<string, int>, other: Map<string, int> }
+const BASE: Map<string, int> = {"a": 1}
+
+fn base() -> Map<string, int> { BASE }
+
+fn bump(mut m: Map<string, int>, k: string) { m.set(k, (m.get(k) ?? 0) + 1) }
+
+fn update<V>(mut m: Map<string, V>, k: string, f: fn(V?) -> V) { m.set(k, f(m.get(k))) }
+
+mut m = {"a": 1}
+bump(m, "a")
+bump(m, "new")
+mut thawed = base()
+thawed.set("a", (thawed.get("a") ?? 0) + 10)
+mut h = Holder { inner: Inner { m: {"x": 1}, other: {"x": 100} } }
+h.inner.m.set("x", (h.inner.m.get("x") ?? 0) + 1)
+mut h2 = Holder { inner: Inner { m: {"x": 1}, other: {"x": 100} } }
+h2.inner.m.set("x", (h2.inner.other.get("x") ?? 0) + 1)
+mut twice = {"k": 2}
+twice.set("k", (twice.get("k") ?? 0) + (twice.get("k") ?? 0))
+mut branched: Map<string, int> = {}
+branched.set("k", if branched.get("k") == null { 1 } else { 2 })
+branched.set("k", if branched.get("k") == null { 1 } else { 2 })
+mut forced = {"k": 5}
+forced.set("k", forced.get("k")! * 2)
+mut texts: Map<string, string?> = {}
+update(texts, "t", (v) -> "first")
+update(texts, "t", (v) -> "${v ?? null ?? "-"}!")
+mut nums: Map<string, int?> = {}
+update(nums, "n", (v) -> null)
+update(nums, "n", (v) -> 3)
+let s: Scores = {"a": 1, "b": 5}
+let top = s.filter(it.value > 2)
+"${m.get("a") ?? 0}${m.get("new") ?? 0} ${thawed.get("a") ?? 0}${BASE.get("a") ?? 0} ${h.inner.m.get("x") ?? 0} ${h2.inner.m.get("x") ?? 0} ${twice.get("k") ?? 0} ${branched.get("k") ?? 0} ${forced.get("k") ?? 0} ${texts.get("t") ?? null ?? "?"} ${nums.get("n") ?? null ?? -1} ${top.keys().join("")}${top.length}"

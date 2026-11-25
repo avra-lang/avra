@@ -1,0 +1,122 @@
+// A program held in memory, asked of the program layer: what its build says, what it runs to, and
+// the count of what it says.
+use @std.avrac.testing.{
+    answered,
+    floored,
+    judged,
+    provided,
+    refusals,
+    refused_at_run,
+    refused_in,
+    refused_with,
+    said,
+    shown,
+}
+use @std.avrac.compiler.backend.{render_ir}
+use @std.avrac.testing.held.{held_at}
+
+spec "testing/held — a lone source on the program layer" {
+    given "a program its build accepts" {
+        then "runs to its answer" {
+            shown("1 + 2") == "3"
+        }
+        then "reads the prelude's verbs" {
+            shown("[1, 2, 3].filter(it > 1).length") == "2"
+        }
+        then "says nothing" {
+            refusals("enum E { A, B }\nE.B.name") == 0
+        }
+        then "is clean" {
+            judged("fn f() -> int { 2 }\nf()").clean()
+        }
+    }
+    given "a program its build refuses" {
+        then "is refused once, in the law's words" {
+            refused_with(
+                "enum P { A, B(int) }\nP.all().length",
+                "`all` lists an enum whose variants carry nothing, and `P.B` carries a payload",
+            )
+        }
+        then "is placed in `<source>`" {
+            judged("let a: int = \"x\"\na").report().contains("<source>:1:14")
+        }
+        then "says each mistake" {
+            refusals("let a: int = \"x\"\nlet b: string = 1\nnope()") == 3
+        }
+        then "shows as refused" {
+            shown("nope()") == "<refused>"
+        }
+        then "does not run" {
+            judged("nope()").ran() == null
+        }
+    }
+    given "a program's IR" {
+        then "a fn is signed by its seats' layouts, the program holding no type of its own" {
+            render_ir(judged("fn f(n: int) -> int { n + 1 }\nf(2)").lowered()).contains("f(r0: ")
+        }
+        then "the entry alone renders too" {
+            render_ir(judged("1 + 2").lowered()).contains("call avra_puts(")
+        }
+    }
+    given "a program that refuses to run" {
+        then "the evaluator's refusal is the run's" {
+            refused_at_run("let z = 0\n1 / z", "division by zero")
+        }
+        then "a const that traps while settling" {
+            refused_at_run(
+                "fn boom(n: int) -> int {\n    n / 0\n}\nconst Z: int = boom(1)\nZ",
+                "trapped while settling",
+            )
+        }
+        then "a program that runs is not refused" {
+            !refused_at_run("1 + 2", "")
+        }
+    }
+}
+
+const APP: string = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n"
+
+spec "testing/held — a package held in memory" {
+    given "a program beside a provider package" {
+        then "runs through the provider's export" {
+            answered(provided("use @x.c.{seven}\nseven()", "export fn seven() -> int { 7 }")) == "7"
+        }
+        then "says nothing" {
+            said(provided("use @x.c.{seven}\nseven()", "export fn seven() -> int { 7 }")).is_empty()
+        }
+        then "is refused once, in the law's words" {
+            refused_in(
+                provided("nope()", "export fn seven() -> int { 7 }"),
+                "no `fn nope` is defined",
+            )
+        }
+        then "a refusal is placed in the file it stands in" {
+            provided("nope()", "export fn seven() -> int { 7 }")
+                .report()
+                .contains("/w/src/main.av:1:1")
+        }
+    }
+    given "a program on the prelude alone" {
+        then "runs" {
+            answered(floored("[1, 2, 3].filter(it > 1).length")) == "2"
+        }
+    }
+    given "a package graph" {
+        then "a row naming a directory with no manifest is refused before any file is read" {
+            let files = {
+                "/w/avra.toml": APP + "\n[dependencies]\n\"@x/gone\" = { path = \"vendor/gone\" }\n",
+                "/w/src/main.av": "nope()",
+            }
+            let j = held_at(files, "/w").judged_at("/w/src/main.av")
+            j.diagnostics.length == 1 && !j.report().contains("nope")
+        }
+        then "a module of the package's own is read" {
+            let files = {
+                "/w/avra.toml": APP,
+                "/w/src/main.av": "use lib.{two}\ntwo() + 1",
+                "/w/src/lib/lib.av": "export fn two() -> int { 2 }",
+            }
+            answered(held_at(files, "/w").judged_at("/w/src/main.av")) == "3"
+        }
+    }
+}

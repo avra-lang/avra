@@ -1,0 +1,35 @@
+//! `forms/model_form.av` — a form for any decoded record: one input per
+//! field `T` declares, and a submit that decodes what was typed through
+//! `T`'s own rules — handing the handler a `T`, or showing each field's
+//! issue beside it in its rule's own words.
+//!
+//!     model_form<Signup> { on submit { s -> save(s) } }
+//!
+//! The typed half is stateless; what was typed is `form_inputs`' own,
+//! held as text, so the instance it keeps is one type for every `T` (a
+//! `once fn` takes no type parameters, and a stateful composition's
+//! keeper is one).
+use @std.validate.{Decode, Value, Issue, Coercion}
+
+export component model_form<T: Decode> {
+    submit_label: string = "Save"
+    on submit(value: T)
+    let shapes = T.fields()
+    form_inputs shapes {
+        submit_label: self.submit_label
+        judged: (v: Value) -> self.decoded(v)
+    }
+
+    /// What was typed decoded as `T` — handed on, answering no issue, or
+    /// refused, answering every one.
+    fn decoded(v: Value) -> List<Issue> {
+        match T.decode(v, Coercion.Lax) {
+            .Ok(value) -> {
+                let fire? = self.submit else { return [] }
+                fire(value)
+                []
+            },
+            .Err(e) -> e.all,
+        }
+    }
+}

@@ -1,0 +1,102 @@
+//! The loop statements' StmtSemantics — one impl per kind, dispatch
+//! one-liners. The rule bodies live beside this file, by concern:
+//! check.av for the typing laws, lower.av — the MEANING — for the
+//! brackets.
+use core.{StmtId, ExprId, Reg, SyntaxArena}
+use core.stmt.{While, ForEach, Jump}
+use features.{StmtSemantics, ResolveCx, TypeCx, LowerCx, NameFacts, nothing}
+
+impl StmtSemantics for While {
+    fn resolve_stmt(mut cx: ResolveCx, s: StmtId) {
+        match cx.view.store.stmt(s) {
+            .While(cond, stmts) -> {
+                cx.walk(cond)
+                cx.scope_stmts(stmts)
+            },
+            _ -> nothing(),
+        }
+    }
+
+    fn type_stmt(mut cx: TypeCx, s: StmtId) {
+        check_while(cx, s)
+    }
+
+    fn lower_stmt(mut cx: LowerCx, s: StmtId) -> Reg? {
+        match cx.view.store.stmt(s) {
+            .While(cond, stmts) -> {
+                lower_while(cx, s, cond, stmts)
+                null
+            },
+            _ -> null,
+        }
+    }
+}
+
+impl StmtSemantics for ForEach {
+    /// The subject resolves OUTSIDE the binding (a list never sees
+    /// its own element name); the body inside it.
+    fn resolve_stmt(mut cx: ResolveCx, s: StmtId) {
+        match cx.view.store.stmt(s) {
+            .ForEach(_, _, subject, stmts) -> {
+                cx.walk(subject)
+                cx.bound_scope(s, [], stmts)
+            },
+            _ -> nothing(),
+        }
+    }
+
+    fn type_stmt(mut cx: TypeCx, s: StmtId) {
+        check_for_each(cx, s)
+    }
+
+    fn lower_stmt(mut cx: LowerCx, s: StmtId) -> Reg? {
+        match cx.view.store.stmt(s) {
+            .ForEach(_, _, subject, stmts) -> {
+                lower_for_each(cx, s, subject, stmts)
+                null
+            },
+            _ -> null,
+        }
+    }
+}
+
+impl StmtSemantics for Jump {
+    /// A label resolves as a read of the name it spells — the binding
+    /// in hand, never the name, says which loop it is.
+    fn resolve_stmt(mut cx: ResolveCx, s: StmtId) {
+        let label? = jump_label(cx.view.store, s) else { return }
+        cx.walk(label)
+    }
+
+    fn type_stmt(mut cx: TypeCx, s: StmtId) {
+        check_jump(cx, s)
+    }
+
+    fn lower_stmt(mut cx: LowerCx, s: StmtId) -> Reg? {
+        match cx.view.store.stmt(s) {
+            .Jump(label, again) -> lower_jump(cx, label, again),
+            _ -> nothing(),
+        }
+        null
+    }
+}
+
+/// A jump's label, when it writes one.
+fn jump_label(store: SyntaxArena, s: StmtId) -> ExprId? {
+    // a feature matching its own variants
+    match store.stmt(s) { .Jump(label, _) -> label, rest -> null }
+}
+
+/// The loop a label names: the `for` whose element or index it binds.
+fn label_loop(names: NameFacts, store: SyntaxArena, label: ExprId) -> StmtId? {
+    match names.binding(label)? {
+        .Def(s) or .Index(s) -> if is_for(store, s) { s } else { null },
+        rest -> null,
+    }
+}
+
+/// Whether the statement is a `for`, which a label may name.
+fn is_for(store: SyntaxArena, s: StmtId) -> bool {
+    // a feature matching its own variants
+    match store.stmt(s) { .ForEach(_, _, _, _) -> true, rest -> false }
+}

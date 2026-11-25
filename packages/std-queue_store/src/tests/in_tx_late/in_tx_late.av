@@ -1,0 +1,58 @@
+//! proves a handler run `in_tx` that outlives its lease after writing
+//! is cut and its write rolled back: the connection is left holding no
+//! transaction, the item is handed out again, and only the second
+//! start's write stands.
+use @std.queue.{queue, worker, run, Dead, Delivery, HomeError}
+use @std.queue_store.durable.{db, stored}
+use @std.queue_store.fault.{homed}
+use @std.relation.{codec}
+use @std.sqlite.{Db, sql}
+use @std.time.{ms, sleep}
+
+@codec
+type Job = { n: int }
+
+fn slow_first(d: Delivery<Job>) -> Result<int, string> {
+    let _ = ctx.db
+        .run(
+            sql(
+                "INSERT INTO \"done\" (\"n\", \"attempt\") VALUES (?1, ?2)",
+                [.Int(d.item.n), .Int(d.attempt)],
+            ),
+        ) catch 0
+    if d.attempt == 0 { sleep(ms(200)) }
+    d.item.n
+}
+
+fn rows(db: Db) -> Result<string, HomeError> {
+    let n = homed((homed(db.scalar(sql("SELECT count(*) FROM \"done\"")))?).int())?
+    let at = homed(
+        (homed(db.scalar(sql("SELECT coalesce(max(\"attempt\"), 0 - 1) FROM \"done\"")))?).int(),
+    )?
+    "rows ${n} of attempt ${at}"
+}
+
+fn main() -> Result<string, HomeError> {
+    ctx db = homed(Db.memory())?
+    let _ = homed(ctx.db.run(sql("CREATE TABLE \"done\" (\"n\" INTEGER, \"attempt\" INTEGER)")))?
+    queue<Job> jobs {
+        name: "jobs"
+        durable: stored<Job>()
+        lease: ms(50)
+    }
+    queue<Dead<Job>> letters {}
+    worker crew {
+        reads: jobs
+        in_tx: true
+        each: slow_first
+        dead: letters
+    }
+    let _ = jobs.send(Job { n: 1 })?
+    let serving = spawn run(crew)
+    while jobs.home().depth()? > 0 { sleep(ms(10)) }
+    crew.stop()
+    let settled = match serving.await { .Ok(n) -> n, .Err(_) -> 0 - 1 }
+    "settled ${settled} | ${rows(ctx.db)?} | open ${ctx.db.in_transaction()}"
+}
+
+match main() { .Ok(told) -> told, .Err(_) -> "failed" }

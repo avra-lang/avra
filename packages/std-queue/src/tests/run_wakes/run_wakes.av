@@ -1,0 +1,77 @@
+//! proves a waiting worker wakes on a send and no clock moves: the item
+//! is settled in the instant it was sent, and a worker with nothing to
+//! do asks its home for nothing more while it waits.
+use @std.queue.{
+    queue,
+    worker,
+    run,
+    key,
+    open_memory,
+    Dead,
+    Delivery,
+    DrainError,
+    Home,
+    Order,
+    Overflow,
+    Terms,
+}
+use @std.time.{ms, now_ms, secs, sleep}
+
+extern fn avra_clock_virtual(on: int)
+
+/// `under`, with each take counted.
+fn counting(under: Home<int>, takes: Cell<int>) -> Home<int> {
+    under with { take: (max: int) -> counted(takes, (under.take)(max)) }
+}
+
+fn counted<V>(n: Cell<int>, answer: V) -> V {
+    n.set(n.get() + 1)
+    answer
+}
+
+fn fine(d: Delivery<int>) -> Result<int, string> {
+    d.item
+}
+
+fn said(r: Result<int, DrainError>) -> string {
+    match r { .Ok(n) -> "settled ${n}", .Err(_) -> "failed" }
+}
+
+/// The terms the queue's memory home is opened under.
+fn terms() -> Terms {
+    Terms {
+        capacity: 8,
+        lease: secs(30),
+        retries: 3,
+        dead: "jobs/dead",
+        overflow: Overflow.park,
+        order: Order.fifo,
+    }
+}
+
+avra_clock_virtual(1)
+state takes: Cell<int> = Cell.new(0)
+state acks: Cell<int> = Cell.new(0)
+queue<Dead<int>> letters {}
+queue<int> jobs {
+    homed: match open_memory<int>(terms()) { .Ok(m) -> counting(m.home(), takes), .Err(_) -> null }
+    acked: (d: Delivery<int>) -> acks.set(acks.get() + 1)
+}
+worker idle {
+    reads: jobs
+    each: fine
+    dead: letters
+}
+let r = spawn run(idle)
+sleep(secs(20))
+let idle_takes = takes.get()
+let sent_at = now_ms()
+let _ = jobs.home().send(7, key("k"))
+mut yields = 0
+while acks.get() == 0 && yields < 100 {
+    sleep(ms(0))
+    yields = yields + 1
+}
+let moved = now_ms() - sent_at
+idle.stop()
+"idle takes ${idle_takes} | acked ${acks.get()} clock moved ${moved} ms | ${said(r.await)}"

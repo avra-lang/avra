@@ -1,0 +1,257 @@
+// The operating routes: JSON over the operating verbs, every route
+// behind the guard its mount names, a queue's name one percent-encoded
+// segment, and nothing reachable from a table that does not list them.
+use @std.http.body.{Body}
+use @std.http.frame.{framed, limits}
+use @std.http.http.{Request, Unrouted}
+use @std.http.route.{Route, compiled, dispatch, get}
+use @std.queue.{queue, worker, drain, Dead, Delivery, HomeError}
+use @std.relation.{codec}
+use @std.sqlite.{Db, sql}
+use @std.time.{Time, now_ns, secs}
+use admin.{queue_admin}
+use durable.{db, stored}
+use fault.{homed}
+use letters.{stored_dead}
+
+fn ticking() -> Time {
+    Time { ns: now_ns() }
+}
+
+@codec
+type Order = { sku: string, qty: int }
+
+fn packed(d: Delivery<Order>) -> Result<int, string> {
+    if d.item.qty < 1 { fail "nothing to pack: ${d.item.sku}" }
+    d.item.qty
+}
+
+/// A request as the server holds one, framed from its octets.
+fn asked(line: string, token: string) -> Request<Unrouted>? {
+    let raw = (line + "\r\nHost: h\r\nAuthorization: " + token + "\r\n\r\n").bytes()
+    match framed(raw, 0, 0, limits()) {
+        .Complete(head) -> Request { raw: raw, head: head, body: Body.Empty, peer: "t", params: Unrouted {} },
+        .Partial or .Refused(_) -> null,
+    }
+}
+
+/// Only the operator's token may ask.
+fn operator(q: Request<Unrouted>) -> bool {
+    q.header("authorization") == "Bearer op"
+}
+
+fn answered(routes: List<Route>, line: string, token: string = "Bearer op") -> string {
+    let q? = asked(line, token) else { return "unframed" }
+    let r = dispatch(compiled(routes), q)
+    "${r.status} ${r.body.text() ?? ""}"
+}
+
+/// The database's operating routes, three orders sent and one of them
+/// buried in a letter.
+fn stocked() -> Result<List<Route>, HomeError> {
+    queue<Order> orders {
+        name: "orders"
+        durable: stored<Order>(clock: ticking)
+        retries: 1
+    }
+    queue<Dead<Order>> unpacked {
+        name: "orders/dead"
+        durable: stored_dead<Order>(clock: ticking)
+    }
+    worker packer {
+        reads: orders
+        each: packed
+        dead: unpacked
+    }
+    let _ = orders.send(Order { sku: "nil", qty: 0 })?
+    let _ = drain(packer)
+    let _ = orders.send(Order { sku: "a1", qty: 2 })?
+    let _ = orders.send(Order { sku: "b2", qty: 1 })?
+    let _ = orders.home().take()?
+    queue_admin(ctx.db, operator, ticking).found
+}
+
+/// A database with one order whose kept descriptor no build wrote,
+/// paged through the routes.
+fn undescribed() -> string {
+    let routes = undescribed_routes() catch []
+    if routes.is_empty() { return "no routes" }
+    answered(routes, "GET /orders/items HTTP/1.1")
+}
+
+fn undescribed_routes() -> Result<List<Route>, HomeError> {
+    ctx db = homed(Db.memory())?
+    queue<Order> orders {
+        name: "orders"
+        durable: stored<Order>(clock: ticking)
+    }
+    let _ = orders.send(Order { sku: "a1", qty: 2 })?
+    let _ = homed(ctx.db.run(sql("UPDATE \"FlowShape\" SET \"descriptor\" = 'x'")))?
+    queue_admin(ctx.db, operator, ticking).found
+}
+
+/// What each line answers, one per line, with the database's mark cut
+/// from every id so the answer does not depend on it.
+/// A line heading `GUEST ` is asked with a token the guard refuses.
+fn lines(asks: List<string>) -> string {
+    asked_under(asks) catch "no routes"
+}
+
+/// The lines asked with the database standing as `ctx db`, as a server
+/// holds it for its handlers.
+fn asked_under(asks: List<string>) -> Result<string, HomeError> {
+    ctx db = homed(Db.memory())?
+    let routes = stocked()?
+    let mark = mark_in(answered(routes, "GET /orders/items HTTP/1.1"))
+    [answered_as(routes, a.replace("MARK", mark)).replace(mark, "") for a in asks].join("\n")
+}
+
+fn answered_as(routes: List<Route>, line: string) -> string {
+    if line.starts_with("GUEST ") { return answered(routes, line.substring(6, line.length), "Bearer guest") }
+    answered(routes, line)
+}
+
+/// The mark heading the first id in a page's JSON.
+fn mark_in(page: string) -> string {
+    let at = page.split("\"id\":\"")
+    if at.length < 2 { return "?" }
+    let id = at[1].split("\"")[0]
+    id.substring(0, id.length - (id.split("-").last() ?? "").length)
+}
+
+/// A table that lists a route of its own and not the operating ones.
+fn unmounted() -> string {
+    let routes = [get "/health" { _req -> "ok" }]
+    "${answered(routes, "GET /health HTTP/1.1")} | ${answered(routes, "GET / HTTP/1.1")} | ${answered(routes, "GET /orders/items HTTP/1.1")}"
+}
+
+spec "std/queue_store — the operating routes" {
+    given "a request the guard admits" {
+        then "lists every queue with its terms and counts" {
+            lines(["GET / HTTP/1.1"]).replace("\"opened_at\":\"", "<").split("<").length == 3 &&
+                lines(["GET / HTTP/1.1"])
+                    .contains(
+                        "{\"name\":\"orders\",\"letter\":false,\"terms\":{\"capacity\":1000,\"lease_ms\":30000,\"retries\":1,\"overflow\":\"park\",\"order\":\"fifo\",\"dedupe_ms\":86400000,",
+                    )
+        }
+        then "answers one queue, a letter's name percent-encoded" {
+            lines(["GET /orders%2Fdead HTTP/1.1"])
+                    .contains("\"name\":\"orders/dead\",\"letter\":true") &&
+                lines(["GET /orders%2Fdead HTTP/1.1"])
+                    .contains("\"waiting\":1,\"owed\":1,\"held\":0")
+        }
+        then "pages a queue's items as records" {
+            lines(["GET /orders/items?limit=1 HTTP/1.1"])
+                    .contains("\"stage\":\"held\",\"attempt\":0") &&
+                lines(["GET /orders/items?limit=1 HTTP/1.1"])
+                    .contains("\"item\":{\"sku\":\"a1\",\"qty\":2},\"read\":true,\"unread\":null}]") &&
+                !lines(["GET /orders/items?limit=1 HTTP/1.1"]).contains("b2")
+        }
+        then "a readable item's `unread` is null" {
+            lines(["GET /orders/items HTTP/1.1"]).split("\"unread\":null").length == 3 &&
+                !lines(["GET /orders/items HTTP/1.1"]).contains("\"unread\":\"")
+        }
+        then "an item its descriptor cannot read answers no item and the reason" {
+            undescribed()
+                .ends_with(
+                    "\"item\":null,\"read\":false,\"unread\":\"the descriptor kept for its shape spells no shape this build reads\"}]",
+                )
+        }
+        then "reads a letter's item, fate and path" {
+            lines(["GET /orders%2Fdead/items HTTP/1.1"])
+                .contains(
+                    "\"item\":{\"item\":{\"sku\":\"nil\",\"qty\":0},\"fate\":{\"failed\":\"nothing to pack: nil\"},\"path\":[\"orders\",\"orders/dead\"]}",
+                )
+        }
+        then "retries a letter into its queue, and refuses a held item with 409" {
+            lines(
+                    [
+                        "POST /orders%2Fdead/items/MARK2/retry HTTP/1.1",
+                        "POST /orders/items/MARK3/retry HTTP/1.1",
+                        "GET /orders HTTP/1.1",
+                    ],
+                )
+                    .split("\n")
+                    .map(it.split(" ")[0])
+                    .join(" ") == "200 409 200" &&
+                lines(["POST /orders%2Fdead/items/MARK2/retry HTTP/1.1", "GET /orders HTTP/1.1"])
+                    .contains("\"waiting\":2,\"owed\":3")
+        }
+        then "discards an item once, and the second is a 404" {
+            lines(["DELETE /orders/items/MARK4 HTTP/1.1", "DELETE /orders/items/MARK4 HTTP/1.1"]) == "200 {\"id\":\"4\"}\n404 no item `4` stands in `orders`"
+        }
+    }
+    given "a request it cannot read" {
+        then "an unknown queue is a 404, and its pages are empty" {
+            lines(["GET /nope HTTP/1.1", "GET /nope/items HTTP/1.1"]) == "404 no queue `nope` stands in this database\n200 []"
+        }
+        then "a bad, past-bound or repeated limit is a 422; a page after no item, a NUL or a bad escape in a name a 400" {
+            lines(
+                [
+                    "GET /orders/items?limit=x HTTP/1.1",
+                    "GET /orders/items?limit=5000 HTTP/1.1",
+                    "GET /orders/items?limit=1&limit=2 HTTP/1.1",
+                    "GET /orders/items?after=zz HTTP/1.1",
+                    "GET /ord%00ers HTTP/1.1",
+                    "GET /ord%zzers HTTP/1.1",
+                ],
+            )
+                .split("\n")
+                .map(it.split(" ")[0])
+                .join(" ") == "422 422 422 400 400 400"
+        }
+        then "a refused page names every field it refused" {
+            lines(["GET /orders/items?limit=5000&after HTTP/1.1"]) == "422 {\"title\":\"the request does not validate\",\"status\":422,\"issues\":[{\"path\":\"limit\",\"rule\":\"range\",\"message\":\"must be between 0 and 1000\"},{\"path\":\"after\",\"rule\":\"type\",\"message\":\"must be text, not a boolean\"}]}"
+        }
+        then "a name that is no text is a 400 saying so" {
+            lines(["GET /ord%zzers HTTP/1.1"]) == "400 the segment `ord%zzers` is not percent-encoded text"
+        }
+        then "an after escaped in the query is the id it encodes" {
+            lines(["GET /orders/items?after=MARK2 HTTP/1.1"]) == lines(["GET /orders/items?after=MARK%32 HTTP/1.1"])
+        }
+        then "an id that names no item, or one of another queue, is a 404" {
+            lines(
+                [
+                    "POST /orders/items/x/retry HTTP/1.1",
+                    "DELETE /orders/items/MARK2 HTTP/1.1",
+                    "DELETE /orders%2Fdead/items/MARK4 HTTP/1.1",
+                    "POST /orders/items/..%2F..%2Fx/retry HTTP/1.1",
+                ],
+            )
+                .split("\n")
+                .map(it.split(" ")[0])
+                .join(" ") == "404 404 404 404"
+        }
+    }
+    given "a request the guard refuses" {
+        then "every route answers 403 and acts on nothing" {
+            lines(
+                    [
+                        "GUEST GET / HTTP/1.1",
+                        "GUEST GET /orders/items HTTP/1.1",
+                        "GUEST POST /orders%2Fdead/items/MARK2/retry HTTP/1.1",
+                        "GUEST DELETE /orders/items/MARK4 HTTP/1.1",
+                    ],
+                )
+                    .split("\n")
+                    .map(it.split(" ")[0])
+                    .join(" ") == "403 403 403 403" &&
+                lines(
+                    [
+                        "GUEST DELETE /orders/items/MARK4 HTTP/1.1",
+                        "GUEST POST /orders%2Fdead/items/MARK2/retry HTTP/1.1",
+                        "GET /orders HTTP/1.1",
+                    ],
+                )
+                    .contains("\"waiting\":1,\"owed\":2")
+        }
+        then "a target no operating route reads is no 403 but the table's 404" {
+            lines(["GUEST GET /orders/items/7/extra HTTP/1.1"]) == "404 "
+        }
+    }
+    given "a table that does not mount them" {
+        then "no operating route is reachable" {
+            unmounted() == "200 ok | 404  | 404 "
+        }
+    }
+}

@@ -1,0 +1,259 @@
+//! THE ONE READING OF A VALUE'S TYPE, for everything that writes values down. A saved answer, a
+//! tape and a tape's schema all read a type through this, so none of them can disagree about what
+//! a value is made of.
+//!
+//! A value is plain, or it wraps others: an option, a list, a cell, a name over a shape, a map's
+//! entries, a result's sides. A declared record or enum writes itself. An id marked
+//! `@indexes(Node)` stands for the node it names. A value with no bytes, as a fn or a pointer has
+//! none, has no shape.
+use @std.meta.{Arms, Code, Field, Kind, Named, Type as MetaType, Variant as MetaVariant, name}
+
+/// Marks a dense id: a value of it names one node of `node`, declared in the id's own module, so
+/// whatever writes the id down writes that node.
+export fn indexes(_t: MetaType, _node: Named) {}
+
+/// Marks a value that says where something was written, as a span does, or that its tree mints
+/// there, as a seat's identity is: on a tape it's that place, `tree.<to>(value)`, and it reads back
+/// as `tree.<from>(place)`. Either verb takes the value absent too.
+export fn placed(_t: MetaType, _from: string, _to: string) {}
+
+/// What a value is made of.
+export enum ValueShape {
+    Int
+    Float
+    Bool
+    Text
+    Octets
+    /// Absent, or holding `inner`.
+    Optional(inner: ValueShape)
+    /// Any number of `inner`, in order.
+    Listed(inner: ValueShape)
+    /// `inner` in a cell: read with `get`, made with `Cell.new`.
+    Celled(inner: ValueShape)
+    /// A name over a shape: read with `of`, made with `Name(value)`.
+    Renamed(type_name: string, over: ValueShape)
+    /// A map's entries in order, each a key and a value.
+    Entries(key: ValueShape, value: ValueShape)
+    /// A result: one side or the other.
+    Sides(ok: ValueShape, err: ValueShape)
+    /// A declared record or enum, which writes itself. `path` is its whole path.
+    Declared(type_name: string, path: string)
+    /// An id, standing for the node it names: `node` as the id's module names it, and its whole path.
+    Id(type_name: string, node: string, node_path: string)
+    /// A value standing for where it was written: `from` makes one at a place, `to` says a value's.
+    Placed(from: string, to: string)
+    /// An int saying where in its item's file something stands, a field marked `@offset`: where
+    /// places stand apart it counts from the item, so it reads back moved with it.
+    Offset
+    /// An enum whose variants hold nothing: a number, which of `variants` it is. `path` is its
+    /// whole path.
+    Tags(type_name: string, path: string, variants: List<string>)
+}
+
+/// Marks an int field that says where in its file something stands.
+export const OFFSET_MARK: string = "offset"
+
+/// What a language does with a field: writes it down, carries it in the value without writing it,
+/// or keeps it apart from the value, as a side table does.
+export enum FieldRole {
+    Written
+    /// Written, and left out of the face: a part no reader of the declaration's name depends on, as
+    /// a fn's body is.
+    Body
+    Carried
+    Apart
+}
+
+/// The program layer's interned name, by the name it is declared as: a tape writes it as its text
+/// and reads it back interned, and a saved answer holds its text.
+export const NAME_TYPE: string = "Name"
+
+/// What a language tells the reading: its declarations, what it does with each field, and whether
+/// places stand apart from what's written, as they do on a tape.
+export type Reading = { declared: fn(string) -> MetaType?, role: fn(Field) -> FieldRole, places: bool = false }
+
+/// A field that's written down, with its shape: absent when it has no bytes.
+export type ShapedField = { field: Field, shape: ValueShape? }
+
+/// A variant and its fields that are written down, in order. A record is one variant, named as
+/// the type is.
+export type ShapedVariant = { name: string, fields: List<ShapedField> }
+
+impl Reading {
+    /// What a value of `kind` is made of, absent when it has no bytes.
+    fn shape_of(kind: Kind) -> ValueShape? {
+        match kind {
+            .Int -> .Int,
+            .Float -> .Float,
+            .Bool -> .Bool,
+            .Str -> .Text,
+            .Bytes -> .Octets,
+            .Opt(inner) -> self.optional_shape(self.shape_of(inner)?),
+            .List(inner) -> .Listed(self.shape_of(inner)?),
+            .Cell(inner) -> .Celled(self.shape_of(inner)?),
+            .Map(key, value) -> .Entries(self.shape_of(key)?, self.shape_of(value)?),
+            .Result(ok, err) -> .Sides(self.shape_of(ok)?, self.shape_of(err)?),
+            .Named(type_name, args) -> self.named_shape(type_name, args),
+            .Ptr or .Void or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> null,
+        }
+    }
+
+    /// A declared record's one variant, or an enum's variants, each with the fields written down.
+    fn variants_of(t: MetaType) -> List<ShapedVariant> { [self.shaped(v) for v in declared_variants(t)] }
+
+    /// A name: an id, a name over a shape, or a declared record or enum. Absent when nothing
+    /// declares it. The program layer's own interned name is declared by no reading: it writes
+    /// itself, as its text.
+    fn named_shape(type_name: string, args: List<Kind>) -> ValueShape? {
+        if type_name == NAME_TYPE { return .Declared(NAME_TYPE, NAME_TYPE) }
+        let declared? = self.declaration_of(type_name) else { return null }
+        let node = node_indexed(declared)
+        if node != null { return .Id(type_name, node!, path_in(declared.module, node!, [])) }
+        let verbs = if self.places { declared.annotations.find(it.name == "placed")?.args ?? [] } else { [] }
+        if verbs.length == 2 { return .Placed(verbs[0], verbs[1]) }
+        if is_tags(declared) { return .Tags(type_name, path_of(declared, args), [v.name for v in declared.variants]) }
+        let over? = declared.shape_over() else { return .Declared(type_name, path_of(declared, args)) }
+        .Renamed(type_name, self.shape_of(over)?)
+    }
+
+    fn shaped(v: MetaVariant) -> ShapedVariant {
+        ShapedVariant {
+            name: v.name,
+            fields: [ShapedField { field: f, shape: self.field_shape(f) } for f in v.fields if self.is_on_tape(f)],
+        }
+    }
+
+    /// What a field's value is made of: its type's shape, an offset's ints counting from the item
+    /// where places stand apart.
+    fn field_shape(f: Field) -> ValueShape? {
+        let shape? = self.shape_of(f.kind) else { return null }
+        if !self.places || !f.marks.any(it.name == OFFSET_MARK) { return shape }
+        offset_within(shape)
+    }
+
+    fn declaration_of(type_name: string) -> MetaType? { (self.declared)(type_name) }
+
+    fn is_written(f: Field) -> bool {
+        match self.role_of(f) { .Written or .Body -> true, .Carried or .Apart -> false }
+    }
+
+    /// Whether a field is written down: one the language writes, or a place it carries, which
+    /// goes among the places.
+    fn is_on_tape(f: Field) -> bool { self.is_written(f) || self.is_carried(f) && self.is_place(f.kind) }
+
+    /// Whether a value of `kind` is a place.
+    fn is_place(kind: Kind) -> bool {
+        let shape? = self.shape_of(kind) else { return false }
+        match shape { .Placed(_, _) -> true, rest -> false }
+    }
+
+    /// An absent place is a place, its verbs taking absence; any other absent value is an option.
+    fn optional_shape(inner: ValueShape) -> ValueShape {
+        match inner { .Placed(_, _) -> inner, rest -> .Optional(inner) }
+    }
+
+    /// Whether a field is a body, left out of a face.
+    fn is_body(f: Field) -> bool {
+        match self.role_of(f) { .Body -> true, .Written or .Carried or .Apart -> false }
+    }
+
+    /// Whether a value of the type holds the field, as a variant's payload does.
+    fn is_carried(f: Field) -> bool {
+        match self.role_of(f) { .Written or .Body or .Carried -> true, .Apart -> false }
+    }
+
+    /// The fields a variant's value holds, in order: what's written down and what's carried.
+    fn carried_fields(v: MetaVariant) -> List<Field> { [f for f in v.fields if self.is_carried(f)] }
+
+    fn role_of(f: Field) -> FieldRole { (self.role)(f) }
+
+}
+
+/// A cell, or a name over a shape, which adds nothing to how a value is written down: what it
+/// wraps, generated code reading the wrapped value through it, and making one around a value.
+export type Wrapper = { inner: ValueShape, opened: fn(Code) -> Code, closed: fn(Code) -> Code }
+
+impl ValueShape {
+    /// The wrapper this shape is, absent for any other.
+    fn wrapper() -> Wrapper? {
+        match self {
+            .Celled(inner) -> Wrapper {
+                inner: inner,
+                opened: (value: Code) -> quote { ${value}.get() },
+                closed: (value: Code) -> quote { Cell.new(${value}) },
+            },
+            .Renamed(type_name, over) -> Wrapper {
+                inner: over,
+                opened: (value: Code) -> quote { ${value}.of },
+                closed: (value: Code) -> quote { ${type_name}(${value}) },
+            },
+            .Int or .Offset or .Float or .Bool or .Text or .Octets or .Optional(_) or .Listed(_) or .Entries(_, _) or .Sides(_, _) or .Declared(_, _) or .Id(_, _, _) or .Placed(_, _) or .Tags(_, _, _) -> null,
+        }
+    }
+
+    /// The shapes this one is made of: none for a plain value, nor for a declared one, which writes
+    /// itself.
+    fn children() -> List<ValueShape> {
+        match self {
+            .Optional(inner) or .Listed(inner) or .Celled(inner) or .Renamed(_, inner) -> [inner],
+            .Entries(key, value) or .Sides(key, value) -> [key, value],
+            .Int or .Offset or .Float or .Bool or .Text or .Octets or .Declared(_, _) or .Id(_, _, _) or .Placed(_, _) or .Tags(_, _, _) -> [],
+        }
+    }
+}
+
+impl ShapedField {
+    /// The field's shape, or none when it has no bytes.
+    fn shapes() -> List<ValueShape> {
+        let shape? = self.shape else { return [] }
+        [shape]
+    }
+}
+
+impl ShapedVariant {
+    /// The shapes of the fields with bytes, in order.
+    fn shapes() -> List<ValueShape> { [shape for f in self.fields for shape in f.shapes()] }
+}
+
+/// The node a dense id names, absent for any other type.
+fn node_indexed(declared: MetaType) -> string? { marked(declared, "indexes") }
+
+/// The first argument of a marker on a declaration, absent when it isn't marked.
+fn marked(declared: MetaType, marker: string) -> string? { declared.annotations.find(it.name == marker)?.args?.first() }
+
+/// A declared record's one variant, or an enum's variants.
+export fn declared_variants(t: MetaType) -> List<MetaVariant> {
+    if t.variants.is_empty() { [MetaVariant { name: t.name, payload: [], at: null, fields: t.fields }] } else { t.variants }
+}
+
+/// A declared type's whole path, with its arguments when it has any.
+export fn path_of(t: MetaType, args: List<Kind>) -> string { path_in(t.module, t.name, args) }
+
+/// The whole path of the type `type_name` declares in `module`.
+fn path_in(module: string, type_name: string, args: List<Kind>) -> string { "${module}.${Kind.Named(type_name, args).spelled()}" }
+
+/// An offset's shape over an int's: absent for any other, which no offset is.
+fn offset_within(shape: ValueShape) -> ValueShape? {
+    match shape {
+        .Int -> .Offset,
+        .Optional(inner) -> .Optional(offset_within(inner)?),
+        .Listed(inner) -> .Listed(offset_within(inner)?),
+        rest -> null,
+    }
+}
+
+/// Whether a declaration is an enum whose variants hold nothing.
+fn is_tags(declared: MetaType) -> bool { !declared.variants.is_empty() && declared.variants.all(it.fields.is_empty()) }
+
+/// Generated code answering which of `variants` a value is.
+export fn tag_number(value: Code, variants: List<string>) -> Code {
+    let arms: List<Arms> = [quote { .${v} -> ${at} } for at, v in variants]
+    quote { match ${value} { ${arms} } }
+}
+
+/// Generated code making the variant a number names, the last for any past it.
+export fn tag_made(type_name: string, variants: List<string>, number: Code) -> Code {
+    let last = variants.length - 1
+    let arms: List<Arms> = [if at == last { quote { _ -> ${name(type_name)}.${v} } } else { quote { ${at} -> ${name(type_name)}.${v} } } for at, v in variants]
+    quote { match ${number} { ${arms} } }
+}

@@ -1,0 +1,277 @@
+// Values bound into a statement's slots, and read back through SQL.
+//
+// The driver cannot read TEXT out of a cell yet — `column_text` hands
+// back a borrowed pointer and nothing can copy foreign text into a box
+// — so a text bind is proved the way SQLite itself would answer it:
+// `hex(?)` compares the BYTES inside the database and answers an
+// integer, so a value truncated at a NUL fails the comparison instead
+// of passing a length check.
+use @std.sqlite.open.{Db}
+use @std.sqlite.stmt.{Stmt}
+use @std.sqlite.error.{SqlError}
+use @std.text.{from_codepoint, from_codepoints}
+
+/// The integer a one-hole query answers when `v` is bound as text, or
+/// the kind it was refused with. The SQL does the reading.
+fn with_text(sql: string, v: string) -> string { asked(sql, bound_text(v)) }
+fn with_blob(sql: string, v: string) -> string { asked(sql, bound_blob(v)) }
+fn with_int(sql: string, v: int) -> string { asked(sql, bound_int(v)) }
+fn with_null(sql: string) -> string { asked(sql, bound_null()) }
+
+/// How a value gets into hole 1 — a fn per kind, so the cases below
+/// show only the SQL and the value.
+type Binder = { kind: int, text: string, number: int, octets: Bytes? = null }
+fn bound_text(v: string) -> Binder { Binder { kind: 1, text: v, number: 0 } }
+fn bound_blob(v: string) -> Binder { Binder { kind: 2, text: v, number: 0 } }
+fn bound_int(v: int) -> Binder { Binder { kind: 3, text: "", number: v } }
+fn bound_null() -> Binder { Binder { kind: 4, text: "", number: 0 } }
+fn bound_static(v: string) -> Binder { Binder { kind: 5, text: v, number: 0, octets: v.bytes() } }
+
+fn asked(sql: string, b: Binder) -> string { in_memory((db) -> in_db(db, sql, b)) }
+
+fn in_db(db: Db, sql: string, b: Binder) -> string {
+    let said = prepared(db, sql, b)
+    let _ = db.close()
+    said
+}
+
+fn prepared(db: Db, sql: string, b: Binder) -> string {
+    match db.prepare(sql) { .Ok(s) -> filled(s, b), .Err(e) -> e.cause.kind() }
+}
+
+fn filled(s: Stmt, b: Binder) -> string {
+    let said = after_bind(s, b)
+    let _ = s.finalize()
+    said
+}
+
+fn after_bind(s: Stmt, b: Binder) -> string {
+    match place(s, b) { .Ok(_) -> bound_first_int(s), .Err(e) -> e.cause.kind() }
+}
+
+fn place(s: Stmt, b: Binder) -> Result<int, SqlError> {
+    if b.kind == 1 { return s.bind_text(1, b.text) }
+    if b.kind == 2 { return s.bind_blob(1, b.text) }
+    if b.kind == 3 { return s.bind_int(1, b.number) }
+    // THE BORROWED BIND TAKES THE CALLER'S OCTETS, and the box
+    // lives in the Binder for the statement's whole life — which is
+    // the promise the verb's name asks for, made visible.
+    if b.kind == 5 { return s.bind_text_unsafely_borrowed(1, b.octets!) }
+    s.bind_null(1)
+}
+
+fn bound_first_int(s: Stmt) -> string {
+    match s.step() {
+        .Ok(more) -> if more { bound_told(s.int_at(0)) } else { "NO ROW" },
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+fn bound_told(r: Result<int, SqlError>) -> string {
+    match r { .Ok(v) -> "${v}", .Err(e) -> e.cause.kind() }
+}
+
+// ── A REAL, on its own path ─────────────────────────────────────
+//
+// A FLOAT CANNOT RIDE THE `Binder` STRUCT, so the real bind gets its own
+// four-step walk. A float in a heap slot — a struct field, a list, an
+// enum payload — does not survive the native backend yet, and `Binder`
+// is a struct. The value travels as a PARAMETER the whole way, which is
+// where a float is sound today.
+//
+// The reading verb is absent for the same reason (it would answer
+// `Result<float, SqlError>`), so a real bind is proved exactly as a text
+// bind is: SQL does the comparison INSIDE the database and answers an
+// integer. Nothing read here is a float.
+
+/// SPELLED OUT, and not by choice: `in_memory` takes a lambda, a
+/// lambda's captures live in a heap box, and a float does not survive
+/// one — `LLVM verification failed`, the same defect that holds
+/// `real_at` back. These two convert the day it lands.
+fn with_real(sql: string, v: float) -> string {
+    match Db.memory() { .Ok(db) -> real_in_db(db, sql, v), .Err(e) -> e.cause.kind() }
+}
+
+fn real_in_db(db: Db, sql: string, v: float) -> string {
+    let said = real_prepared(db, sql, v)
+    let _ = db.close()
+    said
+}
+
+fn real_prepared(db: Db, sql: string, v: float) -> string {
+    match db.prepare(sql) { .Ok(s) -> real_filled(s, v), .Err(e) -> e.cause.kind() }
+}
+
+fn real_filled(s: Stmt, v: float) -> string {
+    let said = real_after_bind(s, v)
+    let _ = s.finalize()
+    said
+}
+
+fn with_real_at(index: int, sql: string, v: float) -> string {
+    match Db.memory() { .Ok(db) -> real_at_index(db, index, sql, v), .Err(e) -> e.cause.kind() }
+}
+
+fn real_at_index(db: Db, index: int, sql: string, v: float) -> string {
+    let said = aimed(db, index, sql, v)
+    let _ = db.close()
+    said
+}
+
+fn aimed(db: Db, index: int, sql: string, v: float) -> string {
+    match db.prepare(sql) { .Ok(s) -> aimed_bind(s, index, v), .Err(e) -> e.cause.kind() }
+}
+
+fn aimed_bind(s: Stmt, index: int, v: float) -> string {
+    let said = said_of(s.bind_real(index, v))
+    let _ = s.finalize()
+    said
+}
+
+fn said_of(r: Result<int, SqlError>) -> string {
+    match r { .Ok(_) -> "bound", .Err(e) -> e.cause.kind() }
+}
+
+fn real_after_bind(s: Stmt, v: float) -> string {
+    match s.bind_real(1, v) { .Ok(_) -> bound_first_int(s), .Err(e) -> e.cause.kind() }
+}
+
+/// `a`, a NUL, `b` — three bytes no literal can spell, and the exact
+/// shape that a `strlen` measurement would cut to one.
+fn a_nul_b() -> string { from_codepoints([97, 0, 98]) }
+
+spec "std/sqlite binding" {
+    given "a value put into a statement and read back by SQL" {
+
+        then "an integer arrives unchanged" { with_int("select ?", 42) == "42" }
+        then "an integer past 32 bits arrives unchanged" { with_int("select ?", 4294967297) == "4294967297" }
+        then "a negative integer arrives negative" { with_int("select ?", 0 - 7) == "-7" }
+        then "text arrives with its own length" { with_text("select length(?)", "hello") == "5" }
+        then "empty text is text, and its length is zero" { with_text("select length(?)", "") == "0" }
+        then "a bound NULL is SQL NULL rather than a missing value" { with_null("select ? is null") == "1" }
+    }
+    given "a real bound, compared where the driver cannot yet read one" {
+
+        // The comparison happens INSIDE SQLite over the stored double,
+        // so a value that lost bits crossing the wall fails it — where a
+        // test that read the number back through the driver would be
+        // comparing the driver against itself.
+        then "a real arrives bit-for-bit" { with_real("select ? = 3.5", 3.5) == "1" }
+        // 0.1 has no exact binary form, which is what makes it the
+        // interesting one: both sides must round the SAME way.
+        then "a real with no exact binary form arrives unchanged too" { with_real("select ? = 0.1", 0.1) == "1" }
+        // The class is the second half of "arrived unchanged" — a value
+        // that arrived as the right number in the wrong class would pass
+        // the comparison above and still be stored wrong.
+        then "and it lands in the REAL storage class" { with_real("select typeof(?) = 'real'", 2.0) == "1" }
+        // A WHOLE number bound as a real STAYS a real. SQLite converts
+        // on INSERT by affinity, never on a bind, so nothing narrows it
+        // back to an integer on the way in.
+        then "a whole number bound as a real is still a real" { with_real("select typeof(?) = 'real'", 3.0) == "1" }
+        then "and it is not equal to the integer that prints the same" { with_real("select typeof(?) = 'integer'", 3.0) == "0" }
+        // Zero is the value an encoding spends, and a bind is an
+        // encoding: a slot never bound is also NULL.
+        then "a bound zero is a value, not an absent bind" { with_real("select ? is null", 0.0) == "0" }
+        then "a negative real keeps its sign" { with_real("select ? = 0.0 - 1.5", 0.0 - 1.5) == "1" }
+        // The slot law is the bind's, not the value's, so it must answer
+        // the same for a real as for every other kind.
+        then "slot 1 of a one-slot statement takes it" { with_real_at(1, "select ?1", 3.5) == "bound" }
+        then "and slot 2 of that statement is out of the slots" { with_real_at(2, "select ?1", 3.5) == "sqlite.out_of_slots" }
+    }
+    given "a bind names the storage class SQLite will store" {
+
+        then "text binds as text" { with_text("select typeof(?) = 'text'", "hi") == "1" }
+        then "an integer binds as an integer" { with_int("select typeof(?) = 'integer'", 1) == "1" }
+        then "a blob binds as a blob" { with_blob("select typeof(?) = 'blob'", "hi") == "1" }
+        then "NULL binds as null" { with_null("select typeof(?) = 'null'") == "1" }
+        // Empty is a VALUE, not an absence — the trap this driver has
+        // met at four different boundaries now.
+        then "empty text is text and not null" { with_text("select typeof(?) = 'text'", "") == "1" }
+        then "an empty blob is a blob and not null" { with_blob("select typeof(?) = 'blob'", "") == "1" }
+    }
+    given "text holding a NUL, which C would cut short" {
+
+        // `hex` compares the BYTES inside the database, so a value bound
+        // with a `strlen` length fails this rather than passing a
+        // length check. 610062 is 'a', NUL, 'b'.
+        then "all three bytes reach the database" { with_text("select hex(?) = '610062'", a_nul_b()) == "1" }
+        then "the database agrees the value is three bytes long" { with_text("select length(cast(? as blob))", a_nul_b()) == "3" }
+        then "a NUL-bearing value is not equal to its own prefix" { with_text("select ? = 'a'", a_nul_b()) == "0" }
+        then "a lone NUL is one byte, not an empty value" { with_text("select length(cast(? as blob))", from_codepoint(0)) == "1" }
+    }
+    given "bytes bound as a blob" {
+
+        then "the bytes arrive exactly" { with_blob("select hex(?) = '610062'", a_nul_b()) == "1" }
+        then "a blob keeps its length where text would end at a NUL" { with_blob("select length(?)", a_nul_b()) == "3" }
+    }
+    given "a parameter index outside the statement's slots" {
+
+        // Parameters count from 1 and columns from 0, which is the
+        // oldest off-by-one in this API — so the driver names it rather
+        // than letting SQLITE_RANGE come back as a bare code.
+        //
+        // AND IT IS ITS OWN CAUSE, not the one a bad COLUMN gets. Read
+        // in a row, `out_of_row` for a bad column, a read before
+        // stepping AND a bad parameter told a caller nothing about
+        // which mistake they had made — a write mistake and a read
+        // mistake are different fixes.
+        then "index 0 is refused, because slots count from one" { with_int_at("select ?", 0) == "sqlite.out_of_slots" }
+        then "an index past the last slot is refused" { with_int_at("select ?", 2) == "sqlite.out_of_slots" }
+        then "binding into a statement with no slots is refused" { with_int_at("select 1", 1) == "sqlite.out_of_slots" }
+        then "and a bad COLUMN is still its own, different cause" { with_int("select ?", 1) == "1" }
+        then "a statement with one hole reports one" { slots_of("select ?") == 1 }
+        then "a statement with three slots reports three" { slots_of("select ? + ? + ?") == 3 }
+        then "a statement with none reports none" { slots_of("select 1") == 0 }
+    }
+    given "the borrowing bind, which is the named hatch and not a default" {
+
+        // `SQLITE_STATIC` asks SQLite not to copy, so the caller's bytes
+        // must outlive the statement. The value here is alive across the
+        // whole call, which is the only condition under which it is
+        // safe — and the verb's name says what the caller is promising.
+        then "a borrowed bind delivers the same bytes as a copied one" { asked("select hex(?) = '610062'", bound_static(a_nul_b())) == "1" }
+        then "and the copying bind is what the short name gives you" { with_text("select hex(?) = '610062'", a_nul_b()) == "1" }
+    }
+}
+
+/// A bind aimed at a chosen hole, so the index guard can be tested.
+fn with_int_at(sql: string, index: int) -> string { in_memory((db) -> at_index(db, sql, index)) }
+
+fn at_index(db: Db, sql: string, index: int) -> string {
+    let said = index_said(db, sql, index)
+    let _ = db.close()
+    said
+}
+
+fn index_said(db: Db, sql: string, index: int) -> string {
+    match db.prepare(sql) { .Ok(s) -> index_bound(s, index), .Err(e) -> e.cause.kind() }
+}
+
+fn index_bound(s: Stmt, index: int) -> string {
+    let said = bound_told(s.bind_int(index, 1))
+    let _ = s.finalize()
+    said
+}
+
+/// How many slots a statement has.
+/// SPELLED OUT because it answers an `int`, not a `string` — the one
+/// place in this file `in_memory` does not reach.
+fn slots_of(sql: string) -> int {
+    match Db.memory() { .Ok(db) -> counted(db, sql), .Err(_) -> 0 - 1 }
+}
+
+fn counted(db: Db, sql: string) -> int {
+    let n = slots_said(db, sql)
+    let _ = db.close()
+    n
+}
+
+fn slots_said(db: Db, sql: string) -> int {
+    match db.prepare(sql) { .Ok(s) -> slots_finalized(s), .Err(_) -> 0 - 1 }
+}
+
+fn slots_finalized(s: Stmt) -> int {
+    let n = s.slots()
+    let _ = s.finalize()
+    n
+}
