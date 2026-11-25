@@ -78,6 +78,8 @@ run() {
 }
 
 self_test() {
+    # its fixtures run whole, whatever share a gate part asked of the tree's own witnesses
+    unset TOOL_WITNESSES_PART
     t=$(mktemp -d) || exit 1
     trap 'find "$t" -delete' EXIT
     mkdir -p "$t/tools"
