@@ -5,7 +5,7 @@
 //! printed answer.
 use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, DeclId, Arrow, reversed}
 use diagnostics.{Diag, refusal}
-use features.{LowerCx, Deferred, Deferral, DirectCall, WithinMark}
+use features.{LowerCx, Deferred, Deferral, DirectCall, WithinMark, OnceSlot}
 
 /// A block scope left open for its caller to close: `opened` says
 /// whether `lower_block_open` entered a scope at all.
@@ -129,36 +129,28 @@ impl LowerCx {
     }
 
     /// A `once` FN'S BODY, GUARDED: the fn's own SLOT answers when it
-    /// holds this fn's value, and otherwise the body runs and the
-    /// slot keeps it. The slot is addressed by the fn's own
-    /// SYMBOL — unique in a binary by the linker's own law — so no
-    /// key is minted until the cold path actually needs one.
+    /// holds this fn's value, and otherwise the body runs and every
+    /// exit that answers keeps its answer there (`kept`). The slot is
+    /// addressed by the fn's own SYMBOL — unique in a binary by the
+    /// linker's own law — so no key is minted until the cold path
+    /// actually needs one. Under the niche a pointer answer's nullable
+    /// IS the pointer, so the guard is the presence protocol; a
+    /// NULLABLE answer's null is an answer, and an answer that is no
+    /// pointer — a value record, an enum that is its tag — rides a
+    /// one-cell list, so the slot's own null means only "not yet".
     mut fn once_body(symbol: string, root: ExprId, answer: TypeId) -> Reg {
-        if self.view.types.carried(answer) != null || !self.view.types.rides_pointer(answer) { return self.once_boxed(symbol, root, answer) }
-        // the slot answers `T?` — under the niche the nullable IS
-        // the pointer, so the guard is the presence protocol and the
-        // present arm's carry is identity
-        let maybe = self.view.decls.types.type(answer?)
+        let boxed = self.view.types.carried(answer) != null ||
+            !self.view.types.rides_pointer(answer)
+        self.once_slot = OnceSlot { symbol: symbol, answer: answer, boxed: boxed }
+        let maybe = if boxed { self.view.decls.types.type(List<answer>?) } else { self.view.decls.types.type(answer?) }
         let held = self.once_read(self.view.decls.types.shape_of(maybe), symbol)
         self
-            .region_as(self.presence_of(held, maybe), answer) { cx -> cx.carried_of(held, maybe) } else { cx ->
+            .region_as(self.presence_of(held, maybe), answer) { cx ->
+                let carried = cx.carried_of(held, maybe)
+                if boxed { cx.slot_read(carried, 0, answer) } else { carried }
+            } else { cx ->
                 let made = cx.reg_of(root)
-                cx.once_commit(symbol, made)
-                made
-            }
-    }
-
-    /// A NULLABLE answer's null is an answer, so the slot holds it in a
-    /// one-cell list and the slot's own null means only "not yet". An
-    /// answer that is no pointer — a value record, an enum that is its
-    /// tag — rides the same cell.
-    mut fn once_boxed(symbol: string, root: ExprId, answer: TypeId) -> Reg {
-        let maybe = self.view.decls.types.type(List<answer>?)
-        let held = self.once_read(self.view.decls.types.shape_of(maybe), symbol)
-        self
-            .region_as(self.presence_of(held, maybe), answer) { cx -> cx.slot_read(cx.carried_of(held, maybe), 0, answer) } else { cx ->
-                let made = cx.reg_of(root)
-                cx.once_commit(symbol, cx.one_cell(made, answer))
+                cx.kept(made)
                 made
             }
     }
@@ -466,13 +458,6 @@ impl LowerCx {
         let _ = self.within_loops.pop()
     }
 
-    /// An early exit that ANSWERS `answer`: every open frame's
-    /// entries run, innermost first — an `errdefer` behind the
-    /// answer's tag. Nothing closes — other paths continue.
-    mut fn leaving(answer: Reg?) {
-        self.run_from(0, answer)
-    }
-
     /// The entries of every frame from `floor` in run, innermost
     /// first — an `errdefer` behind `answer`'s tag.
     mut fn run_from(floor: int, answer: Reg?) {
@@ -494,8 +479,8 @@ impl LowerCx {
         self.deferred.any(it.depth >= floor && it.work.calls())
     }
 
-    /// An early exit that FAILS: every open frame's `defer`s AND
-    /// `errdefer`s run, innermost first.
+    /// What a failure runs: every open frame's `defer`s AND
+    /// `errdefer`s, innermost first.
     mut fn failing() {
         for d in reversed(self.deferred) { self.exited(d) }
     }
