@@ -46,28 +46,28 @@ fn problem_found(
     let pointed = pointed_place(engine, file, p)
     if p.unplaced {
         return carried(
-            annotation_span(store, stmts, p.by) ?? declared,
+            site_span(store, stmts, p) ?? declared,
             "annotation.unplaceable",
             fill_unplaced(p.message),
         )
     }
     if !p.wrapped.is_empty() {
         return carried(
-            annotation_span(store, stmts, p.by) ?? declared,
+            site_span(store, stmts, p) ?? declared,
             "annotation.wrap_${p.wrapped}",
             wrap_words(p.wrapped, p.by, p.message),
         )
     }
     if p.taken {
         return carried(
-            annotation_span(store, stmts, p.by) ?? declared,
+            site_span(store, stmts, p) ?? declared,
             "annotation.generated_taken",
             generated_name_taken(p.by, p.message),
         )
     }
     if p.trapped {
         return carried(
-            annotation_span(store, stmts, p.by) ?? declared,
+            site_span(store, stmts, p) ?? declared,
             "annotation.unsettled",
             could_not_run(p.message),
         )
@@ -82,7 +82,7 @@ fn problem_found(
     }
     if p.kind != null && !is_kind_word(p.kind!) {
         return carried(
-            annotation_span(store, stmts, p.by) ?? declared,
+            site_span(store, stmts, p) ?? declared,
             "annotation.kind",
             kind_unworded(p.by, p.kind!, p.message),
         )
@@ -126,6 +126,12 @@ fn wrap_words(fault: string, ann: string, name: string) -> Voice {
 fn declaring_span(store: SyntaxArena, stmts: List<StmtId>, name: string) -> Span? {
     let s? = stmts.find((x: StmtId) -> store.declared_name(x) == name) ?? stmts.first() else { return null }
     store.stmt_span(s)
+}
+
+/// Where the annotation naming `p`'s generator stands on a statement among `stmts`: `@${p.by}`, else
+/// the generator's own word, as a trait's derive is written.
+fn site_span(store: SyntaxArena, stmts: List<StmtId>, p: KeptProblem) -> Span? {
+    annotation_span(store, stmts, p.by) ?? annotation_span(store, stmts, p.generator)
 }
 
 /// Where the annotation `@${name}` stands on a statement among `stmts`, or on a method an impl among

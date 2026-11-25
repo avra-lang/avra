@@ -1165,10 +1165,29 @@ fn witnesses() -> List<CodeWitness> {
             witness: with_meta("use @std.meta.{code_hash}\nlet h = code_hash(1)\n0"),
         },
         CodeWitness {
+            code: "annotation.derive_spelled",
+            witness: on_the_program_layer(
+                with_meta_modules(
+                    "use @std.meta.{derive}\nuse kit.{Plain}\n\n@derive(Plain)\ntype R = { n: int }\n0\n",
+                    {
+                        "/w/src/kit/kit.av": "use @std.meta.{Type, Directive}\n\nexport trait Plain {\n    static fn derive(t: Type) -> List<Directive> { [] }\n}\n",
+                    },
+                ),
+            ),
+        },
+        CodeWitness {
+            code: "annotation.ambiguous",
+            witness: on_the_program_layer(
+                with_meta(
+                    "use @std.meta.{Named, Diagnostic}\ntrait Pair { fn left() -> int }\nfn Pair(_d: Named) -> List<Diagnostic> { [] }\n@Pair\ntype T = { x: int }\n0\n",
+                ),
+            ),
+        },
+        CodeWitness {
             code: "annotation.unimported",
             witness: on_the_program_layer(
                 with_meta_modules(
-                    "use @std.meta.{derive}\nuse kit.{Reads}\n\n@derive(Reads)\ntype R = { @flag n: int }\n0\n",
+                    "use kit.{Reads}\n\n@Reads\ntype R = { @flag n: int }\n0\n",
                     {
                         "/w/src/kit/kit.av": "use @std.meta.{Named, Marker, Type, Directive}\n\nexport fn flag(_d: Named) -> Marker { Marker {} }\n\nexport trait Reads {\n    static fn derive(t: Type) -> List<Directive> { [] }\n    static fn marks(t: Type) -> List<string> { [\"flag\"] }\n}\n",
                     },
@@ -1592,10 +1611,7 @@ fn witnesses() -> List<CodeWitness> {
         },
         CodeWitness {
             code: "annotation.unsettled",
-            witness: provided_program(
-                "use @std.meta.{derive}\nuse @x.c.{Traps}\n@derive(Traps)\ntype T = { x: int }\n0",
-                annotators,
-            ),
+            witness: provided_program("use @x.c.{Traps}\n@Traps\ntype T = { x: int }\n0", annotators),
         },
         CodeWitness { code: "annotation.wrap_kind", witness: Witness.Beyond(wrap_kind_golden) },
         CodeWitness { code: "annotation.meta", witness: moved_meta_program(plain_main) },
@@ -1607,10 +1623,7 @@ fn witnesses() -> List<CodeWitness> {
         },
         CodeWitness {
             code: "annotation.unplaceable",
-            witness: provided_program(
-                "use @std.meta.{derive}\nuse @x.c.{Fields}\n@derive(Fields)\ntype T = { x: int }\n0",
-                annotators,
-            ),
+            witness: provided_program("use @x.c.{Fields}\n@Fields\ntype T = { x: int }\n0", annotators),
         },
         CodeWitness {
             code: "type.unbranched",

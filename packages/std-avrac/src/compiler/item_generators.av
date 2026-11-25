@@ -773,8 +773,11 @@ fn annotation_sites(
     a: Annotation,
 ) -> List<GeneratorSite> {
     let store = read.store
-    let named? = stratum_resolved(engine, scope, file, Space.Value, a.name).named() else { return [] }
-    if named.file.package_name == META && named.name == DERIVE {
+    let meant = annotation_meant(engine, scope, file, a.name)
+    let derived = meant_trait(meant)
+    if derived != null { return [derive_site(name, item, derived!)] }
+    let named? = meant_fn(meant) else { return [] }
+    if derive_fn(named) {
         return [derive_site(name, item, t!) for e in a.args for t in [trait_named(engine, scope, file, arg_lit(store, e).text)] if t != null]
     }
     if named.kind != ItemKind.Fn { return [] }
@@ -1177,10 +1180,17 @@ export fn derive_claims(
     if worn.is_empty() { return null }
     mut claims: List<string> = []
     for a in worn {
-        let d? = stratum_resolved(engine, scope, file, Space.Value, a.name).named() else { return null }
-        if d.file.package_name != META || d.name != DERIVE { return null }
-        for e in a.args {
-            let t? = trait_named(engine, scope, file, arg_lit(store, e).text) else { return null }
+        let meant = annotation_meant(engine, scope, file, a.name)
+        let derived = meant_trait(meant)
+        let traits: List<TraitAt?> = if derived != null {
+            [derived]
+        } else {
+            let d? = meant_fn(meant) else { return null }
+            if !derive_fn(d) { return null }
+            [trait_named(engine, scope, file, arg_lit(store, e).text) for e in a.args]
+        }
+        for named in traits {
+            let t? = named else { return null }
             if t.file == file { return null }
             let held? = trait_claims(engine, t, file, name).claims else { return null }
             claims = claims.concat(held)
@@ -1239,13 +1249,23 @@ export fn trait_claims(engine: QueryEngine, t: TraitAt, file: SourceFileAddress,
 const CLAIMS: string = "marks"
 
 /// The trait `name` names from `file`, absent for a name naming none.
-fn trait_named(engine: QueryEngine, scope: FileScope, file: SourceFileAddress, name: string) -> TraitAt? {
-    let d? = stratum_resolved(engine, scope, file, Space.Type, name).named() else { return null }
-    if d.kind == ItemKind.Trait { TraitAt { file: d.file, name: d.name } } else { null }
+/// The fn an annotation's word names, where it names one.
+fn meant_fn(m: AnnotationMeant) -> DeclaredName? {
+    match m { .Fn(d) -> d, _ -> null }
 }
 
-/// The annotation naming the traits whose generators run over a declaration.
-const DERIVE: string = "derive"
+/// The trait whose derive an annotation's word names, where it names one.
+fn meant_trait(m: AnnotationMeant) -> TraitAt? {
+    match m { .Derive(d) -> trait_named_by(d), _ -> null }
+}
+
+fn trait_named(engine: QueryEngine, scope: FileScope, file: SourceFileAddress, name: string) -> TraitAt? {
+    let d? = stratum_resolved(engine, scope, file, Space.Type, name).named() else { return null }
+    if d.kind == ItemKind.Trait { trait_named_by(d) } else { null }
+}
+
+/// The trait the declared name `d` is, where it's declared.
+fn trait_named_by(d: DeclaredName) -> TraitAt { TraitAt { file: d.file, name: d.name } }
 
 /// The record a declaring annotation's first seat takes.
 const META_FN: string = "Fn"
