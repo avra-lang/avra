@@ -1,0 +1,56 @@
+// A STORE ANSWERS ONLY THE COMPILER THAT MADE ITS ANSWERS. A compiler is named by its queries' code:
+// another compiler over the same store on disk — one query built from other code — reads none of
+// the first's answers, works everything out again and answers alike, and the first, back over that
+// store, still reads its own.
+use @std.avrac.testing.held.{Pass, another_compiler, held_at}
+use @std.program.query_engine.{QueryDefinition}
+use @std.time.{stamp}
+use compiler.{avra_fact_definitions}
+
+const CP_MAIN: string = "/w/src/main.av"
+
+fn cp_files() -> Map<string, string> {
+    {
+        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+        CP_MAIN: "use util.{twice}\ntwice(21)\n",
+        "/w/src/util/u.av": "export fn twice(n: int) -> int { n * 2 }\n",
+    }
+}
+
+/// A store on disk nothing has written to.
+fn cp_store() -> string { "/tmp/avra-compiler-print-test/${stamp()}" }
+
+/// One process of the compiler whose queries are `definitions`, over the disk store at `store`,
+/// saved as the process ends.
+fn cp_pass(store: string, definitions: List<QueryDefinition>) -> Pass {
+    held_at(cp_files(), "/w").passed_on_disk(CP_MAIN, store, definitions)
+}
+
+spec "compiler/build — a store answers only the compiler that made its answers" {
+    given "a store one compiler checked" {
+        then "another compiler over it works everything out again" {
+            let s = cp_store()
+            let first = cp_pass(s, avra_fact_definitions())
+            let other = cp_pass(s, another_compiler("typed_fn"))
+            !first.worked.is_empty() && other.worked.join(",") == first.worked.join(",")
+        }
+        then "and answers alike" {
+            let s = cp_store()
+            let first = cp_pass(s, avra_fact_definitions())
+            let other = cp_pass(s, another_compiler("typed_fn"))
+            first.ran == "42" && other.ran == first.ran && other.report == first.report
+        }
+        then "a compiler differing in a query no answer here reads keeps nothing of the first's either" {
+            let s = cp_store()
+            let first = cp_pass(s, avra_fact_definitions())
+            cp_pass(s, another_compiler("program_hosts_owed")).worked.join(",") == first.worked.join(",")
+        }
+        then "the first compiler, back over that store, still reads its own" {
+            let s = cp_store()
+            let _ = cp_pass(s, avra_fact_definitions())
+            let _ = cp_pass(s, another_compiler("typed_fn"))
+            let back = cp_pass(s, avra_fact_definitions())
+            back.ran == "42" && back.worked.is_empty()
+        }
+    }
+}

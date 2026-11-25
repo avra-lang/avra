@@ -1,0 +1,39 @@
+//! WHAT A TYPE IS TO THE MACHINE, IN A WORD — `avra repr`'s answer: a type expression read where a
+//! file's top level stands, laid out as the program lays it out (`CheckedProgram.layout`), and named
+//! by what that layout is. A nullable answers by what carries its absence; anything else by whether
+//! it rides a pointer.
+use core.{BoxKind, Layout}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+
+/// The representation of the type `text` spells, read in `file`: absent for text that spells no
+/// type, a name `file` reads as no type, or a type no value has.
+export fn type_repr(engine: QueryEngine, file: SourceFileAddress, text: string) -> string? {
+    let written? = parse_type_ref(avra(), text) else { return null }
+    let signing = signing_in(engine, file, [])
+    let ty = signing.signed(written)
+    if ty.unknown() { return null }
+    let program = program_of(engine, file, signing)
+    let whole? = program.layout(ty) else { return null }
+    if !ty.nullable() { return carried_word(whole) }
+    let carried? = program.layout(ty.unwrapped()) else { return null }
+    absence_word(whole, carried)
+}
+
+/// A value that is no nullable: whether it rides a pointer.
+fn carried_word(l: Layout) -> string { if l.pointer() { "boxed" } else { "flat" } }
+
+/// A nullable laid out as `whole` over a value laid out as `carried`, by what carries its absence:
+/// the value's own pointer, null (niche); a box of one slot around a flat record; a presence flag
+/// beside the value (pair); or a tag no variant has.
+fn absence_word(whole: Layout, carried: Layout) -> string {
+    match whole {
+        .Maybe(_) -> "pair",
+        .Boxed(box) -> match box {
+            .Slot -> "one-slot box",
+            .Text or .Bytes or .List or .Map or .Record or .Enum or .Closure or .Cell or .Task or .Dyn or .Union or .Range -> "niche",
+        },
+        .Bare -> "niche",
+        .Void or .Word or .Truth or .Real or .Fields(_) or .Tagged(_) -> if carried.pointer() { "niche" } else { "tag -1" },
+    }
+}

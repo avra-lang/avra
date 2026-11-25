@@ -1,0 +1,70 @@
+# Drain a channel: the SHAPED rows, not just latency. An O(n^2) drain
+# hides behind a small-n latency number; the same drain at 1000 and 10000
+# items, reported per item, exposes the scaling — and an UNBOUNDED channel
+# exposes the quadratic a fixed cap hides.
+languages = ["c", "rust", "go", "python", "avra"]
+
+[benchmark]
+name = "drain"
+family = "tasks"
+title = "Channel drain"
+invariant = "a producer pushes n items into a channel of capacity cap while one consumer drains it; every item arrives exactly once, in FIFO order, so the sum is n(n-1)/2 and none is dropped. cap = 64 is the bounded row; cap = -1 is the unbounded row, and both must hold the same invariant"
+row = "wall-clock nanoseconds per item for the bounded and the unbounded drain, at two sizes, plus the ratio of the large per-item cost to the small one for each"
+
+[workload]
+small = 1000
+n = 10000
+cap = 64
+rounds = 5
+
+[analogues]
+c = "an OS thread producer (pthread) pushing into a ring buffer"
+rust = "an OS thread producer (std::thread) pushing into a sync_channel"
+python = "an OS thread producer (threading.Thread) pushing into a queue.Queue"
+go = "a goroutine producer pushing into a buffered channel"
+avra = "a user-space task producer (`produce<T>(cap)`) drained with `for x in source`"
+
+[rows.drain_1k_ns_per_op]
+unit = "ns"
+about = "nanoseconds per item draining 1000 items through a capacity-64 channel"
+
+[rows.drain_10k_ns_per_op]
+unit = "ns"
+about = "nanoseconds per item draining 10000 items through a capacity-64 channel"
+
+[rows.drain_scale]
+unit = "x"
+about = "the bounded large per-item cost over the small one — a linear drain reports about 1, an O(n^2) drain about (n/small)"
+
+[rows.drain_unbounded_1k_ns_per_op]
+unit = "ns"
+about = "nanoseconds per item draining 1000 items through an unbounded channel"
+
+[rows.drain_unbounded_10k_ns_per_op]
+unit = "ns"
+about = "nanoseconds per item draining 10000 items through an unbounded channel"
+
+[rows.drain_unbounded_scale]
+unit = "x"
+about = "the unbounded large per-item cost over the small one — a linear drain reports about 1, an O(n^2) drain about (n/small); this is the row a small fixed cap cannot hide"
+
+[rows.drain_ops_per_s]
+unit = "ops"
+about = "items drained per second at 10000 items — the throughput"
+
+[rows.drain_bytes]
+unit = "bytes"
+check = "exact"
+about = "payload bytes moved at 10000 items (8 per item)"
+
+[rows.drain_sum]
+unit = "ops"
+check = "exact"
+about = "the sum of every drained item — a witness every item arrived exactly once"
+
+[gate.rows]
+drain_scale = 3.0
+drain_unbounded_scale = 3.0
+
+[notes]
+text = "This is the suite's scaling witness: a pure latency row cannot tell a linear drain from a quadratic one, and the audit of Avra's own carrier found one behind the bounded cap alone. The unbounded rows measure the same drain with cap = -1, where the ratio must stay near 1."

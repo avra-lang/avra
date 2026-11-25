@@ -1,0 +1,52 @@
+//! WHAT AN INSTANCE'S WRAPPING STATEMENT FILLS of its record: what only the statement carries — the
+//! `///` above it and its `@name(args)` annotations — since neither exists while the instance's own
+//! record literal is built (an annotation wraps the statement from outside, once it stands). A
+//! field named `doc` reads the statement's own `///`, first paragraph; any other field an
+//! annotation shares the name of is a `List<R>` taking one `R` per annotation, in written order.
+//! Each lowering carries this out in its own builder; the law is said here once.
+use core.{Annotation, ExprId, StmtId, SyntaxArena, doc_first_paragraph, joined}
+
+/// A field of an instance's record the wrapping statement fills: its place among the record's
+/// fields, and what fills it.
+export type FieldFill = { slot: int, fill: StatementFill }
+
+/// What fills a field: the statement's doc, or the annotations that share the field's name.
+export enum StatementFill {
+    Doc(text: string)
+    Annotated(marks: List<Annotation>)
+}
+
+/// One annotation as one element of the list it fills: the element type's zero for an annotation
+/// that writes no argument; its arguments into the element's fields by position, the rest
+/// defaulted, where the element is a record with at least as many fields; else its first argument.
+export enum ElementFill {
+    Zero
+    Arg(e: ExprId)
+    Packed(args: List<ExprId>)
+}
+
+/// What the statement `owner` fills of a record whose fields are named `fields`, in their order.
+export fn instance_fills(store: SyntaxArena, owner: StmtId, fields: List<string>) -> List<FieldFill> {
+    let marks = store.annotations_of(owner)
+    [f! for j, name in fields for f in [field_fill(store, owner, marks, j, name)] if f != null]
+}
+
+fn field_fill(store: SyntaxArena, owner: StmtId, marks: List<Annotation>, slot: int, name: string) -> FieldFill? {
+    if name == DOC_FIELD { return FieldFill { slot: slot, fill: StatementFill.Doc(doc_text(store, owner)) } }
+    let shared = marks.filter(it.name == name)
+    if shared.is_empty() { null } else { FieldFill { slot: slot, fill: StatementFill.Annotated(shared) } }
+}
+
+/// The first paragraph of the statement's own `///`, its lines joined.
+fn doc_text(store: SyntaxArena, owner: StmtId) -> string { joined(doc_first_paragraph(store.doc_comment(owner) ?? []), " ") }
+
+/// The annotation `a` as one element of a list whose element is a record of `fields` fields, or no
+/// record where absent.
+export fn element_fill(a: Annotation, fields: int?) -> ElementFill {
+    let one? = a.args.first() else { return ElementFill.Zero }
+    let count? = fields else { return ElementFill.Arg(one) }
+    if a.args.length > count { ElementFill.Arg(one) } else { ElementFill.Packed(a.args) }
+}
+
+/// The field the statement's doc fills.
+const DOC_FIELD: string = "doc"

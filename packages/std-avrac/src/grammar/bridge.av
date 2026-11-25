@@ -1,0 +1,239 @@
+//! Avra's own token as `@std.grammar`'s `Lexeme<Token>` — the seam
+//! that lets `@std/grammar`'s engine, which owns no lexer and no
+//! concrete token type, assemble and run AVRA'S grammar exactly as it
+//! always did. `Token`/`TokenKind` stay here (they name Avra-specific
+//! kinds like `IStrBegin`/`Hole`/`Block`); the engine, the DSL
+//! notation's data model, and its builders all moved to `@std/grammar`.
+use @std.errors.{Loc}
+use @std.grammar.{
+    Lexeme,
+    TokenTables,
+    class_bits,
+    closing_bit,
+    Grammar,
+    parse_grammar as grammar_parse_tokens,
+    Diagnostic,
+    lex_diagnostic,
+}
+use core.{Span, span_of}
+
+/// One row of the terminal-name vocabulary: the string a grammar rule
+/// writes (`NUMBER`) and the token kind it denotes. One table; the
+/// membership test (`term_kind`) and the vocabulary a grammar's own
+/// coherence check is handed (`avra_known_terminals`) both read it, so
+/// neither can list a name the other forgets.
+type TermKind = { name: string, kind: TokenKind, form: TokenForm = TokenForm.Any }
+
+/// Which of a kind's tokens a terminal takes: all of them, or the ones
+/// spelled one way — a `"""raw"""` string, a number with a point or
+/// without one.
+enum TokenForm {
+    Any
+    Raw
+    Fraction
+    Integer
+}
+
+/// Whether the token is spelled the way the form asks.
+fn spelled_as(form: TokenForm, t: Token) -> bool {
+    match form {
+        .Any -> true,
+        .Raw -> t.raw,
+        .Fraction -> t.is_fraction(),
+        .Integer -> !t.is_fraction(),
+    }
+}
+
+const terminal_kinds: List<TermKind> = [
+    TermKind { name: "NAME", kind: TokenKind.Name },
+    TermKind { name: "NUMBER", kind: TokenKind.Num },
+    TermKind { name: "INTEGER", kind: TokenKind.Num, form: TokenForm.Integer },
+    TermKind { name: "FRACTION", kind: TokenKind.Num, form: TokenForm.Fraction },
+    TermKind { name: "STRING", kind: TokenKind.Str },
+    TermKind { name: "RAW_STRING", kind: TokenKind.Str, form: TokenForm.Raw },
+    TermKind { name: "OCTETS", kind: TokenKind.Octets },
+    TermKind { name: "ISTR_BEGIN", kind: TokenKind.IStrBegin },
+    TermKind { name: "ISTR_MID", kind: TokenKind.IStrMid },
+    TermKind { name: "ISTR_END", kind: TokenKind.IStrEnd },
+    TermKind { name: "BREAK", kind: TokenKind.Break },
+    // `END` is a statement's end — a Break consumed, or a `}` left
+    // for the body that opened it — and answers to the Break class.
+    TermKind { name: "END", kind: TokenKind.Break },
+    TermKind { name: "EOF", kind: TokenKind.Eof },
+    TermKind { name: "PKG", kind: TokenKind.Pkg },
+    TermKind { name: "HOLE", kind: TokenKind.Hole },
+    TermKind { name: "HOLE_BEGIN", kind: TokenKind.HoleBegin },
+    TermKind { name: "HOLE_END", kind: TokenKind.HoleEnd },
+    TermKind { name: "BLOCK", kind: TokenKind.Block },
+    TermKind { name: "BODY", kind: TokenKind.Body },
+    TermKind { name: "COMPONENT", kind: TokenKind.Component },
+    TermKind { name: "STATE", kind: TokenKind.State },
+    TermKind { name: "ON", kind: TokenKind.On },
+    TermKind { name: "CTX", kind: TokenKind.Ctx },
+]
+
+/// The TokenKind a terminal name denotes, or null for an unknown name.
+export fn term_kind(term: string) -> TokenKind? {
+    terminal_kinds.find(it.name == term)?.kind
+}
+
+/// Every terminal name Avra's own grammar may write in a `.Named`
+/// atom or a `@recover(sync_to: ...)` — the vocabulary `ready`/
+/// `Grammar.defects` are handed when assembling or checking Avra's
+/// language grammar or a `syntax` block's.
+export fn avra_known_terminals() -> List<string> {
+    [tk.name for tk in terminal_kinds]
+}
+
+/// A token's kind reads as `k`'s class: a template's `Hole` stands
+/// wherever a NAME may, since every builder mints its ordinary node
+/// with the placeholder name — so does a component's word, a name
+/// that can also open an instance.
+fn kind_is(self_kind: TokenKind, k: TokenKind) -> bool {
+    self_kind == k ||
+        k == TokenKind.Name && (self_kind == TokenKind.Hole || self_kind == TokenKind.Component)
+}
+
+fn token_lit_matches(t: Token, text: string) -> bool { spells_literals(t.kind) && t.text == text }
+
+/// Whether a token of kind `k` can spell a grammar literal: by its text, when it does.
+fn spells_literals(k: TokenKind) -> bool {
+    match k {
+        .Name or .Num or .Op or .Break or .Pkg -> true,
+        .Str or .IStrBegin or .IStrMid or .IStrEnd or .Eof or .Hole or .HoleBegin or .HoleEnd or .Block or .Body or .Component or .State or .Env or .Provide or .On or .Ctx or .Octets -> false,
+    }
+}
+
+/// A number for everything a terminal class reads of a token but its text: its kind and its
+/// spelling — two tokens of one class wear the same classes.
+fn token_class(t: Token) -> int {
+    let kind = match t.kind {
+        .Name -> 0,
+        .Num -> 1,
+        .Str -> 2,
+        .IStrBegin -> 3,
+        .IStrMid -> 4,
+        .IStrEnd -> 5,
+        .Op -> 6,
+        .Break -> 7,
+        .Eof -> 8,
+        .Pkg -> 9,
+        .Hole -> 10,
+        .HoleBegin -> 11,
+        .HoleEnd -> 12,
+        .Block -> 13,
+        .Body -> 14,
+        .Component -> 15,
+        .State -> 16,
+        .Octets -> 17,
+        .Env -> 18,
+        .Provide -> 19,
+        .On -> 20,
+        .Ctx -> 21,
+    }
+    kind * 4 +
+        if t.raw { 2 } else { 0 } +
+        if t.kind == TokenKind.Num && t.is_fraction() { 1 } else { 0 }
+}
+
+/// What each token class wears, by `token_class`: -1 until a token of it is asked. It holds no
+/// class until one is asked, and grows to the class asked, so a token kind added to the lexer is
+/// never past its end.
+export fn token_classes_worn() -> Cell<List<int>> { Cell.new([]) }
+
+/// Each token's literal slot by `lits` and its classes by `kinds`, as `token_tables` answers
+/// them — a class asked of the lexeme once in `worn`, for every token of it.
+export fn avra_token_tables(
+    tokens: List<Token>,
+    lits: Map<string, int>,
+    kinds: List<int>,
+    worn: Cell<List<int>>,
+) -> TokenTables {
+    let lit = [if spells_literals(t.kind) { lits.get(t.text) ?? 0 - 1 } else { 0 - 1 } for t in tokens]
+    let close = lits.get("}") ?? 0 - 1
+    TokenTables {
+        lit: lit,
+        mask: [class_worn(worn, kinds, t) | closing_bit(lit[i], close) for i, t in tokens],
+    }
+}
+
+fn class_worn(worn: Cell<List<int>>, kinds: List<int>, t: Token) -> int {
+    let key = token_class(t)
+    let seen = worn.get()
+    if key < seen.length && seen[key] >= 0 { return seen[key] }
+    let bits = class_bits(avra_lexeme(), kinds, t)
+    if key >= seen.length { worn.set([if k < seen.length { seen[k] } else { 0 - 1 } for k in 0..key + 1]) }
+    worn.set_at(key, bits)
+    bits
+}
+
+fn token_is_eof(t: Token) -> bool { t.kind == TokenKind.Eof }
+
+fn token_ends_statement(t: Token) -> bool { t.kind == TokenKind.Break }
+
+/// A terminal name's kind id: its place in `terminal_kinds`, -1 for a
+/// name Avra's lexer has no kind for.
+fn token_kind_of(term: string) -> int { terminal_places().get(term) ?? 0 - 1 }
+
+/// Each terminal name's place in `terminal_kinds`, made once a process.
+once fn terminal_places() -> Map<string, int> {
+    mut places: Map<string, int> = {}
+    for i, k in terminal_kinds { places.set(k.name, i) }
+    places
+}
+
+fn token_wears_kind(t: Token, k: int) -> bool {
+    k >= 0 && kind_is(t.kind, terminal_kinds[k].kind) && spelled_as(terminal_kinds[k].form, t)
+}
+
+fn token_text(t: Token) -> string { t.text }
+
+fn token_loc(t: Token) -> Loc { Loc { file: null, lo: t.span.lo, hi: t.span.hi } }
+
+/// The source range from `a` to `b` covers, made once.
+fn token_cover(a: Token, b: Token) -> Loc {
+    Loc {
+        file: null,
+        lo: if a.span.lo < b.span.lo { a.span.lo } else { b.span.lo },
+        hi: if a.span.hi > b.span.hi { a.span.hi } else { b.span.hi },
+    }
+}
+
+/// A payload a grammar RULE states rather than one a token captured
+/// (`-> Expr.BoolLit(value = true)`), worn as a terminal.
+fn token_stated(text: string, loc: Loc?) -> Token {
+    let l = loc ?? Loc { file: null, lo: 0, hi: 0 }
+    Token { kind: TokenKind.Name, text: text, span: span_of(l.lo, l.hi) }
+}
+
+/// Avra's own token, as the engine's whole contract for it. A fn, not
+/// a const: a record of fn values is not a settled compile-time shape.
+export fn avra_lexeme() -> Lexeme<Token> {
+    Lexeme {
+        lit_matches: token_lit_matches,
+        is_eof: token_is_eof,
+        ends_statement: token_ends_statement,
+        kind_of: token_kind_of,
+        wears_kind: token_wears_kind,
+        text: token_text,
+        loc: token_loc,
+        cover: token_cover,
+        stated: token_stated,
+    }
+}
+
+/// DSL text in, Grammar value out — `@std.grammar`'s engine running
+/// its own notation, tokenized here since that engine owns no lexer.
+export fn parse_grammar(source: string) -> GrammarParse {
+    let lexed = lex_grammar(source)
+    let o = grammar_parse_tokens(lexed.tokens, avra_lexeme())
+    GrammarParse {
+        built: o.built,
+        diagnostics: [lex_diagnostic(e.message, e.span.engine_loc()) for e in lexed.errors].concat(o.diagnostics),
+    }
+}
+
+/// The parse outcome, in Avra's own words: `@std.grammar`'s own type,
+/// re-exported so a caller need reach for only one module.
+export type GrammarParse = { built: Grammar?, diagnostics: List<Diagnostic> }
+

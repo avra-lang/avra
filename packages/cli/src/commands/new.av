@@ -1,0 +1,260 @@
+//! `avra new` — the compiler scaffolds its own growth.
+//! `feature <name>` writes the directory, the five files, and the
+//! test, all compiling, then prints the three wiring edits.
+//! `ins <Name>` prints the IR VOCABULARY PROTOCOL: the two
+//! questions that gate growth, then the consumers a new
+//! instruction owes. Both end at `make gate`.
+use @std.cli.{CliResult, Runnable, command, arg}
+use @std.io.{write_text, make_dirs}
+use @std.process.{exit, Exit}
+
+type NewCmd = {}
+
+impl Runnable for NewCmd {
+    fn run(args: CliResult) -> int {
+        let kind = args.arg("kind")
+        let name = args.arg("name")
+        if kind == "feature" { return scaffold_feature(name) }
+        if kind == "ins" { return scaffold_ins(name) }
+        eprintln("avra new: `feature` or `ins`")
+        2
+    }
+}
+
+export command new {
+    description: "Scaffold the next feature, or an IR instruction's checklist"
+    arg kind {
+        description: "what to scaffold (`feature` or `ins`)"
+        required: true
+    }
+    arg name {
+        description: "its snake_case name"
+        required: true
+    }
+    run: NewCmd {}
+}
+
+/// `foo` -> `Foo`.
+fn initial_upper(name: string) -> string {
+    let lower = "abcdefghijklmnopqrstuvwxyz"
+    let upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    if name.is_empty() { return name }
+    let head = name.substring(0, 1)
+    mut out = head
+    for j in 0..26 {
+        if lower.substring(j, j + 1) == head { out = upper.substring(j, j + 1) }
+    }
+    "${out}${name.substring(1, name.length)}"
+}
+
+fn scaffold_feature(name: string) -> int {
+    let dir = "packages/std-avrac/src/features/${name}"
+    // LICENSED compiler.host_asked_directly: a command's read of the path it writes to, at this instant — no query frame is open
+    let there = match disk_host().there("${dir}/mod.av") { .Exists(_, t) -> t, rest -> false }
+    if there {
+        eprintln("avra new: `${dir}` already exists")
+        return 2
+    }
+    if make_dirs("${dir}/tests") is .Err {
+        eprintln("avra new: cannot create `${dir}`")
+        return 1
+    }
+    let ty = "${initial_upper(name)}Semantics"
+    write_or_die("${dir}/mod.av", mod_template(name))
+    write_or_die("${dir}/builders.av", builders_template(name))
+    write_or_die("${dir}/semantics.av", semantics_template(name, ty))
+    write_or_die("${dir}/check.av", check_template(name))
+    write_or_die("${dir}/lower.av", lower_template(name))
+    write_or_die("${dir}/tests/${name}_test.av", test_template(name))
+    println("feature `${name}` scaffolded at ${dir}")
+    println("wire it in (three edits):")
+    println("  1. core/nodes.av — the node variant and its fingerprint arm")
+    println("  2. the node record carries its own `Meaning`")
+    println("  3. compiler/mod.av — the feature in language_features(), in its spot")
+    println("     (keywords derive from your gram's literals — nothing to list)")
+    println("prove it: tests/${name}/${name}.av with its .expected, then `make gate`")
+    0
+}
+
+/// `avra new ins <Name>` — the IR vocabulary protocol, printed at
+/// the moment of use: the two questions that gate growth, then the
+/// consumers the new variant owes.
+fn scaffold_ins(name: string) -> int {
+    println("`${name}` would join the IR vocabulary. Two questions first:")
+    println("")
+    println("  JUSTIFY     a new control shape, value category, memory")
+    println("              boundary — or a MACHINE SHAPE the backend can")
+    println("              exploit and cannot infer? Performance counts.")
+    println("              If an existing instruction already says it, stop:")
+    println("              every value-producing runtime need rides CallRt.")
+    println("  GENERALIZE  can an EXISTING variant become more general")
+    println("              instead? SwitchStart reuses ArmEnd/RegionEnd, so")
+    println("              regions and 2-arm ifs stayed ONE mechanism. One")
+    println("              variant that deepens a concept beats two that")
+    println("              split it.")
+    println("")
+    println("Then declare it in core/ir.av's `Ins` and pay its")
+    println("consumers — each dispatch is exhaustive, so the compiler")
+    println("lists them for you and `make vocab` keeps it that way:")
+    println("")
+    println("  1. core/ir.av                     dst_of      the register it defines")
+    println("       .${name}(...) -> null,")
+    println("  2. compiler/backend/interp.av     step        its MEANING")
+    println("       .${name}(...) -> <mutate the machine, answer the next pc>,")
+    println("  3. compiler/memory/memory.av      memory_ins  its ownership effect")
+    println("       .${name}(...) -> { manages(types, reg_types, open_scopes, i)")
+    println("                          out.push(i) }")
+    println("  4. compiler/backend/ir_text.av    body_lines  its human projection")
+    println("       .${name}(...) -> lines.push(line(depth, \"...\")),")
+    println("  5. compiler/backend/llvm_emit.av  emit_ins    its machine projection")
+    println("       .${name}(...) -> <build it>,")
+    println("  6. features/facts.av              give        does the runtime registry")
+    println("       validate it — join the calling arms or the silent group")
+    println("  7. core/ir.av            body_symbol   the program body it names")
+    println("       .${name}(...) -> null,   (unless it calls one)")
+    println("  8. core/ir.av            hosted_symbol the hosted fn it calls")
+    println("       .${name}(...) -> null,   (unless it calls one)")
+    println(
+        "  9. compiler/memory/memory.av      managed_dst whether its answer is the caller's to release",
+    )
+    println("       .${name}(...) -> dst,    (null for a borrowed or immortal answer)")
+    println("")
+    println("prove it: a program test (eval == native == expected) and the")
+    println("`avra ir` golden that shows the new shape. Then `make gate`.")
+    0
+}
+
+fn write_or_die(path: string, content: string) {
+    if write_text(path, content) is .Err {
+        eprintln("avra new: cannot write `${path}`")
+        exit(Exit.Code(1))
+    }
+}
+
+/// A template's holes filled. A raw block says exactly what it
+/// holds, so a scaffold NAMES its holes and this fills them — which
+/// is also why each template reads as the file it becomes.
+fn filled_in(template: string, name: string, ty: string) -> string {
+    template.replace(hole("name"), name).replace(hole("ty"), ty)
+}
+
+/// One hole as the templates spell it.
+fn hole(word: string) -> string {
+    "\${${word}}"
+}
+
+fn mod_template(name: string) -> string {
+    filled_in(
+        """//! TODO: what `${name}` IS, in one breath.
+use features.{LanguageFeature, BuilderRow}
+use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
+
+export fn ${name}() -> LanguageFeature {
+    let rows = table<BuilderRow> {
+        name      | build
+        "${name}" | build_${name}
+    }
+    LanguageFeature ${name} {
+        gram: grammar {
+            TODO = TODO -> ${name}()
+        }
+        builders: rows
+    }
+    ${name}
+}
+""",
+        name,
+        "",
+    )
+}
+
+fn builders_template(name: string) -> string {
+    filled_in(
+        """//! Parse-time lowering: captures -> the ${name} node.
+use core.{Expr}
+use features.{LangNode, Builder}
+
+fn build_${name}(b: Builder) -> Result<LangNode, string> {
+    b.make_expr(Expr.Error)
+}
+""",
+        name,
+        "",
+    )
+}
+
+fn semantics_template(name: string, ty: string) -> string {
+    filled_in(
+        """//! The ${name} Meaning: dispatch only. Typing lives in
+//! check.av; lowering — the MEANING — in lower.av.
+use core.{ExprId, TypeId, Reg}
+use features.{Meaning, ResolveCx, TypeCx, LowerCx, nothing}
+
+export type ${ty} = { }
+
+impl Meaning for ${ty} {
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
+        nothing()
+    }
+
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
+        ${name}_type(cx, e)
+    }
+
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
+        ${name}_lower(cx, e)
+    }
+}
+""",
+        name,
+        ty,
+    )
+}
+
+fn check_template(name: string) -> string {
+    filled_in(
+        """//! The typing rule: TODO.
+use core.{ExprId, TypeId}
+use features.{TypeCx}
+
+fn ${name}_type(cx: TypeCx, e: ExprId) -> TypeId {
+    cx.error_type
+}
+""",
+        name,
+        "",
+    )
+}
+
+fn lower_template(name: string) -> string {
+    filled_in(
+        """//! The lowering rule — the ONE meaning: TODO.
+use core.{ExprId, Reg}
+use features.{LowerCx}
+
+fn ${name}_lower(cx: LowerCx, e: ExprId) -> Reg {
+    cx.result(e)
+}
+""",
+        name,
+        "",
+    )
+}
+
+fn test_template(name: string) -> string {
+    filled_in(
+        """// TODO: the vertical, tested — parse, type, run, and the IR.
+use @std.avrac.testing.{shown}
+
+spec "features/${name}" {
+    given "TODO" {
+        then "TODO" {
+            shown("TODO") == "<refused>"
+        }
+    }
+}
+""",
+        name,
+        "",
+    )
+}

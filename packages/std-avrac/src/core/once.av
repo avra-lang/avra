@@ -1,0 +1,105 @@
+//! A `once` FN'S ANSWER: kept in the fn's own slot the first time its body answers, and read back
+//! from that slot by every call after. A pointer is kept as it is; any other answer rides a list of
+//! one, so a kept absence is told apart from a slot nothing was kept in yet. EVERY EXIT THAT ANSWERS
+//! KEEPS IT — the tail, a `return`, a failure; an unwind answers nothing, and the next call runs the
+//! body again.
+
+/// The slot a `once` fn's answer is kept in: the fn's symbol, the slot's type, and whether the answer
+/// rides a list of one.
+export type OnceKept = { symbol: string, slot: SignedType, boxed: bool }
+
+/// A module `state` as a read reaches it: the unit that answers its box, and what the box holds.
+export type KeptState = { callee: CalledFn, held: SignedType }
+
+impl Lowering {
+    /// The answer of the `once` fn known by `symbol`, its body `body` answering `answer`: what its slot
+    /// holds, else the body's value, kept. An answer that is nothing isn't lowered yet.
+    mut fn once_answered(symbol: string, body: ExprId, answer: SignedType) -> Reg {
+        let carried = self.laid_out(answer)
+        let boxed = answer.nullable() || !carried.pointer()
+        if boxed && answer.owns(OwnType.Void) { return self.missed_as("a `once` fn answering `${answer.spelled()}`") }
+        let slot = if boxed { owned_type("List") with { args: [answer], nulls: 1 } } else { answer with { nulls: 1 } }
+        let held = self.mint(self.laid_out(slot))
+        self.emit(Ins.OnceRead(held, symbol))
+        self.once_kept = OnceKept { symbol: symbol, slot: slot, boxed: boxed }
+        let r = self
+            .region(self.present(held, slot), carried) { cx ->
+                let kept = cx.carried(held, slot)
+                if boxed { cx.unboxed_at(carried, kept, 0) } else { kept }
+            } else { cx ->
+                let made = cx.lower(body)
+                cx.kept_once(made)
+                made
+            }
+        self.once_kept = null
+        r
+    }
+
+    /// The box a module `state` is kept in, built from `init`, its value of `held`, the first time its
+    /// unit is called and kept in the unit's slot `symbol` for every call after.
+    mut fn state_kept(symbol: string, init: ExprId, held: SignedType) -> Reg {
+        let slot = cell_of(held) with { nulls: 1 }
+        let l = self.laid_out(cell_of(held))
+        let kept = self.mint(self.laid_out(slot))
+        self.emit(Ins.OnceRead(kept, symbol))
+        self
+            .region(self.present(kept, slot), l) { cx -> kept } else { cx ->
+                let made = cx.celled(cx.lowered_into(init, held), held, l)
+                cx.emit(Ins.OnceCommit(symbol, made))
+                made
+            }
+    }
+
+    /// What the module `state` whose unit is `callee` holds now, a value of `held`.
+    mut fn state_read(callee: CalledFn, held: SignedType) -> Reg { self.proven_read(self.laid_out(held), self.state_box(callee, held), 0) }
+
+    /// `v` written as what the module `state` `name` names at `at` holds next; false where `name`
+    /// names none.
+    mut fn state_written(at: ExprId, name: string, v: Reg) -> bool {
+        let named? = self.named(at, name) else { return false }
+        let kept? = kept_state(named) else { return false }
+        self.slot_written(self.state_box(kept.callee, kept.held), self.const_int(0), v, true)
+        true
+    }
+
+    /// The box the module `state` `name` holds, opened for a write in place; absent where `name`
+    /// names none.
+    mut fn state_opened(name: string) -> Reg? {
+        let named? = (self.program.named)(name, null) else { return null }
+        let kept? = kept_state(named) else { return null }
+        self
+            .call_row(
+                self.laid_out(kept.held),
+                rt_sig_of("avra_slot_unique")!,
+                [self.state_box(kept.callee, kept.held), self.const_int(0)],
+            )
+    }
+
+    /// Whether `name` names a module `state`.
+    fn names_module_state(name: string) -> bool {
+        let named? = (self.program.named)(name, null) else { return false }
+        kept_state(named) != null
+    }
+
+    /// The one-slot box the module `state` whose unit is `callee` is kept in.
+    mut fn state_box(callee: CalledFn, held: SignedType) -> Reg { self.call_fn(self.laid_out(cell_of(held)), callee, []) }
+
+    /// `answer` kept in the slot of the `once` fn whose body is being lowered; outside one, nothing.
+    mut fn kept_once(answer: Reg) {
+        let k? = self.once_kept else { return }
+        self
+            .emit(
+                Ins
+                    .OnceCommit(
+                        k.symbol,
+                        if k.boxed { self.boxed_words(self.laid_out(k.slot), [], self.leaves(answer)) } else { answer },
+                    ),
+            )
+    }
+}
+
+/// The module `state` a name reaches, absent for any other value.
+export fn kept_state(named: NamedValue) -> KeptState? { match named { .Kept(callee, held) -> KeptState { callee: callee, held: held }, rest -> null } }
+
+/// The type of the one-slot box keeping a value of `held`.
+export fn cell_of(held: SignedType) -> SignedType { owned_type("Cell") with { args: [held] } }

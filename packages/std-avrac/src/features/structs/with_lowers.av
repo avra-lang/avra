@@ -1,0 +1,39 @@
+//! The lowering rule of `with`: the record, then each written value in the order written; a flat
+//! record packed afresh from what's written and what it held, a boxed one copied whole and each
+//! written field written over. A `state` field written is held in a cell of its own, minted here;
+//! one left unwritten is the cell the record held, shared.
+use core.{ExprId, FieldSeat, Lowering, Lowers, Reg}
+use core.expr.{With}
+
+impl Lowers for With {
+    /// A copy of a record of its own type.
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        let ty? = cx.type_at(e) else { return cx.unlowered(e) }
+        if cx.type_at(self.subject)?.spelled() != ty.spelled() { return cx.unlowered(e) }
+        let fields? = cx.fields_of(ty) else { return cx.unlowered(e) }
+        let laid? = cx.seat_layouts(fields) else { return cx.unlowered(e) }
+        let written = [f.of for f in self.fields]
+        let l = cx.laid_out(ty)
+        let src = cx.lower(self.subject)
+        let lowered = [keyed(cx, fields, self.fields[j].of, v) for j, v in self.values]
+        let values = [celled_as(cx, fields, w, lowered[k]) for k, w in written]
+        match l {
+            .Boxed(_) -> {
+                let dst = cx.record_copied(l, src, laid)
+                for n, f in fields { if written.contains(f.name) { cx.field_rewritten(dst, laid, n, values[written.index_of(f.name)]) } }
+                dst
+            },
+            .Void or .Word or .Truth or .Real or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> cx
+                .pack(
+                    l,
+                    [if written.contains(f.name) { values[written.index_of(f.name)] } else { cx.extracted(laid[n], src, n) } for n, f in fields],
+                ),
+        }
+    }
+}
+
+/// The value written for the field `name` among `fields`: in a cell of its own for a `state` field.
+fn celled_as(mut cx: Lowering, fields: List<FieldSeat>, name: string, v: Reg) -> Reg {
+    let f? = fields.find(it.name == name) else { return v }
+    cx.seat_filled(f, v)
+}

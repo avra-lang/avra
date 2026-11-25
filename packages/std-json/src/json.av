@@ -1,0 +1,748 @@
+//! @std.json — JSON as a value. `parse` reads text into a `Json`;
+//! `to_text` writes one back compact, `pretty` with two-space
+//! indents. An object keeps its fields in order — a list of `Field`,
+//! never a map, so what is written reads back the same. A number
+//! spelled as an integer is an `Int`, and one with a fraction or an
+//! exponent is a `Float`; RFC 8259's grammar is the whole door, so a
+//! leading zero, a bare point and a `+` are refused, and a number
+//! past what its kind holds is refused by name rather than rounded to
+//! infinity. Strings decode every escape, `\uXXXX` and surrogate
+//! pairs included. Every refusal is a `JsonError` that says where.
+//! A document nests at most `MAX_DEPTH` deep. `@json`, in the `codec`
+//! module, reads a record from text and writes it back; a misfit is
+//! a `DecodeError` naming the path to it.
+//!
+//! THERE IS ONE SCANNER. `skip` and the scans under it (`string_end`,
+//! `number_end`, `word_end`) validate a text and answer -1 where it is not
+//! JSON; given a `why` they also say where and why, as a `JsonError`. `parse`
+//! validates with them, builds what passed without a second check, and
+//! asks them again, with `why`, only to explain a refusal. The typed readers
+//! (`@std.json.typed`) read through the same scans.
+//!
+//! A typed reader walks the text itself through the SCANS (`space`,
+//! `plain_end`, `string_end`, `text_of`, `number_end`, `int_end`,
+//! `int_of`, `skip`, `value_at`): each answers the position past what
+//! it read, or -1 where the text is not JSON. They accept the texts `parse`
+//! accepts, but for a float past the largest float, whose range is its
+//! reader's to judge; a reader that meets -1 asks `parse` why. `typed` is
+//! such a reader, and the one scanner a page that moves its own types links.
+use @std.text.{builder, repeat, from_codepoint, parse_int, parse_float, admits}
+use @std.errors.{Error, ErrorInfo, info}
+
+// ── The value ───────────────────────────────────────────────────
+
+export type Field = { key: string, value: Json }
+
+export enum Json {
+    Null
+    Bool(truth: bool)
+    Int(n: int)
+    Float(x: float)
+    Str(s: string)
+    Arr(items: List<Json>)
+    Obj(fields: List<Field>)
+}
+
+/// One field of an object.
+export fn field(key: string, value: Json) -> Field {
+    Field { key: key, value: value }
+}
+
+impl Json {
+    /// The field's value, when this is an object that has it.
+    fn get(key: string) -> Json? {
+        self.fields().find(it.key == key)?.value
+    }
+
+    /// The item at `i`, when this is an array long enough.
+    fn at(i: int) -> Json? {
+        let items = self.items()
+        if i < 0 || i >= items.length { return null }
+        items[i]
+    }
+
+    /// The field's value, `Null` when absent — so a walk chains:
+    /// `doc.member("tags").item(1).int()`.
+    fn member(key: string) -> Json {
+        self.get(key) ?? Json.Null
+    }
+
+    /// The item at `i`, `Null` when there is none — the chaining twin
+    /// of `at`.
+    fn item(i: int) -> Json {
+        self.at(i) ?? Json.Null
+    }
+
+    fn text() -> string? {
+        match self { .Str(s) -> s, rest -> null }
+    }
+
+    fn int() -> int? {
+        match self { .Int(n) -> n, rest -> null }
+    }
+
+    /// A number spelled with a fraction or an exponent.
+    fn float() -> float? {
+        match self { .Float(x) -> x, rest -> null }
+    }
+
+    fn truth() -> bool? {
+        match self { .Bool(b) -> b, rest -> null }
+    }
+
+    fn is_null() -> bool {
+        self is .Null
+    }
+
+    /// An array's items; nothing for any other value.
+    fn items() -> List<Json> {
+        match self { .Arr(items) -> items, rest -> [] }
+    }
+
+    /// An object's fields in order; nothing for any other value.
+    fn fields() -> List<Field> {
+        match self { .Obj(fields) -> fields, rest -> [] }
+    }
+
+    fn keys() -> List<string> {
+        [f.key for f in self.fields()]
+    }
+}
+
+// ── Writing ─────────────────────────────────────────────────────
+
+/// The value as compact JSON text.
+export fn to_text(j: Json) -> string {
+    match j {
+        .Null -> "null",
+        .Bool(b) -> if b { "true" } else { "false" },
+        .Int(n) -> "${n}",
+        .Float(x) -> float_text(x),
+        .Str(s) -> quoted(s),
+        .Arr(items) -> "[${[to_text(x) for x in items].join(",")}]",
+        .Obj(fields) -> "{${[compact_field(f) for f in fields].join(",")}}",
+    }
+}
+
+/// A float as JSON spells it: the shortest text that reads back as
+/// the same float, a `.0` kept so it reads back a `Float`. JSON has
+/// no spelling for infinity or NaN, so those write `null`.
+fn float_text(x: float) -> string {
+    if x - x == 0.0 { "${x}" } else { "null" }
+}
+
+fn compact_field(f: Field) -> string {
+    "${quoted(f.key)}:${to_text(f.value)}"
+}
+
+/// The value as JSON text a person reads: two-space indents, one
+/// item or field per line; an empty array or object stays `[]`/`{}`.
+export fn pretty(j: Json) -> string {
+    indented(j, 0)
+}
+
+/// A REGISTRY, not a projection: two arms answer, so every variant is
+/// spelled. A catch-all here would route a NEW AGGREGATE to `to_text`
+/// and render it compact inside a pretty document, silently — the
+/// scalars delegate because for them the two forms agree.
+fn indented(j: Json, depth: int) -> string {
+    match j {
+        .Arr(items) -> block("[", "]", [indented(x, depth + 1) for x in items], depth),
+        .Obj(fields) -> block("{", "}", [pretty_field(f, depth + 1) for f in fields], depth),
+        .Null or .Bool(_) or .Int(_) or .Float(_) or .Str(_) -> to_text(j),
+    }
+}
+
+fn pretty_field(f: Field, depth: int) -> string {
+    "${quoted(f.key)}: ${indented(f.value, depth)}"
+}
+
+/// A bracketed block: each row on its own line one level in, the
+/// closer back at this level — or the bare brackets for no rows.
+fn block(open: string, close: string, rows: List<string>, depth: int) -> string {
+    if rows.is_empty() { return open + close }
+    let inner = repeat("  ", depth + 1)
+    "${open}\n${[inner + r for r in rows].join(",\n")}\n${repeat("  ", depth)}${close}"
+}
+
+/// A string as JSON spells it: quoted, the two that must be escaped
+/// and the named controls as their letters, other controls as
+/// `\u00XX`, everything else as itself.
+fn quoted(s: string) -> string {
+    "\"" + [escaped(s.char_code(i), s.substring(i, i + 1)) for i in 0..s.length].join("") + "\""
+}
+
+fn escaped(c: int, raw: string) -> string {
+    when {
+        c == 34 -> "\\\""
+        c == 92 -> "\\\\"
+        c == 10 -> "\\n"
+        c == 13 -> "\\r"
+        c == 9 -> "\\t"
+        c == 8 -> "\\b"
+        c == 12 -> "\\f"
+        c < 32 -> "\\u00${hex_byte(c)}"
+        _ -> raw
+    }
+}
+
+fn hex_byte(c: int) -> string {
+    "${hex_digit(c / 16)}${hex_digit(c % 16)}"
+}
+
+fn hex_digit(d: int) -> string {
+    "0123456789abcdef".substring(d, d + 1)
+}
+
+// ── Refusals ────────────────────────────────────────────────────
+
+/// Why text is not JSON, and where — a byte offset.
+export enum JsonError {
+    Unexpected(at: int, found: string)
+    Unterminated(at: int)
+    BadEscape(at: int)
+    LeadingZero(at: int)
+    Trailing(at: int)
+    Overflow(at: int)
+    PastFloat(at: int)
+    TooDeep(at: int)
+}
+
+impl Error for JsonError {
+    fn describe() -> ErrorInfo {
+        match self {
+            .Unexpected(at, found) -> info("json.unexpected", "unexpected ${found} at byte ${at}"),
+            .Unterminated(at) -> info("json.unterminated", "the string opened at byte ${at} never closes"),
+            .BadEscape(at) -> info("json.bad_escape", "the escape at byte ${at} names nothing"),
+            .LeadingZero(at) -> info("json.leading_zero", "the number at byte ${at} has a leading zero"),
+            .Trailing(at) -> info("json.trailing", "text goes on past the value, at byte ${at}"),
+            .Overflow(at) -> info("json.overflow", "the integer at byte ${at} does not fit an int"),
+            .PastFloat(at) -> info("json.past_float", "the number at byte ${at} is past the largest float"),
+            .TooDeep(at) -> info(
+                "json.too_deep",
+                "the value at byte ${at} nests deeper than ${MAX_DEPTH} arrays and objects",
+            ),
+        }
+    }
+}
+
+// ── Decoding into a type ─────────────────────────────────────────
+
+/// Why a JSON value is not the type asked of it, and where: `at` is
+/// the path from the document's root (`items[2].name`), empty for the
+/// root itself.
+export type DecodeError = { at: string, wanted: string, found: string }
+
+/// What reads JSON text as a `T` — a record's `from_json_text` under `@json`.
+export alias Decoder<T> = fn(string) -> Result<T, DecodeError>
+
+impl Error for DecodeError {
+    fn describe() -> ErrorInfo {
+        info("json.decode", "${where_said(self.at)} wants ${self.wanted}, found ${self.found}")
+    }
+}
+
+fn where_said(at: string) -> string {
+    if at.is_empty() { "the document" } else { "`${at}`" }
+}
+
+/// The path to a field under `at`.
+export fn path_field(at: string, key: string) -> string {
+    if at.is_empty() { key } else { "${at}.${key}" }
+}
+
+/// The path to an item under `at`.
+export fn path_item(at: string, i: int) -> string { "${at}[${i}]" }
+
+/// The refusal for a `tag` that names no variant.
+export fn unknown_tag(at: string, tag: string) -> DecodeError {
+    DecodeError { at: at, wanted: "a variant's name", found: "`${tag}`" }
+}
+
+// ── Reading ─────────────────────────────────────────────────────
+
+/// THE DEEPEST A DOCUMENT NESTS. The reader descends one call per
+/// level, so an unbounded depth is a stack an untrusted body sizes —
+/// a request of `[` repeated overflows a task's stack and takes the
+/// process with it. RFC 8259 §9 lets a reader set this limit.
+export const MAX_DEPTH: int = 512
+
+/// What an escape stands for and where it ends.
+type Decoded = { piece: string, next: int }
+
+/// The escape at `j` (the backslash) decoded — `\uXXXX`, and a high
+/// surrogate followed by `\uXXXX` low as one code point — or none where it
+/// names nothing. THE ONE DECODER: `parse` and `text_of` both read escapes
+/// here.
+fn escape_at(text: string, n: int, j: int) -> Decoded? {
+    if j + 1 >= n { return null }
+    let e = text.char_code(j + 1)
+    if e != 117 {
+        let piece? = simple_escape(e) else { return null }
+        return Decoded { piece: piece, next: j + 2 }
+    }
+    let code? = hex4(text, n, j + 2) else { return null }
+    if code >= 55296 && code < 56320 && at(text, n, j + 6, 92) && at(text, n, j + 7, 117) {
+        let low: int? = hex4(text, n, j + 8)
+        if low != null {
+            let tail = low!
+            if tail >= 56320 && tail < 57344 {
+                return Decoded {
+                    piece: from_codepoint(65536 + (code - 55296) * 1024 + (tail - 56320)),
+                    next: j + 12,
+                }
+            }
+        }
+    }
+    Decoded { piece: from_codepoint(code), next: j + 6 }
+}
+
+fn simple_escape(e: int) -> string? {
+    when {
+        e == 34 -> "\""
+        e == 92 -> "\\"
+        e == 47 -> "/"
+        e == 98 -> from_codepoint(8)
+        e == 102 -> from_codepoint(12)
+        e == 110 -> "\n"
+        e == 114 -> "\r"
+        e == 116 -> "\t"
+        _ -> null
+    }
+}
+
+/// Four hex digits at `i`, as a number; null when they are not there.
+fn hex4(text: string, n: int, i: int) -> int? {
+    if i + 4 > n { return null }
+    mut v = 0
+    mut k = 0
+    while k < 4 {
+        let d? = hex_value(text.char_code(i + k)) else { return null }
+        v = v * 16 + d
+        k = k + 1
+    }
+    v
+}
+
+fn hex_value(c: int) -> int? {
+    when {
+        is_digit(c) -> c - 48
+        c >= 97 && c <= 102 -> c - 87
+        c >= 65 && c <= 70 -> c - 55
+        _ -> null
+    }
+}
+
+fn at(text: string, n: int, i: int, code: int) -> bool {
+    i < n && text.char_code(i) == code
+}
+
+fn is_space(c: int) -> bool { c == 32 || c == 9 || c == 10 || c == 13 }
+fn is_digit(c: int) -> bool { c >= 48 && c <= 57 }
+fn is_letter(c: int) -> bool { c >= 97 && c <= 122 }
+
+// ── Scanning ────────────────────────────────────────────────────
+
+/// A string's bytes that need no second look: not the quote, not a
+/// backslash, not a control character.
+fn is_plain(c: int) -> bool { c >= 32 && c != 34 && c != 92 }
+
+const plain: Bytes = admits(is_plain)
+const spaces: Bytes = admits(is_space)
+const digits: Bytes = admits(is_digit)
+const letters: Bytes = admits(is_letter)
+
+/// Past the whitespace at `i`.
+export fn space(b: Bytes, i: int) -> int { b.run(i, spaces) }
+
+/// Past the string whose quote is at `i` when it holds no escape —
+/// its text is then the bytes between the quotes; -1 otherwise.
+export fn plain_end(b: Bytes, i: int) -> int {
+    let j = b.run(i + 1, plain)
+    if j < b.length && b.at(j) == 34 { j + 1 } else { -1 }
+}
+
+/// Why a scan refused, in data: what, and where. Words and quoted characters
+/// are made only by `explained`, so a scan that never explains builds none.
+export enum Cause {
+    EndOfText
+    Unterminated
+    ControlInString
+    BadEscape
+    LeadingZero
+    Overflow
+    PastFloat
+    TooDeep
+    BadCharacter
+    BadWord
+    WantsDigit
+    WantsDigitAfterPoint
+    WantsDigitInExponent
+    WantsFieldName
+    WantsColon
+    WantsCommaOrBrace
+    WantsCommaOrBracket
+}
+
+/// A refusal: its cause and the offset it stands at.
+export type Refusal = { cause: Cause, at: int }
+
+/// What a scan that is asked to explain carries: where it records the
+/// refusal, and how it judges a float's range — handed in, so the scans
+/// themselves name no float parser and a page that only reads text links none.
+export type Explain = { found: Cell<Refusal?>, floats: fn(string) -> bool }
+
+/// The explaining scan's seat: refusals recorded in `found`, a float's range
+/// judged by `parse_float`.
+fn judging(found: Cell<Refusal?>) -> Explain {
+    Explain { found: found, floats: (t: string) -> parse_float(t) != null }
+}
+
+/// Record a refusal in `why` — the first only, the one nearest the start —
+/// and answer -1. A scan given no `why` just answers -1.
+fn refused(why: Explain?, cause: Cause, at: int) -> int {
+    let w? = why else { return -1 }
+    if w.found.get() == null { w.found.set(Refusal { cause: cause, at: at }) }
+    -1
+}
+
+/// Past the string whose quote is at `i`; -1 when it is not one, and `why`
+/// says how (never closes, a raw control octet, an escape that names nothing).
+export fn string_end(b: Bytes, i: int, why: Explain? = null) -> int {
+    mut j = i + 1
+    while j < b.length {
+        j = b.run(j, plain)
+        if j >= b.length { break }
+        let c = b.at(j)
+        if c == 34 { return j + 1 }
+        if c < 32 { return refused(why, Cause.ControlInString, j) }
+        let next = escape_end(b, j)
+        if next < 0 { return refused(why, Cause.BadEscape, j) }
+        j = next
+    }
+    refused(why, Cause.Unterminated, i)
+}
+
+/// Past the escape whose backslash is at `j`; -1 when it names
+/// nothing.
+fn escape_end(b: Bytes, j: int) -> int {
+    if j + 1 >= b.length { return -1 }
+    let e = b.at(j + 1)
+    if e != 117 { return if simple_escape(e) == null { -1 } else { j + 2 } }
+    if j + 6 > b.length || b.run(j + 2, hex) < j + 6 { -1 } else { j + 6 }
+}
+
+const hex: Bytes = admits(is_hex)
+
+fn is_hex(c: int) -> bool { hex_value(c) != null }
+
+/// The text of the string from `i` to `end`, its escapes decoded.
+export fn text_of(text: string, b: Bytes, i: int, end: int) -> string {
+    if b.run(i + 1, plain) == end - 1 { return text.substring(i + 1, end - 1) }
+    mut out = builder()
+    mut run = i + 1
+    mut j = i + 1
+    while j < end - 1 {
+        if b.at(j) != 92 {
+            j = j + 1
+            continue
+        }
+        out.push(text.substring(run, j))
+        let d = escape_at(text, b.length, j) ?? Decoded { piece: "", next: j + 2 }
+        out.push(d.piece)
+        j = d.next
+        run = d.next
+    }
+    out.push(text.substring(run, end - 1))
+    out.built()
+}
+
+/// Past the integer at `i` — a number with no fraction and no
+/// exponent; -1 for any other.
+export fn int_end(b: Bytes, i: int) -> int {
+    let end = number_end(b, i)
+    if end < 0 || b.run(if b.at(i) == 45 { i + 1 } else { i }, digits) != end { -1 } else { end }
+}
+
+/// Nineteen digits or more: whether they fit, as `parse_int` reads
+/// them.
+fn fits(b: Bytes, i: int, j: int) -> bool {
+    let t? = b.slice(i, j).text() else { return false }
+    parse_int(t) != null
+}
+
+/// The integer from `i` to `end`, which `int_end` passed.
+export fn int_of(text: string, b: Bytes, i: int, end: int) -> int {
+    let negative = b.at(i) == 45
+    let from = if negative { i + 1 } else { i }
+    if end - from >= 19 { return parse_int(text.substring(i, end)) ?? 0 }
+    mut v = 0
+    for k in from..end { v = v * 10 + b.at(k) - 48 }
+    if negative { 0 - v } else { v }
+}
+
+/// Past the number at `i` — `-`? an integer part with no leading zero, then
+/// a fraction and an exponent each optional — or -1, and `why` says how. An
+/// integer past what an int holds is refused; a float's RANGE is its
+/// reader's to judge (`parse_float`).
+export fn number_end(b: Bytes, i: int, why: Explain? = null) -> int {
+    let from = if i < b.length && b.at(i) == 45 { i + 1 } else { i }
+    let whole = b.run(from, digits)
+    if whole == from { return refused(why, Cause.WantsDigit, from) }
+    if b.at(from) == 48 && whole > from + 1 { return refused(why, Cause.LeadingZero, i) }
+    mut end = whole
+    if end < b.length && b.at(end) == 46 {
+        let frac = b.run(end + 1, digits)
+        if frac == end + 1 { return refused(why, Cause.WantsDigitAfterPoint, end + 1) }
+        end = frac
+    }
+    if end < b.length && (b.at(end) == 101 || b.at(end) == 69) {
+        let signed = if end + 1 < b.length && (b.at(end + 1) == 43 || b.at(end + 1) == 45) { end + 2 } else { end + 1 }
+        let exp = b.run(signed, digits)
+        if exp == signed { return refused(why, Cause.WantsDigitInExponent, signed) }
+        end = exp
+    }
+    if end == whole {
+        if whole - from >= 19 && !fits(b, i, end) { return refused(why, Cause.Overflow, i) }
+        return end
+    }
+    let judged? = why else { return end }
+    if !judged.floats(b.slice(i, end).text() ?? "") { return refused(why, Cause.PastFloat, i) }
+    end
+}
+
+/// Past `true`, `false` or `null` at `i`; -1 for any other word.
+export fn word_end(b: Bytes, i: int, why: Explain? = null) -> int {
+    let j = b.run(i, letters)
+    let known = b.eq_at(i, j, "true".bytes()) ||
+        b.eq_at(i, j, "false".bytes()) ||
+        b.eq_at(i, j, "null".bytes())
+    if known { return j }
+    refused(why, Cause.BadWord, i)
+}
+
+/// Past the one value at `i`, arrays and objects nested no deeper than
+/// `room` levels; -1 where the text is not JSON, and `why` says where and
+/// why. A LOOP with a stack of the closers it owes, so hostile nesting costs
+/// a list and never the call stack. THE ONE SCANNER: `parse` validates with
+/// it, builds from what it passed, and asks it again, with `why`, to explain
+/// a refusal.
+export fn skip(b: Bytes, i: int, room: int, why: Explain? = null) -> int {
+    let owed: Cell<List<int>> = Cell.new([])
+    mut depth = 0
+    mut j = i
+    // LICENSED loops.push_loop: one value is walked token by token with an explicit stack
+    while true {
+        if j >= b.length { return refused(why, Cause.EndOfText, j) }
+        let c = b.at(j)
+        mut done = -1
+        if c == 34 {
+            done = string_end(b, j, why)
+        } else if c == 45 || is_digit(c) {
+            done = number_end(b, j, why)
+        } else if is_letter(c) {
+            done = word_end(b, j, why)
+        } else if c == 123 || c == 91 {
+            if depth >= room { return refused(why, Cause.TooDeep, j) }
+            let close = if c == 123 { 125 } else { 93 }
+            if depth == owed.get().length { owed.push(close) } else { owed.set_at(depth, close) }
+            depth = depth + 1
+            let k = space(b, j + 1)
+            if k < b.length && b.at(k) == close {
+                depth = depth - 1
+                done = k + 1
+            } else {
+                j = k
+                if c == 123 {
+                    j = member_start(b, j, why)
+                    if j < 0 { return -1 }
+                }
+                continue
+            }
+        } else {
+            return refused(why, Cause.BadCharacter, j)
+        }
+        if done < 0 { return -1 }
+        // a value ended at done: close what it closes, or go on to the next
+        while true {
+            if depth == 0 { return done }
+            let k = space(b, done)
+            let want = owed.get()[depth - 1]
+            if k < b.length && b.at(k) == want {
+                depth = depth - 1
+                done = k + 1
+                continue
+            }
+            if k >= b.length || b.at(k) != 44 {
+                return refused(
+                    why,
+                    if want == 125 { Cause.WantsCommaOrBrace } else { Cause.WantsCommaOrBracket },
+                    k,
+                )
+            }
+            j = space(b, k + 1)
+            if want == 125 {
+                j = member_start(b, j, why)
+                if j < 0 { return -1 }
+            }
+            break
+        }
+    }
+    -1
+}
+
+/// `skip`, with a float's range judged too: -1 where `parse` would refuse
+/// the text. A reader that only passes over a value uses this one, so it
+/// refuses what the tree reader refuses.
+export fn skip_judged(b: Bytes, i: int, room: int) -> int {
+    let found: Cell<Refusal?> = Cell.new(null)
+    skip(b, i, room, judging(found))
+}
+
+/// Past an object member's name and its colon, where its value starts; -1,
+/// and `why`, where there is none.
+fn member_start(b: Bytes, j: int, why: Explain?) -> int {
+    if j >= b.length || b.at(j) != 34 { return refused(why, Cause.WantsFieldName, j) }
+    let key_end = string_end(b, j, why)
+    if key_end < 0 { return -1 }
+    let colon = space(b, key_end)
+    if colon >= b.length || b.at(colon) != 58 { return refused(why, Cause.WantsColon, colon) }
+    space(b, colon + 1)
+}
+
+/// The value at `at` of text `parse` accepts — what a typed reader shows of
+/// a value it refused. The scanner finds where the value ends, so a value
+/// inside a larger text is read as the one scanner reads every value.
+export fn value_at(text: string, at: int) -> Json {
+    let b = text.bytes()
+    let from = space(b, at)
+    let end = skip(b, from, MAX_DEPTH)
+    if end < 0 { return Json.Null }
+    match parse(text.substring(from, end)) { .Ok(v) -> v, .Err(_) -> Json.Null }
+}
+
+/// The text as one JSON value, whitespace around it allowed. The scanner
+/// validates it first; what passes is built without a second check, and
+/// what does not is scanned again for the words and the offset.
+export fn parse(text: string) -> Result<Json, JsonError> {
+    let b = text.bytes()
+    let from = space(b, 0)
+    let end = skip(b, from, MAX_DEPTH)
+    if end < 0 { fail explained(b, from) }
+    let tail = space(b, end)
+    if tail < b.length { fail JsonError.Trailing(tail) }
+    let past: Cell<int> = Cell.new(-1)
+    let v = built(text, b, from, past)
+    if past.get() >= 0 { fail explained(b, from) }
+    v.json
+}
+
+/// The character whose first octet is at `i`, whole.
+fn character_at(b: Bytes, i: int) -> string {
+    let lead = b.at(i)
+    let width = when {
+        lead >= 240 -> 4
+        lead >= 224 -> 3
+        lead >= 192 -> 2
+        _ -> 1
+    }
+    let end = if i + width > b.length { b.length } else { i + width }
+    b.slice(i, end).text() ?? b.slice(i, i + 1).text() ?? "?"
+}
+
+/// The unexpected octet at `i` named — or the end of the text.
+fn unexpected_at(b: Bytes, i: int, wanted: string) -> JsonError {
+    if i >= b.length { return JsonError.Unexpected(i, "the end of the text, wanting ${wanted}") }
+    JsonError.Unexpected(i, "${quoted(character_at(b, i))}, wanting ${wanted}")
+}
+
+/// Why the scanner refused the value at `from`: asked again, with a place to
+/// say so, and the words made here.
+fn explained(b: Bytes, from: int) -> JsonError {
+    let found: Cell<Refusal?> = Cell.new(null)
+    let why = judging(found)
+    let _ = skip(b, from, MAX_DEPTH, why)
+    let r? = found.get() else { return JsonError.Unexpected(from, "the end of the text") }
+    match r.cause {
+        .EndOfText -> JsonError.Unexpected(r.at, "the end of the text"),
+        .Unterminated -> JsonError.Unterminated(r.at),
+        .ControlInString -> JsonError.Unexpected(r.at, "a control character inside a string"),
+        .BadEscape -> JsonError.BadEscape(r.at),
+        .LeadingZero -> JsonError.LeadingZero(r.at),
+        .Overflow -> JsonError.Overflow(r.at),
+        .PastFloat -> JsonError.PastFloat(r.at),
+        .TooDeep -> JsonError.TooDeep(r.at),
+        .BadCharacter -> JsonError.Unexpected(r.at, quoted(character_at(b, r.at))),
+        .BadWord -> JsonError.Unexpected(r.at, "`${b.slice(r.at, b.run(r.at, letters)).text() ?? ""}`"),
+        .WantsDigit -> unexpected_at(b, r.at, "a digit"),
+        .WantsDigitAfterPoint -> unexpected_at(b, r.at, "a digit after the point"),
+        .WantsDigitInExponent -> unexpected_at(b, r.at, "a digit in the exponent"),
+        .WantsFieldName -> unexpected_at(b, r.at, "a field's name in quotes"),
+        .WantsColon -> unexpected_at(b, r.at, "`:` after the field's name"),
+        .WantsCommaOrBrace -> unexpected_at(b, r.at, "`,` or `}`"),
+        .WantsCommaOrBracket -> unexpected_at(b, r.at, "`,` or `]`"),
+    }
+}
+
+/// A value built and where it ended.
+type Built = { json: Json, next: int }
+
+/// The value at `i` of text the scanner passed. Only a float past the
+/// largest float is still unjudged: it records where, and `parse` refuses with it.
+fn built(text: string, b: Bytes, i: int, past: Cell<int>) -> Built {
+    let c = b.at(i)
+    if c == 34 {
+        let end = string_end(b, i)
+        return Built { json: Json.Str(text_of(text, b, i, end)), next: end }
+    }
+    if c == 123 { return built_object(text, b, i, past) }
+    if c == 91 { return built_array(text, b, i, past) }
+    if c == 45 || is_digit(c) {
+        let end = number_end(b, i)
+        if int_end(b, i) == end { return Built { json: Json.Int(int_of(text, b, i, end)), next: end } }
+        let x? = parse_float(text.substring(i, end)) else {
+            if past.get() < 0 { past.set(i) }
+            return Built { json: Json.Null, next: end }
+        }
+        return Built { json: Json.Float(x), next: end }
+    }
+    let end = word_end(b, i)
+    let json = when {
+        c == 116 -> Json.Bool(true)
+        c == 102 -> Json.Bool(false)
+        _ -> Json.Null
+    }
+    Built { json: json, next: end }
+}
+
+fn built_array(text: string, b: Bytes, i: int, past: Cell<int>) -> Built {
+    mut items: List<Json> = []
+    mut j = space(b, i + 1)
+    if b.at(j) == 93 { return Built { json: Json.Arr([]), next: j + 1 } }
+    // LICENSED loops.push_loop: items are built in the order they stand, each from where the last ended
+    while true {
+        let v = built(text, b, j, past)
+        items.push(v.json)
+        j = space(b, v.next)
+        if b.at(j) == 93 { break }
+        j = space(b, j + 1)
+    }
+    Built { json: Json.Arr(items), next: j + 1 }
+}
+
+fn built_object(text: string, b: Bytes, i: int, past: Cell<int>) -> Built {
+    mut fields: List<Field> = []
+    mut j = space(b, i + 1)
+    if b.at(j) == 125 { return Built { json: Json.Obj([]), next: j + 1 } }
+    // LICENSED loops.push_loop: fields are built in the order they stand, each from where the last ended
+    while true {
+        let key_end = string_end(b, j)
+        let key = text_of(text, b, j, key_end)
+        let v = built(text, b, space(b, space(b, key_end) + 1), past)
+        fields.push(field(key, v.json))
+        j = space(b, v.next)
+        if b.at(j) == 125 { break }
+        j = space(b, j + 1)
+    }
+    Built { json: Json.Obj(fields), next: j + 1 }
+}

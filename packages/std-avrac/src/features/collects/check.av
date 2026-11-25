@@ -1,0 +1,589 @@
+//! A collect's own laws: the kind and scope words are known, the
+//! order is declared, the projected type is the annotation's element,
+//! every field it declares is filled exactly once, and every `it`
+//! path is in the kind's vocabulary. Nothing here walks a value —
+//! a collect carries none; its body is synthesised at lowering
+//! (compiler/lower/lower.av) from these same recorded parts.
+use core.{
+    ExprId,
+    StmtId,
+    TypeId,
+    FileId,
+    DeclId,
+    CollectKind,
+    CollectScope,
+    CollectEnumParts,
+    Projection,
+    Plain,
+    same_file,
+    joined,
+    sorted_by,
+    list_eq,
+}
+use features.{TypeCx, Decl, Decls, nothing, duplicate_names}
+use diagnostics.{refusal, Diag, Voice, loc_at, said_as}
+use @std.errors.{Loc}
+use @std.meta.{Diagnostic}
+
+/// The generic `it` vocabulary every kind answers, beside its own.
+/// `it.line` is in the design (docs/2026_09_22_COLLECTIONS.md) and
+/// not built: a Loc is a byte range (`@std/errors`'s `Loc`), and no
+/// line index is wired to this projection yet.
+export const generic_words: List<string> = ["name", "module", "file", "doc"]
+
+export fn check_collect(mut cx: TypeCx, s: StmtId) {
+    let p? = cx.view.store.collect_parts(s) else { return }
+    let declared: TypeId = cx.annotated(s, p.ty)
+    cx.facts.record_const_type(s, declared)
+    if cx.view.types.shape_of(declared) is .Error { return }
+    let kind = checked_kind(cx, s, p.kind)
+    checked_scope(cx, s, p.scope)
+    if p.order.is_empty() { cx.emit(order_required(cx.stmt_loc(s), p.name)) }
+    let entry_ty: TypeId? = cx.view.types.element(declared)
+    if entry_ty == null { return cx.emit(not_a_list(cx.stmt_loc(s), p.name)) }
+    checked_projection(cx, s, p.proj, kind, entry_ty!)
+    checked_order(cx, s, kind, p.scope, p.order, p.dense)
+}
+
+/// `check_collect`'s twin over `collect enum` — no declared type, no
+/// projection: the members ARE the variants, so the extra laws are
+/// theirs — two members naming the same variant, and a member whose
+/// record cannot be a payload.
+export fn check_collect_enum(mut cx: TypeCx, s: StmtId) {
+    let p? = cx.view.store.collect_enum_parts(s) else { return }
+    let kind = checked_kind(cx, s, p.kind)
+    checked_scope(cx, s, p.scope)
+    if p.order.is_empty() { cx.emit(order_required(cx.stmt_loc(s), p.name)) }
+    checked_order(cx, s, kind, p.scope, p.order, p.dense)
+    let members = cx.view.decls.gathered_into(p.kind, p.scope, cx.view.file)
+    let twice = duplicate_names(
+        "collect_enum.variant",
+        p.name,
+        [m.name for m in members],
+        cx.stmt_loc(s),
+    )
+    if members.is_empty() && kind != null && lawful_header(p) && cx.elsewhere.unread_root() == null {
+        cx.emit(gathers_nothing(cx.stmt_loc(s), p.name))
+    }
+    for d in twice { cx.emit(d) }
+    for m in members { checked_member(cx, s, p.name, m) }
+    for t in p.traits { checked_trait(cx, s, p.name, t, members) }
+    checked_enum_scope(cx, s, p.name, p.scope)
+    // two members of one name are refused as that; their shared key is the same mistake
+    if !p.dense && twice.is_empty() { checked_ties(cx, s, kind, p.order, members) }
+}
+
+/// Every member implements each trait the enum is written over; one
+/// that does not is refused where it is declared.
+fn checked_trait(mut cx: TypeCx, s: StmtId, owner: string, t: ExprId, members: List<Decl>) {
+    let word = cx.view.store.ident_name(t) ?? ""
+    let tr? = cx.view.decls.trait_named(cx.names, word) else {
+        // a name nothing declares is resolve's to refuse
+        if cx.bound_decl(t) != null { cx.emit(no_trait(cx.loc_of(t), owner, word)) }
+        return
+    }
+    let derive: DeclId? = cx.view.decls.trait_derive(tr)
+    for m in members {
+        if !cx.view.decls.implements(m.id, tr) && !derived_from_elsewhere(cx.view.decls, derive, m) {
+            cx.emit(unimplemented(member_loc(cx.view.decls, m), owner, word, m.name))
+        }
+    }
+    for x in delegation_problems(cx, s, t) { cx.emit(unpairable(cx.loc_of(t), x, owner)) }
+}
+
+/// What `@std/meta`'s `delegate` refuses over the trait, as it spoke it.
+fn delegation_problems(cx: TypeCx, s: StmtId, t: ExprId) -> List<Diagnostic> {
+    let made_by? = cx.view.decls.meta_named("delegate") else { return [] }
+    match cx.view.decls.lifted(made_by, cx.view.file, s, t, [t]) {
+        .Ok(crossed) -> crossed.declared_problems(),
+        .Err(_) -> [],
+    }
+}
+
+/// Whether a member's impl of the trait is DERIVED rather than written:
+/// the trait declares `derive`, and its derive runs from another file —
+/// one in the member's own file would re-enter a file still
+/// registering, the same guard a written `@derive(T)` keeps. Such a
+/// member is filled by the collect enum's own expansion, never refused
+/// here.
+fn derived_from_elsewhere(decls: Decls, derive: DeclId?, m: Decl) -> bool {
+    if derive == null { return false }
+    !same_file(decls.decl(derive!).file, m.file)
+}
+
+/// Where a member is declared, in its own file.
+fn member_loc(decls: Decls, m: Decl) -> Loc? { loc_at(decls.file(m.file).path, decls.facts_of(m.id)?.span) }
+
+/// A REGISTRY match over `CollectScope`: an enum's variants are the
+/// same set whoever asks and whenever, so it gathers what its own
+/// file or package holds — never what imports happen to have reached.
+fn checked_enum_scope(mut cx: TypeCx, s: StmtId, owner: string, scope: CollectScope) {
+    match scope {
+        .Self or .Package or .UnknownScope(_) -> nothing(),
+        .Closure -> cx.emit(closure_enum(cx.stmt_loc(s), owner)),
+    }
+}
+
+/// An enum's ordinals are its `by` order, so two members may not
+/// share a key: a tie would leave their order to the order files
+/// were read in.
+fn checked_ties(
+    mut cx: TypeCx,
+    s: StmtId,
+    kind: CollectKind?,
+    order: List<Plain>,
+    members: List<Decl>,
+) {
+    let k? = kind else { return }
+    let keys = [[sort_value(cx.view.decls, k, key, m) for key in order] for m in members]
+    // no order, or a key nothing can compare, is refused as that already
+    if order.is_empty() || keys.any((key) -> key.any(it is .Other)) { return }
+    let ordered = sorted_by(keys, sort_key_before)
+    if [j for j in 1..ordered.length if !sort_key_before(ordered[j - 1], ordered[j])].is_empty() { return }
+    cx.emit(tied_order(cx.stmt_loc(s)))
+}
+
+/// A gathered variant's payload is the fields its member's record
+/// WRITES, at fixed types: a record that takes type parameters or
+/// spreads another's fields refuses.
+fn checked_member(mut cx: TypeCx, s: StmtId, owner: string, m: Decl) {
+    let record? = cx.view.decls.store_of(m.file).struct_parts(m.stmt) else { return }
+    if !record.tparams.is_empty() { cx.emit(generic_member(cx.stmt_loc(s), owner, m.name)) }
+    if !record.spreads.is_empty() { cx.emit(spread_member(cx.stmt_loc(s), owner, m.name)) }
+}
+
+/// The kind as the file can gather it: an annotation always, a word
+/// only when the file names a component by it — absent, and refused,
+/// otherwise. A REGISTRY match over `CollectKind`.
+fn checked_kind(mut cx: TypeCx, s: StmtId, kind: CollectKind) -> CollectKind? {
+    match kind {
+        .Annotated(_) -> kind,
+        .Component(w) -> {
+            if names_component(cx, w) { return kind }
+            cx.emit(unknown_kind(cx.stmt_loc(s), w))
+            null
+        },
+    }
+}
+
+/// Whether `word` names, in this file, a record a block instantiates.
+fn names_component(cx: TypeCx, word: string) -> bool {
+    let d? = cx.names.names.type_decl(word) else { return false }
+    cx.view.decls.facts_of(d)?.is_component ?? false
+}
+
+/// Whether the declaration's own words are lawful — a kind and a scope
+/// that exist, an order written. A gathering that names nothing real
+/// is empty because of that refusal, so it speaks only once — and a
+/// module with an unread file may have lost the member there.
+export fn lawful_header(p: CollectEnumParts) -> bool {
+    !p.order.is_empty() && known_scope(p.scope)
+}
+
+export fn known_scope(scope: CollectScope) -> bool {
+    match scope { .Self or .Package or .Closure -> true, .UnknownScope(_) -> false }
+}
+
+fn checked_scope(mut cx: TypeCx, s: StmtId, scope: CollectScope) {
+    match scope {
+        .Self or .Package or .Closure -> nothing(),
+        .UnknownScope(w) -> cx.emit(unknown_scope(cx.stmt_loc(s), w)),
+    }
+}
+
+fn checked_projection(
+    mut cx: TypeCx,
+    s: StmtId,
+    proj: Projection,
+    kind: CollectKind?,
+    entry_ty: TypeId,
+) {
+    let elem_name = cx.view.types.name_of(entry_ty)
+    if proj.ty.name != elem_name { cx.emit(proj_mismatch(cx.stmt_loc(s), proj.ty.name, elem_name)) }
+    let fields? = cx.fields_of(entry_ty) else { return cx.emit(not_a_record(cx.stmt_loc(s), proj.ty.name)) }
+    let written = [f.field.of for f in proj.fields]
+    let missing = [n for n in fields.names if !written.contains(n)]
+    let unknown = [n for n in written if !fields.names.contains(n)]
+    if !missing.is_empty() || !unknown.is_empty() { cx.emit(field_mismatch(cx.stmt_loc(s), proj.ty.name, missing, unknown)) }
+    for f in proj.fields { if !known_path(kind, f.path) { cx.emit(unknown_path(cx.stmt_loc(s), f.path)) } }
+}
+
+/// Whether `path` is in `kind`'s vocabulary — empty (the bare
+/// declaration) always is; one generic word always is; a kind's own
+/// word is this REGISTRY's, spelled per kind, never a string list
+/// grown ad hoc.
+export fn known_path(kind: CollectKind?, path: List<Plain>) -> bool {
+    if path.is_empty() { return true }
+    if path.length > 1 { return false }
+    generic_words.contains(path[0].of) || kind_word(kind, path[0].of)
+}
+
+/// A kind's OWN word, past the four generic ones — a REGISTRY over
+/// `CollectKind`, since each kind's non-generic vocabulary is its
+/// own. A `.Component`'s is the instance's OWN field, by name
+/// (`rule in closure as RuleEntry { run: it.run }` reads the `rule`
+/// component's `run` field off each instance) — not checked against
+/// the component's actual fields here (this door has no component
+/// signature in hand, only its word): a name that misses is
+/// `field_named`'s DEFECT at lowering (features/values.av), loud
+/// rather than a plausible default. A `.Annotated`'s is `mark`
+/// alone — the matched annotation's own name and literal args
+/// (`collect_field_reg`, compiler/lower/lower.av); an annotated
+/// declaration has no instance value to read an arbitrary field
+/// off, so nothing past `mark` is honest to accept. An unknown kind
+/// names no declarations at all, so it answers no word.
+fn kind_word(kind: CollectKind?, word: string) -> bool {
+    let k? = kind else { return false }
+    match k { .Component(_) -> true, .Annotated(_) -> word == "mark" }
+}
+
+fn path_word(path: List<Plain>) -> string {
+    if path.is_empty() { return "it" }
+    "it.${joined([p.of for p in path], ".")}"
+}
+
+// ── the `by` keys ──
+
+/// Every `by` key must be in the kind's vocabulary AND yield a value a
+/// comparison can read; a key it cannot compare is REFUSED, never
+/// sorted by file order. A `dense` order is data: unique and gap-free
+/// from 0, a duplicate or a gap refused.
+fn checked_order(
+    mut cx: TypeCx,
+    s: StmtId,
+    kind: CollectKind?,
+    scope: CollectScope,
+    order: List<Plain>,
+    dense: bool,
+) {
+    for k in order {
+        if !order_known(kind, k) { cx.emit(unknown_order(cx.stmt_loc(s), k)) }
+    }
+    let known? = kind else { return }
+    for k in order { if order_known(known, k) { checked_column(cx, s, known, scope, k) } }
+    if dense && !order.is_empty() { checked_dense(cx, s, known, scope, order) }
+}
+
+/// Whether `text` names a path the kind answers at all — the
+/// vocabulary law, beside the comparability one.
+export fn order_known(kind: CollectKind?, text: Plain) -> bool {
+    let path = order_path(text)
+    if path.index == null && path.segs.length == 1 && generic_words.contains(path.segs[0]) { return true }
+    let k? = kind else { return false }
+    if path.index != null { return mark_args_path(k, path) }
+    when {
+        path.segs.length == 1 -> match k {
+            .Component(_) -> true,
+            .Annotated(_) -> path.segs[0] == "mark",
+        }
+        path.segs.length == 2 -> match k {
+            .Annotated(_) -> path.segs[0] == "mark" && (path.segs[1] == "name" || path.segs[1] == "args"),
+            .Component(_) -> false,
+        }
+        _ -> false
+    }
+}
+
+fn mark_args_path(kind: CollectKind, path: OrderPath) -> bool {
+    match kind {
+        .Annotated(_) -> path.segs.length == 2 && path.segs[0] == "mark" && path.segs[1] == "args",
+        .Component(_) -> false,
+    }
+}
+
+/// Whether the key yields a COMPARABLE scalar — a generic text word,
+/// `mark.name`, or `mark.args[i]`. A whole mark, a whole args list, a
+/// component's own field: refused here, never file-ordered.
+export fn order_comparable(kind: CollectKind, text: Plain) -> bool {
+    let path = order_path(text)
+    if path.segs.length == 1 && path.index == null { return generic_words.contains(path.segs[0]) }
+    if path.segs.length != 2 { return false }
+    match kind {
+        .Annotated(_) -> path.segs[0] == "mark" &&
+            (path.segs[1] == "name" || path.segs[1] == "args" && path.index != null),
+        .Component(_) -> false,
+    }
+}
+
+/// One key's COLUMN across every gathered member: a value the compiler
+/// cannot compare, or a column mixing int and string, refuses.
+fn checked_column(mut cx: TypeCx, s: StmtId, kind: CollectKind, scope: CollectScope, key: Plain) {
+    if !order_comparable(kind, key) { return cx.emit(uncomparable_order(cx.stmt_loc(s), key)) }
+    let members = cx.view.decls.gathered_into(kind, scope, cx.view.file)
+    let values = [sort_value(cx.view.decls, kind, key, d) for d in members]
+    if values.any(it is .Other) { return cx.emit(uncomparable_order(cx.stmt_loc(s), key)) }
+    if values.any(it is .Int) && values.any(it is .Text) { cx.emit(mixed_order(cx.stmt_loc(s), key)) }
+}
+
+/// `dense`: exactly one key, every member an int, and the sorted
+/// values exactly `0 … n-1` — a duplicate or a gap refuses.
+fn checked_dense(
+    mut cx: TypeCx,
+    s: StmtId,
+    kind: CollectKind,
+    scope: CollectScope,
+    order: List<Plain>,
+) {
+    if order.length != 1 { return cx.emit(dense_shape(cx.stmt_loc(s))) }
+    if !order_known(kind, order[0]) || !order_comparable(kind, order[0]) { return }
+    let members = cx.view.decls.gathered_into(kind, scope, cx.view.file)
+    let values = [sort_value(cx.view.decls, kind, order[0], d) for d in members]
+    if !values.all(it is .Int) { return cx.emit(dense_int(cx.stmt_loc(s), order[0])) }
+    let ns = sorted_by(
+        [match v { .Int(n) -> n, rest -> 0 } for v in values],
+        (x: int, y: int) -> x < y,
+    )
+    let want = [i for i in 0..values.length]
+    if !list_eq(ns, want, (x: int, y: int) -> x == y) { cx.emit(dense_gap(cx.stmt_loc(s), order[0])) }
+}
+
+// ── voices ──
+
+fn unknown_kind(at: Loc?, kind: string) -> Diag { said_as("collect.kind", at, unknown_kind_said(kind)) }
+
+/// The words `unknown_kind` says.
+export fn unknown_kind_said(kind: string) -> Voice {
+    Voice {
+        message: "`${kind}` is not a declaration kind `collect` gathers yet",
+        label: "in this collect",
+        help: "an imported component's own name — `rule` among them — or `@name` for every declaration wearing that annotation",
+    }
+}
+
+fn unknown_scope(at: Loc?, scope: string) -> Diag { said_as("collect.scope", at, unknown_scope_said(scope)) }
+
+/// The words `unknown_scope` says.
+export fn unknown_scope_said(scope: string) -> Voice {
+    Voice {
+        message: "`${scope}` is not a collect scope",
+        label: "in this collect",
+        help: "the scopes are: self, package, closure",
+    }
+}
+
+fn order_required(at: Loc?, name: string) -> Diag { said_as("collect.order", at, order_required_said(name)) }
+
+/// The words `order_required` says.
+export fn order_required_said(name: string) -> Voice {
+    Voice {
+        message: "a collection declares its order — `by …`",
+        label: "`${name}` has none",
+        help: "add `by it.field, …` — never file order",
+    }
+}
+
+fn not_a_list(at: Loc?, name: string) -> Diag { said_as("collect.not_a_list", at, not_a_list_said(name)) }
+
+/// The words `not_a_list` says.
+export fn not_a_list_said(name: string) -> Voice {
+    Voice {
+        message: "`collect ${name}` must declare a `List<T>`",
+        label: "declared here",
+        help: "write `List<Row>` as the collection's type",
+    }
+}
+
+fn not_a_record(at: Loc?, ty: string) -> Diag { said_as("collect.not_a_record", at, not_a_record_said(ty)) }
+
+/// The words `not_a_record` says.
+export fn not_a_record_said(ty: string) -> Voice {
+    Voice {
+        message: "`${ty}` has no fields a projection can fill",
+        label: "as this type",
+        help: "project into a record type",
+    }
+}
+
+fn proj_mismatch(at: Loc?, written: string, elem: string) -> Diag { said_as("collect.proj_type", at, proj_mismatch_said(written, elem)) }
+
+/// The words `proj_mismatch` says.
+export fn proj_mismatch_said(written: string, elem: string) -> Voice {
+    Voice {
+        message: "`as ${written}` disagrees with the declared element `${elem}`",
+        label: "in this collect",
+        help: "project `as ${elem}`, or declare `List<${written}>`",
+    }
+}
+
+fn field_mismatch(at: Loc?, ty: string, missing: List<string>, unknown: List<string>) -> Diag { said_as("collect.fields", at, field_mismatch_said(ty, missing, unknown)) }
+
+/// The words `field_mismatch` says.
+export fn field_mismatch_said(ty: string, missing: List<string>, unknown: List<string>) -> Voice {
+    Voice {
+        message: "`${ty}`'s fields are not each filled exactly once — ${field_gap_words(missing, unknown)}",
+        label: "in this projection",
+        help: "fill every declared field once, and no other",
+    }
+}
+
+fn field_gap_words(missing: List<string>, unknown: List<string>) -> string {
+    let words: List<string> = some_word("missing", missing).concat(some_word("unknown", unknown))
+    words.join("; ")
+}
+
+fn some_word(label: string, names: List<string>) -> List<string> {
+    if names.is_empty() { [] } else { ["${label} ${names.join(", ")}"] }
+}
+
+fn unknown_path(at: Loc?, path: List<Plain>) -> Diag { said_as("collect.path", at, unknown_path_said(path)) }
+
+/// The words `unknown_path` says.
+export fn unknown_path_said(path: List<Plain>) -> Voice {
+    Voice {
+        message: "`${path_word(path)}` is not a field this kind's declarations answer",
+        label: "in this collect",
+        help: "the generic fields are name, module, file, doc — a kind may add its own",
+    }
+}
+
+fn unknown_order(at: Loc?, key: Plain) -> Diag { said_as("collect.order_key", at, unknown_order_said(key)) }
+
+/// The words `unknown_order` says.
+export fn unknown_order_said(key: Plain) -> Voice {
+    Voice {
+        message: "`it.${key.of}` is not a field this kind's declarations answer",
+        label: order_at(),
+        help: "an annotated kind orders by `it.mark.name` or `it.mark.args[i]`; a component kind by a generic field",
+    }
+}
+
+fn uncomparable_order(at: Loc?, key: Plain) -> Diag { said_as("collect.order_uncomparable", at, uncomparable_order_said(key)) }
+
+/// The words `uncomparable_order` says.
+export fn uncomparable_order_said(key: Plain) -> Voice {
+    Voice {
+        message: "`it.${key.of}` is not a value a `by` key can compare",
+        label: order_at(),
+        help: "order by a text field, or by an annotation literal — `it.mark.args[i]` reads the literal's own type",
+    }
+}
+
+fn mixed_order(at: Loc?, key: Plain) -> Diag { said_as("collect.order_mixed", at, mixed_order_said(key)) }
+
+/// The words `mixed_order` says.
+export fn mixed_order_said(key: Plain) -> Voice {
+    Voice {
+        message: "`it.${key.of}` mixes int and string arguments — a `by` column is one kind",
+        label: order_at(),
+        help: "make every member's argument the same kind, or order by a different field",
+    }
+}
+
+/// The label every `by` key's refusal shares — one spelling for one
+/// seat, so the same sentence is not duplicated per voice.
+fn order_at() -> string { "in this collect's order" }
+
+fn gathers_nothing(at: Loc?, owner: string) -> Diag { said_as("collect_enum.empty", at, enum_gathers_nothing(owner)) }
+
+/// A `collect enum` `owner` that gathers no member.
+export fn enum_gathers_nothing(owner: string) -> Voice {
+    Voice {
+        message: "`${owner}` gathers no member, and an enum names at least one variant",
+        label: "this gathering is empty",
+        help: "declare a member this `collect enum` gathers, or drop the enum",
+    }
+}
+
+fn no_trait(at: Loc?, owner: string, word: string) -> Diag { said_as("collect_enum.trait", at, no_trait_said(owner, word)) }
+
+/// The words `no_trait` says.
+export fn no_trait_said(owner: string, word: string) -> Voice {
+    Voice {
+        message: "every member of a `collect enum E: T` implements `T` — `${word}` names no trait here",
+        label: "`${owner}` implements it over its members",
+        help: "name a trait this file can see",
+    }
+}
+
+fn unimplemented(at: Loc?, owner: string, word: string, member: string) -> Diag { said_as("collect_enum.trait", at, unimplemented_said(owner, word, member)) }
+
+/// The words `unimplemented` says.
+export fn unimplemented_said(owner: string, word: string, member: string) -> Voice {
+    Voice {
+        message: "every member of a `collect enum E: T` implements `T`",
+        label: "`${member}` is gathered into `${owner}` and has no `impl ${word} for ${member}`",
+        help: "write `impl ${word} for ${member} { … }` — an empty `impl ${word} for ${member} {}` takes every default",
+    }
+}
+
+fn unpairable(at: Loc?, said: Diagnostic, owner: string) -> Diag { said_as("collect_enum.self", said.at ?? at, delegation_refused(said.message, owner, said.help)) }
+
+/// What `@std/meta`'s `delegate` said over the `collect enum` `owner`: its words, and its help.
+export fn delegation_refused(message: string, owner: string, help: string?) -> Voice { Voice { message: message, label: "delegated by `${owner}`", help: help } }
+
+fn closure_enum(at: Loc?, owner: string) -> Diag { said_as("collect_enum.scope", at, closure_enum_said(owner)) }
+
+/// The words `closure_enum` says.
+export fn closure_enum_said(owner: string) -> Voice {
+    Voice {
+        message: "an enum's variants are one set for every reader — `${owner}` gathers `in closure`, which is what imports have reached so far",
+        label: "in this collect",
+        help: "gather `in self` or `in package`",
+    }
+}
+
+fn tied_order(at: Loc?) -> Diag { said_as("collect_enum.tie", at, tied_order_said()) }
+
+/// The words `tied_order` says.
+export fn tied_order_said() -> Voice {
+    Voice {
+        message: "an enum's `by` order is its variants' ordinals — two members share a key",
+        label: order_at(),
+        help: "order by a key every member holds apart, or number them: `by it.mark.args[0] dense`",
+    }
+}
+
+fn generic_member(at: Loc?, owner: string, member: string) -> Diag { said_as("collect_enum.member", at, generic_member_said(owner, member)) }
+
+/// The words `generic_member` says.
+export fn generic_member_said(owner: string, member: string) -> Voice {
+    Voice {
+        message: "a gathered variant carries fixed types — `${member}` takes type parameters",
+        label: "`${owner}` gathers it here",
+        help: "write `${member}`'s fields at the types the variant carries",
+    }
+}
+
+fn spread_member(at: Loc?, owner: string, member: string) -> Diag { said_as("collect_enum.member", at, spread_member_said(owner, member)) }
+
+/// The words `spread_member` says.
+export fn spread_member_said(owner: string, member: string) -> Voice {
+    Voice {
+        message: "a gathered variant carries the fields its record writes — `${member}` spreads another record's",
+        label: "`${owner}` gathers it here",
+        help: "write the fields in `${member}` itself, in payload order",
+    }
+}
+
+fn dense_shape(at: Loc?) -> Diag { said_as("collect.dense", at, dense_shape_said()) }
+
+/// The words `dense_shape` says.
+export fn dense_shape_said() -> Voice {
+    Voice {
+        message: "`dense` orders ONE key",
+        label: "in this collect",
+        help: "write a single `by it.mark.args[i] dense` key",
+    }
+}
+
+fn dense_int(at: Loc?, key: Plain) -> Diag { said_as("collect.dense", at, dense_int_said(key)) }
+
+/// The words `dense_int` says.
+export fn dense_int_said(key: Plain) -> Voice {
+    Voice {
+        message: "`dense` needs int arguments — `it.${key.of}` is not",
+        label: order_at(),
+        help: "`dense` is gap-free from 0, so its values are ints",
+    }
+}
+
+fn dense_gap(at: Loc?, key: Plain) -> Diag { said_as("collect.dense", at, dense_gap_said(key)) }
+
+/// The words `dense_gap` says.
+export fn dense_gap_said(key: Plain) -> Voice {
+    Voice {
+        message: "`it.${key.of}` is not unique and gap-free from 0",
+        label: order_at(),
+        help: "every ordinal 0, 1, 2 … appears exactly once",
+    }
+}

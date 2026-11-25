@@ -1,0 +1,97 @@
+//! A list lowers as the runtime aggregate: one `avra_array_new`,
+//! then a push per element — the CallRt escape hatch carrying the
+//! whole feature, zero new instructions.
+use core.{ExprId, StmtId, Reg, CompClause, Type, BinOp}
+use features.{LowerCx, Pipeline, Clause, Source, Lookup}
+
+fn list_reg(mut cx: LowerCx, e: ExprId, elems: List<ExprId>) -> Reg {
+    let regs = [cx.reg_of(k) for k in elems]
+    if elems.any((k) -> spreads(cx, k)) { return spread_reg(cx, e, elems, regs) }
+    let size = cx.box_size(regs.length)
+    cx.grown_box(cx.shape_at(e), size, regs)
+}
+
+/// A literal with `..` entries, built by `listed` — one element at a
+/// time where a spread's elements are adopted by the list's nullable
+/// element.
+fn spread_reg(mut cx: LowerCx, e: ExprId, elems: List<ExprId>, regs: List<Reg>) -> Reg {
+    let elem? = cx.view.types.element(cx.type_at(e)) else { return listed(cx, cx.shape_at(e), regs, [spreads(cx, k) for k in elems]) }
+    if !elems.any((k) -> spreads(cx, k) && cx.spread_adopts(k, elem)) {
+        return listed(cx, cx.shape_at(e), regs, [spreads(cx, k) for k in elems])
+    }
+    let dst = cx.grown_box(cx.shape_at(e), cx.box_size(0), [])
+    for j, k in elems {
+        if spreads(cx, k) { cx.spread(dst, k) } else { cx.push_slot(dst, regs[j]) }
+    }
+    dst
+}
+
+/// A list from values in written order, `spreads[j]` saying value `j` is
+/// a list whose elements join in: ONE box, sized for every plain value
+/// and every spread's length, then each plain value pushed and each
+/// spread's slots appended in order.
+export fn listed(mut cx: LowerCx, sh: Type, regs: List<Reg>, spreads: List<bool>) -> Reg {
+    if !spreads.any(it) { return cx.grown_box(sh, cx.box_size(regs.length), regs) }
+    mut size = cx.const_int([s for s in spreads if !s].length)
+    for j, r in regs {
+        if spreads[j] { size = cx.bin(Type.Int, BinOp.Add, size, cx.array_len(Type.Int, r)) }
+    }
+    let dst = cx.array_sized(sh, size)
+    for j, r in regs {
+        if spreads[j] { cx.array_extend(dst, r) } else { cx.push_slot(dst, r) }
+    }
+    dst
+}
+
+/// THE COMPREHENSION LOWERED: a fresh box, and the comprehension run
+/// as a pipeline pushing into it — each head a walk nested in the one
+/// before, each filter a keep, the element mapped last. A head the
+/// planner narrows reads its lookup where its turn opens.
+fn comp_reg(mut cx: LowerCx, e: ExprId, elem: ExprId, clauses: List<CompClause>) -> Reg {
+    let dst = cx.grown_box(cx.shape_at(e), cx.box_size(0), [])
+    let plans = narrowings(cx, clauses)
+    cx
+        .piped(
+            Pipeline {
+                clauses: [stage(c, j, plans) for j, c in clauses].concat([.Map(.Written(elem))]),
+                sink: .Push(dst),
+            },
+        )
+}
+
+/// A written clause as a pipeline's: a head keyed by its SOURCE alone —
+/// the one anchor resolve bound its names to, range bound included.
+fn stage(c: CompClause, at: int, plans: List<Plan>) -> Clause {
+    match c {
+        .Head(index, _, source, hi) -> .Head(Source { source: source, hi: hi, index: index != null, lookup: lookup_at(plans, at) }),
+        .Filter(cond) -> .Keep(.Written(cond)),
+    }
+}
+
+/// The lookup narrowing the head at `at`, if one does.
+fn lookup_at(plans: List<Plan>, at: int) -> Lookup? {
+    let p? = plans.find(it.head == at) else { return null }
+    Lookup { lookup: p.lookup, db: p.db, value: p.value, cond: p.cond }
+}
+
+/// The lookup each head scanning a relation narrows to, where one
+/// answers a conjunct whose value cannot be null.
+fn narrowings(cx: LowerCx, clauses: List<CompClause>) -> List<Plan> {
+    [p for s in relation_scans(cx.view, cx.names, clauses) for p in narrowing(cx, clauses, s)]
+}
+
+fn narrowing(cx: LowerCx, clauses: List<CompClause>, scan: Scan) -> List<Plan> {
+    [p for p in comp_plans(cx.view, cx.names, clauses, scan) if !could_be_null(cx.view.types, cx.type_at(p.value))]
+        .slice(0, 1)
+}
+
+/// A `collect`: an empty list, grown by each kept value as its
+/// statements run.
+fn collect_reg(mut cx: LowerCx, e: ExprId, stmts: List<StmtId>) -> Reg {
+    let dst = cx.grown_box(cx.shape_at(e), cx.box_size(0), [])
+    cx.gathering(dst, stmts)
+    dst
+}
+
+/// Whether a list element is a `..` spread.
+fn spreads(cx: LowerCx, k: ExprId) -> bool { cx.view.store.spread_operand(k) != null }

@@ -1,0 +1,29 @@
+// THE CHAIN IS BOUNDED BY ITS SIZE: a change is written as a delta while the chain, with it, holds at
+// most its base's share of places, or a few hundred over a small base; past that it folds into a base
+// where it is written, so no later reader lays the overlay over the base on every open.
+use frontier.{chain_takes}
+
+spec "frontier chain — a delta while the chain has room, a base past it" {
+    given "a base of the cli's size, some 557k places" {
+        then "an edit's few places are a delta, over an empty chain and over three deltas" {
+            chain_takes(556863, 0, 0, 20) && chain_takes(556863, 3, 900, 20)
+        }
+        then "a findings run's 115k places fold, though a fourth of the base would take them" {
+            !chain_takes(556863, 0, 0, 115000) && 115000 * 4 <= 556863
+        }
+        then "a chain grown to its share folds the next write" {
+            chain_takes(556863, 2, 34000, 800) && !chain_takes(556863, 2, 34000, 900)
+        }
+        then "a fifth delta rebases, whatever its size" {
+            !chain_takes(556863, 4, 10, 1)
+        }
+    }
+    given "a small base" {
+        then "a chain holds a few hundred places, while each change is at most a fourth of the base" {
+            chain_takes(40, 0, 0, 10) &&
+                !chain_takes(40, 0, 0, 11) &&
+                chain_takes(2000, 3, 200, 56) &&
+                !chain_takes(2000, 3, 200, 57)
+        }
+    }
+}

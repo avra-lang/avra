@@ -1,0 +1,57 @@
+//! A VOICE: how one refusal is worded — its message, the label at its place, its help, and the
+//! name it guesses was meant — apart from where it's said, so every law and every pass that says
+//! the same refusal says it in one definition.
+use core.{closest}
+use @std.errors.{Confidence, Edit, Loc, Suggestion}
+
+/// How a refusal is worded: its message, what the label at its place says, its help, and the name
+/// it guesses was meant where it guesses one.
+export type Voice = { message: string, label: string? = null, help: string? = null, guess: Guess? = null }
+
+/// A name written and the near one it guesses was meant, how many edits apart they stand, and
+/// whether another name stands as near.
+export type Guess = { written: string, meant: string, distance: int, tied: bool = false }
+
+/// `v` guessing, among `candidates`, the one name nearest `written`; `v` itself where none is near.
+export fn guessed(v: Voice, written: string, candidates: List<string>) -> Voice {
+    let n? = closest(written, candidates) else { return v }
+    v with { help: "did you mean `${n.name}`?", guess: Guess { written: written, meant: n.name, distance: n.distance } }
+}
+
+/// The fix a guess offers: the written name at `at` respelled as the one meant, sure only one edit
+/// off and with no other name as near.
+export fn guess_fix(g: Guess, at: Loc) -> Suggestion {
+    Suggestion {
+        confidence: if g.distance == 1 && !g.tied { Confidence.High } else { Confidence.Medium },
+        description: "replace `${g.written}` with `${g.meant}`",
+        edits: [Edit { loc: at, replacement: g.meant }],
+    }
+}
+
+/// What the fix that makes the top-level binding `name` a `const` does.
+export fn made_const(name: string) -> string { "make `${name}` a `const`" }
+
+/// The fix that writes `const` over the `let` at `at` of the top-level binding `name`: sure, a value
+/// of literals alone settling as a const's does.
+export fn const_fix(name: string, at: Loc) -> Suggestion {
+    Suggestion {
+        confidence: Confidence.High,
+        description: made_const(name),
+        edits: [Edit { loc: at, replacement: "const" }],
+    }
+}
+
+/// The refusal of `kind` at `at`, worded by `v`: pointed at its place where it labels one.
+export fn said_as(kind: string, at: Loc?, v: Voice) -> Diag {
+    let label? = v.label else { return error_at(kind, at, v.message) with { help: v.help } }
+    refusal(kind, at, v.message, label, v.help)
+}
+
+/// The fix that cuts the text `loc` covers, as `description` says.
+export fn cut_fix(description: string, loc: Loc) -> Suggestion {
+    Suggestion {
+        confidence: Confidence.High,
+        description: description,
+        edits: [Edit { loc: loc, replacement: "" }],
+    }
+}

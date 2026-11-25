@@ -1,0 +1,30 @@
+// proves: `conn.reads()` is a source whose `arm` files the socket, so a
+// task that arms it and parks wakes on a real write and takes the chunk.
+use @std.net.{listen, connect, Conn, NetError}
+use @std.time.{ms, secs, sleep}
+use @std.task.{Source}
+
+extern fn avra_wait_park() -> int
+
+fn writes_later(c: Conn, after: int) -> int {
+    sleep(ms(after))
+    match c.write("hi".bytes()) { .Ok(n) -> n, .Err(_) -> 0 }
+}
+
+fn run() -> Result<string, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let a = connect("127.0.0.1", l.port, secs(2))?
+    let b = l.accept()?
+    let s: Source<Bytes> = b.reads()
+    let writer = spawn writes_later(a, 30)
+    s.arm(1)
+    let _ = avra_wait_park()
+    let got = s.taken()
+    let n = writer.await
+    l.close()
+    let _ = a.close()
+    let _ = b.close()
+    .Ok("${got != null} ${n}")
+}
+
+run() catch e -> "failed: ${e.verb}"

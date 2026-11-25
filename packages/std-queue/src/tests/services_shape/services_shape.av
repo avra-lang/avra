@@ -1,0 +1,31 @@
+//! proves the services shape: a queue declared at the program's top level is one value every fn
+//! names — built once, where the entry writes it — so a fn sends to it, another drains it, and
+//! both reach the one queue.
+use @std.queue.{queue, key}
+use @std.time.{ms}
+
+type Email = { to: string }
+
+queue<Email> emails {
+    capacity: 8
+    lease: ms(60000)
+}
+
+fn welcome(to: string) {
+    let _ = emails.home().send(Email { to: to }, key(to))
+}
+
+fn delivered() -> List<string> {
+    mut sent: List<string> = []
+    mut d = emails.home().take() catch null
+    while d != null {
+        let _ = emails.home().ack(d!) catch false
+        sent.push(d!.item.to)
+        d = emails.home().take() catch null
+    }
+    sent
+}
+
+welcome("ana")
+welcome("bo")
+"${delivered().join(",")} ${delivered().length}"

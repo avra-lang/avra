@@ -1,0 +1,61 @@
+// The arity ceiling core/rebuild_derive.av's `built()` once carried
+// (0..6 spelled by hand, 7+ a named refusal) is gone: a run hole
+// splices a variant's whole argument list, so ANY payload count
+// derives. `WideArity` exists to prove it at 7 and at 12 — past the
+// old ceiling on both sides of it.
+use @std.avrac.core.{Rebuild, classifier, new_node_store}
+use @std.meta.{derive}
+
+@derive(Rebuild)
+enum WideArity {
+    Seven(a: int, b: int, c: int, d: int, e: int, f: int, g: int)
+    Twelve(
+        a: int,
+        b: int,
+        c: int,
+        d: int,
+        e: int,
+        f: int,
+        g: int,
+        h: int,
+        i: int,
+        j: int,
+        k: int,
+        l: int,
+    )
+}
+
+fn rebuilt(w: WideArity) -> WideArity {
+    mut rb = classifier(new_node_store(), [])
+    w.rebuilt(rb)
+}
+
+/// Every payload folded in order — position matters as much as value,
+/// so a run splicing arguments out of order would still be caught.
+fn signature(w: WideArity) -> string {
+    match w {
+        .Seven(a, b, c, d, e, f, g) -> ["${n}" for n in [a, b, c, d, e, f, g]].join(","),
+        .Twelve(a, b, c, d, e, f, g, h, i, j, k, l) -> ["${n}" for n in [a, b, c, d, e, f, g, h, i, j, k, l]].join(","),
+    }
+}
+
+spec "core/rebuild — the arity ceiling" {
+    given "a 7-payload variant, past the old hand-spelled ceiling" {
+        then "every payload rebuilds in place" {
+            let w = WideArity.Seven(1, 2, 3, 4, 5, 6, 7)
+            signature(rebuilt(w)) == signature(w)
+        }
+    }
+    given "a 12-payload variant" {
+        then "every payload rebuilds in place" {
+            let w = WideArity.Twelve(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
+            signature(rebuilt(w)) == signature(w)
+        }
+        then "the rebuilt value answers the right variant" {
+            match rebuilt(WideArity.Twelve(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)) {
+                .Twelve(_, _, _, _, _, _, _, _, _, _, _, l) -> l == 12,
+                .Seven(_, _, _, _, _, _, _) -> false,
+            }
+        }
+    }
+}

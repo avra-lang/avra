@@ -1,0 +1,39 @@
+// proves: a value laid inline — a record of two scalars, an enum carrying a
+// payload — boxes as a `dyn`, and each method the box dispatches reads it
+// back whole, its arguments after it, in a list of mixed boxes.
+trait Measure {
+    fn measure(scale: int) -> int
+    fn named() -> string
+}
+
+type Span = { lo: int, hi: int }
+
+impl Measure for Span {
+    fn measure(scale: int) -> int { (self.hi - self.lo) * scale }
+    fn named() -> string { "span ${self.lo}..${self.hi}" }
+}
+
+enum Shape {
+    Dot
+    Line(len: int)
+}
+
+impl Measure for Shape {
+    fn measure(scale: int) -> int {
+        match self { .Dot -> 0, .Line(len) -> len * scale }
+    }
+    fn named() -> string {
+        match self { .Dot -> "dot", .Line(len) -> "line ${len}" }
+    }
+}
+
+type Name = { text: string }
+
+impl Measure for Name {
+    fn measure(scale: int) -> int { self.text.length * scale }
+    fn named() -> string { "name ${self.text}" }
+}
+
+let all: List<dyn Measure> = [Span { lo: 2, hi: 5 }, Shape.Line(4), Shape.Dot, Name { text: "abc" }]
+
+[m.named() + "=" + "${m.measure(10)}" for m in all].join(",")

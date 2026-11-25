@@ -1,0 +1,310 @@
+//! THE STRONGLY-CONNECTED SETS OF A CALL GRAPH, settled one at a time. `scc_walk` finds
+//! the sets under a root in dependency order — a set is handed to `solve` only when every
+//! set it calls has been — and a node `settled` already is never entered again, so a walk
+//! reads the unsettled part of the graph and nothing else. `scc_fixpoint` is the least
+//! fixpoint of one set: every member starts at its seed and steps until none moves.
+//! `strong_sets` and `reached_by` do the same over a graph of int nodes: its sets, and which
+//! sources reach each.
+use core.{DeclId, distinct, flatten, same_decl, sorted_texts}
+use @std.meta.{derive}
+use @std.program.saved_derive.{Saved}
+use @std.relation.engine.{list_cell}
+
+/// The walk's own state: each node's visit number and low link, the open stack, and what
+/// settles a set.
+type Walk = {
+    callees: fn(DeclId) -> List<DeclId>,
+    settled: fn(DeclId) -> bool,
+    solve: fn(List<DeclId>) -> void,
+    number: Map<string, int>,
+    low: Map<string, int>,
+    open: Map<string, bool>,
+    stack: List<DeclId>,
+    next: int,
+}
+
+fn slot(d: DeclId) -> string { "${d.index}" }
+
+impl Walk {
+    /// Visits `d` and everything it reaches that is not settled, answering its low link. A
+    /// node whose low link is its own number roots a set: the stack above it is the set.
+    mut fn visit(d: DeclId) -> int {
+        let at = self.next
+        self.number.set(slot(d), at)
+        self.low.set(slot(d), at)
+        self.open.set(slot(d), true)
+        self.stack.push(d)
+        self.next = at + 1
+        mut low = at
+        for c in (self.callees)(d) {
+            if (self.settled)(c) { continue }
+            let seen? = self.number.get(slot(c)) else {
+                low = min(low, self.visit(c))
+                continue
+            }
+            if self.open.get(slot(c)) ?? false { low = min(low, seen) }
+        }
+        self.low.set(slot(d), low)
+        if low == at { self.close_set(d) }
+        low
+    }
+
+    /// The set rooted at `d`: popped off the stack and handed to `solve`.
+    mut fn close_set(d: DeclId) {
+        mut members: List<DeclId> = []
+        while true {
+            let m = self.stack.pop()
+            self.open.set(slot(m), false)
+            members.push(m)
+            if same_decl(m, d) { break }
+        }
+        (self.solve)(members)
+    }
+}
+
+fn min(a: int, b: int) -> int { if a < b { a } else { b } }
+
+/// Every set under `root` that is not settled, each handed to `solve` after the sets it
+/// calls. `callees` answers the members a node calls; `settled` says a node needs no visit.
+export fn scc_walk(
+    root: DeclId,
+    callees: fn(DeclId) -> List<DeclId>,
+    settled: fn(DeclId) -> bool,
+    solve: fn(List<DeclId>) -> void,
+) {
+    mut walk = Walk {
+        callees: callees,
+        settled: settled,
+        solve: solve,
+        number: {},
+        low: {},
+        open: {},
+        stack: [],
+        next: 0,
+    }
+    let _ = walk.visit(root)
+}
+
+/// The least fixpoint over one set: each member begins at `seed(member)` and takes
+/// `step(member, read)` until none moves. `read` answers a member's current state, and
+/// `outside` the settled state of anything else. `step` answers a state no smaller than the
+/// one it read for the member. The states come back in the members' order.
+export fn scc_fixpoint<S>(
+    members: List<DeclId>,
+    seed: fn(DeclId) -> S,
+    step: fn(DeclId, fn(DeclId) -> S) -> S,
+    same: fn(S, S) -> bool,
+    outside: fn(DeclId) -> S,
+) -> List<S> {
+    let states = Cell.new([seed(m) for m in members])
+    mut place: Map<string, int> = {}
+    for i, m in members { place.set(slot(m), i) }
+    let read = (c: DeclId) -> match place.get(slot(c)) {
+        i? -> states.get()[i]
+        null -> outside(c)
+    }
+    while true {
+        mut moved = false
+        for i, m in members {
+            let next = step(m, read)
+            if !same(states.get()[i], next) {
+                states.set_at(i, next)
+                moved = true
+            }
+        }
+        if !moved { break }
+    }
+    states.get()
+}
+
+/// The bits one word of a reach row holds: the top bits stay clear, so no shift reaches the sign.
+export const REACH_BITS: int = 62
+
+/// The words a reach row over `sources` sources takes.
+export fn reach_words(sources: int) -> int { sources / REACH_BITS + 1 }
+
+/// Whether the reach row `row` says source `k` reaches.
+export fn row_has(row: List<int>, k: int) -> bool { (row[k / REACH_BITS] >> k % REACH_BITS) & 1 == 1 }
+
+/// A graph's strongly connected sets: the set of each node, numbered so a set refers only to itself
+/// and to sets of a lower number; and the nodes of each, set after set, set `c`'s from `starts[c]`.
+export type StrongSets = { of: List<int>, order: List<int>, starts: List<int> }
+
+impl StrongSets {
+    /// How many sets there are.
+    fn count() -> int { self.starts.length - 1 }
+
+    /// The nodes of set `c`.
+    fn members_of(c: int) -> List<int> { self.order.slice(self.starts[c], self.starts[c + 1]) }
+}
+
+/// THE STRONGLY CONNECTED SETS of the graph numbered `0..refs.length`, `refs[v]` the nodes `v`
+/// refers to: Tarjan's walk, its path and its stack held in lists of their own, so no depth of the
+/// graph is a depth of calls.
+export fn strong_sets(refs: List<List<int>>) -> StrongSets {
+    let n = refs.length
+    let w = SetWalk {
+        refs: refs,
+        index: Cell.new([-1 for _v in 0..n]),
+        low: Cell.new([0 for _v in 0..n]),
+        cursor: Cell.new([0 for _v in 0..n]),
+        of: Cell.new([-1 for _v in 0..n]),
+        stack: Cell.new([0 for _v in 0..n]),
+        top: Cell.new(0),
+        order: list_cell(),
+        starts: Cell.new([0]),
+        next: Cell.new(0),
+    }
+    for root in 0..n { if w.index.get()[root] < 0 { w.from(root) } }
+    StrongSets { of: w.of.get(), order: w.order.get(), starts: w.starts.get() }
+}
+
+/// Tarjan's walk over int nodes: each node's visit number, low link, next reference to follow and
+/// set once closed (-1 while open); the open stack and its height; the nodes of the closed sets in
+/// order and where each set starts; and the next visit number.
+type SetWalk = {
+    refs: List<List<int>>,
+    index: Cell<List<int>>,
+    low: Cell<List<int>>,
+    cursor: Cell<List<int>>,
+    of: Cell<List<int>>,
+    stack: Cell<List<int>>,
+    top: Cell<int>,
+    order: Cell<List<int>>,
+    starts: Cell<List<int>>,
+    next: Cell<int>,
+}
+
+impl SetWalk {
+    /// Every set under `root` not closed yet, each closed after the sets it refers to.
+    fn from(root: int) {
+        self.enter(root)
+        mut path = [root]
+        while !path.is_empty() {
+            let v = path.last()!
+            let e = self.cursor.get()[v]
+            if e < self.refs[v].length {
+                self.cursor.set_at(v, e + 1)
+                let u = self.refs[v][e]
+                if self.index.get()[u] < 0 {
+                    self.enter(u)
+                    path.push(u)
+                } else if self.of.get()[u] < 0 {
+                    self.lower(v, self.index.get()[u])
+                }
+                continue
+            }
+            let _ = path.pop()
+            if self.low.get()[v] == self.index.get()[v] { self.close(v) }
+            let parent? = path.last() else { continue }
+            self.lower(parent, self.low.get()[v])
+        }
+    }
+
+    /// `v` met: numbered, and pushed on the open stack.
+    fn enter(v: int) {
+        let at = self.next.get()
+        self.next.set(at + 1)
+        self.index.set_at(v, at)
+        self.low.set_at(v, at)
+        self.stack.set_at(self.top.get(), v)
+        self.top.set(self.top.get() + 1)
+    }
+
+    /// `v`'s low link brought down to `to`, where that is lower.
+    fn lower(v: int, to: int) { if to < self.low.get()[v] { self.low.set_at(v, to) } }
+
+    /// The set `v` roots: the stack down to `v`, numbered next.
+    fn close(v: int) {
+        let set = self.starts.get().length - 1
+        while true {
+            self.top.set(self.top.get() - 1)
+            let m = self.stack.get()[self.top.get()]
+            self.of.set_at(m, set)
+            self.order.push(m)
+            if m == v { break }
+        }
+        self.starts.push(self.order.get().length)
+    }
+}
+
+/// WHICH SOURCES REACH EACH SET of `sets`, the strongly connected sets of the graph `refs`:
+/// `reach_words(sources.length)` words a set, bit `k % REACH_BITS` of word `k / REACH_BITS` set
+/// where `sources[k]` reaches it, a source reaching its own set; a negative source reaches nothing.
+/// One pass, highest set first: a set is referred to only by sets of a higher number, so its row is
+/// whole before it is handed on.
+export fn reached_by(refs: List<List<int>>, sets: StrongSets, sources: List<int>) -> List<int> {
+    let w = reach_words(sources.length)
+    let rows = Cell.new([0 for _k in 0..sets.count() * w])
+    for k, s in sources { if s >= 0 { or_word(rows, sets.of[s] * w + k / REACH_BITS, 1 << k % REACH_BITS) } }
+    for back in 0..sets.count() {
+        let c = sets.count() - 1 - back
+        let row = rows.get().slice(c * w, c * w + w)
+        if row.all(it == 0) { continue }
+        for v in sets.members_of(c) {
+            for u in refs[v] {
+                let d = sets.of[u]
+                if d != c { for j, x in row { or_word(rows, d * w + j, x) } }
+            }
+        }
+    }
+    rows.get()
+}
+
+/// `rows` with `x` or'd into word `at`.
+fn or_word(rows: Cell<List<int>>, at: int, x: int) { rows.set_at(at, rows.get()[at] | x) }
+
+/// What one node of a graph holds of its own, and the nodes it refers to, each by name.
+@derive(Saved)
+export type NodeReads = { own: List<string>, refs: List<string> }
+
+/// THE UNION `root` REACHES: what it holds of its own and what every node it refers to holds,
+/// through any cycle, each once, in name order. The graph is read from `root` through `reads`, one
+/// node at a time; each strongly connected set is folded once, after the sets it refers to.
+export fn reached_union(root: string, reads: fn(string) -> NodeReads) -> List<string> {
+    let g = read_graph(root, reads)
+    let sets = strong_sets(g.refs)
+    let none: List<string> = []
+    let held = Cell.new([none for _c in 0..sets.count()])
+    for c in 0..sets.count() { held.set_at(c, set_union(g, sets, held.get(), c)) }
+    sorted_distinct(held.get()[sets.of[0]])
+}
+
+/// A graph read from its root: each node's name, what it holds of its own, and the nodes it refers
+/// to by number, the root numbered 0.
+type ReadGraph = { names: List<string>, own: List<List<string>>, refs: List<List<int>> }
+
+/// The graph under `root`, each node read once through `reads` and numbered as it is first met.
+fn read_graph(root: string, reads: fn(string) -> NodeReads) -> ReadGraph {
+    mut names = [root]
+    mut at: Map<string, int> = {}
+    at.set(root, 0)
+    mut own: List<List<string>> = []
+    mut refs: List<List<int>> = []
+    mut i = 0
+    while i < names.length {
+        let r = reads(names[i])
+        for n in r.refs {
+            if at.has(n) { continue }
+            at.set(n, names.length)
+            names.push(n)
+        }
+        own.push(r.own)
+        refs.push([at.get(n)! for n in r.refs])
+        i = i + 1
+    }
+    ReadGraph { names: names, own: own, refs: refs }
+}
+
+/// What the set `c` reaches: its members' own, and what each set they refer to reaches — a set refers
+/// only to sets of a lower number, so `held` has those already.
+fn set_union(g: ReadGraph, sets: StrongSets, held: List<List<string>>, c: int) -> List<string> {
+    let members = sets.members_of(c)
+    sorted_distinct(
+        flatten([g.own[v] for v in members])
+            .concat(flatten([held[sets.of[u]] for v in members for u in g.refs[v] if sets.of[u] != c])),
+    )
+}
+
+/// Each text once, in order.
+fn sorted_distinct(xs: List<string>) -> List<string> { sorted_texts(distinct(xs)) }

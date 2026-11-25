@@ -1,0 +1,195 @@
+//! `@std/http_message` — the HTTP message as a VALUE. A request here is
+//! data: it names what to ask and of whom, and nothing about how it is
+//! sent. A client sends it (`@std/http`'s `send`), a page's host sends it
+//! with its own `fetch`, and a test reads it back — one type, so what a
+//! program asks is the same value on every target, inspectable and
+//! replayable.
+//!
+//! NOTHING HERE OPENS A SOCKET, PARKS A TASK OR READS A CLOCK, so a page's
+//! program may depend on it. A wait is a `Duration`. A body is data too: a
+//! stream (a closure) is `@std/http`'s own extra, never part of the value.
+use @std.text.{parse_int}
+use @std.time.{Duration}
+
+use @std.url.{encoded as percent_encoded}
+
+/// The nine methods RFC 9110 registers, and `Other` for a token this
+/// framer read and does not name — a method is extensible, so an
+/// unknown one is well formed and not a refusal.
+export enum Method { Get, Head, Post, Put, Delete, Patch, Options, Connect, Trace, Other }
+
+impl Method {
+    /// The method as a request line spells it.
+    fn word() -> string {
+        match self {
+            .Get -> "GET",
+            .Head -> "HEAD",
+            .Post -> "POST",
+            .Put -> "PUT",
+            .Delete -> "DELETE",
+            .Patch -> "PATCH",
+            .Options -> "OPTIONS",
+            .Connect -> "CONNECT",
+            .Trace -> "TRACE",
+            .Other -> "GET",
+        }
+    }
+}
+
+/// One field of a message: its name and its value.
+export type Header = { name: string, value: string }
+
+impl Header {
+    /// Whether this header is named `name`, ASCII-folded as field names
+    /// compare.
+    fn named(name: string) -> bool {
+        let b = self.name.trim().bytes()
+        b.ieq_at(0, b.length, name.bytes())
+    }
+}
+
+/// What a request carries, whole. `Json` holds the document already
+/// written as text; `Octets` names its own content type.
+export enum Body {
+    Empty
+    Text(text: string)
+    Json(text: string)
+    Form(fields: List<Header>)
+    Octets(bytes: Bytes, kind: string)
+}
+
+/// One request: the method, the URL it is made to, the fields it carries,
+/// its body, how long it may take in all (none: the sender's own bound)
+/// and how many times a dropped one may be asked again.
+export type Request = {
+    method: Method,
+    url: string,
+    headers: List<Header> = [],
+    body: Body = .Empty,
+    timeout: Duration? = null,
+    retries: int = 0,
+}
+
+/// A body as it travels: its content type (none for an empty one) and its
+/// octets, whole.
+export type Encoded = { kind: string, bytes: Bytes }
+
+impl Body {
+    /// The body as it is sent: text names its charset, JSON is the text it
+    /// holds, a form is its fields percent-encoded as query parameters
+    /// joined by `&`, octets bring their own type.
+    fn encoded() -> Encoded {
+        match self {
+            .Empty -> Encoded { kind: "", bytes: "".bytes() },
+            .Text(text) -> Encoded { kind: "text/plain; charset=utf-8", bytes: text.bytes() },
+            .Json(text) -> Encoded { kind: "application/json", bytes: text.bytes() },
+            .Form(fields) -> Encoded {
+                kind: "application/x-www-form-urlencoded",
+                bytes: [form_pair(f) for f in fields].join("&").bytes(),
+            },
+            .Octets(bytes, kind) -> Encoded { kind: kind, bytes: bytes },
+        }
+    }
+}
+
+fn form_pair(f: Header) -> string {
+    let name = percent_encoded(f.name.bytes(), .Param).text() ?? ""
+    let value = percent_encoded(f.value.bytes(), .Param).text() ?? ""
+    "${name}=${value}"
+}
+
+/// The fields a host hands over as `name: value` lines, in the order they stand;
+/// a line with no `: ` names no field.
+export fn headers_of(lines: string) -> List<Header> {
+    [Header { name: l.substring(0, at), value: l.substring(at + 2, l.length) } for l in lines.split("\n") for at in [l.index_of(": ") ?? -1] if at > 0]
+}
+
+/// What a request is answered with: the status, the fields the answer
+/// carries and its body, whole.
+export type Reply = { status: int, headers: List<Header> = [], body: Bytes }
+
+/// WHERE A SERVER'S DATA STANDS: the database's commit counter, the one number its
+/// answers are ordered by. It is a reply's `ETag` — `tag` writes it, `parsed` reads
+/// it back — so the validator a client sends and the order it keeps answers in are
+/// one value, the same for every process that serves the database.
+export type Version = { sequence: int }
+
+impl Version {
+    /// The version as an entity tag.
+    fn tag() -> string { "\"v${self.sequence}\"" }
+
+    /// The version an entity tag names, or none when it names no version.
+    static fn parsed(tag: string) -> Version? {
+        let quoted = if tag.starts_with("W/") { tag.substring(2, tag.length) } else { tag }
+        if quoted.length < 4 || !quoted.starts_with("\"v") || !quoted.ends_with("\"") { return null }
+        let sequence? = parse_int(quoted.substring(2, quoted.length - 1)) else { return null }
+        Version { sequence: sequence }
+    }
+
+    /// Whether this version is later than `held`. An equal version is no later.
+    fn after(held: Version) -> bool { self.sequence > held.sequence }
+}
+
+/// The field that names the tables an answer read, and the one that names the tables a
+/// write touched: table or model names a server read off its database, never a row.
+export const READS: string = "avra-reads"
+
+export const WROTE: string = "avra-wrote"
+
+/// The field that names where an answer's observations are announced when they go stale, and the
+/// one that names the database count the answer stood at before it read: both a server's, neither
+/// a row.
+export const FEED: string = "avra-feed"
+
+export const STAND: string = "avra-stand"
+
+/// Names as one field value.
+export fn named_field(names: List<string>) -> string { names.join(", ") }
+
+impl Reply {
+    /// The tables its `avra-reads` field names: none when the server said nothing of what
+    /// the answer read, which is not the same as reading nothing.
+    fn reads() -> List<string>? { self.named(READS) }
+
+    /// The tables its `avra-wrote` field names, when the answer is to a write that said.
+    fn wrote() -> List<string>? { self.named(WROTE) }
+
+    fn named(field: string) -> List<string>? {
+        let held? = self.headers.find(it.named(field)) else { return null }
+        [n.trim() for n in held.value.split(",") if !n.trim().is_empty()]
+    }
+
+    /// Where changes to what the answer read are announced, when the server names a feed.
+    fn feed() -> string? { self.headers.find(it.named(FEED))?.value }
+
+    /// The count the database stood at when the answer was read, when the server says.
+    fn stand() -> int? { parse_int(self.headers.find(it.named(STAND))?.value ?? "") }
+
+    /// The version its `ETag` names, when it carries one.
+    fn version() -> Version? {
+        let tag? = self.headers.find(it.named("etag")) else { return null }
+        Version.parsed(tag.value)
+    }
+}
+
+impl Request {
+    /// A request for `url`.
+    static fn get(url: string) -> Request { Request { method: .Get, url: url } }
+
+    /// A request that sends `body` to `url`.
+    static fn post(url: string, body: Body) -> Request { Request { method: .Post, url: url, body: body } }
+
+    /// A request that replaces what stands at `url` with `body`.
+    static fn put(url: string, body: Body) -> Request { Request { method: .Put, url: url, body: body } }
+
+    /// A request that changes part of what stands at `url` by `body`.
+    static fn patch(url: string, body: Body) -> Request { Request { method: .Patch, url: url, body: body } }
+
+    /// A request that removes what stands at `url`.
+    static fn delete(url: string) -> Request { Request { method: .Delete, url: url } }
+
+    /// The request carrying one more field.
+    fn header(name: string, value: string) -> Request {
+        self with { headers: self.headers.concat([Header { name: name, value: value }]) }
+    }
+}

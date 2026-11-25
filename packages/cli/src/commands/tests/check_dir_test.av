@@ -1,0 +1,130 @@
+//! `avra check <dir>` ON THE PROGRAM LAYER — A CHECK THAT EXAMINED NOTHING IS NO CHECK THAT PASSED.
+//! A directory that holds no manifest is no package's root: the check says nothing was checked,
+//! names the package it stands in where one does, and leaves by 1. A root without `src/` checks
+//! each source file directly in it, as `check <file>` checks it, or — holding none — refuses in
+//! `manifest.no_source`'s words. Each case runs the compiler as a user does, its exit and its words.
+use @std.io.{make_dirs, write_text}
+use @std.path.{dir_of}
+use @std.time.{stamp}
+use @std.process.{tool, cmd, inherited, Exit, Outcome, ProcessError}
+
+/// One directory per run, outside any package, so no earlier run's store answers for this one and
+/// no `avra.toml` stands above it.
+once fn dir_base() -> string { "/tmp/avra-check-dir-test/${stamp()}" }
+
+fn at(name: string) -> string { "${dir_base()}/${name}" }
+
+/// A file at `path` holding `text`, its directory made.
+fn put(path: string, text: string) {
+    let _ = make_dirs(dir_of(path))
+    let _ = write_text(path, text)
+}
+
+fn manifest(name: string) -> string { "[package]\nname = \"${name}\"\nversion = \"0.1.0\"\n" }
+
+const BROKEN: string = "fn f() -> int { nope() }\nf()\n"
+
+/// `check <dir>`, run as a user runs it: its exit and its stdout. The program layer's check alone, the
+/// net off — the check that stands once the old path goes, and the one that passed these in silence.
+fn checked(dir: string) -> Result<Outcome, ProcessError> {
+    let t = tool(avra_bin())?
+    (cmd(t, ["check", dir]) with { env: inherited().with_var("AVRA_PROGRAM_NET", "0"), timeout: hang_bound() })
+        .outcome()
+}
+
+fn exit_of(o: Result<Outcome, ProcessError>) -> int {
+    match o {
+        .Ok(r) -> match r.exit { .Code(n) -> n, .Clean -> 0, .Signal(_, _) -> -1 },
+        .Err(_) -> -2,
+    }
+}
+
+fn said(o: Result<Outcome, ProcessError>) -> string { match o { .Ok(r) -> r.out.stdout, .Err(_) -> "" } }
+
+/// A package `pkg` whose `src/` holds a file that is refused, and a directory under it.
+once fn package_dirs() -> string {
+    let root = at("pkg")
+    put("${root}/avra.toml", manifest("pkg"))
+    put("${root}/src/main.av", BROKEN)
+    let _ = make_dirs("${root}/src/sub")
+    root
+}
+
+once fn in_src() -> Result<Outcome, ProcessError> { checked("${package_dirs()}/src") }
+
+once fn in_sub() -> Result<Outcome, ProcessError> { checked("${package_dirs()}/src/sub") }
+
+/// A directory of source files that stands in no package.
+once fn loose() -> Result<Outcome, ProcessError> {
+    put(at("loose/a.av"), BROKEN)
+    checked(at("loose"))
+}
+
+/// A package root of one manifest, no `src/`, nothing directly in it.
+once fn rootless() -> Result<Outcome, ProcessError> {
+    put(at("rootless/avra.toml"), manifest("rootless"))
+    checked(at("rootless"))
+}
+
+/// A package root with no `src/` and a refused source file directly in it.
+once fn root_direct() -> Result<Outcome, ProcessError> {
+    put(at("direct/avra.toml"), manifest("direct"))
+    put(at("direct/a.av"), BROKEN)
+    checked(at("direct"))
+}
+
+/// The same, its one file clean.
+once fn root_direct_clean() -> Result<Outcome, ProcessError> {
+    put(at("clean/avra.toml"), manifest("clean"))
+    put(at("clean/a.av"), "fn f() -> int { 1 }\nf()\n")
+    checked(at("clean"))
+}
+
+/// `manifest.no_manifest`'s words for `dir`, naming the package it stands in — the golden.
+fn no_manifest_in(dir: string, root: string) -> string {
+    "error[manifest.no_manifest]: `${dir}` holds no `avra.toml`: nothing was checked\nhelp: it stands in the package at `${root}`: check that root, or a source file by its path\n"
+}
+
+/// The same words for a directory that stands in no package.
+fn no_manifest_alone(dir: string) -> string {
+    "error[manifest.no_manifest]: `${dir}` holds no `avra.toml`: nothing was checked\nhelp: check a package's root — the directory its `avra.toml` stands in — or a source file by its path\n"
+}
+
+spec "avra check <dir> — a directory that is no package's root is never a pass" {
+    given "a package's `src/`" {
+        then "it is refused: nothing was checked, the package's root named" {
+            said(in_src()) == no_manifest_in("${package_dirs()}/src", package_dirs())
+        }
+        then "and the check leaves by 1" { exit_of(in_src()) == 1 }
+    }
+    given "a directory under a package's `src/`" {
+        then "it is refused, naming the same root" {
+            said(in_sub()) == no_manifest_in("${package_dirs()}/src/sub", package_dirs())
+        }
+        then "and leaves by 1" { exit_of(in_sub()) == 1 }
+    }
+    given "a directory of source files in no package" {
+        then "it is refused, and no root is named" { said(loose()) == no_manifest_alone(at("loose")) }
+        then "and leaves by 1" { exit_of(loose()) == 1 }
+    }
+    given "a package root with no `src/` and nothing directly in it" {
+        then "it is refused in manifest.no_source's words" {
+            said(rootless()) == "error[manifest.no_source]: nothing to check under `${at("rootless")}`: no `src/` and no program files\nhelp: add a `src/` directory, or a `.av` file directly under this root\n"
+        }
+        then "and leaves by 1" { exit_of(rootless()) == 1 }
+    }
+    given "a package root with no `src/` and a source file directly in it" {
+        then "the file is checked, and what it is refused with is said" {
+            said(root_direct()).contains("error[resolve.unresolved]") && exit_of(root_direct()) == 1
+        }
+        then "a clean one is checked clean, by 0" { exit_of(root_direct_clean()) == 0 }
+    }
+    given "a package's own root" {
+        then "it is checked as it always was, its file's refusal said" {
+            let o = checked(package_dirs())
+            said(o).contains("error[resolve.unresolved]") &&
+                !said(o).contains("manifest.no_manifest") &&
+                exit_of(o) == 1
+        }
+    }
+}

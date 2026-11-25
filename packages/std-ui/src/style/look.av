@@ -1,0 +1,82 @@
+//! `style/look.av` — what a primitive wears when its author says nothing:
+//! the theme's own look for each control, as data every target reads. A
+//! look names roles, steps and the theme's measures, never a length or a
+//! colour, and what it leaves unsaid is the target's own. A state's look
+//! is derived from the look at rest by ONE rule (`worn`), so one surface
+//! moves every state; a theme names a state itself only where the rule
+//! will not do.
+use style.tokens.{Size, Tone, Ink}
+use style.style.{Interaction}
+
+/// The surface a look stands on.
+export enum Ground {
+    /// The target's own surface for the control.
+    Native
+    /// None of its own: what it stands on shows through.
+    Clear
+    /// A surface by its role, `mix` percent of the way to what sits on it.
+    Fill(tone: Tone, mix: int)
+}
+
+/// A length a look names: a step of the spacing scale, a control's height
+/// or a row's padding.
+export enum Measure {
+    Step(size: Size)
+    Control
+    Row
+}
+
+/// What a look wears. At rest, a field left unsaid is the target's own: no
+/// ink is the ink of what it stands on, no line the target's line. In a
+/// state, it names only what changes.
+export type Wear = {
+    ground: Ground = .Native,
+    ink: Ink? = null,
+    line: Ink? = null,
+    radius: Size? = null,
+    least: Measure? = null,
+    block: Measure? = null,
+    inline: Measure? = null,
+}
+
+/// A state's look, named by the theme where the derived one will not do.
+export type StateWear = { state: Interaction, wear: Wear }
+
+/// What a primitive wears: its look at rest, whether a reader acts on it
+/// (only then does it wear the states), and the states the theme names
+/// itself.
+export type Look = { rest: Wear = Wear {}, acts: bool = false, states: List<StateWear> = [] }
+
+/// How far a surface shades toward what sits on it while a reader points at
+/// it and while one presses it, in percent.
+export type Shading = { hover: int, pressed: int }
+
+/// A look that wears nothing of its own.
+export const unstyled = Look {}
+
+/// What a look wears in a state: what changes from rest, by the theme's
+/// own state where it names one, else by the rule — a pointed or pressed
+/// surface shades toward what sits on it, one that cannot be acted on wears
+/// the disabled ink, and focus keeps the target's own ring. A look no
+/// reader acts on wears no state.
+export fn worn(l: Look, s: Interaction, shading: Shading) -> Wear {
+    if !l.acts { return Wear {} }
+    let named? = l.states.find(it.state == s) else { return derived(l.rest, s, shading) }
+    named.wear
+}
+
+/// The rule: what a state changes of a look at rest. Every state spelled.
+fn derived(rest: Wear, s: Interaction, shading: Shading) -> Wear {
+    match s {
+        .Hover -> shaded(rest.ground, shading.hover),
+        .Pressed -> shaded(rest.ground, shading.pressed),
+        .Disabled -> Wear { ink: .Disabled },
+        .Focus -> Wear {},
+    }
+}
+
+/// A surface shaded by `by` percent; nothing changes on one of the
+/// target's own or one that shows through.
+fn shaded(g: Ground, by: int) -> Wear {
+    match g { .Fill(t, _) -> Wear { ground: .Fill(t, by) }, .Native or .Clear -> Wear {} }
+}

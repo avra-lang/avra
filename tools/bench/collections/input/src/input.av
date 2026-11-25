@@ -1,0 +1,119 @@
+//! The collection bench's inputs, drawn from one seed by splitmix64, and
+//! its checksum. Written bit for bit as `rust/src/lib.rs`, so an Avra
+//! program and its Rust twin read the same numbers and must print the
+//! same sums.
+use @std.text.{from_codepoints}
+
+/// The seed every workload's input is drawn from.
+export const SEED = 24301
+
+/// splitmix64's increment, as a two's-complement int.
+const GOLDEN = -7046029254386353131
+
+/// FNV-1a 64's offset basis and prime: the map hash before it was keyed.
+const FNV_OFFSET = -3750763034362895579
+const FNV_PRIME = 1099511628211
+
+/// The index bits an adversarial key set shares under FNV-1a.
+const SHARED_BITS = 262143
+
+/// A logical right shift: `>>` carries the sign in.
+fn shifted(z: int, k: int) -> int { (z >> k) & (1 << 64 - k) - 1 }
+
+/// splitmix64's output for the state `x`.
+fn mixed(x: int) -> int {
+    let a = (x ^ shifted(x, 30)) * -4658895280553007687
+    let b = (a ^ shifted(a, 27)) * -7723592293110705685
+    b ^ shifted(b, 31)
+}
+
+/// The `i`th draw of the stream `seed` names, non-negative.
+export fn draw(seed: int, i: int) -> int { shifted(mixed(seed + (i + 1) * GOLDEN), 1) }
+
+/// `n` draws, each below `bound`.
+export fn ints(seed: int, n: int, bound: int) -> List<int> { [draw(seed, i) % bound for i in 0..n] }
+
+/// One more value into an order-sensitive checksum.
+export fn folded(h: int, x: int) -> int { (h ^ x) * FNV_PRIME }
+
+/// A list's checksum: its length, then every element in order.
+export fn fold_all(xs: List<int>) -> int {
+    mut h = xs.length
+    // LICENSED loops.push_loop: a checksum fold, it builds no list
+    for x in xs { h = folded(h, x) }
+    h
+}
+
+/// A text list's checksum: each text's length and its first and last
+/// bytes, in order.
+export fn fold_texts(xs: List<string>) -> int {
+    mut h = xs.length
+    // LICENSED loops.push_loop: a checksum fold, it builds no list
+    for s in xs { h = folded(folded(folded(h, s.length), s.char_code(0)), s.char_code(s.length - 1)) }
+    h
+}
+
+/// A text list's checksum over every byte of every text, in order.
+export fn fold_bytes(xs: List<string>) -> int {
+    mut h = xs.length
+    // LICENSED loops.push_loop: a checksum fold, it builds no list
+    for s in xs {
+        // LICENSED loops.push_loop: a checksum fold, it builds no list
+        for i in 0..s.length { h = folded(h, s.char_code(i)) }
+    }
+    h
+}
+
+/// One result line: the row, the checksum, the nanoseconds from `t0` to `t1`.
+export fn report(row: string, sum: int, t0: int, t1: int) { println("${row} ${sum} ${t1 - t0}") }
+
+/// The alphanumeric byte at base-62 digit `d`.
+fn alnum(d: int) -> int {
+    when {
+        d < 10 -> 48 + d
+        d < 36 -> 55 + d
+        _ -> 61 + d
+    }
+}
+
+/// The four bytes of candidate block `j`, low digit first.
+fn block_bytes(j: int) -> List<int> { [alnum(j / p % 62) for p in [1, 62, 3844, 238328]] }
+
+/// FNV-1a's state after block `j`, from the state `h`.
+fn fnv_block(h: int, j: int) -> int {
+    mut s = h
+    // LICENSED loops.push_loop: a hash fold over four digits, it builds no list
+    for p in [1, 62, 3844, 238328] { s = (s ^ alnum(j / p % 62)) * FNV_PRIME }
+    s
+}
+
+/// Blocks that carry FNV-1a's shared index bits from one state to one
+/// next state.
+type Stage = { blocks: List<string>, next: int }
+
+/// The first `per` blocks that take `h` to block 0's index bits.
+fn stage(h: int, per: int) -> Stage {
+    let next = fnv_block(h, 0)
+    mut blocks: List<string> = []
+    mut j = 0
+    while blocks.length < per {
+        if (fnv_block(h, j) ^ next) & SHARED_BITS == 0 { blocks.push(from_codepoints(block_bytes(j))) }
+        j = j + 1
+    }
+    Stage { blocks: blocks, next: next }
+}
+
+/// `per`^`stages` distinct keys whose FNV-1a hashes share their low 18
+/// bits: each stage's blocks agree on those bits from a shared state,
+/// and FNV-1a's low bits never read its high ones.
+export fn fnv_colliding(per: int, stages: int) -> List<string> {
+    mut h = FNV_OFFSET
+    mut keys = [""]
+    // LICENSED loops.push_loop: each stage extends every key, a fold over stages
+    for _s in 0..stages {
+        let st = stage(h, per)
+        keys = [k + b for k in keys for b in st.blocks]
+        h = st.next
+    }
+    keys
+}

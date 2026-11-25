@@ -1,0 +1,215 @@
+// The spec DSL: `spec`/`given`/`then` is one declaration whose cases
+// are bool-answering bodies — the program lists them in order, runs
+// each by its symbol, and the laws refuse in their own words. Asked of
+// the program layer: the suite `avra test` makes of a package's files.
+use @std.avrac.compiler.{MadeSuite}
+use @std.avrac.testing.{shown, refused_with, held_at}
+use compiler.backend.{run_program, run_symbol}
+
+fn manifest() -> string {
+    "[package]\nname = \"app\"\nversion = \"0.1.0\"\n"
+}
+
+/// The suite a package of `modules` makes, each module by its path under `src/`, `main.av` the
+/// entry: every case each module writes.
+fn suite_over(modules: Map<string, string>) -> Result<MadeSuite, string> {
+    mut files: Map<string, string> = {"/w/avra.toml": manifest()}
+    for name, text in modules { files.set("/w/src/${name}", text) }
+    held_at(files, "/w")
+        .judged_at("/w/src/main.av")
+        .suite(["/w/src/${name}" for name in modules.keys()])
+}
+
+/// The suite of a package whose one module is `text`.
+fn package_of(text: string) -> Result<MadeSuite, string> { suite_over({"main.av": text}) }
+
+/// The suite of a package of two modules: the entry and a sibling.
+fn package_of_two(main: string, other: string) -> Result<MadeSuite, string> {
+    suite_over({"main.av": main, "other.av": other})
+}
+
+/// Two groups, three cases — the middle one false on purpose.
+fn suite() -> string {
+    "fn double(n: int) -> int { n * 2 }\n" +
+        "spec \"arithmetic\" {\n" +
+        "    given \"doubling\" {\n" +
+        "        then \"two doubles to four\" { double(2) == 4 }\n" +
+        "        then \"three doubles to seven\" { double(3) == 7 }\n" +
+        "    }\n" +
+        "    given \"identity\" {\n" +
+        "        then \"zero stays zero\" { double(0) == 0 }\n" +
+        "    }\n" +
+        "}\n"
+}
+
+/// Each case's line as the suite says it, in listing order; none where the suite isn't made.
+fn cases_of(made: Result<MadeSuite, string>) -> List<string> {
+    match made { .Ok(m) -> [c.label for c in m.cases], .Err(_) -> [] }
+}
+
+/// Every case's verdict, in listing order; a suite that isn't made has none.
+fn verdicts_of(made: Result<MadeSuite, string>) -> List<bool> {
+    match made {
+        .Ok(m) -> [match run_symbol(m.lowered, c.symbol) { .Ok(b) -> b, .Err(_) -> false } for c in m.cases],
+        .Err(_) -> [],
+    }
+}
+
+fn verdicts(text: string) -> List<bool> {
+    verdicts_of(package_of(text))
+}
+
+/// The first case's refusal, or the empty word when it answered.
+fn note_of(text: string) -> string {
+    match package_of(text) {
+        .Ok(m) -> match run_symbol(m.lowered, m.cases[0].symbol) { .Ok(_) -> "", .Err(why) -> why },
+        .Err(why) -> why,
+    }
+}
+
+/// Whether making the suite refuses, saying `phrase`.
+fn refused_cases(made: Result<MadeSuite, string>, phrase: string) -> bool {
+    match made { .Ok(_) -> false, .Err(why) -> why.contains(phrase) }
+}
+
+/// One verdict, and it is true — lists compare by identity here.
+fn only_true(v: List<bool>) -> bool {
+    v.length == 1 && v[0]
+}
+
+fn one_case(body: string) -> string {
+    "spec \"s\" {\n    given \"g\" {\n        then \"t\" { ${body} }\n    }\n}\n"
+}
+
+/// A case run for its PRINTED words — what a failing `then` shows
+/// before the suite entry names it.
+fn ran_case(body: string) -> string { ran_full(one_case(body)) }
+
+/// A whole spec source run for its printed words.
+fn ran_full(text: string) -> string {
+    match package_of(text) {
+        .Ok(m) -> match run_program(m.lowered, m.cases[0].symbol) { .Ok(out) -> out, .Err(why) -> why },
+        .Err(why) -> why,
+    }
+}
+
+spec "features/specs" {
+    given "the declaration" {
+        then "a spec lists its cases in written order, each knowing its suite, group and line" {
+            let cs = cases_of(package_of(suite()))
+            cs.length == 3 &&
+                cs[0] == "arithmetic / doubling / two doubles to four @ /w/src/main.av:4" &&
+                cs[1] == "arithmetic / doubling / three doubles to seven @ /w/src/main.av:5" &&
+                cs[2] == "arithmetic / identity / zero stays zero @ /w/src/main.av:8"
+        }
+        then "a spec is a declaration — the program around it still runs" {
+            shown("${suite()}double(21)") == "42"
+        }
+        then "a spec may hold no groups, and a group no cases" {
+            cases_of(package_of("spec \"empty\" {\n}\nspec \"s\" {\n    given \"g\" {\n    }\n}\n"))
+                .is_empty()
+        }
+        then "a then directly under the spec is a case of the empty group" {
+            let p = package_of("spec \"s\" {\n    then \"t\" { true }\n}\n")
+            cases_of(p).join("|") == "s /  / t @ /w/src/main.av:2" && only_true(verdicts_of(p))
+        }
+        then "two specs in one file both list and run" {
+            let v = verdicts(
+                "spec \"a\" {\n    then \"x\" { true }\n}\nspec \"b\" {\n    then \"y\" { false }\n}\n",
+            )
+            v.length == 2 && v[0] && !v[1]
+        }
+    }
+    given "the run" {
+        then "each case answers its own condition" {
+            let v = verdicts(suite())
+            v.length == 3 && v[0] && !v[1] && v[2]
+        }
+        then "a case reads declarations written after it" {
+            only_true(verdicts("${one_case("later() == 3")}fn later() -> int { 3 }\n"))
+        }
+        then "a case body may be a block with statements" {
+            only_true(
+                verdicts(one_case("let a = 2\n            let b = a * a\n            b == 4")),
+            )
+        }
+        then "a return inside a case answers it" {
+            only_true(verdicts(one_case("if 1 < 2 { return true }\n            false")))
+        }
+        then "a case in a sibling module runs too" {
+            only_true(verdicts_of(package_of_two("fn m() -> int { 1 }\n", one_case("2 == 2"))))
+        }
+        then "a runaway recursion is a trap naming its depth, not a crash" {
+            note_of("fn inf(n: int) -> int { inf(n + 1) + 1 }\n${one_case("inf(0) == 1")}")
+                .contains("recursion too deep")
+        }
+        then "a trap inside a case is its note" {
+            note_of(one_case("[1][5] == 1")).contains("out of bounds")
+        }
+    }
+    given "the failure shows both sides" {
+        then "a failing equality prints actual and expected" {
+            let out = ran_case("\"x\" == \"y\"")
+            out.contains("actual:   x") && out.contains("expected: y")
+        }
+        then "a passing case prints neither side" {
+            !ran_case("\"x\" == \"x\"").contains("actual")
+        }
+        then "an int comparison renders both numbers" {
+            let out = ran_case("2 + 1 == 4")
+            out.contains("actual:   3") && out.contains("expected: 4")
+        }
+        then "an owned answer stays live into the failure note" {
+            ran_case("\"x\" + \"!\" == \"y\"").contains("actual:   x!")
+        }
+        then "a body block reads through to its value" {
+            let out = ran_case("let a = 2\n            a == 3")
+            out.contains("actual:   2") && out.contains("expected: 3")
+        }
+        then "a body that is not one equality says why" {
+            ran_case("2 < 1").contains("only for one `a == b`")
+        }
+        then "a comparison with no text projection says why" {
+            let body = "P { n: 1 } == P { n: 2 }"
+            ran_full("type P = { n: int }\n${one_case(body)}").contains("only for one `a == b`")
+        }
+    }
+    given "the laws" {
+        then "a case answers a bool, in its own words" {
+            refused_with(one_case("1 + 1"), "a `then` answers a `bool`, this one answers `int`")
+        }
+        then "a spec lives at the top level" {
+            refused_with(
+                "fn f() {\n    spec \"s\" {\n    }\n}\n",
+                "spec blocks live at the top level",
+            )
+        }
+        then "a case's mistake is spoken like any body's" {
+            refused_with(one_case("missing() == 1"), "no `fn missing` is defined")
+        }
+        then "a group names each case once" {
+            refused_with(
+                "spec \"s\" {\n    given \"g\" {\n        then \"t\" { true }\n        then \"t\" { true }\n    }\n}\n",
+                "`s / g` declares `t` more than once",
+            )
+        }
+        then "the same case name in two groups is fine" {
+            verdicts(
+                "spec \"s\" {\n    given \"g\" {\n        then \"t\" { true }\n    }\n    given \"h\" {\n        then \"t\" { true }\n    }\n}\n",
+            )
+                .length == 2
+        }
+        then "a then without its body costs one diagnostic, and the next case still parses" {
+            refused_with(
+                "spec \"s\" {\n    given \"g\" {\n        then \"t\" true\n        then \"u\" { true }\n    }\n}\n",
+                "expected `{`",
+            )
+        }
+        then "a module file's stray statement refuses under test as under run" {
+            refused_cases(
+                package_of_two(one_case("2 == 2"), "fn h() -> int { 3 }\nh()\n"),
+                "only the entry",
+            )
+        }
+    }
+}

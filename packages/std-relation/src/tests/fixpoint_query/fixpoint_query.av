@@ -1,0 +1,38 @@
+// proves: `@fixpoint(bottom, join)` solves a cycle's group from bottom until no member grows,
+// and an input that moves solves the group again from bottom — a removed edge shrinks what
+// every member of the cycle reaches — in both engines
+use @std.relation.{query, input, fixpoint}
+use @std.relation.db.{Db, new_db}
+
+const nodes: List<string> = ["a", "b", "c", "d"]
+
+/// A node's out-edges, comma-joined, as the driver stages them.
+@input
+fn edges(_db: Db, _node: string) -> string { "" }
+
+fn nothing() -> List<string> { [] }
+
+/// The nodes either side holds, in one order whichever side holds them.
+fn union(a: List<string>, b: List<string>) -> List<string> { [n for n in nodes if a.contains(n) || b.contains(n)] }
+
+/// Every node `node` reaches, itself included.
+@query
+@fixpoint(nothing, union)
+fn reach(db: Db, node: string) -> List<string> {
+    union([node], [n for e in edges(db, node).split(",") if !e.is_empty() for n in reach(db, e)])
+}
+
+fn said(db: Db) -> string { [n + ":" + reach(db, n).join("") for n in nodes].join(" ") }
+
+fn main_run() -> string {
+    let db = new_db()
+    set_edges(db, "a", "b")
+    set_edges(db, "b", "c")
+    set_edges(db, "c", "a,d")
+    set_edges(db, "d", "")
+    let first = said(db)
+    set_edges(db, "c", "")
+    "${first} | ${said(db)}"
+}
+
+main_run()

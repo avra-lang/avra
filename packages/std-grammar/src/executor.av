@@ -1,0 +1,1646 @@
+//! The grammar engine: runs a Grammar over tokens, producing built
+//! values and structured diagnostics.
+//!
+//! Alternation is ordered choice with DEFERRED commitment: a branch
+//! that fails past its first token is a committed break — its
+//! diagnostics are real, authored `Expect` messages first, panic-mode
+//! `Recover` sync second (a recovered branch is a HIT with a hole,
+//! and stands immediately) — but the break itself waits: later
+//! branches still try, and only when none hits does the first break
+//! surface. So `f(x)` and bare `f` share a rule, keyword branches
+//! survive behind NAME-headed ones, and a genuinely broken committed
+//! branch still reports from inside itself. Options and repetitions
+//! are SPECULATION BOUNDARIES: a committed failure inside one means
+//! not-taken or loop-end, surviving only as farthest-failure
+//! information.
+//! The engine tracks the farthest cursor any attempt reached and every
+//! terminal that would have matched there, so a failed parse reports
+//! "expected A, B or C while parsing `rule`".
+//!
+//! State threads functionally: a match returns its new state, so
+//! rolling back a speculative attempt is keeping the old one.
+//! Diagnostics are structured (span, expected set, rule); prose
+//! rendering is a projection.
+//!
+//! Generic over `T` — the token type — and `N`, whatever a builder
+//! constructs. The engine never looks inside either: `T` belongs to
+//! whoever tokenizes, `N` to whoever supplies the builders. A `T`'s
+//! whole contract is its `Lexeme<T>` value, carried on the context
+//! (`cx.lex`) rather than a trait bound (lexeme.av says why).
+use util.{filled, distinct, is_end, some_list}
+use ast.{
+    Grammar,
+    Alt,
+    Seq,
+    Item,
+    Prim,
+    Rep,
+    BranchStart,
+    StartTerm,
+    Slot,
+    Build,
+    Operators,
+    OpEntry,
+    Tier,
+    Assoc,
+    listed_grammar,
+    node_builder_name,
+    closer_of,
+}
+use item_shape.{ItemShape, item_shape}
+use first.{with_branch_starts}
+use diagnostics.{Cause, Diagnostic, Failure, Voice, defect, told, spoken, Want, want_merged}
+use lexeme.{Lexeme}
+use @std.errors.{Loc}
+
+/// What a builder receives and returns.
+export enum Captured<T, N> {
+    /// A matched terminal.
+    Terminal(t: T)
+    /// Whatever a builder constructed.
+    Node(n: N)
+    /// Accumulated repetition captures, in source order.
+    Many(items: List<Captured<T, N>>)
+    /// An optional capture not taken, or a recovered error hole.
+    Absent
+}
+
+/// The parse outcome: a result when anything was built (partial trees
+/// included), plus every diagnostic from the run.
+export type RunOutcome<T, N> = { result: Captured<T, N>?, diagnostics: List<Diagnostic> }
+
+/// One capture binding in a branch's scope.
+type Binding<T, N> = { label: int, value: Captured<T, N> }
+
+/// The farthest point speculation reached: what would have matched
+/// there, inside which rule.
+type FarthestFailure = { cursor: int, expected: Want, in_rule: string }
+
+/// How one match attempt ended: matched, missed cleanly (speculation
+/// may continue), broke inside a committed branch (final for this
+/// branch, but a speculation boundary may absorb it), or hit a fatal
+/// defect (a builder error — grammar-authoring problems pass through
+/// every boundary). The four states that exist, and no fifth.
+enum MatchStatus { Hit, Miss, Broke, Fatal }
+
+/// Where a branch stood once its first `at` members had all matched: what a sibling sharing those
+/// members (`Seq.shared`) starts from instead of matching them again.
+type SeqPoint<T, N> = { at: int, cursor: int, bindings: List<Binding<T, N>>, vals: List<Captured<T, N>>, open: bool }
+
+/// One match attempt's outcome.
+type MatchResult<T, N> = {
+    status: MatchStatus,
+    // where the attempt ended, with the captures in scope there —
+    // once a boxed state per hit and per call, now the result's own
+    cursor: int,
+    bindings: List<Binding<T, N>>,
+    value: Captured<T, N>,
+    diagnostics: List<Failure>,
+    farthest: FarthestFailure?,
+}
+
+/// Everything a match needs to see. `ordinals` numbers the grammar's
+/// rules by name, built once per grammar — a rule IS `g.rules` at its
+/// ordinal; `memo` remembers what each rule answered at each cursor
+/// — a rule enters with a FRESH binding scope, so its answer
+/// depends on nothing else, and speculation that revisits it reads
+/// instead of re-matching.
+type MatchContext<T, N> = {
+    g: Grammar,
+    tokens: List<T>,
+    lex: Lexeme<T>,
+    ordinals: Map<string, int>,
+    // every label the grammar binds, by name: an item's `label_slot` its place here
+    labels: Map<string, int>,
+    // the caller's own terminal-class vocabulary — what `.Named`
+    // atoms and a `sync_to` name may denote, disambiguating a
+    // named class from a literal spelling at `sync_past`
+    known_terminals: List<string>,
+    // each of the grammar's terminal classes as this parse's lexer
+    // numbers it, by the class's slot — resolved once per run
+    kinds: List<int>,
+    // per token, the classes it wears by slot as bits (bit 62: it closes a body) — the
+    // branch check reads one int where it would ask the lexeme class by class
+    masks: List<int>,
+    // per token, the slot of the grammar literal it spells, or -1
+    lit_at: List<int>,
+    // one absence and one silence per run: a miss is the engine's
+    // commonest outcome, and a value it shares costs nothing to hand
+    // out (a consumer that changed one would copy it)
+    absent: Captured<T, N>,
+    silence: List<Failure>,
+    build: fn(string, List<Captured<T, N>>, Loc?) -> Result<Captured<T, N>, string>,
+    memo: Memo<T, N>,
+    // whether misses tell their story — a parse that ends clean never reads one
+    tracking: bool,
+    // THE PLAIN MISS, made once: a miss with no story and no words says only that it
+    // missed, and it is the engine's commonest answer — `memo.results[0]` is this one
+    miss: MatchResult<T, N>,
+}
+
+/// The memo: an open-addressed table from a rule at a cursor, capped or open, to one past the
+/// index of its answer in `results`. Each slot is a key and a value side by side, a key of zero
+/// meaning free. It grows with the attempts a parse makes, never with rules times tokens. A
+/// struct because a write reaches a place through its field.
+type Memo<T, N> = { slots: List<int>, results: List<MatchResult<T, N>>, mask: int, used: int }
+
+/// The slots a parse of `tokens` tokens starts with, a power of two.
+fn memo_slot_count(tokens: int) -> int {
+    mut count = 64
+    while count < tokens * 8 { count = count * 2 }
+    count
+}
+
+impl Memo<T, N> {
+    /// Where `key` sits in `slots`, or the free slot it would take.
+    fn slot_of(key: int) -> int {
+        let mixed = key * 40503
+        mut slot = (mixed ^ (mixed >> 15)) & self.mask
+        while self.slots[slot * 2] != 0 && self.slots[slot * 2] != key { slot = slot + 1 & self.mask }
+        slot * 2
+    }
+
+    /// What's known under `key`: one past an answer's index, or zero.
+    fn known(key: int) -> int { self.slots[self.slot_of(key) + 1] }
+
+    /// `value` under a key not yet here.
+    mut fn remember(key: int, value: int) {
+        if (self.used + 1) * 2 > self.mask + 1 { self.grow() }
+        let slot = self.slot_of(key)
+        self.slots.set(slot, key)
+        self.slots.set(slot + 1, value)
+        self.used = self.used + 1
+    }
+
+    /// Twice the slots, every key moved across.
+    mut fn grow() {
+        let old = self.slots
+        self.slots = filled((self.mask + 1) * 4, 0)
+        self.mask = (self.mask + 1) * 2 - 1
+        for at in 0..old.length / 2 {
+            if old[at * 2] != 0 {
+                let slot = self.slot_of(old[at * 2])
+                self.slots.set(slot, old[at * 2])
+                self.slots.set(slot + 1, old[at * 2 + 1])
+            }
+        }
+    }
+}
+
+impl MatchContext<T, N> {
+    /// The place of the label `name` among the grammar's, -1 for one no item binds.
+    fn label_of(name: string) -> int { self.labels.get(name) ?? 0 - 1 }
+
+    /// What a miss at `cursor` would have taken — told only to a run that tracks.
+    fn miss_story(cursor: int, in_rule: string, expected: Want) -> FarthestFailure? {
+        if !self.tracking { return null }
+        FarthestFailure { cursor: cursor, expected: expected, in_rule: in_rule }
+    }
+}
+
+/// Captured.Absent with its type parameters pinned.
+fn captured_absent<T, N>() -> Captured<T, N> { Captured.Absent }
+
+/// Captured.Terminal with its type parameters pinned.
+fn captured_terminal<T, N>(t: T) -> Captured<T, N> { Captured.Terminal(t) }
+
+/// Captured.Many with its type parameters pinned.
+fn captured_many<T, N>(items: List<Captured<T, N>>) -> Captured<T, N> { Captured.Many(items) }
+
+fn matched<T, N>(
+    cursor: int,
+    bindings: List<Binding<T, N>>,
+    v: Captured<T, N>,
+    diagnostics: List<Failure>,
+    farthest: FarthestFailure?,
+) -> MatchResult<T, N> {
+    MatchResult {
+        status: MatchStatus.Hit,
+        cursor: cursor,
+        bindings: bindings,
+        value: v,
+        diagnostics: diagnostics,
+        farthest: farthest,
+    }
+}
+
+/// A non-hit outcome: no value was built, so only HOW it ended
+/// differs. The three verbs below are the vocabulary; this is the
+/// one shape behind them, and a site holding a status in hand
+/// (a sub-match's, passed straight through) calls it directly.
+fn ended<T, N>(
+    cx: MatchContext<T, N>,
+    status: MatchStatus,
+    cursor: int,
+    bindings: List<Binding<T, N>>,
+    diagnostics: List<Failure>,
+    farthest: FarthestFailure?,
+) -> MatchResult<T, N> {
+    // no reader asks a plain miss where it was or what was bound: it missed
+    if status == MatchStatus.Miss && farthest == null && diagnostics.is_empty() { return cx.miss }
+    MatchResult {
+        status: status,
+        cursor: cursor,
+        bindings: bindings,
+        value: cx.absent,
+        diagnostics: diagnostics,
+        farthest: farthest,
+    }
+}
+
+fn missed<T, N>(
+    cx: MatchContext<T, N>,
+    cursor: int,
+    bindings: List<Binding<T, N>>,
+    diagnostics: List<Failure>,
+    farthest: FarthestFailure?,
+) -> MatchResult<T, N> {
+    ended<T, N>(cx, MatchStatus.Miss, cursor, bindings, diagnostics, farthest)
+}
+
+/// Whether a result is the plain miss — nothing in it but that it missed.
+fn plain_miss<T, N>(r: MatchResult<T, N>) -> bool { r.status == MatchStatus.Miss && r.farthest == null && r.diagnostics.is_empty() }
+
+fn broke<T, N>(
+    cx: MatchContext<T, N>,
+    cursor: int,
+    bindings: List<Binding<T, N>>,
+    diagnostics: List<Failure>,
+    farthest: FarthestFailure?,
+) -> MatchResult<T, N> {
+    ended<T, N>(cx, MatchStatus.Broke, cursor, bindings, diagnostics, farthest)
+}
+
+fn fatal_defect<T, N>(
+    cx: MatchContext<T, N>,
+    cursor: int,
+    bindings: List<Binding<T, N>>,
+    diagnostics: List<Failure>,
+    farthest: FarthestFailure?,
+) -> MatchResult<T, N> {
+    ended<T, N>(cx, MatchStatus.Fatal, cursor, bindings, diagnostics, farthest)
+}
+
+/// The deeper of two farthest points; a tie unions the expected sets.
+fn far_merge(a: FarthestFailure?, b: FarthestFailure?) -> FarthestFailure? {
+    if a == null { return b }
+    if b == null { return a }
+    let fa = a!
+    let fb = b!
+    when {
+        fa.cursor > fb.cursor -> a
+        fb.cursor > fa.cursor -> b
+        _ -> fa with { expected: want_merged(fa.expected, fb.expected) }
+    }
+}
+
+/// Append with copy, so a rolled-back attempt cannot have mutated a
+/// list an earlier snapshot still references.
+export fn accumulate<T, N>(prev: Captured<T, N>, v: Captured<T, N>) -> Captured<T, N> {
+    match prev {
+        .Many(items) -> Captured.Many(items.concat([v])),
+        .Terminal(t) -> Captured.Many([Captured.Terminal(t), v]),
+        .Node(n) -> Captured.Many([Captured.Node(n), v]),
+        .Absent -> Captured.Many([v]),
+    }
+}
+
+impl Binding<T, N> {
+    /// This binding, updated when its own label is `target`:
+    /// accumulating `v` inside a repetition, replacing outright
+    /// otherwise. Any other label passes through unchanged.
+    fn rebound(target: int, v: Captured<T, N>, acc: bool) -> Binding<T, N> {
+        if self.label != target { return self }
+        self with { value: if acc { accumulate(self.value, v) } else { v } }
+    }
+
+    /// `rebound`'s whole-run twin: every value in `vs` folded in at
+    /// once, for the label a repetition's own capture binds under.
+    fn rebound_all(target: int, vs: List<Captured<T, N>>) -> Binding<T, N> {
+        if self.label != target { return self }
+        self with { value: accumulated_all(self.value, vs) }
+    }
+}
+
+/// A new scope with `label` bound: accumulating inside repetitions,
+/// last-wins otherwise.
+fn bind_label<T, N>(bindings: List<Binding<T, N>>, label: int, v: Captured<T, N>, acc: bool) -> List<
+    Binding<T, N>,
+> {
+    if !bindings.any(it.label == label) {
+        let bound = Binding<T, N> {
+            label: label,
+            value: if acc { captured_many<T, N>([v]) } else { v },
+        }
+        return bindings.concat([bound])
+    }
+    [b.rebound(label, v, acc) for b in bindings]
+}
+
+/// `bind_label`'s REPETITION-SHAPED twin: an outer `label:item*`'s
+/// whole capture, bound ONCE instead of once per element. Calling
+/// `bind_label(…, acc: true)` inside the loop it replaces folds
+/// `accumulate`'s own copy over every element — the O(N²) `match_repetition`
+/// exists to spend a `List.concat` avoiding: `collected` already
+/// holds the same values in order, so `accumulate` folded over them
+/// from whatever the label already held is exactly `accumulated_all`,
+/// computed with one copy instead of N.
+fn bind_label_all<T, N>(bindings: List<Binding<T, N>>, label: int, vs: List<Captured<T, N>>) -> List<
+    Binding<T, N>,
+> {
+    if !bindings.any(it.label == label) {
+        return bindings.concat([Binding { label: label, value: captured_many<T, N>(vs) }])
+    }
+    [b.rebound_all(label, vs) for b in bindings]
+}
+
+/// `accumulate`, folded over a whole run at once.
+export fn accumulated_all<T, N>(prev: Captured<T, N>, vs: List<Captured<T, N>>) -> Captured<T, N> {
+    match prev {
+        .Many(items) -> Captured.Many(items.concat(vs)),
+        // The subset today: a two-parameter generic call as a list
+        // literal's sole element cannot pin `T` from the payload alone —
+        // a typed local pins it first.
+        .Terminal(t) -> {
+            let one: Captured<T, N> = captured_terminal<T, N>(t)
+            Captured.Many([one].concat(vs))
+        },
+        .Node(n) -> {
+            let one: Captured<T, N> = Captured.Node(n)
+            Captured.Many([one].concat(vs))
+        },
+        .Absent -> Captured.Many(vs),
+    }
+}
+
+fn binding_for<T, N>(bindings: List<Binding<T, N>>, label: int) -> Captured<T, N>? {
+    for b in bindings {
+        if b.label == label { return b.value }
+    }
+    null
+}
+
+/// Skip to just past the sync target: a terminal-class name in the
+/// caller's known vocabulary syncs by class, anything else by text.
+/// `END` syncs to the statement's end: past the next Break that stands
+/// outside every brace the statement opened, or BEFORE a `}` it did not
+/// open — a block it opened, on its line or after its failure, is its
+/// own to close, so what stands around a statement that failed keeps
+/// its shape. Stops at Eof.
+fn sync_past<T, N>(cx: MatchContext<T, N>, target: string, entry: int, from: int) -> int {
+    if is_end(target) { return sync_to_end<T, N>(cx, entry, from) }
+    let known = cx.known_terminals.contains(target)
+    let kind = cx.lex.kind_of(target)
+    mut i = from
+    while !cx.lex.is_eof(cx.tokens[i]) {
+        let t = cx.tokens[i]
+        let hit: bool = if known { cx.lex.wears_kind(t, kind) } else { cx.lex.lit_matches(t, target) }
+        if hit { return i + 1 }
+        i = i + 1
+    }
+    i
+}
+
+fn sync_to_end<T, N>(cx: MatchContext<T, N>, entry: int, from: int) -> int {
+    mut depth = open_braces<T, N>(cx, entry, from)
+    mut i = from
+    while !cx.lex.is_eof(cx.tokens[i]) {
+        let t = cx.tokens[i]
+        if depth == 0 && cx.lex.ends_statement(t) { return i + 1 }
+        if cx.lex.lit_matches(t, "{") { depth = depth + 1 }
+        if closes_body(cx.lex, t) {
+            if depth == 0 { return i }
+            depth = depth - 1
+        }
+        i = i + 1
+    }
+    i
+}
+
+/// How many `{` the tokens in [lo, hi) leave open.
+fn open_braces<T, N>(cx: MatchContext<T, N>, lo: int, hi: int) -> int {
+    mut depth = 0
+    for j in lo..hi {
+        if cx.lex.lit_matches(cx.tokens[j], "{") { depth = depth + 1 }
+        if closes_body(cx.lex, cx.tokens[j]) && depth > 0 { depth = depth - 1 }
+    }
+    depth
+}
+
+/// A `}` — the token a statement may end against without consuming.
+fn closes_body<T>(lex: Lexeme<T>, t: T) -> bool {
+    lex.lit_matches(t, "}")
+}
+
+fn match_rule<T, N>(mut cx: MatchContext<T, N>, name: string, cursor: int, capped: bool) -> MatchResult<
+    T,
+    N,
+> {
+    let ordinal? = cx.ordinals.get(name) else { return undefined_rule<T, N>(cx, name, cursor) }
+    let key = (ordinal * (cx.tokens.length + 1) + cursor) * 2 + if capped { 2 } else { 1 }
+    let known = cx.memo.known(key)
+    if known > 0 { return cx.memo.results[known - 1] }
+    let fresh = match_alt<T, N>(
+        cx,
+        name,
+        cx.g.rules[ordinal].body,
+        cursor,
+        [],
+        false,
+        capped,
+        cursor,
+    )
+    if plain_miss<T, N>(fresh) {
+        cx.memo.remember(key, 1)
+        return fresh
+    }
+    cx.memo.results.push(fresh)
+    cx.memo.remember(key, cx.memo.results.length)
+    fresh
+}
+
+/// A reference to no rule — a grammar-authoring defect, final.
+fn undefined_rule<T, N>(cx: MatchContext<T, N>, name: string, cursor: int) -> MatchResult<T, N> {
+    broke<T, N>(cx, cursor, [], [told(defect(name, "undefined rule `${name}`"))], null)
+}
+
+/// Whether one closed terminal accepts `t`, exactly as `match_prim`
+/// judges it.
+fn takes_term<T>(lex: Lexeme<T>, kinds: List<int>, st: StartTerm, t: T) -> bool {
+    match st.prim {
+        .Lit(text) -> lex.lit_matches(t, text),
+        .Named(term) -> lex.wears_kind(t, kind_in(lex, kinds, term, st.slot)) || is_end(term) && closes_body(lex, t),
+        .Ref(_) or .Group(_) or .NotChar(_) -> false,
+    }
+}
+
+/// The farthest point a branch that cannot take `tok` would have
+/// contributed — its own expectations at the cursor — or null when
+/// the branch can try (it is nullable, or a terminal accepts).
+fn skip_point(st: BranchStart, cursor: int) -> FarthestFailure {
+    FarthestFailure {
+        cursor: cursor,
+        expected: [t.prim for t in st.terminals],
+        in_rule: st.in_rule,
+    }
+}
+
+/// Whether a branch cannot consume the token at `cursor`: it is not nullable and none
+/// of its first terminals accepts — read off the token's bits, the rest asked.
+fn cannot_take<T, N>(cx: MatchContext<T, N>, cursor: int, st: BranchStart?) -> bool {
+    let s? = st else { return false }
+    if s.nullable || cx.masks[cursor] & s.kinds != 0 || has_bit(s.lits, cx.lit_at[cursor]) { return false }
+    s.asked.is_empty() || !s.asked.any(takes_term(cx.lex, cx.kinds, it, cx.tokens[cursor]))
+}
+
+/// Whether bit `b` of a run of 62-bit words is set; a negative `b` is no bit.
+fn has_bit(words: List<int>, b: int) -> bool {
+    b >= 0 && b / 62 < words.length && (words[b / 62] >> b % 62) & 1 == 1
+}
+
+/// A token's bits for the branch check: bit `s` when it wears the class of slot `s`, bit 62
+/// when it closes a body. Slots past 61 are asked the long way.
+fn token_mask<T>(lex: Lexeme<T>, kinds: List<int>, t: T) -> int {
+    mut bits = if closes_body(lex, t) { 1 << 62 } else { 0 }
+    for s, kind in kinds {
+        if s < 62 && lex.wears_kind(t, kind) { bits = bits | (1 << s) }
+    }
+    bits
+}
+
+/// The slot of the grammar literal a token spells, or -1 — a literal matches by text alone.
+fn token_lit<T>(lex: Lexeme<T>, lit_slots: Map<string, int>, t: T) -> int {
+    let at? = lit_slots.get(lex.text(t)) else { return 0 - 1 }
+    if lex.lit_matches(t, lex.text(t)) { at } else { 0 - 1 }
+}
+
+/// The kind id a terminal wears in this parse: its slot's, resolved
+/// once per run — or asked by name for a grammar `ready` never numbered.
+fn kind_in<T>(lex: Lexeme<T>, kinds: List<int>, term: string, slot: int) -> int {
+    if slot >= 0 && slot < kinds.length { kinds[slot] } else { lex.kind_of(term) }
+}
+
+/// Branches tried top to bottom; the first success wins. A committed
+/// break DEFERS — later branches still try, and the first break
+/// stands only when nothing hits. A wholly-uncommitted failure
+/// carries the merged farthest point of every branch.
+/// A branch whose first terminals cannot take the token cannot
+/// consume it, so it fails at the cursor: it is skipped, and its own
+/// expectations join the farthest point in branch order — a skip must
+/// say what the branch would have.
+/// `origin` is where the value built from a matched branch is said to
+/// begin: the branch's own start, except for a fold's turn, whose node
+/// begins where the fold's seed did.
+fn match_alt<T, N>(
+    mut cx: MatchContext<T, N>,
+    rule_name: string,
+    a: Alt,
+    cursor: int,
+    bindings: List<Binding<T, N>>,
+    acc: bool,
+    capped: bool,
+    origin: int,
+) -> MatchResult<T, N> {
+    mut farthest: FarthestFailure? = null
+    mut broken: List<List<Failure>> = []
+    // THE SHARED LEAD: a branch that begins with the members the one before it began with starts where
+    // that one stood after them (`lent`, the point the branch before lends, when it got there), so a
+    // lead siblings share is matched once
+    mut lent: List<SeqPoint<T, N>> = []
+    for br in a.branches {
+        if cannot_take<T, N>(cx, cursor, br.start) {
+            lent = []
+            if cx.tracking { farthest = far_merge(farthest, skip_point(br.start!, cursor)) }
+        } else {
+            let next = br.lends
+            let held = lent.first()
+            let resumed = held != null && br.shared > 0 && held!.at == br.shared
+            let r = if resumed || next > 0 {
+                let from = if resumed {
+                    held!
+                } else {
+                    SeqPoint { at: 0, cursor: cursor, bindings: bindings, vals: [], open: !capped }
+                }
+                let lead = seq_lead<T, N>(cx, rule_name, br, acc, from, next)
+                lent = if next > 0 && lead.at == next { [lead] } else { [] }
+                match_seq<T, N>(cx, rule_name, br, cursor, bindings, acc, capped, origin, lead)
+            } else {
+                lent = []
+                match_seq<T, N>(cx, rule_name, br, cursor, bindings, acc, capped, origin, null)
+            }
+            farthest = far_merge(farthest, r.farthest)
+            if r.status == MatchStatus.Hit || r.status == MatchStatus.Fatal {
+                return r with { farthest: farthest }
+            }
+            if r.status == MatchStatus.Broke && broken.is_empty() { broken.push(r.diagnostics) }
+        }
+    }
+    let first? = broken.first() else { return missed<T, N>(cx, cursor, bindings, cx.silence, farthest) }
+    broke<T, N>(cx, cursor, bindings, first, farthest)
+}
+
+/// "expected A, B or C while parsing `rule`" from a farthest point.
+fn farthest_failure<T, N>(cx: MatchContext<T, N>, f: FarthestFailure) -> Failure {
+    Failure {
+        cause: Cause.Expected,
+        voice: Voice.Sentence(f.expected),
+        loc: cx.lex.loc(cx.tokens[f.cursor]),
+        in_rule: f.in_rule,
+    }
+}
+
+/// The failure inside a committed branch, preferring
+/// the failed sub-match's own farthest point.
+fn committed_failure<T, N>(
+    cx: MatchContext<T, N>,
+    rule_name: string,
+    member: Item,
+    r: MatchResult<T, N>,
+    cursor: int,
+) -> Failure {
+    let f = r.farthest ?? FarthestFailure {
+        cursor: cursor,
+        expected: [member.prim],
+        in_rule: rule_name,
+    }
+    farthest_failure<T, N>(cx, f)
+}
+
+/// Where the branch `s` stands once the members of its lead have matched from `from`, up to its
+/// first `upto`: each a single terminal (`shared_member`), which builds nothing, so a sibling reading
+/// the same members from the same place stands exactly here. It stops at the first that misses.
+fn seq_lead<T, N>(
+    mut cx: MatchContext<T, N>,
+    rule_name: string,
+    s: Seq,
+    acc: bool,
+    from: SeqPoint<T, N>,
+    upto: int,
+) -> SeqPoint<T, N> {
+    if from.at >= upto { return from }
+    mut at = from.at
+    mut cursor = from.cursor
+    mut bindings = from.bindings
+    mut vals = from.vals
+    mut open = from.open
+    while at < upto {
+        let member = s.items[at]
+        if !shared_member(member) { break }
+        let r = match_item<T, N>(cx, rule_name, member, cursor, bindings, acc, !open)
+        if r.status != MatchStatus.Hit || !r.diagnostics.is_empty() { break }
+        if opens(member.prim) { open = true }
+        cursor = r.cursor
+        bindings = r.bindings
+        vals.push(r.value)
+        at = at + 1
+    }
+    SeqPoint { at: at, cursor: cursor, bindings: bindings, vals: vals, open: open }
+}
+
+/// Whether a branch's member can stand in a lead its sibling shares: a single terminal, which
+/// builds nothing and leaves no trace but the token it takes.
+fn shared_member(m: Item) -> bool { m.rep == Rep.One && m.expect == null && !m.trailer && m.prim.token_name() != null }
+
+/// The branch `s` matched from `entry`; from where `lead` stands when its first members have matched.
+fn match_seq<T, N>(
+    mut cx: MatchContext<T, N>,
+    rule_name: string,
+    s: Seq,
+    entry: int,
+    entry_bindings: List<Binding<T, N>>,
+    acc: bool,
+    capped: bool,
+    origin: int,
+    lead: SeqPoint<T, N>?,
+) -> MatchResult<T, N> {
+    let led = lead?.cursor ?? entry
+    mut cursor = led
+    mut bindings = lead?.bindings ?? entry_bindings
+    mut vals: List<Captured<T, N>> = lead?.vals ?? []
+    mut diagnostics: List<Failure> = []
+    mut farthest: FarthestFailure? = null
+    // a lead that consumed a token anchored the branch
+    mut anchored = led > entry
+    // THE HEAD LAW: a trailer never matches under a cap, and a
+    // delimiter the sequence consumes opens the rest of it
+    mut open = lead?.open ?? !capped
+    let start = lead?.at ?? 0
+    for i, member in s.items {
+        if i < start { continue }
+        let r = when {
+            member.trailer && !open -> missed<T, N>(cx, cursor, bindings, cx.silence, null)
+            s.fold != null && (member.rep == Rep.Star || member.rep == Rep.Opt) -> match_fold<T, N>(
+                cx,
+                rule_name,
+                cx.label_of(s.fold!),
+                entry,
+                member,
+                cursor,
+                bindings,
+                !open,
+            )
+            _ -> match_item<T, N>(cx, rule_name, member, cursor, bindings, acc, !open)
+        }
+        farthest = far_merge(farthest, r.farthest)
+        if r.status == MatchStatus.Hit {
+            diagnostics = diagnostics.concat(r.diagnostics)
+            if r.cursor > cursor { anchored = true }
+            if opens(member.prim) { open = true }
+            cursor = r.cursor
+            bindings = r.bindings
+            vals.push(r.value)
+        } else if r.status == MatchStatus.Broke || r.status == MatchStatus.Fatal {
+            diagnostics = diagnostics.concat(r.diagnostics)
+            return ended<T, N>(cx, r.status, cursor, bindings, diagnostics, farthest)
+        } else if !anchored {
+            return missed<T, N>(cx, entry, entry_bindings, diagnostics, farthest)
+        } else if !diagnostics.is_empty() {
+            // a part already spoke: what fails after it is its consequence
+            if member.expect == null && s.recover == null { return broke<T, N>(cx, cursor, bindings, diagnostics, farthest) }
+            return matched<T, N>(
+                sync_past<T, N>(cx, s.recover?.sync_to ?? "END", entry, cursor),
+                bindings,
+                cx.absent,
+                diagnostics,
+                farthest,
+            )
+        } else if member.expect != null {
+            // Committed territory: this failure is real — a hole.
+            diagnostics
+                .push(
+                    Failure {
+                        cause: Cause.Expected,
+                        voice: Voice.Held(member.expect!.message, [member.prim]),
+                        loc: cx.lex.loc(cx.tokens[cursor]),
+                        in_rule: rule_name,
+                    },
+                )
+            if member.label != null { bindings = bind_label<T, N>(bindings, member.label_slot, cx.absent, acc) }
+            vals.push(cx.absent)
+            // what is left of a statement that did not end is its own
+            if member.prim.answers_to("END") { cursor = sync_to_end<T, N>(cx, entry, cursor) }
+        } else {
+            diagnostics.push(committed_failure<T, N>(cx, rule_name, member, r, cursor))
+            if s.recover == null { return broke<T, N>(cx, cursor, bindings, diagnostics, farthest) }
+            let c = sync_past<T, N>(cx, s.recover!.sync_to, entry, cursor)
+            return matched<T, N>(c, bindings, cx.absent, diagnostics, farthest)
+        }
+    }
+    if s.operators != null {
+        let climbed = climb<T, N>(
+            cx,
+            Climbing {
+                rule_name: rule_name,
+                ops: s.operators!,
+                operand: s.items[0],
+                directive: s.build,
+                capped: capped,
+            },
+            vals[0],
+            entry,
+            cursor,
+            0,
+            diagnostics,
+            farthest,
+        )
+        return climbed with { bindings: bindings }
+    }
+    // Build phase. The branch's consumed range is the builder's span.
+    // A BUILDER'S WORDS ARE ITS CLAIM, carried whole: the words say
+    // the law or the defect, `Cause` says the category, and neither
+    // restates the other.
+    let branch = consumed_loc<T>(cx.lex, cx.tokens, origin, cursor)
+    match built<T, N>(cx, s.build, bindings, vals, branch) {
+        .Ok(v) -> matched<T, N>(cursor, bindings, v, diagnostics, farthest),
+        // a branch that already spoke has said why — the build it spoils says nothing new
+        .Err(_) if !diagnostics.is_empty() -> matched<T, N>(cursor, bindings, cx.absent, diagnostics, farthest),
+        .Err(m) -> {
+            diagnostics
+                .push(
+                    told(
+                        Diagnostic {
+                            cause: Cause.Builder,
+                            message: m,
+                            loc: branch ?? cx.lex.loc(cx.tokens[cursor]),
+                            expected: [],
+                            in_rule: rule_name,
+                        },
+                    ),
+                )
+            fatal_defect<T, N>(cx, cursor, bindings, diagnostics, farthest)
+        },
+    }
+}
+
+/// The branch's value: its sole capture, a named binding, or the
+/// builder called over its named captures.
+fn built<T, N>(
+    cx: MatchContext<T, N>,
+    directive: Build?,
+    bindings: List<Binding<T, N>>,
+    vals: List<Captured<T, N>>,
+    branch: Loc?,
+) -> Result<Captured<T, N>, string> {
+    // A pass-through branch carries exactly one item — the validator
+    // says so where a value is needed, and an empty one would index
+    // nothing, so it refuses through the builder's own channel.
+    if directive == null {
+        let only? = vals.first() else { return .Err("a pass-through branch captured nothing") }
+        return .Ok(only)
+    }
+    match directive! {
+        .Var(name) -> .Ok(binding_for<T, N>(bindings, cx.label_of(name)) ?? cx.absent),
+        .Call(name, args) -> cx
+            .build(name, [binding_for<T, N>(bindings, cx.label_of(a)) ?? cx.absent for a in args], branch),
+        .Node(owner, variant, _, slots) -> if slots == null {
+            .Err(unresolved_node(owner, variant))
+        } else {
+            cx
+                .build(
+                    node_builder_name(owner, variant),
+                    [slot_value<T, N>(cx, bindings, sl, branch)? for sl in slots!],
+                    branch,
+                )
+        },
+        .Computed(owner, variant, by, slots) -> if slots == null {
+            .Err(unresolved_node(owner, variant))
+        } else {
+            cx.build(by, [slot_value<T, N>(cx, bindings, sl, branch)? for sl in slots!], branch)
+        },
+    }
+}
+
+/// One payload as the builder receives it: the capture its label
+/// bound, the value the rule stated, a node built in place, a list of
+/// those, or nothing. A nested build's own refusal is carried whole.
+fn slot_value<T, N>(cx: MatchContext<T, N>, bindings: List<Binding<T, N>>, sl: Slot, branch: Loc?) -> Result<
+    Captured<T, N>,
+    string,
+> {
+    match sl {
+        .Label(name) -> .Ok(binding_for<T, N>(bindings, cx.label_of(name)) ?? cx.absent),
+        .Fixed(text) -> .Ok(captured_terminal<T, N>(cx.lex.stated(text, branch))),
+        .Nested(inner) -> built<T, N>(cx, inner, bindings, [], branch),
+        .Items(items) -> .Ok(spliced<T, N>([slot_value<T, N>(cx, bindings, i, branch)? for i in items])),
+        .Empty -> .Ok(cx.absent),
+    }
+}
+
+/// A list's items as one capture: a listed capture among them splices in
+/// and an absent one adds nothing, so `[a, rest]` reads as one run.
+export fn spliced<T, N>(vs: List<Captured<T, N>>) -> Captured<T, N> {
+    Captured.Many([run_of<T, N>(v) for v in vs].flatten())
+}
+
+fn run_of<T, N>(v: Captured<T, N>) -> List<Captured<T, N>> {
+    match v { .Many(items) -> items, .Absent -> [], .Terminal(_) or .Node(_) -> [v] }
+}
+
+/// A node build reaching the engine is a DEFECT of the assembly, not
+/// of the input: the engine holds no node model, so whoever does owes
+/// every `-> Owner.Variant` its resolution before a grammar runs.
+fn unresolved_node(owner: string, variant: string) -> string {
+    "`${owner}.${variant}` was never resolved into a builder — a node build is bound where the node model lives"
+}
+
+/// The source range tokens `[from, until)` cover; null when empty.
+fn consumed_loc<T>(lex: Lexeme<T>, tokens: List<T>, from: int, until: int) -> Loc? {
+    if until <= from { return null }
+    (lex.cover)(tokens[from], tokens[until - 1])
+}
+
+/// A delimiter that OPENS what follows it in its sequence: inside
+/// parentheses, brackets or braces a head's cap no longer holds.
+fn opens(p: Prim) -> bool {
+    match p {
+        .Lit(text) -> closer_of(text) != null,
+        .Ref(_) or .Named(_) or .Group(_) or .NotChar(_) -> false,
+    }
+}
+
+/// The result with this item's label bound, when it carries one.
+fn with_label<T, N>(member: Item, r: MatchResult<T, N>, acc: bool) -> MatchResult<T, N> {
+    if member.label == null { return r }
+    r with { bindings: bind_label<T, N>(r.bindings, member.label_slot, r.value, acc || member.listed) }
+}
+
+fn match_item<T, N>(
+    mut cx: MatchContext<T, N>,
+    rule_name: string,
+    member: Item,
+    cursor: int,
+    bindings: List<Binding<T, N>>,
+    acc: bool,
+    capped: bool,
+) -> MatchResult<T, N> {
+    match member.rep {
+        .One -> {
+            let r = match_prim<T, N>(cx, rule_name, member, cursor, bindings, acc, capped)
+            if r.status != MatchStatus.Hit { return r }
+            with_label<T, N>(member, r, acc)
+        },
+        .Opt -> {
+            // An option is a speculation boundary: even a committed
+            // sub-failure means not-taken, surviving only in `farthest`.
+            let r = match_prim<T, N>(cx, rule_name, member, cursor, bindings, acc, capped)
+            if r.status == MatchStatus.Hit { return with_label<T, N>(member, r, acc) }
+            if r.status == MatchStatus.Fatal { return r }
+            matched<T, N>(cursor, bindings, cx.absent, cx.silence, r.farthest)
+        },
+        .Star -> match_repetition<T, N>(cx, rule_name, member, cursor, bindings, 0, capped),
+        .Plus -> match_repetition<T, N>(cx, rule_name, member, cursor, bindings, 1, capped),
+    }
+}
+
+/// Greedy repetition: iterations are speculative (an uncommitted
+/// iteration failure ends the loop cleanly), committed failures
+/// propagate, and every iteration must consume input.
+fn match_repetition<T, N>(
+    mut cx: MatchContext<T, N>,
+    rule_name: string,
+    member: Item,
+    entry: int,
+    entry_bindings: List<Binding<T, N>>,
+    min: int,
+    capped: bool,
+) -> MatchResult<T, N> {
+    mut cursor = entry
+    mut bindings = entry_bindings
+    mut collected: List<Captured<T, N>> = []
+    mut diagnostics: List<Failure> = []
+    mut farthest: FarthestFailure? = null
+    mut count = 0
+    while true {
+        let r = match_prim<T, N>(cx, rule_name, member, cursor, bindings, true, capped)
+        farthest = far_merge(farthest, r.farthest)
+        // A repetition is a speculation boundary: a failed iteration
+        // (committed included) ends the loop; its story lives in `farthest`.
+        if r.status == MatchStatus.Fatal {
+            diagnostics = diagnostics.concat(r.diagnostics)
+            return fatal_defect<T, N>(
+                cx,
+                cursor,
+                labeled_bindings<T, N>(bindings, member, collected),
+                diagnostics,
+                farthest,
+            )
+        }
+        if r.status != MatchStatus.Hit { break }
+        if r.cursor == cursor {
+            diagnostics
+                .push(told(defect(rule_name, "repetition matched without consuming input; stopped")))
+            break
+        }
+        diagnostics = diagnostics.concat(r.diagnostics)
+        collected.push(r.value)
+        bindings = r.bindings
+        cursor = r.cursor
+        count = count + 1
+    }
+    if count < min { return missed<T, N>(cx, entry, entry_bindings, diagnostics, farthest) }
+    matched<T, N>(
+        cursor,
+        labeled_bindings<T, N>(bindings, member, collected),
+        captured_many<T, N>(collected),
+        diagnostics,
+        farthest,
+    )
+}
+
+/// The bindings with the fold's seed label holding the value so far,
+/// replacing whatever it held.
+fn with_seed<T, N>(bindings: List<Binding<T, N>>, field: int, acc: Captured<T, N>) -> List<
+    Binding<T, N>,
+> {
+    [b.rebound(field, acc, false) for b in bindings]
+}
+
+/// A fold's repeated group: each turn is matched with the seed's label
+/// bound to the value so far, and the node it builds becomes that
+/// value. `origin` is where the fold's branch began, so a turn's node
+/// spans the seed and everything folded into it. A turn's own labels
+/// die with the turn — what a later turn reads is the value so far and
+/// nothing else. Iterations speculate as a repetition's do; an optional
+/// group is one turn at most.
+fn match_fold<T, N>(
+    mut cx: MatchContext<T, N>,
+    rule_name: string,
+    field: int,
+    origin: int,
+    member: Item,
+    entry: int,
+    bindings: List<Binding<T, N>>,
+    capped: bool,
+) -> MatchResult<T, N> {
+    let turns = member.prim.group_alt() ?? Alt { branches: [] }
+    mut cursor = entry
+    mut acc: Captured<T, N> = binding_for<T, N>(bindings, field) ?? cx.absent
+    mut diagnostics: List<Failure> = []
+    mut farthest: FarthestFailure? = null
+    while true {
+        let r = match_alt<T, N>(
+            cx,
+            rule_name,
+            turns,
+            cursor,
+            with_seed<T, N>(bindings, field, acc),
+            false,
+            capped,
+            origin,
+        )
+        farthest = far_merge(farthest, r.farthest)
+        if r.status == MatchStatus.Fatal {
+            diagnostics = diagnostics.concat(r.diagnostics)
+            return fatal_defect<T, N>(
+                cx,
+                cursor,
+                with_seed<T, N>(bindings, field, acc),
+                diagnostics,
+                farthest,
+            )
+        }
+        if r.status != MatchStatus.Hit { break }
+        if r.cursor == cursor {
+            diagnostics
+                .push(
+                    told(
+                        defect(rule_name, "a fold's turn matched without consuming input; stopped"),
+                    ),
+                )
+            break
+        }
+        diagnostics = diagnostics.concat(r.diagnostics)
+        acc = r.value
+        cursor = r.cursor
+        if member.rep == Rep.Opt { break }
+    }
+    matched<T, N>(cursor, with_seed<T, N>(bindings, field, acc), acc, diagnostics, farthest)
+}
+
+/// A repeated item's own label, bound to everything collected so
+/// far — `bindings` unchanged when it carries none, AND unchanged
+/// when nothing was collected: a star that never turned binds
+/// nothing, the way zero iterations of the old per-element
+/// `bind_label` calls never called it either. Binding an EMPTY
+/// `Many` here instead would read as present-but-empty where the
+/// grammar's own tests read absent.
+fn labeled_bindings<T, N>(
+    bindings: List<Binding<T, N>>,
+    member: Item,
+    collected: List<Captured<T, N>>,
+) -> List<Binding<T, N>> {
+    if member.label == null || collected.is_empty() { return bindings }
+    bind_label_all<T, N>(bindings, member.label_slot, collected)
+}
+
+fn match_prim<T, N>(
+    mut cx: MatchContext<T, N>,
+    rule_name: string,
+    member: Item,
+    cursor: int,
+    bindings: List<Binding<T, N>>,
+    acc: bool,
+    capped: bool,
+) -> MatchResult<T, N> {
+    match member.prim {
+        .Lit(text) -> {
+            let t = cx.tokens[cursor]
+            if takes_lit<T, N>(cx, member.slot, text, cursor) {
+                matched<T, N>(cursor + 1, bindings, captured_terminal<T, N>(t), cx.silence, null)
+            } else {
+                missed<T, N>(
+                    cx,
+                    cursor,
+                    bindings,
+                    cx.silence,
+                    cx.miss_story(cursor, rule_name, [member.prim]),
+                )
+            }
+        },
+        .Named(term) -> {
+            let t = cx.tokens[cursor]
+            if cx.lex.wears_kind(t, kind_in(cx.lex, cx.kinds, term, member.slot)) {
+                // Eof is a position, not a token: match without consuming.
+                let step = if cx.lex.is_eof(t) { 0 } else { 1 }
+                matched<T, N>(cursor + step, bindings, captured_terminal<T, N>(t), cx.silence, null)
+            } else {
+                if is_end(term) && closes_body(cx.lex, t) {
+                    // A statement ends where its body closes: the `}` is
+                    // the body's to consume.
+                    matched<T, N>(cursor, bindings, captured_terminal<T, N>(t), cx.silence, null)
+                } else {
+                    missed<T, N>(
+                        cx,
+                        cursor,
+                        bindings,
+                        cx.silence,
+                        cx.miss_story(cursor, rule_name, [member.prim]),
+                    )
+                }
+            }
+        },
+        .Ref(target) -> {
+            let r = match_rule<T, N>(cx, target, cursor, capped || member.head)
+            if r.status == MatchStatus.Hit {
+                matched<T, N>(r.cursor, bindings, r.value, r.diagnostics, r.farthest)
+            } else {
+                ended<T, N>(cx, r.status, cursor, bindings, r.diagnostics, r.farthest)
+            }
+        },
+        .Group(inner) -> {
+            // Captures inside a group escape to the branch's scope; the
+            // group's own value exists only when the item is labeled.
+            let r = match_alt<T, N>(cx, rule_name, inner, cursor, bindings, acc, capped, cursor)
+            if r.status != MatchStatus.Hit { return r }
+            let v = if member.label != null { r.value } else { cx.absent }
+            r with { value: v }
+        },
+        .NotChar(_) -> broke<T, N>(
+            cx,
+            cursor,
+            bindings,
+            [
+                told(
+                    defect(
+                        rule_name,
+                        "a character primitive reached the token engine — this atom belongs to a lexicon, not a parsing grammar",
+                    ),
+                ),
+            ],
+            null,
+        ),
+        // A lexicon's own atom, over a token stream — a grammar
+        // authoring mistake, not an input failure.
+    }
+}
+
+/// Whether the token at `cursor` is literal `text`, slot `slot` — by slot when it has one.
+fn takes_lit<T, N>(cx: MatchContext<T, N>, slot: int, text: string, cursor: int) -> bool {
+    if slot >= 0 { cx.lit_at[cursor] == slot } else { cx.lex.lit_matches(cx.tokens[cursor], text) }
+}
+
+/// The final diagnostic when the whole parse failed silently — the
+/// farthest point speculation reached, or a generic failure.
+fn overall_failure<T, N>(cx: MatchContext<T, N>, r: MatchResult<T, N>) -> Failure {
+    if r.farthest != null { return farthest_failure<T, N>(cx, r.farthest!) }
+    told(
+        Diagnostic {
+            cause: Cause.Expected,
+            message: "cannot parse `${cx.g.start}`",
+            loc: cx.lex.loc(cx.tokens[0]),
+            expected: [],
+            in_rule: cx.g.start,
+        },
+    )
+}
+
+/// A grammar READY TO RUN: its defects found once and its rules
+/// indexed once. Neither belongs to a parse — a grammar's defects are
+/// a property of the GRAMMAR, and the index is the same map for every
+/// token stream. Paying them per FILE re-proved a fixed grammar
+/// well-formed once per source file in the workspace.
+export type Ready = {
+    g: Grammar,
+    ordinals: Map<string, int>,
+    known_terminals: List<string>,
+    // every terminal class the grammar names, a `.Named` atom's slot
+    // its place here
+    terms: List<string>,
+    // every literal the grammar spells, by its text: a `.Lit` atom's slot
+    lit_slots: Map<string, int>,
+    // every label the grammar binds, a pair's three first: an item's `label_slot` its place here
+    labels: Map<string, int>,
+    defects: List<Diagnostic>,
+    // what the rules say about a file's items, for reading one without parsing it
+    items: ItemShape,
+}
+
+/// A grammar prepared: validated, numbered, and answered ONCE. `known_terminals` is the
+/// caller's own vocabulary of `.Named` class names.
+export fn ready(g: Grammar, known_terminals: List<string>) -> Ready {
+    mut ordinals: Map<string, int> = {}
+    for j, r in g.rules { ordinals.set(r.name, j) }
+    let prims = [terminals_of(r.body) for r in g.rules].flatten()
+    let terms = distinct([term for p in prims for term in some_list(p.class())])
+    mut lit_slots: Map<string, int> = {}
+    for j, text in distinct([text for p in prims for text in some_list(p.literal())]) { lit_slots.set(text, j) }
+    mut labels: Map<string, int> = {}
+    for j, name in distinct(PAIR_LABELS.concat([labels_of(r.body) for r in g.rules].flatten())) { labels.set(name, j) }
+    Ready {
+        g: listed_grammar(with_start_bits(with_branch_starts(slotted(g, terms, lit_slots, labels)))),
+        ordinals: ordinals,
+        known_terminals: known_terminals,
+        terms: terms,
+        lit_slots: lit_slots,
+        labels: labels,
+        defects: g.defects(known_terminals),
+        items: item_shape(g),
+    }
+}
+
+/// Every terminal item slotted — a class by its place in `terms`, a literal by its place in
+/// `lit_slots` — and every labelled item by its label's place in `labels`, groups opened.
+fn slotted(g: Grammar, terms: List<string>, lit_slots: Map<string, int>, labels: Map<string, int>) -> Grammar {
+    g with { rules: [r with { body: slotted_alt(r.body, terms, lit_slots, labels) } for r in g.rules] }
+}
+
+fn slotted_alt(a: Alt, terms: List<string>, lit_slots: Map<string, int>, labels: Map<string, int>) -> Alt {
+    a with { branches: [s with { items: [slotted_item(m, terms, lit_slots, labels) for m in s.items] } for s in a.branches] }
+}
+
+fn slotted_item(m: Item, terms: List<string>, lit_slots: Map<string, int>, labels: Map<string, int>) -> Item {
+    let labelled = m with { label_slot: if m.label == null { 0 - 1 } else { labels.get(m.label!) ?? 0 - 1 } }
+    match m.prim {
+        .Named(term) -> labelled with { slot: terms.index_of(term) },
+        .Lit(text) -> labelled with { slot: lit_slots.get(text) ?? 0 - 1 },
+        .Group(inner) -> labelled with { prim: Prim.Group(slotted_alt(inner, terms, lit_slots, labels)) },
+        .Ref(_) or .NotChar(_) -> labelled,
+    }
+}
+
+/// The labels a pair's build reads, at their places in `Ready.labels`.
+const PAIR_LEFT: int = 0
+const PAIR_OP: int = 1
+const PAIR_RIGHT: int = 2
+const PAIR_LABELS: List<string> = ["left", "op", "right"]
+
+/// Every label the branches of `a` bind, a fold's seed among them, groups opened, in order.
+fn labels_of(a: Alt) -> List<string> {
+    [some_list(s.fold)
+        .concat([some_list(m.label).concat(group_labels(m.prim)) for m in s.items].flatten()) for s in a.branches]
+        .flatten()
+}
+
+/// The labels inside the group the prim `p` opens; none for any other prim.
+fn group_labels(p: Prim) -> List<string> {
+    match p {
+        .Group(inner) -> labels_of(inner),
+        .Ref(_) or .Named(_) or .Lit(_) or .NotChar(_) -> [],
+    }
+}
+
+/// Every branch's start terminals as bits, groups opened.
+fn with_start_bits(g: Grammar) -> Grammar {
+    g with { rules: [r with { body: bits_alt(r.body) } for r in g.rules] }
+}
+
+fn bits_alt(a: Alt) -> Alt {
+    a with { branches: [bits_seq(s) for s in a.branches] }
+}
+
+fn bits_seq(s: Seq) -> Seq {
+    let items = [m with { prim: bits_prim(m.prim) } for m in s.items]
+    let st? = s.start else { return s with { items: items } }
+    let kinds = [kind_bits(t) for t in st.terminals].flatten().fold(0, (acc, b) -> acc | b)
+    let lits = [t.slot for t in st.terminals if lit_slotted(t)]
+    s with { items: items, start: st with { kinds: kinds, lits: [lits.filter(it / 62 == w).fold(0, (acc, b) -> acc | (1 << b % 62)) for w in 0..word_count(lits)], asked: [t for t in st.terminals if !lit_slotted(t) && kind_bits(t).is_empty()] } }
+}
+
+fn bits_prim(p: Prim) -> Prim {
+    match p {
+        .Group(inner) -> Prim.Group(bits_alt(inner)),
+        .Ref(_) or .Lit(_) or .Named(_) or .NotChar(_) -> p,
+    }
+}
+
+/// A class terminal's bits: its slot's, and bit 62 for an `END` a closing `}` answers —
+/// none for a slot past 61, which is asked.
+fn kind_bits(t: StartTerm) -> List<int> {
+    match t.prim {
+        .Named(term) if t.slot >= 0 && t.slot < 62 -> [1 << t.slot].concat(if is_end(term) { [1 << 62] } else { [] }),
+        .Named(_) or .Lit(_) or .Ref(_) or .Group(_) or .NotChar(_) -> [],
+    }
+}
+
+fn lit_slotted(t: StartTerm) -> bool { t.prim is .Lit && t.slot >= 0 }
+
+/// How many 62-bit words hold slots up to the highest of `slots`.
+fn word_count(slots: List<int>) -> int { slots.fold(0, (acc, b) -> if b / 62 + 1 > acc { b / 62 + 1 } else { acc }) }
+
+/// Every terminal under an alternation, groups opened.
+fn terminals_of(a: Alt) -> List<Prim> {
+    [terminal_prims(m.prim) for m in a.items()].flatten()
+}
+
+fn terminal_prims(p: Prim) -> List<Prim> {
+    match p { .Lit(_) or .Named(_) -> [p], .Ref(_) or .Group(_) or .NotChar(_) -> [] }
+}
+
+/// Run `rd` over `tokens`. A defective grammar refuses to run; a failed
+/// parse still reports every diagnostic gathered; a partial result
+/// (error holes inside) is a result. `lex` is `T`'s whole contract.
+export fn run_grammar<T, N>(
+    rd: Ready,
+    tokens: List<T>,
+    lex: Lexeme<T>,
+    build: fn(string, List<Captured<T, N>>, Loc?) -> Result<Captured<T, N>, string>,
+) -> RunOutcome<T, N> {
+    run_from<T, N>(rd, rd.g.start, tokens, lex, build)
+}
+
+/// THE SAME RUN, UNTOLD: no miss keeps its story, so a failure here says less than
+/// it could. A parse that ends clean never read one — most do, and most of an
+/// ordered choice is misses — so a caller runs this first and, when anything
+/// spoke, runs `run_grammar` over a FRESH builder state for the words.
+export fn run_untold<T, N>(
+    rd: Ready,
+    tokens: List<T>,
+    lex: Lexeme<T>,
+    build: fn(string, List<Captured<T, N>>, Loc?) -> Result<Captured<T, N>, string>,
+) -> RunOutcome<T, N> {
+    run_as<T, N>(rd, rd.g.start, tokens, lex, build, false)
+}
+
+/// Run `rd` from the rule named `start` — a FRAGMENT parse, for a
+/// spelling that is one type or one expression rather than a program.
+export fn run_from<T, N>(
+    rd: Ready,
+    start: string,
+    tokens: List<T>,
+    lex: Lexeme<T>,
+    build: fn(string, List<Captured<T, N>>, Loc?) -> Result<Captured<T, N>, string>,
+) -> RunOutcome<T, N> {
+    run_as<T, N>(rd, start, tokens, lex, build, true)
+}
+
+fn run_as<T, N>(
+    rd: Ready,
+    start: string,
+    tokens: List<T>,
+    lex: Lexeme<T>,
+    build: fn(string, List<Captured<T, N>>, Loc?) -> Result<Captured<T, N>, string>,
+    tracking: bool,
+) -> RunOutcome<T, N> {
+    if !rd.defects.is_empty() {
+        return RunOutcome { result: null, diagnostics: rd.defects }
+    }
+    let g = rd.g
+    let kinds: List<int> = [lex.kind_of(term) for term in rd.terms]
+    let slot_count = memo_slot_count(tokens.length + 1)
+    let silence: List<Failure> = []
+    let miss = MatchResult<T, N> {
+        status: MatchStatus.Miss,
+        cursor: 0,
+        bindings: [],
+        value: captured_absent<T, N>(),
+        diagnostics: silence,
+        farthest: null,
+    }
+    let memo = Memo<T, N> {
+        slots: filled(slot_count * 2, 0),
+        results: [miss],
+        mask: slot_count - 1,
+        used: 0,
+    }
+    mut cx = MatchContext<T, N> {
+        g: g,
+        tokens: tokens,
+        lex: lex,
+        ordinals: rd.ordinals,
+        labels: rd.labels,
+        known_terminals: rd.known_terminals,
+        kinds: kinds,
+        masks: [token_mask(lex, kinds, t) for t in tokens],
+        lit_at: [token_lit(lex, rd.lit_slots, t) for t in tokens],
+        absent: captured_absent<T, N>(),
+        silence: silence,
+        build: build,
+        memo: memo,
+        tracking: tracking,
+        miss: miss,
+    }
+    let r = match_rule<T, N>(cx, start, 0, false)
+    mut diagnostics = [spoken(f) for f in r.diagnostics]
+    if r.status != MatchStatus.Hit {
+        if diagnostics.is_empty() { diagnostics.push(spoken(overall_failure<T, N>(cx, r))) }
+        return RunOutcome { result: null, diagnostics: diagnostics }
+    }
+    if !cx.lex.is_eof(cx.tokens[r.cursor]) {
+        diagnostics
+            .push(
+                Diagnostic {
+                    cause: Cause.Trailing,
+                    message: "unexpected input after `${start}`",
+                    loc: cx.lex.loc(cx.tokens[r.cursor]),
+                    expected: [],
+                    in_rule: start,
+                },
+            )
+    }
+    RunOutcome { result: r.value, diagnostics: diagnostics }
+}
+
+/// What one precedence climb reads: the branch's operand and tiers,
+/// and the build a tier without its own falls back to.
+type Climbing = {
+    rule_name: string,
+    ops: Operators,
+    operand: Item,
+    directive: Build?,
+    capped: bool,
+}
+
+/// One operator taken: where it stood, which tier, what stood to its
+/// right and where the right side ended.
+type Taken<T, N> = {
+    status: MatchStatus,
+    tier: int,
+    suffixed: bool,
+    suffix_at: int,
+    op_at: int,
+    op_words: int,
+    rhs: Captured<T, N>,
+    cursor: int,
+    diagnostics: List<Failure>,
+    farthest: FarthestFailure?,
+}
+
+fn untaken<T, N>(cx: MatchContext<T, N>, status: MatchStatus, farthest: FarthestFailure?) -> Taken<
+    T,
+    N,
+> {
+    Taken {
+        status: status,
+        tier: 0,
+        suffixed: false,
+        suffix_at: 0 - 1,
+        op_at: 0,
+        op_words: 0,
+        rhs: cx.absent,
+        cursor: 0,
+        diagnostics: cx.silence,
+        farthest: farthest,
+    }
+}
+
+/// PRECEDENCE CLIMBING over `k.ops`: `left`, which began at `start`
+/// and ended at `from`, takes every operator of tier `min` and
+/// tighter that follows. A taken operator's right side is an operand
+/// climbed at the next tighter tier, so a tier groups to the left;
+/// and a `Single` tier takes no second operator of its own. Answers a
+/// hit at the end of what was taken, or a fatal.
+fn climb<T, N>(
+    mut cx: MatchContext<T, N>,
+    k: Climbing,
+    left0: Captured<T, N>,
+    start: int,
+    from: int,
+    min: int,
+    diagnostics0: List<Failure>,
+    farthest0: FarthestFailure?,
+) -> MatchResult<T, N> {
+    mut left = left0
+    mut cursor = from
+    mut diagnostics = diagnostics0
+    mut farthest = farthest0
+    mut spent = 0 - 1
+    mut ceil = k.ops.tiers.length - 1
+    while true {
+        let t = one_operator<T, N>(cx, k, cursor, min, spent, ceil)
+        farthest = far_merge(farthest, t.farthest)
+        if t.status == MatchStatus.Fatal {
+            return fatal_defect<T, N>(cx, cursor, [], diagnostics.concat(t.diagnostics), farthest)
+        }
+        if t.status != MatchStatus.Hit { break }
+        let tier = k.ops.tiers[t.tier]
+        diagnostics = diagnostics.concat(t.diagnostics)
+        let paired = pair<T, N>(cx, k, tier, left, t, start)
+        match paired {
+            .Ok(v) -> { left = v },
+            .Err(m) -> { return refused_run<T, N>(cx, k, m, start, t.cursor, diagnostics, farthest) },
+        }
+        cursor = t.cursor
+        spent = if tier.assoc.spends() { t.tier } else { 0 - 1 }
+        if t.suffixed { ceil = t.tier }
+    }
+    farthest = far_merge(
+        farthest,
+        cx.miss_story(cursor, k.rule_name, k.ops.expected_from(min, spent, ceil)),
+    )
+    matched<T, N>(cursor, [], left, diagnostics, farthest)
+}
+
+impl Assoc {
+    /// Whether a second operator of the same tier is left unconsumed.
+    fn spends() -> bool {
+        match self { .Single -> true, .Left -> false }
+    }
+}
+
+impl Operators {
+    /// The words a miss expects from tier `min` up to `ceil`, less the
+    /// tier a `Single` operator just spent.
+    fn expected_from(min: int, spent: int, ceil: int) -> Want {
+        if spent < 0 && ceil >= self.tiers.length - 1 { return self.reach[min] }
+        [self.expects[i] for i in tightest_tiers(self.tiers.length) if i >= min && i <= ceil && i != spent]
+            .flatten()
+    }
+}
+
+fn tightest_tiers(n: int) -> List<int> {
+    [n - 1 - i for i in 0..n]
+}
+
+/// The first operator at `cursor`, tightest tier first, whose right
+/// side also matches; an operator whose right side fails leaves the
+/// next candidate its turn. Tiers above `ceil` are out of reach: what
+/// a suffix closed has no right operand left for them to take.
+fn one_operator<T, N>(
+    mut cx: MatchContext<T, N>,
+    k: Climbing,
+    cursor: int,
+    min: int,
+    spent: int,
+    ceil: int,
+) -> Taken<T, N> {
+    let entries = k.ops.by_first.get(cx.lex.text(cx.tokens[cursor])) ?? []
+    first_taken<T, N>(cx, k, entries, 0, cursor, min, spent, ceil, null)
+}
+
+/// `one_operator` from candidate `at` on, `farthest` carrying what the
+/// ones before it reached.
+fn first_taken<T, N>(
+    mut cx: MatchContext<T, N>,
+    k: Climbing,
+    entries: List<OpEntry>,
+    at: int,
+    cursor: int,
+    min: int,
+    spent: int,
+    ceil: int,
+    farthest: FarthestFailure?,
+) -> Taken<T, N> {
+    if at >= entries.length { return untaken<T, N>(cx, MatchStatus.Miss, farthest) }
+    let e = entries[at]
+    if e.tier < min || e.tier == spent || e.tier > ceil {
+        return first_taken<T, N>(cx, k, entries, at + 1, cursor, min, spent, ceil, farthest)
+    }
+    let t = take_operator<T, N>(cx, k, e, cursor)
+    let reached = far_merge(farthest, t.farthest)
+    if t.status == MatchStatus.Hit || t.status == MatchStatus.Fatal { return t with { farthest: reached } }
+    first_taken<T, N>(cx, k, entries, at + 1, cursor, min, spent, ceil, reached)
+}
+
+/// One entry at `cursor`: its tokens, then its right side.
+fn take_operator<T, N>(mut cx: MatchContext<T, N>, k: Climbing, e: OpEntry, cursor: int) -> Taken<
+    T,
+    N,
+> {
+    mut at = cursor
+    for w in e.words {
+        if !cx.lex.lit_matches(cx.tokens[at], w) {
+            return untaken<T, N>(
+                cx,
+                MatchStatus.Miss,
+                cx.miss_story(at, k.rule_name, [Prim.Lit(w)]),
+            )
+        }
+        at = at + 1
+    }
+    let right = if e.rule == null {
+        match_prim<T, N>(cx, k.rule_name, k.operand, at, [], true, k.capped)
+    } else {
+        match_rule<T, N>(cx, e.rule!, at, k.capped)
+    }
+    if right.status == MatchStatus.Fatal {
+        return untaken<T, N>(cx, right.status, right.farthest) with { diagnostics: right.diagnostics }
+    }
+    if right.status != MatchStatus.Hit { return untaken<T, N>(cx, right.status, right.farthest) }
+    if e.rule != null {
+        return Taken {
+            status: MatchStatus.Hit,
+            tier: e.tier,
+            suffixed: true,
+            suffix_at: e.at,
+            op_at: cursor,
+            op_words: e.words.length,
+            rhs: right.value,
+            cursor: right.cursor,
+            diagnostics: right.diagnostics,
+            farthest: right.farthest,
+        }
+    }
+    let tighter = climb<T, N>(
+        cx,
+        k,
+        right.value,
+        at,
+        right.cursor,
+        e.tier + 1,
+        right.diagnostics,
+        right.farthest,
+    )
+    Taken {
+        status: tighter.status,
+        tier: e.tier,
+        suffixed: false,
+        suffix_at: 0 - 1,
+        op_at: cursor,
+        op_words: e.words.length,
+        rhs: tighter.value,
+        cursor: tighter.cursor,
+        diagnostics: tighter.diagnostics,
+        farthest: tighter.farthest,
+    }
+}
+
+/// `left op right` built by the tier's build, else the branch's.
+fn pair<T, N>(
+    cx: MatchContext<T, N>,
+    k: Climbing,
+    tier: Tier,
+    left: Captured<T, N>,
+    t: Taken<T, N>,
+    start: int,
+) -> Result<Captured<T, N>, string> {
+    let branch = consumed_loc<T>(cx.lex, cx.tokens, start, t.cursor)
+    let op = operator_capture<T, N>(cx, t, branch)
+    let seen: List<Binding<T, N>> = [
+        Binding { label: PAIR_LEFT, value: left },
+        Binding { label: PAIR_OP, value: op },
+        Binding { label: PAIR_RIGHT, value: t.rhs },
+    ]
+    built<T, N>(cx, tier.build_at(t.suffix_at) ?? k.directive, seen, [left, op, t.rhs], branch)
+}
+
+/// The operator a pair's builds read as `op`: its one token, or — for a
+/// word spelled with several (`>` `>`) — the word's own text as ONE
+/// token, so `op` is what the author wrote whichever way it was lexed.
+fn operator_capture<T, N>(cx: MatchContext<T, N>, t: Taken<T, N>, branch: Loc?) -> Captured<T, N> {
+    if t.op_words == 1 { return captured_terminal<T, N>(cx.tokens[t.op_at]) }
+    captured_terminal<T, N>(
+        cx.lex.stated([cx.lex.text(cx.tokens[t.op_at + k]) for k in 0..t.op_words].join(""), branch),
+    )
+}
+
+/// A builder's refusal inside a climb: spoken as the branch's own build
+/// refusal is, unless the branch already spoke.
+fn refused_run<T, N>(
+    cx: MatchContext<T, N>,
+    k: Climbing,
+    message: string,
+    start: int,
+    until: int,
+    diagnostics: List<Failure>,
+    farthest: FarthestFailure?,
+) -> MatchResult<T, N> {
+    if !diagnostics.is_empty() { return matched<T, N>(until, [], cx.absent, diagnostics, farthest) }
+    let branch = consumed_loc<T>(cx.lex, cx.tokens, start, until)
+    fatal_defect<T, N>(
+        cx,
+        until,
+        [],
+        [
+            told(
+                Diagnostic {
+                    cause: Cause.Builder,
+                    message: message,
+                    loc: branch ?? cx.lex.loc(cx.tokens[until]),
+                    expected: [],
+                    in_rule: k.rule_name,
+                },
+            ),
+        ],
+        farthest,
+    )
+}

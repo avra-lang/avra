@@ -1,0 +1,213 @@
+//! The data-driven renderer, by its laws: one tree, a vocabulary of
+//! primitives and attributes, a table per target, and one atomic
+//! stylesheet whose classes name theme tokens.
+use @std.ui.components.{text, heading, button, column, row, field, checkbox}
+use @std.ui.tree.view.{View, tree_of}
+use @std.ui.realize.html.html.{render}
+use @std.ui.realize.html.tags.{HtmlAttrName, HtmlTag}
+use @std.ui.realize.tui.tui.{render as tui_render}
+use @std.ui.env.{Env}
+use @std.ui.realize.tests.support.{stamped_with}
+use @std.ui.style.style.{Style, StateStyle, Interaction}
+use @std.ui.style.theme.{default_theme}
+
+fn html(v: dyn View) -> string { render(tree_of(v), Env {}) }
+
+fn html_in(v: dyn View, env: Env) -> string { render(tree_of(v), env) }
+
+fn term(v: dyn View) -> string { tui_render(tree_of(v), Env {}, 40) }
+
+fn occurrences(hay: string, needle: string) -> int { hay.split(needle).length - 1 }
+
+const sunk = Style { fill: .SurfaceSunk }
+
+fn sunk_button(label: string) -> dyn View { button label { style: sunk } }
+
+spec "std/ui render — the HTML target" {
+    given "a text" {
+        then "is a span holding its words, inside the body" {
+            html(text "hi").contains("<body><span>hi</span></body>")
+        }
+        then "ships one stylesheet from the theme" { html(text "hi").contains(":root{") }
+        then "carries no inline style attribute" { !html(text "hi").contains("style=\"") }
+    }
+    given "a heading with a rank" {
+        then "becomes that level" { html(heading "T" { rank: 2 }).contains("<body><h2>T</h2></body>") }
+    }
+    given "a button" {
+        then "is a button holding its label, announced too" {
+            html(button "Buy")
+                .contains("<body><button type=\"button\" aria-label=\"Buy\">Buy</button></body>")
+        }
+    }
+    given "a column of two leaves" {
+        then "nests them in a div that flows down" {
+            html(column { items: [text "a", button "b"] })
+                .contains(
+                    "<div class=\"dir-col\"><span>a</span><button type=\"button\" aria-label=\"b\">b</button></div>",
+                )
+        }
+        then "takes its children from its body, into items" {
+            html(
+                column {
+                    text "a"
+                    button "b"
+                },
+            )
+                .contains(
+                    "<div class=\"dir-col\"><span>a</span><button type=\"button\" aria-label=\"b\">b</button></div>",
+                )
+        }
+    }
+    given "text that looks like markup" {
+        then "is escaped" { html(text "<b>").contains("<span>&lt;b&gt;</span>") }
+    }
+    given "a control with a place and what it shows" {
+        then "the page is first served what the program shows, else what the place holds" {
+            html(field "n" { initial: "kept" }).contains("value=\"kept\"") &&
+                html(
+                    field "n" {
+                        initial: "kept"
+                        shown: "told"
+                    },
+                )
+                    .contains("value=\"told\"") &&
+                !html(checkbox "c" { shown: false }).contains("checked") &&
+                html(checkbox "c" { initial: true }).contains("checked")
+        }
+    }
+    given "a row of two texts" {
+        then "is a div that flows across" {
+            html(row { items: [text "a", text "b"] })
+                .contains("<div class=\"dir-row gap-s\"><span>a</span><span>b</span></div>")
+        }
+    }
+}
+
+spec "std/ui render — the target vocabulary is on the variant" {
+    given "every tag" {
+        then "spells its element, the six levels included" {
+            [
+                HtmlTag.Span.word(),
+                HtmlTag.Button.word(),
+                HtmlTag.Div.word(),
+                HtmlTag.A.word(),
+                HtmlTag.Img.word(),
+                HtmlTag.Input.word(),
+                HtmlTag.Dialog.word(),
+                HtmlTag.H1.word(),
+                HtmlTag.H2.word(),
+                HtmlTag.H3.word(),
+                HtmlTag.H4.word(),
+                HtmlTag.H5.word(),
+                HtmlTag.H6.word(),
+                HtmlTag.Hr.word(),
+                HtmlTag.Ul.word(),
+                HtmlTag.Li.word(),
+                HtmlTag.Article.word(),
+                HtmlTag.Progress.word(),
+                HtmlTag.Form.word(),
+            ]
+                .join(" ") == "span button div a img input dialog h1 h2 h3 h4 h5 h6 hr ul li article progress form"
+        }
+    }
+    given "every attribute name" {
+        then "spells its attribute" {
+            [
+                HtmlAttrName.DataKey.word(),
+                HtmlAttrName.Class.word(),
+                HtmlAttrName.AriaLabel.word(),
+                HtmlAttrName.AriaSelected.word(),
+                HtmlAttrName.AriaInvalid.word(),
+                HtmlAttrName.AriaBusy.word(),
+                HtmlAttrName.AriaLive.word(),
+                HtmlAttrName.Title.word(),
+                HtmlAttrName.Href.word(),
+                HtmlAttrName.Min.word(),
+                HtmlAttrName.Max.word(),
+                HtmlAttrName.Open.word(),
+                HtmlAttrName.Value.word(),
+                HtmlAttrName.Placeholder.word(),
+                HtmlAttrName.Src.word(),
+                HtmlAttrName.Alt.word(),
+                HtmlAttrName.Disabled.word(),
+                HtmlAttrName.Checked.word(),
+            ]
+                .join(" ") == "data-key class aria-label aria-selected aria-invalid aria-busy aria-live title href min max open value placeholder src alt disabled checked"
+        }
+    }
+}
+
+spec "std/ui render — atomic classes" {
+    given "a component with a fill" {
+        then "names a token class, never a value" {
+            let out = html(button "Buy" { style: Style { fill: .Surface } })
+            out.contains("fill-surface") &&
+                out.contains(".fill-surface{background:var(--tone-surface)}")
+        }
+    }
+    given "two nodes that share a look" {
+        then "share one rule in the stylesheet" {
+            let a = sunk_button("a")
+            let b = sunk_button("b")
+            let out = html(column { items: [a, b] })
+            occurrences(out, ".fill-surface-sunk{") == 1
+        }
+    }
+    given "a theme held dark" {
+        then "rewrites the scheme, moving no class and no colour" {
+            let out = render(
+                stamped_with(tree_of(text "hi"), default_theme with { mode: .Dark }),
+                Env {},
+            )
+            out.contains(":root{color-scheme:dark;") &&
+                out.contains("--tone-surface:light-dark(#FFFFFF,#0A0A0A)") &&
+                out.contains("--ink-text:light-dark(#0A0A0A,#FAFAFA)")
+        }
+    }
+}
+
+spec "std/ui render — interaction states" {
+    given "a button that looks different while hovered and pressed" {
+        then "names a state-prefixed class and a pseudo-class rule" {
+            let out = html(
+                button "Buy" {
+                    style: Style {
+                        fill: .Surface,
+                        states: [
+                            StateStyle { state: .Hover, style: Style { fill: .Neutral } },
+                            StateStyle { state: .Pressed, style: Style { fill: .SurfaceSunk } },
+                        ],
+                    }
+                },
+            )
+            out.contains("hover:fill-neutral") &&
+                out.contains(".hover\\:fill-neutral:hover") &&
+                out.contains(".pressed\\:fill-surface-sunk:active")
+        }
+    }
+    given "a disabled override" {
+        then "maps to the disabled pseudo-class" {
+            html(
+                button "Buy" {
+                    style: Style {
+                        states: [StateStyle { state: .Disabled, style: Style { color: .Muted } }],
+                    }
+                },
+            )
+                .contains(".disabled\\:color-muted:disabled")
+        }
+    }
+}
+
+spec "std/ui render — the terminal target" {
+    given "a text" {
+        then "is the words themselves" { term(text "hi") == "hi" }
+    }
+    given "a button" {
+        then "brackets its label" { term(button "Buy") == "[ Buy ]" }
+    }
+    given "a column of a text and a button" {
+        then "stacks one line each" { term(column { items: [text "a", button "b"] }) == "a\n[ b ]" }
+    }
+}

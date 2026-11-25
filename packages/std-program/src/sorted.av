@@ -1,0 +1,112 @@
+//! SORTING. Merges runs of doubling width, stably, and answers a new list; and searches a sorted one.
+
+/// `items` in the order `comes_before` says. Items it can't tell apart keep their order.
+export fn sorted_by<T>(items: List<T>, comes_before: fn(T, T) -> bool) -> List<T> {
+    mut sorted = items
+    mut width = 1
+    while width < items.length {
+        mut merged: List<T> = []
+        for start in 0..items.length {
+            if start % (2 * width) == 0 { merge_runs(sorted, start, width, comes_before, merged) }
+        }
+        sorted = merged
+        width = width * 2
+    }
+    sorted
+}
+
+/// The run of `width` items from `start`, merged with the run after it, onto `merged`.
+fn merge_runs<T>(
+    items: List<T>,
+    start: int,
+    width: int,
+    comes_before: fn(T, T) -> bool,
+    mut merged: List<T>,
+) {
+    let middle = smaller_of(start + width, items.length)
+    let end = smaller_of(start + 2 * width, items.length)
+    mut first = start
+    mut second = middle
+    while first < middle || second < end {
+        let takes_first = second >= end ||
+            first < middle && !comes_before(items[second], items[first])
+        merged.push(if takes_first { items[first] } else { items[second] })
+        if takes_first { first = first + 1 } else { second = second + 1 }
+    }
+}
+
+fn smaller_of(a: int, b: int) -> int { if a < b { a } else { b } }
+
+/// The places of two columns of words, in order: a place comes first when its high word is less, or
+/// equal and its low word less. Places of equal words keep their order. Words are compared where they
+/// lie, so no item is read and nothing is called.
+export fn order_by_words(highs: List<int>, lows: List<int>) -> List<int> {
+    let words = WordColumns { highs: highs, lows: lows }
+    mut order = [at for at in 0..highs.length]
+    mut width = 1
+    while width < order.length {
+        mut merged: List<int> = []
+        mut start = 0
+        while start < order.length {
+            merge_word_runs(order, start, width, words, merged)
+            start = start + 2 * width
+        }
+        order = merged
+        width = width * 2
+    }
+    order
+}
+
+/// Two columns of words an order is taken over.
+type WordColumns = { highs: List<int>, lows: List<int> }
+
+impl WordColumns {
+    /// Whether the words at place `a` come before those at place `b`.
+    fn before(a: int, b: int) -> bool {
+        self.highs[a] < self.highs[b] ||
+            self.highs[a] == self.highs[b] && self.lows[a] < self.lows[b]
+    }
+}
+
+/// The run of `width` places of `order` from `start`, merged with the run after it, onto `merged`.
+fn merge_word_runs(
+    order: List<int>,
+    start: int,
+    width: int,
+    words: WordColumns,
+    mut merged: List<int>,
+) {
+    let middle = smaller_of(start + width, order.length)
+    let end = smaller_of(start + 2 * width, order.length)
+    mut first = start
+    mut second = middle
+    while first < middle && second < end {
+        if words.before(order[second], order[first]) {
+            merged.push(order[second])
+            second = second + 1
+        } else {
+            merged.push(order[first])
+            first = first + 1
+        }
+    }
+    while first < middle {
+        merged.push(order[first])
+        first = first + 1
+    }
+    while second < end {
+        merged.push(order[second])
+        second = second + 1
+    }
+}
+
+/// The first place from `from` whose item `before` says nothing of, in `items` sorted so each item
+/// it says comes before the wanted one stands first; their length when it says it of every one.
+export fn first_not_before<T>(items: List<T>, from: int, before: fn(T) -> bool) -> int {
+    mut low = from
+    mut high = items.length
+    while low < high {
+        let middle = low + (high - low) / 2
+        if before(items[middle]) { low = middle + 1 } else { high = middle }
+    }
+    low
+}

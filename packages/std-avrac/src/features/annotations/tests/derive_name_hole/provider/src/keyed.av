@@ -1,0 +1,29 @@
+use @std.meta.{Type, Directive, Decls}
+use rows.{Rows}
+
+/// A fn named through a hole whose signature names the template's
+/// own import, a type generated beside it, and a neighbour only the
+/// annotated file declares.
+export trait Keyed {
+    static fn derive(t: Type) -> List<Directive> {
+        [
+            Directive {
+                twin: "",
+                name: t.name,
+                at: t.at,
+                source: keyed(t, "by_${t.fields[0].name}"),
+            },
+        ]
+    }
+}
+
+fn keyed(t: Type, n: string) -> Decls {
+    quote {
+        type ${t}Key = { a: string }
+        impl ${t} {
+            static fn ${n}(rs: Rows<${t}>, v: string) -> ${t}? { rs.held.find((r) -> r.a == v) }
+            static fn ${n}_key(r: ${t}) -> ${t}Key? { null }
+            static fn ${n}_tag(r: ${t}) -> Tag { Tag { of: r.a } }
+        }
+    }
+}

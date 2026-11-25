@@ -1,0 +1,36 @@
+// proves: `f?.(args)` calls a fn that may be absent — the answer when
+// one is held, absence when none is — on a field, a binding and a
+// method's answer; the arguments are not evaluated for an absent fn;
+// a fn answering nothing is called for its effect; and a chain of
+// two reads on.
+alias Press = fn() -> int
+alias Add = fn(int) -> int
+alias Tell = fn(mut List<string>) -> void
+
+type Button = { press: Press?, add: Add?, tell: Tell? }
+
+impl Button {
+    fn pressed() -> int? { self.press?.() }
+
+    fn told(mut log: List<string>) { self.tell?.(log) }
+}
+
+fn loud(mut log: List<string>, n: int) -> int {
+    log.push("evaluated")
+    n
+}
+
+fn maker(on: bool) -> Add? { if on { (x: int) -> x * 2 } else { null } }
+
+mut log: List<string> = []
+let full = Button {
+    press: () -> 7,
+    add: (x: int) -> x + 1,
+    tell: (mut l: List<string>) -> l.push("told"),
+}
+let empty = Button { press: null, add: null, tell: null }
+let held = "${full.pressed() ?? -1} ${full.add?.(2) ?? -1} ${maker(true)?.(4) ?? -1}"
+let gone = "${empty.pressed() ?? -1} ${empty.add?.(loud(log, 2)) ?? -1} ${maker(false)?.(4) ?? -1}"
+full.told(log)
+empty.told(log)
+"${held} | ${gone} | ${log.join(",")}"

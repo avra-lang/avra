@@ -1,0 +1,19 @@
+//! C7: sort 500k records by a key that repeats, stably.
+//! Today: core's `sorted_by` with a comparator on the key. Target:
+//! `xs.sorted_by(it.key)`.
+use @bench.input.{SEED, draw, folded, report}
+use @std.avrac.core.{sorted_by}
+use @std.time.{now_ns}
+
+type Rec = { key: int, payload: int }
+
+fn by_key(a: Rec, b: Rec) -> bool { a.key < b.key }
+
+let rs = [Rec { key: draw(SEED, i) % 100000, payload: i } for i in 0..500000]
+let t0 = now_ns()
+let ys = sorted_by(rs, by_key)
+let t1 = now_ns()
+mut h = ys.length
+// LICENSED loops.push_loop: a checksum fold, it builds no list
+for r in ys { h = folded(folded(h, r.key), r.payload) }
+report("C7", h, t0, t1)

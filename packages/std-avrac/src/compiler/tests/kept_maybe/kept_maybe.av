@@ -1,0 +1,58 @@
+// proves: a nullable of a nullable keeps its box in a slot — pushed,
+// set and filed under a key where the slot holds a present mark beside
+// the pointer — after the binding that made the box is gone
+type Entry = { vals: List<int>, name: string }
+
+fn entry(n: int) -> Entry { Entry { vals: [n, n + 1], name: "e${n}" } }
+
+fn maybe(n: int) -> Entry? {
+    if n % 2 == 0 { entry(n) } else { null }
+}
+
+fn pushed<T>(a: T, b: T) -> List<T?> {
+    mut out: List<T?> = []
+    out.push(a)
+    out.push(null)
+    out.push(b)
+    out
+}
+
+fn placed<T>(a: T, b: T) -> List<T?> {
+    mut out: List<T?> = [null, null]
+    out.set(0, a)
+    out.set(1, b)
+    out
+}
+
+fn filed<T>(a: T, b: T) -> Map<string, T?> {
+    mut m: Map<string, T?> = {}
+    m.set("a", a)
+    m.set("gap", null)
+    m.set("b", b)
+    m
+}
+
+fn told(e: Entry?) -> string {
+    let got? = e else { return "none" }
+    "${got.name}:${got.vals[0] + got.vals[1]}"
+}
+
+fn present<T>(x: T?) -> string {
+    if x == null { "gone" } else { "here" }
+}
+
+fn churned() -> int {
+    mut t = 0
+    for i in 0..5000 { t = t + entry(i).vals.length }
+    t
+}
+
+fn shown() -> string {
+    let p = pushed(maybe(2), maybe(3))
+    let q = placed(maybe(4), maybe(6))
+    let f = filed(maybe(8), maybe(9))
+    let n = churned()
+    "${["${present(x)} ${told(x ?? null)}" for x in p].join(",")} | ${[told(x ?? null) for x in q].join(",")} | ${told(f.get("a") ?? null ?? null)} ${told(f.get("b") ?? null ?? null)} ${present(f.get("gap") ?? null)} ${f.length} | ${n}"
+}
+
+shown()

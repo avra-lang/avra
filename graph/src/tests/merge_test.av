@@ -1,0 +1,253 @@
+use models.{models, Person, WorkItem}
+use schema.{Ref}
+use store.open.{Graph}
+use store.publish.{Record, Publication}
+use store.query.{stored_value}
+use store.merge.{Merge}
+use store.identity.{Identity}
+use data.{encoded}
+
+fn whole(id: string, model: string, value: string) -> Result<Record, string> {
+    Record { id: id, model: model, value: stored_value(value)? }
+}
+
+fn claimed(id: string, model: string, value: string) -> Result<Record, string> {
+    Record { id: id, model: model, value: stored_value(value)?, mode: .Partial }
+}
+
+fn published(g: Graph, run: string, producer: string, records: List<Record>) -> Result<
+    Publication,
+    string,
+> {
+    Publication {
+        id: run,
+        producer: producer,
+        scope: run,
+        input: "input:1",
+        input_revision: 1,
+        schema: g.catalog.fingerprint,
+        expected_revision: g.revision()?,
+        records: records,
+    }
+}
+
+fn decision(id: string, left: string, right: string) -> Merge {
+    Merge { id: id, left: left, right: right, decider: "user" }
+}
+
+fn two_people(mut g: Graph) -> Result<int, string> {
+    g
+        .publish(
+            published(
+                g,
+                "one",
+                "mail-agent",
+                [claimed("p1", "Person", "{\"email\":\"ada@example.com\"}")?],
+            )?,
+        )?
+    g.publish(published(g, "two", "name-agent", [claimed("p2", "Person", "{\"name\":\"Ada\"}")?])?)
+}
+
+fn merge_unions_reads() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("input:1", "two sources")?
+    two_people(g)?
+    let apart = match g.value("p1") { .Ok(_) -> false, .Err(_) -> true }
+    g.merge(decision("m1", "p1", "p2"))?
+    let assembled = encoded(g.value("p1")?)
+    let mirrored = encoded(g.value("p2")?)
+    apart &&
+        assembled.contains("\"name\":\"Ada\"") &&
+        assembled.contains("\"email\":\"ada@example.com\"") &&
+        mirrored == assembled
+}
+
+fn equal_values_collapse() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("input:1", "two sources")?
+    g.publish(published(g, "one", "name-agent", [claimed("p1", "Person", "{\"name\":\"Ada\"}")?])?)?
+    g.publish(published(g, "two", "other-agent", [claimed("p2", "Person", "{\"name\":\"Ada\"}")?])?)?
+    g.merge(decision("m1", "p1", "p2"))?
+    match (g.entity("p1")?).fields.find(it.property == "name") {
+        found? -> found.candidates.length == 1
+        null -> false
+    }
+}
+
+fn cross_model_refused() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("input:1", "two sources")?
+    g
+        .publish(
+            published(
+                g,
+                "one",
+                "agent",
+                [
+                    claimed("p1", "Person", "{\"name\":\"Ada\"}")?,
+                    whole("w1", "WorkItem", "{\"title\":\"Review\"}")?,
+                ],
+            )?,
+        )?
+    let revision = g.revision()?
+    let refused = match g.merge(decision("m1", "p1", "w1")) { .Ok(_) -> false, .Err(_) -> true }
+    refused && g.revision()? == revision && (g.merges("")?).is_empty()
+}
+
+fn one_group_refused() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("input:1", "two sources")?
+    two_people(g)?
+    let itself = match g.merge(decision("m0", "p1", "p1")) { .Ok(_) -> false, .Err(_) -> true }
+    g.merge(decision("m1", "p1", "p2"))?
+    let again = match g.merge(decision("m2", "p2", "p1")) { .Ok(_) -> false, .Err(_) -> true }
+    itself && again && (g.merges("")?).length == 1
+}
+
+fn split_restores() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("input:1", "two sources")?
+    two_people(g)?
+    g.merge(decision("m1", "p1", "p2"))?
+    g.split("m1")?
+    let apart = match g.value("p1") { .Ok(_) -> false, .Err(_) -> true }
+    let history = g.merges("p1")?
+    apart && history.length == 1 && !history[0].active() && history[0].until_revision > 0
+}
+
+fn same_name_replays() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("input:1", "two sources")?
+    two_people(g)?
+    let first = g.merge(decision("m1", "p1", "p2"))?
+    let replay = g.merge(decision("m1", "p1", "p2"))? == first
+    let moved = match g.merge(decision("m1", "p2", "p1")) { .Ok(_) -> false, .Err(_) -> true }
+    replay && moved && g.revision()? == first
+}
+
+fn find_collapses_groups() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("input:1", "two sources")?
+    two_people(g)?
+    let before = g.find("Person")?
+    g.merge(decision("m1", "p1", "p2"))?
+    let after = g.find("Person")?
+    before.length == 2 && after.length == 1
+}
+
+fn edges_cross_the_group() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("input:1", "two sources")?
+    two_people(g)?
+    g
+        .publish(
+            published(
+                g,
+                "three",
+                "message-agent",
+                [
+                    Record {
+                        id: "msg1",
+                        model: "Message",
+                        value: stored_value("{\"author\":\"p2\",\"recipients\":[],\"body\":\"hello\"}")?,
+                    },
+                ],
+            )?,
+        )?
+    g.merge(decision("m1", "p1", "p2"))?
+    (g.edges("p1", incoming: true)?).length == 1 && (g.traverse("msg1", depth: 2)?).contains("p2")
+}
+
+fn names_cross_the_group() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("input:1", "two sources")?
+    g
+        .publish(
+            published(
+                g,
+                "one",
+                "name-agent",
+                [
+                    Record {
+                        id: "p1",
+                        model: "Person",
+                        value: stored_value("{\"name\":\"Ada\"}")?,
+                        identities: [Identity { namespace: "mail", external_key: "ada" }],
+                    },
+                ],
+            )?,
+        )?
+    g
+        .publish(
+            published(
+                g,
+                "two",
+                "mail-agent",
+                [
+                    Record {
+                        id: "p2",
+                        model: "Person",
+                        value: stored_value("{\"email\":\"ada@example.com\"}")?,
+                        mode: .Partial,
+                        identities: [Identity { namespace: "directory", external_key: "ada" }],
+                    },
+                ],
+            )?,
+        )?
+    g.merge(decision("m1", "p1", "p2"))?
+    (g.aliases("p1")?).length == 2 && (g.aliases("p2")?).length == 2
+}
+
+fn withdrawn_decision_refused() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("input:1", "two sources")?
+    two_people(g)?
+    g.merge(decision("m1", "p1", "p2"))?
+    g.split("m1")?
+    let replay = match g.merge(decision("m1", "p1", "p2")) { .Ok(_) -> false, .Err(_) -> true }
+    let history = g.merges("")?
+    replay && history.length == 1 && !history[0].active()
+}
+
+fn unknown_decisions_refused() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("input:1", "two sources")?
+    two_people(g)?
+    let split = match g.split("never") { .Ok(_) -> false, .Err(_) -> true }
+    let unknown = match g.merge(decision("m1", "p1", "nobody")) { .Ok(_) -> false, .Err(_) -> true }
+    split && unknown && (g.merges("")?).is_empty()
+}
+
+fn passed(answer: Result<bool, string>) -> bool {
+    answer catch e -> {
+        println(e)
+        false
+    }
+}
+
+spec "graph explicit merges" {
+    given "two identities an operator decides are one entity" {
+        then "reads union over the decision" { passed(merge_unions_reads()) }
+        then "equal supported values are one candidate" { passed(equal_values_collapse()) }
+        then "only entities of one model merge" { passed(cross_model_refused()) }
+        then "self and already-grouped merges are refused" { passed(one_group_refused()) }
+        then "split restores the separate reads and keeps the decision" { passed(split_restores()) }
+        then "a decision id replays, and a different decision under it is refused" { passed(same_name_replays()) }
+        then "find lists one id per group" { passed(find_collapses_groups()) }
+        then "references and traversal cross the group" { passed(edges_cross_the_group()) }
+        then "external names cross the group" { passed(names_cross_the_group()) }
+        then "a withdrawn decision cannot be replayed as if it still stood" { passed(withdrawn_decision_refused()) }
+        then "unknown decisions and entities are refused" { passed(unknown_decisions_refused()) }
+    }
+}

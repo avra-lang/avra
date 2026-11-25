@@ -1,0 +1,87 @@
+//! Tasks: `spawn e` runs `e` beside the spawner and answers its handle,
+//! a `Task<T>`; `t.await` parks until `e` answers and answers it. A task
+//! is joined when the last thing holding it ends — a binding, a list —
+//! so none outlives the block it was made in. A `Tasks` owner holds
+//! tasks whose answers nobody reads — `conns.push(spawn serve(c))` —
+//! shedding each as it finishes, so a loop that never ends owns only
+//! the tasks still running. `within limit { body }` gives the body a
+//! deadline, over the scheduler's rows, and answers `Result<T,
+//! TimedOut>`: the body's answer, or the deadline it ran past.
+use features.{
+    LanguageFeature,
+    PropertyRow,
+    MethodRow,
+    ReceiverEffect,
+    TypeRow,
+    no_law,
+    no_variants,
+    no_view,
+    no_caught,
+    TypeArgs,
+    unknown_answer,
+    void_answer,
+}
+use core.{Type}
+// LICENSED modules.unused_import: `Fixed` and `Term` are named by GENERATED code, not by this
+// file — a rule that states a payload writes a `Fixed` literal, and one that builds a node in
+// place writes a `Term`. Resolve needs the names the source never spells.
+use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Fixed, Term, Expect, Recover}
+use diagnostics.{DiagCode}
+
+export fn tasks() -> LanguageFeature {
+    let properties = table<PropertyRow> {
+        name    | takes   | check       | lower       | waits | view       | caught
+        "await" | on_task | check_await | lower_await | true  | await_view | caught_await
+        "done"  | on_task | check_done  | lower_done  | false | no_view    | no_caught
+    }
+    let codes = table<DiagCode> {
+        kind               | summary
+        "type.task_escape" | "a task is joined by the block that spawned it"
+        "type.within"      | "`within` answers its block or the deadline it ran past"
+        "flow.broken"      | "an `@unbroken` fn lets no other task run"
+        "flow.yield"       | "`yield` sends into the producer it stands in"
+        "flow.produce"     | "`produce` answers `@std/task.Source`"
+        "flow.channel"     | "`channel` answers `@std/task.Channel`"
+        "flow.never_ends"  | "a bare `channel` ends only at `close()`"
+    }
+    let methods = table<MethodRow> {
+        name     | takes         | check        | lower        | effect                | answers
+        "new"    | on_tasks_type | check_new    | lower_new    | ReceiverEffect.Read   | unknown_answer
+        "push"   | on_tasks      | check_push   | lower_push   | ReceiverEffect.Shared | void_answer
+        "cancel" | on_task       | check_cancel | lower_cancel | ReceiverEffect.Shared | void_answer
+        "filed"  | on_task       | check_filed  | lower_filed  | ReceiverEffect.Shared | void_answer
+        "since"  | on_task       | check_since  | lower_since  | ReceiverEffect.Read   | unknown_answer
+    }
+    let types = table<TypeRow> {
+        name    | arity | slots | judge  | builds      | variants
+        "Task"  | 1     | true  | no_law | task_shape  | no_variants
+        "Tasks" | 0     | true  | no_law | tasks_shape | no_variants
+    }
+    LanguageFeature tasks {
+        gram: grammar {
+            primary = "spawn" body:expression -> Expr.Spawn(body = Expr.Lambda(body = body))
+            primary = "within" limit:expression body:block -> Expr.Within(limit = limit, body = body) @head(limit)
+            stmt = "yield" value:expression END -> Stmt.ExprStmt(value = Expr.Emit(value = value)) @recover(sync_to: "END")
+            primary = "produce" "<" elem:type ","? ">" "(" cap:expression ")" body:block -> Expr.Produce(elem = elem, cap = cap, body = Expr.Lambda(body = body))
+            primary = "produce" "<" elem:type ","? ">" body:block -> Expr.Produce(elem = elem, body = Expr.Lambda(body = body))
+            primary = "channel" "<" elem:type ","? ">" "(" ( cap:expression )? ")" @expect(")", "`channel<T>(cap)` takes at most one capacity") -> Expr.Channel
+        }
+        properties: properties
+        methods: methods
+        diags: codes
+        types: types
+    }
+    tasks
+}
+
+fn on_task(t: Type) -> bool { t is .Task }
+
+fn task_shape(args: TypeArgs) -> Type { Type.Task(args.parts[0]) }
+
+fn on_tasks_type(t: Type) -> bool {
+    match t { .TypeName(_, "Tasks") -> true, _ -> false }
+}
+
+fn on_tasks(t: Type) -> bool { t is .Tasks }
+
+fn tasks_shape(_args: TypeArgs) -> Type { Type.Tasks }

@@ -1,0 +1,119 @@
+//! FAN-IN in Avra: eight producer tasks each push values into their own
+//! bounded channel; one consumer waits on all eight with a single
+//! `select` — one arm per source — and takes every value. Prints the
+//! per-value cost and the received and dropped counts.
+use @std.io.{env_or}
+use @std.text.{parse_int}
+use @std.time.{now_ns}
+use @std.task.{Channel, open_channel}
+
+/// The benchmark's environment value, or its default.
+fn env_int(name: string, fallback: int) -> int {
+    parse_int(env_or(name, "${fallback}")) ?? fallback
+}
+
+/// The producers the Avra twin fans in: `select` names one arm each,
+/// and the workload runs eight.
+const producers: int = 8
+
+/// Push `per` values into `ch` from `base`. The channel is left open:
+/// the consumer takes exactly `producers * per` values, so no source ever
+/// ends mid-run (an ended arm in a cooperative `select` would spin).
+fn feed(ch: Channel<int>, base: int, per: int) -> int {
+    mut j = 0
+    while j < per {
+        let _ = ch.sink.send(base + j)
+        j = j + 1
+    }
+    per
+}
+
+/// The best round's nanoseconds, the drained sum, and the count read.
+type Fan = { spent: int, sum: int, got: int }
+
+fn fanin_once(per: int, cap: int) -> Fan {
+    let c0 = open_channel<int>(cap)
+    let c1 = open_channel<int>(cap)
+    let c2 = open_channel<int>(cap)
+    let c3 = open_channel<int>(cap)
+    let c4 = open_channel<int>(cap)
+    let c5 = open_channel<int>(cap)
+    let c6 = open_channel<int>(cap)
+    let c7 = open_channel<int>(cap)
+    let t0 = now_ns()
+    mut hs: List<Task<int>> = []
+    hs.push(spawn feed(c0, 0 * per, per))
+    hs.push(spawn feed(c1, 1 * per, per))
+    hs.push(spawn feed(c2, 2 * per, per))
+    hs.push(spawn feed(c3, 3 * per, per))
+    hs.push(spawn feed(c4, 4 * per, per))
+    hs.push(spawn feed(c5, 5 * per, per))
+    hs.push(spawn feed(c6, 6 * per, per))
+    hs.push(spawn feed(c7, 7 * per, per))
+    mut s = 0
+    mut got = 0
+    let total = producers * per
+    while got < total {
+        select {
+            v in c0.source -> {
+                s = s + v
+                got = got + 1
+            }
+            v in c1.source -> {
+                s = s + v
+                got = got + 1
+            }
+            v in c2.source -> {
+                s = s + v
+                got = got + 1
+            }
+            v in c3.source -> {
+                s = s + v
+                got = got + 1
+            }
+            v in c4.source -> {
+                s = s + v
+                got = got + 1
+            }
+            v in c5.source -> {
+                s = s + v
+                got = got + 1
+            }
+            v in c6.source -> {
+                s = s + v
+                got = got + 1
+            }
+            v in c7.source -> {
+                s = s + v
+                got = got + 1
+            }
+            c0.source.ended -> { let _ = 0 }
+            c1.source.ended -> { let _ = 0 }
+            c2.source.ended -> { let _ = 0 }
+            c3.source.ended -> { let _ = 0 }
+            c4.source.ended -> { let _ = 0 }
+            c5.source.ended -> { let _ = 0 }
+            c6.source.ended -> { let _ = 0 }
+            c7.source.ended -> { let _ = 0 }
+        }
+    }
+    for h in hs { let _ = h.await }
+    Fan { spent: now_ns() - t0, sum: s, got: got }
+}
+
+let per = env_int("BENCH_PER", 6250)
+let cap = env_int("BENCH_CAP", 64)
+let rounds = env_int("BENCH_ROUNDS", 5)
+let total = producers * per
+mut best = 0
+mut got = 0
+mut r = 0
+while r < rounds {
+    let f = fanin_once(per, cap)
+    if r == 0 || f.spent < best { best = f.spent }
+    got = f.got
+    r = r + 1
+}
+println("fanin_ns_per_op\t${best / total}\tns\t${rounds}")
+println("fanin_received\t${got}\tops\t${rounds}")
+println("fanin_dropped\t${total - got}\tops\t${rounds}")

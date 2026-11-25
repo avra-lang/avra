@@ -1,0 +1,122 @@
+// A source as the program layer reads it: what a file that is there,
+// empty, missing, not text, refused or a link to nothing makes of a
+// program — each said in its own words, never one silence — and what a
+// check over the same store says once the file has moved under it.
+use @std.avrac.testing.{held_at, Held, Judged}
+use @std.avrac.testing.held.{empty_store}
+use @std.program.source_facts.{FileOctets}
+use @std.program.tests.support.store_in_memory.{StoreInMemory}
+
+const HOST_MAIN: string = "/w/src/main.av"
+
+const HOST_OTHER: string = "/w/src/other.av"
+
+/// The package whose entry is `main` and whose other source is `other`.
+fn host_held(main: string, other: string) -> Held {
+    held_at(
+        {
+            "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+            HOST_MAIN: main,
+            HOST_OTHER: other,
+        },
+        "/w",
+    )
+}
+
+/// The package whose other source holds no text, as a read of its octets finds `octets`.
+fn unread_held(octets: FileOctets) -> Held { host_held("1\n", "") with { unread: {HOST_OTHER: octets} } }
+
+/// The kinds a judged program says, in order.
+fn kinds_said(j: Judged) -> List<string> { [d.kind for d in j.diagnostics] }
+
+/// The message of the one diagnostic of `kind` a judged program says, empty for none.
+fn said_of(j: Judged, kind: string) -> string { j.diagnostics.find(it.kind == kind)?.message ?? "" }
+
+/// The source line the unwritten-`mut` rule names in the other source, judged over `store`.
+fn mut_line(h: Held, store: StoreInMemory) -> string? {
+    h.judged_over(HOST_MAIN, store).findings().find(it.rule == "let_stmt.unmutated_mut")?.text
+}
+
+spec "compiler/input_host — a source as the program layer reads it" {
+    given "nothing there" {
+        then "an empty source is there, and empty: the program says nothing of it" {
+            host_held("1\n", "").judged_at(HOST_MAIN).diagnostics.is_empty()
+        }
+        then "a missing source is said in words, by its path" {
+            let j = unread_held(FileOctets.Missing).judged_at(HOST_MAIN)
+            kinds_said(j).join(",") == "source.missing" &&
+                said_of(j, "source.missing").contains(HOST_OTHER)
+        }
+        then "a missing source and an empty one say apart" {
+            !host_held("1\n", "")
+                    .judged_at(HOST_MAIN)
+                    .diagnostics
+                    .any(it.kind == "source.missing") &&
+                unread_held(FileOctets.Missing)
+                    .judged_at(HOST_MAIN)
+                    .diagnostics
+                    .any(it.kind == "source.missing")
+        }
+    }
+    given "a source the host will not give as text" {
+        then "octets that are no text are said by kind, from the byte that isn't" {
+            let j = unread_held(FileOctets.Read([97, 255].bytes()!)).judged_at(HOST_MAIN)
+            kinds_said(j).join(",") == "source.not_text" &&
+                said_of(j, "source.not_text").contains("byte 1")
+        }
+        then "a refusal is said by kind, in the host's own words" {
+            let one = unread_held(FileOctets.Refused("permission denied (os error 13)"))
+                .judged_at(HOST_MAIN)
+            let other = unread_held(FileOctets.Refused("EACCES")).judged_at(HOST_MAIN)
+            kinds_said(one).join(",") == "source.refused" &&
+                kinds_said(other).join(",") == "source.refused" &&
+                said_of(one, "source.refused").contains("os error 13")
+        }
+        then "a refused source and a missing one say apart" {
+            kinds_said(unread_held(FileOctets.Refused("x")).judged_at(HOST_MAIN)).join(",") != kinds_said(unread_held(FileOctets.Missing).judged_at(HOST_MAIN)).join(",")
+        }
+        then "a link to nothing is said as one" {
+            kinds_said(unread_held(FileOctets.Linked).judged_at(HOST_MAIN)).join(",") == "source.dangling"
+        }
+    }
+    given "a source that is there" {
+        then "its text is what the host holds" {
+            host_held("1\n", "fn f() -> int {\n    mut a = 0\n    a\n}\n")
+                .judged_at(HOST_MAIN)
+                .findings()
+                .find(it.rule == "let_stmt.unmutated_mut")?.text == "mut a = 0"
+        }
+    }
+    given "a check over a store an earlier check left, once the source moved" {
+        then "an unchanged source names the line it holds" {
+            let store = empty_store()
+            let h = host_held("1\n", "fn f() -> int {\n    mut a = 0\n    a\n}\n")
+            let _ = mut_line(h, store)
+            mut_line(h, store) == "mut a = 0"
+        }
+        then "an edited source names its current line" {
+            let store = empty_store()
+            let _ = mut_line(host_held("1\n", "fn f() -> int {\n    mut a = 0\n    a\n}\n"), store)
+            mut_line(host_held("1\n", "fn f() -> int {\n    mut b = 0\n    b\n}\n"), store) == "mut b = 0"
+        }
+        then "a source truncated to empty names no line — never the old one" {
+            let store = empty_store()
+            let _ = mut_line(host_held("1\n", "fn f() -> int {\n    mut a = 0\n    a\n}\n"), store)
+            mut_line(host_held("1\n", ""), store) == null
+        }
+        then "a source that is gone is said as missing — never analysed as empty in silence" {
+            let store = empty_store()
+            let h = host_held("1\n", "fn f() -> int {\n    mut a = 0\n    a\n}\n")
+            let _ = mut_line(h, store)
+            let gone = h with { unread: {HOST_OTHER: FileOctets.Missing} }
+            kinds_said(gone.judged_over(HOST_MAIN, store)).contains("source.missing")
+        }
+        then "a source that turned unreadable is said as not text" {
+            let store = empty_store()
+            let h = host_held("1\n", "fn f() -> int {\n    mut a = 0\n    a\n}\n")
+            let _ = mut_line(h, store)
+            let turned = h with { unread: {HOST_OTHER: FileOctets.Read([255].bytes()!)} }
+            kinds_said(turned.judged_over(HOST_MAIN, store)).contains("source.not_text")
+        }
+    }
+}

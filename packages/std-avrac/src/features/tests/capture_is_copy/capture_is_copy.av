@@ -1,0 +1,47 @@
+// proves: a capture is a copy, so a writing method called on one
+// writes the lambda's copy — never the value it was captured from,
+// whether the lambda runs now, later, or as a `defer`. The copy is the
+// lambda's own: a second call sees the first call's write.
+type L = { items: List<int>, pad: int }
+type Outer = { inner: L }
+
+impl L {
+    mut fn add(v: int) { self.items.push(v) }
+}
+
+fn seed(n: int) -> List<int> { [n] }
+
+fn deferred(mut s: L) -> int {
+    mut t = s
+    defer t.add(9)
+    s.items.length
+}
+
+fn lambda_of_copy(mut s: L) -> int {
+    mut t = s
+    let f = () -> t.add(9)
+    f()
+    s.items.length
+}
+
+mut a = L { items: seed(1), pad: 0 }
+let d = deferred(a)
+let l = lambda_of_copy(a)
+
+mut t = L { items: seed(1), pad: 0 }
+let f = () -> t.add(9)
+f()
+
+mut o = Outer { inner: L { items: seed(1), pad: 0 } }
+let g = () -> o.inner.add(9)
+g()
+
+mut c = L { items: seed(1), pad: 0 }
+let counted = () -> {
+    c.add(9)
+    c.items.length
+}
+let first = counted()
+let second = counted()
+
+"${d} ${l} ${a.items.length} ${t.items.length} ${o.inner.items.length} ${c.items.length} ${first} ${second}"

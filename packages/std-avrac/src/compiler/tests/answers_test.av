@@ -1,0 +1,56 @@
+//! A SAVED ANSWER is read back by a later process over the same store, and nothing is worked out
+//! while the texts it read stand; the work is done again when one of them moved, and an edit to
+//! a module the program never reads disturbs nothing of it.
+use @std.avrac.testing.held.{Pass, beyond, empty_store, held_at}
+use @std.program.tests.support.store_in_memory.{StoreInMemory}
+
+const ENTRY: string = "/w/src/main.av"
+
+fn files_of(main: string, a: string, b: string) -> Map<string, string> {
+    {
+        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+        ENTRY: main,
+        "/w/src/x/a.av": "export fn n() -> int { ${a} }\n",
+        "/w/src/y/b.av": "export fn m() -> int { ${b} }\n",
+    }
+}
+
+const READS_X: string = "use x.{n}\nn()\n"
+
+/// A main that reads neither module.
+const READS_NOTHING: string = "1\n"
+
+/// What a process over `store` makes of the package.
+fn pass(main: string, a: string, b: string, store: StoreInMemory) -> Pass {
+    held_at(files_of(main, a, b), "/w").passed_over(ENTRY, store)
+}
+
+/// What the second of two processes over one store works out, the package going from `a`/`b` to
+/// `a2`/`b2`, under `main`.
+fn second(main: string, a: string, b: string, a2: string, b2: string) -> Pass {
+    let s = empty_store()
+    let _ = pass(main, a, b, s)
+    pass(main, a2, b2, s)
+}
+
+spec "compiler/answers — a saved answer stands while the texts it read stand" {
+    given "nothing edited between two processes" {
+        then "the second answers alike and works nothing out" {
+            let p = second(READS_X, "5", "6", "5", "6")
+            p.ran == "5" && p.worked.is_empty()
+        }
+    }
+    given "a file the program reads, edited" {
+        then "the work is done again and answers the edited text" {
+            let p = second(READS_X, "5", "6", "7", "6")
+            p.ran == "7" && !p.worked.is_empty()
+        }
+    }
+    given "a module the program never reads, edited" {
+        then "the answer stands, and the program's share of the work is nothing" {
+            let p = second(READS_X, "5", "6", "5", "60")
+            p.ran == "5" &&
+                beyond(p.worked, second(READS_NOTHING, "5", "6", "5", "60").worked).is_empty()
+        }
+    }
+}

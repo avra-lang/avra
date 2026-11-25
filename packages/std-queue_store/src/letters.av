@@ -1,0 +1,117 @@
+//! The dead letter that outlives the process: a queue of `Dead<T, E>`
+//! on the program's database, so an item buried out of a durable queue
+//! is moved in one transaction and survives a restart.
+//!
+//!     queue<Dead<Email, string>> undeliverable {
+//!         name: "undeliverable"
+//!         durable: stored_dead<Email>()
+//!     }
+//!
+//! A letter crosses as its item's own codec octets, its fate and the
+//! path it took.
+use @std.queue.{Dead, Durable, Fate}
+use @std.relation.{Storable}
+use @std.relation.stable.{CodecFault, Reader, Writer, stable_hasher, text_hash}
+use @std.time.{Duration, Time, ms, now}
+use @std.text.{parse_int}
+use durable.{stored_with}
+use queue_store.{Sync, Wire, wire, wire_of}
+
+/// A letter's `durable:` for a coded item whose handler fails with
+/// text: the store home of `ctx.db`.
+export fn stored_dead<T: Storable>(
+    sync: Sync = Sync.every_send,
+    poll: Duration = ms(250),
+    clock: fn() -> Time = now,
+) -> Durable<Dead<T, string>> {
+    stored_with(dead_wire(wire<T>(), text_wire()), sync, poll, clock)
+}
+
+/// A letter's `durable:` for a coded item whose handler fails with a
+/// coded error.
+export fn stored_dead_of<T: Storable, E: Storable>(
+    sync: Sync = Sync.every_send,
+    poll: Duration = ms(250),
+    clock: fn() -> Time = now,
+) -> Durable<Dead<T, E>> {
+    stored_with(dead_wire(wire<T>(), wire<E>()), sync, poll, clock)
+}
+
+/// Text's wire.
+export fn text_wire() -> Wire<string> {
+    wire_of<string>(
+        text_hash("string"),
+        "string",
+        (w: Writer, s: string) -> w.text(s),
+        (r: Reader) -> r.text(),
+    )
+}
+
+/// A letter's wire over its item's and its error's: the item's octets,
+/// the fate, the error's octets when it failed with one, and the path.
+/// Its descriptor holds both parts' own, so a letter is read with no
+/// program.
+export fn dead_wire<T, E>(item: Wire<T>, error: Wire<E>) -> Wire<Dead<T, E>> {
+    wire_of<Dead<T, E>>(
+        stable_hasher(text_hash("Dead")).int(item.shape).int(error.shape).finish(),
+        dead_descriptor(item, error),
+        (w: Writer, d: Dead<T, E>) -> written(w, d, item, error),
+        (r: Reader) -> read(r, item, error),
+    )
+}
+
+/// What a letter's descriptor holds: its item's shape and descriptor,
+/// and its error's.
+export type DeadParts = { item_shape: int, item: string, error_shape: int, error: string }
+
+/// The head of every letter's descriptor.
+const dead_spelling: string = "avra.dead.1"
+
+/// A letter's descriptor: the head, both shapes, the item descriptor's
+/// length, then the item's descriptor and the error's, so neither is
+/// escaped.
+fn dead_descriptor<T, E>(item: Wire<T>, error: Wire<E>) -> string {
+    "${dead_spelling}|${item.shape}|${error.shape}|${item.descriptor.length}|${item.descriptor}${error.descriptor}"
+}
+
+/// The parts a letter's descriptor names, or absent for any other
+/// descriptor.
+export fn dead_parts(text: string) -> DeadParts? {
+    let parts = text.split("|")
+    if parts.length < 5 || parts[0] != dead_spelling { return null }
+    let item_shape? = parse_int(parts[1]) else { return null }
+    let error_shape? = parse_int(parts[2]) else { return null }
+    let n? = parse_int(parts[3]) else { return null }
+    let rest = text
+        .substring(parts[0].length + parts[1].length + parts[2].length + parts[3].length + 4, text.length)
+    if n < 0 || n > rest.length { return null }
+    DeadParts {
+        item_shape: item_shape,
+        item: rest.substring(0, n),
+        error_shape: error_shape,
+        error: rest.substring(n, rest.length),
+    }
+}
+
+fn written<T, E>(w: Writer, d: Dead<T, E>, item: Wire<T>, error: Wire<E>) {
+    w.octets((item.encode)(d.item))
+    match d.fate {
+        .Failed(e) -> {
+            w.count(0)
+            w.octets((error.encode)(e))
+        },
+        .Unanswered -> w.count(1),
+    }
+    w.count(d.path.length)
+    for p in d.path { w.text(p) }
+}
+
+fn read<T, E>(r: Reader, item: Wire<T>, error: Wire<E>) -> Result<Dead<T, E>, CodecFault> {
+    let it? = (item.decode)(r.octets()?) else { fail CodecFault.OtherShape }
+    let unanswered = r.count()? == 1
+    let e = if unanswered { null } else { (error.decode)(r.octets()?) }
+    if !unanswered && e == null { fail CodecFault.OtherShape }
+    let n = r.count()?
+    let path = [r.text()? for _i in 0..n]
+    Dead { item: it, fate: if unanswered { Fate.Unanswered } else { Fate.Failed(e!) }, path: path }
+}

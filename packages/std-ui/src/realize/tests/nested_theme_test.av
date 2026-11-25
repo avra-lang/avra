@@ -1,0 +1,140 @@
+//! A subtree set to another theme inside its page's is drawn in that theme by
+//! every realizer — never silently in the page's. Headless and the terminal
+//! carry the nearest stamp down; the DOM and HTML scope the subtree by a class
+//! its theme names, its variables set on that element and its look under the
+//! chain of scopes it stands in.
+use @std.ui.components.{column, text}
+use @std.ui.env.{Env}
+use @std.ui.headless.{headless}
+use @std.ui.realize.dom.live.{live}
+use @std.ui.realize.dom.patch.{Patch}
+use @std.ui.realize.html.element.{Element}
+use @std.ui.realize.html.css.{page_drawn, scopes_of, theme_scope}
+use @std.ui.realize.html.html.{hydration, render}
+use @std.ui.style.theme.{Theme, default_theme, plain, theme}
+use @std.ui.terminal.{terminal}
+use @std.ui.tree.view.{tree_of}
+
+fn night() -> Theme { default_theme with { mode: .Dark } }
+
+/// Words drawn in `worn`, set where they stand, around what `inside` places.
+component worn_here {
+    worn: Theme = plain()
+    words: string = ""
+    ctx theme = self.worn
+    text self.words
+}
+
+/// Back in the page's theme, inside the night.
+component back_home {
+    ctx theme = plain()
+    text "back"
+}
+
+/// The night, around a subtree back in the page's theme.
+component at_night {
+    ctx theme = night()
+    column {
+        text "inside"
+        back_home {}
+    }
+}
+
+/// A page in the plain theme with the night inside it.
+component nested_page {
+    ctx theme = plain()
+    column {
+        text "outside"
+        at_night {}
+        text "after"
+    }
+}
+
+/// A page in one theme only.
+component one_theme {
+    ctx theme = plain()
+    column {
+        text "outside"
+        worn_here { words: "same" }
+    }
+}
+
+fn mode_of(t: Theme?) -> string { t?.mode?.word() ?? "none" }
+
+fn html() -> string { render(tree_of(nested_page {}), Env {}) }
+
+/// The sheet a paint's patches send.
+fn sheet_of(ps: List<Patch>) -> string { [css for p in ps for css in styled(p)].join("\n") }
+
+fn styled(p: Patch) -> List<string> {
+    match p { .Style(css) -> [css], _ -> [] }
+}
+
+/// Whether `e` or an element under it carries `class` among its attributes.
+fn wears(e: Element, class: string) -> bool {
+    let el? = e.tagged() else { return false }
+    el.attrs.any(it.value.contains(class)) || el.kids.any(wears(it, class))
+}
+
+/// What the nested page's themes wear, in the order its walk first meets them.
+fn page_scopes() -> List<string> { scopes_of(page_drawn(tree_of(nested_page {})).root) }
+
+fn night_scope() -> string { theme_scope(night(), page_scopes()) ?? "none" }
+
+fn home_scope() -> string { theme_scope(plain(), page_scopes()) ?? "none" }
+
+/// Whether the first paint over a server's page took it over as it stood: elements kept, none drawn.
+fn taken_over(p: Patch?) -> bool {
+    let first? = p else { return false }
+    match first { .Adopt(kept, _) -> !kept.is_empty(), _ -> false }
+}
+
+spec "a subtree in another theme" {
+    given "headless" {
+        then "the subtree is drawn in its own theme" { mode_of(headless(() -> nested_page {}).theme_of("inside")) == "dark" }
+        then "the page around it in the page's" { mode_of(headless(() -> nested_page {}).theme_of("outside")) == "system" }
+        then "a sibling after it in the page's" { mode_of(headless(() -> nested_page {}).theme_of("after")) == "system" }
+        then "a subtree back in the page's theme inside it in the page's" {
+            mode_of(headless(() -> nested_page {}).theme_of("back")) == "system"
+        }
+    }
+    given "a terminal" {
+        then "the subtree is drawn in its own theme" { mode_of(terminal(() -> nested_page {}).theme_of("inside")) == "dark" }
+        then "the page around it in the page's" { mode_of(terminal(() -> nested_page {}).theme_of("outside")) == "system" }
+        then "a subtree back in the page's theme inside it in the page's" {
+            mode_of(terminal(() -> nested_page {}).theme_of("back")) == "system"
+        }
+    }
+    given "html" {
+        then "the subtree wears its theme's scope" { html().contains("${night_scope()}\"") || html().contains("${night_scope()} ") }
+        then "its variables are set on the scope, dark" { html().contains(".${night_scope()}{color-scheme:dark;") }
+        then "the subtree back in the page's theme wears the page's scope, set again" {
+            html().contains(".${home_scope()}{color-scheme:")
+        }
+        then "the look back home is under the chain, so the nearest scope is the most specific" {
+            html().contains(".${night_scope()} .${home_scope()} ")
+        }
+        then "a page in one theme scopes no sheet" { !render(tree_of(one_theme {}), Env {}).contains(".th-") }
+        then "a scope is named by where the page first meets its theme, never by a digest of it" {
+            night_scope() == "th-1" && home_scope() == "th-2"
+        }
+    }
+    given "the dom" {
+        then "the first paint sets the subtree's variables on its scope" {
+            sheet_of(live().patches(tree_of(nested_page {})))
+                .contains(".${night_scope()}{color-scheme:dark;")
+        }
+        then "the subtree's element wears its scope" {
+            let page = live()
+            let _ = page.patches(tree_of(nested_page {}))
+            page.page.get().any(wears(it, night_scope()))
+        }
+        then "a page in one theme scopes no sheet" { !sheet_of(live().patches(tree_of(one_theme {}))).contains(".th-") }
+        then "the dom takes the html's page over as it stands: both name its scopes alike" {
+            let h = hydration(tree_of(nested_page {}))
+            let page = live()
+            page.stood.set(h.print)
+            taken_over(page.patches(tree_of(nested_page {})).first())
+        }
+    }
+}

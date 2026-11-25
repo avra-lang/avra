@@ -1,0 +1,43 @@
+// A field whose type implements `TextForm` crosses JSON as its text: written through
+// `text_form`, read through `from_text_form`, a refused text filed at its path.
+use @std.json.{to_text}
+use @std.json.codec.{json}
+use @std.time.{Time}
+
+@json
+type Event = { at: Time, label: string, seen: List<Time> }
+
+const stamp: string = "1970-01-01T00:00:01.000000000Z"
+
+fn doc(at: string, seen: string) -> string { "{\"at\":\"${at}\",\"label\":\"x\",\"seen\":[${seen}]}" }
+
+spec "std/json — a text-form field is a JSON string" {
+    given "an event with a Time" {
+        then "it writes the time's text" {
+            Event { at: Time { ns: 1000000000 }, label: "x", seen: [] }.json_text() == doc(stamp, "")
+        }
+        then "its tree form carries the same string" {
+            to_text(Event { at: Time { ns: 1000000000 }, label: "x", seen: [] }.to_json()) == doc(stamp, "")
+        }
+        then "the text reads back to the instant, as list elements too" {
+            match Event.from_json_text(doc(stamp, "\"${stamp}\"")) {
+                .Ok(e) -> e.at.ns == 1000000000 && e.seen[0].ns == 1000000000,
+                .Err(_) -> false,
+            }
+        }
+    }
+    given "a malformed time" {
+        then "it is refused at its path" {
+            match Event.from_json_text(doc("nope", "")) {
+                .Ok(_) -> false,
+                .Err(e) -> e.at == "at" && e.found == "nope",
+            }
+        }
+        then "a list element is refused at its index" {
+            match Event.from_json_text(doc(stamp, "\"${stamp}\",\"nope\"")) {
+                .Ok(_) -> false,
+                .Err(e) -> e.at == "seen[1]",
+            }
+        }
+    }
+}

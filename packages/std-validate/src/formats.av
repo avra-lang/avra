@@ -1,0 +1,85 @@
+//! The formats, each read into one `Value`, so every decoder reads
+//! them all. Text that is not the format is refused as an issue at
+//! the root, the same kind a decode answers.
+use @std.json.{Json, parse}
+use @std.toml.{TomlDoc, TomlValue, TomlError, parse_toml}
+use issue.{Issue, Issues, root}
+use value.{Value, Entry}
+
+/// JSON text as a value. @std/json refuses nesting past its own
+/// `MAX_DEPTH` at the opener; a decoder bounds its depth again, at
+/// its `Limits`.
+export fn from_json(text: string) -> Result<Value, Issues> {
+    match parse(text) {
+        .Ok(j) -> json_value(j),
+        .Err(e) -> { fail Issues { all: [syntax("json", e.describe().message)] } },
+    }
+}
+
+/// A JSON value as a value.
+export fn json_value(j: Json) -> Value {
+    match j {
+        .Null -> Value.Null,
+        .Bool(b) -> Value.Bool(b),
+        .Int(n) -> Value.Int(n),
+        .Float(x) -> Value.Float(x),
+        .Str(s) -> Value.Text(s),
+        .Arr(items) -> Value.List([json_value(x) for x in items]),
+        .Obj(fields) -> Value.Map([Entry { key: f.key, value: json_value(f.value) } for f in fields]),
+    }
+}
+
+/// TOML text as a value: each `[a.b]` section a map inside its
+/// parent, keys in written order. Every line TOML refuses is an issue.
+export fn from_toml(text: string) -> Result<Value, Issues> {
+    let doc = parse_toml(text)
+    if !doc.errors.is_empty() { fail Issues { all: [toml_syntax(e) for e in doc.errors] } }
+    section_value(doc, "")
+}
+
+/// A section's entries, then each section directly under it.
+fn section_value(doc: TomlDoc, section: string) -> Value {
+    let own = [Entry { key: e.key, value: toml_value(e.value) } for e in doc.entries_of(section)]
+    let inner = [Entry { key: c, value: section_value(doc, joined(section, c)) } for c in children(doc, section)]
+    Value.Map(own.concat(inner))
+}
+
+/// The names one step below `section`, first appearance first.
+fn children(doc: TomlDoc, section: string) -> List<string> {
+    let steps = [next_step(s, section) for s in doc.sections() if below(s, section)]
+    [c for i, c in steps if steps.index_of(c) == i]
+}
+
+fn below(s: string, section: string) -> bool {
+    if section.is_empty() { !s.is_empty() } else { s.starts_with(section + ".") }
+}
+
+/// The first dotted step of `s` past `section`.
+fn next_step(s: string, section: string) -> string {
+    let rest = if section.is_empty() { s } else { s.substring(section.length + 1, s.length) }
+    rest.split(".")[0]
+}
+
+fn joined(section: string, step: string) -> string {
+    if section.is_empty() { step } else { "${section}.${step}" }
+}
+
+fn toml_value(v: TomlValue) -> Value {
+    match v {
+        .Str(s) -> Value.Text(s),
+        .Int(n) -> Value.Int(n),
+        .Bool(b) -> Value.Bool(b),
+        .Strs(items) -> Value.List([Value.Text(s) for s in items]),
+        .Table(pairs) -> Value.Map([Entry { key: p.key, value: toml_value(p.value) } for p in pairs]),
+    }
+}
+
+fn toml_syntax(e: TomlError) -> Issue {
+    syntax("toml", "${e.message} (bytes ${e.lo}..${e.hi})")
+}
+
+// ── voices ──────────────────────────────────────────────────────
+
+fn syntax(format: string, message: string) -> Issue {
+    Issue { path: root(), rule: format, message: "is not ${format}: ${message}" }
+}

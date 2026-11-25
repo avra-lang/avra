@@ -1,0 +1,26 @@
+//! The typing rule of an assignment: the value checks against what its place holds, its seat the
+//! place's; a place rooted in a type's name holds nothing, which the place law says.
+use core.{Checking, Expected, ExprId, Seating, StmtChecks, StmtId}
+use core.stmt.{Assign}
+
+impl StmtChecks for Assign {
+    fn stmt_checked(mut cx: Checking, s: StmtId) {
+        if cx.type_rooted(self.target) != null {
+            let _ = cx.check(self.value, Expected.Free)
+            return
+        }
+        let place = cx.check(self.target, Expected.Free)
+        cx.wrote(self.target)
+        cx.seals_path(self.target, self.target)
+        let _ = cx
+            .check_seated(self.value, place, Seating.Assigned(spot_of(cx, self.target), s.index))
+    }
+}
+
+/// The place `target` as a refused assignment names it: its binding where it is one, else a slot of
+/// the binding it's rooted in.
+fn spot_of(cx: Checking, target: ExprId) -> string {
+    let root = cx.store.place_root(target)
+    let named = if root == null { "this place" } else { "`${cx.store.ident_name(root!) ?? "this place"}`" }
+    if cx.store.ident_name(target) == null { "a slot of ${named}" } else { named }
+}

@@ -1,0 +1,45 @@
+// proves: the program's const shapes against a database's recorded ones — a database brought to every model diffs clean, and one that lacks a model's table reports it
+use @std.db.{model, model_shape}
+use @std.db.apply.{recorded_shapes}
+use @std.db.migrate.{plan_all, report}
+use @std.db.models.{Found, migrate_all}
+use @std.db.shape.{Shape}
+use @std.sqlite.{Db}
+use @std.sqlite.error.{SqlError}
+
+@model
+type Board = {
+    id: int = 0,
+    title: string,
+}
+
+@model
+type Card = {
+    id: int = 0,
+    text: string,
+}
+
+collect models: List<Found> = @model in closure as Found { model: it, name: it.name } by it.name
+
+const shapes: List<Shape> = [model_shape(f.model) for f in models]
+
+fn said(db: Db) -> string {
+    match recorded_shapes(db) {
+        .Ok(live) -> {
+            let lines = report(plan_all(shapes, live, []))
+            "${lines.length} ${lines.first() ?? "-"}"
+        },
+        .Err(e) -> e.message,
+    }
+}
+
+fn shown() -> Result<string, SqlError> {
+    let empty = Db.memory()?
+    let partial = Db.memory()?
+    let _ = Board.create_table(partial)?
+    let whole = Db.memory()?
+    let _ = migrate_all(whole, models) catch 0
+    [said(empty), said(partial), said(whole)].join("\n")
+}
+
+match shown() { .Ok(t) -> t, .Err(e) -> "failed: ${e.message}" }

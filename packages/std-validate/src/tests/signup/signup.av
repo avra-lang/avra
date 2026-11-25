@@ -1,0 +1,151 @@
+// proves: @std/validate end to end, evaluated and native alike — JSON
+// read into a Value, decoded into a typed Signup by a hand-written
+// decoder, and EVERY issue reported with its path, rule, message,
+// what was received and a fix; strict and lax coercion; a secret
+// field never echoed; a syntax error the same kind of refusal.
+use @std.validate.{
+    email,
+    range,
+    length,
+    matches,
+    one_of,
+    pattern,
+    Decoding,
+    Slot,
+    Coercion,
+    Issues,
+    decode,
+    ruled,
+    list,
+    from_json,
+}
+
+type Signup = {
+    email: string,
+    age: int,
+    username: string,
+    password: string,
+    confirm: string,
+    plan: string,
+    interests: List<string>,
+}
+
+/// What `@derive` will write from the annotations: each field read at
+/// its slot, then its rules in order.
+fn signup(mut d: Decoding, s: Slot) -> Signup? {
+    let o? = d.object(s) else { return null }
+    let address = mailbox(d, o.field("email"))
+    let years = age(d, o.field("age"))
+    let handle = username(d, o.field("username"))
+    let secret = password(d, o.field("password").secret())
+    let again = confirm(d, o.field("confirm").secret(), secret)
+    let tier = plan(d, o.field("plan").optional())
+    let likes = interests(d, o.field("interests").optional())
+    if !d.closed(o, ["email", "age", "username", "password", "confirm", "plan", "interests"]) { return null }
+    Signup {
+        email: address!,
+        age: years!,
+        username: handle!,
+        password: secret!,
+        confirm: again!,
+        plan: tier ?? "free",
+        interests: likes ?? [],
+    }
+}
+
+fn mailbox(mut d: Decoding, s: Slot) -> string? {
+    let v? = d.text(s) else { return null }
+    ruled(d, s, "email", email(v))
+}
+
+fn age(mut d: Decoding, s: Slot) -> int? {
+    let v? = d.int(s) else { return null }
+    ruled(d, s, "range", range(v, 13, 130))
+}
+
+fn username(mut d: Decoding, s: Slot) -> string? {
+    let v? = d.text(s) else { return null }
+    let sized? = ruled(d, s, "length", length(v, min: 3, max: 32)) else { return null }
+    ruled(d, s, "pattern", pattern(sized, slug, "slug"))
+}
+
+fn password(mut d: Decoding, s: Slot) -> string? {
+    let v? = d.text(s) else { return null }
+    ruled(d, s, "length", length(v, min: 12))
+}
+
+fn confirm(mut d: Decoding, s: Slot, password: string?) -> string? {
+    let v? = d.text(s) else { return null }
+    ruled(d, s, "matches", matches(v, password, "password"))
+}
+
+fn plan(mut d: Decoding, s: Slot) -> string? {
+    let v? = d.text(s) else { return null }
+    ruled(d, s, "one_of", one_of(v, ["free", "pro"]))
+}
+
+fn interests(mut d: Decoding, s: Slot) -> List<string>? {
+    let v? = list(d, s, interest) else { return null }
+    ruled(d, s, "at_most", at_most(v, 3))
+}
+
+fn interest(mut d: Decoding, s: Slot) -> string? {
+    let v? = d.text(s) else { return null }
+    ruled(d, s, "one_of", one_of(v, ["music", "maths", "code"]))
+}
+
+/// A rule of our own: a plain fn over the value.
+fn at_most(v: List<string>, n: int) -> Result<List<string>, string> {
+    if v.length > n { fail "must hold at most ${n} items" }
+    v
+}
+
+/// Lowercase letters, digits and inner hyphens.
+fn slug(s: string) -> bool {
+    !s.starts_with("-") &&
+        !s.ends_with("-") &&
+        [s.char_code(i) for i in 0..s.length].all(slug_char(it))
+}
+
+fn slug_char(c: int) -> bool { c >= 97 && c <= 122 || c >= 48 && c <= 57 || c == 45 }
+
+fn accepted(s: Signup) -> string {
+    "accepted: ${s.username} <${s.email}>, ${s.age}, ${s.plan}, interests: ${if s.interests.is_empty() { "none" } else { s.interests.join(", ") }}"
+}
+
+fn refused(all: Issues) -> string {
+    "refused, ${all.count()} issue${if all.count() == 1 { "" } else { "s" }}:\n${all.report()}"
+}
+
+fn submit(label: string, body: string, coercion: Coercion) {
+    println("── ${label}")
+    let answer = match from_json(body) {
+        .Err(e) -> refused(e),
+        .Ok(v) -> match decode(v, signup, coercion) { .Ok(s) -> accepted(s), .Err(e) -> refused(e) },
+    }
+    println(answer)
+    println("")
+}
+
+submit(
+    "everything wrong at once",
+    "{\"email\": \"ada@lovelace\", \"age\": 9, \"username\": \"Ada!\", \"password\": \"correct horse\", \"confirm\": \"correct house\", \"plan\": \"prp\", \"interests\": [\"music\", \"math\", \"art\", \"code\"], \"admin\": true, \"pln\": \"pro\"}",
+    Coercion.Strict,
+)
+submit(
+    "the wrong kinds",
+    "{\"email\": 42, \"age\": \"36\", \"username\": null, \"password\": \"short\", \"confirm\": \"short\", \"interests\": [\"music\", \"maths\", \"code\", \"music\"]}",
+    Coercion.Strict,
+)
+submit(
+    "the same, read lax: \"36\" is 36",
+    "{\"email\": \"ada@lovelace.dev\", \"age\": \"36\", \"username\": \"ada\", \"password\": \"correct horse battery\", \"confirm\": \"correct horse battery\"}",
+    Coercion.Lax,
+)
+submit("not JSON at all", "{\"email\": \"ada@lovelace.dev\",, }", Coercion.Strict)
+submit(
+    "all well",
+    "{\"email\": \"ada@lovelace.dev\", \"age\": 36, \"username\": \"ada-l\", \"password\": \"correct horse battery\", \"confirm\": \"correct horse battery\", \"plan\": \"pro\", \"interests\": [\"maths\", \"code\"]}",
+    Coercion.Strict,
+)
+"done"

@@ -1,0 +1,107 @@
+//! wire.av — the TRANSPORT a connection rides. Every verb parks where
+//! its transport's own verb parks, so the framer, the router and every
+//! handler read one stream whichever transport it is — a route's
+//! meaning never changes with it.
+//!
+//! A plain socket is `Conn`'s own. TLS lives in `@std/https`, a package
+//! of its own, so a program that never imports it links no TLS.
+use @std.errors.{Error}
+use @std.net.{Conn, NetError, outran}
+use @std.time.{Duration, TimedOut}
+
+/// Why a transport verb failed: the socket's own failure — a deadline
+/// passing among them — the secure layer's, carried whole, or the
+/// transport cut off by its peer before it ended — an HTTP/2 stream
+/// reset, the connection under it gone.
+export enum WireError {
+    Net(e: NetError)
+    Secure(e: dyn Error)
+    Reset
+}
+
+/// A connection's transport. Its verbs wear a `wire_` prefix so a
+/// transport's own verbs of the same name stay its own.
+export trait Transport {
+    /// Up to `max` bytes, the task parked until some arrive; null at
+    /// the peer's end.
+    fn wire_read(max: int) -> Result<Bytes?, WireError>
+
+    /// All of `bytes`, the task parked while the transport is full.
+    fn wire_write(bytes: Bytes) -> Result<int, WireError>
+
+    /// The write side ended: the peer reads its end after what was
+    /// sent.
+    fn wire_shutdown() -> Result<int, WireError>
+
+    /// The read side ended: a task parked reading wakes to the end,
+    /// and nothing more is read — the descriptor still this
+    /// transport's until `wire_close`.
+    fn wire_unheard() -> Result<int, WireError>
+
+    /// Closed; answers the descriptor.
+    fn wire_close() -> Result<int, WireError>
+
+    /// The peer as "ip:port", or "" once it is gone.
+    fn wire_peer() -> string
+
+    /// The descriptor under the transport.
+    fn wire_fd() -> int
+
+    /// Whether the transport is secured — what an `https` target
+    /// demands of the connection it arrives on.
+    fn wire_secured() -> bool
+
+    /// The application protocol the transport agreed (ALPN), or null
+    /// when it agreed none — always, for a plain socket.
+    fn wire_protocol() -> string?
+
+    /// Whether nothing has arrived and the peer has not ended, asked
+    /// without waiting — what a pool asks of a kept connection before
+    /// it lends it again.
+    fn wire_silent() -> bool
+}
+
+/// A net result as the wire's.
+fn plain<T>(r: Result<T, NetError>) -> Result<T, WireError> {
+    match r { .Ok(v) -> .Ok(v), .Err(e) -> .Err(.Net(e)) }
+}
+
+/// A `within` over a transport's verb, as that verb's own answer: a
+/// deadline the block ran past is the wire's timed-out failure.
+export fn wire_timely<T>(r: Result<Result<T, WireError>, TimedOut>) -> Result<T, WireError> {
+    match r { .Ok(inner) -> inner, .Err(_) -> plain(outran<T>("wait", "a deadline")) }
+}
+
+impl Transport for Conn {
+    fn wire_read(max: int) -> Result<Bytes?, WireError> { plain(self.read(max)) }
+    fn wire_write(bytes: Bytes) -> Result<int, WireError> { plain(self.write(bytes)) }
+    fn wire_shutdown() -> Result<int, WireError> { plain(self.shutdown_write()) }
+    fn wire_unheard() -> Result<int, WireError> { plain(self.shutdown_read()) }
+    fn wire_close() -> Result<int, WireError> { plain(self.close()) }
+    fn wire_peer() -> string { self.peer() }
+    fn wire_fd() -> int { self.fd }
+    fn wire_secured() -> bool { false }
+    fn wire_protocol() -> string? { null }
+    fn wire_silent() -> bool { silent(self) }
+}
+
+/// Whether `c` has nothing to say: a read that finds data or the end
+/// means the peer moved on. A byte it finds is consumed, so a
+/// connection that is not silent is closed, never read again.
+export fn silent(c: Conn) -> bool {
+    match c.try_read(1) { .Ok(r) -> r is .Pending, .Err(_) -> false }
+}
+
+/// `c` as a transport.
+export fn plainly(c: Conn) -> dyn Transport { c }
+
+/// How a server opens a connection it accepted: `open` settles the
+/// transport within the deadline it is handed — a handshake, for TLS —
+/// or answers null, the socket closed.
+export type Secure = { open: fn(Conn, Duration) -> dyn Transport? }
+
+/// How a client secures a connection it made: `open` runs the
+/// handshake within the deadline, the server verified as the host it
+/// is handed, and answers the secured transport — or the failure, the
+/// socket closed.
+export type Securing = { open: fn(Conn, string, Duration) -> Result<dyn Transport, WireError> }

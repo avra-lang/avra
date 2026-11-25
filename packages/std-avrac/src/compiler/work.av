@@ -1,0 +1,65 @@
+//! WORK, COUNTED. The compiler's own tallies of what a run did: files read from
+//! disk, files parsed, modules and files minted from a hold, queries computed,
+//! store rows written. Each is exact and the same on every machine, and the
+//! ones that grow with the tree are held as RATIOS to the program's size, so a
+//! ratchet can hold it where a clock cannot (tools/warm_edit_bench.sh, `check
+//! --counts`). A tally is process-wide and only grows.
+use compiler.store.{store_rows_written}
+
+once fn parsed_tally() -> Cell<int> { Cell.new(0) }
+
+once fn fallbacks_tally() -> Cell<int> { Cell.new(0) }
+
+once fn spells_tally() -> Cell<int> { Cell.new(0) }
+
+once fn rule_nodes_tally() -> Cell<int> { Cell.new(0) }
+
+once fn rule_ns_tally() -> Cell<int> { Cell.new(0) }
+
+once fn rule_runs_tally() -> Cell<int> { Cell.new(0) }
+
+fn bumped(tally: Cell<int>) { tally.set(tally.get() + 1) }
+
+/// A source parsed from text.
+export fn work_parsed() { bumped(parsed_tally()) }
+
+/// A kept row judged by rebuilding its file's views, because a module it read moved or no stamp was kept.
+export fn work_judge_fallback() { bumped(fallbacks_tally()) }
+
+/// A file's spelled names asked whether they hold one name.
+export fn work_spell_lookup() { bumped(spells_tally()) }
+
+/// A node the rule pass visited.
+export fn work_rule_node() { bumped(rule_nodes_tally()) }
+
+/// Nanoseconds the rule pass took: a clock's reading, so reported and never gated.
+export fn work_rule_ns(ns: int) { rule_ns_tally().set(rule_ns_tally().get() + ns) }
+
+/// A rule tried at a node.
+export fn work_rule_run() { bumped(rule_runs_tally()) }
+
+/// `n` per million of `size`: a count made relative to the program it ran on, so a tree that
+/// grows is not refused for doing more work on more program. 0 for no program.
+fn per_million(n: int, size: int) -> int { if size > 0 { n * 1000000 / size } else { 0 } }
+
+/// ONE RUN'S WORK, AS `check --counts` SAYS IT: what it read, made and kept anew, beside the
+/// program's size. The rule pass's counts are its own, kept as the rules run on either path.
+export type WorkCounts = {
+    files_loaded: int,
+    files_parsed: int,
+    files_minted: int,
+    modules_minted: int,
+    queries_computed: int,
+    whole_reads: int,
+    judge_fallbacks: int,
+    store_rows_written: int,
+    program_files: int,
+    program_modules: int,
+    program_decls: int,
+    spell_lookups: int,
+}
+
+/// The `counts:` line of a run's work, its ratios per the program's size.
+export fn counts_said(c: WorkCounts) -> string {
+    "counts: files_loaded=${c.files_loaded} files_parsed=${c.files_parsed} files_minted_ppm=${per_million(c.files_minted, c.program_files)} modules_minted_ppm=${per_million(c.modules_minted, c.program_modules)} queries_computed_ppm=${per_million(c.queries_computed, c.program_decls)} whole_reads=${c.whole_reads} judge_fallbacks=${c.judge_fallbacks} store_rows_ppm=${per_million(c.store_rows_written, c.program_decls)} program_files=${c.program_files} program_modules=${c.program_modules} program_decls=${c.program_decls} spell_lookups=${c.spell_lookups} rule_nodes=${rule_nodes_tally().get()} rule_runs=${rule_runs_tally().get()} rule_ms=${rule_ns_tally().get() / 1000000} files_minted=${c.files_minted} modules_minted=${c.modules_minted} queries_computed=${c.queries_computed} store_rows_written=${c.store_rows_written}"
+}

@@ -1,0 +1,29 @@
+//! `compiler/idioms.av`'s own rules are declared as `quote { ... } -> ...` patterns whose left side,
+//! matched structurally, is a `Pat.Quote` — and that pattern's own text is a CODE SHAPE
+//! (`${cx}.emit(Ins.IfStart(${c}))`, say) mirrored into an expr tree so the pattern can be WRITTEN.
+//! Before the rules pass learned to stop at a `Pat.Quote`, it walked INTO that mirrored tree as into
+//! any other code, so every rule in this file matched its OWN declaration — a PRECISION bug
+//! (avra-8sb5.25.49): `compiler/idioms.av` had 34 self-matches and exactly one real defect
+//! (`most_copied`'s own `mut best: string? = null`, a genuine `nullable_flag_local`). Both halves
+//! are held here, on the program layer, over the real std-avrac package as it stands on disk: no
+//! rule fires on its own pattern, and the one real defect still fires.
+use @std.avrac.testing.held.{held_on_disk}
+
+/// Each rule finding the program layer makes in `compiler/idioms.av`, judged as part of the real
+/// std-avrac package.
+once fn idioms_findings() -> List<string> {
+    let root = "${tree_root()}/packages/std-avrac"
+    let j = held_on_disk(root).judged_at("${root}/src/compiler/idioms.av")
+    [f.rule for f in j.findings() if f.file.ends_with("compiler/idioms.av")]
+}
+
+spec "commands/rule pass — a rule never fires on its own pattern" {
+    given "compiler/idioms.av, judged as part of the real std-avrac package" {
+        then "no rule fires on one of the file's own quote patterns: one finding, never 35" {
+            idioms_findings().length == 1
+        }
+        then "and the one real defect still fires" {
+            idioms_findings().length == 1 && idioms_findings()[0] == "nullable.nullable_flag_local"
+        }
+    }
+}

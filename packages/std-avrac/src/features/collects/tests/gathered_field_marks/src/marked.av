@@ -1,0 +1,28 @@
+use @std.meta.{Type, Directive, Variant, literal}
+
+export trait Marked {
+    static fn derive(t: Type) -> List<Directive> {
+        [
+            Directive {
+                twin: "",
+                name: t.name,
+                at: t.at,
+                source: quote {
+                    impl ${t} {
+                        static fn marked() -> string { ${literal([said(v) for v in t.variants].join(" "))} }
+                    }
+                },
+            },
+        ]
+    }
+
+    static fn marks(t: Type) -> List<string> { ["key", "span"] }
+}
+
+fn said(v: Variant) -> string {
+    v.name +
+        "(" +
+        [f.name + [":" + m.name + "/" + m.args.join("/") for m in f.marks].join("") for f in v.fields]
+            .join(",") +
+        ")"
+}

@@ -1,0 +1,46 @@
+//! A primitive's look, by its law: a state is derived from the look at rest
+//! by one rule, a theme's own state stands in its place, and a look no
+//! reader acts on wears no state.
+use @std.ui.style.look.{Look, Wear, StateWear, Shading, worn}
+use @std.ui.style.theme.{default_theme}
+use @std.ui.tree.node.{Prim}
+
+const shading = Shading { hover: 8, pressed: 16 }
+
+const filled = Look { rest: Wear { ground: .Fill(.Accent, 0) }, acts: true }
+
+/// The ground a wear names, as its tone's word and mix; empty for none of its own.
+fn ground_said(w: Wear) -> string {
+    match w.ground { .Fill(t, mix) -> "${t.word()} ${mix}", .Native or .Clear -> "" }
+}
+
+spec "std/ui look — states" {
+    given "a filled look a reader acts on" {
+        then "pointing at it shades its surface by the theme's hover" { ground_said(worn(filled, .Hover, shading)) == "accent 8" }
+        then "pressing it shades its surface by the theme's press" { ground_said(worn(filled, .Pressed, shading)) == "accent 16" }
+        then "one that cannot be acted on wears the disabled ink" { worn(filled, .Disabled, shading).ink == .Disabled }
+        then "focus keeps the target's own ring" { worn(filled, .Focus, shading).line == null }
+    }
+    given "a look that shows what it stands on" {
+        then "pointing at it changes nothing" {
+            ground_said(worn(Look { rest: Wear { ground: .Clear }, acts: true }, .Hover, shading)) == ""
+        }
+    }
+    given "a state the theme names itself" {
+        then "it stands in place of the rule" {
+            let ringed = filled with { states: [StateWear { state: .Focus, wear: Wear { line: .Focus } }] }
+            worn(ringed, .Focus, shading).line == .Focus &&
+                ground_said(worn(ringed, .Hover, shading)) == "accent 8"
+        }
+    }
+    given "a look no reader acts on" {
+        then "it wears no state" { worn(Look { rest: Wear { ground: .Fill(.Accent, 0) } }, .Disabled, shading).ink == null }
+    }
+    given "Crisp" {
+        then "every control a reader acts on wears the states" {
+            [Prim.Button, .Field, .Checkbox, .Switch, .Slider]
+                .all((p) -> default_theme.look.at(p).acts)
+        }
+        then "a button shows what it stands on" { default_theme.look.at(Prim.Button).rest.ground is .Clear }
+    }
+}

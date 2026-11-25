@@ -1,0 +1,440 @@
+//! THE WORKSPACE — many files, one program, driven by the query
+//! kernel. Every step is a family of queries: `source`, `parsed`,
+//! `items` by FileId; `namespace` by ModuleId; `visible`, `resolved`
+//! by FileId; `sig`, `methods`, `typed` by DeclId; `folded` and
+//! `analysis` by FileId; `lowered` by unit. A declaration's
+//! signature and a type's method table are asked LAZILY — the
+//! table's own reads are the queries, armed here — so declaration
+//! order stops mattering, a cycle speaks, and a body depends on
+//! exactly what it read. `program` composes the files for lowering.
+//! The host is a record of fns, so tests hand in memory and the CLI
+//! hands in the disk. A workspace holds PACKAGES: the root's (its
+//! `avra.toml`, or none) and, transitively, every path dependency a
+//! manifest names; each is its own module tree under its `src/`,
+//! and a `use @scope.name.a` reaches a dependency's module only when
+//! the asking package's manifest declares it. A lone file is a
+//! package of one rooted at its directory.
+use core.{
+    Ids,
+    CollectKind,
+    CollectScope,
+    Plain,
+    SyntaxArena,
+    StmtId,
+    same_decl,
+    module_path,
+    DeclId,
+    FileId,
+    ModuleId,
+    UseParts,
+    ExprId,
+    fp,
+    fp_list,
+    fp_str,
+    mix_final,
+    joined,
+    flatten,
+    sorted_texts,
+    distinct,
+    TypeId,
+    Type,
+    some_list,
+    same_file,
+    touch,
+    Annotation,
+    DeclKind,
+    Exemplar,
+}
+use @std.path.{dir_of, joined_path, relative_path}
+use features.components.{word_of, instanced}
+use features.{
+    ConstType,
+    ItemLine,
+    ExternNote,
+    Listed,
+    Ref,
+    takes_receiver,
+    Unsettled,
+    Settled,
+    Settlement,
+    TypeCx,
+    Decls,
+    new_decls_under,
+    scalar_types,
+    kind_word,
+    Decl,
+    Namespace,
+    Import,
+    ModuleNames,
+    Clash,
+    NameFacts,
+    new_name_facts,
+    TypeFacts,
+    DeclSig,
+    Wanted,
+    nothing,
+    Lifted,
+    SeatValue,
+    Elsewhere,
+    SettleRoot,
+    BlockWords,
+}
+use core.{ComponentWord, Instanced, Span}
+use @std.text.{repeat}
+use grammar.{Token}
+use @std.meta.{Diagnostic, bracket, identity, plain_field, derive, code_hash}
+use core.{EmbedKind, EmbedBase, ForeignOrigin, StmtId, ModulePath, watched_kernel, db_verified}
+use diagnostics.{
+    SourceFile,
+    new_source_file,
+    Diag,
+    Voices,
+    error_at,
+    refusal,
+    by_position,
+    is_error,
+}
+use @std.errors.{Loc}
+use @std.testing.{words}
+use compiler.store.{Reading}
+use compiler.store.{Store, Keeping, blobs_kept_in}
+use compiler.lower.{Unit, FieldPlan, CodeFacts}
+use compiler.families.{Family}
+use @std.relation.{query, codec}
+use @std.relation.stable.{Scope}
+use @std.relation.engine.{
+    Table,
+    new_table,
+    list_cell,
+    map_cell,
+    Kernel,
+    Key,
+    Relation,
+    Fixpoint,
+    new_fixpoint,
+}
+
+/// No held file's code, typed.
+
+/// The host's environment — what a `${NAME}` hole in a link row fills from.
+extern fn avra_host_env(name: string) -> string
+
+/// PER-BUILD KEY MEMOIZATION: a module's interface digest and what it sees, a
+/// file's object key, the parts it digests, and its text digest (record.av's key derivations), where
+/// this compiler's store stands and where its writes land, and this compiler's
+/// own print (build.av — `compiler_id` is never cleared: the running binary cannot move
+/// mid-process). Cleared piecemeal by `keep_interfaces`: `object_keys` and
+/// `object_parts` every record write, the rest only when a record's SEEN part (its
+/// interface or imports) moved.
+type Suspects = { files: int, rows: Map<string, bool>, paths: Map<string, bool> }
+
+@identity
+type Keys = { bytes_keys: Cell<Map<string, string>>, view_parts: Cell<Map<string, List<SeenPart>>>, view_index: Cell<Map<string, NarrowIndex>>, file_fns: Cell<Map<string, List<FnForm>>>, typed_files: Cell<Map<string, Map<string, List<string>>>>, file_owners: Cell<Map<string, string>>, placed_from: Cell<Map<string, bool>>, object_keys: Cell<Map<string, string>>, object_parts: Cell<Map<string, KeyParts>>, staged: Cell<Map<string, int>>, lex_words: Cell<Map<string, LexWords>>, placing: Cell<Map<string, List<Token>>>, suspects: Cell<Suspects>, name_index: Cell<Map<string, int>>, name_seen: Cell<Map<string, int>>, viewed: Cell<Map<string, List<ModulePath>>>, view_marks: Cell<Map<string, bool>>, store_root: Cell<string>, held_pack: Cell<string>, keeping: Cell<Keeping>, compiler_id: Cell<string>, build_mode: Cell<string>, one_shot: Cell<bool>, modules_of: Cell<Map<string, string>> }
+
+/// WHAT IS HELD THIS BUILD: the files a build must parse, each with why
+/// (`forced` — a home an instantiation lowers from, a file a run reaches,
+/// one whose stored asks or rule findings could not be read); what held files' bodies ask, by name (`held_asks`), and the held files whose asks name a declaration that no longer resolves (`asks_lost`); the
+/// held files whose bodies this build asked for — a compile-time run reads
+/// a body, and a held file has none (`body_asks`, a Cell: the ask comes
+/// from inside a query); what each file's compile-time runs read
+/// (`runs`); the files whose runs are being lowered, innermost last
+/// (`settling`); the files a record knows that are read all the same,
+/// each with why (`read_files`) — the read set the hold is settled by,
+/// which is every file a text was taken of and nothing else; the held
+/// modules minted so far, by name
+/// (`minted`); whether the holds are settled, before which no file's
+/// standing is known (`holds_now`); the files holding a fn that links a
+/// scheduler (`linked_by`); the
+/// records a held file's line declared FLAT (`held_flat`); and the
+/// declarations whose OWN row has been filled from the record, by
+/// DeclId — a module mints every identity at once, but fills each
+/// row on the ask that names it, so a row that names another still
+/// unfilled in the same module can fill it first (`row_filled`); and what
+/// moved in each file's key when this build replaced its kept parts
+/// (`moved`); each open
+/// settlement's kept lines, innermost last (`settle_frames`), what each
+/// settlement read, by its ask (`settle_reads`), each reader's list generation
+/// and the reads seen under it (`read_gen`, `read_seen`, `read_gens`), the units being lowered,
+/// innermost last (`lowering`), and the consts each unit's lowering asked
+/// for, by the unit (`unit_asks`), the declaration each lowered body belongs to, by its
+/// name (`owners`).
+/// A read's expansion, memoized for the attempt: the reads it inherits and the
+/// run generation of the path it walked. A read expands differently as a fn than
+/// as a whole file, so the run generation — not a "seen" mark — invalidates it.
+type Followed = { reads: List<RunRead>, gen: int }
+
+/// A view's standing, memoized for the attempt: the file count and body-ask
+/// count it was judged under. `view_stands` judges the module and file facts a
+/// build is building, so a file minted or a body asked while the attempt runs
+/// makes the standing stale.
+type ViewStand = { files: int, asks: int, stands: bool }
+
+/// The name buckets one answer's run read, held for the group cell that stands for them.
+type Group = { owner: int, id: int, buckets: List<int> }
+
+/// THE NAME ENVIRONMENTS, as the modules' kept producers file them: the files declaring under
+/// each declaration name, component word and annotation mark; every extern; and the files
+/// declaring a kind that implements a trait for a type.
+@identity
+type NameEnvs = {
+    names: Cell<Map<string, List<string>>>,
+    words: Cell<Map<string, List<string>>>,
+    marks: Cell<Map<string, List<string>>>,
+    externs: Cell<List<ExternNote>>,
+    implementors: Cell<List<string>>,
+}
+
+fn new_name_envs() -> NameEnvs {
+    NameEnvs {
+        names: map_cell(),
+        words: map_cell(),
+        marks: map_cell(),
+        externs: list_cell(),
+        implementors: list_cell(),
+    }
+}
+
+/// ONE MODULE'S NAME ENVIRONMENT, as a value: under each declaration name, component word and
+/// annotation mark, the root-relative files declaring it, in file order; its externs; and the
+/// files declaring a kind that implements a trait for a type.
+@codec
+export type NameEnv = {
+    names: Map<string, List<string>>,
+    words: Map<string, List<string>>,
+    marks: Map<string, List<string>>,
+    externs: List<ExternNote>,
+    implementors: List<string>,
+}
+
+impl NameEnv {
+    /// Two environments as one: each name's files, this one's first.
+    fn joined(o: NameEnv) -> NameEnv {
+        NameEnv {
+            names: merged_files(self.names, o.names),
+            words: merged_files(self.words, o.words),
+            marks: merged_files(self.marks, o.marks),
+            externs: self.externs.concat(o.externs),
+            implementors: distinct(self.implementors.concat(o.implementors)),
+        }
+    }
+}
+
+/// Each key's files from both, `a`'s first, every file once.
+fn merged_files(a: Map<string, List<string>>, b: Map<string, List<string>>) -> Map<
+    string,
+    List<string>,
+> {
+    mut out = a
+    for key, files in b { out.set(key, distinct((out.get(key) ?? []).concat(files))) }
+    out
+}
+
+impl NameEnvs {
+    /// A module's environment filed into the program's.
+    fn noted(e: NameEnv) {
+        for key, files in e.names { filed_into(self.names, key, files) }
+        for key, files in e.words { filed_into(self.words, key, files) }
+        for key, files in e.marks { filed_into(self.marks, key, files) }
+        self.externs.set(self.externs.get().concat(e.externs))
+        for path in e.implementors { if !self.implementors.get().contains(path) { self.implementors.push(path) } }
+    }
+
+    /// The files a bucket reader's listing names.
+    fn listed(l: Listed) -> List<string> {
+        match l {
+            .Name(name) -> self.names.get().get(name) ?? [],
+            .Word(word) -> self.words.get().get(word) ?? [],
+            .Mark(mark) -> self.marks.get().get(mark) ?? [],
+            .Extern(name) -> [n.path for n in self.externs.get() if n.name == name],
+            .Hosted -> [n.path for n in self.externs.get() if n.hosted],
+        }
+    }
+}
+
+fn filed_into(map: Cell<Map<string, List<string>>>, key: string, files: List<string>) {
+    map.put(key, distinct((map.get().get(key) ?? []).concat(files)))
+}
+
+@identity
+type Hold = {
+    body_asks: Cell<List<string>>,
+    runs: Cell<Map<string, List<RunRead>>>,
+    read_gen: Cell<Map<string, int>>,
+    read_seen: Cell<Map<string, bool>>,
+    read_gens: Cell<int>,
+    ran_followed: Cell<Map<string, Followed>>,
+    runs_gen: Cell<Map<string, int>>,
+    view_standing: Cell<Map<string, ViewStand>>,
+    settle_reads: Cell<Map<string, List<RunRead>>>,
+    pending_reads: Cell<List<PendingRead>>,
+    pending_resolved: Cell<Map<string, string>>,
+    settling: Cell<List<string>>,
+    read_files: Cell<List<ReadFile>>,
+    /// The files held because their kept rows stand: their object keys are the rows', never re-derived.
+    /// The plain free fn names a module's forms moved by, from the forms a row stood on: per `module<TAB>digest`.
+    forms_moved: Cell<Map<string, Map<string, bool>>>,
+    /// Each judged file's run tokens off its module's row, decoded once per build.
+    lite_runs: Cell<Map<string, List<string>>>,
+    linked_by: Cell<List<string>>,
+    moved: Cell<Map<string, List<PartMoved>>>,
+    settle_frames: Cell<List<Cell<List<KeptLine>>>>,
+    lowering: Cell<List<int>>,
+    unit_asks: Cell<Map<string, Cell<Map<string, ConstAsk>>>>,
+    /// The family a frame's gathered name reads stand under as one read, the groups minted
+    /// for it, and each group's place by its owner's family and id.
+    closure: Cell<int>,
+    groups: Cell<List<Group>>,
+    group_index: Cell<Map<string, int>>,
+    owners: Cell<Map<string, DeclId>>,
+}
+
+/// One const a unit's lowering asked the settlement for.
+type ConstAsk = { file: FileId, root: SettleRoot, seats: List<SeatValue> }
+
+/// A read whose declaration's syntax must be parsed before a reader's hold can be
+/// decided: the file whose key carries it, and the read itself.
+type PendingRead = { reader: string, read: RunRead }
+
+/// A `collect`'s name, what it gathers by, from where, the order it gathers in, and what it
+/// reads of each member, one plan per projected field.
+type Gathering = {
+    name: string,
+    kind: CollectKind,
+    scope: CollectScope,
+    order: List<Plain>,
+    plans: List<FieldPlan>,
+}
+
+/// One line a settlement keeps: what it says, the unit's file when it names
+/// a unit, the bodies it covers, so the run's entered set can mark it when
+/// the settlement ends, and the wanted that lowers it again (empty when its
+/// name holds a node id, which an edit moves), and a unit's named read when its value is
+/// more than its file shows (a cross-file collect's members).
+type KeptLine = {
+    line: string,
+    unit: bool,
+    path: string,
+    bodies: List<string>,
+    wire: string,
+    read: Reading?,
+}
+
+/// A file's kept declaration wires by the name each declares — `kept` false when no read of
+/// its text as it stands kept lines.
+
+/// The query family's held value. A refusal remains here in full so a
+/// new revision can compare it, while a repeated read speaks nothing.
+/// The query family's held value. A refusal remains here in full so a
+/// new revision can compare it, while a repeated read speaks nothing.
+/// A SUCCESS holds the crossing itself — saids and the materializer
+/// read the same rows through the field protocol.
+@derive(Exemplar)
+enum LiftResult { Crossed(Lifted), Refused(Unsettled) }
+
+/// One package of the workspace: its key (the manifest's name; ""
+/// for a root without one), its root and source directories, its
+/// ordinal (the manifest query's key), and where it was named —
+/// absent for the root.
+export type Package = { key: string, root: string, src: string, ordinal: int, at: Loc?, origin: Origin }
+
+/// How a package entered the workspace: the root it was opened at, a
+/// manifest row (`at` is that row), or the toolchain's std root.
+export enum Origin {
+    Root
+    Declared
+    Toolchain
+}
+
+/// One timed phase, in nanoseconds of the workspace's clock.
+export type Phase = { name: string, ns: int, mints: int = 0, settles: int = 0 }
+
+impl Phase {
+    fn shown() -> string { "${self.name} ${self.ns / 1000000}ms" }
+
+    /// The same, with what the phase minted and settled.
+    fn counted() -> string { "${self.shown()} ${self.mints} mints ${self.settles} settles" }
+}
+
+/// A PHASE CLOCK: each mark closes the span since the last one.
+export type Marks = { now: fn() -> int, counts: fn() -> List<int>, last: int, seen: List<int>, spans: List<Phase> }
+
+impl Marks {
+    mut fn mark(name: string) {
+        let at = self.now()
+        let c = self.counts()
+        self
+            .spans
+            .push(
+                Phase {
+                    name: name,
+                    ns: at - self.last,
+                    mints: c[0] - self.seen[0],
+                    settles: c[1] - self.seen[1],
+                },
+            )
+        self.last = at
+        self.seen = c
+    }
+
+    /// Closes the span since the last mark under the next of `names` — the phase
+    /// a run of them is in is the one after those already closed.
+    mut fn next(names: List<string>) {
+        if self.spans.length < names.length { self.mark(names[self.spans.length]) }
+    }
+}
+
+/// EVERY NAME ONCE, SUMMED — the one grouping every `--time` report
+/// wants: a coarse phase pushed once reads unchanged, a per-file span
+/// pushed hundreds of times folds to its total instead of flooding
+/// the line with one entry per file.
+export fn grouped_phases(phases: List<Phase>) -> List<Phase> {
+    [Phase {
+        name: n,
+        ns: phase_total(phases, n),
+        mints: phase_sum([p.mints for p in phases if p.name == n]),
+        settles: phase_sum([p.settles for p in phases if p.name == n]),
+    } for n in distinct([p.name for p in phases])]
+}
+
+fn phase_sum(counts: List<int>) -> int { counts.fold(0, (sum, c) -> sum + c) }
+
+export fn phase_total(phases: List<Phase>, name: string) -> int {
+    mut total = 0
+    for p in phases { if p.name == name { total = total + p.ns } }
+    total
+}
+
+/// `Parsed`'s fingerprint over a `DbRow` value — the words a block
+/// import brings in are folded so a dependency's grammar appearing
+/// re-parses this file.
+
+/// A PARSE'S OWN DIGEST — structural fingerprints and the block words it read, never a byte or
+/// a comment. The family's cutoff and the record's `syntax` column are the same value, so a
+/// file whose text moved but whose syntax did not is the same file to both.
+export fn fingerprint_of_parsed(p: Parsed) -> int {
+    fp(121, [program_hash(p), fp_str(joined(sorted_texts(p.store.sublang_words()), ","))])
+}
+
+fn key(f: Family, arg: int) -> Key {
+    Key { family: f.ordinal, arg: arg }
+}
+
+/// A family's arg, as the file, module or declaration it keys by.
+fn file_at(arg: int) -> FileId { FileId { index: arg } }
+
+/// A program's fingerprint — the fold of its statements'.
+impl Parsed {
+    /// A parse folded by its structure: what an in-process answer of one digests by.
+    fn fingerprint() -> int { fingerprint_of_parsed(self) }
+}
+
+fn program_hash(p: Parsed) -> int {
+    fp(17, [p.store.stmt_fingerprint(s) for s in p.stmts])
+}
+
+/// Text with every byte but a line break turned to a space.
+fn blanked(text: string) -> string {
+    let starts = new_source_file("", text).line_starts
+    let ends = [at - 1 for at in starts.drop(1)].concat([text.length])
+    joined([repeat(" ", ends[j] - at) for j, at in starts], "\n")
+}
