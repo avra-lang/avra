@@ -13,6 +13,7 @@
 #
 #   sh tools/tool_witnesses.sh list         each witness and who runs it
 #   sh tools/tool_witnesses.sh run          run the ones that are this keeper's
+#                                           (TOOL_WITNESSES_PART=k/n: the k-th of n shares, dealt in turn)
 #   sh tools/tool_witnesses.sh --self-test
 # A root other than the tree is `WITNESS_ROOT=<dir>`.
 
@@ -59,7 +60,10 @@ run() {
         echo "tool-witnesses: OWED tools/$name — $rest"
     done
     fail="" n=0
-    for w in $(list | awk '$3 == "here" { print $1 ":" $2 }'); do
+    # TOOL_WITNESSES_PART=k/n runs the k-th of n shares of them, dealt in turn (the gate's parts)
+    part=${TOOL_WITNESSES_PART:-1/1}
+    k=${part%/*} of=${part#*/}
+    for w in $(list | awk -v k="$k" -v n="$of" '$3 == "here" { if ((i++ % n) == k - 1) print $1 ":" $2 }'); do
         name=${w%%:*} mode=${w#*:}
         n=$((n + 1))
         case "$name" in *.py) cmd=python3 ;; *) cmd=sh ;; esac

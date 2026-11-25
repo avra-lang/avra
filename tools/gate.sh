@@ -73,7 +73,7 @@ edit-d     witness_program_edit, WITNESS_ONLY=10, the frontier walk checked
 edit-e     witness_program_edit, WITNESS_ONLY=rename, the frontier walk checked
 keepers-mutations  make runtime-mutations alone: every scheduler break some runtime test must fail; then a planted fault
 keepers-warm  make warm-edit alone: the warm edits' work held to its ceilings; then a planted fault
-keepers-try   make try, then the keepers that read its compiler and warm store (speed-ratchet, tool-witnesses); then a planted fault
+keepers-try   make try over the tree's own store, then speed-ratchet, which reads that warm store; then a planted fault
 EOF
     splits | while IFS='|' read -r family parts what; do
         n=1
@@ -101,6 +101,7 @@ needs|6|witness_program_needs over every package and refusal witness, dealt in t
 witness-b|5|the witnesses and attacks of witness_b_rows, dealt in turn
 cost-warm|7|make cost, COST_PART=warm: the cli's cold check, then the warm edits (COST_EDITS) dealt in turn, the noop in every part
 keepers|4|every other keeper of the Makefile's groups (make keepers-listed) a row of its own, dealt in turn, a planted fault last
+keepers-witnesses|4|make try, then tool-witnesses' own share of the tools' witnesses (TOOL_WITNESSES_PART), a planted fault last
 EOF
 }
 
@@ -608,9 +609,11 @@ keepers_dealt() {
 # so and refuses (a SKIPPED tool is no pass): the row fails on its exit like any other.
 keeper_row() {
     k=$1
+    # an assignment `$2` the keeper runs under (a part's share), or none
+    set -- env ${2:-}
     if listed tools/gate/keepers.pinned | cut -d' ' -f1 | grep -qxF "$k"; then
         rows=$((rows + 1))
-        if sh tools/bounded.sh "$ROW_SECS" make -s -o avra "$k" >"$out/keeper-$k.log" 2>&1; then
+        if sh tools/bounded.sh "$ROW_SECS" "$@" make -s -o avra "$k" >"$out/keeper-$k.log" 2>&1; then
             failed=$((failed + 1))
             failures="$failures keeper-$k"
             echo "row keeper-$k FAIL — pinned in tools/gate/keepers.pinned, and it passes: take its pin away" >>"$out/rows"
@@ -619,7 +622,7 @@ keeper_row() {
         fi
         return
     fi
-    row "keeper-$k" make -s -o avra "$k"
+    row "keeper-$k" "$@" make -s -o avra "$k"
 }
 
 # A PART'S PLANTED FAULT: a keeper over a copy of the tree with one fault planted in what it judges
@@ -674,6 +677,11 @@ part_of() {
         needs) row needs-witness sh tools/witness_program_needs.sh build/avra $(sh tools/witness_program_needs.sh --cases | dealt "$(($2 - 1))" "$3") ;;
         witness-b) rows_dealt witness_b_rows "$2" "$3" ;;
         keepers) keepers_part "$2" "$3" ;;
+        keepers-witnesses)
+            row try make -s -o avra try
+            keeper_row tool-witnesses "TOOL_WITNESSES_PART=$2/$3"
+            planted_row "$2"
+            ;;
         cost-warm) slice_cost warm "$2/$3" ;;
     esac
 }
@@ -791,9 +799,10 @@ if compiler; then
         keepers-mutations) keeper_row runtime-mutations; planted_row 1 ;;
         keepers-warm) keeper_row warm-edit; planted_row 2 ;;
         keepers-try)
-            row try make -s -o avra try
+            # speed-ratchet reads the warm store at the tree's own .avra-cache (tools/speed_measure.sh),
+            # never a slice's machine store, so `make try` fills that one
+            row try env AVRA_CACHE_DIR="$root/.avra-cache" make -s -o avra try
             keeper_row speed-ratchet
-            keeper_row tool-witnesses
             planted_row 3
             ;;
         *) part_of "${slice%-*}" "${slice##*-}" "$(splits | awk -F'|' -v f="${slice%-*}" '$1 == f { print $2 }')" ;;
