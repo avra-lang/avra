@@ -98,7 +98,8 @@ impl ReadFacts for ProgramReads {
         if ty.dynamic || ty.nullable() { return [StatePlace.Unknown] }
         let reached = (self.methods)(ty, m.name, false)
         let held = if own_shape_reads(ty, m.name) == RowReads.Handed && ty.own() == OwnType.Cell { some_list(self.root_through(m.subject)) } else { [] }
-        let unapplied = if applies(ty, m.name) && m.args.any((a) -> !self.store.expr_is_closure(a) && ((self.types)(a)?.callable() ?? true)) { [StatePlace.Unknown] } else { [] }
+        let unapplied = if applies(ty, m.name) &&
+            m.args.any((a) -> !self.store.expr_is_closure(a) && (self.types)(a)?.callable() ?? true) { [StatePlace.Unknown] } else { [] }
         reached.concat(held).concat(unapplied)
     }
 
@@ -278,7 +279,14 @@ export fn method_reads(
     let signed? = signed_method(engine, impls[0], name, statics) else { return unnamed_reads() }
     let body = elaborated(engine, impls[0].file, signed.signed)
     let seats = [p.state for p in signed.signed.signature.params]
-    body_reads(engine, impls[0].file, body, seats, method_reads_key(file, owner, name, statics, reader), structural)
+    body_reads(
+        engine,
+        impls[0].file,
+        body,
+        seats,
+        method_reads_key(file, owner, name, statics, reader),
+        structural,
+    )
 }
 
 /// What the elaborated `body` in `file` reads by itself, keyed under `here`, and the bodies it calls,
@@ -299,7 +307,14 @@ fn body_reads(
         reach: (c: CalledFn) -> called(calls, c),
         typed: true,
         types: (e: ExprId) -> if e.index < body.core.length { body.core[e.index] } else { null },
-        methods: (ty: SignedType, m: string, statics: bool) -> method_reached(engine, calls, ty, m, statics, file.package_name),
+        methods: (ty: SignedType, m: string, statics: bool) -> method_reached(
+            engine,
+            calls,
+            ty,
+            m,
+            statics,
+            file.package_name,
+        ),
         fields: (ty: SignedType, f: string) -> holds_state(engine, ty, f),
         seats: seats,
     }
@@ -369,7 +384,13 @@ fn holds_state(engine: QueryEngine, ty: SignedType, name: string) -> bool {
 
 /// A method's or a static fn's key: the type it's of, where that's declared, its name, which it is,
 /// and the package that reads it.
-fn method_reads_key(file: SourceFileAddress, owner: string, name: string, statics: bool, reader: string) -> string {
+fn method_reads_key(
+    file: SourceFileAddress,
+    owner: string,
+    name: string,
+    statics: bool,
+    reader: string,
+) -> string {
     "${METHOD_MARK}${template_home(file)}\t${owner}\t${name}\t${if statics { STATIC_KEYWORD } else { METHOD_WORD }}\t${reader}"
 }
 
