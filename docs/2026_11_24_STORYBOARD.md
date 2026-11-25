@@ -430,3 +430,12 @@ std-ui_gallery 50/50 with the golden.
 **A Mac compiler of this head** cannot be made here (a Linux container, with no macOS SDK or
 toolchain). On a Mac, `make bootstrap` from the landed head builds it, or the pipeline's own build
 once this lands.
+
+### The first Firefox run, and what it changed
+
+The gate's first Firefox run (train22) failed the storyboard row on two STALE pins. On d7cd84d9,
+`avra dev` serves the bundled picture and Firefox draws it, so `pictured icon/` and `pictured image/`
+fail no more, and the baseline falls to `# at most 15`. Every other failure was pinned. The summary
+read `fail` for a family whose failures were all pinned, and that hid the real cause, so a family now
+reads `ok`, `pinned` (n failures, each on its ruling) or `FAIL`. Firefox 158 here: 585 frames, 51
+failures, all pinned, every mutant caught, exit 0 (86 s with the mutants).
