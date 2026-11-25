@@ -1,0 +1,4 @@
+echo "== fmt"; build/avra fmt --check packages/std-avrac/src/core/expr/facts.av packages/std-avrac/src/core/facts_derive.av packages/std-avrac/src/core/makers_derive.av packages/std-avrac/src/core/store.av packages/std-avrac/src/features/builder.av packages/std-avrac/src/features/expr_spine/builders.av packages/std-avrac/src/features/expr_spine/mod.av packages/std-avrac/src/features/expr_spine/pipe.av packages/std-avrac/src/features/tables/mod.av ; echo "fmt $?"
+echo "== idioms"; build/avra check packages/std-avrac --baseline tools/idioms.baseline > /tmp/idi.txt 2>&1; echo "idioms $?"; grep -E "^(error|warning)\[" /tmp/idi.txt | sort | uniq -c | sort -rn | head; tail -n 3 /tmp/idi.txt
+echo "== store-quiet under base"; cp build/avra build/avra.head; cp build/avra.base build/avra; make -s cache-attacks-b2 2>&1 | tail -n 3; cp build/avra.head build/avra
+echo "== store-quiet under head again"; make -s cache-attacks-b2 2>&1 | tail -n 3

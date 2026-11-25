@@ -1,0 +1,5 @@
+echo "== keepers-static"; make -s keepers-static 2>&1 | tail -n 12; echo "static $?"
+echo "== witnesses"; make -s witnesses 2>&1 | tail -n 4; echo "witnesses $?"
+echo "== idioms"; build/avra check packages/std-avrac --baseline tools/idioms.baseline > /tmp/idi.txt 2>&1; echo "idioms $?"
+echo "== cache-attacks-a"; make -s cache-attacks-a 2>&1 | tail -n 3; echo "a $?"
+echo "== cache-attacks-b1"; make -s cache-attacks-b1 2>&1 | tail -n 3; echo "b1 $?"
