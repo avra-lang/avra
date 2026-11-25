@@ -1,0 +1,72 @@
+// `identity.text_compare`: a fn `@std/program` remembers tells identities apart by key, so a `==`
+// or `!=` there whose side reads an identity's text is warned. The toolchain carries a stand-in
+// `@std/program` declaring the address and the remembering mark, judged by DECLARATION: a package's
+// own `query`, or its own record named `SourceFileAddress`, is never one.
+use @std.avrac.testing.{vendored_prelude}
+use @std.avrac.testing.held.{held_at}
+
+const ADDRESS: string = "export type SourceFileAddress = { package_name: string, path_in_package: string }\n"
+
+const SAVED_QUERY: string = "export fn query(n: int, pass: string) -> int { n }\n"
+
+const USES: string = "use @std.program.address.{SourceFileAddress}\nuse @std.program.saved_query.{query}\n\n"
+
+/// The report of `main`, judged beside the stand-in `@std/program`.
+fn checked(main: string) -> string {
+    let files = vendored_prelude(
+        {
+            "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+            "/w/src/main.av": main,
+            "/std/std-program/avra.toml": "[package]\nname = \"@std/program\"\nversion = \"0.0.1\"\n",
+            "/std/std-program/src/address.av": ADDRESS,
+            "/std/std-program/src/saved_query.av": SAVED_QUERY,
+        },
+    )
+    held_at(files, "/w").judged_at("/w/src/main.av").report()
+}
+
+fn warned(main: string) -> bool { checked(main).contains("[identity.text_compare]") }
+
+spec "compiler (identity text compare)" {
+    given "a remembered fn comparing two files' paths" {
+        then "`==` is warned, naming the record and the field" {
+            let out = checked(
+                USES +
+                    "@query(\"resolve\")\nfn same(a: SourceFileAddress, b: SourceFileAddress) -> bool { a.path_in_package == b.path_in_package }\n",
+            )
+            out.contains("[identity.text_compare]") &&
+                out.contains("`==` compares `SourceFileAddress.path_in_package` as text")
+        }
+        then "`!=` against a literal is warned too" {
+            warned(
+                USES +
+                    "@query(\"resolve\")\nfn rooted(a: SourceFileAddress) -> bool { a.package_name != \"app\" }\n",
+            )
+        }
+    }
+    given "the same compare where nothing remembers the fn" {
+        then "a plain fn is never warned" {
+            !warned(
+                USES +
+                    "fn same(a: SourceFileAddress, b: SourceFileAddress) -> bool { a.path_in_package == b.path_in_package }\n",
+            )
+        }
+        then "a package's own `query` is no remembering mark" {
+            !warned(
+                "use @std.program.address.{SourceFileAddress}\n\nfn query(n: int, pass: string) -> int { n }\n\n@query(\"resolve\")\nfn same(a: SourceFileAddress, b: SourceFileAddress) -> bool { a.path_in_package == b.path_in_package }\n",
+            )
+        }
+    }
+    given "a remembered fn comparing text that spells no identity" {
+        then "a record of the package's own, though named like an address, is never warned" {
+            !warned(
+                "use @std.program.saved_query.{query}\n\ntype SourceFileAddress = { package_name: string, path_in_package: string }\n\n@query(\"resolve\")\nfn same(a: SourceFileAddress, b: SourceFileAddress) -> bool { a.path_in_package == b.path_in_package }\n",
+            )
+        }
+        then "two plain texts are never warned" {
+            !warned(
+                USES + "@query(\"resolve\")\nfn same(a: string, b: string) -> bool { a == b }\n",
+            )
+        }
+    }
+}

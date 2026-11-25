@@ -1,0 +1,121 @@
+//! WHERE A REMEMBERED BODY TELLS IDENTITIES APART BY THEIR TEXT: a `==` or `!=` over two texts, in a
+//! fn `@std/program` remembers (`@query`, `@cut_query`, …), one of whose sides reads the text of an
+//! identity — a file's or a directory's address, a module's package, a declared name. An identity is
+//! told apart by its key, minted once; its text is what it prints as. Read off the item's typed nodes.
+use core.{At, BinOp, ExprId, OwnType, NodeKind, SignedType}
+use compiler.laws.{Found, Reach, law}
+use diagnostics.{Voice}
+use @std.program.address.{SourceFileAddress}
+
+/// A text field that spells an identity: the package declaring its record, the record, the field.
+type IdentityText = { package: string, record: string, field: string }
+
+/// Every text field that spells an identity.
+const IDENTITY_TEXTS: List<IdentityText> = [
+    IdentityText { package: "@std/program", record: "SourceFileAddress", field: "package_name" },
+    IdentityText { package: "@std/program", record: "SourceFileAddress", field: "path_in_package" },
+    IdentityText { package: "@std/program", record: "DirectoryAddress", field: "package_name" },
+    IdentityText { package: "@std/program", record: "DirectoryAddress", field: "path_in_package" },
+    IdentityText { package: "@std/program", record: "ModuleAddress", field: "package_name" },
+    IdentityText { package: "@std/avrac", record: "DeclaredName", field: "name" },
+]
+
+/// The package whose marks make a fn's body remembered, and the module declaring them.
+const REMEMBERING_PACKAGE: string = "@std/program"
+
+const REMEMBERING_MODULE: string = "saved_query.av"
+
+/// Whether the item `view` shows is read cleanly and is a fn `@std/program` remembers.
+fn remembered_body(view: ItemView) -> bool {
+    if !read_cleanly(view) { return false }
+    let store = view.item.store
+    view.item.stmts.any((s) -> store.annotations_of(s).any((a) -> remembers(view, a.name)))
+}
+
+/// Whether the annotation word `word` names a mark `@std/program`'s saved queries declare.
+fn remembers(view: ItemView, word: string) -> bool {
+    let d? = resolved(view.engine, view.file, Space.Value, word).named() else { return false }
+    d.file.package_name == REMEMBERING_PACKAGE &&
+        d.file.path_in_package.ends_with(REMEMBERING_MODULE)
+}
+
+/// The `==` or `!=` at `at` of `view`'s item, its file's own, over two texts, one of whose sides reads
+/// an identity's text: handed the operator and the identity's record and field.
+fn identity_compared(view: ItemView, at: At) -> List<Found> {
+    let e? = at.expr() else { return [] }
+    let t? = typed_of(view) else { return [] }
+    if t.store.home_of(e) != null { return [] }
+    let parts? = compared(t, e) else { return [] }
+    if !texts(t, parts.left) || !texts(t, parts.right) { return [] }
+    let read? = identity_read(t, parts.left) ?? identity_read(t, parts.right) else { return [] }
+    [Found { at: t.store.expr_span(e), args: [parts.symbol, read.record, read.field] }]
+}
+
+/// The two sides of an equality compare and its symbol.
+type Compared = { left: ExprId, right: ExprId, symbol: string }
+
+/// The node `e` as an equality compare; absent for any other node.
+fn compared(t: TypedNodes, e: ExprId) -> Compared? {
+    match t.store.expr(e) {
+        .Binary(.Eq, l, r) -> Compared { left: l, right: r, symbol: "==" },
+        .Binary(.Ne, l, r) -> Compared { left: l, right: r, symbol: "!=" },
+        rest -> null,
+    }
+}
+
+/// Whether the node `e` is typed as text, present or absent.
+fn texts(t: TypedNodes, e: ExprId) -> bool {
+    let ty? = (t.type_at)(e.index) else { return false }
+    !ty.dynamic && ty.owns(OwnType.Str)
+}
+
+/// The identity text the node `e` reads, where it is a field read of one: absent for any other node.
+fn identity_read(t: TypedNodes, e: ExprId) -> IdentityText? {
+    let read? = field_read(t, e) else { return null }
+    let subject? = (t.type_at)(read.subject.index) else { return null }
+    let file? = declared_file(subject) else { return null }
+    let record = subject.word()
+    IDENTITY_TEXTS
+        .find(it.package == file.package_name && it.record == record && it.field == read.field)
+}
+
+/// A field read: what is read, and the field.
+type FieldRead = { subject: ExprId, field: string }
+
+/// The node `e` as a field read; absent for any other node.
+fn field_read(t: TypedNodes, e: ExprId) -> FieldRead? {
+    match t.store.expr(e) {
+        .Prop(subject, name) -> FieldRead { subject: subject, field: name.of },
+        rest -> null,
+    }
+}
+
+/// The file declaring the record `ty` names; absent for a type no file declares.
+fn declared_file(ty: SignedType) -> SourceFileAddress? {
+    match ty.head { .Declared(file, _) -> file, rest -> null }
+}
+
+/// an identity is told apart by its key, never by its text
+export law identity_text_compare {
+    kind: "identity.text_compare"
+    on: [NodeKind.ExprBinary]
+    judge: identity_compared
+    reach: Reach.Typed
+    judged_if: remembered_body
+    warns: true
+    voice: identity_compare_words
+    witness: "use @std.program.address.{SourceFileAddress}\nuse @std.program.saved_query.{query}\nuse @std.program.query_engine.{QueryEngine}\n\n@query(\"resolve\")\nfn same(_engine: QueryEngine, a: SourceFileAddress, b: SourceFileAddress) -> bool { a.path_in_package == b.path_in_package }\n"
+}
+
+fn identity_compare_words(a: List<string>) -> Voice { text_compared(a[0], a[1], a[2]) }
+
+// ── voices ──
+
+/// A remembered body comparing an identity by its text.
+fn text_compared(symbol: string, record: string, field: string) -> Voice {
+    Voice {
+        message: "an identity is told apart by its key, never by its text",
+        label: "`${symbol}` compares `${record}.${field}` as text",
+        help: "compare the identities' keys — `text_key(a).same_as(text_key(b))` (`@std.program.interned`) — minted once where each is made",
+    }
+}
