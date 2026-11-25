@@ -14,7 +14,7 @@ set -u
 A=${SHARE_ATTACK_AVRA:-$(pwd)/avra}
 R=build/share-merge-attack
 find "$R" -delete 2>/dev/null; mkdir -p "$R"
-unset AVRA_PROGRAM AVRA_PROGRAM_NET AVRA_MERGED_HERE AVRA_MERGED_APART_FROM AVRA_SHARE_UNMERGED
+unset AVRA_MERGED_HERE AVRA_MERGED_APART_FROM AVRA_SHARE_UNMERGED
 
 # The package at `$R/$1`: an entry printing the sum of enough files that every wave forks.
 package() {

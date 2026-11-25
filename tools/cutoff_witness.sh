@@ -15,8 +15,8 @@ A=${1:-build/avra}
 CEILING=tools/cutoff.ceiling
 R=build/cutoff-witness
 rm -rf "$R" && mkdir -p "$R"
-unset AVRA_PROGRAM AVRA_PROGRAM_MODE AVRA_WORK_AHEAD_OFF AVRA_QUERY_TIMES
-export AVRA_PROGRAM_NET=0 AVRA_STORE_KEPT_HERE=1
+unset AVRA_PROGRAM_MODE AVRA_WORK_AHEAD_OFF AVRA_QUERY_TIMES
+export AVRA_STORE_KEPT_HERE=1
 F=packages/cli/src/commands/cache.av
 before='println("avra cache log: no pack")'
 after='println("avra cache log: no packs")'

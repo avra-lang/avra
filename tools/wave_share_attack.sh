@@ -16,7 +16,7 @@ set -u
 A=${WAVE_ATTACK_AVRA:-$(pwd)/avra}
 R=build/wave-share-attack
 find "$R" -delete 2>/dev/null; mkdir -p "$R"
-unset AVRA_PROGRAM AVRA_PROGRAM_NET AVRA_WAVE_ALONE AVRA_SHARED_KILL_AT AVRA_SHARED_TRAP_AT AVRA_WORK_AHEAD_CORES
+unset AVRA_WAVE_ALONE AVRA_SHARED_KILL_AT AVRA_SHARED_TRAP_AT AVRA_WORK_AHEAD_CORES
 
 # The package: forty files, each calling a fn of one shared module, and an entry summing them.
 package() {

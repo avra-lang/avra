@@ -35,7 +35,7 @@ mkdir -p "$home/src/embeds/tests/reader/art"
 printf 'note!' >"$home/src/embeds/tests/reader/art/note.txt"
 suite "$home/src/plain/tests/printer" printer 'println("printed")\n' "printed"
 
-(cd "$home" && env -u AVRA_PROGRAM "$avra" test src/embeds src/plain >"$tmp/both.log" 2>&1) || {
+(cd "$home" && "$avra" test src/embeds src/plain >"$tmp/both.log" 2>&1) || {
     cat "$tmp/both.log" >&2
     echo "witness_two_suites: one process over both suites failed" >&2
     exit 1

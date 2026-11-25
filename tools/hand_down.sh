@@ -33,7 +33,7 @@ pack() {
     refused="$out.refused"
     find "$refused" -delete 2>/dev/null
     # shellcheck disable=SC2086
-    { tar -cf - --exclude=build/avra --exclude=build/avra-tools-compiler --exclude='build/avra-tools/*/compiler' --exclude=.avra-cache/obj --exclude=.avra-cache/bin $dirs || : > "$refused"; } | gzip -1 > "$out" || return 1
+    { tar -cf - --exclude=build/avra --exclude=build/wisp-compiler --exclude='build/wisp/*/compiler' --exclude=.avra-cache/obj --exclude=.avra-cache/bin $dirs || : > "$refused"; } | gzip -1 > "$out" || return 1
     [ ! -f "$refused" ] || { find "$refused" -delete; echo "::error::tar refused the hand-down"; return 1; }
     size=$(wc -c < "$out" | tr -d ' ')
     echo "hand-down: $out is $(( size / 1048576 )) MB compressed"

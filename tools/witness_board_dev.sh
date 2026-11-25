@@ -17,7 +17,7 @@ trap 'kill $dev 2>/dev/null; pkill -P "${dev:-0}" 2>/dev/null; rm -rf "$work"' E
 mkdir -p "$work/tools" "$work/cache/home"
 cp -R "$here/ui-board" "$work/tools/ui-board"
 find "$work/tools/ui-board" -name '.avra-cache' -prune -exec rm -rf {} + 2> /dev/null
-(cd "$tree" && HOME="$work/cache/home" AVRA_CACHE_DIR="$work/cache" AVRA_MACHINE_STORE=0 AVRA_PROGRAM_NET=0 \
+(cd "$tree" && HOME="$work/cache/home" AVRA_CACHE_DIR="$work/cache" AVRA_MACHINE_STORE=0 \
     BOARD_DB="$work/board.db" exec "$avra" dev --port 0 "$work/tools/ui-board") > "$work/dev.out" 2> "$work/dev.err" &
 dev=$!
 tries=0

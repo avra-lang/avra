@@ -21,7 +21,7 @@ verdict=FAIL
 finish() { find "$tmp" -delete; echo "witness_layered_link: $verdict"; }
 trap finish EXIT
 [ -x "$avra" ] || { echo "witness_layered_link: no compiler at $avra" >&2; exit 1; }
-export AVRA_PROGRAM=1 AVRA_PROGRAM_MODE=dev AVRA_LINK_TRACE=1 AVRA_CACHE_DIR="$tmp/machine"
+export AVRA_PROGRAM_MODE=dev AVRA_LINK_TRACE=1 AVRA_CACHE_DIR="$tmp/machine"
 mkdir -p "$tmp/machine" "$tmp/p/src"
 p="$tmp/p"
 layers="$p/.avra-cache/tapes-build/layers"

@@ -81,7 +81,7 @@ said() {
 judged_alone() {
     name=$1
     from="$cases_dir/$name"
-    (cd "$tmp/$name" && AVRA_PROGRAM=1 AVRA_PROGRAM_NET=0 "$avra" build ${target:+--target "$target"} . >"$tmp/$name.new" 2>&1)
+    (cd "$tmp/$name" && "$avra" build ${target:+--target "$target"} . >"$tmp/$name.new" 2>&1)
     new=$?
     said "$name" new >"$tmp/$name.new.said"
     if [ -n "$target" ] && [ "$new" = 2 ]; then return 2; fi

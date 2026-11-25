@@ -25,7 +25,7 @@ board() {
 # built <name>: the copy built on the witness's own store
 built() {
     (cd "$tree" && HOME="$work/home" AVRA_CACHE_DIR="$work/home/cache" AVRA_MACHINE_STORE_DIR="$work/store" \
-        AVRA_PROGRAM_NET=0 "$avra" build "$work/$1/tools/ui-board") > "$work/$1.out" 2> "$work/$1.err"
+        "$avra" build "$work/$1/tools/ui-board") > "$work/$1.out" 2> "$work/$1.err"
 }
 board edited
 built edited || { echo "store-broken-edit: the board's server page did not build at first"; grep -v '^warning' "$work/edited.err" | tail -3; exit 1; }

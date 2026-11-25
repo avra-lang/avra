@@ -26,7 +26,7 @@ make --no-print-directory CFLAGS_avra_runtime="$counted" CFLAGS_avra_hot="$count
 # THE MINTED BOXES ARE NAMED: each box a runtime row makes is counted by
 # its type (AVRA_CENSUS_TYPES), the `type:` table.
 # THE CENSUS COUNTS THE COMPILER'S OWN WORK: the old path's check the net runs first is not that work.
-AVRA_PROGRAM_NET=0 AVRA_FRAME_POINTERS=1 AVRA_INLINE_RUNTIME=0 AVRA_CENSUS_TYPES=1 AVRA_PROGRAM_MODE=release \
+AVRA_FRAME_POINTERS=1 AVRA_INLINE_RUNTIME=0 AVRA_CENSUS_TYPES=1 AVRA_PROGRAM_MODE=release \
     "$builder" build packages/cli > build/census-build.out 2>&1 || {
     tail -20 build/census-build.out; echo "census: the census compiler did not build"; exit 1; }
 # A BINARY THE PROGRAM LAYER PLACES IS ITS KEPT BINARY, LINKED: a census compiler left from an earlier

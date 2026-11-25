@@ -13,7 +13,6 @@ avra=${1:-build/avra-try}
 [ -x "$avra" ] || { echo "witness_place_kill: no compiler at $avra" >&2; exit 1; }
 tmp=$(mktemp -d)
 export AVRA_CACHE_DIR="$tmp/machine"
-export AVRA_PROGRAM=1
 # the stores are copied, emptied and read between builds, so each build saves its own before it answers
 export AVRA_STORE_KEPT_HERE=1
 # A PRODUCT COMPARED BYTE FOR BYTE IS THE RELEASE ONE: a dev build's binary is an overlay linked

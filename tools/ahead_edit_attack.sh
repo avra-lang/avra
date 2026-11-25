@@ -12,7 +12,7 @@ set -u
 A=${AHEAD_ATTACK_AVRA:-$(pwd)/avra}
 R=build/ahead-edit-attack
 rm -rf "$R" && mkdir -p "$R"
-unset AVRA_PROGRAM AVRA_PROGRAM_NET AVRA_AHEAD_EDIT AVRA_AHEAD_UNPROVEN
+unset AVRA_AHEAD_EDIT AVRA_AHEAD_UNPROVEN
 
 # The package: an entry printing `word()` and the sum of enough files that every wave forks.
 package() {

@@ -160,7 +160,7 @@ so no PR run publishes a binary.
 | `gate` | any non-push run with a changed `.av` or an affected package; `fmt` + idioms |
 | `cache-attacks` | whenever `cache=1` (a push to `main`, a hand-run gate, or a PR that reaches the store or the attacks); two shards: `cache-attacks-a` (`tools/cache_attacks.sh`) and `cache-attacks-b` (the other attacks, plus `code-hash-attacks`) |
 | `flow-gate` | whenever `runtime/` moved |
-| `runtime-keep` | the C runtime's own tests and mutation breaks: on a PR only when `runtime/`, the Makefile or `tools/memcap.sh` changed (`sh tools/avra_tools.sh ci_path_gate`); always on main's push and a hand-run |
+| `runtime-keep` | the C runtime's own tests and mutation breaks: on a PR only when `runtime/`, the Makefile or `tools/memcap.sh` changed (`./wisp ci_path_gate`); always on main's push and a hand-run |
 | `suites` | any non-push run with a non-empty affected closure; sharded (4 shards) |
 | `codecs` | a PR whose diff reaches the compiler source or the reader |
 | `test` | the aggregate required check, every run |
@@ -217,7 +217,7 @@ a loaded desktop; the Sprites are where heavy work runs.
 Installs the checks' toolchain (`.github/ci/packages.txt`, the same list
 the CI image reads), points the tree's `${LLVM_PREFIX}` at the distro
 LLVM, and leaves a working `build/avra`. Idempotent, so it is safe on
-every start. A run started by `tools/sp` is provisioned by
+every start. A run started by `tools/work run --sprite` is provisioned by
 `tools/sprite-remote.sh` instead.
 
     make sprite-check             # does a fresh Sprite need a build?
@@ -293,11 +293,6 @@ run again from its first line and answers its status.
 
 `test` is the lane's convenience: it runs what the affected closure owes
 on the Sprite.
-
-### The old spelling
-
-`tools/sp` is the old spelling of `tools/work run`: it execs `tools/work
-run` against this worktree's Sprite. New work uses `tools/work`.
 
 ---
 

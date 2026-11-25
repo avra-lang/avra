@@ -14,7 +14,7 @@ set -u
 A=${BESIDE_ATTACK_AVRA:-$(pwd)/avra}
 R=build/beside-attack
 find "$R" -delete 2>/dev/null; mkdir -p "$R"
-unset AVRA_PROGRAM AVRA_PROGRAM_NET AVRA_BESIDE AVRA_WORK_AHEAD_OFF AVRA_QUERY_TIMES
+unset AVRA_BESIDE AVRA_WORK_AHEAD_OFF AVRA_QUERY_TIMES
 
 # The package at `$R/pkg`: an entry printing the sum of enough files that every wave forks; with
 # `$1` set, one file answers a string where it says an int.
@@ -46,11 +46,10 @@ built() {
 binary() { echo "$1" | sed 's/ beside=.*//'; }
 field() { echo "$1" | tr ' ' '\n' | grep "^$2=" | cut -d= -f2; }
 
-# The refused package built cold under the settings `$@`, the program layer left to refuse it
-# (`AVRA_PROGRAM_NET=0`): its exit status, then what it said.
+# The refused package built cold under the settings `$@`: its exit status, then what it said.
 refused() {
     package refused
-    env AVRA_PROGRAM_NET=0 "$@" "$A" build "$R/pkg" > "$R/refused.out" 2>&1
+    env "$@" "$A" build "$R/pkg" > "$R/refused.out" 2>&1
     echo "exit=$?"
     cat "$R/refused.out"
 }

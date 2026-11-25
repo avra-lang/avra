@@ -27,7 +27,7 @@ failed=0
 for p in "$@"; do
     [ -d "$p" ] || { echo "witness_program_waits: no package at $p" >&2; failed=1; continue; }
     mkdir -p "$tmp/cache"
-    AVRA_CACHE_DIR="$tmp/cache" AVRA_PROGRAM_NET=0 "$avra" tapes --waits "$p" > "$tmp/out" 2> "$tmp/err"
+    AVRA_CACHE_DIR="$tmp/cache" "$avra" tapes --waits "$p" > "$tmp/out" 2> "$tmp/err"
     code=$?
     rm -rf "$tmp/cache" "$p/.avra-cache"
     said=$(grep '^waits:' "$tmp/out" | tail -1)

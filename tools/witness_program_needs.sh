@@ -34,7 +34,7 @@ held() { # held <package>: one line saying the package's hold, then any items ap
     had=no
     if [ -d "$p/.avra-cache" ]; then mv "$p/.avra-cache" "$out.aside"; had=yes; fi
     mkdir -p "$out.cache"
-    AVRA_CACHE_DIR="$out.cache" AVRA_PROGRAM_NET=0 "$avra" tapes --needs "$p" > "$out.out" 2> "$out.err"
+    AVRA_CACHE_DIR="$out.cache" "$avra" tapes --needs "$p" > "$out.out" 2> "$out.err"
     code=$?
     rm -rf "$out.cache" "$p/.avra-cache"
     if [ "$had" = yes ]; then mv "$out.aside" "$p/.avra-cache"; fi

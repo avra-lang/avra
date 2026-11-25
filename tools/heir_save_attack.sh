@@ -16,7 +16,7 @@ set -u
 A=${HEIR_ATTACK_AVRA:-$(pwd)/avra}
 R=build/heir-save-attack
 find "$R" -delete 2>/dev/null; mkdir -p "$R"
-unset AVRA_PROGRAM AVRA_PROGRAM_NET AVRA_STORE_KEPT_HERE AVRA_HEIR_LINGERS_MS
+unset AVRA_STORE_KEPT_HERE AVRA_HEIR_LINGERS_MS
 LINGER=4000
 
 # The package `$1`: an entry printing `word()` and the sum of enough files that a cold build forks.

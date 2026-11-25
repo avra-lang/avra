@@ -96,7 +96,7 @@ def stats():
             cwd=ROOT,
             capture_output=True,
             text=True,
-            env=dict(os.environ, AVRA_PROGRAM_NET="0", AVRA_STORE_KEPT_HERE="1"),
+            env=dict(os.environ, AVRA_STORE_KEPT_HERE="1"),
         )
     finally:
         if os.path.isdir(store):

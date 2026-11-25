@@ -29,7 +29,6 @@ export LLVM_PREFIX
 
 # THE CENSUS COUNTS THE COMPILER'S OWN WORK, under a memory cap: the old path's check the net runs
 # before the program layer's is not that work, and its memory with the layer's passes the cap.
-export AVRA_PROGRAM_NET=0
 census=build/avra.census
 laid=build/answers.census
 stores=.avra-cache.census-saved

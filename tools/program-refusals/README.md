@@ -5,7 +5,7 @@ in the old path's words, or must build. `sh tools/witness_program_refusal.sh` ju
 its head says what each file means. In short:
 
 - `refuses.expected`: the old path's `avra check` words, its warnings aside, paths as `<case>`.
-  Both the old `check` and `AVRA_PROGRAM=1 avra build` exit 1 saying exactly this.
+  Both the old `check` and `avra build` exit 1 saying exactly this.
 - `prints.expected`: what the product prints. The old `check` exits 0, the program layer builds
   the package, and its binary prints exactly this.
 - `differs.why`: the paths are known to differ here, for the reason on its first line. The case

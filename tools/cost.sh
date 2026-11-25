@@ -157,7 +157,7 @@ counted() {
     (cd "$src" && unset AVRA_MACHINE_STORE_DIR && export AVRA_CENSUS_SITES=1 AVRA_CENSUS_DEATHS=1 && \
         { [ "${census:-deaths}" = deaths ] || unset AVRA_CENSUS_DEATHS; } && \
         { [ "${census:-deaths}" != none ] || unset AVRA_CENSUS_SITES; } && \
-        HOME="$cache/home" AVRA_MACHINE_STORE=$machine AVRA_MEM_STATS=1 AVRA_CENSUS_TOP=1000000 AVRA_WORK_AHEAD_OFF=1 AVRA_PROGRAM_NET=0 AVRA_CACHE_DIR="$cache" AVRA_STORE_KEPT_HERE=1 \
+        HOME="$cache/home" AVRA_MACHINE_STORE=$machine AVRA_MEM_STATS=1 AVRA_CENSUS_TOP=1000000 AVRA_WORK_AHEAD_OFF=1 AVRA_CACHE_DIR="$cache" AVRA_STORE_KEPT_HERE=1 \
         sh "$root/tools/memcap.sh" "${COST_CAP_MB:-8000}" taskset -c 0 build/avra "$@" \
         > "$root/$out/$name.stdout" 2> "$root/$out/$name.out") || {
         tail -20 "$out/$name.out"; echo "cost: $name failed ($*)"; exit 1; }
@@ -180,7 +180,7 @@ ledgered() {
     mkdir -p "$cache/home"
     started=$(date +%s)
     (cd "$src" && unset AVRA_MACHINE_STORE_DIR && \
-        HOME="$cache/home" AVRA_MACHINE_STORE=$machine AVRA_WORK_AHEAD_OFF=1 AVRA_PROGRAM_NET=0 AVRA_CACHE_DIR="$cache" AVRA_STORE_KEPT_HERE=1 \
+        HOME="$cache/home" AVRA_MACHINE_STORE=$machine AVRA_WORK_AHEAD_OFF=1 AVRA_CACHE_DIR="$cache" AVRA_STORE_KEPT_HERE=1 \
         taskset -c 0 build/avra "$sub" --passes --passes-rows "$@" > /dev/null 2> "$root/$out/$ran.ledger") || {
         tail -20 "$out/$ran.ledger"; echo "cost: $ran's ledger run failed"; exit 1; }
     grep '^pass-row' "$out/$ran.ledger" > "$out/$ran.out" || { echo "cost: $ran's ledger run printed no pass rows"; exit 1; }

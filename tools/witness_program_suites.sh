@@ -63,7 +63,7 @@ said_by() {
     find "$tmp/lr-$1" "$tmp/lr-$1.machine" -depth -delete 2>/dev/null
     mkdir -p "$tmp/lr-$1" "$tmp/lr-$1.machine"
     cp -R "$root/tools/program-suites/lib_refused" "$tmp/lr-$1/"
-    (cd "$tmp/lr-$1" && AVRA_CACHE_DIR="$tmp/lr-$1.machine" AVRA_PROGRAM=1 "$avra" "$1" lib_refused >"$tmp/lr-$1.out" 2>&1
+    (cd "$tmp/lr-$1" && AVRA_CACHE_DIR="$tmp/lr-$1.machine" "$avra" "$1" lib_refused >"$tmp/lr-$1.out" 2>&1
         echo $? >"$tmp/lr-$1.code")
     sed "s#$tmp/lr-$1#<w>#g" "$tmp/lr-$1.out" | grep -v '^watch:' >"$tmp/lr-$1.said"
 }

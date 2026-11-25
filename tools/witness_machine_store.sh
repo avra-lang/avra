@@ -22,7 +22,6 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 avra=$(cd "$(dirname "${1:-$root/build/avra-try}")" && pwd)/$(basename "${1:-$root/build/avra-try}")
 w=$(mktemp -d "${TMPDIR:-/tmp}/avra-machine-store.XXXXXX")
 trap 'find "$w" -delete 2>/dev/null || :' EXIT
-export AVRA_PROGRAM=1
 # A PRODUCT COMPARED BYTE FOR BYTE IS THE RELEASE ONE: a dev build's binary is an overlay linked
 # beside the world it last linked, so no two stores' dev products share their bytes.
 export AVRA_PROGRAM_MODE=release

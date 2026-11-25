@@ -32,11 +32,11 @@ failed=0
 ran() { name=$1; shift; env "$@" timeout 300 "$avra" tapes "$tmp/$name" --ran >"$tmp/$name.log" 2>&1; }
 refused() { echo "witness_program_runs: $1" >&2; sed 's/^/  /' "$tmp/$2.log" | head -20 >&2; failed=$((failed + 1)); }
 
-ran nested AVRA_PROGRAM=1
+ran nested
 [ $? = 0 ] && grep -q "^ran: 1 program tests found" "$tmp/nested.log" ||
     refused "nested: a program test laid out as a package was not found and passed" nested
 
-ran forks AVRA_PROGRAM=1
+ran forks
 code=$?
 [ "$code" != 124 ] || refused "forks: the run did not end within 300 s" forks
 [ "$(grep -c '^ran:' "$tmp/forks.log")" = 1 ] || refused "forks: the tally was said other than once: a forked process ran the harness on" forks
@@ -49,7 +49,7 @@ ran guarded AVRA_RC_GUARD=1
 ran rc AVRA_RC_GUARD=1
 grep -q "(native)" "$tmp/rc.log" || refused "rc: a box released twice passed its native leg under the guard" rc
 
-ran static_write AVRA_PROGRAM=1
+ran static_write
 [ "$(grep -c '(native): .* native != expected' "$tmp/static_write.log")" = 2 ] && [ "$(grep -c '^(it ended with status 2)' "$tmp/static_write.log")" = 2 ] ||
     refused "static_write: a write into the binary's own data was not refused by the runtime" static_write
 

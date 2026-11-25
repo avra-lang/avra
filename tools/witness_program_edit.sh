@@ -42,7 +42,6 @@ avra=${1:-build/avra-try}
 [ -x "$avra" ] || { echo "witness_program_edit: no compiler at $avra" >&2; exit 1; }
 tmp=$(mktemp -d)
 export AVRA_CACHE_DIR="$tmp/machine"
-export AVRA_PROGRAM=1
 # the stores are copied, emptied and read between builds, so each build saves its own before it answers
 export AVRA_STORE_KEPT_HERE=1
 mkdir -p "$AVRA_CACHE_DIR"

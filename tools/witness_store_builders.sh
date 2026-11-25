@@ -26,7 +26,7 @@ prints() { ls "$tapes" 2>/dev/null | sed -n 's/^pack-\([^.]*\)\..*\.pack$/\1/p' 
 
 # one build by `$1`, the packs it maps sampled into `$2`
 built() {
-    AVRA_PROGRAM=1 "$1" build packages/cli > "$tmp/out" 2>&1 &
+    "$1" build packages/cli > "$tmp/out" 2>&1 &
     pid=$!
     while kill -0 "$pid" 2>/dev/null; do
         for p in $pid $(pgrep -P "$pid" || :); do

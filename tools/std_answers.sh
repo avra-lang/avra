@@ -29,14 +29,14 @@ if [ "${1:-}" = --one ]; then
     avra=$2; p=$3; out=$4; job="$5/$(basename "$3")"
     mkdir -p "$job/verdict"
     # the verdict: the package's own check, its answers kept apart and let go
-    if ! AVRA_CACHE_DIR="$job" AVRA_MACHINE_STORE_DIR="$job/judged" AVRA_VERDICT_DIR="$job/verdict" AVRA_PROGRAM_NET=0 "$avra" check "$p" >"$job/said" 2>&1; then
+    if ! AVRA_CACHE_DIR="$job" AVRA_MACHINE_STORE_DIR="$job/judged" AVRA_VERDICT_DIR="$job/verdict" "$avra" check "$p" >"$job/said" 2>&1; then
         { echo "std_answers: $(basename "$p") is refused by its own compiler:"; head -40 "$job/said"; } >&2
         [ "${STD_ANSWERS_REFUSED:-fail}" = skip ] || exit 1
         echo "std_answers: $(basename "$p") ships its answers and no verdict: a program judges its files" >&2
         find "$job/verdict" -mindepth 1 -delete
     fi
     # the answers: what a program over the package reads of it
-    AVRA_CACHE_DIR="$job" AVRA_MACHINE_STORE_DIR="$out" AVRA_PROGRAM_NET=0 "$avra" cache dependents "$p" >/dev/null 2>"$job/said" ||
+    AVRA_CACHE_DIR="$job" AVRA_MACHINE_STORE_DIR="$out" "$avra" cache dependents "$p" >/dev/null 2>"$job/said" ||
         { echo "std_answers: what a program reads of $(basename "$p") was not worked out:" >&2; cat "$job/said" >&2; exit 1; }
     find "$p" -name .avra-cache -type d -prune -exec find {} -delete \;
     # a witness's moment: the store compacted after the packages STD_ANSWERS_COMPACT_AFTER names

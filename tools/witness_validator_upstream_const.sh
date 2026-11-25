@@ -33,7 +33,7 @@ written() {
 }
 # what a build of the package says and how it exits, its warnings and its product aside
 built() {
-    (cd "$1" && AVRA_CACHE_DIR="$2" AVRA_PROGRAM_NET=0 "$avra" build . 2>&1; echo "exit $?") | sed "s#$1#<pkg>#g" | awk '/^warning\[/ { w = 1; next } w { if ($0 == "") w = 0; next } { print }' | grep -v '^<pkg>/src/main$'
+    (cd "$1" && AVRA_CACHE_DIR="$2" "$avra" build . 2>&1; echo "exit $?") | sed "s#$1#<pkg>#g" | awk '/^warning\[/ { w = 1; next } w { if ($0 == "") w = 0; next } { print }' | grep -v '^<pkg>/src/main$'
 }
 failed=0
 built "$pkg" "$tmp/warm.machine" >/dev/null

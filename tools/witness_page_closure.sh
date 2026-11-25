@@ -33,7 +33,7 @@ unbodied() {
 
 # check <page under tools/> <package it must name, or none>
 check() {
-    if ! (cd "$tree" && AVRA_PROGRAM_NET=0 "$avra" emit "tools/$1") > "$work/ir.ll" 2> "$work/emit.err"; then
+    if ! (cd "$tree" && "$avra" emit "tools/$1") > "$work/ir.ll" 2> "$work/emit.err"; then
         echo "page-closure: $1 did not emit"
         tail -3 "$work/emit.err"
         return 1

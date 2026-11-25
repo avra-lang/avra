@@ -13,7 +13,7 @@ R=build/root-listing-attack
 find "$R" -delete 2>/dev/null
 mkdir -p "$R/m"
 cp -R tools/program-suites/suited "$R/"
-tested() { (cd "$R" && AVRA_CACHE_DIR="$PWD/m" AVRA_PROGRAM=1 AVRA_QUERY_TIMES=1 "$OLDPWD/build/avra" test suited >out 2>err); }
+tested() { (cd "$R" && AVRA_CACHE_DIR="$PWD/m" AVRA_QUERY_TIMES=1 "$OLDPWD/build/avra" test suited >out 2>err); }
 # worked again: the typing and lowering rows a run worked out, `name count`, one a line
 worked() { grep "^worked:" "$R/err" | tr ',' '\n' | sed 's/.*; //; s/^ *//' | grep -E '^(lowered_case|lowered_under|entry_lowered|typed_fn|case_source) ' ; }
 tested

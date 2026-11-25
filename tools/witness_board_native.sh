@@ -20,7 +20,7 @@ find "$work/tools/ui-board" -path '*/src/main' -type f -delete
 cold() {
     db="$work/$1.db"
     shift
-    HOME="$work/cache/home" AVRA_CACHE_DIR="$work/cache" AVRA_MACHINE_STORE=0 AVRA_PROGRAM_NET=0 BOARD_DB="$db" "$@"
+    HOME="$work/cache/home" AVRA_CACHE_DIR="$work/cache" AVRA_MACHINE_STORE=0 BOARD_DB="$db" "$@"
 }
 board="$work/tools/ui-board"
 if ! (cd "$tree" && cold build "$avra" build "$board") > "$work/build.out" 2> "$work/build.err"; then

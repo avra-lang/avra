@@ -19,7 +19,7 @@ set -u
 A=${HELD_ATTACK_AVRA:-$(pwd)/avra}
 R=build/held-store-attack
 rm -rf "$R" && mkdir -p "$R"
-unset AVRA_PROGRAM AVRA_PROGRAM_NET AVRA_HELD_BYTES AVRA_HELD_ITEMS_OFF
+unset AVRA_HELD_BYTES AVRA_HELD_ITEMS_OFF
 
 # The program `$1` (soak or turn), in a store of its own, cold: the soak driver, whose std reaches
 # bodies with sugar beside siblings in one item; or two sibling methods filling equal literals.

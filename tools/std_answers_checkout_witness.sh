@@ -26,7 +26,6 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 avra=$(cd "$(dirname "${1:-$root/build/avra}")" && pwd)/$(basename "${1:-$root/build/avra}")
 w=$(mktemp -d "${TMPDIR:-/tmp}/avra-checkout-answers.XXXXXX")
 trap 'find "$w" -delete 2>/dev/null || :' EXIT
-export AVRA_PROGRAM_NET=0
 unset AVRA_MACHINE_STORE AVRA_MACHINE_STORE_DIR
 fail() { echo "std_answers_checkout_witness: $*"; exit 1; }
 held() { echo "std_answers_checkout_witness: $*"; }

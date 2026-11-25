@@ -80,7 +80,7 @@ ctl="$tmp/control"
 mkdir -p "$ctl/src"
 printf '[package]\nname = "control"\nversion = "0.0.1"\n' >"$ctl/avra.toml"
 printf 'fn primed(i: int) -> int {\n    let k = i\n    const PRIMES: List<int> = [2, 3, 5].map((p) -> p * k)\n    PRIMES[i]\n}\nprintln("${primed(1)}")\n' >"$ctl/src/main.av"
-(cd "$ctl" && AVRA_PROGRAM=1 AVRA_IR_OF=main.av.primed "$avra" build . >"$tmp/ctl.log" 2>&1) || fail "the control: the program layer refused it"
+(cd "$ctl" && AVRA_IR_OF=main.av.primed "$avra" build . >"$tmp/ctl.log" 2>&1) || fail "the control: the program layer refused it"
 grep -qE "$builds" "$tmp/ctl.log" || { cat "$tmp/ctl.log" >&2; fail "the control: a const that reads its body is not seen built at run time"; }
 [ "$("$ctl/src/main")" = 3 ] || fail "the control printed $("$ctl/src/main")"
 echo "witness_body_consts: the control — a const that reads its body is built where it stands"

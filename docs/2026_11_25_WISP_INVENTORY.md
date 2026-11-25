@@ -4,6 +4,8 @@
 
 **Class:** `user` = a person building or using Avra reaches it; `internal` = the repo's own machinery; `not config` = an `AVRA_` token that is no setting (a C macro, guard, enum or fixture name).
 
+**Corrected at S1** (each delete was re-checked against its callers before it went): 4 delete rows were live and are re-classed below; the 7 Sprite rows wait for `work`, which still sources them; `tools-suite` died with the move. The counts above are the first measurement.
+
 **Action:** `keep` stays where it is; `merge: <verb>` becomes that wisp verb (or a flag/setting) and the old path is deleted in the same change; `delete` is dead or superseded.
 
 ## Counts
@@ -51,7 +53,7 @@ The ticket's figures (154 / 267 / 247 / 43) were taken on an earlier tree; these
 - **Nine keeper sets** (`KEEPERS`, `_ALONE`, `_A`, `_A1`, `_A2`, `_B`, `_WASM`, `_STATIC`, `_PR`) are Make variables that `keepers-static`/`keepers-pr` police with `filter-out`. They are a registry, so they become one table with a set column.
 - **Sixteen `-accept` targets**, one per ratchet. They become one flag, `--accept`, on the ratchet's verb.
 - **Sprites are retired** (owner 11-02), yet `tools/work` holds 112 `sprite` lines and five `sprite-*` scripts stand. They are deleted when `work` moves.
-- **Twins:** `obj_gone_attack.sh` and `object_gone_attack.sh`; `make check/run/ir/emit/build-native` wrap `./avra <cmd> $(FILE)` and nothing calls them.
+- **Dead wrappers:** `make check/run/ir/emit/build-native` wrap `./avra <cmd> $(FILE)` and nothing calls them. (`obj_gone_attack.sh` and `object_gone_attack.sh` read alike, but they are two different attacks, and both run.)
 - **Self-test-only tools** (`digest_diff.py`, `parse_diff.py`): only their own fixtures run them. The lead decides whether each is an instrument or dead.
 - **The `_OFF` / `_CHECK` switches** (`AVRA_HELD_ITEMS_OFF`, `AVRA_FOLD_CHECK`, `AVRA_HELD_QUESTIONS_CHECK`, … 68 rows of `settings.debug`) are the "gated" half of gated==ungated. Each becomes a reading in the oracle, not a variable a human sets.
 
@@ -86,8 +88,8 @@ The ticket's figures (154 / 267 / 247 / 43) were taken on an earlier tree; these
 | try | tools; recipe | internal | keep: Make | a file in build/; wisp asks Make for files, never the reverse |
 | edit-loop | none | internal | merge: cost warm-edit | no caller |
 | install | tools; recipe | user | keep: Make | builds files; runs before any compiler exists |
-| sprite | recipe | internal | delete | Sprites retired (owner 11-02) |
-| sprite-check | tools | internal | delete | Sprites retired (owner 11-02) |
+| sprite | recipe | internal | delete, with work | Sprites retired (owner 11-02); `tools/work` still sources these, so they go when `work` moves |
+| sprite-check | tools | internal | delete, with work | Sprites retired (owner 11-02); `tools/work` still sources these, so they go when `work` moves |
 | sweep | none | internal | merge: tree sweep |  |
 | test | tools; recipe | internal | merge: gate --suites |  |
 | runtime-tests | dep of gate; KEEPERS_ALONE | internal | merge: keepers |  |
@@ -111,7 +113,7 @@ The ticket's figures (154 / 267 / 247 / 43) were taken on an earlier tree; these
 | beside-attack | KEEPERS_B | internal | merge: oracle | an agreement or refusal case |
 | wave-share-attack | KEEPERS_B | internal | merge: oracle | an agreement or refusal case |
 | code-hash-attacks | ci | internal | merge: oracle | an agreement or refusal case |
-| object-gone-attack | none | internal | delete | no caller; twin of obj_gone_attack.sh |
+| object-gone-attack | none | internal | delete (S1) | no caller; its script also runs in `cache-attacks-b2` |
 | census | tools; recipe | internal | merge: census | a report, never a verdict |
 | stems | dep of gate; KEEPERS_A1; tools | internal | merge: keepers |  |
 | clean | tools; recipe | user | keep: Make | builds files; runs before any compiler exists |
@@ -134,7 +136,7 @@ The ticket's figures (154 / 267 / 247 / 43) were taken on an earlier tree; these
 | speed-note | KEEPERS_B,KEEPERS_STATIC | internal | merge: keepers |  |
 | libs-self-test | KEEPERS_B,KEEPERS_STATIC | internal | merge: fixtures |  |
 | hooks-released | dep of gate; KEEPERS_B,KEEPERS_STATIC | internal | merge: keepers |  |
-| tools-suite | KEEPERS_B | internal | merge: fixtures |  |
+| tools-suite | KEEPERS_B | internal | delete (S1) | `./avra test tools`; wisp joins the derived suites under packages/ |
 | inputs | KEEPERS_B | internal | merge: cost | a ratchet; `-accept` is its `--accept` |
 | clock-holds | KEEPERS | internal | merge: cost | a ratchet; `-accept` is its `--accept` |
 | inputs-accept | tools | internal | merge: cost | a ratchet; `-accept` is its `--accept` |
@@ -271,8 +273,8 @@ The ticket's figures (154 / 267 / 247 / 43) were taken on an earlier tree; these
 | cutoff.ceiling | Makefile, cutoff_witness.sh | internal | merge: cost |  |
 | cutoff_witness.sh | Makefile, cutoff.ceiling | internal | merge: oracle |  |
 | db06_pkgc_witness.sh | — | internal | delete | a finished campaign's probe |
-| db06_step5_witness.sh | store_attacks.sh | internal | delete | a finished campaign's probe |
-| db06_step6_rebuild.sh | store_attacks.sh | internal | delete | a finished campaign's probe |
+| db06_step5_witness.sh | store_attacks.sh | internal | merge: oracle | run by store_attacks.sh |
+| db06_step6_rebuild.sh | store_attacks.sh | internal | merge: oracle | cited by store_attacks.sh |
 | db_corpus.sh | Makefile | internal | merge: oracle |  |
 | db_measure/ | Makefile, census.sh, warm_edit_bench.sh | internal | merge: census |  |
 | defects/ | Makefile, checks.yml, gate.sh +23 | internal | merge: keepers |  |
@@ -348,7 +350,7 @@ The ticket's figures (154 / 267 / 247 / 43) were taken on an earlier tree; these
 | moved_tree_attack.sh | Makefile, gate.sh | internal | merge: oracle |  |
 | names_attack.sh | Makefile | internal | merge: oracle |  |
 | obj_gone_attack.sh | Makefile, gate.sh | internal | merge: oracle |  |
-| object_gone_attack.sh | Makefile | internal | delete | twin of obj_gone_attack.sh |
+| object_gone_attack.sh | Makefile | internal | merge: oracle | a different attack from obj_gone_attack.sh; run by cache-attacks-b2 |
 | package_swap_attack.sh | Makefile | internal | merge: oracle |  |
 | packages.sh | checks.yml, orders.yml | internal | merge: gate |  |
 | page-closure/ | witness_page_closure.sh | internal | merge: oracle |  |
@@ -402,11 +404,11 @@ The ticket's figures (154 / 267 / 247 / 43) were taken on an earlier tree; these
 | speed_note_fixtures/ | speed_note_test.sh | internal | merge: cost |  |
 | speed_note_test.sh | — | internal | merge: cost |  |
 | speed_ratchet.py | Makefile, checks.yml, ci_invariants.py +5 | internal | merge: cost |  |
-| sprite-lib.sh | packages-dev.txt, packages.txt, sprite-remote.sh +2 | internal | delete | Sprites retired (owner 11-02) |
-| sprite-provision.sh | Makefile, sprite-lib.sh, sprite-remote.sh +1 | internal | delete | Sprites retired (owner 11-02) |
-| sprite-remote.sh | Makefile, ci_invariants.py, sprite-lib.sh +3 | internal | delete | Sprites retired (owner 11-02) |
-| sprite-rsh.sh | work, work_test.sh | internal | delete | Sprites retired (owner 11-02) |
-| sprite_remote_test.sh | work_test.sh | internal | delete | Sprites retired (owner 11-02) |
+| sprite-lib.sh | packages-dev.txt, packages.txt, sprite-remote.sh +2 | internal | delete, with work | Sprites retired (owner 11-02); `tools/work` still sources these, so they go when `work` moves |
+| sprite-provision.sh | Makefile, sprite-lib.sh, sprite-remote.sh +1 | internal | delete, with work | Sprites retired (owner 11-02); `tools/work` still sources these, so they go when `work` moves |
+| sprite-remote.sh | Makefile, ci_invariants.py, sprite-lib.sh +3 | internal | delete, with work | Sprites retired (owner 11-02); `tools/work` still sources these, so they go when `work` moves |
+| sprite-rsh.sh | work, work_test.sh | internal | delete, with work | Sprites retired (owner 11-02); `tools/work` still sources these, so they go when `work` moves |
+| sprite_remote_test.sh | work_test.sh | internal | delete, with work | Sprites retired (owner 11-02); `tools/work` still sources these, so they go when `work` moves |
 | src/ | Makefile, suite-seconds.txt, suite-splits.txt +611 | internal | keep: wisp package | avra-tools IS wisp; renamed, moved to packages/wisp |
 | stale_imports_attack.sh | Makefile | internal | merge: oracle |  |
 | stamps.sh | Makefile | internal | merge: tree |  |
@@ -496,7 +498,7 @@ The ticket's figures (154 / 267 / 247 / 43) were taken on an earlier tree; these
 | witness_page_closure.sh | gate.sh | internal | merge: oracle | run by tool_witnesses (derived) |
 | witness_parallel_build.sh | — | internal | merge: oracle | run by tool_witnesses (derived) |
 | witness_place_kill.sh | — | internal | merge: oracle | run by tool_witnesses (derived) |
-| witness_program_differential.old | witness_program_differential.py, witness_program_differential.sh | internal | delete | a stale golden beside its live one |
+| witness_program_differential.old | witness_program_differential.py, witness_program_differential.sh | internal | keep: data of its witness | the frozen golden witness_program_differential.py reads |
 | witness_program_differential.py | witness_program_differential.sh | internal | merge: oracle |  |
 | witness_program_differential.sh | gate.sh, main.av, witness_program_differential.py | internal | merge: oracle |  |
 | witness_program_doors.sh | gate.sh | internal | merge: oracle | run by tool_witnesses (derived) |

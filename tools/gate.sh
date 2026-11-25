@@ -27,7 +27,7 @@
 set -u
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root" || exit 1
-unset AVRA_PROGRAM AVRA_PROGRAM_MODE
+unset AVRA_PROGRAM_MODE
 export AVRA_SUITE_ALL=1
 
 # the bound of one row, and of a compiler build
@@ -336,7 +336,6 @@ slice_cli() {
     children_kept tested cli-suite "${@:-packages/cli}"
     children_of_failed cli-suite
     ci_captured
-    export AVRA_PROGRAM_NET=0
 }
 
 # WHAT A RED CLI SLICE STOOD ON, kept under $out/capture for its artifact: for each failed case whose
@@ -444,7 +443,7 @@ slice_cost() {
 # is already: a seed unpacked from the release of a tree of the same compiler source takes it as it is
 gen2_made() {
     read -r _h _a gen _ < build/.avra-built-from 2> /dev/null || gen=1
-    [ "${gen:-1}" -ge 2 ] || row compiler-gen2 env AVRA_PROGRAM_NET=0 AVRA_STD_ANSWERS=0 make avra
+    [ "${gen:-1}" -ge 2 ] || row compiler-gen2 env AVRA_STD_ANSWERS=0 make avra
 }
 # the census compiler, built by this tree's compiler of generation 2
 census_made() {
@@ -622,7 +621,7 @@ if compiler; then
                 echo "fact gen2-is-gen1 - (the seed stood at generation 2)" >>"$out/rows"
             fi
             # the package libraries as this tree's sources make them: nothing rebuilt where none moved
-            row compiler-libs env AVRA_PROGRAM_NET=0 make -o avra libs
+            row compiler-libs make -o avra libs
             tarball="build/gate/compiler-$sha8.tar.gz"
             packed >"$out/files"
             row pack tar -czf "$tarball" -T "$out/files" && echo "pack: $tarball, $(wc -l <"$out/files" | tr -d ' ') files, $(du -k "$tarball" | cut -f1) KB" >>"$out/rows"

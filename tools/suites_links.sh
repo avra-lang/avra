@@ -1,6 +1,6 @@
 #!/bin/sh
 # A PACKAGE IS A REAL DIRECTORY: a symlinked one would run its suite under two names. The suites
-# command (tools/src/commands/suites.av) cannot see a link — std-io's stat follows them — so this
+# command (packages/wisp/src/commands/suites.av) cannot see a link — std-io's stat follows them — so this
 # is the one question it leaves to the shell.
 #
 #   sh tools/suites_links.sh

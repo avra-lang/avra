@@ -18,7 +18,6 @@ avra=$(cd "$(dirname "${1:-$root/build/avra-try}")" && pwd)/$(basename "${1:-$ro
 w=$(mktemp -d "${TMPDIR:-/tmp}/avra-std-answers.XXXXXX")
 mounted=""
 trap '[ -n "$mounted" ] && umount "$mounted" 2>/dev/null; find "$w" -delete 2>/dev/null || :' EXIT
-export AVRA_PROGRAM_NET=0
 unset AVRA_MACHINE_STORE AVRA_MACHINE_STORE_DIR
 fail() { echo "std_answers_attack: $*"; exit 1; }
 held() { echo "std_answers_attack: $*"; }

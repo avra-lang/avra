@@ -1948,8 +1948,7 @@ doctrine it expands.
   beside a `.avra-cache` directory, so building or checking with a
   SECOND binary over the SAME source can read the FIRST binary's
   kept warnings or kept binary outright — a differential build
-  (`AVRA_ALIAS_EMIT=0` vs `=1` over one source, or any two-binary
-  comparison) silently compares one binary's real run against the
+  (any two-binary comparison over one source) silently compares one binary's real run against the
   other's cache hit, byte-identical checksums included. `rm -rf
   .avra-cache` before every run whose ANSWER is being compared, not
   only before the first. AND A CACHE FILLED BY A BINARY BUILT FROM

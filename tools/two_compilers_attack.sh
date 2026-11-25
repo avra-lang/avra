@@ -23,7 +23,7 @@ R=build/two-compilers-attack
 find "$R" -delete 2>/dev/null
 for w in shared alone; do mkdir -p "$R/$w/m"; cp -R tools/program-suites/suited "$R/$w/"; done
 # tested <where> <compiler> <name>: the suites fixture tested in $R/<where> on that cache
-tested() { (cd "$R/$1" && AVRA_CACHE_DIR="$PWD/m" AVRA_PROGRAM=1 AVRA_QUERY_TIMES=1 "$2" test suited >"$3.out" 2>"$3.err"; echo $? >"$3.code"); }
+tested() { (cd "$R/$1" && AVRA_CACHE_DIR="$PWD/m" AVRA_QUERY_TIMES=1 "$2" test suited >"$3.out" 2>"$3.err"; echo $? >"$3.code"); }
 tested shared "$A" a
 tested shared "$B" b
 tested alone "$B" b
