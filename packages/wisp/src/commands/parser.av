@@ -1,0 +1,95 @@
+//! `wisp parser [--write] [--avra <compiler>]` — THE GENERATED PARSER, HELD TO ITS GRAMMAR.
+//! compiler/untold_parser.av is the grammar's untold run written as code. A compiler whose parser
+//! was made from another grammar refuses to parse (its fallback is the `AVRA_ENGINE_PARSE` switch
+//! alone), so the file is never stale unseen: this verb says whether it is what `<compiler>
+//! grammar --untold` makes, and `--write` makes it so. Exit 0 fresh or written, 1 stale, 2 when
+//! the compiler could not make it.
+use @std.cli.{CliResult, Runnable, command, flag, option}
+use @std.process.{Outcome, minimal, cmd, tool_at, exit_text}
+use @std.io.{read_text, write_text}
+use @std.time.{secs}
+
+/// Where the generated parser stands in the tree.
+const PARSER_FILE: string = "packages/std-avrac/src/compiler/untold_parser.av"
+
+type ParserCmd = {}
+
+impl Runnable for ParserCmd {
+    fn run(args: CliResult) -> int {
+        let avra = args.option("avra")
+        let made? = made_by(avra) else { return 2 }
+        let written = (read_text(PARSER_FILE) catch "") == made
+        if written {
+            println(fresh(avra))
+            return 0
+        }
+        if !args.has_flag("write") {
+            eprintln(stale(avra))
+            return 1
+        }
+        match write_text(PARSER_FILE, made) {
+            .Ok(_) -> {
+                println(rewritten(avra))
+                0
+            },
+            .Err(_) -> {
+                eprintln(unwritable())
+                1
+            },
+        }
+    }
+}
+
+export command parser {
+    description: "Hold compiler/untold_parser.av to what the compiler's grammar makes; --write makes it so"
+    flag write { description: "write the parser the grammar makes" }
+    option avra {
+        description: "the compiler whose grammar makes the parser"
+        default: "./avra"
+    }
+    run: ParserCmd {}
+}
+
+/// What `avra grammar --untold` prints, as the file holds it; null, said, when it could not.
+fn made_by(avra: string) -> string? {
+    let c = cmd(tool_at(avra, avra), ["grammar", "--untold"]) with { env: minimal().passing(["LLVM_PREFIX"]), timeout: secs(600) }
+    match c.outcome() {
+        .Ok(o) -> answered(avra, o),
+        .Err(_) -> {
+            eprintln(unmade(avra, "it did not start"))
+            null
+        },
+    }
+}
+
+fn answered(avra: string, o: Outcome) -> string? {
+    match o.exit {
+        .Clean -> o.out.stdout,
+        .Code(_) or .Signal(_, _) -> {
+            eprintln(unmade(avra, exit_text(o.exit)))
+            null
+        },
+    }
+}
+
+// ── voices ──
+
+fn fresh(avra: string) -> string {
+    "parser: ${PARSER_FILE} is what ${avra}'s grammar makes"
+}
+
+fn rewritten(avra: string) -> string {
+    "parser: ${PARSER_FILE} rewritten from ${avra}'s grammar — build again to run it"
+}
+
+fn stale(avra: string) -> string {
+    "parser: ${PARSER_FILE} is not what ${avra}'s grammar makes — it is generated, never edited: ./wisp parser --write --avra ${avra}"
+}
+
+fn unmade(avra: string, why: string) -> string {
+    "parser: ${avra} could not make the parser — ${why}"
+}
+
+fn unwritable() -> string {
+    "parser: ${PARSER_FILE} could not be written"
+}
