@@ -379,12 +379,38 @@ impl Decls {
     /// Generated SOURCE admitted beside the declaration that asked for
     /// it: the code was parsed INTO this file's store (no copy), so the
     /// declarations mint from the same arena every pass already reads.
+    ///
+    /// EACH STATEMENT'S FLOOR IS THE ONE BEFORE IT'S CEILING: a batch's
+    /// SEED (its first statement's `lo`) is the arena mark before any
+    /// of the batch minted, and every later statement's `lo` is the
+    /// PREVIOUS one's `hi` — the same rule `mint_code_decl`'s own
+    /// member loop already threads, one level up. A fixed `lo` shared
+    /// by every statement (the seed computed once and never updated)
+    /// gives a LATER statement a range wide enough to swallow an
+    /// EARLIER one's, and folding lays the later one's blanks over the
+    /// earlier one's real facts — the earlier declaration's body reads
+    /// as empty.
     fn mint_generated_code(f: FileId, store: NodeStore, stmts: List<StmtId>, lo: int, tag: string, ann: string, at: Span?) -> List<DeclId> {
-        // each statement keys under its place, so two impls of one
-        // target in one generation mint two
-        let made = flatten([self.mint_code_stmt(f, store, s, "${tag}$${j}", ann, at, lo) for j, s in stmts])
+        mut cursor = lo
+        mut made: List<DeclId> = []
+        for j, s in stmts {
+            // each statement keys under its place, so two impls of one
+            // target in one generation mint two
+            let ds = self.mint_code_stmt(f, store, s, "${tag}$${j}", ann, at, cursor)
+            made = made.concat(ds)
+            cursor = self.sibling_floor(ds, cursor)
+        }
         self.record_generated(f, made)
         made
+    }
+
+    /// The next sibling's floor: the statement just minted owns the
+    /// range up to its own `hi` (its body is the last node of its
+    /// subtree), or the cursor stands where it was when the statement
+    /// minted nothing.
+    fn sibling_floor(made: List<DeclId>, cursor: int) -> int {
+        let owner? = made.first() else { return cursor }
+        self.decl(owner).hi
     }
 
     /// One generated statement: its declaration and members, or its
