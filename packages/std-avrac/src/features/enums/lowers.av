@@ -186,7 +186,7 @@ type Chosen = { v: Reg, ty: SignedType, variants: List<VariantSeat>, region: Sig
 /// A match on an enum: its one arm's value; a region over the subject's tag, each arm but the last
 /// taken at its variant's tag and the last at any other, where each arm but the last takes one
 /// variant whole; else each arm in turn, taken where it accepts the subject. A match on any other
-/// value that compares by value — a number, text, bytes, a record of one such field: each arm in
+/// value that compares by value — a number, text, bytes, a record, a list: each arm in
 /// turn, the last taking the rest. A match with a pattern that tests more
 /// than one variant, an arm whose patterns bind different names, or one that leaves its subject to an
 /// absent tail no arms block's answer gives a meaning, isn't lowered yet. A named type's subject is chosen on as its shape.
@@ -195,7 +195,7 @@ fn variant_matched(mut cx: Lowering, e: ExprId, m: Match) -> Reg {
     let ty = cx.named_over(written) ?? written
     if ty.nullable() { return presence_matched(cx, e, m, ty) }
     let found = cx.variants_of(ty)
-    let scalar = found == null && ty.spelled() != owned_type("bool").spelled() && cx.equatable(ty)
+    let scalar = found == null && ty.spelled() != owned_type("bool").spelled() && cx.flat(ty)
     let quoted = m.arms.any((a) -> arm_quotes(cx, a))
     let elem = ty.listed()
     let record = if found == null && !scalar && elem == null && cx.fields_of(ty) != null { ty } else { null }
@@ -459,7 +459,7 @@ fn sub_taken(cx: Lowering, ty: SignedType?, p: PatId) -> Taken? {
     if elem != null && !held.nullable() { return listed_taken(cx, elem!, p) }
     if cx.fields_of(held) != null && cx.variants_of(held) == null { return fielded_taken(cx, held, p) }
     if held.dynamic && !held.nullable() { return pattern_taken(cx, [], p, false) }
-    let scalar = !held.nullable() && held.owned() != null && cx.equatable(held)
+    let scalar = !held.nullable() && held.owned() != null && cx.flat(held)
     let variants = cx.variants_of(held)
     if variants == null && !scalar { return null }
     pattern_taken(cx, variants ?? [], p, scalar)
@@ -530,6 +530,7 @@ fn bound_names(t: Taken) -> List<string> {
 }
 
 /// Whether two patterns bind the same names, in any order.
+// LICENSED compiler.trait_family: SET equality — the same names in any order
 fn same_names(a: List<string>, b: List<string>) -> bool { a.length == b.length && a.all((n) -> b.contains(n)) }
 
 /// The tag an arm takes whole: an unguarded arm of one pattern that tests one variant.

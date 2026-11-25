@@ -165,22 +165,14 @@ fn at_rest(value: Held) -> Held {
     match value { .Text(_) -> Held.Text(""), .Flag(_) -> Held.Flag(false) }
 }
 
-fn rests(value: Held) -> bool { same_held(value, at_rest(value)) }
+fn rests(value: Held) -> bool { value == at_rest(value) }
 
 /// Whether drawing `value` would tell the page anything: it is not what
 /// the program knows the page to hold, or the program knows nothing.
 fn news(known: Held?, value: Held) -> bool {
     match known {
-        held? -> !same_held(held, value)
+        held? -> held != value
         null -> true
-    }
-}
-
-/// Two values a property may hold, compared.
-fn same_held(a: Held, b: Held) -> bool {
-    match a {
-        .Text(x) -> match b { .Text(y) -> x == y, .Flag(_) -> false },
-        .Flag(x) -> match b { .Flag(y) -> x == y, .Text(_) -> false },
     }
 }
 
@@ -211,6 +203,7 @@ fn attrs_of(el: Tagged) -> List<HtmlAttr> { [a for a in el.attrs if property(a) 
 
 /// Whether two actions ask the page for the same listener: the kind, and
 /// what the event says.
+// LICENSED compiler.trait_family: two actions agree by their seat and what their handler says, a fn’s identity aside
 fn same_hearing(a: Action, b: Action) -> bool { a.seat == b.seat && says(a.handler) == says(b.handler) }
 
 /// A diff under way: what the user was heard to do to the page since it
@@ -289,7 +282,7 @@ impl Differ {
     /// leave it, else as it was last drawn.
     fn stands_open(id: NodeId, d: Door, drawn: bool) -> bool {
         match self.heard.find(it.id == id && it.name == d.name)?.value {
-            left? -> same_held(left, Held.Flag(true))
+            left? -> left == Held.Flag(true)
             null -> drawn
         }
     }

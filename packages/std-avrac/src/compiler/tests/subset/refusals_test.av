@@ -453,18 +453,20 @@ spec "compiler/subset — wants the typer does not carry yet" {
                 1,
             )
         }
-        then "a record of two fields has no `==`" {
+        then "a record of two fields compares field by field" { accepted("type Pair = { a: int, b: int }\nfn f(x: Pair, y: Pair) -> bool { x == y }\n") }
+        then "a record holding a float has no `==`" {
             refused(
-                "type Pair = { a: int, b: int }\nfn f(x: Pair, y: Pair) -> bool { x == y }\n",
-                "error[type.mismatch]: `==` compares by value — a scalar, text, a tagged enum, or a record of one such field",
+                "type Pair = { a: int, b: float }\nfn f(x: Pair, y: Pair) -> bool { x == y }\n",
+                "error[type.mismatch]: `==` compares by value — a value whose every part does",
                 1,
             )
         }
         then "a record of one field compares by it" { accepted("type Id = { n: int }\nfn f() -> bool { Id { n: 1 } == Id { n: 1 } }\n") }
-        then "an enum carrying a payload has no `==`" {
+        then "an enum carrying a payload compares by variant, then payload" { accepted("enum E { A(x: int), B }\nfn f(a: E, b: E) -> bool { a == b }\n") }
+        then "an enum carrying a fn has no `==`" {
             refused(
-                "enum E { A(x: int), B }\nfn f(a: E, b: E) -> bool { a == b }\n",
-                "error[type.mismatch]: `==` compares by value — a scalar, text, a tagged enum, or a record of one such field",
+                "enum E { A(f: fn() -> int), B }\nfn f(a: E, b: E) -> bool { a == b }\n",
+                "error[type.mismatch]: `==` compares by value — a value whose every part does",
                 1,
             )
         }

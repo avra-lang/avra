@@ -26,14 +26,10 @@ fn tile(x: int, y: int, label: string) -> Tile { Tile { x: x, y: y, label: label
 
 fn tile_hash(t: Tile) -> int { hash_text(hash_word(hash_word(0, t.x), t.y), t.label) }
 
-fn same_tile(a: Tile, b: Tile) -> bool { a.x == b.x && a.y == b.y && a.label == b.label }
-
-fn tiles() -> Interned<Tile> { interned(tile_hash, same_tile) }
+fn tiles() -> Interned<Tile> { interned(tile_hash, (a, b) -> a == b) }
 
 /// Every tile hashing alike: only the comparison tells them apart.
-fn colliding() -> Interned<Tile> { interned((_t: Tile) -> 7, same_tile) }
-
-fn same_key(a: ContentHash, b: ContentHash) -> bool { a.same_as(b) }
+fn colliding() -> Interned<Tile> { interned((_t: Tile) -> 7, (a, b) -> a == b) }
 
 spec "interned — values as dense ids" {
     given "an empty table" {
@@ -79,8 +75,8 @@ spec "interned — values as dense ids" {
     }
     given "text split at another place" {
         then "the keys differ" {
-            !same_key(tile_key(tile(0, 0, "abcdefghi")), tile_key(tile(0, 0, "abcdefgh"))) &&
-                !same_key(tile_key(tile(0, 0, "a")), tile_key(tile(0, 0, "")))
+            tile_key(tile(0, 0, "abcdefghi")) != tile_key(tile(0, 0, "abcdefgh")) &&
+                tile_key(tile(0, 0, "a")) != tile_key(tile(0, 0, ""))
         }
     }
     given "two tables interning in different orders" {
@@ -92,8 +88,8 @@ spec "interned — values as dense ids" {
             let b2 = two.id_of(tile(3, 4, "b"))
             let a2 = two.id_of(tile(1, 2, "a"))
             a1.index != a2.index &&
-                same_key(tile_key(one.value_of(a1)), tile_key(two.value_of(a2))) &&
-                same_key(tile_key(one.value_of(b1)), tile_key(two.value_of(b2)))
+                tile_key(one.value_of(a1)) == tile_key(two.value_of(a2)) &&
+                tile_key(one.value_of(b1)) == tile_key(two.value_of(b2))
         }
     }
     given "a value looked for before it arrives" {

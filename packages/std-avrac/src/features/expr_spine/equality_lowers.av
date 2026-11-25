@@ -1,6 +1,6 @@
 //! The lowering rule of `==` and `!=` past the values the language owns: a nullable against `null`
-//! is its presence, only the nullable side read, and two sides that hold only null are equal; an enum compares by its tag, and a record of one
-//! field by that field, all the way down.
+//! is its presence, only the nullable side read, and two sides that hold only null are equal; an enum,
+//! a record and a list compare by the derived equality (core/equality.av), all the way down.
 use core.{ExprId, Lowering, Reg, SignedType}
 
 /// `l == r`, or `l != r` when `negated`, where one side is `null` or both are one enum or one record
@@ -14,7 +14,8 @@ fn compared_beyond(mut cx: Lowering, negated: bool, l: ExprId, r: ExprId) -> Reg
         let present = cx.present(cx.lower(asked!), cx.type_at(asked!)!)
         return if negated { present } else { cx.not(present) }
     }
-    if lt.spelled() != rt.spelled() || lt.owned() != null || !cx.equatable(lt) { return null }
+    // a scalar the language owns was compared before this; a list of what compares is asked here
+    if lt.spelled() != rt.spelled() || !cx.equatable(lt) { return null }
     let a = cx.lower(l)
     let b = cx.lower(r)
     let same = cx.same_value(a, b, lt)
