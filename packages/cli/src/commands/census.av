@@ -2,6 +2,10 @@
 //! census run classified to the technique that would remove its cost (docs/ZERO_COST.md's classifier),
 //! the top of each technique named with its count and the declaration it stands in. A report is a
 //! census run's site lines, every site resolved to its symbol (tools/cost.sh writes them).
+//!
+//! `avra census --identity <report>…` — every site that compares texts to tell two things apart, by
+//! the Avra fn that asked, with its count and the declaration it stands in: a compare a map makes on a
+//! key is the asking fn's, never the map row's (the content-key census).
 use @std.cli.{CliResult, Runnable, command, arg, flag, option}
 use @std.io.{exists, read_text}
 use @std.path.{joined_path}
@@ -12,8 +16,9 @@ type CensusCmd = {}
 
 impl Runnable for CensusCmd {
     fn run(args: CliResult) -> int {
-        if !args.has_flag("candidates") {
-            eprintln("avra census: `--candidates <report>…`")
+        let identity = args.has_flag("identity")
+        if !args.has_flag("candidates") && !identity {
+            eprintln("avra census: `--candidates <report>…` or `--identity <report>…`")
             return 2
         }
         let reports = args.args_of("report")
@@ -23,7 +28,8 @@ impl Runnable for CensusCmd {
             return 1
         }
         let found = flatten([candidates_in(read_text(p) catch "") for p in reports])
-        for line in ranked(found, args.option("root")) { println(line) }
+        let lines = if identity { identity_lines(found, args.option("root")) } else { ranked(found, args.option("root")) }
+        for line in lines { println(line) }
         0
     }
 }
@@ -33,14 +39,19 @@ export flag candidates {
     aliases: ["--candidates"]
 }
 
+export flag identity {
+    description: "every site that compares texts as identity, by the fn that asked, most first"
+    aliases: ["--identity"]
+}
+
 export option root {
     description: "the tree whose sources a site's declaration is found in (default: here)"
     default: "."
 }
 
 export command census {
-    description: "Read census reports: `--candidates` names the top sites per zero-cost technique"
-    flags: [candidates]
+    description: "Read census reports: `--candidates` names the top sites per zero-cost technique, `--identity` every text compare"
+    flags: [candidates, identity]
     options: [root]
     arg report {
         description: "a census report, its sites resolved to symbols"
@@ -88,8 +99,9 @@ fn technique_word(t: Technique) -> string {
     }
 }
 
-/// One site a technique would make cheaper: the Avra fn it stands in, and how often it paid.
-type Candidate = { technique: Technique, symbol: string, count: int }
+/// One site a technique would make cheaper: the Avra fn it stands in, how often it paid, and — for a
+/// text compare — the runtime row it asked through (`by`), empty where the fn compared itself.
+type Candidate = { technique: Technique, symbol: string, count: int, by: string = "" }
 
 /// How many sites of each technique are named.
 const TOP: int = 10
@@ -100,10 +112,19 @@ fn candidates_in(report: string) -> List<Candidate> { flatten([candidates_of(lin
 /// The candidates one site line shows, read by its words:
 ///   pair|move: <made or retained at> <dropped or released at> <count> <bytes>
 ///   reuse: <freed at> <made at> <count> <bytes>
-///   typed|streq|empty-open: site <at> <count> <bytes>B <label…>
+///   typed|empty-open: site <at> <count> <bytes>B <label…>
+///   streq-pair: <compared at> <its caller> <count> <bytes>
+/// A TEXT COMPARE IS THE FN'S THAT ASKED: one the fn made itself is charged to it, one a runtime row
+/// made (a map's probe on a key) to the row's caller. The `streq:` site lines name only the first
+/// frame, so the pairs alone are counted.
 fn candidates_of(words: List<string>) -> List<Candidate> {
     if words.length < 4 { return [] }
     let kind = words[0]
+    if kind == "streq-pair:" {
+        if avra_symbol(words[1]) { return counted(Technique.InternedNames, words[1], words[3]) }
+        if !avra_symbol(words[2]) { return [] }
+        return [c with { by: words[1] } for c in counted(Technique.InternedNames, words[2], words[3])]
+    }
     if kind == "pair:" || kind == "move:" {
         if words[1] != words[2] || !avra_symbol(words[1]) { return [] }
         let t = if kind == "pair:" { Technique.StackRecords } else { Technique.MoveAtLastUse }
@@ -111,7 +132,6 @@ fn candidates_of(words: List<string>) -> List<Candidate> {
     }
     if kind == "reuse:" { return if avra_symbol(words[2]) { counted(Technique.ReuseInPlace, words[2], words[3]) } else { [] } }
     if words[1] != "site" || !avra_symbol(words[2]) { return [] }
-    if kind == "streq:" { return counted(Technique.InternedNames, words[2], words[3]) }
     if kind == "empty-open:" { return counted(Technique.FreshEmpty, words[2], words[3]) }
     if kind != "typed:" { return [] }
     let label = words.drop(5).join(" ")
@@ -156,6 +176,29 @@ fn technique_lines(t: Technique, found: List<Candidate>, root: string) -> List<s
         (a: SymbolTotal, b: SymbolTotal) -> a.count > b.count,
     )
     ["candidate: ${technique_word(t)} ${s.count} ${decoded(s.symbol)} ${where_of(s.symbol, root)}" for s in symbols.take(TOP)]
+}
+
+/// Every site that compares texts as identity, most first, each
+/// `text-identity: <count> <how> <where> <fn>`: `==` where the fn compared itself, else the row it
+/// asked through (`by:avra_map_slot`); the fn last, since a specialised fn's name holds spaces. One fn
+/// asking both ways is two lines.
+fn identity_lines(found: List<Candidate>, root: string) -> List<string> {
+    let mine = [c for c in found if c.technique == Technique.InternedNames]
+    let keyed = [c with { symbol: "${c.symbol} ${c.by}" } for c in mine]
+    let sites = sorted_by(
+        distinct_symbols(keyed),
+        (a: SymbolTotal, b: SymbolTotal) -> a.count > b.count,
+    )
+    let total = [s.count for s in sites].fold(0, (a: int, b: int) -> a + b)
+    ["text-identity: ${total} compares at ${sites.length} site(s)"]
+        .concat([identity_line(s, root) for s in sites])
+}
+
+/// One identity site's line: its count, the fn, where it is declared, and how it compared.
+fn identity_line(s: SymbolTotal, root: string) -> string {
+    let words = s.symbol.split(" ")
+    let how = if words.length < 2 || words[1] == "" { "==" } else { "by:${words[1]}" }
+    "text-identity: ${s.count} ${how} ${where_of(words[0], root)} ${decoded(words[0])}"
 }
 
 /// A symbol and every count of it summed.
