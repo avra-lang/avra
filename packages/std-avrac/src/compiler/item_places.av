@@ -50,7 +50,7 @@ type ProgramReads = {
     typed: bool = false,
     types: fn(ExprId) -> SignedType? = no_types,
     methods: fn(SignedType, string, bool) -> List<StatePlace> = no_methods,
-    fields: fn(SignedType, string) -> bool = no_fields,
+    fields: fn(SignedType, string) -> bool = no_state_fields,
     seats: List<bool> = [],
 }
 
@@ -61,7 +61,7 @@ fn no_types(_e: ExprId) -> SignedType? { null }
 fn no_methods(_t: SignedType, _n: string, _s: bool) -> List<StatePlace> { [StatePlace.Unknown] }
 
 /// No field known to hold a cell.
-fn no_fields(_t: SignedType, _n: string) -> bool { false }
+fn no_state_fields(_t: SignedType, _n: string) -> bool { false }
 
 impl ReadFacts for ProgramReads {
     fn tree() -> SyntaxArena { self.store }
@@ -278,7 +278,7 @@ export fn method_reads(
     let signed? = signed_method(engine, impls[0], name, statics) else { return unnamed_reads() }
     let body = elaborated(engine, impls[0].file, signed.signed)
     let seats = [p.state for p in signed.signed.signature.params]
-    body_reads(engine, impls[0].file, body, seats, method_key(file, owner, name, statics, reader), structural)
+    body_reads(engine, impls[0].file, body, seats, method_reads_key(file, owner, name, statics, reader), structural)
 }
 
 /// What the elaborated `body` in `file` reads by itself, keyed under `here`, and the bodies it calls,
@@ -328,7 +328,7 @@ fn method_reached(
         },
         .Declared(_, _) -> {
             let d? = declared_at(ty) else { return [StatePlace.Unknown] }
-            calls.push(method_key(d.file, d.name, name, statics, reader))
+            calls.push(method_reads_key(d.file, d.name, name, statics, reader))
             []
         },
         .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Union or .Never or .Meta -> [StatePlace.Unknown],
@@ -369,15 +369,15 @@ fn holds_state(engine: QueryEngine, ty: SignedType, name: string) -> bool {
 
 /// A method's or a static fn's key: the type it's of, where that's declared, its name, which it is,
 /// and the package that reads it.
-fn method_key(file: SourceFileAddress, owner: string, name: string, statics: bool, reader: string) -> string {
-    "${METHOD_MARK}${template_home(file)}\t${owner}\t${name}\t${if statics { STATIC_WORD } else { METHOD_WORD }}\t${reader}"
+fn method_reads_key(file: SourceFileAddress, owner: string, name: string, statics: bool, reader: string) -> string {
+    "${METHOD_MARK}${template_home(file)}\t${owner}\t${name}\t${if statics { STATIC_KEYWORD } else { METHOD_WORD }}\t${reader}"
 }
 
 /// What a method's key begins with.
 const METHOD_MARK: string = "@"
 
 /// How a method's key says it's a static fn.
-const STATIC_WORD: string = "static"
+const STATIC_KEYWORD: string = "static"
 
 /// How a method's key says it's a method.
 const METHOD_WORD: string = "method"
@@ -463,7 +463,7 @@ fn method_keyed(engine: QueryEngine, key: string, structural: bool) -> NodeReads
     let parts = key.substring(METHOD_MARK.length, key.length).split("\t")
     if parts.length != 5 { return unnamed_reads() }
     let file? = template_file(parts[0]) else { return unnamed_reads() }
-    method_reads(engine, file, parts[1], parts[2], parts[3] == STATIC_WORD, parts[4], structural)
+    method_reads(engine, file, parts[1], parts[2], parts[3] == STATIC_KEYWORD, parts[4], structural)
 }
 
 /// What a fn no body is read for reads: what nothing names.
