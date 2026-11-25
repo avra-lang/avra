@@ -1,0 +1,29 @@
+// proves: a map's key is its WHOLE text — keys that differ only after a
+// NUL are different keys, the empty key is a key (in a built map and in
+// a laid-out one), and three thousand keys sharing the text before a NUL
+// each answer their own value; `get` answers a value, a present null
+// and absence alike through its one probe.
+use @std.text.{from_codepoint}
+
+fn nul() -> string { from_codepoint(0) }
+
+fn hostile(i: int) -> string { "k" + nul() + "${i}" }
+
+const LAID: Map<string, int> = {"": 1, "x": 2}
+
+mut m: Map<string, int> = {}
+m.set("a", 1)
+m.set("a" + nul() + "b", 2)
+m.set("a" + nul() + "c", 3)
+m.set("a" + nul(), 4)
+m.set(nul(), 5)
+m.set("", 6)
+m.set("", 60)
+mut chain: Map<string, int> = {}
+for i in 0..3000 { chain.set(hostile(i), i) }
+let own = [i for i in 0..3000 if chain.get(hostile(i)) ?? 0 - 1 == i]
+mut maybe: Map<string, int?> = {}
+maybe.set("", null)
+maybe.set(nul(), 7)
+let got = [m.get(k) ?? 0 for k in ["a", "a" + nul() + "b", "a" + nul() + "c", "a" + nul(), nul(), "", "a" + nul() + "d"]]
+"${m.length} ${got[0]} ${got[1]} ${got[2]} ${got[3]} ${got[4]} ${got[5]} ${got[6]} ${chain.length} ${own.length} ${maybe.get("") != null} ${maybe.get("") ?? null ?? 0 - 1} ${maybe.get(nul()) ?? null ?? 0 - 1} ${maybe.get("z") != null} ${LAID.get("") ?? 0} ${LAID.get("x") ?? 0} ${LAID.get(nul()) ?? 0}"

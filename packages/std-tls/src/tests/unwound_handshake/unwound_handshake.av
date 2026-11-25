@@ -1,0 +1,63 @@
+//! proves: a task unwound inside a handshake leaves nothing behind —
+//! its socket is closed, so the peer reads the end, and its session is
+//! returned to the engine, whether the handshake was asked for or dialed
+use @std.net.{Conn, Listener, Read, listen, connect}
+use @std.time.{secs, ms, sleep}
+use @std.tls.{Config, TlsError, dial, handshake, session, wired}
+use @std.tls.testing.{trusting_localhost}
+
+/// The slot the engine hands the next session: a returned slot is
+/// handed out again first, so a session left behind moves the answer.
+fn slot(config: Config) -> Result<int, TlsError> {
+    let s = session(config, "localhost")?
+    s.end()?
+    .Ok(s.handle % 65536)
+}
+
+/// Whether the peer has closed: everything it wrote read, then the end.
+fn ended(c: Conn) -> Result<bool, TlsError> {
+    match wired(c.try_read(65536))? { .Data(_) -> ended(c), .Eof -> true, .Pending -> false }
+}
+
+fn shakes(c: Conn, config: Config) -> bool { handshake(c, config, "localhost") is .Ok }
+
+fn dials(port: int, config: Config) -> bool { dial("127.0.0.1", port, secs(5), config) is .Ok }
+
+/// A handshake over a made connection, parked on a peer that never
+/// answers, then cancelled.
+fn asked(l: Listener, config: Config) -> Result<string, TlsError> {
+    let c = wired(connect("127.0.0.1", l.port, secs(2)))?
+    let peer = wired(l.accept())?
+    let before = slot(config)?
+    let t = spawn shakes(c, config)
+    sleep(ms(50))
+    t.cancel()
+    sleep(ms(50))
+    let closed = ended(peer)?
+    let _ = peer.close()
+    .Ok("${closed} ${slot(config)? == before}")
+}
+
+/// The same through `dial`, which makes the connection itself.
+fn dialed(l: Listener, config: Config) -> Result<string, TlsError> {
+    let before = slot(config)?
+    let t = spawn dials(l.port, config)
+    let peer = wired(l.accept())?
+    sleep(ms(50))
+    t.cancel()
+    sleep(ms(50))
+    let closed = ended(peer)?
+    let _ = peer.close()
+    .Ok("${closed} ${slot(config)? == before}")
+}
+
+fn run() -> Result<string, TlsError> {
+    let config = trusting_localhost()?
+    let l = wired(listen("127.0.0.1", 0))?
+    let a = asked(l, config)?
+    let d = dialed(l, config)?
+    wired(l.close())?
+    .Ok("asked: ${a} | dialed: ${d}")
+}
+
+run() catch e -> e.describe().message

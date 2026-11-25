@@ -1,0 +1,42 @@
+// proves: a nullable match whose arms answer nothing runs the arm its
+// subject picks — the `null` arm as surely as the present one, in
+// either order, braced or bare, as a fn's last statement and before
+// an early return — while a chain into a call that answers nothing
+// runs only when its subject is held.
+alias Tell = fn(mut List<string>) -> void
+
+fn say(mut log: List<string>, w: string) { log.push(w) }
+
+fn told(mut log: List<string>, s: string?) {
+    match s {
+        name? -> say(log, name)
+        null -> say(log, "none")
+    }
+}
+
+fn early(mut log: List<string>, s: string?) -> int {
+    if s != "x" {
+        match s {
+            name? -> say(log, "early-${name}")
+            null -> say(log, "early-none")
+        }
+        return 0
+    }
+    1
+}
+
+fn chained(mut log: List<string>, t: Tell?) { t?.(log) }
+
+mut log: List<string> = []
+told(log, null)
+told(log, "a")
+let _ = early(log, null)
+let _ = early(log, "b")
+let absent: string? = null
+match absent {
+    name? -> { say(log, name) }
+    null -> { say(log, "braced-none") }
+}
+chained(log, null)
+chained(log, (mut l: List<string>) -> l.push("chained"))
+log.join(",")

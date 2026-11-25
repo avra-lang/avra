@@ -1,0 +1,89 @@
+// The template gaps, by seat law: a block's last hole takes statements or
+// an expression, a literal pattern splices into an arm, `..${run}` spreads
+// into arguments, an expression quote adopts a `Stmts` want, and a lambda
+// that says what it answers leaves by `?`. The accepted shapes run in
+// `template_gaps/` and `closures/tests/lambda_question`; these pin what
+// refuses, in the seat's own words.
+use @std.avrac.compiler.{Program}
+use @std.avrac.testing.{
+    refused_n,
+    vendored_meta,
+    vendored_meta_paths,
+    test_workspace,
+    refused_with,
+    shown,
+}
+use @std.avrac.compiler.host.{memory_host}
+
+/// A program with `@std/meta` whose one fn is `body`.
+fn meta_program(body: string) -> Program {
+    let files = vendored_meta(
+        {
+            "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n",
+            "/w/src/main.av": "use @std.meta.{Code, Stmts, Arms}\nfn f(xs: List<Stmts>, arms: List<Arms>, n: int, s: string, rs: List<Code>) {\n    let _ = ${body}\n}\n1",
+        },
+    )
+    test_workspace(
+        memory_host(files, ["/w/avra.toml", "/w/src/main.av"].concat(vendored_meta_paths())),
+        "/w",
+    )
+        .program("/w/src/main.av")
+}
+
+spec "features/quote — a block's last hole" {
+    given "the fill" {
+        then "a list of statements is a statement run, and the block still answers Code" {
+            meta_program("quote { fn g() { \${xs} } }").check() is .Ok
+        }
+        then "an int is a value" { meta_program("quote { fn g() -> int { \${n} } }").check() is .Ok }
+        then "arms have no place at a block's end" {
+            refused_n(
+                meta_program("quote { fn g() { \${arms} } }"),
+                "a hole in block-tail position takes `Code`, `Stmts` or `Decls`, a list of them, an `int` or a `bool`, found `List<Arms>`",
+                1,
+            )
+        }
+        then "a string is ambiguous" {
+            refused_n(
+                meta_program("quote { fn g() -> string { \${s} } }"),
+                "a string in expression position is ambiguous",
+                1,
+            )
+        }
+    }
+}
+
+spec "features/quote — a spread into arguments" {
+    given "the template" {
+        then "a run spreads into a call's arguments" {
+            meta_program("quote { add(..\${rs}) }").check() is .Ok
+        }
+        then "a run spreads into a variant's payload" {
+            meta_program("quote { .Pair(..\${rs}) }").check() is .Ok
+        }
+        then "a list of statements is no run of expressions" {
+            refused_n(
+                meta_program("quote { add(..\${xs}) }"),
+                "a hole in run position takes a `List<Code>`",
+                1,
+            )
+        }
+    }
+    given "real source" {
+        then "a variant built from a spread is refused, the length being run-time" {
+            refused_with(
+                "enum E {\n    P(int, int)\n}\nlet xs = [1, 2]\nlet e: E = .P(..xs)\n1",
+                "`..` spreads into a seat that takes the rest of the arguments, and `.P` declares none",
+            )
+        }
+    }
+}
+
+spec "features/quote — a literal pattern" {
+    given "the arm" {
+        then "an int fills a pattern seat as a literal" {
+            meta_program("quote { match 1 { \${n} -> 1, _ -> 0 } }").check() is .Ok
+        }
+        then "a text still binds" { meta_program("quote { match 1 { \${s} -> 1 } }").check() is .Ok }
+    }
+}

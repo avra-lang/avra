@@ -1,0 +1,901 @@
+//! `view.av` — `View` is what a component implements: `describe`, THE
+//! WALK that makes a tree, handed where it stands (`tree/standing.av`).
+//! `@derive(View)` WRITES that impl. A component that names a primitive
+//! (`@prim`) is one, drawn from what each member SAYS it projects to:
+//!
+//!     @attr(.Label) label: string     an attribute of the node
+//!     @attr(.Value) value: string?    one the node names only when given
+//!     @children items: List<dyn View> the node's children
+//!     @style(color) tone: Tone        a token laid over the node's style
+//!     on input(typed: string)         an event the node speaks
+//!     ..Box                           the shared box, read field for field
+//!
+//! NO MEANING IS READ FROM A MEMBER'S NAME: a member that says nothing is
+//! refused where it stands. Every word a member says is checked against
+//! the library's own declaration — a primitive against `Prim`, an
+//! attribute against `Attribute`, a style against `Style`, an event
+//! against the platforms' enums (`@host`), what it says against `Handler` — so each
+//! fact has the one table its type already is, and a word or a type that
+//! does not fit is refused at the member, never inside this file.
+//!
+//! A component that names none is a COMPOSITION: its BODY is the views
+//! it is made of, drawn in place under its own parent; it projects
+//! nothing of its own, and its `state` members are places each INSTANCE
+//! owns — kept by where the instance stands, alive while a paint reaches
+//! it. The author writes no `@derive` and no spread: `@composes` says a
+//! component with a body is a `View` and carries a `Stand`.
+//!
+//! A derive's template text resolves in THIS file, so every foreign name
+//! it writes is a static `quote`; a generated hole resolves in the
+//! annotated file, so fields are read as `self.<field>`.
+use @std.meta.{
+    Type,
+    Field,
+    Param,
+    Variant,
+    Mark,
+    MarkArg,
+    Kind,
+    Directive,
+    Declared,
+    Diagnostic,
+    Code,
+    Stmts,
+    list_of,
+    literal,
+    refuse_as_at,
+    type_exported,
+    type_named,
+    composes,
+    beside,
+    declares,
+}
+use tree.node.{Node, Prim, Attribute, Action, Handler}
+use tree.dom_event.{DomEvent}
+use tree.seats.{SeatRow, seat, seat_named}
+use tree.terminal_key.{Key}
+use tree.lists.{flatten}
+// LICENSED modules.unused_import: `sighted` is named by GENERATED code (the node a primitive derives).
+use tree.sites.{sighted}
+use tree.identity.{Stand, stand_of, steps, shared}
+use tree.standing.{Standing, Kept, standing, kept, stood}
+use style.box.{Box}
+use compose.{gathered}
+use @std.validate.{nearest}
+
+/// A component that projects to a neutral `Node`. A COMPONENT WITH A
+/// BODY IS A VIEW: the compiler derives this trait over it, and it
+/// carries a `Stand` — its key, the site it was written at — with
+/// nothing written.
+@composes(Stand)
+export trait View {
+    /// What this view says of where it stands among its siblings.
+    fn stand() -> Stand
+
+    /// What this view draws under its parent, made standing at `at`: a
+    /// primitive its one node, a composition the nodes of what it is
+    /// made of — none, one or several, in place.
+    fn describe(at: Standing) -> List<Node>
+
+    static fn derive(t: Type) -> Declared {
+        let said? = vocabulary() else { return Declared { made: [], problems: [unread(t)] } }
+        let word? = prim_word(t) else { return composition(said, t) }
+        if t.body != null { return unmade(t, [primitive_body(t)]) }
+        let parts = [said.part(t, f) for f in t.fields]
+        let problems = [d for p in parts for d in p.problems].concat(said.unfit(t, word, parts))
+        if !problems.is_empty() { return unmade(t, problems) }
+        let node = quote {
+            Node {
+                prim: Prim.${word},
+                attrs: ${attrs_code(parts)},
+                box: ${said.box_code(parts)},
+                children: ${held_by([c for p in parts for c in p.children])},
+                events: ${joined([c for p in parts for c in p.events])},
+                sites: ${sites_code(t)},
+            }
+        }
+        Declared {
+            made: [
+                beside(
+                    t,
+                    quote {
+                        impl View for ${t} {
+                            fn stand() -> Stand { stand_of(self.key, self.site) }
+
+                            fn describe(at: Standing) -> List<Node> { [${node}] }
+                        }
+                    },
+                ),
+            ]
+                .concat([said.seat_row(t, f) for f in t.fields if f.says != null]),
+        }
+    }
+
+    static fn marks(t: Type) -> List<string> { [attr_mark, children_mark, style_mark, host_mark] }
+}
+
+/// A view that was refused: the impl that stands in for it, and why.
+fn unmade(t: Type, problems: List<Diagnostic>) -> Declared { Declared { made: [refused_view(t)], problems: problems } }
+
+/// What a refused view is given: a `describe` that draws nothing, so the
+/// refusal is the one thing said and no user of the view is blamed for a
+/// method that was never made.
+fn refused_view(t: Type) -> Directive {
+    beside(
+        t,
+        quote {
+            impl View for ${t} {
+                fn stand() -> Stand { Stand {} }
+
+                fn describe(at: Standing) -> List<Node> { [] }
+            }
+        },
+    )
+}
+
+/// A view's tree standing ALONE: no paint came before it and none
+/// follows, so every instance in it is new.
+/// A page that persists paints through `Live.paint_view`.
+export fn tree_of(v: dyn View) -> Node { rooted(v.describe(standing())) }
+
+/// A TREE HAS ONE ROOT. What a view drew, as a tree: its one node — or,
+/// for a composition that drew none or several where nothing holds
+/// them, a column of them.
+export fn rooted(drawn: List<Node>) -> Node {
+    if drawn.length == 1 { return drawn[0] }
+    Node { prim: Prim.Column, attrs: [], box: Box {}, children: drawn }
+}
+
+/// What `items` draw under the node standing at `at`, each standing
+/// under it at its own step.
+export fn described(at: Standing, items: List<dyn View>) -> List<Node> { flatten(each_described(at, items, true)) }
+
+/// What a COMPOSITION standing at `at` draws: what `items` draw, IN
+/// PLACE — under the composition's own parent, with no node of its own
+/// around them. Each node is stepped through the composition, so two
+/// instances' nodes are told apart beside each other; and the FIRST
+/// node it draws wears the composition's `key` where it wears none of
+/// its own, so a keyed row is found on a page by its key.
+export fn made_of(at: Standing, items: List<dyn View>, key: string?) -> List<Node> {
+    let drawn = flatten(each_described(at, items, false))
+    [drawn_through(n, at.step.get(), if j == 0 { key } else { null }, at.by_order.get()) for j, n in drawn]
+}
+
+/// A node as a composition drew it: stepped through `via` where it was
+/// drawn through nothing yet, wearing `key` where it wears none, and told by
+/// order when the composition is.
+fn drawn_through(n: Node, via: string?, key: string?, by_order: bool) -> Node {
+    n with { box: n.box with { via: n.box.via ?? via, key: n.box.key ?? key }, drawn_by_order: n.drawn_by_order || by_order }
+}
+
+/// What each of `items` draws, standing under `at` at its own step.
+fn each_described(at: Standing, items: List<dyn View>, drawn: bool) -> List<List<Node>> {
+    let said = [v.stand() for v in items]
+    let stands = at.children([s.spelled() for s in steps(said)], shared(said), drawn)
+    [v.describe(stands[j]) for j, v in items]
+}
+
+// ── compositions ────────────────────────────────────────────────
+
+/// The impls a composition is given: `composed`, its body gathered —
+/// the statements the author wrote, with `self` the instance — and its
+/// `View`: what the body made, drawn in place under where it stands,
+/// and — when it holds state — the instance that stands there kept and
+/// handed this paint's props.
+fn composition(said: Vocabulary, t: Type) -> Declared {
+    let body? = t.body else { return unmade(t, [no_body(t)]) }
+    let problems = composition_problems(t)
+    if !problems.is_empty() { return unmade(t, problems) }
+    let seat = unwritable(t, "kept")
+    let composed = unwritable(t, "made")
+    let stateful = t.fields.any(it.state)
+    let me = if stateful { said.standing_instance(t, seat) } else { quote { self } }
+    let made = [
+        beside(
+            t,
+            quote {
+                impl ${t} {
+                    fn ${composed}() -> List<dyn View> {
+                        let made = gathered {
+                            ${body}
+                        }
+                        made.items
+                    }
+                }
+            },
+        ),
+        beside(
+            t,
+            quote {
+                impl View for ${t} {
+                    fn stand() -> Stand { stand_of(self.key, self.site) }
+
+                    fn describe(at: Standing) -> List<Node> {
+                        let me = ${me}
+                        made_of(at, me.${composed}(), self.key)
+                    }
+                }
+            },
+        ),
+    ]
+    if !stateful { return Declared { made: made } }
+    Declared {
+        made: [
+            declares(
+                seat,
+                t.at,
+                quote { once fn ${seat}() -> Kept<${t}> { kept(${literal(t.name)}) } },
+            ),
+        ]
+            .concat(made),
+    }
+}
+
+/// A name the derive mints beside a component and no program can
+/// write: the component's own, a `$`, and what it is for.
+fn unwritable(t: Type, role: string) -> string { "${t.name}\$${role}" }
+
+impl Vocabulary {
+    /// The instance that stands: the one kept, with this paint's props
+    /// laid over it — a copy shares its `state` cells — else this one.
+    fn standing_instance(t: Type, seat: string) -> Code {
+        mut carried = quote { held }
+        for name in self.prop_names(t) { carried = quote { ${carried} with { ${name}: self.${name} } } }
+        let synced: List<Stmts> = [quote { if held.${p} != self.${p} { held.${p} = self.${p} } } for p in self.cell_props(t)]
+        quote {
+            match stood(${seat}(), at, self) {
+                held? -> {
+                    ${synced}
+                    ${carried}
+                }
+                null -> self
+            }
+        }
+    }
+
+    /// A prop the compiler made a cell: the PARENT writes it, at each paint.
+    fn prop_cell(f: Field) -> bool { f.state && f.prop }
+
+    /// A place the author keeps: a `state` written in the body. A prop cell is
+    /// no such place — it is the parent's, so a primitive is told it, never
+    /// left to keep it.
+    fn kept_state(f: Field) -> bool { f.state && !f.prop }
+
+    /// The props the compiler made cells of: a later instance writes each into
+    /// the one that stands, only where its value moved.
+    fn cell_props(t: Type) -> List<string> { [f.name for f in t.fields if self.prop_cell(f)] }
+
+    /// The members a later instance hands the one that stands: every one
+    /// that is no `state`, and where it says it stands.
+    fn prop_names(t: Type) -> List<string> { [f.name for f in t.fields if !f.state].concat([f.name for f in self.stand]) }
+}
+
+/// What a composition gets wrong: a box of its own, or a member marked
+/// as a primitive's is.
+fn composition_problems(t: Type) -> List<Diagnostic> {
+    let boxed = if t.spreads.any(is_box(it)) { [boxed_composition(t)] } else { [] }
+    boxed.concat([marked_composition(f, m) for f in t.fields for m in f.marks])
+}
+
+/// The library's own declarations a member's words are checked against.
+type Vocabulary = {
+    prims: List<Variant>,
+    attributes: List<Variant>,
+    web: List<Variant>,
+    keys: List<Variant>,
+    box: List<Field>,
+    style: List<Field>,
+    stand: List<Field>,
+}
+
+/// The modules that declare the vocabulary, as `Type.module` spells them.
+const tree_module = "@std.ui.tree"
+const style_module = "@std.ui.style"
+
+/// The shared box's own name, and the name of what a view says where
+/// it stands with.
+const box_name = "Box"
+const stand_name = "Stand"
+
+/// The vocabulary as the library declares it. Absent only when a
+/// declaration this file imports is not where it is read — the derive's
+/// own defect.
+fn vocabulary() -> Vocabulary? {
+    let prim? = type_exported(tree_module, "Prim") else { return null }
+    let attribute? = type_exported(tree_module, "Attribute") else { return null }
+    let web? = type_exported(tree_module, "DomEvent") else { return null }
+    let key? = type_exported(tree_module, "Key") else { return null }
+    let box? = type_exported(style_module, box_name) else { return null }
+    let style? = type_exported(style_module, "Style") else { return null }
+    let stand? = type_exported(tree_module, stand_name) else { return null }
+    Vocabulary {
+        prims: prim.variants,
+        attributes: attribute.variants,
+        web: web.variants,
+        keys: key.variants,
+        box: box.fields,
+        style: style.fields,
+        stand: stand.fields,
+    }
+}
+
+/// What one member of a primitive projects to, as the code that reads
+/// it: the attributes it gives the node, the children, the events it
+/// binds and the style fields it is laid over — or why it cannot project.
+/// `named` holds the attributes an optional member gives, each as the
+/// code of a run: the one attribute when the member is given, else none.
+/// One member fills one of them; a derive reads each across every member.
+type Part = {
+    attrs: List<Code> = [],
+    named: List<Code> = [],
+    children: List<Code> = [],
+    events: List<Code> = [],
+    styles: List<Laid> = [],
+    problems: List<Diagnostic> = [],
+    said_attrs: List<Saying> = [],
+    said_styles: List<Saying> = [],
+}
+
+/// A member laid over one field of the node's style.
+type Laid = { over: string, member: Field }
+
+/// One thing a member says of the node, and the mark that says it.
+type Saying = { word: string, content: bool, at: Mark }
+
+/// A member that cannot project, and why.
+fn refused(why: Diagnostic) -> Part { Part { problems: [why] } }
+
+impl Vocabulary {
+    /// What `f` projects to: its event, or the one thing its mark says.
+    fn part(t: Type, f: Field) -> Part {
+        if self.kept_state(f) { return refused(stateful_primitive(f)) }
+        let says? = f.says else { return self.marked(f) }
+        let marked? = f.marks.find(it.name != host_mark) else { return self.event(t, f, says) }
+        refused(marked_event(f, marked))
+    }
+
+    /// The one thing a member's marks say. Each mark is read by its own
+    /// word, so a member saying two things shows as two parts.
+    fn marked(f: Field) -> Part {
+        if says_state(f) { return Part {} }
+        let said = [self.attribute(f, m) for m in marks_of(f, attr_mark)]
+            .concat([children(f, m) for m in marks_of(f, children_mark)])
+            .concat([self.styled(f, m) for m in marks_of(f, style_mark)])
+        if said.length > 1 { return refused(says_twice(f)) }
+        said.first() ?? refused(says_nothing(f))
+    }
+
+    /// `@attr(.Label) label` → the code `Attribute.Label(self.label)`.
+    /// AN OPTIONAL MEMBER NAMES ITS ATTRIBUTE ONLY WHEN GIVEN: a node
+    /// whose instance wrote no `value` carries no `Value`, so a target
+    /// can tell what the program draws from what it leaves alone.
+    fn attribute(f: Field, m: Mark) -> Part {
+        let word? = m.args.first() else { return refused(unnamed_mark(m, "@attr(.Label)")) }
+        let v? = self.attributes.find(it.name == word) else {
+            return refused(no_attribute(m, word, [a.name for a in self.attributes]))
+        }
+        let carried? = v.fields.first() else { return refused(bare_attribute(m, v.name)) }
+        if carried.kind.spelled() != filled_by(f.kind).spelled() { return refused(attribute_misfit(m, v.name, carried.kind, f)) }
+        let said = [Saying { word: v.name, content: is_content(v), at: m }]
+        if carried.kind.spelled() == f.kind.spelled() {
+            return Part { attrs: [quote { Attribute.${v.name}(self.${f.name}) }], said_attrs: said }
+        }
+        Part {
+            named: [
+                quote {
+                    match self.${f.name} {
+                        written? -> [Attribute.${v.name}(written)]
+                        null -> []
+                    }
+                },
+            ],
+            said_attrs: said,
+        }
+    }
+
+    /// `@style(color) tone` → `tone` laid over the node's `style.color`.
+    /// A style field is optional, and the member fills it.
+    fn styled(f: Field, m: Mark) -> Part {
+        let word? = m.args.first() else { return refused(unnamed_mark(m, "@style(color)")) }
+        let over? = self.style.find(it.name == word) else {
+            return refused(no_style(m, word, [s.name for s in self.style]))
+        }
+        if filled_by(over.kind).spelled() != f.kind.spelled() { return refused(style_misfit(m, over, f)) }
+        Part {
+            styles: [Laid { over: word, member: f }],
+            said_styles: [Saying { word: word, content: false, at: m }],
+        }
+    }
+
+    /// `on press` → the action the node binds while an instance hears
+    /// it. ABSENCE IS THE OPTION'S OWN NULL: a handler left unset binds
+    /// no action, so a control nobody hears emits nothing.
+    fn event(t: Type, f: Field, says: List<Param>) -> Part {
+        let handler? = hearing(says, quote { bound }) else { return refused(unsayable(f, says)) }
+        Part {
+            problems: self.hosted(f),
+            events: [
+                quote {
+                    match self.${f.name} {
+                        bound? -> [Action { seat: seat_named(${literal(t.name)}, ${literal(f.name)}), handler: ${handler} }]
+                        null -> []
+                    }
+                },
+            ],
+        }
+    }
+
+    /// The const that declares an event seat, beside its component: the
+    /// owner and event it is, and what each platform calls
+    /// it, read off the seat's `@host`. Named by owner and event, so the
+    /// seats are ordered by the one name that tells them apart.
+    fn seat_row(t: Type, f: Field) -> Directive {
+        let marks = marks_of(f, host_mark)
+        let named = "${t.name}\$${f.name}"
+        let row = quote {
+            SeatRow {
+                owner: ${literal(t.name)},
+                event: ${literal(f.name)},
+                web: ${self.hosted_as(marks, web_label, "DomEvent")},
+                terminal: ${self.hosted_as(marks, terminal_label, "Key")},
+                prevent: ${flag_code(hosted_flag(marks, prevent_label))},
+                always: ${flag_code(hosted_flag(marks, always_label))},
+                prim: Prim.${prim_word(t) ?? ""},
+            }
+        }
+        declares(
+            named,
+            t.at,
+            quote {
+                @seat
+                export const ${named}: SeatRow = ${row}
+            },
+        )
+    }
+
+    /// The variant a platform's setting names, as the code that spells it.
+    fn hosted_as(marks: List<Mark>, label: string, enum_name: string) -> Code {
+        let w? = [a.value for m in marks for a in m.named if a.label == label].first() else { return quote { null } }
+        if enum_name == "Key" { return quote { Key.${w} } }
+        quote { DomEvent.${w} }
+    }
+
+    /// What an event's `@host(web: .Click, terminal: .Enter)` gets wrong: a
+    /// missing `@host` (a primitive's event is delivered by a platform, and
+    /// with none named it can never fire), a second `@host`, a setting no platform has, a variant the platform's
+    /// own enum lacks. Each setting is checked against the enum it names.
+    fn hosted(f: Field) -> List<Diagnostic> {
+        let marks = marks_of(f, host_mark)
+        let unheard = if marks.is_empty() { [host_unheard(f)] } else { [] }
+        let twice = if marks.length > 1 { [host_twice(f)] } else { [] }
+        unheard
+            .concat(twice)
+            .concat(
+                flatten([self.host_setting(m, a) for m in marks for a in m.named])
+                    .concat([host_unnamed(m, w) for m in marks for w in m.args]),
+            )
+    }
+
+    /// One setting of a `@host`: a platform, or `prevent`.
+    fn host_setting(m: Mark, setting: MarkArg) -> List<Diagnostic> {
+        match setting.label {
+            web_label -> self.host_variant(m, "DOM event", setting.value, self.web, "DomEvent"),
+            terminal_label -> self
+                .host_variant(m, "terminal key", setting.value, self.keys.filter(it.fields.is_empty()), "Key"),
+            prevent_label or always_label -> if setting.value == "true" || setting.value == "false" { [] } else { [host_flag(m, setting.label, setting.value)] },
+            rest -> [host_platform(m, setting.label)],
+        }
+    }
+
+    /// A platform's event, checked against that platform's enum.
+    fn host_variant(m: Mark, what: string, value: string, known: List<Variant>, enum_name: string) -> List<
+        Diagnostic,
+    > {
+        let names = [v.name for v in known]
+        if names.contains(value) { return [] }
+        [no_host_event(m, what, value, enum_name, nearest(value, names))]
+    }
+
+    /// The node's box: every field of `Box` read off the component, its
+    /// style with each styling member laid over it.
+    fn box_code(parts: List<Part>) -> Code {
+        mut style = quote { self.style }
+        for l in [l for p in parts for l in p.styles] { style = quote { ${style} with { ${l.over}: self.${l.member.name} } } }
+        let rest = [quote { Box { ${f.name}: self.${f.name} } } for f in self.box.concat(self.stand) if f.name != style_field]
+        quote { Box { style: ${style}, ..${rest} } }
+    }
+
+    /// What the primitive as a WHOLE gets wrong: a word `Prim` does not
+    /// have, no shared box, and anything two members say twice — a
+    /// second saying would be dropped, or drawn over the first.
+    fn unfit(t: Type, word: string, parts: List<Part>) -> List<Diagnostic> {
+        self.prim_problem(t, word).concat(unboxed(t)).concat(said_twice(parts))
+    }
+
+    fn prim_problem(t: Type, word: string) -> List<Diagnostic> {
+        if self.prims.any(it.name == word) { [] } else { [not_a_prim(t, word, [p.name for p in self.prims])] }
+    }
+}
+
+/// The marks a member says its projection with.
+const attr_mark = "attr"
+const children_mark = "children"
+const style_mark = "style"
+
+/// The annotation that names a view's primitive.
+const prim_mark = "prim"
+
+/// The mark that says what a platform calls an event, and the settings it
+/// takes.
+const host_mark = "host"
+const web_label = "web"
+const terminal_label = "terminal"
+const prevent_label = "prevent"
+const always_label = "always"
+
+/// Whether an event's `@host` says `prevent: true`.
+fn hosted_flag(marks: List<Mark>, label: string) -> bool {
+    [a.value for m in marks for a in m.named if a.label == label].first() == "true"
+}
+
+/// A flag as the code that spells it.
+fn flag_code(on: bool) -> Code { if on { quote { true } } else { quote { false } } }
+
+/// The mark that says an attribute is its node's own words.
+const facet_mark = "facet"
+const content_facet = "content"
+
+/// A member's marks of one word.
+fn marks_of(f: Field, word: string) -> List<Mark> { [m for m in f.marks if m.name == word] }
+
+/// The box's field a styling member is laid over.
+const style_field = "style"
+
+/// What fills an optional field: the type it may hold.
+fn filled_by(k: Kind) -> Kind {
+    match k { .Opt(inner) -> inner, rest -> k }
+}
+
+/// `@children items` → each child's own `describe`.
+fn children(f: Field, m: Mark) -> Part {
+    match f.kind {
+        .List(.Dyn(_)) -> Part { children: [quote { self.${f.name} }] },
+        rest -> refused(not_children(m, f)),
+    }
+}
+
+/// The `Handler` arm that hears what an event says: ONE arm per thing a
+/// control can say, and absent for anything else.
+fn hearing(says: List<Param>, bound: Code) -> Code? {
+    if says.is_empty() { return quote { Handler.Nothing(${bound}) } }
+    if says.length > 1 { return null }
+    match says[0].kind {
+        .Str -> quote { Handler.Text(${bound}) },
+        .Bool -> quote { Handler.Flag(${bound}) },
+        .Int -> quote { Handler.Number(${bound}) },
+        .Float or .Ptr or .Void or .List(_) or .Cell(_) or .Map(_, _) or .Opt(_) or .Result(_, _) or .Named(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) or .Bytes -> null,
+    }
+}
+
+/// What a node holds: its members' views, described under where the
+/// node stands — nothing for a node no member gives children.
+fn held_by(members: List<Code>) -> Code {
+    if members.is_empty() { return quote { [] } }
+    quote { described(at, ${joined(members)}) }
+}
+
+/// A node's attributes in the order its members stand: one list, or —
+/// where an optional member may name none — the runs each member gives.
+fn attrs_code(parts: List<Part>) -> Code {
+    if parts.all(it.named.is_empty()) { return list_of([c for p in parts for c in p.attrs]) }
+    joined([run for p in parts for run in [list_of([c]) for c in p.attrs].concat(p.named)])
+}
+
+/// Several runs as one list — none is the empty list, one is itself.
+fn joined(runs: List<Code>) -> Code {
+    if runs.is_empty() { return quote { [] } }
+    if runs.length == 1 { return runs[0] }
+    quote { flatten([${..runs}]) }
+}
+
+/// The readings a primitive carries: the closure its field of type
+/// `fn() -> string` holds and the cells its `Cells` field holds, made one
+/// reading when the cells are any. A primitive without both has none.
+fn sites_code(t: Type) -> Code {
+    let said? = t.fields.find(it.ty == said_type) else { return quote { [] } }
+    let read? = t.fields.find(it.ty == cells_type) else { return quote { [] } }
+    quote { sighted(self.site, self.${said.name}, self.${read.name}) }
+}
+
+/// The spellings a field wears to carry what the compiler knows of its text:
+/// the closure that says the words again and the cells it reads.
+const said_type = "Words"
+const cells_type = "Cells"
+
+/// The mark the compiler gives a composition's head prop it made a cell of.
+
+/// Whether a field is one the compiler fills to carry a reading, which no
+/// attribute, child or style says.
+fn says_state(f: Field) -> bool { f.ty == said_type || f.ty == cells_type }
+
+/// The primitive a component named with `@prim` — `@prim(.Button)` says
+/// `Button` — absent when it named none.
+fn prim_word(t: Type) -> string? { t.annotations.find(it.name == prim_mark)?.args?.first() }
+
+/// A primitive spreads the shared box in: the node's box is read off it
+/// field for field.
+fn unboxed(t: Type) -> List<Diagnostic> {
+    if t.spreads.any(is_box(it)) { [] } else { [no_box(t)] }
+}
+
+/// Whether a spread, as its own file names it, is the shared box.
+fn is_box(written: string) -> bool { spreads(written, box_name, style_module) }
+
+/// Whether a spread, as its own file names it, is `module`'s `name`.
+fn spreads(written: string, name: string, module: string) -> bool {
+    let spread? = type_named(written) else { return false }
+    spread.name == name && spread.module == module
+}
+
+/// Whether an attribute is its node's own words — its `@facet(content)`.
+fn is_content(v: Variant) -> bool { v.marks.any(it.name == facet_mark && it.args.first() == content_facet) }
+
+/// Each thing a second member says again: an attribute, a style field,
+/// or the node's own words — refused where the second one stands.
+fn said_twice(parts: List<Part>) -> List<Diagnostic> {
+    let attrs = [s for p in parts for s in p.said_attrs]
+    let styles = [s for p in parts for s in p.said_styles]
+    [attribute_twice(s) for j, s in attrs if attrs.slice(0, j).any(it.word == s.word)]
+        .concat(
+            [words_twice(s) for j, s in attrs if s.content && attrs.slice(0, j).any(it.content && it.word != s.word)],
+        )
+        .concat([style_twice(s) for j, s in styles if styles.slice(0, j).any(it.word == s.word)])
+}
+
+// ── voices ──────────────────────────────────────────────────────
+
+fn unread(t: Type) -> Diagnostic {
+    refuse_as_at(
+        "defect",
+        t.at,
+        "defect: `@derive(View)` could not read the library's own vocabulary over `${t.name}`",
+        "`Prim`, `Attribute`, `Box`, `Style` and `Stand` are read by their modules' names — one moved",
+    )
+}
+
+fn says_nothing(f: Field) -> Diagnostic {
+    refuse_as_at(
+        "unprojected",
+        f.at,
+        "a primitive says what each member projects to, and `${f.name}` says nothing",
+        "mark it `@attr(.Label)`, `@children` or `@style(color)`, or declare it an event — `on ${f.name}`",
+    )
+}
+
+fn says_twice(f: Field) -> Diagnostic {
+    refuse_as_at(
+        "two-marks",
+        f.at,
+        "a member projects to one thing, and `${f.name}` says more than one",
+        "keep one of `@attr`, `@children` and `@style`",
+    )
+}
+
+fn host_unheard(f: Field) -> Diagnostic {
+    refuse_as_at(
+        "host",
+        f.at,
+        "`${f.name}` is an event no platform delivers, and a primitive's event can fire only from one",
+        "name what fires it — `@host(web: .Click, terminal: .Enter) on ${f.name}`",
+    )
+}
+
+fn host_twice(f: Field) -> Diagnostic {
+    refuse_as_at(
+        "host",
+        f.at,
+        "`${f.name}` says `@host` twice",
+        "one `@host(web: …, terminal: …)` names every platform",
+    )
+}
+
+fn host_unnamed(m: Mark, written: string) -> Diagnostic {
+    refuse_as_at(
+        "host",
+        m.at,
+        "`@host` names its platform: `${written}` has none",
+        "write `@host(web: .Click)` — the settings are ${ticked([web_label, terminal_label, prevent_label, always_label])}",
+    )
+}
+
+fn host_platform(m: Mark, label: string) -> Diagnostic {
+    refuse_as_at(
+        "host",
+        m.at,
+        "`@host` has no setting `${label}`",
+        "its settings are ${ticked([web_label, terminal_label, prevent_label, always_label])}",
+    )
+}
+
+fn host_flag(m: Mark, label: string, value: string) -> Diagnostic {
+    refuse_as_at("host", m.at, "`${label}` is `true` or `false`, not `${value}`", null)
+}
+
+fn no_host_event(m: Mark, what: string, value: string, enum_name: string, near: string?) -> Diagnostic {
+    let way = if near == null { "its events are `${enum_name}`" } else { "did you mean `${near!}`? its events are `${enum_name}`" }
+    refuse_as_at("host", m.at, "no ${what} `${value}`", way)
+}
+
+fn marked_event(f: Field, m: Mark) -> Diagnostic {
+    refuse_as_at(
+        "marked-event",
+        m.at,
+        "an event is heard by its own word, and `${f.name}` is marked `@${m.name}` too",
+        "drop the mark — `on ${f.name}`",
+    )
+}
+
+fn unnamed_mark(m: Mark, form: string) -> Diagnostic {
+    refuse_as_at(
+        "unnamed-mark",
+        m.at,
+        "`@${m.name}` names what it marks its member as, and this one names nothing",
+        "`${form}`",
+    )
+}
+
+fn no_attribute(m: Mark, word: string, known: List<string>) -> Diagnostic {
+    refuse_as_at(
+        "attribute",
+        m.at,
+        "`${word}` is no attribute of a node",
+        "the attributes are ${ticked(known)}",
+    )
+}
+
+fn bare_attribute(m: Mark, attribute: string) -> Diagnostic {
+    refuse_as_at(
+        "attribute-misfit",
+        m.at,
+        "`${attribute}` carries nothing a member could fill",
+        null,
+    )
+}
+
+fn attribute_misfit(m: Mark, attribute: string, carried: Kind, f: Field) -> Diagnostic {
+    refuse_as_at(
+        "attribute-misfit",
+        m.at,
+        "`${attribute}` carries `${carried.spelled()}`, and `${f.name}` is `${f.kind.spelled()}`",
+        null,
+    )
+}
+
+fn attribute_twice(s: Saying) -> Diagnostic {
+    refuse_as_at(
+        "said-twice",
+        s.at.at,
+        "a node carries an attribute once, and `${s.word}` is already another member's",
+        "mark one member `@attr(.${s.word})`",
+    )
+}
+
+fn words_twice(s: Saying) -> Diagnostic {
+    refuse_as_at(
+        "said-twice",
+        s.at.at,
+        "a node says its own words once, and another member already says them — `${s.word}` would be lost",
+        "keep one member as the node's words",
+    )
+}
+
+fn no_style(m: Mark, word: string, known: List<string>) -> Diagnostic {
+    refuse_as_at(
+        "style",
+        m.at,
+        "`${word}` is no field of a node's style",
+        "the fields are ${ticked(known)}",
+    )
+}
+
+fn style_misfit(m: Mark, over: Field, f: Field) -> Diagnostic {
+    refuse_as_at(
+        "style-misfit",
+        m.at,
+        "a style's `${over.name}` is `${filled_by(over.kind).spelled()}`, and `${f.name}` is `${f.kind.spelled()}`",
+        null,
+    )
+}
+
+fn style_twice(s: Saying) -> Diagnostic {
+    refuse_as_at(
+        "said-twice",
+        s.at.at,
+        "a node's style holds `${s.word}` once, and another member already fills it",
+        "mark one member `@style(${s.word})`",
+    )
+}
+
+fn not_children(m: Mark, f: Field) -> Diagnostic {
+    refuse_as_at(
+        "children",
+        m.at,
+        "a node's children are views, and `${f.name}` is `${f.kind.spelled()}`",
+        "`@children` marks a `List<dyn View>`",
+    )
+}
+
+fn unsayable(f: Field, says: List<Param>) -> Diagnostic {
+    refuse_as_at(
+        "unsayable",
+        f.at,
+        "a control says nothing, text, a flag or a number, and `${f.name}` says `${["${s.name}: ${s.ty}" for s in says].join(", ")}`",
+        "say one `string`, `bool` or `int`",
+    )
+}
+
+fn stateful_primitive(f: Field) -> Diagnostic {
+    refuse_as_at(
+        "stateful-primitive",
+        f.at,
+        "a primitive draws what it is told, and `${f.name}` is a place it would keep",
+        "state is kept by the composition that uses the primitive — a component whose body is made of views",
+    )
+}
+
+fn no_body(t: Type) -> Diagnostic {
+    refuse_as_at(
+        "prim",
+        t.at,
+        "a view is a primitive or is made of views, and `${t.name}` is neither",
+        "name the primitive it is — `@prim(.Text)` above it — or write in its body the views it is made of",
+    )
+}
+
+fn primitive_body(t: Type) -> Diagnostic {
+    refuse_as_at(
+        "primitive-body",
+        t.at,
+        "a primitive is drawn by its target, and `${t.name}` holds a body of its own",
+        "drop `@prim` and `@derive(View)` — a component made of views needs neither — or drop the body",
+    )
+}
+
+fn boxed_composition(t: Type) -> Diagnostic {
+    refuse_as_at(
+        "boxed-composition",
+        t.at,
+        "a composition wears its view's box, and `${t.name}` spreads one of its own",
+        "drop the spread — where a composition stands is carried for it — or name the primitive it is with `@prim`",
+    )
+}
+
+fn marked_composition(f: Field, m: Mark) -> Diagnostic {
+    refuse_as_at(
+        "marked-composition",
+        m.at,
+        "a composition projects nothing of its own, and `${f.name}` is marked `@${m.name}`",
+        "its body says what it is made of — drop the mark, or name the primitive it is with `@prim`",
+    )
+}
+
+fn no_box(t: Type) -> Diagnostic {
+    refuse_as_at(
+        "box",
+        t.at,
+        "a view carries the shared box, and `${t.name}` spreads none",
+        "spread it in — `..Box`",
+    )
+}
+
+fn not_a_prim(t: Type, word: string, known: List<string>) -> Diagnostic {
+    refuse_as_at(
+        "not-a-prim",
+        t.annotations.find(it.name == prim_mark)?.at ?? t.at,
+        "`${word}` is no primitive a target draws",
+        "the primitives are ${ticked(known)}",
+    )
+}
+
+/// Words as a diagnostic lists them.
+fn ticked(words: List<string>) -> string { ["`${w}`" for w in words].join(", ") }

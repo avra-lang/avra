@@ -1,0 +1,48 @@
+// A SETTLEMENT'S NAME IS ITS CONST'S DECLARATION AND ITS SEATS: a declaration written above
+// the const moves neither, though it moves the const's statement ordinal, which the
+// in-process interning key still carries.
+use compiler.{Workspace}
+use core.{DeclKind}
+use features.{SettleRoot}
+
+fn plain() -> string { "const A: int = 1\nconst B: int = 2\n" }
+
+fn above() -> string { "fn above() -> int {\n    0\n}\n" + plain() }
+
+fn ask_of(ws: Workspace, name: string) -> int {
+    let f = ws.file_id(readmit_path())
+    let d = ws.decls.named_decl(readmit_path(), DeclKind.Const, name)!
+    ws.settle_id(f, SettleRoot.Const(ws.decls.decl(d).stmt), [])
+}
+
+fn name_of(text: string, name: string) -> string {
+    let ws = admitted(text)
+    ws.spelled_settle(ask_of(ws, name)) ?? ""
+}
+
+fn symbol_of(text: string, name: string) -> string {
+    let ws = admitted(text)
+    let f = ws.file_id(readmit_path())
+    let d = ws.decls.named_decl(readmit_path(), DeclKind.Const, name)!
+    ws.settle_symbol(f, SettleRoot.Const(ws.decls.decl(d).stmt), [])
+}
+
+spec "compiler/settle name — a settlement is named by its declaration" {
+    given "a fn written above two consts" {
+        then "neither const's name moves" {
+            let a = name_of(plain(), "A")
+            a != "" && a == name_of(above(), "A") && name_of(plain(), "B") == name_of(above(), "B")
+        }
+        then "the in-process key does move, which is why it is never saved" {
+            symbol_of(plain(), "A") != symbol_of(above(), "A")
+        }
+        then "two consts are two names" {
+            name_of(plain(), "A") != name_of(plain(), "B")
+        }
+        then "a name finds its ask again" {
+            let ws = admitted(above())
+            let id = ask_of(ws, "B")
+            ws.settle_arg(ws.spelled_settle(id) ?? "") == id
+        }
+    }
+}

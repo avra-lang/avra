@@ -1,0 +1,77 @@
+// The red team's survivors: every prefix of a stream, every bit of a
+// checksummed one, a header that asks for a dictionary, a second
+// member, and ceilings at their edges.
+use @std.compress.{Format, CompressError, encoded, decoded}
+use @std.text.{repeat}
+
+fn page() -> string { repeat("a line of text that repeats, ", 40) }
+
+fn packed_page(f: Format) -> Bytes { encoded(page().bytes(), f) catch "".bytes() }
+
+fn read_back(b: Bytes, f: Format, ceiling: int) -> string {
+    match decoded(b, f, ceiling) {
+        .Ok(out) -> out.text() ?? "octets ${out.length}",
+        .Err(e) -> e.describe().message,
+    }
+}
+
+/// Whether a reading was a refusal — the words every refusal opens
+/// with — rather than read as something.
+fn refused(said: string) -> bool { said.starts_with("the input ") || said == "memory ran out" }
+
+/// `b` with bit `k` of octet `i` flipped.
+fn flipped(b: Bytes, i: int, k: int) -> Bytes {
+    let bit = [1, 2, 4, 8, 16, 32, 64, 128][k]
+    let o = b.at(i)
+    let x = if o / bit % 2 == 1 { o - bit } else { o + bit }
+    b.slice(0, i).concat([x].bytes()!).concat(b.slice(i + 1, b.length))
+}
+
+/// Whether every proper prefix of `b` is refused.
+fn prefixes_refused(b: Bytes, f: Format) -> bool {
+    [k for k in 0..b.length].all((k) -> refused(read_back(b.slice(0, k), f, 100000)))
+}
+
+/// Whether every one-bit flip of `b` reads back as `want` or is refused.
+fn flips_hold(b: Bytes, f: Format, want: string) -> bool {
+    [i for i in 0..b.length]
+        .all((i) -> [k for k in 0..8].all((k) -> held(read_back(flipped(b, i, k), f, 100000), want)))
+}
+
+fn held(said: string, want: string) -> bool { said == want || refused(said) }
+
+spec "std/compress — adversarial" {
+    given "degenerate shapes" {
+        then "one octet round-trips" {
+            [Format.Gzip, Format.Zlib, Format.Brotli]
+                .all((f) -> read_back(encoded("x".bytes(), f) catch "".bytes(), f, 1) == "x")
+        }
+        then "a ceiling below zero refuses even nothing" {
+            match decoded(encoded("".bytes(), Format.Gzip) catch "".bytes(), Format.Gzip, 0 - 1) {
+                .Err(e) -> match e { .TooLarge(c) -> c == 0 - 1, .Corrupt or .Truncated or .Memory -> false },
+                .Ok(_) -> false,
+            }
+        }
+        then "a ceiling of zero refuses one octet" { read_back(encoded("x".bytes(), Format.Brotli) catch "".bytes(), Format.Brotli, 0) == "the input decodes to more than 0 octets" }
+    }
+    given "every prefix of a stream" {
+        then "gzip's prefixes are all refused" { prefixes_refused(packed_page(Format.Gzip), Format.Gzip) }
+        then "zlib's prefixes are all refused" { prefixes_refused(packed_page(Format.Zlib), Format.Zlib) }
+        then "brotli's prefixes are all refused" { prefixes_refused(packed_page(Format.Brotli), Format.Brotli) }
+    }
+    given "every bit of a checksummed stream" {
+        then "a gzip flip is refused or harmless" { flips_hold(packed_page(Format.Gzip), Format.Gzip, page()) }
+        then "a zlib flip is refused or harmless" { flips_hold(packed_page(Format.Zlib), Format.Zlib, page()) }
+    }
+    given "headers that ask for more" {
+        then "a zlib stream wanting a preset dictionary" {
+            // FDICT set: CMF 0x78, FLG 0xBB (a multiple of 31 with bit 5), then a dictionary id
+            read_back([120, 187, 0, 0, 0, 1, 3, 0].bytes()!, Format.Zlib, 100) == "the input is not in the format it was read as"
+        }
+        then "a second gzip member is trailing octets" {
+            let one = encoded("a".bytes(), Format.Gzip) catch "".bytes()
+            read_back(one.concat(one), Format.Gzip, 100) == "the input is not in the format it was read as"
+        }
+        then "gzip read as brotli" { refused(read_back(packed_page(Format.Gzip), Format.Brotli, 100000)) }
+    }
+}

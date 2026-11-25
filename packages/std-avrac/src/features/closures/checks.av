@@ -1,0 +1,19 @@
+//! The typing rule of a lambda: each parameter is its written type, or else its seat's when the
+//! lambda checks into a fn type, and makes the promises either makes; its body checks in a scope of its own against the seat's answer,
+//! which is the lambda's answer, the body's widening into it; and the lambda is the fn type it makes
+//! once all of that is known, and where it stands is: a seat it can't see may widen it. A name from
+//! further out reads in the body as it may be when the lambda runs, never narrowed by a test around
+//! it.
+use core.{Checking, Checks, ExprId, Expected, SignedType}
+use core.expr.{Lambda}
+
+impl Checks for Lambda {
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? { cx.lambda_checked(self.params, self.body, expected) }
+}
+
+impl Checks for ArmsBody {
+    /// A body of arms, a lambda of one parameter matched by them: under a fn seat of one parameter,
+    /// each arm binds against that parameter and answers the seat's answer, and the body is the
+    /// seat's fn type; under any other seat each binds against what isn't known.
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? { cx.arms_lambda_checked(self.arms, expected) }
+}

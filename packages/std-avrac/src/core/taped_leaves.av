@@ -1,0 +1,123 @@
+//! Where a node was written, as a tape says it and as Avra's tree does: a span. A seat's identity
+//! is minted where it was written, so on a tape it's that place.
+use @std.program.syntax_tape.{TapePlace}
+
+impl SyntaxArena {
+    /// The place a span says, absent with it.
+    fn span_place(span: Span?) -> TapePlace? {
+        let written? = span else { return null }
+        TapePlace { offset: written.lo, width: written.hi - written.lo }
+    }
+
+    /// The span a place says, absent with it.
+    fn placed_span(place: TapePlace?) -> Span? {
+        let written? = place else { return null }
+        span_of(written.offset, written.offset + written.width)
+    }
+
+    /// Where a span was written, in the item's file or another.
+    fn place_in(span: Span?, elsewhere: bool) -> TapePlace? {
+        let written? = self.span_place(span) else { return null }
+        written with { in_item: !elsewhere }
+    }
+
+    /// Where a node was written: a template's nodes copied home are in their provider's file.
+    fn expr_place(id: ExprId) -> TapePlace? { self.place_in(self.expr_span(id), self.spanned_elsewhere(id)) }
+
+    fn stmt_place(id: StmtId) -> TapePlace? { self.place_in(self.stmt_span(id), self.stmt_origins.get()[id.index]?.spanned_home ?? false) }
+
+    fn pat_place(id: PatId) -> TapePlace? { self.place_in(self.pat_span(id), self.pat_origins.get()[id.index]?.spanned_home ?? false) }
+
+    /// Where a seat was written.
+    fn param_place(id: ParamId) -> TapePlace? { self.place_in(self.param_id_span(id), self.param_elsewhere.get()[id.index]) }
+
+    /// A seat's identity, minted where it was written.
+    fn param_at(place: TapePlace?) -> ParamId {
+        let id = self.alloc_param_id(self.placed_span(place))
+        if !(place?.in_item ?? true) { self.param_elsewhere.set_at(id.index, true) }
+        id
+    }
+}
+
+/// Each table read back off a tape, through the verb its route names: what the tree keeps beside
+/// a node, a file's own lists, and what's made again while reading.
+impl SyntaxArena {
+    /// A statement's annotations, stamped outermost last, as a parse files them.
+    fn annotations_read(s: StmtId, annotations: List<Annotation>) {
+        for a in annotations { self.annotate(s, a) }
+    }
+
+    /// A statement's docs, stamped once its tree stands (`settled_since`).
+    fn docs_read(s: StmtId, group: DocGroup?) {
+        let held? = group else { return }
+        self.record_doc(s, held.lines, held.at)
+    }
+
+    /// The instance a statement wraps, and that it answers for the statement.
+    fn owned_instance_read(s: StmtId, wrapped: ExprId?) {
+        let instance? = wrapped else { return }
+        self.mark_instance_owner(instance, s)
+    }
+
+    fn mints_read(sugar: ExprId, nodes: List<ExprId>) { if !nodes.is_empty() { self.note_minted(sugar, nodes) } }
+
+    fn meaning_read(sugar: ExprId, root: ExprId?) { self.meaning.set_at(sugar.index, root) }
+
+    fn means_note_read(sugar: ExprId, note: string?) { self.means_notes.set_at(sugar.index, note) }
+
+    fn extensions_read(sugar: ExprId, roots: List<ExprId>) { if !roots.is_empty() { self.extended_with(sugar, roots) } }
+
+    fn expansion_read(e: ExprId, expansion: Expansion?) { self.expansions.set_at(e.index, expansion) }
+
+    fn struct_targs_read(e: ExprId, targs: List<TypeRef>) { if !targs.is_empty() { self.mark_struct_targs(e, targs) } }
+
+    /// Where a sublanguage's body starts, which files the block too.
+    fn body_start_read(e: ExprId, at: int?) {
+        let start? = at else { return }
+        self.mark_sublang(e, start)
+    }
+
+    fn block_text_read(e: ExprId, text: string?) { self.wear_block_text(e, text) }
+
+    fn expr_origin_read(e: ExprId, origin: ForeignOrigin?) { self.expr_origins.set_at(e.index, origin) }
+
+    fn stmt_origin_read(s: StmtId, origin: ForeignOrigin?) { self.stmt_origins.set_at(s.index, origin) }
+
+    fn pat_origin_read(p: PatId, origin: ForeignOrigin?) { self.pat_origins.set_at(p.index, origin) }
+
+    fn hoisted_read(stmts: List<StmtId>) { for s in stmts { self.hoist(s) } }
+
+    fn file_doc_read(lines: List<string>?) {
+        let held? = lines else { return }
+        self.document_file(held)
+    }
+
+    fn remarks_read(remarks: List<Remark>) { self.remarks.set(self.remarks.get().concat(remarks)) }
+
+    fn refusals_read(refusals: List<ParseRefusal>) { self.refusals.set(self.refusals.get().concat(refusals)) }
+
+    /// What an expression read back makes again: a quote is named by where it now stands.
+    fn remade_expr(e: ExprId) { if is_quote(self.expr(e)) { self.mark_quote_at(e) } }
+
+}
+
+/// Whether a node is a `quote` body, which is named by where it stands.
+fn is_quote(e: Expr) -> bool {
+    let body? = e.body_of() else { return false }
+    match body_behavior(body.word) { .Quote -> true, .Text or .Foreign -> false }
+}
+
+/// Whether a node is a sublanguage's body, which is neither a quote nor text.
+fn is_sublanguage(e: Expr) -> bool {
+    let body? = e.body_of() else { return false }
+    match body_behavior(body.word) { .Foreign -> true, .Text or .Quote -> false }
+}
+
+impl SyntaxArena {
+    /// What a parse does once its tree stands, for the statements a tape added after `since`:
+    /// each one's docs folded into it.
+    fn settled_since(since: ArenaMarks) {
+        for at in since.stmts..self.stmts.count() { self.stamp_doc(StmtId { index: at }) }
+        self.settle_prints()
+    }
+}

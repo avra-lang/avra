@@ -1,0 +1,47 @@
+//! A `once` FN'S ANSWER: kept in the fn's own slot the first time its body answers, and read back
+//! from that slot by every call after. A pointer is kept as it is; any other answer rides a list of
+//! one, so a kept absence is told apart from a slot nothing was kept in yet. EVERY EXIT THAT ANSWERS
+//! KEEPS IT — the tail, a `return`, a failure; an unwind answers nothing, and the next call runs the
+//! body again.
+
+/// The slot a `once` fn's answer is kept in: the fn's symbol, the slot's type, and whether the answer
+/// rides a list of one.
+export type OnceKept = { symbol: string, slot: SignedType, boxed: bool }
+
+impl Lowering {
+    /// The answer of the `once` fn known by `symbol`, its body `body` answering `answer`: what its slot
+    /// holds, else the body's value, kept. An answer laid inline or that is nothing isn't lowered yet.
+    mut fn once_answered(symbol: string, body: ExprId, answer: SignedType) -> Reg {
+        let carried = self.laid_out(answer)
+        let boxed = answer.nullable() || !carried.pointer()
+        if boxed && (carried.inline() || answer.owns(OwnType.Void)) { return self.missed_as("a `once` fn answering `${answer.spelled()}`") }
+        let slot = if boxed { owned_type("List") with { args: [answer], nulls: 1 } } else { answer with { nulls: 1 } }
+        let held = self.mint(self.laid_out(slot))
+        self.emit(Ins.OnceRead(held, symbol))
+        self.once_kept = OnceKept { symbol: symbol, slot: slot, boxed: boxed }
+        let r = self
+            .region(self.present(held, slot), carried) { cx ->
+                let kept = cx.carried(held, slot)
+                if boxed { cx.slot_read(carried, kept, 0) } else { kept }
+            } else { cx ->
+                let made = cx.lower(body)
+                cx.kept_once(made)
+                made
+            }
+        self.once_kept = null
+        r
+    }
+
+    /// `answer` kept in the slot of the `once` fn whose body is being lowered; outside one, nothing.
+    mut fn kept_once(answer: Reg) {
+        let k? = self.once_kept else { return }
+        self
+            .emit(
+                Ins
+                    .OnceCommit(
+                        k.symbol,
+                        if k.boxed { self.boxed_words(self.laid_out(k.slot), [], [answer]) } else { answer },
+                    ),
+            )
+    }
+}

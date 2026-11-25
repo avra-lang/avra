@@ -1,0 +1,68 @@
+// A query keyed by a declaration or a file names its calls past the process by the key's
+// durable spelling: one per declaration, the same whatever else its file declares, and none
+// in a process where the declaration is gone.
+use @std.avrac.testing.{test_workspace}
+use @std.avrac.core.{DeclId}
+use compiler.{Workspace}
+use compiler.host.{memory_host}
+
+fn package(files: Map<string, string>) -> Workspace {
+    let all = {..files, "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n"}
+    test_workspace(memory_host(all, all.keys()), "/w")
+}
+
+fn named(ws: Workspace, path: string, name: string) -> DeclId {
+    let f = ws.file_id(path)
+    let _ = ws.items(f)
+    ws.decls.decls_of_file(f).find((d) -> ws.decls.decl(d).name == name)!
+}
+
+fn spelled(ws: Workspace, path: string, name: string) -> string { ws.decl_id_spelled(named(ws, path, name)) ?? "" }
+
+fn two_files() -> Workspace {
+    package(
+        {
+            "/w/src/a.av": "export fn x() -> int { 1 }\n",
+            "/w/src/b.av": "export fn x() -> int { 2 }\n",
+        },
+    )
+}
+
+spec "compiler/settlement_wire — a declaration's durable name keys a query past the process" {
+    given "two declarations of one name in two files" {
+        then "they spell apart" {
+            let ws = two_files()
+            spelled(ws, "/w/src/a.av", "x") != spelled(ws, "/w/src/b.av", "x")
+        }
+        then "each spelling names its own declaration again" {
+            let ws = two_files()
+            let d = named(ws, "/w/src/b.av", "x")
+            ws.decl_id_numbered(spelled(ws, "/w/src/b.av", "x"))?.index ?? -1 == d.index
+        }
+    }
+    given "a declaration beside one that is renamed" {
+        then "its spelling stands" {
+            spelled(
+                package({"/w/src/a.av": "fn x() -> int { 1 }\nfn y() -> int { 2 }\n"}),
+                "/w/src/a.av",
+                "x",
+            ) == spelled(
+                package({"/w/src/a.av": "fn x() -> int { 1 }\nfn z() -> int { 2 }\n"}),
+                "/w/src/a.av",
+                "x",
+            )
+        }
+    }
+    given "a declaration deleted in the next process" {
+        then "its spelling names nothing there" {
+            let gone = spelled(
+                package({"/w/src/a.av": "fn x() -> int { 1 }\nfn y() -> int { 2 }\n"}),
+                "/w/src/a.av",
+                "y",
+            )
+            let ws = package({"/w/src/a.av": "fn x() -> int { 1 }\n"})
+            let _ = named(ws, "/w/src/a.av", "x")
+            ws.decl_id_numbered(gone) == null
+        }
+    }
+}

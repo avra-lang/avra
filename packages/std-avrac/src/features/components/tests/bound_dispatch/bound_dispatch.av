@@ -1,0 +1,39 @@
+// proves: a generic component's method reached THROUGH A BOUND — `v.shown()`
+// under `V: Shown` — is instantiated at the instance's own type argument,
+// so its body's `T.kind()` answers the pinned type's static
+
+trait Named {
+    static fn kind() -> string
+}
+
+trait Shown {
+    fn shown() -> string
+}
+
+type P = { v: int }
+
+impl Named for P {
+    static fn kind() -> string { "p" }
+}
+
+type Q = { w: int }
+
+impl Named for Q {
+    static fn kind() -> string { "q" }
+}
+
+component boxed<T: Named>(head: T) {
+    n: int = 1
+}
+
+impl Shown for boxed {
+    fn shown() -> string { T.kind() }
+}
+
+fn show<V: Shown>(v: V) -> string { v.shown() }
+
+let p = P { v: 1 }
+let a = boxed p {}
+let q = Q { w: 2 }
+let b = boxed q {}
+"${a.shown()} ${show(a)} ${show(b)}"

@@ -1,0 +1,22 @@
+//! proves `order: .fifo` holds the next delivery until the one standing
+//! is settled: a second take answers nothing while the first is held.
+use @std.queue.{queue, key, Dead, Order}
+use @std.task.{unbounded_channel}
+use @std.time.{ms}
+
+type Job = { n: int }
+
+let letters = unbounded_channel<Dead<Job, string>>()
+queue<Job> jobs {
+    capacity: 4
+    lease: ms(60000)
+    order: Order.fifo
+    dead: letters.sink
+}
+let _ = jobs.home().send(Job { n: 1 }, key("a"))
+let _ = jobs.home().send(Job { n: 2 }, key("b"))
+let first = jobs.home().take()
+let blocked = jobs.home().take()
+let acked = jobs.home().ack(first!)
+let second = jobs.home().take()
+"${blocked == null} ${second!.item.n} ${acked}"

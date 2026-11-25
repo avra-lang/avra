@@ -1,0 +1,342 @@
+//! The map vocabulary's rows — `get` and `set`, typing and lowering
+//! side by side. `get` answers the value as a nullable through the
+//! nullable protocol's own adoption; `set` is the place law on a
+//! method, like `push`.
+use core.{BinOp, ExprId, Reg, Ins, Type, TypeId, TypeRegistry}
+use diagnostics.{refusal}
+use features.{TypeCx, LowerCx, MethodCall, Refusal, TypeArgs, same_binding, state_slot}
+
+/// The empty literal takes the rows too — it is refused in the
+/// map's own words.
+export fn on_map(t: Type) -> bool {
+    t is .Map || t is .EmptyMap
+}
+
+// ── The rows' rules ──
+
+export fn check_get(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    let value? = value_held(cx, mc, "get") else { return cx.error_type }
+    got_type(cx, mc.e, mc.args, value)
+}
+export fn check_set(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    let value? = value_held(cx, mc, "set") else { return cx.error_type }
+    set_type(cx, mc.e, mc.subject, mc.args, value)
+}
+export fn lower_get(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    got_reg(cx, mc.e, mc.subject, mc.args[0])
+}
+export fn lower_set(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    set_reg(cx, mc.e, mc.subject, mc.args[0], mc.args[1])
+}
+
+export fn check_has(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    let _held? = value_held(cx, mc, "has") else { return cx.error_type }
+    if mc.args.length != 1 {
+        cx.wrong_arity(mc.e, "has", 1, mc.args.length)
+        return cx.error_type
+    }
+    let key = cx.type(string)
+    if !cx.accepts(mc.args[0], key) { cx.wrong_argument("has", 0, key, mc.args[0]) }
+    cx.type(bool)
+}
+
+export fn check_keys(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    let _held? = value_held(cx, mc, "keys") else { return cx.error_type }
+    if !cx.seated(mc, "keys", []) { return cx.error_type }
+    cx.type(List<string>)
+}
+
+export fn check_values(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    let value? = value_held(cx, mc, "values") else { return cx.error_type }
+    if !cx.seated(mc, "values", []) { return cx.error_type }
+    cx.type(List<value>)
+}
+
+/// `m.entries()` answers the prelude's `Entry<string, V>` — a record
+/// the program can name, whatever the file calls its own types.
+export fn check_entries(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    let value? = value_held(cx, mc, "entries") else { return cx.error_type }
+    if !cx.seated(mc, "entries", []) { return cx.error_type }
+    let held? = cx.entry_type(mc.e, value) else { return cx.error_type }
+    cx.type(List<held>)
+}
+
+export fn lower_has(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    let m = cx.reg_of(mc.subject)
+    let key = cx.reg_of(mc.args[0])
+    cx.map_has(Type.Bool, m, key)
+}
+
+export fn lower_keys(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    let m = cx.reg_of(mc.subject)
+    cx.map_keys(cx.shape_at(mc.e), m)
+}
+
+export fn lower_values(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    let m = cx.reg_of(mc.subject)
+    cx.map_vals(cx.shape_at(mc.e), m)
+}
+
+export fn lower_entries(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    let value? = cx.view.types.map_value(cx.type_at(mc.subject)) else {
+        return cx.lower_defect(mc.e, "`entries` over no map survived typing")
+    }
+    let entry? = cx.view.types.element(cx.type_at(mc.e)) else {
+        return cx.lower_defect(mc.e, "`entries` answering no list survived typing")
+    }
+    entries_reg(cx, mc.e, mc.subject, value, entry)
+}
+
+/// `m.entries()`: each key packed beside its value, in the map's order.
+fn entries_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, value: TypeId, entry: TypeId) -> Reg {
+    let k = cx.keyed(subject, value)
+    let dst = cx.grown_box(cx.shape_at(e), cx.box_size(0), [])
+    let here = cx.turn_open(k.keys)
+    cx
+        .push_slot(dst, cx.packed_struct(entry, [cx.turn_elem(k.keys, here), cx.keyed_value(k, here)]))
+    cx.loop_end()
+    dst
+}
+
+export fn check_remove(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    let value? = value_held(cx, mc, "remove") else { return cx.error_type }
+    let root? = cx.view.store.place_root(mc.subject) else { return cx.not_a_place_call(mc.e, "remove") }
+    if !cx.is_mut(root) { return cx.not_mut_call(mc.e, "remove", cx.view.store.ident_name(root) ?? "this name") }
+    cx.alias_copy_law(mc.e, mc.subject, root)
+    if mc.args.length != 1 {
+        cx.wrong_arity(mc.e, "remove", 1, mc.args.length)
+        return cx.error_type
+    }
+    let key = cx.type(string)
+    if !cx.accepts(mc.args[0], key) { cx.wrong_argument("remove", 0, key, mc.args[0]) }
+    cx.type(value?)
+}
+
+export fn check_is_empty(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    if cx.seen_at(mc.subject) is .EmptyMap { return cx.unmeasurable_empty(mc.e, "{}", "Map<string, int>") }
+    if !cx.seated(mc, "is_empty", []) { return cx.error_type }
+    cx.type(bool)
+}
+
+/// `m.remove(k)`: the value read before the key drops, so a managed
+/// value keeps a reference of its own past the map's release.
+fn removed_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, key: ExprId) -> Reg {
+    let opt = cx.type_at(e)
+    let box = cx.unique_box(subject)
+    let k = cx.reg_of(key)
+    let cell = cx.seeded_cell(opt, cx.absent_of(opt))
+    let slot = cx.map_slot(Type.Int, box, k)
+    cx
+        .void_region(cx.bin(Type.Bool, BinOp.Ge, slot, cx.const_int(0))) { cx ->
+            let raw = cx.map_value(box, slot, cx.carried_type(opt))
+            cx.emit(Ins.Store(cell, cx.adopted(opt, false, raw)))
+        }
+    cx.map_remove(box, k)
+    cx.loaded(e, cell)
+}
+
+export fn lower_remove(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    removed_reg(cx, mc.e, mc.subject, mc.args[0])
+}
+
+/// THE PRELUDE both rows share: the value type the receiver holds.
+/// The empty literal refuses in the row's words and absorbs. A ROW
+/// READS ITS RECEIVER THROUGH THE READ DOOR — a NAMED type reached
+/// this row by standing over a map, so the map is what it holds.
+fn value_held(mut cx: TypeCx, mc: MethodCall, name: string) -> TypeId? {
+    if cx.seen_at(mc.subject) is .EmptyMap {
+        let _ = unknowable_map(cx, mc.e, name)
+        return null
+    }
+    let held: TypeId? = match cx.seen_at(mc.subject) { .Map(_, v) -> v, _ -> null }
+    held
+}
+
+fn got_type(mut cx: TypeCx, e: ExprId, args: List<ExprId>, value: TypeId) -> TypeId {
+    if args.length != 1 {
+        cx.wrong_arity(e, "get", 1, args.length)
+        return cx.error_type
+    }
+    let key = cx.type(string)
+    if !cx.accepts(args[0], key) { cx.wrong_argument("get", 0, key, args[0]) }
+    cx.type(value?)
+}
+
+fn set_type(mut cx: TypeCx, e: ExprId, subject: ExprId, args: List<ExprId>, value: TypeId) -> TypeId {
+    if args.length != 2 {
+        cx.wrong_arity(e, "set", 2, args.length)
+        return cx.error_type
+    }
+    let root? = cx.view.store.place_root(subject) else { return cx.not_a_place_call(e, "set") }
+    if !cx.is_mut(root) { return cx.not_mut_call(e, "set", cx.view.store.ident_name(root) ?? "this name") }
+    cx.alias_copy_law(e, subject, root)
+    let key = cx.type(string)
+    if !cx.accepts(args[0], key) { cx.wrong_argument("set", 0, key, args[0]) }
+    if !cx.accepts(args[1], value) { cx.wrong_argument("set", 1, value, args[1]) }
+    cx.type(void)
+}
+
+/// `m.get(k)`: ONE probe names the key's slot, and the value is
+/// adopted into the nullable only when there is one — a cell seeded
+/// absent, like `find`.
+fn got_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, key: ExprId) -> Reg {
+    let m = cx.reg_of(subject)
+    got_at(cx, e, m, cx.map_slot(Type.Int, m, cx.reg_of(key)))
+}
+
+/// The value a probe's word names in `m`, as `get` answers it.
+fn got_at(mut cx: LowerCx, e: ExprId, m: Reg, slot: Reg) -> Reg {
+    let opt = cx.type_at(e)
+    let cell = cx.seeded_cell(opt, cx.absent_of(opt))
+    cx
+        .void_region(cx.bin(Type.Bool, BinOp.Ge, slot, cx.const_int(0))) { cx ->
+            let raw = cx.map_value(m, slot, cx.carried_type(opt))
+            cx.emit(Ins.Store(cell, cx.adopted(opt, false, raw)))
+        }
+    cx.loaded(e, cell)
+}
+
+/// `m.set(k, v)`: the place opens unique, the runtime stores, and
+/// the answer is nothing. A value that reads `m.get(k)` — this place,
+/// this key — shares one probe with the write: the read's word is the
+/// write's.
+fn set_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, key: ExprId, value: ExprId) -> Reg {
+    let box = cx.unique_box(subject)
+    let k = cx.reg_of(key)
+    let read? = fused_read(cx, subject, key, value) else {
+        cx.map_write(box, k, cx.reg_of(value))
+        return cx.zero(e)
+    }
+    let slot = cx.map_slot(Type.Int, box, k)
+    cx.body.set_reg(read, got_at(cx, read, box, slot))
+    cx.map_write_at(box, k, slot, cx.reg_of(value))
+    cx.zero(e)
+}
+
+/// The `m.get(k)` a `set`'s value reads of its own place and key, when
+/// NOTHING CAN MOVE EITHER BEFORE THE STORE: the place is no shared
+/// cell, and its root and the key are each named once under the
+/// value, by that read. Then the probe's word still holds.
+fn fused_read(cx: LowerCx, subject: ExprId, key: ExprId, value: ExprId) -> ExprId? {
+    if !(cx.shape_at(subject) is .Map) || shared_place(cx, subject) { return null }
+    let root? = cx.view.store.place_root(subject) else { return null }
+    let under = cx.view.store.every_expr(value)
+    let read? = under.find((e: ExprId) -> reads_same(cx, e, subject, key)) else { return null }
+    if cx.facts.widened_at(read) != null || cx.facts.narrowed_at(read) != null { return null }
+    if named(cx, under, root) != 1 || !steady_key(cx, under, key) { return null }
+    read
+}
+
+/// Whether a place stands where code that never names it can write: a
+/// `state` cell, on the path or at its root, or a lambda's capture.
+fn shared_place(cx: LowerCx, e: ExprId) -> bool {
+    let step? = cx.view.store.place_step(e) else { return true }
+    match step {
+        .Root(_) -> shared_root(cx, e),
+        .Field(subject, name) -> state_slot(cx.view.decls.fields_of_type(cx.type_at(subject)), name.of) != null ||
+            shared_place(cx, subject),
+        .At(subject, _) or .Unwrap(subject) -> shared_place(cx, subject),
+    }
+}
+
+fn shared_root(cx: LowerCx, root: ExprId) -> bool {
+    let b? = cx.names.binding(root) else { return true }
+    cx.names.reads_state_seat(root) ||
+        match b {
+            .Def(s) -> cx.view.store.is_state_stmt(s),
+            .Capture(_, _) -> true,
+            .Param(_) or .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Index(_) or .TypeParam(_) or .Decl(_) -> false,
+        }
+}
+
+/// Whether `e` is `get` on the same place under the same key.
+fn reads_same(cx: LowerCx, e: ExprId, subject: ExprId, key: ExprId) -> bool {
+    let mc? = cx.view.store.method_parts(e) else { return false }
+    mc.name == "get" &&
+        mc.args.length == 1 &&
+        same_path(cx, mc.subject, subject) &&
+        same_key(cx, mc.args[0], key)
+}
+
+/// Two places spelled alike from one root: the same binding, the same
+/// fields under it. An index or an unwrap on the way is no fixed path.
+fn same_path(cx: LowerCx, a: ExprId, b: ExprId) -> bool {
+    let sa? = cx.view.store.place_step(a) else { return false }
+    let sb? = cx.view.store.place_step(b) else { return false }
+    match sa {
+        .Root(_) -> sb is .Root && same_name(cx, a, b),
+        .Field(pa, na) -> match sb { .Field(pb, nb) -> na == nb && same_path(cx, pa, pb), _ -> false },
+        .At(_, _) or .Unwrap(_) -> false,
+    }
+}
+
+/// Two uses of one binding.
+fn same_name(cx: LowerCx, a: ExprId, b: ExprId) -> bool {
+    let ba? = cx.names.binding(a) else { return false }
+    let bb? = cx.names.binding(b) else { return false }
+    same_binding(ba, bb)
+}
+
+/// Two keys that are one: the same text written twice, or one name.
+fn same_key(cx: LowerCx, a: ExprId, b: ExprId) -> bool {
+    let ta: string? = cx.view.store.expr(a).text_of()
+    let tb: string? = cx.view.store.expr(b).text_of()
+    if ta != null || tb != null { return ta != null && tb != null && ta! == tb! }
+    cx.view.store.ident_name(a) != null && same_name(cx, a, b)
+}
+
+/// A key nothing under the value can change: written text, or a name
+/// the read alone mentions.
+fn steady_key(cx: LowerCx, under: List<ExprId>, key: ExprId) -> bool {
+    cx.view.store.expr(key).text_of() != null || named(cx, under, key) == 1
+}
+
+/// How many of these expressions name `root`'s binding.
+fn named(cx: LowerCx, under: List<ExprId>, root: ExprId) -> int {
+    [e for e in under if is_root(cx, e) && same_name(cx, e, root)].length
+}
+
+/// Whether an expression is a bare name — a path's root.
+fn is_root(cx: LowerCx, e: ExprId) -> bool {
+    let step? = cx.view.store.place_step(e) else { return false }
+    step is .Root
+}
+
+// ── The voices ──
+
+fn unknowable_map(mut cx: TypeCx, e: ExprId, name: string) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.map_value",
+                cx.loc_of(e),
+                "`{}.${name}` cannot know its values",
+                "asked here",
+                "bind the map under a declared type first — `let m: Map<string, int> = {}`",
+            ),
+        )
+}
+
+// ── The constructor and property rows' rules ──
+
+export fn map_shape(args: TypeArgs) -> Type {
+    Type.Map(args.parts[0], args.parts[1])
+}
+
+/// A map's keys are strings.
+export fn string_keys(types: TypeRegistry, args: TypeArgs) -> List<Refusal> {
+    let key = args.parts[0]
+    if types.shape_of(key) is .Str { return [] }
+    [
+        Refusal {
+            message: "a map's keys are strings, not `${types.name_of(key)}`",
+            help: "key by text — `Map<string, …>`",
+        },
+    ]
+}
+
+export fn check_map_length(mut cx: TypeCx, e: ExprId, ty: TypeId) -> TypeId {
+    if cx.view.types.shape_of(ty) is .EmptyMap { return cx.unmeasurable_empty(e, "{}", "Map<string, int>") }
+    cx.type(int)
+}
+

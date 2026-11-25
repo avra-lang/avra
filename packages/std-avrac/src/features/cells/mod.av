@@ -1,0 +1,250 @@
+//! `Cell<T>` — one explicit shared slot. Copies of a cell share its
+//! referent, and `set` replaces it without requiring the cell binding
+//! itself to be `mut`. `get` answers the held value as the reader's
+//! OWN: nothing is copied at the read — the box is shared until a
+//! write comes — and a `push`, `set_at` or `put` through the cell
+//! opens it first, so no write ever reaches what was read out.
+use core.{Type, TypeId, ExprId, Reg}
+use features.{
+    LanguageFeature,
+    MethodRow,
+    ReceiverEffect,
+    TypeRow,
+    TypeArgs,
+    MethodCall,
+    TypeCx,
+    LowerCx,
+    no_law,
+    no_variants,
+    slot_worthy,
+    unknown_answer,
+    void_answer,
+}
+use diagnostics.{DiagCode, refusal}
+
+export fn cells() -> LanguageFeature {
+    let methods = table<MethodRow> {
+        name     | takes        | check        | lower        | effect                | answers
+        "new"    | on_cell_type | check_new    | lower_new    | ReceiverEffect.Read   | unknown_answer
+        "get"    | on_cell      | check_get    | lower_get    | ReceiverEffect.Lends  | unknown_answer
+        "set"    | on_cell      | check_set    | lower_set    | ReceiverEffect.Shared | void_answer
+        "push"   | on_cell      | check_push   | lower_push   | ReceiverEffect.Shared | void_answer
+        "set_at" | on_cell      | check_set_at | lower_set_at | ReceiverEffect.Shared | void_answer
+        "put"    | on_cell      | check_put    | lower_put    | ReceiverEffect.Shared | void_answer
+    }
+    let types = table<TypeRow> {
+        name   | arity | slots | judge  | builds     | variants
+        "Cell" | 1     | true  | no_law | cell_shape | no_variants
+    }
+    let codes = table<DiagCode> {
+        kind            | summary
+        "type.cell_map" | "`put` needs a cell holding a map"
+    }
+    LanguageFeature cells {
+        methods: methods
+        types: types
+        diags: codes
+    }
+    cells
+}
+
+fn on_cell_type(t: Type) -> bool {
+    match t { .TypeName(_, "Cell") -> true, _ -> false }
+}
+
+fn on_cell(t: Type) -> bool { t is .Cell }
+
+fn check_new(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    if mc.args.length != 1 {
+        cx.wrong_arity(mc.e, "Cell.new", 1, mc.args.length)
+        return cx.error_type
+    }
+    let arg = mc.args[0]
+    // A DECLARED WANT FEEDS A HUNGRY ARGUMENT — a generic literal
+    // arrives as the Error stand-in, and the seat is what pins it.
+    // With no want the cell WAITS on a hungry argument, since that
+    // argument's type IS the held type; one that refused absorbs its
+    // own cause and the cell holds nothing.
+    let held? = wanted_held(cx, mc.e) else {
+        if cx.facts.hungry_at(arg) { return cx.hungry(mc.e) }
+        if cx.errored(arg) { return cx.error_type }
+        return held_by_value(cx, arg)
+    }
+    if !cx.accepts(arg, held) { return unfit_cell(cx, arg, held) }
+    cx.view.types.intern(Type.Cell(held))
+}
+
+/// What the cell a planted want declares holds: `let c: Cell<int?> =
+/// Cell.new(null)` holds an `int?`.
+fn wanted_held(cx: TypeCx, e: ExprId) -> TypeId? {
+    let w? = cx.want_at(e) else { return null }
+    cx.view.types.cell_inner(w)
+}
+
+/// With no want, the cell holds what its value is.
+fn held_by_value(mut cx: TypeCx, arg: ExprId) -> TypeId {
+    if !slot_worthy(cx.shape_at(arg)) { return cx.unslottable(arg, "a cell") }
+    cx.view.types.intern(Type.Cell(cx.type_at(arg)))
+}
+
+fn held_type(cx: TypeCx, mc: MethodCall) -> TypeId? {
+    cx.view.types.cell_inner(cx.type_at(mc.subject))
+}
+
+fn check_get(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    let held: TypeId? = held_type(cx, mc)
+    if held == null || !cx.seated(mc, "get", []) { return cx.error_type }
+    held!
+}
+
+fn check_set(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    let held: TypeId? = held_type(cx, mc)
+    if held == null || !cx.seated(mc, "set", [held!]) { return cx.error_type }
+    cx.type(void)
+}
+
+/// A new cell OWNS what it holds: a list or map seed some binding still
+/// holds is copied into it here, so the cell's in-place writes (`push`,
+/// `set_at`, `put`) never reach the binding it was made from.
+fn lower_new(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    if mc.args.length != 1 { return cx.lower_defect(mc.e, "a Cell.new without one value survived typing") }
+    let value = cx.reg_of(mc.args[0])
+    let held? = cx.view.types.cell_inner(cx.type_at(mc.e)) else {
+        return cx.lower_defect(mc.e, "a Cell.new whose cell has no held type survived typing")
+    }
+    cell_holding(cx, held, value)
+}
+
+/// A fresh cell holding `value` — the ONE way a `Cell<T>` is minted,
+/// shared by `Cell.new` and a `state` field's default or written slot.
+/// The cell OWNS what it holds: a list or map value is opened unique,
+/// so the cell's in-place writes never reach a binding it was made from.
+export fn cell_holding(mut cx: LowerCx, held: TypeId, value: Reg) -> Reg {
+    let size = cx.box_size(1)
+    let cell = cx.grown_box(Type.Cell(held), size, [value])
+    if written_in_place(cx.view.types.seen_shape(held)) {
+        let _ = cx.owned_slot_unique(cx.view.types.shape_of(held), cell, cx.const_int(0))
+    }
+    cell
+}
+
+/// Whether a cell writes this shape in place — the list `push` and
+/// `set_at` grow and the map `put` fills. No other held value is ever
+/// written through the cell, so no other seed needs opening.
+fn written_in_place(t: Type) -> bool {
+    match t { .List(_) or .Map(_, _) -> true, _ -> false }
+}
+
+/// What the cell holds, OPENED for a write in place: its own box when
+/// the cell is its only holder, a copy stored back when a `get` still
+/// holds it — so a value read out never sees a later write.
+fn held_alone(mut cx: LowerCx, cell: ExprId, held: TypeId) -> Reg {
+    cx.slot_unique(cx.view.types.shape_of(held), cx.reg_of(cell), cx.const_int(0))
+}
+
+fn lower_get(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    cx.proven_read(cx.reg_of(mc.subject), 0, cx.view.types.cell_inner(cx.type_at(mc.subject)))
+}
+
+fn lower_set(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    cx.slot_write_proved(cx.reg_of(mc.subject), cx.const_int(0), cx.reg_of(mc.args[0]))
+    cx.hollow_of(cx.type_at(mc.e))
+}
+
+/// `c.push(v)` — append to the list the cell HOLDS.
+///
+/// THE WHOLE POINT: a read-modify-write through `get`/`set` copies the held
+/// list once per element, because the value `get` hands back stays shared
+/// with the cell. The cell OWNS its list, so this opens slot 0 — free
+/// while nothing read out still holds it — and the append is in place.
+fn check_push(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    let held? = held_type(cx, mc) else { return cx.error_type }
+    let elem? = cx.view.types.element(held) else { return cx.error_type }
+    if !cx.seated(mc, "push", [elem]) { return cx.error_type }
+    cx.type(void)
+}
+
+fn lower_push(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    let first? = mc.args.first() else { return cx.lower_defect(mc.e, "a push without its value survived typing") }
+    let held: TypeId? = cx.view.types.cell_inner(cx.type_at(mc.subject))
+    if held == null { return cx.lower_defect(mc.e, "a Cell.push whose cell has no held type survived typing") }
+    let list = held_alone(cx, mc.subject, held!)
+    cx.push_slot(list, cx.reg_of(first))
+    cx.hollow_of(cx.type_at(mc.e))
+}
+
+/// `c.set_at(i, v)` — write one element of the list the cell HOLDS.
+///
+/// The indexed twin of `push`, and the same point: `get` then `set` copies
+/// the held list, while the cell owns it and a slot write is in place.
+fn check_set_at(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    let held? = held_type(cx, mc) else { return cx.error_type }
+    let elem? = cx.view.types.element(held) else { return cx.error_type }
+    if !cx.seated(mc, "set_at", [cx.type(int), elem]) { return cx.error_type }
+    cx.type(void)
+}
+
+fn lower_set_at(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    if mc.args.length != 2 { return cx.lower_defect(mc.e, "a set_at without its index and value survived typing") }
+    let held: TypeId? = cx.view.types.cell_inner(cx.type_at(mc.subject))
+    if held == null { return cx.lower_defect(mc.e, "a Cell.set_at whose cell has no held type survived typing") }
+    let list = held_alone(cx, mc.subject, held!)
+    cx.slot_write(list, cx.reg_of(mc.args[0]), cx.reg_of(mc.args[1]))
+    cx.hollow_of(cx.type_at(mc.e))
+}
+
+/// `c.put(k, v)` — insert into the map the cell HOLDS.
+///
+/// THE MAP TWIN of `push`: a read-modify-write through `get`/`set`
+/// copies the held map once per key, because the value `get` hands
+/// back stays shared with the cell. The cell OWNS its map, so this
+/// reads slot 0 and inserts — no `unique_box`, no round trip.
+fn check_put(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    let held? = held_type(cx, mc) else { return cx.error_type }
+    let value? = cx.view.types.map_value(held) else { return cell_holds_no_map(cx, mc.e, held) }
+    if !cx.seated(mc, "put", [cx.type(string), value]) { return cx.error_type }
+    cx.type(void)
+}
+
+fn lower_put(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    if mc.args.length != 2 { return cx.lower_defect(mc.e, "a put without its key and value survived typing") }
+    let held: TypeId? = cx.view.types.cell_inner(cx.type_at(mc.subject))
+    if held == null { return cx.lower_defect(mc.e, "a Cell.put whose cell has no held type survived typing") }
+    let map = held_alone(cx, mc.subject, held!)
+    cx.map_set(map, cx.reg_of(mc.args[0]), cx.reg_of(mc.args[1]))
+    cx.hollow_of(cx.type_at(mc.e))
+}
+
+fn cell_shape(args: TypeArgs) -> Type { Type.Cell(args.parts[0]) }
+
+// ── The voices ──
+
+fn unfit_cell(mut cx: TypeCx, arg: ExprId, held: TypeId) -> TypeId {
+    let n = cx.name_at(arg)
+    cx
+        .spoken(
+            cx
+                .seat_mismatch(
+                    "type.mismatch",
+                    cx.loc_of(arg),
+                    arg,
+                    "this cell holds `${cx.view.types.name_of(held)}`, this is `${n}`",
+                    held,
+                ),
+        )
+}
+
+/// `put` inserts into the map a cell holds — a cell holding anything
+/// else has no map to insert into.
+fn cell_holds_no_map(mut cx: TypeCx, e: ExprId, held: TypeId) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.cell_map",
+                cx.loc_of(e),
+                "`put` inserts into the map a cell holds, and this cell holds `${cx.view.types.name_of(held)}`",
+                "not a map",
+                "put values in through a `Cell<Map<string, V>>`",
+            ),
+        )
+}

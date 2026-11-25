@@ -1,0 +1,17 @@
+//! The typing rule of a `select` arm: its head checks for what it is, its names bind (what they
+//! hold isn't named yet) in a scope of its own, its guard is a `bool`, and its value checks against
+//! what isn't known.
+use core.{Checking, Checks, ExprId, Expected, SignedType, owned_type}
+
+impl Checks for WaitArm {
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let _ = cx.check(self.head, Expected.Free)
+        cx.opened()
+        if !self.index.of.is_empty() { cx.bind(self.index.of, owned_type("int")) }
+        if !self.bind.of.is_empty() { cx.bind(self.bind.of, null) }
+        if self.guard != null { let _ = cx.check(self.guard!, Expected.Exactly(owned_type("bool"))) }
+        let _ = cx.check(self.value, Expected.Unknown)
+        cx.closed()
+        null
+    }
+}

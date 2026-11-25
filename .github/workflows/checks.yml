@@ -1,0 +1,1049 @@
+# THE GATE. There is no merge queue: `main` requires the `test` check AND
+# that a branch be up to date with it, so the PR's own run IS the gate, on
+# the combination of `main` and the PR. A train used to be ONE serial job
+# (~17 minutes: build, keepers, gate, then every affected package's suite one
+# after another). Now:
+#   prepare  decides what the run owes, takes or builds the compiler ONCE,
+#            builds the C objects and package libraries ONCE, and hands both
+#            down as artifacts.
+#   suites   one matrix job PER SHARD, in parallel on their own runners.
+#   keepers-a / keepers-b  the static keepers' two halves, EACH on its own
+#            runner, the clocked ones running first alone.
+#   seed-check  the committed seed builds this tree, ALONE on its own runner
+#            — a compiler build beside the two halves was what the runner's
+#            OOM killed (137), with nothing said.
+#   gate     the changed-file fmt and the packages' idioms.
+#   cache-attacks  the build cache attacked — on the train, on main's own
+#                  push, and on a PR that reaches the store or the attacks.
+#   test     the ONE required check name: an aggregate that passes iff every
+#            needed job succeeded or was skipped.
+# A PR RUNS THE GATE OVER ITS AFFECTED CLOSURE: with the queue gone the PR
+# is the train, so it pays the objects build, the keepers, the seed check and
+# the affected packages' suites — exactly what the combination needs. A PR
+# that touches no `.av`, no package and no compiler source still builds
+# nothing and owes nothing.
+# A run asked for by hand (`gh workflow run checks --ref <branch>`) runs the
+# whole gate over every package. The shards are packed by measured seconds
+# (tools/shards.py), so the slowest is as short as the heaviest suite allows. The shard count
+# trades runner slots against wall time: six shards keeps a PR's gate short.
+name: checks
+
+on:
+  # A DRAFT runs the light gate (see `full` in prepare). Readying it, or
+  # labelling it `full-ci`, is what starts the whole run.
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
+  # A QUEUE'S EVENT IS STILL ACCEPTED, so a repo that re-enables one needs no
+  # edit here.
+  merge_group:
+  # A BASE BRANCH is listed here too: its push climbs its ladder and publishes the compiler, so a
+  # lane cut from it has a builder (tools/work reads this list).
+  push:
+    branches: [main, hd-clean, hd-gate]
+  workflow_dispatch:
+    inputs:
+      only:
+        description: "leave empty for a whole train; `keepers` runs the keepers and seed-check jobs alone"
+        default: ""
+      warm_skip:
+        description: "set only to skip the warm-edit gate BY HAND; unset, a run that cannot judge FAILS (a skip is not a pass)"
+        default: ""
+      cold:
+        description: "1 sets the hand-down store aside before the suites, so each runs from nothing and main records its COLD numbers (the watcher asks for one a day)"
+        default: ""
+
+# The event is part of the group: a run asked for by hand on a ref never
+# cancels that ref's own PR check or train.
+# A `labeled` run is its own group: the label and the open of one PR start two runs
+# on one head, and a shared group had each cancel the other. The mode is read from the
+# PR at run time, so either run gives the same verdict.
+concurrency:
+  group: checks-${{ github.event_name }}-${{ github.event.action == 'labeled' && 'labeled' || 'run' }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+  pull-requests: read
+
+# The PR body, for the speed gates' one waiver line (`SPEED_ACCEPT: <reason>`): the payload's, frozen
+# at the run's start, is the fallback; tools/pr_body.sh asks the API for the body as it is now.
+# The machine store stands inside the job's own workspace, so no two jobs (or steps of other
+# trees) share one and a row is only ever read by the run that wrote it.
+env:
+  AVRA_CACHE_DIR: ${{ github.workspace }}/.avra-machine
+  PR_BODY: ${{ github.event.pull_request.body }}
+  PR_NUMBER: ${{ github.event.pull_request.number }}
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    # THE CHECKS' MACHINE, named once: every other job's `container` is this alias.
+    container: &ci-image
+      image: ghcr.io/avra-lang/avra-ci:llvm22
+      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+      # the defects keeper reads a stalled compile's stack with gdb, which needs ptrace
+      options: --cap-add=SYS_PTRACE
+    # Backstop above the compiler (50) and objects (15) step bounds; a hang in
+    # either heavy step dies there with its own name, not here.
+    timeout-minutes: 65
+    outputs:
+      full: ${{ steps.plan.outputs.full }}
+      mirror: ${{ steps.plan.outputs.mirror }}
+      accept_key: ${{ steps.plan.outputs.accept_key }}
+      compiler_source: ${{ steps.compiler.outputs.source }}
+      shards: ${{ steps.plan.outputs.shards }}
+      changed: ${{ steps.plan.outputs.changed }}
+      packages: ${{ steps.plan.outputs.packages }}
+      build: ${{ steps.plan.outputs.build }}
+      runtime: ${{ steps.plan.outputs.runtime }}
+      runtime_keep: ${{ steps.plan.outputs.runtime_keep }}
+      layout_oracle: ${{ steps.plan.outputs.layout_oracle }}
+      cache: ${{ steps.plan.outputs.cache }}
+      codecs: ${{ steps.plan.outputs.codecs }}
+      key: ${{ steps.plan.outputs.key }}
+      main: ${{ steps.plan.outputs.main }}
+      rungs: ${{ steps.compiler.outputs.rungs }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 20 }
+      # THE SHARDS ARE PACKED BY MEASURED SECONDS: the newest weights a main run kept
+      # (`suite-timing`), else the committed seed rows alone.
+      - uses: actions/cache/restore@v4
+        continue-on-error: true
+        with:
+          path: .github/ci/suite-seconds.measured
+          key: suite-seconds-${{ github.run_id }}
+          restore-keys: suite-seconds-
+      # A PR diffs against its base, `origin/main`; so does the train.
+      - if: github.event_name != 'push'
+        name: base
+        run: git fetch -q --depth=20 origin main
+      # WHAT THIS RUN OWES, decided before anything is built. Both a PR and a
+      # train check the packages a diff AFFECTS — touched plus every package
+      # that reaches one (tools/affected_packages.sh, the ONE definition) —
+      # because a change in A that breaks a DEPENDENT B's compile must refuse
+      # on the PR, not wait for a train (#484). A PR still owes no compiler at
+      # all when it touches no `.av`, no package and no compiler source, and it
+      # runs no suite: `check` is the floor, the train runs the programs.
+      - id: plan
+        name: plan
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          event="${{ github.event_name }}"
+          # THE WAIVER THIS RUN JUDGES BY, as a short key: a verdict another run on the head gave stands for this
+          # run only under the same waiver line, since the speed judge reads the PR's body fresh each run.
+          accept_key=$(sh tools/pr_body.sh | sed -n 's/^SPEED_ACCEPT: *//p' | head -n 1 | git hash-object --stdin | cut -c1-12)
+          changed=""
+          pkgs=""
+          compiler=1
+          build=1
+          runtime=0
+          cache=0
+          codecs=0
+          if [ "$event" != push ] && [ -z "${{ inputs.only }}" ]; then
+            changed=$(git diff --name-only --diff-filter=d origin/main HEAD -- '*.av' | tr '\n' ' ')
+          fi
+          # A DIFF UNDER runtime/ OWES THE LATENCY GATE: the scheduler's
+          # transition rows, which no suite catches (#490's tick cost a
+          # getpid() a transition, silently). Held over every event, main's
+          # own push included (against its parent), so the gate is the
+          # runtime path's, not a PR's own invention.
+          runtime_base=origin/main
+          if [ "$event" = push ]; then runtime_base=HEAD~1; fi
+          if git diff --name-only "$runtime_base" HEAD -- 'runtime/' | grep -q .; then runtime=1; fi
+          # THE C RUNTIME'S OWN TESTS owe a PR only a change they read (runtime/,
+          # the Makefile rules and the memcap wrapper they run under). Main's push
+          # and a hand-run always carry them (tools/src/commands/ci_path_gate.av).
+          runtime_keep=$(git diff --name-only "$runtime_base" HEAD | sh tools/avra_tools.sh ci_path_gate runtime-keep --event "$event")
+          # THE LAYOUT SOLVER'S BROWSER ORACLE owes a PR only a change to what it
+          # reads: std-ui, std-text and its own tools. Main's push and a hand-run
+          # always carry it; the wide sweep is the nightly orders run's.
+          layout_oracle=$(git diff --name-only "$runtime_base" HEAD | sh tools/avra_tools.sh ci_path_gate layout-oracle --event "$event")
+          # A PR AND A TRAIN OWE THE SAME CHECK SET: the affected closure. The
+          # train adds the suites over it, never a package the PR skipped.
+          if [ "$event" = merge_group ] || [ "$event" = pull_request ]; then
+            pkgs=$(sh tools/affected_packages.sh origin/main HEAD "$PWD")
+          fi
+          # THE BUILD CACHE'S OWN ATTACKS RUN WHEREVER THE STORE CAN MOVE: the
+          # train always, main's own push (so a store change main just took is
+          # named on main, not only on a train), and a PR whose diff reaches the
+          # store, the cache's key files or the attacks themselves. A store
+          # rewrite once went PR-green because a PR skips these, and every train
+          # after it failed until the queue stalled.
+          if [ "$event" = merge_group ] || [ "$event" = push ]; then cache=1; fi
+          if [ "$event" = workflow_dispatch ] && [ -z "${{ inputs.only }}" ]; then cache=1; fi
+          if [ "$event" = pull_request ] && ! git diff --quiet origin/main...HEAD -- \
+              packages/std-avrac/src/compiler/store \
+              packages/std-avrac/src/compiler/build.av \
+              packages/std-avrac/src/compiler/record.av \
+              packages/std-avrac/src/compiler/answers.av \
+              packages/std-avrac/src/compiler/host/input.av \
+              packages/std-avrac/src/compiler/lower/code_hash.av \
+              'tools/*attack*.sh'; then
+            cache=1
+          fi
+          # Asked for by hand, the run is a train's over EVERY package: the
+          # whole gate on any branch, without a queue entry.
+          if { [ "$event" = workflow_dispatch ] && [ -z "${{ inputs.only }}" ]; } || [ "$event" = push ]; then
+            pkgs=$(sh tools/packages.sh) || exit 1
+          fi
+          if [ "$event" = pull_request ]; then
+            if git diff --quiet origin/main...HEAD -- $(sh tools/compiler_paths.sh) ':(exclude,glob)**/tests/**'; then compiler=0; fi
+            if [ -z "$changed$pkgs" ] && [ "$compiler" = 0 ]; then build=0; fi
+            # a compiler change moves how often the store settles, which the attacks count
+            if [ "$compiler" = 1 ]; then cache=1; fi
+            # a file a PR keeper holds to the compiler wants one built to hold it to
+            if ! git diff --quiet origin/main...HEAD -- docs/DIAGNOSTICS.md DOGFOODING.md Makefile 'tools/footprint*' tools/attack.sh tools/ui_board_browser.sh 'tools/ui-board/*.mjs' .github/ci/packages-browser.txt; then build=1; fi
+          fi
+          # The attacks need a compiler and its objects: a run that owes them
+          # owes the build, even when the diff itself is only the harness.
+          if [ "$cache" = 1 ]; then build=1; fi
+          # THE CODEC SCAN RUNS ON A PR WHOSE DIFF REACHES WHAT IT READS: the
+          # compiler's own source (any .av under packages/std-avrac/src) and
+          # the reader itself. The scan needs no compiler, so it is its own
+          # cheap job and can run whatever the build decided — and it names an
+          # unregistered encoder/decoder pair on the PR instead of one train
+          # later. The registry's round trip needs a whole compiler and stays
+          # with the train.
+          if [ "$event" = pull_request ] && ! git diff --quiet origin/main...HEAD -- \
+              packages/std-avrac/src tools/codecs.py; then codecs=1; fi
+          key=$(sh tools/compiler_paths.sh --key)
+          shards=$(printf '%s\n' "$pkgs" | python3 tools/shards.py --split 6)
+          if [ -f .github/ci/suite-seconds.measured ]; then echo "suite weights: $(grep -vc '^#' .github/ci/suite-seconds.measured) measured row(s) over the committed seed"; else echo "suite weights: the committed seed alone"; fi
+          # A DRAFT RUNS THE LIGHT GATE: the compiler and the changed-file gate,
+          # the compiler-free keepers and the codecs scan. The heavy legs owe
+          # nothing until the PR is ready or carries `full-ci`, so a draft that
+          # pushes N times costs runners for the light gate only.
+          # THE MODE IS THE PR'S STATE AT RUN TIME, read from the API and not
+          # from the event payload: a run queued before a ready or a label event
+          # would otherwise keep the light mode after the PR is ready.
+          full=1
+          if [ "$event" = pull_request ]; then
+            pr_json=$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}") || pr_json=""
+            [ -n "$pr_json" ] || echo "::warning::the PR's state could not be read; the full gate runs"
+            [ "$(printf '%s' "$pr_json" | sh tools/avra_tools.sh pr_mode)" = light ] && full=0
+          fi
+          # A LABELED RUN NEVER DOUBLES A GATE: when another run on this head is or was the
+          # full one, this run waits for it and mirrors its verdict (tools/ci_dup_run.py).
+          mirror=
+          # A label other than `full-ci` changes nothing: its run restates the head's standing verdict.
+          dupflag=
+          lab=plain
+          if [ "$event" = pull_request ]; then
+            lab=$(python3 tools/pr_mode.py --label-event "${{ github.event.action }}" "${{ github.event.label.name }}")
+          fi
+          [ "$lab" = ignore ] && dupflag=--any
+          if [ "$lab" != plain ]; then
+            dup=$(GH_TOKEN="$GH_TOKEN" python3 tools/ci_dup_run.py --repo "${{ github.repository }}" \
+              --sha "${{ github.event.pull_request.head.sha }}" --run "${{ github.run_id }}" --accept "$accept_key" $dupflag) || dup=work
+            case "$dup" in
+                mirror\ *) mirror=${dup#mirror }; full=0; build=0; changed=; pkgs=; codecs=0; cache=0; runtime=0; runtime_keep=0; layout_oracle=0 ;;
+            esac
+          fi
+          # MAIN'S OWN RUN: its push, or the dispatch the watcher sends when a merge's
+          # token fired no push. It publishes the compiler and saves the baselines.
+          main=0
+          if [ "$event" = push ]; then main=1; fi
+          if [ "$event" = workflow_dispatch ] && [ "${{ github.ref }}" = refs/heads/main ] && [ -z "${{ inputs.only }}" ]; then main=1; fi
+          {
+            echo "main=${main}"
+            echo "full=${full}"
+            echo "mirror=${mirror}"
+            echo "accept_key=${accept_key}"
+            echo "changed=${changed}"
+            echo "packages=$(echo $pkgs)"
+            echo "build=${build}"
+            echo "runtime=${runtime}"
+            echo "runtime_keep=${runtime_keep}"
+            echo "layout_oracle=${layout_oracle}"
+            echo "cache=${cache}"
+            echo "codecs=${codecs}"
+            echo "key=avrac-${key}"
+            echo "shards=${shards}"
+          } >> "$GITHUB_OUTPUT"
+          echo "plan: $event — full=$full build=$build compiler-changed=$compiler runtime=$runtime cache=$cache codecs=$codecs packages: $(echo $pkgs)"
+      # THE TOOLS THE PLAN BUILT OR FETCHED, HANDED DOWN: keepers-static runs them and builds none.
+      - name: avra-tools for keepers-static
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: avra-tools
+          path: build/avra-tools/*/avra-tools
+          if-no-files-found: error
+          retention-days: 1
+      # THE COMPILER, taken or built (.github/actions/compiler — lane-run.yml stands on the same
+      # action): its rungs, the cache, the published release, then the build.
+      - if: steps.plan.outputs.build == '1'
+        id: compiler
+        uses: ./.github/actions/compiler
+        timeout-minutes: 56
+        with:
+          key: ${{ steps.plan.outputs.key }}
+          full: ${{ steps.plan.outputs.full }}
+          main: ${{ steps.plan.outputs.main }}
+          keep-rungs: ${{ github.event_name == 'pull_request' }}
+      # A CEILING IS READ FROM A WARM STORE, SO PREPARE LEAVES ONE. An
+      # exact-key release or a cache hit may hand over a compiler with no
+      # matching store (a prefix restore is not this binary's), and the
+      # warm-edit keeper REFUSES rather than skip. One `check` of the gate's
+      # own target writes the store under THIS compiler's print, so the
+      # hand-down is always warm. A store already standing is left as it is:
+      # the bench's least-of-rounds warms a stale one.
+      - if: steps.plan.outputs.build == '1'
+        name: warm the store
+        timeout-minutes: 15
+        run: |
+          if [ -d .avra-cache ] && [ -n "$(ls -A .avra-cache 2>/dev/null)" ]; then
+            echo "warm store: .avra-cache already stands ($(du -sh .avra-cache 2>/dev/null | cut -f1))"
+            exit 0
+          fi
+          s=$(date +%s)
+          chmod +x build/avra
+          build/avra check packages/cli >/dev/null 2>&1 || true
+          echo "warm store: check packages/cli took $(( $(date +%s) - s ))s"
+      # THE EVALUATOR'S PROOFS RIDE THE HAND-DOWN. A program test the evaluator agreed with is a
+      # store row kept with what it read (the program, its expected text, every file it reaches),
+      # in the store's one file family that merges by copying (`.avra-cache/proof`), so a run owes
+      # only the programs whose reads moved. Main's own runs save the rows (`suite-timing`); every
+      # run restores the newest here.
+      - if: steps.plan.outputs.build == '1'
+        uses: actions/cache/restore@v4
+        with:
+          path: proofs-kept
+          key: proofs-restore-only-${{ github.run_id }}
+          restore-keys: proofs-
+      - if: steps.plan.outputs.build == '1'
+        name: place proofs
+        run: |
+          mkdir -p .avra-cache/proof
+          [ ! -d proofs-kept ] || cp -R proofs-kept/. .avra-cache/proof/
+          echo "proofs: $(find .avra-cache/proof -type f ! -name '*.deps' | wc -l) kept row(s) handed down"
+      # THE CACHE IS BOUNDED before it is kept or handed down (.github/actions/prune-cache).
+      - if: steps.plan.outputs.build == '1'
+        uses: ./.github/actions/prune-cache
+      # A CACHE IS SCOPE-BOUND, AND ONLY THE DEFAULT BRANCH CROSSES RUNS: a run
+      # restores caches from its own branch and `main`, never a sibling's, and
+      # each merge-queue train stands on its own throwaway ref — so a compiler
+      # saved by a train (or by a PR's merge ref) is unreachable to every other
+      # train and only churns the store toward eviction. Save on `push` alone,
+      # where the next train and every PR can restore it; `workflow_dispatch` may
+      # write `main`'s scope too. Everything else restores only.
+      - if: steps.plan.outputs.build == '1' && steps.compiler.outputs.hit != 'true' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            build/avra
+            .avra-cache
+          key: ${{ steps.plan.outputs.key }}
+      # THE STORE RIDES DOWN TO THE JOBS THAT RUN PROGRAMS. The prepare job's
+      # `.avra-cache` is the tree's own compiler's, so a `check` or suite in
+      # another job reads the analysis prepare already paid for instead of
+      # compiling every module from cold. A cache cannot carry it (the train's
+      # ref is throwaway), so it is handed down as an artifact beside the
+      # binary. Missing is fine: the job simply runs cold.
+      - if: steps.plan.outputs.build == '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: avra-store
+          # `.avra-cache` is a hidden directory, which upload-artifact@v4 skips unless asked: the
+          # artifact was never made and every job reading it ran cold. Rows only: the objects and
+          # binaries ride the hand-down tar's own budget.
+          path: |
+            .avra-cache
+            !.avra-cache/obj
+            !.avra-cache/bin
+          include-hidden-files: true
+          retention-days: 1
+          if-no-files-found: ignore
+      - if: steps.plan.outputs.build == '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: avra-compiler
+          path: build/avra
+          retention-days: 1
+      # THE C OBJECTS AND PACKAGE LIBRARIES, built ONCE and handed down to
+      # the jobs that run programs — the keepers, the seed check and the
+      # suites. A PR runs all three now, so it owes the objects build whenever
+      # it owes a compiler; a change that touches nothing builds nothing.
+      #
+      # THE OBJECTS ARE KEYED BY THE C THAT BUILT THEM, not by the compiler:
+      # a `.av` change leaves every object identical, and `hashFiles` of the
+      # tree's C is the key that says so. AN EXACT hit makes `make` a no-op
+      # (the restored objects are touched newer than the sources); a miss
+      # builds once and the save rides `push`/`workflow_dispatch`. A PREFIX
+      # restore is NOT an exact hit (see `objects and libs`).
+      - if: steps.plan.outputs.build == '1' && steps.plan.outputs.full == '1'
+        uses: actions/cache/restore@v4
+        id: objcache
+        with:
+          path: &objs-paths |
+            build/*.o
+            build/*.a
+          key: &objs-key objs-${{ hashFiles('backend/**', 'runtime/**', 'packages/**/src/c/**', 'packages/**/vendor/**', 'Makefile') }}
+          restore-keys: objs-
+      - if: steps.plan.outputs.build == '1' && steps.plan.outputs.full == '1'
+        name: objects and libs
+        timeout-minutes: 15
+        run: |
+          # A PREFIX RESTORE IS NOT THIS TREE'S OBJECTS. `restore-keys: objs-`
+          # can hand back an older key's objects; touching those would make
+          # them newer than the sources and hide a real change from `make` —
+          # a stale `avra_fiber.o` failed a link, and the stale objects were
+          # then SAVED under the new key, propagating the staleness to every
+          # later run. Only an EXACT key hit is this tree's own: touch it so
+          # `make` is a no-op. A miss DISCARDS the restored objects, so the
+          # build below is from source and what it SAVES is sound.
+          if [ "${{ steps.objcache.outputs.cache-hit }}" = "true" ]; then
+            find build -type f -exec touch {} + 2>/dev/null || true
+          else
+            # DISCARD A PREFIX RESTORE'S OBJECTS, whatever mtimes tar gave
+            # them, so the build below is from source and what SAVES is sound.
+            rm -f build/*.o build/*.a
+          fi
+          sh tools/bounded.sh 900 make -s -j"$(nproc)" -o avra objects libs \
+            || sh tools/bounded.sh 900 make -s -o avra objects libs || exit 1
+          # The store rides the same hand-down the objects do, so a keeper or
+          # suite reads what prepare's self-compile already analysed.
+          sh tools/hand_down.sh pack
+          echo "objects: ${{ steps.objcache.outputs.cache-hit == 'true' && 'restored from cache' || 'built' }}"
+      - if: steps.plan.outputs.build == '1' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        uses: actions/cache/save@v4
+        with:
+          path: *objs-paths
+          key: *objs-key
+      - if: steps.plan.outputs.build == '1' && steps.plan.outputs.full == '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: avra-build
+          path: avra-build.tar.gz
+          compression-level: 0
+          retention-days: 1
+
+      - if: always()
+        uses: ./.github/actions/speed-note
+        with:
+          key: speed-main-prepare
+          save: ${{ job.status == 'success' && steps.plan.outputs.main == '1' }}
+  # THE COMPILER MAIN BUILT AND PROVED, PUBLISHED WHERE A PR CAN READ IT. Only a
+  # run on `main` reaches this job, and only once that run's `test` verdict is
+  # green: every PR falls back to the newest published compiler, so a compiler
+  # main has not proved is never served. The key is the compiler's own source
+  # digest, so the artifact is immutable: one key, one binary, and `publish`
+  # never overwrites one.
+  publish-compiler:
+    needs: [prepare, test]
+    # a base branch publishes once its prepare built the compiler; main waits for the proof
+    if: always() && needs.prepare.outputs.main == '1' && needs.prepare.outputs.build == '1' && (needs.test.result == 'success' || (github.ref != 'refs/heads/main' && needs.prepare.result == 'success'))
+    runs-on: ubuntu-latest
+    # the tools build links the runtime library and package objects, made here
+    container: *ci-image
+    permissions:
+      contents: write
+      packages: read
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: avra-compiler, path: build }
+      - name: publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          chmod +x build/avra
+          python3 tools/compiler_release.py publish "${{ needs.prepare.outputs.key }}" build/avra
+      # THE TOOLS ARE PUBLISHED BESIDE THE COMPILER, built by it from main's
+      # own tools/ and keyed by that source (tools/tools_key.sh): a PR that does
+      # not touch tools/ fetches this binary, never builds one.
+      - name: publish avra-tools
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          built=$(AVRA_TOOLS_COMPILER=build/avra sh tools/avra_tools.sh --path)
+          python3 tools/compiler_release.py --asset avra-tools publish "tools-$(sh tools/tools_key.sh)" "$built"
+
+  keepers-a:
+    needs: [prepare]
+    if: needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'
+    runs-on: ubuntu-latest
+    container: *ci-image
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        group: ['1', '2']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/handed-down
+      # MAIN'S LAST COLD-COMPILE COUNTS, restored for the census gate (tools/census_ratchet.py):
+      # a PR is held to the less of the committed ceiling and main's last run, so the ceiling
+      # tightens by itself. Only group 1 runs the gate.
+      - if: matrix.group == '1'
+        uses: actions/cache/restore@v4
+        continue-on-error: true
+        with:
+          path: |
+            census-main.txt
+            census-sites-main.txt
+          key: census-main-${{ github.sha }}
+          restore-keys: census-main-
+      # THE RUNTIME KEEPERS HELD TO A CLOCK (KEEPERS_ALONE: runtime-tests,
+      # runtime-mutations) ARE NOT THIS JOB'S: a runner that held them beside
+      # this half was killed mid-mutation. They have their own job
+      # (runtime-keep), one keeper at a time under `memcap`.
+      #
+      # EACH HEAVY make PRINTS ITS PEAK (max RSS of the tree it waited on,
+      # read from `getrusage`), so a runner grown past its memory is read
+      # from the log rather than inferred from a 137.
+      - name: keepers
+        timeout-minutes: 30
+        env:
+          # the landing tool's supervisor checks need a machine with an init
+          AVRA_NO_SUPERVISOR_TESTS: "1"
+          # THE WARM-EDIT GATE'S HOST IS ONE STABLE NAME: `SPEED_HOST` keys
+          # the bench's numbers to `ci-warm`, never to whatever CPU the
+          # runner happens to have, so `tools/speed.budget`'s `ci-warm warm …`
+          # rows judge every run the same. `warm_skip` is the ONE hand-set way
+          # to stand the gate down; unset, a run that cannot judge FAILS.
+          SPEED_HOST: ci-warm
+          WARM_EDIT_SKIP: ${{ inputs.warm_skip }}
+        run: |
+          a=0
+          # THE ONE WAY TO LET A PR COST MORE: `SPEED_ACCEPT: <reason>` in its body (the squash keeps it).
+          SPEED_ACCEPT=$(sh tools/pr_body.sh | sed -n 's/^SPEED_ACCEPT: *//p' | head -n 1)
+          export SPEED_ACCEPT
+          ta=$(date +%s)
+          python3 tools/step_cpu.py keepers-a${{ matrix.group }} -- make -s -o avra keepers-a${{ matrix.group }} || a=1
+          echo "speed keepers-a${{ matrix.group }} $(( $(date +%s) - ta ))" >> speed.log
+          [ "$a" = 0 ] || echo "::error::a keeper in keepers-a${{ matrix.group }} refused"
+          exit "$a"
+
+      - if: matrix.group == '1' && success() && needs.prepare.outputs.main == '1' && hashFiles('build/census-now.txt') != ''
+        name: census counts kept for main
+        run: cp build/census-now.txt census-main.txt
+      - if: matrix.group == '1' && success() && needs.prepare.outputs.main == '1' && hashFiles('build/census-gate.out') != ''
+        name: per-caller tables kept for main
+        run: "grep -E '^(copy|push|retain): ' build/census-gate.out > census-sites-main.txt || :"
+      - if: matrix.group == '1' && success() && needs.prepare.outputs.main == '1' && hashFiles('census-main.txt') != ''
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        with:
+          path: |
+            census-main.txt
+            census-sites-main.txt
+          key: census-main-${{ github.sha }}
+      - if: matrix.group == '1' && success() && needs.prepare.outputs.main == '1' && hashFiles('census-sites-main.txt') != ''
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: census-sites-main
+          path: census-sites-main.txt
+          retention-days: 30
+      - if: always()
+        uses: ./.github/actions/speed-note
+        with:
+          key: speed-main-keepers
+          save: ${{ job.status == 'success' && needs.prepare.outputs.main == '1' }}
+  # THE SECOND HALF AND THE WASM PROOF, each alone on its own runner. Each
+  # runs one of the Makefile's lists (KEEPERS_B, KEEPERS_WASM) — never a
+  # second list kept in step by hand.
+  keepers-b:
+    needs: [prepare]
+    if: needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'
+    runs-on: ubuntu-latest
+    container: *ci-image
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        list: ['b', 'wasm']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/handed-down
+      # gdb: the defects keeper dumps the stack of a compile that stalls, while it lives.
+      - if: matrix.list == 'b'
+        name: debugger for stalls
+        continue-on-error: true
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: apt-get update -qq && apt-get install -y -qq --no-install-recommends gdb
+      - if: matrix.list == 'b'
+        name: gdb attaches
+        continue-on-error: true
+        run: |
+          sleep 60 &
+          pid=$!
+          if gdb -p "$pid" -batch -ex "bt 3" > /tmp/gdb-attach.out 2>&1; then
+            echo "gdb attaches: yes (pid $pid)"; head -4 /tmp/gdb-attach.out
+          else
+            echo "gdb attaches: NO — a stalled compile will report no stack"; head -6 /tmp/gdb-attach.out
+          fi
+          kill "$pid" 2>/dev/null || true
+      # THE DEFECTS KEEPER'S SECONDS AGAINST THE LAST GREEN RUN: a timeout names what the program took there.
+      - if: matrix.list == 'b'
+        name: earlier defect timings
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 tools/defects_previous.py --repo "${{ github.repository }}" --out build/defects-timings.prev.tsv
+      # THE BROWSER LEG'S LIBRARIES, here and nowhere else: `make ui-browser` also runs the board in
+      # Playwright's WebKit, whose host libraries (.github/ci/packages-browser.txt) no other job needs.
+      # This costs about 40-60 s of apt per run of this job, by design: the image stays lean and the
+      # job that proves the board in a browser carries the browser.
+      - name: browser libraries
+        timeout-minutes: 10
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends $(grep -v '^#' .github/ci/packages-browser.txt | tr '\n' ' ')
+      # npm: the image carries the distro's node alone, and the pinned Node ships npm.
+      - name: node for the browser leg
+        timeout-minutes: 5
+        run: sh .github/ci/install_node.sh
+      # Playwright and its WebKit build are fetched once per pinned version, never per run: the pin is
+      # the one `tools/ui_board_browser.sh` installs by, and the key names the browser the guard reads
+      # as well as the module, so a hit holds both.
+      - name: playwright pin
+        id: playwright
+        run: |
+          v=$(sed -n 's/^playwright_version=//p' tools/ui-board/playwright.sh)
+          [ -n "$v" ] || { echo "::error::tools/ui-board/playwright.sh names no playwright_version, so the cache would be keyed by nothing"; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: build/playwright
+          key: playwright-${{ steps.playwright.outputs.version }}-webkit-browsers
+      - name: keepers
+        timeout-minutes: 30
+        env:
+          # the landing tool's supervisor checks need a machine with an init
+          AVRA_NO_SUPERVISOR_TESTS: "1"
+          # CI always proves both engines; a lane's own run proves Firefox unless it asks for more
+          UI_BROWSER_ENGINES: "firefox webkit webkit-iphone"
+        run: |
+          python3 tools/step_cpu.py keepers-${{ matrix.list }} -- make -s -o avra keepers-${{ matrix.list }} || exit 1
+      - if: always() && matrix.list == 'b'
+        uses: actions/upload-artifact@v4
+        with:
+          name: defects-timings
+          path: build/defects-timings.tsv
+          retention-days: 14
+          if-no-files-found: ignore
+  # THE COMMITTED SEED STILL BUILDS THIS TREE — a compiler build, the
+  # heaviest single keeper. It stands ALONE: run beside the two halves it was
+  # the third compiler process on one runner, and the OOM killed the whole
+  # keepers job (137) before anything could be said. No other job starts from
+  # the seed once a cached compiler exists, so a removed runtime symbol the
+  # seed names, or source the seed cannot read, is refused here before it can
+  # land — and now a refusal is that job's, not the keepers'.
+  seed-check:
+    needs: [prepare]
+    if: needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'
+    runs-on: ubuntu-latest
+    container: *ci-image
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/handed-down
+      # A BRANCH WITH RUNGS IS NOT THE SEED'S TO BUILD: the committed seed cannot read a row's first
+      # reader, by construction, so the check is spoken as skipped here and the seed is refreshed after
+      # the landing (main's run owes it). A rung-free tree is judged as ever.
+      - name: seed check
+        timeout-minutes: 20
+        run: |
+          if [ -n "${{ needs.prepare.outputs.rungs }}" ]; then
+            echo "seed-check: SKIPPED, SPOKEN — this run carries Rung commit(s) (${{ needs.prepare.outputs.rungs }}); the seed cannot build a tree whose reader needs the row it lacks, and the seed refresh is owed after this lands"
+            exit 0
+          fi
+          python3 tools/step_cpu.py seed-check -- make -s -o avra seed-check
+  # THE BUILD CACHE, ATTACKED. Its own job: it clears the store it builds
+  # through, and it runs beside the gate. It runs on the train, on main's own
+  # push, and on a PR that reaches the store or the attacks — the three places
+  # the cache can move, so the attacks are named where the change is, not only
+  # one train later.
+  cache-attacks:
+    needs: [prepare]
+    if: needs.prepare.outputs.cache == '1' && needs.prepare.outputs.full == '1'
+    runs-on: ubuntu-latest
+    container: *ci-image
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ['a', 'b1', 'b2', 'w']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/handed-down
+      - name: cache-attacks
+        timeout-minutes: 15
+        run: |
+          s=$(date +%s)
+          make -s -o avra cache-attacks-${{ matrix.shard }}
+          echo "speed cache-attacks-${{ matrix.shard }} $(( $(date +%s) - s ))" >> speed.log
+      - if: matrix.shard == 'b2'
+        name: code-hash-attacks
+        timeout-minutes: 15
+        run: make -s -o avra code-hash-attacks
+
+      - if: always()
+        uses: ./.github/actions/speed-note
+        with:
+          key: speed-main-cache-attacks
+          save: ${{ job.status == 'success' && needs.prepare.outputs.main == '1' }}
+  # THE CODEC SCAN ON A PR WHOSE DIFF REACHES THE COMPILER'S SOURCE. It
+  # reads the tree alone — no compiler, no objects, no artifacts — so it is
+  # seconds, and it names an unregistered encoder/decoder pair before the
+  # PR ever enters a train. `codecs-static` is the same half `codecs` runs.
+  codecs:
+    needs: [prepare]
+    if: github.event_name == 'pull_request' && needs.prepare.outputs.codecs == '1'
+    runs-on: ubuntu-latest
+    container: *ci-image
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: codecs
+        timeout-minutes: 5
+        run: make -s codecs-static
+  gate:
+    needs: [prepare]
+    # A LIGHT RUN WHOSE TREE'S COMPILER IS NOT PUBLISHED OWES NO GATE: the gate's fmt and
+    # idioms would run an older compiler over this tree's source. Skipped, not passed.
+    if: (needs.prepare.outputs.changed != '' || needs.prepare.outputs.packages != '') && !(needs.prepare.outputs.full == '0' && needs.prepare.outputs.compiler_source == 'latest')
+    runs-on: ubuntu-latest
+    container: *ci-image
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: avra-compiler, path: build }
+      # The tree's own `.avra-cache`, so `check` reads what prepare's
+      # self-compile already analysed instead of compiling every module cold.
+      # Missing is fine: the gate simply runs cold.
+      - uses: actions/download-artifact@v4
+        with: { name: avra-store, path: . }
+        continue-on-error: true
+      # A PR's gate reads the compiler alone: fmt on the changed files and
+      # `check` on the affected packages. It does not untar the objects, does
+      # not run the keepers, does not build the wasm target. The train is the
+      # gate; the PR is the fast floor under it.
+      - name: compiler
+        run: chmod +x build/avra
+      - name: gate
+        timeout-minutes: 20
+        run: |
+          args="--files ${{ needs.prepare.outputs.changed }} --packages ${{ needs.prepare.outputs.packages }} --no-keepers"
+          sh tools/bounded.sh 900 sh tools/gate_changed.sh $args || exit 1
+
+  # THE LATENCY GATE A RUNTIME CHANGE OWES: the scheduler's transition
+  # rows against the recorded baseline, on the runner the checks' image
+  # gives every job. A diff under runtime/ that costs a transition is
+  # refused here, on the PR or on the train, before it can land silently.
+  # Not a required check name of its own — `test` aggregates it — but it
+  # fires only when runtime/ moved, so a compiler-only PR pays nothing.
+  flow-gate:
+    needs: [prepare]
+    if: needs.prepare.outputs.runtime == '1' && needs.prepare.outputs.full == '1'
+    runs-on: ubuntu-latest
+    container: *ci-image
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: flow gate
+        timeout-minutes: 10
+        run: make -s flow-gate FLOW_GATE_ARGS=--require
+  suites:
+    needs: [prepare]
+    # THE TRAIN'S, and a hand-run whole gate's. A PR's check does not run a
+    # suite: the train runs every AFFECTED package (dependents included) on
+    # the combination, which no single PR's tree can. A PR pays fmt + idioms.
+    if: needs.prepare.outputs.packages != '' && needs.prepare.outputs.full == '1'
+    runs-on: ubuntu-latest
+    container: *ci-image
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.prepare.outputs.shards) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/handed-down
+      - name: suites
+        timeout-minutes: 50
+        run: |
+          fail=0
+          first=first
+          # A COLD PASS records main's cold numbers: the baseline keeps a number per cache state, and a
+          # PR's cold suite is only judged against a cold one.
+          if [ "${{ inputs.cold }}" = 1 ]; then
+            mkdir -p "${RUNNER_TEMP:-/tmp}/aside"
+            mv .avra-cache "${RUNNER_TEMP:-/tmp}/aside/" 2>/dev/null || :
+            echo "cold pass: the hand-down store is set aside; every suite runs from nothing"
+          fi
+          for p in ${{ join(matrix.shard, ' ') }}; do
+            [ -d "packages/${p%%/*}/src" ] || continue
+            echo "::group::$p"
+            t=$(date +%s)
+            # The memory pass's L2 proof rides the suite run: a use-after-free
+            # in the pass's own output fails the gate instead of hiding behind it.
+            python3 tools/step_cpu.py --state "$p" -- env AVRA_SOUND_CHECK=1 build/avra test --time $(python3 tools/shards.py --paths "$p") || { fail=1; echo "::error::suite $p failed"; }
+            echo "::endgroup::"
+            echo "$(echo "$p" | tr / _) $(( $(date +%s) - t ))s" | tee -a speed.log
+            # What the packer learns from (tools/shards.py --merge-times): the suite's own seconds,
+            # marked when it was the shard's first, which also paid the runner's cold start.
+            echo "$p $(( $(date +%s) - t )) $first" >> suite-times.txt
+            first=
+          done
+          exit $fail
+      # THE PACKER LEARNS FROM MAIN'S OWN RUNS: a main run hands its suite timings to the
+      # `suite-timing` job, which keeps them for every run's `prepare` to pack by.
+      - if: always() && needs.prepare.outputs.main == '1' && hashFiles('suite-times.txt') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: suite-times-${{ strategy.job-index }}
+          path: suite-times.txt
+          retention-days: 1
+
+      - if: always() && needs.prepare.outputs.main == '1' && hashFiles('.avra-cache/proof/**') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: proofs-${{ strategy.job-index }}
+          path: .avra-cache/proof
+          include-hidden-files: true
+          retention-days: 1
+
+      - if: always()
+        uses: ./.github/actions/speed-note
+        with:
+          key: speed-main-suites-${{ strategy.job-index }}
+          save: ${{ job.status == 'success' && needs.prepare.outputs.main == '1' }}
+  # THE SUITE WEIGHTS, MEASURED. Main's own run times every suite; this job merges those
+  # timings into the weights a later `prepare` packs the shards by, so the packer never
+  # reads a hand-kept file that went stale (`cli` sat at 120 s while it ran 417). The
+  # committed `suite-seconds.txt` is only the seed a cold cache falls back to.
+  suite-timing:
+    needs: [prepare, suites]
+    if: always() && needs.prepare.outputs.main == '1' && needs.suites.result == 'success'
+    runs-on: ubuntu-latest
+    # Prepare's own image: a cache's version includes how it was compressed, so the job that
+    # saves the weights and the one that restores them must share a toolchain.
+    container: *ci-image
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { pattern: suite-times-*, path: times, merge-multiple: false }
+      - uses: actions/cache/restore@v4
+        with:
+          path: .github/ci/suite-seconds.measured
+          key: suite-seconds-${{ github.run_id }}
+          restore-keys: suite-seconds-
+      - name: merge
+        run: python3 tools/shards.py --merge-times times > suite-seconds.new && mv suite-seconds.new .github/ci/suite-seconds.measured && cat .github/ci/suite-seconds.measured
+      - uses: actions/cache/save@v4
+        with:
+          path: .github/ci/suite-seconds.measured
+          key: suite-seconds-${{ github.run_id }}
+      # THE PROOFS A MAIN RUN HELD OR MADE, kept for every run's `prepare`: the union of every
+      # shard's rows over the previous set, newest 4000 rows (a row and its `.deps` go together).
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with: { pattern: proofs-*, path: proofs-in, merge-multiple: true }
+      - uses: actions/cache/restore@v4
+        with:
+          path: proofs-kept
+          key: proofs-${{ github.run_id }}
+          restore-keys: proofs-
+      - name: merge proofs
+        run: |
+          mkdir -p proofs-kept
+          [ ! -d proofs-in ] || cp -R proofs-in/. proofs-kept/
+          find proofs-kept -type f ! -name '*.deps' -printf '%T@ %p\n' | sort -rn | tail -n +4001 | cut -d' ' -f2- | while IFS= read -r f; do find "$f" "$f.deps" -delete 2>/dev/null; done
+          echo "proofs kept: $(find proofs-kept -type f ! -name '*.deps' | wc -l)"
+      - uses: actions/cache/save@v4
+        with:
+          path: proofs-kept
+          key: proofs-${{ github.run_id }}
+  # THE COMPILER-FREE FLOOR ON A PULL REQUEST. The gate runs these too, but a
+  # PR runs them FIRST and for nothing, so a keeper that reads only the tree
+  # refuses on the PR instead of after the objects build. The set is
+  # KEEPERS_STATIC, named once in the Makefile — this job invokes the target,
+  # never a second list kept in step by hand.
+  keepers-static:
+    needs: [prepare]
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    container: *ci-image
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: avra-tools, path: build/avra-tools }
+      - name: keepers-static
+        run: |
+          chmod +x build/avra-tools/*/avra-tools
+          make -s keepers-static
+  # THE RUNTIME KEEPERS HELD TO A CLOCK, ALONE ON THEIR OWN RUNNER. The
+  # scheduler's own C tests, then the mutation run that breaks one line of
+  # the scheduler at a time and demands a test fail for each — the longest
+  # and heaviest keeper in the tree. They run ONE AT A TIME under `memcap`:
+  # a runner that held them beside another keeper, or let the mutation run
+  # scale its workers by the CPU count, walked into the fork limit ("Cannot
+  # fork") and died with nothing said. `memcap` bounds the tree's memory;
+  # `mutations.py` fixes its worker count at four, on every machine. A
+  # refusal is a NAMED one: the guarded tree's own last word goes out as ONE
+  # `::error::` annotation, so a runaway is read, never inferred from an
+  # exit code.
+  runtime-keep:
+    needs: [prepare]
+    if: needs.prepare.outputs.runtime_keep == '1' && needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'
+    runs-on: ubuntu-latest
+    container: *ci-image
+    timeout-minutes: 60
+    # THE BREAKS RUN IN TWO PARTS (runtime/tests/mutations.py, MUTATION_SHARD): the scheduler's
+    # mutations were 10 of this job's 11 minutes, so each runner owns every other one.
+    strategy:
+      fail-fast: false
+      matrix:
+        part: ['0/2', '1/2']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/handed-down
+      - name: keepers held to a clock
+        env:
+          # the landing tool's supervisor checks need a machine with an init
+          AVRA_NO_SUPERVISOR_TESTS: "1"
+          MUTATION_SHARD: ${{ matrix.part }}
+        run: |
+          log=build/keepers-alone.log
+          # `if cmd; then` keeps a failing keeper from tripping the step
+          # shell's `-e` before the status is read; the else branch still
+          # holds the guarded command's own exit status.
+          if sh tools/memcap.sh 6000 make -s -o avra keepers-alone > "$log" 2>&1; then
+            cat "$log"
+            exit 0
+          else
+            rc=$?
+            cat "$log"
+            # ONE annotation, carrying the cause: memcap's own KILLED line,
+            # the fork limit's word, or the keeper that refused. Never a
+            # bare exit code.
+            cause=$(grep -m1 -E 'memcap: KILLED|Cannot fork|fork: |refused' "$log" 2>/dev/null || true)
+            [ -n "$cause" ] || cause=$(tail -n 1 "$log")
+            echo "::error::runtime-keep refused (exit $rc) — $cause"
+            exit "$rc"
+          fi
+  # THE LAYOUT SOLVER AGAINST THE WEB TARGET, in Firefox: std-ui's `place` and
+  # the page the real html realizer writes, one fixed seed of 300 random trees,
+  # every box in agreement (tools/layout-oracle). Owed only to a change it reads
+  # (tools/src/commands/ci_path_gate.av); the nine-seed sweep is the nightly orders run's.
+  layout-oracle:
+    needs: [prepare]
+    if: needs.prepare.outputs.layout_oracle == '1' && needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'
+    runs-on: ubuntu-latest
+    container: *ci-image
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/handed-down
+      # WebKit's host libraries, the same list the board's browser leg installs; node and the pinned
+      # Playwright as there (the pin is tools/ui-board/playwright.sh's).
+      - name: browser libraries
+        timeout-minutes: 10
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends $(grep -v '^#' .github/ci/packages-browser.txt | tr '\n' ' ')
+      - name: node for the browser leg
+        timeout-minutes: 5
+        run: sh .github/ci/install_node.sh
+      - name: playwright pin
+        id: playwright
+        run: |
+          v=$(sed -n 's/^playwright_version=//p' tools/ui-board/playwright.sh)
+          [ -n "$v" ] || { echo "::error::tools/ui-board/playwright.sh names no playwright_version"; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: build/playwright
+          key: playwright-${{ steps.playwright.outputs.version }}-webkit-browsers
+      - name: layout oracle
+        run: sh tools/layout_oracle.sh
+      - name: layout oracle bound terms
+        run: |
+          sh tools/layout_oracle_absent_test.sh
+          sh tools/layout_oracle_own_term_test.sh
+          sh tools/layout_oracle_boundary_test.sh
+  # THE ONE REQUIRED CHECK. Every other job is a shard or a step; this passes
+  # iff each of them succeeded or was skipped (`always()` so it still reports
+  # when a needed job failed, rather than being skipped itself).
+  test:
+    needs: [prepare, keepers-a, keepers-b, keepers-static, runtime-keep, layout-oracle, seed-check, flow-gate, cache-attacks, codecs, gate, suites]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      # A PART OF THE GATE IS NO VERDICT: a run asked for with `only` set posts
+      # a failing `test`, so it can never stand as the required check on a
+      # commit. Its jobs' own results say what it found.
+      - if: github.event_name == 'workflow_dispatch' && inputs.only != ''
+        name: partial
+        run: |
+          echo "test: NOT A VERDICT — this run was asked for with only=${{ inputs.only }}; read the jobs it ran"
+          exit 1
+      # A DRAFT'S RUN IS NOT THE GATE: its heavy legs were never owed, so a
+      # verdict over them would pass on skips. It says so and refuses, as the
+      # `only` run does; readying the PR (or the `full-ci` label) runs the gate.
+      - if: needs.prepare.outputs.full == '0' && needs.prepare.outputs.compiler_source == 'latest'
+        name: light gate compiler
+        run: |
+          echo "light gate: compiler steps skipped — the tree's compiler is not the published one; ready or label full-ci for a verdict"
+      # THE WAIVER KEY RIDES A STEP'S NAME so a later run on this head can read it (tools/ci_dup_run.py).
+      - name: accepts ${{ needs.prepare.outputs.accept_key }}
+        run: echo "test judged under the SPEED_ACCEPT key ${{ needs.prepare.outputs.accept_key }}"
+      - if: needs.prepare.outputs.mirror != ''
+        name: mirror
+        run: |
+          echo "test: another run for this head carries the verdict — ${{ needs.prepare.outputs.mirror }}"
+          case "${{ needs.prepare.outputs.mirror }}" in "success "*) exit 0 ;; *) exit 1 ;; esac
+      - if: needs.prepare.outputs.full == '0' && needs.prepare.outputs.mirror == ''
+        name: light draft
+        run: |
+          echo "test: NOT A VERDICT — a draft runs the light gate; ready the PR or add the full-ci label for the whole gate"
+          exit 1
+      # THE VERDICT NAMES ITS ARITHMETIC: the `test` job's own `needs:` is the
+      # expected set and the run's `needs` JSON is what happened, so a skipped
+      # leg BY DESIGN is green, a failure is refused by name, and a job the
+      # gate owed but the run did not report is refused too (tools/ci_verdict.sh).
+      - if: needs.prepare.outputs.full != '0'
+        name: verdict
+        run: |
+          echo '${{ toJSON(needs) }}' > needs.json
+          sh tools/ci_verdict.sh --needs needs.json --workflow .github/workflows/checks.yml --job test
+      # THE WALL-CLOCK BUDGET: this PR check's per-job and whole wall time,
+      # ratcheted in tools/speed.budget. It reads the run's own jobs as GitHub
+      # reports them, so the queue and the hand-downs count; a ceiling may only
+      # fall (`make speed-accept`), and a host with no row is said out loud and
+      # not gated rather than passed in silence.
+      - if: always() && github.event_name == 'pull_request' && needs.prepare.outputs.full != '0'
+        name: wall budget
+        timeout-minutes: 4
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if sh tools/ci_wall.sh collect > wall.metrics 2>/dev/null; then
+            python3 tools/speed_ratchet.py --wall --raw wall.metrics
+          else
+            echo "::notice title=wall budget::the run's wall time could not be read from the jobs API — not gated"
+          fi

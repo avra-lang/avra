@@ -1,0 +1,681 @@
+//! The doors of a model as routes. A model's derive (`@crud`) builds a `Wire`
+//! of closures over its own concrete operations; this file turns a `Wire` into
+//! the routes, so the HTTP reading and the answers are written once.
+//!
+//! The doors, mounted under a prefix:
+//!
+//!     GET    /              list          200, every row
+//!     POST   /              create        200, the row; 422 with every issue
+//!     GET    /{id}          find          200, the row; 404
+//!     PATCH  /{id}          update        200, the row; 422; 404
+//!     DELETE /{id}          remove        204; 404
+//!     GET    /trash         trash         only for `@soft_delete`
+//!     POST   /{id}/restore  restore       only for `@soft_delete`
+//!
+//! A body is JSON and is decoded by the model's own rules: a row that breaks
+//! one is refused with all of them (422), never one at a time.
+use @std.errors.{Error}
+use @std.http_message.message.{FEED, Header, Method, READS, STAND, Version, WROTE, named_field}
+use @std.http_message.route.{Nothing, Route as Described, Routes}
+use @std.http.http.{Request, Unrouted, Response, text, status, header_pair}
+use @std.http.sse.{Event, Next, Resume, Source, events}
+use @std.http.validators.{tag_listed}
+use @std.net.{Bell}
+use @std.text.{parse_int}
+use @std.time.{Duration, ms, now_ms, secs}
+use @std.http.route.{Route, Mounted, fixed, routed, mounted}
+use @std.json.{Json, Field, field, to_text}
+use @std.db.apply.{commits, last_of, touched}
+use @std.db.reads.{observing}
+use @std.db.error.{ModelError}
+use @std.db.scope.{Op, Where}
+use @std.sqlite.{Db, SqlValue}
+use @std.sqlite.error.{SqlError}
+use @std.validate.{Issue, Issues}
+
+grammar Whole = "/{id: int}"
+grammar Restored = "/{id: int}/restore"
+
+/// One of a model's doors: what `without:` names.
+export enum Door {
+    List
+    Find
+    Create
+    Update
+    Remove
+    Trash
+    Restore
+    Events
+}
+
+/// Why a door answered no row.
+export enum Failure {
+    Invalid(issues: Issues)
+    Missing
+    Conflict(why: string)
+    Broken(why: string)
+}
+
+/// Who may see and touch which rows: the model's `column`, compared by `op`
+/// with a value read from the caller's `header`. A request that carries no
+/// value is refused (401); a row outside the scope is a row that is not there
+/// (404). `belongs_to` is the first constructor; the predicate grows in `Op`.
+export type Access = { column: string, op: Op, header: string, value: fn(string) -> SqlValue? }
+
+/// Rows whose `column` equals what `value` reads from the caller's `header`.
+export fn belongs_to(column: string, header: string, value: fn(string) -> SqlValue?) -> Access {
+    Access { column: column, op: .Eq, header: header, value: value }
+}
+
+/// A model's operations as closures, each already over its database and
+/// each held within the scope the caller's access gives (none: every row).
+export type Wire = {
+    soft: bool,
+    list: fn(Where?) -> Result<Json, Failure>,
+    find: fn(Where?, int) -> Result<Json, Failure>,
+    create: fn(Where?, string) -> Result<Json, Failure>,
+    update: fn(Where?, int, string) -> Result<Json, Failure>,
+    remove: fn(Where?, int) -> Result<int, Failure>,
+    trash: fn(Where?) -> Result<Json, Failure>,
+    restore: fn(Where?, int) -> Result<Json, Failure>,
+    ledger: Ledger,
+    tables: List<string>,
+}
+
+/// What a database says of itself, as closures over one connection: where it stands now, the
+/// version of an answer that read a set of tables (never newer than `now`), and which tables
+/// were written since it stood at a count, or none when the database could not be read.
+export type Ledger = {
+    stand: fn() -> int?,
+    version: fn(List<string>, int) -> Version?,
+    touched: fn(int) -> List<string>?,
+}
+
+/// `db`'s ledger. A counter that cannot be read answers no stand, so no answer under it is tagged.
+export fn ledger(db: Db) -> Ledger {
+    Ledger {
+        stand: () -> match commits(db) { .Ok(n) -> n, .Err(_) -> null },
+        version: (read: List<string>, now: int) -> match last_of(db, read) {
+            .Ok(n) -> Version { sequence: if n < now { n } else { now } },
+            .Err(_) -> null,
+        },
+        touched: (since: int) -> match touched(db, since) { .Ok(names) -> names, .Err(_) -> null },
+    }
+}
+
+/// A router's account of the database for the streams that watch it: the count it last saw, when it
+/// last asked, the tables written since each cursor it was asked for (one SELECT however many streams
+/// share it), and a bell every stream parks on. ONE ASK PER INTERVAL PER PROCESS, whoever's wait
+/// runs out first, and none while nobody watches; a write committed through this router asks at once
+/// and rings, so a stream of this process wakes without waiting. A write from another process or
+/// core is seen within the interval.
+export type Hub = {
+    ledger: Ledger,
+    tables: List<string>,
+    every: Duration,
+    seen: Cell<int>,
+    checked: Cell<int>,
+    memo: Cell<Map<string, List<string>>>,
+    blind: Cell<bool>,
+    bell: Bell,
+}
+
+/// The event streams open in this process.
+once fn streams() -> Cell<int> { Cell.new(0) }
+
+/// How many event streams this process serves now; each ends when its client goes, which the server
+/// learns when it next writes to it.
+export fn subscribed() -> int { streams().get() }
+
+/// A hub over `l` for the tables a router serves, asking at most once per `every`.
+export fn hub(l: Ledger, tables: List<string>, every: Duration) -> Hub {
+    let none: Map<string, List<string>> = {}
+    Hub {
+        ledger: l,
+        tables: tables,
+        every: every,
+        seen: Cell.new(0),
+        checked: Cell.new(0),
+        memo: Cell.new(none),
+        blind: Cell.new(false),
+        bell: Bell {},
+    }
+}
+
+impl Hub {
+    /// The database's count now; when it moved, every stream is woken.
+    fn sync() {
+        self.checked.set(now_ms())
+        let now? = self.ledger.stand() else {
+            self.blind.set(true)
+            return
+        }
+        self.blind.set(false)
+        if now == self.seen.get() { return }
+        self.seen.set(now)
+        let none: Map<string, List<string>> = {}
+        self.memo.set(none)
+        self.bell.ring()
+    }
+
+    /// `sync`, unless the interval has not yet passed since the last ask.
+    fn refresh() {
+        if now_ms() - self.checked.get() >= self.every.ms() { self.sync() }
+    }
+
+    /// The tables this router serves that were written since the database stood at `cursor`.
+    fn since(cursor: int) -> List<string>? {
+        let held = self.memo.get().get("${cursor}")
+        if held != null { return held! }
+        let written? = self.ledger.touched(cursor) else { return null }
+        let names = [t for t in written if self.tables.contains(t)]
+        self.memo.put("${cursor}", names)
+        names
+    }
+
+    /// Where a stream resumes from the cursor its caller sent: after it, or — a cursor the database
+    /// has not reached, one it was replaced under — from now, the caller told so first. No cursor
+    /// reads from now.
+    fn resume(cursor: string?) -> Resume {
+        self.sync()
+        let now = self.seen.get()
+        let c? = cursor else { return .From(self.source(now)) }
+        let at = parse_int(c) ?? -1
+        if at < 0 || at > now { return .Expired(c, self.source(now)) }
+        .From(self.source(at))
+    }
+
+    /// A source of notices from `from` on: the first says where the database stands (the tables written
+    /// since `from`, possibly none), each later one names the tables written since the last.
+    fn source(from: int) -> Source {
+        let at = Cell.new(from)
+        let told = Cell.new(false)
+        streams().set(streams().get() + 1)
+        Source {
+            next: (wait: Duration) -> self.waited(at, told, wait),
+            ended: () -> streams().set(streams().get() - 1),
+        }
+    }
+
+    fn waited(at: Cell<int>, told: Cell<bool>, wait: Duration) -> Next {
+        let until = now_ms() + wait.ms()
+        while true {
+            self.refresh()
+            let now = self.seen.get()
+            let names = self.since(at.get())
+            if names != null && (!told.get() || now > at.get()) {
+                let first = !told.get()
+                told.set(true)
+                at.set(now)
+                if first || !names!.is_empty() {
+                    return .Event(
+                        Event { data: named_field(names!), event: "notice", id: "${now}" },
+                    )
+                }
+            }
+            let left = until - now_ms()
+            if left <= 0 { return if names == null || self.blind.get() { .Failed } else { .Quiet } }
+            let _ = self
+                .bell
+                .waited(ms(if left < self.every.ms() { left } else { self.every.ms() }))
+        }
+        .Quiet
+    }
+}
+
+type Opened = { door: Door, route: Route }
+
+/// Where a door answers: the method, and the pattern under the mount (`/` is the mount itself). The router and
+/// the description of it both read this table.
+type Address = { method: Method, pattern: string }
+
+fn address(d: Door) -> Address {
+    match d {
+        .List -> Address { method: Method.Get, pattern: "/" },
+        .Create -> Address { method: Method.Post, pattern: "/" },
+        .Find -> Address { method: Method.Get, pattern: "/{id: int}" },
+        .Update -> Address { method: Method.Patch, pattern: "/{id: int}" },
+        .Remove -> Address { method: Method.Delete, pattern: "/{id: int}" },
+        .Trash -> Address { method: Method.Get, pattern: "/trash" },
+        .Restore -> Address { method: Method.Post, pattern: "/{id: int}/restore" },
+        .Events -> Address { method: Method.Get, pattern: "/events" },
+    }
+}
+
+/// Whether a mount answers at `d`: a model that keeps its removed rows has a trash and a restore, every model the
+/// rest, and `without` leaves out what it names.
+fn standing(d: Door, soft: bool, without: List<Door>) -> bool {
+    let kept = match d {
+        .Trash or .Restore -> soft,
+        .List or .Find or .Create or .Update or .Remove or .Events -> true,
+    }
+    kept && !without.any(it == d)
+}
+
+/// The route of `d` as data, rooted at `base`: where the router answers it, or none when the mount does not.
+fn described_at<A, T>(d: Door, soft: bool, without: List<Door>, base: string) -> Described<A, T>? {
+    if !standing(d, soft, without) { return null }
+    let at = address(d)
+    let root = if base.ends_with("/") { base.substring(0, base.length - 1) } else { base }
+    let path = if at.pattern == "/" { if root.is_empty() { "/" } else { root } } else { root + at.pattern.replace(": int", "") }
+    Described { method: at.method, path: path }
+}
+
+/// The doors a mount answers, as data: the same declaration (`soft`, `without`) the router is built from, so the
+/// two cannot name different doors.
+export fn described<T>(soft: bool, without: List<Door>, base: string) -> Routes<T> {
+    let list: Described<Nothing, List<T>>? = described_at(.List, soft, without, base)
+    let find: Described<int, T>? = described_at(.Find, soft, without, base)
+    let create: Described<T, T>? = described_at(.Create, soft, without, base)
+    let update: Described<T, T>? = described_at(.Update, soft, without, base)
+    let remove: Described<int, Nothing>? = described_at(.Remove, soft, without, base)
+    let trash: Described<Nothing, List<T>>? = described_at(.Trash, soft, without, base)
+    let restore: Described<int, T>? = described_at(.Restore, soft, without, base)
+    let events: Described<Nothing, Nothing>? = described_at(.Events, soft, without, base)
+    Routes {
+        list: list,
+        find: find,
+        create: create,
+        update: update,
+        remove: remove,
+        trash: trash,
+        restore: restore,
+        events: events,
+    }
+}
+
+/// The routes of a model's doors, but the ones left out.
+export fn crud_routes(
+    w: Wire,
+    without: List<Door>,
+    access: Access? = null,
+    every: Duration = ms(100),
+) -> Mounted {
+    let held = hub(w.ledger, w.tables, every)
+    mounted([d.route for d in opened(w, access, held) if standing(d.door, w.soft, without)])
+}
+
+/// The scope a request's caller is held within, or the refusal to answer it.
+fn scoped<P>(access: Access?, q: Request<P>, act: fn(Where?) -> Response) -> Response {
+    let a? = access else { return act(null) }
+    let named? = q.header(a.header) else { return unknown(a) }
+    let v? = a.value(named) else { return unknown(a) }
+    act(Where { column: a.column, op: a.op, value: v })
+}
+
+fn unknown(a: Access) -> Response { text(401, "this door needs the caller named in the `${a.header}` header") }
+
+fn opened(w: Wire, access: Access?, held: Hub) -> List<Opened> {
+    [
+        Opened {
+            door: .List,
+            route: fixed(
+                address(.List).method,
+                address(.List).pattern,
+                (q: Request<Unrouted>) -> scoped(
+                    access,
+                    q,
+                    (sc) -> observed(w.ledger, q, () -> answered(w.list(sc)), feed_of(q, 0)),
+                ),
+            ),
+        },
+        Opened {
+            door: .Create,
+            route: fixed(
+                address(.Create).method,
+                address(.Create).pattern,
+                (q: Request<Unrouted>) -> scoped(
+                    access,
+                    q,
+                    (sc) -> nudged(held, () -> created(q, (body: string) -> w.create(sc, body))),
+                ),
+            ),
+        },
+        Opened {
+            door: .Find,
+            route: routed<Whole>(
+                address(.Find).method,
+                address(.Find).pattern,
+                (t: Bytes) -> Whole.parse(t),
+                (q: Request<Whole>) -> scoped(
+                    access,
+                    q,
+                    (sc) -> observed(
+                        w.ledger,
+                        q,
+                        () -> answered(w.find(sc, q.params.id)),
+                        feed_of(q, 1),
+                    ),
+                ),
+            ),
+        },
+        Opened {
+            door: .Update,
+            route: routed<Whole>(
+                address(.Update).method,
+                address(.Update).pattern,
+                (t: Bytes) -> Whole.parse(t),
+                (q: Request<Whole>) -> scoped(
+                    access,
+                    q,
+                    (sc) -> nudged(
+                        held,
+                        () -> bodied(q, (body: string) -> w.update(sc, q.params.id, body)),
+                    ),
+                ),
+            ),
+        },
+        Opened {
+            door: .Remove,
+            route: routed<Whole>(
+                address(.Remove).method,
+                address(.Remove).pattern,
+                (t: Bytes) -> Whole.parse(t),
+                (q: Request<Whole>) -> scoped(
+                    access,
+                    q,
+                    (sc) -> nudged(held, () -> removed_answer(w.remove(sc, q.params.id))),
+                ),
+            ),
+        },
+        Opened {
+            door: .Events,
+            route: fixed(
+                Method.Get,
+                "/events",
+                (q: Request<Unrouted>) -> scoped(
+                    access,
+                    q,
+                    (sc) -> events(q, secs(5), (cursor) -> held.resume(cursor)),
+                ),
+            ),
+        },
+    ]
+        .concat(if w.soft { soft_doors(w, access, held) } else { [] })
+}
+
+fn soft_doors(w: Wire, access: Access?, held: Hub) -> List<Opened> {
+    [
+        Opened {
+            door: .Trash,
+            route: fixed(
+                address(.Trash).method,
+                address(.Trash).pattern,
+                (q: Request<Unrouted>) -> scoped(
+                    access,
+                    q,
+                    (sc) -> observed(w.ledger, q, () -> answered(w.trash(sc)), feed_of(q, 1)),
+                ),
+            ),
+        },
+        Opened {
+            door: .Restore,
+            route: routed<Restored>(
+                address(.Restore).method,
+                address(.Restore).pattern,
+                (t: Bytes) -> Restored.parse(t),
+                (q: Request<Restored>) -> scoped(
+                    access,
+                    q,
+                    (sc) -> nudged(held, () -> answered(w.restore(sc, q.params.id))),
+                ),
+            ),
+        },
+    ]
+}
+
+// ── Answers ─────────────────────────────────────────────────────
+
+fn answered(r: Result<Json, Failure>) -> Response {
+    match r { .Ok(j) -> Response.json(j), .Err(f) -> refused(f) }
+}
+
+/// The tables a request's last answer read, by its target, so a caller that holds a version
+/// can be told nothing it read has changed without running the read again. A read set can only
+/// grow when data in a table it already reads changes, and that moves the version first.
+once fn learned() -> Cell<Map<string, List<string>>> { Cell.new({}) }
+
+/// A read answered under what it read: the database's tables the read reached (`@std/db`
+/// notes each model query), and a version that is the latest write to any of them. A caller
+/// that holds that version is answered 304 and no body — without running the read when an
+/// earlier answer told what it reads. The count is taken BEFORE the read, so a write in
+/// between can only make the tag older than the data, never newer. An answer carries
+/// `ETag` and `avra-reads`; a count that cannot be read tags nothing, and the read is
+/// answered plainly. Hand-written routes call this too.
+export fn observed<P>(l: Ledger, q: Request<P>, answer: fn() -> Response, feed: string = "") -> Response {
+    let now? = l.stand() else { return answer() }
+    let target = q.target() ?? ""
+    let known = learned().get().get(target)
+    if known != null && q.header("if-none-match") != null {
+        let at = l.version(known!, now)
+        if at != null && tag_listed(q.header("if-none-match"), at!.tag()) {
+            return Response { status: 304, headers: tagged(at!.tag(), known!, now, feed) }
+        }
+    }
+    let seen = observing(answer)
+    if seen.value.status != 200 { return seen.value }
+    learned().put(target, seen.reads)
+    let at? = l.version(seen.reads, now) else { return seen.value }
+    if tag_listed(q.header("if-none-match"), at.tag()) {
+        return Response { status: 304, headers: tagged(at.tag(), seen.reads, now, feed) }
+    }
+    seen.value with { headers: seen.value.headers.concat(tagged(at.tag(), seen.reads, now, feed)) }
+}
+
+fn tagged(tag: string, read: List<string>, stand: int, feed: string) -> List<Header> {
+    [
+        header_pair("etag", tag),
+        header_pair(READS, named_field(read)),
+        header_pair(STAND, "${stand}"),
+    ]
+        .concat(if feed == "" { [] } else { [header_pair(FEED, feed)] })
+}
+
+/// Where the observations of the router a request reached are announced: the request's path with
+/// its last `up` segments dropped (the door's own), then `/events`.
+fn feed_of<P>(q: Request<P>, up: int) -> string {
+    let path = (q.target() ?? "").split("?").first() ?? ""
+    let parts = [p for p in path.split("/") if !p.is_empty()]
+    "/${parts.slice(0, parts.length - up).join("/")}/events"
+}
+
+/// A write answered with the tables it touched, and the router's streams woken at once.
+fn nudged(h: Hub, act: fn() -> Response) -> Response {
+    let r = committed(h.ledger, act)
+    h.sync()
+    r
+}
+
+/// A write answered with the tables it touched (`avra-wrote`): those the database says were
+/// written between the count before the write and the count after it, none of which names a row,
+/// and the count it left the database at (`avra-stand`).
+/// Hand-written actions call this too.
+export fn committed(l: Ledger, act: fn() -> Response) -> Response {
+    let before = l.stand()
+    let r = act()
+    let b? = before else { return r }
+    if r.status < 200 || r.status > 299 { return r }
+    let after = l.stand() ?? b
+    let written = l.touched(b)
+    let named = if written == null { [] } else { [header_pair(WROTE, named_field(written!))] }
+    r with { headers: r.headers.concat(named).concat([header_pair(STAND, "${after}")]) }
+}
+
+fn removed_answer(r: Result<int, Failure>) -> Response {
+    match r { .Ok(_) -> status(204), .Err(f) -> refused(f) }
+}
+
+/// A door that reads a JSON body: the body's text goes to the model's reader.
+fn bodied<P>(q: Request<P>, read: fn(string) -> Result<Json, Failure>) -> Response {
+    match q.json() { .Ok(doc) -> answered(read(to_text(doc))), .Err(refusal) -> refusal }
+}
+
+/// A door that makes a row: the body read as the row, answered 201 with the
+/// new row's address under the path it was posted to.
+fn created<P>(q: Request<P>, read: fn(string) -> Result<Json, Failure>) -> Response {
+    match q.json() { .Ok(doc) -> located(q, read(to_text(doc))), .Err(refusal) -> refusal }
+}
+
+fn located<P>(q: Request<P>, r: Result<Json, Failure>) -> Response {
+    match r { .Ok(row) -> placed(row, q.path()?.text() ?? "/"), .Err(f) -> refused(f) }
+}
+
+fn placed(row: Json, path: string) -> Response {
+    let at = if path.ends_with("/") { path } else { "${path}/" }
+    let key = keyed(row.get("id"))
+    let body = Response.json(row)
+    body with { status: 201, headers: body.headers.concat([Header { name: "location", value: at + key }]) }
+}
+
+/// A row's key as the text an address ends in; empty for a row with none.
+fn keyed(id: Json?) -> string {
+    let held? = id else { return "" }
+    match held { .Int(n) -> "${n}", rest -> "" }
+}
+
+fn refused(f: Failure) -> Response {
+    match f {
+        .Invalid(issues) -> Response.json(issues_json(issues)) with { status: 422 },
+        .Missing -> status(404),
+        .Conflict(why) -> text(409, why),
+        .Broken(why) -> text(500, why),
+    }
+}
+
+fn issues_json(all: Issues) -> Json {
+    Json.Obj([field("issues", Json.Arr([issue_json(i) for i in all.all]))])
+}
+
+fn issue_json(i: Issue) -> Json {
+    Json
+        .Obj(
+            [
+                field("path", Json.Str(i.path.text())),
+                field("rule", Json.Str(i.rule)),
+                field("message", Json.Str(i.message)),
+            ],
+        )
+}
+
+// ── What a model's derive calls ─────────────────────────────────
+
+/// Every row, as JSON.
+export fn listed<T>(r: Result<List<T>, SqlError>, show: fn(T) -> Json) -> Result<Json, Failure> {
+    match r {
+        .Ok(rows) -> .Ok(Json.Arr([show(row) for row in rows])),
+        .Err(e) -> .Err(sql_failure(e)),
+    }
+}
+
+/// One row, as JSON; missing when there is none.
+export fn found<T>(r: Result<T?, SqlError>, show: fn(T) -> Json) -> Result<Json, Failure> {
+    match r { .Ok(row) -> shown_or_missing(row, show), .Err(e) -> .Err(sql_failure(e)) }
+}
+
+fn shown_or_missing<T>(row: T?, show: fn(T) -> Json) -> Result<Json, Failure> {
+    let r? = row else { return .Err(.Missing) }
+    .Ok(show(r))
+}
+
+/// A body read and written as a new row.
+export fn made<T>(read: Result<T, Issues>, put: fn(T) -> Result<T, ModelError>, show: fn(T) -> Json) -> Result<
+    Json,
+    Failure,
+> {
+    match read { .Ok(row) -> written(put(row), show), .Err(issues) -> .Err(.Invalid(issues)) }
+}
+
+fn written<T>(r: Result<T, ModelError>, show: fn(T) -> Json) -> Result<Json, Failure> {
+    match r { .Ok(row) -> .Ok(show(row)), .Err(e) -> .Err(model_failure(e)) }
+}
+
+/// A body read and written over an existing row: no row changed is missing.
+export fn changed<T>(
+    read: Result<T, Issues>,
+    put: fn(T) -> Result<int, ModelError>,
+    show: fn(T) -> Json,
+) -> Result<Json, Failure> {
+    match read { .Ok(row) -> kept(put(row), row, show), .Err(issues) -> .Err(.Invalid(issues)) }
+}
+
+fn kept<T>(r: Result<int, ModelError>, row: T, show: fn(T) -> Json) -> Result<Json, Failure> {
+    match r {
+        .Ok(0) -> .Err(.Missing),
+        .Ok(_) -> .Ok(show(row)),
+        .Err(e) -> .Err(model_failure(e)),
+    }
+}
+
+/// A row removed; missing when there is none.
+export fn dropped<T>(r: Result<T?, SqlError>, drop: fn(T) -> Result<int, ModelError>) -> Result<
+    int,
+    Failure,
+> {
+    match r { .Ok(row) -> dropped_row(row, drop), .Err(e) -> .Err(sql_failure(e)) }
+}
+
+fn dropped_row<T>(row: T?, drop: fn(T) -> Result<int, ModelError>) -> Result<int, Failure> {
+    let r? = row else { return .Err(.Missing) }
+    match drop(r) { .Ok(0) -> .Err(.Missing), .Ok(n) -> .Ok(n), .Err(e) -> .Err(model_failure(e)) }
+}
+
+/// A removed row brought back; missing when the trash holds none by this key.
+export fn revived<T>(
+    r: Result<List<T>, SqlError>,
+    id: int,
+    key: fn(T) -> int,
+    back: fn(T) -> Result<int, SqlError>,
+    show: fn(T) -> Json,
+) -> Result<Json, Failure> {
+    match r {
+        .Ok(rows) -> restored(rows.find(key(it) == id), back, show),
+        .Err(e) -> .Err(sql_failure(e)),
+    }
+}
+
+fn restored<T>(row: T?, back: fn(T) -> Result<int, SqlError>, show: fn(T) -> Json) -> Result<
+    Json,
+    Failure,
+> {
+    let r? = row else { return .Err(.Missing) }
+    match back(r) {
+        .Ok(0) -> .Err(.Missing),
+        .Ok(_) -> .Ok(show(r)),
+        .Err(e) -> .Err(sql_failure(e)),
+    }
+}
+
+fn sql_failure(e: SqlError) -> Failure { .Broken(e.describe().message) }
+
+fn model_failure(e: ModelError) -> Failure {
+    match e {
+        .Invalid(issues) -> .Invalid(issues),
+        .Unique(_, _, _) or .Ambiguous(_, _, _) or .Referenced(_, _) -> .Conflict(e.describe().message),
+        .Other(sql) -> .Broken(e.describe().message),
+    }
+}
+
+// ── Json of a row's fields ──────────────────────────────────────
+
+/// What a door answers on a model that has no such door: never read.
+export fn empty() -> Result<Json, Failure> { .Ok(Json.Arr([])) }
+
+export fn json_obj(fields: List<Field>) -> Json { Json.Obj(fields) }
+
+export fn entry(key: string, value: Json) -> Field { field(key, value) }
+
+export fn jint(n: int) -> Json { Json.Int(n) }
+
+export fn jstr(s: string) -> Json { Json.Str(s) }
+
+export fn jbool(b: bool) -> Json { Json.Bool(b) }
+
+export fn jfloat(x: float) -> Json { Json.Float(x) }
+
+export fn jint_opt(n: int?) -> Json { if n == null { Json.Null } else { Json.Int(n!) } }
+
+export fn jstr_opt(s: string?) -> Json { if s == null { Json.Null } else { Json.Str(s!) } }
+
+export fn jbool_opt(b: bool?) -> Json { if b == null { Json.Null } else { Json.Bool(b!) } }
+
+export fn jfloat_opt(x: float?) -> Json { if x == null { Json.Null } else { Json.Float(x!) } }

@@ -1,0 +1,47 @@
+//! The builder of one parameter seat: a rule ending `-> Record.ParamSyntax`
+//! labels the words and parts a seat writes, and the seat is made here,
+//! its identity minted at its name — or at its type, for a positional
+//! enum payload that writes none.
+use core.{Carried, Param, Scoped, SeatMark, SeatSpread, hole_name}
+use features.{LangNode, Builder}
+
+impl Builder {
+    /// The seat a `ParamSyntax` rule wrote.
+    fn seat() -> Result<LangNode, string> {
+        let n = (self.tokens(self.slot_of("name")?)?).first()
+        let ty = self.type_opt_of("ty")?
+        let name = n?.text ?? ""
+        .Ok(
+            LangNode
+                .NCarried(
+                    Carried
+                        .Param(
+                            Param {
+                                name: Scoped(name),
+                                ty: ty,
+                                default: self.expr_opt_of("default")?,
+                                promises: SeatMark {
+                                    mutable: self.present_of("mutable")?,
+                                    settled: self.present_of("constant")?,
+                                    state: self.present_of("state")?,
+                                    unshared: self.present_of("unshared")?,
+                                },
+                                id: self.store.alloc_param_id(n?.span ?? ty?.span),
+                                marks: self.marks_of("marks")?,
+                                state: self.present_of("state_field")?,
+                                spread: self.spread_of(name)?,
+                            },
+                        ),
+                ),
+        )
+    }
+
+    /// What the seat spreads: the rest of a call's arguments, a template
+    /// hole, or nothing.
+    fn spread_of(name: string) -> Result<SeatSpread?, string> {
+        if self.present_of("variadic")? { return .Ok(SeatSpread.Rest) }
+        if !self.present_of("spread")? { return .Ok(null) }
+        let holes: List<int> = hole_name(name)?.holes ?? []
+        .Ok(SeatSpread.Hole(holes.first() ?? 0 - 1))
+    }
+}

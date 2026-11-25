@@ -1,0 +1,178 @@
+//! `tree/controls.av` — the controls on a screen, as a target with no
+//! host of its own finds them: in reading order, each where it stands,
+//! and what happens when one speaks. A control is a node that hears an
+//! event of its own or submits its form; one a reader could not reach — in a dialog
+//! that is not open — is not on the screen, and a disabled one does not
+//! speak.
+use tree.identity.{steps, shared, root as root_step, path, Owner}
+use tree.node.{Node, Prim, Action, Said}
+use tree.sink.{Sink, draw}
+use tree.seats.{row_at}
+
+/// A control on the screen: the node, the form it stands in, the path it
+/// stands at — its own across paints — and its seat in the walk of the tree.
+export type Control = { node: Node, form: Node?, path: string, ordered: bool, seat: int }
+
+/// Whether what a node holds is on the screen: a dialog shows its content
+/// only while it is open.
+export fn shows_content(n: Node) -> bool {
+    match n.prim {
+        .Dialog -> n.open(),
+        .Text or .Heading or .Button or .Link or .Image or .Field or .Checkbox or .Row or .Column or .Divider or .Icon or .Surface or .List or .Item or .Card or .Fieldset or .Progress or .Alert or .Spinner or .Form or .Switch or .Slider or .Key -> true,
+    }
+}
+
+/// The dialog a node is, as a run of none or one. Every primitive spelled.
+fn dialog_at(n: Node) -> List<Node> {
+    match n.prim {
+        .Dialog -> [n],
+        .Text or .Heading or .Button or .Link or .Image or .Field or .Checkbox or .Row or .Column or .Divider or .Icon or .Surface or .List or .Item or .Card or .Fieldset or .Progress or .Alert or .Spinner or .Form or .Switch or .Slider or .Key -> [],
+    }
+}
+
+/// The dialogs open on the screen `root` draws, in reading order: the
+/// last stands over the rest.
+export fn open_dialogs(root: Node) -> List<Node> {
+    if !shows_content(root) { return [] }
+    dialog_at(root).concat([d for c in root.children for d in open_dialogs(c)])
+}
+
+/// The form what `n` holds stands in: `n` itself when it is one, else the
+/// form around it.
+fn form_within(n: Node, around: Node?) -> Node? {
+    match n.prim {
+        .Form -> n,
+        .Text or .Heading or .Button or .Link or .Image or .Field or .Checkbox or .Row or .Column or .Dialog or .Divider or .Icon or .Surface or .List or .Item or .Card or .Fieldset or .Progress or .Alert or .Spinner or .Switch or .Slider or .Key -> around,
+    }
+}
+
+/// Whether an event is one a control says itself. A form's `submit` is
+/// said by what stands in it and a dialog's `dismiss` from outside it, so
+/// hearing either makes no control of the node.
+export fn said_by_control(a: Action) -> bool { !row_at(a.seat).always }
+
+/// Whether a node is a control: it hears an event of its own, or submits
+/// its form.
+fn speaks(n: Node) -> bool { n.drawn() && (n.events.any(said_by_control(it)) || n.submits()) }
+
+/// A node the walk has opened and not yet closed: its place among its
+/// siblings, whether what it holds is on the screen, and the form what it
+/// holds stands in.
+type Open = { node: Node, index: int, shows: bool, form: Node? }
+
+/// The step `n` stands at: among `parent`'s children, or alone as a root.
+fn step_at(parent: Node?, index: int, n: Node) -> string {
+    let under? = parent else { return root_step(n.box.key).spelled() }
+    steps([c.box.stand() for c in under.children])[index].spelled()
+}
+
+/// The path a node at `index` under the open nodes `above` stands at:
+/// each ancestor's step, then its own.
+fn path_to(above: List<Open>, index: int, n: Node) -> string {
+    path(
+        [step_at(if j == 0 { null } else { above[j - 1].node }, o.index, o.node) for j, o in above]
+            .concat([step_at(above.last()?.node, index, n)]),
+    )
+}
+
+/// Whether each of `children` is told from its siblings by order alone:
+/// by its own step, or by the composition that drew it.
+export fn by_order(children: List<Node>) -> List<bool> {
+    let told = shared([c.box.stand() for c in children])
+    [c.drawn_by_order || told[j] for j, c in children]
+}
+
+/// Whether the node at `index` under `parent` is told from a sibling by
+/// order alone.
+fn crowded_at(parent: Node?, index: int) -> bool {
+    let under? = parent else { return false }
+    by_order(under.children)[index]
+}
+
+/// Whether any step down to the node at `index` under the open nodes
+/// `above` is told from a sibling by order alone.
+fn crowded_to(above: List<Open>, index: int) -> bool {
+    [crowded_at(if j == 0 { null } else { above[j - 1].node }, o.index) for j, o in above]
+        .concat([crowded_at(above.last()?.node, index)])
+        .any(it)
+}
+
+/// The finder: a target of THE one walk (`tree/sink.av`), so the seat
+/// it files a control under is the seat every other target of that walk
+/// is handed for the same node. A path is built only for a control found.
+type Finder = { open: Cell<List<Open>> = Cell.new([]), found: Cell<List<Control>> = Cell.new([]) }
+
+impl Sink for Finder {
+    fn opened(seat: int, _parent: int?, index: int, n: Node) {
+        let above = self.open.get()
+        let under = above.last()
+        let on_screen = under?.shows ?? true
+        if on_screen && speaks(n) {
+            self
+                .found
+                .push(
+                    Control {
+                        node: n,
+                        form: under?.form,
+                        path: path_to(above, index, n),
+                        ordered: crowded_to(above, index),
+                        seat: seat,
+                    },
+                )
+        }
+        self
+            .open
+            .push(
+                Open {
+                    node: n,
+                    index: index,
+                    shows: on_screen && shows_content(n),
+                    form: form_within(n, under?.form),
+                },
+            )
+    }
+    fn words(_seat: int, _s: string) {}
+    fn closed(_n: Node) {
+        let stack = self.open.get()
+        self.open.set(stack.slice(0, stack.length - 1))
+    }
+}
+
+/// Every control on the screen `root` draws, in reading order.
+export fn controls(root: Node) -> List<Control> {
+    let at = Finder {}
+    draw(root, at)
+    at.found.get()
+}
+
+impl Control {
+    /// The owner a control's work is filed under.
+    fn owner() -> Owner { Owner { key: self.path, ordered: self.ordered } }
+
+    /// Whether the control can speak at all.
+    fn disabled() -> bool { self.node.disabled() }
+
+    /// The control speaks, saying `said`: the handler of its own that hears
+    /// what was said runs. False when none answered.
+    fn says(said: Said?) -> bool {
+        if self.disabled() { return false }
+        let action? = self.node.events.find(said_by_control(it) && it.handler.hears(said)) else { return false }
+        action.fire(said)
+    }
+
+    /// The form the control stands in is sent.
+    fn sends() -> bool {
+        if self.disabled() { return false }
+        let form? = self.form else { return false }
+        let action? = form.events.find(!said_by_control(it)) else { return false }
+        action.fire(null)
+    }
+
+    /// The control is pressed: its own handler runs, and a control that
+    /// submits sends its form.
+    fn pressed() -> bool {
+        let own = self.says(null)
+        let form = self.node.submits() && self.sends()
+        own || form
+    }
+}

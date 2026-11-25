@@ -1,0 +1,506 @@
+//! WHETHER A METHOD WRITES ITS RECEIVER: it does when it's marked `mut`, when its body assigns to a
+//! place rooted in `self` that crosses no `state` field, calls a verb whose receiver seat is `mut` on
+//! such a place, hands such a place to a `mut` seat, or calls a method on such a place that writes
+//! its own receiver; a fn value a `let` binds writes what it's handed only through a seat its type
+//! marks `mut`. A lambda's `self` is a copy, so nothing inside one counts. A method whose answer
+//! turns on what can't be read here is unproved, and says why.
+use core.{ExprId, SignedType, StmtId, SyntaxArena, TypeHead, filled, flatten, headed_type}
+use @std.meta.{derive}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.saved_derive.{Saved}
+use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+
+/// What a method does to its receiver.
+@derive(Saved)
+export enum ReceiverUse {
+    /// Reads it only.
+    Read
+    /// Writes it.
+    Written
+    /// May write it: the first thing that couldn't be read to say.
+    Unproved(why: string)
+}
+
+impl ReceiverUse {
+    /// Whether the receiver is known written.
+    fn written() -> bool {
+        match self { .Written -> true, .Read or .Unproved(_) -> false }
+    }
+
+    /// Why whether the receiver is written isn't known, absent when it is.
+    fn unproved() -> string? {
+        match self { .Unproved(why) -> why, .Read or .Written -> null }
+    }
+}
+
+/// A method of a type the program declares: the type's file and name, the method's, and the package
+/// whose code calls it, which sees the impls its reach writes.
+@derive(Saved)
+type MethodAt = { file: SourceFileAddress, owner: string, name: string, reader: string }
+
+fn same_method(a: MethodAt, b: MethodAt) -> bool {
+    a.name == b.name &&
+        a.owner == b.owner &&
+        a.reader == b.reader &&
+        a.file.package_name == b.file.package_name &&
+        a.file.path_in_package == b.file.path_in_package
+}
+
+/// What the method `method` of the type `file` declares as `owner` does to its receiver: each method
+/// it reaches through its receiver surveyed once, in one walk, so a recursion asks nothing twice.
+@query
+export fn receiver_use(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    owner: string,
+    method: string,
+    reader: string,
+) -> ReceiverUse {
+    mut reached = [MethodAt { file: file, owner: owner, name: method, reader: reader }]
+    mut unproved: string? = null
+    mut at = 0
+    while at < reached.length {
+        let found = surveyed(engine, reached[at])
+        if found.written { return ReceiverUse.Written }
+        unproved = unproved ?? found.unproved
+        for m in found.reached { if !reached.any((r) -> same_method(r, m)) { reached.push(m) } }
+        at = at + 1
+    }
+    if unproved == null { ReceiverUse.Read } else { ReceiverUse.Unproved(unproved!) }
+}
+
+/// One method's own evidence: whether it writes its receiver itself, the first thing that couldn't be
+/// read to say, and the methods it calls on places rooted in its receiver.
+@derive(Saved)
+type Evidence = { written: bool, unproved: string?, reached: List<MethodAt> }
+
+/// A method's evidence, under the method's name.
+@derive(Saved)
+type Surveyed = { name: string, evidence: Evidence }
+
+/// The evidence of the method `m`: the one impl's that gives it, else the one default body of a
+/// trait its type implements. One no body gives is unproved.
+@query
+fn surveyed(engine: QueryEngine, m: MethodAt) -> Evidence {
+    let impls = impls_given(engine, m.file, m.owner, m.name, false, m.reader)
+    if impls.length > 1 { return unread(not_one_impl(m)) }
+    if impls.is_empty() { return gathered_evidence(engine, m) ?? defaulted(engine, m) }
+    impl_evidence(engine, impls[0], m.file, m.owner).find(it.name == m.name)?.evidence ?? unread(
+        not_one_impl(m),
+    )
+}
+
+/// The evidence of each method the impl at `at` writes, its receiver the type `file` declares as
+/// `owner`, read from the impl read back once.
+@query
+fn impl_evidence(engine: QueryEngine, at: ImplAt, file: SourceFileAddress, owner: string) -> List<
+    Surveyed,
+> {
+    let item = read_item(engine, at.file, at.item)
+    let fns = [p!.fns for s in item.stmts for p in [item.store.impl_parts(s)] if p != null].first() ?? []
+    let ty = headed_type(TypeHead.Declared(file, owner)) with { args: [headed_type(TypeHead.Parameter(i, p)) for i, p in at.params] }
+    let methods = [s for s in fns if item.store.fn_parts(s) != null && !item.store.is_static(s)]
+    [Surveyed { name: item.store.fn_parts(methods[i])!.name, evidence: e } for i, e in fns_evidence(
+        engine,
+        at.file,
+        item.store,
+        methods,
+        ty,
+        (name) -> method_typed(engine, at, name).types,
+    )]
+}
+
+/// The body of the method `name` the impl at `at` gives, typed: each node's type by its index in the
+/// item read back; none where it gives none.
+@query
+fn method_typed(engine: QueryEngine, at: ImplAt, name: string) -> TypedBody {
+    let method? = signed_method(engine, at, name, false) else { return TypedBody { types: [] } }
+    TypedBody { types: body_checked(engine, at.file, method.signed, false).types.get() }
+}
+
+/// No node's type, for a body nothing types here.
+fn untyped_nodes() -> List<SignedType?> { [] }
+
+/// The evidence of the method `m` of a `collect enum` a trait it implements over its members
+/// declares: written where the trait marks it `mut`, the signature each member's impl answers to.
+/// Absent where no trait it gathers declares it.
+fn gathered_evidence(engine: QueryEngine, m: MethodAt) -> Evidence? {
+    let marked = [s! for t in gathered_traits(engine, m.file, m.owner) for s in [trait_marked(engine, t, m.name)] if s != null]
+    let written? = marked.first() else { return null }
+    Evidence { written: written, unproved: null, reached: [] }
+}
+
+/// Whether the method `name` the trait `t` declares is marked `mut`; absent where it declares none.
+fn trait_marked(engine: QueryEngine, t: TraitAt, name: string) -> bool? {
+    let item? = trait_item(engine, t) else { return null }
+    let s? = trait_fns(item)
+        .find((f) -> item.store.fn_parts(f)?.name == name && !item.store.is_static(f)) else { return null }
+    item.store.is_mutating(s)
+}
+
+/// The evidence of the method `m` as the one trait its type implements that gives it a body writes it.
+fn defaulted(engine: QueryEngine, m: MethodAt) -> Evidence {
+    let traits = [i.implements! for i in impls_of(engine, m.file, m.owner) if i.at.params.is_empty() && i.implements != null]
+    let giving = [t for t in traits if gives(engine, t, m.name)]
+    if giving.length != 1 { return unread(not_one_impl(m)) }
+    let item? = trait_item(engine, giving[0]) else { return unread(not_one_impl(m)) }
+    let s? = trait_fns(item)
+        .find((f) -> item.store.fn_parts(f)?.name == m.name && !item.store.is_static(f)) else { return unread(not_one_impl(m)) }
+    fns_evidence(
+        engine,
+        giving[0].file,
+        item.store,
+        [s],
+        headed_type(TypeHead.Declared(m.file, m.owner)),
+        (_name) -> untyped_nodes(),
+    )[0]
+}
+
+/// The trait `t`'s declaring item, read back.
+fn trait_item(engine: QueryEngine, t: TraitAt) -> ReadItem? { declaring_item(engine, t.file, t.name, ItemKind.Trait) }
+
+/// Whether the trait `t` declares a fn named `name`.
+fn gives(engine: QueryEngine, t: TraitAt, name: string) -> bool {
+    let item? = trait_item(engine, t) else { return false }
+    trait_fns(item).any((s) -> item.store.fn_parts(s)?.name == name)
+}
+
+/// The fns a trait's declaring item declares.
+fn trait_fns(item: ReadItem) -> List<StmtId> { [p!.fns for s in item.stmts for p in [item.store.trait_parts(s)] if p != null].first() ?? [] }
+
+/// The evidence of each of the methods `fns` of one read-back item, written in `file` with its
+/// receiver of type `owner`, a method's nodes typed by `typed` under its name: what their bodies
+/// share read once.
+fn fns_evidence(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    store: SyntaxArena,
+    fns: List<StmtId>,
+    owner: SignedType,
+    typed: fn(string) -> List<SignedType?>,
+) -> List<Evidence> {
+    let kept = [outside_lambdas(store, store.fn_parts(s)!.body) for s in fns]
+    mut holder = filled(store.expr_count(), -1)
+    for i, k in kept { for e in k { holder.set(e.index, i) } }
+    let bodies = ItemBodies {
+        holder: holder,
+        targets: [x! for s in store.stmt_ids() for x in [store.assign_target(s)] if x != null],
+        lets: [n! for s in store.stmt_ids() for n in [store.let_name(s)] if n != null],
+    }
+    [body_evidence(
+        engine,
+        file,
+        store,
+        bodies,
+        i,
+        s,
+        kept[i],
+        owner,
+        () -> typed(store.fn_parts(s)!.name),
+    ) for i, s in fns]
+}
+
+/// What the bodies of one read-back item share: which of its surveyed methods holds each expression
+/// outside a lambda, by index, -1 for none; every assignment's target; and the names its `let`s bind.
+type ItemBodies = { holder: List<int>, targets: List<ExprId>, lets: List<string> }
+
+/// The evidence of the method `s`, the item's `at`th surveyed one, its expressions outside lambdas
+/// `kept`, written in `file` with its receiver of type `owner` and its nodes typed by `types` when asked.
+fn body_evidence(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    store: SyntaxArena,
+    bodies: ItemBodies,
+    at: int,
+    s: StmtId,
+    kept: List<ExprId>,
+    owner: SignedType,
+    types: fn() -> List<SignedType?>,
+) -> Evidence {
+    if store.is_mutating(s) { return Evidence { written: true, unproved: null, reached: [] } }
+    let parts = store.fn_parts(s)!
+    mut cx = Survey {
+        engine: engine,
+        file: file,
+        store: store,
+        owner: owner,
+        bodies: bodies,
+        at: at,
+        types: types,
+        locals: [p.name.of for p in parts.params].concat(bodies.lets),
+        written: false,
+        unproved: null,
+        reached: [],
+    }
+    cx.assigns()
+    for e in kept { cx.call_evidence(e) }
+    Evidence { written: cx.written, unproved: cx.unproved, reached: cx.reached }
+}
+
+fn unread(why: string) -> Evidence { Evidence { written: false, unproved: why, reached: [] } }
+
+/// Every expression at and under `root` that no lambda holds, children before owners.
+fn outside_lambdas(store: SyntaxArena, root: ExprId) -> List<ExprId> {
+    if store.lambda_parts(root) != null { return [] }
+    flatten([outside_lambdas(store, k) for k in store.reached(root)]).concat([root])
+}
+
+/// One method's survey: where its body is read, the receiver's type, its nodes' types when asked,
+/// what its item's bodies share and which of them it is, the names its seats and `let`s bind, and the
+/// evidence as it accrues.
+type Survey = { engine: QueryEngine, file: SourceFileAddress, store: SyntaxArena, owner: SignedType, types: fn() -> List<SignedType?>, bodies: ItemBodies, at: int, locals: List<string>, written: bool, unproved: string?, reached: List<MethodAt> }
+
+impl Survey {
+    /// Every assignment outside a lambda through a place rooted in the receiver writes it, unless the
+    /// path crosses a `state` field, whose cell takes the write.
+    mut fn assigns() {
+        for t in self.bodies.targets {
+            if self.bodies.holder[t.index] != self.at || !self.rooted(t) { continue }
+            let crosses? = self.crosses_state(t) else {
+                self.unread(untyped_place(self.path_words(t)))
+                continue
+            }
+            if !crosses { self.written = true }
+        }
+    }
+
+    /// A call's evidence: a method's on a place rooted in the receiver, and any call handing such a
+    /// place to a seat, a fn value's by the seats its type marks.
+    mut fn call_evidence(e: ExprId) {
+        let mp = self.store.method_parts(e)
+        if mp != null { return self.method_evidence(mp!.subject, mp!.name, mp!.args) }
+        let call = self.store.call_parts(e)
+        if call != null { return self.named_evidence(call!.callee, call!.args) }
+        let applied? = self.store.applied_parts(e) else { return }
+        if !self.hands_write(applied.args) { return }
+        let f? = self.typed_at(applied.subject) else { return self.unread(handed_to_value()) }
+        if !(f.head is .Function) || f.nullable() { return self.unread(handed_to_value()) }
+        self.fed([s.mutable for s in f.seats], applied.args, self.path_words(applied.subject))
+    }
+
+    /// A method call: on a place rooted in the receiver, a verb with a `mut` receiver seat writes it,
+    /// a declared method is reached, a trait's that's `mut` writes it, and a fn a field holds is
+    /// called; its arguments feed its seats.
+    mut fn method_evidence(subject: ExprId, name: string, args: List<ExprId>) {
+        if !self.rooted(subject) {
+            if !self.hands_write(args) { return }
+            let ty? = self.typed_at(subject) else { return self.unread(handed_unread(name)) }
+            let marks? = self.called_marks(ty, name, args.length) else { return self.unread(handed_unread(name)) }
+            return self.fed(marks, args, name)
+        }
+        let ty? = self.place_type(subject) else { return self.unread(untyped_place(self.path_words(subject))) }
+        if ty.dynamic { return self.contract_evidence(ty, name, args) }
+        let seats = method_type(self.engine, ty, name, self.file.package_name)?.seats
+        if seats == null { return self.field_fn_evidence(ty, name, args) }
+        let declared = declared_at(ty)
+        if declared != null {
+            self
+                .reached
+                .push(
+                    MethodAt {
+                        file: declared!.file,
+                        owner: declared!.name,
+                        name: name,
+                        reader: self.file.package_name,
+                    },
+                )
+        } else if seats!.first()?.mutable ?? false {
+            self.written = true
+        }
+        self.fed([s.mutable for s in seats!.drop(1)], args, name)
+    }
+
+    /// Which seats of what a call of `name` on a value of `ty` reaches are `mut`, the arguments'
+    /// alone: a static of the type a type value stands for, or a variant of it, which writes nothing;
+    /// a fn a field holds; else a method, past its receiver. Absent where none is read.
+    fn called_marks(ty: SignedType, name: string, count: int) -> List<bool>? {
+        let described = ty.described()
+        if described != null { return self.through_type_marks(described!, name, count) }
+        let f = self.field_of(ty, name)?.ty
+        if f != null && f!.head is .Function && !f!.nullable() { return [s.mutable for s in f!.seats] }
+        let seats? = method_type(self.engine, ty, name)?.seats else { return null }
+        [s.mutable for s in seats.drop(1)]
+    }
+
+    /// Which seats of a call of `name` through the type `ty` are `mut`: its static's, or none of a
+    /// variant's.
+    fn through_type_marks(ty: SignedType, name: string, count: int) -> List<bool>? {
+        let statics = static_type(self.engine, ty, name)
+        if statics != null { return [s.mutable for s in statics!.seats] }
+        let d? = declared_at(ty) else { return null }
+        if variant_named(self.engine, d.file, d.name, name) { filled(count, false) } else { null }
+    }
+
+    /// A method a `dyn` trait value has: written where the trait marks it `mut`; its arguments feed
+    /// its seats.
+    mut fn contract_evidence(ty: SignedType, name: string, args: List<ExprId>) {
+        let d? = declared_at(ty) else { return self.unread(no_method(ty, name)) }
+        let t = TraitAt { file: d.file, name: d.name }
+        let item? = trait_item(self.engine, t) else { return self.unread(no_method(ty, name)) }
+        let s? = trait_fns(item).find((f) -> item.store.fn_parts(f)?.name == name) else { return self.unread(no_method(ty, name)) }
+        if item.store.is_mutating(s) { self.written = true }
+        self.fed([p.promises.mutable for p in item.store.fn_parts(s)!.params], args, name)
+    }
+
+    /// A call of the fn a field of `ty` holds: its arguments feed the fn type's seats.
+    mut fn field_fn_evidence(ty: SignedType, name: string, args: List<ExprId>) {
+        let f? = self.field_of(ty, name)?.ty else { return self.unread(no_method(ty, name)) }
+        if !(f.head is .Function) || f.nullable() { return self.unread(no_method(ty, name)) }
+        self.fed([s.mutable for s in f.seats], args, name)
+    }
+
+    /// A call by name handing a place rooted in the receiver to a seat: a declared fn's seats read
+    /// from what it writes; a name the body binds is a fn value; any other name writes nothing, a
+    /// construction.
+    mut fn named_evidence(callee: string, args: List<ExprId>) {
+        if !self.hands_receiver(args) { return }
+        if self.locals.contains(callee) {
+            let marks? = self.bound_marks(callee) else {
+                if self.hands_write(args) { self.unread(handed_unread(callee)) }
+                return
+            }
+            return self.fed(marks, args, callee)
+        }
+        let d? = resolved(self.engine, self.file, Space.Value, callee).named() else { return }
+        let marks? = written_seats(self.engine, d) else { return }
+        self.fed(marks, args, callee)
+    }
+
+    /// Each argument rooted in the receiver handed to a `mut` seat writes it; one past the seats, or
+    /// named or spread, is unproved.
+    mut fn fed(marks: List<bool>, args: List<ExprId>, callee: string) {
+        if args.length > marks.length ||
+            args.any((a) -> self.store.arg_label(a) != null || self.store.spread_operand(a) != null) {
+            if self.hands_receiver(args) { self.unread(handed_unread(callee)) }
+            return
+        }
+        for j, a in args { if marks[j] && self.rooted(a) { self.written = true } }
+    }
+
+    /// Which seats of the fn value the one `let` binding `name` holds are `mut`, read off the type its
+    /// value has; absent where the body binds it otherwise, or its type isn't a fn's.
+    fn bound_marks(name: string) -> List<bool>? {
+        let lets = [s for s in self.store.stmt_ids() if self.store.let_name(s) == name]
+        if lets.length != 1 { return null }
+        let value? = self.store.stmt_value(lets[0]) else { return null }
+        let ty? = self.typed_at(value) else { return null }
+        if !(ty.head is .Function) || ty.nullable() { return null }
+        [s.mutable for s in ty.seats]
+    }
+
+    /// The type the body has `e` at, absent where it isn't typed.
+    fn typed_at(e: ExprId) -> SignedType? {
+        let types = (self.types)()
+        if e.index >= types.length { null } else { types[e.index] }
+    }
+
+    /// Whether any argument is a place rooted in the receiver.
+    fn hands_receiver(args: List<ExprId>) -> bool { args.any((a) -> self.rooted(self.store.unnamed(a))) }
+
+    /// Whether any argument is a place rooted in the receiver a callee could write through: one
+    /// whose type isn't read, or isn't a scalar, which a seat copies.
+    fn hands_write(args: List<ExprId>) -> bool { args.any((a) -> self.carries_write(self.store.unnamed(a))) }
+
+    fn carries_write(a: ExprId) -> bool {
+        if !self.rooted(a) { return false }
+        let ty? = self.place_type(a) else { return true }
+        let word? = match ty.head { .Owned(w) -> w, rest -> null } else { return true }
+        !SCALARS.contains(word)
+    }
+
+    /// A place's path as a reader names it.
+    fn path_words(e: ExprId) -> string {
+        let step? = self.store.place_step(e) else { return "…" }
+        match step {
+            .Root(n) -> n.of,
+            .Field(subject, name) -> "${self.path_words(subject)}.${name.of}",
+            .At(subject, _) -> "${self.path_words(subject)}[…]",
+            .Unwrap(subject) -> "${self.path_words(subject)}!",
+        }
+    }
+
+    /// Whether `e` is a place rooted in the receiver.
+    fn rooted(e: ExprId) -> bool {
+        let root? = self.store.place_root(e) else { return false }
+        self.store.is_receiver(root)
+    }
+
+    /// Whether a place's path crosses a `state` field; absent where a holder along it isn't read.
+    fn crosses_state(e: ExprId) -> bool? {
+        let step? = self.store.place_step(e) else { return false }
+        match step {
+            .Root(_) -> false,
+            .Field(subject, name) -> {
+                let holder? = self.place_type(subject) else { return null }
+                let f? = self.field_of(holder, name.of) else { return null }
+                if f.state { true } else { self.crosses_state(subject) }
+            },
+            .At(subject, _) or .Unwrap(subject) -> self.crosses_state(subject),
+        }
+    }
+
+    /// The type a place rooted in the receiver holds, absent where its path isn't read.
+    fn place_type(e: ExprId) -> SignedType? {
+        let step? = self.store.place_step(e) else { return null }
+        match step {
+            .Root(_) -> if self.store.is_receiver(e) { self.owner } else { null },
+            .Field(subject, name) -> {
+                let holder? = self.place_type(subject) else { return null }
+                self.field_of(holder, name.of)?.ty
+            },
+            .At(subject, _) -> self.place_type(subject)?.listed(),
+            .Unwrap(subject) -> {
+                let held? = self.place_type(subject) else { return null }
+                if held.nullable() { held.unwrapped() } else { null }
+            },
+        }
+    }
+
+    /// The field `name` of the record `holder` is, typed under its arguments, or over its own
+    /// parameters where it's applied to none; absent for any other.
+    fn field_of(holder: SignedType, name: string) -> SignedField? {
+        if holder.nullable() || holder.dynamic { return null }
+        let d? = declared_at(holder) else { return null }
+        let record? = record_signature(self.engine, d.file, d.name) else { return null }
+        if !holder.args.is_empty() && record.type_params.length != holder.args.length { return null }
+        let f? = record.fields.find(it.name == name) else { return null }
+        f with { ty: f.ty?.bound(holder.args) }
+    }
+
+    mut fn unread(why: string) { self.unproved = self.unproved ?? why }
+}
+
+/// Which seats of the fn `d` names are `mut`, as written: an extern's or a declared fn's; absent for
+/// a name that's neither.
+fn written_seats(engine: QueryEngine, d: DeclaredName) -> List<bool>? {
+    let item = read_item(engine, d.file, d.item)
+    let external = [p! for s in item.stmts for p in [item.store.extern_parts(s)] if p != null && p!.name == d.name]
+        .first()
+    if external != null { return [p.promises.mutable for p in external!.params] }
+    let declared? = [p! for s in item.stmts for p in [item.store.fn_parts(s)] if p != null && p!.name == d.name]
+        .first() else { return null }
+    [p.promises.mutable for p in declared.params]
+}
+
+/// The types the language owns whose values a seat copies.
+const SCALARS: List<string> = ["int", "float", "bool", "string", "Bytes", "ptr"]
+
+collect listed_write_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries whether a method writes its receiver reads through, for a process to hand its engine.
+export fn write_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_write_facts) }
+
+// ── Voices ──────────────────────────────────────────────────────────
+
+fn not_one_impl(m: MethodAt) -> string { "the method `${m.name}` of `${m.owner}`, which no one impl gives" }
+
+fn generic_owner(m: MethodAt) -> string { "the method `${m.name}` of the generic `${m.owner}`" }
+
+fn untyped_place(path: string) -> string { "`${path}`, whose type isn't read" }
+
+fn no_method(ty: SignedType, name: string) -> string { "the method `${name}` of `${ty.spelled()}`" }
+
+fn handed_unread(callee: string) -> string { "`self` handed to `${callee}`, whose seats aren't read" }
+
+fn handed_to_value() -> string { "`self` handed to a fn value" }

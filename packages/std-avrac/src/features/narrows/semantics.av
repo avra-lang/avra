@@ -1,0 +1,43 @@
+//! The narrows semantics: dispatch only. The laws live in check.av,
+//! the test in lower.av.
+use core.{PatId, TypeId, Reg}
+use features.{PatSemantics, TypeCx, LowerCx}
+use features.narrows.{narrow_types, narrow_accepts, narrow_binds}
+
+export type NarrowPatSemantics = {}
+
+impl PatSemantics for NarrowPatSemantics {
+    fn pat_types(mut cx: TypeCx, p: PatId, expected: TypeId) -> List<TypeId> {
+        // a feature cannot enumerate OTHER features' variants
+        match cx.view.store.pat(p) {
+            .Typed(_, ty) -> narrow_types(cx, p, ty, expected),
+            rest -> [],
+        }
+    }
+
+    fn pat_accepts(mut cx: LowerCx, p: PatId, v: Reg, vty: TypeId) -> Reg {
+        // a feature cannot enumerate OTHER features' variants
+        match cx.view.store.pat(p) {
+            .Typed(_, _) -> narrow_accepts(cx, p, v, vty),
+            rest -> reached_wrongly(cx),
+        }
+    }
+
+    fn pat_binds(mut cx: LowerCx, p: PatId, v: Reg, vty: TypeId) -> List<Reg> {
+        // a feature cannot enumerate OTHER features' variants
+        match cx.view.store.pat(p) {
+            .Typed(_, _) -> narrow_binds(cx, p, v),
+            rest -> {
+                cx.defect("a pattern that is no type test reached the narrowing binds")
+                []
+            },
+        }
+    }
+}
+
+/// The seam routes every pattern to its owner, so this cannot
+/// arrive; refusing is the honest answer if the seam ever breaks.
+fn reached_wrongly(mut cx: LowerCx) -> Reg {
+    cx.defect("a pattern that is no type test reached the narrowing test")
+    cx.const_bool(false)
+}

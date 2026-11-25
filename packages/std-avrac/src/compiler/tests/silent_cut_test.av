@@ -1,0 +1,46 @@
+//! A derive cut by its memory budget SPEAKS, every time its file is expanded.
+//! The first ask speaks and holds its refusal; a later ask answers `Spoken`,
+//! and an expansion's voices are wiped when the expansion runs again — so the
+//! run that read the held refusal said nothing, and the derive's declarations
+//! were simply absent ("`T` has no method `big`" with no budget in sight).
+use @std.avrac.testing.{test_workspace, vendored_meta, vendored_meta_paths}
+use compiler.host.{memory_host}
+use compiler.families.{Family}
+
+const LIFT_BUDGET: string = "\n[lifted]\nmemory = 1\n"
+
+fn heavy_derive() -> string {
+    "use @std.meta.{Type, Directive}\n\nexport trait Big {\n    static fn derive(t: Type) -> List<Directive> {\n        let xs = [0 for i in 0..400000]\n        [Directive { twin: \"\", name: t.name, at: t.at, source: quote { impl \${t} { fn big() -> int { \${xs.length} } } } }]\n    }\n}\n"
+}
+
+fn files() -> Map<string, string> {
+    vendored_meta(
+        {
+            "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@x/b\" = { path = \"vendor/b\" }\n${LIFT_BUDGET}",
+            "/w/src/main.av": "use @std.meta.{derive}\nuse @x.b.{Big}\n\n@derive(Big)\ntype T = { n: int }\n\nT { n: 1 }.big()\n",
+            "/w/vendor/b/avra.toml": "[package]\nname = \"@x/b\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n${LIFT_BUDGET}",
+            "/w/vendor/b/src/gen.av": heavy_derive(),
+        },
+    )
+}
+
+fn paths() -> List<string> {
+    ["/w/avra.toml", "/w/src/main.av", "/w/vendor/b/avra.toml", "/w/vendor/b/src/gen.av"]
+        .concat(vendored_meta_paths())
+}
+
+spec "compiler/expand — a derive cut by its budget" {
+    given "a file expanded once and then expanded again" {
+        then "speaks on the first expansion" {
+            let ws = test_workspace(memory_host(files(), paths()), "/w")
+            ws.program("/w/src/main.av").report().contains("annotation.unsettled")
+        }
+        then "speaks on the second, which reads the refusal the first held" {
+            let ws = test_workspace(memory_host(files(), paths()), "/w")
+            let f = ws.file_id("/w/src/main.av")
+            let _ = ws.expanded(f)
+            ws.relation(Family.Expanded).evict_call(f.index)
+            ws.program("/w/src/main.av").report().contains("annotation.unsettled")
+        }
+    }
+}

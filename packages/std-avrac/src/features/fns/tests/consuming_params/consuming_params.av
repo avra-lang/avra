@@ -1,0 +1,77 @@
+// R3 — CONSUMING (owned) PARAMS: the compiler INFERS a param
+// consumed — no keyword names it — when the body reuses it whole
+// (a `with`'s bare subject, a method's bare subject), stores it into
+// a fresh list or struct, or returns it early. A consumed seat's
+// caller hands a DYING argument straight over instead of retaining
+// across the call (docs/2026_09_23_REUSE_IN_PLACE.md §31). `items`
+// is a MANAGED field on every record here for exactly one reason: a
+// record with none is a VALUE (a tuple of registers, never boxed),
+// and R3 has nothing to seed on a value nobody counts.
+type P = { n: int, items: List<int> }
+type Pair = { a: P, b: P }
+
+fn made(n: int) -> P { P { n: n, items: [1] } }
+
+/// THE CORE WITNESS: a `with`'s bare subject — a fresh box only on
+/// the FIRST turn a caller hands it a dying argument; every later
+/// turn reuses that SAME box in place.
+fn bumped(p: P) -> P { p with { n: p.n + 1 } }
+
+/// THE EMPTY CASE FIRST: the seat is eligible (the body CAN reach a
+/// consuming site) but this call never does.
+fn untouched(p: P, run: bool) -> P {
+    if run { return bumped(p) }
+    p
+}
+
+/// A NON-DYING ARGUMENT: the caller reads `p` again after handing it
+/// to a consuming call — `bumped`'s own fresh reference must not
+/// answer for the caller's.
+fn twice(p: P) -> int { bumped(p).n + p.n }
+
+/// A FIELD VIEW at a consuming seat: the argument is `pr.a`, read off
+/// a boxed record — never itself scope-owned, so the caller mints a
+/// fresh reference rather than handing one over.
+fn from_pair(pr: Pair) -> P { bumped(pr.a) }
+
+/// RECURSION: each frame consumes its OWN `p`; no frame answers for
+/// a caller's.
+fn countdown(p: P) -> int {
+    if p.n <= 0 { return 0 }
+    1 + countdown(p with { n: p.n - 1 })
+}
+
+/// AN EXPLICIT EARLY RETURN of the bare param, beside a branch that
+/// consumes it instead — the seat is still ONE contract either way.
+fn given_or_bumped(p: P, give: bool) -> P {
+    if give { return p }
+    bumped(p)
+}
+
+/// A `defer` reading the param's FIELD after the tail consumes the
+/// param whole — the read is a plain field load, taken before the
+/// box is handed to the reusing twin. `log` is a `Cell`: a fn body
+/// sees declarations, never a top-level binding's value, so the
+/// caller hands it in.
+fn logged(p: P, log: Cell<int>) -> P {
+    defer { log.set(p.n) }
+    bumped(p)
+}
+
+mut x = made(0)
+mut i = 0
+while i < 5 {
+    x = bumped(x)
+    i = i + 1
+}
+let skipped = untouched(made(100), false)
+let ran = untouched(made(100), true)
+let doubled = twice(made(3))
+let pr = Pair { a: made(10), b: made(20) }
+let viewed = from_pair(pr)
+let counted = countdown(made(4))
+let kept = given_or_bumped(made(7), true)
+let advanced = given_or_bumped(made(7), false)
+let log = Cell.new(0)
+let via_defer = logged(made(1), log)
+"${x.n} ${skipped.n} ${ran.n} ${doubled} ${pr.a.n} ${viewed.n} ${counted} ${kept.n} ${advanced.n} ${via_defer.n} ${log.get()}"

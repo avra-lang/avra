@@ -1,0 +1,31 @@
+// proves: `model_form<T>` hands its handler a decoded `T`, and shows a
+// refused field's issue beside it — in both engines
+use @std.meta.{derive}
+use @std.validate.{Decode, range}
+use @std.ui.forms.{model_form}
+use @std.ui.headless.{Screen, headless}
+
+@derive(Decode)
+type Order = {
+    item: string,
+    @range(1, 9) count: int,
+    gift: bool = false,
+}
+
+fn page(got: Cell<string>) -> Screen {
+    headless(
+        () -> model_form<Order> { on submit { o -> got.set("${o.item} x${o.count} gift=${o.gift}") } },
+    )
+}
+
+let got: Cell<string> = Cell.new("")
+let refused = page(got)
+let _ = refused.fill("item", "tea") && refused.fill("count", "12") && refused.submit("item")
+println(refused.text())
+println("handed: ${got.get()}")
+let taken = page(got)
+let _ = taken.fill("item", "tea") &&
+    taken.fill("count", "3") &&
+    taken.check("gift", true) &&
+    taken.submit("item")
+println("handed: ${got.get()}")

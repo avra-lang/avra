@@ -1,0 +1,131 @@
+// A run of fields spread into a type's field list or a record
+// literal: `..${fs}` takes templates of `type _ = { … }` (or of a record
+// literal) and splices their fields flat, in order, with their marks
+// and defaults.
+use @std.avrac.testing.{refused_in}
+
+/// A provider whose derive builds field lists and literals from runs.
+fn runs_provider() -> string {
+    "use @std.meta.{Type, Field, Directive, Decls, Code}\n" +
+        "fn field_of(f: Field) -> Decls { quote { type _ = { \${f.name}: \${f.ty} } } }\n" +
+        "fn keyed_of(f: Field) -> Decls { quote { type _ = { @key \${f.name}: \${f.ty} } } }\n" +
+        "fn five_of(f: Field) -> Decls { quote { type _ = { \${f.name}: \${f.ty} = 5 } } }\n" +
+        "fn init_of(f: Field) -> Code { quote { W { \${f.name}: self.\${f.name} } } }\n" +
+        "export trait Runs {\n" +
+        "    static fn derive(t: Type) -> List<Directive> {\n" +
+        "        let all = [field_of(f) for f in t.fields]\n" +
+        "        let none: List<Decls> = []\n" +
+        "        let keys = [keyed_of(f) for f in t.fields]\n" +
+        "        let two = [five_of(f) for f in t.fields.slice(0, 2)]\n" +
+        "        let one = [field_of(f) for f in t.fields.slice(2, 3)]\n" +
+        "        let inits = [init_of(f) for f in t.fields]\n" +
+        "        let rest = [init_of(f) for f in t.fields.slice(1, 3)]\n" +
+        "        let no_inits: List<Code> = []\n" +
+        "        [Directive { twin: \"\", name: t.name, at: t.at, source: quote {\n" +
+        "            type \${t}Copy = { ..\${all} }\n" +
+        "            type \${t}Empty = { ..\${none} }\n" +
+        "            type \${t}Beside = { first: int, ..\${all}, last: int }\n" +
+        "            type \${t}Trail = { ..\${all}, }\n" +
+        "            type \${t}Keys = { ..\${keys} }\n" +
+        "            type \${t}Two = { ..\${two}, mid: int = 7, ..\${one} }\n" +
+        "            type \${t}Owt = { ..\${one}, mid: int = 7, ..\${two} }\n" +
+        "            impl \${t} {\n" +
+        "                fn rebuilt() -> \${t} { \${t} { ..\${inits} } }\n" +
+        "                fn beside() -> \${t} { \${t} { x: 7, ..\${rest}, } }\n" +
+        "                static fn none_run() -> \${t} { \${t} { x: 1, y: 2, z: 3, ..\${no_inits} } }\n" +
+        "            }\n" +
+        "        } }]\n" +
+        "    }\n" +
+        "}\n"
+}
+
+fn runs_program(tail: string) -> string {
+    "use @std.meta.{derive}\nuse @x.prov.{Runs}\n@derive(Runs)\ntype P = { x: int, y: int, z: int }\n${tail}"
+}
+
+fn ran(tail: string) -> string? {
+    match packaged(runs_program(tail), runs_provider()).run() { .Ok(v) -> v, .Err(_) -> null }
+}
+
+fn expanded(tail: string) -> string {
+    let p = packaged(runs_program(tail), runs_provider())
+    p.expanded_source(p.ws.file_id("/w/src/main.av"))
+}
+
+spec "features/quote — run holes in field lists" {
+    given "the written form" {
+        then "a spread in a type's fields prints back as written" {
+            canonical("let c = quote { type \${n} = { a: int, ..\${fs}, b: int } }") == "let c = quote { type \${n} = { a: int, ..\${fs}, b: int } }"
+        }
+        then "a spread in a record literal prints back as written" {
+            canonical("let c = quote { W { a: 1, ..\${inits} } }") == "let c = quote { W { a: 1, ..\${inits} } }"
+        }
+    }
+    given "a type's field list" {
+        then "a run of every field copies each field, in order" {
+            ran("let c = PCopy { x: 1, y: 2, z: 3 }\nc.x * 100 + c.y * 10 + c.z") == "123"
+        }
+        then "an empty run declares a type of no fields" {
+            ran("let e = PEmpty {}\n1") == "1"
+        }
+        then "a run beside written fields keeps every field's place" {
+            expanded("1")
+                .contains(
+                    "type PBeside = {\n    first: int,\n    x: int,\n    y: int,\n    z: int,\n    last: int,\n}",
+                )
+        }
+        then "a trailing comma after a run is a trailing comma" {
+            ran("let t = PTrail { x: 1, y: 2, z: 3 }\nt.z") == "3"
+        }
+        then "a spliced field keeps its marks" {
+            expanded("1")
+                .contains("type PKeys = {\n    @key x: int,\n    @key y: int,\n    @key z: int,\n}")
+        }
+        then "a spliced field keeps its default" {
+            ran("let t = PTwo { z: 1 }\nt.x + t.y + t.mid + t.z") == "18"
+        }
+        then "two runs of different lengths each keep their own defaults, either order" {
+            ran("let t = POwt { z: 1 }\nt.x + t.y + t.mid + t.z") == "18"
+        }
+    }
+    given "a struct literal" {
+        then "a run of inits fills every field" {
+            ran("let c = P { x: 1, y: 2, z: 3 }.rebuilt()\nc.x * 100 + c.y * 10 + c.z") == "123"
+        }
+        then "a run beside written inits, a trailing comma after them" {
+            ran("let b = P { x: 1, y: 2, z: 3 }.beside()\nb.x * 100 + b.y * 10 + b.z") == "723"
+        }
+        then "an empty run beside every written init adds nothing" {
+            ran("let n = P.none_run()\nn.x * 100 + n.y * 10 + n.z") == "123"
+        }
+    }
+    given "a fill no field seat holds" {
+        then "an expression template in a field list refuses in the seat's words" {
+            refused_in(
+                packaged(
+                    "use @std.meta.{derive}\nuse @x.prov.{Bad}\n@derive(Bad)\ntype P = { x: int }\n1",
+                    "use @std.meta.{Type, Directive, Code}\nexport trait Bad {\n    static fn derive(t: Type) -> List<Directive> {\n        let c: Code = quote { 1 }\n        [Directive { twin: \"\", name: t.name, at: t.at, source: quote { type \${t}Bad = { ..\${c} } } }]\n    }\n}\n",
+                ),
+                "a hole in field position takes `Decls` of `type _ = { … }`",
+            )
+        }
+        then "an expression that is not a record literal refuses where it is spliced" {
+            refused_in(
+                packaged(
+                    "use @std.meta.{derive}\nuse @x.prov.{Bad}\n@derive(Bad)\ntype P = { x: int }\n1",
+                    "use @std.meta.{Type, Directive, Code}\nexport trait Bad {\n    static fn derive(t: Type) -> List<Directive> {\n        let c: Code = quote { 1 }\n        [Directive { twin: \"\", name: t.name, at: t.at, source: quote {\n            impl \${t} {\n                static fn b() -> \${t} { \${t} { ..\${c} } }\n            }\n        } }]\n    }\n}\n",
+                ),
+                "is not a record literal",
+            )
+        }
+        then "a declaration that carries no fields refuses where it is spliced" {
+            refused_in(
+                packaged(
+                    "use @std.meta.{derive}\nuse @x.prov.{Bad}\n@derive(Bad)\ntype P = { x: int }\n1",
+                    "use @std.meta.{Type, Directive, Decls}\nexport trait Bad {\n    static fn derive(t: Type) -> List<Directive> {\n        let d: Decls = quote { enum E { A } }\n        [Directive { twin: \"\", name: t.name, at: t.at, source: quote { type \${t}Bad = { ..\${d} } } }]\n    }\n}\n",
+                ),
+                "carries no fields",
+            )
+        }
+    }
+}

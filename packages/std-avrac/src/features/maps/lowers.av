@@ -1,0 +1,56 @@
+//! The lowering rules of a map literal of pairs: every key, then every value, then the map, then
+//! each pair written into it; a literal that spreads a map isn't lowered yet. `m.entries()` is its
+//! keys and its values read once, side by side, each pair a record in a list sized for them.
+use core.{
+    BoxKind,
+    ExprId,
+    Layout,
+    Lowering,
+    Lowers,
+    OwnType,
+    Reg,
+    map_keys,
+    map_spreads,
+    map_values,
+    owned_type,
+    rt_sig_of,
+}
+use core.expr.{MapLit, MethodCall}
+
+impl Lowers for MapLit {
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        if !map_spreads(self.entries).is_empty() { return cx.missed_as("a map literal's spread") }
+        let keys = [cx.lower(k) for k in map_keys(self.entries)]
+        let values = [cx.lower(v) for v in map_values(self.entries)]
+        let dst = cx.call_row(cx.layout_at(e), rt_sig_of("avra_map_new")!, [])
+        for at, k in keys { cx.map_written(dst, k, values[at]) }
+        dst
+    }
+}
+
+impl Lowering {
+    /// `m.entries()` over a map: each key beside its value, in the map's order. Absent for any other
+    /// verb.
+    mut fn map_entries(m: MethodCall, e: ExprId, own: OwnType) -> Reg? {
+        if own != OwnType.Map || m.name.of != ENTRIES || !m.args.is_empty() { return null }
+        let ty? = self.type_at(e) else { return null }
+        let entry? = ty.listed() else { return null }
+        let value? = self.type_at(m.subject)?.mapped() else { return null }
+        let map = self.lower(m.subject)
+        let keys = self.call_row(Layout.Boxed(BoxKind.List), rt_sig_of("avra_map_keys")!, [map])
+        let values = self.call_row(Layout.Boxed(BoxKind.List), rt_sig_of("avra_map_vals")!, [map])
+        let w = self.walk_list(keys, owned_type("string"))
+        let dst = self.call_row(self.laid_out(ty), rt_sig_of("avra_array_sized")!, [w.len])
+        let here = self.walk_turn(w)
+        let pair = [
+            self.element_at(w.elem_layout, keys, here),
+            self.element_at(self.laid_out(value), values, here),
+        ]
+        self.push_slot(dst, self.record_packed(self.laid_out(entry), pair))
+        self.loop_end()
+        dst
+    }
+}
+
+/// The verb a map's entries answer to.
+const ENTRIES: string = "entries"

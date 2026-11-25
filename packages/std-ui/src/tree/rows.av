@@ -1,0 +1,163 @@
+//! `tree/rows.av` — A LIST OF ROWS THAT BUILDS ONLY THE ONES ON SCREEN. A
+//! `Rows` knows how many rows there are, each row's key, and how to build
+//! the row at an index; it is a view, and where it stands it describes the
+//! rows of its WINDOW and no others. The window is a target's to tell
+//! (`Standing.windowed`: a scroll position, a screen's rows); until it has,
+//! the first screenful stands.
+//!
+//!     list { windowed(rows, (r) -> r.id, (r) -> bench_row r { key: r.id }) }
+//!
+//! This is the door the `for` lowering of a `list` goes through: the author
+//! writes `list { for r in rows { … } }` and nothing else. A row is keyed,
+//! so a window that slides makes the rows at its edges and moves none; an
+//! instance a row holds survives its scrolling out of the window for as long
+//! as its key is in the source.
+//!
+//! A row whose own key is not the key the list was given is SAID: the key
+//! the list finds a row by must be the key the row stands under.
+use tree.identity.{Stand, Step, steps, shared}
+use tree.lists.{flatten}
+use tree.node.{Node, Prim, Attribute}
+use style.box.{Box}
+use tree.standing.{Standing, Window}
+use tree.view.{View}
+
+/// An ask to bring a row into view: the row's key, and the ask's number.
+/// Each ask is new — `to` numbers the next — so the same key asked twice
+/// scrolls twice. The first, empty ask is nobody's.
+export type Show = { key: string = "", nth: int = 0 }
+
+impl Show {
+    /// The ask that follows this one, for the row named `key`.
+    fn to(key: string) -> Show { Show { key: key, nth: self.nth + 1 } }
+}
+
+/// The rows of a list: how many, the key of the one at an index, the view
+/// of it, and the ask to bring a row into view. Nothing here is built until
+/// a window asks.
+export type Rows = {
+    count: int,
+    key_at: fn(int) -> string,
+    at: fn(int) -> dyn View,
+    showing: Show,
+}
+
+/// `xs` as rows: `key` names a row, `build` makes its view. `showing` is the
+/// list's latest ask to bring a row into view: keep it in a `state` and
+/// replace it with `showing.to(key)` to scroll there, as often as wanted.
+export fn windowed<T>(
+    xs: List<T>,
+    key: fn(T) -> string,
+    build: fn(T) -> dyn View,
+    showing: Show = Show {},
+) -> dyn View {
+    Rows {
+        count: xs.length,
+        key_at: (i: int) -> key(xs[i]),
+        at: (i: int) -> build(xs[i]),
+        showing: showing,
+    }
+}
+
+impl View for Rows {
+    fn stand() -> Stand { Stand {} }
+
+    fn describe(at: Standing) -> List<Node> {
+        let w = self.framed(at)
+        let indices = self.built_at(at, w)
+        let built = [self.at(i) for i in indices]
+        let said = [lent(v.stand(), self.key_at(indices[j]), at) for j, v in built]
+        let seats = [s.spelled() for s in steps(said)]
+        let stands = at
+            .children_windowed(
+                seats,
+                shared(said),
+                indices,
+                (step: string, i: int) -> i < self.count && self.step_at(i) == step,
+                () -> self.present(),
+            )
+        at.tally(built.length)
+        let drawn = [self.row(at, indices[j], v.describe(stands[j])) for j, v in built]
+        let gaps = [indices[j] - if j == 0 { -1 } else { indices[j - 1] } - 1 for j in 0..indices.length]
+        let last = indices.last() ?? -1
+        flatten([skipped(at, indices[j], gaps[j]).concat(drawn[j]) for j in 0..indices.length])
+            .concat(skipped(at, self.count, self.count - last - 1))
+    }
+}
+
+impl Rows {
+    /// The step of the row at `i`.
+    fn step_at(i: int) -> string { Step.Keyed(self.key_at(i), 0).spelled() }
+
+    /// The index of every row's step in the source: asked only when a kept
+    /// row is no longer where it was.
+    fn present() -> Map<string, int> {
+        mut at: Map<string, int> = {}
+        // LICENSED loops.push_loop: one key a row, found without building the row
+        for i in 0..self.count { at.set(self.step_at(i), i) }
+        at
+    }
+
+    /// Where the row named `key` stands, looking first at `hint`.
+    fn find_key(key: string, hint: int) -> int? {
+        if hint >= 0 && hint < self.count && self.key_at(hint) == key { return hint }
+        (0..self.count).find((k) -> self.key_at(k) == key)
+    }
+
+    /// The window this paint stands with: the one the target told, or — when
+    /// an ask to show a row has not yet been honored — one starting at it.
+    fn framed(at: Standing) -> Window {
+        let w = at.window_of(self.count)
+        if self.showing.nth == at.honored_nth() { return w }
+        at.reveals(self.showing.key, self.showing.nth)
+        let i? = self.find_key(self.showing.key, -1) else { return w }
+        let to = if i + w.to - w.from > self.count { self.count } else { i + w.to - w.from }
+        at.windowed(i, to)
+        Window { from: i, to: to }
+    }
+
+    /// The rows built this paint, in order: the window, and the row the
+    /// target's focus rests on when it stands outside the window.
+    fn built_at(at: Standing, w: Window) -> List<int> {
+        let shown = [i for i in w.from..w.to]
+        let key? = at.pinned_key() else { return shown }
+        let i? = self.find_key(key, at.pin_found()) else { return shown }
+        at.pin_noted(i)
+        let before = if i < w.from { [i] } else { [] }
+        let after = if i >= w.to { [i] } else { [] }
+        before.concat(shown).concat(after)
+    }
+
+    /// The nodes of the row at `i`, each saying where it stands in the list
+    /// and whether the target is to scroll to it.
+    fn row(at: Standing, i: int, nodes: List<Node>) -> List<Node> {
+        if !at.spaces() { return nodes }
+        let reveal = at.revealing() == self.key_at(i)
+        [n with { attrs: n.attrs.concat([Attribute.Placed(i, self.count, reveal)]) } for n in nodes]
+    }
+}
+
+/// The room `rows` unbuilt rows would take before the row at `next`, where
+/// the target keeps room for them: nothing where none is unbuilt.
+fn skipped(at: Standing, next: int, rows: int) -> List<Node> {
+    if rows <= 0 || !at.spaces() { return [] }
+    [
+        Node {
+            prim: Prim.Item,
+            attrs: [Attribute.Skipped(at.route.get(), rows, at.extent_of())],
+            box: Box { key: "~skipped-${next}" },
+            children: [],
+        },
+    ]
+}
+
+/// A row's stand, under the key the list found it by. A row that says
+/// another key of its own is said.
+fn lent(own: Stand, key: string, at: Standing) -> Stand {
+    if own.key != null && own.key != key { at.says(told_apart(key)) }
+    own with { key: key }
+}
+
+fn told_apart(key: string) -> string {
+    "the row the list calls `${key}` says another key of its own: give `windowed` the key the row stands under"
+}

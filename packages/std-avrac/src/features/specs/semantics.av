@@ -1,0 +1,32 @@
+//! The spec's statement semantics: its cases resolve as bodies under
+//! the file's floor, each group naming its cases once; typing and
+//! lowering reach the cases as declarations, so the statement itself
+//! does nothing there.
+use core.{StmtId, Case, distinct, flatten}
+use core.stmt.{Spec}
+use features.{StmtSemantics, ResolveCx, duplicate_names}
+use diagnostics.{Diag}
+use @std.errors.{Loc}
+
+impl StmtSemantics for Spec {
+    fn resolve_stmt(mut cx: ResolveCx, s: StmtId) {
+        if cx.refuses_nested(s, "resolve.nested_spec", "spec blocks") { return }
+        let parts? = cx.view.store.spec_parts(s) else { return }
+        for d in repeated_cases(parts.name, parts.cases, cx.stmt_loc(s)) { cx.emit(d) }
+        for c in parts.cases { cx.walk_under([], c.body) }
+    }
+
+}
+
+/// A case named twice within one group — the shared member voice,
+/// the group named as the owner.
+fn repeated_cases(suite: string, cases: List<Case>, at: Loc?) -> List<Diag> {
+    flatten(
+        [duplicate_names(
+            "resolve.duplicate_case",
+            "${suite} / ${g}",
+            [c.name for c in cases if c.group == g],
+            at,
+        ) for g in distinct([c.group for c in cases])],
+    )
+}

@@ -1,0 +1,43 @@
+// A field whose type implements `TextForm` is read from its text: a refused text is an
+// issue at the field's path, from a tree and from JSON text alike.
+use @std.meta.{derive}
+use @std.time.{Time}
+use @std.validate.{Decode, Value, Issues, from_json}
+
+@derive(Decode)
+type Event = { at: Time, seen: List<Time> = [] }
+
+const stamp: string = "1970-01-01T00:00:01.000000000Z"
+
+fn paths(r: Result<Event, Issues>) -> string {
+    match r { .Ok(_) -> "ok", .Err(e) -> [i.path.text() + " " + i.rule for i in e.all].join(", ") }
+}
+
+fn tree(text: string) -> Value { from_json(text) catch Value.Null }
+
+spec "std/validate — a text-form field reads from its text" {
+    given "a tree" {
+        then "a valid time reads to the instant" {
+            match Event.decode(tree("{\"at\": \"${stamp}\"}")) {
+                .Ok(e) -> e.at.ns == 1000000000,
+                .Err(_) -> false,
+            }
+        }
+        then "a malformed time is an issue at its field" { paths(Event.decode(tree("{\"at\": \"nope\"}"))) == "at text" }
+        then "a list element is an issue at its index" {
+            paths(Event.decode(tree("{\"at\": \"${stamp}\", \"seen\": [\"${stamp}\", \"nope\"]}"))) == "seen[1] text"
+        }
+    }
+    given "JSON text" {
+        then "a valid time reads to the instant" {
+            match Event.from_json("{\"at\": \"${stamp}\"}") {
+                .Ok(e) -> e.at.ns == 1000000000,
+                .Err(_) -> false,
+            }
+        }
+        then "a malformed time is an issue at its field" { paths(Event.from_json("{\"at\": \"nope\"}")) == "at text" }
+        then "a list element is an issue at its index" {
+            paths(Event.from_json("{\"at\": \"${stamp}\", \"seen\": [\"nope\"]}")) == "seen[0] text"
+        }
+    }
+}

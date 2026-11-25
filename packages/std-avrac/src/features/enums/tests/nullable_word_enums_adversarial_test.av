@@ -1,0 +1,127 @@
+// The RED TEAM's permanent record for a NULLABLE WORD ENUM (R11e: the
+// spare tag -1, one register — `Repr.Tagged` generalized from
+// `is_valued` to `is_word_enum`, see docs/2026_09_23_REUSE_IN_PLACE.md
+// §27). Every answer below was run through both engines via `shown`.
+use @std.avrac.compiler.{analyze_source}
+use @std.avrac.testing.{shown, refused_with}
+
+spec "features/enums (nullable word enums, adversarial)" {
+    given "aliasing — a copy never sees the original's later write" {
+        then "a record field copied, then written through the copy" {
+            shown(
+                "enum Dir { N, S, E, W }\ntype H = { at: Dir? }\nimpl H { mut fn turn(d: Dir?) { self.at = d } }\nfn shadow(p: H) -> string {\n    mut q = p\n    q.turn(Dir.S)\n    q.turn(null)\n    \"\${q.at == null} \${p.at == null}\"\n}\nlet h = H { at: Dir.N }\nshadow(h)",
+            ) == "true false"
+        }
+        then "a `Cell` seat writes through the caller's own binding" {
+            shown(
+                "enum Dir { N, S, E, W }\nfn clear(c: Cell<Dir?>) { c.set(null) }\nfn f() -> string {\n    let c: Cell<Dir?> = Cell.new(Dir.E)\n    clear(c)\n    \"\${c.get() == null}\"\n}\nf()",
+            ) == "true"
+        }
+        then "`with` builds a NEW value — the source is untouched" {
+            shown(
+                "enum Dir { N, S, E, W }\ntype H = { at: Dir? }\nfn f() -> string {\n    let h = H { at: Dir.W }\n    let h2 = h with { at: null }\n    \"\${h.at == null} \${h2.at == null}\"\n}\nf()",
+            ) == "false true"
+        }
+        then "a list of the nullable, one element written by index" {
+            shown(
+                "enum Dir { N, S, E, W }\nfn f() -> string {\n    mut xs: List<Dir?> = [Dir.N, null, Dir.S]\n    xs[1] = Dir.E\n    \"\${xs[0] == null} \${xs[1] == Dir.E} \${xs[2] == Dir.S}\"\n}\nf()",
+            ) == "false true true"
+        }
+    }
+    given "crossing a one-word seat — dyn, generic, boxed" {
+        then "a `dyn` box carries it through a method and back" {
+            shown(
+                "enum Dir { N, S, E, W }\ntrait Holds { fn get() -> Dir? }\ntype Box = { at: Dir? }\nimpl Holds for Box { fn get() -> Dir? { self.at } }\nfn read(h: dyn Holds) -> string { \"\${h.get() == null}\" }\n\"\${read(Box { at: Dir.N })} \${read(Box { at: null })}\"",
+            ) == "false true"
+        }
+        then "a GENERIC seat carries it, present and absent alike" {
+            shown(
+                "enum Dir { N, S, E, W }\nfn through<T>(x: T) -> T { x }\nfn f() -> string {\n    let a: Dir? = Dir.S\n    let b: Dir? = null\n    \"\${through(a) == Dir.S} \${through(b) == null}\"\n}\nf()",
+            ) == "true true"
+        }
+        then "a `Box<T>`-shaped field, `T` bound to the enum's own nullable" {
+            shown(
+                "enum Dir { N, S, E, W }\ntype Cage<T> = { held: T }\nfn caged<T>(x: T) -> Cage<T> { Cage { held: x } }\nfn f() -> string {\n    let c = caged<Dir?>(Dir.W)\n    let n = caged<Dir?>(null)\n    \"\${c.held == Dir.W} \${n.held == null}\"\n}\nf()",
+            ) == "true true"
+        }
+    }
+    given "static data — a const of the nullable, and a const list of it" {
+        then "a top-level const of `E?`, present and absent" {
+            shown(
+                "enum Dir { N, S, E, W }\nconst HELD: Dir? = Dir.E\nconst GONE: Dir? = null\n\"\${HELD == Dir.E} \${GONE == null}\"",
+            ) == "true true"
+        }
+        then "a const `List<E?>`, mixed presence" {
+            shown(
+                "enum Dir { N, S, E, W }\nconst XS: List<Dir?> = [Dir.N, null, Dir.W]\n\"\${XS[0] == Dir.N} \${XS[1] == null} \${XS[2] == Dir.W} \${XS.length}\"",
+            ) == "true true true 3"
+        }
+    }
+    given "the tag boundary — a word enum wide enough to matter" {
+        then "64 variants, the nullable at both ends and the middle" {
+            shown(
+                "enum K {\n    v0, v1, v2, v3, v4, v5, v6, v7, v8, v9,\n    v10, v11, v12, v13, v14, v15, v16, v17, v18, v19,\n    v20, v21, v22, v23, v24, v25, v26, v27, v28, v29,\n    v30, v31, v32, v33, v34, v35, v36, v37, v38, v39,\n    v40, v41, v42, v43, v44, v45, v46, v47, v48, v49,\n    v50, v51, v52, v53, v54, v55, v56, v57, v58, v59,\n    v60, v61, v62, v63\n}\nfn f() -> string {\n    let a: K? = K.v0\n    let b: K? = K.v63\n    let c: K? = null\n    \"\${a == K.v0} \${b == K.v63} \${c == null} \${a == null} \${b == null}\"\n}\nf()",
+            ) == "true true true false false"
+        }
+    }
+    given "equality — the operator every other attack leans on" {
+        then "`x == null` reads absence, both sides written" {
+            shown(
+                "enum Dir { N, S, E, W }\nfn f(x: Dir?) -> string { \"\${x == null} \${null == x}\" }\n\"\${f(Dir.N)} | \${f(null)}\"",
+            ) == "false false | true true"
+        }
+        then "two `E?` compare by tag, absence included" {
+            shown(
+                "enum Dir { N, S, E, W }\nfn same(a: Dir?, b: Dir?) -> bool { a == b }\n\"\${same(Dir.N, Dir.N)} \${same(Dir.N, Dir.S)} \${same(null, null)} \${same(Dir.N, null)} \${same(null, Dir.N)}\"",
+            ) == "true false true false false"
+        }
+        then "`!=` is the same law, negated" {
+            shown(
+                "enum Dir { N, S, E, W }\nfn f() -> string {\n    let a: Dir? = Dir.N\n    let b: Dir? = null\n    \"\${a != b} \${a != Dir.N} \${b != null}\"\n}\nf()",
+            ) == "true false false"
+        }
+    }
+    given "degenerate shapes — the N=1 word enum" {
+        then "a single-variant enum still spends the spare tag, not variant 0" {
+            shown(
+                "enum Only { A }\nfn f() -> string {\n    let a: Only? = Only.A\n    let n: Only? = null\n    \"\${a == Only.A} \${a == null} \${n == null} \${n == Only.A}\"\n}\nf()",
+            ) == "true false true false"
+        }
+    }
+    given "a managed neighbor — a real box beside a register" {
+        then "a struct field write, string alongside the nullable word enum" {
+            shown(
+                "enum Dir { N, S, E, W }\ntype Rec = { name: string, at: Dir? }\nfn f() -> string {\n    let r = Rec { name: \"a\", at: Dir.N }\n    let r2 = r with { at: null, name: r.name + \"b\" }\n    \"\${r.name} \${r.at == Dir.N} \${r2.name} \${r2.at == null}\"\n}\nf()",
+            ) == "a true ab true"
+        }
+    }
+    given "a `Result`'s side — stays boxed, correctly, not lost through `?`" {
+        then "`Result<E?, string>` carries presence and absence through `?`" {
+            shown(
+                "enum Dir { N, S, E, W }\nfn parse(s: string) -> Result<Dir?, string> {\n    if s == \"n\" { return .Ok(Dir.N) }\n    if s == \"z\" { return .Ok(null) }\n    .Err(\"bad\")\n}\nfn f(s: string) -> Result<string, string> {\n    let v = parse(s)?\n    .Ok(\"\${v == Dir.N} \${v == null}\")\n}\nfn shown_of(s: string) -> string { match f(s) { .Ok(r) -> r, .Err(e) -> e } }\n\"\${shown_of(\"n\")} | \${shown_of(\"z\")} | \${shown_of(\"x\")}\"",
+            ) == "true false | false true | bad"
+        }
+    }
+    given "cross every other feature — loops, recursion, an early exit" {
+        then "a `for` loop folds presence across a `List<E?>`" {
+            shown(
+                "enum Dir { N, S, E, W }\nfn f() -> string {\n    let xs: List<Dir?> = [Dir.N, null, Dir.S, null, Dir.W]\n    mut count = 0\n    for x in xs { if x != null { count = count + 1 } }\n    \"\${count}\"\n}\nf()",
+            ) == "3"
+        }
+        then "recursion over a `List<E?>`, one tag register per call" {
+            shown(
+                "enum Dir { N, S, E, W }\nfn sum(xs: List<Dir?>, i: int, acc: int) -> int {\n    if i >= xs.length { return acc }\n    let add = if xs[i] == null { 0 } else { 1 }\n    sum(xs, i + 1, acc + add)\n}\n\"\${sum([Dir.N, null, Dir.E, null], 0, 0)}\"",
+            ) == "2"
+        }
+        then "a `match` arm that leaves the fn merges beside PRESENT and ABSENT `E?` arms — `hollow_of`'s fallback" {
+            // NOT a plain `if`/`else`: a diverging arm there is F2000
+            // "branches disagree" even for a bare `int` (control-probed,
+            // no enum involved) — `match`'s join already exempts a
+            // leaving arm (`checks.av`'s `stays`), which is the door
+            // this attack means to walk through.
+            shown(
+                "enum Dir { N, S, E, W }\nfn pick(k: int) -> string {\n    let v: Dir? = match k {\n        0 -> Dir.N,\n        1 -> null,\n        _ -> { return \"early\" },\n    }\n    \"\${v == Dir.N} \${v == null}\"\n}\n\"\${pick(0)} | \${pick(1)} | \${pick(9)}\"",
+            ) == "true false | false true | early"
+        }
+    }
+}

@@ -1,0 +1,22 @@
+//! The lowering rule of a block: a scope of its own holding its statements, its value its tail's.
+use core.{ExprId, Lowering, Lowers, Reg, owned_type}
+use core.expr.{Block}
+
+impl Lowers for Block {
+    /// A block's value is lifted where the block stands, so its tail is read as it's born.
+    /// A block holding only its value is that value. Any other is a scope: its statements in order,
+    /// then its tail's value, or where it ends in a statement, nothing of the type it ends as: the
+    /// fn's answer where it leaves, else `void`.
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        let lead = cx.store.lead_of(e)
+        let tail = cx.store.tail_of(e)
+        if lead.is_empty() && tail != null { return cx.born(tail!) }
+        cx.scope_enter()
+        cx.opened()
+        for s in lead { cx.lower_stmt(s) }
+        let r = if tail != null { cx.born(tail!) } else { cx.hollow_of(if cx.store.leaves(e) { cx.answer } else { owned_type("void") }) }
+        cx.closed_giving(r)
+        cx.scope_exit(r)
+        r
+    }
+}

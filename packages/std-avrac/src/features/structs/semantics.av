@@ -1,0 +1,75 @@
+//! The structs semantics: dispatch only. Typing lives in check.av;
+//! lowering — the MEANING — in lower.av. The declaration is a
+//! STATEMENT kind: names declare program-wide in the type
+//! namespace (the driver gathers them), so here it runs its field
+//! names through the naming law and walks each field default as a
+//! body of its own.
+use core.{ExprId, StmtId, TypeId, Reg, SyntaxArena}
+use core.stmt.{StructDecl, NamedType, Alias}
+use features.{StmtSemantics, ResolveCx, TypeCx, LowerCx, nothing, Meaning}
+
+use core.expr.{StructLit, With}
+
+impl StmtSemantics for StructDecl {
+    // a default is a body of its own: it sees declarations, never
+    // the top level's run-time bindings
+    fn resolve_stmt(mut cx: ResolveCx, s: StmtId) {
+        decl_resolve(cx, s)
+        for d in default_exprs(cx.view.store, s) { cx.walk_under([], d) }
+    }
+
+    // a field's default is a declaration of its own, typed as one
+}
+
+/// The declaration's field names run the naming law; the driver
+/// owns the namespace and the field table.
+fn decl_resolve(mut cx: ResolveCx, s: StmtId) {
+    if cx.refuses_nested(s, "resolve.nested_type", "type declarations") { return }
+    let record? = cx.view.store.struct_parts(s) else { return }
+    cx.check_params(record.fields, s)
+}
+
+/// The defaults a declaration's fields carry.
+fn default_exprs(store: SyntaxArena, s: StmtId) -> List<ExprId> {
+    let sp? = store.struct_parts(s) else { return [] }
+    [f.default! for f in sp.fields if f.default != null]
+}
+
+/// A NAMED TYPE, and an ALIAS, declares nothing to walk: no field
+/// names to run the naming law over, and no default bodies. The
+/// nesting law and the shape's own laws speak at declare
+/// (typing/declare.av's `declare_named`, `declare_alias`).
+impl StmtSemantics for NamedType {
+    fn resolve_stmt(mut cx: ResolveCx, s: StmtId) {
+        let _ = cx.refuses_nested(s, "resolve.nested_type", "type declarations")
+    }
+}
+
+impl StmtSemantics for Alias {
+    fn resolve_stmt(mut cx: ResolveCx, s: StmtId) {
+        let _ = cx.refuses_nested(s, "resolve.nested_type", "type declarations")
+    }
+}
+
+impl Meaning for StructLit {
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
+        cx.use_type(e, self.name.of)
+    }
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
+        lit_type(cx, e, self.name.of, [t.of for t in self.fields], self.values)
+    }
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
+        lit_reg(cx, e, [t.of for t in self.fields], self.values)
+    }
+}
+impl Meaning for With {
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
+        nothing()
+    }
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
+        with_type(cx, e, self.subject, [t.of for t in self.fields], self.values)
+    }
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
+        with_reg(cx, e, self.subject, [t.of for t in self.fields], self.values)
+    }
+}

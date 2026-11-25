@@ -1,0 +1,80 @@
+// The solver in a typeface's own units: text laid by advances summed in
+// sixty-fourths of a pixel and rounded once, where a box's size leaves.
+use @std.ui.env.{Env}
+use @std.ui.tree.node.{Node}
+use @std.ui.style.layout.{Layout, Align, Sizing}
+use @std.ui.place.measure.{Cells}
+use @std.ui.place.metrics.{Table}
+use @std.ui.place.solve.{place}
+use @std.ui.place.describe.{describe}
+use @std.ui.place.text.{Text}
+use @std.ui.realize.tests.support.{boxed, placed, text_node}
+
+/// A face of pixels: `i` 1.5 wide, `m` 4.25, `W` 5, a space 2, everything else
+/// 205/64 (3.203); a line 16 high.
+fn face() -> Table {
+    Table { advances: {"i": 96, "m": 272, "W": 320, " ": 128}, fallback: 205, up: 768, down: 256 }
+}
+
+fn pixels() -> Text { Text { metrics: face(), theme: Env {}.theme, rest: Cells {} } }
+
+/// `s` as a text hugging its content in a row, `width` across.
+fn in_row(s: string, width: int) -> string {
+    let root = boxed(.Row, Layout {}, [text_node(s)])
+    describe(root, place(root, pixels(), width))
+}
+
+/// `s` as a text held to `width`, in a column of that width.
+fn held(s: string, width: int) -> string {
+    let root = boxed(
+        .Column,
+        Layout { width: .Fixed(width) },
+        [placed(text_node(s), Layout { width: .Fixed(width) })],
+    )
+    describe(root, place(root, pixels(), 300))
+}
+
+/// `s` as a text in a 36-wide column that lays it against the end edge.
+fn at_end(s: string) -> string {
+    let root = boxed(.Column, Layout { align: .End, width: .Fixed(36) }, [text_node(s)])
+    describe(root, place(root, pixels(), 300))
+}
+
+spec "place/text — the solver in a typeface's units" {
+    given "a text that just fits" {
+        then "takes one line of its advances' sum, rounded once" { in_row("ii ii", 8) == "row 0,0 8x16\n  text 0,0 8x16" }
+    }
+    given "a text a pixel short" {
+        then "wraps at the space" { in_row("ii ii", 7) == "row 0,0 7x32\n  text 0,0 7x32" }
+    }
+    given "two words of ten glyphs of 205/64 across 64 pixels" {
+        then "wrap, which whole-pixel advances (3 each) would not" {
+            in_row("xxxxxxxxxx xxxxxxxxxx", 64) == "row 0,0 64x32\n  text 0,0 64x32"
+        }
+    }
+    given "twenty glyphs of 205/64, a word 64.06 pixels wide, across 64" {
+        then "keep one line, the box holding the fraction the way a browser's does" {
+            in_row("xxxxxxxxxxxxxxxxxxxx", 64) == "row 0,0 64x16\n  text 0,0 64x16"
+        }
+    }
+    given "a text 114.45 pixels wide by its clusters' sixtieths (114.5 by the exact sum)" {
+        then "is a box 114 wide, as Firefox lays it" {
+            in_row("mmxaWix xmmiaiaW iimxi xi xmximaxai aax", 300) == "row 0,0 300x16\n  text 0,0 114x16"
+        }
+    }
+    given "a word cut to `axi` and `i`, then a word `ii` that fits beside its last piece" {
+        then "keeps the next word on the fragment's line, as a browser does" {
+            held("axii ii", 8) == "column 0,0 8x32\n  text 0,0 8x32"
+        }
+    }
+    given "a word cut to `axi` and `i`, then a word too wide to fit beside it" {
+        then "breaks the line first, then cuts the word from the line it starts" {
+            held("axii xWWWiaWmm", 8) == "column 0,0 8x160\n  text 0,0 8x160"
+        }
+    }
+    given "a text 34.5 pixels wide against the end edge of a 36-wide column" {
+        then "starts at 1.5, which snaps up to 2, ending at 36" {
+            at_end("xixxixam mW") == "column 0,0 36x16\n  text 2,0 34x16"
+        }
+    }
+}

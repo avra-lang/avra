@@ -1,0 +1,367 @@
+//! THE SUITE — every proof a package carries, as ONE binary linked through the
+//! store: its spec cases, and its PROGRAM tests — a source file with the text
+//! it must print beside it. Every proof is both engines: a program the
+//! evaluator has not agreed with since anything it can see last moved runs
+//! there first, and a disagreement stops the run before a binary exists.
+use core.{sorted_texts, joined, flatten, distinct, module_path, TypeRegistry, counted, FileId}
+use @std.path.{joined_path, dir_of, stem_of, relative_path, normalized, under_dir}
+use @std.io.{make_dirs}
+use compiler.backend.{run_scheduled}
+use compiler.store.{Store, Stored, node_key}
+use compiler.lower.{Lowered, program_symbol}
+
+/// How many schedules a suite runs, and the one its i-th run uses — the
+/// runtime's settings, read as the native leg reads them.
+extern fn avra_sched_runs_wanted() -> int
+extern fn avra_sched_schedule_at(i: int) -> int
+
+/// HOW A PROGRAM RUN AS A CHILD MUST END — the marker beside it says
+/// which: a trap, or a verdict (the program's own run cancelled). Each
+/// ends its process, so neither is ever called in a suite's own.
+export enum ChildEnd {
+    Trap
+    Verdict
+}
+
+impl ChildEnd {
+    /// The marker's extension beside the program.
+    fn marker() -> string {
+        match self { .Trap -> "refuses", .Verdict -> "verdict" }
+    }
+
+    /// The exit its child owes.
+    fn code() -> int {
+        match self { .Trap -> 2, .Verdict -> 1 }
+    }
+}
+
+/// Every end a marker names — the ONE list discovery and `is_program`
+/// both read.
+fn child_ends() -> List<ChildEnd> { [ChildEnd.Trap, ChildEnd.Verdict] }
+
+/// One child-run program: `voice` is the text its stderr must carry,
+/// `end` how it must end.
+export type RefusesCall = { path: string, voice: string, end: ChildEnd }
+
+/// What the evaluator made of a held derivation: agreed with it, or quarrelled
+/// under a hold — the derivation let go, the sources to be asked.
+enum Hearing {
+    Agreed(Derived)
+    Quarrelled
+}
+
+/// A suite's own module, as one derivation tells it: every case in scope and
+/// the file its body is in, and each program the entry calls.
+fn suite_module(d: Derived, only: List<string>, calls: List<ProgramCall>) -> ProgramModule {
+    let told = [s for s in d.said if in_scope(only, s.path)]
+    let cases = flatten([s.cases for s in told])
+    ProgramModule {
+        main: (types: TypeRegistry) -> suite_entry(types, cases, calls),
+        rows: program_rows,
+        cases: flatten([[CaseHome { call: c, path: s.path } for c in s.cases] for s in told]),
+    }
+}
+
+impl Workspace {
+    /// EVERY SUITE THE PACKAGE CARRIES: its own, and one per package nested under
+    /// its sources — a module tree, a vendored dependency, a test that reaches
+    /// past the library's own dependencies — each proved on its own. `only`
+    /// scopes the run to the proofs at or under any of its paths; labels are told from
+    /// `told_from`.
+    fn suites(only: List<string>, told_from: string, tools: Toolchain) -> Result<
+        List<BuildOutcome>,
+        string,
+    > {
+        let own: BuildOutcome? = self.suite(only, told_from, tools)?
+        mut out: List<BuildOutcome> = if own == null { [] } else { [own!] }
+        for root in [r for r in self.nested_roots(joined_path(self.root, "src")) if in_scope(only, r)] {
+            let inner = self.nested_at(root)
+            let made: BuildOutcome? = inner.suite([], told_from, tools)?
+            inner.discarded()
+            if made != null { out.push(made!) }
+        }
+        out
+    }
+
+    /// A nested root as a workspace: one with a `src/` is a package, one without
+    /// a DIRECTORY OF PROGRAMS — every file there its own module.
+    fn nested_at(root: string) -> Workspace {
+        let src = joined_path(root, "src")
+        if self.is_dir(src) { built(self.host, root, src, self.lang, self.clock, false, false) } else { built(self.host, root, root, self.lang, self.clock, false, true) }
+    }
+
+    /// Whether this run proves the rule examples: std-avrac's own, once, in an
+    /// unscoped run or one whose scope holds `src/compiler`.
+    fn proves_rules(only: List<string>) -> bool {
+        let home = joined_path(self.root, "src/compiler")
+        self.manifest(0).name == "@std/avrac" && in_scope(only, home)
+    }
+
+    /// One suite's binary, or null when there is nothing to prove.
+    fn suite(only: List<string>, told_from: string, tools: Toolchain) -> Result<
+        BuildOutcome?,
+        string,
+    > {
+        // A rule's examples run NATIVE, right here, at build time —
+        // no evaluator, no generated case: std-avrac testing ITSELF
+        // means its own rules are already part of the standing
+        // binary. Gated to std-avrac's own suite alone, so testing an
+        // unrelated package never runs a stranger's rules — and this
+        // is also the one build where `rules` can be held to what
+        // `self.decls` actually declares (`rules_checked`). A scoped
+        // run proves them once, where its scope holds `src/compiler`.
+        if self.proves_rules(only) {
+            let results = self.rules_proved()
+            let missed = [c.label for c in results if !c.ok]
+            if !missed.is_empty() { fail joined([rule_example_missed(l) for l in missed], "\n") }
+            println("${counted(results.length, "rule example")} proved")
+        }
+        let refuses = [r for r in self.refuses_tests() if in_scope(only, r.path)]
+        let programs = [path for path in self.program_tests() if in_scope(only, path)]
+        let under = Keyed {
+            named: "suite:${joined(only, ",")}",
+            beside: [beside(path, "expected") for path in programs],
+        }
+        let binary = joined_path(joined_path(self.root, "build"), "suite")
+        let kept = self.kept_linked(under, binary, tools)
+        if kept != null { return .Ok(kept! with { refuses: refuses }) }
+        let store = self.opened_store()
+        let owed = [path for path in programs if !self.native_only(path) && !self.proved(store, path)]
+        let calls = [self.program_call(path, told_from) for path in programs]
+        let began = self.clock()
+        let d = self.evaluated(store, owed, told_from)?
+        eprintln(
+            "proofs: ${owed.length} of ${programs.length} programs owed, evaluated in ${(self.clock() - began) / 1000000} ms",
+        )
+        let m = suite_module(d, only, calls)
+        if m.cases.is_empty() && programs.is_empty() && refuses.is_empty() { return .Ok(null) }
+        let _ = make_dirs(dir_of(binary))
+        let made: BuildOutcome? = match d.linked(m, under, binary, tools) {
+            .Ok(b) -> b with { refuses: refuses },
+            .Err(e) -> { fail e.describe().message },
+        }
+        // a suite's workspace is done at its link: a package's nested suites
+        // run one after another, never beside the ones before them
+        d.program.ws.discarded()
+        made
+    }
+
+    /// The rule examples, proved in a workspace of their own: proving reads
+    /// every file of the package, and none of that stands beside the suite's
+    /// derivation.
+    fn rules_proved() -> List<ExampleCheck> {
+        let fresh = self.anew()
+        let results = fresh.rules_checked()
+        fresh.discarded()
+        results
+    }
+
+    /// The package's CHILD-RUN program tests, marked `.refuses` or
+    /// `.verdict` instead of `.expected`: a program whose own end is the
+    /// proof. Never among `program_tests()` — a suite runs every case in
+    /// one process, and calling one of these there would end it at the
+    /// first one.
+    fn refuses_tests() -> List<RefusesCall> {
+        flatten([self.child_calls(p) for p in sorted_texts(self.root_files())])
+    }
+
+    /// One call per marker beside `path`.
+    fn child_calls(path: string) -> List<RefusesCall> {
+        [self.refuses_call(path, e) for e in child_ends() if self.marked(path, e)]
+    }
+
+    fn refuses_call(path: string, end: ChildEnd) -> RefusesCall {
+        let text = self.listed_text(beside(path, end.marker()))
+        RefusesCall {
+            path: path,
+            voice: if text.ends_with("\n") { text.substring(0, text.length - 1) } else { text },
+            end: end,
+        }
+    }
+
+    /// The program derived with every program the evaluator owes a run READ,
+    /// each run and held to its text — and remembered, so an unmoved program is
+    /// not run again. A quarrel under a hold is asked again of the sources: a
+    /// held body the record did not foresee is no verdict on the program.
+    fn evaluated(store: Store, owed: List<string>, told_from: string) -> Result<Derived, string> {
+        match self.heard(store, owed, told_from)? {
+            .Agreed(d) -> .Ok(d),
+            .Quarrelled -> self.heard_whole(store, owed, told_from),
+        }
+    }
+
+    /// THE HELD DERIVATION, HEARD BY THE EVALUATOR: agreed with, or — quarrelling
+    /// under a hold — let go, so the sources' own derivation never stands beside
+    /// it. A quarrel with nothing held is the program's.
+    fn heard(store: Store, owed: List<string>, told_from: string) -> Result<Hearing, string> {
+        let reach = [ReadFile { path: path, why: Reads.Reached } for path in flatten([self.seen_files(store, path) for path in owed])]
+        // the evaluator runs bodies, an instantiation's among them
+        let d = self.derived_reading(null, Want.Binary, reach)?
+        let first = d.program.ws.quarrels(d, owed, told_from)
+        if first.is_empty() { return Hearing.Agreed(d.program.ws.agreed(store, d, owed)) }
+        fail joined(first, "\n")
+    }
+
+    /// The sources' own derivation, heard: the verdict on the program.
+    fn heard_whole(store: Store, owed: List<string>, told_from: string) -> Result<Derived, string> {
+        let sure = self.from_sources(null, Want.Binary)?
+        let last = sure.program.ws.quarrels(sure, owed, told_from)
+        if !last.is_empty() { fail joined(last, "\n") }
+        sure.program.ws.agreed(store, sure, owed)
+    }
+
+    /// The evaluator agreed with each: remembered under what the program can see.
+    fn agreed(store: Store, d: Derived, owed: List<string>) -> Derived {
+        for path in owed { self.prove(store, path) }
+        d
+    }
+
+    /// Every program the evaluator did not say, in its own words.
+    fn quarrels(d: Derived, owed: List<string>, told_from: string) -> List<string> {
+        flatten([quarrel(d.lowered, self.program_call(path, told_from)) for path in owed])
+    }
+
+    /// The package's program tests, in name order.
+    fn program_tests() -> List<string> {
+        sorted_texts([f for f in self.root_files() if self.expects_text(f)])
+    }
+
+    /// The text a program must print stands beside it.
+    fn expects_text(path: string) -> bool { self.there(beside(path, "expected")) }
+
+    /// The voice a program's `end` must speak stands beside it.
+    fn marked(path: string, end: ChildEnd) -> bool { self.there(beside(path, end.marker())) }
+
+    /// WHETHER A FILE IS A PROGRAM, not a module: a proof stands beside it, so its
+    /// top-level statements are its own to run. Discovery reads the same
+    /// markers, each for its own kind of proof.
+    fn is_program(path: string) -> bool {
+        self.expects_text(path) || child_ends().any((e) -> self.marked(path, e))
+    }
+
+    /// `is_program`, asked of a file the analysis holds.
+    fn is_program_file(f: FileId) -> bool { self.is_program(self.decls.file(f).path) }
+
+    /// A marker beside a program drops the evaluator's leg — the seam is the
+    /// host's, and the marker's text says why.
+    fn native_only(path: string) -> bool { self.there(beside(path, "native-only")) }
+
+    /// One program as the binary needs it: the text beside it with its final
+    /// newline dropped — the shape the capture answers.
+    fn program_call(path: string, told_from: string) -> ProgramCall {
+        let text = self.listed_text(beside(path, "expected"))
+        ProgramCall {
+            symbol: program_symbol(self.file_name(path)),
+            label: relative_path(told_from, joined_path(dir_of(path), stem_of(path))),
+            expected: if text.ends_with("\n") { text.substring(0, text.length - 1) } else { text },
+            evaluated: !self.native_only(path),
+        }
+    }
+
+    /// Every file a program's bodies can reach: the files of the modules its
+    /// own module sees.
+    fn seen_files(store: Store, path: string) -> List<string> {
+        let ws = self
+        flatten(
+            [self.module_files(module_path(dep.split("."))) for dep in seen_modules(ws, store, self.module_path_of(path))],
+        )
+    }
+
+    /// WHERE THE EVALUATOR'S AGREEMENT IS REMEMBERED: a row under the compiler that agreed,
+    /// kept with what the agreement READ — the program, the text it must print and every file
+    /// it can reach, each by its text (a BODY moves a run, and so can a line a task prints).
+    /// It stands while every read does, and nothing else judges it.
+    fn proof_row(path: string) -> string { node_key(Stored.Proof, ["proved", self.compiler_id(), path]) }
+
+    /// What a program's agreement stands on.
+    fn proof_reads(store: Store, path: string) -> List<VerdictRead> {
+        [VerdictRead.Text(f) for f in distinct([path, beside(path, "expected")].concat(self.seen_files(store, path)))]
+    }
+
+    /// The evaluator agreed with `path`: kept with what it read.
+    fn prove(store: Store, path: string) {
+        let _ = store
+            .keep_reading(
+                Stored.Proof,
+                self.proof_row(path),
+                "proved",
+                self.readings(self.proof_reads(store, path)),
+            )
+    }
+
+    // LICENSED input.test_setting: a proof only skips a test run, never an input of what is built
+    fn proved(store: Store, path: string) -> bool {
+        store.get_valid(Stored.Proof, self.proof_row(path), (name) -> self.named_now(name)) != null
+    }
+}
+
+/// The file beside a program that wears its stem and this extension.
+fn beside(path: string, extension: string) -> string { joined_path(dir_of(path), "${stem_of(path)}.${extension}") }
+
+/// Whether a run scoped to `only` reaches `path`: every path when unscoped (no scope),
+/// else a path that is, or lies under, one of the scopes.
+fn in_scope(only: List<string>, path: string) -> bool {
+    if only.is_empty() { return true }
+    let at = normalized(path)
+    only.any((scope) -> at == normalized(scope) || under_dir(at, normalized(scope)))
+}
+
+impl Workspace {
+    /// Every nested package under a directory: one holding its own manifest
+    /// is a package, and nothing under it is asked again.
+    fn nested_roots(dir: string) -> List<string> {
+        flatten(
+            [self.nested_under(joined_path(dir, e.name)) for e in self.listing(dir) ?? [] if e.dir],
+        )
+    }
+
+    fn nested_under(dir: string) -> List<string> {
+        if self.there(joined_path(dir, "avra.toml")) { [dir] } else { self.nested_roots(dir) }
+    }
+}
+
+/// One program's disagreement with the evaluator, as none or one.
+/// A program's evaluated leg under the schedules its native leg runs:
+/// schedule 0, then — only when it chose — the next, up to the setting.
+export fn quarrel(lo: Lowered, pr: ProgramCall) -> List<string> {
+    // LICENSED input.test_setting: how many orders a suite runs, never an input of what is built
+    let runs = avra_sched_runs_wanted()
+    quarrel_from(lo, pr, 0, runs)
+}
+
+fn quarrel_from(lo: Lowered, pr: ProgramCall, i: int, runs: int) -> List<string> {
+    if i >= runs { return [] }
+    // LICENSED input.test_setting: which order a suite runs, never an input of what is built
+    let schedule = avra_sched_schedule_at(i)
+    // PATH MODE WALKED EVERY ORDER: -1 names no schedule left to run.
+    if schedule < 0 { return [] }
+    match run_scheduled(lo, pr.symbol, schedule) {
+        .Ok(r) -> when {
+            r.out != pr.expected -> [said_otherwise_under(pr, r.out, schedule)]
+            r.choices == 0 -> []
+            _ -> quarrel_from(lo, pr, i + 1, runs)
+        },
+        .Err(why) -> [eval_wrecked(pr, why)],
+    }
+}
+
+// ── The voices ──
+
+fn rule_example_missed(label: string) -> string {
+    "${label}: a @fixes missed its `after`, or a @keeps fired"
+}
+
+fn said_otherwise(pr: ProgramCall, out: string) -> string {
+    "${pr.label}: eval != expected\n${out}"
+}
+
+/// What a schedule printed when it was not what the program must, and the
+/// number that replays it.
+fn said_otherwise_under(pr: ProgramCall, out: string, schedule: int) -> string {
+    if schedule == 0 { return said_otherwise(pr, out) }
+    "${pr.label}: eval != expected under schedule ${schedule} — AVRA_SCHED_SEED=${schedule} replays it\n${out}"
+}
+
+fn eval_wrecked(pr: ProgramCall, why: string) -> string {
+    "${pr.label}: eval FAILED\n${why}"
+}

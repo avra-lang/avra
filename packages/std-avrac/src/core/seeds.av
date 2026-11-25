@@ -1,0 +1,68 @@
+//! WHERE A SEED CAME FROM: a `mut` binding's cell holds either a value made fresh for it or one read
+//! from a place, and a write through the cell copies the second before it lands, so the place it
+//! was read from never sees the write.
+
+impl Lowering {
+    /// The cell `cell` was seeded with a value read from a place when `lent`.
+    mut fn seed_kept(cell: Reg, lent: bool) { self.seeds.put("${cell.index}", lent) }
+
+    /// Whether the cell `cell` was seeded with a value read from a place; absent for a cell no `mut`
+    /// binding seeded.
+    fn seed_lent(cell: Reg) -> bool? { self.seeds.get().get("${cell.index}") }
+
+    /// Whether `v` is read from a place rather than made fresh: a place rooted in a binding; a side
+    /// whose value is `v`'s (an unwrap's subject, a `??`'s sides, a branch of `v`'s own type) that
+    /// is; or a value read out of a holder that is (a field's or an element's subject, a `?.` read's
+    /// subject, the receiver of a verb whose answer its receiver holds).
+    fn read_from_place(v: ExprId) -> bool {
+        if self.binding_rooted(v) { return true }
+        if self.value_sides(v).any((x) -> self.read_from_place(x)) { return true }
+        let holder? = self.read_out_of(v) else { return false }
+        self.read_from_place(holder)
+    }
+
+    /// Whether `v` is a place rooted in a binding, never in a type's name.
+    fn binding_rooted(v: ExprId) -> bool {
+        let root? = self.store.place_root(v) else { return false }
+        self.type_at(root)?.described() == null
+    }
+
+    /// The nodes whose value is `v`'s: an unwrap's subject, a `??`'s sides, and each branch that
+    /// isn't known to wear another type.
+    fn value_sides(v: ExprId) -> List<ExprId> {
+        let worn = self.type_at(v)?.spelled()
+        let heirs = [h for h in self.store.heired(v) if worn == null || self.type_at(h) == null || self.type_at(h)!.spelled() == worn]
+        some_list(self.store.forced(v)).concat(self.store.coalesced(v)).concat(heirs)
+    }
+
+    /// What `v` is read out of: a field's, an element's or an unwrap's subject, a `?.` read's subject,
+    /// or the receiver of a verb whose answer that receiver holds; absent for any other value.
+    fn read_out_of(v: ExprId) -> ExprId? {
+        let step = self.store.place_step(v)
+        if step != null { return step_subject(step!) }
+        let chained = self.store.chained(v)
+        if chained != null { return chained }
+        let call? = self.store.method_parts(v) else { return null }
+        if self.lending(call.subject, call.name) { call.subject } else { null }
+    }
+
+    /// Whether the verb `name` on `subject` answers a value `subject` holds: a list's, a map's or a
+    /// cell's `get`, a list's `first` or `last`, a list's or a map's `find` or `find_last`.
+    fn lending(subject: ExprId, name: string) -> bool {
+        let own? = self.type_at(subject)?.own() else { return false }
+        match own {
+            .List -> ["get", "first", "last", "find", "find_last"].contains(name),
+            .Map -> ["get", "find", "find_last"].contains(name),
+            .Cell -> name == "get",
+            .Int or .Float or .Bool or .Str or .Ptr or .Void or .Bytes or .Range or .Result or .Task or .Tasks -> false,
+        }
+    }
+}
+
+/// The subject a place's step reads, absent for a root.
+fn step_subject(step: PlaceStep) -> ExprId? {
+    match step {
+        .Root(_) -> null,
+        .Field(subject, _) or .At(subject, _) or .Unwrap(subject) -> subject,
+    }
+}

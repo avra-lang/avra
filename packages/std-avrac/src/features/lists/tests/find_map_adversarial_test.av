@@ -1,0 +1,43 @@
+// `find_map` under attack: the one law it adds (the fn's answer must
+// be nullable) at its own voice, and every shared walk seat reused —
+// arity, non-fn, empty literal, non-list receiver.
+use @std.avrac.testing.{shown, refused_with}
+
+spec "features/lists/find_map — the seats under attack" {
+    given "the fn's answer" {
+        then "a non-nullable answer refuses, and the voice names the verb" {
+            refused_with(
+                "[1, 2].find_map((x: int) -> x)",
+                "`find_map` seeks the value its fn answers, nullable — this answers `int`",
+            )
+        }
+        then "a nullable answer lands, and the first present wins" {
+            shown("[1, 2, 3].find_map((x: int) -> if x > 1 { x } else { null }) ?? 0") == "2"
+        }
+        then "an all-absent walk answers absence" {
+            shown("fn never(x: int) -> int? { null }\n([1, 2, 3].find_map(never) ?? 0) - 1") == "-1"
+        }
+    }
+    given "the arguments" {
+        then "two arguments" {
+            refused_with(
+                "[1].find_map((x: int) -> x, (y: int) -> y)",
+                "`find_map` takes one fn, found 2",
+            )
+        }
+        then "no argument" {
+            refused_with("[1].find_map()", "`find_map` takes one fn, found 0")
+        }
+        then "a non-fn argument" {
+            refused_with("[1].find_map(2)", "`find_map` wants a fn taking the element")
+        }
+    }
+    given "the receiver" {
+        then "an empty literal cannot know its element" {
+            refused_with("[].find_map((x: int) -> x)", "`[].find_map` cannot know its elements")
+        }
+        then "a non-list receiver falls to the method table" {
+            refused_with("1.find_map((x: int) -> x)", "`int` has none")
+        }
+    }
+}

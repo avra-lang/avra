@@ -1,0 +1,52 @@
+//! `yield` and `produce`: the emit verb and the producer primitive.
+//! Both are TYPED here; the producer's task ownership and lowering are
+//! FLOW 05 S2/S3, so a valid `produce` is typed and refused at
+//! lowering by name.
+use @std.avrac.testing.{floored_beside, refused_with, projected}
+
+/// A toolchain carrying `@std/task`'s `Source` and `Sink` — enough for
+/// the front end to type against.
+const task_src: string = "export type Source<T> = { next: fn() -> T? }\nexport type Sink<T> = { send: fn(T) -> bool }\n"
+
+spec "features/tasks.produce" {
+    given "the emit verb" {
+        then "`yield` outside a producer is refused by name" {
+            refused_with("yield 1\n0", "no producer encloses it")
+        }
+        then "`yield` sends what the producer's element names" {
+            let p = floored_beside(
+                "use @std.task.{Source}\nlet pages: Source<int> = produce<int>(2) { yield 1 }\n0",
+                "task",
+                task_src,
+            )
+            p.files[0].diagnostics.is_empty()
+        }
+        then "a `yield` the element does not accept refuses" {
+            let p = floored_beside(
+                "use @std.task.{Source}\nlet pages: Source<int> = produce<int>(2) { yield \"x\" }\n0",
+                "task",
+                task_src,
+            )
+            p.files[0].diagnostics.length == 1
+        }
+    }
+    given "the `produce` primitive" {
+        then "`produce<T> { … }` parses with no capacity" {
+            projected("produce<int> { yield 1 }\n0") != "<parse refused>"
+        }
+        then "`produce<T>(n) { … }` parses with one" {
+            projected("produce<int>(2) { yield 1 }\n0") != "<parse refused>"
+        }
+        then "its answer walks as a `Source`, binding the element" {
+            let p = floored_beside(
+                "use @std.task.{Source}\nlet pages: Source<int> = produce<int>(2) { yield 1 }\nmut n = 0\nfor p in pages { n = n + p }\nn",
+                "task",
+                task_src,
+            )
+            p.files[0].diagnostics.is_empty()
+        }
+        then "a program loading no `@std/task` is refused by name" {
+            refused_with("produce<int> { yield 1 }\n0", "loads no `@std/task`")
+        }
+    }
+}

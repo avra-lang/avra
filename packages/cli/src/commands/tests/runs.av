@@ -1,0 +1,24 @@
+//! Running the compiler and what it builds, as the cli's tests do: one
+//! door each, under one bound.
+use @std.process.{tool, cmd, inherited, Outcome, ProcessError}
+use @std.time.{ms, Duration}
+
+/// How long a run may take before it is a HANG: far past any honest run on
+/// a loaded machine, so the bound catches a stuck process and never fails a
+/// slow pass.
+fn hang_bound() -> Duration { ms(600000) }
+
+/// `avra` over `args`, in the caller's environment.
+fn avra_ran(args: List<string>) -> Result<Outcome, ProcessError> {
+    (cmd(tool(avra_bin())?, args) with { env: inherited(), timeout: hang_bound() }).outcome()
+}
+
+/// A built program, run with no arguments.
+fn binary_ran(binary: string) -> Result<Outcome, ProcessError> {
+    (cmd(tool(binary)?, []) with { timeout: hang_bound() }).outcome()
+}
+
+/// The stdout of a run that ended clean.
+fn clean_stdout(r: Result<Outcome, ProcessError>) -> string? {
+    match r { .Ok(o) -> if exit_is_zero(o.exit) { o.out.stdout } else { null }, .Err(_) -> null }
+}

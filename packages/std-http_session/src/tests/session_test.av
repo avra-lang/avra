@@ -1,0 +1,94 @@
+// Signed values and sessions: a value opens only under its own name
+// and key, the default MAC is HMAC-SHA256, and a session's expiry
+// cannot be moved by the client.
+use @std.http.cookie.{SetCookie}
+use @std.http_session.{Signer, Session}
+
+fn line_of(c: SetCookie) -> string {
+    match c.header() { .Ok(h) -> h.value, .Err(e) -> e.describe().message }
+}
+
+/// A stand-in MAC for the signing logic's own tests: keyed, and
+/// changed by every octet of the message. Not a secure MAC.
+fn toy_mac(key: Bytes, msg: Bytes) -> Bytes {
+    mut acc = 7
+    for i in 0..msg.length { acc = (acc * 31 + msg.at(i) + key.at(i % key.length)) % 1000003 }
+    [acc % 256, acc / 256 % 256, acc / 65536 % 256, key.length].bytes()!
+}
+
+fn signer() -> Signer { Signer { key: "k3y".bytes(), mac: toy_mac } }
+
+/// The same key under the default MAC.
+fn hmac_signer() -> Signer { Signer { key: "k3y".bytes() } }
+
+spec "std/http_session" {
+    given "a signed value" {
+        then "it opens under its own name" { signer().opened("s", signer().signed("s", "hello")) == "hello" }
+        then "a value holding dots opens" { signer().opened("s", signer().signed("s", "a.b.c")) == "a.b.c" }
+        then "an empty value opens" { signer().opened("s", signer().signed("s", "")) == "" }
+        then "it is still a cookie value" {
+            line_of(SetCookie { name: "s", value: signer().signed("s", "hello") })
+                .starts_with("s=hello.")
+        }
+        then "moved to another cookie's name it does not open" { signer().opened("t", signer().signed("s", "hello")) == null }
+        then "a changed value does not open" { signer().opened("s", signer().signed("s", "hello").replace("hello", "hellp")) == null }
+        then "another key does not open it" {
+            Signer { key: "other".bytes(), mac: toy_mac }.opened("s", signer().signed("s", "hello")) == null
+        }
+        then "no tag, a bad tag, nothing" {
+            signer().opened("s", "hello") == null &&
+                signer().opened("s", "hello.!!") == null &&
+                signer().opened("s", null) == null
+        }
+    }
+    given "the default MAC" {
+        then "HMAC-SHA256 over name=value, base64url" {
+            hmac_signer().signed("s", "hello") == "hello.eBiUD_iva0K7s3MmjrWfeGeZcMy6OVM6PT1vCPUSxto"
+        }
+        then "it opens what it signed" { hmac_signer().opened("s", hmac_signer().signed("s", "v")) == "v" }
+        then "a tag cut by one character does not open" {
+            hmac_signer().opened("s", "hello.eBiUD_iva0K7s3MmjrWfeGeZcMy6OVM6PT1vCPUSxt") == null
+        }
+        then "the toy MAC's tag does not open under the default" { hmac_signer().opened("s", signer().signed("s", "hello")) == null }
+    }
+    given "a session" {
+        then "issued then opened before it expires" {
+            let s = Session { signer: signer() }
+            s.opened(s.issued("user=7", 1000).value, 1000 + 86399) == "user=7"
+        }
+        then "opened at its expiry it is gone" {
+            let s = Session { signer: signer() }
+            s.opened(s.issued("user=7", 1000).value, 1000 + 86400) == null
+        }
+        then "its expiry cannot be extended by the client" {
+            let s = Session { signer: signer() }
+            let sealed = s.issued("user=7", 1000).value
+            s.opened(sealed.replace("87400.", "99999."), 90000) == null
+        }
+        then "its cookie is a __Host- cookie with the safe defaults" {
+            let s = Session { signer: signer() }
+            line_of(s.issued("x", 0)).starts_with("__Host-session=") &&
+                line_of(s.issued("x", 0)).ends_with("Max-Age=86400; Secure; HttpOnly; SameSite=Lax")
+        }
+        then "any text rides it" {
+            let s = Session { signer: signer() }
+            s.opened(s.issued("a; b=\"c\"\n", 0).value, 1) == "a; b=\"c\"\n"
+        }
+        then "ending it removes the cookie" { line_of(Session { signer: signer() }.ended()).contains("Max-Age=0") }
+    }
+    given "hostile sessions" {
+        then "a payload with no expiry, signed, is no session" {
+            Session { signer: signer() }.opened(signer().signed("__Host-session", "forever"), 0) == null
+        }
+        then "an expiry that is not a number is no session" {
+            Session { signer: signer() }.opened(signer().signed("__Host-session", "soon.eA"), 0) == null
+        }
+        then "data that is not base64url is no session" {
+            Session { signer: signer() }.opened(signer().signed("__Host-session", "99.!!"), 0) == null
+        }
+        then "a session's value under another cookie's name" {
+            let s = Session { signer: signer() }
+            Session { signer: signer(), name: "other" }.opened(s.issued("x", 0).value, 1) == null
+        }
+    }
+}

@@ -1,0 +1,69 @@
+//! `realize/html/print.av` — THE PRINT of a page: one number a server and a
+//! module both fold from the same elements, so a page the server sent can be
+//! told from one the module would have drawn. It reads what the lowering
+//! decides — each element's seat, tag, attributes and words, and the sheet
+//! — and nothing a host adds, so equal prints mean the DOM order and the
+//! numbering the module counts out are the server's.
+use realize.html.element.{Element, Tagged}
+use realize.html.tags.{HtmlAttr}
+use tree.lists.{flatten}
+
+/// The modulus of the fold: a prime under 2^30, so `acc * base + octet`
+/// never leaves an int.
+const prime = 1000000007
+
+const base = 131
+
+/// `acc` with every octet of `s`, then its length, folded in.
+fn mixed(acc: int, s: string) -> int {
+    let bs = s.bytes()
+    mut at = acc
+    for j in 0..bs.length { at = (at * base + bs.at(j) + 1) % prime }
+    (at * base + bs.length + 1) % prime
+}
+
+fn element_print(acc: int, e: Element) -> int {
+    match e {
+        .Text(run) -> mixed(mixed(acc, "#text"), run.seat + "|" + run.content),
+        .Tag(el) -> tagged_print(acc, el),
+    }
+}
+
+fn tagged_print(acc: int, el: Tagged) -> int {
+    let named = mixed(mixed(acc, el.tag.word()), el.seat)
+    let attrs = el
+        .attrs
+        .fold(named, (a: int, at: HtmlAttr) -> mixed(mixed(a, at.name.word()), at.value))
+    let kids = el.kids.fold(mixed(attrs, "<"), (a: int, k: Element) -> element_print(a, k))
+    mixed(kids, ">")
+}
+
+/// The print of a run of elements and the sheet drawn for them.
+export fn print_of(run: List<Element>, css: string) -> int {
+    run.fold(mixed(7, css), (a: int, e: Element) -> element_print(a, e)) + 1
+}
+
+/// Each element of a run in document order — the tag's word, or `#text` —
+/// the sequence a host checks the page it holds against.
+export fn kinds_of(run: List<Element>) -> List<string> {
+    flatten([kinds_in(e) for e in run])
+}
+
+fn kinds_in(e: Element) -> List<string> {
+    match e {
+        .Text(_) -> ["#text"],
+        .Tag(el) -> [el.tag.word()].concat(flatten([kinds_in(k) for k in el.kids])),
+    }
+}
+
+/// One number over the words of every text in a run, in document order: what
+/// a host folds the texts it holds to, so a parser or a proxy that drops a
+/// `pre`'s first newline or rewrites a word is told from the page drawn.
+export fn words_of(run: List<Element>) -> int { run.fold(7, (a: int, e: Element) -> words_in(a, e)) + 1 }
+
+fn words_in(acc: int, e: Element) -> int {
+    match e {
+        .Text(run) -> mixed(acc, run.content),
+        .Tag(el) -> el.kids.fold(acc, (a: int, k: Element) -> words_in(a, k)),
+    }
+}

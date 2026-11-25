@@ -1,0 +1,80 @@
+//! THE NAME A LITERAL HELD AS DATA IS LAID OUT UNDER: its file, then a site folded from its file's
+//! module and stem, its content with the type that decides its layout, and its turn among the
+//! literals its file writes alike, ordered by where they stand. A line added above moves nothing, and
+//! two literals written alike are told apart by their turn. A literal no source wrote is named by the
+//! unit that holds it, its content with its type, and its turn among that unit's literals alike.
+use core.{ExprId, SignedType, SyntaxArena, fp_list, fp_str, key_spelled, mix_final}
+use @std.path.{stem_of}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+
+/// The name the literal `e` of type `ty`, standing in `store` in the unit `unit`, is laid out under,
+/// read from an item `file` holds.
+fn literal_symbol(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    store: SyntaxArena,
+    unit: string,
+    e: ExprId,
+    ty: SignedType,
+) -> string { sourced_symbol(engine, file, store, e, ty) ?? made_symbol(file, store, unit, e, ty) }
+
+/// The name of a literal no source wrote, `e` standing in `store` in the unit `unit`.
+fn made_symbol(file: SourceFileAddress, store: SyntaxArena, unit: string, e: ExprId, ty: SignedType) -> string {
+    let print = store.expr_fingerprint(e)
+    let turn = [1 for x in store.exprs_by_kind(0, e.index, store.tag_expr(store.expr(e))) if store.expr_fingerprint(x) == print]
+        .length
+    let site = mix_final(fp_list([fp_str(unit), fp_list([print, fp_str(ty.spelled())]), turn]))
+    "${spelled_file(file)}\$made${site}"
+}
+
+/// The name the literal `e` of type `ty` is laid out under where a source wrote it, `e` standing in
+/// `store`, read from an item `file` holds; absent for one no source wrote.
+fn sourced_symbol(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    store: SyntaxArena,
+    e: ExprId,
+    ty: SignedType,
+) -> string? {
+    let span? = store.expr_span(e) else { return null }
+    let reads = [read_item(engine, file, at).store for at in 0..item_count(engine, file)]
+    let home? = reads
+        .find_index(
+            (s) -> written_as(s, e) &&
+                s.expr_span(e)!.lo == span.lo &&
+                s.expr_span(e)!.hi == span.hi,
+        ) else { return null }
+    let own = reads[home]
+    let lo = own.expr_span(e)!.lo
+    let print = own.expr_fingerprint(e)
+    let kind = own.tag_expr(own.expr(e))
+    let turn = [1 for at, s in reads for x in s.exprs_by_kind(0, s.expr_count(), kind) if written(s, x) &&
+        s.expr_fingerprint(x) == print &&
+        stands_before(s.expr_span(x)!.lo, at == home && x.index < e.index, lo)]
+        .length
+    let site = mix_final(
+        fp_list(
+            [
+                fp_str(module_spelled(file)),
+                fp_str(stem_of(file.path_in_package)),
+                fp_list([print, fp_str(ty.spelled())]),
+                turn,
+            ],
+        ),
+    )
+    "${spelled_file(file)}\$lit${site}"
+}
+
+/// Whether `store` holds `e` as a node its source wrote.
+fn written_as(store: SyntaxArena, e: ExprId) -> bool { e.index < store.expr_count() && written(store, e) }
+
+/// Whether `store`'s node `x` is one its own source wrote: it stands somewhere, and no template copied
+/// it from another file.
+fn written(store: SyntaxArena, x: ExprId) -> bool { store.expr_span(x) != null && !store.spanned_elsewhere(x) }
+
+/// Whether a node at `lo` stands before one at `at`; `earlier` tells two at one place apart.
+fn stands_before(lo: int, earlier: bool, at: int) -> bool { lo < at || lo == at && earlier }
+
+/// A file's module as its package and directories spell it: `@std.text.sub`, `cli.commands`.
+fn module_spelled(file: SourceFileAddress) -> string { [key_spelled(file.package_name)].concat(module_segments(file)).join(".") }

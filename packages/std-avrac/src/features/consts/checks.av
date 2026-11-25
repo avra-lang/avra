@@ -1,0 +1,13 @@
+//! The typing rule of a `const` in a body: its value checks against its annotation, and its name
+//! binds to the annotation's type, or else to the value's.
+use core.{Checking, Expected, StmtChecks, StmtId}
+use core.stmt.{ConstDecl}
+
+impl StmtChecks for ConstDecl {
+    fn stmt_checked(mut cx: Checking, s: StmtId) {
+        let declared = if self.ty == null { null } else { cx.written(self.ty!) }
+        let read = cx
+            .check(self.value, if declared == null { Expected.Free } else { Expected.Exactly(declared!) })
+        cx.bind(self.name.of, declared ?? read, true)
+    }
+}

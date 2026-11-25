@@ -1,0 +1,2009 @@
+//! THE INTERFACE, REMEMBERED AND REBUILT — what stands in for a file's
+//! declarations when the file is not read.
+//!
+//! A caller needs a declaration's SIGNATURE, never its body, so a module is
+//! answered from its RECORD: flat text, one line per declaration — a shape word,
+//! the file, the ordinal, the name, the kind, the facts, the shape's payload —
+//! beside the module's interface digest, its imports, and one `file` line per
+//! file: the text its lines were read from and the files its compile-time runs
+//! read. A SHAPE IS CARRIED, not just a name: a type's identity is a per-run id,
+//! so a struct carries its fields and an enum its variants, and loading walks
+//! the imports first — a field of another module's type interns only once that
+//! module's types exist.
+use @std.text.{parse_int}
+use @std.relation.engine.{list_cell}
+use core.{
+    Record as RecordForm,
+    ChildSlot,
+    Event as ComponentEvent,
+    CollectKind,
+    CollectScope,
+    Plain,
+    wire_fields,
+    some_list,
+    digest_of,
+    blake_key,
+    joined,
+    sorted_texts,
+    distinct,
+    flatten,
+    grouped_by,
+    same_decl,
+    module_path,
+    ModulePath,
+    TypeRegistry,
+    TypeId,
+    DeclId,
+    DeclKind,
+    FileId,
+    SeatMark,
+    Span,
+}
+use @std.text.{hex, unhex}
+use features.{
+    implements_kind,
+    admits_package,
+    ExternNote,
+    DeclSig,
+    DeclFacts,
+    AnnotationFact,
+    LitArg,
+    NamedLit,
+    LitKind,
+    CancelReach,
+    tree_saved,
+    tree_unsaved,
+}
+use compiler.lower.{Body, program_symbol, FieldPlan}
+use compiler.store.{Store, Stored, node_key}
+use @std.path.{relative_path}
+
+impl Workspace {
+    /// THE NAME A MODULE'S RECORD IS STORED UNDER. The ROOT module's name is EMPTY — it holds
+    /// the entry file and its neighbours — and an empty name has no shard to live in and no key
+    /// to be asked for, so it is spelled here rather than special-cased at every reader.
+    fn record_key(m: ModulePath) -> string {
+        node_key(Stored.Sig, [self.root, m.text()])
+    }
+
+    /// Where this compiler keeps record bodies, by module and interface.
+    fn record_bodies() -> RecordBodies { RecordBodies { root: self.root, db: self.db } }
+}
+
+/// A MODULE'S RECORD IS KEPT BY ITS INTERFACE: the row under `record_key` holds
+/// the interface digest, and the body stands under (module, digest). A body
+/// edit rewrites the body its interface already names; an interface that moves
+/// leaves the old body standing, so what it declared can still be read.
+export type RecordBodies = { root: string, db: Db }
+
+impl RecordBodies {
+    fn key(module: string, iface: string) -> string { node_key(Stored.Sig, [self.root, module, iface]) }
+
+    /// The record kept for a module under one interface, when one was: its kept lines, then
+    /// each file's Items lines (`whole`).
+    fn body(store: Store, module: string, iface: string) -> string? {
+        let headers? = self.db.sig(store, self.key(module, iface)) else { return null }
+        self.whole(store, headers)
+    }
+}
+
+/// ONE READ PER RECORD PER BUILD. The record for a module, from the cache when this
+/// build has already asked, else from the store. An absent record is cached too, so a
+/// module with no record is asked ONCE rather than at every consumer.
+// LICENSED compiler.free_state_verb: a Workspace method here trips the compiler's declaration-order defect (F2010).
+fn record_cached(ws: Workspace, store: Store, m: ModulePath) -> string {
+    let key = ws.record_key(m)
+    let known = ws.records.record_texts.get().get(key)
+    if known != null { return known! }
+    let iface = ws.db.sig(store, key) ?? ""
+    let text = if iface == "" { "" } else { ws.record_bodies().body(store, m.text(), iface) ?? "" }
+    ws.records.record_texts.put(key, text)
+    if text != "" { ws.records.record_lines.put(key, text.split("\n")) }
+    text
+}
+
+/// ONE FILE A COMPILE-TIME RUN READ, as the reader's own line carries it: the file,
+/// its text digest at write, and — when the run read a DECLARATION of it — that
+/// declaration's ref and its syntax hash at write. A read with no declaration, or
+/// one whose file was held, keeps empty ref and print and is judged by its text.
+/// `outline` is the read file's declaration outline at write: a renamed, added or
+/// removed declaration beside the one read moves the reader's module interface
+/// without moving the read itself, and is known from syntax alone.
+export type RunRead = { path: string, digest: string, ref: string, print: string, outline: string }
+
+/// WHERE ONE FILE STANDS IN ITS MODULE'S RECORD: its `file` line, and the run of its
+/// declaration lines — a record lists a file's declarations together — and the
+/// files its compile-time runs read. Asked per file, a scan of the whole record
+/// is the module's lines squared.
+type Placed = { file: List<string>, runs: List<RunRead>, lo: int, hi: int }
+
+/// A record's files, each placed — memoized for the build.
+// LICENSED compiler.free_state_verb: see `record_cached` — a Workspace method trips the F2010 defect.
+fn record_places(ws: Workspace, store: Store, m: ModulePath) -> Map<string, Placed> {
+    let key = ws.record_key(m)
+    let known: Map<string, Placed>? = ws.records.record_places.get().get(key)
+    if known != null { return known! }
+    let made = places_of(record_fields(ws, store, m))
+    ws.records.record_places.put(key, made)
+    made
+}
+
+/// A record's fields grouped by the file each line belongs to, in record order — the one
+/// index every per-file read of a record goes through, so no site scans the record whole.
+fn fields_by_file(fields: List<List<string>>) -> Map<string, List<List<string>>> {
+    mut buckets: Map<string, Cell<List<List<string>>>> = {}
+    for p in fields {
+        let path? = line_file(p) else { continue }
+        let own = buckets.get(path) ?? {
+            let fresh: Cell<List<List<string>>> = list_cell()
+            buckets.set(path, fresh)
+            fresh
+        }
+        own.push(p)
+    }
+    mut out: Map<string, List<List<string>>> = {}
+    for path, own in buckets { out.set(path, own.get()) }
+    out
+}
+
+/// The file a record line belongs to: a `gathers` line names it third, every other line second.
+fn line_file(p: List<string>) -> string? {
+    let at = if p[0] == "gathers" { 2 } else { 1 }
+    if p.length > at { p[at] } else { null }
+}
+
+/// A record's lines for one file — built once per record, memoized for the build.
+// LICENSED compiler.free_state_verb: see `record_cached` — a Workspace method trips the F2010 defect.
+fn file_lines(ws: Workspace, store: Store, m: ModulePath, path: string) -> List<List<string>> {
+    let key = ws.record_key(m)
+    let known: Map<string, List<List<string>>>? = ws.records.record_files.get().get(key)
+    if known != null { return known!.get(path) ?? [] }
+    let made = fields_by_file(record_fields(ws, store, m))
+    ws.records.record_files.put(key, made)
+    made.get(path) ?? []
+}
+
+fn places_of(fields: List<List<string>>) -> Map<string, Placed> {
+    mut out: Map<string, Placed> = {}
+    for j, parts in fields {
+        if places_file(parts) {
+            let runs? = runs_of(parts) else { continue }
+            out.set(parts[1], Placed { file: parts, runs: runs, lo: 0, hi: 0 })
+        } else if declares(parts) && parts.length > 1 {
+            let at = out.get(parts[1]) ?? Placed { file: [], runs: [], lo: 0, hi: 0 }
+            out.set(parts[1], at with { lo: if at.hi == 0 { j } else { at.lo }, hi: j + 1 })
+        }
+    }
+    out
+}
+
+/// Whether a declaration line keeps what holding it needs: a const's verdict, or nothing to keep.
+fn const_kept(parts: List<string>) -> bool { parts[0] != "const" || parts.length > 14 && parts[14] != "" }
+
+/// One file's declaration lines.
+fn file_rows(fields: List<List<string>>, at: Placed?) -> List<List<string>> {
+    if at == null { [] } else { fields.slice(at!.lo, at!.hi) }
+}
+
+/// THE RECORD AS LINES — cached, so every phase that needs them gets a pre-split list.
+// LICENSED compiler.free_state_verb: see `record_cached` — a Workspace method trips the F2010 defect.
+fn record_lines(ws: Workspace, store: Store, m: ModulePath) -> List<string> {
+    let key = ws.record_key(m)
+    let cached = ws.records.record_lines.get().get(key)
+    if cached != null { return cached! }
+    let text = record_cached(ws, store, m)
+    if text == "" { return [] }
+    ws.records.record_lines.get().get(key) ?? []
+}
+
+/// THE RECORD AS TAB-SPLIT FIELDS — each line split once per module, so mint and fill
+/// get pre-parsed fields without a per-declaration tab split.
+// LICENSED compiler.free_state_verb: see `record_cached` — a Workspace method trips the F2010 defect.
+fn record_fields(ws: Workspace, store: Store, m: ModulePath) -> List<List<string>> {
+    let key = ws.record_key(m)
+    let cached = ws.records.record_fields.get().get(key)
+    if cached != null { return cached! }
+    let fields = [read_fields(line) for line in record_lines(ws, store, m)]
+    ws.records.record_fields.put(key, fields)
+    fields
+}
+
+/// A NAME IS ANY TEXT — a case's is a sentence — so the two name fields spell the
+/// record's own separators out, and a tab or a line break in one stays one field.
+fn field_text(s: string) -> string { s.replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n") }
+
+/// `field_text`, read back.
+fn text_of_field(s: string) -> string {
+    if !s.contains("\\") { return s }
+    mut out = ""
+    mut i = 0
+    while i < s.length {
+        let escaped = s.char_code(i) == 92 && i + 1 < s.length
+        let at = if escaped { i + 1 } else { i }
+        let c = s.substring(at, at + 1)
+        out = out + if !escaped { c } else { match c { "t" -> "\t", "n" -> "\n", _ -> c } }
+        i = at + 1
+    }
+    out
+}
+
+/// One record line as its fields, the two NAME fields read back.
+export fn read_fields(line: string) -> List<string> {
+    [if j == 5 || j == 7 { text_of_field(x) } else { x } for j, x in line.split("\t")]
+}
+
+/// THE SHAPE WORD — a declaration line's first column. A header line
+/// ("file"/"import"/"gathers"/"iface"/"bytes") is not a declaration and has none.
+enum Shape { Struct, Boxed, Enum, Named, Alias, Const, Aims, Opaque, Fn, Extern, Collect, State }
+
+fn shape_of(word: string) -> Shape? {
+    match word {
+        "struct" -> .Struct,
+        "boxed" -> .Boxed,
+        "enum" -> .Enum,
+        "named" -> .Named,
+        "alias" -> .Alias,
+        "const" -> .Const,
+        "aims" -> .Aims,
+        "opaque" -> .Opaque,
+        "fn" -> .Fn,
+        "extern" -> .Extern,
+        "collect" -> .Collect,
+        "state" -> .State,
+        _ -> null,
+    }
+}
+
+/// ONE DECLARATION LINE, DECODED — named fields over `record_line`'s columns
+/// (interface.av, the one writer). `payload` is what is left past the facts
+/// block: one field for most shapes, six for `Fn`/`Extern` (seats, return,
+/// marks, written bits, bounds, whether it may reach a cancel point), read
+/// through `RowShape`'s verbs below.
+type Row = { shape: Shape, path: string, ordinal: int, stmt: int, exported: bool, name: string, kind: string, owner: string, parent_at: int, enclosing: string, root: int, item: bool, facts: string, payload: List<string> }
+
+/// A declaration row, decoded from its already-split fields — null for a
+/// header line, or one that does not decode: the same checks `decodable`
+/// runs over a whole record, over the one row a caller already has in hand.
+fn read_row(parts: List<string>) -> Row? {
+    if parts.length < 13 || nameless(parts) { return null }
+    let shape? = shape_of(parts[0]) else { return null }
+    let ordinal? = wire_number(parts[2]) else { return null }
+    let stmt? = wire_number(parts[3]) else { return null }
+    let parent_at? = wire_number(parts[8]) else { return null }
+    let root? = wire_number(parts[10]) else { return null }
+    Row {
+        shape: shape,
+        path: parts[1],
+        ordinal: ordinal,
+        stmt: stmt,
+        exported: parts[4] == "1",
+        name: parts[5],
+        kind: parts[6],
+        owner: parts[7],
+        parent_at: parent_at,
+        enclosing: text_of_field(parts[9]),
+        root: root,
+        item: parts[11] == "1",
+        facts: parts[12],
+        payload: parts.slice(13, parts.length),
+    }
+}
+
+/// A declaration's shape: its word and the payload past the facts block — what fills a
+/// declaration's signature, read the same from its record line and from its own row.
+type RowShape = { shape: Shape, payload: List<string> }
+
+impl Row {
+    fn shaped() -> RowShape { RowShape { shape: self.shape, payload: self.payload } }
+}
+
+impl RowShape {
+    /// Payload field `j`, or "" past its end — every shape but `Fn`/`Extern`
+    /// writes one field, and one with nothing to say writes it empty.
+    fn field(j: int) -> string { if self.payload.length > j { self.payload[j] } else { "" } }
+
+    /// The `;`-joined list at payload field `j` — empty for an empty or absent one.
+    fn list_at(j: int) -> List<string> {
+        let raw = self.field(j)
+        if raw.is_empty() { [] } else { raw.split(";") }
+    }
+
+    /// `Struct`/`Boxed`'s fields, `Enum`'s arms, `Fn`/`Extern`'s seats — the
+    /// shapes whose payload opens with a `;`-joined list.
+    fn items() -> List<string> { self.list_at(0) }
+
+    /// `Fn`/`Extern`'s seat marks, one per seat.
+    fn marks() -> List<SeatMark> { [mark_of_word(w) for w in self.list_at(2)] }
+
+    /// `Fn`/`Extern`'s written-seat bits, a `1`/`0` per seat.
+    fn writes() -> string { self.field(3) }
+
+    /// `Fn`'s bounded seats' trait arguments, one `seat=wire|wire` each.
+    fn bounds() -> List<string> { self.list_at(4) }
+
+    /// `Fn`/`Extern`'s cancel bits, how it waits then whether it spins: a
+    /// record that says nothing says it may, a row among what it reaches.
+    fn reach() -> CancelReach {
+        let waits = self.field(5)
+        CancelReach {
+            parks: waits != "0",
+            spins: self.field(6) != "0",
+            links: waits != "0" && waits != "1",
+        }
+    }
+}
+
+/// A record as this build now knows it: its words, its lines and their fields.
+// LICENSED compiler.free_state_verb: see `record_cached` — a Workspace method trips the F2010 defect.
+fn record_known(ws: Workspace, m: ModulePath, text: string) {
+    let key = ws.record_key(m)
+    let lines = text.split("\n")
+    ws.records.record_texts.put(key, text)
+    ws.records.record_lines.put(key, lines)
+    let fields = [read_fields(line) for line in lines]
+    ws.records.record_fields.put(key, fields)
+    ws.records.record_places.put(key, places_of(fields))
+    ws.records.record_files.put(key, fields_by_file(fields))
+}
+
+/// What OTHER modules' keys read of a record: its interface digest, its imports and
+/// its references — the files an importer reaches through it.
+fn seen_part(text: string) -> string {
+    joined(
+        [line for line in text.split("\n") if line.starts_with("iface\t") || line.starts_with("import\t") || line.starts_with("ref\t")],
+        "\n",
+    )
+}
+
+/// THE MEMO PATTERN, ONCE: a cache checked, a value made and kept on a miss.
+/// A generic METHOD is recorded, not landed (F2031), so this is a free fn —
+/// `mut cache` is what lets its write land in the caller's map. NOT for a
+/// `make` that itself needs a `mut` seat on the value the cache lives in — a
+/// lambda's capture is a copy, and a copy cannot fill a `mut` seat (F2048);
+/// `bytes_key_cached`/`obj_key_cached`/`view_parts` below stay hand-written.
+fn memoized<T>(mut cache: Map<string, T>, key: string, make: fn() -> T) -> T {
+    let known: T? = cache.get(key)
+    if known != null { return known! }
+    let made = make()
+    cache.set(key, made)
+    made
+}
+
+/// A MODULE'S INTERFACE DIGEST, memoized for the build.
+// LICENSED compiler.free_state_verb: see `record_cached` — a Workspace method trips the F2010 defect.
+fn bytes_key_cached(ws: Workspace, store: Store, m: ModulePath) -> string {
+    let known: string? = ws.keys.bytes_keys.get().get(m.text())
+    if known != null { return known! }
+    let made = bytes_key(ws, store, m)
+    ws.keys.bytes_keys.put(m.text(), made)
+    made
+}
+
+/// ONE FILE'S OBJECT KEY, memoized for the build. The key is the module together with
+/// the file's path, so a module-level ask and a file-level ask do not collide.
+// LICENSED compiler.free_state_verb: see `record_cached` — a Workspace method trips the F2010 defect.
+fn obj_key_cached(ws: Workspace, store: Store, m: ModulePath, path: string) -> string {
+    let key = "${m.text()}\t${path}"
+    let known: string? = ws.keys.object_keys.get().get(key)
+    if known != null { return known! }
+    // THE BUILD MODE JOINS: one store serves every compiler AND every target, so a
+    // host object and a wasm object for one source must not share a key. `built_for`
+    // clears this table, since a mode that moved leaves every key stale.
+    let made = object_key_of_parts(ws, ws.key_parts_cached(store, m, path))
+    ws.keys.object_keys.put(key, made)
+    made
+}
+
+/// A TYPE'S SHAPE, as one line — the declaration it belongs to, and what it stands over.
+/// A NAMED type's line carries the shape it IS, so re-interning reproduces the same type
+/// rather than a fresh one that merely wears the name.
+///
+/// THE SEPARATORS ARE `;` AND `|`, NEVER A SPACE: a spelling CONTAINS spaces
+/// (`dyn Runnable`, `fn(a) -> b`), so a space-joined list splits a single type into
+/// fields and invents declarations (`body:dyn Runnable` became `body:dyn` and a field
+/// named `Runnable`). Neither `;` nor `|` is in the type grammar.
+fn shape_line(ws: Workspace, s: DeclSig, layout: string) -> string {
+    match s {
+        .Record(r) -> "${layout}\t${joined([r.names[i] + ":" + ws.decls.type_wire(r.types[i]) for i in 0..r.names.length], ";")}\t${joined([ws.decl_ref(d) for d in r.defaults], ";")}\t${joined([if r.state_at(i) { "1" } else { "0" } for i in 0..r.names.length], "")}",
+        .Enum(e) -> "enum\t${joined([e.names[i] + ":" + joined([ws.decls.type_wire(t) for t in e.payloads[i]], "|") for i in 0..e.names.length], ";")}",
+        .Named(n) -> "named\t${ws.decls.type_wire(n.of)}",
+        .Alias(of) -> "alias\t${ws.decls.type_wire(of)}",
+        .Fn(f) -> "fn\t${joined([ws.decls.type_wire(t) for t in f.params], ";")}\t${ws.decls.type_wire(f.ret)}",
+    }
+}
+
+type WireType = { id: TypeId, next: int }
+
+/// EVERY NAME A MODULE EXPORTS — its imports first, so a reader can walk the closure in
+/// the order that makes each shape internable.
+/// A seat with neither promise written.
+const no_seat_mark: SeatMark = SeatMark { mutable: false, settled: false }
+
+/// Whether a declaration stands among a file's top-level items.
+fn on_top(top: List<DeclId>, d: DeclId) -> bool { top.any(same_decl(it, d)) }
+
+/// A MODULE'S INTERFACE, AS ONE DIGEST — the identity a dependent keys on. It covers what
+/// a caller can SEE (names, kinds, visibility, type parameters, bounds, seat names, and
+/// each signature's type wire and seat marks) and NOTHING a build recorded: the spans a
+/// whitespace edit moves, the statement/expression indices, and the `writes` bits the
+/// receivers pass recomputes. A body edit therefore does not move a dependent's key; a
+/// seat or shape change does, because both are in the digest.
+// LICENSED compiler.free_state_verb: a pure PROJECTION — a module's declaration lines in, its interface digest out.
+export fn iface_digest(items: List<string>) -> string {
+    digest_of(joined([interface_form(line) for line in sorted_texts(items)], "\n"))
+}
+
+/// ONE DECLARATION'S CONTRACT, as one line: the fields a caller can see, and never the
+/// span, the statement/expression indices, or the `writes` bits. A fn's cancel bits ARE
+/// contract: a caller's code tests after the call by them.
+// LICENSED compiler.free_state_verb: a pure PROJECTION — a record line in, its contract out.
+fn interface_form(line: string) -> string {
+    let p = line.split("\t")
+    // a re-export's contract is the name it exports and what it names — never its path
+    if p[0] == "reexport" { return p.slice(2, p.length).join("\t") }
+    if p.length < 13 { return "" }
+    let top = unpacked(p[12])
+    let facts = if top.is_empty() { [] } else { top[0].split(";") }
+    let seen = if facts.length >= 8 { facts.slice(0, 3).concat(facts.slice(5, 10)) } else { facts }
+    // the payload skips its `writes` bits (field 16); past them stand a fn's bounds,
+    // then its cancel bits, parks and spins
+    [p[0], p[2], p[4], p[5], p[6], p[7], p[8], p[11], seen.join(";")]
+        .concat(p.slice(13, 16))
+        .concat(p.slice(17, 20))
+        .join("\t")
+}
+
+/// A record's declaration lines, by the file each names.
+fn lines_by_file(lines: List<string>) -> Map<string, List<string>> {
+    grouped_by([line for line in lines if named_file(line) != ""], named_file)
+}
+
+/// The path a record line names, or "" — the second column, and nothing for a header line.
+fn named_file(line: string) -> string {
+    if line.starts_with("import\t") ||
+        line.starts_with("gathers\t") ||
+        line.starts_with("bytes\t") ||
+        line.starts_with("iface\t") ||
+        line.starts_with("file\t") {
+        return ""
+    }
+    let parts = line.split("\t")
+    if parts.length < 2 { return "" }
+    parts[1]
+}
+
+/// A DECLARATION'S FACTS, as the record's block — the encoder of `facts_unblocked`, and
+/// the pair is ONE unit. THE HEAD is every fact whose text is a type spelling, a name or
+/// a digit — none of which carry `;` — joined the old way; DOC AND ANNOTATIONS ARE FREE
+/// TEXT a `///` line or a literal argument can spell anything in, so they ride as two
+/// more `packed` segments alongside the head rather than inside its `;`-join.
+export fn facts_block(f: DeclFacts) -> string {
+    let slo = f.span?.lo ?? 0 - 1
+    let shi = f.span?.hi ?? 0 - 1
+    let head = "${if f.external { "1" } else { "0" }};${if f.stat { "1" } else { "0" }};${if f.is_grammar { "1" } else { "0" }};${slo};${shi};${list_field(f.tparams)};${list_field(f.bounds)};${list_field(f.seats)};${list_field(f.host)};${if f.annotated { "1" } else { "0" }};${f.of};${if f.is_component { "1" } else { "0" }};${if f.instance { "1" } else { "0" }};${list_field(f.mut_seats)};${list_field(some_list(f.word))};${list_field(f.trait_args)};${if f.hosted { "1" } else { "0" }};${f.variadic ?? 0 - 1};${f.fingerprint()}"
+    packed(
+        [
+            head,
+            doc_wire(f.doc),
+            annotations_wire(f.annotations),
+            form_wire(f.form),
+            list_field(["${t}" for t in some_list(f.template)]),
+        ],
+    )
+}
+
+/// A component's record form as a `packed` record — empty for none. Every text in it is
+/// a name a declaration wrote, which carries no `~`.
+fn form_wire(r: RecordForm?) -> string {
+    let f? = r else { return "" }
+    packed(
+        [
+            list_field(f.head),
+            packed([packed([s.name, s.of, bit_word(s.gathers)]) for s in f.slots]),
+            bit_word(f.named),
+            bit_word(f.checks),
+            list_field(some_list(f.fn_field)),
+            bit_word(f.fn_optional),
+            packed([packed([e.name, list_field(e.says), bit_word(e.default)]) for e in f.events]),
+            bit_word(f.words),
+        ],
+    )
+}
+
+/// The inverse: none for the empty wire, and none for one that is not eight parts.
+fn form_of_wire(wire: string) -> RecordForm? {
+    let p = unpacked(wire)
+    if p.length != 8 { return null }
+    RecordForm {
+        head: read_list(p[0]),
+        slots: [ChildSlot { name: q[0], of: q[1], gathers: q[2] == "1" } for x in unpacked(p[1]) for q in [unpacked(x)] if q.length == 3],
+        named: p[2] == "1",
+        checks: p[3] == "1",
+        fn_field: read_list(p[4]).first(),
+        fn_optional: p[5] == "1",
+        events: [ComponentEvent { name: q[0], says: read_list(q[1]), default: q[2] == "1" } for x in unpacked(p[6]) for q in [unpacked(x)] if q.length == 3],
+        words: p[7] == "1",
+    }
+}
+
+/// One string list as `<count>~<len>:<item>…`. EACH ELEMENT CARRIES ITS LENGTH, because
+/// a bare `~`-join LOSES a trailing EMPTY element — `split` drops it — and a facts list
+/// legitimately holds `""` (an unconstrained bound, an unwritten width). The old form
+/// decoded `[""]` as `[]`: benign where the only reader returns `""` either way, and a
+/// silent loss the moment a reader distinguishes them. Reserved for text this build
+/// already knows carries no `~` — a type spelling, a parameter name; free text goes
+/// through `packed` instead, which never searches an element for one.
+fn list_field(xs: List<string>) -> string { "${xs.length}~${joined(["${x.length}:${x}" for x in xs], "~")}" }
+
+/// A LIST OF STRINGS, EACH SLICED BY ITS OWN RECORDED LENGTH — never searched for.
+/// `list_field`'s `~` join reads an element's own `~` as another boundary; a doc line
+/// or an annotation's literal argument is free text a program wrote, so it can hold
+/// any byte the record format itself uses as punctuation. Reading `packed` never
+/// inspects an element's bytes for a separator, only jumps by the length recorded
+/// beside it, so nothing an element contains can be mistaken for the list's own shape.
+fn packed(xs: List<string>) -> string { "${xs.length};${joined(["${x.length}:${x}" for x in xs], "")}" }
+
+fn unpacked(s: string) -> List<string> {
+    let semi = s.index_of(";")
+    if semi < 0 { return [] }
+    let n? = wire_number(s.substring(0, semi)) else { return [] }
+    mut out: List<string> = []
+    mut i = semi + 1
+    mut k = 0
+    while k < n {
+        let rest = s.substring(i, s.length)
+        let colon = rest.index_of(":")
+        if colon < 0 { return out }
+        let len? = wire_number(rest.substring(0, colon)) else { return out }
+        let start = i + colon + 1
+        let end = start + len
+        if end > s.length { return out }
+        out.push(s.substring(start, end))
+        i = end
+        k = k + 1
+    }
+    out
+}
+
+/// `List<string>?` as one packed item: absent is `packed(["0"])`, present carries a
+/// `"1"` flag then every line, EACH ESCAPED as `field_text` escapes a name — `packed`
+/// is safe against `;`/`~`/`:`, but the whole block still lands in one TAB COLUMN of
+/// one LINE of the record, and a `///` line or a literal argument can hold either.
+fn doc_wire(doc: List<string>?) -> string {
+    match doc {
+        lines? -> packed(["1"].concat([field_text(l) for l in lines]))
+        null -> packed(["0"])
+    }
+}
+
+fn doc_of_wire(wire: string) -> List<string>? {
+    let parts = unpacked(wire)
+    if parts.is_empty() || parts[0] == "0" { return null }
+    [text_of_field(x) for x in parts.slice(1, parts.length)]
+}
+
+/// One `AnnotationFact` as a 5-item `packed` record: its escaped name, its arguments
+/// (each its escaped text and its kind, packed again — an argument's text is exactly as
+/// free), its span's two wires, and its named arguments (each its label beside its argument).
+fn annotation_wire(a: AnnotationFact) -> string {
+    let slo = a.span?.lo ?? 0 - 1
+    let shi = a.span?.hi ?? 0 - 1
+    packed(
+        [
+            field_text(a.name),
+            packed([lit_arg_wire(x) for x in a.args]),
+            "${slo}",
+            "${shi}",
+            packed([packed([field_text(n.label), lit_arg_wire(n.arg)]) for n in a.named]),
+        ],
+    )
+}
+
+fn annotation_of_wire(wire: string) -> AnnotationFact {
+    let p = unpacked(wire)
+    let name = if p.length > 0 { text_of_field(p[0]) } else { "" }
+    let args = if p.length > 1 { [lit_arg_of_wire(x) for x in unpacked(p[1])] } else { [] }
+    let slo = if p.length > 2 { wire_number(p[2]) ?? 0 - 1 } else { 0 - 1 }
+    let shi = if p.length > 3 { wire_number(p[3]) ?? 0 - 1 } else { 0 - 1 }
+    let named = if p.length > 4 { [named_lit_of_wire(x) for x in unpacked(p[4])] } else { [] }
+    AnnotationFact { name: name, args: args, span: wire_span(slo, shi), named: named }
+}
+
+fn lit_arg_wire(x: LitArg) -> string { packed([field_text(x.text), lit_kind_word(x.kind)]) }
+
+/// One named argument on the wire: its label, then its argument's wire.
+fn named_lit_of_wire(item: string) -> NamedLit {
+    let q = unpacked(item)
+    let label = if q.length > 0 { text_of_field(q[0]) } else { "" }
+    let arg = if q.length > 1 { lit_arg_of_wire(q[1]) } else { LitArg.codec_zero() }
+    NamedLit { label: label, arg: arg }
+}
+
+/// One literal argument on the wire: its text, then its kind's word.
+fn lit_arg_of_wire(item: string) -> LitArg {
+    let q = unpacked(item)
+    let text = if q.length > 0 { text_of_field(q[0]) } else { "" }
+    let kind = if q.length > 1 { lit_kind_of(text_of_field(q[1])) } else { LitKind.Text }
+    LitArg { text: text, kind: kind }
+}
+
+fn lit_kind_word(k: LitKind) -> string {
+    match k { .Int -> "int", .Text -> "text", .Bool -> "bool", .Other -> "other" }
+}
+
+fn lit_kind_of(w: string) -> LitKind {
+    match w { "int" -> .Int, "text" -> .Text, "bool" -> .Bool, rest -> .Other }
+}
+
+/// A span from its two wire ints — the decoder `facts_unblocked` and
+/// `annotation_of_wire` share, both writing `-1` for the same absence.
+fn wire_span(lo: int, hi: int) -> Span? {
+    if lo < 0 { null } else { Span { lo: lo, hi: hi } }
+}
+
+fn annotations_wire(xs: List<AnnotationFact>) -> string { packed([annotation_wire(a) for a in xs]) }
+
+fn annotations_of_wire(wire: string) -> List<AnnotationFact> { [annotation_of_wire(x) for x in unpacked(wire)] }
+
+/// The inverse, by the list's own count: `"0~"` is the empty list, and a
+/// length-prefixed element survives whether or not it is empty.
+fn read_list(field: string) -> List<string> {
+    let parts = wire_fields(field, "~")
+    let n = parse_int(parts[0]) ?? 0
+    [item_of_field(p) for p in parts.slice(1, 1 + n)]
+}
+
+/// One list element: its length prefix dropped, the value whole.
+fn item_of_field(p: string) -> string {
+    let at = p.index_of(":")
+    if at < 0 { return p }
+    p.substring(at + 1, p.length)
+}
+
+/// The decoder — a block it cannot read makes the whole RECORD undecodable, so the module
+/// is a miss rather than a declaration whose facts are guessed. THE LAST FIELD IS THE
+/// VALUE'S OWN FINGERPRINT: it is recomputed from what was decoded, so a field the
+/// writer added but this reader does not know makes the two disagree and the record is
+/// REFUSED — drift is a rebuild, never a declaration wearing a default.
+export fn facts_unblocked(block: string) -> DeclFacts? {
+    let top = unpacked(block)
+    if top.length < 3 { return null }
+    let p = wire_fields(top[0], ";")
+    if p.length < 19 { return null }
+    let slo? = wire_number(p[3]) else { return null }
+    let shi? = wire_number(p[4]) else { return null }
+    let seat? = wire_number(p[17]) else { return null }
+    let facts = DeclFacts {
+        external: p[0] == "1",
+        stat: p[1] == "1",
+        is_grammar: p[2] == "1",
+        span: wire_span(slo, shi),
+        tparams: read_list(p[5]),
+        bounds: read_list(p[6]),
+        seats: read_list(p[7]),
+        host: read_list(p[8]),
+        annotated: p[9] == "1",
+        of: p[10],
+        is_component: p[11] == "1",
+        instance: p[12] == "1",
+        mut_seats: read_list(p[13]),
+        word: read_list(p[14]).first(),
+        trait_args: read_list(p[15]),
+        hosted: p[16] == "1",
+        variadic: if seat < 0 { null } else { seat },
+        doc: doc_of_wire(top[1]),
+        annotations: annotations_of_wire(top[2]),
+        form: if top.length > 3 { form_of_wire(top[3]) } else { null },
+        template: if top.length > 4 { parse_int(read_list(top[4]).first() ?? "") } else { null },
+    }
+    if "${facts.fingerprint()}" != p[18] { return null }
+    facts
+}
+
+/// REMEMBER EVERY MODULE'S INTERFACE, once the build has computed it.
+// LICENSED compiler.free_state_verb: THE RECORD STEP — a workspace, a store and a module list in, the records written.
+export fn keep_interfaces(ws: Workspace, store: Store, modules: List<ModulePath>) {
+    mut seen_moved = false
+    for m in modules {
+        // a module none of whose files this attempt read has its lines carried forward whole
+        if !ws.module_files(m).any((path) -> ws.read_here(path)) { continue }
+        let prior = record_cached(ws, store, m)
+        let forms_were = ws.producers_for(store, m)?.forms
+        let made = ws.record_of(store, m)
+        ws.keep_items(store, m, made, prior)
+        // a record is keyed by its module's NAME: a write is owed when its words moved
+        if made != prior {
+            let iface = iface_of(made) ?? ""
+            ws.db.insert_sig(store, ws.record_bodies().key(m.text(), iface), record_headers(made))
+            ws.db.insert_sig(store, ws.record_key(m), iface)
+            record_known(ws, m, made)
+            ws.keep_producers(store, m, iface)
+            // a plain free fn's form is what a file that spells its name sees of it
+            if seen_part(made) != seen_part(prior) ||
+                ws.producers_for(store, m)?.forms != forms_were {
+                seen_moved = true
+            }
+        }
+    }
+    // A BODY EDIT MOVES A RECORD'S `file` LINES, and with them no key but its own
+    // files'. Only a moved interface or import list moves what other modules see.
+    let no_object: Map<string, string> = {}
+    ws.keys.object_keys.set(no_object)
+    let no_parts: Map<string, KeyParts> = {}
+    ws.keys.object_parts.set(no_parts)
+    if seen_moved {
+        let no_bytes: Map<string, string> = {}
+        let no_view: Map<string, List<SeenPart>> = {}
+        ws.keys.bytes_keys.set(no_bytes)
+        ws.keys.view_parts.set(no_view)
+        let no_index: Map<string, NarrowIndex> = {}
+        ws.keys.view_index.set(no_index)
+        let no_fns: Map<string, List<FnForm>> = {}
+        ws.keys.file_fns.set(no_fns)
+        let no_typed: Map<string, Map<string, List<string>>> = {}
+        ws.keys.typed_files.set(no_typed)
+        ws.keys.file_owners.set(no_bytes)
+        let no_placed: Map<string, bool> = {}
+        ws.keys.placed_from.set(no_placed)
+        let no_imports: Map<string, List<string>> = {}
+        ws.import_lists.set(no_imports)
+    }
+}
+
+/// `kind_words` read back; null for words no kind writes.
+fn kind_of_words(word: string, name: string) -> CollectKind? {
+    match word {
+        "mark" -> CollectKind.Annotated(name),
+        "component" -> CollectKind.Component(name),
+        _ -> null,
+    }
+}
+
+/// A `gathers` line read back as the collect it holds a file to; null for a line
+/// this compiler never wrote.
+fn held_gather(parts: List<string>, package: string) -> HeldGather? {
+    if parts.length < 8 { return null }
+    let kind? = kind_of_words(parts[3], parts[4]) else { return null }
+    let order? = hex_fields_of(parts[5]) else { return null }
+    let plans? = plans_of(parts[6]) else { return null }
+    let scope? = scope_of_word(if parts.length > 8 { parts[8] } else { "package" }) else { return null }
+    HeldGather {
+        collector: parts[2],
+        package: package,
+        gathering: Gathering {
+            name: if parts.length > 9 { parts[9] } else { "" },
+            kind: kind,
+            scope: scope,
+            order: [Plain(o) for o in order],
+            plans: plans,
+        },
+        digest: parts[7],
+    }
+}
+
+/// A `gathers` line: the package, the collecting file, what it gathers by, in what
+/// order, what it reads of each member, the set, its scope and the collect's name.
+fn gathers_line(key: string, path: string, g: Gathering, set: string) -> string {
+    joined(
+        ["gathers", key, path]
+            .concat(kind_words(g.kind))
+            .concat(
+                [
+                    hex_fields(["${o}" for o in g.order]),
+                    hex_fields([hex_fields(plan_words(p)) for p in g.plans]),
+                    set,
+                    scope_word(g.scope),
+                    g.name,
+                ],
+            ),
+        "\t",
+    )
+}
+
+/// A field's plan as a record's words.
+fn plan_words(p: FieldPlan) -> List<string> {
+    match p {
+        .Crossed -> ["crossed"],
+        .Value -> ["value"],
+        .RootKind -> ["root_kind"],
+        .NodeKinds -> ["node_kinds"],
+        .Mark -> ["mark"],
+        .Component(word) -> ["component", word],
+        .Text(path) -> ["text"].concat(["${s}" for s in path]),
+    }
+}
+
+/// A record's plans read back; null for any it never wrote.
+fn plans_of(field: string) -> List<FieldPlan>? {
+    let each? = hex_fields_of(field) else { return null }
+    let plans = [plan_of_field(f) for f in each]
+    if plans.any(it == null) { return null }
+    [p! for p in plans]
+}
+
+fn plan_of_field(field: string) -> FieldPlan? {
+    let words? = hex_fields_of(field) else { return null }
+    if words.is_empty() { return null }
+    match words[0] {
+        "crossed" -> FieldPlan.Crossed,
+        "value" -> FieldPlan.Value,
+        "root_kind" -> FieldPlan.RootKind,
+        "node_kinds" -> FieldPlan.NodeKinds,
+        "mark" -> FieldPlan.Mark,
+        "component" -> if words.length == 2 { FieldPlan.Component(words[1]) } else { null },
+        "text" -> FieldPlan.Text([Plain(w) for w in words.slice(1, words.length)]),
+        _ -> null,
+    }
+}
+
+/// What a collect gathers by, as a record's two words.
+fn kind_words(kind: CollectKind) -> List<string> {
+    match kind { .Annotated(w) -> ["mark", w], .Component(w) -> ["component", w] }
+}
+
+/// The scope a `gathers` line holds its collect to, as its last field.
+fn scope_word(scope: CollectScope) -> string {
+    match scope {
+        .Self -> "self",
+        .Package -> "package",
+        .Closure -> "closure",
+        .UnknownScope(_) -> "unknown",
+    }
+}
+
+/// `scope_word` read back; null for a word no scope writes, and for the two a line never holds.
+fn scope_of_word(word: string) -> CollectScope? {
+    match word { "package" -> CollectScope.Package, "closure" -> CollectScope.Closure, _ -> null }
+}
+
+/// Whether a kept `import` line stands for the next record: the file that imports stands in the
+/// module and was held, so its imports are still what its text says.
+// LICENSED compiler.free_state_verb: a pure PROJECTION — a workspace, the module's files and a line in.
+fn kept_import(ws: Workspace, files: List<string>, line: string) -> bool {
+    let parts = line.split("\t")
+    parts[0] == "import" && parts.length > 2 && files.contains(parts[2]) && !ws.read_here(parts[2])
+}
+
+/// Whether a kept `gathers` line stands for the next record: its collecting file was held.
+// LICENSED compiler.free_state_verb: a pure PROJECTION — a workspace and a line in.
+fn kept_gathers(ws: Workspace, line: string) -> bool {
+    let parts = line.split("\t")
+    parts[0] == "gathers" && parts.length > 3 && !ws.read_here(parts[2])
+}
+
+/// WHY A FILE IS READ and not held — a thin hold says so itself under `--time`.
+export enum Reads {
+    Entry
+    Home
+    Moved
+    Unkept
+    Consts
+    Unholdable
+    RunBy(string)
+    Undecodable(string)
+    Reached
+    BodyAsked
+    AsksUnread
+    Gathered(string)
+    GathersUnread
+    CodesUnread
+    Remembered(string)
+}
+
+export type ReadFile = { path: string, why: Reads }
+
+impl Reads {
+    fn says() -> string {
+        match self {
+            .Entry -> "the entry",
+            .Home -> "a home of instantiations owed",
+            .Moved -> "its text moved",
+            .Unkept -> "nothing kept stands in: what it sees moved, or it was never built",
+            .Consts -> "a const's kept value is gone",
+            .Unholdable -> "it declares what a record cannot carry",
+            .RunBy(by) -> "its bodies run while ${by} compiles",
+            .Undecodable(why) -> "its module's record refused whole: ${why}",
+            .Reached -> "a program the evaluator runs reaches it",
+            .BodyAsked -> "a compile-time run called one of its bodies",
+            .AsksUnread -> "what its bodies ask could not be read back",
+            .Gathered(by) -> "what its collect gathers from ${by} moved",
+            .GathersUnread -> "its record's `gathers` line cannot be read",
+            .CodesUnread -> "what its code is could not be read back",
+            .Remembered(said) -> said,
+        }
+    }
+}
+
+/// WHETHER A RECORD'S LINES FOR A FILE WERE WRITTEN FROM THIS TEXT. A record is kept
+/// under its module's NAME and an object under its file's CONTENT, so two programs share
+/// the object and not the record: one that holds a file by an object another stored
+/// would read lines it wrote itself, before the edit. The record says what it read.
+fn written_from(at: Placed?, print: string) -> bool {
+    at != null && at!.file.length >= 3 && at!.file[2] == print
+}
+
+/// Whether a record line is a DECLARATION's — the rest say what the module imports,
+/// gathers and digests to, (`ref`) what a held file's own body once referenced, or (`reexport`)
+/// a name its `export use` lines put on the module's surface.
+fn declares(parts: List<string>) -> bool {
+    parts[0] != "import" &&
+        parts[0] != "gathers" &&
+        parts[0] != "bytes" &&
+        parts[0] != "iface" &&
+        parts[0] != "file" &&
+        parts[0] != "ref" &&
+        parts[0] != "maker" &&
+        parts[0] != "reexport"
+}
+
+/// WHETHER A RECORD CAN BE REBUILT WHOLE — a total check, run BEFORE any file is
+/// held, over the SAME decoder the mint uses. A field the writer adds that this
+/// reader does not know makes the record short, and a short record refuses the
+/// module rather than contributing a declaration nobody can see. Null when
+/// whole; otherwise the one declaration that made it short, named — the
+/// refusal this answers for (`load_interface`'s own `Reads.Undecodable`).
+// LICENSED compiler.free_state_verb: a pure PROJECTION — a record's lines in, the first break out.
+fn record_complete(fields: List<List<string>>) -> string? {
+    // THE ORDINALS MUST BE CONTIGUOUS PER FILE, 0..n-1 IN ORDER: the mint appends each
+    // held declaration to its file, so a hole is a record where a declaration would be
+    // silently missing. Checking it HERE refuses the whole module instead of truncating.
+    mut seen: Map<string, int> = {}
+    for parts in fields {
+        if declares(parts) {
+            if !decodable(parts) {
+                return "`${parts[5]}`'s kind `${parts[6]}` (shape `${parts[0]}`) in ${parts[1]} does not decode"
+            }
+            let ordinal? = wire_number(parts[2]) else {
+                return "`${parts[5]}` in ${parts[1]} names no ordinal"
+            }
+            let want: int = seen.get(parts[1]) ?? 0
+            if ordinal != want {
+                return "`${parts[5]}` in ${parts[1]} wants ordinal ${want}, names ${ordinal}"
+            }
+            seen.set(parts[1], want + 1)
+        }
+    }
+    null
+}
+
+/// Whether a line names nothing where a name is owed: a CASE's name is any text,
+/// the empty one included.
+fn nameless(parts: List<string>) -> bool { parts[5].is_empty() && parts[6] != "case" }
+
+/// WHETHER ONE RECORD LINE DECODES — the guard half of the decoder, so a line the
+/// mint would silently skip is caught here and the whole record is refused.
+fn decodable(parts: List<string>) -> bool {
+    let row? = read_row(parts) else { return false }
+    declared_kind(row.shape, row.kind) != null
+}
+
+/// WHETHER A FILE MAY BE HELD — a grammar record's spec and an extern fn's raw seat
+/// spellings are their own parse and are not in the interface, so a file that declares
+/// either is a MISS and parses. The honest boundary: the interface carries what it
+/// carries, and a fact it cannot is a rebuild, not a guess.
+
+/// A SEAT'S PROMISES as one character each, in a fixed order — the
+/// record's spelling of `SeatMark`, so every promise survives the trip.
+/// EVERY `SeatMark` FIELD GETS A CHARACTER: a field this word does not
+/// spell is a field the record silently drops the day it is read back
+/// (CLAUDE.md, "a hash that forgets a payload").
+export fn mark_word(m: SeatMark) -> string {
+    "${flag_char(m.mutable, "m")}${flag_char(m.settled, "s")}${flag_char(m.state, "t")}${flag_char(m.unshared, "i")}${flag_char(m.consumed, "o")}"
+}
+
+/// `mark_word`'s fixed width — a `Type.Fn`'s wire (interface.av's
+/// `wire_body`/`read_type_wire`) packs one word per seat into ONE
+/// unseparated bits string, so the decoder must slice at exactly this
+/// width or every seat past the first reads as another seat's tail.
+const mark_word_width: int = 5
+
+fn flag_char(on: bool, c: string) -> string { if on { c } else { "-" } }
+
+/// The inverse, by position — a word of any other length is the plain
+/// unwritten seat, the shape of every seat that promises nothing.
+fn mark_of_word(w: string) -> SeatMark {
+    if w.length != mark_word_width { return no_seat_mark }
+    SeatMark {
+        mutable: w.substring(0, 1) == "m",
+        settled: w.substring(1, 2) == "s",
+        state: w.substring(2, 3) == "t",
+        unshared: w.substring(3, 4) == "i",
+        consumed: w.substring(4, 5) == "o",
+    }
+}
+
+/// A field's SPELLING, from the same pair — the part `by_name` is asked for.
+fn name_of_field(pair: string) -> string {
+    let at = pair.index_of(":")
+    if at < 0 { return pair }
+    pair.substring(at + 1, pair.length)
+}
+
+/// A variant's PAYLOAD, from its `name:t1,t2` pair — no types when it carries none.
+// LICENSED compiler.free_state_verb: a RECORD DECODER — a workspace and one arm's text in, the payload's types out.
+fn payload_of(ws: Workspace, arm: string) -> List<TypeId> {
+    [ws.interface_type(t) for t in name_of_field(arm).split("|") if t != ""]
+}
+
+/// THE DECLARATION KIND a record's shape and kind column name. `Struct`/`Boxed`
+/// are always a `Record` and `Named` always `Named` — their kind column reads
+/// "type" either way, so the SHAPE alone tells them apart; every other shape
+/// reads its kind from the kind column, which is theirs to spell — an `Enum`'s
+/// says whether a `collect enum` made it.
+fn declared_kind(shape: Shape, word: string) -> DeclKind? {
+    match shape {
+        .Struct or .Boxed -> .Record,
+        .Enum -> enum_kind(word),
+        .Named -> .Named,
+        .Alias -> .Alias,
+        .Const -> .Const,
+        .Collect -> .Collect,
+        .State -> .State,
+        .Aims -> .Impl,
+        .Fn or .Extern or .Opaque -> kind_of_word(word),
+    }
+}
+
+/// The kind an `Enum` shape's kind column names — an enum or a `collect enum`,
+/// and nothing else.
+fn enum_kind(word: string) -> DeclKind? {
+    let k? = kind_of_word(word) else { return null }
+    match k {
+        .Enum or .CollectEnum -> k,
+        .Builtin or .Fn or .Record or .Named or .Alias or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const or .Collect or .State -> null,
+    }
+}
+
+/// THE KIND WORD a record's kind column spells — the shapes that need it:
+/// `Fn`/`Extern`'s Fn-vs-Method, `Opaque`'s trait/syntax/default/main/case/builtin.
+fn kind_of_word(word: string) -> DeclKind? {
+    match word {
+        "fn" -> .Fn,
+        "enum" -> .Enum,
+        "trait" -> .Trait,
+        "syntax" -> .Syntax,
+        "method" -> .Method,
+        "default" -> .Default,
+        "impl" -> .Impl,
+        "main" -> .Main,
+        "case" -> .Case,
+        "const" -> .Const,
+        "builtin" -> .Builtin,
+        "collect" -> .Collect,
+        "collect_enum" -> .CollectEnum,
+        _ -> null,
+    }
+}
+
+// ── THE OBJECT'S KEY, FROM INPUTS ───────────────────────────────────
+
+/// A module with no record yet, as its files' bytes: it over-invalidates, never under.
+// LICENSED compiler.free_state_verb: a KEY DERIVATION — a workspace and a module in, the digest of its bytes out.
+export fn module_bytes(ws: Workspace, m: ModulePath) -> string {
+    let lines = [fields_wire([path, ws.text_digest(path)]) for path in sorted_texts(ws.module_files(m))]
+    blake_key(fields_wire(lines))
+}
+
+/// WHAT A DEPENDENT KEYS ON: a module's interface digest, from its record. A record's
+/// declaration TEXT is no interface — it carries the receivers pass's written bits,
+/// which move without a contract moving.
+/// A record that places a file the host no longer has is a previous tree's, and
+/// keys on the module's bytes like no record at all.
+export fn bytes_key(ws: Workspace, store: Store, m: ModulePath) -> string {
+    let row = ws.producers_in(store, m)
+    if !row.placed.all((path) -> ws.there(path)) { return module_bytes(ws, m) }
+    if !row.files.is_empty() && row.files.all(it.length > 4) { return ifaces_digest([l[4] for l in row.files]) }
+    iface_of(record_cached(ws, store, m)) ?? sub_module_bytes_key(ws, store, m) ?? module_bytes(
+        ws,
+        m,
+    )
+}
+
+/// Whether a record line is a `file` line naming a path.
+fn places_file(parts: List<string>) -> bool { parts.length >= 3 && parts[0] == "file" }
+
+/// A file-level module within a package (a bare intra-package `use`'s
+/// target) has no record of its own — only the PACKAGE ROOT's record
+/// does, one `file` line per file, each carrying that file's own
+/// interface digest (`FileLines.iface`, `interface.av`'s `record_of`).
+/// That digest already covers every declaration the file names,
+/// exported or not — a same-package `use` reaches both — so reading
+/// it here is the same digest a cross-package `use` of the whole
+/// package already keys on, narrowed to the files this path names.
+/// Null when the root itself has no record yet, or names a file the
+/// root's record has not placed — module_bytes is the honest answer
+/// for either, never a guess.
+// LICENSED compiler.free_state_verb: a KEY DERIVATION — a workspace and a module in, the digest of its bytes out.
+fn sub_module_bytes_key(ws: Workspace, store: Store, m: ModulePath) -> string? {
+    if m.local().is_empty() || m.package() == null { return null }
+    files_iface(ws, store, module_path(m.segments.slice(0, 2)), ws.module_files(m))
+}
+
+/// SOME OF A MODULE'S FILES' INTERFACE, as one digest: each file's own interface
+/// digest from the module's record — every file of it is the record's own `iface`.
+/// Null when none is asked, one is gone, or the record places one nowhere.
+// LICENSED compiler.free_state_verb: a KEY DERIVATION — a workspace, a module and its files in, their interface digest out.
+fn files_iface(ws: Workspace, store: Store, m: ModulePath, paths: List<string>) -> string? {
+    if paths.is_empty() || paths.any((f) -> !ws.there(f)) { return null }
+    let columns = ws.file_columns(store, m)
+    let ats = [columns.get(f) for f in paths]
+    if ats.any((at: List<string>?) -> at == null || at!.length <= 4) { return null }
+    ifaces_digest([at![4] for at in ats])
+}
+
+/// Files' interface digests as one — in name order, so the order they were asked in is no part of it.
+fn ifaces_digest(ifaces: List<string>) -> string { digest_of(joined(sorted_texts(ifaces), "\n")) }
+
+/// ONE FILE'S KEY — what its object, what it said and what it asks are kept under: its
+/// text, the texts its compile-time runs read, and the interfaces its bodies can see.
+/// THE OBJECT KEY OF A FILE'S PARTS under this workspace's compiler and build mode — the
+/// one fold, so a key computed on any route is the key the file was kept under.
+// LICENSED compiler.free_state_verb: a KEY DERIVATION — a workspace, a store, a module and a file in, the key out.
+// LICENSED compiler.free_state_verb: a KEY DERIVATION — a workspace and parts in, the key out.
+export fn object_key_of_parts(ws: Workspace, k: KeyParts) -> string { node_key(Stored.Obj, [ws.compiler_id(), key_of_parts(k)]) }
+
+/// WHAT ONE FILE'S KEY IS MADE OF: its module and path, its text's digest, the
+/// digest of each text its compile-time runs read ("" for one that is gone), the
+/// set each of its package-wide collects gathered, and every module its bodies can
+/// see with that module's interface key and how many files it held. The key is
+/// these parts' digest, so a key and the parts it is shown as never disagree.
+export type KeyParts = { module: string, path: string, text: string, runs: List<string>, gathered: List<string>, seen: List<SeenPart> }
+
+/// A plain free fn of a module as the narrowed view names it: the module's place in the
+/// view, and its interface form.
+type NamedForm = { dep: int, form: string }
+
+/// A plain free fn of one file as its contract reads: its name and its form.
+type FnForm = { name: string, form: string }
+
+/// A module's view split by what a name reaches: the digest of the lines no name reaches, per
+/// module seen, and the plain free fns by name. `whole` when a file of the view carries no digest.
+export type NarrowIndex = { whole: bool, globals: List<string>, alone: List<string>, named: Map<string, List<NamedForm>> }
+
+/// WHETHER A RECORD LINE IS A PLAIN FREE FN OR CONST: reached by its name and by nothing else — not a
+/// method, a nested or generated declaration, an annotated one a collect gathers, a component
+/// or an instance, a host or external one, a static one.
+// LICENSED compiler.free_state_verb: a pure PROJECTION — a record line's fields in, whether a name alone reaches it.
+fn named_alone(p: List<string>) -> bool {
+    if p.length < 13 ||
+        p[0] != "fn" && p[0] != "const" ||
+        p[6] != p[0] ||
+        !p[7].is_empty() ||
+        p[8] != "-1" ||
+        p[11] != "1" {
+        return false
+    }
+    let top = unpacked(p[12])
+    if top.is_empty() { return false }
+    let facts = top[0].split(";")
+    facts.length > 16 &&
+        facts[0] == "0" &&
+        facts[1] == "0" &&
+        facts[2] == "0" &&
+        facts[9] == "0" &&
+        facts[11] == "0" &&
+        facts[12] == "0" &&
+        facts[16] == "0"
+}
+
+/// The lines of a file no name reaches, as one digest.
+// LICENSED compiler.free_state_verb: a pure PROJECTION — a file's record lines in, its unnamed interface digest out.
+fn global_digest(lines: List<string>) -> string {
+    digest_of(
+        joined(
+            sorted_texts([placed_form(unordered(l)) for l in lines if !named_alone(l.split("\t"))]),
+            "\n",
+        ),
+    )
+}
+
+/// A line's contract and the file it stands in: moving a declaration between files is not
+/// nothing — an impl's home is where its methods lower.
+fn placed_form(line: string) -> string { "${line.split("\t")[1]}\t${interface_form(line)}" }
+
+/// A file's own entry declaration (`main`, the statements it runs) stands wherever the last
+/// declaration ended: its ordinal counts declarations, and nothing else reads it.
+fn unordered(line: string) -> string {
+    let p = line.split("\t")
+    if p.length > 6 && p[6] == "main" { joined(["main", p[1], "-"].concat(p.slice(3, p.length)), "\t") } else { line }
+}
+
+/// Every identifier a text spells, once, in name order. A token is a run of letters,
+/// digits and `_`: names in comments and strings count too, which only widens a file's key.
+// LICENSED compiler.free_state_verb: a pure PROJECTION — a text in, the names it spells out.
+fn idents_of(text: string) -> List<string> { sorted_texts(token_counts(text).keys()) }
+
+/// Every identifier a text spells, with how many times.
+// LICENSED compiler.free_state_verb: a pure PROJECTION — a text in, the names it spells out.
+fn token_counts(text: string) -> Map<string, int> {
+    let b = text.bytes()
+    let found: Cell<Map<string, int>> = Cell.new({})
+    mut start = 0 - 1
+    for i in 0..b.length + 1 {
+        let c = if i < b.length { b.at(i) } else { 0 }
+        let inside = c >= 97 && c <= 122 || c >= 65 && c <= 90 || c >= 48 && c <= 57 || c == 95
+        if inside {
+            if start < 0 { start = i }
+        } else if start >= 0 {
+            let word = b.slice(start, i).text()
+            if word != null { found.put(word!, (found.get().get(word!) ?? 0) + 1) }
+            start = 0 - 1
+        }
+    }
+    found.get()
+}
+
+/// A module a file sees: its name, its interface's bytes key, its file count.
+export type SeenPart = { module: string, bytes_key: string, files: int }
+
+impl Workspace {
+    /// A file's key parts, derived.
+    fn key_parts(store: Store, m: ModulePath, path: string) -> KeyParts {
+        KeyParts {
+            module: m.text(),
+            path: path,
+            text: if path == "" { "" } else { self.text_digest(path) },
+            // an object that bakes a compile-time run's answer in reads the TEXT the run read
+            runs: [self.read_token(path, read) for read in kept_runs(record_places(self, store, m).get(path))],
+            // an object that bakes a collect's members in reads the set it gathered
+            gathered: self.gathered_said(store, m, path),
+            seen: self.seen_by_name(store, m, path),
+        }
+    }
+
+    /// What a file's package-wide collects gathered, as its record names it — read
+    /// before anything is parsed, so a key asked while holds settle parses nothing. A
+    /// held file is held to it (`gathered_moved`); a read file's object is keyed by
+    /// the set it gathers now (`gathered_now`).
+    fn gathered_said(store: Store, m: ModulePath, path: string) -> List<string> {
+        [p[7] for p in file_lines(self, store, m, path) if p.length > 7 && p[0] == "gathers"]
+    }
+
+    /// What a text a compile-time run read says NOW: a source file's digest,
+    /// "" for one that is gone — and for a file that is no source, what an
+    /// `embed` of it would answer, its refusal included: a text the host will
+    /// not give is a different answer, never the end of the run.
+    fn run_said(ran: string) -> string {
+        if !self.reads_as_source(ran) { return self.embed_said(ran) }
+        if self.there(ran) { self.text_digest(ran) } else { "" }
+    }
+
+    /// `key_parts`, remembered beside the key it digests to — cleared with it.
+    fn key_parts_cached(store: Store, m: ModulePath, path: string) -> KeyParts {
+        let key = "${m.text()}\t${path}"
+        let known: KeyParts? = self.keys.object_parts.get().get(key)
+        if known != null { return known! }
+        let made = self.key_parts(store, m, path)
+        self.keys.object_parts.put(key, made)
+        made
+    }
+
+    /// ONE READ'S TOKEN IN A READER'S KEY: the read file's text when no declaration
+    /// rode it, the write-time print while its text stands, and a pending marker when
+    /// its text moved but a declaration may still name the same syntax — the token
+    /// `resolve_pending_reads` finalizes once the read file is parsed.
+    fn read_token(reader: string, read: RunRead) -> string {
+        if !self.there(read.path) { return "" }
+        if read.ref == "" || read.print == "" { return self.run_said(read.path) }
+        if self.text_digest(read.path) == read.digest { return read.print }
+        let key = pending_key(reader, read)
+        let done: string? = self.hold.pending_resolved.get().get(key)
+        if done != null { return done! }
+        self
+            .hold
+            .pending_reads
+            .set(self.hold.pending_reads.get().concat([PendingRead { reader: reader, read: read }]))
+        "?${read.print}"
+    }
+
+    /// The modules a module's files see, each with its interface key and file
+    /// count — memoized for the build, since every file of a module sees the same ones.
+    /// Its own module is seen whole; another only through the files it reaches.
+    fn view_parts(store: Store, m: ModulePath) -> List<SeenPart> {
+        let known: List<SeenPart>? = self.keys.view_parts.get().get(m.text())
+        if known != null { return known! }
+        let r = self.reach(store, m)
+        let deps = sorted_texts([m.text()].concat(r.mods))
+        let made = [if dep == m.text() { self.seen_part_of(store, m) } else { self.reached_part(store, dep, r.files_of(dep)) } for dep in deps]
+        self.keys.view_parts.put(m.text(), made)
+        let ni = self.narrow_index(store, m, deps, r)
+        self.keys.view_index.put(m.text(), ni)
+        made
+    }
+
+    /// WHAT A FILE SEES OF THE MODULES ITS MODULE SEES: each part's key covers the module's
+    /// lines no name reaches — types, impls, consts, collects, re-exports, whatever a body
+    /// takes by inference — and, of its plain free fns, the ones whose NAME the file mentions.
+    /// An added, renamed or retyped fn nothing in the file spells moves nothing here. A file
+    /// whose tokens the record does not carry, or a view whose files lack their digest, is
+    /// seen whole.
+    fn seen_by_name(store: Store, m: ModulePath, path: string) -> List<SeenPart> {
+        let whole = self.view_parts(store, m)
+        let index? = self.keys.view_index.get().get(m.text()) else { return whole }
+        let columns = self.file_columns(store, m).get(path) ?? []
+        if index.whole || columns.length < 7 || columns[5] == "" { return whole }
+        let buckets: Cell<Map<string, List<string>>> = Cell.new({})
+        for name in columns[5].split(",") {
+            for hit in index.named.get(name) ?? [] {
+                let key = "${hit.dep}"
+                buckets.put(key, (buckets.get().get(key) ?? []).concat([hit.form]))
+            }
+        }
+        [s with { bytes_key: self.named_key(index, i, buckets.get().get("${i}") ?? []) } for i, s in whole]
+    }
+
+    /// What a file sees of the `i`th module: the lines no name reaches alone when it mentions
+    /// none of its fns, else with the forms of those it does.
+    fn named_key(index: NarrowIndex, i: int, forms: List<string>) -> string {
+        if forms.is_empty() { return index.alone[i] }
+        digest_of(joined([index.globals[i]].concat(sorted_texts(forms)), "\n"))
+    }
+
+    /// A file's plain free fns, each with its form — remembered for the build, since every
+    /// module that reaches the file asks for them; cleared with the view they feed.
+    fn file_fns(store: Store, m: ModulePath, f: string) -> List<FnForm> {
+        let known = self.keys.file_fns.get().get(f)
+        if known != null { return known! }
+        let by: Cell<Map<string, List<FnForm>>> = Cell.new({})
+        for l in (self.forms_at(store, m) ?? "").split("\n") {
+            let q = l.split("\t")
+            if q.length == 3 { by.put(q[0], (by.get().get(q[0]) ?? []).concat([FnForm { name: q[1], form: q[2] }])) }
+        }
+        for path in self.producers_in(store, m).placed { self.keys.file_fns.put(path, by.get().get(path) ?? []) }
+        self.keys.file_fns.get().get(f) ?? []
+    }
+
+    /// Each file a module's record places, with the columns of its `file` line.
+    fn file_columns(store: Store, m: ModulePath) -> Map<string, List<string>> {
+        let by: Cell<Map<string, List<string>>> = Cell.new({})
+        for line in self.producers_in(store, m).files { by.put(line[1], line) }
+        by.get()
+    }
+
+    /// The narrowed view of a module: for each module it sees, in `view_parts` order, the digest
+    /// of its files' lines no name reaches, and every plain free fn of those files by name.
+    fn narrow_index(store: Store, m: ModulePath, deps: List<string>, r: Reach) -> NarrowIndex {
+        let named: Cell<Map<string, List<NamedForm>>> = Cell.new({})
+        mut globals: List<string> = []
+        mut whole = false
+        for i, dep in deps {
+            let at = module_path(dep.split("."))
+            let files = if dep == m.text() { self.module_files(m) } else { r.files_of(dep) }
+            let columns = self.file_columns(store, at)
+            mut digests: List<string> = []
+            for f in files {
+                let p? = columns.get(f) else {
+                    whole = true
+                    continue
+                }
+                if p.length < 7 || p[6] == "" || !self.there(f) {
+                    whole = true
+                    continue
+                }
+                digests.push(p[6])
+                for entry in self.file_fns(store, at, f) {
+                    named
+                        .put(
+                            entry.name,
+                            (named.get().get(entry.name) ?? [])
+                                .concat([NamedForm { dep: i, form: entry.form }]),
+                        )
+                }
+            }
+            globals.push(ifaces_digest(digests))
+        }
+        NarrowIndex {
+            whole: whole,
+            globals: globals,
+            alone: [digest_of(g) for g in globals],
+            named: named.get(),
+        }
+    }
+
+    /// EVERY OTHER MODULE'S FILE A MODULE'S OBJECTS CAN DEPEND ON: each file its own
+    /// files reference, and — since a type reaches a body through a signature the body
+    /// never names, and an impl through its type — each file a reached file's types
+    /// name or its types' impls sit in, closed. A file's module is the record that
+    /// places it among the modules this one sees, never the package table, which
+    /// grows as packages are admitted.
+    fn reach(store: Store, m: ModulePath) -> Reach {
+        let sees = self.sees_records(store, m)
+        mut r = Reach {
+            home: m.text(),
+            sees: {},
+            placed: self.keys.file_owners.get(),
+            files: [],
+            owners: [],
+            walked: {},
+            mods: [],
+            indexes: [],
+            late: [],
+        }
+        for d in sees { r.sees.set(d, true) }
+        r.add_all(self.reach_refs(store, m))
+        // a name reached through a re-export references its original's file, so the
+        // file that re-exports it is reached too: re-pointing the name moves that file
+        r.add_all(flatten([self.reexporting_files(store, d) for d in sees]))
+        r.indexes = [self.typed_named(store, d) for d in r.mods]
+        r.late = []
+        // LICENSED compiler.seen_accumulator: a WORKLIST — the list grows while it is walked
+        mut at = 0
+        while at < r.files.length {
+            let f = r.files[at]
+            for index in r.indexes { r.add_all(index.get(f) ?? []) }
+            at = at + 1
+            // a module that joins late is asked of every file already walked
+            while !r.late.is_empty() {
+                let index = self.typed_named(store, r.late[0])
+                r.indexes.push(index)
+                r.late = r.late.slice(1, r.late.length)
+                for g in r.files.slice(0, at) { r.add_all(index.get(g) ?? []) }
+            }
+        }
+        r
+    }
+
+    /// THE RECORDS A MODULE SEES, each indexed — so every file one places is filed as
+    /// its own: its own module's, its imports' closure, the prelude's, and each one's
+    /// enclosing modules', since a file-level module's record is its directory's.
+    fn sees_records(store: Store, m: ModulePath) -> List<string> {
+        let names = seen_modules(self, store, m).concat([prelude_module().text()])
+        let sees = distinct([e for n in names for e in enclosings(n)])
+        for n in sees { self.place_files(store, n) }
+        sees
+    }
+
+    /// Files each `file` line of a module's record as that module's own — once per
+    /// record for the build.
+    fn place_files(store: Store, name: string) {
+        if self.keys.placed_from.get().get(name) != null { return }
+        self.keys.placed_from.put(name, true)
+        for path in self.producers_in(store, module_path(name.split("."))).placed { self.keys.file_owners.put(path, name) }
+    }
+
+    /// A module's producer row, or the one its record makes when no row is kept.
+    fn producers_in(store: Store, m: ModulePath) -> Producers {
+        self.producers_for(store, m) ?? producers_of(m, record_fields(self, store, m))
+    }
+
+    /// The files a module's record references by name, builtin types apart.
+    fn reach_refs(store: Store, m: ModulePath) -> List<string> { self.producers_in(store, m).reach_refs }
+
+    /// The files of a seen module's record that re-export a name — memoized per record, so a
+    /// record written since is read again, since every module that sees `name` asks again and a scan of
+    /// its whole record per asker is the module's lines squared.
+    fn reexporting_files(store: Store, name: string) -> List<string> {
+        let m = module_path(name.split("."))
+        let key = self.record_key(m)
+        let known: List<string>? = self.records.record_reexports.get().get(key)
+        if known != null { return known! }
+        let made = distinct([p[1] for p in self.producers_in(store, m).reexports])
+        self.records.record_reexports.put(key, made)
+        made
+    }
+
+    /// `typed_index` by the module's name.
+    fn typed_named(store: Store, name: string) -> Map<string, List<string>> {
+        let known: Map<string, List<string>>? = self.keys.typed_files.get().get(name)
+        known ?? self.typed_index(store, module_path(name.split(".")))
+    }
+
+    /// Each file of a module's record with the files its types name — its type uses',
+    /// and its declarations' wires' — and each type's file with the files its impls
+    /// sit in, memoized for the build.
+    fn typed_index(store: Store, m: ModulePath) -> Map<string, List<string>> {
+        let known: Map<string, List<string>>? = self.keys.typed_files.get().get(m.text())
+        if known != null { return known! }
+        mut made: Map<string, List<string>> = {}
+        for edge in self.producers_in(store, m).typed {
+            made.set(edge.path, (made.get(edge.path) ?? []).concat([edge.value]))
+        }
+        self.keys.typed_files.put(m.text(), made)
+        made
+    }
+
+    /// A module another reaches into, keyed on the reached files' interfaces alone —
+    /// the whole module's when its record places one of them nowhere.
+    fn reached_part(store: Store, dep: string, files: List<string>) -> SeenPart {
+        let at = module_path(dep.split("."))
+        SeenPart {
+            module: dep,
+            bytes_key: files_iface(self, store, at, files) ?? bytes_key_cached(self, store, at),
+            files: files.length,
+        }
+    }
+
+    fn seen_part_of(store: Store, m: ModulePath) -> SeenPart {
+        SeenPart {
+            module: m.text(),
+            bytes_key: bytes_key_cached(self, store, m),
+            files: self.module_files(m).length,
+        }
+    }
+}
+
+/// A MODULE'S REACH, as it is walked: the files reached, each beside the module whose
+/// record places it, and those modules in the order they joined with each one's
+/// index — `late` holds the ones not yet asked of the files already walked.
+type Reach = {
+    home: string,
+    sees: Map<string, bool>,
+    placed: Map<string, string>,
+    files: List<string>,
+    owners: List<string>,
+    walked: Map<string, bool>,
+    mods: List<string>,
+    indexes: List<Map<string, List<string>>>,
+    late: List<string>,
+}
+
+impl Reach {
+    /// A file joins once, when a module the walk sees places it — never the walk's own.
+    mut fn add(t: string) {
+        if self.walked.get(t) != null { return }
+        let d? = self.placed.get(t) else { return }
+        if d == self.home || self.sees.get(d) == null { return }
+        self.walked.set(t, true)
+        self.files.push(t)
+        self.owners.push(d)
+        if !self.mods.contains(d) {
+            self.mods.push(d)
+            self.late.push(d)
+        }
+    }
+
+    mut fn add_all(ts: List<string>) { for t in ts { self.add(t) } }
+
+    /// The reached files one module places.
+    fn files_of(d: string) -> List<string> { [f for i, f in self.files if self.owners[i] == d] }
+}
+
+/// A module name and every module enclosing it, outermost first — the root package's
+/// own root `""` among them, since its record places the files beside `src/`.
+fn enclosings(name: string) -> List<string> {
+    let segments = name.split(".")
+    let from = if module_path(segments).packaged() { 1 } else { 0 }
+    [joined(segments.slice(0, k), ".") for k in from..segments.length + 1]
+}
+
+/// The key a file's parts digest to — BLAKE3 over an arity-folded encoding of every
+/// part, so a member that moved what a part folds to moves the object key.
+fn key_of_parts(k: KeyParts) -> string {
+    blake_key(
+        fields_wire(
+            [
+                k.module,
+                k.path,
+                k.text,
+                fields_wire(k.runs),
+                fields_wire(k.gathered),
+                seen_digest(k.seen),
+            ],
+        ),
+    )
+}
+
+/// Where a file's key parts are kept: under its PATH, so the parts a key was made
+/// of the last time the file was kept can be read when its key no longer is.
+export fn parts_key(path: string) -> string { node_key(Stored.Unit, ["parts", path]) }
+
+/// A file's key parts as a row: a line per part, its fields apart by tabs.
+export fn parts_wire(k: KeyParts) -> string {
+    joined(
+        ["module\t${k.module}", "path\t${k.path}", "text\t${k.text}"]
+            .concat(["run\t${r}" for r in k.runs])
+            .concat(["gathered\t${g}" for g in k.gathered])
+            .concat(seen_lines(k.seen)),
+        "\n",
+    )
+}
+
+/// Where a module's seen interfaces are kept: one row a module's files share.
+export fn seen_key(module: string) -> string { node_key(Stored.Unit, ["seen", module]) }
+
+/// The modules a module's files see, as a row: a line each.
+export fn seen_wire(seen: List<SeenPart>) -> string { joined(seen_lines(seen), "\n") }
+
+fn seen_lines(seen: List<SeenPart>) -> List<string> { ["seen\t${s.module}\t${s.bytes_key}\t${s.files}" for s in seen] }
+
+/// `seen_wire`, read back — the empty row is nothing seen, and null for a row
+/// that is not one.
+export fn seen_of(raw: string) -> List<SeenPart>? {
+    if raw.is_empty() { return [] }
+    let seen = [if r.length == 4 && r[0] == "seen" { seen_row(r) } else { null } for r in [wire_fields(line, "\t") for line in wire_fields(raw, "\n")]]
+    if seen.any(it == null) { return null }
+    [s! for s in seen]
+}
+
+/// `parts_wire`, read back — null for a row that is not one.
+export fn parts_of(raw: string) -> KeyParts? {
+    let rows = [wire_fields(line, "\t") for line in wire_fields(raw, "\n")]
+    let module? = field_named(rows, "module") else { return null }
+    let path? = field_named(rows, "path") else { return null }
+    let text? = field_named(rows, "text") else { return null }
+    let seen = [seen_row(r) for r in rows if r.length == 4 && r[0] == "seen"]
+    if seen.any(it == null) { return null }
+    KeyParts {
+        module: module,
+        path: path,
+        text: text,
+        runs: [r[1] for r in rows if r.length == 2 && r[0] == "run"],
+        gathered: [r[1] for r in rows if r.length == 2 && r[0] == "gathered"],
+        seen: [s! for s in seen],
+    }
+}
+
+fn field_named(rows: List<List<string>>, name: string) -> string? {
+    let row? = rows.find(it.length == 2 && it[0] == name) else { return null }
+    row[1]
+}
+
+fn seen_row(r: List<string>) -> SeenPart? {
+    let files? = parse_int(r[3]) else { return null }
+    SeenPart { module: r[1], bytes_key: r[2], files: files }
+}
+
+/// ONE PART OF A KEY THAT MOVED: what it is, how it read then and reads now, and
+/// for a module's interface the contract lines it lost (`- `) and gained (`+ `).
+export type PartMoved = { part: KeyPart, was: string, now: string, lines: List<string> }
+
+/// Which part of a key moved: the file's own text, what its compile-time runs
+/// read, or a module it sees — one it came to see, one it no longer sees, or one
+/// whose interface moved.
+export enum KeyPart {
+    Text
+    Runs
+    Came(module: string)
+    Went(module: string)
+    Interface(module: string)
+    Gathered
+}
+
+impl KeyPart {
+    fn says() -> string {
+        match self {
+            .Text -> "its text",
+            .Runs -> "what its compile-time runs read",
+            .Came(m) or .Went(m) -> "module ${m}",
+            .Interface(m) -> "module ${m}'s interface",
+            .Gathered -> "what its collects gathered",
+        }
+    }
+}
+
+/// What moved between a key's parts then and now — its text, what its runs read,
+/// and each module it sees whose interface moved, came or went.
+export fn parts_moved(store: Store, bodies: RecordBodies, was: KeyParts, now: KeyParts) -> List<
+    PartMoved,
+> {
+    let text = if was.text == now.text { [] } else { [PartMoved { part: KeyPart.Text, was: was.text, now: now.text, lines: [] }] }
+    let runs = if joined(was.runs, ",") == joined(now.runs, ",") {
+        []
+    } else {
+        [
+            PartMoved {
+                part: KeyPart.Runs,
+                was: joined(was.runs, ","),
+                now: joined(now.runs, ","),
+                lines: [],
+            },
+        ]
+    }
+    let gathered = if fields_wire(was.gathered) == fields_wire(now.gathered) {
+        []
+    } else {
+        [
+            PartMoved {
+                part: KeyPart.Gathered,
+                was: joined(was.gathered, ","),
+                now: joined(now.gathered, ","),
+                lines: [],
+            },
+        ]
+    }
+    text.concat(runs).concat(gathered).concat(seen_list_moved(store, bodies, was.seen, now.seen))
+}
+
+/// What moved between the modules seen then and now: each whose interface
+/// moved, came or went.
+export fn seen_list_moved(
+    store: Store,
+    bodies: RecordBodies,
+    was: List<SeenPart>,
+    now: List<SeenPart>,
+) -> List<PartMoved> {
+    let seen = [m for s in now for m in seen_moved(store, bodies, was.find(it.module == s.module), s)]
+    seen
+        .concat(
+            [PartMoved {
+                part: KeyPart.Went(s.module),
+                was: seen_words(s),
+                now: "no longer seen",
+                lines: [],
+            } for s in was if !now.any(it.module == s.module)],
+        )
+}
+
+fn seen_moved(store: Store, bodies: RecordBodies, was: SeenPart?, now: SeenPart) -> List<PartMoved> {
+    let prior? = was else {
+        return [
+            PartMoved {
+                part: KeyPart.Came(now.module),
+                was: "not seen",
+                now: seen_words(now),
+                lines: [],
+            },
+        ]
+    }
+    if prior.bytes_key == now.bytes_key && prior.files == now.files { return [] }
+    [
+        PartMoved {
+            part: KeyPart.Interface(now.module),
+            was: seen_words(prior),
+            now: seen_words(now),
+            lines: forms_moved(forms_at(store, bodies, prior), forms_at(store, bodies, now)),
+        },
+    ]
+}
+
+/// A record's contract lines — each declaration's `interface_form`, in name order.
+fn record_forms(record: string) -> List<string> {
+    sorted_texts(
+        [f for line in record.split("\n") if named_file(line) != "" for f in [interface_form(line)] if f != ""],
+    )
+}
+
+/// The contract lines of the record a module had under one interface — null
+/// when no body was kept for it.
+fn forms_at(store: Store, bodies: RecordBodies, s: SeenPart) -> List<string>? {
+    let body? = bodies.body(store, s.module, s.bytes_key) else { return null }
+    record_forms(body)
+}
+
+/// The lines one interface lost and the other gained — nothing when either
+/// side was never kept.
+fn forms_moved(was: List<string>?, now: List<string>?) -> List<string> {
+    if was == null || now == null { return [] }
+    ["- ${f}" for f in was! if !now!.contains(f)]
+        .concat(["+ ${f}" for f in now! if !was!.contains(f)])
+}
+
+/// The interface digest a record names on its `iface` line.
+/// What a record keeps of itself: every line but its files' declaration and maker lines,
+/// which their own rows hold.
+fn record_headers(made: string) -> string { joined([l for l in made.split("\n") if !items_line(read_fields(l))], "\n") }
+
+fn iface_of(record: string) -> string? {
+    let line? = record.split("\n").find(it.starts_with("iface\t")) else { return null }
+    line.substring(6, line.length)
+}
+
+fn seen_words(s: SeenPart) -> string { "bytes ${s.bytes_key}, ${s.files} file${if s.files == 1 { "" } else { "s" }}" }
+
+/// Whether a `ref` line names a builtin — the language's own, whose wire names
+/// whichever file minted the builtins, never a module an importer reaches.
+fn names_builtin(row: List<string>) -> bool {
+    let words = wire_fields(row[2], "~")
+    words.length >= 2 && builtin_word(words[1])
+}
+
+/// Whether a wire's kind word is the builtin's.
+fn builtin_word(word: string) -> bool {
+    let kind? = kind_of_word(word) else { return false }
+    match kind {
+        .Builtin -> true,
+        .Fn or .Record or .Enum or .Named or .Alias or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const or .Collect or .CollectEnum or .State -> false,
+    }
+}
+
+/// The files a declaration line's type wires name: the word after each declared
+/// type's tag (`S~<decl wire>` and its kin) opens that declaration's wire, its file.
+fn wired_files(row: List<string>) -> List<string> {
+    let words = [w for field in row.slice(13, row.length) for a in field.split(";") for b in a.split("|") for c in b.split(":") for w in c.split("~")]
+    [words[i + 1] for i, w in words if i + 1 < words.length && opens_decl_wire(w)]
+}
+
+/// The file an `impl` line's aimed type sits in — the impl rides wherever that type
+/// goes, a `dyn` box's vtable included. Null for every other line.
+fn aimed_file(row: List<string>) -> string? {
+    if row.length <= 13 { return null }
+    let shape? = shape_of(row[0]) else { return null }
+    match shape { .Aims -> wire_fields(row[13], "~")[0], _ -> null }
+}
+
+/// Whether a type wire's word is a tag a declaration's wire follows.
+fn opens_decl_wire(word: string) -> bool {
+    ["S", "E", "D", "N", "R", "A"]
+        .contains(if word.starts_with("^") { word.substring(1, word.length) } else { word })
+}
+
+/// The interfaces a module's files see, as one digest.
+fn seen_digest(seen: List<SeenPart>) -> string { digest_of(joined([s.bytes_key for s in seen], "\n")) }
+
+/// The files a record says one file's compile-time runs read.
+fn kept_runs(at: Placed?) -> List<RunRead> { at?.runs ?? [] }
+
+/// A list of texts as one record field: each as hex, so no character a text may
+/// hold is spent on the record's own separators.
+fn hex_fields(xs: List<string>) -> string { joined([hex(x.bytes()) for x in xs], "|") }
+
+/// `hex_fields` read back; null when a part is no text's hex — a field this
+/// compiler never wrote.
+fn hex_fields_of(field: string) -> List<string>? {
+    let xs = [unhex(part)?.text() for part in field.split("|")]
+    if xs.any(it == null) { return null }
+    [x! for x in xs]
+}
+
+/// ONE READ as one field: its five texts hexed, `~` between. Hexing each keeps
+/// a print holding `~`, `|` or a tab from spending the field's own separators; the
+/// path and the declaration are spelled from the tree first, since no store reads inside hex.
+fn read_wire(r: RunRead) -> string {
+    joined(
+        [
+            hex(tree_saved(r.path).bytes()),
+            hex(r.digest.bytes()),
+            hex(tree_saved(r.ref).bytes()),
+            hex(r.print.bytes()),
+            hex(r.outline.bytes()),
+        ],
+        "~",
+    )
+}
+
+/// A hex cell read back: empty text for an empty cell. `split` DROPS a run's
+/// trailing empty run, so a cell that was written empty arrives absent.
+fn unhex_text(s: string) -> string? {
+    if s.is_empty() { return "" }
+    let b? = unhex(s) else { return null }
+    b.text()
+}
+
+/// `read_wire` read back — a legacy part with no `~` is a path alone, a read
+/// whose file was named before a declaration rode it. The cells are read
+/// through core's `wire_fields` — which keeps the empty LAST cell `split`
+/// drops — then padded to four: a plain read ends `~~~`, and a raw split
+/// reads it two cells short.
+fn read_of_wire(s: string) -> RunRead? {
+    if !s.contains("~") {
+        let text? = unhex_text(s) else { return null }
+        return RunRead { path: tree_unsaved(text), digest: "", ref: "", print: "", outline: "" }
+    }
+    let parts = wire_fields(s, "~")
+    if parts.length > 5 { return null }
+    let cells = parts.concat(["", "", "", "", ""]).slice(0, 5)
+    let pt? = unhex_text(cells[0]) else { return null }
+    let dt? = unhex_text(cells[1]) else { return null }
+    let rt? = unhex_text(cells[2]) else { return null }
+    let qt? = unhex_text(cells[3]) else { return null }
+    let ot? = unhex_text(cells[4]) else { return null }
+    RunRead { path: tree_unsaved(pt), digest: dt, ref: tree_unsaved(rt), print: qt, outline: ot }
+}
+
+/// A list of reads as one record field, each a `read_wire`.
+export fn reads_field(reads: List<RunRead>) -> string { joined([read_wire(r) for r in reads], "|") }
+
+/// `reads_field` read back; null when a part is no read — a field this compiler
+/// never wrote.
+export fn reads_of(field: string) -> List<RunRead>? {
+    if field.is_empty() { return [] }
+    let xs = [read_of_wire(part) for part in field.split("|")]
+    if xs.any(it == null) { return null }
+    [x! for x in xs]
+}
+
+/// The key a pending read resolves under: its reader, the read file, and the
+/// declaration that rode it.
+fn pending_key(reader: string, read: RunRead) -> string { "${reader}\t${read.path}\t${read.ref}" }
+
+/// The reads with each one's first appearance kept, order intact — `distinct`
+/// over the wire, since a read is a record and not a string.
+fn distinct_reads(xs: List<RunRead>) -> List<RunRead> {
+    mut seen: Map<string, bool> = {}
+    mut out: List<RunRead> = []
+    for r in xs {
+        let w = read_wire(r)
+        if seen.get(w) == null {
+            seen.set(w, true)
+            out.push(r)
+        }
+    }
+    out
+}
+
+/// A `file` line's runs read back; null when one is no read's hex — a line this
+/// compiler never wrote, so it places nothing.
+fn runs_of(parts: List<string>) -> List<RunRead>? {
+    if parts.length < 4 { return [] }
+    reads_of(parts[3])
+}
+
+/// The modules a module's record says it imports — memoized for the build.
+// LICENSED compiler.free_state_verb: see `record_cached` — a Workspace method trips the F2010 defect.
+fn imports_kept(ws: Workspace, store: Store, name: string) -> List<string> {
+    let known: List<string>? = ws.import_lists.get().get(name)
+    if known != null { return known! }
+    let made = distinct(
+        [p[1] for p in ws.producers_in(store, module_path(name.split("."))).walk if p[0] == "import" && p.length > 1],
+    )
+    ws.import_lists.put(name, made)
+    made
+}
+
+/// THE MODULES A PROGRAM REACHES: its own package's, the prelude, and the closure of what they
+/// import — a parsed module by the `use` lines it has now, a held one by its record — with each
+/// package a held `collect` gathers whole, as `pkg:KEY`. What a held file said stands in the store
+/// whatever else ran in the directory; it is printed only when the program reaches it.
+// LICENSED compiler.free_state_verb: a pure PROJECTION — the workspace, a store and the program in, the modules reached out.
+fn reached_modules(ws: Workspace, store: Store, p: Program) -> Map<string, bool> {
+    mut reached: Map<string, bool> = {}
+    mut parsed_in: Map<string, List<Analysis>> = {}
+    for a in p.files {
+        let m = ws.module_of(a.view.source.file)
+        parsed_in.set(m, (parsed_in.get(m) ?? []).concat([a]))
+    }
+    mut held_in: Map<string, bool> = {}
+    mut work: List<string> = [prelude_module().text()]
+        .concat(
+            distinct(
+                [ws.module_of(path) for path in [a.view.source.file for a in p.files] if ws.holder_of_path(path) == 0],
+            ),
+        )
+    mut at = 0
+    while at < work.length {
+        let m = work[at]
+        at = at + 1
+        if reached.get(m) != null { continue }
+        reached.set(m, true)
+        if held_in.get(m) != null {
+            work = work.concat(imports_kept(ws, store, m))
+            for parts in ws.producers_in(store, module_path(m.split("."))).walk {
+                if parts[0] == "gathers" && parts.length > 1 { reached.set("pkg:${parts[1]}", true) }
+            }
+        }
+        for a in parsed_in.get(m) ?? [] {
+            let from = ws.packages()[ws.holder_of_path(a.view.source.file)]
+            for s in a.view.stmts {
+                let u = a.view.store.use_parts(s)
+                if u != null { work.push(qualified(module_path(u!.path), from).text()) }
+            }
+        }
+    }
+    reached
+}
+
+/// Whether a program reaches the file at `path`: its own package's, a reached module's, or a
+/// package some reached `collect` gathers whole.
+// LICENSED compiler.free_state_verb: a pure PROJECTION — the workspace, the reached modules and a path in.
+fn reaches_file(ws: Workspace, reached: Map<string, bool>, path: string) -> bool {
+    let holder = ws.holder_of_path(path)
+    holder == 0 ||
+        reached.get(ws.module_of(path)) != null ||
+        reached.get("pkg:${ws.packages()[holder].key}") != null
+}
+
+/// EVERY MODULE A FILE OF `m` CAN SEE A TYPE OF: its own — a sibling file's names need no
+/// import — and the closure of its imports, since a type reaches a body through a
+/// signature the body never names. In name order.
+// LICENSED compiler.free_state_verb: a pure PROJECTION — the workspace, a store and a module in, the modules it sees out.
+fn seen_modules(ws: Workspace, store: Store, m: ModulePath) -> List<string> {
+    // LICENSED compiler.seen_accumulator: a WORKLIST — the list grows while it is walked
+    mut seen: List<string> = [m.text()]
+    mut at = 0
+    while at < seen.length {
+        for dep in imports_kept(ws, store, seen[at]) {
+            if !seen.contains(dep) { seen.push(dep) }
+        }
+        at = at + 1
+    }
+    sorted_texts(seen)
+}
+
+/// EVERY ROOT MODULE A PREVIOUS BUILD WROTE DOWN — where the held walk starts. Whether
+/// a FILE is held is `load_interface`'s question, asked per file of its object and its
+/// asks; a module is walked for its record alone, because the entry's object is keyed
+/// by its own bytes and a root that is only an entry has no other.
+// LICENSED compiler.free_state_verb: THE HELD WALK — a workspace and a store in, the modules worth loading out.
+export fn held_modules(ws: Workspace, store: Store, built: string?) -> List<ModulePath> {
+    [m for m in [module_path(n.split(".")) for n in distinct([ws.module_of(p) for p in ws.entry_files(built)])] if record_cached(ws, store, m) != ""]
+}

@@ -1,0 +1,32 @@
+//! proves: a WebSocket whose opening handshake is refused closes the
+//! connection it dialed — the server reads the end
+use @std.net.{Conn, Listener, NetError, Read, listen}
+use @std.time.{ms, secs, sleep}
+use @std.http.ws.{dialed, ws_limits}
+
+/// Whether the peer has closed: everything it wrote read, then the end.
+fn ended(c: Conn) -> Result<bool, NetError> {
+    match c.try_read(65536)? { .Data(_) -> ended(c), .Eof -> true, .Pending -> false }
+}
+
+/// One connection accepted and its upgrade answered with a plain 200.
+fn refuses(l: Listener) -> Result<Conn, NetError> {
+    let c = l.accept()?
+    c.read(4096)?
+    c.write("HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n".bytes())?
+    .Ok(c)
+}
+
+fn run() -> Result<string, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let server = spawn refuses(l)
+    let opened = dialed("127.0.0.1", l.port, "/chat", secs(2), ws_limits()) is .Ok
+    let peer = server.await?
+    sleep(ms(20))
+    let closed = ended(peer)?
+    peer.close()?
+    l.close()?
+    .Ok("${opened} ${closed}")
+}
+
+run() catch e -> "failed: ${e.verb} ${e.subject} ${e.errno}"

@@ -1,0 +1,72 @@
+// A write summary (compiler/receivers.av) reads a seated fn's nodes
+// through `self.decls.store(d)` — a table read the Kernel's `ask` never
+// sees (`features/bypass.av`'s `Bypassed.Store`) — for declarations that
+// are never its own. It calls `touch(self.syntax(d))` first, so that
+// foreign read depends on `d`'s own syntax, never only on the file's
+// whole `Parsed`.
+use @std.avrac.testing.{test_workspace}
+use compiler.{Workspace, syntax_in_key}
+use compiler.host.{memory_host}
+use core.{DeclId}
+use @std.relation.engine.{Key, same_key}
+
+fn syntax_key(ws: Workspace, d: DeclId) -> Key { syntax_in_key(ws, d) }
+
+fn receivers_workspace(main: string) -> Workspace {
+    test_workspace(
+        memory_host(
+            {
+                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+                "/w/src/main.av": main,
+            },
+            ["/w/avra.toml", "/w/src/main.av"],
+        ),
+        "/w",
+    )
+}
+
+fn receivers_decl_named(ws: Workspace, name: string) -> DeclId {
+    [x.id for x in ws.decls.all_decls() if x.name == name][0]
+}
+
+/// `a`'s body is the only thing this varies; `b` never moves. Both are
+/// plain fns, so the write walk's own `seated` predicate takes both.
+fn receivers_source(a_body: string, b_body: string) -> string {
+    "fn a() -> int {\n    ${a_body}\n}\nfn b() -> int {\n    ${b_body}\n}\n"
+}
+
+/// Runs `b`'s write summary and answers `b`'s own syntax hash —
+/// the value a downstream reader that depends on the summary
+/// would settle on.
+fn receivers_synced_b(ws: Workspace) -> int {
+    let _ = ws.items(ws.file_id("/w/src/main.av"))
+    let _ = ws.writes_of(receivers_decl_named(ws, "b"))
+    ws.syntax(receivers_decl_named(ws, "b"))
+}
+
+spec "compiler/receivers — a foreign store_of read depends on the declaration's own syntax" {
+    given "`b`'s write summary over a program with two plain fns" {
+        then "its own dependency list names `b`'s Syntax directly, not only the file's Parsed" {
+            let ws = receivers_workspace(receivers_source("1", "2"))
+            let _ = ws.items(ws.file_id("/w/src/main.av"))
+            let b = receivers_decl_named(ws, "b")
+            let _ = ws.writes_of(b)
+            ws
+                .cells_named("write_summary")
+                .any(
+                    (s: Key) -> ws
+                        .db
+                        .edges_by_reader(s)
+                        .any((k: Key) -> same_key(k, syntax_key(ws, b))),
+                )
+        }
+    }
+    given "a reader that depends on `b`'s syntax through its summary, in a file where `a` is edited" {
+        then "it is reused — `b`'s hash does not move" {
+            receivers_synced_b(receivers_workspace(receivers_source("1", "2"))) == receivers_synced_b(receivers_workspace(receivers_source("1 + 1", "2")))
+        }
+        then "an edit to `b` itself refuses it — the hash moves" {
+            receivers_synced_b(receivers_workspace(receivers_source("1", "2"))) != receivers_synced_b(receivers_workspace(receivers_source("1", "2 + 2")))
+        }
+    }
+}

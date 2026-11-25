@@ -1,0 +1,49 @@
+// A refused sublanguage block derives to its one refusal: lowering never reads a
+// block no expansion stands behind, on any path that derives a program.
+use @std.avrac.testing.{vendored_meta_as, real_meta_source, test_workspace}
+use compiler.{Want, Workspace, Derived}
+use compiler.host.{memory_host}
+
+const sql_provider: string = "export type Select = { cols: List<string>, relation: string, cond: Where? }\nexport type Where = { col: string, value: int }\nexport fn query(cols: List<string>, relation: string, cond: Where?) -> Select { Select { cols: cols, relation: relation, cond: cond } }\nexport fn eq(col: string, value: int) -> Where { Where { col: col, value: value } }\nexport grammar sql {\n    select = \"SELECT\" c:NAME ( \",\" c:NAME )* \"FROM\" t:NAME ( \"WHERE\" w:where )? -> query(c, t, w)\n    where = c:NAME \"=\" v:NAME -> eq(c, v)\n}\n"
+
+/// A package with the provider and `@std/meta` beside a `main.av` that writes `block`,
+/// derived through the door `from`.
+fn refused(block: string, from: fn(Workspace) -> Result<Derived, string>) -> string {
+    let files = vendored_meta_as(
+        {
+            "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@x/c\" = { path = \"vendor/c\" }\n",
+            "/w/src/main.av": "use @x.c.{sql, Select}\nlet q: Select = ${block}\n0\n",
+            "/w/vendor/c/avra.toml": "[package]\nname = \"@x/c\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n",
+            "/w/vendor/c/src/c.av": sql_provider,
+        },
+        real_meta_source(),
+    )
+    let ws = test_workspace(memory_host(files, files.keys()), "/w")
+    ws.alone()
+    match from(ws) { .Err(report) -> report, .Ok(_) -> "derived" }
+}
+
+fn from_sources(ws: Workspace) -> Result<Derived, string> { ws.from_sources("/w/src/main.av", Want.Binary) }
+
+fn derived(ws: Workspace) -> Result<Derived, string> { ws.derived("/w/src/main.av", Want.Binary) }
+
+/// The report is the refusal alone: no defect follows a refusal the compiler already spoke.
+fn says_only_the_refusal(report: string) -> bool {
+    report.starts_with("error[block.parse]") && !report.contains("language.defect")
+}
+
+spec "compiler/derive — a refused block" {
+    given "derived from the sources alone" {
+        then "says its refusal and nothing it caused" {
+            says_only_the_refusal(refused("sql { garbage }", from_sources))
+        }
+        then "says trailing input the same way" {
+            says_only_the_refusal(refused("sql { SELECT name FROM users extra }", from_sources))
+        }
+    }
+    given "derived the way a build derives" {
+        then "says its refusal and nothing it caused" {
+            says_only_the_refusal(refused("sql { garbage }", derived))
+        }
+    }
+}

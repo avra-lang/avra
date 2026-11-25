@@ -1,0 +1,61 @@
+use @std.avrac.testing.{test_workspace, vendored_meta, vendored_meta_paths, refused_in}
+use @std.avrac.compiler.{Program}
+use compiler.host.{memory_host}
+
+fn provider() -> string {
+    "use @std.meta.{Fn, Type, Code, Declared, Directive, Diagnostic, refuse}\nexport fn defaulted(f: Fn, value: int = 7) -> List<Diagnostic> { if value == 7 { [] } else { [refuse(\"wrong default value\")] } }\nexport fn chosen(f: Fn, expected: int, value: int = 7) -> List<Diagnostic> { if value == expected { [] } else { [refuse(\"wrong default value\")] } }\nfn computed() -> int { 9 }\nexport fn calculated(f: Fn, value: int = computed()) -> List<Diagnostic> { if value == 9 { [] } else { [refuse(\"wrong computed default\")] } }\nexport fn pair(f: Fn, first: string = \"a\", second: string = \"b\") -> List<Diagnostic> { if first == \"a\" && second == \"b\" { [] } else { [refuse(\"wrong pair\")] } }\nexport fn projected(t: Type, value: Code = quote { 7 }) -> Declared { Declared { made: [Directive { twin: \"\", name: t.name, at: t.at, source: quote { impl \${t} { static fn configured() -> int { \${value} } } } }] } }\n"
+}
+
+fn program(source: string) -> Program {
+    let files = vendored_meta(
+        {
+            "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n",
+            "/w/src/main.av": "use provider.{defaulted, chosen, calculated, pair, projected}\n" + source,
+            "/w/src/provider.av": provider(),
+        },
+    )
+    let ws = test_workspace(
+        memory_host(
+            files,
+            ["/w/avra.toml", "/w/src/main.av", "/w/src/provider.av"].concat(vendored_meta_paths()),
+        ),
+        "/w",
+    )
+    ws.program("/w/src/main.av")
+}
+
+fn accepts(source: string) -> bool {
+    let p = program(source)
+    match p.check() {
+        .Ok(_) -> true,
+        .Err(e) -> {
+            println(e)
+            false
+        },
+    }
+}
+
+spec "annotations use ordinary trailing seat defaults" {
+    given "annotations declared in another source file" {
+        then "a defaulted annotation evaluates its omitted integer seat" { accepts("@defaulted\nfn answer() -> int { 1 }\nanswer()") }
+        then "an explicit value overrides its default" { accepts("@chosen(11, 11)\nfn answer() -> int { 1 }\nanswer()") }
+        then "a required argument may precede omitted defaults" { accepts("@chosen(7)\nfn answer() -> int { 1 }\nanswer()") }
+        then "multiple omitted trailing seats evaluate in their owner's scope" { accepts("@pair\n@calculated\nfn answer() -> int { 1 }\nanswer()") }
+        then "a partially supplied trailing list defaults the rest" { accepts("@pair(\"a\")\nfn answer() -> int { 1 }\nanswer()") }
+        then "declaring annotations can default a quoted expression" { accepts("@projected\ntype Box = { value: int }\nBox.configured()") }
+        then "declaring annotations can override that expression" { accepts("@projected(quote { 11 })\ntype Box = { value: int }\nBox.configured()") }
+        then "a missing required argument is still refused" { refused_in(program("@chosen\nfn answer() -> int { 1 }\nanswer()"), "annotation.seats") }
+        then "too many arguments are still refused" {
+            refused_in(
+                program("@defaulted(7, 8)\nfn answer() -> int { 1 }\nanswer()"),
+                "annotation.seats",
+            )
+        }
+        then "an explicit wrong type is still refused" {
+            refused_in(
+                program("@defaulted(\"seven\")\nfn answer() -> int { 1 }\nanswer()"),
+                "annotation.seats",
+            )
+        }
+    }
+}

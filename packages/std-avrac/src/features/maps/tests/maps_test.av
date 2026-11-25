@@ -1,0 +1,291 @@
+// Maps, the vertical: the literal, `{}` adopted, `get` answering
+// absence, `set` on a place, `length`, and the refusals in their
+// own words.
+use @std.avrac.testing.{shown, refused_with, ir_of, floored, answered, refused_in}
+use compiler.backend.{render_ir}
+
+/// The runtime rows a program's IR calls, as text.
+fn rows(source: string) -> string { render_ir(ir_of(source)) }
+
+const counted: string = "mut m: Map<string, int> = {}\nlet k = \"k\"\n"
+
+spec "features/maps" {
+    given "the literal" {
+        then "a pair reads back" {
+            shown("let m = { \"x\": 5, \"y\": 6 }\nm.get(\"y\") ?? 0") == "6"
+        }
+        then "a missing key answers absence" {
+            shown("let m = { \"x\": 5 }\nm.get(\"zz\") ?? 0 - 1") == "-1"
+        }
+        then "length counts the pairs" {
+            shown("let m = { \"x\": 5, \"y\": 6 }\nm.length") == "2"
+        }
+        then "string values" {
+            shown("let m = { \"hi\": \"there\" }\nm.get(\"hi\") ?? \"-\"") == "there"
+        }
+        then "`{}` is adopted by a declared map" {
+            shown("mut m: Map<string, int> = {}\nm.set(\"a\", 1)\nm.length") == "1"
+        }
+        then "`{}` fills a struct's map field" {
+            shown(
+                "type R = { ids: Map<string, int> }\nmut r = R { ids: {} }\nr.ids.set(\"k\", 42)\nr.ids.get(\"k\") ?? 0",
+            ) == "42"
+        }
+    }
+    given "set — the place law on a method" {
+        then "a new key appends, an old key overwrites" {
+            shown(
+                "mut m: Map<string, int> = {}\nm.set(\"a\", 1)\nm.set(\"b\", 2)\nm.set(\"a\", 10)\nlet a = m.get(\"a\") ?? 0\n\"" +
+                    "\${a} " +
+                    "\${m.length}\"",
+            ) == "10 2"
+        }
+        then "a snapshot keeps its pairs — copy-on-write" {
+            shown(
+                "mut m: Map<string, int> = {}\nm.set(\"a\", 1)\nlet s = m\nm.set(\"b\", 2)\n\"" +
+                    "\${m.length} " +
+                    "\${s.length}\"",
+            ) == "2 1"
+        }
+        then "a `let` map refuses — set mutates it" {
+            refused_with(
+                "let m = { \"a\": 1 }\nm.set(\"b\", 2)\n2",
+                "`m` is not `mut` — `set` mutates it",
+            )
+        }
+        then "a literal is a value, not a place" {
+            refused_with("{ \"a\": 1 }.set(\"b\", 2)\n2", "`set` mutates a place")
+        }
+        then "the value seat judges" {
+            refused_with(
+                "mut m: Map<string, int> = {}\nm.set(\"a\", \"s\")\n2",
+                "argument 2 of `set` wants `int`, found `string`",
+            )
+        }
+        then "set answers nothing" {
+            refused_with(
+                "mut m: Map<string, int> = {}\nlet n = m.set(\"a\", 1)\n2",
+                "answers nothing",
+            )
+        }
+    }
+    given "has, keys and values — a map's order is its insertion order" {
+        then "has asks presence" {
+            shown("let m = { \"a\": 1 }\n\"\${m.has(\"a\")} \${m.has(\"z\")}\"") == "true false"
+        }
+        then "keys and values read in written order" {
+            shown(
+                "mut m: Map<string, int> = {}\nm.set(\"b\", 2)\nm.set(\"a\", 1)\nm.set(\"c\", 3)\nlet ks = m.keys()\nlet vs = m.values()\n\"" +
+                    "\${ks[0]} " +
+                    "\${ks[1]} " +
+                    "\${ks[2]} " +
+                    "\${vs[0]} " +
+                    "\${vs[1]} " +
+                    "\${vs[2]}\"",
+            ) == "b a c 2 1 3"
+        }
+        then "overwriting keeps the key's place" {
+            shown(
+                "mut m: Map<string, int> = {}\nm.set(\"a\", 1)\nm.set(\"b\", 2)\nm.set(\"a\", 10)\n\"" +
+                    "\${m.keys()[0]} " +
+                    "\${m.keys()[1]} " +
+                    "\${m.get(\"a\") ?? 0}\"",
+            ) == "a b 10"
+        }
+        then "a null value reads back null, its key still counted" {
+            shown(
+                "mut m: Map<string, int?> = {}\nm.set(\"p\", null)\nm.set(\"q\", 7)\nlet vs = m.values()\n\"" +
+                    "\${vs.length} " +
+                    "\${vs[0] == null} " +
+                    "\${vs[1] ?? 0}\"",
+            ) == "2 true 7"
+        }
+        then "an empty declared map has an empty order" {
+            shown("let m: Map<string, int> = {}\n\"\${m.keys().length} \${m.values().length}\"") == "0 0"
+        }
+        then "keys of `{}` refuse in the row's words" {
+            refused_with("let m = {}\nm.keys()\n0", "`{}.keys` cannot know its values")
+        }
+    }
+    given "for k, v in m — a map walks paired, in order" {
+        then "keys read in insertion order" {
+            shown(
+                "mut m: Map<string, int> = {}\nm.set(\"b\", 2)\nm.set(\"a\", 1)\nmut out: List<string> = []\nfor k, v in m { out.push(k) }\nout.join(\",\")",
+            ) == "b,a"
+        }
+        then "an unpaired head refuses" {
+            refused_with(
+                "let m = { \"a\": 1 }\nfor k in m { 0 }\n0",
+                "a map walks as key and value",
+            )
+        }
+    }
+    given "[f(k, v) for k, v in m] — a comprehension's head pairs too" {
+        then "the pairs read in insertion order, under a filter" {
+            shown(
+                "let m = { \"b\": 2, \"a\": 1, \"c\": 3 }\n[k for k, v in m if v != 1].join(\",\")",
+            ) == "b,c"
+        }
+        then "an unpaired head refuses, once" {
+            refused_with(
+                "let m = { \"a\": 1 }\n[k for k in m].length",
+                "a map walks as key and value",
+            )
+        }
+    }
+    given "m.set(k, f(m.get(k))) — the read's probe is the write's" {
+        then "a value reading its own key hands the write its word" {
+            let ir = rows(counted + "m.set(k, (m.get(k) ?? 0) + 1)\nm.length")
+            ir.contains("avra_map_slot(") &&
+                ir.contains("avra_map_set_at(") &&
+                !ir.contains("avra_map_set(")
+        }
+        then "a literal key written twice is one key" {
+            rows(counted + "m.set(\"a\", (m.get(\"a\") ?? 0) + 1)\nm.length")
+                .contains("avra_map_set_at(")
+        }
+        then "another key keeps its own probe" {
+            !rows(counted + "m.set(k, (m.get(\"other\") ?? 0) + 1)\nm.length")
+                .contains("avra_map_set_at(")
+        }
+        then "a value naming the map again keeps its own probe" {
+            !rows(counted + "m.set(k, (m.get(k) ?? 0) + m.length)\nm.length")
+                .contains("avra_map_set_at(")
+        }
+        then "a value naming the key again keeps its own probe" {
+            !rows(counted + "m.set(k, (m.get(k) ?? 0) + k.length)\nm.length")
+                .contains("avra_map_set_at(")
+        }
+        then "a read under a lambda is a copy's, and keeps its own probe" {
+            !rows(counted + "m.set(k, [1].map((m.get(k) ?? 0) + it).sum())\nm.length")
+                .contains("avra_map_set_at(")
+        }
+        then "one map handed to two `mut` seats is refused, so no callee moves it under the read" {
+            refused_with(
+                "fn h(mut b: Map<string, int>, v: int) -> int {\n    let _ = b.remove(\"k\")\n    v + 1\n}\nfn g(mut a: Map<string, int>, mut b: Map<string, int>) { a.set(\"k\", h(b, a.get(\"k\") ?? 0)) }\nmut m = { \"k\": 5 }\ng(m, m)\nm.length",
+                "`m` is handed `mut` twice in one call to `g`",
+            )
+        }
+        then "the count is the same either way" {
+            shown(
+                counted +
+                    "m.set(k, (m.get(k) ?? 0) + 1)\nm.set(k, (m.get(k) ?? 0) + 1)\nm.get(k) ?? 0",
+            ) == "2"
+        }
+    }
+    given "a walk over a map — its entries, the prelude's" {
+        then "a program that sees no prelude is told so, once" {
+            refused_with(
+                "let m = { \"a\": 1 }\nm.any(it.value > 0)",
+                "a map's entries are the prelude's `Entry`, and this program sees no `@std/prelude`",
+            )
+        }
+        then "under the prelude it walks, and a kept map keeps its order" {
+            answered(
+                floored(
+                    "let m = { \"b\": 2, \"a\": 1, \"c\": 3 }\nm.filter(it.value != 1).keys().join(\",\")",
+                ),
+            ) == "b,c"
+        }
+        then "a verb that adds numbers says what the map holds" {
+            refused_in(
+                floored("let m = { \"a\": 1 }\nm.sum()"),
+                "`sum` needs numbers, and this map holds `Entry<string, int>`",
+            )
+        }
+        then "a scan by value says what the map holds" {
+            refused_in(
+                floored("let m = { \"a\": 1 }\nm.contains(m.entries()[0])"),
+                "and this map holds `Entry<string, int>`",
+            )
+        }
+        then "a file's own `Entry` is not the prelude's" {
+            refused_in(
+                floored(
+                    "type Entry = { view: string }\nfn f(e: Entry) -> string { e.view }\nlet m = { \"a\": 1 }\nf(m.entries()[0])",
+                ),
+                "argument 1 of `f` wants `Entry`, found `Entry<string, int>`",
+            )
+        }
+        then "the empty literal names no map to walk" {
+            refused_with(
+                "let m = {}\nm.filter(it.value > 0)\n0",
+                "`.filter(…)` calls a method, and `{}` has none",
+            )
+        }
+    }
+    given "entries — a pair is the prelude's record" {
+        then "a program that sees no prelude is told so, once" {
+            refused_with(
+                "let m = { \"a\": 1 }\nm.entries().length",
+                "a map's entries are the prelude's `Entry`, and this program sees no `@std/prelude`",
+            )
+        }
+        then "an argument refuses before the prelude is asked" {
+            refused_with(
+                "let m = { \"a\": 1 }\nm.entries(1)\n0",
+                "`entries` takes 0 arguments, found 1",
+            )
+        }
+        then "`{}` cannot know its values" {
+            refused_with("let m = {}\nm.entries()\n0", "`{}.entries` cannot know its values")
+        }
+    }
+    given "remove and is_empty — a key drops and the rest keep order" {
+        then "remove answers the value and drops the key" {
+            shown(
+                "mut m: Map<string, int> = {}\nm.set(\"a\", 1)\nm.set(\"b\", 2)\nm.set(\"c\", 3)\nlet gone = m.remove(\"b\")\n\"" +
+                    "\${m.length} " +
+                    "\${gone ?? 0} " +
+                    "\${m.has(\"b\")} " +
+                    "\${m.keys()[0]} " +
+                    "\${m.keys()[1]}\"",
+            ) == "2 2 false a c"
+        }
+        then "removing a missing key answers absence" {
+            shown(
+                "mut m: Map<string, int> = { \"a\": 1 }\nlet gone = m.remove(\"z\")\n\"\${m.length} \${gone != null}\"",
+            ) == "1 false"
+        }
+        then "is_empty measures" {
+            shown("mut m: Map<string, int> = {}\n\"\${m.is_empty()} \${m.length}\"") == "true 0"
+        }
+        then "is_empty is false with a pair" {
+            shown("let m = { \"a\": 1 }\nm.is_empty()") == "false"
+        }
+        then "a `let` map refuses — remove mutates it" {
+            refused_with(
+                "let m = { \"a\": 1 }\nm.remove(\"a\")\n2",
+                "`m` is not `mut` — `remove` mutates it",
+            )
+        }
+    }
+    given "the refusals" {
+        then "a non-string key in a literal" {
+            refused_with("let m = { 1: 5 }\n2", "a map's keys are strings, this is `int`")
+        }
+        then "values disagree" {
+            refused_with(
+                "let m = { \"a\": 1, \"b\": \"s\" }\n2",
+                "this map holds `int`, this is `string`",
+            )
+        }
+        then "a non-string key TYPE" {
+            refused_with("mut m: Map<int, int> = {}\n2", "a map's keys are strings, not `int`")
+        }
+        then "a nullable value keeps a present null apart from a missing key" {
+            shown(
+                "mut m: Map<string, int?> = {}\nm.set(\"a\", null)\nm.set(\"b\", 2)\n\"\${m.length} \${m.get(\"a\") != null} \${m.get(\"z\") != null} \${(m.get(\"b\") ?? null) ?? 0}\"",
+            ) == "2 true false 2"
+        }
+        then "get takes one key" {
+            refused_with("let m = { \"a\": 1 }\nm.get()\n2", "`get` takes 1 arguments, found 0")
+        }
+        then "get's key is a string" {
+            refused_with(
+                "let m = { \"a\": 1 }\nm.get(1)\n2",
+                "argument 1 of `get` wants `string`, found `int`",
+            )
+        }
+    }
+}

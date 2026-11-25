@@ -1,0 +1,26 @@
+// proves: a descriptor that is writable claims every arm of a wait set,
+// not only the one that took the poller's first edge — the arm filed
+// after it must not park until the set's far deadline.
+use @std.time.{now_ns}
+
+extern fn avra_wait_fd(fd: int, writable: int, arm: int, member: int)
+extern fn avra_wait_until(at_ns: int, arm: int, member: int)
+extern fn avra_wait_park() -> int
+
+fn far() -> int { now_ns() + 60000000000 }
+
+/// A claim as `arm:member`.
+fn said(claim: int) -> string { "${claim >> 32}:${claim & 4294967295}" }
+
+/// One arm of the set: the descriptor is writable, so it claims.
+fn armed() -> string {
+    avra_wait_fd(1, 1, 3, 7)
+    avra_wait_until(far(), 2, 9)
+    said(avra_wait_park())
+}
+
+/// The same descriptor, writable both times: the second arm claims it as
+/// the first did.
+fn twice() -> string { "${armed()} ${armed()}" }
+
+twice()

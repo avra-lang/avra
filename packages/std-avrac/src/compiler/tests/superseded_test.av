@@ -1,0 +1,36 @@
+//! ONE ONE-SHOT WORKSPACE IS ALIVE AT A TIME: the one made before the next
+//! stands no more, and every read of it — a relation's rows included —
+//! is refused with that law.
+use @std.avrac.testing.{test_workspace}
+use compiler.{Workspace, Stand}
+use compiler.host.{memory_host}
+
+fn one_file() -> Workspace {
+    test_workspace(memory_host({"/w/src/main.av": "1\n"}, ["/w/src/main.av"]), "/w")
+}
+
+spec "compiler/one-shot — the workspace made before the next" {
+    given "a test workspace, then another" {
+        then "the first stands no more, superseded" {
+            let first = one_file()
+            let _ = one_file()
+            first.stand.get() is .Superseded
+        }
+        then "its rows refuse a read with the law, never the closed-Db words" {
+            let first = one_file()
+            let _ = one_file()
+            first
+                .decls
+                .rows_db
+                .get()
+                .closed_voice
+                .get()
+                .contains("read what it answers before making another")
+        }
+        then "the one made last stands" {
+            let _ = one_file()
+            let last = one_file()
+            !last.let_go()
+        }
+    }
+}

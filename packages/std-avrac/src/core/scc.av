@@ -1,0 +1,113 @@
+//! THE STRONGLY-CONNECTED SETS OF A CALL GRAPH, settled one at a time. `scc_walk` finds
+//! the sets under a root in dependency order — a set is handed to `solve` only when every
+//! set it calls has been — and a node `settled` already is never entered again, so a walk
+//! reads the unsettled part of the graph and nothing else. `scc_fixpoint` is the least
+//! fixpoint of one set: every member starts at its seed and steps until none moves.
+use core.{DeclId, same_decl}
+
+/// The walk's own state: each node's visit number and low link, the open stack, and what
+/// settles a set.
+type Walk = {
+    callees: fn(DeclId) -> List<DeclId>,
+    settled: fn(DeclId) -> bool,
+    solve: fn(List<DeclId>) -> void,
+    number: Map<string, int>,
+    low: Map<string, int>,
+    open: Map<string, bool>,
+    stack: List<DeclId>,
+    next: int,
+}
+
+fn slot(d: DeclId) -> string { "${d.index}" }
+
+impl Walk {
+    /// Visits `d` and everything it reaches that is not settled, answering its low link. A
+    /// node whose low link is its own number roots a set: the stack above it is the set.
+    mut fn visit(d: DeclId) -> int {
+        let at = self.next
+        self.number.set(slot(d), at)
+        self.low.set(slot(d), at)
+        self.open.set(slot(d), true)
+        self.stack.push(d)
+        self.next = at + 1
+        mut low = at
+        for c in (self.callees)(d) {
+            if (self.settled)(c) { continue }
+            let seen? = self.number.get(slot(c)) else {
+                low = min(low, self.visit(c))
+                continue
+            }
+            if self.open.get(slot(c)) ?? false { low = min(low, seen) }
+        }
+        self.low.set(slot(d), low)
+        if low == at { self.close_set(d) }
+        low
+    }
+
+    /// The set rooted at `d`: popped off the stack and handed to `solve`.
+    mut fn close_set(d: DeclId) {
+        mut members: List<DeclId> = []
+        while true {
+            let m = self.stack.pop()
+            self.open.set(slot(m), false)
+            members.push(m)
+            if same_decl(m, d) { break }
+        }
+        (self.solve)(members)
+    }
+}
+
+fn min(a: int, b: int) -> int { if a < b { a } else { b } }
+
+/// Every set under `root` that is not settled, each handed to `solve` after the sets it
+/// calls. `callees` answers the members a node calls; `settled` says a node needs no visit.
+export fn scc_walk(
+    root: DeclId,
+    callees: fn(DeclId) -> List<DeclId>,
+    settled: fn(DeclId) -> bool,
+    solve: fn(List<DeclId>) -> void,
+) {
+    mut walk = Walk {
+        callees: callees,
+        settled: settled,
+        solve: solve,
+        number: {},
+        low: {},
+        open: {},
+        stack: [],
+        next: 0,
+    }
+    let _ = walk.visit(root)
+}
+
+/// The least fixpoint over one set: each member begins at `seed(member)` and takes
+/// `step(member, read)` until none moves. `read` answers a member's current state, and
+/// `outside` the settled state of anything else. `step` answers a state no smaller than the
+/// one it read for the member. The states come back in the members' order.
+export fn scc_fixpoint<S>(
+    members: List<DeclId>,
+    seed: fn(DeclId) -> S,
+    step: fn(DeclId, fn(DeclId) -> S) -> S,
+    same: fn(S, S) -> bool,
+    outside: fn(DeclId) -> S,
+) -> List<S> {
+    let states = Cell.new([seed(m) for m in members])
+    mut place: Map<string, int> = {}
+    for i, m in members { place.set(slot(m), i) }
+    let read = (c: DeclId) -> match place.get(slot(c)) {
+        i? -> states.get()[i]
+        null -> outside(c)
+    }
+    mut moved = true
+    while moved {
+        moved = false
+        for i, m in members {
+            let next = step(m, read)
+            if !same(states.get()[i], next) {
+                states.set_at(i, next)
+                moved = true
+            }
+        }
+    }
+    states.get()
+}

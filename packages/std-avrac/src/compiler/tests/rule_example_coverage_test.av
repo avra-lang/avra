@@ -1,0 +1,45 @@
+//! `compiler/rule_examples`' coverage keeper: an example is proved only
+//! when the walk covers its whole source. The planted example leads with
+//! a `type` and puts the fn below it — the shape a first-statement walk
+//! leaves unexamined.
+use compiler.{
+    analyze_source,
+    Analysis,
+    coverage_gaps,
+    example_gaps,
+    example_roots,
+    rules,
+    RuleEntry,
+    any_root,
+}
+use features.{Code, Fix}
+
+const planted: string = "type Z = { a: int }\nfn f() { mut n = 0 }"
+
+fn never(_c: Code) -> Fix? { null }
+
+fn planted_rule() -> RuleEntry {
+    RuleEntry {
+        name: "planted",
+        module: "test",
+        run: never,
+        root: [any_root],
+        kinds: [],
+        doc: "",
+        fixes: [],
+        keeps: [planted],
+        law: [],
+    }
+}
+
+/// The walk as it stood before the fix: the example's first statement.
+fn first_only(a: Analysis) -> List<Code> { example_roots(a).take(1) }
+
+spec "compiler/rule_examples (coverage)" {
+    then "the planted example is examined whole" { example_gaps([planted_rule()]).is_empty() }
+    then "a first-statement walk leaves it unexamined" {
+        let gaps = coverage_gaps([planted_rule()], first_only)
+        gaps.length == 1 && gaps[0].lack is .NotReached
+    }
+    then "every example the compiler carries is examined whole" { example_gaps(rules).is_empty() }
+}

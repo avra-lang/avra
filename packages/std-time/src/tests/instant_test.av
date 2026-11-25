@@ -1,0 +1,94 @@
+// Instants: the epoch is zero nanoseconds, ISO-8601 round-trips across
+// the range, a malformed text is absent, and Duration arithmetic is exact
+// where it says so and floors where it says so.
+use @std.time.{epoch, parse_iso, ms, secs}
+
+spec "std/time — instants" {
+    given "the epoch" {
+        then "the epoch is zero nanoseconds" {
+            epoch().ns == 0
+        }
+        then "the epoch renders as the start of 1970 in UTC" {
+            epoch().iso() == "1970-01-01T00:00:00.000000000Z"
+        }
+        then "the epoch's text parses back to the epoch" {
+            parse_iso("1970-01-01T00:00:00.000000000Z")! == epoch()
+        }
+    }
+    given "ISO-8601 round-trips" {
+        then "a leap day round-trips" {
+            parse_iso("2000-02-29T12:34:56.789000000Z")!.iso() == "2000-02-29T12:34:56.789000000Z"
+        }
+        then "an instant before the epoch round-trips" {
+            parse_iso("1969-07-20T20:17:40.000000001Z")!.iso() == "1969-07-20T20:17:40.000000001Z"
+        }
+        then "the range's first instant round-trips" {
+            parse_iso("1677-09-21T00:12:43.145224192Z")!.iso() == "1677-09-21T00:12:43.145224192Z"
+        }
+        then "the range's last instant round-trips" {
+            parse_iso("2262-04-11T23:47:16.854775807Z")!.iso() == "2262-04-11T23:47:16.854775807Z"
+        }
+        then "a text with no fraction reads as a whole second" {
+            parse_iso("2001-09-09T01:46:40Z")!.iso() == "2001-09-09T01:46:40.000000000Z"
+        }
+    }
+    given "a malformed text" {
+        then "a day past a month's end is absent" {
+            parse_iso("2001-02-29T00:00:00Z") == null
+        }
+        then "a month past twelve is absent" {
+            parse_iso("2001-13-01T00:00:00Z") == null
+        }
+        then "a zone other than Z is absent" {
+            parse_iso("2001-01-01T00:00:00+01:00") == null
+        }
+        then "a space for the T is absent" {
+            parse_iso("2001-01-01 00:00:00Z") == null
+        }
+        then "more than nine fraction digits is absent" {
+            parse_iso("2001-01-01T00:00:00.1234567890Z") == null
+        }
+    }
+    given "arithmetic" {
+        then "plus moves an instant by a span" {
+            epoch().plus(secs(1)).ns == 1000000000
+        }
+        then "minus is exact to the nanosecond" {
+            epoch().plus(ms(2)).minus(epoch()).ns == 2000000
+        }
+        then "minus runs both ways" {
+            epoch().minus(epoch().plus(ms(2))).ms() == -2
+        }
+        then "an instant is before and after by its nanoseconds" {
+            epoch().before(epoch().plus(ms(1))) && epoch().plus(ms(1)).after(epoch())
+        }
+    }
+    given "the range edges" {
+        then "the largest millisecond span holds" {
+            ms(9223372036854).ns == 9223372036854000000
+        }
+        then "the largest second span holds" {
+            secs(9223372036).ns == 9223372036000000000
+        }
+        then "the instant at the range's end is the largest nanosecond" {
+            parse_iso("2262-04-11T23:47:16.854775807Z")!.ns == 9223372036854775807
+        }
+        then "the instant at the range's start is the smallest nanosecond" {
+            parse_iso("1677-09-21T00:12:43.145224192Z")!.ns == 0 - 9223372036854775807 - 1
+        }
+        then "the epoch's neighbour is one nanosecond before it" {
+            parse_iso("1969-12-31T23:59:59.999999999Z")!.minus(epoch()).ns == 0 - 1
+        }
+    }
+    given "a span's whole milliseconds" {
+        then "they round down, never toward zero" {
+            ms(2).ms() == 2 &&
+                epoch().plus(ms(1)).minus(epoch()).ms() == 1 &&
+                epoch().minus(epoch().plus(ms(1))).ms() == 0 - 1
+        }
+        then "a span short of a millisecond rounds down on the side it is on" {
+            parse_iso("1969-12-31T23:59:59.999999999Z")!.minus(epoch()).ms() == 0 - 1 &&
+                epoch().minus(parse_iso("1969-12-31T23:59:59.999999999Z")!).ms() == 0
+        }
+    }
+}

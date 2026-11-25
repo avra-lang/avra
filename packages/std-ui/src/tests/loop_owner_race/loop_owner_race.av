@@ -1,0 +1,48 @@
+// proves: a cut aimed at a job never lands on the next one. Control "A"
+// asks for a job that finishes in a millisecond and is hidden as it
+// finishes; control "B" asks for a job at the same moment, 40 times over.
+// Every one of B's jobs lands, eval == native.
+// The real loop (`looped`), not the driven one: the claim is that a cut aimed at a job never lands on the next one.
+use @std.ui.components.{button, item}
+use @std.ui.headless.{headless}
+use @std.ui.app.{later}
+use @std.time.{ms}
+
+state ids: List<string> = ["A", "B"]
+state landed: int = 0
+
+fn bump() -> bool {
+    landed = landed + 1
+    true
+}
+
+fn nothing() -> bool { true }
+
+fn asks(id: string) {
+    let _ = later(ms(1), if id == "B" { bump } else { nothing })
+}
+
+fn view() -> item {
+    item { items: [button i { on press { asks(i) } } for i in ids] }
+}
+
+fn show(these: List<string>) -> bool {
+    ids = these
+    true
+}
+
+let screen = headless(view)
+screen
+    .looped(
+        () -> {
+            for _round in 0..40 {
+                let _ = screen.press("A")
+                screen.advance(ms(1))
+                let _ = screen.turn(() -> show(["B"]))
+                let _ = screen.press("B")
+                let _ = screen.turn(() -> show(["A", "B"]))
+                screen.advance(ms(3))
+            }
+        },
+    )
+"B landed ${landed} of 40"

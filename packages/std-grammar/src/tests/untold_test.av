@@ -1,0 +1,104 @@
+// What a generated run reads of each token, and what it answers at its end.
+use @std.grammar.{
+    Captured,
+    Lexeme,
+    TokenTables,
+    untold,
+    untold_outcome,
+    token_tables,
+    class_bits,
+    closing_bit,
+    no_end,
+}
+use @std.errors.{Loc}
+
+/// Tokens as their own text, the empty text the end of input; one class, `WORD`, worn by every
+/// token but the end.
+fn word_lexeme() -> Lexeme<string> {
+    Lexeme {
+        lit_matches: (t: string, text: string) -> t == text,
+        is_eof: (t: string) -> t == "",
+        ends_statement: (t: string) -> false,
+        kind_of: (term: string) -> if term == "WORD" { 0 } else { 0 - 1 },
+        wears_kind: (t: string, k: int) -> k == 0 && t != "",
+        text: (t: string) -> t,
+        loc: (t: string) -> Loc { file: null, lo: 0, hi: t.length },
+        stated: (text: string, loc: Loc?) -> text,
+    }
+}
+
+fn word_tables(tokens: List<string>) -> TokenTables {
+    token_tables(word_lexeme(), {"a": 0, "}": 1}, [0], tokens)
+}
+
+fn unbuilt(_ix: int, _args: List<Captured<string, int>>, _loc: Loc?) -> Result<
+    Captured<string, int>,
+    string,
+> {
+    .Err("no builder")
+}
+
+spec "grammar/untold" {
+    given "a run of tokens" {
+        then "a literal's slot is read by its text and a stranger's is -1" {
+            word_tables(["a", "b", "}", ""]).lit.map("${it}").join(" ") == "0 -1 1 -1"
+        }
+        then "every word wears its class's bit, the end none" {
+            let mask = word_tables(["a", "b", ""]).mask
+            mask[0] == 1 && mask[1] == 1 && mask[2] == 0
+        }
+        then "a `}` wears the closing bit beside its class's" {
+            word_tables(["}", ""]).mask[0] == 1 | (1 << 62)
+        }
+        then "the class bits of a token are asked of the lexeme" {
+            class_bits(word_lexeme(), [0], "b") == 1 && class_bits(word_lexeme(), [0], "") == 0
+        }
+        then "the closing bit is no other literal's" {
+            closing_bit(0, 1) == 0 &&
+                closing_bit(1, 1) == 1 << 62 &&
+                closing_bit(no_end, no_end) == 0
+        }
+    }
+    given "a run's end" {
+        then "an end at the end of input with nothing said answers the value" {
+            let tokens = ["a", ""]
+            let u = untold<string, int>(
+                tokens,
+                word_lexeme(),
+                word_tables(tokens),
+                [0],
+                0 - 1,
+                1,
+                unbuilt,
+            )
+            untold_outcome(u, "s", 1).result != null
+        }
+        then "an end short of the end of input answers words in place of a value" {
+            let tokens = ["a", ""]
+            let u = untold<string, int>(
+                tokens,
+                word_lexeme(),
+                word_tables(tokens),
+                [0],
+                0 - 1,
+                1,
+                unbuilt,
+            )
+            let o = untold_outcome(u, "s", 0)
+            o.result == null && o.diagnostics.length == 1
+        }
+        then "a stream with no end of input last answers words" {
+            let tokens = ["a"]
+            let u = untold<string, int>(
+                tokens,
+                word_lexeme(),
+                word_tables(tokens),
+                [0],
+                0 - 1,
+                1,
+                unbuilt,
+            )
+            untold_outcome(u, "s", 0).result == null
+        }
+    }
+}

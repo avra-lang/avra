@@ -1,0 +1,162 @@
+// SCALAR-FIELD VALUE RECORDS: a record of `int`, `bool` and WORD ENUM
+// fields (one whose own declaration carries no payload) lives in
+// registers too, boxed only where a one-word seat holds it. Each
+// attack puts one where a box, a `mut` seat, a match, a capture or a
+// fold meets it, and reads it back.
+type Span = { lo: int, hi: int }
+type Flags = { a: bool, b: bool, n: int }
+type Tagged = { mode: Mode, on: bool, count: int }
+type Nested = { at: Span, tagged: Tagged }
+type Box<T> = { held: T }
+
+enum Mode { Read, Write, Append }
+
+trait Show {
+    fn show() -> string
+}
+
+impl Show for Tagged {
+    fn show() -> string { "${mode_word(self.mode)}${self.on}${self.count}" }
+}
+
+fn mode_word(m: Mode) -> string {
+    match m { .Read -> "r", .Write -> "w", .Append -> "a" }
+}
+
+fn mode_of(n: int) -> Mode {
+    when {
+        n % 3 == 0 -> Mode.Append
+        n % 2 == 0 -> Mode.Write
+        _ -> Mode.Read
+    }
+}
+
+fn made(n: int) -> Tagged { Tagged { mode: mode_of(n), on: n % 2 == 0, count: n } }
+
+/// A `mut` seat of a scalar-field record writes through to the
+/// caller — the box the law keeps for exactly this.
+fn bump(mut t: Tagged) { t.count = t.count + 100 }
+
+const ALL: List<Tagged> = [
+    Tagged { mode: .Read, on: true, count: 1 },
+    Tagged { mode: .Write, on: false, count: 2 },
+]
+
+fn celled() -> string {
+    let c = Cell.new(made(1))
+    let d = c
+    c.set(made(6))
+    "${d.get().count}${mode_word(d.get().mode)}"
+}
+
+fn seated() -> string {
+    mut t = made(3)
+    bump(t)
+    "${t.count}"
+}
+
+/// A `match` over a record's own ENUM FIELD, read straight out of the
+/// register aggregate that holds it.
+fn field_matched(t: Tagged) -> string {
+    match t.mode { .Read -> "r", .Write -> "w", .Append -> "a" }
+}
+
+fn tag_of(x: Tagged?) -> string {
+    let t? = x else { return "-" }
+    "${t.count}"
+}
+
+fn nullable_list() -> string {
+    let xs: List<Tagged?> = [made(2), null, made(3)]
+    [tag_of(x) for x in xs].join(",")
+}
+
+fn captured_then_changed() -> string {
+    mut t = made(2)
+    let f = () -> t.on
+    t.on = !t.on
+    "${f()}/${t.on}"
+}
+
+fn in_result(k: int) -> Result<Tagged, string> {
+    if k > 0 { return .Ok(made(k)) }
+    .Err("none")
+}
+
+fn resulted() -> string {
+    let a = in_result(3) catch e -> made(0)
+    let b = in_result(0) catch e -> made(0)
+    "${a.count}/${b.count}"
+}
+
+fn dynamic() -> string {
+    let d: dyn Show = made(7)
+    d.show()
+}
+
+fn mapped() -> string {
+    mut m: Map<string, Tagged> = {}
+    m.set("t", made(5))
+    let t = m.get("t") ?? made(0)
+    m.set("t", t with { on: !t.on, count: 60 })
+    "${t.on}/${(m.get("t") ?? t).count}/${(m.get("t") ?? t).on}"
+}
+
+/// A bool field and a word-enum field, both folded across a loop
+/// through `with` — the accumulator law's twin for a scalar-field
+/// record (`@std.http.frame`'s `Framing`, in production).
+fn folded() -> string {
+    mut fl = Flags { a: false, b: false, n: 0 }
+    mut m = Mode.Read
+    for i in 0..5 {
+        fl = fl with { a: fl.a || i == 3, b: fl.b || i > 10, n: fl.n + i }
+        if i == 4 { m = .Append }
+    }
+    "${fl.a}/${fl.b}/${fl.n}/${mode_word(m)}"
+}
+
+fn field_written() -> string {
+    mut t = made(1)
+    t.on = !t.on
+    t.mode = .Append
+    "${t.on}/${mode_word(t.mode)}"
+}
+
+/// A nested wide field carrying a scalar-field record of its own.
+fn nested() -> string {
+    let n = Nested { at: Span { lo: 1, hi: 2 }, tagged: made(9) }
+    "${n.at.hi}/${n.tagged.count}/${mode_word(n.tagged.mode)}"
+}
+
+fn generic_box() -> string {
+    let b: Box<Tagged> = Box { held: made(11) }
+    "${b.held.count}/${mode_word(b.held.mode)}"
+}
+
+fn static_list() -> string {
+    "${ALL[1].count}/${mode_word(ALL[0].mode)}/${ALL[0].mode is .Read}"
+}
+
+fn popped() -> string {
+    mut xs = [made(1), made(2)]
+    let last = xs.pop()
+    "${last.count}/${xs.length}"
+}
+
+[
+    celled(),
+    seated(),
+    field_matched(made(6)),
+    nullable_list(),
+    captured_then_changed(),
+    resulted(),
+    dynamic(),
+    mapped(),
+    folded(),
+    field_written(),
+    nested(),
+    generic_box(),
+    static_list(),
+    popped(),
+]
+    .join(" ")

@@ -1,0 +1,140 @@
+// `@unbroken`: a fn that lets no other task run inside it — the law
+// compiler/typing/unbroken.av holds, judged by DECLARATION: the
+// annotation must resolve to `@std/meta`'s own `unbroken`. Packaged
+// rather than a lone source, since a lone source cannot import
+// `@std/meta` (compiler/dev/witnesses.av's `unbroken_golden`) —
+// `provided` vendors the real package.
+use @std.avrac.testing.{provided}
+use @std.avrac.compiler.{Program}
+use core.{DeclId}
+
+/// The program over C rows a gate's fns call, `@std/meta`'s mark
+/// imported.
+fn unbroken_program(main: string) -> Program {
+    provided(
+        [
+                "use @std.meta.{unbroken}",
+                "extern fn avra_wait_park() -> int",
+                "extern fn avra_fiber_sleep(ms: int)",
+                "fn helper(n: int) -> int { n + 1 }",
+            ]
+                .join("\n") +
+            "\n" +
+            main,
+        "",
+    )
+}
+
+fn unbroken_report(main: string) -> string { unbroken_program(main).report() }
+
+fn unbroken_decl(p: Program, name: string) -> DeclId {
+    [x.id for x in p.ws.decls.all_decls() if x.name == name][0]
+}
+
+/// A ring's shape: a `while` over a claim, a step through another
+/// `@unbroken` fn, a vocabulary row, and the park row itself.
+fn ring_source(mark: string) -> string {
+    [
+        "@unbroken",
+        "fn step(n: int) -> int { n + 1 }",
+        mark,
+        "fn ring(xs: List<int>) -> int {",
+        "    mut i = 0",
+        "    while i < xs.length { i = step(i) }",
+        "    let _ = avra_wait_park()",
+        "    i",
+        "}",
+        "ring([1])",
+    ]
+        .join("\n")
+}
+
+/// A `while` and nothing that waits.
+fn spin_source(mark: string) -> string {
+    [
+        mark,
+        "fn spin(n: int) -> int {",
+        "    mut i = 0",
+        "    while i < n { i = i + 1 }",
+        "    i",
+        "}",
+        "spin(2)",
+    ]
+        .join("\n")
+}
+
+spec "compiler/typing — the unbroken law" {
+    given "an `@unbroken` fn" {
+        then "a `while`, a call to C, a vocabulary row and another `@unbroken` fn draw no refusal" {
+            !unbroken_report(ring_source("@unbroken")).contains("flow.broken")
+        }
+        then "a call to an unmarked fn is refused, naming both, with the remedy" {
+            let out = unbroken_report("@unbroken\nfn ring(n: int) -> int { helper(n) }\nring(1)")
+            out.contains("[flow.broken]") &&
+                out.contains("`ring` is `@unbroken`, and `helper` may let another task run") &&
+                out
+                    .contains(
+                        "mark `helper` `@unbroken` if nothing in it can wait, or make the call outside `ring`",
+                    )
+        }
+        then "a call through a fn-typed parameter is refused" {
+            unbroken_report("@unbroken\nfn ring(f: fn() -> int) -> int { f() }\nring(() -> 1)")
+                .contains("`ring` is `@unbroken`, and a call through a value may be any fn")
+        }
+        then "a call through a contract is refused" {
+            unbroken_report(
+                "trait Show {\n    fn show() -> int\n}\ntype P = { n: int }\nimpl Show for P {\n    fn show() -> int { 1 }\n}\n@unbroken\nfn ring(s: dyn Show) -> int { s.show() }\nring(P { n: 1 })",
+            )
+                .contains("`ring` is `@unbroken`, and a call through a value may be any fn")
+        }
+        then "a spawn is refused" {
+            unbroken_report("@unbroken\nfn ring() {\n    let t = spawn helper(1)\n}\nring()")
+                .contains("`ring` is `@unbroken`, and a task it spawns is joined where its scope ends")
+        }
+        then "a `?.await` is refused, as `.await` is" {
+            unbroken_report("@unbroken\nfn f(t: Task<int>?) -> int { t?.await ?? 0 }\n1")
+                .contains("`f` is `@unbroken`, and `await` waits")
+        }
+        then "a call that leaves a seat to a default that may wait is refused, naming the seat" {
+            unbroken_report(
+                "@unbroken\nfn take(n: int = helper(1)) -> int { n }\n@unbroken\nfn ring() -> int { take() }\nring()",
+            )
+                .contains("`ring` is `@unbroken`, and the default this call leaves to `n` may wait")
+        }
+        then "a call that passes every seat is not judged by the defaults it does not use" {
+            !unbroken_report(
+                "@unbroken\nfn take(n: int = helper(1)) -> int { n }\n@unbroken\nfn ring() -> int { take(2) }\nring()",
+            )
+                .contains("`ring` is `@unbroken`")
+        }
+        then "an `.await` is refused" {
+            unbroken_report("@unbroken\nfn ring(t: Task<int>) -> int { t.await }\n1")
+                .contains("`ring` is `@unbroken`, and `await` waits")
+        }
+    }
+    given "the same body with no mark" {
+        then "the law never fires" {
+            !unbroken_report("fn ring(n: int) -> int { helper(n) }\nring(1)")
+                .contains("flow.broken")
+        }
+    }
+    given "a package's OWN fn named `unbroken`, never `@std/meta`'s" {
+        then "the law never fires — the mark is a DECLARATION, not a word" {
+            !provided(
+                "fn unbroken(x: int) -> int { x }\nfn helper(n: int) -> int { n + 1 }\n@unbroken\nfn ring(n: int) -> int { helper(n) }\nring(1)",
+                "",
+            )
+                .report()
+                .contains("flow.broken")
+        }
+    }
+    given "the cancel fact" {
+        then "an `@unbroken` fn's `while` is no cancel point, and the same fn unmarked reaches one" {
+            let marked = unbroken_program(spin_source("@unbroken"))
+            // a one-shot workspace is read while it stands
+            let marked_reaches = marked.ws.reaches_cancel(unbroken_decl(marked, "spin"))
+            let plain = unbroken_program(spin_source(""))
+            !marked_reaches && plain.ws.reaches_cancel(unbroken_decl(plain, "spin"))
+        }
+    }
+}

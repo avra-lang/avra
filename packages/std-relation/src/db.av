@@ -1,0 +1,2264 @@
+//! THE DB a relation's rows live under: an identity and the KERNEL its
+//! cells are read and verified in.
+//! Each relation keeps its typed rows in a store of its own, indexed by
+//! the Db's id, so a Db never names a row type and a relation declared
+//! in any package reaches its rows the same way. A CLOSED Db refuses
+//! every reach: its rows are gone, and nothing opens them again.
+//!
+//! ROWS HAVE AN OWNER WHERE A WRITER NAMES ONE, and an owner's rows are
+//! written as a VALUE: `Rel.replaced(db, owner, rows)` files every row as
+//! the owner's and removes what the owner held and these rows do not
+//! name — one step, so a keyed rerun upserts, a keyless one replaces its
+//! whole set, and no reader meets half of it. Two owners never write one
+//! row. A `@query` WRITES NO ROWS of its own: an insert inside its body
+//! is refused.
+//! A KERNEL'S INSTRUMENTS ARE ITS OWNER'S TO TURN ON: a fresh Db traces
+//! nothing and writes no graph. `db.engine().trace_on()` traces each
+//! ask and settle through the runtime's trace row (which prints under
+//! `AVRA_QTRACE`), and `.graph_on()` writes every settled cell with the
+//! keys it read to stderr — the compiler turns both on for its own
+//! kernel from its environment; a program does it for its own.
+//!
+//! A DB THAT ASKED A QUERY LIVES UNTIL IT IS CLOSED: a `@query`'s and an
+//! `@input`'s answers are kept, by the Db's id, where the query is
+//! declared — so they hold the Db's kernel, and a query's way to be
+//! asked again holds the Db. `close` lets both go. A Db that only ever
+//! held rows is let go with its last holder.
+//!
+use rows.{Rows, named_rows, Stamp, INT_CAP}
+use engine.{
+    Kernel,
+    Key,
+    new_kernel,
+    Relation,
+    new_memo,
+    Fixpoint,
+    new_fixpoint,
+    spoken as fixpoint_spoken,
+    Table,
+    new_table,
+    edge_of,
+    key_of,
+    list_cell,
+    map_cell,
+}
+use stable.{
+    Writer,
+    Reader,
+    CodecFault,
+    encoded_with,
+    named_encoding_from,
+    decoded_from,
+    decoded_with,
+    reader,
+    int_spelled,
+    written_list,
+    read_list,
+    stable_hasher,
+    spelled_hash,
+    saved_in,
+}
+
+extern fn avra_trap(message: string)
+
+extern fn avra_qtrace(message: string)
+
+/// A Db: its dense id, whether it is closed, each relation it has reached
+/// (its hash, its close, its sweep), the KERNEL its cells live in — its
+/// own, or one it was given — and how that kernel is told of a write;
+/// who hears a refusal, and where answers outlive the process.
+/// Then what a saved answer names its reads by: the relations reached
+/// here, the queries and inputs asked here, and what each answered query
+/// stands on (`leaves`). Then its owners: each one's dense cell and name
+/// and how many times its rows were replaced, how many `@query` bodies
+/// are running here, and how many writes it has taken. A Db given another kernel registers
+/// every family it holds there again (`registrars`).
+export type Db = {
+    id: int,
+    closed: Cell<bool>,
+    /// What a reach after the close is refused with: the law its owner closed it under.
+    closed_voice: Cell<string>,
+    hashes: Cell<List<fn() -> int>>,
+    closers: Cell<List<fn() -> void>>,
+    kernel: Cell<Kernel?>,
+    home: Cell<Home>,
+    moves: Cell<Map<string, Cell<List<int>>>>,
+    row_families: Cell<List<int>>,
+    hears: Cell<fn(string) -> void>,
+    durable: Durable,
+    relations: Cell<List<RelRef>>,
+    answer_refs: Cell<List<AnswerRef>>,
+    leaves: Cell<Map<string, Noted>>,
+    watched: Cell<Map<string, int>>,
+    reach: Cell<int>,
+    registrars: Cell<List<fn(fn(fn(int) -> int) -> int) -> void>>,
+    cells: Cell<Map<string, int>>,
+    runs: Cell<List<int>>,
+    names: Cell<List<string>>,
+    /// Each open `@query` body, innermost last: whether its answer is kept.
+    asking: Cell<List<bool>>,
+    written: Cell<int>,
+    /// Settled calls one query keeps under this Db before an epoch drops them; 0 keeps all.
+    cap: Cell<int>,
+    /// What each named read answers at `known_at`, by its identity: the cell a read of it
+    /// records, and its digest — asked once a revision however many saved answers name it.
+    keys_known: Cell<Map<string, Key>>,
+    digests_known: Cell<Map<string, int>>,
+    /// What a read whose record fell answers now.
+    digests_made: Cell<Map<string, int>>,
+    known_at: Cell<int>,
+    /// Every leaf this process named, numbered once.
+    leaf_table: LeafTable,
+    /// The saved answers named for reading an in-process one, by pair.
+    law_named: Cell<Map<string, bool>>,
+    /// The walk each query's cell was last met in, by family and argument.
+    walks: Cell<List<Cell<List<int>>>>,
+    /// Each leaf chunk this process wrote or read back, by its hash: its leaves' numbers.
+    leaf_chunks: Cell<Map<string, List<int>>>,
+    /// Answers waiting to be kept until their reads can be judged whole, while `keeps_wait`.
+    keeps_owed: Cell<List<fn() -> void>>,
+    keeps_wait: Cell<bool>,
+    /// Who read what, owed to the store: a read's kin to the kins of its readers.
+    readers_owed: Cell<Map<string, Cell<List<int>>>>,
+    /// Each leaf number's kin.
+    leaf_kins: Cell<List<int>>,
+    /// The kins some moved input may reach, once a run has asked; every other read stands.
+    suspects: Cell<Map<string, bool>?>,
+    /// What the owner stages before a call a record names is asked by its spelling.
+    staging: Cell<fn(string) -> void>,
+    /// The calls whose records are being judged.
+    judging: Cell<Map<string, Judging>>,
+    judge_depth: Cell<int>,
+    judge_low: Cell<int>,
+    digests_trusted: Cell<Map<string, int>>,
+    /// The leaf each read of a cell no query settled names this revision, by family and argument.
+    leaf_at_key: Cell<List<Cell<List<int>>>>,
+    /// By leaf number this revision: 1 holds, 2 moved, 0 not judged; and the edge a read of it records, -1 none yet.
+    leaf_judged: Cell<List<int>>,
+    leaf_edges: Cell<List<int>>,
+}
+
+/// THE LEAVES A PROCESS NAMED, NUMBERED: a leaf (its read and its digest) has one number, and
+/// every number one KIN — the read apart from its digest — so a union of what queries stood
+/// on is a walk over numbers, never a map of spelled names. A number's place in a kept chunk
+/// stands beside it once the leaf is kept.
+type LeafTable = {
+    numbers: Cell<Map<string, int>>,
+    leaves: Cell<List<Leaf>>,
+    kin: Cell<List<int>>,
+    kins: Cell<Map<string, int>>,
+    /// The union a kin, and a number, was last taken into: `union` moves on per union.
+    marks: Cell<List<int>>,
+    taken: Cell<List<int>>,
+    union: Cell<int>,
+    chunk_of: Cell<List<int>>,
+    at_of: Cell<List<int>>,
+}
+
+fn leaf_table() -> LeafTable {
+    LeafTable {
+        numbers: map_cell(),
+        leaves: list_cell(),
+        kin: list_cell(),
+        kins: map_cell(),
+        marks: list_cell(),
+        taken: list_cell(),
+        union: Cell.new(0),
+        chunk_of: list_cell(),
+        at_of: list_cell(),
+    }
+}
+
+impl LeafTable {
+    /// `l`'s number, given it the first time it is named.
+    fn number(l: Leaf) -> int {
+        let word = l.kept_word()
+        let known? = self.numbers.get().get(word) else {
+            let n = self.leaves.get().length
+            self.numbers.put(word, n)
+            self.leaves.push(l)
+            self.kin.push(self.kin_of(l.id()))
+            self.taken.push(0 - 1)
+            self.chunk_of.push(0)
+            self.at_of.push(0 - 1)
+            return n
+        }
+        known
+    }
+
+    fn kin_of(id: string) -> int {
+        let known? = self.kins.get().get(id) else {
+            let k = self.kins.get().length
+            self.kins.put(id, k)
+            self.marks.push(0 - 1)
+            return k
+        }
+        known
+    }
+
+    fn leaf(n: int) -> Leaf { self.leaves.get()[n] }
+
+    /// A new union: every kin is out of it.
+    fn opened() -> int {
+        self.union.set(self.union.get() + 1)
+        self.union.get()
+    }
+
+    /// Whether `n`'s kin joins union `u` now — false when it already stood in it.
+    fn joins(n: int, u: int) -> bool {
+        let k = self.kin.get()[n]
+        if self.marks.get()[k] == u { return false }
+        self.marks.set_at(k, u)
+        true
+    }
+
+    /// Whether `n` itself joins union `u` now — false when it already stood in it.
+    fn first_in(n: int, u: int) -> bool {
+        if self.taken.get()[n] == u { return false }
+        self.taken.set_at(n, u)
+        true
+    }
+
+    /// `n`'s place in a kept chunk, none before it is kept.
+    fn place(n: int) -> LeafPlace? {
+        let at = self.at_of.get()[n]
+        if at < 0 { null } else { placed_at(self.chunk_of.get()[n], at) }
+    }
+
+    fn placed(n: int, p: LeafPlace) {
+        self.chunk_of.set_at(n, p.chunk)
+        self.at_of.set_at(n, p.at)
+    }
+}
+
+/// A leaf as a saved answer names it: the chunk it was kept in, and its place there.
+type LeafPlace = { chunk: int, at: int }
+
+/// The name leaf chunks are kept under beside the queries': no query's durable name has a space.
+export const LEAF_CHUNK: string = "leaf chunk"
+
+/// Whose kernel a Db's cells live in, and so how a write is heard.
+/// `Own`: the Db's own kernel — a cell is verified by its live hash, and a
+/// write to a cell a query read is an input arriving: the revision moves
+/// and every reader is verified again. `Given`: an owner's kernel — a cell
+/// is verified by the revision a write stamped it with, and a write to a
+/// cell read this revision is refused: a producer runs before its readers.
+enum Home {
+    Own
+    Given
+}
+
+/// How a write lands on a cell: it stands, it is late — a settled reader
+/// read the cell this revision — or it would tear a reader still running.
+enum Landing {
+    Stands
+    Late
+    Torn
+}
+
+/// The next replacement of `owner`'s rows: its count, moved on.
+fn renewed(db: Db, owner: int) -> int {
+    let run = db.runs.get()[owner] + 1
+    db.runs.set_at(owner, run)
+    run
+}
+
+/// One read a saved answer stands on, by a name that outlives the process: a relation by
+/// the hash of its rows, an input by the hash of its value at its spelled arguments.
+export enum Leaf {
+    Rows(name: string, digest: int)
+    Input(name: string, spelled: string, digest: int)
+}
+
+impl Leaf {
+    /// The read's identity, apart from its digest.
+    fn id() -> string {
+        match self {
+            .Rows(name, _) -> "r\t${name}",
+            .Input(name, spelled, _) -> "i\t${name}\t${spelled}",
+        }
+    }
+
+    /// The read's digest as a saved answer spells it.
+    fn digest_text() -> string {
+        match self { .Rows(_, digest) or .Input(_, _, digest) -> "${digest}" }
+    }
+
+    /// The read and the digest it was kept at, as one word: what a chunk places.
+    fn kept_word() -> string { "${self.id()}\t${self.digest_text()}" }
+}
+
+/// What a settled query stands on: named, unnamed (something it read has no name), or owed —
+/// named from its cell's reads the first time a reader asks, so a query no saved answer reads
+/// never walks them.
+enum Noted {
+    Known(leaves: List<int>)
+    Unnamed
+    Owed(key: Key)
+}
+
+/// One read a walk meets: leaves to take, or a settled query's own reads to walk in its place.
+enum Step {
+    Leaves(numbers: List<int>)
+    Reads(keys: List<Key>)
+}
+
+/// A relation reached in a Db, by name: its family and its rows' hash, read live.
+type RelRef = { name: string, family: fn() -> int, hash: fn() -> int }
+
+impl RelRef {
+    fn family_now() -> int {
+        (self.family)()
+    }
+
+    fn hash_now() -> int {
+        (self.hash)()
+    }
+}
+
+/// A query or input asked in a Db, by its durable name: its family, each call's spelled
+/// arguments and its value's hash, read live.
+export type AnswerRef = {
+    name: string,
+    family: fn() -> int,
+    spelled: fn(int) -> string?,
+    arg: fn(string) -> int?,
+    hash: fn(int) -> int?,
+    /// Whether a reader of one of these answers stands on the answer itself, by its name and
+    /// digest, rather than on what it read: a query's, whose key is a name another process reads.
+    by_answer: bool = false,
+    /// Whether these answers live in the process alone: a kept read of one stands only while
+    /// this process holds the call, and a saved answer that records one is the law's finding.
+    in_process: bool = false,
+    /// The family whose cell a read of these answers records, for answers no cell of their own
+    /// settles: the cell that notes them as its leaves. -1 for answers recorded as themselves.
+    noted_by: int = -1,
+    /// The dense number a call was asked with, none for a call asked by no number.
+    number: fn(int) -> int? = unnumbered,
+    /// The call asked with a dense number, none when none was.
+    numbered: fn(int) -> int? = unnumbered,
+    /// Whether these answers are a function of the program's declaration rows alone, whose
+    /// wires a run that asks for suspects has held still.
+    of_rows: bool = false,
+    /// The name these answers' records are kept under, none for answers with no record.
+    kept_name: fn() -> string? = no_kept_name,
+}
+
+fn no_kept_name() -> string? { null }
+
+fn no_suspects() -> Map<string, bool>? { null }
+
+fn no_staging(_spelled: string) {}
+
+fn distinct_ints(ns: List<int>) -> List<int> {
+    let seen: Cell<Map<string, bool>> = map_cell()
+    mut out: List<int> = []
+    for n in ns {
+        if seen.get().get("${n}") ?? false { continue }
+        seen.put("${n}", true)
+        out.push(n)
+    }
+    out
+}
+
+/// A call being judged: how deep, and the digest its record claims.
+type Judging = { depth: int, digest: int }
+
+const NOT_LOW: int = 4611686018427387904
+
+fn min_of(a: int, b: int) -> int { if a < b { a } else { b } }
+
+/// A leaf whose kin is not yet asked, and one that has none.
+const NOT_ASKED: int = 0 - 1
+const NO_KIN: int = 0 - 2
+
+/// Where a read's readers are kept.
+const READERS: string = "readers"
+
+/// No call is asked by a number.
+fn unnumbered(_n: int) -> int? { null }
+
+impl AnswerRef {
+    fn family_now() -> int {
+        (self.family)()
+    }
+
+    /// The family a read of one of these answers records.
+    fn recorded_family() -> int { if self.noted_by >= 0 { self.noted_by } else { self.family_now() } }
+
+    fn spelled_at(arg: int) -> string? {
+        (self.spelled)(arg)
+    }
+
+    fn arg_of(spelled: string) -> int? {
+        (self.arg)(spelled)
+    }
+
+    fn hash_at(arg: int) -> int? {
+        (self.hash)(arg)
+    }
+}
+
+/// Queries open now, process-wide, and the reads some query made of rows it could not hear.
+once fn open_queries() -> Cell<int> { Cell.new(0) }
+
+once fn foreign_reads() -> Cell<int> { Cell.new(0) }
+
+/// A read no kernel hears — a table its owner answers without a read — made while a query is
+/// open: that query stands on something its record cannot name, so its answer is never kept.
+export fn unheard_read() {
+    if open_queries().get() > 0 { foreign_reads().set(foreign_reads().get() + 1) }
+}
+
+/// Where an owner keeps query answers past the process, by a query's
+/// durable name and its arguments' stable hash: `answer` reads a kept
+/// record back, `keep` hands one over, `home` names the tree a kept
+/// spelling stands in (none by default). What key a record lives under,
+/// and whether it still stands, is the owner's.
+export type Durable = { answer: fn(string, int) -> Bytes?, keep: fn(string, int, Bytes) -> void, home: fn() -> string = no_home }
+
+/// An owner that keeps nothing past the process.
+export fn transient() -> Durable {
+    Durable {
+        answer: (_query: string, _args: int) -> no_bytes(),
+        keep: (_query: string, _args: int, _record: Bytes) -> no_word(),
+    }
+}
+
+fn no_bytes() -> Bytes? { null }
+
+fn no_word() {}
+
+fn no_home() -> string { "" }
+
+/// A refusal no owner hears ends the program, in its own words.
+fn trapped(words: string) { avra_trap(words) }
+
+/// The longest spelled query key a name can be: a path is bounded by PATH_MAX.
+const KEY_BOUND = 4096
+
+fn key_too_long(n: int) -> string {
+    "a query's key is a name, not a text — this key is ${n} bytes, past the ${KEY_BOUND}-byte bound; read the text through an @input"
+}
+
+/// The next Db id this process mints.
+once fn minted() -> Cell<int> { Cell.new(0) }
+
+/// A fresh Db under the next dense id. Its kernel is its own, made when
+/// a query is first asked of it — a Db that only holds rows has none —
+/// and a write to a cell a query read is an input arriving.
+export fn new_db() -> Db { made(transient()) }
+
+/// `new_db`, its query answers kept past the process where `durable`
+/// keeps them.
+export fn durable_db(durable: Durable) -> Db { made(durable) }
+
+fn made(durable: Durable) -> Db {
+    let next = minted()
+    let id = next.get()
+    next.set(id + 1)
+    let hashes: Cell<List<fn() -> int>> = Cell.new([])
+    let closers: Cell<List<fn() -> void>> = Cell.new([])
+    let moves: Cell<Map<string, Cell<List<int>>>> = Cell.new({})
+    let row_families: Cell<List<int>> = Cell.new([])
+    let cells: Cell<Map<string, int>> = Cell.new({})
+    let runs: Cell<List<int>> = Cell.new([0])
+    let asking: Cell<List<bool>> = Cell.new([])
+    let names: Cell<List<string>> = Cell.new([""])
+    let registrars: Cell<List<fn(fn(fn(int) -> int) -> int) -> void>> = Cell.new([])
+    let relations: Cell<List<RelRef>> = Cell.new([])
+    let answer_refs: Cell<List<AnswerRef>> = Cell.new([])
+    let leaves: Cell<Map<string, Noted>> = Cell.new({})
+    let owed: Cell<List<fn() -> void>> = Cell.new([])
+    let watched: Cell<Map<string, int>> = Cell.new({})
+    let none: Kernel? = null
+    Db {
+        id: id,
+        closed: Cell.new(false),
+        closed_voice: Cell.new(closed_db(id)),
+        hashes: hashes,
+        closers: closers,
+        kernel: Cell.new(none),
+        home: Cell.new(Home.Own),
+        moves: moves,
+        row_families: row_families,
+        hears: Cell.new(trapped),
+        durable: durable,
+        relations: relations,
+        answer_refs: answer_refs,
+        leaves: leaves,
+        watched: watched,
+        reach: Cell.new(0 - 1),
+        registrars: registrars,
+        cells: cells,
+        runs: runs,
+        names: names,
+        asking: asking,
+        cap: Cell.new(0),
+        keys_known: map_cell(),
+        digests_known: map_cell(),
+        digests_made: map_cell(),
+        known_at: Cell.new(0 - 1),
+        written: Cell.new(0),
+        leaf_table: leaf_table(),
+        law_named: map_cell(),
+        walks: list_cell(),
+        leaf_chunks: map_cell(),
+        keeps_owed: owed,
+        keeps_wait: Cell.new(false),
+        readers_owed: map_cell(),
+        leaf_kins: list_cell(),
+        suspects: Cell.new(no_suspects()),
+        staging: Cell.new(no_staging),
+        judging: map_cell(),
+        judge_depth: Cell.new(0),
+        judge_low: Cell.new(NOT_LOW),
+        digests_trusted: map_cell(),
+        leaf_at_key: list_cell(),
+        leaf_judged: list_cell(),
+        leaf_edges: list_cell(),
+    }
+}
+
+impl Db {
+    /// This Db, keeping at most `n` settled calls per query before an epoch drops
+    /// them. A Db made without it keeps every call, as before.
+    fn with_cap(n: int) -> Db {
+        self.cap.set(n)
+        self
+    }
+
+    /// A relation reached here for the first time: its name, its family, its set hash
+    /// and its close, each already bound to this Db.
+    fn joined(name: string, family: fn() -> int, hash: fn() -> int, close: fn() -> void) {
+        self.joined_unnamed(hash, close)
+        self.relations.push(RelRef { name: name, family: family, hash: hash })
+        self.reached(name)
+        self.named_in(name, family())
+    }
+
+    /// A relation's declared name given to the kernel as its family's trace name, so a read
+    /// of it is reported by name; none while the Db has no kernel (`homed` names them then).
+    fn named_in(name: string, family: int) {
+        let kernel? = self.kernel.get() else { return }
+        kernel.named(family, name)
+    }
+
+    /// A column reached here that no saved answer can name: its hash and its close only.
+    fn joined_unnamed(hash: fn() -> int, close: fn() -> void) {
+        self.hashes.push(hash)
+        self.closers.push(close)
+    }
+
+    /// Whether a read here is heard by no one: no query is open in the
+    /// kernel, or there is no kernel yet.
+    fn unheard() -> bool { self.reader_now() < 0 }
+
+    /// The Db's kernel, made on the first reach when it has none: every
+    /// family registered here so far is registered in it then. A program
+    /// that traces a plain Db asks for it: `db.engine().trace_on()`.
+    /// What the query at `edge` stood on, named with no frame hearing what naming reads: a
+    /// leaf's name is the record's, never a read of the query that asked.
+    fn leaves_unheard(edge: int) -> List<int>? {
+        let none: List<int>? = null
+        let out = Cell.new(none)
+        self.engine().unheard(() -> out.set(self.leaves_noted(edge)))
+        out.get()
+    }
+
+    /// `spell`'s text, made with no frame hearing what it reads.
+    fn spelled_unheard(spell: fn() -> string) -> string {
+        let out: Cell<string> = Cell.new("")
+        self.engine().unheard(() -> out.set(spell()))
+        out.get()
+    }
+
+    fn engine() -> Kernel {
+        let held? = self.kernel.get() else {
+            let made = new_kernel()
+            self.homed(made)
+            return made
+        }
+        held
+    }
+
+    /// A family registered in this Db's kernel when it has one, and again
+    /// in any kernel it comes to have — `again` receives the register fn,
+    /// so it never holds the Db itself. -1 while there is no kernel.
+    fn registered(verify: fn(int) -> int, again: fn(fn(fn(int) -> int) -> int) -> void) -> int {
+        self.registrars.push(again)
+        let kernel? = self.kernel.get() else { return 0 - 1 }
+        self.family(kernel, verify)
+    }
+
+    /// A family of `kernel` over `verify`, a cell's live hash: verified
+    /// by that hash, or by the revision a write last stamped the cell with.
+    fn family(kernel: Kernel, verify: fn(int) -> int) -> int {
+        let family = match self.home.get() {
+            .Own -> kernel.hashed_family(verify),
+            .Given -> self.stamped_family(kernel),
+        }
+        self.row_families.push(family)
+        family
+    }
+
+    /// A family of `kernel` verified by the revision a write last stamped
+    /// each cell with.
+    fn stamped_family(kernel: Kernel) -> int {
+        let moved_at: Cell<List<int>> = list_cell()
+        let family = kernel.family()
+        kernel
+            .set_verify(
+                family,
+                (cell: int) -> if cell < moved_at.get().length { moved_at.get()[cell] } else { 0 },
+            )
+        self.moves.put("${family}", moved_at)
+        family
+    }
+
+    /// The Db handed to an owner's kernel: every family registered here
+    /// is registered there. Refused once a query has read here — what it
+    /// read was told to the kernel being left.
+    fn given_to(kernel: Kernel) {
+        if self.read_ever() {
+            self.refuse(given_after_read(self.id))
+            return
+        }
+        self.home.set(Home.Given)
+        self.homed(kernel)
+    }
+
+    /// `kernel` taken as this Db's, every family here registered in it.
+    fn homed(kernel: Kernel) {
+        self.forgotten()
+        self.kernel.set(kernel)
+        for again in self.registrars.get() { again((verify: fn(int) -> int) -> self.family(kernel, verify)) }
+        for r in self.relations.get() { self.named_in(r.name, r.family()) }
+    }
+
+    /// Everything kept about the kernel being left: its families' ids and
+    /// stamps, and the cell answers read back depend on — the next kernel
+    /// numbers its own from the start. Each
+    /// relation forgets its read marks as it registers again.
+    fn forgotten() {
+        let no_moves: Map<string, Cell<List<int>>> = {}
+        let no_rows: List<int> = []
+        self.moves.set(no_moves)
+        self.row_families.set(no_rows)
+        let no_refs: List<AnswerRef> = []
+        let no_leaves: Map<string, Noted> = {}
+        let no_watch: Map<string, int> = {}
+        self.answer_refs.set(no_refs)
+        self.leaves.set(no_leaves)
+        self.watched.set(no_watch)
+        self.reach.set(0 - 1)
+    }
+
+    /// The Db let go by its owner — back to no kernel, its families in none.
+    fn released() {
+        let none: Kernel? = null
+        self.forgotten()
+        self.kernel.set(none)
+        self.home.set(Home.Own)
+        for again in self.registrars.get() { again((_verify: fn(int) -> int) -> 0 - 1) }
+    }
+
+    /// Who hears a refusal, in place of ending the program.
+    fn heard_by(hears: fn(string) -> void) { self.hears.set(hears) }
+
+    /// The open kernel query's token, -1 with none open.
+    fn reader_now() -> int { self.kernel.get()?.reader() ?? 0 - 1 }
+
+    /// One more write taken — a row filed or removed.
+    fn counted() { self.written.set(self.written.get() + 1) }
+
+    /// Whether a write with no owner named is refused: inside a
+    /// `@query`'s body it is, spoken — anywhere else it is no one's.
+    fn unowned_refused() -> bool {
+        if self.asking.get().is_empty() { return false }
+        self.refuse(query_writes())
+        true
+    }
+
+    /// A write `owner` makes between two replacements of its rows.
+    fn stamp_of(owner: int) -> Stamp { Stamp { owner: owner, run: self.runs.get()[owner] } }
+
+    /// An owner named by its writer: its dense cell, never 0 — 0 is no one.
+    fn owner_named(key: string) -> int {
+        let known? = self.cells.get().get(key) else {
+            let made = self.runs.get().length
+            self.cells.put(key, made)
+            self.runs.push(0)
+            self.names.push(key)
+            return made
+        }
+        known
+    }
+
+    /// A writer in words: a query by its key, or the driver.
+    fn writer(edge: int) -> string {
+        let kernel? = self.kernel.get() else { return "the driver" }
+        if edge < 0 { "the driver" } else { "query ${kernel.edge_text(edge)}" }
+    }
+
+    /// Whose a row stamped `owner` is, in words.
+    fn whose(owner: int) -> string { if owner == 0 { "no one's" } else { "`${self.names.get()[owner]}`'s" } }
+
+    /// A `@query`'s body entered, and left: whether its answer is kept.
+    fn entered() {
+        self.asking.push(true)
+        open_queries().set(open_queries().get() + 1)
+    }
+
+    fn left() -> bool {
+        let open = self.asking.get()
+        self.asking.set(open.slice(0, open.length - 1))
+        open_queries().set(open_queries().get() - 1)
+        open.last() ?? true
+    }
+
+    /// The running `@query` cannot finish its answer: it reaches the asker, and no cell holds
+    /// it, so the next ask computes again.
+    fn unkept() {
+        let open = self.asking.get()
+        if open.is_empty() { trapped(unkept_outside()) }
+        self.asking.set_at(open.length - 1, false)
+    }
+
+    /// The running `@query` stands on what this process alone knows: neither its answer nor
+    /// any answer that reads it is kept past the process.
+    fn in_process_only() { foreign_reads().set(foreign_reads().get() + 1) }
+
+    /// A read of this Db's rows that no open query hears: some query is open elsewhere,
+    /// so that query stands on rows its record can never name.
+    fn foreign_read() {
+        if open_queries().get() > 0 && self.asking.get().is_empty() {
+            foreign_reads().set(foreign_reads().get() + 1)
+        }
+    }
+
+    /// How a write would land on `cell` of `family`, last read at
+    /// revision `read_at` (-1 never) by `reader` — asked, nothing moved. A
+    /// cell read this revision that a query still running holds is never
+    /// moved; one only settled readers hold refuses the write where late
+    /// writes are refused.
+    fn landing(family: int, cell: int, read_at: int, reader: int) -> Landing {
+        let kernel? = self.kernel.get() else { return Landing.Stands }
+        if read_at != kernel.revision() { return Landing.Stands }
+        if kernel.open_reader_of(family, cell, reader) >= 0 { return Landing.Torn }
+        match self.home.get() { .Given -> Landing.Late, .Own -> Landing.Stands }
+    }
+
+    /// The query still running that holds `cell` of `family`, -1 for none.
+    fn running(family: int, cell: int, last: int) -> int {
+        self.kernel.get()?.open_reader_of(family, cell, last) ?? 0 - 1
+    }
+
+    /// A write that lands moves `cell`, last read at `read_at`: where late
+    /// writes are taken, a cell any reader ever read moves the revision.
+    fn moved(family: int, cell: int, read_at: int) {
+        let kernel? = self.kernel.get() else { return }
+        if read_at >= 0 && self.takes_late() { kernel.bump() }
+        self.stamped(family, cell, kernel.revision())
+    }
+
+    /// Whether a late write here is an input arriving.
+    fn takes_late() -> bool {
+        match self.home.get() { .Given -> false, .Own -> true }
+    }
+
+    /// A relation first reached here: the answers read back while it was unreached are told.
+    fn reached(name: string) {
+        let cell? = self.watched.get().get(name) else { return }
+        self.engine().set_input(self.reach_key(cell), 1)
+    }
+
+    fn reach_key(cell: int) -> Key { Key { family: self.reach.get(), arg: cell } }
+
+    /// An answer read back stands on a relation not yet reached here: it is told when
+    /// the relation is.
+    fn watch_reach(name: string) {
+        let kernel = self.engine()
+        if self.reach.get() < 0 { self.reach.set(kernel.input_family()) }
+        let known = self.watched.get().get(name)
+        let cell = known ?? self.watched.get().length
+        if known == null {
+            self.watched.put(name, cell)
+            kernel.set_input(self.reach_key(cell), 0)
+        }
+        kernel.record_at(self.reach.get(), cell)
+    }
+
+    /// What a query that read `deps` stands on, by names that outlive the process: each
+    /// relation by its rows' hash, each input by its value's. A query read stands for
+    /// what it stood on. Absent when any read has no such name.
+    fn leaves_of(deps: List<Key>) -> List<Leaf>? {
+        let ns? = self.numbers_of(deps) else { return null }
+        [self.leaf_table.leaf(n) for n in ns]
+    }
+
+    /// What one read stands on, by names that outlive the process.
+    fn leaves_at(k: Key) -> List<Leaf>? {
+        let ns? = self.numbers_of([k]) else { return null }
+        [self.leaf_table.leaf(n) for n in ns]
+    }
+
+    /// The query at `edge` settled standing on `leaves`, absent when it stood on a read with no name.
+    fn noted(edge: int, leaves: List<Leaf>?) {
+        let ls? = leaves else { return self.noted_numbers(edge, null) }
+        self.noted_numbers(edge, [self.leaf_table.number(l) for l in ls])
+    }
+
+    fn numbers_of(deps: List<Key>) -> List<int>? {
+        let named = self.leaf_table
+        let union = named.opened()
+        mut out: List<int> = []
+        mut todo: List<Key> = [deps[deps.length - 1 - i] for i in 0..deps.length]
+        while !todo.is_empty() {
+            let step? = self.step_of(todo.pop(), union) else { return null }
+            match step {
+                .Leaves(ns) -> {
+                    for n in ns {
+                        if named.joins(n, union) { out.push(n) }
+                    }
+                },
+                .Reads(ks) -> {
+                    todo = todo.concat([ks[ks.length - 1 - i] for i in 0..ks.length])
+                },
+            }
+        }
+        out
+    }
+
+    /// One read of a walk: its leaves, or — a query settled on its cell's reads — those reads,
+    /// walked in its place the first time the walk meets it. Absent when the read has no name.
+    fn step_of(k: Key, union: int) -> Step? {
+        let rel? = self.relations.get().find(it.family_now() == k.family) else { return self.answer_step(k, union) }
+        Step.Leaves([self.leaf_table.number(Leaf.Rows(rel.name, rel.hash_now()))])
+    }
+
+    fn answer_step(k: Key, union: int) -> Step? {
+        let owner? = self.answer_refs.get().find(it.family_now() == k.family) else { return null }
+        if owner.by_answer {
+            let named = self.spelled_numbers(owner, k)
+            if named != null { return Step.Leaves(named!) }
+        }
+        let noted? = self.leaves.get().get("${edge_of(k)}") else {
+            let named? = self.spelled_numbers(owner, k) else { return null }
+            return Step.Leaves(named)
+        }
+        match noted {
+            .Known(ns) -> Step.Leaves(ns),
+            .Unnamed -> null,
+            .Owed(key) -> if self.first_walk(k, union) { Step.Reads(self.engine().deps_of(key)) } else { Step.Leaves([]) },
+        }
+    }
+
+    /// Whether `k` is met for the first time in walk `union`: a query's reads are walked once a walk.
+    fn first_walk(k: Key, union: int) -> bool {
+        while self.walks.get().length <= k.family { self.walks.push(list_cell()) }
+        let marks = self.walks.get()[k.family]
+        while marks.get().length <= k.arg { marks.push(0 - 1) }
+        if marks.get()[k.arg] == union { return false }
+        marks.set_at(k.arg, union)
+        true
+    }
+
+    /// A cell no query settled, named by its owner's spelling of its argument, once a revision.
+    fn spelled_numbers(owner: AnswerRef, k: Key) -> List<int>? {
+        self.known_now()
+        while self.leaf_at_key.get().length <= k.family { self.leaf_at_key.push(list_cell()) }
+        let row = self.leaf_at_key.get()[k.family]
+        if k.arg < row.get().length && row.get()[k.arg] >= 0 { return [row.get()[k.arg]] }
+        let spelled? = owner.spelled_at(k.arg) else { return null }
+        let digest? = owner.hash_at(k.arg) else { return null }
+        let n = self.leaf_table.number(Leaf.Input(owner.name, spelled, digest))
+        while row.get().length <= k.arg { row.push(0 - 1) }
+        row.set_at(k.arg, n)
+        [n]
+    }
+
+    /// What the query at `edge` settled standing on.
+    fn noted_numbers(edge: int, leaves: List<int>?) {
+        self
+            .leaves
+            .put("${edge}", if leaves == null { Noted.Unnamed } else { Noted.Known(leaves!) })
+    }
+
+    /// The query at `edge` settled on its cell's reads, named when first asked.
+    fn owed(edge: int, key: Key) { self.leaves.put("${edge}", Noted.Owed(key)) }
+
+    fn leaves_noted(edge: int) -> List<int>? {
+        let noted? = self.leaves.get().get("${edge}") else { return null }
+        self.known(noted)
+    }
+
+    /// What a noted query stands on: an owed one named now, from its cell's reads — walked
+    /// whenever asked, so no query's union outlives the walk that made it.
+    fn known(noted: Noted) -> List<int>? {
+        match noted {
+            .Known(leaves) -> leaves,
+            .Unnamed -> null,
+            .Owed(key) -> self.numbers_of(self.engine().deps_of(key)),
+        }
+    }
+
+    /// From here an answer is kept at `kept_owed`, its reads digested as they stand then: a
+    /// digest taken while the owner's tables fill names what is minted so far.
+    fn keeps_await() { self.keeps_wait.set(true) }
+
+    /// `keep` run, or owed while keeps wait.
+    fn keeping(keep: fn() -> void) {
+        if self.keeps_wait.get() { self.keeps_owed.push(keep) } else { keep() }
+    }
+
+    /// Every owed answer kept; an answer settling from here keeps at once.
+    fn kept_owed() {
+        self.keeps_wait.set(false)
+        let owed = self.keeps_owed.get()
+        self.keeps_owed.set([])
+        for keep in owed { keep() }
+    }
+
+    /// A family cell's record: its digest and what it read, and no answer. Kept once its reads
+    /// can be digested; none for a cell that read nothing or a read with no name.
+    fn cell_settled(name: string, k: Key) { self.keeping(() -> self.keep_cell(name, k)) }
+
+    fn keep_cell(name: string, k: Key) {
+        let owner? = self.answer_named(name) else { return }
+        let query? = (owner.kept_name)() else { return }
+        let spelled? = owner.spelled_at(k.arg) else { return }
+        let reads = self.engine().deps_of(k)
+        if reads.is_empty() { return }
+        let digest? = owner.hash_at(k.arg) else { return }
+        let none: List<int>? = null
+        let leaves = Cell.new(none)
+        self.engine().unheard(() -> leaves.set(self.numbers_of(reads)))
+        let ns? = leaves.get() else { return }
+        self.record_kept(query, spelled, digest, ns, (_w: Writer) -> no_word())
+    }
+
+    /// A record: a call's spelling, its digest, its reads by their places, then its answer.
+    fn record_kept(
+        query: string,
+        spelled: string,
+        digest: int,
+        leaves: List<int>,
+        answer: fn(Writer) -> void,
+    ) {
+        self.readers_noted(self.kin_of(query.split("#")[0], spelled), leaves)
+        let places = self.placed_leaves(leaves)
+        let saved = self.saved_spelling(spelled)
+        let bytes? = named_encoding_from(
+            self.home(),
+            0,
+            (w, _v) -> {
+                w.text(saved)
+                w.int(digest)
+                written_list(w, runs_of(places), write_run)
+                answer(w)
+            },
+        ) else {
+            return
+        }
+        (self.durable.keep)(query, spelled_hash(query, saved), bytes)
+    }
+
+    /// A call's one name past the process, whoever spells it.
+    fn kin_of(name: string, spelled: string) -> int { spelled_hash(name, self.saved_spelling(spelled)) }
+
+    /// Leaf `n`'s kin: its read apart from its digest. None for what a table's rows decide.
+    fn leaf_kin(n: int) -> int? {
+        let known = self.leaf_kins
+        if n < known.get().length && known.get()[n] != NOT_ASKED { return if known.get()[n] == NO_KIN { null } else { known.get()[n] } }
+        let made = match self.leaf_table.leaf(n) {
+            .Rows(_, _) -> NO_KIN,
+            .Input(name, spelled, _) -> if self.answer_named(name)?.of_rows ?? false { NO_KIN } else { self.kin_of(name, spelled) },
+        }
+        while known.get().length <= n { known.push(NOT_ASKED) }
+        known.set_at(n, made)
+        if made == NO_KIN { null } else { made }
+    }
+
+    /// `reader` read `leaves`.
+    fn readers_noted(reader: int, leaves: List<int>) {
+        for n in leaves {
+            let kin? = self.leaf_kin(n) else { continue }
+            self.reader_filed(kin, reader)
+        }
+    }
+
+    /// `reader` read what `kin` names, whatever else it read.
+    fn reader_filed(kin: int, reader: int) {
+        let at = "${kin}"
+        let filed = self.readers_owed.get().get(at)
+        if filed != null {
+            filed!.push(reader)
+            return
+        }
+        let made: Cell<List<int>> = Cell.new([kin, reader])
+        self.readers_owed.put(at, made)
+    }
+
+    /// The readers a read has on record.
+    fn readers_of(kin: int) -> List<int> {
+        let answer = self.durable.answer
+        let bytes? = answer(READERS, kin) else { return [] }
+        match decoded_with(bytes, (r: Reader) -> read_list(r, (x: Reader) -> x.int())) {
+            .Ok(ns) -> ns,
+            .Err(_) -> [],
+        }
+    }
+
+    /// Every read's new readers kept beside its old ones. A reader that no longer reads stays
+    /// filed: it is judged for nothing, never missed.
+    fn readers_kept() {
+        let owed = self.readers_owed.get()
+        let none: Map<string, Cell<List<int>>> = {}
+        self.readers_owed.set(none)
+        let keep = self.durable.keep
+        for _at, cell in owed {
+            let filed = cell.get()
+            let kin = filed[0]
+            let was = self.readers_of(kin)
+            let now = distinct_ints(was.concat(filed.drop(1)))
+            if now.length == was.length { continue }
+            keep(
+                READERS,
+                kin,
+                encoded_with(now, (w, v) -> written_list(w, v, (x: Writer, n: int) -> x.int(n))),
+            )
+        }
+    }
+
+    /// From here a read outside what `seeds` reach stands unjudged.
+    fn suspects_from(seeds: List<int>) { self.suspects.set(self.reached_from(seeds)) }
+
+    /// `seeds`' readers suspected too.
+    fn suspects_also(seeds: List<int>) {
+        let among? = self.suspects.get() else { return }
+        mut held = among
+        for k, v in self.reached_from(seeds) { held.set(k, v) }
+        self.suspects.set(held)
+    }
+
+    /// Every kin some read of `seeds` reaches, by the readers on record.
+    fn reached_from(seeds: List<int>) -> Map<string, bool> {
+        let seen: Cell<Map<string, bool>> = map_cell()
+        mut todo = seeds
+        for s in seeds { seen.put("${s}", true) }
+        while !todo.is_empty() {
+            for r in self.readers_of(todo.pop()) {
+                if seen.get().get("${r}") ?? false { continue }
+                seen.put("${r}", true)
+                todo.push(r)
+            }
+        }
+        seen.get()
+    }
+
+    /// How many reads a moved input may reach.
+    fn suspect_count() -> int { self.suspects.get()?.length ?? 0 }
+
+    /// The kin of the call a key names.
+    fn kin_at(k: Key) -> int? {
+        let owner? = self.answer_refs.get().find(it.family_now() == k.family) else { return null }
+        let spelled? = owner.spelled_at(k.arg) else { return null }
+        self.kin_of(owner.name, spelled)
+    }
+
+    /// Whether the read a key names stands: not suspect, or its record's every read holds.
+    fn read_stands(k: Key) -> bool {
+        let owner? = self.answer_refs.get().find(it.family_now() == k.family) else {
+            return false
+        }
+        let spelled? = owner.spelled_at(k.arg) else {
+            return false
+        }
+        if !self.suspected(self.kin_of(owner.name, spelled)) { return true }
+        self.record_digest(owner, spelled, "${owner.name}\t${spelled}") != null
+    }
+
+    /// Whether the answer a key names is the one its record digests, its record's reads moved or
+    /// not: asked when they moved.
+    fn answer_stands(k: Key) -> bool {
+        if self.read_stands(k) { return true }
+        let owner? = self.answer_refs.get().find(it.family_now() == k.family) else { return false }
+        let spelled? = owner.spelled_at(k.arg) else { return false }
+        let query? = (owner.kept_name)() else { return false }
+        let answer = self.durable.answer
+        let saved = self.saved_spelling(spelled)
+        let bytes? = answer(query, spelled_hash(query, saved)) else { return false }
+        let head? = match record_head(self, reader_from(self.home(), bytes), saved) {
+            .Ok(h) -> h,
+            .Err(_) -> null,
+        } else {
+            return false
+        }
+        owner.hash_at(k.arg) == head.digest
+    }
+
+    /// Whether a kin may have moved; every kin when no run has asked.
+    fn suspected(kin: int) -> bool {
+        let among? = self.suspects.get() else { return true }
+        among.get("${kin}") ?? false
+    }
+
+    /// LEAVES ARE KEPT ONCE A PROCESS: each read a saved answer stands on is written into a
+    /// chunk the first time any answer names it, and an answer names it by its place there.
+    /// A chunk is named by its hash, so one written twice is one row.
+    fn placed_leaves(ns: List<int>) -> List<LeafPlace> {
+        let named = self.leaf_table
+        let union = named.opened()
+        let fresh = [n for n in ns if named.place(n) == null && named.first_in(n, union)]
+        if !fresh.is_empty() { self.chunk_kept(fresh) }
+        [named.place(n)! for n in ns]
+    }
+
+    /// `fresh` kept as one chunk and placed.
+    fn chunk_kept(fresh: List<int>) {
+        let bytes = encoded_with(
+            [self.saved_leaf(self.leaf_table.leaf(n)) for n in fresh],
+            (w, v) -> written_list(w, v, write_leaf),
+        )
+        let chunk = stable_hasher(0).octets(bytes).finish()
+        let keep = self.durable.keep
+        keep(LEAF_CHUNK, chunk, bytes)
+        self.chunk_placed(chunk, fresh)
+    }
+
+    /// The leaves numbered `ns` known as chunk `chunk`, each placed at its index there.
+    fn chunk_placed(chunk: int, ns: List<int>) {
+        self.leaf_chunks.put("${chunk}", ns)
+        for at, n in ns { self.leaf_table.placed(n, placed_at(chunk, at)) }
+    }
+
+    /// The numbers of the leaves a saved answer names by a run; absent when its chunk is not kept.
+    fn run_leaves(run: PlaceRun) -> List<int>? {
+        let chunk? = self.chunk_read(run.chunk) else { return null }
+        if run.ats.any(it < 0 || it >= chunk.length) { return null }
+        [chunk[at] for at in run.ats]
+    }
+
+    /// A chunk read back once a process, its leaves numbered.
+    fn chunk_read(chunk: int) -> List<int>? {
+        let known = self.leaf_chunks.get().get("${chunk}")
+        if known != null { return known }
+        let answer = self.durable.answer
+        let bytes? = answer(LEAF_CHUNK, chunk) else { return null }
+        let read = match decoded_with(bytes, (r: Reader) -> read_list(r, read_leaf)) {
+            .Ok(ls) -> [self.leaf_table.number(self.unsaved_leaf(l)) for l in ls],
+            .Err(_) -> { return null },
+        }
+        self.chunk_placed(chunk, read)
+        read
+    }
+
+    /// The tree this Db's answers are kept from, spelled where a saved name names a path.
+    fn home() -> string {
+        (self.durable.home)()
+    }
+
+    /// A call's spelling as its saved record names it: every path under the tree spelled from
+    /// the tree, so a record, its key and the leaves it names are the same in every checkout.
+    /// The process keeps its own spelling; only what is kept is spelled so.
+    fn saved_spelling(text: string) -> string { saved_in(self.home(), text) }
+
+    /// A leaf as a saved record names it.
+    fn saved_leaf(l: Leaf) -> Leaf {
+        match l {
+            .Rows(_, _) -> l,
+            .Input(name, spelled, digest) -> Leaf.Input(name, self.saved_spelling(spelled), digest),
+        }
+    }
+
+    /// A saved leaf as this process names it.
+    fn unsaved_leaf(l: Leaf) -> Leaf {
+        match l {
+            .Rows(_, _) -> l,
+            .Input(name, spelled, digest) -> Leaf.Input(name, unsaved_in(self.home(), spelled), digest),
+        }
+    }
+
+    /// Whether every read still has the digest it was kept at.
+    fn leaves_hold(ns: List<int>) -> bool {
+        let holds = Cell.new(false)
+        self.engine().unheard(() -> holds.set(ns.all((n) -> self.number_holds(n))))
+        holds.get()
+    }
+
+    /// Whether leaf `n` holds, judged once a revision once its digest can be read.
+    fn number_holds(n: int) -> bool {
+        self.known_now()
+        let judged = self.leaf_judged
+        if n < judged.get().length && judged.get()[n] != 0 { return judged.get()[n] == 1 }
+        if self.suspects.get() != null {
+            let kin = self.leaf_kin(n)
+            if kin == null || !self.suspected(kin!) { return true }
+        }
+        match self.leaf_table.leaf(n) {
+            .Rows(name, digest) -> self.rows_digest(name) == digest,
+            .Input(name, spelled, digest) -> {
+                let now? = self.input_digest(name, spelled) else {
+                    return self.unstaged(name)
+                }
+                if now == digest && self.judged_on_trust() { return true }
+                while judged.get().length <= n { judged.push(0) }
+                judged.set_at(n, if now == digest { 1 } else { 2 })
+                now == digest
+            },
+        }
+    }
+
+    /// The digest of the read `Leaf.id` names, as it stands here; absent when this Db cannot
+    /// name the read.
+    fn leaf_digest(id: string) -> string? {
+        if id.starts_with("r\t") { return "${self.rows_digest(id.substring(2, id.length))}" }
+        if !id.starts_with("i\t") { return null }
+        let rest = id.substring(2, id.length)
+        let at = rest.index_of("\t")
+        if at < 0 { return null }
+        let now? = self.input_digest(rest.substring(0, at), rest.substring(at + 1, rest.length)) else { return null }
+        "${now}"
+    }
+
+    /// An input the record names that this process never set or asked: a miss, never a
+    /// lazy load, and counted in the trace.
+    fn unstaged(name: string) -> bool {
+        let kernel? = self.kernel.get() else { return false }
+        if kernel.tracing.get() { avra_qtrace("Q\tleaf\tunstaged\t${name}\n") }
+        false
+    }
+
+    /// A relation's rows' hash here; an unreached relation holds none.
+    fn rows_digest(name: string) -> int {
+        let rel = self.relations.get().find(it.name == name)
+        rel?.hash_now() ?? 0
+    }
+
+    /// An input's value hash here, absent when this Db has not been asked it.
+    fn input_digest(name: string, spelled: string) -> int? {
+        self.known_now()
+        let id = "${name}\t${spelled}"
+        let known = self.digests_known.get().get(id) ?? self.digests_made.get().get(id)
+        if known != null { return known }
+        let owner? = self.answer_named(name) else { return null }
+        let stood = self.record_digest(owner, spelled, id)
+        if stood != null { return stood }
+        let staging = self.staging.get()
+        staging(spelled)
+        let arg? = owner.arg_of(spelled) else { return null }
+        let made? = owner.hash_at(arg) else { return null }
+        self.digests_made.put(id, made)
+        made
+    }
+
+    /// The digest a call's record stands for while its every read holds: nothing is decoded,
+    /// minted or asked. None for no record or a moved read. A call met again while it is judged
+    /// answers its record's digest on trust: what stood on that trust is only known to hold, and
+    /// only remembered, once the call the cycle opened at has held.
+    fn record_digest(owner: AnswerRef, spelled: string, id: string) -> int? {
+        let known = self.digests_known.get().get(id) ?? self.digests_trusted.get().get(id)
+        if known != null { return known }
+        let open = self.judging.get().get(id)
+        if open != null && open!.depth >= 0 {
+            self.judge_low.set(min_of(self.judge_low.get(), open!.depth))
+            return open!.digest
+        }
+        let query? = (owner.kept_name)() else { return null }
+        let answer = self.durable.answer
+        let saved = self.saved_spelling(spelled)
+        let bytes? = answer(query, spelled_hash(query, saved)) else { return null }
+        let head? = match record_head(self, reader_from(self.home(), bytes), saved) {
+            .Ok(h) -> h,
+            .Err(_) -> null,
+        } else {
+            return null
+        }
+        let depth = self.judge_depth.get()
+        let outer = self.judge_low.get()
+        self.judging.put(id, Judging { depth: depth, digest: head.digest })
+        self.judge_depth.set(depth + 1)
+        self.judge_low.set(NOT_LOW)
+        let holds = self.leaves_hold(head.leaves)
+        let low = self.judge_low.get()
+        self.judge_depth.set(depth)
+        self.judge_low.set(min_of(outer, low))
+        self.judging.put(id, Judging { depth: 0 - 1, digest: 0 })
+        if !holds {
+            self.trust_cleared()
+            return null
+        }
+        if low < depth {
+            self.digests_trusted.put(id, head.digest)
+            return head.digest
+        }
+        self.digests_known.put(id, head.digest)
+        for at, d in self.digests_trusted.get() { self.digests_known.put(at, d) }
+        self.trust_cleared()
+        head.digest
+    }
+
+    fn trust_cleared() {
+        let none: Map<string, int> = {}
+        self.digests_trusted.set(none)
+    }
+
+    /// Whether what a judge just found rests on no call still being judged.
+    fn judged_on_trust() -> bool { self.judge_low.get() < self.judge_depth.get() }
+
+    /// The tables of what this revision answered, emptied when the revision moved.
+    fn known_now() {
+        let rev = self.kernel.get()?.revision() ?? 0 - 1
+        if rev == self.known_at.get() { return }
+        let no_keys: Map<string, Key> = {}
+        self.keys_known.set(no_keys)
+        let no_digests: Map<string, int> = {}
+        self.digests_known.set(no_digests)
+        self.digests_made.set(no_digests)
+        let no_leaves: List<Cell<List<int>>> = []
+        self.leaf_at_key.set(no_leaves)
+        let none: List<int> = []
+        self.leaf_judged.set(none)
+        self.leaf_edges.set(none)
+        self.known_at.set(rev)
+    }
+
+    /// The one query or input asked here wearing `name`; none when two do.
+    /// THE LAW, TRACED: a saved answer stands on what outlives the process, so one that reads
+    /// an in-process answer is named — once a process for each pair, and only under a trace,
+    /// so a compile pays nothing — until none is left to name.
+    fn in_process_reads(query: string, ns: List<int>) {
+        for n in ns {
+            let read? = self.in_process_read(n) else { continue }
+            self.law_heard(query, read)
+        }
+    }
+
+    /// The in-process answer leaf `n` reads, none for any other read.
+    fn in_process_read(n: int) -> string? {
+        match self.leaf_table.leaf(n) {
+            .Rows(_, _) -> null,
+            .Input(name, _, _) -> if self.answer_named(name)?.in_process ?? false { name } else { null },
+        }
+    }
+
+    fn law_heard(query: string, read: string) {
+        let pair = "${query}\t${read}"
+        if self.law_named.get().has(pair) { return }
+        self.law_named.put(pair, true)
+        avra_qtrace("Q\tlaw\tin_process_read\t${query}\t${read}\n")
+    }
+
+    /// The dense number a query's call `k` was asked with — a declaration's or a file's index —
+    /// none for a call asked by none.
+    fn number_of(k: Key) -> int? {
+        let owner? = self.answer_refs.get().find(it.family_now() == k.family) else { return null }
+        (owner.number)(k.arg)
+    }
+
+    /// The call of `family` asked with dense number `n`, none when none was.
+    fn call_numbered(family: int, n: int) -> int? {
+        let owner? = self.answer_refs.get().find(it.family_now() == family) else { return null }
+        (owner.numbered)(n)
+    }
+
+    fn answer_named(name: string) -> AnswerRef? {
+        let all = self.answer_refs.get().filter(it.name == name)
+        if all.length == 1 { all.first() } else { null }
+    }
+
+    /// An answer read back reads what it stood on: the same cells a run of it would.
+    fn read_leaves(ns: List<int>) {
+        let kernel = self.engine()
+        for n in ns {
+            match self.leaf_table.leaf(n) {
+                .Rows(name, _) -> self.read_rows_leaf(kernel, name),
+                .Input(name, spelled, _) -> self.read_input_leaf(kernel, n, name, spelled),
+            }
+        }
+    }
+
+    fn read_rows_leaf(kernel: Kernel, name: string) {
+        let rel = self.relations.get().find(it.name == name)
+        if rel != null { kernel.record_at(rel!.family_now(), 0) } else { self.watch_reach(name) }
+    }
+
+    fn read_input_leaf(kernel: Kernel, n: int, name: string, spelled: string) {
+        self.known_now()
+        let edges = self.leaf_edges
+        if n < edges.get().length && edges.get()[n] >= 0 {
+            kernel.record_dep(key_of(edges.get()[n]))
+            return
+        }
+        let k? = self.input_key(name, spelled) else { return }
+        while edges.get().length <= n { edges.push(0 - 1) }
+        edges.set_at(n, edge_of(k))
+        kernel.record_at(k.family, k.arg)
+    }
+
+    /// The cell a read of the answer `spelled` of `name` records, resolved once a revision; none
+    /// for one no family here records — not kept, since a declaration minted later may name it.
+    fn input_key(name: string, spelled: string) -> Key? {
+        self.known_now()
+        let id = "${name}\t${spelled}"
+        let known = self.keys_known.get().get(id)
+        if known != null { return known }
+        let owner? = self.answer_named(name) else { return null }
+        let family = owner.recorded_family()
+        if family < 0 { return null }
+        let arg? = owner.arg_of(spelled) else { return null }
+        let made = Key { family: family, arg: arg }
+        self.keys_known.put(id, made)
+        made
+    }
+
+    /// A query or input asked here, as a saved answer may name it.
+    fn answer_known(ref: AnswerRef) { self.answer_refs.push(ref) }
+
+    /// The answers named here, forgotten: each holds the owner that named it.
+    fn answers_forgotten() {
+        let none: List<AnswerRef> = []
+        self.answer_refs.set(none)
+    }
+
+    /// The revision `cell` moved at, kept where a family verifies by it — a cell is a dense
+    /// number, so its revision stands at its place.
+    fn stamped(family: int, cell: int, rev: int) {
+        let moved_at? = self.moves.get().get("${family}") else { return }
+        while moved_at.get().length <= cell { moved_at.push(0) }
+        moved_at.set_at(cell, rev)
+    }
+
+    /// Whether any cell here can have a reader: no query ever opened in
+    /// the kernel means no write can be late.
+    fn read_ever() -> bool { self.kernel.get()?.opened_ever() ?? false }
+
+    /// Whether a query ever read a cell of `family` — one registered in
+    /// this Db's kernel: until one has, a write there has no reader to
+    /// ask and no reader to tell.
+    fn read_in(family: int) -> bool { family >= 0 && self.kernel.get()?.read_any(family) ?? false }
+
+    /// The name a reader's token stands for.
+    fn reader(token: int) -> string {
+        let kernel? = self.kernel.get() else { return "a query (reader ${token})" }
+        "a query (reader ${token}, ${kernel.reader_text(token)})"
+    }
+
+    /// Who is writing now, in words: the innermost open query, or the driver.
+    fn writing() -> string { self.writer(self.kernel.get()?.asking_edge() ?? 0 - 1) }
+
+    /// A write the law refuses, told to whoever hears.
+    fn refuse(words: string) { (self.hears.get())(words) }
+
+    /// Every reached relation's set hash, in the order they were reached.
+    fn set_hashes() -> List<int> { [h() for h in self.hashes.get()] }
+
+    /// Every reached relation's rows let go, and every later reach
+    /// refused.
+    fn close() {
+        self.closed.set(true)
+        for c in self.closers.get() { c() }
+    }
+
+    /// `close`, a later reach refused with `voice` — the law the owner let
+    /// its rows go under.
+    fn close_saying(voice: string) {
+        self.closed_voice.set(voice)
+        self.close()
+    }
+}
+
+/// One Db's rows of one relation: never reached, open, or let go when
+/// the Db closed — three states, never one absence standing for two.
+enum Slot<R> {
+    Unreached
+    Open(rows: Rows<R>)
+    Closed
+}
+
+/// One relation's rows under every Db, indexed by the Db's id, each
+/// opened with the relation's own name and indexes: how many, and a bit
+/// per index set where it hashes in order.
+export type Stores<R> = { slots: Cell<List<Slot<R>>>, name: string, indexes: int, ordered: int }
+
+export fn stores<R>(name: string, indexes: int, ordered: int) -> Stores<R> {
+    let none: List<Slot<R>> = []
+    Stores { slots: Cell.new(none), name: name, indexes: indexes, ordered: ordered }
+}
+
+impl Stores<R> {
+    /// The rows under `db`: opened and kept on the first reach, the Db
+    /// told how to hash them and let them go; refused once it closed. A
+    /// close turns every reached slot `Closed`, so only a first reach
+    /// asks the Db whether it closed.
+    fn reach(db: Db) -> Rows<R> {
+        let held = self.slots.get()
+        let at = db.id
+        if at >= held.length { return self.first_reach(db) }
+        match held[at] {
+            .Open(rows) -> rows,
+            .Unreached -> self.first_reach(db),
+            .Closed -> self.refused(db),
+        }
+    }
+
+    /// A Db's first reach: refused once it closed, opened otherwise.
+    fn first_reach(db: Db) -> Rows<R> {
+        if db.closed.get() { return self.refused(db) }
+        while self.slots.get().length <= db.id { self.slots.push(Slot.Unreached) }
+        self.opened(db)
+    }
+
+    /// Fresh rows under `db`, kept, the Db told, the owner's family
+    /// registered to verify them.
+    fn opened(db: Db) -> Rows<R> {
+        let made = self.fresh()
+        self.slots.set_at(db.id, Slot.Open(made))
+        let slots = self.slots
+        let id = db.id
+        let verify = (cell: int) -> cell_hash(slots.get()[id], cell)
+        made
+            .family
+            .set(
+                db
+                    .registered(
+                        verify,
+                        (register: fn(fn(int) -> int) -> int) -> {
+                            made.unmarked()
+                            made.family.set(register(verify))
+                        },
+                    ),
+            )
+        let family = made.family
+        db
+            .joined(
+                self.name,
+                () -> family.get(),
+                () -> open_hash(slots.get()[id]),
+                () -> slots.set_at(id, Slot.Closed),
+            )
+        made
+    }
+
+    fn refused(db: Db) -> Rows<R> {
+        avra_trap(db.closed_voice.get())
+        self.fresh()
+    }
+
+    fn fresh() -> Rows<R> { named_rows(self.name, [(self.ordered >> i) & 1 == 1 for i in 0..self.indexes]) }
+}
+
+/// A cell's live hash: cell 0 the relation's set, cell `b + 1` bucket
+/// `b`; none while unreached or closed.
+fn cell_hash<R>(s: Slot<R>, cell: int) -> int {
+    match s {
+        .Open(held) -> if cell == 0 { held.set_hash() } else { held.bucket_hash(cell - 1) },
+        .Unreached or .Closed -> 0,
+    }
+}
+
+/// A slot's set hash: its rows', none while unreached or closed.
+fn open_hash<R>(s: Slot<R>) -> int {
+    match s { .Open(held) -> held.set_hash(), .Unreached or .Closed -> 0 }
+}
+
+// ── queries and inputs ──
+
+/// One `@query`'s or `@input`'s answers under every Db, by the Db's id: `name` keeps them past
+/// the process, `word` names their family in the kernel's counts and traces.
+export type Answers<V> = { held: Cell<List<AnswersUnder<V>?>>, name: string, word: string, dense: bool, lasting: bool }
+
+/// One query's answers under one Db: its kernel family with the typed
+/// values, every call's spelled arguments interned to a dense arg, and
+/// how each call is asked again when the kernel verifies it.
+type AnswersUnder<V> = {
+    memo: Relation<V>,
+    args: Cell<Map<string, int>>,
+    spells: Cell<List<string>>,
+    ints: Cell<List<int>>,
+    again: Table<fn() -> V>,
+    cap: int,
+    since: Cell<int>,
+    next: Cell<int>,
+    free: Cell<List<int>>,
+    /// Whether a call is keyed by a process's own number, which only `named` makes durable.
+    dense: bool,
+    /// Whether these answers outlive the process. One that does not is never asked to judge a
+    /// kept read of it: a call this process did not make is a read that does not stand.
+    lasting: bool = true,
+    /// Each int-keyed call's number, by its arg.
+    numbers: Cell<List<int>>,
+    named: Cell<DenseNames?>,
+    /// The name these answers' records are kept under, once the owner opened them.
+    kept_query: Cell<string?>,
+    /// How a call keyed by one text is asked by that text, set by its first call: a leaf that
+    /// names a call this process has not made is judged by asking it, as a dense one is.
+    texted: Cell<List<fn(string) -> void>>,
+    /// A fixpoint query's group solver over this family, made by its first call.
+    fixed: Cell<List<Fixpoint<V>>>,
+    /// Each fixpoint member's own body, by its arg: what its group's solve steps.
+    bodies: Table<fn() -> V>,
+}
+
+/// How a query keyed by one dense number names its calls past the process: the number's
+/// durable spelling, its inverse in this process, and the call asked by its number alone.
+/// A scope's spelling as a call's name: an empty one names nothing.
+export fn named_spelling(s: string) -> string? { if s.is_empty() { null } else { s } }
+
+export type DenseNames = { spell: fn(int) -> string?, number: fn(string) -> int?, ask: fn(int) -> void }
+
+export fn answers<V>(name: string, word: string, dense: bool, lasting: bool) -> Answers<V> {
+    let none: List<AnswersUnder<V>?> = []
+    Answers { held: Cell.new(none), name: name, word: word, dense: dense, lasting: lasting }
+}
+
+impl Answers<V> {
+    /// The answers under `db`: its family registered in the Db's kernel
+    /// on the first ask, and dropped — to register again, empty — when
+    /// the Db closes or is given another kernel.
+    fn under(db: Db) -> AnswersUnder<V> {
+        let held = self.held.get()
+        if db.id >= held.length { return self.opened(db) }
+        held[db.id] ?? self.opened(db)
+    }
+
+    fn opened(db: Db) -> AnswersUnder<V> {
+        while self.held.get().length <= db.id { self.held.push(null) }
+        let slots = self.held
+        let id = db.id
+        let kernel = db.engine()
+        let family = kernel.family()
+        kernel.named(family, self.word)
+        kernel.set_verify(family, (arg: int) -> reasked(slots.get()[id], arg))
+        let made: AnswersUnder<V> = held_in(kernel, family, db.cap.get(), self.dense)
+        self.placed(db, made with { lasting: self.lasting })
+    }
+
+    /// `made` kept as the answers under `db`, until the Db closes or is
+    /// given another kernel.
+    fn placed(db: Db, made: AnswersUnder<V>) -> AnswersUnder<V> {
+        let slots = self.held
+        let id = db.id
+        self.held.set_at(id, made)
+        db.registrars.push((_register: fn(fn(int) -> int) -> int) -> slots.set_at(id, null))
+        db.closers.push(() -> slots.set_at(id, null))
+        db
+            .answer_known(
+                AnswerRef {
+                    name: self.name,
+                    family: () -> held_family(slots, id),
+                    spelled: (arg: int) -> held_spelled(slots, id, arg),
+                    arg: (spelled: string) -> held_arg(slots, id, spelled),
+                    hash: (arg: int) -> held_hash(slots, id, arg),
+                    by_answer: true,
+                    in_process: !self.lasting,
+                    number: (arg: int) -> held_number(slots, id, arg),
+                    numbered: (n: int) -> held_numbered(slots, id, n),
+                    kept_name: () -> held_kept_name(slots, id),
+                },
+            )
+        made
+    }
+}
+
+/// The family the answers under Db `id` live in, -1 once they are dropped.
+fn held_family<V>(slots: Cell<List<AnswersUnder<V>?>>, id: int) -> int {
+    let h? = slots.get()[id] else { return 0 - 1 }
+    h.memo.query_key(0).family
+}
+
+/// The arguments call `arg` was asked with, spelled so another process reads the same call.
+fn held_spelled<V>(slots: Cell<List<AnswersUnder<V>?>>, id: int, arg: int) -> string? {
+    let h? = slots.get()[id] else { return null }
+    h.durable_at(arg)
+}
+
+/// The call a durable spelling names here — asked by its number when this process never
+/// asked it; none for a spelling that names nothing here.
+fn held_arg<V>(slots: Cell<List<AnswersUnder<V>?>>, id: int, spelled: string) -> int? {
+    let h? = slots.get()[id] else { return null }
+    h.durable_arg(spelled)
+}
+
+/// The name the answers under Db `id` are kept under.
+fn held_kept_name<V>(slots: Cell<List<AnswersUnder<V>?>>, id: int) -> string? {
+    let h? = slots.get()[id] else { return null }
+    h.kept_query.get()
+}
+
+/// The dense number call `arg` was asked with.
+fn held_number<V>(slots: Cell<List<AnswersUnder<V>?>>, id: int, arg: int) -> int? {
+    let h? = slots.get()[id] else { return null }
+    h.number_at(arg)
+}
+
+/// The call asked with dense number `n`.
+fn held_numbered<V>(slots: Cell<List<AnswersUnder<V>?>>, id: int, n: int) -> int? {
+    let h? = slots.get()[id] else { return null }
+    h.numbered_arg(n)
+}
+
+/// The hash of call `arg`'s settled value — the call asked first, by its number, when it
+/// never settled here; none for one nothing can ask.
+fn held_hash<V>(slots: Cell<List<AnswersUnder<V>?>>, id: int, arg: int) -> int? {
+    let h? = slots.get()[id] else { return null }
+    h.hash_asked(arg)
+}
+
+/// A query's empty answers in one kernel family.
+fn held_in<V>(kernel: Kernel, family: int, cap: int, dense: bool) -> AnswersUnder<V> {
+    let none: DenseNames? = null
+    let free: Cell<List<int>> = Cell.new([])
+    let memo: Relation<V> = new_memo(kernel, family)
+    let args: Cell<Map<string, int>> = Cell.new({})
+    let spells: Cell<List<string>> = Cell.new([])
+    let ints: Cell<List<int>> = Cell.new([])
+    let again: Table<fn() -> V> = new_table()
+    AnswersUnder {
+        memo: memo,
+        args: args,
+        spells: spells,
+        ints: ints,
+        again: again,
+        cap: cap,
+        since: Cell.new(0),
+        next: Cell.new(0),
+        free: free,
+        dense: dense,
+        numbers: list_cell(),
+        named: Cell.new(none),
+        kept_query: Cell.new(no_kept_name()),
+        texted: list_cell(),
+        fixed: list_cell(),
+        bodies: new_table(),
+    }
+}
+
+/// A kept record read back: what the answer stood on, and the answer.
+type Kept<V> = { leaves: List<int>, value: V }
+
+/// A kept record's answer, read back only when it was kept for `spelled`.
+fn proved<V>(db: Db, r: Reader, spelled: string, read: fn(Reader) -> Result<V, CodecFault>) -> Result<
+    Kept<V>?,
+    CodecFault,
+> {
+    let head? = record_head(db, r, db.saved_spelling(spelled))? else {
+        let elsewhere: Kept<V>? = null
+        return elsewhere
+    }
+    let held: Kept<V>? = if db.leaves_hold(head.leaves) { Kept { leaves: head.leaves, value: read(r)? } } else { null }
+    held
+}
+
+/// What a record says before its answer: its digest and its reads.
+type RecordHead = { digest: int, leaves: List<int> }
+
+/// A record's head, none when it was kept for other arguments or its chunk is gone.
+fn record_head(db: Db, r: Reader, saved: string) -> Result<RecordHead?, CodecFault> {
+    if db.saved_spelling(r.text()?) != saved { fail CodecFault.OtherArguments }
+    let digest = r.int()?
+    let leaves = [db.run_leaves(run) for run in read_list(r, read_run)?]
+    if leaves.any(it == null) { fail CodecFault.OtherArguments }
+    let head: RecordHead? = RecordHead {
+        digest: digest,
+        leaves: [n for run in leaves for n in run!],
+    }
+    head
+}
+
+/// A kept record's answer, its reads passed over.
+fn unproved<V>(r: Reader, read: fn(Reader) -> Result<V, CodecFault>) -> Result<V, CodecFault> {
+    let _spelled = r.text()?
+    let _digest = r.int()?
+    let _runs = read_list(r, read_run)?
+    read(r)
+}
+
+/// A leaf's place: its chunk and its position there.
+fn placed_at(chunk: int, at: int) -> LeafPlace { LeafPlace { chunk: chunk, at: at } }
+
+/// PLACES IN ONE CHUNK, IN A ROW: the chunk once, then each position as its step from the one
+/// before — a chunk's leaves are placed in order, so a step is mostly one octet.
+type PlaceRun = { chunk: int, ats: List<int> }
+
+/// `places` as runs, each its consecutive places in one chunk, in order.
+fn runs_of(places: List<LeafPlace>) -> List<PlaceRun> {
+    let starts = [i for i, p in places if i == 0 || places[i - 1].chunk != p.chunk]
+    [PlaceRun {
+        chunk: places[s].chunk,
+        ats: [places[i].at for i in s..if j + 1 < starts.length { starts[j + 1] } else { places.length }],
+    } for j, s in starts]
+}
+
+/// A run: its chunk, its count, then each position's step from the one before (from zero).
+fn write_run(w: Writer, run: PlaceRun) {
+    w.int(run.chunk)
+    w.count(run.ats.length)
+    for i, at in run.ats { w.int(at - if i == 0 { 0 } else { run.ats[i - 1] }) }
+}
+
+fn read_run(r: Reader) -> Result<PlaceRun, CodecFault> {
+    let chunk = r.int()?
+    let n = r.count()?
+    mut at = 0
+    mut out: List<int> = []
+    for _i in 0..n {
+        at = at + r.int()?
+        out.push(at)
+    }
+    PlaceRun { chunk: chunk, ats: out }
+}
+
+fn write_leaf(w: Writer, l: Leaf) {
+    match l {
+        .Rows(name, digest) -> {
+            w.int(0)
+            w.text(name)
+            w.int(digest)
+        },
+        .Input(name, spelled, digest) -> {
+            w.int(1)
+            w.text(name)
+            w.text(spelled)
+            w.int(digest)
+        },
+    }
+}
+
+fn read_leaf(r: Reader) -> Result<Leaf, CodecFault> {
+    let tag = r.int()?
+    match tag {
+        0 -> {
+            let name = r.text()?
+            let digest = r.int()?
+            Leaf.Rows(name, digest)
+        },
+        1 -> {
+            let name = r.text()?
+            let spelled = r.text()?
+            let digest = r.int()?
+            Leaf.Input(name, spelled, digest)
+        },
+        _ -> {
+            fail CodecFault.NotVariant
+        },
+    }
+}
+
+/// A call verified: asked again when it is a query's, then the revision
+/// its cell last changed at.
+/// A fixpoint member's own body run: every member a solve steps was asked, so its body is kept.
+fn run_body<V>(bodies: Table<fn() -> V>, arg: int) -> V { (bodies.at(arg)!)() }
+
+fn reasked<V>(held: AnswersUnder<V>?, arg: int) -> int {
+    let h? = held else { return 0 }
+    match h.again.entry(arg) {
+        .Present(ask) -> {
+            let _ = ask()
+        },
+        .Missing -> no_word(),
+    }
+    h.memo.kernel.changed_at(h.memo.query_key(arg))
+}
+
+impl AnswersUnder<V> {
+    /// A new call's room. Past the cap, every settled call not in flight is dropped at
+    /// once — its value, its cell, its `again`, its spelled-key entry and its int slot —
+    /// the revision moves once so dependents re-verify, and the count starts over. A
+    /// dropped call is new the next time it is asked: its arg number is never reused.
+    fn make_room() {
+        if self.cap == 0 { return }
+        if self.since.get() < self.cap {
+            self.since.set(self.since.get() + 1)
+            return
+        }
+        mut kept: Map<string, int> = {}
+        mut dropped: List<int> = []
+        for e in self.args.get().entries() {
+            if self.memo.open(e.value) {
+                kept.set(e.key, e.value)
+            } else {
+                self.memo.evict_call(e.value)
+                self.again.drop(e.value)
+                dropped.push(e.value)
+            }
+        }
+        self.args.set(kept)
+        self.free.set(self.free.get().concat(dropped))
+        self.ints.set([if x >= 0 && self.memo.open(x) { x } else { -1 } for x in self.ints.get()])
+        self.memo.kernel.bump()
+        self.since.set(1)
+    }
+
+    /// A dense arg for a new call: the newest one an epoch freed, else one never used before.
+    /// A freed arg comes back with a new cell, which settles at a revision past any stale
+    /// dependent's verification, so that dependent re-verifies and never reuses.
+    fn take_arg() -> int {
+        let free = self.free.get()
+        let reused? = free.last() else {
+            let made = self.next.get()
+            self.next.set(made + 1)
+            return made
+        }
+        self.free.set(free.slice(0, free.length - 1))
+        reused
+    }
+
+    fn arg(spelled: string) -> int {
+        if spelled.length > KEY_BOUND { trapped(key_too_long(spelled.length)) }
+        let known? = self.args.get().get(spelled) else {
+            self.make_room()
+            let made = self.take_arg()
+            self.args.put(spelled, made)
+            self.spell(made, spelled)
+            return made
+        }
+        known
+    }
+
+    /// Call `at`'s arguments, kept to be read back. Marked, since no arguments spell as "".
+    fn spell(at: int, spelled: string) {
+        while self.spells.get().length <= at { self.spells.push("") }
+        self.spells.set_at(at, "#${spelled}")
+    }
+
+    fn spelled_at(arg: int) -> string? {
+        if arg < 0 || arg >= self.spells.get().length { return null }
+        let marked = self.spells.get()[arg]
+        if marked.is_empty() { null } else { marked.substring(1, marked.length) }
+    }
+
+    /// An int argument's dense arg: read from the int table below the cap, else
+    /// interned by its spelled form, as `arg` interns it.
+    fn int_arg(n: int) -> int {
+        let inside = n >= 0 && n < INT_CAP
+        if inside {
+            let known = self.ints.get()
+            if n < known.length && known[n] >= 0 { return known[n] }
+        }
+        let made = self.arg(int_spelled(n))
+        if inside { self.remember_int(n, made) }
+        while self.numbers.get().length <= made { self.numbers.push(-1) }
+        self.numbers.set_at(made, n)
+        made
+    }
+
+    /// Whether this query's calls name themselves past the process yet.
+    fn durably_named() -> bool { !self.dense || self.named.get() != null }
+
+    /// How a dense-keyed query's calls are named past the process, set by its first call.
+    fn durable_by(names: DenseNames) { self.named.set(names) }
+
+    /// These answers' records are kept under `name`.
+    fn kept_as(name: string?) { self.kept_query.set(name) }
+
+    /// How a call keyed by one text is asked by it, once.
+    fn asked_by_text(ask: fn(string) -> void) {
+        if self.texted.get().is_empty() { self.texted.push(ask) }
+    }
+
+    /// Call `arg`'s spelling another process reads alike: its arguments as the codec spells
+    /// them, or — keyed by a dense number — that number's durable name; none for a number no
+    /// name stands for.
+    fn durable_at(arg: int) -> string? {
+        if !self.dense { return self.spelled_at(arg) }
+        let names? = self.named.get() else { return null }
+        let n? = self.number_at(arg) else { return null }
+        (names.spell)(n)
+    }
+
+    /// `durable_at`'s inverse: the call a spelling names here, interned when never asked.
+    fn durable_arg(spelled: string) -> int? {
+        if !self.dense {
+            let known = self.args.get().get(spelled)
+            if known != null || !self.lasting { return known }
+            let ask? = self.texted.get().first() else { return null }
+            self.memo.kernel.unheard(() -> ask(spelled))
+            return self.args.get().get(spelled)
+        }
+        let names? = self.named.get() else { return null }
+        let number = names.number
+        let n? = number(spelled) else { return null }
+        self.int_arg(n)
+    }
+
+    /// The number call `arg` was asked with, when it was asked by one.
+    fn number_at(arg: int) -> int? {
+        if arg < 0 || arg >= self.numbers.get().length { return null }
+        let n = self.numbers.get()[arg]
+        if n < 0 { null } else { n }
+    }
+
+    /// The answer call `arg` holds, none when it holds none — computing and recording nothing.
+    fn peeked(arg: int) -> V? {
+        match self.memo.values.entry(arg) { .Present(value) -> value, .Missing -> null }
+    }
+
+    /// The number a key of this query was asked with, none for another query's key.
+    fn number_of(k: Key) -> int? {
+        if k.family != self.memo.family { return null }
+        self.number_at(k.arg)
+    }
+
+    /// The call asked with dense number `n`, none when none was.
+    fn numbered_arg(n: int) -> int? {
+        let known = self.ints.get()
+        if n < 0 || n >= known.length || known[n] < 0 { return null }
+        known[n]
+    }
+    /// Every answer and cell dropped, and every re-ask with them: what a call's closure held of
+    /// its context is let go.
+    fn dropped() {
+        self.memo.evict()
+        self.again.clear()
+    }
+
+    /// Call `arg`'s settled hash, the call asked by its number first when it never settled —
+    /// heard by no open frame, since a leaf's judge reads the call and no reader of it does.
+    fn hash_asked(arg: int) -> int? {
+        let key = self.memo.query_key(arg)
+        let held = self.memo.kernel.value_hash_of(key)
+        if held != null { return held }
+        let names? = self.named.get() else { return null }
+        let n? = self.number_at(arg) else { return null }
+        let ask = names.ask
+        self.memo.kernel.unheard(() -> ask(n))
+        self.memo.kernel.value_hash_of(key)
+    }
+
+    /// A FIXPOINT QUERY'S CALL: a member of the group its reads make, the group solved from
+    /// `bottom` under `join` on this family until no member grows. A join that breaks a lattice
+    /// law traps in the law's own words.
+    fn solved(
+        arg: int,
+        body: fn() -> V,
+        again: fn() -> V,
+        bottom: V,
+        join: fn(V, V) -> V,
+        digest: fn(V) -> int,
+    ) -> V {
+        self.again.keep(arg, again)
+        self.bodies.keep(arg, body)
+        let made = self.fixed.get().first() ?? self.fixpoint_made(bottom, join, digest)
+        let bodies = self.bodies
+        match made.asked(arg, (a: int) -> run_body(bodies, a)) {
+            .Ok(value) -> value,
+            .Err(r) -> {
+                trapped(fixpoint_spoken(r))
+                bottom
+            },
+        }
+    }
+
+    /// This family's group solver, made once.
+    fn fixpoint_made(bottom: V, join: fn(V, V) -> V, digest: fn(V) -> int) -> Fixpoint<V> {
+        let made = new_fixpoint<V>(self.memo.kernel, self.memo.family, bottom, join, digest)
+        self.fixed.push(made)
+        made
+    }
+
+    fn remember_int(n: int, made: int) {
+        while self.ints.get().length <= n { self.ints.push(-1) }
+        self.ints.set_at(n, made)
+    }
+
+    /// An open call computed: `body` run, its answer settled under the
+    /// reads the kernel recorded.
+    fn ran(db: Db, arg: int, body: fn() -> V, again: fn() -> V, digest: fn(V) -> int) -> V {
+        let done = self.run(db, arg, body, again, digest)
+        if self.kept_query.get() != null { db.keeping(() -> self.keep_head(db, arg)) }
+        done.value
+    }
+
+    /// An in-process answer's record: its digest and its reads, and no answer — a reader's read
+    /// of it stands while they do, and only a moved read runs it.
+    fn keep_head(db: Db, arg: int) {
+        let query? = self.kept_query.get() else { return }
+        let spelled? = self.durable_at(arg) else { return }
+        let leaves? = db.leaves_unheard(edge_of(self.memo.query_key(arg))) else { return }
+        self.keep_record(db, arg, query, spelled, leaves, (_w: Writer) -> no_word())
+    }
+
+    /// A call's record: its digest from its cell.
+    fn keep_record(
+        db: Db,
+        arg: int,
+        query: string,
+        spelled: string,
+        leaves: List<int>,
+        answer: fn(Writer) -> void,
+    ) {
+        db
+            .record_kept(
+                query,
+                spelled,
+                db.engine().value_hash_of(self.memo.query_key(arg)) ?? 0,
+                leaves,
+                answer,
+            )
+    }
+
+    /// `ran`, for an answer that reads back: a call this process never
+    /// answered takes the owner's record when it has one and every read the
+    /// record names still has its digest; else it runs, and hands its answer
+    /// over when it wrote no rows and every read has a name. A call
+    /// answered here and gone stale was moved in this process, which no
+    /// record saw: it runs.
+    fn ran_lasting(
+        db: Db,
+        arg: int,
+        named: string?,
+        body: fn() -> V,
+        again: fn() -> V,
+        digest: fn(V) -> int,
+        record: KeptRecord<V>,
+    ) -> V {
+        let query? = record.query else { return self.ran(db, arg, body, again, digest) }
+        let spelled? = named else { return self.ran(db, arg, body, again, digest) }
+        if self.answered(arg) { return self.ran(db, arg, body, again, digest) }
+        let kept? = self.restored(db, query, record, spelled) else {
+            return self.made_lasting(db, arg, query, spelled, body, again, digest, record)
+        }
+        self.again.keep(arg, again)
+        db.read_leaves(kept.leaves)
+        db.noted_numbers(edge_of(self.memo.query_key(arg)), kept.leaves)
+        self.memo.finish(arg, kept.value, digest(kept.value))
+    }
+
+    /// What a settled call stands on, noted: unnamed when a read of rows it could not hear
+    /// happened since `foreign`, else owed to its first reader.
+    fn note_leaves(db: Db, key: Key, foreign: int) {
+        if foreign_reads().get() > foreign { db.noted_numbers(edge_of(key), null) } else { db.owed(edge_of(key), key) }
+    }
+
+    /// A call run, its answer kept with what it stood on.
+    fn made_lasting(
+        db: Db,
+        arg: int,
+        query: string,
+        spelled: string,
+        body: fn() -> V,
+        again: fn() -> V,
+        digest: fn(V) -> int,
+        record: KeptRecord<V>,
+    ) -> V {
+        let done = self.run(db, arg, body, again, digest)
+        db.keeping(() -> self.keep_lasting(db, arg, query, spelled, done, record))
+        done.value
+    }
+
+    /// A call's answer kept with what it stood on, when every read has a name.
+    fn keep_lasting(
+        db: Db,
+        arg: int,
+        query: string,
+        spelled: string,
+        done: Run<V>,
+        record: KeptRecord<V>,
+    ) {
+        let leaves? = db.leaves_unheard(edge_of(self.memo.query_key(arg))) else { return }
+        if done.wrote { return db.readers_noted(db.kin_of(query.split("#")[0], spelled), leaves) }
+        if db.engine().tracing.get() { db.in_process_reads(query, leaves) }
+        self
+            .keep_record(db, arg, query, spelled, leaves, (w: Writer) -> record.write(w, done.value))
+    }
+
+    /// Whether this process ever answered the call.
+    fn answered(arg: int) -> bool {
+        match self.again.entry(arg) { .Present(_) -> true, .Missing -> false }
+    }
+
+    /// The owner's record for a call, read back — one that does not read
+    /// back is recomputed, never guessed at.
+    fn restored(db: Db, query: string, record: KeptRecord<V>, spelled: string) -> Kept<V>? {
+        let answer = db.durable.answer
+        let bytes? = answer(query, spelled_hash(query, db.saved_spelling(spelled))) else { return null }
+        match decoded_from(db.home(), bytes, (r: Reader) -> proved(db, r, spelled, record.read)) {
+            .Ok(kept) -> kept,
+            .Err(_) -> null,
+        }
+    }
+
+    /// The answer a call's record holds, its reads unasked; none for no record or one that
+    /// does not read back.
+    fn kept_value(db: Db, spelled: string?, record: KeptRecord<V>) -> V? {
+        let query? = record.query else { return null }
+        let named? = spelled else { return null }
+        let answer = db.durable.answer
+        let bytes? = answer(query, spelled_hash(query, db.saved_spelling(named))) else { return null }
+        let value: V? = match decoded_from(
+            db.home(),
+            bytes,
+            (r: Reader) -> unproved(r, record.read),
+        ) { .Ok(v) -> v, .Err(_) -> null }
+        value
+    }
+
+    fn run(db: Db, arg: int, body: fn() -> V, again: fn() -> V, digest: fn(V) -> int) -> Run<V> {
+        let settled = Cell.new(false)
+        self.again.keep(arg, again)
+        let before = db.written.get()
+        let foreign = foreign_reads().get()
+        db.entered()
+        defer self.abandoned_unless(db, settled, arg)
+        let value = body()
+        let kept = db.left()
+        settled.set(true)
+        if !kept {
+            self.memo.kernel.abandon(self.memo.query_key(arg))
+            return Run { value: value, wrote: true }
+        }
+        // digested as it settles: its readers cut off on that digest
+        let answer = self.memo.finish(arg, value, digest(value))
+        let key = self.memo.query_key(arg)
+        self.note_leaves(db, key, foreign)
+        Run { value: answer, wrote: db.written.get() > before }
+    }
+
+    /// A call left before it settled leaves no body counted as running
+    /// here and no open query in the kernel.
+    fn abandoned_unless(db: Db, settled: Cell<bool>, arg: int) {
+        if settled.get() { return }
+        let _ = db.left()
+        self.memo.kernel.abandon(self.memo.query_key(arg))
+    }
+
+    /// The driver's own value for an input's call.
+    fn set(_db: Db, arg: int, value: V, digest: fn(V) -> int) {
+        self.memo.set(arg, value, digest(value))
+    }
+}
+
+/// A run's answer and whether a row was filed or removed while it ran — an unkept run counts
+/// as one, so no record keeps its answer.
+type Run<V> = { value: V, wrote: bool }
+
+/// How an answer is kept past the process: the query's durable name, the
+/// call's arguments' stable hash, and the answer's codec.
+/// The name a query's answers are kept under: its durable name and its
+/// code's hash — none when the code has no hash, so nothing is kept.
+export fn code_keyed(name: string, hash: string?) -> string? {
+    let h? = hash else { return null }
+    "${name}#${h}"
+}
+
+export type KeptRecord<V> = { query: string?, write: fn(Writer, V) -> void, read: fn(Reader) -> Result<V, CodecFault> }
+
+// ── voices ──
+
+fn unkept_outside() -> string {
+    "`unkept()` says a running `@query` cannot finish its answer, and no query is running here"
+}
+
+fn query_writes() -> string {
+    "a `@query` wrote a row with no owner — a query answers, it writes no rows of its own; hand the rows to a named owner (`Rel.replaced(db, owner, rows)`)"
+}
+
+fn given_after_read(id: int) -> string {
+    "Db ${id} is given a kernel after a query read it — a Db takes its owner's kernel before anything is asked of it"
+}
+
+fn closed_db(id: int) -> string {
+    "relation rows reached through Db ${id} after it closed — a closed Db's rows are gone; open a new Db"
+}

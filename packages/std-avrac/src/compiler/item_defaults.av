@@ -1,0 +1,89 @@
+//! WHAT A TRAIT'S OWN BODY GIVES: a method a type never writes, answered by the one trait it
+//! implements that writes a body for it. That body is lowered once per type it answers for, `Self`
+//! and the receiver that type, its unit named for the trait, the method and the type.
+use core.{CalledFn, StmtId, TypeHead, headed_type}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+
+/// The trait the type `file` declares as `owner` implements, by an impl applied to nothing, whose own
+/// body gives the method `method`: the one such, absent where none or several do.
+export fn default_giver(engine: QueryEngine, file: SourceFileAddress, owner: string, method: string) -> TraitAt? {
+    let giving = [i.implements! for i in impls_of(engine, file, owner) if i.at.params.is_empty() &&
+        i.implements != null &&
+        given_body(engine, i.implements!, method) != null]
+    if giving.length == 1 { giving[0] } else { null }
+}
+
+/// A trait's member fn with a body: the trait's item, and the statement.
+type GivenBody = { item: ReadItem, stmt: StmtId }
+
+/// The member `method` the trait `t` declares with a body of its own, absent when it declares none.
+fn given_body(engine: QueryEngine, t: TraitAt, method: string) -> GivenBody? {
+    let item? = declaring_item(engine, t.file, t.name, ItemKind.Trait) else { return null }
+    let s? = trait_fns(item)
+        .find(
+            (f) -> item.store.fn_parts(f)?.name == method &&
+                !item.store.is_static(f) &&
+                written_body(item, f),
+        ) else { return null }
+    GivenBody { item: item, stmt: s }
+}
+
+/// Whether a trait's member writes a body: a bare signature's is a hole.
+fn written_body(item: ReadItem, s: StmtId) -> bool { !(item.store.expr(item.store.fn_parts(s)!.body) is .Error) }
+
+/// The name the body `giver` gives the method `method` is known by as the type `file` declares as
+/// `owner` answers it.
+export fn default_unit(giver: TraitAt, method: string, file: SourceFileAddress, owner: string) -> string {
+    "${giver.name}.${method}\$for\$${spelled_file(file)}.${owner}"
+}
+
+/// The method `method` the type `file` declares as `owner` never writes, as a call reaches the body
+/// the one trait it implements gives it. Absent for a method no one trait gives.
+fn given_callee(engine: QueryEngine, file: SourceFileAddress, owner: string, method: string) -> CalledFn? {
+    let giver? = default_giver(engine, file, owner, method) else { return null }
+    let written? = given_body(engine, giver, method) else { return null }
+    let parts = written.item.store.fn_parts(written.stmt)!
+    let used = receiver_use(engine, file, owner, method, giver.file.package_name)
+    let receiver = headed_type(TypeHead.Declared(file, owner))
+    CalledFn {
+        file: giver.file,
+        name: method,
+        symbol: declared_symbol(giver.file, default_unit(giver, method, file, owner)),
+        external: false,
+        plain: parts.tparams.is_empty() && parts.params.all(plain_seat),
+        owner: owner,
+        of: file,
+        writes: used.written(),
+        unproved: used.unproved(),
+        given_by: giver.name,
+        params: signed_seats(trait_method_signature(engine, giver, method, receiver)?.params ?? []),
+    }
+}
+
+/// The body the one trait the type `file` declares as `owner` implements gives the method `method`,
+/// lowered with `Self` and the receiver that type. Absent when no one trait gives it a body.
+export fn lowered_default(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    owner: string,
+    method: string,
+) -> LoweredFn? {
+    let giver? = default_giver(engine, file, owner, method) else { return null }
+    let written? = given_body(engine, giver, method) else { return null }
+    let receiver = headed_type(TypeHead.Declared(file, owner))
+    let signature? = trait_method_signature(engine, giver, method, receiver) else { return null }
+    lowered_signed(
+        engine,
+        giver.file,
+        SignedBody {
+            signature: signature,
+            item: written.item,
+            body: written.item.store.fn_parts(written.stmt)!.body,
+            stmt: written.stmt,
+            receiver: receiver,
+        },
+        default_unit(giver, method, file, owner),
+        null,
+    )
+}

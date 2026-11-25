@@ -1,0 +1,450 @@
+//! §10.4 — the red team's MECHANICAL classes, generated from a
+//! feature's RULE and the model. A person writes only the SEMANTIC
+//! attacks; the shapes every hand red team found by hand (a bool in a
+//! NAME seat, an empty `${}` hole) are classes here.
+//!
+//! THE ENUMERATOR IS A PROJECTION OF THE GRAMMAR. It reads
+//! `grammar.{Grammar,Rule,Alt,Seq,Item,Prim,Rep}` and resolves a
+//! `Named(term)` through the grammar's OWN terminal registry
+//! (`term_kind`), so a sample is keyed on the lexer's kind enum and a
+//! new kind breaks the match rather than drifting from the terminals.
+//!
+//! THE CLASSES ARE THE SPEC'S THREE, and each states a LAW:
+//! degenerate shapes (N = 0, 1, many of a repeated capture) are VALID;
+//! a malformed surface (delete, duplicate, swap, keyword-replace a
+//! token) is DIAGNOSED; a wrong-typed slot is REFUSED. A survivor —
+//! the compiler accepting what the class says it must refuse — is a
+//! missing law and makes the case RED, never a pinned expectation.
+use core.{joined, flatten, quoted_text, distinct}
+use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep}
+use grammar.{TokenKind, term_kind}
+use compiler.{analyze_source}
+
+/// The class a case belongs to.
+export enum AttackClass { Degenerate, Malformed, Keyword }
+
+/// The malformed cases the compiler ACCEPTS. A survivor is a mutant
+/// the tolerance law lets through, and it is NOT a failure — it may be
+/// a valid program. It is recorded in `tools/attack.baseline` so a NEW
+/// one is refused: the baseline never grows without a decision.
+export fn survivors_of(g: Generated) -> List<Attack> {
+    [a for a in g.cases if is_mutant(a.class) && accepts(a.source)]
+}
+
+/// A case whose verdict the compiler CHOSE — every class but the one
+/// that asserts stability. A survivor is one of these the compiler
+/// accepts.
+fn is_mutant(c: AttackClass) -> bool {
+    match c { .Degenerate -> false, .Malformed or .Keyword -> true }
+}
+
+fn accepts(src: string) -> bool {
+    analyze_source(src).diagnostics.is_empty()
+}
+
+/// A source on one baseline line — a newline or tab would break the
+/// record, so they are spelled.
+export fn baseline_word(src: string) -> string {
+    src.replace("\n", "\\n").replace("\t", "\\t")
+}
+
+/// One generated attack: its class, the source, and — for a
+/// degenerate case — the BASE it varies, so the law is STABILITY.
+export type Attack = { class: AttackClass, source: string, base: string = "" }
+
+/// How many copies of a repeated item a sample spells.
+enum Count { None, One, Many }
+
+/// The one repeated item a sample is varying, by its path through the
+/// branch's items and groups.
+type Vary = { path: List<int>, count: Count }
+
+/// Every mechanical attack a grammar's rules name, in rule and branch
+/// order — deterministic, so a regeneration is a diff.
+export fn attacks(g: Grammar, cap: int) -> Generated {
+    let all = first_seen(flatten([rule_attacks(g, r) for r in g.rules]))
+    if all.length <= cap { return Generated { cases: all, dropped: 0, cap: cap } }
+    Generated { cases: all.slice(0, cap), dropped: all.length - cap, cap: cap }
+}
+
+/// The generated cases and the cap they were generated under — a
+/// SUBSET whose gap is written in the artifact is honest; a silent one
+/// claims a coverage it does not have.
+export type Generated = { cases: List<Attack>, dropped: int, cap: int }
+
+/// One case per SOURCE — a `then` label is the source, so a source
+/// two branches or two classes both reach declares the same test
+/// twice, which the language refuses (F3023).
+fn first_seen(cases: List<Attack>) -> List<Attack> {
+    [a for j, a in cases if earlier_sources(cases, j).all(it.source != a.source)]
+}
+
+fn earlier_sources(cases: List<Attack>, at: int) -> List<Attack> {
+    cases.slice(0, at)
+}
+
+fn rule_attacks(g: Grammar, r: Rule) -> List<Attack> {
+    flatten([branch_attacks(g, r, j) for j in 0..r.body.branches.length])
+}
+
+fn branch_attacks(g: Grammar, r: Rule, branch: int) -> List<Attack> {
+    let s = r.body.branches[branch]
+    let base = seq_sample(g, s, [r.name], null, [])
+    let minimal = seq_sample_min(g, s, [r.name], [])
+    degenerate(g, r, s)
+        .concat(malformed(base))
+        .concat(keyworded(g, base))
+        .concat(if minimal == base { [] } else { malformed(minimal) })
+}
+
+/// The sample with every OPTIONAL item omitted — the minimal surface a
+/// branch accepts. Its malformed class is proved too, so a `?` added to
+/// a rule grows the sample without removing a mutant the model had.
+fn seq_sample_min(g: Grammar, s: Seq, seen: List<string>, path: List<int>) -> string {
+    joined([min_item(g, m, seen, path.concat([j])) for j, m in s.items if !is_optional(m)], " ")
+}
+
+fn is_optional(m: Item) -> bool {
+    match m.rep { .Opt -> true, .One or .Star or .Plus -> false }
+}
+
+fn min_item(g: Grammar, m: Item, seen: List<string>, path: List<int>) -> string {
+    prim_sample(g, m.prim, seen, null, path)
+}
+
+/// The degenerate class: every repeated item in a branch, spelled
+/// ZERO — and MANY where the repeat spells itself: a `(s:stmt | BREAK)*`
+/// repeat alternates with a SEPARATOR branch, so repeating the
+/// statement branch alone skips the break and the many sample does not
+/// parse. That is a generator limit, not a compiler law, so the many
+/// case is emitted only where the repeat is self-contained.
+fn degenerate(g: Grammar, r: Rule, s: Seq) -> List<Attack> {
+    let base = seq_sample(g, s, [r.name], null, [])
+    flatten([reps_attacks(g, s, r.name, base, rep) for rep in repeats_of(s, [])])
+}
+
+fn reps_attacks(g: Grammar, s: Seq, rname: string, base: string, rep: Repeat) -> List<Attack> {
+    let counts = if rep.many { [Count.None, Count.Many] } else { [Count.None] }
+    [Attack { class: AttackClass.Degenerate, source: varying(g, s, rname, rep.path, c), base: base } for c in counts]
+}
+
+/// A repeated item and whether its many-copy is self-contained.
+type Repeat = { path: List<int>, many: bool }
+
+/// A group that alternates with a lone-BREAK branch is separator-led.
+fn many_ok(m: Item) -> bool {
+    match m.prim {
+        .Group(inner) -> !inner.branches.any(is_separator),
+        .Ref(_) or .Lit(_) or .Named(_) or .NotChar(_) -> true,
+    }
+}
+
+fn is_separator(s: Seq) -> bool {
+    if s.items.length != 1 { return false }
+    match s.items[0].prim {
+        .Named(term) -> term == "BREAK",
+        .Ref(_) or .Lit(_) or .Group(_) or .NotChar(_) -> false,
+    }
+}
+
+fn varying(g: Grammar, s: Seq, rname: string, path: List<int>, count: Count) -> string {
+    seq_sample(g, s, [rname], Vary { path: path, count: count }, [])
+}
+
+/// The malformed class: a required token deleted, duplicated, or
+/// swapped with its neighbour. Each must be DIAGNOSED. KEYWORD-REPLACE
+/// is scheduled with the wrong-type class: it needs the generator to
+/// know which replacements the position still accepts (replacing
+/// `true` with `false` in bool_lit is a VALID program, not a
+/// malformed one), and asserting refusal there would manufacture a
+/// false survivor.
+fn malformed(base: string) -> List<Attack> {
+    let toks = [t for t in base.split(" ") if !t.is_empty()]
+    if toks.is_empty() { return [] }
+    let sources = distinct(deletions(toks).concat(duplications(toks)).concat(swap_mutants(toks)))
+    [Attack { class: AttackClass.Malformed, source: src } for src in sources]
+}
+
+/// The keyword-replace class: a token replaced by a keyword the
+/// grammar ITSELF spells, different from the token. The LAW is
+/// tolerance, not refusal — replacing `true` with `false` in bool_lit
+/// is a VALID program, and a refusal assertion there would manufacture
+/// a survivor; a new survivor is a decision in `tools/attack.baseline`.
+fn keyworded(g: Grammar, base: string) -> List<Attack> {
+    let toks = [t for t in base.split(" ") if !t.is_empty()]
+    let words = g.keywords()
+    if toks.is_empty() || words.is_empty() { return [] }
+    let sources = distinct([join_replace(toks, j, other_word(toks[j], words)) for j, t in toks])
+    [Attack { class: AttackClass.Keyword, source: src } for src in sources]
+}
+
+/// A grammar keyword that is not the token being replaced, so the
+/// mutant is a real substitution; the token stands when the grammar
+/// spells only that one word, and the dedupe drops the no-op.
+fn other_word(token: string, words: List<string>) -> string {
+    words.find(it != token) ?? token
+}
+
+fn join_replace(xs: List<string>, at: int, word: string) -> string {
+    joined([worded(t, j, at, word) for j, t in xs], " ")
+}
+
+fn worded(t: string, j: int, at: int, word: string) -> string {
+    if j == at { return word }
+    t
+}
+
+/// A token removed — but an EMPTY surface is a VALID empty program,
+/// not a malformed one, so a deletion that empties the sample is not
+/// an attack.
+fn deletions(toks: List<string>) -> List<string> {
+    [d for d in [join_without(toks, j) for j, t in toks] if !d.is_empty()]
+}
+
+fn duplications(toks: List<string>) -> List<string> {
+    [join_dup(toks, j) for j, t in toks]
+}
+
+/// A swap needs a neighbour of a DIFFERENT token — swapping two equal
+/// ones is a no-op, not an attack.
+fn swap_mutants(toks: List<string>) -> List<string> {
+    if toks.length < 2 { return [] }
+    [join_swap(toks, j) for j in 0..toks.length - 1 if toks[j] != toks[j + 1]]
+}
+
+// ── The sample ─────────────────────────────────────────────────────
+// A rule's first branch, spelled once: literals as written, a terminal
+// as its canonical token, a reference recursed (a cycle answers a
+// NAME), a group opened, a repetition one copy unless it is the one
+// being varied.
+
+fn alt_sample(g: Grammar, a: Alt, seen: List<string>, vary: Vary?, path: List<int>) -> string {
+    if a.branches.is_empty() { return "" }
+    seq_sample(g, a.branches[0], seen, vary, path)
+}
+
+fn rule_sample(g: Grammar, name: string, seen: List<string>, vary: Vary?, path: List<int>) -> string {
+    let r? = g.rules.find(it.name == name) else { return "x" }
+    alt_sample(g, r.body, seen, vary, path)
+}
+
+fn seq_sample(g: Grammar, s: Seq, seen: List<string>, vary: Vary?, path: List<int>) -> string {
+    joined(
+        [item_sample(g, m, seen, vary, path.concat([j])) for j, m in s.items if !sample_empty(vary, path.concat([j]))],
+        " ",
+    )
+}
+
+/// Whether an item is spelled at all — a varied `None` drops it, so
+/// the join never leaves a double space.
+fn sample_empty(vary: Vary?, path: List<int>) -> bool {
+    count_for(vary, path) is .None
+}
+
+fn item_sample(g: Grammar, m: Item, seen: List<string>, vary: Vary?, path: List<int>) -> string {
+    let base = prim_sample(g, m.prim, seen, vary, path)
+    match count_for(vary, path) { .None -> "", .One -> base, .Many -> "${base} ${base}" }
+}
+
+/// The repetition count this item wears: the varied one when it is the
+/// target, else the canonical single copy — a `?` still spells one, so
+/// absence is the degenerate class's job and never an accident.
+fn count_for(vary: Vary?, path: List<int>) -> Count {
+    if vary == null { return Count.One }
+    if same_path(vary!.path, path) { return vary!.count }
+    Count.One
+}
+
+fn same_path(a: List<int>, b: List<int>) -> bool {
+    a.length == b.length && [j for j in 0..a.length if a[j] != b[j]].is_empty()
+}
+
+fn prim_sample(g: Grammar, p: Prim, seen: List<string>, vary: Vary?, path: List<int>) -> string {
+    match p {
+        .Lit(text) -> text,
+        .Named(term) -> terminal_sample(term),
+        // A reference's own items are a fresh path space, so a vary
+        // never leaks into it; the malformed class still mutates the
+        // expanded text.
+        .Ref(name) -> if seen.contains(name) { "x" } else { rule_sample(g, name, seen.concat([name]), null, []) },
+        .Group(inner) -> alt_sample(g, inner, seen, vary, path),
+        // A lexicon's own atom never reaches a parsing grammar's attack
+        // sample — a placeholder character, never asked to be exact.
+        .NotChar(_) -> "x",
+    }
+}
+
+/// The repeated items of a branch, by path — a group's FIRST branch,
+/// which is the one the sample opens.
+fn repeats_of(s: Seq, prefix: List<int>) -> List<Repeat> {
+    flatten([repeat_in_item(m, prefix.concat([j])) for j, m in s.items])
+}
+
+fn repeat_in_item(m: Item, path: List<int>) -> List<Repeat> {
+    let here = if repeats(m.rep) { [Repeat { path: path, many: many_ok(m) }] } else { [] }
+    here.concat(group_repeats(m.prim, path))
+}
+
+fn group_repeats(p: Prim, path: List<int>) -> List<Repeat> {
+    match p {
+        .Group(inner) if !inner.branches.is_empty() -> repeats_of(inner.branches[0], path),
+        .Group(_) or .Ref(_) or .Lit(_) or .Named(_) or .NotChar(_) -> [],
+    }
+}
+
+fn repeats(r: Rep) -> bool {
+    match r { .Star or .Plus -> true, .One or .Opt -> false }
+}
+
+/// A terminal's canonical token — through the grammar's OWN registry,
+/// so a kind with no sample is a compile error rather than a silent
+/// empty.
+fn terminal_sample(term: string) -> string {
+    let k? = term_kind(term) else { return "x" }
+    sample_of(k)
+}
+
+fn sample_of(k: TokenKind) -> string {
+    match k {
+        .Name -> "x",
+        .Num -> "1",
+        .Str -> "\"s\"",
+        .IStrBegin -> "\"\$" + "{",
+        .IStrMid -> "}",
+        .IStrEnd -> "}\"",
+        .Op -> "?",
+        .Break -> "\n",
+        .Eof -> "",
+        .Pkg -> "@std",
+        .State -> "state",
+        .Env -> "env",
+        .Provide -> "provide",
+        .On -> "on",
+        .Hole -> "\$" + "{x}",
+        .HoleBegin -> "\$" + "{",
+        .HoleEnd -> "}",
+        .Octets -> "b\"s\"",
+        .Block or .Body or .Component -> "",
+    }
+}
+
+// ── The malformed surface ──────────────────────────────────────────
+
+fn join_without(xs: List<string>, at: int) -> string {
+    joined([t for j, t in xs if j != at], " ")
+}
+
+fn join_dup(xs: List<string>, at: int) -> string {
+    joined(flatten([duped(t, j, at) for j, t in xs]), " ")
+}
+
+fn duped(t: string, j: int, at: int) -> List<string> {
+    if j == at { return [t, t] }
+    [t]
+}
+
+fn join_swap(xs: List<string>, at: int) -> string {
+    joined([swapped(t, j, at, xs) for j, t in xs], " ")
+}
+
+fn swapped(t: string, j: int, at: int, xs: List<string>) -> string {
+    if j == at { return xs[at + 1] }
+    if j == at + 1 { return xs[at] }
+    t
+}
+
+// ── The committed file ─────────────────────────────────────────────
+// THE FIXTURE IS GENERATED, so a case's law is its test body. The
+// laws live in `attack_case`; a TRAP is not a verdict — the case dies
+// with the process, which is why a malformed mutant is never exempted
+// for crashing.
+
+/// The `<feature>_adversarial_test.av` a command writes, whole.
+export fn attack_test_source(feature: string, g: Generated) -> string {
+    let cases = g.cases
+    joined(
+        [
+            "// GENERATED by `avra attack ${feature}` — the mechanical",
+            "// classes from the feature's rule and the model. A SEMANTIC",
+            "// attack belongs in the feature's hand-written test.",
+            "// cap: ${g.cap} case(s), ${g.dropped} dropped.",
+            "use @std.avrac.compiler.{analyze_source}",
+            "use @std.avrac.diagnostics.{Diag}",
+            "",
+            "/// The SHAPE parses — a canonical sample spells `x` where a name",
+            "/// belongs, so a TYPE error is expected and a PARSE error is not.",
+            "fn parses(src: string) -> bool {",
+            "    !analyze_source(src).diagnostics.any(parse_error)",
+            "}",
+            "",
+            "fn parse_error(d: Diag) -> bool {",
+            "    d.kind.starts_with(\"parse.\")",
+            "}",
+            "",
+            "/// The compiler REACHES A VERDICT on a malformed surface — a",
+            "/// deletion can yield a valid program, so this law is tolerance,",
+            "/// not refusal; a trap is not a verdict and dies in the call.",
+            "fn tolerates(src: string) -> bool {",
+            "    let reached = analyze_source(src).diagnostics.length",
+            "    reached >= 0",
+            "}",
+            "",
+            "spec \"features/${feature} adversarial — mechanical\" {",
+        ]
+            .concat(case_blocks(cases))
+            .concat(["}"]),
+        "\n",
+    )
+}
+
+fn case_blocks(cases: List<Attack>) -> List<string> {
+    [
+        given_block(
+            AttackClass.Degenerate,
+            "degenerate shapes — a valid surface, and must stay valid",
+            cases,
+        ),
+        given_block(
+            AttackClass.Malformed,
+            "malformed surface (delete, duplicate, swap) — must be diagnosed",
+            cases,
+        ),
+        given_block(
+            AttackClass.Keyword,
+            "keyword-replace — must be diagnosed or a valid program",
+            cases,
+        ),
+    ]
+}
+
+/// Whether a case belongs to the class a block renders — a `match`,
+/// never `is <variable>`.
+fn in_class(have: AttackClass, want: AttackClass) -> bool {
+    match have {
+        .Degenerate -> want is .Degenerate,
+        .Malformed -> want is .Malformed,
+        .Keyword -> want is .Keyword,
+    }
+}
+
+fn given_block(c: AttackClass, title: string, cases: List<Attack>) -> string {
+    let rows = [attack_case(a) for a in cases if in_class(a.class, c)]
+    if rows.is_empty() { return "" }
+    joined(["    given \"${title}\" {"].concat(rows).concat(["    }"]), "\n")
+}
+
+fn attack_case(a: Attack) -> string {
+    let want = match a.class {
+        // DEGENERATE'S LAW IS STABILITY, not cleanliness: varying a
+        // repetition's count must not change whether the surface
+        // parses. A canonical sample spells `x` where a name belongs,
+        // and a fragment rule's base may not parse at all.
+        .Degenerate -> "parses(${quoted_text(a.source)}) == parses(${quoted_text(a.base)})",
+        // MALFORMED'S LAW IS TOLERANCE, not refusal: deleting a leading
+        // keyword can yield a VALID program (`{"s"}` is a block), so a
+        // refusal assertion there is false and manufactures a survivor.
+        // A TRAP is not a verdict and dies in the call, failing the case.
+        .Malformed or .Keyword -> "tolerates(${quoted_text(a.source)})",
+    }
+    "        then ${quoted_text(a.source)} { ${want} }"
+}

@@ -1,0 +1,74 @@
+// One binary, two assembled languages, one store: a row the first language's parse
+// stands on is never the second's answer, so the print each keeps under names its
+// language — every feature's rules and soft words — beside the binary.
+use @std.avrac.compiler.{
+    assemble,
+    language_features,
+    language_mark,
+    digest_of_binary,
+    Language,
+    new_workspace,
+    language_words,
+}
+use compiler.{Workspace}
+use core.{joined}
+use compiler.host.{memory_host}
+use @std.io.{write_text, make_dirs}
+use @std.time.{stamp}
+
+/// One compiler binary's bytes, written where a host can name it.
+fn tg_binary() -> string {
+    let dir = "/tmp/avra-two-grammars/${stamp()}"
+    let _ = make_dirs(dir)
+    let _ = write_text("${dir}/binary", "the same compiler")
+    "${dir}/binary"
+}
+
+/// A workspace over one package, in `lang`.
+fn tg_workspace(binary: string, lang: Language) -> Workspace {
+    new_workspace(
+        memory_host(
+            {
+                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+                "/w/src/main.av": "fn a() -> int { 1 }\n",
+            },
+            ["/w/avra.toml", "/w/src/main.av"],
+        ) with { compiler: binary, print: () -> digest_of_binary(binary) },
+        "/w",
+        lang,
+    )
+}
+
+/// What a workspace over one package keeps its rows under, in `lang`.
+fn tg_print(binary: string, lang: Language) -> string { tg_workspace(binary, lang).compiler_id() }
+
+/// The language with one more soft word on its first feature.
+fn tg_softer() -> Language {
+    let fs = language_features()
+    assemble([fs[0] with { soft_words: fs[0].soft_words.concat(["tgword"]) }].concat(fs.drop(1)))
+}
+
+spec "compiler/build — two grammars, one store" {
+    given "one binary assembling two languages" {
+        then "the same language twice keeps one print" {
+            let bin = tg_binary()
+            tg_print(bin, assemble(language_features())) == tg_print(bin, assemble(language_features()))
+        }
+        then "a language missing a feature keeps another print" {
+            let bin = tg_binary()
+            tg_print(bin, assemble(language_features())) != tg_print(bin, assemble(language_features().drop(1)))
+        }
+        then "a language with one more soft word keeps another print" {
+            let bin = tg_binary()
+            tg_print(bin, assemble(language_features())) != tg_print(bin, tg_softer())
+        }
+        then "a query over a source reads the words of the workspace's own language" {
+            let softer = tg_softer()
+            language_words(tg_workspace(tg_binary(), softer).query_db(), "") == joined(softer.keywords, " ")
+        }
+        then "the mark is the language's alone" {
+            language_mark(assemble(language_features())) == language_mark(assemble(language_features())) &&
+                language_mark(tg_softer()) != language_mark(assemble(language_features()))
+        }
+    }
+}

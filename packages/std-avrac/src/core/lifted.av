@@ -1,0 +1,107 @@
+//! A VALUE LIFTED INTO ITS SEAT: what `SignedType.reaches` judges, made. A seat that takes a value
+//! as more than it is (a nullable of it, a `Result` it's the `Ok` of) is where that value takes its
+//! wider layout, at the one edge every node passes through.
+
+impl Lowering {
+    /// `r`, a value of `from`, as a seat of `into` holds it: itself where the seat takes it as it is
+    /// or doesn't take it at all.
+    mut fn lifted(r: Reg, from: SignedType, into: SignedType) -> Reg {
+        if self.rewrites(from, into.unwrapped()) { return if into.nullable() { self.adopted(r, from, into) } else { self.rewritten(r, into) } }
+        if from.stands_as(into) || from.bottom() || !from.reaches(into) { return r }
+        if into.dynamic && !into.nullable() { return self.dyn_boxed(r, from, into) }
+        if into.nullable() { return self.adopted(r, from, into) }
+        self.okayed(into, self.lifted(r, from, into.args[0]))
+    }
+
+    /// Whether a value of `from` lifts into `into` as a rule's rewrite: a template, `@std/meta`'s
+    /// `Code`, where a rule's `Fix` is wanted.
+    fn rewrites(from: SignedType, into: SignedType) -> bool {
+        if from.nullable() { return false }
+        let code? = self.program.checked.meta("Code") else { return false }
+        if !code.names_as(from) { return false }
+        FIX_MODULES
+            .any((m) -> (self.program.checked.toolchain_type)(m, "Fix")?.names_as(into) ?? false)
+    }
+
+    /// The template `r` as the rule's `Fix` `into`, its `Rewrite`.
+    mut fn rewritten(r: Reg, into: SignedType) -> Reg {
+        let tag? = self.variants_of(into)?.find_index(it.name == "Rewrite") else { return self.missed_as("a rule's `Fix` with no `Rewrite`") }
+        self.tagged_value(self.laid_out(into), tag, [r])
+    }
+
+    /// `e`'s value lifted into a seat of `seat`, from what its own seat, else its type, holds it as.
+    mut fn lowered_into(e: ExprId, seat: SignedType) -> Reg {
+        let r = self.lower(e)
+        let from? = self.seat_at(e) ?? self.worn_as(r) ?? self.type_at(self.meaning_of(e)) else { return r }
+        self.lifted(r, from, seat)
+    }
+
+    /// `r` adopted by the nullable `into`: `null` is its absence, any other value is lifted into
+    /// what `into` holds when present, then worn present.
+    mut fn adopted(r: Reg, from: SignedType, into: SignedType) -> Reg {
+        let l = self.laid_out(into)
+        if from.absence() { return if l.pointer() && !l.slot_box() { r } else { self.absent_of(into, l) } }
+        let held = self.lifted(r, from, into.unwrapped())
+        match l {
+            .Maybe(_) -> self.pack(l, [self.const_bool(true), held]),
+            .Boxed(_) -> if l.slot_box() { self.slot_boxed(l, held) } else { held },
+            .Void or .Word or .Truth or .Real or .Bare or .Fields(_) or .Tagged(_) -> held,
+        }
+    }
+
+    /// `r` as the `Ok` of the `Result` `into`: tag 0 beside its word, or in a box behind its tag.
+    mut fn okayed(into: SignedType, r: Reg) -> Reg {
+        let l = self.laid_out(into)
+        match l {
+            .Tagged(_) or .Boxed(_) -> self.tagged_value(l, 0, [r]),
+            .Void or .Word or .Truth or .Real or .Bare or .Fields(_) or .Maybe(_) -> self.missed_as("a lift into `${into.spelled()}`"),
+        }
+    }
+
+    /// `r` noted as made a value of `ty`, where its node's type says more: what it's lifted from.
+    mut fn wear(r: Reg, ty: SignedType) { self.worn.put("${r.index}", ty) }
+
+    /// The type `r` was made as, where its node's type says more.
+    fn worn_as(r: Reg) -> SignedType? { self.worn.get().get("${r.index}") }
+
+    // ── Presence ────────────────────────────────────────────────────
+
+    /// Whether `v`, a nullable of `opt`, holds a value: a pointer that isn't null, a tag that isn't
+    /// the spare one, or the pair's own flag.
+    mut fn present(v: Reg, opt: SignedType) -> Reg {
+        let l = self.laid_out(opt)
+        match l {
+            .Maybe(_) -> self.extracted(Layout.Truth, v, 0),
+            .Boxed(_) or .Bare -> self.bin(Layout.Truth, BinOp.Ne, v, self.word_at(l, 0)),
+            .Word or .Tagged(_) -> self
+                .bin(
+                    Layout.Truth,
+                    BinOp.Ne,
+                    self.extracted(Layout.Word, v, 0),
+                    self.const_int(ABSENT_TAG),
+                ),
+            .Void or .Truth or .Real or .Fields(_) -> self.missed_as("a presence test of `${opt.spelled()}`"),
+        }
+    }
+
+    /// What `v`, a nullable of `opt`, holds, once it's known present: the pair's second, a flat
+    /// record's box's one slot, else itself.
+    mut fn carried(v: Reg, opt: SignedType) -> Reg {
+        let l = self.laid_out(opt)
+        match l {
+            .Maybe(value) -> self.extracted(value, v, 1),
+            .Boxed(_) -> if l.slot_box() { self.slot_read(self.laid_out(opt.unwrapped()), v, 0) } else { v },
+            .Void or .Word or .Truth or .Real or .Bare or .Fields(_) or .Tagged(_) -> v,
+        }
+    }
+
+    /// Element `at` of the packed value `v`, a value of layout `l`.
+    mut fn extracted(l: Layout, v: Reg, at: int) -> Reg {
+        let dst = self.mint(l)
+        self.emit(Ins.Extract(dst, v, at))
+        dst
+    }
+}
+
+/// The modules declaring a rule's `Fix`: the compiler's own, and `@std/meta`'s for a package's rules.
+const FIX_MODULES: List<string> = ["@std.avrac.features", "@std.meta"]

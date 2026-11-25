@@ -1,0 +1,123 @@
+// The parameter-list language, pinned: every spelling a signature accepts
+// prints in its canonical form, and every malformed one is refused once,
+// at the place and in the words it always was.
+use @std.avrac.compiler.{analyze_source}
+use @std.avrac.testing.{projected, refused_with}
+
+spec "features/fns params pin" {
+    given "parameter lists of every declaring form print canonically" {
+        then "valid form 0: fn f() -> int { 1 }" {
+            projected("fn f() -> int { 1 }").contains("fn f() -> int")
+        }
+        then "valid form 1: fn f(a: int,) -> int { a }" {
+            projected("fn f(a: int,) -> int { a }").contains("fn f(a: int) -> int")
+        }
+        then "valid form 2: fn f(a: int, b: int = 2,) -> int { a + b }" {
+            projected("fn f(a: int, b: int = 2,) -> int { a + b }")
+                .contains("fn f(a: int, b: int = 2) -> int")
+        }
+        then "valid form 3: fn f(mut xs: List<int>,) { xs.push(1) }" {
+            projected("fn f(mut xs: List<int>,) { xs.push(1) }").contains("fn f(mut xs: List<int>)")
+        }
+        then "valid form 4: fn f(const a: int) -> int { a }" {
+            projected("fn f(const a: int) -> int { a }").contains("fn f(const a: int) -> int")
+        }
+        then "valid form 5: fn f(isolated g: fn() -> int) -> int { g() }" {
+            projected("fn f(isolated g: fn() -> int) -> int { g() }")
+                .contains("fn f(isolated g: fn() -> int) -> int")
+        }
+        then "valid form 6: fn f<T,>(v: T,) -> T { v }" {
+            projected("fn f<T,>(v: T,) -> T { v }").contains("fn f<T>(v: T) -> T")
+        }
+        then "valid form 7: fn f<T: Tr, U,>(a: T, b: U) -> int { a.m() }" {
+            projected("trait Tr { fn m() -> int }\nfn f<T: Tr, U,>(a: T, b: U) -> int { a.m() }")
+                .contains("fn f<T: Tr, U>(a: T, b: U) -> int")
+        }
+        then "valid form 8: extern fn g(mut a: int, b: int,) -> int" {
+            projected("extern fn g(mut a: int, b: int,) -> int")
+                .contains("extern fn g(mut a: int, b: int) -> int")
+        }
+        then "valid form 9: once fn h() -> string { x }" {
+            projected("once fn h() -> string { \"x\" }").contains("once fn h() -> string")
+        }
+        then "valid form 10: let k = (a: int, b: int,) -> a + b" {
+            projected("let k = (a: int, b: int,) -> a + b")
+                .contains("let k = (a: int, b: int) -> a + b")
+        }
+        then "valid form 11: let t: fn(int, mut int,) -> int = f" {
+            projected("let t: fn(int, mut int,) -> int = f")
+                .contains("let t: fn(int, mut int) -> int = f")
+        }
+        then "valid form 12: trait Tr { fn m(a: int, b: int,) -> int }" {
+            projected("trait Tr { fn m(a: int, b: int,) -> int }")
+                .contains("fn m(a: int, b: int) -> int")
+        }
+    }
+    given "malformed parameter lists are refused once, where and in the words they always were" {
+        then "malformed form 13: fn f(a: int b: int) -> int { a }" {
+            refused_with(
+                    "fn f(a: int b: int) -> int { a }",
+                    "expected `)` while parsing `stmt`",
+                ) &&
+                analyze_source("fn f(a: int b: int) -> int { a }").report().contains(":1:13]")
+        }
+        then "malformed form 14: fn f(,) -> int { 1 }" {
+            refused_with("fn f(,) -> int { 1 }", "expected `)` while parsing `stmt`") &&
+                analyze_source("fn f(,) -> int { 1 }").report().contains(":1:6]")
+        }
+        then "malformed form 15: fn f(a: int,,) -> int { a }" {
+            refused_with("fn f(a: int,,) -> int { a }", "expected `)` while parsing `stmt`") &&
+                analyze_source("fn f(a: int,,) -> int { a }").report().contains(":1:13]")
+        }
+        then "malformed form 16: fn f(a: int = ) -> int { a }" {
+            refused_with("fn f(a: int = ) -> int { a }", "expected `)` while parsing `stmt`") &&
+                analyze_source("fn f(a: int = ) -> int { a }").report().contains(":1:13]")
+        }
+        then "malformed form 17: fn f(mut) -> int { 1 }" {
+            refused_with("fn f(mut) -> int { 1 }", "expected `)` while parsing `stmt`") &&
+                analyze_source("fn f(mut) -> int { 1 }").report().contains(":1:6]")
+        }
+        then "malformed form 18: fn f(mut const a: int) -> int { a }" {
+            refused_with(
+                    "fn f(mut const a: int) -> int { a }",
+                    "expected `)` while parsing `stmt`",
+                ) &&
+                analyze_source("fn f(mut const a: int) -> int { a }").report().contains(":1:16]")
+        }
+        then "malformed form 19: fn f(a: ) -> int { a }" {
+            refused_with("fn f(a: ) -> int { a }", "expected `)` while parsing `stmt`") &&
+                analyze_source("fn f(a: ) -> int { a }").report().contains(":1:7]")
+        }
+        then "malformed form 20: fn f<>() -> int { 1 }" {
+            refused_with("fn f<>() -> int { 1 }", "expected `(` while parsing `stmt`") &&
+                analyze_source("fn f<>() -> int { 1 }").report().contains(":1:5]")
+        }
+        then "malformed form 21: fn f<T,,>() -> int { 1 }" {
+            refused_with("fn f<T,,>() -> int { 1 }", "expected `(` while parsing `stmt`") &&
+                analyze_source("fn f<T,,>() -> int { 1 }").report().contains(":1:5]")
+        }
+        then "malformed form 22: extern fn g(a: int = 1) -> int" {
+            refused_with("extern fn g(a: int = 1) -> int", "expected `)` while parsing `stmt`") &&
+                analyze_source("extern fn g(a: int = 1) -> int").report().contains(":1:20]")
+        }
+        then "malformed form 23: once fn h(a: int) -> string { x }" {
+            refused_with(
+                "once fn h(a: int) -> string { \"x\" }",
+                "takes arguments — a `once` answer is one value for the whole process",
+            )
+        }
+        then "malformed form 24: let k = (a: int = 1) -> a" {
+            refused_with("let k = (a: int = 1) -> a", "expected `)` to close the group") &&
+                analyze_source("let k = (a: int = 1) -> a").report().contains(":1:11]")
+        }
+        then "malformed form 25: fn f(a, b: int) -> int { b }" {
+            refused_with("fn f(a, b: int) -> int { b }", "parameter `a` declares no type")
+        }
+        then "malformed form 26: fn f(self, a: int) -> int { a }" {
+            refused_with("fn f(self, a: int) -> int { a }", "`self` is a keyword")
+        }
+        then "malformed form 27: fn f(a: int, a: int) -> int { a }" {
+            refused_with("fn f(a: int, a: int) -> int { a }", "`f` declares `a` more than once")
+        }
+    }
+}

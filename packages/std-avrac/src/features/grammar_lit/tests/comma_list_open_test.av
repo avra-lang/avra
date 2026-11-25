@@ -1,0 +1,32 @@
+// `comma_list_open` refuses a repeated comma list no alternative closes
+// with `","?`, and keeps one whose trailing comma follows it or sits in a
+// later alternative of the same rule.
+use @std.avrac.compiler.{checks_keeps}
+use @std.avrac.features.grammar_lit.{comma_list_open}
+
+fn rule_of(body: string) -> string { "let g = grammar {\n    ${body}\n}" }
+
+spec "features/grammar_lit — comma_list_open" {
+    given "a repeated comma list" {
+        then "ending the group is refused" {
+            !checks_keeps(comma_list_open.run, rule_of("list = a:NAME ( \",\" a:NAME )*"))
+        }
+        then "followed only by another group is refused" {
+            !checks_keeps(
+                comma_list_open.run,
+                rule_of("list = a:NAME ( \",\" a:NAME )* ( \",\" b:NAME )?"),
+            )
+        }
+        then "closed by its own trailing comma is kept" {
+            checks_keeps(comma_list_open.run, rule_of("list = a:NAME ( \",\" a:NAME )* \",\"?"))
+        }
+        then "closed by a later alternative's trailing comma is kept" {
+            checks_keeps(
+                comma_list_open.run,
+                rule_of(
+                    "list = a:NAME ( \",\" a:NAME )* ( \",\" b:NAME )? | b:NAME ( \",\" b:NAME )* \",\"?",
+                ),
+            )
+        }
+    }
+}

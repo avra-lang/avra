@@ -1,0 +1,37 @@
+// proves: a `select` LOOP over a task it only READS keeps turning — the head
+// that loses a turn is neither joined nor cancelled as the turn's frame
+// closes, so the next turn runs and the task is still going after the last
+use @std.task.{Source}
+use @std.time.{secs, sleep}
+
+fn slow(n: int) -> int {
+    sleep(secs(30))
+    n
+}
+
+fn turns(t: Task<int>, ticks: Source<int>) -> string {
+    mut n = 0
+    mut seen = ""
+    while n < 3 {
+        n = n + 1
+        seen = seen +
+            select {
+                x in ticks -> "${x}"
+                r in t -> "d${r}"
+                ticks.ended -> "e"
+            }
+    }
+    seen
+}
+
+let ticks: Source<int> = produce<int>(4) {
+    yield 1
+    yield 2
+    yield 3
+}
+let shared = spawn slow(9)
+let seen = turns(shared, ticks)
+let still = !shared.done
+shared.cancel()
+let _ = shared.await catch c -> { 0 }
+"${seen} ${still}"

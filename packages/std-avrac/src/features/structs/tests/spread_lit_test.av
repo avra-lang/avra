@@ -1,0 +1,120 @@
+// A record literal's value spread, by attack class. The accepted
+// programs run through `shown`; each refusal pins its voice, and the
+// goldens pin the rendering.
+use @std.avrac.testing.{shown, refused_with, projected}
+use compiler.{analyze_source}
+
+const POINT: string = "type P = { x: int, y: int }\ntype Q = { x: int, w: int }\nlet a = P { x: 1, y: 2 }\nlet q = Q { x: 1, w: 2 }\n"
+
+spec "features/structs — value spread, adversarial" {
+    given "order decides" {
+        then "a later field wins" { shown("${POINT}let b = P { ..a, x: 9 }\nb.x * 10 + b.y") == "92" }
+        then "a later spread wins" {
+            shown("${POINT}let c = P { x: 7, y: 8 }\nlet b = P { ..a, ..c }\nb.x * 10 + b.y") == "78"
+        }
+        then "an earlier spread loses to a field after it" {
+            shown("${POINT}let b = P { y: 5, ..a, x: 4 }\nb.x * 10 + b.y") == "42"
+        }
+        then "a subset record fills what it carries" {
+            shown("${POINT}type X = { x: int }\nlet b = P { ..X { x: 6 }, y: 1 }\nb.x * 10 + b.y") == "61"
+        }
+        then "the source is evaluated once" {
+            shown(
+                "type P = { x: int, y: int }\nfn make(n: int) -> P { P { x: n, y: n } }\nlet b = P { ..make(3), x: 1 }\nb.x * 10 + b.y",
+            ) == "13"
+        }
+        then "the source is untouched" { shown("${POINT}let b = P { ..a, x: 9 }\na.x") == "1" }
+    }
+    given "the shapes a spread meets" {
+        then "an empty record spreads nothing" { shown("type E = {}\ntype P = { x: int }\nP { ..E {}, x: 3 }.x") == "3" }
+        then "a flat record is its field" { shown("type F = { n: int }\nlet f = F { n: 2 }\nF { ..f }.n") == "2" }
+        then "a default stands when nothing carries it" {
+            shown("type P = { x: int, y: int = 4 }\ntype X = { x: int }\nP { ..X { x: 1 } }.y") == "4"
+        }
+        then "a managed field is shared safely" {
+            shown(
+                "type P = { s: string, n: int }\nlet a = P { s: \"hi\", n: 1 }\nlet b = P { ..a, n: 2 }\n\"\${a.s}\${b.s}\${a.n}\${b.n}\"",
+            ) == "hihi12"
+        }
+        then "a trailing comma is a list's" { shown("${POINT}P { ..a, }.y") == "2" }
+    }
+    given "refusals" {
+        then "a source that is no record" {
+            refused_with(
+                "type P = { x: int }\nP { ..5, x: 1 }\n1",
+                "`..` spreads `int`, which has no fields",
+            )
+        }
+        then "a nullable source" {
+            refused_with(
+                "type P = { x: int }\nlet a: P? = null\nP { ..a, x: 1 }\n1",
+                "`..` spreads `P?`, which may be null",
+            )
+        }
+        then "a field the record lacks" {
+            refused_with(
+                "${POINT}let b = P { ..q, y: 1 }\n1",
+                "this spread carries `w`, and `P` declares no such field",
+            )
+        }
+        then "a field at another type" {
+            refused_with(
+                "type P = { x: int }\ntype S = { x: string }\nlet s = S { x: \"a\" }\nlet b = P { ..s }\n1",
+                "this spread carries `x` as `string`, and `P` declares it `int`",
+            )
+        }
+        then "a field nothing sets" {
+            refused_with(
+                "type P = { x: int, y: int }\ntype X = { x: int }\nlet b = P { ..X { x: 1 } }\n1",
+                "this `P` leaves field `y` unset",
+            )
+        }
+        then "a field written twice" {
+            refused_with(
+                "${POINT}let b = P { ..a, x: 1, x: 2 }\n1",
+                "field `x` is written more than once",
+            )
+        }
+        then "a generic record's literal" {
+            refused_with(
+                "type G<T> = { v: T }\nlet g = G { v: 1 }\nlet h = G { ..g }\n1",
+                "`G` takes type parameters",
+            )
+        }
+        then "a third dot" { !analyze_source("${POINT}let b = P { ...a, x: 1 }\n1").diagnostics.is_empty() }
+        then "a spread of a spread is no range" { !analyze_source("${POINT}let b = P { ..a..a }\n1").diagnostics.is_empty() }
+    }
+    given "the dead write" {
+        then "a field before a spread that carries it warns" {
+            let r = analyze_source("${POINT}let b = P { x: 1, ..a }\nb.x")
+            r.report().contains("field `x` is overwritten by a spread after it") && r.ran() == "1"
+        }
+        then "the warning does not stop the program" { shown("${POINT}let b = P { x: 1, ..a }\nb.y") == "2" }
+        then "a field after the spread is no dead write" {
+            analyze_source("${POINT}let b = P { ..a, x: 1 }\nb.x").diagnostics.is_empty()
+        }
+    }
+    given "the refusals, rendered" {
+        then "a spread missing a field" {
+            analyze_source(
+                "type P = { x: int, y: int }\ntype X = { x: int }\nlet b = P { ..X { x: 1 } }\nb.x",
+            )
+                .report() == "error[type.spread_missing]: this `P` leaves field `y` unset\n  ╭─[<source>:3:9]\n3 │ let b = P { ..X { x: 1 } }\n  ·         ┬\n  ·         ╰── this literal\n──╯\nhelp: add `y: …`, or spread a record that has it"
+        }
+        then "a dead write" {
+            analyze_source("${POINT}let b = P { x: 1, ..a }\nb.x").report() == "warning[type.spread_dead]: field `x` is overwritten by a spread after it\n  ╭─[<source>:5:16]\n5 │ let b = P { x: 1, ..a }\n  ·                ┬\n  ·                ╰── overwritten\n──╯\nhelp: write `x` after the spread to keep it"
+        }
+    }
+    given "the printer" {
+        then "a spread keeps its place and its spelling" {
+            projected(
+                "type P = {\n    x: int,\n    y: int,\n}\nlet a = P { x: 1, y: 2 }\nlet b = P { x: 3,   ..a, y: 4 }\n",
+            ) == "type P = {\n    x: int,\n    y: int,\n}\nlet a = P { x: 1, y: 2 }\nlet b = P { x: 3, ..a, y: 4 }"
+        }
+        then "a spread of a fallback keeps its parentheses" {
+            projected(
+                "type P = {\n    x: int,\n}\nlet a: P? = null\nlet b = P { ..(a ?? P { x: 1 }) }\n",
+            ) == "type P = {\n    x: int,\n}\nlet a: P? = null\nlet b = P { ..(a ?? P { x: 1 }) }"
+        }
+    }
+}

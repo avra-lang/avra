@@ -1,0 +1,37 @@
+// proves: a nullable box in a slot, a field and a map is counted when
+// present and nothing when absent
+fn first_of<T>(xs: List<T>) -> T? { xs.first() }
+
+type Slot = { held: List<int>?, tag: string? }
+
+fn shown() -> string {
+    let a: List<string?> = [null, "x"]
+    let b: List<List<int>?> = [null, [1, 2], null]
+    let fa = first_of(a)
+    let fb = first_of(b)
+    mut slots: List<Slot> = []
+    for i in 0..200 {
+        slots
+            .push(
+                Slot {
+                    held: if i % 2 == 0 { [i] } else { null },
+                    tag: if i % 3 == 0 { "t" } else { null },
+                },
+            )
+    }
+    mut n = 0
+    for s in slots {
+        let h? = s.held else { continue }
+        n = n + h.length
+        if s.tag != null { n = n + 1 }
+    }
+    mut m: Map<string, List<int>?> = {}
+    m.set("a", null)
+    m.set("b", [4])
+    m.set("a", [5, 6])
+    m.set("b", null)
+    let got = m.get("a")
+    "${fa == null} ${fb == null} ${(b[1] ?? [0, 0, 0]).length} ${n} ${(got ?? null ?? []).length} ${m.get("b") == null}"
+}
+
+shown()

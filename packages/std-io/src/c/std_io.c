@@ -1,0 +1,595 @@
+/* @std/io's OWN C — opening, standing, making, removing, and the two
+   halves of a durable write. Every entry point answers an int: a
+   status, a descriptor, a handle, a kind, or a NEGATIVE errno. No
+   text and no bytes cross here; a file's contents ride the runtime's
+   descriptor rows, which are the only door that mints a managed box
+   (docs/2026_09_07_PACKAGE_C_STANDARD.md §2.5).  */
+
+#include <stdint.h>
+#include <string.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <sys/file.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+
+#include "avra_door.h"
+
+// The runtime's: a blocking call here holds the world, so a virtual
+// clock flows at wall rate across it.
+void avra_clock_hold(int64_t by);
+
+/* What stands at the path: 0 nothing, 1 a file, 2 a directory, 3
+   something else; -errno when the host will not say. */
+int64_t avra_io_kind(const char* path) {
+    struct stat st;
+    if (stat(path, &st) != 0) return errno == ENOENT ? 0 : -errno;
+    if (S_ISREG(st.st_mode)) return 1;
+    if (S_ISDIR(st.st_mode)) return 2;
+    return 3;
+}
+
+/* A file's STAMP: its size, its two times and its inode folded to one
+   positive number — what says "these are the bytes you read before"
+   without reading them. 0 when there is no telling: the path is no
+   file, or it moved within the last two seconds, where two writes can
+   wear one time. */
+int64_t avra_io_stamp(const char* path) {
+    struct stat st;
+    struct timespec now;
+    if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) return 0;
+#ifdef __APPLE__
+    struct timespec m = st.st_mtimespec, c = st.st_ctimespec;
+#else
+    struct timespec m = st.st_mtim, c = st.st_ctim;
+#endif
+    clock_gettime(CLOCK_REALTIME, &now);
+    if (now.tv_sec - m.tv_sec < 2 || now.tv_sec - c.tv_sec < 2) return 0;
+    uint64_t h = 0x9E3779B97F4A7C15ull;
+    uint64_t parts[6] = { (uint64_t)st.st_size, (uint64_t)m.tv_sec, (uint64_t)m.tv_nsec,
+                          (uint64_t)c.tv_sec, (uint64_t)c.tv_nsec, (uint64_t)st.st_ino };
+    for (int i = 0; i < 6; i++) { h ^= parts[i]; h *= 0x100000001B3ull; h ^= h >> 29; }
+    h &= 0x7FFFFFFFFFFFFFFFull;
+    return h == 0 ? 1 : (int64_t)h;
+}
+
+/* A read descriptor for the path, or -errno. A DIRECTORY is refused
+   here rather than at the first read: `open` on one succeeds and
+   `read` answers EISDIR only on some hosts, so the door says it. */
+int64_t avra_io_open(const char* path) {
+    int fd;
+    while ((fd = open(path, O_RDONLY | O_CLOEXEC)) < 0 && errno == EINTR) {}
+    if (fd < 0) return -errno;
+    // One path walk: the descriptor says what it opened.
+    struct stat st;
+    if (fstat(fd, &st) != 0) { int err = errno; close(fd); return -err; }
+    if (S_ISDIR(st.st_mode)) { close(fd); return -EISDIR; }
+    return fd;
+}
+
+/* A descriptor closed. EINTR does NOT mean try again: on every host
+   Avra targets the descriptor is already gone, and a retry would
+   close whatever took its number. */
+int64_t avra_io_close(int64_t fd) {
+    return close((int)fd) == 0 || errno == EINTR ? 0 : -errno;
+}
+
+/* A write descriptor positioned at the file's current end, created if
+   absent — every write through it lands AFTER whatever is already
+   there, never over it. The append-only pack format's own primitive:
+   a caller that wants a whole-file replace still goes through
+   avra_io_temp's publish-or-remove door. */
+int64_t avra_io_open_append(const char* path) {
+    int fd;
+    while ((fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644)) < 0 && errno == EINTR) {}
+    return fd < 0 ? -errno : fd;
+}
+
+/* The descriptor's writes durable on the device — a crash after this
+   returns cannot lose bytes already written through it. */
+int64_t avra_fd_sync(int64_t fd) {
+    avra_clock_hold(1);
+    int synced;
+    while ((synced = fsync((int)fd)) != 0 && errno == EINTR) {}
+    int err = synced != 0 ? errno : 0;
+    avra_clock_hold(-1);
+    if (err) return -err;
+    return 0;
+}
+
+/* An exclusive advisory lock on the descriptor's open file, taken
+   without waiting: 0 held, 1 another open file holds it, -errno
+   otherwise. It ends when the descriptor closes or its process dies —
+   the kernel releases it, so a kill never leaves it standing. */
+int64_t avra_fd_try_lock(int64_t fd) {
+#if defined(__wasm32__)
+    (void)fd;
+    return -ENOTSUP;
+#else
+    // the clock: LOCK_NB answers at once, never waits
+    while (flock((int)fd, LOCK_EX | LOCK_NB) != 0) {
+        if (errno == EWOULDBLOCK) return 1;
+        if (errno != EINTR) return -errno;
+    }
+    return 0;
+#endif
+}
+
+/* The file cut back to exactly `len` bytes. A caller trims a TORN
+   TAIL — bytes past the last frame it could verify, left by a writer
+   that crashed mid-append — to this before appending past it, so a
+   half-written frame never ends up sitting between two valid ones. */
+int64_t avra_io_truncate(const char* path, int64_t len) {
+    return truncate(path, (off_t)len) == 0 ? 0 : -errno;
+}
+
+/* Every directory along the path made; one already standing is fine,
+   a FILE standing where a directory must is -ENOTDIR. */
+int64_t avra_io_mkdir(const char* path) {
+    size_t n = strlen(path);
+    if (n == 0) return -ENOENT;
+    if (n >= 4096) return -ENAMETOOLONG;
+    char buf[4096];
+    memcpy(buf, path, n + 1);
+    for (size_t i = 1; i <= n; i++) {
+        if (buf[i] != '/' && buf[i] != '\0') continue;
+        char saved = buf[i];
+        buf[i] = '\0';
+        if (mkdir(buf, 0755) != 0) {
+            if (errno != EEXIST) return -errno;
+            struct stat st;
+            if (stat(buf, &st) != 0) return -errno;
+            if (!S_ISDIR(st.st_mode)) return -ENOTDIR;
+        }
+        buf[i] = saved;
+    }
+    return 0;
+}
+
+/* A file, or an empty directory, gone. */
+int64_t avra_io_remove(const char* path) {
+    return remove(path) == 0 ? 0 : -errno;
+}
+
+/* ── The durable write ────────────────────────────────────────────
+   A reader sees the old file or the new and never half of one, so the
+   bytes go to a TEMP beside the target and the rename is LAST.
+
+   THE HANDLE'S WHOLE POINT IS THAT DROPPING AN UNCOMMITTED TEMP
+   REMOVES IT. That is what makes `defer drop(h)` correct on both
+   paths, which is what a `?` inside the write loop needs: the
+   deferred call runs before the early exit, and a deferred COMMIT
+   there would publish a truncated file over the reader's data in code
+   that reads as careful. Committing is the deliberate act; dropping
+   is the default.  */
+
+enum { IO_TEMPS = 64, IO_PATH = 4096 };
+
+typedef struct {
+    int fd;                 /* -1 when the slot is free */
+    int committed;
+    char temp[IO_PATH];
+    char target[IO_PATH];
+} IoTemp;
+
+static IoTemp g_io_temps[IO_TEMPS];
+static int g_io_temps_armed = 0;
+
+static void temps_armed(void) {
+    if (g_io_temps_armed) return;
+    for (int i = 0; i < IO_TEMPS; i++) g_io_temps[i].fd = -1;
+    g_io_temps_armed = 1;
+}
+
+static IoTemp* temp_at(int64_t h) {
+    return h >= 0 && h < IO_TEMPS && g_io_temps[h].fd >= 0 ? &g_io_temps[h] : NULL;
+}
+
+/* A free slot claimed for a temp at `temp`, to be published as
+   `target`, or -errno. O_EXCL means a leftover from a crashed run of
+   THIS pid is refused rather than silently reused, so it is removed and
+   the open tried once more. */
+static int64_t temp_claimed(const char* temp, const char* target) {
+    temps_armed();
+    int64_t h = -1;
+    for (int i = 0; i < IO_TEMPS && h < 0; i++) if (g_io_temps[i].fd < 0) h = i;
+    if (h < 0) return -EMFILE;
+    IoTemp* t = &g_io_temps[h];
+    if (strlen(temp) >= IO_PATH || strlen(target) >= IO_PATH) return -ENAMETOOLONG;
+    snprintf(t->temp, IO_PATH, "%s", temp);
+    snprintf(t->target, IO_PATH, "%s", target);
+    int fd;
+    while ((fd = open(t->temp, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0644)) < 0 && errno == EINTR) {}
+    if (fd < 0 && errno == EEXIST) {
+        unlink(t->temp);
+        while ((fd = open(t->temp, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0644)) < 0 && errno == EINTR) {}
+    }
+    if (fd < 0) return -errno;
+    t->fd = fd;
+    t->committed = 0;
+    return h;
+}
+
+/* A temp open beside the target, or -errno. The name carries the
+   PROCESS's id, so two processes writing the same path do not share a
+   temp and clobber each other's half-written bytes. */
+int64_t avra_io_temp(const char* path) {
+    if (strlen(path) + 32 >= IO_PATH) return -ENAMETOOLONG;
+    char temp[IO_PATH];
+    snprintf(temp, IO_PATH, "%s.avra-%ld.tmp", path, (long)getpid());
+    return temp_claimed(temp, path);
+}
+
+/* A DRAFT: a temp at the caller's own name, its target named only when
+   it is published (`avra_io_commit_to`). The caller makes the name
+   this process's alone from `avra_io_pid` and `avra_io_serial`. */
+int64_t avra_io_draft(const char* temp) { return temp_claimed(temp, temp); }
+
+/* This process's id. */
+int64_t avra_io_pid(void) { return (int64_t)getpid(); }
+
+/* A number no earlier call in this process answered. */
+int64_t avra_io_serial(void) {
+    static int64_t next = 0;
+    return next++;
+}
+
+/* The temp's descriptor, for the runtime's write row. */
+int64_t avra_io_temp_fd(int64_t h) {
+    IoTemp* t = temp_at(h);
+    return t ? t->fd : -EBADF;
+}
+
+int64_t avra_io_commit_to(int64_t h, const char* target);
+
+/* THE CLOSE'S ERROR REACHES THE STATUS, and it must: a write can be
+   held in the kernel until close, so a full disk or a failing device
+   is reported HERE and nowhere earlier. Only then the rename, which
+   is the publish and is last. */
+int64_t avra_io_commit(int64_t h) {
+    IoTemp* t = temp_at(h);
+    if (!t) return -EBADF;
+    return avra_io_commit_to(h, t->target);
+}
+
+/* The temp published under `target`, chosen now, by the same close
+   then rename as `avra_io_commit`. */
+int64_t avra_io_commit_to(int64_t h, const char* target) {
+    IoTemp* t = temp_at(h);
+    if (!t) return -EBADF;
+    if (strlen(target) >= IO_PATH) return -ENAMETOOLONG;
+    if (target != t->target) snprintf(t->target, IO_PATH, "%s", target);
+    int64_t shut = close(t->fd) == 0 || errno == EINTR ? 0 : -errno;
+    t->fd = -1;
+    if (shut < 0) { unlink(t->temp); return shut; }
+    if (rename(t->temp, t->target) != 0) { int e = errno; unlink(t->temp); return -e; }
+    t->committed = 1;
+    return 0;
+}
+
+/* The handle let go. An UNCOMMITTED temp is removed — nothing
+   half-written is ever left beside the target — and a committed one
+   is already gone from the table, so this answers 0. */
+int64_t avra_io_drop(int64_t h) {
+    if (h < 0 || h >= IO_TEMPS) return -EBADF;
+    IoTemp* t = &g_io_temps[h];
+    if (t->fd < 0 && t->committed) { t->committed = 0; return 0; }
+    if (t->fd < 0) return 0;
+    close(t->fd);
+    t->fd = -1;
+    unlink(t->temp);
+    return 0;
+}
+
+/* ── The environment ──────────────────────────────────────────────
+   WHETHER THE VARIABLE IS SET, and nothing else: 0 set, -1 not. The
+   VALUE comes from the runtime's own environment row, which answers
+   immortal text — so no text crosses here and this package needs no
+   door into the runtime's scratch.
+
+   THE PREDICATE EXISTS BECAUSE THE VALUE CANNOT CARRY IT. `getenv`
+   answers NULL for unset and "" for set-to-empty, and the runtime's
+   row hands both back as "" — so the value alone cannot tell them
+   apart, and `env` must answer null for one and "" for the other. */
+int64_t avra_io_env_set(const char* name) {
+    return getenv(name) != NULL ? 0 : -1;
+}
+
+/* A read descriptor for `rel` BENEATH the directory `root`, or
+   -errno. Each segment is opened relative to the one before with
+   O_NOFOLLOW, so a symlink anywhere below the root refuses (ELOOP or
+   ENOTDIR) rather than leading out of it, and `..`, `.` and an empty
+   segment refuse as EACCES — the walk never names a parent. The last
+   segment opens O_NONBLOCK so a FIFO standing there cannot block the
+   caller; `avra_io_fd_kind` says what was opened. `rel` is `/`-split
+   and never begins with one. */
+int64_t avra_io_open_beneath(const char* root, const char* rel) {
+    int dir;
+    while ((dir = open(root, O_RDONLY | O_DIRECTORY | O_CLOEXEC)) < 0 && errno == EINTR) {}
+    if (dir < 0) return -errno;
+    const char* seg = rel;
+    for (;;) {
+        const char* end = strchr(seg, '/');
+        size_t n = end ? (size_t)(end - seg) : strlen(seg);
+        if (n == 0 || n >= 256 || (n == 1 && seg[0] == '.') || (n == 2 && seg[0] == '.' && seg[1] == '.')) {
+            close(dir);
+            return -EACCES;
+        }
+        char name[256];
+        memcpy(name, seg, n);
+        name[n] = '\0';
+        int flags = O_RDONLY | O_NOFOLLOW | O_CLOEXEC | (end ? O_DIRECTORY : O_NONBLOCK);
+        int fd;
+        while ((fd = openat(dir, name, flags)) < 0 && errno == EINTR) {}
+        int err = errno;
+        close(dir);
+        if (fd < 0) return -err;
+        if (!end) return fd;
+        dir = fd;
+        seg = end + 1;
+    }
+}
+
+/* What a descriptor holds: 1 a file, 2 a directory, 3 something
+   else; -errno when the host will not say. */
+int64_t avra_io_fd_kind(int64_t fd) {
+    struct stat st;
+    if (fstat((int)fd, &st) != 0) return -errno;
+    if (S_ISREG(st.st_mode)) return 1;
+    if (S_ISDIR(st.st_mode)) return 2;
+    return 3;
+}
+
+/* A descriptor's size in octets, or -errno. */
+int64_t avra_io_fd_size(int64_t fd) {
+    struct stat st;
+    if (fstat((int)fd, &st) != 0) return -errno;
+    return (int64_t)st.st_size;
+}
+
+/* A descriptor's modification time, whole seconds since the epoch,
+   or -errno. */
+int64_t avra_io_fd_mtime(int64_t fd) {
+    struct stat st;
+    if (fstat((int)fd, &st) != 0) return -errno;
+#ifdef __APPLE__
+    return (int64_t)st.st_mtimespec.tv_sec;
+#else
+    return (int64_t)st.st_mtim.tv_sec;
+#endif
+}
+
+/* The descriptor positioned at `at` from its start: `at`, or -errno. */
+int64_t avra_io_seek(int64_t fd, int64_t at) {
+    off_t o = lseek((int)fd, (off_t)at, SEEK_SET);
+    return o < 0 ? -errno : (int64_t)o;
+}
+/* ── The compile slot ─────────────────────────────────────────────
+   One of AVRA_MAX_COMPILES machine-wide slots (default 3; 0 = off),
+   counted by one System V semaphore keyed on the slot directory's NAME
+   and the cap — never its inode, so a directory made again finds its set
+   (a set outlives its processes, and the kernel's table is bounded). A take is SEM_UNDO, so the
+   kernel returns the slot when the process ends by any means. Nothing
+   polls: a waiter sleeps in the kernel until what it waits on is released.
+   ARRIVAL ORDER IS BY CONSTRUCTION, never a kernel's wake order: each
+   arrival takes the next ticket under a blocking flock on the gate file and
+   holds a lock named for it (<dir>/q.<ticket>); it waits only for its
+   predecessor's lock, so at most one waiter at a time contends for the
+   semaphore, and a ticket's holder dying passes the line on. The set is
+   made under that same gate, valued at the cap by whoever makes it.
+   A process whose parent already holds one (AVRA_COMPILE_SLOT set, and
+   inherited) takes none, so a compile's own children never wait on
+   the slot their parent holds. Waits when every slot is taken, saying
+   so once. Answers how many other slots were taken at that moment, or
+   -1 when none is taken. */
+#if !defined(__wasm32__)
+#include <sys/ipc.h>
+#include <sys/sem.h>
+
+union avra_semun { int val; struct semid_ds* buf; unsigned short* array; };
+
+static void slot_path(char* out, size_t size, const char* dir, const char* name, unsigned long ticket, int numbered) {
+    if (numbered) snprintf(out, size, "%s/%s.%lu", dir, name, ticket);
+    else snprintf(out, size, "%s/%s", dir, name);
+}
+
+/* The key of the semaphore for `dir` and cap `n`: FNV-1a over the name, never zero. */
+static key_t slot_key(const char* dir, long n) {
+    uint32_t h = 2166136261u;
+    for (const char* c = dir; *c; c++) h = (h ^ (uint8_t)*c) * 16777619u;
+    h = (h ^ (uint32_t)n) * 16777619u;
+    return (key_t)((h & 0x7fffffffu) | 1u);
+}
+
+/* The semaphore counting the slots of cap `n` under `dir`, made at `n` when absent; -1 when the host will not give one. Called under the gate. */
+static int slot_counter(const char* dir, long n) {
+    key_t key = slot_key(dir, n);
+    int id = semget(key, 1, IPC_CREAT | IPC_EXCL | 0666);
+    if (id >= 0) {
+        union avra_semun start;
+        start.val = (int)n;
+        if (semctl(id, 0, SETVAL, start) != 0) {
+            semctl(id, 0, IPC_RMID);
+            return -1;
+        }
+        return id;
+    }
+    return errno == EEXIST ? semget(key, 1, 0666) : -1;
+}
+
+/* Joins the line under the gate: the next ticket's lock, held (descriptor in *mine, path in `mine_path`), the predecessor's path in `behind` (empty for the first arrival), and the semaphore. Answers the semaphore, or -1. */
+static int slot_join(const char* dir, long n, int* mine, char* mine_path, char* behind, size_t size) {
+    char gate_path[1024], count_path[1024];
+    slot_path(gate_path, sizeof gate_path, dir, "gate", 0, 0);
+    slot_path(count_path, sizeof count_path, dir, "counter", 0, 0);
+    int gate = open(gate_path, O_RDWR | O_CREAT | O_CLOEXEC, 0666);
+    if (gate < 0) return -1;
+    // the clock: held for a few file operations only, by the compiler's own startup, before any program runs
+    flock(gate, LOCK_EX);
+    int counter = slot_counter(dir, n);
+    int book = open(count_path, O_RDWR | O_CREAT | O_CLOEXEC, 0666);
+    unsigned long ticket = 0;
+    if (counter >= 0 && book >= 0) {
+        char text[32];
+        ssize_t got = pread(book, text, sizeof text - 1, 0);
+        if (got > 0) { text[got] = 0; ticket = strtoul(text, NULL, 10); }
+        int len = snprintf(text, sizeof text, "%lu", ticket + 1);
+        if (ftruncate(book, 0) != 0 || pwrite(book, text, (size_t)len, 0) != len) counter = -1;
+    } else {
+        counter = -1;
+    }
+    if (book >= 0) close(book);
+    *mine = -1;
+    behind[0] = 0;
+    if (counter >= 0) {
+        slot_path(mine_path, size, dir, "q", ticket, 1);
+        *mine = open(mine_path, O_RDWR | O_CREAT | O_CLOEXEC, 0666);
+        // the clock: a lock named for this ticket, taken by no one else, answers at once
+        if (*mine < 0 || flock(*mine, LOCK_EX) != 0) counter = -1;
+        else if (ticket > 0) slot_path(behind, size, dir, "q", ticket - 1, 1);
+    }
+    // the clock: LOCK_UN answers at once, never waits
+    flock(gate, LOCK_UN);
+    close(gate);
+    if (counter < 0 && *mine >= 0) { close(*mine); *mine = -1; }
+    return counter;
+}
+#endif
+
+int64_t avra_io_compile_slot(void) {
+#if defined(__wasm32__)
+    // WASI has no semaphores and no machine-wide compile slots; only the compiler's
+    // own tools take one, and a wasm program is never one of them.
+    return -1;
+#else
+    const char* held = getenv("AVRA_COMPILE_SLOT");
+    if (held && *held) return -1;
+    const char* max = getenv("AVRA_MAX_COMPILES");
+    long n = (max && *max) ? strtol(max, NULL, 10) : 3;
+    if (n <= 0) return -1;
+    const char* dir = getenv("AVRA_SLOT_DIR");
+    if (!dir || !*dir) dir = "/tmp/avra-slots";
+    mkdir(dir, 0777);
+    int mine;
+    char mine_path[1100], behind[1100];
+    int counter = slot_join(dir, n, &mine, mine_path, behind, sizeof behind);
+    if (counter < 0) return -1;
+    int said = 0;
+    if (behind[0]) {
+        int ahead = open(behind, O_RDWR | O_CREAT | O_CLOEXEC, 0666);
+        if (ahead >= 0) {
+            // the clock: LOCK_NB answers at once, never waits
+            if (flock(ahead, LOCK_EX | LOCK_NB) != 0) {
+                fprintf(stderr, "avra: waiting for a compile slot (AVRA_MAX_COMPILES=%ld)\n", n);
+                said = 1;
+                // the clock: the compiler's own wait for a slot, before any program runs
+                flock(ahead, LOCK_EX);
+            }
+            unlink(behind);
+            close(ahead);
+        }
+    }
+    struct sembuf take = { 0, -1, SEM_UNDO };
+    struct sembuf try_take = { 0, -1, SEM_UNDO | IPC_NOWAIT };
+    if (semop(counter, &try_take, 1) != 0) {
+        if (errno != EAGAIN) { unlink(mine_path); close(mine); return -1; }
+        if (!said) fprintf(stderr, "avra: waiting for a compile slot (AVRA_MAX_COMPILES=%ld)\n", n);
+        while (semop(counter, &take, 1) != 0) {
+            if (errno != EINTR) { unlink(mine_path); close(mine); return -1; }
+        }
+    }
+    unlink(mine_path);
+    close(mine);
+    int free_now = semctl(counter, 0, GETVAL);
+    long taken = free_now < 0 ? 0 : (n - 1 - free_now);
+    if (taken < 0) taken = 0;
+    char slot[24];
+    snprintf(slot, sizeof slot, "%ld", taken);
+    setenv("AVRA_COMPILE_SLOT", slot, 1);
+    return (int64_t)taken;
+#endif
+}
+
+/* ── A DIRECTORY THIS USER ALONE HOLDS (runtime/avra_door.h) ──────────
+   Opened once with no link followed and held to its owner and mode;
+   every file in it is then named FROM that descriptor, never by a path
+   another user could swap for a link. A name is one segment: no `/`,
+   never `.` or `..`. */
+
+/* `path` made 0700 when absent, then open when it is this user's alone
+   — a descriptor, or -errno (EPERM: it stands and is not ours). */
+int64_t avra_io_own_dir(const char* path) {
+#if defined(__wasm32__)
+    (void)path;
+    return -ENOTSUP;
+#else
+    if (mkdir(path, 0700) != 0 && errno != EEXIST) return -errno;
+    return avra_dir_held(path);
+#endif
+}
+
+/* The user's own directory (avra_door.h), made 0700 when absent and
+   open — or -errno. */
+int64_t avra_io_user_dir(void) {
+#if defined(__wasm32__)
+    return -ENOTSUP;
+#else
+    char path[256];
+    avra_user_dir(path, sizeof path);
+    return avra_io_own_dir(path);
+#endif
+}
+
+static int one_segment(const char* name) {
+    return name[0] && !strchr(name, '/') && strcmp(name, ".") != 0 && strcmp(name, "..") != 0;
+}
+
+/* A FRESH file `name` in the open directory, 0600, open for writing:
+   whatever stood at the name is removed first, and the open refuses a
+   link. A descriptor, or -errno. */
+int64_t avra_io_put_new(int64_t dir, const char* name) {
+#if defined(__wasm32__)
+    (void)dir; (void)name;
+    return -ENOTSUP;
+#else
+    if (!one_segment(name)) return -EINVAL;
+    if (unlinkat((int)dir, name, 0) != 0 && errno != ENOENT) return -errno;
+    int fd;
+    while ((fd = openat((int)dir, name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600)) < 0 && errno == EINTR) {}
+    return fd < 0 ? -errno : fd;
+#endif
+}
+
+/* `name` in the open directory open for reading when it is a plain file
+   this user owns — a descriptor, -ENOENT when nothing stands there, or
+   -errno (EPERM: a link, or another's file). */
+int64_t avra_io_open_own(int64_t dir, const char* name) {
+#if defined(__wasm32__)
+    (void)dir; (void)name;
+    return -ENOTSUP;
+#else
+    if (!one_segment(name)) return -EINVAL;
+    int fd;
+    while ((fd = openat((int)dir, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)) < 0 && errno == EINTR) {}
+    if (fd < 0) return errno == ELOOP ? -EPERM : -errno;
+    struct stat st;
+    if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode) && st.st_uid == geteuid()) return fd;
+    close(fd);
+    return -EPERM;
+#endif
+}
+
+/* `name` removed from the open directory: 0, or -errno. */
+int64_t avra_io_unlink_at(int64_t dir, const char* name) {
+#if defined(__wasm32__)
+    (void)dir; (void)name;
+    return -ENOTSUP;
+#else
+    if (!one_segment(name)) return -EINVAL;
+    return unlinkat((int)dir, name, 0) == 0 ? 0 : -errno;
+#endif
+}
+

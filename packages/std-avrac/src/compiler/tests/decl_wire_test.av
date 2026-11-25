@@ -1,0 +1,50 @@
+// A declaration's wire is one spelling whatever else of its file is minted: its place
+// counts only the declarations sharing its kind, owner, name and maker, a group that
+// arrives whole, so a sibling made later never renumbers it.
+use compiler.{line_wires}
+
+const PATH: string = "/w/src/db.av"
+
+/// A declaration line as an Items row keeps it: the columns the wire reads, the rest blank.
+fn decl_line(ordinal: int, kind: string, name: string) -> List<string> {
+    ["aims", PATH, "${ordinal}", "0", "1", name, kind, "", "-1", "", "-1", "1", ""]
+}
+
+fn maker_line(ordinal: int, maker: string) -> List<string> { ["maker", PATH, "${ordinal}", maker] }
+
+/// One written `impl Db` and two a derive made beside it.
+fn whole() -> List<List<string>> {
+    [
+        decl_line(0, "impl", "Db"),
+        decl_line(1, "impl", "Db"),
+        decl_line(2, "impl", "Db"),
+        maker_line(1, "derive Rows"),
+        maker_line(2, "derive Rows"),
+    ]
+}
+
+spec "compiler/interface — a declaration's wire does not move with what is minted" {
+    given "a written impl and two a derive made with its name" {
+        then "the written one names no maker and no place" {
+            line_wires(PATH, whole())[0] == "${PATH}~impl~~Db"
+        }
+        then "the made ones name their maker and their place among its own" {
+            let ws = line_wires(PATH, whole())
+            ws[1] == "${PATH}~impl~~Db~=derive Rows~0" && ws[2] == "${PATH}~impl~~Db~=derive Rows~1"
+        }
+        then "the written one is spelled alike before the derive's are minted" {
+            line_wires(PATH, [decl_line(0, "impl", "Db")])[0] == line_wires(PATH, whole())[0]
+        }
+        then "a made one is spelled alike without the written one beside it" {
+            line_wires(
+                PATH,
+                [
+                    decl_line(1, "impl", "Db"),
+                    decl_line(2, "impl", "Db"),
+                    maker_line(1, "derive Rows"),
+                    maker_line(2, "derive Rows"),
+                ],
+            )[1] == line_wires(PATH, whole())[2]
+        }
+    }
+}

@@ -1,0 +1,150 @@
+//! The lowering rules of a call and `return`: a call of a declared fn hands it each argument, its
+//! answer minted last; `@std/meta`'s `guarded` is the runtime's guarded run; `return` leaves the fn
+//! with its value.
+use core.{
+    BinOp,
+    BoxKind,
+    Bound,
+    CalledFn,
+    ExprId,
+    Layout,
+    Lowering,
+    Lowers,
+    META_MODULE,
+    Reg,
+    SignedType,
+    StmtId,
+    StmtLowers,
+    rt_sig_of,
+}
+use core.expr.{Call}
+use core.stmt.{Return}
+
+impl Lowers for Call {
+    /// A call of a fn value the body binds, by position into seats that promise nothing, or of a fn
+    /// the program declares (a generic one's unit under its arguments' layouts): its arguments in
+    /// order, each into the seat it fills, then the call. Any other call isn't lowered yet.
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        let value = cx.bound(self.callee.of)
+        if value != null { return called_value(cx, self, e, value!) }
+        let named? = called(cx, self, e) else { return crossed(cx, self, e) ?? cx.missed_as(uncalled(cx, self, e)) }
+        if self.args.length == 1 && metas(cx, named, GUARDED) { return guarded_run(cx, e, self.args[0]) }
+        if self.args.length == 1 && metas(cx, named, CODE_HASH) { return code_hash_read(cx, e, self.args[0]) }
+        let callee? = reached_unit(cx, named, self, e) else { return cx.missed_as(unlaid(named)) }
+        let args? = cx.call_args(callee, self.args) else { return cx.missed_as(unseated(callee)) }
+        let answer = cx.layout_at(e)
+        if !callee.external { return cx.call_fn(answer, callee, args) }
+        cx.reached(callee)
+        cx.call_c(answer, callee.symbol, args)
+    }
+}
+
+/// Whether `callee` is the fn `@std/meta` declares as `name`.
+fn metas(cx: Lowering, callee: CalledFn, name: string) -> bool {
+    let meta? = (cx.program.toolchain_fn)(META_MODULE, name) else { return false }
+    meta.symbol == callee.symbol
+}
+
+/// `@std/meta`'s fn whose body the runtime runs.
+const GUARDED: string = "guarded"
+
+/// `@std/meta`'s fn whose answer the program gives.
+const CODE_HASH: string = "code_hash"
+
+/// `code_hash(f)` over a fn the program declares: the argument lowered as any fn value is, then a
+/// call of the body the program answers `f`'s code hash with. Any other argument isn't lowered yet.
+fn code_hash_read(mut cx: Lowering, e: ExprId, target: ExprId) -> Reg {
+    let name? = cx.store.ident_name(target) else { return cx.missed_as(unhashed()) }
+    let named? = cx.named(target, name) else { return cx.missed_as(unhashed()) }
+    let callee? = match named { .Fn(c) -> c, rest -> null } else { return cx.missed_as(unhashed()) }
+    let _ = cx.lower(target)
+    cx.code_hash_called(cx.layout_at(e), callee)
+}
+
+/// `guarded(body)`: the runtime's guarded run of the closure, whose status says whether a trap on
+/// this task ended it, then answering the trap's words, or the body ran to its end, answering none.
+fn guarded_run(mut cx: Lowering, e: ExprId, body: ExprId) -> Reg {
+    let ty? = cx.type_at(e) else { return cx.unlowered(e) }
+    let status = cx.call_row(Layout.Word, rt_sig_of("avra_guard_run")!, [cx.lower(body)])
+    cx
+        .region(cx.bin(Layout.Truth, BinOp.Ne, status, cx.const_int(0)), cx.laid_out(ty)) { cx ->
+            cx.call_row(Layout.Boxed(BoxKind.Text), rt_sig_of("avra_guard_words")!, [])
+        } else { cx ->
+            cx.hollow_of(ty)
+        }
+}
+
+/// `Name(value)`: the value as it is, a named type being its shape to the machine. Absent for a call
+/// of any other name.
+fn crossed(mut cx: Lowering, call: Call, e: ExprId) -> Reg? {
+    if call.args.length != 1 || cx.bound(call.callee.of) != null { return null }
+    let named? = (cx.program.checked.type_value)(call.callee.of, cx.store.home_of(e))?.described() else { return null }
+    if cx.program.checked.named_shape(named) == null { return null }
+    cx.lower(call.args[0])
+}
+
+/// The fn a call names, when the program declares it with seats a call fills, pinning each of its
+/// type parameters or none.
+fn called(cx: Lowering, call: Call, e: ExprId) -> CalledFn? {
+    if cx.bound(call.callee.of) != null { return null }
+    let named? = cx.named(e, call.callee.of) else { return null }
+    let callee? = match named { .Fn(c) -> c, rest -> null } else { return null }
+    if !callee.plain && callee.params.is_empty() ||
+        !call.pins.is_empty() && call.pins.length != callee.type_params { null } else { callee }
+}
+
+/// A call of a fn value the body binds, by position into seats that promise nothing or are written
+/// through: its arguments in order, a `mut` seat's the place it writes through, then the code its box
+/// holds, handed the box first.
+fn called_value(mut cx: Lowering, call: Call, e: ExprId, b: Bound) -> Reg {
+    if !plain_value_call(cx, call, b.type()) { return cx.missed_as("a call of a fn value through a seat that promises or by name") }
+    let seats = b.type().seats
+    let args = [if seats[at].mutable { cx.written_arg(a) } else { cx.lower(a) } for at, a in call.args]
+    if args.any(it == null) { return cx.missed_as("a fn value's `mut` seat handed a place no write reaches back from") }
+    let box = cx.held(b)
+    cx.called_code(cx.layout_at(e), cx.code_of(box), box, [a! for a in args])
+}
+
+/// Whether `call` hands the fn value of type `ty` its arguments by position into seats that promise
+/// nothing or are written through.
+fn plain_value_call(cx: Lowering, call: Call, ty: SignedType) -> bool {
+    ty.head is .Function &&
+        !ty.nullable() &&
+        ty.seats.length == call.args.length &&
+        !ty.seats.any(it.settled) &&
+        call.pins.is_empty() &&
+        !call.args.any((a) -> cx.store.names_its_seat(a))
+}
+
+/// The unit a call of `callee` reaches: the fn itself, or a generic fn's unit under its arguments'
+/// layouts.
+fn reached_unit(cx: Lowering, callee: CalledFn, call: Call, e: ExprId) -> CalledFn? {
+    if callee.type_params == 0 { callee } else { cx.instantiated(callee, call.pins, call.args, e) }
+}
+
+impl StmtLowers for Return {
+    /// `return` leaves the fn with its value, or with nothing.
+    fn stmt_lowered(mut cx: Lowering, s: StmtId) {
+        let value? = self.value else { return cx.answer_exit(null) }
+        cx.answer_exit(cx.lower(value))
+    }
+}
+
+/// A call of a name that is no fn a call here reaches, by what the name is.
+fn uncalled(cx: Lowering, call: Call, e: ExprId) -> string {
+    let name = call.callee.of
+    let named? = cx.named(e, name) else { return "a call of `${name}`, which names nothing this body reads" }
+    match named {
+        .Fn(_) -> "a call of `${name}` with type arguments it doesn't declare, or into seats a call doesn't fill",
+        .Literal(_) or .Settled(_, _) or .Unsettled(_) or .Built(_) -> "a call of `${name}`, which names a value",
+    }
+}
+
+/// A call whose arguments this layer doesn't seat yet.
+fn unseated(callee: CalledFn) -> string { "a call of `${callee.name}` handing a generic unit more than plain arguments, a `mut` seat a place no write reaches back from, or a spread record" }
+
+/// A call of a generic fn whose arguments don't lay out each of its type parameters.
+fn unlaid(callee: CalledFn) -> string { "a call of the generic `${callee.name}` whose arguments don't lay out its type parameters" }
+
+/// A code hash's argument naming no fn the program declares.
+fn unhashed() -> string { "a code hash of what names no declared fn" }

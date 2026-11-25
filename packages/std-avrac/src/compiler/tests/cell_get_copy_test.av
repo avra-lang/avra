@@ -1,0 +1,49 @@
+//! `compiler.cell_get_copy`: a `Cell` read out, written through and
+//! stored back copies the whole value every turn — the cell's own
+//! in-place verbs, or a `SideTable`'s `side_put`/`side_grow`, are the
+//! door. The rule's entry in the compiler's own table (`rules`) is
+//! exercised directly, so the refuse and accept surfaces are both
+//! proven without a package.
+use compiler.{analyze_source, nearest_fix, checks_keeps}
+use compiler.{rules, RuleEntry}
+use features.{Code, Fix}
+
+/// The rule's own `run`, as `check` reaches it — the table entry, never
+/// the declaration's field.
+fn applied() -> fn(Code) -> Fix? { rules.find(it.name == "cell_get_copy")!.run }
+
+/// Whether the rule fires anywhere in `text`'s first statement.
+fn fires(text: string) -> bool {
+    let a = analyze_source(text)
+    match a.view.stmts.first() {
+        s? -> nearest_fix(applied(), a.code_at(.Stmt(s))) != null
+        null -> false
+    }
+}
+
+/// Whether the rule keeps `text` — fires nowhere in it.
+fn keeps(text: string) -> bool { checks_keeps(applied(), text) }
+
+spec "compiler/idioms (cell_get_copy)" {
+    then "the rule stands in the compiler's own table" { rules.any(it.name == "cell_get_copy") }
+    given "a value read out of a cell, written through, and stored back" {
+        then "a list `push` round trip fires" { fires("{\n    mut t = c.get()\n    t.push(1)\n    c.set(t)\n}") }
+        then "a map `set` round trip fires" {
+            fires("{\n    mut t = c.get()\n    t.set(\"a\", 1)\n    c.set(t)\n}")
+        }
+        then "a struct field write round trip fires" { fires("{\n    mut t = c.get()\n    t.n = 2\n    c.set(t)\n}") }
+        then "the kernel's own closed_frame shape fires" {
+            fires("{\n    mut t = c.get()\n    let _ = t.pop()\n    c.set(t)\n}")
+        }
+    }
+    given "the cell written in place" {
+        then "the cell's own verb keeps" { keeps("{\n    c.push(1)\n}") }
+        then "a sanctioned detach keeps" {
+            keeps(
+                "{\n    mut t = c.get()\n    c.set(t with { cells: [] })\n    t.push(1)\n    c.set(t)\n}",
+            )
+        }
+        then "a different cell stored back keeps" { keeps("{\n    mut t = a.get()\n    t.push(1)\n    b.set(t)\n}") }
+        then "a read with no write keeps" { keeps("{\n    mut t = c.get()\n    c.set(t)\n}") }
+    }
+}

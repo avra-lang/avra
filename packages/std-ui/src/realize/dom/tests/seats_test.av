@@ -1,0 +1,37 @@
+//! The seat table the View derive writes beside each primitive, held to the
+//! hand tables it replaces: every event seat's `@host` says what the page's
+//! own tables said of its kind.
+use @std.ui.components.{button, checkbox, dialog, field, form, link, slider, switch}
+use @std.ui.tree.node.{Prim}
+use @std.ui.tree.seats.{SeatRow, seat_rows, ties}
+
+fn rows() -> List<SeatRow> { [g.row for g in seat_rows] }
+
+spec "the seat table" {
+    given "the controls std-ui declares" {
+        then "holds one seat per event, in name order" {
+            [r.owner + "." + r.event for r in rows()].join(" ") == "button.press checkbox.change dialog.dismiss field.input form.submit key.press link.press slider.change switch.change"
+        }
+        then "names each seat once" { ties(rows()).is_empty() }
+        then "calls each seat what the web calls it" {
+            [r.owner + "." + r.event + "=" + r.web!.word() for r in rows()].join(" ") == "button.press=click checkbox.change=change dialog.dismiss=cancel field.input=input form.submit=submit key.press=keydown link.press=click slider.change=change switch.change=change"
+        }
+        then "marks the seats the page always listens for, handler or none: a form's submit and a dialog's dismissal" {
+            [r.owner + "." + r.event for r in rows() if r.always].join(" ") == "dialog.dismiss form.submit"
+        }
+        then "names the primitive that declares each seat" {
+            rows().find(it.owner == "form")?.prim == Prim.Form &&
+                rows().find(it.owner == "dialog")?.prim == Prim.Dialog &&
+                rows().find(it.owner == "slider")?.prim == Prim.Slider
+        }
+        then "prevents the page's own answer only where it would leave the page" {
+            [r.owner for r in rows() if r.prevent].join(" ") == "form"
+        }
+    }
+    given "two seats of one name" {
+        then "are a tie, named" {
+            let twice = rows().concat([rows()[0]])
+            ties(twice).join(",") == "button.press"
+        }
+    }
+}

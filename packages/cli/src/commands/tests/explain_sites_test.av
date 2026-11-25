@@ -1,0 +1,76 @@
+//! `avra explain --sites` — the mechanism the compiler chose for each site of
+//! a declaration's body, and why: constant, one place, several, an open
+//! input, a place it cannot name.
+use @std.io.{make_dirs, write_text}
+use @std.time.{stamp}
+use commands.{explain_answer, Asked}
+
+/// A package of one file, its own path each run.
+fn sites_probe(name: string) -> string {
+    let root = "/tmp/avra-sites-test/${name}-${stamp()}"
+    let _ = make_dirs("${root}/src")
+    let _ = write_text("${root}/avra.toml", "[package]\nname = \"${name}\"\nversion = \"0.0.1\"\n")
+    let _ = write_text(
+        "${root}/src/main.av",
+        "state n: int = 0\nstate m: int = 0\n\nfn constant() -> int { 1 + 2 }\nfn one() -> int { n + 1 }\nfn two() -> int { n + m }\nfn param(x: int) -> int { x + 1 }\nfn through() -> int { one() * 2 }\nfn opaque() -> int {\n    let g = (x: int) -> x + n\n    g(1)\n}\nfn own() -> int {\n    state k: int = 0\n    k + 1\n}\none()\n",
+    )
+    root
+}
+
+fn sites(root: string, name: string) -> List<string> {
+    explain_answer(Asked { target: "@${name}", from: root, sites: true }) catch why -> why
+}
+
+spec "commands/explain — sites" {
+    given "a body that reads nothing" {
+        then "its one site is constant and hoists" {
+            sites(sites_probe("hoist"), "constant").join("\n") == "sites of `constant`:\n  hoist  1 + 2 — reads no state and no open input: constant, hoisted into the binary"
+        }
+    }
+    given "a body that reads one place" {
+        then "its site is a direct write to that place" {
+            sites(sites_probe("direct"), "one").join("\n") == "sites of `one`:\n  direct n + 1 — reads exactly one place, `n`: a direct write to its node"
+        }
+        then "a call that reaches exactly that place is direct to it too, through the callee" {
+            sites(sites_probe("through"), "through").join("\n") == "sites of `through`:\n  direct one() * 2 — reads exactly one place, `n`: a direct write to its node"
+        }
+        then "a state of the body itself is its own place" {
+            sites(sites_probe("own"), "own")[1] == "  direct { — reads exactly one place, `k`: a direct write to its node"
+        }
+    }
+    given "a body that cannot be a direct write" {
+        then "two places stay on the tree, and each leaf is direct" {
+            let lines = sites(sites_probe("two"), "two")
+            lines[1] == "  tree   n + m — reads 2 places: the tree path" &&
+                lines
+                    .any(
+                        it == "  direct n — reads exactly one place, `n`: a direct write to its node",
+                    ) &&
+                lines
+                    .any(
+                        it == "  direct m — reads exactly one place, `m`: a direct write to its node",
+                    )
+        }
+        then "a parameter is an open input: the tree path" {
+            sites(sites_probe("param"), "param")[1] == "  tree   x + 1 — reads an input it does not bind (a parameter, a receiver, an outer binding): the tree path"
+        }
+        then "an applied fn value reaches a place it cannot name" {
+            sites(sites_probe("opaque"), "opaque")[1].contains("reaches a place it cannot name")
+        }
+    }
+    given "a target that is no declaration" {
+        then "a file is refused, naming what `--sites` reads" {
+            match explain_answer(
+                Asked { target: "src/main.av", from: sites_probe("file"), sites: true },
+            ) {
+                .Err(lines) -> lines.join("\n").contains("reads one declaration's body"),
+                .Ok(_) -> false,
+            }
+        }
+        then "it goes with neither `--stats` nor `--why`" {
+            match explain_answer(
+                Asked { target: "@one", from: sites_probe("both"), sites: true, why: true },
+            ) { .Err(lines) -> lines.join("\n").contains("a form of its own"), .Ok(_) -> false }
+        }
+    }
+}

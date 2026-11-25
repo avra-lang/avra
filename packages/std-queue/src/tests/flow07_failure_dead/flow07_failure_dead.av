@@ -1,0 +1,32 @@
+//! proves a handler that keeps failing is buried once its attempts
+//! reach the terms, and the letter carries the error and the path.
+use @std.queue.{queue, worker, drain, key, Dead, Delivery}
+use @std.task.{unbounded_channel}
+use @std.time.{ms}
+
+type Job = { n: int }
+type Receipt = { ok: bool }
+
+fn pay(d: Delivery<Job>) -> Result<Receipt, string> { .Err("job ${d.item.n} failed") }
+
+let letters = unbounded_channel<Dead<Job, string>>()
+queue<Job> jobs {
+    capacity: 8
+    lease: ms(60000)
+    retries: 2
+    dead: letters.sink
+}
+worker settle {
+    reads: jobs
+    each: pay
+    dead: letters.sink
+}
+let _ = jobs.home().send(Job { n: 7 }, key("k"))
+match drain(settle) {
+    .Ok(n) -> {
+        let gone = letters.source.taken()
+        let g = gone!
+        "${n} ${g.item.n} ${g.error} ${g.path[0]} ${g.path[1]} ${jobs.home().depth()}"
+    },
+    .Err(e) -> e,
+}

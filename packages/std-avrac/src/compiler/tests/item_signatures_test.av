@@ -1,0 +1,92 @@
+// A fn's signature off its item's tape and the names layer: each name resolved, an alias standing
+// for what it names, a width on its seat, a union in one order, and a body edit moving nothing.
+use compiler.{FnSignature, avra_fact_definitions, avra_source_world, fn_signature}
+use @std.program.disk_store.{disk_store_at}
+use @std.program.query_engine.{query_engine}
+use @std.program.source_facts.{use_source_world}
+use compiler.tests.support.{file_at, files, list_held, read_held, store_dir}
+
+const SHAPES: string = "export type Point = { x: int, y: int }\n\nexport enum Lost {\n    Gone\n}\n\nexport enum Late {\n    Slow\n}\n\nexport alias Pair<T> = List<T>\n"
+
+const MAIN: string = "use lib.{Point, Lost, Late, Pair}\n\nfn near<T>(p: Point, xs: List<T>, mut n: int) -> Point? { null }\n\nfn pairs(p: Pair<string>) -> Pair<int>? { null }\n\nfn either(n: int) -> Result<int, Late or Lost> { .Ok(n) }\n\nfn found(n: int) -> Result<int, _> { .Ok(n) }\n\nextern fn c_width(n: i32) -> i32\n"
+
+/// One process asking the signature of the fn `main.av` declares as `name`, and the queries it ran.
+type Asked = { signature: FnSignature?, ran: List<string> }
+
+fn signed(dir: string, name: string) -> Asked {
+    use_source_world(avra_source_world(read_held, list_held, "avra-test"))
+    let store = disk_store_at(dir)
+    let engine = query_engine(store, avra_fact_definitions())
+    let signature = fn_signature(engine, file_at("src/main.av"), name)
+    let _ = store.saved()
+    Asked { signature: signature, ran: engine.computed_queries() }
+}
+
+/// The signature as its parameters and answer are written, resolved.
+fn spelled(dir: string, name: string) -> string {
+    let s? = signed(dir, name).signature else { return "absent" }
+    "(${[p.ty?.spelled() ?? "_" for p in s.params].join(", ")}) -> ${s.answer.spelled()}"
+}
+
+spec "a fn's signature" {
+    given "a fn naming a declared type, a type parameter and the language's own" {
+        then "each resolves, and the seat keeps its promise" {
+            files().set({"src/lib/shapes.av": SHAPES, "src/main.av": MAIN})
+            let dir = store_dir("names")
+            let s = signed(dir, "near").signature!
+            spelled(dir, "near") == "(Point, List<T>, int) -> Point?" &&
+                s.type_params[0] == "T" &&
+                s.params[2].mutable &&
+                !s.params[0].mutable
+        }
+    }
+    given "a generic alias" {
+        then "it stands for what it names, its parameter bound" {
+            files().set({"src/lib/shapes.av": SHAPES, "src/main.av": MAIN})
+            spelled(store_dir("alias"), "pairs") == "(List<string>) -> List<int>?"
+        }
+    }
+    given "a union" {
+        then "its members stand in one order whatever order they're written in" {
+            files().set({"src/lib/shapes.av": SHAPES, "src/main.av": MAIN})
+            spelled(store_dir("union"), "either") == "(int) -> Result<int, Late or Lost>"
+        }
+    }
+    given "an answer the body decides" {
+        then "it's marked as the body's to answer" {
+            files().set({"src/lib/shapes.av": SHAPES, "src/main.av": MAIN})
+            signed(store_dir("inferred"), "found").signature!.answer.inferred()
+        }
+    }
+    given "an extern naming C widths" {
+        then "each seat is the language's integer, and keeps the width it crosses at" {
+            files().set({"src/lib/shapes.av": SHAPES, "src/main.av": MAIN})
+            let s = signed(store_dir("width"), "c_width").signature!
+            spelled(store_dir("width_spelled"), "c_width") == "(int) -> int" &&
+                s.params[0].width == "i32" &&
+                s.answer_width == "i32"
+        }
+    }
+    given "a name nothing declares" {
+        then "the fn is absent" {
+            files().set({"src/lib/shapes.av": SHAPES, "src/main.av": MAIN})
+            signed(store_dir("none"), "nowhere").signature == null
+        }
+    }
+    given "a fn's body edited" {
+        then "its signature reads the same, and a process asking it again runs only what the edit reached" {
+            let dir = store_dir("body_edit")
+            files().set({"src/lib/shapes.av": SHAPES, "src/main.av": MAIN})
+            let before = spelled(dir, "near")
+            files()
+                .put(
+                    "src/main.av",
+                    MAIN.replace("-> Point? { null }", "-> Point? {\n    let _ = n\n    null\n}"),
+                )
+            let after = signed(dir, "near")
+            before == "(Point, List<T>, int) -> Point?" &&
+                spelled(dir, "near") == before &&
+                !after.ran.contains("module_declares")
+        }
+    }
+}

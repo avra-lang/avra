@@ -1,0 +1,383 @@
+//! The runner: a recorded shape and a declared one, diffed, and a plan of
+//! GROWTH applied — never a moving change. Before any write to a file
+//! database a copy is taken with `VACUUM INTO` and read back whole; the
+//! steps and the registry's new shape then go in one transaction that is
+//! checked before it commits, so a plan that breaks the database is never
+//! kept. Forward only: to go back, restore the copy.
+use @std.errors.{Error, ErrorInfo, info}
+use @std.sqlite.{Db, Row, SqlValue, sql}
+use @std.sqlite.error.{SqlError}
+use @std.time.{now_ms}
+use migrate.{Plan, Renamed, diff, refusals, statements}
+use shape.{Shape, quoted, shape_read, shape_text}
+
+/// Why a table was not migrated.
+export enum MigrateError {
+    Sql(e: SqlError)
+    /// The plan holds changes that need an author: nothing was written.
+    Moving(plan: Plan)
+    /// The table has no recorded shape — an older claim — so nothing can be diffed.
+    Unrecorded(name: string)
+    /// The copy taken before writing could not be made or did not read back whole.
+    Backup(why: string)
+    /// The plan was applied and broke the database, so it was rolled back.
+    Broken(name: string, why: string)
+}
+
+impl Error for MigrateError {
+    fn describe() -> ErrorInfo {
+        match self {
+            .Sql(e) -> e.describe(),
+            .Moving(plan) -> info("db.migrate.moving", moving_voice(plan)),
+            .Unrecorded(name) -> info("db.migrate.unrecorded", unrecorded_voice(name)),
+            .Backup(why) -> info("db.migrate.backup", backup_voice(why)),
+            .Broken(name, why) -> info("db.migrate.broken", broken_voice(name, why)),
+        }
+    }
+}
+
+/// What the whole program's migration needs of one model.
+export type Entry = {
+    name: string,
+    owner: string,
+    declared_at: string,
+    shape: string,
+    renamed_to: List<string>,
+    renamed_from: List<string>,
+}
+
+/// Every model's table made and grown, in the order given; answers how many
+/// steps it took in all. The first refusal stops the rest.
+export fn migrated_all(db: Db, entries: List<Entry>) -> Result<int, MigrateError> {
+    mut steps = 0
+    // LICENSED loops.push_loop: tables go one after another, and the first refusal stops the rest
+    for e in entries {
+        let _ = lifted(claim_table(db, e.name, e.owner, e.declared_at, e.shape))?
+        steps = steps + grown(db, e.shape, e.renamed_to, e.renamed_from)?
+    }
+    .Ok(steps)
+}
+
+/// The registry's claim on a table name, and the table made if it is not
+/// there. A second model of the same name declared elsewhere is refused,
+/// naming the file that claimed it first.
+export fn claim_table(db: Db, name: string, owner: string, declared_at: string, shape: string) -> Result<
+    int,
+    SqlError,
+> {
+    let read? = shape_read(shape) else { return .Err(unread_voice()) }
+    let _ = db.run(sql("PRAGMA foreign_keys = ON"))?
+    let _ = db.run(sql(registry_sql()))?
+    if (db.scalar(sql(shape_column_probe_sql()))?).int()? == 0 {
+        let _ = db.run(sql(shape_column_add_sql()))?
+    }
+    if (db.scalar(sql(owner_column_probe_sql()))?).int()? == 0 {
+        let _ = db.run(sql(owner_column_add_sql()))?
+    }
+    let claim = db.first(sql(claim_select_sql(), [.Text(name)]))?
+    match claim {
+        row? -> {
+            let held = text_or_null(row, 0)
+            let recorded = text_or_null(row, 1)
+            if held == null && (recorded == null || recorded == shape) {
+                let _ = db.run(sql(claim_adopt_sql(), [.Text(owner), .Text(name)]))?
+            } else if held != owner {
+                fail SqlError.defect(collision_voice(name) + (held ?? shape_conflict_word()))
+            }
+        }
+        null -> {
+            let _ = db
+                .run(
+                    sql(
+                        claim_insert_sql(),
+                        [.Text(name), .Text(declared_at), .Text(shape), .Text(owner)],
+                    ),
+                )?
+        }
+    }
+    let made = db.run(sql(create_sql(read.name, read.columns)))?
+    let _ = counted(db, read.name)?
+    .Ok(made)
+}
+
+/// THE DATABASE'S COMMIT COUNTER, one row every write to a model's table moves:
+/// a trigger per kind of write bumps it inside the writer's own transaction, so
+/// it is persisted with the data, the same for every connection and every
+/// process, and only rises. Raw SQL against a model's table counts like any
+/// other write. Made with the table, and again on every claim, so a database
+/// older than the counter gains it.
+fn counted(db: Db, on: string) -> Result<int, SqlError> {
+    let _ = db.run(sql(commits_sql()))?
+    let _ = db.run(sql(commits_seed_sql()))?
+    let _ = db.run(sql(tables_sql()))?
+    for kind in ["INSERT", "UPDATE", "DELETE"] { let _ = db.run(sql(bump_sql(on, kind)))? }
+    .Ok(0)
+}
+
+/// Where the database stands: how many writes its model tables have taken, or
+/// the refusal when the counter is not there (a database no model has claimed).
+export fn commits(db: Db) -> Result<int, SqlError> { (db.scalar(sql(read_commits_sql()))?).int() }
+
+/// The count at which the latest of `names` was last written: the version of an
+/// answer that read exactly those tables. A table never written is at nothing.
+export fn last_of(db: Db, names: List<string>) -> Result<int, SqlError> {
+    let marks = ["?" for _n in names].join(", ")
+    let held = db
+        .scalar(
+            sql(
+                "SELECT COALESCE(MAX(\"last\"), 0) FROM \"avra_tables\" WHERE \"name\" IN (${marks})",
+                [SqlValue.Text(n) for n in names],
+            ),
+        )?
+    held.int()
+}
+
+/// The tables written since the database stood at `since`: what the writes between
+/// the two readings touched, and nothing about which rows.
+export fn touched(db: Db, since: int) -> Result<List<string>, SqlError> {
+    let rows = db
+        .all(
+            sql(
+                "SELECT \"name\" FROM \"avra_tables\" WHERE \"last\" > ? ORDER BY \"name\"",
+                [.Int(since)],
+            ),
+        )?
+    .Ok([texted(r.values[0]) for r in rows])
+}
+
+/// A table brought to the shape a model's text declares, answering how many
+/// steps it took; a text that is no shape is a defect of the caller. A column and its old
+/// name sit at one index of the two rename lists.
+export fn grown(db: Db, declared: string, renamed_to: List<string>, renamed_from: List<string>) -> Result<
+    int,
+    MigrateError,
+> {
+    let shape? = shape_read(declared) else { return .Err(.Sql(unread_voice())) }
+    let plan = migrated(
+        db,
+        shape,
+        [Renamed { from: renamed_from[i], to: renamed_to[i] } for i in 0..renamed_to.length],
+    )?
+    .Ok(plan.steps.length)
+}
+
+/// One table brought to its declared shape. Answers the plan it applied;
+/// a plan with nothing to do writes nothing, and one that moves is refused.
+export fn migrated(db: Db, declared: Shape, renames: List<Renamed>) -> Result<Plan, MigrateError> {
+    let held = lifted(recorded(db, declared.name))?
+    let stored? = held else { return .Err(.Unrecorded(declared.name)) }
+    let plan = diff(stored, declared, renames)
+    if !plan.moving.is_empty() { return .Err(.Moving(plan)) }
+    if plan.steps.is_empty() { return .Ok(plan) }
+    let _ = copied(db)?
+    let _ = applied(db, plan, declared)?
+    .Ok(plan)
+}
+
+/// A driver failure as this runner's own.
+export fn lifted<T>(r: Result<T, SqlError>) -> Result<T, MigrateError> {
+    match r { .Ok(v) -> .Ok(v), .Err(e) -> .Err(.Sql(e)) }
+}
+
+/// A scalar's text; empty for any other class.
+fn texted(v: SqlValue) -> string {
+    match v { .Text(t) -> t, .Int(_) or .Real(_) or .Blob(_) or .Null -> "" }
+}
+
+/// The shape the registry holds for a table; absent when it holds none.
+fn recorded(db: Db, name: string) -> Result<Shape?, SqlError> {
+    let row? = db.first(sql(recorded_sql(), [.Text(name)]))? else { return .Ok(null) }
+    .Ok(shape_read(texted(row.values[0])))
+}
+
+/// Every shape the registry holds, in table order; none for a database no
+/// model has claimed a table in.
+export fn recorded_shapes(db: Db) -> Result<List<Shape>, SqlError> {
+    if (db.scalar(sql(registry_probe_sql()))?).int()? == 0 { return .Ok([]) }
+    let held: List<Shape?> = [shape_read(texted(r.values[0])) for r in db.all(sql(all_recorded_sql()))?]
+    .Ok([s! for s in held if s != null])
+}
+
+fn registry_probe_sql() -> string { "SELECT count(*) FROM sqlite_master WHERE name = '__avra_models__'" }
+
+fn all_recorded_sql() -> string {
+    "SELECT \"shape\" FROM \"__avra_models__\" WHERE \"shape\" IS NOT NULL ORDER BY \"table_name\""
+}
+
+// ── The copy ────────────────────────────────────────────────────
+
+/// A verified copy of a file database; nothing for one that lives in memory.
+fn copied(db: Db) -> Result<int, MigrateError> {
+    let path = texted(lifted(db.scalar(sql(file_sql())))?)
+    if path.is_empty() { return .Ok(0) }
+    let copy = "${path}.${now_ms()}.bak"
+    let _ = lifted(db.run(sql(vacuum_sql(), [.Text(copy)])))?
+    let said = whole(copy)
+    if said != "ok" { return .Err(.Backup("${copy} read back as ${said}")) }
+    .Ok(1)
+}
+
+/// What a database file says when asked whether it is whole.
+fn whole(path: string) -> string {
+    let opened = Db.open_read(path)
+    match opened {
+        .Err(e) -> e.message,
+        .Ok(b) -> {
+            let said = match b.scalar(sql(integrity_sql())) {
+                .Ok(v) -> texted(v),
+                .Err(e) -> e.message,
+            }
+            let _ = b.close()
+            said
+        },
+    }
+}
+
+// ── The write ───────────────────────────────────────────────────
+
+/// The plan's steps and the registry's new shape, in one transaction that
+/// commits only when the database checks out.
+fn applied(db: Db, plan: Plan, declared: Shape) -> Result<int, MigrateError> {
+    let _ = lifted(db.begin())?
+    match written(db, plan, declared) {
+        .Ok(_) -> kept(db),
+        .Err(e) -> {
+            let _ = db.finish()
+            .Err(e)
+        },
+    }
+}
+
+fn kept(db: Db) -> Result<int, MigrateError> {
+    match lifted(db.commit()) {
+        .Ok(n) -> .Ok(n),
+        .Err(e) -> {
+            let _ = db.finish()
+            .Err(e)
+        },
+    }
+}
+
+fn written(db: Db, plan: Plan, declared: Shape) -> Result<int, MigrateError> {
+    // LICENSED loops.push_loop: each statement runs once, in order, and the first refusal stops them
+    for s in statements(plan) {
+        let _ = lifted(db.run(sql(s)))?
+    }
+    let _ = lifted(
+        db
+            .run(
+                sql(
+                    restamp_sql(),
+                    [.Text(shape_text(declared.name, declared.columns)), .Text(declared.name)],
+                ),
+            ),
+    )?
+    checked(db, declared.name)
+}
+
+/// Whether the database, as the plan left it, is whole and its links hold.
+fn checked(db: Db, name: string) -> Result<int, MigrateError> {
+    let said = texted(lifted(db.scalar(sql(integrity_sql())))?)
+    if said != "ok" { return .Err(.Broken(name, said)) }
+    let loose = lifted(db.first(sql(links_sql())))?
+    if loose != null { return .Err(.Broken(name, "a row points at a row that is not there")) }
+    .Ok(0)
+}
+
+// ── SQL ─────────────────────────────────────────────────────────
+
+fn commits_sql() -> string {
+    "CREATE TABLE IF NOT EXISTS \"avra_commits\" (\"id\" INTEGER PRIMARY KEY CHECK (\"id\" = 1), \"seq\" INTEGER NOT NULL)"
+}
+
+fn commits_seed_sql() -> string { "INSERT OR IGNORE INTO \"avra_commits\" (\"id\", \"seq\") VALUES (1, 0)" }
+
+fn read_commits_sql() -> string { "SELECT \"seq\" FROM \"avra_commits\" WHERE \"id\" = 1" }
+
+fn tables_sql() -> string {
+    "CREATE TABLE IF NOT EXISTS \"avra_tables\" (\"name\" TEXT PRIMARY KEY, \"last\" INTEGER NOT NULL)"
+}
+
+/// The trigger that counts one kind of write to the table `on`, and stamps the table with the
+/// count it reached: the table's own version. An upsert, never `OR REPLACE`: a write made
+/// by a foreign-key action runs under its own conflict policy, which overrides a trigger's.
+fn bump_sql(on: string, kind: string) -> string {
+    "CREATE TRIGGER IF NOT EXISTS ${quoted("avra_commit_${on}_${kind}")} AFTER ${kind} ON ${quoted(on)} BEGIN UPDATE \"avra_commits\" SET \"seq\" = \"seq\" + 1 WHERE \"id\" = 1; INSERT INTO \"avra_tables\" (\"name\", \"last\") VALUES (${literal_text(on)}, (SELECT \"seq\" FROM \"avra_commits\" WHERE \"id\" = 1)) ON CONFLICT (\"name\") DO UPDATE SET \"last\" = excluded.\"last\"; END"
+}
+
+/// `name` as an SQL text literal.
+fn literal_text(name: string) -> string { "'${name.replace("'", "''")}'" }
+
+fn registry_sql() -> string {
+    "CREATE TABLE IF NOT EXISTS \"__avra_models__\" (\"table_name\" TEXT PRIMARY KEY, \"declared_at\" TEXT, \"shape\" TEXT, \"owner\" TEXT)"
+}
+
+/// A registry made before shapes were recorded lacks the column: it is
+/// added, and an older claim's shape stays NULL — unknown, never guessed.
+fn shape_column_probe_sql() -> string {
+    "SELECT count(*) FROM pragma_table_info('__avra_models__') WHERE name = 'shape'"
+}
+
+fn shape_column_add_sql() -> string { "ALTER TABLE \"__avra_models__\" ADD COLUMN \"shape\" TEXT" }
+
+/// A registry made before owners were recorded lacks the column: it is
+/// added, and an older claim's owner stays NULL until a model whose shape
+/// agrees adopts it.
+fn owner_column_probe_sql() -> string {
+    "SELECT count(*) FROM pragma_table_info('__avra_models__') WHERE name = 'owner'"
+}
+
+fn owner_column_add_sql() -> string { "ALTER TABLE \"__avra_models__\" ADD COLUMN \"owner\" TEXT" }
+
+fn claim_select_sql() -> string {
+    "SELECT \"owner\", \"shape\" FROM \"__avra_models__\" WHERE \"table_name\" = ?"
+}
+
+fn claim_insert_sql() -> string {
+    "INSERT INTO \"__avra_models__\" (\"table_name\", \"declared_at\", \"shape\", \"owner\") VALUES (?, ?, ?, ?)"
+}
+
+fn claim_adopt_sql() -> string {
+    "UPDATE \"__avra_models__\" SET \"owner\" = ? WHERE \"table_name\" = ?"
+}
+
+fn recorded_sql() -> string { "SELECT \"shape\" FROM \"__avra_models__\" WHERE \"table_name\" = ?" }
+
+fn restamp_sql() -> string { "UPDATE \"__avra_models__\" SET \"shape\" = ? WHERE \"table_name\" = ?" }
+
+fn file_sql() -> string { "SELECT file FROM pragma_database_list WHERE name = 'main'" }
+
+fn vacuum_sql() -> string { "VACUUM INTO ?" }
+
+fn integrity_sql() -> string { "PRAGMA integrity_check" }
+
+fn links_sql() -> string { "PRAGMA foreign_key_check" }
+
+// ── Voices ──────────────────────────────────────────────────────
+
+fn unread_voice() -> SqlError { SqlError.defect("a model's shape text did not read back") }
+
+fn collision_voice(name: string) -> string {
+    "table \"${name}\" is already claimed by a @model of module "
+}
+
+fn shape_conflict_word() -> string { "an earlier version with another shape" }
+
+/// A column's text, or null where it holds NULL.
+fn text_or_null(r: Row, i: int) -> string? {
+    match r.values[i] { .Text(v) -> v, rest -> null }
+}
+
+fn moving_voice(plan: Plan) -> string {
+    "`${plan.name}` cannot be migrated by itself: ${refusals(plan).join("; ")}"
+}
+
+fn unrecorded_voice(name: string) -> string {
+    "`${name}` has no recorded shape — its table was claimed before shapes were kept, so there is nothing to compare the model with"
+}
+
+fn backup_voice(why: string) -> string { "no copy of the database could be taken, so nothing was changed: ${why}" }
+
+fn broken_voice(name: string, why: string) -> string {
+    "migrating `${name}` left the database unsound (${why}) and was rolled back"
+}

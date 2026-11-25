@@ -1,0 +1,70 @@
+// A fn's written seats are settled with its strongly-connected set alone: a cycle takes what
+// a member outside it writes, a cycle with no writer stays unwritten, and asking one fn
+// settles no fn it does not call. `Writes` is family 41 by name; the keys are spelled
+// through `family_ordinal`.
+use @std.avrac.testing.{test_workspace}
+use compiler.{Workspace}
+use compiler.host.{memory_host}
+use core.{DeclId}
+use @std.relation.engine.{Key}
+
+fn writes_key(d: DeclId) -> Key { Key { family: family_ordinal("Writes"), arg: d.index } }
+
+fn writes_workspace(main: string) -> Workspace {
+    let ws = test_workspace(
+        memory_host(
+            {
+                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+                "/w/src/main.av": main,
+            },
+            ["/w/avra.toml", "/w/src/main.av"],
+        ),
+        "/w",
+    )
+    let _ = ws.items(ws.file_id("/w/src/main.av"))
+    ws
+}
+
+fn writes_decl(ws: Workspace, name: string) -> DeclId {
+    [x.id for x in ws.decls.all_decls() if x.name == name][0]
+}
+
+fn written(ws: Workspace, name: string) -> bool {
+    let d = writes_decl(ws, name)
+    let _ = ws.writes_of(d)
+    ws.decls.seat_written(d, 0)
+}
+
+fn cycle_source(leaf_body: string) -> string {
+    "type P = { n: int }\nfn leaf(mut p: P) {\n    ${leaf_body}\n}\nfn ping(mut p: P, k: int) {\n    if k > 0 { pong(p, k - 1) } else { leaf(p) }\n}\nfn pong(mut p: P, k: int) {\n    if k > 0 { ping(p, k - 1) }\n}\nfn quiet(p: P) -> int { p.n }\n"
+}
+
+spec "compiler/receivers — a fn's written seats settle with its own set" {
+    given "a two-fn cycle whose way out reaches a fn that writes" {
+        then "the fn that writes writes the seat" {
+            written(writes_workspace(cycle_source("p.n = 1")), "leaf")
+        }
+        then "a caller of it writes the seat" {
+            let ws = writes_workspace(cycle_source("p.n = 1"))
+            let _ = written(ws, "leaf")
+            written(ws, "ping")
+        }
+        then "both members of the cycle write the seat" {
+            let ws = writes_workspace(cycle_source("p.n = 1"))
+            written(ws, "ping") && written(ws, "pong")
+        }
+    }
+    given "the same cycle where nothing writes" {
+        then "neither member writes it" {
+            let ws = writes_workspace(cycle_source("let _ = p.n"))
+            !written(ws, "ping") && !written(ws, "pong")
+        }
+    }
+    given "a fn that calls nothing" {
+        then "asking it settles none of the fns it does not call" {
+            let ws = writes_workspace(cycle_source("p.n = 1"))
+            let _ = written(ws, "quiet")
+            ws.db.value_hash_of(writes_key(writes_decl(ws, "ping"))) == null
+        }
+    }
+}

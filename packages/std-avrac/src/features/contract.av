@@ -1,0 +1,770 @@
+//! What a feature's nodes DO at each pass — THE contract, and the
+//! vocabulary every feature speaks across it.
+//!
+//! The contract: one capability context per pass — the pass's own
+//! STATE, whose verbs (walk, look up, record, emit) are its methods,
+//! the statement and expression spines sharing it — and the two
+//! semantics traits. A pass method a feature has nothing to say at
+//! is the trait's DEFAULT (no kids, no heirs, nothing to resolve,
+//! nothing to lower); what a node IS at typing and lowering, and
+//! what a statement does, every impl states. The passes reach
+//! an impl through the semantics map and never match feature nodes.
+//!
+//! The vocabulary: the FACT shapes the declare phase records
+//! (FnSig, StructSig, EnumSig, and the one DeclSig currency that
+//! holds them), and the refusals and help PHRASES features share
+//! word-for-word, so no two sites drift.
+//!
+//! Siblings, by concern: checks.av holds the typing LAWS,
+//! values.av the runtime VALUE representation, builder.av the
+//! parse-time authoring surface. A feature-named fn has no place
+//! in any of them.
+use @std.meta.{derive, delegates, Rewrite}
+use @std.relation.{codec}
+use core.{
+    Expr,
+    Stmt,
+    ExprId,
+    StmtId,
+    PatId,
+    FileId,
+    Param,
+    TypeId,
+    TypeRef,
+    TypeRegistry,
+    Reg,
+    same_reg,
+    joined,
+    DeclId,
+    found_at,
+    Binding,
+    SyntaxArena,
+    Span,
+    Provided,
+    Means,
+    no_door,
+    Minting,
+    minting,
+}
+use core.{SeatMark, SideTable, Fingerprint, StaticBox, nothing_bound}
+use core.{fp, fp_list, fp_str}
+// LICENSED modules.unused_import: the GENERATED impls call these; the keeper reads source, and generated code is not source
+use diagnostics.{Diag, refusal}
+use @std.errors.{Loc}
+
+/// Resolve capabilities: an impl reports a name use — as a value
+/// (`use_name`), a callee (`use_call`), a type (`use_type`) or the
+/// receiver (`use_receiver`) — and opens the scopes it owns
+/// (`arm_scope` walks one match arm's guard and value under its own
+/// binds, the first scope an EXPRESSION opens; `block_scope`;
+/// `lambda_scope`).
+/// The statement spine walks (`walk`, `walk_under`), applies the
+/// binding law (`bind_checked`, `check_params`), opens its scopes
+/// (`scope_stmts`, `bound_scope`, `impl_stmts`) and speaks. The
+/// context IS the pass's state — the verbs are its methods, written
+/// where the walk lives — and the driver owns scopes, namespaces,
+/// suggestions, and diagnostics.
+export type ResolveCx = {
+    view: FileView,
+    facts: NameFacts,
+    dispatch: Dispatch,
+    keywords: List<string>,
+    // the file's `let` definitions and their names (the typo
+    // candidates), the program scope's bindings, the open overlays
+    all_defs: List<Def>,
+    def_names: List<string>,
+    visible: Map<string, Binding>,
+    overlays: List<Map<string, Binding>>,
+    // the open lambda frames; the open fn bodies' floors; one entry
+    // per open impl or trait body (inside, `self` names the receiver
+    // seat and the written params start at seat 1); the open fn
+    // body's seat contracts, by written position
+    lframes: List<LFrame>,
+    floors: List<int>,
+    receivers: List<SelfSeat>,
+    marks: List<List<SeatMark>>,
+    // a name resolves ONCE; a scoped binder never counts as a later
+    // definition
+    walked: SideTable<bool>,
+    scoped: SideTable<bool>,
+    // THE WALK'S STATE: the open fn body's seat names, and whether
+    // the statement in hand stands inside a block
+    scope: List<string>,
+    in_block: bool,
+    // the type parameters the open declarations name, and each read of
+    // one no static call has seated yet
+    tnames: List<string>,
+    unseated: List<ExprId>,
+    // the two looks past the written file
+    elsewhere: Elsewhere,
+}
+
+/// The resolver's two looks PAST the written file. A name the
+/// written namespace lacks may be a GENERATED declaration of this
+/// file, materialized on demand (the two-tier lookup's second tier);
+/// and a template's own name lives in the namespace of the file that
+/// WROTE the quote — origin hygiene.
+export type Elsewhere = {
+    generated: fn(string) -> DeclId?,
+    written_in: fn(FileId) -> Namespace,
+    // the parse error the file's module is unread behind, asked only when
+    // a refusal is being worded — a clean check reads no sibling for it
+    unread: fn() -> Diag?,
+}
+
+impl Elsewhere {
+    fn unread_root() -> Diag? {
+        (self.unread)()
+    }
+}
+
+/// One `let` definition of the program, in order.
+export type Def = { name: string, stmt: StmtId }
+
+/// A binder an arm opens, with the file that WROTE its text — a
+/// generated pattern's name and its arm's value may come from
+/// different runs, and the binder wears its own.
+export type Bound = { name: string, origin: FileId? }
+
+/// One OPEN lambda during the walk: its params, and the overlay
+/// depth at entry — an overlay at or above the floor is
+/// lambda-local; below it lies the outer world, reached by capture.
+export type LFrame = { lam: ExprId, params: List<string>, floor: int }
+
+/// A fn's typed signature, as the type pass computed it.
+@derive(Fingerprint)
+export type FnSig = { params: List<TypeId>, ret: TypeId }
+
+/// A recorded INSTANTIATION: which generic fn a call targets, what
+/// each of its Vars bound to by ordinal, and the VALUE fingerprints
+/// of its settled (`const`) seats. Typing records it; mono lowers one
+/// body per distinct binding AND per distinct settled value.
+@codec
+export type Sub = { target: DeclId, args: List<TypeId>, consts: List<string> = [] }
+
+/// A struct's typed field table, in declaration order — the index
+/// IS the runtime slot; a default is the declaration whose body
+/// fills it. `lacking` names what it leaves out ON PURPOSE (`@lacks`).
+@derive(Fingerprint)
+export type StructSig = { names: List<string>, types: List<TypeId>, defaults: List<DeclId?>, lacking: List<Lacked> = [], states: List<bool> = [] }
+
+/// A field a record leaves out on purpose, and the reason a read hears.
+@derive(Fingerprint)
+export type Lacked = { field: string, why: string }
+
+/// A NAMED TYPE's table: the ONE shape it stands over. The name is
+/// its own type at every seat; this says what it travels as.
+@derive(Fingerprint)
+export type NamedSig = { of: TypeId }
+
+/// A declared enum's variant table, in declaration order — the
+/// index IS the runtime tag, and a payload (when the variant
+/// carries one) rides slot 1 of the value.
+@derive(Fingerprint)
+export type EnumSig = { names: List<string>, payloads: List<List<TypeId>> }
+
+/// Names listed for help text — one wording everywhere.
+fn named_list(names: List<string>) -> string {
+    joined(["`${n}`" for n in names], ", ")
+}
+
+impl StructSig {
+    /// A named field's slot, when declared — THE lookup every
+    /// consumer shares.
+    fn slot_of(name: string) -> int? {
+        found_at(self.names, name)
+    }
+
+    /// The fields, listed for help text.
+    fn listed() -> string {
+        named_list(self.names)
+    }
+
+    /// Whether slot `j` is a `state` field — its slot holds a `Cell`
+    /// while its reads answer what the cell holds.
+    fn state_at(j: int) -> bool {
+        if j < self.states.length { self.states[j] } else { false }
+    }
+
+    /// Whether the field named `name` is a `state` field.
+    fn state_named(name: string) -> bool {
+        let j? = self.slot_of(name) else { return false }
+        self.state_at(j)
+    }
+
+    /// Why the record leaves `name` out, when it does so on purpose.
+    fn lacked(name: string) -> string? {
+        let l? = self.lacking.find(it.field == name) else { return null }
+        l.why
+    }
+}
+
+impl EnumSig {
+    /// A named variant's TAG, when declared.
+    fn tag_of(name: string) -> int? {
+        found_at(self.names, name)
+    }
+
+    /// What the variant CARRIES, in order — empty for a unit variant.
+    fn payloads_of(name: string) -> List<TypeId> {
+        let tag? = self.tag_of(name) else { return [] }
+        self.payloads[tag]
+    }
+
+    /// The ONE payload of a single-value wrapper — absent for a
+    /// unit variant and for a variant carrying several.
+    fn payload_of(name: string) -> TypeId? {
+        let carried = self.payloads_of(name)
+        if carried.length != 1 { return null }
+        carried[0]
+    }
+
+    /// The variants, listed for help text.
+    fn listed() -> string {
+        named_list(self.names)
+    }
+}
+
+/// The BUILT-IN enum's variant table — Result IS an enum, and this
+/// one answer hands its match, exhaustiveness, and binds to the
+/// enums machinery whole. The names are the LAW: `.Ok` is tag 0,
+/// `.Err` tag 1, each carrying its side.
+export fn res_enum_sig(ok: TypeId, err: TypeId) -> EnumSig {
+    EnumSig { names: ["Ok", "Err"], payloads: [[ok], [err]] }
+}
+
+/// What a DECLARATION declares — the ONE currency the declare
+/// phase records and every consumer reads. Three parallel tables
+/// (fns, records, enums) became one dense table of this, exactly as
+/// the parallel resolve tables became one Binding. A new declared
+/// kind is a new VARIANT, and the projections below break at
+/// compile time until it is handled.
+/// What seat 0 holds in an open impl or trait member: its receiver, or
+/// nothing — a `static fn`'s, or a seat's default, a body of its own.
+export enum SelfSeat { Receiver, Static, Default }
+
+@derive(Projections)
+@codec
+export enum DeclSig {
+    Fn(sig: FnSig)
+    Record(sig: StructSig)
+    Enum(sig: EnumSig)
+    Named(sig: NamedSig)
+    /// An alias: the type its name stands for, over its own type
+    /// parameters.
+    Alias(of: TypeId)
+}
+
+/// Typing capabilities: read children's computed types (post-order —
+/// they exist), read an ident's definition type, read a call's
+/// target signature, and speak. The impl OWNS its diagnostics
+/// wording. `error_type` is the ABSORBING answer, interned once: a
+/// site whose operand already refused answers with it and says
+/// nothing more. `types` is THE registry, carried whole — shapes,
+/// interning, printing, and every carried/pointer query ride the
+/// one field instead of a verb per question, so this vocabulary
+/// stops growing when the registry does.
+///
+/// The context IS the pass's state: the walk's verbs — a subtree
+/// typed under the seats in scope, a block, a narrowed branch, a
+/// lambda body behind its barrier, the enclosing fn's promise, the
+/// hunger protocol's feed — are its methods, written where the
+/// walk lives. THE HUNGER PROTOCOL: a rule that needs a want it
+/// lacks goes hungry (silently); the agreement door FEEDS it — the
+/// want planted, the rule re-run; at the walk's end every rule
+/// still hungry is re-run STARVING, and speaks in its own words.
+export type TypeCx = {
+    view: FileView,
+    names: NameFacts,
+    // the two looks past the written file: a template's written types
+    // resolve in the namespace of the file that WROTE them, and a name
+    // this file lacks may be one of its generated declarations;
+    // `writer` is the writing namespace while one is being read, null
+    // for this file's own
+    elsewhere: Elsewhere,
+    writer: Namespace?,
+    // what a written type being read is written in — what an unknown
+    // name's refusal says it stands in
+    written_in: WrittenIn = WrittenIn.Signature,
+    facts: TypeFacts,
+    error_type: TypeId,
+    // the language's semantics and keywords: the walk dispatches
+    // through the one, the seat law reads the other
+    dispatch: Dispatch,
+    keywords: List<string>,
+    // THE WALK'S STATE: the seats in scope; the narrows in force (a
+    // def's stmt index, a param's position — two stacks keep the
+    // keyspaces apart); the enclosing fns' promises; the lambda
+    // barriers; the type parameters in scope; the paired `for`
+    // heads' subjects — the one place a pairing word may stand; the
+    // task bodies being typed — the one lambda a task may be captured by
+    scope: List<TypeId>,
+    narrow_defs: List<NarrowFrame>,
+    narrow_params: List<NarrowFrame>,
+    fn_ret: List<TypeId>,
+    lam_bar: List<int>,
+    lam_promise: List<List<TypeId>>,
+    tscope: List<TypeId>,
+    pairs: List<ExprId>,
+    task_bodies: List<ExprId>,
+    // the open `collect`s, innermost last — what each has gathered
+    gathers: List<Gathering> = [],
+    // the loops whose turn is being typed, innermost last — what a
+    // `break` may end
+    loops: List<OpenLoop> = [],
+    // the enclosing fn's seats' promises, by seat — what a parameter
+    // passed on still promises
+    scope_marks: List<SeatMark> = [],
+    starving: bool,
+    // the sugar whose minted node is being typed — a refusal spoken
+    // meanwhile carries the sugar's sentence
+    rewriting: ExprId? = null,
+    // F2106's dedup: a bare `mut` local's declaring statement, once its
+    // alias-copy law has spoken for it — the first writing call through
+    // it is the tell, later ones on the same local repeat nothing new.
+    aliased_warned: List<int>,
+    // the repeated-row law's dedup: an instance a repetition already
+    // refused, so a loop inside another says it once
+    rows_told: List<int> = [],
+    // the element each enclosing `produce` hands its `yield`, innermost
+    // last — what a `yield` sends into, and why one outside has none
+    sinks: List<TypeId> = [],
+}
+
+/// What a written type stands in: a declaration's signature, or a type
+/// pattern's test.
+export enum WrittenIn {
+    Signature
+    Pattern
+}
+
+/// One loop whose turn is being typed: the statement that wrote it —
+/// none for a comprehension, whose walk no jump ends — and the lambda
+/// barriers standing when it opened, so a jump behind a later one is
+/// a lambda's, never its.
+export type OpenLoop = { owner: StmtId?, bars: int }
+
+/// One open `collect`: the lambda barriers standing when it opened —
+/// a statement behind another is a lambda's, never its — the element
+/// its seat wants, which each kept value hears, and the values its
+/// statements discarded, in order. The want is seeded once the frame is
+/// open (`want_gathered`), since a seat judged late may plant it after
+/// the body has begun typing.
+export type Gathering = { bars: int, want: TypeId? = null, values: List<ExprId> }
+
+/// One narrow in force: the proven binding's key, the INNER its
+/// reads answer, and the OPT each read is recorded as wearing, for
+/// lowering.
+export type NarrowFrame = { key: int, inner: TypeId, opt: TypeId }
+
+/// Lowering capabilities: `reg_of` lowers a child at first request —
+/// a region's branches lower inside its brackets. `result` mints the
+/// fresh register for a node, typed from the type pass; take every
+/// child's register FIRST — registers mint in instruction order —
+/// then `emit` the instruction that defines it. A desugar's SCRATCH
+/// register is `mint_ty(cx.type_at(e))` — spelled as what it is,
+/// never a second name for the answer.
+///
+/// The context IS the pass's state — one per BODY: the emitter, the
+/// body's registers and slots, the body's instantiation and declared
+/// answer (fields, not stacks: a body is lowered whole), the mono
+/// worklist every named body enqueues through. The walk's verbs — a
+/// child lowered on request, a block, the statement loop, a
+/// binding's register (a fn value mints a wrapper), a lambda lifted,
+/// captures packed, a declaration's body named as instantiated at a
+/// site — are its methods, written where the walk lives.
+export type LowerCx = {
+    view: FileView,
+    names: NameFacts,
+    facts: TypeFacts,
+    // the per-declaration QUERY of the state places a declaration reaches,
+    // asked by a body only for the declarations it names
+    decl_places: fn(DeclId) -> List<int>,
+    // the same query for the places read at paint time that no reading
+    // answers for
+    decl_structural: fn(DeclId) -> List<int>,
+    // THE FRAME'S ROOTS: the expressions this body's own code is, for the
+    // places it reads at paint time. None for a body whose code is not one
+    // expression (the entry's statements), which is read as opaque.
+    roots: List<ExprId>? = null,
+    dispatch: Dispatch,
+    out: Emitter,
+    body: BodyRegs,
+    sub: Sub?,
+    // THE UNIT'S SETTLED SEATS: the values its `const` seats were
+    // called with, so a `const` in the body folds to them. Empty for
+    // a plain body.
+    seats: List<SeatValue>,
+    // The register each seeded seat was materialized into — a scalar
+    // is its own seat's index, an aggregate spans several, so a read
+    // asks here. Empty for a body whose seats are its runtime params.
+    seat_regs: List<Reg>,
+    // THE ENCLOSING FN'S DECLARED MARKS, by seat — a `const` seat is
+    // legal to read (a unit supplies it); any other parameter is a
+    // run-time value a const cannot depend on.
+    seat_marks: List<SeatMark>,
+    fn_ret: TypeId?,
+    jobs: Jobs,
+    // THE BODY'S OWN FRAME: the static `Frame` an unwind out of this
+    // body pushes, one per body. Absent for a body the compiler
+    // synthesized (a wrapper) — it names no source frame.
+    frame: BodyFrame? = null,
+    // THE FRAMES: every `defer` registered in an open frame — a
+    // statement list's — with that frame's depth; a frame's close
+    // runs and drops its own, an early exit runs them all
+    deferred: List<Deferred>,
+    depth: int,
+    // the cleanup regions this body has opened: the next one's `id`
+    cleanups: int = 0,
+    // the open `collect`s' lists, innermost last — a lambda's body is
+    // its own context, so none reaches through one
+    gathers: List<Reg> = [],
+    // the open loops, innermost last — what a `break` aims at
+    loops: List<LoopMark> = [],
+    // the open `within` landing loops, innermost last — where an
+    // unwind is caught at its own scope's landing
+    within_loops: List<WithinMark> = [],
+    // THE LAMBDAS LOWERED IN PLACE: a lambda literal at a verb seat
+    // lowers its body here instead of lifting a closure, so its
+    // params resolve to the registers the site hands them.
+    inline_seats: List<InlineSeat> = [],
+    // a deferred body is being lowered: it runs whole, so its calls
+    // carry no test after them
+    deferring: bool = false,
+    // what an early exit answers where the body's answer is not its
+    // declared one — a task's, the cell its answer rides
+    exit: TypeId? = null,
+    // an `@unbroken` fn's own `while`s carry NO back-edge check: nothing
+    // may run between its test and its park, so a checked back-edge
+    // would break the law it promises
+    unbroken: bool = false,
+    // whether a `while` back-edge carries its tick check at all. A
+    // COMPILE-TIME RUN emits none (it links no source), and so does a
+    // program the cancel pass says links no scheduler.
+    checks: bool = true,
+    // THE PRODUCER'S SINK: inside a `produce` body's lift, the register
+    // its channel's `Sink<T>` was read into — what a `yield` sends
+    // into. Null outside a producer.
+    producer_sink: Reg? = null,
+    // THE BODY'S `once` SLOT: where every exit that answers keeps its
+    // answer. Null for a body that is not `once`.
+    once_slot: OnceSlot? = null,
+}
+
+/// A `once` body's slot: the symbol that addresses it, the answer it
+/// keeps, and whether that answer rides a one-cell box — the slot's
+/// own null means only "not yet".
+export type OnceSlot = { symbol: string, answer: TypeId, boxed: bool }
+
+/// A lambda literal lowered where it is CALLED rather than lifted:
+/// its params resolve to `regs`, the seats the inline site hands it.
+export type InlineSeat = { lam: ExprId, regs: List<Reg> }
+
+/// The static `Frame` a fn body's unwind pushes: its symbol and the
+/// boxes that lay its `{label, loc}` out as the binary's data. The
+/// register pushes the ROOT box's address — the currency IS its
+/// payload, so the landing maps a frame back by reading it.
+export type BodyFrame = { sym: string, boxes: List<StaticBox> }
+
+/// One open loop: the statement that wrote it — none for a loop the
+/// compiler spells (a walk, a comprehension) — and the depth of the
+/// frame its turn opens, where an early end of the turn stops running
+/// `defer`s.
+export type LoopMark = { owner: StmtId?, frame: int }
+
+/// One open `within`'s landing: the one-turn loop its body runs in and
+/// the frame its scope opens (where its end runs).
+export type WithinMark = { loop: int, frame: int }
+
+/// One registered `defer`: the fn box to call, the depth of the
+/// frame that registered it, and whether only a failing exit runs it.
+/// What a closing frame runs: a deferred closure, called; a deferred
+/// call, made; an owner's tasks, joined; or a `within`'s scope, ended.
+export enum Deferral {
+    Call(box: Reg)
+    Settle(owner: Reg, cell: bool)
+    /// a call whose arguments were fixed where the `defer` stands —
+    /// no box to build, the callee named directly at every exit
+    Direct(call: DirectCall)
+    /// a `within` scope's end: the scope ends where its frame closes,
+    /// and its answer — whether the cancel it met was its own — lands
+    /// in `cell`
+    Landing(scope: Reg, cell: Reg)
+}
+
+impl Deferral {
+    /// Whether running it calls a deferred body — what a cold exit
+    /// shields. A settle and a landing are the frame's own rows.
+    fn calls() -> bool {
+        match self { .Call(_) or .Direct(_) -> true, .Settle(_, _) or .Landing(_, _) -> false }
+    }
+
+    /// Whether this is the settle of the very value the frame ANSWERS:
+    /// an owner a fn answers is settled by its receiver, never here.
+    fn settles(r: Reg) -> bool {
+        match self { .Settle(owner, _) -> same_reg(owner, r), rest -> false }
+    }
+}
+
+/// A deferred call with its arguments in hand: a declared fn's symbol,
+/// or a host row's (`host`) — answering `ret`, which the call drops.
+export type DirectCall = { callee: string, host: bool, args: List<Reg>, ret: TypeId }
+
+/// One entry of a frame: what it runs, the frame's depth, whether only a failure
+/// runs it, and the `id` of the cleanup region it opened for a trap's unwind
+/// (`-1` for an entry that calls nothing).
+export type Deferred = { work: Deferral, depth: int, on_error: bool, cleanup: int = 0 - 1 }
+
+/// A syntax node's meaning at resolve, typing and lowering, delegated
+/// over `Expr`: each record writes its own impl.
+@delegates(Expr)
+export trait Meaning {
+    fn resolve(mut cx: ResolveCx, e: ExprId)
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg
+
+    /// What the node means, written once as the template it expands to —
+    /// read where it is written and never run on a program's values; null
+    /// for a node that is no sugar, and an Err its own refusal, spoken where
+    /// it stands.
+    fn means(cx: MeanCx) -> Result<Rewrite, string>? { null }
+
+    /// What the node means where its meaning is computed from what stands
+    /// around it, minted into `cx.store` at `cx.span`: its nodes in
+    /// allocation order, the last the root. Empty for a node that is no
+    /// computed sugar, and for one whose shape has no meaning (a pipe into a
+    /// non-call); an Err its own refusal.
+    fn minted(cx: MeanCx) -> Result<Minting, string> { .Ok(minting([])) }
+}
+
+/// What a sugar's meaning is read with: the store it stands in, the sugar
+/// itself and its span, the component its word names when the file's
+/// imports provide one, and the door a template it copies is minted by.
+export type MeanCx = { store: SyntaxArena, at: ExprId, span: Span?, provided: Provided? = null, door: Means = no_door }
+
+/// The per-pass behavior of one feature's STATEMENT kinds — the
+/// stmt-spine's twin of NodeSemantics. A driver calls the method on
+/// the `Stmt` VALUE and never matches Stmt kinds; a value-producing
+/// statement answers its register (lower), which the DRIVER records
+/// as the statement's slot; what a program SHOWS is its final
+/// expression statement's, read through the store.
+@delegates(Stmt)
+export trait StmtSemantics {
+    fn resolve_stmt(mut cx: ResolveCx, s: StmtId) {
+        nothing()
+    }
+    fn type_stmt(mut cx: TypeCx, s: StmtId) {
+        nothing()
+    }
+    fn lower_stmt(mut cx: LowerCx, s: StmtId) -> Reg? {
+        null
+    }
+}
+
+/// The semantics of one PATTERN KIND — the pattern ladder's twin of
+/// NodeSemantics. NO DEFAULTS: a feature that owns a `Pat` variant
+/// owes all three, because a pattern that types without accepting,
+/// or accepts without binding, is a silently wrong match rather
+/// than a missing feature.
+///
+/// THE RECURSION GOES THROUGH THE SEAM. A nested pattern is reached
+/// by asking `pat_semantics_of` again, never by a local call — that
+/// is what lets one feature's pattern sit inside another's.
+export trait PatSemantics {
+    /// The types this pattern's binds take, in pattern order.
+    fn pat_types(mut cx: TypeCx, p: PatId, expected: TypeId) -> List<TypeId>
+    /// A bool register: does the value match?
+    fn pat_accepts(mut cx: LowerCx, p: PatId, v: Reg, vty: TypeId) -> Reg
+    /// The registers this pattern's binds read, in pattern order.
+    fn pat_binds(mut cx: LowerCx, p: PatId, v: Reg, vty: TypeId) -> List<Reg>
+}
+
+/// The written-out nothing — a pass method that deliberately does no
+/// work says so by calling this.
+export fn nothing() {
+    let _ = 0
+}
+
+/// The impossible-past-the-gate PHRASE, worded once — every rule
+/// that meets a recovery hole says exactly this, and `lower_defect`
+/// supplies the "defect:" that fronts it.
+export const hole_defect: string = "a hole survived a clean analysis"
+
+/// Every REPEATED name in a declaration, one refusal per extra
+/// copy. The FIRST position wins, so `a, a, a` speaks twice — at the
+/// second and the third. A record's fields, an enum's variants and a
+/// fn's parameters are the same law and must give the same count.
+export fn duplicate_names(kind: string, owner: string, names: List<string>, at: Loc?) -> List<Diag> {
+    mut out: List<Diag> = []
+    for j, n in names {
+        if names.index_of(n) < j { out.push(duplicate_member(kind, owner, n, at)) }
+    }
+    out
+}
+
+/// A declaration naming the same member twice — one refusal for
+/// every declared table (a record's fields, an enum's variants).
+export fn duplicate_member(kind: string, owner: string, member: string, at: Loc?) -> Diag {
+    refusal(
+        kind,
+        at,
+        "`${owner}` declares `${member}` more than once",
+        "in this declaration",
+        "rename one of them",
+    )
+}
+
+impl LowerCx {
+    /// A lowering defect: record it and stand on a fresh register — the
+    /// driver refuses the whole build afterward. THE answer when a
+    /// payload the dispatch GUARANTEES comes back absent; never a
+    /// plausible default, which would compile a wrong program silently.
+    mut fn lower_defect(e: ExprId, what: string) -> Reg {
+        self.defect("${what} in `${self.view.source.file}` at expression ${e.index}")
+        self.result(e)
+    }
+
+    /// A node another feature owns reached this one's lowering: the
+    /// dispatch map is wrong, and the answer is a recorded defect on a
+    /// fresh register — never a silent register with nothing behind it.
+    mut fn foreign_node(e: ExprId) -> Reg {
+        self.lower_defect(e, hole_defect)
+    }
+}
+
+/// A declaration that must live at the TOP LEVEL, refused where it
+/// was written. The namespaces are gathered from the program's own
+/// statements, so a nested declaration is invisible — and blaming
+/// the later USE ("`E` is not defined") hides the real mistake.
+export fn nested_decl(kind: string, what: string, at: Loc?) -> Diag {
+    refusal(
+        kind,
+        at,
+        "${what} live at the top level",
+        "declared inside a block",
+        "move it out of the block",
+    )
+}
+
+impl ResolveCx {
+    /// THE nested-declaration guard every declaring statement opens
+    /// with: inside a block it refuses and answers true, so the rule
+    /// returns; at the top level it answers false.
+    mut fn refuses_nested(s: StmtId, kind: string, what: string) -> bool {
+        if !self.in_block { return false }
+        self.emit(nested_decl(kind, what, self.stmt_loc(s)))
+        true
+    }
+
+    // ── The statement-value rituals: one verb per shape, so no rule
+    // ever spells the stmt_value-guard two-step. ──
+    /// Walk the statement's value expression, when it carries one.
+    mut fn walk_value(s: StmtId) {
+        let v: ExprId? = self.view.store.stmt_value(s)
+        if v != null { self.walk(v!) }
+    }
+}
+
+/// The parallel-capture mismatch, worded once — every zip builder
+/// that finds its lists disagreeing says exactly this, naming the
+/// two lists it zipped.
+export fn zip_defect_of(what: string) -> string {
+    "${what} disagree in count"
+}
+
+/// The common zip: names against values — arms and fields both.
+export const zip_defect: string = zip_defect_of("names and values")
+
+/// The help EVERY "no such variant" refusal gives — what there IS.
+/// Construction and `match` both name a variant, so both offer the
+/// same list, in the same words.
+export fn variants_are(sig: EnumSig) -> string {
+    "the variants are ${sig.listed()}"
+}
+
+/// The same, for a record: a property read and a literal both name
+/// a field, so both offer the same list.
+export fn fields_are(sig: StructSig) -> string {
+    "the fields are ${sig.listed()}"
+}
+
+/// A lacked field's refusal, read or written: the record's own reason.
+export fn lacks_voice(record: string, field: string, why: string) -> string {
+    "`${record}` lacks `${field}` on purpose — ${why}"
+}
+
+/// What to write when a RECORD name was used where an enum was
+/// expected — the two features that can hit it say it alike.
+export fn build_a_record(tname: string) -> string {
+    "build a record with `${tname} { ... }`"
+}
+
+/// A variant that typing accepted and lowering cannot find: the
+/// two lowering paths that construct one share the words.
+export const variant_defect: string = "an undeclared variant survived typing"
+
+impl TypeCx {
+    /// Walk the statement's value expression, when it carries one —
+    /// and refuse a TYPE standing where a value belongs, since
+    /// "the statement's value" says it must be one.
+    mut fn walk_value(s: StmtId) {
+        let v? = self.view.store.stmt_value(s) else { return }
+        self.walk(v)
+        let _ = self.refuses_type_value(v)
+    }
+}
+
+impl LowerCx {
+    /// The statement's value, lowered — null when it carries none.
+    mut fn lower_value(s: StmtId) -> Reg? {
+        let v? = self.view.store.stmt_value(s) else { return null }
+        self.reg_of(v)
+    }
+}
+
+/// One optional bind as an arm's bind list — "" names nothing.
+export fn named_bind(b: string) -> List<string> {
+    if b == "" || b == nothing_bound() { return [] }
+    [b]
+}
+
+/// A declared sig with the declaration's Vars substituted — how an
+/// instantiation answers `variants_of`.
+export fn subbed_variants(types: TypeRegistry, sig: EnumSig?, decl: DeclId, args: List<TypeId>) -> EnumSig? {
+    if sig == null { return null }
+    EnumSig {
+        names: sig!.names,
+        payloads: [subbed_payloads(types, ps, decl, args) for ps in sig!.payloads],
+    }
+}
+
+fn subbed_payloads(types: TypeRegistry, ps: List<TypeId>, decl: DeclId, args: List<TypeId>) -> List<
+    TypeId,
+> {
+    [types.substituted(p, decl, args) for p in ps]
+}
+
+/// The struct twin.
+export fn subbed_fields(types: TypeRegistry, sig: StructSig?, decl: DeclId, args: List<TypeId>) -> StructSig? {
+    if sig == null { return null }
+    let held = sig!
+    held with { types: [types.substituted(t, decl, args) for t in held.types] }
+}
+
+/// The type a written value must be accepted by at slot `j`: a plain
+/// field's declared type, a `state` field's HELD type — the slot holds
+/// the cell, the writer writes what the cell holds.
+export fn slot_want(types: TypeRegistry, sig: StructSig, j: int) -> TypeId {
+    let ty = sig.types[j]
+    if !sig.state_at(j) { return ty }
+    types.cell_inner(ty) ?? ty
+}
+
+/// The slot of a `state` field named `name` — null for an absent field
+/// or a plain one. THE lookup every write path shares.
+export fn state_slot(sig: StructSig?, name: string) -> int? {
+    let s? = sig else { return null }
+    let j? = s.slot_of(name) else { return null }
+    if s.state_at(j) { j } else { null }
+}
+

@@ -1,0 +1,548 @@
+//! `@std/mcp` — the agent door: tools an agent may call, spoken as
+//! MCP (JSON-RPC 2.0). Design: docs/2026_09_29_UI.md §3.7, §7.
+//!
+//! THE PROTOCOL IS A FN OVER JSON, and both transports are thin:
+//! `handle(tools, request)` answers the response value or nothing
+//! (a notification is never answered), `handle_text` reads and writes
+//! JSON text around it, `serve_stdio` frames it by lines, `route` by
+//! an HTTP POST.
+//!
+//! AN AGENT DISCHARGES A SAFEGUARD WITH A MANDATE: a tool whose impact
+//! is not speculative, or asks any safeguard, runs only under a mandate
+//! the host granted that covers it, in its window and within its budget,
+//! and is otherwise refused, uncalled, with "requires a mandate"
+//! (docs/2026_09_29_AUTHORITY_AND_RECEIPTS.md §5, §9.1, §11). The tool
+//! receives the mandate it ran under, so its write can record who granted
+//! it; tools/list shows each tool's covering mandate.
+//!
+//! ARGUMENTS ARE CHECKED WHOLE BEFORE A TOOL RUNS: an undeclared
+//! name, a repeated name, a missing required one and a value of the
+//! wrong kind are each `-32602` naming the param. A `number` takes an
+//! integer or a fraction, an `integer` an integer alone.
+use @std.http_message.message.{Header, Method}
+use @std.json.{Json, Field, field, parse, to_text}
+use @std.action.{Impact, Mandate, covers, mandate_faults, faults as impact_faults}
+use @std.time.{wall_secs}
+use @std.errors.{Error}
+use @std.http.http.{Request, Unrouted, Response}
+use @std.http.route.{Route, fixed}
+use @std.text.{ascii_lower, parse_int}
+
+extern fn avra_fd_read(fd: int, max: int) -> int
+extern fn avra_fd_taken(token: int) -> Bytes
+extern fn avra_fd_write(fd: int, bytes: Bytes, from: int) -> int
+
+// ── Tools ───────────────────────────────────────────────────────
+
+/// What a param's value may be; `word` is its JSON Schema type.
+export enum ParamKind { Text, Integer, Number, Boolean }
+
+export type ToolParam = { name: string, kind: ParamKind, required: bool, description: string = "" }
+
+/// One call of a tool: its checked arguments, and the mandate it runs
+/// under when its impact needs one.
+export type Invocation = { args: Json, mandate: Mandate? }
+
+export type Tool = {
+    name: string,
+    description: string,
+    params: List<ToolParam>,
+    impact: Impact,
+    call: fn(Invocation) -> Result<Json, string>,
+}
+
+/// A door: its tools, the mandates its host granted, and the invocations
+/// each mandate has spent so far.
+export type Server = { tools: List<Tool>, mandates: List<Mandate>, spent: Cell<Map<string, int>> }
+
+/// A door over `tools` under the host's `mandates`, none spent.
+export fn server(tools: List<Tool>, mandates: List<Mandate> = []) -> Server {
+    let spent: Cell<Map<string, int>> = Cell.new({})
+    Server { tools: tools, mandates: mandates, spent: spent }
+}
+
+/// The JSON Schema type word of a kind.
+export fn word(k: ParamKind) -> string {
+    match k { .Text -> "string", .Integer -> "integer", .Number -> "number", .Boolean -> "boolean" }
+}
+
+/// The MCP tool descriptor: name, description, and the input as a
+/// JSON Schema object that admits only the declared params.
+export fn schema(t: Tool) -> Json {
+    Json
+        .Obj(
+            [
+                field("name", Json.Str(t.name)),
+                field("description", Json.Str(t.description)),
+                field("inputSchema", input_schema(t.params)),
+            ],
+        )
+}
+
+/// A tool's descriptor on this door: `_meta` says whether it needs a
+/// mandate, and which granted mandate covers it, if any.
+export fn listing(s: Server, t: Tool) -> Json {
+    let covering = if needs_mandate(t.impact) { s.mandates.filter(it.actions.contains(t.name)) } else { [] }
+    let meta = Json
+        .Obj(
+            [
+                field("avra/needs_mandate", Json.Bool(needs_mandate(t.impact))),
+                field("avra/mandates", Json.Arr([mandate_json(m) for m in covering])),
+            ],
+        )
+    Json.Obj(schema(t).fields().concat([field("_meta", meta)]))
+}
+
+/// A mandate as the door shows it: who granted what, to whom, until when.
+export fn mandate_json(m: Mandate) -> Json {
+    Json
+        .Obj(
+            [
+                field("id", Json.Str(m.id)),
+                field("issuer", Json.Str(m.issuer)),
+                field("subject", Json.Str(m.subject)),
+                field("actions", Json.Arr([Json.Str(a) for a in m.actions])),
+                field("granted_ms", Json.Int(m.granted_ms)),
+                field(
+                    "expires_ms",
+                    if m.expires_ms == null { Json.Null } else { Json.Int(m.expires_ms!) },
+                ),
+                field("budget", if m.budget == null { Json.Null } else { Json.Int(m.budget!) }),
+                field("endorsed", Json.Bool(m.endorsed)),
+            ],
+        )
+}
+
+fn input_schema(params: List<ToolParam>) -> Json {
+    Json
+        .Obj(
+            [
+                field("type", Json.Str("object")),
+                field("properties", Json.Obj([property(p) for p in params])),
+                field("required", Json.Arr([Json.Str(p.name) for p in params if p.required])),
+                field("additionalProperties", Json.Bool(false)),
+            ],
+        )
+}
+
+fn property(p: ToolParam) -> Field {
+    field(p.name, Json.Obj([field("type", Json.Str(word(p.kind)))].concat(described(p))))
+}
+
+fn described(p: ToolParam) -> List<Field> {
+    if p.description == "" { [] } else { [field("description", Json.Str(p.description))] }
+}
+
+/// Every way a tool list is unsound: a name outside MCP's
+/// `[A-Za-z0-9_-]{1,64}`, a name twice, a param twice, an impact that
+/// contradicts itself. Empty means sound.
+export fn faults(tools: List<Tool>) -> List<string> {
+    [f for t in tools for f in tool_faults(tools, t)]
+}
+
+/// Every way a door is unsound: its tools' faults, a mandate that
+/// contradicts itself, one id granted twice, or a grant for no tool.
+export fn server_faults(s: Server) -> List<string> {
+    faults(s.tools)
+        .concat([f for m in s.mandates for f in mandate_faults(m)])
+        .concat(
+            [repeated_mandate(m.id) for m in s.mandates if s.mandates.filter(it.id == m.id).length > 1],
+        )
+        .concat(
+            [unknown_grant(m.id, a) for m in s.mandates for a in m.actions if !s.tools.any(it.name == a)],
+        )
+}
+
+fn tool_faults(tools: List<Tool>, t: Tool) -> List<string> {
+    let name = if name_fits(t.name) { [] } else { [bad_name(t.name)] }
+    name
+        .concat(if tools.filter(it.name == t.name).length > 1 { [repeated_tool(t.name)] } else { [] })
+        .concat(
+            [repeated_declared_param(t.name, p.name) for p in t.params if t.params.filter(it.name == p.name).length > 1],
+        )
+        .concat([unsound_impact(t.name, f) for f in impact_faults(t.impact)])
+}
+
+fn name_fits(s: string) -> bool {
+    s.length >= 1 &&
+        s.length <= 64 &&
+        [i for i in 0..s.length if !name_char(s.char_code(i))].is_empty()
+}
+
+fn name_char(c: int) -> bool {
+    c >= 48 && c <= 57 || c >= 65 && c <= 90 || c >= 97 && c <= 122 || c == 45 || c == 95
+}
+
+// ── The protocol ────────────────────────────────────────────────
+
+/// The JSON-RPC methods this server speaks.
+enum Verb { Initialize, Initialized, ToolsList, ToolsCall, Ping }
+
+/// A request, read: its id echoed as sent, and whether it is a
+/// notification — no `id` member at all, so never answered.
+type Call = { id: Json, method: string, params: Json, notification: bool }
+
+type Fault = { code: int, message: string }
+
+/// The JSON-RPC response to `request`, or nothing for a notification,
+/// on a door with no mandates.
+export fn handle(tools: List<Tool>, request: Json) -> Json? { handle_on(server(tools), request) }
+
+/// The JSON-RPC response to `request` on a door, or nothing for a notification.
+export fn handle_on(s: Server, request: Json) -> Json? {
+    match read_call(request) {
+        .Err(refused) -> refused,
+        .Ok(c) -> if c.notification { null } else { reply_to(c.id, run(s, c)) },
+    }
+}
+
+/// `handle` over text: a body that is not JSON answers `-32700`.
+export fn handle_text(tools: List<Tool>, text: string) -> string? { handle_text_on(server(tools), text) }
+
+export fn handle_text_on(s: Server, text: string) -> string? {
+    match parse(text) {
+        .Ok(request) -> printed(handle_on(s, request)),
+        .Err(e) -> to_text(refusal(Json.Null, parse_error(e.describe().message))),
+    }
+}
+
+fn handle_octets(s: Server, raw: Bytes) -> string? {
+    let body? = raw.text() else { return to_text(refusal(Json.Null, parse_error("the body is not UTF-8"))) }
+    handle_text_on(s, body)
+}
+
+fn printed(j: Json?) -> string? {
+    let v? = j else { return null }
+    to_text(v)
+}
+
+fn read_call(request: Json) -> Result<Call, Json> {
+    if !(request is .Obj) { fail refusal(Json.Null, invalid_request(not_an_object())) }
+    let id = request.get("id")
+    let echoed = id ?? Json.Null
+    if !id_fits(echoed) { fail refusal(Json.Null, invalid_request(bad_id())) }
+    if request.member("jsonrpc").text() != "2.0" { fail refusal(echoed, invalid_request(bad_version())) }
+    let method? = request.member("method").text() else { fail refusal(echoed, invalid_request(no_method())) }
+    Call { id: echoed, method: method, params: request.member("params"), notification: id == null }
+}
+
+/// Whether `id` is one this server echoes: a string, an integer or
+/// null. JSON-RPC 2.0 says a fractional id SHOULD NOT be sent, and a
+/// float cannot be echoed as the octets it arrived as, so it is refused.
+fn id_fits(id: Json) -> bool {
+    match id {
+        .Null or .Int(_) or .Str(_) -> true,
+        .Float(_) or .Bool(_) or .Arr(_) or .Obj(_) -> false,
+    }
+}
+
+fn method_of(name: string) -> Verb? {
+    match name {
+        "initialize" -> .Initialize,
+        "notifications/initialized" -> .Initialized,
+        "tools/list" -> .ToolsList,
+        "tools/call" -> .ToolsCall,
+        "ping" -> .Ping,
+        rest -> null,
+    }
+}
+
+fn run(s: Server, c: Call) -> Result<Json, Fault> {
+    let m? = method_of(c.method) else { fail Fault { code: -32601, message: unknown_method(c.method) } }
+    match m {
+        .Initialize -> .Ok(server_hello()),
+        .Initialized -> .Ok(Json.Obj([])),
+        .ToolsList -> .Ok(Json.Obj([field("tools", Json.Arr([listing(s, t) for t in s.tools]))])),
+        .ToolsCall -> called(s, c.params),
+        .Ping -> .Ok(Json.Obj([])),
+    }
+}
+
+fn server_hello() -> Json {
+    Json
+        .Obj(
+            [
+                field("protocolVersion", Json.Str("2025-06-18")),
+                field("capabilities", Json.Obj([field("tools", Json.Obj([]))])),
+                field(
+                    "serverInfo",
+                    Json.Obj([field("name", Json.Str("avra")), field("version", Json.Str("0.0.1"))]),
+                ),
+            ],
+        )
+}
+
+fn called(s: Server, params: Json) -> Result<Json, Fault> {
+    let name? = params.member("name").text() else { fail invalid_params(no_tool_name()) }
+    let tool? = s.tools.find(it.name == name) else { fail invalid_params(no_such_tool(name)) }
+    let mandate = if needs_mandate(tool.impact) { s.covering(name) } else { null }
+    if needs_mandate(tool.impact) && mandate == null { return .Ok(outcome(needs_mandate_words(name), true)) }
+    let args = params.get("arguments") ?? Json.Obj([])
+    if !(args is .Obj) { fail invalid_params(arguments_not_object()) }
+    let problems = argument_problems(tool.params, args)
+    if !problems.is_empty() { fail invalid_params(problems[0]) }
+    if mandate != null { s.spend(mandate!) }
+    match (tool.call)(Invocation { args: args, mandate: mandate }) {
+        .Ok(answer) -> .Ok(outcome(to_text(answer), false)),
+        .Err(words) -> .Ok(outcome(words, true)),
+    }
+}
+
+impl Server {
+    /// The first granted mandate that covers the tool now, within its budget.
+    fn covering(name: string) -> Mandate? {
+        let now = wall_secs() * 1000
+        let spent = self.spent.get()
+        self.mandates.find((m) -> covers(m, name, now, spent.get(m.id) ?? 0))
+    }
+
+    /// One invocation charged to the mandate it ran under.
+    fn spend(m: Mandate) {
+        self.spent.put(m.id, (self.spent.get().get(m.id) ?? 0) + 1)
+    }
+}
+
+/// Only a tool that speculates and asks no safeguard of its invoker runs
+/// without a mandate — a safeguard is discharged by a mandate the host
+/// granted, never by the agent itself.
+fn needs_mandate(i: Impact) -> bool {
+    let guarded = match i.safeguard {
+        .None -> false,
+        .Undo or .Confirm or .Reauth or .Typed -> true,
+    }
+    guarded || match i.presentation { .Speculative -> false, .Pending or .Sending -> true }
+}
+
+/// Every problem with `args` against the declared params: repeated,
+/// undeclared, missing, then mistyped names — in that order.
+fn argument_problems(params: List<ToolParam>, args: Json) -> List<string> {
+    let keys = args.keys()
+    [repeated_param(k) for i, k in keys if keys.index_of(k) != i]
+        .concat([unknown_param(k) for k in keys if !params.any(it.name == k)])
+        .concat([missing_param(p.name) for p in params if p.required && !keys.contains(p.name)])
+        .concat([wrong_kind(p.name, p.kind) for p in params if mistyped(p, args)])
+}
+
+fn mistyped(p: ToolParam, args: Json) -> bool {
+    match args.get(p.name) {
+        v? -> !fits(p.kind, v)
+        null -> false
+    }
+}
+
+fn fits(k: ParamKind, v: Json) -> bool {
+    match k {
+        .Text -> v is .Str,
+        .Integer -> v is .Int,
+        .Number -> v is .Int || v is .Float,
+        .Boolean -> v is .Bool,
+    }
+}
+
+/// A tool's answer as MCP content.
+fn outcome(text: string, is_error: bool) -> Json {
+    Json
+        .Obj(
+            [
+                field(
+                    "content",
+                    Json
+                        .Arr(
+                            [
+                                Json
+                                    .Obj(
+                                        [
+                                            field("type", Json.Str("text")),
+                                            field("text", Json.Str(text)),
+                                        ],
+                                    ),
+                            ],
+                        ),
+                ),
+                field("isError", Json.Bool(is_error)),
+            ],
+        )
+}
+
+// ── Responses ───────────────────────────────────────────────────
+
+fn reply_to(id: Json, r: Result<Json, Fault>) -> Json {
+    match r { .Ok(result) -> envelope(id, field("result", result)), .Err(f) -> refusal(id, f) }
+}
+
+fn refusal(id: Json, f: Fault) -> Json {
+    envelope(
+        id,
+        field(
+            "error",
+            Json.Obj([field("code", Json.Int(f.code)), field("message", Json.Str(f.message))]),
+        ),
+    )
+}
+
+fn envelope(id: Json, body: Field) -> Json {
+    Json.Obj([field("jsonrpc", Json.Str("2.0")), field("id", id), body])
+}
+
+fn parse_error(words: string) -> Fault { Fault { code: -32700, message: words } }
+
+fn invalid_request(words: string) -> Fault { Fault { code: -32600, message: words } }
+
+fn invalid_params(words: string) -> Fault { Fault { code: -32602, message: words } }
+
+// ── Transports ──────────────────────────────────────────────────
+
+/// `POST /mcp`: the JSON-RPC body answered as JSON; a notification is
+/// accepted with no body. `origins` (none unless listed) are the pages allowed beyond
+/// loopback; a request with no Origin is a client, not a page.
+export fn route(tools: List<Tool>, origins: List<string> = [], mandates: List<Mandate> = []) -> Route {
+    let door = server(tools, mandates)
+    fixed(Method.Post, "/mcp", (q: Request<Unrouted>) -> posted(door, origins, q))
+}
+
+/// A body that could not be gathered runs nothing: the server answers
+/// it by the law it broke. A page on another host is refused before
+/// its body is read.
+fn posted(s: Server, origins: List<string>, q: Request<Unrouted>) -> Response {
+    match origin_refusal(q.header("origin"), origins) {
+        r? -> r
+        null -> served(s, q)
+    }
+}
+
+fn served(s: Server, q: Request<Unrouted>) -> Response {
+    let octets? = q.body.octets() else { return Response { status: 400 } }
+    match handle_octets(s, octets) {
+        answer? -> json_reply(answer)
+        null -> Response { status: 202 }
+    }
+}
+
+/// The 403 a page on another host earns, or null when the request may
+/// proceed. A request with no Origin, a loopback one, or one listed passes.
+fn origin_refusal(origin: string?, origins: List<string>) -> Response? {
+    let o? = origin else { return null }
+    if is_loopback(o) || origins.contains(o) { return null }
+    Response { status: 403, body: foreign_origin(o).bytes() }
+}
+
+fn is_loopback(origin: string) -> bool {
+    let o = ascii_lower(origin)
+    ["http://", "https://"]
+        .any(
+            (s) -> ["localhost", "127.0.0.1", "[::1]"]
+                .any((h) -> o == s + h || port_is(o, s + h + ":")),
+        )
+}
+
+/// A port spelled right after `prefix` and nothing after it: digits
+/// that parse as an integer in 1 to 65535.
+fn port_is(origin: string, prefix: string) -> bool {
+    let parts = origin.split(prefix)
+    if parts.length != 2 || parts[0] != "" { return false }
+    let port? = parse_int(parts[1]) else { return false }
+    port >= 1 && port <= 65535
+}
+
+/// A page's Origin must be loopback or listed by the server, so a
+/// page on another host cannot reach this door through the browser.
+fn foreign_origin(origin: string) -> string {
+    "the Origin ${origin} is not loopback: loopback is localhost, 127.0.0.1 or [::1]; list other origins explicitly"
+}
+
+fn json_reply(body: string) -> Response {
+    Response {
+        headers: [Header { name: "content-type", value: "application/json" }],
+        body: body.bytes(),
+    }
+}
+
+/// Newline-delimited JSON-RPC over stdin and stdout, until stdin
+/// ends. Answers are written unbuffered, one line each.
+export fn serve_stdio(tools: List<Tool>, mandates: List<Mandate> = []) {
+    let door = server(tools, mandates)
+    mut pending: Bytes = "".bytes()
+    mut token = avra_fd_read(0, chunk())
+    while token > 0 && pending.length <= line_limit() {
+        let cut = split_lines([pending, avra_fd_taken(token)].bytes())
+        for line in cut.lines { answer_line(door, line) }
+        pending = cut.rest
+        token = avra_fd_read(0, chunk())
+    }
+    answer_line(door, pending)
+}
+
+fn chunk() -> int { 65536 }
+
+/// The longest unfinished line held; past it the input is dropped.
+fn line_limit() -> int { 8388608 }
+
+fn answer_line(s: Server, line: Bytes) {
+    if line.length == 0 { return }
+    let answer? = handle_octets(s, line) else { return }
+    written((answer + "\n").bytes())
+}
+
+fn written(out: Bytes) {
+    mut at = 0
+    while at < out.length {
+        let n = avra_fd_write(1, out, at)
+        at = if n > 0 { at + n } else { out.length }
+    }
+}
+
+/// The complete lines of a buffer and the unfinished tail after them.
+export type Lines = { lines: List<Bytes>, rest: Bytes }
+
+export fn split_lines(b: Bytes) -> Lines {
+    let ends = [i for i in 0..b.length if b.at(i) == 10]
+    let starts = [0].concat([e + 1 for e in ends])
+    Lines {
+        lines: [b.slice(starts[k], ends[k]) for k in 0..ends.length],
+        rest: b.slice(starts[ends.length], b.length),
+    }
+}
+
+// ── Voices ──────────────────────────────────────────────────────
+
+fn not_an_object() -> string { "a request is one JSON object" }
+
+fn bad_id() -> string { "an id is a string, an integer or null" }
+
+fn bad_version() -> string { "`jsonrpc` is \"2.0\"" }
+
+fn no_method() -> string { "a request names its `method` as a string" }
+
+fn unknown_method(name: string) -> string { "no method `${name}`" }
+
+fn no_tool_name() -> string { "`tools/call` names its tool in `name`" }
+
+fn no_such_tool(name: string) -> string { "no tool `${name}`" }
+
+fn arguments_not_object() -> string { "`arguments` is an object" }
+
+fn needs_mandate_words(name: string) -> string {
+    "`${name}` requires a mandate, and this door holds none that covers it now"
+}
+
+fn repeated_mandate(id: string) -> string { "mandate `${id}` is granted more than once" }
+
+fn unknown_grant(id: string, action: string) -> string { "mandate `${id}` grants `${action}`, which is no tool here" }
+
+fn repeated_param(name: string) -> string { "param `${name}` is given more than once" }
+
+fn unknown_param(name: string) -> string { "param `${name}` is not declared" }
+
+fn missing_param(name: string) -> string { "param `${name}` is required" }
+
+fn wrong_kind(name: string, k: ParamKind) -> string { "param `${name}` must be ${word(k)}" }
+
+fn bad_name(name: string) -> string { "tool `${name}` is not [A-Za-z0-9_-]{1,64}" }
+
+fn repeated_tool(name: string) -> string { "tool `${name}` is declared more than once" }
+
+fn repeated_declared_param(tool: string, param: string) -> string {
+    "tool `${tool}` declares param `${param}` more than once"
+}
+
+fn unsound_impact(tool: string, fault: string) -> string { "tool `${tool}`: ${fault}" }

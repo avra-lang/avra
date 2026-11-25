@@ -1,0 +1,98 @@
+// `@derive(Flow)`: every node variant wears exactly one control word,
+// and the walk it generates answers as the hand-written one did.
+use @std.avrac.core.{new_node_store, Flow, Control, At, Expr, Stmt, Scoped, named_ref}
+use @std.meta.{Type, Variant, Field, Mark}
+
+fn variant(name: string, words: List<string>, fields: List<Field>) -> Variant {
+    Variant {
+        name: name,
+        payload: [f.ty for f in fields],
+        at: null,
+        fields: fields,
+        marks: [Mark { name: w, args: [], at: null } for w in words],
+    }
+}
+
+fn field(name: string, ty: string) -> Field { Field { name: name, ty: ty, at: null } }
+
+fn enum_of(vs: List<Variant>) -> Type { Type { name: "Expr", fields: [], variants: vs, at: null } }
+
+fn said(vs: List<Variant>) -> List<string> { [d.message for d in Flow.derive(enum_of(vs)).problems] }
+
+/// The word a control answer is, and how many steps or arms it holds.
+fn shown(c: Control) -> string {
+    match c {
+        .Seq(steps) -> "seq ${steps.length}",
+        .Branch(head, arms) -> "branch ${head.length} ${arms.length}",
+        .Returns(_) -> "returns",
+        .Fails(_) -> "fails",
+        .Apart -> "apart",
+    }
+}
+
+/// The expression a step names, or -1.
+fn expr_at(a: At) -> int {
+    match a { .Expr(e) -> e.index, _ -> -1 }
+}
+
+spec "core/flow — one control word per variant" {
+    given "the law a variant is held to" {
+        then "a variant wearing no word is refused, named" {
+            said([variant("A", ["apart"], []), variant("B", [], [])]).join("|") == "a node variant wears exactly one control word — `B` wears none"
+        }
+        then "a variant wearing two words is refused, with the count" {
+            said([variant("A", ["apart", "sequence"], [])]).join("|") == "a node variant wears exactly one control word — `A` wears 2"
+        }
+        then "a `@sequence` variant whose field no step reads is refused" {
+            said([variant("A", ["sequence"], [field("arms", "List<Arm>")])]).length == 1
+        }
+        then "every variant wearing one word is accepted" {
+            said(
+                [
+                    variant("A", ["apart"], []),
+                    variant("B", ["sequence"], [field("v", "ExprId")]),
+                    variant("C", ["branches"], []),
+                ],
+            )
+                .is_empty()
+        }
+    }
+    given "the walk the derive generates" {
+        then "a sequence runs its fields' expressions in field order" {
+            mut s = new_node_store()
+            let a = s.alloc_expr(Expr.IntLit(1))
+            let b = s.alloc_expr(Expr.IntLit(2))
+            let e = s.alloc_expr(Expr.Index(a, b))
+            match s.expr_control(e) {
+                .Seq(steps) -> ["${expr_at(x)}" for x in steps].join(" ") == "${a.index} ${b.index}",
+                _ -> false,
+            }
+        }
+        then "an assignment runs its value before its target" {
+            mut s = new_node_store()
+            let t = s.alloc_expr(Expr.IntLit(1))
+            let v = s.alloc_expr(Expr.IntLit(2))
+            let st = s.alloc_stmt(Stmt.Assign(t, v))
+            match s.stmt_control(st) {
+                .Seq(steps) -> ["${expr_at(x)}" for x in steps].join(" ") == "${v.index} ${t.index}",
+                _ -> false,
+            }
+        }
+        then "branching, leaving, apart and empty shapes answer as before" {
+            mut s = new_node_store()
+            let one = s.alloc_expr(Expr.IntLit(1))
+            let shapes = [
+                shown(s.expr_control(s.alloc_expr(Expr.If(one, one, one)))),
+                shown(s.expr_control(s.alloc_expr(Expr.Lambda([], one)))),
+                shown(s.expr_control(s.alloc_expr(Expr.Receiver))),
+                shown(s.stmt_control(s.alloc_stmt(Stmt.Return(null)))),
+                shown(s.stmt_control(s.alloc_stmt(Stmt.Jump(null, false)))),
+                shown(
+                    s
+                        .stmt_control(s.alloc_stmt(Stmt.FnDecl(Scoped("f"), [], [], named_ref("int"), one))),
+                ),
+            ]
+            shapes.join(", ") == "branch 1 2, apart, seq 0, returns, seq 0, apart"
+        }
+    }
+}

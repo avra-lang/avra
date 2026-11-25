@@ -1,0 +1,38 @@
+// proves: a map a pass fills is the SAME map under both engines,
+// whatever writes it — new keys, overwrites, a removal and a key
+// written again after it — and a copy taken mid-way never sees a
+// later write, nor the original the copy's. Sized so a per-write copy
+// of the whole map would not finish.
+fn filled(n: int) -> Map<string, int> {
+    mut ids: Map<string, int> = {}
+    for i in 0..n { ids.set("seat/${i}", i) }
+    ids
+}
+
+fn counted(words: List<string>) -> Map<string, int> {
+    mut seen: Map<string, int> = {}
+    for w in words { seen.set(w, (seen.get(w) ?? 0) + 1) }
+    seen
+}
+
+fn churned(n: int) -> Map<string, int> {
+    mut m: Map<string, int> = {}
+    for i in 0..n {
+        m.set("k${i % 7}", i)
+        if i % 5 == 0 { m.remove("k${i % 3}") }
+    }
+    m
+}
+
+let big = filled(20000)
+let tally = counted([if i % 3 == 0 { "a" } else { "b" } for i in 0..30000])
+mut before = filled(3)
+let snapshot = before
+before.set("late", 9)
+before.set("seat/0", 100)
+mut fork = snapshot
+fork.set("mine", 1)
+let c = churned(1000)
+let sizes = "${big.length} ${big.get("seat/19999") ?? -1} ${tally.get("a") ?? 0} ${tally.get("b") ?? 0} ${tally.keys().join(",")}"
+let views = "${before.length} ${snapshot.length} ${fork.length} ${snapshot.get("seat/0") ?? -1} ${before.get("seat/0") ?? -1} ${fork.has("late")} ${before.has("mine")}"
+"${sizes} | ${views} | ${c.length} ${c.keys().join(",")} ${c.values().sum()}"

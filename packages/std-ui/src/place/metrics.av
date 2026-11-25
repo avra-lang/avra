@@ -1,0 +1,41 @@
+//! `place/metrics.av` — what a typeface answers: how far each cluster
+//! advances and how tall a line is. Everything is in SIXTY-FOURTHS of the
+//! target's unit, the fixed point a browser and a shaper both speak, so a run
+//! sums its advances exactly and the layout rounds once, at the box edge.
+use @std.text.{graphemes}
+
+/// Sixty-fourths to the unit.
+export const subunits = 64
+
+/// A face: the advance of one cluster, and the height a line takes as
+/// ascent, descent and the gap between lines.
+export trait Metrics {
+    fn advance(cluster: string) -> int
+    fn ascent() -> int
+    fn descent() -> int
+    fn gap() -> int
+}
+
+/// The width of a run in sixty-fourths: its clusters' advances summed.
+export fn run_width(m: dyn Metrics, s: string) -> int { run_width_in(m, s, subunits) }
+
+/// The width of a run in `per` parts to the unit, each cluster's advance
+/// rounded to them before the sum — as a browser lays a run out in its own
+/// sixtieths, one glyph at a time.
+export fn run_width_in(m: dyn Metrics, s: string, per: int) -> int {
+    [(m.advance(g) * per + subunits / 2) / subunits for g in graphemes(s)].sum()
+}
+
+/// The height of a line.
+export fn line_height(m: dyn Metrics) -> int { m.ascent() + m.descent() + m.gap() }
+
+/// A face given as a table: the advance of each cluster it names, and one for
+/// every other.
+export type Table = { advances: Map<string, int>, fallback: int, up: int, down: int, between: int = 0 }
+
+impl Metrics for Table {
+    fn advance(cluster: string) -> int { self.advances.get(cluster) ?? self.fallback }
+    fn ascent() -> int { self.up }
+    fn descent() -> int { self.down }
+    fn gap() -> int { self.between }
+}

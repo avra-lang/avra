@@ -1,0 +1,30 @@
+//! proves: a server whose serving task is cancelled leaves no
+//! connection behind — an open one is closed, so its client reads the
+//! end, and none is counted
+use @std.net.{NetError, Read, connect, listen}
+use @std.time.{ms, secs, sleep}
+use @std.http.frame.{limits}
+use @std.http.http.{text}
+use @std.http.server.{Server, served, timing}
+
+type Quiet = {}
+
+fn serves(s: Server<Quiet>) -> bool { s.run(cores: 1) is .Ok }
+
+fn run() -> Result<string, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let s = served(l, () -> Quiet {}, limits(), timing()) { _a, q -> text(200, "ok") }
+    let t = spawn serves(s)
+    let c = connect("127.0.0.1", l.port, secs(2))?
+    c.write("GET / HT".bytes())?
+    sleep(ms(50))
+    let open = s.connections()
+    t.cancel()
+    sleep(ms(50))
+    let ended = c.try_read(16)? is .Eof
+    c.close()?
+    s.stop()
+    .Ok("${open} ${s.connections()} ${ended}")
+}
+
+run() catch e -> "failed: ${e.verb} ${e.subject} ${e.errno}"

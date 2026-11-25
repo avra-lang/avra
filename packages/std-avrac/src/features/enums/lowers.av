@@ -1,0 +1,641 @@
+//! The lowering rules of a variant and of a `match`. A variant is the value of its tag and its
+//! payloads. A match on a `bool`, what an `if` means, is one region, its first arm taken where the
+//! subject holds; a match on an enum is a region over the subject's tag, each arm reading what its
+//! pattern binds inside its own region; a match on a number or text tries each arm in turn.
+use core.{
+    payload_unknown,
+    Arm,
+    BinOp,
+    Bound,
+    ExprId,
+    Layout,
+    Lowering,
+    Lowers,
+    PatId,
+    Reg,
+    SignedType,
+    SyntaxArena,
+    VariantSeat,
+    flatten,
+    owned_type,
+    quote_pat_holes,
+    quote_pat_names,
+    some_list,
+    types_joined,
+}
+use core.expr.{Is, Match, VariantLit}
+
+impl Lowers for VariantLit {
+    /// The variant's tag and the payloads it's written with, in order, or one the source alone spells,
+    /// which is the binary's own data. One written with a payload by name isn't lowered yet.
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        let ty? = cx.type_at(e) else { return cx.unlowered(e) }
+        let variants? = cx.variants_of(ty) else { return cx.unlowered(e) }
+        let data = cx.static_literal(e)
+        if data != null { return data! }
+        let tag? = variants.find_index(it.name == self.name.of) else { return cx.unlowered(e) }
+        if self.args.any((a) -> cx.store.names_its_seat(a)) { return cx.missed_as("a variant's payload by name") }
+        cx.tagged_value(cx.laid_out(ty), tag, [cx.lower(a) for a in self.args])
+    }
+}
+
+impl Lowers for Is {
+    /// Whether the subject's tag is the variant's. An `is` that binds what the variant carries, or
+    /// tests a type, isn't lowered yet.
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        let ty? = cx.type_at(self.left) else { return cx.unlowered(e) }
+        let variants? = cx.variants_of(ty) else { return cx.unlowered(e) }
+        let tag? = asked_tag(cx.store, variants, self.right) else { return cx.missed_as("an `is` that binds or tests a type") }
+        cx.bin(Layout.Truth, BinOp.Eq, cx.tag_of(cx.lower(self.left)), cx.const_int(tag))
+    }
+}
+
+/// The tag of the variant a pattern asks for, absent for one that binds a payload or names no
+/// variant of `variants`.
+fn asked_tag(store: SyntaxArena, variants: List<VariantSeat>, p: PatId) -> int? {
+    match store.pat(p) {
+        .Variant(name, args) -> if args.all((a) -> holed(store, a)) { variants.find_index(it.name == name.of) } else { null },
+        rest -> null,
+    }
+}
+
+/// Whether a pattern is a hole, taking whatever stands there unnamed.
+fn holed(store: SyntaxArena, p: PatId) -> bool {
+    match store.pat(p) { .Wild -> true, rest -> false }
+}
+
+impl Lowers for Match {
+    /// A region answering each arm's value, or where an arm leaves, nothing of the region's type. On a
+    /// `bool`, the region answers the type its arms meet at, which is what its seat lifts it from.
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        let arms? = truth_arms(cx, self) else { return variant_matched(cx, e, self) }
+        let ty = region_type(cx, e)
+        let met = arms_met(cx, [arms.taken, arms.other]) ?? ty
+        let r = cx
+            .region(cx.lower(self.subject), cx.laid_out(met)) { cx -> met_at(cx, arms.taken, met) } else { cx -> met_at(cx, arms.other, met) }
+        if met.spelled() != ty.spelled() { cx.wear(r, met) }
+        r
+    }
+
+    /// A region whose arms are statements and whose value is nothing; a match on an enum, as its value.
+    fn lowered_dropped(mut cx: Lowering, e: ExprId) -> Reg {
+        let arms? = truth_arms(cx, self) else { return variant_matched(cx, e, self) }
+        cx
+            .void_branches(cx.lower(self.subject)) { cx -> cx.arm_stmts(arms.taken) } else { cx -> cx.arm_stmts(arms.other) }
+        cx.hollow_of(owned_type("void"))
+    }
+}
+
+/// A match on a `bool`'s two arms: the one a true subject takes, and the other.
+type TruthArms = { taken: ExprId, other: ExprId }
+
+/// The arms of a match on a `bool` whose first arm takes `true` and whose second takes the rest
+/// without naming it; absent for any other match.
+fn truth_arms(cx: Lowering, m: Match) -> TruthArms? {
+    if cx.type_at(m.subject)?.spelled() != owned_type("bool").spelled() || m.arms.length != 2 { return null }
+    let truths = arm_truths(cx.store, m.arms)
+    if truths[0] != true || truths[1] != false || binds_subject(cx.store, m.arms[1]) { return null }
+    TruthArms { taken: m.arms[0].value, other: m.arms[1].value }
+}
+
+/// Whether an arm's one pattern names the subject.
+fn binds_subject(store: SyntaxArena, a: Arm) -> bool {
+    match store.pat(a.pats[0]) { .Bind(_) -> true, rest -> false }
+}
+
+/// The type a region answers: the match's own, or where every arm leaves, its seat's, else the fn's.
+fn region_type(cx: Lowering, e: ExprId) -> SignedType {
+    let own = cx.type_at(e)
+    if own != null && !own!.bottom() { return own! }
+    let seat = cx.seat_at(e)
+    if seat != null && !seat!.bottom() { seat! } else { cx.answer }
+}
+
+/// The type arms' values meet at, absent where one isn't known, every arm leaves, or the meeting
+/// says less than a type.
+fn arms_met(cx: Lowering, values: List<ExprId>) -> SignedType? {
+    let met? = types_joined([cx.type_at(cx.meaning_of(v)) for v in values]) else { return null }
+    if met.bottom() || met.partial() { null } else { met }
+}
+
+/// An arm's value as a region answering `met` yields it: born as its own type and lifted into `met`,
+/// or where it leaves, nothing of that type.
+fn met_at(mut cx: Lowering, value: ExprId, met: SignedType) -> Reg {
+    let made = cx.born(value)
+    if cx.store.leaves(value) { return cx.hollow_of(met) }
+    let own? = cx.worn_as(made) ?? cx.type_at(cx.meaning_of(value)) else { return made }
+    cx.lifted(made, own, met)
+}
+
+/// An arm's value: what it makes, or where it leaves, nothing of the region's type.
+fn yielded(mut cx: Lowering, value: ExprId, ty: SignedType) -> Reg {
+    let made = cx.lower(value)
+    if cx.store.leaves(value) { cx.hollow_of(ty) } else { made }
+}
+
+// ── A match on an enum ──────────────────────────────────────────────
+
+/// What a pattern takes of the subject: all of it, under a name or none; one variant, each payload
+/// under a name or none, or where a pattern of its own stands for it, what that one takes; one
+/// gathered variant whole, its member's record under a name; the value a literal is; or the value a
+/// top-level const is.
+enum Taken {
+    Whole(name: string?)
+    Variant(tag: int, names: List<string?>, subs: List<Taken?>)
+    Member(tag: int, name: string, record: SignedType)
+    Quoted(body: ExprId, names: List<string>)
+    Equal(lit: ExprId)
+    Compared(name: string)
+    /// A nullable payload's absence, which `null` in its place tests.
+    Absent
+}
+
+/// An arm as a match on an enum reads it: what each of its patterns takes, its guard, and its value.
+type Planned = { pats: List<Taken>, guard: ExprId?, value: ExprId }
+
+/// The subject an enum's match chooses on: its register and type, its enum's variants, and the type
+/// the match answers.
+type Chosen = { v: Reg, ty: SignedType, variants: List<VariantSeat>, region: SignedType }
+
+/// A match on an enum: its one arm's value; a region over the subject's tag, each arm but the last
+/// taken at its variant's tag and the last at any other, where each arm but the last takes one
+/// variant whole; else each arm in turn, taken where it accepts the subject. A match on a number,
+/// text or bytes: each arm in turn, the last taking the rest. A match with a pattern that tests more
+/// than one variant, an arm whose patterns bind different names, or one that leaves its subject to an
+/// absent tail, isn't lowered yet.
+fn variant_matched(mut cx: Lowering, e: ExprId, m: Match) -> Reg {
+    let ty? = cx.type_at(m.subject) else { return cx.unlowered(e) }
+    if ty.nullable() { return presence_matched(cx, e, m, ty) }
+    let scalar = ty.owned() != null &&
+        ty.spelled() != owned_type("bool").spelled() &&
+        cx.equatable(ty)
+    let found = cx.variants_of(ty)
+    let quoted = m.arms.any((a) -> a.pats.any((p) -> quotes(cx, p)))
+    if found == null && !scalar && !quoted { return cx.unlowered(e) }
+    let variants = found ?? []
+    let made = [n for a in m.arms for p in a.pats for n in made_compared(cx, p)]
+    if !made.is_empty() { return cx.missed_as(made_value(made[0])) }
+    let planned = [arm_planned(cx, variants, a, scalar) for a in m.arms]
+    if m.arms.is_empty() || planned.any(it == null) { return cx.missed_as("a match whose patterns aren't each one variant or the rest") }
+    let arms = [a! for a in planned]
+    if !if scalar || quoted { ends_in_rest(arms) } else { covers(cx, variants, arms) } { return cx.missed_as("a match leaving a variant to an absent tail") }
+    let s = Chosen {
+        v: cx.lower(m.subject),
+        ty: ty,
+        variants: variants,
+        region: region_type(cx, e),
+    }
+    if arms.length == 1 { return arm_lowered(cx, s, arms[0]) }
+    let cases = [t! for a in arms.take(arms.length - 1) for t in [case_of(a)] if t != null]
+    if cases.length < arms.length - 1 { return chained(cx, s, arms, 0) }
+    cx
+        .switched(cx.tag_of(s.v), cases, cx.laid_out(s.region)) { cx, j -> arm_lowered(cx, s, arms[j]) }
+}
+
+/// A match on a nullable whose arms are `null`, then one taking the rest: a region on the subject's
+/// presence, the rest's arm binding its name to the subject. Any other match on a nullable isn't
+/// lowered yet.
+fn presence_matched(mut cx: Lowering, e: ExprId, m: Match, ty: SignedType) -> Reg {
+    if m.arms.length != 2 || !absence_arm(cx, m.arms[0]) { return cx.missed_as(unpresenced()) }
+    let present = m.arms[1]
+    if present.guard != null || present.pats.length != 1 { return cx.missed_as(unpresenced()) }
+    let name? = rest_name(cx, present.pats[0]) else { return cx.missed_as(unpresenced()) }
+    let region = region_type(cx, e)
+    let v = cx.lower(m.subject)
+    cx
+        .region(cx.present(v, ty), cx.laid_out(region)) { cx ->
+            cx.opened()
+            if !name.is_empty() { cx.bind(name, Bound.Value(v, ty)) }
+            let r = yielded(cx, present.value, region)
+            cx.closed()
+            r
+        } else { cx -> yielded(cx, m.arms[0].value, region) }
+}
+
+/// Whether an arm takes only the absence: one `null` pattern, unguarded.
+fn absence_arm(cx: Lowering, a: Arm) -> bool { a.guard == null && a.pats.length == 1 && absence_pattern(cx, a.pats[0]) }
+
+/// Whether a pattern is `null`.
+fn absence_pattern(cx: Lowering, p: PatId) -> bool {
+    match cx.store.pat(p) {
+        .Lit(lit) -> cx.store.null_literal(lit),
+        .Wild or .Rest or .Bind(_) or .Variant(_, _) or .Member(_, _) or .Quote(_) or .Format(_, _) or .Typed(_, _) or .Seq(_, _, _) or .Fields(_, _, _) -> false,
+    }
+}
+
+/// The name a pattern taking whatever the subject is binds it to, empty for a hole; absent for any
+/// other pattern.
+fn rest_name(cx: Lowering, p: PatId) -> string? {
+    match cx.store.pat(p) {
+        .Wild or .Rest -> "",
+        .Bind(name) -> if compares(cx, name.of) { null } else { name.of },
+        .Lit(_) or .Variant(_, _) or .Member(_, _) or .Quote(_) or .Format(_, _) or .Typed(_, _) or .Seq(_, _, _) or .Fields(_, _, _) -> null,
+    }
+}
+
+fn unpresenced() -> string { "a match on a nullable whose arms aren't `null` and the rest" }
+
+/// An arm as a match on a subject with `variants`, or compared by value where `scalar`, reads it;
+/// absent where a pattern tests more than one variant, or an arm's patterns bind different names.
+fn arm_planned(cx: Lowering, variants: List<VariantSeat>, a: Arm, scalar: bool) -> Planned? {
+    let pats = [pattern_taken(cx, variants, p, scalar) for p in a.pats]
+    if pats.any(it == null) { return null }
+    let taken = [p! for p in pats]
+    let names = bound_names(taken[0])
+    if taken.any((p) -> !same_names(bound_names(p), names)) { return null }
+    Planned { pats: taken, guard: a.guard, value: a.value }
+}
+
+/// What a pattern takes of a subject with `variants`, or compared by value where `scalar`; absent for
+/// one that tests more than one variant.
+fn pattern_taken(cx: Lowering, variants: List<VariantSeat>, p: PatId, scalar: bool) -> Taken? {
+    match cx.store.pat(p) {
+        .Wild or .Rest -> Taken.Whole(null),
+        .Bind(name) -> if compares(cx, name.of) { Taken.Compared(name.of) } else { Taken.Whole(name.of) },
+        .Variant(name, args) -> {
+            let tag? = variants.find_index(it.name == name.of) else { return null }
+            let payloads = variants[tag].payloads
+            if args.length > payloads.length { return null }
+            let subs = [if takes_any(cx, a) { null } else { sub_taken(cx, payloads[k].ty, a) } for k, a in args]
+            if [k for k, a in args if subs[k] == null && !takes_any(cx, a)].length > 0 { return null }
+            Taken.Variant(tag, [bind_name(cx.store, a) for a in args], subs)
+        },
+        .Lit(lit) -> if scalar && !cx.store.null_literal(lit) { Taken.Equal(lit) } else { null },
+        .Member(name, bind) -> member_taken(variants, name.of, bind.of),
+        .Quote(body) -> Taken.Quoted(body, quote_pat_names(quote_pat_holes(cx.store, body))),
+        .Format(_, _) or .Typed(_, _) or .Seq(_, _, _) or .Fields(_, _, _) -> null,
+    }
+}
+
+/// Whether a pattern is a quote, which matches code.
+fn quotes(cx: Lowering, p: PatId) -> bool {
+    match cx.store.pat(p) {
+        .Quote(_) -> true,
+        .Wild or .Rest or .Bind(_) or .Variant(_, _) or .Lit(_) or .Member(_, _) or .Format(_, _) or .Typed(_, _) or .Seq(_, _, _) or .Fields(_, _, _) -> false,
+    }
+}
+
+/// What `.V as r` takes of a subject with `variants`: the gathered variant `V`, its member's record
+/// under `r`; absent for any other variant.
+fn member_taken(variants: List<VariantSeat>, name: string, bind: string) -> Taken? {
+    let tag? = variants.find_index(it.name == name) else { return null }
+    let record? = variants[tag].member else { return null }
+    Taken.Member(tag, bind, record)
+}
+
+/// Whether the last arm takes whatever the subject is: unguarded, one pattern taking it whole.
+fn ends_in_rest(arms: List<Planned>) -> bool {
+    let last = arms.last()!
+    last.guard == null && last.pats.length == 1 && takes_rest(last.pats[0])
+}
+
+/// Whether a pattern takes whatever the subject is.
+fn takes_rest(t: Taken) -> bool {
+    match t {
+        .Whole(_) -> true,
+        .Variant(_, _, _) or .Member(_, _, _) or .Quoted(_, _) or .Equal(_) or .Compared(_) or .Absent -> false,
+    }
+}
+
+/// Whether a payload's pattern takes whatever it holds: a hole, or a name that binds.
+fn takes_any(cx: Lowering, p: PatId) -> bool {
+    match cx.store.pat(p) {
+        .Wild -> true,
+        .Bind(name) -> !compares(cx, name.of),
+        .Rest or .Variant(_, _) or .Lit(_) or .Format(_, _) or .Quote(_) or .Typed(_, _) or .Member(_, _) or .Seq(_, _, _) or .Fields(_, _, _) -> false,
+    }
+}
+
+/// What the pattern `p` takes of a payload of type `ty`: a variant of the enum it is, or the value a
+/// literal is where it compares by value; absent for any other.
+fn sub_taken(cx: Lowering, ty: SignedType?, p: PatId) -> Taken? {
+    let held? = ty else { return null }
+    if held.nullable() && absence_pattern(cx, p) { return Taken.Absent }
+    let scalar = !held.nullable() && held.owned() != null && cx.equatable(held)
+    let variants = cx.variants_of(held)
+    if variants == null && !scalar { return null }
+    pattern_taken(cx, variants ?? [], p, scalar)
+}
+
+/// The name a pattern binds, absent for a hole.
+fn bind_name(store: SyntaxArena, p: PatId) -> string? {
+    match store.pat(p) { .Bind(name) -> name.of, rest -> null }
+}
+
+/// Whether a name in a pattern may stand for a top-level value the subject is compared with, rather
+/// than bind: one the program names that isn't a fn, which no binding in the body hides.
+fn compares(cx: Lowering, name: string) -> bool {
+    cx.bound(name) == null && (cx.program.compared)(name) ?? false
+}
+
+/// The bare names a pattern holds, at its top or as a variant's payload, that only a generator gives a
+/// value a pattern compares with, which no binder's question reads.
+fn made_compared(cx: Lowering, p: PatId) -> List<string> {
+    match cx.store.pat(p) {
+        .Bind(name) -> if (cx.program.compared)(name.of) == null { [name.of] } else { [] },
+        .Variant(_, args) -> flatten([made_compared(cx, a) for a in args]),
+        .Wild or .Rest or .Lit(_) or .Format(_, _) or .Quote(_) or .Typed(_, _) or .Member(_, _) or .Seq(_, _, _) or .Fields(_, _, _) -> [],
+    }
+}
+
+/// The names what a pattern takes binds, in its order.
+fn bound_names(t: Taken) -> List<string> {
+    match t {
+        .Whole(name) -> some_list(name),
+        .Variant(_, names, subs) -> [n! for n in names if n != null]
+            .concat(flatten([bound_names(t!) for t in subs if t != null])),
+        .Member(_, name, _) -> [name],
+        .Quoted(_, names) -> names,
+        .Equal(_) or .Compared(_) or .Absent -> [],
+    }
+}
+
+/// Whether two patterns bind the same names, in any order.
+fn same_names(a: List<string>, b: List<string>) -> bool { a.length == b.length && a.all((n) -> b.contains(n)) }
+
+/// The tag an arm takes whole: an unguarded arm of one pattern that tests one variant.
+fn case_of(a: Planned) -> int? {
+    if a.guard != null || a.pats.length != 1 { null } else { variant_tag(a.pats[0]) }
+}
+
+/// Whether the unguarded arms take every variant: one takes the rest, or each variant is taken.
+fn covers(cx: Lowering, variants: List<VariantSeat>, arms: List<Planned>) -> bool {
+    takes_every(cx, variants, [t for a in arms if a.guard == null for t in a.pats])
+}
+
+/// Whether the patterns `taken` take every value of an enum with `variants`: one takes the rest, or
+/// each variant is taken.
+fn takes_every(cx: Lowering, variants: List<VariantSeat>, taken: List<Taken>) -> bool {
+    taken.any(takes_rest) ||
+        (0..variants.length).all((tag) -> variant_taken(cx, variants[tag], tag, taken))
+}
+
+/// Whether the patterns `taken` take every value of the variant `tag`: one takes it whole, or, where
+/// it carries one payload, the patterns standing for that payload take every value of its enum.
+fn variant_taken(cx: Lowering, variant: VariantSeat, tag: int, taken: List<Taken>) -> bool {
+    if taken.any((t) -> variant_tag(t) == tag) { return true }
+    if variant.payloads.length != 1 { return false }
+    let held? = variant.payloads[0].ty else { return false }
+    let inner? = cx.variants_of(held) else { return false }
+    let subs = [s! for t in taken for s in [payload_taken(t, tag)] if s != null]
+    !subs.is_empty() && takes_every(cx, inner, subs)
+}
+
+/// What a pattern taking the variant `tag` takes of its one payload; absent for any other pattern.
+fn payload_taken(t: Taken, tag: int) -> Taken? {
+    match t {
+        .Variant(at, _, subs) -> if at == tag && subs.length == 1 { subs[0] ?? Taken.Whole(null) } else { null },
+        .Whole(_) or .Member(_, _, _) or .Quoted(_, _) or .Equal(_) or .Compared(_) or .Absent -> null,
+    }
+}
+
+/// The tag of the variant a pattern takes whole, absent for one that takes the rest or tests a
+/// payload.
+fn variant_tag(t: Taken) -> int? {
+    match t {
+        .Variant(tag, _, subs) -> if subs.all(it == null) { tag } else { null },
+        .Member(tag, _, _) -> tag,
+        .Whole(_) or .Quoted(_, _) or .Equal(_) or .Compared(_) or .Absent -> null,
+    }
+}
+
+/// Arm `k` onward, each taken where it accepts the subject and the next tried where it doesn't; the
+/// last taken whatever the subject is.
+fn chained(mut cx: Lowering, s: Chosen, arms: List<Planned>, k: int) -> Reg {
+    let a = arms[k]
+    if k == arms.length - 1 { return arm_lowered(cx, s, a) }
+    cx
+        .region(accepted(cx, s, a), cx.laid_out(s.region)) { cx -> arm_lowered(cx, s, a) } else { cx -> chained(cx, s, arms, k + 1) }
+}
+
+/// Whether an arm accepts the subject: any of its patterns does, each tried only where those before
+/// it didn't; then its guard, read only once a pattern accepted, under what it binds.
+fn accepted(mut cx: Lowering, s: Chosen, a: Planned) -> Reg {
+    mut any = tested(cx, s, a.pats[0])
+    for t in a.pats.drop(1) {
+        any = cx
+            .region(any, Layout.Truth) { cx -> cx.const_bool(true) } else { cx -> tested(cx, s, t) }
+    }
+    let g? = a.guard else { return any }
+    cx.region(any, Layout.Truth) { cx -> guarded(cx, s, a, g) } else { cx -> cx.const_bool(false) }
+}
+
+/// Whether a pattern accepts the subject: one taking the rest always, a variant where the tag is its,
+/// a literal where the subject is its value.
+fn tested(mut cx: Lowering, s: Chosen, t: Taken) -> Reg {
+    match t {
+        .Whole(_) -> cx.const_bool(true),
+        .Variant(tag, _, subs) -> {
+            let is_tag = cx.bin(Layout.Truth, BinOp.Eq, cx.tag_of(s.v), cx.const_int(tag))
+            if subs.all(it == null) { return is_tag }
+            cx
+                .region(is_tag, Layout.Truth) { cx -> subs_accepted(cx, s, tag, subs, 0) } else { cx -> cx.const_bool(false) }
+        },
+        .Member(tag, _, _) -> cx.bin(Layout.Truth, BinOp.Eq, cx.tag_of(s.v), cx.const_int(tag)),
+        .Quoted(body, _) -> {
+            let q? = cx.quote_runs(s.v, s.ty, body) else { return cx.const_bool(false) }
+            cx.present(q.runs, q.answer)
+        },
+        .Equal(lit) -> cx.same_value(s.v, cx.lower(lit), s.ty),
+        .Compared(name) -> compared_const(cx, s, name),
+        .Absent -> cx.not(cx.present(s.v, s.ty)),
+    }
+}
+
+/// Whether each payload from `k` on that a pattern of its own stands for, of the variant `tag` the
+/// subject holds, is taken by it, each tested only once those before it were.
+fn subs_accepted(mut cx: Lowering, s: Chosen, tag: int, subs: List<Taken?>, k: int) -> Reg {
+    if k == subs.length { return cx.const_bool(true) }
+    let sub? = subs[k] else { return subs_accepted(cx, s, tag, subs, k + 1) }
+    let held? = payload_chosen(cx, s, tag, k) else { return cx.missed_as(payload_unknown()) }
+    let took = tested(cx, held, sub)
+    if k == subs.length - 1 { return took }
+    cx
+        .region(took, Layout.Truth) { cx -> subs_accepted(cx, s, tag, subs, k + 1) } else { cx -> cx.const_bool(false) }
+}
+
+/// Payload `k` of the variant `tag` the subject holds, as the subject a pattern of its own chooses on;
+/// absent where a payload's type isn't known.
+fn payload_chosen(mut cx: Lowering, s: Chosen, tag: int, k: int) -> Chosen? {
+    let payloads = s.variants[tag].payloads
+    let ty? = payloads[k].ty else { return null }
+    let carried? = cx.seat_layouts(payloads) else { return null }
+    Chosen {
+        v: cx.payload_at(s.v, k, carried),
+        ty: ty,
+        variants: cx.variants_of(ty) ?? [],
+        region: s.region,
+    }
+}
+
+/// Whether the subject is the value the top-level const `name` is; one of a subject that doesn't
+/// compare by value isn't lowered yet.
+fn compared_const(mut cx: Lowering, s: Chosen, name: string) -> Reg {
+    if !cx.equatable(s.ty) { return cx.missed_as("a const compared with a subject that doesn't compare by value") }
+    let named? = (cx.program.named)(name, null) else { return cx.missed_as("a pattern's name that names no value") }
+    cx.same_value(s.v, cx.const_read(named, s.ty), s.ty)
+}
+
+/// An arm's guard, under what its pattern binds, in a scope of names of its own.
+fn guarded(mut cx: Lowering, s: Chosen, a: Planned, g: ExprId) -> Reg {
+    cx.opened()
+    bound(cx, s, a)
+    let r = cx.lower(g)
+    cx.closed()
+    r
+}
+
+/// An arm taken: what its pattern binds read from the subject, in a scope of names of its own, then
+/// its value.
+fn arm_lowered(mut cx: Lowering, s: Chosen, a: Planned) -> Reg {
+    cx.opened()
+    bound(cx, s, a)
+    let r = yielded(cx, a.value, s.region)
+    cx.closed()
+    r
+}
+
+/// What an arm binds, read from the subject and bound: of one pattern, what it takes; of several, a
+/// cell per name, filled by whichever pattern took the subject.
+fn bound(mut cx: Lowering, s: Chosen, a: Planned) {
+    if a.pats.length != 1 { return or_bound(cx, s, a.pats) }
+    taken_bound(cx, s, a.pats[0])
+}
+
+/// What one pattern binds, read from the subject and bound: a variant's payloads by name, then what
+/// each payload's own pattern binds of it.
+fn taken_bound(mut cx: Lowering, s: Chosen, t: Taken) {
+    match t {
+        .Whole(name) -> subject_bound(cx, s, name),
+        .Variant(tag, names, subs) -> {
+            payloads_bound(cx, s.v, s.variants[tag], names)
+            for k, sub in subs {
+                if sub == null { continue }
+                let held? = payload_chosen(cx, s, tag, k) else { return cx.missed("a payload whose type isn't known") }
+                taken_bound(cx, held, sub!)
+            }
+        },
+        .Member(tag, name, record) -> cx.bind(name, Bound.Value(member_read(cx, s, tag, record), record)),
+        .Quoted(body, names) -> {
+            let held? = cx.quote_binds(s.v, s.ty, body) else { return }
+            for j, n in names { cx.bind(n, Bound.Value(held[j].reg, held[j].ty)) }
+        },
+        .Equal(_) or .Compared(_) or .Absent -> subject_bound(cx, s, null),
+    }
+}
+
+/// What an arm of several patterns binds: a cell per name the first binds, seeded with a value nobody
+/// reads; each pattern but the last tested in turn and the first that takes the subject writes its
+/// reads, each variant laying its payloads out its own way; then each cell read and bound.
+fn or_bound(mut cx: Lowering, s: Chosen, pats: List<Taken>) {
+    let names = bound_names(pats[0])
+    if names.is_empty() { return }
+    let types? = bound_types(s, pats[0]) else {
+        return cx
+            .missed(
+                "an or-pattern binding a payload a pattern of its own holds, or whose type isn't known",
+            )
+    }
+    let cells = [cx.seeded_cell(cx.laid_out(ty), cx.hollow_of(ty)) for ty in types]
+    or_filled(cx, s, pats, 0, names, cells)
+    for j, n in names { cx.bind(n, Bound.Value(cx.loaded(cx.laid_out(types[j]), cells[j]), types[j])) }
+}
+
+/// The types of what a pattern binds, in its order; absent where a payload's isn't known.
+fn bound_types(s: Chosen, t: Taken) -> List<SignedType>? {
+    match t {
+        .Whole(name) -> if name == null { [] } else { [s.ty] },
+        .Variant(tag, names, subs) -> {
+            if subs.any((t) -> t != null && !bound_names(t!).is_empty()) { return null }
+            let payloads = s.variants[tag].payloads
+            let tys = [payloads[k].ty for k, n in names if n != null]
+            if tys.any(it == null) { null } else { [ty! for ty in tys] }
+        },
+        .Member(_, _, record) -> [record],
+        .Quoted(_, _) -> null,
+        .Equal(_) or .Compared(_) or .Absent -> [],
+    }
+}
+
+/// Pattern `k` onward: the first that takes the subject writes its reads into the cells; the last is
+/// taken whatever its test, the arm having accepted the subject.
+fn or_filled(
+    mut cx: Lowering,
+    s: Chosen,
+    pats: List<Taken>,
+    k: int,
+    names: List<string>,
+    cells: List<Reg>,
+) {
+    let took = tested(cx, s, pats[k])
+    if k == pats.length - 1 { return stored_reads(cx, s, pats[k], names, cells) }
+    cx
+        .void_branches(took) { cx -> stored_reads(cx, s, pats[k], names, cells) } else { cx -> or_filled(cx, s, pats, k + 1, names, cells) }
+}
+
+/// What one pattern reads of the subject, each written into the cell of the name it binds.
+fn stored_reads(mut cx: Lowering, s: Chosen, t: Taken, names: List<string>, cells: List<Reg>) {
+    let regs = taken_reads(cx, s, t)
+    let own = bound_names(t)
+    if regs.length != own.length { return }
+    for j, n in names { cx.stored(cells[j], regs[own.index_of(n)]) }
+}
+
+/// What a pattern reads of the subject for the names it binds, in its order.
+fn taken_reads(mut cx: Lowering, s: Chosen, t: Taken) -> List<Reg> {
+    match t {
+        .Whole(name) -> if name == null { [] } else { [s.v] },
+        .Variant(tag, names, subs) -> payloads_read(cx, s.v, s.variants[tag], names)
+            .concat(flatten([sub_reads(cx, s, tag, k, sub) for k, sub in subs])),
+        .Member(tag, _, record) -> [member_read(cx, s, tag, record)],
+        .Quoted(body, _) -> [h.reg for h in cx.quote_binds(s.v, s.ty, body) ?? []],
+        .Equal(_) or .Compared(_) or .Absent -> [],
+    }
+}
+
+/// What payload `k`'s own pattern `sub` reads of it for the names it binds; none where it has none.
+fn sub_reads(mut cx: Lowering, s: Chosen, tag: int, k: int, sub: Taken?) -> List<Reg> {
+    let t? = sub else { return [] }
+    let held? = payload_chosen(cx, s, tag, k) else { return [] }
+    taken_reads(cx, held, t)
+}
+
+/// The subject bound to `name`, where a pattern names it.
+fn subject_bound(mut cx: Lowering, s: Chosen, name: string?) {
+    if name != null { cx.bind(name!, Bound.Value(s.v, s.ty)) }
+}
+
+/// Each payload a name stands for, read from the variant `v` holds and bound to it, in order.
+fn payloads_bound(mut cx: Lowering, v: Reg, variant: VariantSeat, names: List<string?>) {
+    let held = [k for k, n in names if n != null]
+    for j, r in payloads_read(cx, v, variant, names) { cx.bind(names[held[j]]!, Bound.Value(r, variant.payloads[held[j]].ty!)) }
+}
+
+/// The member's record the gathered variant `tag` the subject holds is made of: each field its payload
+/// of that name, read, and a field no payload carries its default; one of a record whose fields
+/// aren't known isn't lowered yet.
+fn member_read(mut cx: Lowering, s: Chosen, tag: int, record: SignedType) -> Reg {
+    let variant = s.variants[tag]
+    let fields? = cx.fields_of(record) else { return cx.missed_as("a member's record whose fields aren't known") }
+    let carried: List<string?> = [p.name for p in variant.payloads]
+    let read = payloads_read(cx, s.v, variant, carried)
+    if read.length != carried.length { return cx.missed_as(payload_unknown()) }
+    cx
+        .record_packed(
+            cx.laid_out(record),
+            [if carried.contains(f.name) { read[carried.index_of(f.name)] } else { cx.field_default(record, f) } for f in fields],
+        )
+}
+
+/// Each payload a name stands for, read from the variant `v` holds, in order; none where a payload's
+/// layout isn't known.
+fn payloads_read(mut cx: Lowering, v: Reg, variant: VariantSeat, names: List<string?>) -> List<Reg> {
+    let carried? = cx.seat_layouts(variant.payloads) else {
+        cx.missed("a payload whose type isn't known")
+        return []
+    }
+    [cx.payload_at(v, k, carried) for k, n in names if n != null]
+}
+
+/// A pattern's bare name a generator gives a value of, which no binder's question reads.
+fn made_value(name: string) -> string { "a pattern's bare name `${name}`, which only a generator makes a const or a collection of: whether it compares or binds isn't read" }

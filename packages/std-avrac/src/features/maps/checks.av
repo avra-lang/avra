@@ -1,0 +1,26 @@
+//! The typing rule of a map literal: each key is text, and the literal is the map its seat names, or
+//! with none the map of its values' join, a spread's values among them. `{}` is its own type
+//! wherever it stands.
+use core.{Checking, Checks, ExprId, Expected, MapEntry, SignedType, types_joined, owned_type}
+use core.expr.{MapLit}
+
+impl Checks for MapLit {
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let wanted = match expected { .Exactly(ty) -> ty with { nulls: 0 }, rest -> null }
+        let held = types_joined([value_of(cx, entry, wanted?.mapped()) for entry in self.entries])
+        if wanted?.mapped() != null && !self.entries.is_empty() { return wanted }
+        if held == null { null } else { owned_type("Map") with { args: [owned_type("string"), held!] } }
+    }
+}
+
+/// The type one entry brings to the map's values: a pair's value, checked against the value type
+/// the seat wants if it wants one, and a spread map's values.
+fn value_of(mut cx: Checking, entry: MapEntry, wanted: SignedType?) -> SignedType? {
+    match entry {
+        .Pair(key, value) -> {
+            let _ = cx.check(key, Expected.Exactly(owned_type("string")))
+            cx.check(value, if wanted == null { Expected.Free } else { Expected.Exactly(wanted!) })
+        },
+        .Spread(from) -> cx.check(from, Expected.Free)?.mapped(),
+    }
+}

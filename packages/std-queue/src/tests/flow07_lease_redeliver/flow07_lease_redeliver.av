@@ -1,0 +1,18 @@
+//! proves a hold past its lease is redelivered with epoch + 1, and the
+//! old ack is refused.
+use @std.queue.{queue, key, Dead}
+use @std.task.{unbounded_channel}
+use @std.time.{ms}
+
+type Job = { n: int }
+
+let letters = unbounded_channel<Dead<Job, string>>()
+queue<Job> jobs {
+    capacity: 8
+    lease: ms(0)
+    dead: letters.sink
+}
+let _ = jobs.home().send(Job { n: 1 }, key("k"))
+let first = jobs.home().take()
+let second = jobs.home().take()
+"${first!.epoch} ${second!.epoch} ${jobs.home().ack(first!)} ${jobs.home().ack(second!)}"

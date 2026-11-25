@@ -1,0 +1,66 @@
+// A SITE is where a literal was written, and it holds still under what does
+// not move the literal: an edit below it, and the role of its package.
+use @std.avrac.testing.{answered, provided, test_workspace, vendored_meta, vendored_meta_paths}
+use @std.avrac.compiler.host.{memory_host}
+
+/// A record that nests itself and says where it was written.
+const marks: string = "use @std.meta.{Site}\ntype Mark = { name: string, kid: Mark? = null, at: Site }\n"
+
+/// The site of the OUTER literal when the nested one wears `inner`.
+fn outer_site(inner: string) -> string {
+    answered(
+        provided(
+            marks +
+                "let outer = Mark { name: \"o\", kid: Mark { name: \"" +
+                inner +
+                "\" } }\n\"\${outer.at}\"",
+            "",
+        ),
+    )
+}
+
+/// The site of the NESTED literal, which an edit to its own words moves.
+fn inner_site(inner: string) -> string {
+    answered(
+        provided(
+            marks +
+                "let outer = Mark { name: \"o\", kid: Mark { name: \"" +
+                inner +
+                "\" } }\n\"\${outer.kid!.at}\"",
+            "",
+        ),
+    )
+}
+
+/// A provider file whose one fn says the site of a literal in it.
+const sited_file: string = "use @std.meta.{Site}\nexport type Mark = { name: string, at: Site }\nexport fn site() -> string { \"\${Mark { name: \"a\" }.at}\" }\n"
+
+/// That file as a DEPENDENCY of a program.
+fn as_dependency() -> string { answered(provided("use @x.c.{site}\nsite()", sited_file)) }
+
+/// That file as the ROOT package, under the name the dependency has.
+fn as_root() -> string {
+    let files = vendored_meta(
+        {
+            "/w/avra.toml": "[package]\nname = \"@x/c\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n",
+            "/w/src/c.av": "use @std.meta.{Code}\n" + sited_file + "site()",
+        },
+    )
+    answered(
+        test_workspace(
+            memory_host(files, ["/w/avra.toml", "/w/src/c.av"].concat(vendored_meta_paths())),
+            "/w",
+        )
+            .program("/w/src/c.av"),
+    )
+}
+
+spec "structs — a site holds still" {
+    given "an edit below a literal" {
+        then "leaves the enclosing literal's site where it was" { outer_site("x") == outer_site("y") }
+        then "moves the edited literal's own" { inner_site("x") != inner_site("y") }
+    }
+    given "a package read as the root and as a dependency" {
+        then "gives one literal one site" { as_root() == as_dependency() }
+    }
+}

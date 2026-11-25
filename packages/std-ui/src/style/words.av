@@ -1,0 +1,46 @@
+//! `style/words.av` — `@derive(Words)`: an enum variant carries its own
+//! word. The word is DATA on the variant (`@word("xs") Xs`), so a target
+//! never hand-writes `match z { .None -> "none", … }` again — and the
+//! variant a word names is read back from the same marks (`worded`), so
+//! no second list of the variants is kept. `every` is that list and
+//! `ordinal` a variant's place in it, for a wire that numbers a closed set.
+use @std.meta.{Type, Variant, Directive, literal, beside}
+
+/// An enum whose variants name their words.
+export trait Words {
+    fn word() -> string
+
+    static fn derive(t: Type) -> List<Directive> {
+        let arms = [quote { .${v} -> ${literal(word_of(v))} } for v in t.variants]
+        let places = [quote { .${v} -> ${j} } for j, v in t.variants]
+        let each = [quote { .${v} } for v in t.variants]
+        [
+            beside(
+                t,
+                quote {
+                    impl ${t} {
+                        fn word() -> string { match self { ${arms} } }
+
+                        /// Where the variant stands among the enum's, as declared.
+                        fn ordinal() -> int { match self { ${places} } }
+
+                        static fn every() -> List<${t}> { [${..each}] }
+
+                        static fn worded(word: string) -> ${t}? {
+                            let every: List<${t}> = [${..each}]
+                            every.find(it.word() == word)
+                        }
+                    }
+                },
+            ),
+        ]
+    }
+
+    static fn marks(t: Type) -> List<string> { ["word"] }
+}
+
+/// The variant's `@word(…)`, or its own name when it carries none.
+fn word_of(v: Variant) -> string {
+    let m? = v.marks.find(it.name == "word") else { return v.name }
+    (m.args.first() ?? v.name).replace("_", "-")
+}

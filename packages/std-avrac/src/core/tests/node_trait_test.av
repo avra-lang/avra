@@ -1,0 +1,37 @@
+// `@derive(Node)`: a record's control runs its fields' expressions in
+// declaration order, or nowhere when it wears `@apart`.
+use @std.avrac.core.{Node, Control, At, Expr, ExprId, new_node_store}
+use @std.avrac.core.marks.{apart}
+use @std.meta.{derive}
+
+@derive(Node)
+type Sample = { first: ExprId, rest: List<ExprId>, label: string }
+
+@derive(Node)
+@apart
+type Detached = { held: ExprId }
+
+/// The expression a step names, or -1.
+fn expr_at(a: At) -> int {
+    match a { .Expr(e) -> e.index, _ -> -1 }
+}
+
+spec "core/node_trait — a record's control is derived" {
+    given "the generated `impl Node`" {
+        then "a record runs its fields' expressions in declaration order" {
+            mut s = new_node_store()
+            let a = s.alloc_expr(Expr.IntLit(1))
+            let b = s.alloc_expr(Expr.IntLit(2))
+            let sample = Sample { first: a, rest: [b], label: "x" }
+            match sample.control() {
+                .Seq(steps) -> ["${expr_at(x)}" for x in steps].join(" ") == "${a.index} ${b.index}",
+                _ -> false,
+            }
+        }
+        then "`@apart` answers apart whatever its fields hold" {
+            mut s = new_node_store()
+            let e = s.alloc_expr(Expr.IntLit(1))
+            match Detached { held: e }.control() { .Apart -> true, _ -> false }
+        }
+    }
+}

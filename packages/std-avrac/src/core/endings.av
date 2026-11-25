@@ -1,0 +1,221 @@
+//! WHAT A SCOPE RUNS AS IT ENDS: each scope is a frame holding what it ends — a task joined, a
+//! deferred body called — run last first where it ends normally, and wherever the fn or a loop's
+//! turn leaves before then, innermost first. A `defer` runs at every end; an `errdefer` only where
+//! the fn fails: `fail`, `?` and an unwind always, and a `return` or the body's own end when the
+//! `Result` it answers holds `Err`, asked of its tag. A deferred call opens a cleanup region where it
+//! is registered, the landing a trap unwinding past it enters, and each exit that runs the call
+//! closes that region first, so a trap inside the call finds it no longer open.
+
+/// What a scope runs as it ends.
+export enum Ending {
+    /// A task, or each in a list of them, joined.
+    Joined(h: TaskHeld)
+    /// A deferred body's box called, its answer laid out as `answer`; where `on_error`, only where the
+    /// fn fails. `cleanup` names the region a trap unwinding past it lands in.
+    Deferred(box: Reg, answer: Layout, on_error: bool, cleanup: int)
+    /// A `within`'s deadline scope `scope` ended, whether an unwind it asked for ended there kept in
+    /// the cell `cell`.
+    Landed(scope: Reg, cell: Reg)
+}
+
+/// A `within` open around what's being lowered: the loop an unwind it catches leaves, by its place
+/// among the open loops, and the first scope its turn opened.
+export type WithinMark = { loop: int, floor: int }
+
+impl Ending {
+    /// Whether ending it calls a deferred body.
+    fn calls() -> bool {
+        match self { .Joined(_) or .Landed(_, _) -> false, .Deferred(_, _, _, _) -> true }
+    }
+}
+
+/// How what a scope holds is ended: by an end that decides nothing about failing, by the fn
+/// answering a value, or by the fn failing.
+export enum Leaving {
+    Plain
+    Answering(r: Reg)
+    Failing
+}
+
+/// What an end that decides nothing about failing does with an `errdefer`.
+fn nothing_ended() {}
+
+/// A scope holding nothing to end yet.
+fn no_endings() -> List<Ending> {
+    let held: List<Ending> = []
+    held
+}
+
+impl Lowering {
+    /// A scope opened inside the current one.
+    mut fn opened() {
+        self.scopes.push(no_names())
+        self.endings.push(no_endings())
+    }
+
+    /// The innermost scope closed, what it holds ended.
+    mut fn closed() { self.closed_giving(null) }
+
+    /// The innermost scope closed answering `gives`: what it holds ended, the fn's own body's
+    /// `errdefer`s behind what it answers.
+    mut fn closed_giving(gives: Reg?) {
+        let body = gives != null && self.endings.get().length == 2
+        self
+            .ended_in(
+                self.endings.get().last() ?? [],
+                if body { Leaving.Answering(gives!) } else { Leaving.Plain },
+            )
+        let scopes = self.scopes.get()
+        self.scopes.set(scopes.take(scopes.length - 1))
+        let held = self.endings.get()
+        self.endings.set(held.take(held.length - 1))
+    }
+
+    /// The tasks `r`, a value of `ty`, holds, joined where the innermost scope ends: a task, or each
+    /// in a list of them.
+    mut fn owns(r: Reg, ty: SignedType?) {
+        let many? = tasks_held(ty) else { return }
+        self.ends_with(Ending.Joined(TaskHeld { reg: r, many: many }))
+    }
+
+    /// Whether a value of `ty` holds tasks a scope joins.
+    fn holds_tasks(ty: SignedType) -> bool { tasks_held(ty) != null }
+
+    /// The deferred body `box`, answering a value laid out as `answer`, called where the innermost
+    /// scope ends; where `on_error`, only where the fn fails. Its cleanup region opens here.
+    mut fn deferred(box: Reg, answer: Layout, on_error: bool) {
+        let cleanup = self.cleanups.get()
+        self.cleanups.set(cleanup + 1)
+        self.ends_with(Ending.Deferred(box, answer, on_error, cleanup))
+        self.emit(Ins.Cleanup(cleanup))
+        self.deferred_called(box, answer)
+        self.scope_exit(null)
+    }
+
+    /// `x` among what the innermost scope ends.
+    mut fn ends_with(x: Ending) {
+        let held = self.endings.get()
+        self.endings.set_at(held.length - 1, held.last()!.concat([x]))
+    }
+
+    /// What the innermost scope holds, ended as a normal end ends it.
+    mut fn joined() { self.ended_in(self.endings.get().last() ?? [], Leaving.Plain) }
+
+    /// What every scope from the `floor`th outward-in holds, ended as `leaving` says, innermost first.
+    mut fn ended_from(floor: int, leaving: Leaving) {
+        for frame in reversed(self.endings.get().drop(floor)) { self.ended_in(frame, leaving) }
+    }
+
+    /// What one scope holds, ended as `leaving` says, the last held first.
+    mut fn ended_in(frame: List<Ending>, leaving: Leaving) { for x in reversed(frame) { self.ending(x, leaving) } }
+
+    /// `x` ended as `leaving` says: a task joined whole, with no test after; a `defer` run; an
+    /// `errdefer` run where the fn fails.
+    mut fn ending(x: Ending, leaving: Leaving) {
+        match x {
+            .Joined(h) -> self.settled(h),
+            .Deferred(box, answer, on_error, cleanup) -> if on_error { self.failed_ran(leaving, box, answer, cleanup) } else { self.deferred_ran(box, answer, cleanup) },
+            .Landed(scope, cell) -> self
+                .stored(cell, self.call_row(Layout.Word, rt_sig_of("avra_fiber_within_end")!, [scope])),
+        }
+    }
+
+    /// The `errdefer` `box` run as `leaving` says: always by a failure, by an answer behind its tag,
+    /// and by an end that decides nothing never.
+    mut fn failed_ran(leaving: Leaving, box: Reg, answer: Layout, cleanup: int) {
+        match leaving {
+            .Failing -> self.deferred_ran(box, answer, cleanup),
+            .Answering(r) -> self.answered_ran(r, box, answer, cleanup),
+            .Plain -> nothing_ended(),
+        }
+    }
+
+    /// The `errdefer` `box` run where the fn's answer `r` says by its tag that it failed.
+    mut fn answered_ran(r: Reg, box: Reg, answer: Layout, cleanup: int) {
+        if !self.fails_by_tag(r) { return }
+        let failed = self.bin(Layout.Truth, BinOp.Ne, self.tag_of(r), self.const_int(0))
+        self.void_region(failed) { cx -> cx.deferred_ran(box, answer, cleanup) }
+    }
+
+    /// Whether the fn's answer `r` tells by its tag whether it failed: a `Result` laid out as the
+    /// fn's own; a value lifted into it later is a success.
+    fn fails_by_tag(r: Reg) -> bool {
+        if !self.answer.resulted() { return false }
+        let own? = self.program.checked.layout(self.answer) else { return false }
+        self.layout_of(r).spelled() == own.spelled()
+    }
+
+    /// The deferred body `box` run by an exit: its cleanup region closed first, then the call.
+    mut fn deferred_ran(box: Reg, answer: Layout, cleanup: int) {
+        self.emit(Ins.Cleanup(cleanup))
+        self.scope_exit(null)
+        self.deferred_called(box, answer)
+    }
+
+    /// The code the deferred body `box` holds called, handed the box, its answer nothing reads.
+    mut fn deferred_called(box: Reg, answer: Layout) {
+        let code = self.code_of(box)
+        let dst = self.mint(answer)
+        self.emit(Ins.CallPtr(dst, code, [box]))
+    }
+
+    /// The task `h` names joined, or each in its list.
+    mut fn settled(h: TaskHeld) {
+        let row = rt_sig_of(if h.many { "avra_task_settle_all" } else { "avra_task_settle" })!
+        self.emit(Ins.CallRtVoid(row.name, [h.reg]))
+    }
+
+    /// The fn leaves unwinding: what every scope holds ended as a failure ends it, its deferred calls
+    /// shielded from the cancel being unwound, then the exit, answering what no caller reads. With a
+    /// `within` open, its landing catches the unwind instead: what the scopes from its turn's hold is
+    /// ended, shielded the same way, and its loop is left.
+    mut fn unwound_exit() {
+        let mark? = self.withins.get().last() else {
+            self.frame_pushed()
+            let gives = self.exit_answer()
+            self.shielded(0) { cx -> cx.ended_from(0, Leaving.Failing) }
+            return self.emit(Ins.FnExit(gives))
+        }
+        self.shielded(mark.floor) { cx -> cx.ended_from(mark.floor, Leaving.Plain) }
+        self.emit(Ins.LoopJump(self.loops.get() - 1 - mark.loop, false))
+    }
+
+    /// The body's own frame joined to the unwind's list as the unwind leaves it; a `within` catching
+    /// the unwind in the same body pushes none, since the body hasn't left.
+    mut fn frame_pushed() {
+        let f? = self.frame else { return }
+        self
+            .run_row(
+                rt_sig_of("avra_unwind_push")!,
+                [self.laid_static(Layout.Boxed(BoxKind.Record), f.name, f.boxes)],
+            )
+    }
+
+    /// `run` under the shield where a scope from the `floor`th holds a deferred call, so a call inside
+    /// isn't cut by the cancel being unwound.
+    mut fn shielded(floor: int, run: fn(mut Lowering) -> void) {
+        let shielded = self.endings.get().drop(floor).any((f) -> f.any(it.calls()))
+        if shielded { self.run_row(rt_sig_of("avra_fiber_shield_enter")!, []) }
+        run(self)
+        if shielded { self.run_row(rt_sig_of("avra_fiber_shield_leave")!, []) }
+    }
+
+    /// A `within`'s turn opened: the deadline scope armed for `millis` milliseconds, its end held by the
+    /// turn's scope and whether an unwind landed there kept in `landing`; an unwind inside now leaves
+    /// the innermost loop.
+    mut fn within_opened(millis: Reg, landing: Reg) {
+        let scope = self.call_row(Layout.Word, rt_sig_of("avra_fiber_within")!, [millis])
+        self
+            .withins
+            .push(WithinMark { loop: self.loops.get() - 1, floor: self.endings.get().length })
+        self.opened()
+        self.ends_with(Ending.Landed(scope, landing))
+    }
+
+    /// The innermost `within`'s turn closed: its scope ended, and an unwind no longer lands there.
+    mut fn within_closed() {
+        self.closed()
+        let held = self.withins.get()
+        self.withins.set(held.take(held.length - 1))
+    }
+}

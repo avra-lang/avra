@@ -1,0 +1,42 @@
+// A sorted list searched: the first place a test stops holding, from any place, empty first.
+use sorted.{first_not_before, sorted_by}
+
+/// The first place from `from` whose number isn't below `wanted`, walked to.
+fn walked_to(numbers: List<int>, from: int, wanted: int) -> int {
+    (from..numbers.length).find(numbers[it] >= wanted) ?? numbers.length
+}
+
+/// Whether searching `numbers` from every place, for every number and its neighbours, agrees with a
+/// walk.
+fn search_agrees(numbers: List<int>) -> bool {
+    let wanted = [w for n in numbers for w in [n - 1, n, n + 1]].concat([-1000, 1000])
+    (0..numbers.length + 1)
+        .all(
+            (from) -> wanted
+                .all(
+                    (w) -> first_not_before(numbers, from, (n) -> n < w) == walked_to(numbers, from, w),
+                ),
+        )
+}
+
+spec "program/sorted — sorting, and searching what's sorted" {
+    given "a sorted list searched" {
+        then "an empty one answers its length" {
+            let empty: List<int> = []
+            first_not_before(empty, 0, (n) -> n < 5) == 0
+        }
+        then "the answer agrees with a walk, from every place, through repeats" {
+            search_agrees([7]) &&
+                search_agrees([1, 3, 3, 3, 8, 20]) &&
+                search_agrees([-5, -5, 0, 0, 9])
+        }
+    }
+    given "a list sorted" {
+        then "items it can't tell apart keep their order" {
+            let sorted = sorted_by([31, 12, 22, 11, 32], (a, b) -> a / 10 < b / 10)
+            let expected = [12, 11, 22, 31, 32]
+            sorted.length == expected.length &&
+                (0..expected.length).all((at) -> sorted[at] == expected[at])
+        }
+    }
+}

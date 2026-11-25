@@ -1,0 +1,36 @@
+//! A restart of a one-shot workspace ends with it. `anew()` makes a fresh
+//! workspace (a build's restart, a turned attempt that stood), and nothing but
+//! the standing list ends a one-shot — so a restart left out of it was never
+//! ended, and its rows stood in the process beside every later workspace.
+use @std.avrac.testing.{test_workspace}
+use compiler.host.{memory_host}
+use compiler.{Workspace, one_shot_let_go}
+
+fn lone() -> Workspace {
+    test_workspace(
+        memory_host(
+            {
+                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+                "/w/src/main.av": "1\n",
+            },
+            ["/w/avra.toml", "/w/src/main.av"],
+        ),
+        "/w",
+    )
+}
+
+spec "compiler/workspace — a restart of a one-shot" {
+    given "the next one-shot workspace" {
+        then "lets the restart go with the workspace it restarted" {
+            let fresh = lone().anew()
+            one_shot_let_go()
+            fresh.let_go()
+        }
+        then "lets a restart of a restart go too" {
+            let fresh = lone().anew()
+            let again = fresh.anew()
+            one_shot_let_go()
+            fresh.let_go() && again.let_go()
+        }
+    }
+}

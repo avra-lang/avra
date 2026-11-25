@@ -1,0 +1,19 @@
+//! proves `overflow: .fail` refuses a full ring's send — `null` — and
+//! leaves what waits untouched.
+use @std.queue.{queue, key, Dead, Overflow}
+use @std.task.{unbounded_channel}
+use @std.time.{ms}
+
+type Job = { n: int }
+
+let letters = unbounded_channel<Dead<Job, string>>()
+queue<Job> jobs {
+    capacity: 1
+    lease: ms(60000)
+    overflow: Overflow.fail
+    dead: letters.sink
+}
+let _ = jobs.home().send(Job { n: 1 }, key("k"))
+let second = jobs.home().send(Job { n: 2 }, key("k"))
+let taken = jobs.home().take()
+"${second == null} ${taken!.item.n}"

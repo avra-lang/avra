@@ -1,0 +1,247 @@
+//! PLACES — where a mutation lands. A path from a mut binding's
+//! cell through fields and indexes opens for writing by COPY-ON-
+//! WRITE, top-down: each box along the way is returned as-is when
+//! its count is one and cloned into its holder otherwise, so the
+//! write is in place when nothing shares and aliasing is never
+//! observed. The runtime clones by its own owned-map; the
+//! interpreter clones every time (the executable spec). Mutation
+//! and the list vocabulary's `push` both land here.
+use core.{ExprId, StmtId, TypeId, DeclId, Reg, Ins, Type}
+use features.{state_slot}
+
+/// An opened place: a cell (a bare mut name) or a slot of a box
+/// already made unique.
+export enum Place {
+    Cell(slot: Reg)
+    Slot(box: Reg, at: Reg)
+    // a slot the box's shape proves exists: a cell's one, a record's declared field
+    Proved(box: Reg, at: Reg)
+}
+
+impl LowerCx {
+    /// `v` written where `target` names. A FIELD OF A VALUE RECORD has
+    /// no slot of its own — the record is registers — so the record is
+    /// read, packed again with that field replaced, and written whole to
+    /// wherever IT lives: the same verb, one step up the path.
+    mut fn written_to(target: ExprId, v: Reg) {
+        let step? = self.view.store.place_step(target) else { return self.defect(non_place()) }
+        match step {
+            .Field(subject, name) -> {
+                // A `state` field's slot IS its cell's one slot.
+                let cell = self.state_field_cell(subject, name.of)
+                if cell != null { return self.slot_write_proved(cell!, self.const_int(0), v) }
+                if self.view.types.is_wide(self.type_at(subject)) {
+                    return self.repacked(subject, name.of, v)
+                }
+                if !self.flat_at(subject) { return self.boxed_written(subject, name.of, v) }
+                self.opened_write(target, v)
+            },
+            rest -> self.opened_write(target, v),
+        }
+    }
+
+    /// A boxed record's field written in place — laid inline when it is
+    /// a value record.
+    mut fn boxed_written(subject: ExprId, name: string, v: Reg) {
+        let sig? = self.fields_at(subject) else { return self.defect(non_place()) }
+        let n? = sig.slot_of(name) else { return self.defect(non_place()) }
+        self.field_written(self.unique_box(subject), self.type_at(subject), n, v)
+    }
+
+    /// The value record at `subject` with field `name` now `v`, written back.
+    mut fn repacked(subject: ExprId, name: string, v: Reg) {
+        let sig? = self.fields_at(subject) else { return self.defect("a fieldless value record survived typing") }
+        let ty = self.type_at(subject)
+        let old = self.reg_of(subject)
+        let fresh = self
+            .pack(
+                ty,
+                [if n == name { v } else { self.field_read(old, ty, slot, sig.types[slot]) } for slot, n in sig.names],
+            )
+        self.written_to(subject, fresh)
+    }
+
+    /// The write lands where the opened place says: a cell takes a
+    /// store (the mut-cell protocol owns the counts), a slot takes the
+    /// runtime's set (the memory pass marks a managed value owned).
+    mut fn opened_write(target: ExprId, v: Reg) {
+        let place? = self.opened_place(target) else { return self.defect(non_place()) }
+        match place {
+            .Cell(slot) -> self.emit(Ins.Store(slot, v)),
+            .Slot(box, at) -> self.slot_write(box, at, v),
+            .Proved(box, at) -> self.slot_write_proved(box, at, v),
+        }
+    }
+
+    /// The place an expression names, opened for one write — null for
+    /// a value (resolve refuses those before lowering).
+    mut fn opened_place(e: ExprId) -> Place? {
+        let step? = self.view.store.place_step(e) else { return null }
+        match step {
+            .Root(_) -> self.root_place(e),
+            .Field(subject, name) -> self.field_place(subject, name.of),
+            .At(subject, index) -> Place.Slot(self.unique_box(subject), self.reg_of(index)),
+            .Unwrap(subject) -> self.unwrapped_place(e, subject),
+        }
+    }
+
+    /// What a nullable carries, as a place — reached only as a FLAT
+    /// record's field (`h.r!.x = …`), since an unwrap is never a
+    /// target itself. A boxed nullable holds the record in its one
+    /// slot; the box must be present.
+    mut fn unwrapped_place(e: ExprId, subject: ExprId) -> Place? {
+        let opt = self.type_at(subject)
+        match self.repr_of(opt) {
+            .Boxed -> Place
+                .Slot(
+                    self.insist(self.view.types.shape_of(opt), self.unique_box(subject)),
+                    self.const_int(0),
+                ),
+            .Niche or .Pair or .Tagged -> {
+                let _ = self.lower_defect(e, "an unwrap written whole survived resolve")
+                null
+            },
+        }
+    }
+
+    /// A field's place. A FLAT record IS its one field, so writing that
+    /// field writes the RECORD — the subject's own place, not a slot in
+    /// a box the record does not have.
+    mut fn field_place(subject: ExprId, name: string) -> Place? {
+        // A `state` field's slot IS the cell's one slot.
+        let cell? = self.state_field_cell(subject, name) else {
+            if self.flat_at(subject) { return self.opened_place(subject) }
+            return Place.Proved(self.unique_box(subject), self.field_slot(subject, name))
+        }
+        Place.Proved(cell, self.const_int(0))
+    }
+
+    /// The `Cell` a `state` field holds, read from its record — null for
+    /// any other field. THE read every write path shares.
+    mut fn state_field_cell(subject: ExprId, name: string) -> Reg? {
+        let sig? = self.fields_at(subject) else { return null }
+        let slot? = state_slot(sig, name) else { return null }
+        self.field_read(self.reg_of(subject), self.type_at(subject), slot, sig.types[slot])
+    }
+
+    /// What a `state` field's cell holds — null for any other field.
+    fn state_field_held(subject: ExprId, name: string) -> TypeId? {
+        let sig? = self.fields_at(subject) else { return null }
+        let slot? = state_slot(sig, name) else { return null }
+        self.view.types.cell_inner(sig.types[slot])
+    }
+
+    /// A root's place. THE ROOT LAW: a `state` is an identity, so a path
+    /// rooted at one is written IN its cell's one slot, where every reader
+    /// looks; every other root writes its own box whole.
+    fn root_place(e: ExprId) -> Place? {
+        let cell? = self.state_root_cell(e) else { return self.cell_place(e) }
+        Place.Proved(cell, self.const_int(0))
+    }
+
+    fn cell_place(e: ExprId) -> Place? {
+        let cell? = self.cell_of(e) else { return null }
+        Place.Cell(cell)
+    }
+
+    /// A bare `mut` local's box for a write through it whole: a copy
+    /// only when the box is the binary's own data.
+    mut fn thawed_box(s: ExprId) -> Reg {
+        let cell? = self.cell_of(s) else { return self.lower_defect(s, "a thawed write rooted outside a mut cell survived resolve") }
+        self.cell_thawed(self.shape_at(s), cell)
+    }
+
+    /// A plain `let`'s fresh seed, boxed into a cell exactly as a
+    /// `mut` local's is: thawed once, here, so every later read or
+    /// write finds the same cell.
+    mut fn boxed_seed(s: StmtId, v: Reg) -> Reg {
+        let thawed = self.box_thawed(self.view.types.shape_of(self.out.type_of_reg(v)), v)
+        let declared: TypeId? = self.facts.declared_binding(s)
+        let slot = if declared == null { self.mint_like(thawed) } else { self.mint_ty(self.concrete(declared!)) }
+        self.emit(Ins.Alloca(slot))
+        self.emit(Ins.Store(slot, thawed))
+        self.body.bind_slot(s, slot)
+        thawed
+    }
+
+    /// The box a path's subject holds, UNIQUE for writing. Operands
+    /// first, the destination last — registers define in mint order.
+    mut fn unique_box(s: ExprId) -> Reg {
+        let step? = self.view.store.place_step(s) else { return self.lower_defect(s, "a mutation through a value survived resolve") }
+        match step {
+            .Root(_) -> {
+                // a `state` root's box is the one its cell holds, opened in place
+                let held: Reg? = self.state_root_cell(s)
+                if held != null { return self.slot_opened(s, held!, self.const_int(0)) }
+                let cell: Reg? = self.cell_of(s)
+                // a cell opens unique — copy-on-write
+                if cell != null { return self.cell_unique(self.shape_at(s), cell!) }
+                self.captured_box(s) ?? self.borrowed_box(s)
+            },
+            .Field(subject, name) -> {
+                // a `state` field's box is the one its cell holds, opened in place
+                if self.state_field_held(subject, name.of) != null {
+                    let cell = self.state_field_cell(subject, name.of)
+                    return self.slot_opened(s, cell!, self.const_int(0))
+                }
+                self.slot_opened(s, self.unique_box(subject), self.field_slot(subject, name.of))
+            },
+            .At(subject, index) -> self.slot_opened(s, self.unique_box(subject), self.reg_of(index)),
+            .Unwrap(subject) -> self.unwrapped_box(s, subject),
+        }
+    }
+
+    /// A capture's box, opened unique in its lane of the lambda's env: the
+    /// write lands in the lambda's copy, never the captured value. Null
+    /// for any other binding.
+    mut fn captured_box(s: ExprId) -> Reg? {
+        let b? = self.names.binding(s) else { return null }
+        match b {
+            .Capture(_, j) -> self
+                .owned_slot_unique(self.shape_at(s), self.env_box(), self.const_int(capture_lane(j))),
+            _ -> null,
+        }
+    }
+
+    /// A method's receiver, a borrowed parameter: no cell stands behind
+    /// it, so its box is thawed once here — idempotent, since the call
+    /// site already thawed it.
+    mut fn borrowed_box(s: ExprId) -> Reg {
+        let reg? = self.def_reg(s) else { return self.lower_defect(s, "a mutation rooted outside a mut cell survived resolve") }
+        self.box_thawed(self.shape_at(s), reg)
+    }
+
+    /// The box a nullable carries, unique and insisted present. Only a
+    /// NICHE carries a box of its own: a boxed nullable carries a flat
+    /// record, which has no slots, and a pair a scalar.
+    mut fn unwrapped_box(s: ExprId, subject: ExprId) -> Reg {
+        let opt = self.type_at(subject)
+        if self.view.types.carried(opt) == null { return self.unique_box(subject) }
+        match self.repr_of(opt) {
+            .Niche -> self.insisted_niche(self.unique_box(subject), opt),
+            .Boxed or .Pair or .Tagged -> self.lower_defect(s, "a slot write under an unwrap of a flat value survived typing"),
+        }
+    }
+
+    mut fn slot_opened(s: ExprId, parent: Reg, at: Reg) -> Reg {
+        self.slot_unique(self.shape_at(s), parent, at)
+    }
+
+    /// A field's declaration index as a register — the slot it lives in.
+    mut fn field_slot(subject: ExprId, name: string) -> Reg {
+        let sig: StructSig? = self.fields_at(subject)
+        let slot: int? = sig?.slot_of(name)
+        // LICENSED compiler.raw_mint_emit_const_int: the defect arm answers idx unemitted — minted once, both arms share it
+        let idx = self.mint_shape(Type.Int)
+        if slot == null {
+            let _ = self.lower_defect(subject, "a fieldless place survived typing")
+            return idx
+        }
+        self.emit(Ins.ConstInt(idx, self.field_offset(self.type_at(subject), slot!)))
+        idx
+    }
+}
+
+// ── The voices ──
+
+fn non_place() -> string { "an assignment to a non-place survived a clean analysis" }

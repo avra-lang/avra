@@ -1,0 +1,265 @@
+//! The lowering rules of the literals, names and operators this feature reads: a literal is its
+//! constant, a name what it's bound to, and an operator over the language's own numbers, truths and
+//! text one instruction or one runtime row; `&&` and `||` take their right side inside a region.
+use core.{
+    BinOp,
+    NAMED_FIELD,
+    enum_property_named,
+    state_read,
+    witness_only,
+    ExprId,
+    Layout,
+    Lowering,
+    Lowers,
+    OwnVerb,
+    Reg,
+    RtSig,
+    SignedType,
+    VariantSeat,
+    own_row_of,
+    own_shape,
+    rt_sig_of,
+}
+use core.expr.{Binary, FloatLit, Ident, Index, IntLit, Not, Prop}
+
+impl Lowers for IntLit {
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg { cx.const_int(self.value) }
+}
+
+impl Lowers for FloatLit {
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg { cx.const_float(self.bits) }
+}
+
+impl Lowers for Ident {
+    /// A name is what it's bound to here: a parameter's or a `let`'s register, what a `mut`'s cell
+    /// holds now, what a `const` is written as or settles to, or a declared fn as a value.
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        let b = cx.bound(self.name.of)
+        if b != null { return cx.read(e, b!) }
+        let named? = cx.named(e, self.name.of) else { return cx.unlowered(e) }
+        match named {
+            .Fn(callee) -> cx.fn_value(e, callee),
+            .Literal(_) or .Settled(_, _) or .Unsettled(_) -> {
+                let ty? = cx.type_at(e) else { return cx.unlowered(e) }
+                cx.const_read(named, ty)
+            },
+            .Built(callee) -> cx.call_fn(cx.layout_at(e), callee, []),
+        }
+    }
+}
+
+impl Lowers for Index {
+    /// `xs[i]` is the runtime's read of the list's slot `i`.
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        if cx.type_at(self.subject)?.listed() == null { return cx.unlowered(e) }
+        let xs = cx.lower(self.subject)
+        let at = cx.lower(self.index)
+        cx.element_at(cx.layout_at(e), xs, at)
+    }
+}
+
+impl Lowers for Prop {
+    /// A property of a type is its variant of that name, which carries nothing. A property of a type
+    /// the language owns is its row, handed the receiver, or the shape of rows it is. A record's field is
+    /// what a flat record's registers hold at its place, or a boxed one's slots past the fields
+    /// before it. A `state` field, and any other property, aren't lowered yet.
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        let ty? = cx.type_at(self.subject) else { return cx.unlowered(e) }
+        let described = ty.described()
+        if described != null { return variant_named(cx, e, described!, self.name.of) }
+        let own = owned_property(ty, self.name.of)
+        if own != null { return cx.call_words(cx.layout_at(e), own!, [cx.lower(self.subject)]) }
+        let shape = owned_shape(ty, self.name.of)
+        if shape != null { return cx.own_verb_lowered(shape!, e, self.subject, []) }
+        if self.name.of == NAMED_FIELD && cx.named_over(ty) != null { return cx.lower(self.subject) }
+        let variants = cx.variants_of(ty)
+        if variants != null { return enum_property(cx, e, variants!, self.name.of, cx.lower(self.subject)) }
+        let fields? = cx.fields_of(ty) else { return cx.unlowered(e) }
+        let n? = fields.find_index(it.name == self.name.of) else { return cx.unlowered(e) }
+        if fields[n].state { return cx.missed_as(state_read()) }
+        let laid? = cx.seat_layouts(fields) else { return cx.unlowered(e) }
+        let v = cx.lower(self.subject)
+        let l = cx.layout_at(e)
+        match cx.laid_out(ty) {
+            .Boxed(_) -> cx.boxed_field(v, laid, n, l),
+            .Void or .Word or .Truth or .Real or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> cx.extracted(l, v, n),
+        }
+    }
+}
+
+/// The property `name` every enum has, of the enum `v` declaring `variants`: its tag is its variant's
+/// place, and its variant's name the text the tag selects.
+fn enum_property(mut cx: Lowering, e: ExprId, variants: List<VariantSeat>, name: string, v: Reg) -> Reg {
+    let tag = cx.tag_of(v)
+    let property? = enum_property_named(name) else { return cx.unlowered(e) }
+    match property { .Ordinal -> tag, .Name -> variant_name(cx, e, variants, tag) }
+}
+
+/// The name of the variant of `variants` the tag `tag` selects.
+fn variant_name(mut cx: Lowering, e: ExprId, variants: List<VariantSeat>, tag: Reg) -> Reg {
+    let last = variants.length - 1
+    if last == 0 { return cx.const_str(variants[0].name) }
+    cx
+        .switched(tag, [j for j in 0..last], cx.layout_at(e)) { cx, j -> cx.const_str(variants[j].name) }
+}
+
+/// The variant `name` of the enum `ty`, carrying nothing.
+fn variant_named(mut cx: Lowering, e: ExprId, ty: SignedType, name: string) -> Reg {
+    let made? = cx.type_at(e) else { return cx.unlowered(e) }
+    if !made.names_as(ty) { return cx.unlowered(e) }
+    let tag? = cx.variants_of(made)?.find_index(it.name == name) else { return cx.unlowered(e) }
+    cx.tagged_value(cx.laid_out(made), tag, [])
+}
+
+impl Lowers for Not {
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg { cx.not(cx.lower(self.value)) }
+}
+
+impl Lowers for Binary {
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        match self.op {
+            .And -> both(cx, self.left, self.right),
+            .Or -> either(cx, self.left, self.right),
+            .Eq -> compared(cx, e, false, self.left, self.right),
+            .Ne -> compared(cx, e, true, self.left, self.right),
+            .Add or .Sub or .Mul or .Div or .Mod or .Lt or .Le or .Gt or .Ge or .BitAnd or .BitOr or .BitXor or .Shl or .Shr -> operated(cx, e, self.op, self.left, self.right),
+        }
+    }
+}
+
+/// `l && r`: `r` where `l` holds, else false.
+fn both(mut cx: Lowering, l: ExprId, r: ExprId) -> Reg {
+    cx.region(cx.lower(l), Layout.Truth) { cx -> cx.lower(r) } else { cx -> cx.const_bool(false) }
+}
+
+/// `l || r`: true where `l` holds, else `r`.
+fn either(mut cx: Lowering, l: ExprId, r: ExprId) -> Reg {
+    cx.region(cx.lower(l), Layout.Truth) { cx -> cx.const_bool(true) } else { cx -> cx.lower(r) }
+}
+
+/// The row a property of a type the language owns is, absent for any other property.
+fn owned_property(ty: SignedType, name: string) -> RtSig? {
+    let own? = own_row_of(ty, name) else { return null }
+    rt_sig_of(own.row)
+}
+
+/// The shape of rows the property `name` of a value of `ty`, a type the language owns, is; absent
+/// for one that's no such shape, or one called through the type.
+fn owned_shape(ty: SignedType, name: string) -> OwnVerb? {
+    let shape? = own_shape(ty, name) else { return null }
+    if shape.on_the_type() { null } else { shape }
+}
+
+/// What an operator's operands are, by their layout.
+enum Operand {
+    Number
+    Truth
+    Text
+    Octets
+}
+
+/// The operands' kind, absent for a layout no operator here reads.
+fn operand_of(l: Layout) -> Operand? {
+    match l {
+        .Word or .Real -> Operand.Number,
+        .Truth -> Operand.Truth,
+        .Boxed(box) -> match box {
+            .Text -> Operand.Text,
+            .Bytes -> Operand.Octets,
+            .List or .Map or .Record or .Enum or .Closure or .Cell or .Task or .Dyn or .Union or .Range or .Slot -> null,
+        },
+        .Void or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> null,
+    }
+}
+
+/// The kind of the one type both operands are, seen through a name either wears, when it's one the
+/// language owns, applied to nothing and present.
+fn operands(mut cx: Lowering, l: ExprId, r: ExprId) -> Operand? {
+    let left? = seen_type(cx, l) else { return null }
+    if seen_type(cx, r)?.spelled() != left.spelled() { return null }
+    if left.nullable() || left.dynamic || !left.args.is_empty() { return null }
+    let plain? = owned_only(left) else { return null }
+    operand_of(cx.laid_out(plain))
+}
+
+/// The type `e` has, seen through the name it wears.
+fn seen_type(cx: Lowering, e: ExprId) -> SignedType? {
+    let written? = cx.type_at(e) else { return null }
+    cx.program.checked.named_shape(written) ?? written
+}
+
+/// `t` when the language owns it.
+fn owned_only(t: SignedType) -> SignedType? { match t.head { .Owned(_) -> t, rest -> null } }
+
+/// `l == r`, or `l != r` when `negated`: text and bytes by the runtime's comparison, a number or a
+/// truth by one instruction.
+fn compared(mut cx: Lowering, e: ExprId, negated: bool, l: ExprId, r: ExprId) -> Reg {
+    let kind? = operands(cx, l, r) else {
+        return compared_beyond(cx, negated, l, r) ?? compared_held(cx, negated, l, r) ?? uncompared(
+            cx,
+            e,
+            l,
+            r,
+        )
+    }
+    let a = cx.lower(l)
+    let b = cx.lower(r)
+    match kind {
+        .Number or .Truth -> cx.bin(Layout.Truth, if negated { BinOp.Ne } else { BinOp.Eq }, a, b),
+        .Text or .Octets -> {
+            let same = owned_same(cx, kind, a, b)
+            if negated { cx.not(same) } else { same }
+        },
+    }
+}
+
+/// Whether two values of a type the language owns, of the operand kind `kind`, are one value.
+fn owned_same(mut cx: Lowering, kind: Operand, a: Reg, b: Reg) -> Reg {
+    match kind {
+        .Text -> cx.call_row(Layout.Truth, rt_sig_of("avra_streq")!, [a, b]),
+        .Octets -> cx.call_row(Layout.Truth, rt_sig_of("avra_bytes_eq")!, [a, b]),
+        .Number or .Truth -> cx.bin(Layout.Truth, BinOp.Eq, a, b),
+    }
+}
+
+/// `l == r`, or `l != r` when `negated`, where one side is a nullable of a type that compares by value
+/// and the other a present value of that type: one value where the nullable holds one equal to it.
+/// Absent, with nothing emitted, for any other operands.
+fn compared_held(mut cx: Lowering, negated: bool, l: ExprId, r: ExprId) -> Reg? {
+    let lt? = cx.type_at(l) else { return null }
+    let rt? = cx.type_at(r) else { return null }
+    let opt = if lt.nullable() { lt } else { rt }
+    let plain = if lt.nullable() { rt } else { lt }
+    if plain.nullable() ||
+        !opt.nullable() ||
+        opt.absence() ||
+        opt.unwrapped().spelled() != plain.spelled() ||
+        !cx.equatable(plain) { return null }
+    let a = cx.lower(l)
+    let b = cx.lower(r)
+    let held = if lt.nullable() { a } else { b }
+    let other = if lt.nullable() { b } else { a }
+    let same = cx
+        .region(cx.present(held, opt), Layout.Truth) { cx -> cx.same_value(cx.carried(held, opt), other, plain) } else { cx -> cx.const_bool(false) }
+    if negated { cx.not(same) } else { same }
+}
+
+/// `l == r` past every rule: over a type parameter, what only a witness answers.
+fn uncompared(mut cx: Lowering, e: ExprId, l: ExprId, r: ExprId) -> Reg {
+    if cx.type_at(l)?.generic() ?? false || cx.type_at(r)?.generic() ?? false { return cx.missed_as(witness_only("`==` over a type parameter")) }
+    cx.unlowered(e)
+}
+
+/// An arithmetic, comparison or bitwise operation over numbers, one instruction; `+` over text, the
+/// runtime's join.
+fn operated(mut cx: Lowering, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> Reg {
+    let kind? = operands(cx, l, r) else { return cx.unlowered(e) }
+    let a = cx.lower(l)
+    let b = cx.lower(r)
+    let answer = cx.layout_at(e)
+    match kind {
+        .Number -> cx.bin(answer, op, a, b),
+        .Text -> if op == BinOp.Add { cx.call_row(answer, rt_sig_of("avra_str_concat")!, [a, b]) } else { cx.unlowered(e) },
+        .Truth or .Octets -> cx.unlowered(e),
+    }
+}

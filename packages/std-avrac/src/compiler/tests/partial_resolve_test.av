@@ -1,0 +1,52 @@
+//! A resolve asked while its file's expansion is still open is a SMALLER
+//! view: the expansion has not finished minting, so the tables it sizes
+//! are short of the arena the expansion ends with. That view serves the
+//! run that asked and is never kept — a kept one answered every later
+//! reader with tables an id short ("side table `bindings` holds [0, N) —
+//! id N is outside it").
+use @std.avrac.testing.{test_workspace}
+use compiler.host.{memory_host}
+use compiler.{Workspace}
+use compiler.families.{Family}
+use core.{FileId}
+
+fn lone() -> Workspace {
+    test_workspace(
+        memory_host(
+            {
+                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+                "/w/src/main.av": "type T = { n: int }\n1\n",
+            },
+            ["/w/avra.toml", "/w/src/main.av"],
+        ),
+        "/w",
+    )
+}
+
+/// Whether the file's resolve is held after it was answered.
+fn resolve_held(ws: Workspace, f: FileId) -> bool {
+    match ws.relation(Family.Resolved).ask(f.index) {
+        .Reuse(_) -> true,
+        .Compute or .Cycle -> false,
+    }
+}
+
+spec "compiler/workspace — a resolve under an open expansion" {
+    given "a file whose expansion is not open" {
+        then "its resolve is kept" {
+            let ws = lone()
+            let f = ws.file_id("/w/src/main.av")
+            let _ = ws.resolved(f)
+            resolve_held(ws, f)
+        }
+    }
+    given "a file whose expansion is still open" {
+        then "its resolve answers and is not kept" {
+            let ws = lone()
+            let f = ws.file_id("/w/src/main.av")
+            ws.relation(Family.Expanded).begin(f.index)
+            let _ = ws.resolved(f)
+            !resolve_held(ws, f)
+        }
+    }
+}

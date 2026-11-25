@@ -1,0 +1,148 @@
+//! The check a `while` back-edge carries: one read of the tick byte and,
+//! taken, the cold side — emitted at a `while`'s back edge and nowhere
+//! else; a `for` over a list or a range carries none, and an `@unbroken`
+//! fn's own `while` carries none either. Every program here spawns from a
+//! fn, so the cancel pass says the program links a scheduler.
+//!
+//! `@std/meta` is PACKAGED, not a lone source (compiler/tests/
+//! unbroken_test.av): a lone source cannot import it, so its mark would
+//! never resolve and the `@unbroken` case would prove nothing.
+use @std.avrac.testing.{ir_of, provided}
+use compiler.backend.{render_ir}
+
+/// The IR text of a program.
+fn ir(lines: List<string>) -> string { render_ir(ir_of(lines.concat([""]).join("\n"))) }
+
+/// How many times `word` stands in `text`.
+fn times(text: string, word: string) -> int { text.split(word).length - 1 }
+
+/// The IR of ONE fn's body: from its `fn <name>(` line to the next `fn `.
+fn section(text: string, name: string) -> string {
+    let parts = text.split("fn ${name}(")
+    if parts.length < 2 { return "" }
+    parts[1].split("\nfn ")[0]
+}
+
+/// How many times `word` stands in `name`'s body.
+fn in_text(text: string, name: string, word: string) -> int { times(section(text, name), word) }
+
+/// How many times `word` stands in `name`'s body, over a lone source.
+fn in_body(lines: List<string>, name: string, word: string) -> int {
+    in_text(ir(lines), name, word)
+}
+
+/// A `while` around a counter, run as a task.
+fn spinning() -> List<string> {
+    [
+        "fn spin(n: int) -> int {",
+        "    mut i = 0",
+        "    while i < n { i = i + 1 }",
+        "    i",
+        "}",
+        "fn go() -> int {",
+        "    let t = spawn spin(3)",
+        "    t.await",
+        "}",
+        "go()",
+    ]
+}
+
+/// Two `for`s — over a list and over a range — run as a task.
+fn walking() -> List<string> {
+    [
+        "fn walk(xs: List<int>) -> int {",
+        "    mut s = 0",
+        "    for x in xs { s = s + x }",
+        "    s",
+        "}",
+        "fn rng(n: int) -> int {",
+        "    mut s = 0",
+        "    for i in 0..n { s = s + i }",
+        "    s",
+        "}",
+        "fn go() -> int {",
+        "    let t = spawn walk([1])",
+        "    t.await + rng(2)",
+        "}",
+        "go()",
+    ]
+}
+
+/// A program whose ONLY spawn and ONLY `while` are TOP-LEVEL: the entry
+/// root is no declaration, so the cancel pass must survey it for the
+/// scheduler link to be found, or the top-level `while` carries no check.
+fn top_level() -> List<string> {
+    [
+        "fn spinner(n: int) -> int { n }",
+        "let t = spawn spinner(3)",
+        "mut i = 0",
+        "while i < 3 { i = i + 1 }",
+        "let _ = t.await",
+        "i",
+    ]
+}
+
+/// The same, whose only top-level wait is a runtime row that parks.
+fn top_sleep() -> List<string> {
+    [
+        "extern fn avra_fiber_sleep(ms: int)",
+        "let t = spawn spinner(3)",
+        "avra_fiber_sleep(0)",
+        "mut i = 0",
+        "while i < 3 { i = i + 1 }",
+        "i",
+    ]
+}
+
+/// An `@unbroken` fn's own `while`, run as a task, `@std/meta` vendored.
+fn unbroken_ir() -> string {
+    render_ir(
+        provided(
+            [
+                "use @std.meta.{unbroken}",
+                "@unbroken",
+                "fn rouse() -> int {",
+                "    mut i = 0",
+                "    while i < 3 { i = i + 1 }",
+                "    i",
+                "}",
+                "fn go() -> int {",
+                "    let t = spawn rouse()",
+                "    t.await",
+                "}",
+                "go()",
+            ]
+                .join("\n"),
+            "",
+        )
+            .lowered(),
+    )
+}
+
+spec "compiler/lower — a checked `while` back-edge" {
+    then "a `while` reads the tick and calls the cold side once" {
+        in_body(spinning(), "spin", "= flag tick") == 1 &&
+            in_body(spinning(), "spin", "call avra_tick_cold()") == 1
+    }
+    then "a `for` over a list or a range carries no check" {
+        in_body(walking(), "walk", "= flag tick") == 0 &&
+            in_body(walking(), "walk", "call avra_tick_cold()") == 0 &&
+            in_body(walking(), "rng", "= flag tick") == 0 &&
+            in_body(walking(), "rng", "call avra_tick_cold()") == 0
+    }
+    then "an `@unbroken` fn's own `while` carries no check" {
+        in_text(unbroken_ir(), "rouse", "= flag tick") == 0 &&
+            in_text(unbroken_ir(), "rouse", "call avra_tick_cold()") == 0
+    }
+    then "a top-level `while` in a program whose only spawn is top-level carries the check" {
+        times(ir(top_level()), "= flag tick") == 1 &&
+            times(ir(top_level()), "call avra_tick_cold()") == 1
+    }
+    then "a top-level park links the scheduler for a top-level `while`" {
+        times(ir(top_sleep()), "= flag tick") == 1 &&
+            times(ir(top_sleep()), "call avra_tick_cold()") == 1
+    }
+    then "the cold side is followed by the unwind test, so a cancelled task leaves" {
+        in_body(spinning(), "spin", "= flag unwinding") >= 1
+    }
+}

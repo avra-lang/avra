@@ -1,0 +1,86 @@
+//! The workspace's `@query` answers kept in the store, each carrying the source texts it
+//! read: a later process (a fresh workspace over the same store) reads the answer back
+//! and runs nothing while those texts stand, runs the query when one of them moved, and
+//! is not disturbed by an edit to a file the query never read.
+use @std.relation.{query}
+use @std.relation.db.{Db as RelDb}
+use @std.time.{now_ns}
+use compiler.{Workspace}
+use @std.avrac.testing.{test_workspace}
+use compiler.answers.{file_text}
+use compiler.host.{memory_host}
+use compiler.store.{Store, store_at}
+
+once fn computes() -> Cell<int> { Cell.new(0) }
+
+@query
+fn text_length(db: RelDb, path: string) -> int {
+    let c = computes()
+    c.set(c.get() + 1)
+    file_text(db, path).length
+}
+
+fn files_of(a: string, b: string) -> Map<string, string> {
+    {
+        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+        "/w/src/a.av": a,
+        "/w/src/b.av": b,
+    }
+}
+
+/// A fresh workspace over `files`, its store the one attached.
+fn process(files: Map<string, string>, store: Store) -> Workspace {
+    let ws = test_workspace(memory_host(files, files.keys()), "/w")
+    ws.attach_store(store)
+    ws
+}
+
+/// What `text_length` answers about /w/src/a.av in a process over `files`, and how many
+/// times it ran in that process.
+fn asked(files: Map<string, string>, store: Store) -> string {
+    let ws = process(files, store)
+    ws.stage_text("/w/src/a.av")
+    let before = computes().get()
+    let n = text_length(ws.decls.rows_db.get(), "/w/src/a.av")
+    "${n}/${computes().get() - before}"
+}
+
+fn fresh_store(name: string) -> Store { store_at("/tmp/avra-answers-test/${now_ns()}/${name}") }
+
+spec "compiler/answers — a workspace's @query answers carry the texts they read" {
+    given "a file whose text is unchanged between two processes" {
+        then "the second reads the answer back and runs nothing" {
+            let s = fresh_store("unchanged")
+            asked(files_of("12345", "b"), s) == "5/1" && asked(files_of("12345", "b"), s) == "5/0"
+        }
+    }
+    given "a file whose text was edited" {
+        then "the query runs again and answers the edited text" {
+            let s = fresh_store("edited")
+            let _ = asked(files_of("12345", "b"), s)
+            asked(files_of("1234567", "b"), s) == "7/1"
+        }
+    }
+    given "another file edited between the processes" {
+        then "the answer still stands" {
+            let s = fresh_store("unrelated")
+            let _ = asked(files_of("12345", "b"), s)
+            asked(files_of("12345", "an edit elsewhere"), s) == "5/0"
+        }
+    }
+    given "a workspace that never attached a store" {
+        then "nothing is kept: each process runs the query" {
+            asked_detached(files_of("12345", "b")) == "5/1" &&
+                asked_detached(files_of("12345", "b")) == "5/1"
+        }
+    }
+}
+
+/// `asked`, in a process with no store attached.
+fn asked_detached(files: Map<string, string>) -> string {
+    let ws = test_workspace(memory_host(files, files.keys()), "/w")
+    ws.stage_text("/w/src/a.av")
+    let before = computes().get()
+    let n = text_length(ws.decls.rows_db.get(), "/w/src/a.av")
+    "${n}/${computes().get() - before}"
+}

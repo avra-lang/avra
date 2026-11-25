@@ -1,0 +1,83 @@
+//! `style/theme.av` — the token TABLES as data. A token is a name; the
+//! theme is what each name means on a target, held as a Map keyed by the
+//! token's own WORD. One default ships; a user replaces it whole. Values
+//! are target-neutral (whole units, a colour as text, a family list).
+use style.tokens.{Size, Tone, Font}
+use @std.meta.{derive}
+use style.words.{Words}
+
+/// Which contrast mode a theme is written for.
+@derive(Words)
+export enum Mode {
+    @word(light) Light
+    @word(dark) Dark
+    @word(high_contrast) HighContrast
+}
+
+/// Every token family one target needs, together.
+export type Theme = {
+    mode: Mode,
+    space: Map<string, int>,
+    radius: Map<string, int>,
+    color: Map<string, string>,
+    face: Map<string, string>,
+}
+
+const system_ui = "system-ui, sans-serif"
+
+export const default_theme = Theme {
+    mode: .Light,
+    space: {"none": 0, "xs": 4, "s": 8, "m": 16, "l": 32, "xl": 48},
+    radius: {"none": 0, "xs": 2, "s": 4, "m": 8, "l": 16, "xl": 24},
+    color: {
+        "text": "#111111",
+        "muted": "#666666",
+        "danger": "#b00020",
+        "surface": "#ffffff",
+        "surface-raised": "#f7f7f7",
+        "surface-sunk": "#ececec",
+        "surface-hover": "#f0f0f0",
+    },
+    face: {
+        "body": system_ui,
+        "heading": system_ui,
+        "footnote": system_ui,
+        "mono": "ui-monospace, monospace",
+    },
+}
+
+/// The dark mode: the scales kept, every colour replaced.
+export const dark_theme = default_theme with { mode: .Dark, color: {
+    "text": "#eeeeee",
+    "muted": "#aaaaaa",
+    "danger": "#ff6b6b",
+    "surface": "#121212",
+    "surface-raised": "#1e1e1e",
+    "surface-sunk": "#0a0a0a",
+    "surface-hover": "#2a2a2a",
+} }
+
+/// The high-contrast mode: flat surfaces, the strongest text.
+export const high_contrast_theme = default_theme with { mode: .HighContrast, color: {
+    "text": "#000000",
+    "muted": "#000000",
+    "danger": "#a00000",
+    "surface": "#ffffff",
+    "surface-raised": "#ffffff",
+    "surface-sunk": "#ffffff",
+    "surface-hover": "#ffff00",
+} }
+
+impl Theme {
+    /// The spacing step a `Size` names.
+    fn space_of(z: Size) -> int { self.space.get(z.word()) ?? 0 }
+
+    /// The corner step a `Size` names.
+    fn radius_of(z: Size) -> int { self.radius.get(z.word()) ?? 0 }
+
+    /// The colour a `Tone` names.
+    fn color_of(c: Tone) -> string { self.color.get(c.word()) ?? "" }
+
+    /// The family list a `Font` names.
+    fn face_of(f: Font) -> string { self.face.get(f.word()) ?? "" }
+}

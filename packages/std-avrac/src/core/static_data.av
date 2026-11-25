@@ -1,0 +1,318 @@
+//! A VALUE THE BINARY HOLDS AS DATA: a literal the source alone spells, and a fn value that captures
+//! nothing, laid out once as boxes of slots and read by its address. The boxes stand child first and
+//! the root last, so no slot points ahead; each slot is what the value's layout makes of it: a scalar
+//! its word, an aggregate the box laid out before it, and inside a box a value enum its tag and word,
+//! a value record its fields, each across slots of their own.
+
+/// The code a fn value naming a declared fn holds: it takes the value's box, then the fn's seats,
+/// and calls `target` with the seats.
+export type FnWrapper = { symbol: string, target: string, box: Layout, seats: List<Layout>, answer: Layout }
+
+impl FnWrapper {
+    /// The wrapper's registers' layouts: the box, each seat, then the answer.
+    fn layouts() -> List<Layout> { [self.box].concat(self.seats).concat([self.answer]) }
+
+    /// The wrapper's instructions: the call of `target` with the seats, in a scope its answer
+    /// escapes.
+    fn ins() -> List<Ins> {
+        let answer = Reg { index: 1 + self.seats.length }
+        [
+            Ins.ScopeEnter(Level.Application),
+            Ins.Call(answer, self.target, [Reg { index: 1 + at } for at in 0..self.seats.length]),
+            Ins.ScopeExit(answer),
+            Ins.RetVal(answer),
+        ]
+    }
+}
+
+impl Lowering {
+    // ── Addresses ───────────────────────────────────────────────────
+
+    /// `e`, a literal of a box whose every part the source alone spells, as the binary's own data: its
+    /// address. Absent where a part doesn't lay out from the source alone, so it's built instead.
+    mut fn static_literal(e: ExprId) -> Reg? {
+        if !self.held_as_data(e) { return null }
+        let ty = self.type_at(e)!
+        let boxes: Cell<List<StaticBox>> = Cell.new([])
+        let root? = self.data_slot(e, ty, boxes) else { return null }
+        if boxed_slot_at(root) == null { return null }
+        self.laid_static(self.laid_out(ty), (self.program.literal_symbol)(e, ty), boxes.get())
+    }
+
+    /// A fn value of layout `l` that captures nothing: the code at `symbol` alone, laid out once.
+    mut fn fn_static(l: Layout, symbol: string) -> Reg { self.laid_static(l, "fn\$${symbol}", [StaticBox.Slots([Slot.Code(symbol)])]) }
+
+    /// The declared fn `callee` named as a value at `e`: the code of its wrapper, which takes what a
+    /// call through a fn value hands it and calls `callee`, laid out once.
+    mut fn fn_value(e: ExprId, callee: CalledFn) -> Reg {
+        let ty? = self.type_at(e) else { return self.unlowered(e) }
+        self.fn_value_as(ty, callee)
+    }
+
+    /// `callee` as a value of the fn type `ty`: its wrapper's static box.
+    mut fn fn_value_as(ty: SignedType, callee: CalledFn) -> Reg {
+        self.reached(callee)
+        let box = self.laid_out(ty)
+        let symbol = "${callee.symbol}\$w"
+        if !self.program.wrappers.get().any(it.symbol == symbol) {
+            self
+                .program
+                .wrappers
+                .push(
+                    FnWrapper {
+                        symbol: symbol,
+                        target: callee.symbol,
+                        box: box,
+                        seats: [self.laid_out(s.ty) for s in ty.seats],
+                        answer: if ty.answer == null { Layout.Void } else { self.laid_out(ty.answer!) },
+                    },
+                )
+        }
+        self.fn_static(box, symbol)
+    }
+
+    /// The value the const `named` is, read as a value of `ty`: the literal it's written as, or what it
+    /// settles to. A literal read as another type, and a const that doesn't settle yet, aren't lowered
+    /// yet.
+    mut fn const_read(named: NamedValue, ty: SignedType) -> Reg {
+        match named {
+            .Literal(value) -> if ty.spelled() != value.type().spelled() {
+                self
+                    .missed_as("a const read as `${ty.spelled()}`, written as `${value.type().spelled()}`")
+            } else {
+                self.constant(value)
+            },
+            .Settled(kept_words, data) -> self.settled_value(self.laid_out(ty), kept_words, data),
+            .Unsettled(why) -> self.missed_as(why),
+            .Fn(callee) -> self.missed_as("the fn `${callee.name}` read as a const"),
+            .Built(callee) -> self.call_fn(self.laid_out(ty), callee, []),
+        }
+    }
+
+    /// A value a const settled to, of layout `l`, its boxes `data`: its one word, or its words packed.
+    /// A word pointing at a box short of the data's root isn't lowered yet.
+    mut fn settled_value(l: Layout, words: List<SettledWord>, data: Static) -> Reg {
+        if words.any((w) -> boxed_slot_at(w.slot) ?? data.boxes.length - 1 != data.boxes.length - 1) { return self.missed_as("a const whose words point at more than one box") }
+        let regs = [self.settled_word(w, data) for w in words]
+        if regs.any(it == null) { return self.missed_as("a const that settles to no value") }
+        if words.length == 1 && l.one_word() { regs[0]! } else { self.pack(l, [r! for r in regs]) }
+    }
+
+    /// One word a const settled to: a scalar its constant, a box the address of the data `data`.
+    /// Absent for a slot no register reads as a word.
+    mut fn settled_word(w: SettledWord, data: Static) -> Reg? {
+        match w.slot {
+            .Int(n) -> self.word_at(w.layout, n),
+            .Float(bits) -> self.const_float(bits),
+            .Bool(b) -> self.const_bool(b),
+            .Text(s) -> self.const_str(s),
+            .Box(_) -> self.laid_static(w.layout, data.name, data.boxes),
+            .Null or .Absent or .Code(_) -> null,
+        }
+    }
+
+    /// The data `boxes` laid out under `name`, once, and its address in a register of layout `l`.
+    mut fn laid_static(l: Layout, name: string, boxes: List<StaticBox>) -> Reg {
+        if !self.program.data.get().any(it.name == name) { self.program.data.push(Static { name: name, boxes: boxes }) }
+        let r = self.mint(l)
+        self.emit(Ins.StaticAddr(r, name))
+        r
+    }
+
+    // ── Slots ───────────────────────────────────────────────────────
+
+    /// The one slot `e`, a value of `ty`, takes, its boxes laid into `boxes`; absent where it isn't
+    /// one slot spelled by the source alone.
+    fn data_slot(e: ExprId, ty: SignedType, boxes: Cell<List<StaticBox>>) -> Slot? {
+        if ty.nullable() { return self.nullable_slot(e, ty, boxes) }
+        let raw = self.store.valued(e)
+        let l? = self.program.checked.layout(ty) else { return null }
+        match l {
+            .Word -> self.word_slot(raw, ty, boxes),
+            .Truth -> bool_slot(raw),
+            .Real -> float_slot(raw),
+            .Boxed(box) -> self.boxed_slot(raw, ty, box, boxes),
+            .Void or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> null,
+        }
+    }
+
+    /// A nullable's slot: its absence the null pointer, a word enum's spare tag or a scalar's mark;
+    /// present, what it holds. A flat record's box and a value enum hold no slot spelled alone.
+    fn nullable_slot(e: ExprId, ty: SignedType, boxes: Cell<List<StaticBox>>) -> Slot? {
+        let absent = self.store.null_literal(self.meaning_of(e))
+        let l? = self.program.checked.layout(ty) else { return null }
+        match l {
+            .Boxed(_) -> if absent { Slot.Null } else if l.slot_box() { null } else { self.data_slot(e, ty.unwrapped(), boxes) },
+            .Word -> if absent { Slot.Int(ABSENT_TAG) } else { self.data_slot(e, ty.unwrapped(), boxes) },
+            .Maybe(_) -> if absent { Slot.Absent } else { self.data_slot(e, ty.unwrapped(), boxes) },
+            .Bare -> if absent { Slot.Null } else { null },
+            .Void or .Truth or .Real or .Fields(_) or .Tagged(_) -> null,
+        }
+    }
+
+    /// A word's slot: an `int`, a variant of an enum whose variants carry nothing as its tag, or a flat
+    /// record of one field as that field.
+    fn word_slot(raw: Expr, ty: SignedType, boxes: Cell<List<StaticBox>>) -> Slot? {
+        let n = raw.int_of()
+        if n != null { return Slot.Int(n!) }
+        match raw {
+            .VariantLit(name, _) -> {
+                let tag? = self.variants_of(ty)?.find_index(it.name == name.of) else { return null }
+                Slot.Int(tag)
+            },
+            .StructLit(_, _, values) -> {
+                let fields? = self.fields_of(ty) else { return null }
+                if fields.length != 1 || values.length != 1 || fields[0].ty == null { return null }
+                self.data_slot(values[0], fields[0].ty!, boxes)
+            },
+            rest -> null,
+        }
+    }
+
+    /// A box's slot: text its own, and a list, record, variant or map the box laid out for it.
+    fn boxed_slot(raw: Expr, ty: SignedType, box: BoxKind, boxes: Cell<List<StaticBox>>) -> Slot? {
+        match box {
+            .Text -> text_slot(raw),
+            .List -> self.list_slot(raw, ty, boxes),
+            .Record -> self.record_slot(raw, ty, boxes),
+            .Enum -> self.variant_slot(raw, ty, boxes),
+            .Map -> self.table_slot(raw, ty, boxes),
+            .Bytes or .Closure or .Cell or .Task or .Dyn or .Union or .Range or .Slot -> null,
+        }
+    }
+
+    /// A list's box: each element's slot, in order.
+    fn list_slot(raw: Expr, ty: SignedType, boxes: Cell<List<StaticBox>>) -> Slot? {
+        let elems? = match raw { .ListLit(elems) -> elems, rest -> null } else { return null }
+        let elem? = ty.listed() else { return null }
+        let cells = [self.data_slot(x, elem, boxes) for x in elems]
+        if cells.any(it == null) { return null }
+        pushed(boxes, StaticBox.Slots([c! for c in cells]))
+    }
+
+    /// A record's box: every field written, its cells in the order the fields are declared.
+    fn record_slot(raw: Expr, ty: SignedType, boxes: Cell<List<StaticBox>>) -> Slot? {
+        let parts? = match raw {
+            .StructLit(_, fields, values) -> WrittenFields { names: [f.of for f in fields], values: values },
+            rest -> null,
+        } else { return null }
+        let fields? = self.fields_of(ty) else { return null }
+        if parts.names.length != fields.length || fields.any(it.state || it.ty == null) { return null }
+        let at = [parts.names.index_of(f.name) for f in fields]
+        if at.any(it < 0) { return null }
+        let cells = [self.data_cells(parts.values[at[j]], f.ty!, boxes) for j, f in fields]
+        if cells.any(it == null) { return null }
+        pushed(boxes, StaticBox.Slots(flatten([c! for c in cells])))
+    }
+
+    /// A variant's box: its tag, then its payloads' cells in order.
+    fn variant_slot(raw: Expr, ty: SignedType, boxes: Cell<List<StaticBox>>) -> Slot? {
+        let parts? = match raw {
+            .VariantLit(name, args) -> WrittenVariant { name: name.of, args: args },
+            rest -> null,
+        } else { return null }
+        let variants? = self.variants_of(ty) else { return null }
+        let tag? = variants.find_index(it.name == parts.name) else { return null }
+        if parts.args.any((a) -> self.store.names_its_seat(a)) { return null }
+        let payloads? = variants[tag].seats(parts.args.length) else { return null }
+        let cells = [self.data_cells(a, payloads[k], boxes) for k, a in parts.args]
+        if cells.any(it == null) { return null }
+        pushed(boxes, StaticBox.Slots([Slot.Int(tag)].concat(flatten([c! for c in cells]))))
+    }
+
+    /// A map's box: its keys in written order beside each value's slot.
+    fn table_slot(raw: Expr, ty: SignedType, boxes: Cell<List<StaticBox>>) -> Slot? {
+        let entries? = match raw { .MapLit(entries) -> entries, rest -> null } else { return null }
+        let value? = ty.mapped() else { return null }
+        if !map_spreads(entries).is_empty() { return null }
+        let keys = [self.store.valued(k).text_of() for k in map_keys(entries)]
+        let cells = [self.data_slot(v, value, boxes) for v in map_values(entries)]
+        if keys.any(it == null) || cells.any(it == null) { return null }
+        pushed(boxes, StaticBox.Table([k! for k in keys], [c! for c in cells]))
+    }
+
+    /// The cells `e`, a value of `ty`, takes inside a box: a value enum's tag and word, a value
+    /// record's fields, else its one slot.
+    fn data_cells(e: ExprId, ty: SignedType, boxes: Cell<List<StaticBox>>) -> List<Slot>? {
+        let l? = self.program.checked.layout(ty) else { return null }
+        match l {
+            .Tagged(_) -> self.valued_cells(e, ty, boxes),
+            .Fields(_) -> self.field_cells(e, ty, boxes),
+            .Void or .Word or .Truth or .Real or .Boxed(_) or .Bare or .Maybe(_) -> {
+                let c? = self.data_slot(e, ty, boxes) else { return null }
+                [c]
+            },
+        }
+    }
+
+    /// A value enum's two cells: its tag and the word its variant carries, a zero word for a variant
+    /// carrying nothing; its absence the spare tag beside a zero word.
+    fn valued_cells(e: ExprId, ty: SignedType, boxes: Cell<List<StaticBox>>) -> List<Slot>? {
+        if self.store.null_literal(self.meaning_of(e)) { return [Slot.Int(ABSENT_TAG), Slot.Int(0)] }
+        let parts? = match self.store.valued(e) {
+            .VariantLit(name, args) -> WrittenVariant { name: name.of, args: args },
+            rest -> null,
+        } else { return null }
+        let variants? = self.variants_of(ty.unwrapped()) else { return null }
+        let tag? = variants.find_index(it.name == parts.name) else { return null }
+        let payloads? = variants[tag].seats(parts.args.length) else { return null }
+        if payloads.is_empty() { return [Slot.Int(tag), Slot.Int(0)] }
+        if parts.args.length != 1 || self.store.names_its_seat(parts.args[0]) { return null }
+        let word? = self.data_slot(parts.args[0], payloads[0], boxes) else { return null }
+        [Slot.Int(tag), word]
+    }
+
+    /// A value record's cells: every field written, each its own slot, in the order declared.
+    fn field_cells(e: ExprId, ty: SignedType, boxes: Cell<List<StaticBox>>) -> List<Slot>? {
+        let parts? = match self.store.valued(e) {
+            .StructLit(_, fields, values) -> WrittenFields { names: [f.of for f in fields], values: values },
+            rest -> null,
+        } else { return null }
+        let fields? = self.fields_of(ty) else { return null }
+        if parts.names.length != fields.length || fields.any(it.ty == null) { return null }
+        let at = [parts.names.index_of(f.name) for f in fields]
+        if at.any(it < 0) { return null }
+        let cells = [self.data_slot(parts.values[at[j]], f.ty!, boxes) for j, f in fields]
+        if cells.any(it == null) { return null }
+        [c! for c in cells]
+    }
+}
+
+/// A record literal's fields as written: each name beside its value.
+type WrittenFields = { names: List<string>, values: List<ExprId> }
+
+/// A variant literal as written: its name and its payloads.
+type WrittenVariant = { name: string, args: List<ExprId> }
+
+/// One more box among `boxes`, after every box it points at: its slot is its place.
+fn pushed(boxes: Cell<List<StaticBox>>, b: StaticBox) -> Slot {
+    boxes.push(b)
+    Slot.Box(boxes.get().length - 1)
+}
+
+/// The box a slot points at, absent for a slot that holds its word itself.
+fn boxed_slot_at(s: Slot) -> int? {
+    match s { .Box(at) -> at, rest -> null }
+}
+
+impl SyntaxArena {
+    /// Whether the argument `a` names its seat.
+    fn names_its_seat(a: ExprId) -> bool {
+        match self.expr(a) { .Named(_, _) -> true, rest -> false }
+    }
+}
+
+fn bool_slot(raw: Expr) -> Slot? {
+    let b? = raw.bool_of() else { return null }
+    Slot.Bool(b)
+}
+
+fn float_slot(raw: Expr) -> Slot? {
+    let bits? = raw.bits_of() else { return null }
+    Slot.Float(bits)
+}
+
+fn text_slot(raw: Expr) -> Slot? {
+    let s? = raw.text_of() else { return null }
+    Slot.Text(s)
+}

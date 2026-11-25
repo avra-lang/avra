@@ -1,0 +1,104 @@
+// The method, extern and lambda parameter lists, pinned: each spelling
+// prints in its canonical form, and each malformed one is refused at the
+// place and in the words it always was.
+use @std.avrac.compiler.{analyze_source}
+use @std.avrac.testing.{projected}
+
+spec "features/fns method and lambda params pin" {
+    given "the spellings those forms accept print canonically" {
+        then "valid form m0" {
+            projected("type S = { n: int }\nimpl S {\n    mut fn bump(by: int,) -> int { by }\n}")
+                .contains("mut fn bump(by: int) -> int")
+        }
+        then "valid form m1" {
+            projected(
+                "type S = { n: int }\nimpl S {\n    static fn make(const a: int, mut b: int = 1,) -> int { a }\n}",
+            )
+                .contains("static fn make(const a: int, mut b: int = 1) -> int")
+        }
+        then "valid form m2" {
+            projected(
+                "type S = { n: int }\nimpl S {\n    mut fn bump(isolated g: fn() -> int) -> int { g() }\n}",
+            )
+                .contains("mut fn bump(isolated g: fn() -> int) -> int")
+        }
+        then "valid form m3" {
+            projected(
+                "type S = { n: int }\nimpl S {\n    static fn make<T: Tr,>(a: int) -> int { a }\n}",
+            )
+                .contains("static fn make<T>(a: int) -> int")
+        }
+        then "valid form m7" {
+            projected(
+                "type S = { n: int }\nimpl S {\n    mut fn bump<T: int>(a: int) -> int { a }\n}",
+            )
+                .contains("mut fn bump<T>(a: int) -> int")
+        }
+        then "valid form m11" {
+            projected("let k = (const a: int, mut b,) -> a")
+                .contains("let k = (const a: int, mut b) -> a")
+        }
+    }
+    given "the malformed ones are refused where and in the words they always were" {
+        then "malformed form m4" {
+            analyze_source(
+                    "type S = { n: int }\nimpl S {\n    mut fn bump(a: int b: int) -> int { a }\n}",
+                )
+                    .report()
+                    .contains("expected `=` while parsing `stmt`") &&
+                analyze_source(
+                    "type S = { n: int }\nimpl S {\n    mut fn bump(a: int b: int) -> int { a }\n}",
+                )
+                    .report()
+                    .contains(":3:12]")
+        }
+        then "malformed form m5" {
+            analyze_source(
+                    "type S = { n: int }\nimpl S {\n    static fn make(,) -> int { 1 }\n}",
+                )
+                    .report()
+                    .contains("expected BREAK while parsing `stmt`") &&
+                analyze_source(
+                    "type S = { n: int }\nimpl S {\n    static fn make(,) -> int { 1 }\n}",
+                )
+                    .report()
+                    .contains(":3:12]")
+        }
+        then "malformed form m6" {
+            analyze_source(
+                    "type S = { n: int }\nimpl S {\n    static fn make(state a: int) -> int { a }\n}",
+                )
+                    .report()
+                    .contains("expected BREAK while parsing `stmt`") &&
+                analyze_source(
+                    "type S = { n: int }\nimpl S {\n    static fn make(state a: int) -> int { a }\n}",
+                )
+                    .report()
+                    .contains(":3:12]")
+        }
+        then "malformed form m9" {
+            analyze_source("extern fn g(a: int b: int) -> int")
+                    .report()
+                    .contains("expected `)` while parsing `stmt`") &&
+                analyze_source("extern fn g(a: int b: int) -> int").report().contains(":1:20]")
+        }
+        then "malformed form m10" {
+            analyze_source("extern fn g(a,) -> int")
+                    .report()
+                    .contains("expected `)` while parsing `stmt`") &&
+                analyze_source("extern fn g(a,) -> int").report().contains(":1:13]")
+        }
+        then "malformed form m12" {
+            analyze_source("let k = (a b) -> a")
+                    .report()
+                    .contains("expected `)` to close the group") &&
+                analyze_source("let k = (a b) -> a").report().contains(":1:12]")
+        }
+        then "malformed form m13" {
+            analyze_source("let k = (isolated a) -> a")
+                    .report()
+                    .contains("expected `)` to close the group") &&
+                analyze_source("let k = (isolated a) -> a").report().contains(":1:19]")
+        }
+    }
+}

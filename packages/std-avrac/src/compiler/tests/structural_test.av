@@ -1,0 +1,167 @@
+// The structural set of a declaration: the `state` places it reads at paint
+// time that no reading answers for. A text an instance says again through its
+// minted closure is answered by the page; a label, an `if`, a `for`, a helper
+// the view calls and a captured local are not, and a write to any of them
+// takes the full paint.
+use @std.avrac.testing.{test_workspace}
+use compiler.{Workspace}
+use compiler.host.{memory_host}
+use core.{DeclId, FileId, StmtId}
+use features.{
+    place_key,
+    place_at_key,
+    StatePlace,
+    structural_key,
+    is_structural_key,
+    plain_of_structural,
+}
+
+fn structural_workspace(body: string) -> Workspace {
+    let ws = test_workspace(
+        memory_host(
+            {
+                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+                "/w/src/main.av": "fn none() -> string { \"\" }\ntype Words = fn() -> string\ncomponent said(content: string) {\n    words: Words = Words(none)\n}\ncomponent plain(content: string) {\n}\nstate n: int = 0\n" +
+                    body,
+            },
+            ["/w/avra.toml", "/w/src/main.av"],
+        ),
+        "/w",
+    )
+    let f = ws.file_id("/w/src/main.av")
+    let _ = ws.items(f)
+    let _ = ws.resolved(f)
+    ws
+}
+
+fn named(ws: Workspace, name: string) -> DeclId { [x.id for x in ws.decls.all_decls() if x.name == name][0] }
+
+/// The structural places of the declaration `name`.
+fn structural_of(ws: Workspace, name: string) -> List<int> { ws.structural_places(named(ws, name)) }
+
+/// Whether a set holds the one place `n`, and nothing else.
+fn only_n(ws: Workspace, keys: List<int>) -> bool { keys.length == 1 && keys[0] == key_of_n(ws) }
+
+/// The key of the top-level `state n`.
+fn key_of_n(ws: Workspace) -> int { place_key(StatePlace.Global(named(ws, "n"))) }
+
+spec "compiler/workspace — the structural set" {
+    given "a text an instance says again" {
+        then "reads no structural place: its reading answers for it" {
+            let ws = structural_workspace("fn covered() -> said { said \"a \${n}\" }\n")
+            structural_of(ws, "covered").is_empty()
+        }
+    }
+    given "a label no reading covers" {
+        then "makes the cell structural" {
+            let ws = structural_workspace("fn labelled() -> plain { plain \"a \${n}\" }\n")
+            only_n(ws, structural_of(ws, "labelled"))
+        }
+    }
+    given "a conditional that reads the cell" {
+        then "makes it structural, though a text beside it is sited" {
+            let ws = structural_workspace(
+                "fn branched() -> said {\n    if n > 1 { said \"big\" } else { said \"a \${n}\" }\n}\n",
+            )
+            only_n(ws, structural_of(ws, "branched"))
+        }
+    }
+    given "a loop over the cell" {
+        then "makes it structural" {
+            let ws = structural_workspace(
+                "fn looped() -> int {\n    mut t = 0\n    for i in 0..n { t = t + i }\n    t\n}\n",
+            )
+            only_n(ws, structural_of(ws, "looped"))
+        }
+    }
+    given "a helper the view calls" {
+        then "makes the cell structural through the call" {
+            let ws = structural_workspace(
+                "fn helper() -> int { n }\nfn viewed() -> plain { plain \"v \${helper()}\" }\n",
+            )
+            only_n(ws, structural_of(ws, "viewed"))
+        }
+        then "but not when the call sits inside a text an instance says again" {
+            let ws = structural_workspace(
+                "fn helper() -> int { n }\nfn viewed() -> said { said \"v \${helper()}\" }\n",
+            )
+            structural_of(ws, "viewed").is_empty()
+        }
+    }
+    given "a local state read outside any reading" {
+        then "is the declaration's own structural place" {
+            let ws = structural_workspace(
+                "fn local() -> plain {\n    state k: int = 1\n    plain \"k \${k}\"\n}\n",
+            )
+            structural_of(ws, "local").length == 1
+        }
+    }
+    given "a handler an instance hears" {
+        then "reads no structural place: it runs when the user speaks" {
+            let ws = structural_workspace(
+                "component press(on go) {\n}\nfn pressed() -> press {\n    press { on go { n = n + 1 } }\n}\n",
+            )
+            structural_of(ws, "pressed").is_empty()
+        }
+    }
+    given "a cell read both inside a reading and outside it" {
+        then "is a plain place and a structural one, never one for the other" {
+            let ws = structural_workspace(
+                "fn both() -> plain {\n    let t = said \"a \${n}\"\n    plain \"b \${n}\"\n}\n",
+            )
+            let d = named(ws, "both")
+            ws.decl_places(d).contains(key_of_n(ws)) && only_n(ws, structural_of(ws, "both"))
+        }
+        then "and a cell read only inside a reading is plain with no structural entry" {
+            let ws = structural_workspace("fn only() -> said { said \"a \${n}\" }\n")
+            let d = named(ws, "only")
+            ws.decl_places(d).contains(key_of_n(ws)) && structural_of(ws, "only").is_empty()
+        }
+    }
+    given "the keys at the edge of the range" {
+        then "the largest local and global keys are plain, their structural keys are structural, and they decode back" {
+            let local = place_key(
+                StatePlace.Local(FileId { index: 524286 }, StmtId { index: 4294967295 }),
+            )
+            let global = place_key(StatePlace.Global(DeclId { index: 2251799813685245 }))
+            !is_structural_key(local) &&
+                !is_structural_key(global) &&
+                is_structural_key(structural_key(local)) &&
+                is_structural_key(structural_key(global)) &&
+                plain_of_structural(structural_key(local)) == local &&
+                plain_of_structural(structural_key(global)) == global
+        }
+        then "a local past the bound answers Unknown, which no one mistakes for a structural key" {
+            let past = place_key(StatePlace.Local(FileId { index: 524287 }, StmtId { index: 0 }))
+            past == place_key(StatePlace.Unknown) &&
+                !is_structural_key(past) &&
+                is_structural_key(structural_key(past))
+        }
+        then "a declaration past the bound answers Unknown" {
+            place_key(StatePlace.Global(DeclId { index: 2251799813685246 })) == place_key(StatePlace.Unknown)
+        }
+        then "place_at_key reads a plain key back" {
+            let d = place_key(StatePlace.Global(DeclId { index: 7 }))
+            place_key(place_at_key(d)) == d
+        }
+    }
+}
+
+/// The fingerprint of the file's last statement, the declaration a body names.
+fn last_fp(ws: Workspace) -> int {
+    let p = ws.parsed(ws.file_id("/w/src/main.av"))
+    p.store.stmt_fingerprint(p.stmts.last()!)
+}
+
+spec "compiler/workspace — a view's declaration fingerprint follows its sited text" {
+    given "two views that differ only inside a sited hole" {
+        then "an edit inside the hole moves the declaration's fingerprint" {
+            last_fp(structural_workspace("fn v() -> said { said \"a \${n}\" }\n")) != last_fp(structural_workspace("fn v() -> said { said \"a \${n + 1}\" }\n"))
+        }
+    }
+    given "two views written the same way" {
+        then "the same source fingerprints alike" {
+            last_fp(structural_workspace("fn v() -> said { said \"a \${n}\" }\n")) == last_fp(structural_workspace("fn v() -> said { said \"a \${n}\" }\n"))
+        }
+    }
+}

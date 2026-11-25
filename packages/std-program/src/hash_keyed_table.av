@@ -1,0 +1,103 @@
+//! A TABLE KEYED BY CONTENT HASH. A key is already uniformly spread, so its own low word picks its
+//! slot: nothing is hashed and no text is made. Open addressing over a power-of-two list of slots,
+//! never more than half full. Values keep the order they were first put in. An identity: every
+//! holder sees one table.
+use answer_record.{ContentHash}
+
+/// The slots a table starts with when its first key arrives.
+const FIRST_SLOT_COUNT: int = 8
+
+export type HashKeyedTable<T> = {
+    high_words: Cell<List<int>>,
+    low_words: Cell<List<int>>,
+    held_values: Cell<List<T>>,
+    /// Each slot holds one more than a key's position, or zero when it's free.
+    slots: Cell<List<int>>,
+}
+
+export fn hash_keyed_table<T>() -> HashKeyedTable<T> {
+    let high_words: Cell<List<int>> = Cell.new([])
+    let low_words: Cell<List<int>> = Cell.new([])
+    let held_values: Cell<List<T>> = Cell.new([])
+    let slots: Cell<List<int>> = Cell.new([])
+    HashKeyedTable {
+        high_words: high_words,
+        low_words: low_words,
+        held_values: held_values,
+        slots: slots,
+    }
+}
+
+impl HashKeyedTable<T> {
+    /// The value under `key`, absent when there's none.
+    fn get(key: ContentHash) -> T? {
+        let position? = self.position_of(key) else { return null }
+        self.held_values.get()[position]
+    }
+
+    /// `value` under `key`. A key already here keeps its place.
+    fn put(key: ContentHash, value: T) {
+        match self.position_of(key) {
+            position? -> { self.held_values.set_at(position, value) }
+            null -> { self.added(key, value) }
+        }
+    }
+
+    /// Every value, in the order its key first arrived.
+    fn values() -> List<T> { self.held_values.get() }
+
+    fn is_empty() -> bool { self.high_words.get().is_empty() }
+
+    /// Nothing under any key.
+    fn clear() {
+        self.high_words.set([])
+        self.low_words.set([])
+        self.held_values.set([])
+        self.slots.set([])
+    }
+
+    /// Where `key` sits, absent when it's not here. A free slot ends the search.
+    fn position_of(key: ContentHash) -> int? {
+        let slots = self.slots.get()
+        if slots.is_empty() { return null }
+        let highs = self.high_words.get()
+        let lows = self.low_words.get()
+        mut slot = key.low_word & slots.length - 1
+        while slots[slot] != 0 {
+            let position = slots[slot] - 1
+            if highs[position] == key.high_word && lows[position] == key.low_word { return position }
+            slot = slot + 1 & slots.length - 1
+        }
+        null
+    }
+
+    /// A key that isn't here yet, added.
+    fn added(key: ContentHash, value: T) {
+        let position = self.high_words.get().length
+        if (position + 1) * 2 > self.slots.get().length {
+            self
+                .slots
+                .set(slots_holding(self.low_words.get(), slot_count_after(self.slots.get().length)))
+        }
+        self.slots.set_at(free_slot(self.slots.get(), key.low_word), position + 1)
+        self.high_words.push(key.high_word)
+        self.low_words.push(key.low_word)
+        self.held_values.push(value)
+    }
+}
+
+fn slot_count_after(count: int) -> int { if count == 0 { FIRST_SLOT_COUNT } else { count * 2 } }
+
+/// The first free slot from where `low_word` lands.
+fn free_slot(slots: List<int>, low_word: int) -> int {
+    mut slot = low_word & slots.length - 1
+    while slots[slot] != 0 { slot = slot + 1 & slots.length - 1 }
+    slot
+}
+
+/// `slot_count` slots holding every key so far.
+fn slots_holding(low_words: List<int>, slot_count: int) -> List<int> {
+    mut slots = [0 for _slot in 0..slot_count]
+    for position, low_word in low_words { slots[free_slot(slots, low_word)] = position + 1 }
+    slots
+}

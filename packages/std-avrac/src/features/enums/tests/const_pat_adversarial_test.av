@@ -1,0 +1,197 @@
+// A const as a pattern under attack: what a bare name compares to,
+// what makes it bind instead, what it refuses, and what the writer is
+// told where the two readings could be mistaken for each other.
+use @std.avrac.compiler.{analyze_source}
+use @std.avrac.testing.{shown, refused_with, refusals, projected}
+
+fn codes() -> string {
+    "const tab = 9\nconst escape = 27\n"
+}
+
+/// A program that RUNS, answers `answer`, and earns exactly one
+/// diagnostic saying `phrase`.
+fn warned(source: string, answer: string, phrase: string) -> bool {
+    let a = analyze_source(source)
+    a.ran() == answer && a.diagnostics.length == 1 && a.report().contains(phrase)
+}
+
+/// `body` as the one statement of a fn over an int, called with `arg`.
+fn over(body: string, arg: string) -> string {
+    "${codes()}fn f(c: int) -> int {\n${body}\n}\nf(${arg})"
+}
+
+spec "features/enums/patterns — a const's name compares" {
+    given "a const beside the subject" {
+        then "the arm is taken when they are equal" {
+            shown("${codes()}match 27 {\n    tab -> \"t\"\n    escape -> \"e\"\n    _ -> \"-\"\n}") == "e"
+        }
+        then "an or-run compares each" {
+            shown("${codes()}match 9 {\n    escape or tab -> 1\n    _ -> 0\n}") == "1"
+        }
+        then "a literal and a const share a run" {
+            shown("${codes()}match 3 {\n    escape or 3 -> 1\n    _ -> 0\n}") == "1"
+        }
+        then "a guard reads on after it" {
+            shown("${codes()}let on = false\nmatch 9 {\n    tab if on -> 1\n    _ -> 0\n}") == "0"
+        }
+        then "a payload is compared in its place" {
+            shown(
+                "${codes()}enum K {\n    C(int)\n    N\n}\nmatch K.C(9) {\n    .C(escape) -> 1\n    .C(tab) -> 2\n    .C(_) -> 3\n    .N -> 4\n}",
+            ) == "2"
+        }
+        then "one const named twice in a pattern compares twice — it binds nothing" {
+            shown(
+                "${codes()}enum P {\n    Two(int, int)\n}\nmatch P.Two(9, 9) {\n    .Two(tab, tab) -> 1\n    .Two(_, _) -> 0\n}",
+            ) == "1"
+        }
+        then "a const beside a binder in one payload: one compares, one binds" {
+            shown(
+                "${codes()}enum P {\n    Two(int, int)\n}\nmatch P.Two(9, 4) {\n    .Two(tab, rest_of) -> rest_of\n    .Two(_, _) -> 0\n}",
+            ) == "4"
+        }
+        then "the arm's body reads the const by its name" {
+            shown("${codes()}match 9 {\n    tab -> tab + 1\n    _ -> 0\n}") == "10"
+        }
+        then "text compares whole — a prefix is no match" {
+            shown("const word = \"ab\"\nmatch \"abc\" {\n    word -> 1\n    _ -> 0\n}") == "0"
+        }
+        then "a nullable const compares to a nullable subject, absence included" {
+            shown(
+                "const one: int? = 1\nfn f(o: int?) -> int {\n    match o {\n        one -> 1\n        _ -> 2\n    }\n}\n\"\${f(1)}\${f(null)}\${f(3)}\"",
+            ) == "122"
+        }
+    }
+    given "what the const must be" {
+        then "a settled list is no pattern — the equality law speaks" {
+            refused_with(
+                "const xs: List<int> = [1]\nmatch [1] {\n    xs -> 1\n    _ -> 0\n}",
+                "`==` compares by value",
+            )
+        }
+        then "a carrying enum's const refuses alike" {
+            refused_with(
+                "enum E {\n    A\n    B(int)\n}\nconst e = E.B(1)\nmatch E.A {\n    e -> 1\n    _ -> 0\n}",
+                "`==` compares by value",
+            )
+        }
+        then "a const of another type never matches" {
+            refused_with(
+                "const word = \"a\"\nmatch 1 {\n    word -> 1\n    _ -> 0\n}",
+                "a `string` never matches `int`",
+            )
+        }
+        then "a const of the carried type never matches the nullable — unwrap first" {
+            refused_with(
+                "${codes()}let o: int? = 9\nmatch o {\n    tab -> 1\n    _ -> 0\n}",
+                "a `int` never matches `int?`",
+            )
+        }
+        then "a const of the shape under a named subject is another type" {
+            refused_with(
+                "type Code = int\nconst lim = 100\nlet c: Code = 100\nmatch c {\n    lim -> 1\n    _ -> 0\n}",
+                "a `int` never matches `Code`",
+            )
+        }
+    }
+    given "the binding law — a nearer name of that spelling binds" {
+        then "a parameter hides the const: the name is a fresh binder" {
+            shown(
+                "${codes()}fn f(c: int, tab: int) -> int {\n    match c {\n        tab -> tab\n    }\n}\nf(5, 1)",
+            ) == "5"
+        }
+        then "a `let` hides it alike" {
+            shown(over("    let tab = 1\n    match c {\n        tab -> tab\n    }", "5")) == "5"
+        }
+        then "a lambda's parameter hides it" {
+            shown("${codes()}let g = (tab: int) -> match 5 {\n    tab -> tab\n}\ng(1)") == "5"
+        }
+        then "a fn's name is no const: it binds" {
+            shown("fn k() -> int { 1 }\nmatch 7 {\n    k -> k\n}") == "7"
+        }
+        then "a name no const wears binds in silence" {
+            refusals("${codes()}match 9 {\n    other -> other\n}") == 0
+        }
+        then "a const declared below the match is the const all the same" {
+            shown(
+                "fn f(c: int) -> int {\n    match c {\n        late -> 1\n        _ -> 0\n    }\n}\nconst late = 4\n\"\${f(4)}\${f(5)}\"",
+            ) == "10"
+        }
+        then "a lambda's match reads the const, capturing nothing" {
+            shown(
+                "${codes()}fn f(xs: List<int>) -> int { xs.filter((c) -> match c { tab or escape -> true, _ -> false }).length }\nf([9, 27, 1])",
+            ) == "2"
+        }
+        then "an `is` payload under `if` is a pattern seat too — the const compares there" {
+            shown(
+                "${codes()}enum K {\n    C(int)\n}\nfn f(k: K) -> int {\n    if k is .C(tab) { return 1 }\n    0\n}\n\"\${f(K.C(9))}\${f(K.C(4))}\"",
+            ) == "10"
+        }
+        then "a body's own const compares" {
+            shown(
+                over(
+                    "    const bell = 7\n    match c {\n        bell -> 1\n        _ -> 0\n    }",
+                    "7",
+                ),
+            ) == "1"
+        }
+    }
+    given "exhaustiveness" {
+        then "a comparison covers nothing — the catch-all is still owed" {
+            analyze_source(over("    match c {\n        tab -> 1\n        escape -> 2\n    }", "9"))
+                .report()
+                .contains("a `match` over `int` needs a catch-all arm")
+        }
+        then "comparing a unit enum's every const still owes each variant" {
+            let a = analyze_source(
+                "enum M {\n    A\n    B\n}\nconst a = M.A\nconst b = M.B\nfn f(m: M) -> int {\n    match m {\n        a -> 1\n        b -> 2\n    }\n}\nf(M.A)",
+            )
+            a.report().contains("must handle `.A`") && a.report().contains("must handle `.B`")
+        }
+    }
+    given "the hazard, comparing half — a match that ends on a const's name" {
+        then "the writer is told it compares, where a binder would have taken the rest" {
+            warned(
+                "enum M {\n    A\n    B\n}\nconst a = M.A\nfn f(m: M) -> int {\n    match m {\n        .A -> 1\n        .B -> 2\n        a -> 3\n    }\n}\nf(M.B)",
+                "2",
+                "`a` is a const here, so this arm compares",
+            )
+        }
+        then "with `_` after it nothing is said" {
+            refusals(over("    match c {\n        tab -> 1\n        _ -> 0\n    }", "9")) == 0
+        }
+        then "a guarded one is no ending — nothing is said of it" {
+            analyze_source(
+                over("    match c {\n        9 -> 1\n        tab if c > 0 -> 2\n    }", "9"),
+            )
+                .report()
+                .contains("is a const here") == false
+        }
+    }
+    given "the hazard, binding half — the const is gone" {
+        then "the name binds everything, and the arm below is told it never runs" {
+            warned(
+                over("    match c {\n        gone -> 1\n        _ -> 0\n    }", "9"),
+                "1",
+                "this arm is never reached — `gone` above binds, and takes every value",
+            )
+        }
+        then "an arm after `_` is told too, in the hole's words" {
+            warned(
+                over("    match c {\n        _ -> 0\n        tab -> 1\n    }", "9"),
+                "0",
+                "this arm is never reached — the arm above takes every value",
+            )
+        }
+        then "a guarded binder takes nothing for granted — the arms below are reached" {
+            refusals(
+                over("    match c {\n        big if big > 100 -> 1\n        _ -> 0\n    }", "9"),
+            ) == 0
+        }
+    }
+    given "its spelling" {
+        then "the formatter writes the bare name back" {
+            let src = "match c { escape or tab -> 1, .C(tab, x) if x > 0 -> 2, _ -> 0 }"
+            projected(src) == src
+        }
+    }
+}

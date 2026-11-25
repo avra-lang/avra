@@ -1,0 +1,146 @@
+//! A page said and read back is the page: every element's number, seat,
+//! tag, attributes and words — and anything else is no page at all.
+use @std.ui.components.{button, column, text}
+use @std.ui.realize.dom.live.{live}
+use @std.ui.realize.dom.patch.{Patch, diff}
+use @std.ui.style.theme.{default_theme}
+use @std.ui.realize.dom.snapshot.{Page, said, taken}
+use @std.ui.realize.html.element.{Element, lowered}
+use @std.ui.tree.node.{Node}
+use @std.ui.tree.view.{tree_of}
+
+fn counting(n: int) -> Node {
+    tree_of(
+        column {
+            text "${n}"
+            button "Raise" { on press {} }
+        },
+    )
+}
+
+fn standing(n: int) -> Page {
+    let made = diff([], lowered(counting(n)), [], 0)
+    Page { elements: made.page, next: made.next, sheet: ".a{b:c}" }
+}
+
+/// A page said, read, and said again.
+fn again(p: Page) -> Bytes {
+    let read? = taken(said(p)) else { return "".bytes() }
+    said(read)
+}
+
+fn spelled(b: Bytes) -> string { ["${b.at(j)}" for j in 0..b.length].join(",") }
+
+fn ids(run: List<Element>) -> string { ["${e.id().n}" for e in run].join(",") }
+
+fn cut(bytes: Bytes, to: int) -> Bytes { bytes.slice(0, to) }
+
+spec "std/ui dom — a page, said and read back" {
+    given "a page" {
+        then "reads back as the same page" { spelled(again(standing(1))) == spelled(said(standing(1))) }
+        then "keeps its next number and its sheet" {
+            let read? = taken(said(standing(1))) else { return false }
+            read.next == standing(1).next && read.sheet == ".a{b:c}"
+        }
+        then "keeps every element's number" {
+            let read? = taken(said(standing(1))) else { return false }
+            ids(read.elements) == ids(standing(1).elements)
+        }
+        then "says what it hears of no element" {
+            let read? = taken(said(standing(1))) else { return false }
+            read.elements.all(heard_none(it))
+        }
+    }
+    given "an empty page" {
+        then "reads back empty" {
+            let none: Page = Page { elements: [], next: 0, sheet: "" }
+            let read? = taken(said(none)) else { return false }
+            read.elements.is_empty() && read.next == 0
+        }
+    }
+    given "bytes that are no page" {
+        then "every shorter run is refused" {
+            let whole = said(standing(1))
+            (0..whole.length).all(taken(cut(whole, it)) == null)
+        }
+        then "a run with a byte left over is refused" {
+            taken([said(standing(1)), "x".bytes()].bytes()) == null
+        }
+        then "another version is refused" { taken([2, 0, 0, 0, 0].bytes() ?? "".bytes()) == null }
+        then "nothing is refused" { taken("".bytes()) == null }
+    }
+}
+
+fn heard_none(e: Element) -> bool {
+    match e { .Text(_) -> true, .Tag(el) -> el.hears.is_empty() && el.kids.all(heard_none(it)) }
+}
+
+/// A page standing after a first paint of `n`, said — and a new module's
+/// page handed it.
+fn left_to(n: int, then_n: int) -> List<Patch> {
+    let old = live()
+    let _ = old.patches(counting(n), default_theme)
+    let heir = live()
+    heir.handed.set(taken(old.said()))
+    heir.patches(counting(then_n), default_theme)
+}
+
+fn builds(p: Patch) -> bool {
+    match p {
+        .Create(_, _) or .CreateText(_, _) or .Place(_, _, _) or .Remove(_) -> true,
+        .SetAttr(_, _, _) or .DropAttr(_, _) or .SetProp(_, _, _) or .SetText(_, _) or .Listen(_, _) or .Unlisten(_, _) or .Style(_) or .Call(_, _) or .SetVar(_, _, _) or .DropVar(_, _) or .Adopt(_, _) -> false,
+    }
+}
+
+fn is_listen(p: Patch) -> bool {
+    match p {
+        .Listen(_, _) -> true,
+        .Create(_, _) or .CreateText(_, _) or .Place(_, _, _) or .Remove(_) or .SetAttr(_, _, _) or .DropAttr(_, _) or .SetProp(_, _, _) or .SetText(_, _) or .Unlisten(_, _) or .Style(_) or .Call(_, _) or .SetVar(_, _, _) or .DropVar(_, _) or .Adopt(_, _) -> false,
+    }
+}
+
+fn is_text(p: Patch) -> bool {
+    match p {
+        .SetText(_, _) -> true,
+        .Create(_, _) or .CreateText(_, _) or .Place(_, _, _) or .Remove(_) or .SetAttr(_, _, _) or .DropAttr(_, _) or .SetProp(_, _, _) or .Listen(_, _) or .Unlisten(_, _) or .Style(_) or .Call(_, _) or .SetVar(_, _, _) or .DropVar(_, _) or .Adopt(_, _) -> false,
+    }
+}
+
+spec "std/ui dom — a page left to the module that takes over" {
+    given "the same view" {
+        then "its first paint says listeners and nothing else" {
+            let patches = left_to(1, 1)
+            !patches.is_empty() && patches.all(is_listen(it))
+        }
+    }
+    given "a view whose words changed" {
+        then "its first paint says one new text and the listeners" {
+            let patches = left_to(1, 2)
+            patches.filter(is_text(it)).length == 1 && !patches.any(builds(it))
+        }
+    }
+    given "a page the host lost its elements of" {
+        then "says no sheet to the module that takes over" {
+            let old = live()
+            let _ = old.patches(counting(1), default_theme)
+            let before = taken(old.said())?.sheet ?? ""
+            old.reset()
+            before != "" && taken(old.said())?.sheet == ""
+        }
+        then "forgets a page it was handed and had not taken" {
+            let old = live()
+            let _ = old.patches(counting(1), default_theme)
+            let heir = live()
+            heir.handed.set(taken(old.said()))
+            heir.reset()
+            heir.patches(counting(1), default_theme).any(builds(it))
+        }
+    }
+    given "bytes that are no page" {
+        then "leave the first paint a full one" {
+            let heir = live()
+            heir.handed.set(taken("x".bytes()))
+            heir.patches(counting(1), default_theme).any(builds(it))
+        }
+    }
+}

@@ -1,0 +1,671 @@
+//! WHAT A BODY IS TYPED WITH: the arena its nodes stand in, each node's type as it's checked, the
+//! bindings in scope, and what the program answers about the names a body reads. The program's
+//! answers come in as fns, so typing stands below the queries that answer them.
+
+/// What a seat wants of the node checked into it.
+export enum Expected {
+    /// Anything: the node says what it is.
+    Free
+    /// This type.
+    Exactly(ty: SignedType)
+    /// Nothing: the value is dropped where it stands.
+    Dropped
+    /// Unknown: the node stands under one with no rule, which may use its value or drop it.
+    Unknown
+}
+
+/// What a body's checking reads of the program: the type a top-level value's name has from the
+/// body's file, absent when it names none; a type written in the body, and one named, resolved where
+/// it stands; the record or enum a type is, and the method or property a value of it has as a fn of
+/// its receiver first, absent when the program names none.
+export type CheckedProgram = {
+    /// A top-level value's type by its name, read where the template that wrote the read stands
+    /// (its home, as an origin spells it) before where the body stands.
+    value_named: fn(string, string?) -> SignedType?,
+    written: fn(TypeRef) -> SignedType,
+    /// A type by its name, read where the template that wrote it stands (its home, as an origin
+    /// spells it) before where the body stands.
+    type_named: fn(string, string?) -> SignedType,
+    record_of: fn(SignedType) -> RecordShape?,
+    /// The shape a named type stands over, bound to its arguments; absent for any other type.
+    named_of: fn(SignedType) -> SignedType?,
+    enum_of: fn(SignedType) -> EnumShape?,
+    method_of: fn(SignedType, string) -> SignedType?,
+    property_of: fn(SignedType, string) -> SignedType?,
+    /// What a name naming a type and no value reads as, from its home before where the body stands.
+    type_value: fn(string, string?) -> SignedType?,
+    static_of: fn(SignedType, string) -> SignedType?,
+    /// The type a module the toolchain carries (`@std.grammar`) declares under a name.
+    toolchain_type: fn(string, string) -> SignedType?,
+    /// What each type parameter of the body is to the machine, by its place, where the body is
+    /// lowered under one instantiation's layouts.
+    parameters: List<ParameterLayout> = [],
+}
+
+/// A record as typing reads it: how many type parameters it has, and its fields, each typed under
+/// them.
+export type RecordShape = { params: int, fields: List<FieldSeat> }
+
+/// A record's field: its name, its type when it's written, and whether it's a `state` field, whose
+/// slot holds the cell its value lives in.
+export type FieldSeat = { name: string, ty: SignedType?, state: bool = false }
+
+/// A name bound in a body, its type when it's known, and whether it may narrow: a binding whose type
+/// isn't known still stands in front of every name further out, and only one that can't be written
+/// again (a `let`, a parameter) narrows where a test proves it present.
+export type Local = { ty: SignedType?, narrowable: bool, wide: SignedType? = null }
+
+/// What a condition proves in the branch where it's `truth`: names bound there, as a presence test
+/// narrows its name and `is` binds its pattern's.
+export type Proof = { names: Map<string, Local>, truth: bool }
+
+/// An enum as typing reads it: how many type parameters it has, and its variants, each payload typed
+/// under them.
+export type EnumShape = { params: int, variants: List<VariantSeat> }
+
+/// An enum's variant: its name and its payloads.
+export type VariantSeat = { name: string, payloads: List<FieldSeat>, member: SignedType? = null }
+
+impl VariantSeat {
+    /// Its payloads' types, when it carries `arity` payloads and each one's type is known.
+    fn seats(arity: int) -> List<SignedType>? { all_known([p.ty for p in self.payloads], arity) }
+}
+
+/// What walking a value binds at each turn: its index (a list's position, a map's key) and its
+/// element, each absent when it isn't known.
+export type WalkBinds = { index: SignedType? = null, element: SignedType? = null }
+
+/// One scope of a body: the names bound in it, and whether it's a lambda's, which reads a name further
+/// out as it may be when the lambda runs, never as a test around the lambda narrowed it.
+type CheckScope = { names: Map<string, Local>, fenced: bool = false }
+
+/// One body being checked. An identity: every rule writes the one table.
+export type Checking = {
+    store: SyntaxArena,
+    program: CheckedProgram,
+    /// What the body's fn answers, which a `return` checks against; absent when it isn't known.
+    answer: SignedType?,
+    /// Each node's type, by its index, once checked.
+    types: Cell<List<SignedType?>>,
+    /// The bindings in scope, innermost last.
+    scopes: Cell<List<CheckScope>>,
+    /// What each condition proves, by its node's index.
+    proofs: Cell<Map<string, Proof>>,
+    /// Whether a sugar with a meaning is checked as what it means: the core's typing, where the
+    /// sugar's own rule is the surface's.
+    meanings: bool = false,
+    /// The type each node's seat wanted, by its index, where the body was checked as the core it means.
+    seats: Cell<Map<string, SignedType>>,
+}
+
+impl CheckedProgram {
+    /// The enum `ty` is, `Result` among them, absent when it's none; the arguments it's applied to are
+    /// its reader's to hold to the shape's parameters.
+    fn enum_shape(ty: SignedType) -> EnumShape? {
+        if ty.nullable() || ty.dynamic { return null }
+        match ty.head {
+            .Owned(name) -> if name == "Result" { result_shape() } else { null },
+            rest -> (self.enum_of)(ty),
+        }
+    }
+}
+
+/// `Result<T, E>`: `Ok` holding a `T`, `Err` an `E`.
+fn result_shape() -> EnumShape {
+    EnumShape {
+        params: 2,
+        variants: [
+            VariantSeat {
+                name: "Ok",
+                payloads: [FieldSeat { name: "", ty: headed_type(TypeHead.Parameter(0, "T")) }],
+            },
+            VariantSeat {
+                name: "Err",
+                payloads: [FieldSeat { name: "", ty: headed_type(TypeHead.Parameter(1, "E")) }],
+            },
+        ],
+    }
+}
+
+/// What walking a value of `subject`'s type binds: a list's position and element, a map's key and
+/// value, octets' position and each octet, a range's integers; nothing known for any other type.
+export fn walk_binds(subject: SignedType?) -> WalkBinds {
+    let s? = subject else { return WalkBinds {} }
+    let element = s.listed()
+    if element != null { return WalkBinds { index: owned_type("int"), element: element } }
+    let value = s.mapped()
+    if value != null { return WalkBinds { index: s.args[0], element: value } }
+    if s.word() == "Bytes" && !s.nullable() { return WalkBinds { index: owned_type("int"), element: owned_type("int") } }
+    if s.word() == "Range" && !s.nullable() { return WalkBinds { element: owned_type("int") } }
+    WalkBinds {}
+}
+
+/// `types`, when there are `arity` of them and each is known.
+export fn all_known(types: List<SignedType?>?, arity: int) -> List<SignedType>? {
+    let all? = types else { return null }
+    if all.length == arity && all.all(it != null) { [t! for t in all] } else { null }
+}
+
+/// A seat's part, when it names no type parameter still open: a part that does is the call's to fill
+/// from what the lambda turns out to be.
+fn known(part: SignedType?) -> SignedType? { if part == null || part!.inferred() { null } else { part } }
+
+/// The fn type a lambda's seat wants, when it wants one of `arity` seats.
+fn seat_fn(expected: Expected, arity: int) -> SignedType? {
+    let wanted? = match expected { .Exactly(ty) -> ty, rest -> null } else { return null }
+    if wanted.head is .Function && wanted.seats.length == arity && !wanted.nullable() { wanted } else { null }
+}
+
+/// A body of `store` to check against `program`, its fn answering `answer`.
+export fn checking(store: SyntaxArena, program: CheckedProgram, answer: SignedType?) -> Checking {
+    let unchecked: SignedType? = null
+    let types: Cell<List<SignedType?>> = Cell.new([unchecked for _i in 0..store.exprs.count()])
+    let scopes: Cell<List<CheckScope>> = Cell.new([open_scope()])
+    let proofs: Cell<Map<string, Proof>> = Cell.new({})
+    let seats: Cell<Map<string, SignedType>> = Cell.new({})
+    Checking {
+        seats: seats,
+        store: store,
+        program: program,
+        answer: answer,
+        types: types,
+        scopes: scopes,
+        proofs: proofs,
+    }
+}
+
+impl Checking {
+    /// `e` checked against `expected`, its type kept.
+    mut fn check(e: ExprId, expected: Expected) -> SignedType? {
+        let meant = if self.meanings { self.store.meant(e) } else { null }
+        if self.meanings { self.seat_kept(e, expected) }
+        let made = if meant != null { self.check(meant!, self.store.expr(e).meaning_expected(expected)) } else { self.store.expr(e).checked(self, e, expected) }
+        // a type the body decides is known only once typing infers it
+        let ty = if made != null && made!.inferred() { null } else { made }
+        if ty != null { self.types.set_at(e.index, ty) }
+        ty
+    }
+
+    /// The type a node's seat wants, kept by the node: what the core may answer in its place.
+    fn seat_kept(e: ExprId, expected: Expected) {
+        let wanted? = match expected { .Exactly(ty) -> ty, rest -> null } else { return }
+        self.seats.put("${e.index}", wanted)
+    }
+
+    /// A node with no rule of its own: the core it means checked in its place, where it's a sugar;
+    /// else every node it holds checked against what isn't known, and itself left unchecked.
+    mut fn unruled(e: ExprId, expected: Expected) -> SignedType? {
+        let meant? = self.store.meant(e) else { return self.children_checked(e) }
+        self.check(meant, expected)
+    }
+
+    /// Every node `e` holds checked against what isn't known, and `e` itself left unchecked.
+    mut fn children_checked(e: ExprId) -> SignedType? {
+        for child in self.store.expr_children(e) { let _ = self.check(child, Expected.Unknown) }
+        null
+    }
+
+    /// The names the pattern `p` binds against a subject of type `subject`, in the innermost scope.
+    mut fn check_pat(p: PatId, subject: SignedType?) { self.store.pat(p).pat_checked(self, p, subject) }
+
+    /// The names `p` binds against `subject`, gathered in a scope of their own and handed back.
+    mut fn pattern_binds(p: PatId, subject: SignedType?) -> Map<string, Local> {
+        self.opened()
+        self.check_pat(p, subject)
+        let names = self.scopes.get().last()!.names
+        self.closed()
+        names
+    }
+
+    /// One arm against a subject of type `subject`: its patterns bind in a scope of its own, its
+    /// guard is a `bool`, and its value checks against `expected` — as a value even where the arms'
+    /// meeting is dropped.
+    mut fn arm_checked(arm: Arm, subject: SignedType?, expected: Expected, proof: Proof? = null) -> SignedType? {
+        self.opened()
+        if proof != null { self.scopes.push(CheckScope { names: proof!.names }) }
+        for p in arm.pats { self.check_pat(p, subject) }
+        if arm.guard != null { let _ = self.check(arm.guard!, Expected.Exactly(owned_type("bool"))) }
+        let value = self
+            .check(arm.value, if expected is .Dropped { Expected.Free } else { expected })
+        if proof != null { self.closed() }
+        self.closed()
+        value
+    }
+
+    /// What the branches `branches`, of these types, are where they meet: their join, which each
+    /// branch of another type keeps as its seat under a seat that wants nothing, or the seat's type
+    /// where they don't join, which each lifts into; nothing under a seat that isn't known, which may widen them.
+    fn branches_met(branches: List<ExprId>, types: List<SignedType?>, expected: Expected) -> SignedType? {
+        if expected is .Unknown || types.any(it == null) { return null }
+        let joined = types_joined(types)
+        if joined != null { return if expected is .Free { self.met_seated(branches, types, joined) } else { joined } }
+        match expected { .Exactly(wanted) -> wanted, rest -> null }
+    }
+
+    /// What the arms `arms`, of these types, are where they meet: the seat's type when it wants one,
+    /// which each lifts into, else their join, which each arm of another type keeps as its seat where
+    /// the arms' value is read; nothing under a seat that isn't known, which may widen them. Under a
+    /// free seat, an arm whose type isn't known is checked again where the others meet, which pins a
+    /// generic answer (a generic call's, a generic enum's variant).
+    mut fn arms_met(arms: List<ExprId>, types: List<SignedType?>, expected: Expected) -> SignedType? {
+        if expected is .Unknown { return null }
+        let pinned = match expected {
+            .Free -> self.arms_pinned(arms, types),
+            .Exactly(_) or .Dropped or .Unknown -> types,
+        }
+        if pinned.any(it == null) { return null }
+        match expected {
+            .Exactly(wanted) -> wanted,
+            .Free -> self.met_seated(arms, pinned, types_joined(pinned)),
+            .Dropped or .Unknown -> types_joined(pinned),
+        }
+    }
+
+    /// Each arm's type, one whose type isn't known checked again against where the known ones meet.
+    mut fn arms_pinned(arms: List<ExprId>, types: List<SignedType?>) -> List<SignedType?> {
+        if !types.any(it == null) { return types }
+        let known = [t for t in types if t != null]
+        if known.is_empty() { return types }
+        let meeting? = types_joined(known) else { return types }
+        [if t == null { self.check(arms[at], Expected.Exactly(meeting)) } else { t } for at, t in types]
+    }
+
+    /// `met`, where the arms `arms` of these types meet, kept as the seat of each arm of another type.
+    fn met_seated(arms: List<ExprId>, types: List<SignedType?>, met: SignedType?) -> SignedType? {
+        let meeting? = met else { return null }
+        for at, a in arms { if types[at]?.spelled() != meeting.spelled() { self.seat_kept(a, Expected.Exactly(meeting)) } }
+        meeting
+    }
+
+    /// A lambda of `params` and `body` checked against `expected`: each parameter is its written type,
+    /// or its seat's when the lambda checks into a fn type, and makes the promises either makes; its
+    /// body checks in a fenced scope against the seat's answer, which is the lambda's answer. Absent
+    /// where it stands under a seat it can't see, which may widen it.
+    mut fn lambda_checked(params: List<Param>, body: ExprId, expected: Expected) -> SignedType? {
+        let seat = seat_fn(expected, params.length)
+        let types = [if p.ty != null { self.written(p.ty!) } else { known(seat?.seats?.get(at)?.ty) } for at, p in params]
+        self.fenced()
+        for at, p in params { self.bind(p.name.of, types[at]) }
+        let wanted = known(seat?.answer)
+        let read = self
+            .check(body, if wanted != null { Expected.Exactly(wanted!) } else { Expected.Free })
+        let answer = wanted ?? read
+        self.closed()
+        if expected is .Unknown || answer == null || types.any(it == null) { return null }
+        headed_type(TypeHead.Function) with { seats: [SignedSeat {
+            ty: types[at]!,
+            mutable: p.promises.mutable || seat?.seats?.get(at)?.mutable ?? false,
+            settled: p.promises.settled || seat?.seats?.get(at)?.settled ?? false,
+        } for at, p in params], answer: answer }
+    }
+
+    /// Arms read as a lambda of one parameter that they match, checked against `expected`: each arm
+    /// binds against the seat's parameter and checks against its answer in a fenced scope; the
+    /// seat's fn type when every part of it is known, absent otherwise.
+    mut fn arms_lambda_checked(arms: List<Arm>, expected: Expected) -> SignedType? {
+        let seat = seat_fn(expected, 1)
+        let held = known(seat?.seats?.get(0)?.ty)
+        let wanted = known(seat?.answer)
+        self.fenced()
+        for a in arms {
+            let _ = self
+                .arm_checked(a, held, if wanted != null { Expected.Exactly(wanted!) } else { Expected.Free })
+        }
+        self.closed()
+        if held == null || wanted == null { null } else { seat }
+    }
+
+    /// What `e` was checked as, absent when it wasn't.
+    fn type_of(e: ExprId) -> SignedType? { self.types.get()[e.index] }
+
+    /// The binding a name has in this body's scopes, absent when the body binds it nowhere in view.
+    fn local(name: string) -> Local? {
+        for scope in reversed(self.scopes.get()) {
+            let local = scope.names.get(name)
+            if local != null { return local }
+        }
+        null
+    }
+
+    /// The type a name has here: the innermost binding of it, else what the program names by it;
+    /// absent past a scope that may have bound it unseen.
+    fn bound(name: string) -> SignedType? { self.bound_from(name, null) }
+
+    /// The type `name` read at `e` has: what `bound` answers, a name the program declares read from
+    /// the home of the template that wrote `e`.
+    fn read(e: ExprId, name: string) -> SignedType? { self.bound_from(name, self.home_of(e)) }
+
+    /// What `bound` answers, a name the program declares read from `home` first, when there is one.
+    fn bound_from(name: string, home: string?) -> SignedType? {
+        mut fenced = false
+        for scope in reversed(self.scopes.get()) {
+            let local? = scope.names.get(name) else {
+                if scope.fenced { fenced = true }
+                continue
+            }
+            return if fenced && local.wide != null { local.wide } else { local.ty }
+        }
+        (self.program.value_named)(name, home)
+    }
+
+    /// `name` bound in the innermost scope, to `ty` when it's known; `narrowable` when nothing can
+    /// write it again.
+    mut fn bind(name: string, ty: SignedType?, narrowable: bool = false) {
+        let scopes = self.scopes.get()
+        mut innermost = scopes.last()!
+        innermost.names.set(name, Local { ty: ty, narrowable: narrowable })
+        self.scopes.set_at(scopes.length - 1, innermost)
+    }
+
+    /// The condition `e` proves what `proof` says.
+    mut fn proved(e: ExprId, proof: Proof) { self.proofs.put("${e.index}", proof) }
+
+    /// The condition `e` asks whether `name` is present, true when it is if `on_present`: where the
+    /// name can narrow, a proof that it holds what it holds when present.
+    mut fn presence_asked(e: ExprId, name: string, on_present: bool) {
+        let local = self.local(name)
+        let held = local?.ty
+        if local == null || !local!.narrowable || held == null || !held!.nullable() { return }
+        mut names: Map<string, Local> = {}
+        names.set(name, Local { ty: held!.unwrapped(), narrowable: true, wide: held })
+        self.proved(e, Proof { names: names, truth: on_present })
+    }
+
+    /// What the condition `e` proves in the branch where it's `truth`, absent when nothing.
+    fn proof_when(e: ExprId, truth: bool) -> Proof? {
+        let p? = self.proofs.get().get("${e.index}") else { return null }
+        if p.truth == truth { p } else { null }
+    }
+
+    /// `branch` checked against `expected` under `proof`: in a scope of its own holding the names it
+    /// proves.
+    mut fn check_proven(branch: ExprId, expected: Expected, proof: Proof?) -> SignedType? {
+        let held? = proof else { return self.check(branch, expected) }
+        self.scopes.push(CheckScope { names: held.names })
+        let ty = self.check(branch, expected)
+        self.closed()
+        ty
+    }
+
+    /// A scope opened inside the current one.
+    mut fn opened() { self.scopes.push(open_scope()) }
+
+    /// A lambda's scope opened inside the current one.
+    mut fn fenced() { self.scopes.push(open_scope() with { fenced: true }) }
+
+    /// The innermost scope closed.
+    mut fn closed() {
+        let scopes = self.scopes.get()
+        self.scopes.set(scopes.take(scopes.length - 1))
+    }
+
+    /// `s` checked, binding what it declares where it stands.
+    mut fn check_stmt(s: StmtId) {
+        let meant? = (if self.meanings { self.store.stmt_meant(s) } else { null }) else {
+            return self.store.stmt(s).stmt_checked(self, s)
+        }
+        for m in meant { self.check_stmt(m) }
+    }
+
+    /// Every expression `s` holds checked against what isn't known.
+    mut fn stmt_children_checked(s: StmtId) { for e in self.store.stmt_children(s) { let _ = self.check(e, Expected.Unknown) } }
+
+    /// A member read on a present value of `subject`'s type: its field, else its property.
+    fn member_read(subject: SignedType, name: string) -> SignedType? { self.field_of(subject, name) ?? self.property_read(subject, name) }
+
+    /// What the property `name` of a value of `subject`'s type answers: its one seat takes the
+    /// receiver, filling what it names. Absent when the type has no such property.
+    fn property_read(subject: SignedType, name: string) -> SignedType? {
+        let property? = self.property_of(subject, name) else { return null }
+        mut found: Map<string, SignedType> = {}
+        if property.seats.length != 1 || !property.seats[0].ty.unifies(subject, found) { return null }
+        let answer? = property.answer else { return null }
+        if answer.fills_all(found) { answer.filled(found) } else { null }
+    }
+
+    /// The type of the field `name` on a value of `subject`'s type, bound to the arguments the record
+    /// is applied to: absent for an optional or dynamic subject, a type that's no record, a field it
+    /// doesn't have, and a subject that doesn't give the record every argument.
+    fn field_of(subject: SignedType, name: string) -> SignedType? {
+        if subject.nullable() || subject.dynamic { return null }
+        let record? = self.record_of(subject) else { return null }
+        if subject.args.length != record.params { return null }
+        record.fields.find(it.name == name)?.ty?.bound(subject.args)
+    }
+
+    /// The enum `ty` is, `Result` among them, absent when it's none.
+    fn enum_of(ty: SignedType) -> EnumShape? { self.program.enum_shape(ty) }
+
+    /// The member's record the gathered variant `name` on a value of `subject`'s type is made of;
+    /// absent for any other variant.
+    fn member_of(subject: SignedType?, name: string) -> SignedType? {
+        let s? = subject else { return null }
+        let shape? = self.enum_of(s) else { return null }
+        shape.variants.find(it.name == name)?.member
+    }
+
+    /// The payload types of the variant `name` on a value of `subject`'s type, bound to the arguments
+    /// the enum is applied to; absent when it has no such variant.
+    fn payloads_of(subject: SignedType?, name: string) -> List<SignedType?>? {
+        let s? = subject else { return null }
+        let shape? = self.enum_of(s) else { return null }
+        if s.args.length != shape.params { return null }
+        let variant? = shape.variants.find(it.name == name) else { return null }
+        [p.ty?.bound(s.args) for p in variant.payloads]
+    }
+
+    /// The one payload the variant `name` carries on a value of `subject`'s type, absent when it
+    /// carries another number of them.
+    fn payload_of(subject: SignedType?, name: string) -> SignedType? {
+        let all? = self.payloads_of(subject, name) else { return null }
+        if all.length == 1 { all[0] } else { null }
+    }
+
+    /// The shape the named type `ty` stands over, absent for any other type.
+    fn named_over(ty: SignedType) -> SignedType? { (self.program.named_of)(ty) }
+
+    /// The record `ty` is, absent when it's none.
+    fn record_of(ty: SignedType) -> RecordShape? { (self.program.record_of)(ty) }
+
+    /// A type named in the body, resolved from `home`, the template that wrote the name, first.
+    fn type_named(name: string, home: string?) -> SignedType { (self.program.type_named)(name, home) }
+
+    /// Where the names `e` reads are read, as its origin spells it; absent for a node the body's own
+    /// file wrote.
+    fn home_of(e: ExprId) -> string? { self.store.home_of(e) }
+
+    /// What the values checked into `seats` fill of the type parameters the seats name, beyond those
+    /// `pinned` already fills: each value whose seat isn't a fn first; then what the seat the call
+    /// fills wants of `answer`, for parameters still open; then each fn value against its seat with
+    /// what's filled so far, a seat still naming an unfilled parameter unseen. Absent when a value
+    /// can't fill its seat or two fill one parameter differently.
+    mut fn fills(
+        seats: List<SignedType>,
+        values: List<ExprId>,
+        pinned: Map<string, SignedType>,
+        answer: SignedType?,
+        expected: Expected,
+    ) -> Map<string, SignedType>? {
+        mut found = pinned
+        mut agreed = true
+        for at, v in values {
+            let seat = seats[at]
+            if seat.head is .Function { continue }
+            let open = seat.generic() && !seat.fills_all(found)
+            let read = self
+                .check(v, if open { Expected.Free } else { Expected.Exactly(seat.filled(found)) })
+            if open && (read == null || !seat.unifies(read!, found)) { agreed = false }
+        }
+        let wanted = match expected { .Exactly(ty) -> ty, rest -> null }
+        if answer != null && wanted != null {
+            mut from_seat: Map<string, SignedType> = {}
+            if answer!.unifies(wanted!, from_seat) { for k, v in from_seat { if !found.has(k) { found.set(k, v) } } }
+        }
+        for at, v in values {
+            let seat = seats[at]
+            if !(seat.head is .Function) { continue }
+            let open = !seat.fills_all(found)
+            let lambda = self.store.lambda_parts(v) != null
+            let read = self
+                .check(
+                    v,
+                    if open && !lambda { Expected.Unknown } else { Expected.Exactly(seat.filled_or_inferred(found)) },
+                )
+            if open && (read == null || !seat.unifies(read!, found)) { agreed = false }
+        }
+        if agreed { found } else { null }
+    }
+
+    /// Each value checked against nothing.
+    mut fn checked_free(values: List<ExprId>) { for v in values { let _ = self.check(v, Expected.Free) } }
+
+    /// The static `name` of the type `described`, as a fn of what it's called with; absent when the
+    /// program names none.
+    fn static_of(described: SignedType, name: string) -> SignedType? { (self.program.static_of)(described, name) }
+
+    /// The seats `count` arguments fill, in order, absent when they're too many, or too few to leave
+    /// only defaulted seats behind.
+    fn seats_filled(f: SignedType, count: int) -> List<SignedSeat>? {
+        if count > f.seats.length || f.seats.drop(count).any(!it.defaulted) { return null }
+        f.seats.take(count)
+    }
+
+    /// What a call of the fn type `f` with `args` answers: each argument fills its seat as
+    /// `Checking.fills` has it, and the answer is claimed when every parameter it names is filled.
+    mut fn called(f: SignedType, args: List<ExprId>, expected: Expected) -> SignedType? {
+        let seats = self.seats_filled(f, args.length)
+        if seats == null {
+            self.checked_free(args)
+            return null
+        }
+        let found? = self.fills([s.ty for s in seats!], args, {}, f.answer, expected) else { return null }
+        let answer? = f.answer else { return null }
+        if answer.fills_all(found) { answer.filled(found) } else { null }
+    }
+
+    /// What a call of `f` answers when its type parameters are the body's own, which nothing here
+    /// fills: each argument checks against its seat as written.
+    mut fn rigidly_called(f: SignedType, args: List<ExprId>) -> SignedType? {
+        let seats = self.seats_filled(f, args.length)
+        if seats == null {
+            self.checked_free(args)
+            return null
+        }
+        for at, a in args { let _ = self.check(a, Expected.Exactly(seats![at].ty)) }
+        f.answer
+    }
+
+    /// What a read through `?.` answers: what `read` answers on the subject's present value, made
+    /// optional, since an absent subject answers absent. Absent when the subject isn't optional or
+    /// the read isn't known.
+    fn chained(subject: SignedType?, read: fn(SignedType) -> SignedType?) -> SignedType? {
+        let s? = subject else { return null }
+        if !s.nullable() { return null }
+        let answer? = read(s.unwrapped()) else { return null }
+        answer with { nulls: if answer.nulls > 0 { answer.nulls } else { 1 } }
+    }
+
+    /// The type `@std/meta` declares as `name` (`Code`, `Stmts`), absent when it declares none.
+    fn meta_type(name: string) -> SignedType? { self.program.meta(name) }
+
+    /// The type a module the toolchain carries declares as `name` (`@std.grammar`'s `Grammar`).
+    fn toolchain_type(module: string, name: string) -> SignedType? { (self.program.toolchain_type)(module, name) }
+
+    /// What a name reads as when it names a type and no value: the type, standing as a value.
+    fn type_value(name: string, home: string?) -> SignedType? { (self.program.type_value)(name, home) }
+
+    /// A variant of the enum `enum_type` built from `args`: the enum, its arguments from the seat
+    /// when it names the enum, else from what the payloads fill. Absent when the enum has no such
+    /// variant, or the arguments don't fit it.
+    mut fn variant_built(
+        enum_type: SignedType,
+        name: string,
+        args: List<ExprId>,
+        expected: Expected,
+    ) -> SignedType? {
+        let shape = self.enum_of(enum_type)
+        let seats? = shape?.variants?.find(it.name == name)?.seats(args.length) else {
+            self.checked_free(args)
+            return null
+        }
+        let params = shape!.params
+        let wanted_args = match expected {
+            .Exactly(ty) -> if ty.names_as(enum_type) && ty.args.length == params { ty.args } else { [] },
+            rest -> [],
+        }
+        mut pinned: Map<string, SignedType> = {}
+        for at, a in wanted_args { pinned.set("${at}", a) }
+        let found? = self.fills(seats, args, pinned, null, Expected.Free) else { return null }
+        let filled = [found.get("${at}") for at in 0..params]
+        if filled.any(it == null) { null } else { enum_type with { args: [a! for a in filled] } }
+    }
+
+    /// The property `name` of a value of `subject`'s type, as a fn of the receiver alone; absent when
+    /// the program names none.
+    fn property_of(subject: SignedType, name: string) -> SignedType? { (self.program.property_of)(subject, name) }
+
+    /// What a method answers called on a value of `subject`'s type with `args`: its first seat takes
+    /// the receiver, filling what it names, and the rest fill as a call's do. Absent when a seat can't
+    /// take what it's given or the answer names a parameter nothing filled.
+    mut fn applied(method: SignedType, subject: SignedType, args: List<ExprId>, expected: Expected) -> SignedType? {
+        mut pinned: Map<string, SignedType> = {}
+        let seats = self.seats_filled(method, args.length + 1)
+        if seats == null || !method.seats[0].ty.unifies(subject, pinned) {
+            self.checked_free(args)
+            return null
+        }
+        let found? = self
+            .fills([s.ty for s in seats!.drop(1)], args, pinned, method.answer, expected) else { return null }
+        let answer? = method.answer else { return null }
+        if answer.fills_all(found) { answer.filled(found) } else { null }
+    }
+
+    /// The fn type of the method `name` on a value of `subject`'s type, its receiver the first seat;
+    /// absent when the program names none.
+    fn method_of(subject: SignedType, name: string) -> SignedType? { (self.program.method_of)(subject, name) }
+
+    /// A type written in the body, resolved.
+    fn written(ty: TypeRef) -> SignedType { (self.program.written)(ty) }
+}
+
+/// A scope with nothing bound in it yet.
+fn open_scope() -> CheckScope {
+    let names: Map<string, Local> = {}
+    CheckScope { names: names }
+}
+
+/// The one field a named type is a record over, read as the shape it stands over.
+export const NAMED_FIELD: string = "of"
+
+/// The package that holds the language's compile-time shapes.
+const META_PACKAGE: string = "@std.meta"
+
+impl CheckedProgram {
+    /// The type `@std/meta` declares as `name` (`Code`, `Stmts`), absent when it declares none.
+    fn meta(name: string) -> SignedType? { (self.toolchain_type)(META_PACKAGE, name) }
+}
+
+/// A type the language owns, with nothing applied.
+export fn owned_type(name: string) -> SignedType { headed_type(TypeHead.Owned(name)) }
+
+/// The absent value's own type: `never?`, a value that is only ever null.
+export fn null_type() -> SignedType { never_type() with { nulls: 1 } }
+
+/// The type `described`, standing as a value.
+export fn meta_type(described: SignedType) -> SignedType { headed_type(TypeHead.Meta) with { args: [described] } }
+
+/// The type of code that doesn't finish.
+export fn never_type() -> SignedType { headed_type(TypeHead.Never) }
+
+/// A type that is its head alone: nothing applied, nothing optional.
+export fn headed_type(head: TypeHead) -> SignedType {
+    SignedType {
+        head: head,
+        args: [],
+        nulls: 0,
+        dynamic: false,
+        seats: [],
+        answer: null,
+        alternatives: [],
+    }
+}

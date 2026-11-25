@@ -1,0 +1,72 @@
+// `@default` on an event: the bare statements of an instance are its
+// handler, `gate { n = x + 1 }` being `gate { on press { n = x + 1 } }`.
+// The compiler reads the mark itself, so no derive claims it.
+use @std.avrac.compiler.{Program}
+use @std.avrac.testing.{Module, provided, refused_in, answered}
+
+/// A module of the program's own, so its component's word opens instances.
+fn kit(body: string) -> Module { Module { name: "kit", text: body } }
+
+fn gate() -> Module {
+    kit("export component gate {\n    size: int = 1\n    @default on press\n    on release\n}\n")
+}
+
+/// A program that builds one `gate` with `block` and runs `after` over it.
+fn opened(block: string, after: string) -> Program {
+    provided(
+        "use kit.{gate}\nstate n: int = 0\nfn v() -> string {\n    let x = 5\n    let a = gate ${block}\n    ${after}\n    \"\${n}\"\n}\nv()",
+        "",
+        [gate()],
+    )
+}
+
+const press = "let f? = a.press else { return \"unheard\" }\n    f()"
+const release = "let f? = a.release else { return \"unheard\" }\n    f()"
+
+spec "features/components — a default event" {
+    given "bare statements in an instance" {
+        then "are the default event's handler, closing over what they could see" {
+            answered(opened("{ n = x + 1 }", press)) == "6"
+        }
+        then "leave the other events to their own handlers" {
+            answered(opened("{\n        n = x + 1\n        on release { n = 9 }\n    }", release)) == "9"
+        }
+        then "sit beside settings" { answered(opened("{\n        size: 2\n        n = x + 2\n    }", press)) == "7" }
+        then "are absent when the instance writes none" { answered(opened("{ size: 2 }", press)) == "unheard" }
+        then "are refused beside a handler written for the same event" {
+            refused_in(
+                opened("{\n        on press { n = 1 }\n        n = 2\n    }", press),
+                "`gate` hears `press` once: its bare statements are the `@default` handler, so `on press` beside them says it twice",
+            )
+        }
+    }
+    given "a component no view derives" {
+        then "takes a default too — a worker's message" {
+            answered(
+                provided(
+                    "use kit.{worker}\nstate n: int = 0\nfn v() -> string {\n    let a = worker { n = 4 }\n    let f? = a.message else { return \"unheard\" }\n    f(\"hi\")\n    \"\${n}\"\n}\nv()",
+                    "",
+                    [kit("export component worker {\n    @default on message(text: string)\n}\n")],
+                ),
+            ) == "4"
+        }
+    }
+    given "a declaration" {
+        then "marks at most one event" {
+            refused_in(
+                provided(
+                    "1",
+                    "",
+                    [kit("export component pair {\n    @default on a\n    @default on b\n}\n")],
+                ),
+                "a component has one default event, and `pair` marks `a`, `b` `@default`",
+            )
+        }
+        then "marks an event, never a field" {
+            refused_in(
+                provided("1", "", [kit("export component flat {\n    @default size: int = 1\n}\n")]),
+                "only an event can be a component's default, and `size` of `flat` is a field",
+            )
+        }
+    }
+}

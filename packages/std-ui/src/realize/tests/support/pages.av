@@ -1,0 +1,22 @@
+//! `tests/support/pages.av` — how a test finds an element on a live page:
+//! as a reader of the page would, by its accessible name.
+use realize.dom.live.{Live}
+use realize.html.element.{Element}
+use realize.html.tags.{HtmlAttrName}
+use tree.identity.{NodeId}
+
+/// The elements under `e` that hear an event and are named `name`.
+fn named_in(e: Element, name: string) -> List<NodeId> {
+    let el? = e.tagged() else { return [] }
+    let own: List<NodeId> = if !el.hears.is_empty() &&
+        el.attrs.any(it.name == HtmlAttrName.AriaLabel && it.value == name) {
+        [el.id]
+    } else {
+        []
+    }
+    own.concat([id for k in el.kids for id in named_in(k, name)])
+}
+
+/// The controls named `name` on the page as last painted, in page order
+/// — who a host's echo would name for each.
+export fn named(page: Live, name: string) -> List<NodeId> { [id for e in page.page.get() for id in named_in(e, name)] }

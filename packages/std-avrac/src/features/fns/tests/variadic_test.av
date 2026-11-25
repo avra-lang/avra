@@ -1,0 +1,74 @@
+// A variadic seat, by attack class. Accepted programs run through
+// `shown`; each refusal pins its voice, and the goldens pin the rendering.
+use @std.avrac.testing.{shown, refused_with, projected}
+use compiler.{analyze_source}
+
+const F: string = "fn f(a: int, ..r: List<int>) -> int {\n    a * 1000 + r.length * 100 + r.fold(0, (s, x) -> s + x)\n}\n"
+
+spec "features/fns — variadic seat" {
+    given "calls" {
+        then "no extras is an empty list" { shown("${F}f(1)") == "1000" }
+        then "extras pack in order" { shown("${F}f(1, 2, 3)") == "1205" }
+        then "a spread joins the extras" { shown("${F}let xs = [10, 20]\nf(1, 2, ..xs, 3)") == "1435" }
+        then "a lone spread is handed over whole" { shown("${F}let xs = [10, 20]\nf(1, ..xs)") == "1230" }
+        then "the spread source is untouched" { shown("${F}let xs = [10, 20]\nlet n = f(1, ..xs)\nxs.length") == "2" }
+        then "only the variadic seat" { shown("fn n(..r: List<int>) -> int { r.length }\nn(1, 2, 3, 4)") == "4" }
+        then "a generic element pins by its extras" {
+            shown("fn n<T>(first: T, ..r: List<T>) -> int { r.length }\nn(\"a\", \"b\", \"c\")") == "2"
+        }
+        then "a method takes one" {
+            shown(
+                "type A = { n: int }\nimpl A {\n    fn add(..r: List<int>) -> int { self.n + r.length }\n}\nA { n: 5 }.add(1, 2)",
+            ) == "7"
+        }
+        then "a fn value of a variadic fn is its list seat" {
+            shown("${F}let g = f\ng(1, [2, 3])") == "1205"
+        }
+    }
+    given "refusals" {
+        then "an extra of another element type" {
+            refused_with("${F}f(1, \"s\")", "argument 2 of `f` wants `int`, found `string`")
+        }
+        then "a spread of another element type" {
+            refused_with(
+                "${F}f(1, ..[\"s\"])",
+                "argument 2 of `f` wants `List<int>`, found `List<string>`",
+            )
+        }
+        then "a named argument" {
+            refused_with(
+                "${F}f(a: 1, 2)",
+                "takes the rest of its arguments in a `..` seat, which a call writes by position",
+            )
+        }
+        then "too few before the seat" { refused_with("${F}f()", "`f` needs 1 before its `..` seat, found 0 arguments") }
+        then "a spread into fixed seats" {
+            refused_with(
+                "fn g(a: int, b: int) -> int { a }\ng(1, ..[2])",
+                "`..` spreads into a seat that takes the rest of the arguments, and `g` declares none",
+            )
+        }
+        then "a variadic seat that is not last" {
+            refused_with(
+                "fn h(..r: List<int>, a: int) -> int { a }\n1",
+                "the one seat that stands last",
+            )
+        }
+        then "a variadic seat that is no list" {
+            refused_with("fn n(..r: int) -> int { 1 }\n1", "collects its arguments into a list")
+        }
+    }
+    given "the refusals, rendered" {
+        then "a spread into fixed seats" {
+            analyze_source("fn g(a: int, b: int) -> int { a }\nlet c = g(1, ..[2])\nc").report() == "error[type.spread_seat]: `..` spreads into a seat that takes the rest of the arguments, and `g` declares none\n  ╭─[<source>:2:14]\n2 │ let c = g(1, ..[2])\n  ·              ┬\n  ·              ╰── spread here\n──╯\nhelp: declare `..rest: List<T>` on `g`, or pass each element"
+        }
+        then "a variadic seat that is not last" {
+            analyze_source("fn h(..r: List<int>, a: int) -> int { a }\n1").report() == "error[type.variadic]: `..r` takes the rest of `h`'s arguments, so it is the one seat that stands last\n  ╭─[<source>:1:1]\n1 │ fn h(..r: List<int>, a: int) -> int { a }\n  · ┬\n  · ╰── this seat\n──╯\nhelp: move it to the end, and keep one"
+        }
+    }
+    given "the printer" {
+        then "a variadic seat and a spread argument keep their spelling" {
+            projected("fn f(a: int, ..r: List<int>) -> int { a }\nlet x = f(1,   ..[2], 3)\n") == "fn f(a: int, ..r: List<int>) -> int {\n    a\n}\nlet x = f(1, ..[2], 3)"
+        }
+    }
+}

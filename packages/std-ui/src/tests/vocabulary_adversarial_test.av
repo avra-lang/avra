@@ -1,0 +1,62 @@
+//! Attacks on the vocabulary: degenerate sizes, computed strings, depth,
+//! and views shared or repeated.
+use @std.ui.components.{button, column, item, list, row, text}
+use @std.ui.tree.outline.{outline}
+use @std.ui.tree.node.{Node}
+use @std.ui.tree.shows.{Shows, rows}
+use @std.ui.tree.view.{View, tree_of}
+use @std.ui.style.box.{Box}
+
+type Label = { word: string }
+
+impl Shows for Label {
+    fn view() -> dyn View { text "${self.word}!" }
+}
+
+fn words(n: int) -> List<dyn Shows> { [Label { word: "w${i}" } for i in 0..n] }
+
+/// A column nested `depth` deep around one text.
+fn nested(depth: int) -> Node {
+    if depth == 0 { return tree_of(text "core") }
+    Node { prim: .Column, attrs: [], box: Box {}, children: [nested(depth - 1)] }
+}
+
+fn depth_of(n: Node) -> int {
+    match n.children.first() {
+        c? -> 1 + depth_of(c)
+        null -> 0
+    }
+}
+
+fn many(n: int) -> Node { tree_of(column { [text "t${i}" for i in 0..n] }) }
+
+spec "the vocabulary under attack" {
+    given "degenerate sizes" {
+        then "a one-element rows is one child" { tree_of(list { rows(words(1)) }).children.length == 1 }
+        then "a large list keeps every child in order" {
+            many(2000).children.length == 2000 &&
+                outline(many(3)) == "column\n  text \"t0\"\n  text \"t1\"\n  text \"t2\""
+        }
+    }
+    given "computed strings" {
+        then "a label built at run time survives the node that holds it" {
+            outline(tree_of(list { rows(words(3)) })) == "list\n  text \"w0!\"\n  text \"w1!\"\n  text \"w2!\""
+        }
+        then "computed keys that agree are equal keys" {
+            tree_of(item { key: "x${1 + 1}" }).box.key == tree_of(item { key: "x2" }).box.key
+        }
+    }
+    given "depth and sharing" {
+        then "a tree nested 200 deep keeps its depth" { depth_of(nested(200)) == 200 }
+        then "one view written twice answers two equal nodes" {
+            let b = button "again"
+            let n = tree_of(
+                row {
+                    b
+                    b
+                },
+            )
+            outline(n) == "row\n  button \"again\"\n  button \"again\"" && n.children.length == 2
+        }
+    }
+}

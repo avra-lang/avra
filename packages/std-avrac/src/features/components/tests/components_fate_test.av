@@ -1,0 +1,49 @@
+//! A component that holds a handler which can fail names a fate for
+//! its failure: `flow.no_fate`. The handler is structural — a field
+//! whose value answers `Result` — and the fate is the component's own
+//! `dead:` field, set.
+use @std.avrac.testing.{provided, answered, refused_in}
+use @std.avrac.compiler.{Program}
+
+/// The provider: a component whose `each` can fail, and a `dead:` it
+/// may name.
+fn work() -> string {
+    "export fn ok(n: int) -> Result<int, string> { .Ok(n) }\n\nexport component work {\n    each: fn(int) -> Result<int, string>\n    dead: string? = null\n}\n"
+}
+
+fn built(main: string) -> Program { provided("use @x.c.{work, ok}\n" + main, work()) }
+
+spec "features/components — a handler that can fail names a fate" {
+    given "a component whose handler can fail" {
+        then "names its `dead:` and runs" {
+            answered(
+                built("let w = work {\n    each: ok\n    dead: \"letter\"\n}\nw.dead ?? \"none\""),
+            ) == "letter"
+        }
+        then "names none, and is refused by name" {
+            refused_in(
+                built("let w = work {\n    each: ok\n}\n0"),
+                "error[flow.no_fate]: a handler that can fail must name a fate for its failure, and `work` names none",
+            )
+        }
+        then "names none, and its refusal renders whole" {
+            built("let w = work {\n    each: ok\n}\n0").report().trim() == "error[flow.no_fate]: a handler that can fail must name a fate for its failure, and `work` names none\n  ╭─[/w/src/main.av:3:11]\n3 │     each: ok\n  ·           ┬\n  ·           ╰── this handler can fail\n──╯\nhelp: name the letter a failed item is buried in — `dead: <sink>`"
+        }
+        then "names one as `null`, and is refused the same" {
+            refused_in(
+                built("let w = work {\n    each: ok\n    dead: null\n}\n0"),
+                "error[flow.no_fate]: a handler that can fail must name a fate for its failure, and `work` names none",
+            )
+        }
+    }
+    given "a component whose handler cannot fail" {
+        then "names no fate and is not refused" {
+            answered(
+                provided(
+                    "use @x.c.{plain}\nlet p = plain { }\n0",
+                    "export component plain {\n    dead: string? = null\n}\n",
+                ),
+            ) == "0"
+        }
+    }
+}

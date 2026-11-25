@@ -1,0 +1,110 @@
+//! WHERE A PROCESS'S TIME GOES: each family of asks, its CPU time inside them with and without the
+//! asks it makes in turn. A family is a query's name, or a phase a caller names outside every query.
+use sorted.{sorted_by}
+
+// LICENSED input.clock: a timing reads the clock, never an input of what is built
+extern fn avra_cpu_ns() -> int
+
+/// Which side of the program layer a family stands on.
+export enum TimedSide {
+    /// A query's ask worked out, inside the engine.
+    Query
+    /// A query's ask answered by a kept record found to stand.
+    Reused
+    /// A phase a caller times outside every query.
+    Outside
+}
+
+/// An ask being timed: its family as spoken, its side, when it began, and the time its nested asks
+/// took.
+type OpenAsk = { family: string, side: TimedSide, began: int, nested: int }
+
+/// One family's time, summed over its asks: inside them less their nested asks, and inside them
+/// whole, counted once while it stands open under itself.
+export type FamilyTime = { family: string, side: TimedSide, own: int, whole: int, asks: int }
+
+/// The time of each family this process timed. An identity: every holder times through one.
+export type QueryTimes = {
+    began: int,
+    open: Cell<List<OpenAsk>>,
+    families: Cell<Map<string, FamilyTime>>,
+}
+
+export fn query_times() -> QueryTimes {
+    let open: Cell<List<OpenAsk>> = Cell.new([])
+    let families: Cell<Map<string, FamilyTime>> = Cell.new({})
+    QueryTimes { began: avra_cpu_ns(), open: open, families: families }
+}
+
+impl QueryTimes {
+    /// Opens an ask of `family`.
+    fn opened(family: string, side: TimedSide) {
+        self
+            .open
+            .push(
+                OpenAsk {
+                    family: family + side_word(side),
+                    side: side,
+                    began: avra_cpu_ns(),
+                    nested: 0,
+                },
+            )
+    }
+
+    /// Closes the innermost ask, charging its time to its family and to whoever asked it.
+    fn closed() {
+        let open = self.open.get()
+        let ask? = open.last() else { return }
+        let whole = avra_cpu_ns() - ask.began
+        let outer = open.take(open.length - 1)
+        self.open.set(outer)
+        let under_itself = outer.any(it.family == ask.family)
+        let was = self.families.get().get(ask.family) ?? FamilyTime {
+            family: ask.family,
+            side: ask.side,
+            own: 0,
+            whole: 0,
+            asks: 0,
+        }
+        self
+            .families
+            .put(
+                ask.family,
+                was with { own: was.own + whole - ask.nested, whole: was.whole + if under_itself { 0 } else { whole }, asks: was.asks + 1 },
+            )
+        let asker? = outer.last() else { return }
+        self.open.set_at(outer.length - 1, asker with { nested: asker.nested + whole })
+    }
+
+    /// Each family timed, the most time of its own first.
+    fn by_own_time() -> List<FamilyTime> { sorted_by(self.families.get().values(), (a, b) -> a.own > b.own) }
+
+    /// The `most` families with the most time of their own, each as `family own / whole (asks)`.
+    fn spoken(most: int) -> string {
+        ["${t.family} ${seconds(t.own)} / ${seconds(t.whole)} (${t.asks})" for t in self.by_own_time().take(most)]
+            .join(", ")
+    }
+
+    /// The process's time since these began to be kept, split between the program layer's asks, the
+    /// phases timed outside it, and the rest: each by the time its asks spent as their own.
+    fn split() -> string {
+        let all = avra_cpu_ns() - self.began
+        let families = self.families.get().values()
+        let queries = families.filter(on_the_program_layer).fold(0, (sum, f) -> sum + f.own)
+        let outside = families.filter(!on_the_program_layer(it)).fold(0, (sum, f) -> sum + f.own)
+        "${seconds(all)} CPU: ${seconds(queries)} asking the program layer, ${seconds(outside)} in phases timed outside it, ${seconds(all - queries - outside)} in neither"
+    }
+}
+
+/// Whether a family's asks are the program layer's.
+fn on_the_program_layer(f: FamilyTime) -> bool {
+    match f.side { .Query or .Reused -> true, .Outside -> false }
+}
+
+/// How a family's side is spoken after its name.
+fn side_word(side: TimedSide) -> string {
+    match side { .Query -> "", .Reused -> " (reused)", .Outside -> " (outside)" }
+}
+
+/// Nanoseconds as seconds to a tenth.
+fn seconds(ns: int) -> string { "${ns / 1000000000}.${ns / 100000000 % 10}s" }

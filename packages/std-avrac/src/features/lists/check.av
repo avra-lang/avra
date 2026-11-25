@@ -1,0 +1,461 @@
+//! The literal's typing law: elements share ONE type and each must
+//! ride a slot (the SAME law every aggregate slot obeys — R0's
+//! widening reached lists at G3); the empty literal is the
+//! absence-of-elements value, adopted by whatever list claims it.
+use core.{ExprId, StmtId, Type, TypeId, CompClause, flatten, some_list, same_type}
+use features.{TypeCx, this_is, slot_worthy}
+use diagnostics.{refusal, warning, Diag}
+use @std.errors.{Loc}
+
+fn list_type(mut cx: TypeCx, e: ExprId, elems: List<ExprId>) -> TypeId {
+    if elems.is_empty() { return cx.view.types.intern(Type.EmptyList) }
+    if cx.want_refused(e) { return cx.error_type }
+    if elems.any((k) -> spreading(cx, k)) { return spread_literal_type(cx, e, elems) }
+    // a slot that KNOWS its elements judges each by the one
+    // assignment door — heterogeneity boxes, lambdas hear seats
+    let want: TypeId? = wanted_elem(cx, e)
+    if want != null { return heard_list(cx, e, elems, want!) }
+    let head = cx.led_by(elems)
+    if cx.errored(head) { return cx.error_type }
+    if cx.awaits_seat(e, head) { return cx.error_type }
+    if !slot_worthy(cx.shape_at(head)) { return cx.unslottable(head, "a list element") }
+    let elem = cx.joined(elems, cx.type_at(head))
+    for k in elems {
+        if !cx.accepts(k, elem) { return disagreeing(cx, e, k, elem) }
+    }
+    cx.type(List<elem>)
+}
+
+/// Whether a list element is a `..` spread.
+fn spreading(cx: TypeCx, k: ExprId) -> bool { cx.view.store.spread_operand(k) != null }
+
+/// A literal with `..` entries: each spread is a list, and the elements
+/// and the lists' own elements answer to one element type, as a
+/// `collect` that spreads does.
+fn spread_literal_type(mut cx: TypeCx, e: ExprId, elems: List<ExprId>) -> TypeId {
+    let lists = [k for k in elems if spreading(cx, k)]
+    for k in lists {
+        if !spreads_list(cx, k) { return cx.error_type }
+    }
+    spread_type(cx, e, [k for k in elems if !spreading(cx, k)], lists)
+}
+
+/// A spread's operand is a list; any other speaks once.
+fn spreads_list(mut cx: TypeCx, k: ExprId) -> bool {
+    let ty = cx.type_at(k)
+    if cx.errored_ty(ty) { return false }
+    if is_list(cx, ty) { return true }
+    not_a_list(cx, k)
+    false
+}
+
+/// The element the planted want declares, when the slot is a list.
+fn wanted_elem(cx: TypeCx, e: ExprId) -> TypeId? {
+    let w? = cx.want_at(e) else { return null }
+    cx.view.types.element(w)
+}
+
+/// Every element through `accepts` against the declared element —
+/// widens record (dyn boxes, auto-Ok), and the refusals speak the
+/// slot's words, not the head's.
+fn heard_list(mut cx: TypeCx, e: ExprId, elems: List<ExprId>, want: TypeId) -> TypeId {
+    if !slot_worthy(cx.view.types.shape_of(want)) { return cx.unslottable_want(e, want, "a list element") }
+    for k in elems {
+        if !cx.accepts(k, want) { return unwanted_element(cx, k, want) }
+    }
+    cx.type(List<want>)
+}
+
+/// A `collect` wears the list its kept values make — judged by the
+/// literal's own law, as though each were written as an element. A
+/// kept LIST spreads, its elements joining one by one — unless the
+/// collect holds lists, where a list is one element.
+fn collect_type(mut cx: TypeCx, e: ExprId, stmts: List<StmtId>) -> TypeId {
+    let values = collection(cx, e, stmts)
+    fed(cx, e, values)
+    if values.any((v) -> cx.facts.hungry_at(v)) { return cx.hungry(e) }
+    for v in values { cx.facts.spread(v, spreads(cx, e, v)) }
+    let lists = [v for v in values if cx.facts.spreads_at(v)]
+    if lists.is_empty() { return list_type(cx, e, values) }
+    spread_type(cx, e, [v for v in values if !cx.facts.spreads_at(v)], lists)
+}
+
+/// Each kept value that waited for the element is handed it, once the
+/// collect's seat names one.
+fn fed(mut cx: TypeCx, e: ExprId, values: List<ExprId>) {
+    let elem? = wanted_elem(cx, e) else { return }
+    for v in values {
+        if cx.facts.hungry_at(v) { cx.feed(v, elem) }
+    }
+}
+
+/// A kept value spreads when it is a list and the collect's element is not.
+fn spreads(cx: TypeCx, e: ExprId, v: ExprId) -> bool {
+    if !is_list(cx, cx.type_at(v)) { return false }
+    let held: TypeId? = wanted_elem(cx, e)
+    held == null || !is_list(cx, held!)
+}
+
+fn is_list(cx: TypeCx, t: TypeId) -> bool {
+    match cx.view.types.seen_shape(t) { .List(_) or .EmptyList -> true, _ -> false }
+}
+
+/// A collect with lists spread in: the element is the want's, else the
+/// first single value's, else the first list's own; each single answers
+/// to it and each list to the list of it.
+fn spread_type(mut cx: TypeCx, e: ExprId, singles: List<ExprId>, lists: List<ExprId>) -> TypeId {
+    let elem? = spread_elem(cx, e, singles, lists) else { return cx.view.types.intern(Type.EmptyList) }
+    let listed = cx.type(List<elem>)
+    for v in lists {
+        if !cx.accepts(v, listed) { return disagreeing(cx, e, v, listed) }
+    }
+    for k in singles {
+        if !cx.accepts(k, elem) { return disagreeing(cx, e, k, elem) }
+    }
+    listed
+}
+
+/// Absent only when every kept value is an empty list and no want names
+/// the element.
+fn spread_elem(cx: TypeCx, e: ExprId, singles: List<ExprId>, lists: List<ExprId>) -> TypeId? {
+    let held: TypeId? = wanted_elem(cx, e)
+    if held != null { return held }
+    let single: ExprId? = singles.first()
+    if single != null { return cx.type_at(single!) }
+    flatten([some_list(cx.view.types.element(cx.type_at(v))) for v in lists]).first()
+}
+
+/// A `collect`'s kept values: its body walked once, and remembered —
+/// a collect re-typed under a want it waited for judges the same
+/// values again.
+fn collection(mut cx: TypeCx, e: ExprId, stmts: List<StmtId>) -> List<ExprId> {
+    let kept: List<ExprId>? = cx.facts.collection(e)
+    if kept != null { return kept! }
+    let values = cx.gathered(stmts, wanted_elem(cx, e))
+    cx.facts.collected(e, values)
+    values
+}
+
+/// Elements that disagree wait for a want that may hold them all — a
+/// field's `List<dyn T>` — and speak only when none arrives.
+fn disagreeing(mut cx: TypeCx, e: ExprId, k: ExprId, elem: TypeId) -> TypeId {
+    if !cx.starving { return cx.hungry(e) }
+    disagreeing_element(cx, k, elem)
+}
+
+// ── The voices ──
+
+fn not_a_list(mut cx: TypeCx, k: ExprId) {
+    let n = cx.name_at(k)
+    if cx.shape_at(k) is .Opt {
+        return cx
+            .emit(
+                refusal(
+                    "type.spread_nullable",
+                    cx.loc_of(k),
+                    "`..` spreads `${n}`, which may be null",
+                    "spread here",
+                    "unwrap it first — `..(xs ?? [])`",
+                ),
+            )
+    }
+    cx
+        .emit(
+            refusal(
+                "type.spread_list",
+                cx.loc_of(k),
+                "`..` in a list spreads a list, found `${n}`",
+                "spread here",
+                "a list literal spreads lists — `[..xs, y]`; write any other value as an element",
+            ),
+        )
+}
+
+fn disagreeing_element(mut cx: TypeCx, k: ExprId, elem: TypeId) -> TypeId {
+    let n = cx.name_at(k)
+    let said = cx
+        .seat_mismatch(
+            "type.list_element",
+            cx.loc_of(k),
+            k,
+            "a list's elements share one type — the first is `${cx.view.types.name_of(elem)}`, this is `${n}`",
+            elem,
+        )
+    cx
+        .spoken(
+            if boxable(cx, elem) && boxable(cx, cx.type_at(k)) { said with { help: share_a_trait() } } else { said },
+        )
+}
+
+/// A declared type — the only kind a trait impl serves, so the only
+/// kind a `dyn` list can hold.
+fn boxable(cx: TypeCx, t: TypeId) -> bool {
+    match cx.view.types.shape_of(t) { .Struct(_, _) or .Enum(_, _) -> true, _ -> false }
+}
+
+fn share_a_trait() -> string {
+    "to hold both, declare the list over a trait they share — `let xs: List<dyn Trait> = …`"
+}
+
+fn unwanted_element(mut cx: TypeCx, k: ExprId, want: TypeId) -> TypeId {
+    let n = cx.name_at(k)
+    cx
+        .spoken(
+            cx
+                .seat_mismatch(
+                    "type.list_element",
+                    cx.loc_of(k),
+                    k,
+                    "this list holds `${cx.view.types.name_of(want)}`, this is `${n}`",
+                    want,
+                ),
+        )
+}
+
+/// THE COMPREHENSION LAW: each head is the `for` statement's. Over a
+/// list, the name wears its element type and the index an int;
+/// over a range `lo..hi`, both bounds are ints, the name counts,
+/// and there is no index. A later head's own source and range bound
+/// type under every earlier head's binders; a filter's condition is a
+/// bool, typed the same way. The answer is a list of the element
+/// expression's type, typed under every head's binders at once.
+fn comp_type(mut cx: TypeCx, e: ExprId, elem: ExprId, clauses: List<CompClause>) -> TypeId {
+    cx.sealed_walk() { cx -> comp_walked(cx, e, elem, clauses) }
+}
+
+/// The comprehension's clauses and element, typed as its walk.
+fn comp_walked(mut cx: TypeCx, e: ExprId, elem: ExprId, clauses: List<CompClause>) -> TypeId {
+    let tys = type_clauses(cx, clauses)
+    plan_laws(cx, clauses)
+    cx.bind_types(elem, tys)
+    // THE ELEMENT HEARS THE LIST'S WANT: under `List<E>` the element
+    // reads `E` — a free Var pins, a value boxes — and the list wears
+    // `E`, the element's lift recorded like a literal's
+    let ew: TypeId? = wanted_elem(cx, e)
+    if ew != null { cx.plant_want(elem, ew!) }
+    let ety = cx.walk_type(elem)
+    cx.repeated_rows_law([elem])
+    if cx.errored(elem) || cx.want_refused(e) { return cx.error_type }
+    match ew {
+        w? -> heard_elem(cx, elem, ety, w)
+        null -> collected(cx, elem, ety)
+    }
+}
+
+/// THE PLANNER'S LAWS over each head scanning a relation whole: a
+/// lookup it narrows to must file by the field's own type, and with no
+/// lookup to narrow to, no filter in its region may hand its row to a
+/// call — nothing narrows the set it would run over. A scan left whole
+/// over a relation its census counts past the floor is warned.
+fn plan_laws(mut cx: TypeCx, clauses: List<CompClause>) {
+    for scan in relation_scans(cx.view, cx.names, clauses) { scan_laws(cx, clauses, scan) }
+}
+
+/// One scanned head's laws.
+fn scan_laws(mut cx: TypeCx, clauses: List<CompClause>, scan: Scan) {
+    let plans = comp_plans(cx.view, cx.names, clauses, scan)
+    let plan? = plans.find((p: Plan) -> !could_be_null(cx.view.types, cx.type_at(p.value))) else {
+        let rest? = residual(cx.dispatch, cx.view, cx.names, clauses, scan) else { return census_law(cx, clauses, scan) }
+        return cx.emit(unnarrowed(cx.loc_of(rest), cx.view.decls.decl(scan.relation).name))
+    }
+    if !lookup_fits(cx, scan, plan) {
+        cx
+            .emit(
+                plan_mismatch(
+                    cx.loc_of(plan.value),
+                    cx.view.decls.decl(plan.lookup).name,
+                    plan.field,
+                ),
+            )
+    }
+}
+
+/// THE CENSUS LAW: a whole scan over a relation its census counts past
+/// `scan_floor` rows, filtering on a compare an index would answer,
+/// names the index to add. A value that could be null is in no bucket,
+/// so no index answers it.
+fn census_law(mut cx: TypeCx, clauses: List<CompClause>, scan: Scan) {
+    let rows? = census_rows(cx.view, scan.relation) else { return }
+    if rows <= scan_floor { return }
+    let ask? = unindexed_asks(cx.view, cx.names, clauses, scan)
+        .find((a: Ask) -> !could_be_null(cx.view.types, cx.type_at(a.value))) else {
+        return
+    }
+    cx
+        .emit(
+            scanned_whole(
+                cx.loc_of(ask.at),
+                cx.view.decls.decl(scan.relation).name,
+                ask.field,
+                rows,
+            ),
+        )
+}
+
+/// Whether a lookup's value seat wears the field's type — its element's,
+/// for a list field.
+fn lookup_fits(cx: TypeCx, scan: Scan, plan: Plan) -> bool {
+    let fields? = cx.fields_of(cx.view.decls.self_type_of(scan.relation)) else { return false }
+    let at = fields.names.index_of(plan.field)
+    if at < 0 { return false }
+    let ty = fields.types[at]
+    let filed = cx.view.types.element(ty) ?? ty
+    let seats = cx.view.decls.sig(plan.lookup)?.fn_sig()?.params ?? []
+    seats.length == 2 && same_type(seats[1], filed)
+}
+
+/// Every clause's own binder types, accumulated in written order. The
+/// FIRST head's source and range bound are the comprehension's kids,
+/// typed before it; a later head's are typed here, under everything
+/// bound so far — so each is typed exactly once. A filter types its
+/// condition the same way, adding no binder of its own.
+fn type_clauses(mut cx: TypeCx, clauses: List<CompClause>) -> List<TypeId> {
+    mut tys: List<TypeId> = []
+    for j, c in clauses {
+        match c {
+            .Head(index, _, source, hi) -> {
+                // A clause's own binders are keyed by its SOURCE alone — the
+                // one anchor `resolve_clauses`' `arm_scope` binds them to,
+                // whether an earlier name is read from the source or the
+                // range bound beside it.
+                cx.bind_types(source, tys)
+                if j > 0 { for own in [source].concat(some_list(hi)) { let _ = cx.walk_type(own) } }
+                let added = if hi == null { walked_types(cx, index?.of, source) } else { counted_types(cx, index?.of, source, hi!) }
+                tys = tys.concat(added)
+            },
+            .Filter(cond) -> filter_checks(cx, cond, tys),
+        }
+    }
+    tys
+}
+
+/// The list wears the wanted element once the element is accepted by
+/// it — the element's lift recorded like a literal's. An element that
+/// disagrees keeps its own list, and the SEAT speaks: an `accepts`
+/// miss is silent by contract.
+fn heard_elem(mut cx: TypeCx, elem: ExprId, ety: TypeId, w: TypeId) -> TypeId {
+    cx.view.types.intern(Type.List(if cx.accepts(elem, w) { w } else { ety }))
+}
+
+/// The list an element of its own type makes — the element rides a
+/// slot.
+fn collected(mut cx: TypeCx, elem: ExprId, ety: TypeId) -> TypeId {
+    if !slot_worthy(cx.shape_at(elem)) { return cx.unslottable(elem, "a list element") }
+    cx.type(List<ety>)
+}
+
+/// The filter, under the binders: a bool.
+fn filter_checks(mut cx: TypeCx, cond: ExprId, tys: List<TypeId>) {
+    cx.bind_types(cond, tys)
+    let _ = cx.walk_type(cond)
+    cx.require_bool(cond, "a comprehension's filter", "this decides the element")
+}
+
+/// The binders' types over a list: the element's, under the index's
+/// int when one is named; over a map, its key's and its value's. A
+/// source that is neither speaks, and the element binder wears the
+/// refusal's type — every downstream read stays total.
+fn walked_types(mut cx: TypeCx, index: string?, source: ExprId) -> List<TypeId> {
+    if cx.errored(source) { return binders(cx, index, cx.error_type) }
+    let value: TypeId? = cx.view.types.map_value(cx.type_at(source))
+    if value != null { return keyed_types(cx, index, source, value!) }
+    let held? = cx.yielded(cx.type_at(source)) else { return binders(cx, index, not_walkable(cx, source)) }
+    binders(cx, index, held)
+}
+
+/// The binders' types over a map: the key's and the value's. A map
+/// has no single element, so a head naming one binder refuses.
+fn keyed_types(mut cx: TypeCx, index: string?, source: ExprId, value: TypeId) -> List<TypeId> {
+    if index == null { return [cx.map_unpaired(source)] }
+    [cx.type(string), value]
+}
+
+/// The binders' types over a range: the counter is an int, both
+/// bounds are ints, and an index has nothing to name — it wears the
+/// refusal's type while the count still types.
+fn counted_types(mut cx: TypeCx, index: string?, lo: ExprId, hi: ExprId) -> List<TypeId> {
+    cx.require_int(lo, "a range's low bound", "this is where counting starts")
+    cx.require_int(hi, "a range's high bound", "this is where counting stops")
+    let int = cx.type(int)
+    if index == null { return [int] }
+    [range_has_no_index(cx, lo), int]
+}
+
+/// The binders in pre-order: the index's int first when named.
+fn binders(cx: TypeCx, index: string?, elem: TypeId) -> List<TypeId> {
+    if index == null { return [elem] }
+    [cx.type(int), elem]
+}
+
+fn not_walkable(mut cx: TypeCx, source: ExprId) -> TypeId {
+    if cx.seen_at(source) is .Str { return not_walkable_string(cx, source) }
+    let n = cx.name_at(source)
+    cx
+        .spoken(
+            refusal(
+                "type.list",
+                cx.loc_of(source),
+                "a comprehension walks a list, found `${n}`",
+                this_is(n),
+                "`for x in xs` needs a `List<T>` — an empty `[]` has no element yet; `for i in lo..hi` counts",
+            ),
+        )
+}
+
+/// A `string` has no element of its own — a byte, a code point, a
+/// grapheme — so the comprehension names its view.
+fn not_walkable_string(mut cx: TypeCx, source: ExprId) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.list",
+                cx.loc_of(source),
+                "a comprehension walks a list, and a `string` names no element without a view",
+                "this is `string`",
+                "iterate its octets with `s.bytes()`, or its code points with `s.chars()`",
+            ),
+        )
+}
+
+fn range_has_no_index(mut cx: TypeCx, lo: ExprId) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.list",
+                cx.loc_of(lo),
+                "a range has no index — the counter IS the position",
+                "counted from here",
+                "write `for i in lo..hi`",
+            ),
+        )
+}
+
+fn unnarrowed(at: Loc?, relation: string) -> Diag {
+    refusal(
+        "type.plan_residual",
+        at,
+        "this filter hands `${relation}`'s rows to a call, and no declared index narrows the scan it would run over",
+        "called on every row",
+        "narrow first — compare an `@index` field to a value (`r.f == v`) beside it — or read the rows into a list and filter that",
+    )
+}
+
+fn scanned_whole(at: Loc?, relation: string, field: string, rows: int) -> Diag {
+    warning(
+        "type.plan_scan",
+        at,
+        "this filter scans all of `${relation}`, which a census counts at ${rows} rows, and no index answers `${field}`",
+        "compared on every row",
+        "add `@index ${field}` to `${relation}` — a `@plans(\"${field}\")` lookup — and the scan reads it instead",
+    )
+}
+
+fn plan_mismatch(at: Loc?, lookup: string, field: string) -> Diag {
+    refusal(
+        "type.plans_mismatch",
+        at,
+        "`${lookup}` is `@plans(${field})`, and its value seat does not wear `${field}`'s type — a lookup files by the field's own type",
+        "planned here",
+        "fix the lookup's seat, or drop the `@plans` mark",
+    )
+}

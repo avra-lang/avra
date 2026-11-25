@@ -1,0 +1,1968 @@
+//! `avra tapes <package>` — every file of a package read off its items' tapes for what it means,
+//! held to the tree the compiler's own parse makes of it: statement for statement, the same tape,
+//! every node where it was; and what its top level sees held to what the workspace's namespace
+//! binds, name for name, wherever the workspace's declaration was written. Says each file that
+//! differs and how many it read.
+use @std.cli.{CliResult, Runnable, command, flag, option}
+use @std.avrac.compiler.{Workspace}
+use @std.avrac.compiler.host.{Manifest, read_manifest}
+use @std.avrac.diagnostics.{new_source_file}
+use @std.avrac.core.{
+    CalledFn,
+    DeclId,
+    ExprId,
+    FileId,
+    Ins,
+    LiftedBody,
+    ParameterLayout,
+    Reg,
+    RtFlag,
+    SignedType,
+    Slot,
+    TaskChecks,
+    Static,
+    StaticBox,
+    TypeId,
+    alpha_renamed,
+    canon_not_if,
+    code_hash_symbol,
+    dst_of,
+    flatten,
+    fp_str,
+    some_list,
+    instance_symbol,
+    parameters_spelled,
+    region_end,
+    resymbolled,
+    same_ins,
+    same_reg,
+}
+use @std.avrac.compiler.lower.{Body, Lowered, Unit}
+use @std.avrac.features.{DeclSig, Namespace, Wanted, budgets_of}
+use @std.avrac.compiler.backend.{
+    Owned,
+    body_lines,
+    emit_index,
+    emit_object,
+    objects_made,
+    run_lowered,
+    static_block,
+    unreached_dropped,
+}
+use @std.avrac.compiler.{
+    avra_fact_definitions,
+    avra_source_world,
+    declared_symbol,
+    fn_generated,
+    Space,
+    file_meant,
+    package_read,
+    package_worked,
+    package_sources,
+    spelled_file,
+    template_home,
+    read_back,
+    file_scope,
+    fn_signature,
+    fn_body_spans,
+    typed_fn,
+    node_kinds,
+    file_declares,
+    ItemKind,
+    elaborated_fn,
+    generated_at,
+    generated_declares,
+    lowered_fn,
+    lowered_generic,
+    lowered_unit_of,
+    lowered_method,
+    lowered_method_under,
+    impls_with,
+    lowered_default,
+    default_giver,
+    default_unit,
+    file_impls,
+    ImplAt,
+    made_program,
+    reach_surveyed,
+    TaskSurvey,
+    task_survey,
+    BodyKind,
+    ReachedBody,
+    heard_as_case,
+    quarrel,
+    ProgramCall,
+    made_generator,
+    generator_sites,
+    annotation_kind,
+    GeneratorAt,
+    GeneratorKind,
+    GeneratorSite,
+    item_difference,
+    site_generated,
+    generator_run,
+    MadeProgram,
+    Missed,
+    LoweredFn,
+    resolved_in,
+    respelled_origins,
+    refusal_difference,
+    seen_names,
+    statement_difference,
+}
+use @std.io.{env, list_dir, make_dirs, read_text}
+use @std.path.{dir_of, file_name, joined_path}
+use @std.process.{Exit, cmd, inherited, tool as process_tool, tool_at}
+use @std.time.{now_ns, secs}
+use @std.program.address.{SourceFileAddress}
+use @std.program.disk_store.{disk_store_at}
+use @std.program.query_engine.{QueryEngine, query_engine}
+use @std.program.query_times.{TimedSide}
+use @std.program.sorted.{sorted_by}
+use @std.program.source_facts.{use_source_world}
+use @std.program.syntax_tape.{SyntaxTape}
+use @std.text.{parse_int, text_before}
+
+type TapesCmd = {}
+
+impl Runnable for TapesCmd {
+    fn run(args: CliResult) -> int {
+        let argued? = argued_path(args) else { return 1 }
+        let root = if args.has_flag("program_runs") { package_holding(argued) ?? argued } else { argued }
+        let named = manifest_at(root).name
+        mut deps: Map<string, string> = {}
+        path_dependencies(root, deps)
+        let disk = Disk {
+            root: root,
+            name: named,
+            std: rooted(std_root() ?? ""),
+            only: args.option("only") ?? "",
+            deps: deps,
+        }
+        use_source_world(
+            avra_source_world(
+                (f) -> text_at(disk.on_disk(f.package_name, f.path_in_package)),
+                (d) -> names_at(disk.on_disk(d.package_name, d.path_in_package)),
+                "avra-tapes",
+            ),
+        )
+        if args.has_flag("program_only") { return program_timed(joined_path(root, ".avra-cache/tapes"), disk) }
+        let store = disk_store_at(joined_path(root, ".avra-cache/tapes"))
+        let engine = query_engine(store, avra_fact_definitions())
+        if env("AVRA_QUERY_TIMES") == "1" { engine.time_queries() }
+        let code = held(engine, disk, args, root, argued)
+        engine.frontier_kept()
+        let _ = store.saved()
+        eprintln("worked: ${engine.worked_count()} answers here; ${worked_by_query(engine)}")
+        times_said(engine)
+        code
+    }
+}
+
+/// Where `engine`'s process spent its time, when it timed its asks: the families with the most time
+/// of their own, then the whole split by side.
+fn times_said(engine: QueryEngine) {
+    let times? = engine.kept_times() else { return }
+    eprintln("time: ${times.spoken(15)}")
+    eprintln("split: ${times.split()}")
+}
+
+/// `run`'s answer, timed as the phase `name` outside every query when `engine` times its asks.
+fn phase<T>(engine: QueryEngine, name: string, run: fn() -> T) -> T {
+    engine.kept_times()?.opened(name, TimedSide.Outside)
+    let answer = run()
+    engine.kept_times()?.closed()
+    answer
+}
+
+/// The workspace's lowering of the want `w`, timed as its own phase.
+fn unit_timed(engine: QueryEngine, ws: Workspace, w: Wanted) -> Unit {
+    phase(engine, "workspace lowering", () -> lowered_unit_of(ws, w))
+}
+
+/// How many answers `engine` worked out here, by the query that asked each, inputs aside.
+fn worked_by_query(engine: QueryEngine) -> string {
+    mut counts: Map<string, int> = {}
+    for q in engine.computed_queries() { if !engine.input_named(q) { counts.set(q, (counts.get(q) ?? 0) + 1) } }
+    tallied(counts)
+}
+
+/// The receipt `args` names, held over the package on `disk`: its exit code.
+fn held(engine: QueryEngine, disk: Disk, args: CliResult, root: string, argued: string) -> int {
+    if args.has_flag("core") { return core_held(engine, disk, args.has_flag("left")) }
+    if args.has_flag("program_runs") { return ran_held(engine, disk, argued, args.has_flag("left")) }
+    if args.has_flag("entry_run") { return entry_ran(engine, disk, args.option("args") ?? "") }
+    if args.has_flag("generators") { return generators_held(engine, disk, args.has_flag("left")) }
+    if args.has_flag("built") {
+        return built_held(
+            engine,
+            disk,
+            parse_int(args.option("budget") ?? "") ?? 0,
+            args.has_flag("left"),
+        )
+    }
+    let ws = phase(engine, "workspace opened", () -> root_workspace(root))
+    // every file the receipt reads is the workspace's before any is held to it
+    let sources = package_sources(engine, disk.name, "src")
+    let _ = phase(
+        engine,
+        "workspace files named",
+        () -> [ws.file_id(joined_path(disk.root, f)) for f in sources],
+    )
+    if args.has_flag("lowered") { return lowered_held(engine, ws, disk, args.has_flag("left")) }
+    let files = disk.held(engine)
+    let differing = [d! for f in files for d in [difference(engine, ws, disk, f, args.has_flag("signatures"))] if d != null]
+    for d in differing { println("differs: ${d}") }
+    println("tapes: ${files.length} read, ${differing.length} differing")
+    if args.has_flag("signatures") { println("typed: ${typed_share(engine, ws, disk, files, args.has_flag("left"))}") }
+    if differing.is_empty() { 0 } else { 1 }
+}
+
+/// The program layer alone: the package's store, its unknown files worked out across cores, then
+/// the package read whole as one question and what it learned kept. Says how long it took and how
+/// many questions this process answered by running them.
+fn program_timed(directory: string, disk: Disk) -> int {
+    // LICENSED input.clock: a receipt's duration is timing, never an input of what is built
+    let t0 = now_ns()
+    let worked = package_worked(directory, disk.name)
+    let read = package_read(worked.engine, disk.name)
+    worked.engine.frontier_kept()
+    let _ = worked.store.saved()
+    // LICENSED input.clock: a receipt's duration is timing, never an input of what is built
+    let ms = (now_ns() - t0) / 1000000
+    println(
+        "program: ${read.files.length} files, ${read.items} items, ${read.clashes} clashes in ${ms} ms, ${worked.engine.computed_count()} answers made here, ${worked.engine.records_checked_count()} records checked",
+    )
+    0
+}
+
+/// The packages being read on disk: the one named (`root`, addressed by its manifest's `name`), and
+/// the toolchain's under its std root, a package a manifest names by a path at that path; a receipt
+/// holds the named package's files under `only` alone.
+type Disk = { root: string, name: string, std: string, only: string, deps: Map<string, string> = {} }
+
+impl Disk {
+    /// The named package's source files a receipt holds: each under `only`.
+    fn held(engine: QueryEngine) -> List<string> { package_sources(engine, self.name, "src").filter(it.starts_with(self.only)) }
+
+    /// Where a package's file stands.
+    fn on_disk(package: string, path: string) -> string {
+        let dep = self.deps.get(package)
+        if dep != null { return joined_path(dep!, path) }
+        if package != self.name && package.starts_with(STD) {
+            joined_path(
+                joined_path(self.std, "std-${package.substring(STD.length, package.length)}"),
+                path,
+            )
+        } else {
+            joined_path(self.root, path)
+        }
+    }
+
+    /// The named package's file at `path`, as the program addresses it.
+    fn file_at(path: string) -> SourceFileAddress { SourceFileAddress { package_name: self.name, path_in_package: path } }
+
+    /// A file on disk as the program spells it: its package, then its path.
+    fn spelled(path: string) -> string {
+        for key, dir in self.deps { if path.starts_with("${dir}/") { return "${key}/${path.substring(dir.length + 1, path.length)}" } }
+        if path.starts_with("${self.root}/") { return "${self.name}/${path.substring(self.root.length + 1, path.length)}" }
+        let std_dir = "${self.std}/std-"
+        if !path.starts_with(std_dir) { return path }
+        let rest = path.substring(std_dir.length, path.length)
+        let cut = rest.index_of("/") ?? rest.length
+        "${STD}${rest.substring(0, cut)}${rest.substring(cut, rest.length)}"
+    }
+}
+
+/// The manifest of the package at `dir`; an empty one where it has none.
+fn manifest_at(dir: string) -> Manifest { read_manifest(new_source_file("avra.toml", text_at(joined_path(dir, "avra.toml")) ?? "")) }
+
+/// Each package past the toolchain's the manifest at `dir` names by a path, and each of theirs, by
+/// its directory, the first naming of a package winning.
+fn path_dependencies(dir: string, mut found: Map<string, string>) {
+    for d in manifest_at(dir).deps {
+        let p? = d.path else { continue }
+        if d.key.starts_with(STD) || found.has(d.key) { continue }
+        let at = if p.starts_with("/") { p } else { joined_path(dir, p) }
+        found.set(d.key, at)
+        path_dependencies(at, found)
+    }
+}
+
+/// The toolchain's packages, by the prefix their names wear.
+const STD: string = "@std/"
+
+fn text_at(path: string) -> string? { match read_text(path) { .Ok(text) -> text, .Err(_) -> null } }
+
+fn names_at(path: string) -> List<string>? { match list_dir(path) { .Ok(names) -> names, .Err(_) -> null } }
+
+/// How `path` read for what it means differs from the tree the workspace's parse makes of it,
+/// absent when it doesn't.
+fn difference(engine: QueryEngine, ws: Workspace, disk: Disk, path: string, signed: bool) -> string? {
+    let back = read_back(path, file_meant(engine, disk.file_at(path)))
+    let parsed = ws.parsed(ws.file_id(joined_path(disk.root, path)))
+    respelled_origins(parsed.store, (path) -> origin_spelled(disk, path))
+    let refused = refusal_difference(back.store, parsed.store)
+    if refused != null { return "${path}: ${refused!}" }
+    if back.stmts.length != parsed.stmts.length { return "${path}: ${back.stmts.length} statements, the parse ${parsed.stmts.length}" }
+    for at, s in back.stmts {
+        let how? = statement_difference(back.store, s, parsed.store, parsed.stmts[at]) else { continue }
+        let lo = parsed.store.stmt_span(parsed.stmts[at])?.lo ?? 0
+        return "${path}: statement ${at} at ${lo}, ${how}"
+    }
+    let scoped = scope_difference(engine, ws, disk, path)
+    if scoped != null || !signed { return scoped }
+    signature_difference(engine, ws, disk, path) ?? type_difference(engine, ws, disk, path)
+}
+
+/// How much of the fns `files` declare the program layer types: its typed nodes of all their nodes.
+fn typed_share(engine: QueryEngine, ws: Workspace, disk: Disk, files: List<string>, shown: bool) -> string {
+    let pairs = flatten([typed_pairs(engine, ws, disk, f) for f in files])
+    let typed = pairs.filter(it.new != null).length
+    mut missing: Map<string, int> = {}
+    for p in pairs.filter(it.new == null) { missing.set(p.kind, (missing.get(p.kind) ?? 0) + 1) }
+    let most = sorted_by([k for k, _n in missing], (a, b) -> missing.get(a)! > missing.get(b)!)
+        .take(12)
+    if shown {
+        mut by_fn: Map<string, int> = {}
+        for p in pairs.filter(it.new == null) {
+            let site = "${p.path} ${p.name}"
+            by_fn.set(site, (by_fn.get(site) ?? 0) + 1)
+        }
+        for site in sorted_by([k for k, _n in by_fn], (a, b) -> by_fn.get(a)! > by_fn.get(b)!) { println("untyped: ${by_fn.get(site)!} in ${site}") }
+        for p in pairs.filter(it.new == null) {
+            println(
+                "left: ${p.kind} ${p.old} at ${p.path}:${p.lo} `${snippet(disk, p.path, p.lo)}`",
+            )
+        }
+    }
+    "${typed} of the ${pairs.length} nodes the workspace types, ${if pairs.is_empty() { 0 } else { typed * 100 / pairs.length }}%; left most: ${[k + " " + "${missing.get(k)!}" for k in most].join(", ")}"
+}
+
+/// How a fn `path` declares is typed differently from the workspace's typing of its body, absent
+/// when every node both type reads alike: nodes paired by where they stand, and a node the
+/// workspace left untyped (a literal it folded into another) read as nothing to hold.
+/// A node of a fn the workspace types, beside what the program layer types it as (absent when it
+/// doesn't): its file, the fn, the node's place, its kind and the workspace's spelling.
+type TypedPair = { path: string, name: string, lo: int, kind: string, new: SignedType?, old: string }
+
+/// Each node of each fn `path` declares that the workspace typed, paired by span with the program
+/// layer's node; none of a fn a wrap stands in for, whose typed body is the wrapper's.
+fn typed_pairs(engine: QueryEngine, ws: Workspace, disk: Disk, path: string) -> List<TypedPair> {
+    let file = disk.file_at(path)
+    let id = ws.file_id(joined_path(disk.root, path))
+    let names = ws.visible(id)
+    let parsed = ws.parsed(id)
+    mut old_at: Map<string, List<ExprId>> = {}
+    for at in 0..parsed.store.exprs.count() {
+        let e = ExprId { index: at }
+        let span? = parsed.store.expr_span(e) else { continue }
+        let key = "${span.lo}:${span.hi}"
+        old_at.set(key, (old_at.get(key) ?? []).concat([e]))
+    }
+    mut pairs: List<TypedPair> = []
+    for own in file_declares(engine, file).names.filter(it.kind == ItemKind.Fn) {
+        let d? = written_decl(ws, disk, names, file, own.name) else { continue }
+        if fn_generated(engine, file, own.name).items.any(it.wraps) { continue }
+        let mine? = typed_fn(engine, file, own.name) else { continue }
+        let facts = ws.typed(d)
+        let spans = fn_body_spans(engine, file, own.name)
+        let kinds = node_kinds(engine, file, own.name)
+        for at, ty in mine.types {
+            let span? = spans[at] else { continue }
+            let olds = old_at.get("${span.lo}:${span.hi}") ?? []
+            if olds.length != 1 || !facts.of_expr.holds(olds[0].index) { continue }
+            let old_type = facts.type_at(olds[0])
+            // a node the workspace's typing never reached holds the error it was born with
+            if ws.decls.types.shape_of(old_type) is .Error { continue }
+            pairs
+                .push(
+                    TypedPair {
+                        path: path,
+                        name: own.name,
+                        lo: span.lo,
+                        kind: kinds[at],
+                        new: ty,
+                        old: workspace_spelled(ws, old_type),
+                    },
+                )
+        }
+    }
+    pairs
+}
+
+/// The workspace's declaration of the fn `name` that `file` writes, absent for one generated, or
+/// written somewhere else.
+fn written_decl(ws: Workspace, disk: Disk, names: Namespace, file: SourceFileAddress, name: string) -> DeclId? {
+    let d? = names.fn_decl(name) else { return null }
+    let x = ws.decls.decl(d)
+    if !x.maker.is_empty() ||
+        x.home == null ||
+        disk.spelled(ws.decls.file(x.file).path) != spelled_file(file) { return null }
+    d
+}
+
+/// The first node `path`'s fns type differently from the workspace, absent when none does.
+fn type_difference(engine: QueryEngine, ws: Workspace, disk: Disk, path: string) -> string? {
+    // a block that leaves never answers; the workspace dresses it in the fn's answer
+    let p? = typed_pairs(engine, ws, disk, path)
+        .find(it.new != null && !(it.new!.head is .Never) && !agrees(it.new!, it.old)) else { return null }
+    "${path}: `${p.name}` types the node at ${p.lo} ${headed(p.new!)}, the workspace ${p.old}"
+}
+
+/// Whether a type here is the workspace's, spelled `old`: spelled alike, and every name in it
+/// naming a type, as each of the workspace's does. The workspace types a type parameter standing
+/// as a value as the parameter itself.
+fn agrees(new: SignedType, old: string) -> bool { (parameter_standing(new) ?? new).spelled() == old && !names_no_type(new) }
+
+/// The type parameter a type value stands for, absent for any other type.
+fn parameter_standing(t: SignedType) -> SignedType? {
+    let d? = t.described() else { return null }
+    match d.head { .Parameter(_, _) -> d, rest -> null }
+}
+
+/// Whether a type has a name anywhere in it that names no type.
+fn names_no_type(t: SignedType) -> bool {
+    match t.head {
+        .Unnamed(_) -> true,
+        .Owned(_) or .Parameter(_, _) or .Declared(_, _) or .Inferred or .Function or .Union or .Never or .Meta -> t.args.any((a) -> names_no_type(a)) ||
+            t.seats.any((s) -> names_no_type(s.ty)) ||
+            t.alternatives.any((a) -> names_no_type(a)) ||
+            t.answer != null && names_no_type(t.answer!),
+    }
+}
+
+/// A type as this layer writes it, a name that names no type said so.
+fn headed(t: SignedType) -> string { if names_no_type(t) { "${t.spelled()} (naming no type)" } else { t.spelled() } }
+
+/// A type as the workspace writes it, each union's members in the order the program layer writes
+/// them and a generic type applied by its declaration's name: a union is a set, the workspace orders
+/// it by when its members were first made, and an applied type keeps the name its use spelled.
+fn workspace_spelled(ws: Workspace, id: TypeId) -> string {
+    let types = ws.decls.types
+    match types.shape_of(id) {
+        .Union(members) -> sorted_by([workspace_spelled(ws, m) for m in members], (a, b) -> text_before(a, b))
+            .join(" or "),
+        .Res(ok, err) -> "Result<${workspace_spelled(ws, ok)}, ${workspace_spelled(ws, err)}>",
+        .Opt(inner) -> "${workspace_spelled(ws, inner)}?",
+        .List(elem) -> "List<${workspace_spelled(ws, elem)}>",
+        .App(decl, _, args) -> "${ws.decls.decl(decl).name}<${[workspace_spelled(ws, a) for a in args].join(", ")}>",
+        .Map(k, v) -> "Map<${workspace_spelled(ws, k)}, ${workspace_spelled(ws, v)}>",
+        // every other shape holds no union to order: the workspace's own spelling is the answer
+        rest -> types.name_of(id),
+    }
+}
+
+/// How a fn `path` declares is signed differently from the workspace's signature of it, absent when
+/// every one is signed alike: each parameter's type and the answer, as the compiler writes them.
+fn signature_difference(engine: QueryEngine, ws: Workspace, disk: Disk, path: string) -> string? {
+    let file = disk.file_at(path)
+    let names = ws.visible(ws.file_id(joined_path(disk.root, path)))
+    for own in file_declares(engine, file).names.filter(it.kind == ItemKind.Fn) {
+        let d? = written_decl(ws, disk, names, file, own.name) else { continue }
+        let signed? = ws.decls.sig(d) else { continue }
+        let theirs? = match signed { .Fn(sig) -> sig, rest -> null } else { continue }
+        let mine? = fn_signature(engine, file, own.name) else { return "${path}: `${own.name}` is signed by the workspace and by nothing here" }
+        if mine.answer.inferred() || mine.params.any(it.ty?.inferred() ?? false) { continue }
+        let old = "(${[workspace_spelled(ws, p) for p in theirs.params].join(", ")}) -> ${workspace_spelled(ws, theirs.ret)}"
+        let new = "(${[p.ty?.spelled() ?? "_" for p in mine.params].join(", ")}) -> ${mine.answer.spelled()}"
+        let unnamed = names_no_type(mine.answer) ||
+            mine.params.any((p) -> p.ty != null && names_no_type(p.ty!))
+        if old != new || unnamed { return "${path}: `${own.name}` is signed ${new}${if unnamed { " (naming no type)" } else { "" }}, the workspace's ${old}" }
+    }
+    null
+}
+
+/// How what `path`'s top level sees differs from the workspace's namespace for it, in each space,
+/// absent when it doesn't. A name the workspace bound to a declaration nobody wrote — a builtin,
+/// or one an annotation made — is the workspace's alone.
+fn scope_difference(engine: QueryEngine, ws: Workspace, disk: Disk, path: string) -> string? {
+    let file = disk.file_at(path)
+    let scope? = file_scope(engine, file) else { return "${path}: has no scope" }
+    let names = ws.visible(ws.file_id(joined_path(disk.root, path)))
+    let spaces = [
+        Spaced {
+            space: Space.Value,
+            words: names.fn_suggestions(),
+            bound: (n: string) -> names.fn_decl(n),
+            seen: seen_names(engine, scope, file, Space.Value),
+        },
+        Spaced {
+            space: Space.Type,
+            words: names.type_suggestions(),
+            bound: (n: string) -> names.type_decl(n),
+            seen: seen_names(engine, scope, file, Space.Type),
+        },
+        Spaced {
+            space: Space.Syntax,
+            words: names.syntax_names.concat(names.base?.syntax_names ?? []),
+            bound: (n: string) -> names.syntax_decl(n),
+            seen: seen_names(engine, scope, file, Space.Syntax),
+        },
+    ]
+    for s in spaces {
+        for word in s.words {
+            let d? = (s.bound)(word) else { continue }
+            let x = ws.decls.decl(d)
+            if !x.maker.is_empty() || x.home == null { continue }
+            let mine? = resolved_in(engine, scope, file, s.space, word).named() else { return "${path}: `${word}` is bound by the workspace and seen by nothing" }
+            if disk.spelled(ws.decls.file(x.file).path) != spelled_file(mine.file) ||
+                x.name != mine.name {
+                return "${path}: `${word}` names `${spelled_file(mine.file)}`'s `${mine.name}`, the workspace's `${x.name}`"
+            }
+        }
+        for word in s.seen { if (s.bound)(word) == null { return "${path}: `${word}` is seen and the workspace binds nothing" } }
+    }
+    null
+}
+
+/// One space's names: the workspace's and how it binds them, and every one the file sees.
+type Spaced = { space: Space, words: List<string>, bound: fn(string) -> DeclId?, seen: List<string> }
+
+export flag program_only {
+    description: "run the program layer alone over every file and say how long it took"
+    aliases: ["--program-only"]
+}
+
+export flag signatures {
+    description: "hold every fn's signature to the workspace's too"
+    aliases: ["--signatures"]
+}
+
+export flag left {
+    description: "with --signatures, --core, --lowered or --ran, show where what doesn't agree stands"
+    aliases: ["--left"]
+}
+
+export flag core {
+    description: "elaborate every fn into the core its sugars mean, and hold each sugar's type to its meaning's"
+    aliases: ["--core"]
+}
+
+export flag generators {
+    description: "make each generator the package's traits write on the program layer, with every body it reaches"
+    aliases: ["--generators"]
+}
+
+export flag lowered {
+    description: "lower every fn the program layer can lower whole, and hold its IR to the workspace's"
+    aliases: ["--lowered"]
+}
+
+export flag program_runs {
+    description: "run each program test under the directory through the program layer's lowering, in the evaluator and natively, and hold its output to its `.expected`"
+    aliases: ["--ran"]
+}
+
+export flag entry_run {
+    description: "build the package's program through the program layer natively, a body not lowered yet trapping by name where it's reached, and run it with --args"
+    aliases: ["--run-entry"]
+}
+
+export flag built {
+    description: "walk every body the package's program reaches, past each not lowered yet, and tally what isn't made by why"
+    aliases: ["--built"]
+}
+
+export command tapes {
+    description: "Read every file of a package off its item tapes and hold each to the parse"
+    flags: [
+        program_only,
+        signatures,
+        left,
+        core,
+        lowered,
+        program_runs,
+        generators,
+        built,
+        entry_run,
+    ]
+    args: [file]
+    option only { description: "hold only the package's files whose path starts with this (`src/compiler/`)" }
+    option budget { description: "with --built, stop the walk after this many seconds and tally what it reached" }
+    option args { description: "with --run-entry, the arguments the program runs with, split on spaces" }
+    run: TapesCmd {}
+}
+
+/// Each generator the package writes, a trait's `derive` and a declaring annotation's fn, made on the
+/// program layer with every body it reaches, one not made counted by why; and each made one run over
+/// every declaration that names it, each site's item spliced and held to the site before it, which
+/// it must differ from.
+/// A site whose generator answers no directive and says nothing made nothing, as it answered.
+/// Answers 1 when a made generator says anything or splices none of what it answered. What its items mean is held by
+/// `--signatures` and `--lowered`.
+fn generators_held(engine: QueryEngine, disk: Disk, shown: bool) -> int {
+    let sources = package_sources(engine, disk.name, "src")
+    mut written = 0
+    mut annotations = 0
+    mut annotation_sites = 0
+    mut made = 0
+    mut unmade: Map<string, int> = {}
+    mut sites = 0
+    mut directives = 0
+    mut spliced = 0
+    mut answered_none = 0
+    mut failing: List<string> = []
+    mut witnessed = "no two sites to witness the item comparison by"
+    mut held_before: SyntaxTape? = null
+    for path in sources {
+        let file = disk.file_at(path)
+        for g in written_generators(engine, file) {
+            let missed: Cell<List<Missed>> = Cell.new([])
+            let m? = made_generator(engine, g, missed) else { continue }
+            written = written + 1
+            annotations = annotations + by_annotation(g.kind)
+            let l = match m {
+                .Made(l) -> l,
+                .Unmade(why, at) -> {
+                    let each = missed.get()
+                    if each.is_empty() { unmade.set(why, (unmade.get(why) ?? 0) + 1) }
+                    if each.is_empty() && shown { println("left: ${why} in ${path} ${g.name}'s generator, at ${at}") }
+                    for x in each {
+                        unmade.set(x.why, (unmade.get(x.why) ?? 0) + 1)
+                        if shown { println("left: ${x.why} in ${g.name}'s generator, at ${x.symbol}") }
+                    }
+                    continue
+                },
+            }
+            made = made + 1
+            println("made: ${path} ${g.name}'s generator, ${l.fns.length} bodies")
+            for over in sources {
+                let at = disk.file_at(over)
+                for site in generator_sites(engine, at) {
+                    if site.generator.name != g.name ||
+                        site.generator.kind != g.kind ||
+                        spelled_file(site.generator.file) != spelled_file(file) { continue }
+                    sites = sites + 1
+                    annotation_sites = annotation_sites + by_annotation(g.kind)
+                    let made_here = directives_made(engine, l, g, at, site)
+                    directives = directives + made_here
+                    let item = site_generated(engine, at, site)
+                    let tape = item.items.first()?.tape
+                    let fails = if !item.said.is_empty() { "it said ${item.said[0]}" } else if tape == null && made_here > 0 { "it made nothing of ${made_here} directives" } else if item.items.length > 1 { "${item.items.length} items" } else { null }
+                    if fails != null {
+                        failing.push("${over} ${site.name}'s ${g.name}: ${fails!}")
+                        continue
+                    }
+                    if tape == null {
+                        answered_none = answered_none + 1
+                        continue
+                    }
+                    spliced = spliced + 1
+                    if held_before != null {
+                        witnessed = if item_difference(tape!, held_before!) == null { "an item held to another site's copy reads alike: the comparison can't fail" } else { "an item held to another site's copy differs, as it must" }
+                    }
+                    held_before = tape
+                }
+            }
+        }
+    }
+    for f in failing { println("fails: ${f}") }
+    println(
+        "generators: ${written} written (${annotations} by annotations), ${made} made on the program layer, run over ${sites} declarations (${annotation_sites} by annotations) making ${directives} directives; not made yet: ${tallied(unmade)}",
+    )
+    println(
+        "generated items: ${spliced} of ${sites} spliced, ${answered_none} answering no directive, ${failing.length} failing; ${witnessed}",
+    )
+    if failing.is_empty() { 0 } else { 1 }
+}
+
+/// One for a generator an annotation names, none for a derive.
+fn by_annotation(k: GeneratorKind) -> int {
+    match k { .Derive -> 0, .Annotation or .TypeAnnotation or .TraitAnnotation -> 1 }
+}
+
+/// How many directives the made generator `l` of `g` makes over the declaration `site` stands on in
+/// `file`; none where it doesn't run.
+fn directives_made(
+    engine: QueryEngine,
+    l: Lowered,
+    g: GeneratorAt,
+    file: SourceFileAddress,
+    site: GeneratorSite,
+) -> int {
+    match generator_run(engine, l, g, file, site.name, site.handed, budgets_of()) {
+        .Ran(made, _) -> made.length,
+        .Stopped(_) -> 0,
+    }
+}
+
+/// The generators `file` writes: each trait's `derive`, then each declaring annotation's fn.
+fn written_generators(engine: QueryEngine, file: SourceFileAddress) -> List<GeneratorAt> {
+    let names = file_declares(engine, file).names
+    [GeneratorAt { file: file, name: d.name, kind: GeneratorKind.Derive } for d in names if d.kind == ItemKind.Trait]
+        .concat(
+            [GeneratorAt { file: file, name: d.name, kind: k! } for d in names if d.kind == ItemKind.Fn && d.exported for k in [annotation_kind(engine, file, d.name)] if k != null],
+        )
+}
+
+/// Every fn of the package elaborated: each sugar a meaning rewrote, and whether the core it means
+/// is typed as its own rule typed it. Answers 1 when any differs.
+fn core_held(engine: QueryEngine, disk: Disk, shown: bool) -> int {
+    mut sugars = 0
+    mut alike = 0
+    mut seated = 0
+    mut untyped = 0
+    mut statements = 0
+    mut nodes = 0
+    mut differing: List<string> = []
+    for path in disk.held(engine) {
+        let file = disk.file_at(path)
+        for own in file_declares(engine, file).names.filter(it.kind == ItemKind.Fn) {
+            let body? = elaborated_fn(engine, file, own.name) else { continue }
+            let site = "${path} ${own.name}"
+            statements = statements + body.statements.length
+            let roots = [e.index for e in body.sugars]
+            for at, surface in body.surface {
+                let surface? = surface else { continue }
+                let core? = body.core[at] else { continue }
+                if roots.contains(at) { continue }
+                nodes = nodes + 1
+                let seat = body.seat_at(at)
+                if surface.spelled() != core.spelled() && !meets_its_seat(surface, core, seat) {
+                    differing.push(differs(site, "a node ", surface, core, seat))
+                }
+            }
+            for e in body.sugars {
+                sugars = sugars + 1
+                let surface = body.surface[e.index]
+                let core = body.core[e.index]
+                if surface == null || core == null {
+                    untyped = untyped + 1
+                    if shown {
+                        println(
+                            "untyped: ${site}: ${surface?.spelled() ?? "nothing"} on the surface, ${core?.spelled() ?? "nothing"} in the core",
+                        )
+                    }
+                }
+                let surface? = surface else { continue }
+                let core? = core else { continue }
+                if surface.spelled() == core.spelled() {
+                    alike = alike + 1
+                    continue
+                }
+                let seat = body.seat_at(e.index)
+                if meets_its_seat(surface, core, seat) {
+                    seated = seated + 1
+                    continue
+                }
+                differing.push(differs(site, "", surface, core, seat))
+            }
+        }
+    }
+    if shown { for d in differing { println("differs: ${d}") } }
+    println(
+        "core: ${sugars} sugars and ${statements} statements meant; sugars ${alike} typed alike, ${seated} answering their seat, ${untyped} untyped on a side; ${nodes} other nodes typed on both sides; ${differing.length} differing",
+    )
+    if differing.is_empty() { 0 } else { 1 }
+}
+
+/// A node of the fn at `site` typed one way on the surface and another in the core.
+fn differs(site: string, what: string, surface: SignedType, core: SignedType, seat: SignedType?) -> string {
+    "${site}: ${what}${surface.spelled()} on the surface, ${core.spelled()} in the core, ${seat?.spelled() ?? "no seat"} wanted"
+}
+
+/// Whether a core answering its seat's want stands for a surface type that fits that seat.
+fn meets_its_seat(surface: SignedType, core: SignedType, seat: SignedType?) -> bool {
+    let wanted? = seat else { return false }
+    core.spelled() == wanted.spelled() && surface.reaches(wanted)
+}
+
+/// The source at `lo` in the package's file `path`, one line of it at most.
+fn snippet(disk: Disk, path: string, lo: int) -> string {
+    let text = text_at(disk.on_disk(disk.name, path)) ?? ""
+    let rest = text.substring(lo, if lo + 60 < text.length { lo + 60 } else { text.length })
+    let line_end = rest.index_of("\n")
+    if line_end < 0 { rest } else { rest.substring(0, line_end) }
+}
+
+/// Every fn of the package the program layer lowers whole, its IR held to the workspace's lowering
+/// of the same fn: seat for seat, instruction for instruction with registers numbered as they're
+/// defined, and each register's layout to the one the workspace's type for it has, the unwinding
+/// test after a call that may reach a cancel point and the tick at a loop's back edge among them,
+/// each unit holding one counted. Each lambda a whole fn lifts is held to the workspace's lift of the
+/// lambda written at the same place, and counted. Says what isn't lowered yet, by the first thing
+/// each fn met. Answers 1 when any differs.
+fn lowered_held(engine: QueryEngine, ws: Workspace, disk: Disk, shown: bool) -> int {
+    let survey = task_survey(engine)
+    mut fns = HeldUnits {}
+    mut made = HeldUnits {}
+    mut methods = HeldUnits {}
+    let paths = disk.held(engine)
+    let ids = [ws.file_id(joined_path(disk.root, p)) for p in paths]
+    let _ = phase(engine, "workspace parse", () -> [ws.parsed(id) for id in ids])
+    let scopes = phase(engine, "workspace names", () -> [ws.visible(id) for id in ids])
+    let _ = phase(engine, "workspace settled", () -> workspace_settled(ws))
+    mut wants: List<Wanted> = []
+    for at, path in paths {
+        let file = disk.file_at(path)
+        let names = scopes[at]
+        for own in file_declares(engine, file).names.filter(it.kind == ItemKind.Fn) {
+            let d? = written_decl(ws, disk, names, file, own.name) else { continue }
+            let mine? = lowered_fn(engine, file, own.name) else { continue }
+            let signature = fn_signature(engine, file, own.name)
+            let generic = signature != null && !signature!.type_params.is_empty()
+            if !generic { wants = wants.concat(unit_timed(engine, ws, ws.decls.plain_want(d)).wants) }
+            fns
+                .hold(
+                    engine,
+                    survey,
+                    ws,
+                    disk,
+                    "${path} ${own.name}",
+                    mine,
+                    ws.decls.plain_want(d),
+                    declared_symbol(file, own.name),
+                    shown,
+                )
+        }
+        let written = file_declares(engine, file).names
+        for own in generated_declares(engine, file)
+            .names
+            .filter((g) -> g.kind == ItemKind.Fn && !written.any(it.name == g.name)) {
+            let d? = file_fn_decl(ws, ws.file_id(joined_path(disk.root, path)), own.name) else { continue }
+            let mine? = lowered_fn(engine, file, own.name) else { continue }
+            made
+                .hold(
+                    engine,
+                    survey,
+                    ws,
+                    disk,
+                    "${path} ${own.name}",
+                    mine,
+                    ws.decls.plain_want(d),
+                    declared_symbol(file, own.name),
+                    shown,
+                )
+        }
+        for item, held in file_impls(engine, file) {
+            // a generated item's places are its template's, which the workspace's lambdas are paired by
+            if generated_at(engine, file, item) != null { continue }
+            for i in held.filter(it.params.is_empty()) {
+                let t? = names.type_decl(i.target) else { continue }
+                let impl_at = ImplAt { file: file, item: item, params: i.params }
+                let owner = ws.decls.decl(t).name
+                for statics in [false, true] {
+                    for m in if statics { i.statics } else { i.methods } {
+                        let d? = ws.decls.method(t, m) else { continue }
+                        let mine? = lowered_method(engine, impl_at, m, statics) else { continue }
+                        wants = wants.concat(unit_timed(engine, ws, ws.decls.plain_want(d)).wants)
+                        methods
+                            .hold(
+                                engine,
+                                survey,
+                                ws,
+                                disk,
+                                "${path} ${owner}.${m}",
+                                mine,
+                                ws.decls.plain_want(d),
+                                declared_symbol(file, "${owner}.${m}"),
+                                shown,
+                            )
+                    }
+                }
+            }
+        }
+    }
+    let wanted = wanted_held(engine, survey, ws, disk, wants, shown)
+    let generic = wanted.generic
+    let defaults = wanted.defaults
+    let differing = fns
+        .differing
+        .concat(made.differing)
+        .concat(methods.differing)
+        .concat(generic.differing)
+        .concat(defaults.differing)
+    if shown { for d in differing { println("differs: ${d}") } }
+    println(
+        "lowered: ${fns.whole} of ${fns.units} fns whole, ${fns.alike} held alike to the workspace's (${fns.tested} with the cancel test after a call and ${fns.ticked} with the tick at a loop's back edge held alike, ${fns.theirs_alone} past a cancel test only the workspace's has cut, ${fns.ours_alone} past one only this layer's has cut, ${fns.edges_alone} past a tick only one side reads cut, ${fns.lambdas} lambdas lifted alike, ${fns.statics} statics laid out alike), ${fns.reshaped} lowered through a meaning the workspace shapes otherwise; ${made.whole} of ${made.units} generated fns whole, ${made.alike} held alike; ${methods.whole} of ${methods.units} methods whole, ${methods.alike} held alike (${methods.reshaped} through such a meaning); ${defaults.alike} trait defaults held alike of ${defaults.whole} whole of ${defaults.units} wanted (${defaults.reshaped} through such a meaning); ${generic.alike} generic units held alike of ${generic.whole} whole of ${generic.units} wanted (${generic.reshaped} through such a meaning), ${differing.length} differing; not lowered yet: ${tallied(fns.missing)}; generated fns not lowered yet: ${tallied(made.missing)}; methods not lowered yet: ${tallied(methods.missing)}; trait defaults not lowered yet: ${tallied(defaults.missing)}; generic units not lowered yet: ${tallied(generic.missing)}",
+    )
+    if differing.is_empty() { 0 } else { 1 }
+}
+
+/// What holding units lowered here to the workspace's found: how many were met, lowered whole, held
+/// alike, holding a cancel test or a tick test, the lambdas and statics held alike with them, those
+/// lowered through a meaning the workspace shapes otherwise, how each that differs does, and what
+/// isn't lowered yet, by the first thing each met.
+type HeldUnits = {
+    units: int = 0,
+    whole: int = 0,
+    alike: int = 0,
+    tested: int = 0,
+    ticked: int = 0,
+    theirs_alone: int = 0,
+    ours_alone: int = 0,
+    edges_alone: int = 0,
+    lambdas: int = 0,
+    statics: int = 0,
+    reshaped: int = 0,
+    differing: List<string> = [],
+    missing: Map<string, int> = {},
+}
+
+impl HeldUnits {
+    /// The unit `mine`, lowered here as `symbol`, held to the workspace's lowering of the want `w`, and
+    /// counted.
+    mut fn hold(
+        engine: QueryEngine,
+        survey: TaskSurvey,
+        ws: Workspace,
+        disk: Disk,
+        site: string,
+        unplaced: LoweredFn,
+        w: Wanted,
+        symbol: string,
+        shown: bool,
+    ) {
+        self.units = self.units + 1
+        let mine = survey.placed(unplaced, TaskChecks.Tested)
+        if !mine.whole() {
+            let first = mine.missing[0]
+            self.missing.set(first, (self.missing.get(first) ?? 0) + 1)
+            if shown && self.missing.get(first)! <= 3 { println("left: ${first} in ${site}") }
+            return
+        }
+        self.whole = self.whole + 1
+        if mine.reshaped > 0 {
+            self.reshaped = self.reshaped + 1
+            return
+        }
+        let unit = unit_timed(engine, ws, w)
+        let theirs? = unit.bodies.first() else {
+            self.differing.push("${site}: the workspace lowers no body for it")
+            return
+        }
+        let d = w.decl!
+        mut lifted = known_symbols(
+            wanted_symbols(ws, disk, every_callee(mine), unit.wants),
+            suffixed(
+                lift_names(ws, ws.decls.decl(d).file, mine.lifts),
+                w.name.substring(ws.decls.symbol(d).length, w.name.length),
+            ),
+        )
+        lifted.set(symbol, w.name)
+        for l in mine.lifts.filter((l) -> !lifted.has(l.symbol)) {
+            // a lambda a template wrote stands at the template's places, which this file's parse lacks
+            let taken = [v for _k, v in lifted]
+            let open = unit.bodies.drop(1).filter((b) -> !taken.contains(b.name))
+            let unkept: Cell<List<FlagCuts>> = Cell.new([])
+            let next? = open
+                .find((b) -> lift_difference(ws, disk, l, b, lifted, mine.tagged, unkept) == null) ?? open
+                .first() else { break }
+            lifted.set(l.symbol, next.name)
+        }
+        let agreed = tests_agreed(mine.ins, theirs.ins)
+        let cuts: Cell<List<FlagCuts>> = Cell.new([agreed.cut])
+        let how = lowered_difference(
+            ws,
+            disk,
+            mine with { ins: agreed.ours },
+            theirs with { ins: agreed.theirs },
+            lifted,
+        ) ?? lifts_difference(ws, disk, mine.lifts, unit.bodies, lifted, mine.tagged, cuts) ?? statics_difference(
+            ws,
+            disk,
+            mine,
+            unit.statics,
+            lifted,
+        )
+        if how != null {
+            self.differing.push("${site}: ${how!}")
+            return
+        }
+        self.alike = self.alike + 1
+        self.lambdas = self.lambdas + mine.lifts.length
+        self.statics = self.statics + mine.statics.length
+        let tests = flag_tests(agreed.theirs)
+        if tests.calls > 0 { self.tested = self.tested + 1 }
+        if tests.edges > 0 { self.ticked = self.ticked + 1 }
+        let cut = cuts.get()
+        if cut.any(it.theirs > 0) {
+            self.theirs_alone = self.theirs_alone + 1
+            if shown { println("cut by the workspace alone: ${site}") }
+        }
+        if cut.any(it.ours > 0) { self.ours_alone = self.ours_alone + 1 }
+        if cut.any(it.edges > 0) { self.edges_alone = self.edges_alone + 1 }
+    }
+}
+
+/// A tally, most first, as `what count` pairs.
+fn tallied(counts: Map<string, int>) -> string {
+    let most = sorted_by([k for k, _n in counts], (a, b) -> counts.get(a)! > counts.get(b)!)
+    [k + " " + "${counts.get(k)!}" for k in most].join(", ")
+}
+
+/// The units the workspace's lowering wants beyond each declaration's own: each generic fn's lowered
+/// here under its type arguments' layouts, and each body a trait gives a type that never writes the
+/// method, lowered for that type; each held to the workspace's unit for its want.
+type WantedHeld = { generic: HeldUnits, defaults: HeldUnits }
+
+/// Each want of `seed`, and each want a unit among them wants in turn, that names a generic fn a
+/// file declares or a body a trait gives, held as `WantedHeld` says.
+fn wanted_held(
+    engine: QueryEngine,
+    survey: TaskSurvey,
+    ws: Workspace,
+    disk: Disk,
+    seed: List<Wanted>,
+    shown: bool,
+) -> WantedHeld {
+    mut queue = seed
+    mut seen: Map<string, bool> = {}
+    mut generic = HeldUnits {}
+    mut defaults = HeldUnits {}
+    mut at = 0
+    while at < queue.length {
+        let w = queue[at]
+        at = at + 1
+        if seen.has(w.name) { continue }
+        seen.set(w.name, true)
+        let defaulted = default_target(ws, disk, w)
+        if defaulted != null {
+            let g = defaulted!
+            let mine? = lowered_default(engine, g.file, g.owner, g.method) else { continue }
+            queue = queue.concat(unit_timed(engine, ws, w).wants)
+            let giver? = default_giver(engine, g.file, g.owner, g.method) else { continue }
+            defaults
+                .hold(
+                    engine,
+                    survey,
+                    ws,
+                    disk,
+                    "${spelled_file(g.file)} the default ${w.name}",
+                    mine,
+                    w,
+                    declared_symbol(giver.file, default_unit(giver, g.method, g.file, g.owner)),
+                    shown,
+                )
+            continue
+        }
+        let method = method_target(engine, ws, disk, w)
+        if method != null {
+            let m = method!
+            let mine? = lowered_method_under(engine, m.at, m.name, false, m.parameters) else { continue }
+            queue = queue.concat(unit_timed(engine, ws, w).wants)
+            generic
+                .hold(
+                    engine,
+                    survey,
+                    ws,
+                    disk,
+                    "${spelled_file(m.at.file)} the generic method unit ${w.name}",
+                    mine,
+                    w,
+                    instance_symbol(
+                        declared_symbol(m.at.file, "${m.owner}.${m.name}"),
+                        m.parameters,
+                    ),
+                    shown,
+                )
+            continue
+        }
+        let target? = generic_target(ws, disk, w) else { continue }
+        let mine? = lowered_generic(engine, target.file, target.name, target.parameters) else { continue }
+        queue = queue.concat(unit_timed(engine, ws, w).wants)
+        generic
+            .hold(
+                engine,
+                survey,
+                ws,
+                disk,
+                "${spelled_file(target.file)} the generic unit ${w.name}",
+                mine,
+                w,
+                instance_symbol(declared_symbol(target.file, target.name), target.parameters),
+                shown,
+            )
+    }
+    WantedHeld { generic: generic, defaults: defaults }
+}
+
+/// A method of a generic type: the impl that gives it, the type's name, the method's, and the
+/// layouts a want of it lowers it under.
+type MethodTarget = { at: ImplAt, owner: string, name: string, parameters: List<ParameterLayout> }
+
+/// What the want `w` lowers when it's a method of a generic type under that type's arguments alone,
+/// the one impl that gives it written in a file the disk holds; absent for any other want.
+fn method_target(engine: QueryEngine, ws: Workspace, disk: Disk, w: Wanted) -> MethodTarget? {
+    let sub? = w.sub else { return null }
+    let d? = w.decl else { return null }
+    if !sub.consts.is_empty() || sub.args.is_empty() || ws.decls.is_static_of(d) { return null }
+    let x = ws.decls.decl(d)
+    let parent? = x.parent else { return null }
+    if ws.decls.is_trait(parent) || !x.maker.is_empty() || x.home == null { return null }
+    let owner = ws.decls.decl(sub.target)
+    let file? = address_of(disk, ws.decls.file(owner.file).path) else { return null }
+    let impls = impls_with(engine, file, owner.name, x.name, false)
+    if impls.length != 1 || impls[0].params.length != sub.args.length { return null }
+    MethodTarget {
+        at: impls[0],
+        owner: owner.name,
+        name: x.name,
+        parameters: [old_parameter(ws, a) for a in sub.args],
+    }
+}
+
+/// A body a trait gives a type that never writes the method: the type's file and name, and the
+/// method.
+type DefaultTarget = { file: SourceFileAddress, owner: string, method: string }
+
+/// What the want `w` lowers when it's a trait's own body for a type the disk holds; absent for any
+/// other want.
+fn default_target(ws: Workspace, disk: Disk, w: Wanted) -> DefaultTarget? {
+    let d? = w.decl else { return null }
+    let parent? = ws.decls.decl(d).parent else { return null }
+    if !ws.decls.is_trait(parent) { return null }
+    let owner? = default_owner(ws, w) else { return null }
+    let x = ws.decls.decl(owner)
+    let file? = address_of(disk, ws.decls.file(x.file).path) else { return null }
+    DefaultTarget { file: file, owner: x.name, method: ws.decls.decl(d).name }
+}
+
+/// The type a want of a trait's own body lowers it for: the one type argument, when it's a type the
+/// program declares applied to nothing.
+fn default_owner(ws: Workspace, w: Wanted) -> DeclId? {
+    let sub? = w.sub else { return null }
+    if !sub.consts.is_empty() || sub.args.length != 1 { return null }
+    match ws.decls.types.shape_of(sub.args[0]) { .Struct(t, _) or .Enum(t, _) -> t, rest -> null }
+}
+
+/// Each callee a trait's own body answers, mapped to the name of the workspace's want of that body
+/// for the type it answers for.
+fn default_symbols(ws: Workspace, disk: Disk, callees: List<CalledFn>, wants: List<Wanted>) -> Map<
+    string,
+    string,
+> {
+    mut names: Map<string, string> = {}
+    for c in callees.filter(it.given_by != null) {
+        let id? = ws.decls.known_file_id(disk.on_disk(c.file.package_name, c.file.path_in_package)) else { continue }
+        let tr? = ws.visible(id).type_decl(c.given_by!) else { continue }
+        let member? = ws.decls.default_member(tr, c.name) else { continue }
+        let want? = wants.find((w) -> wants_default(ws, w, member, c.owner!)) else { continue }
+        names.set(c.symbol, want.name)
+    }
+    names
+}
+
+/// Whether `w` wants the trait's own body `member` for the type named `owner`.
+fn wants_default(ws: Workspace, w: Wanted, member: DeclId, owner: string) -> bool {
+    let d? = w.decl else { return false }
+    let t? = default_owner(ws, w) else { return false }
+    d.index == member.index && ws.decls.decl(t).name == owner
+}
+
+/// Each of `names` with `suffix` after the name it maps to: a lambda a generic unit lifts is named
+/// for its want as the unit is.
+fn suffixed(names: Map<string, string>, suffix: string) -> Map<string, string> {
+    mut out: Map<string, string> = {}
+    for k, v in names { out.set(k, v + suffix) }
+    out
+}
+
+/// A generic fn a file declares, and the layouts a want of it lowers it under.
+type GenericTarget = { file: SourceFileAddress, name: string, parameters: List<ParameterLayout> }
+
+/// What the want `w` lowers when it's a generic fn's body under type arguments alone, written in a
+/// file the disk holds; absent for any other want.
+fn generic_target(ws: Workspace, disk: Disk, w: Wanted) -> GenericTarget? {
+    let sub? = w.sub else { return null }
+    let d? = w.decl else { return null }
+    if !sub.consts.is_empty() { return null }
+    let x = ws.decls.decl(d)
+    let declared_fn = match x.kind { .Fn -> true, rest -> false }
+    if !declared_fn || !x.maker.is_empty() || x.home == null { return null }
+    let file? = address_of(disk, ws.decls.file(x.file).path) else { return null }
+    GenericTarget { file: file, name: x.name, parameters: [old_parameter(ws, a) for a in sub.args] }
+}
+
+/// What a type argument of the workspace's is to the machine as it fills a type parameter.
+fn old_parameter(ws: Workspace, a: TypeId) -> ParameterLayout {
+    ParameterLayout {
+        layout: ws.decls.register_layout(a),
+        nullable: ws.decls.nullable_layout(a),
+        side: ws.decls.types.side_word(ws.decls.types.machine_type(a)),
+    }
+}
+
+/// The fns a lowered body and the lambdas it lifts call.
+fn every_callee(f: LoweredFn) -> List<CalledFn> { f.callees.concat(flatten([l.callees for l in f.lifts])) }
+
+/// Each callee among `callees` that's a unit of a want, mapped to the name of the workspace's want:
+/// a generic fn's under its layouts, and a trait's own body for the type it answers for.
+fn wanted_symbols(ws: Workspace, disk: Disk, callees: List<CalledFn>, wants: List<Wanted>) -> Map<
+    string,
+    string,
+> {
+    known_symbols(
+        generic_symbols(ws, disk, callees, wants),
+        default_symbols(ws, disk, callees, wants),
+    )
+}
+
+/// Each generic fn's unit among `callees`, mapped to the name of the workspace's want of that fn
+/// whose type arguments lay out alike.
+fn generic_symbols(ws: Workspace, disk: Disk, callees: List<CalledFn>, wants: List<Wanted>) -> Map<
+    string,
+    string,
+> {
+    mut names: Map<string, string> = {}
+    for c in callees.filter(!it.parameters.is_empty()) {
+        let id? = ws.decls.known_file_id(disk.on_disk(c.file.package_name, c.file.path_in_package)) else { continue }
+        let d? = (if c.owner == null { ws.visible(id).fn_decl(c.name) } else { method_decl(ws, id, c.owner!, c.name) }) else { continue }
+        let spelled = parameters_spelled(c.parameters)
+        let want? = wants
+            .find((w) -> w.decl?.index ?? -1 == d.index && wanted_layouts(ws, w) == spelled) else { continue }
+        names.set(c.symbol, want.name)
+    }
+    names
+}
+
+/// The layouts a want's type arguments lower its generic body under, spelled; absent for a want of
+/// no type arguments.
+fn wanted_layouts(ws: Workspace, w: Wanted) -> string? {
+    let sub? = w.sub else { return null }
+    parameters_spelled([old_parameter(ws, a) for a in sub.args])
+}
+
+/// The workspace with every file it reaches named and its references gathered, before any of its
+/// lowering runs: lowering a fn asks the references, whose gathering reads each file's names, and
+/// naming a file the workspace hasn't met yet mints it under the question that reads them. Answers
+/// how many files it named.
+fn workspace_settled(ws: Workspace) -> int {
+    mut named = 0
+    while ws.decls.all_files().length > named {
+        let files = ws.decls.all_files()
+        for x in files.drop(named) { if ws.reads_as_source(x.path) { let _ = ws.visible(x.id) } }
+        named = files.length
+    }
+    let _ = ws.references()
+    named
+}
+
+/// How many tests of the running task's flags a body holds: the unwinding test after a call that
+/// may reach a cancel point, and the tick test at a loop's back edge.
+type FlagTests = { calls: int, edges: int }
+
+fn flag_tests(ins: List<Ins>) -> FlagTests {
+    mut counted = FlagTests { calls: 0, edges: 0 }
+    for at in 0..ins.length {
+        let tested? = flag_tested(ins, at) else { continue }
+        counted = match tested {
+            .Unwinding -> counted with { calls: counted.calls + 1 },
+            .Tick -> counted with { edges: counted.edges + 1 },
+        }
+    }
+    counted
+}
+
+/// Two bodies' instructions with each test of the running task's flags that one holds where the other
+/// holds none cut out of it, and how many were: the unwinding tests only this layer's or only the
+/// workspace's held, and the ticks only one held.
+type AgreedTests = { ours: List<Ins>, theirs: List<Ins>, cut: FlagCuts }
+
+/// How many flag tests one side held alone.
+type FlagCuts = { ours: int, theirs: int, edges: int }
+
+impl FlagCuts {
+    /// One more test of the flag `tested` cut, from this layer's side when `ours`.
+    fn counted(tested: RtFlag, ours: bool) -> FlagCuts {
+        match tested {
+            .Unwinding -> if ours { self with { ours: self.ours + 1 } } else { self with { theirs: self.theirs + 1 } },
+            .Tick -> self with { edges: self.edges + 1 },
+        }
+    }
+}
+
+/// `ours` and `theirs` walked side by side, a flag test either holds where the other holds none cut
+/// from it, region and all.
+fn tests_agreed(ours: List<Ins>, theirs: List<Ins>) -> AgreedTests {
+    mut kept_ours: List<Ins> = []
+    mut kept_theirs: List<Ins> = []
+    mut cut = FlagCuts { ours: 0, theirs: 0, edges: 0 }
+    mut i = 0
+    mut j = 0
+    while i < ours.length && j < theirs.length {
+        let mine = flag_tested(ours, i)
+        let them = flag_tested(theirs, j)
+        if mine != null && them == null {
+            cut = cut.counted(mine!, true)
+            i = region_end(ours, i + 1) + 1
+            continue
+        }
+        if them != null && mine == null {
+            cut = cut.counted(them!, false)
+            j = region_end(theirs, j + 1) + 1
+            continue
+        }
+        kept_ours.push(ours[i])
+        kept_theirs.push(theirs[j])
+        i = i + 1
+        j = j + 1
+    }
+    AgreedTests {
+        ours: kept_ours.concat(ours.drop(i)),
+        theirs: kept_theirs.concat(theirs.drop(j)),
+        cut: cut,
+    }
+}
+
+/// The flag the instruction at `at` reads for the region that follows it, absent where it reads none.
+fn flag_tested(ins: List<Ins>, at: int) -> RtFlag? {
+    if at + 1 >= ins.length { return null }
+    match ins[at] {
+        .FlagRead(r, f) -> match ins[at + 1] { .IfStart(c) -> if same_reg(c, r) { f } else { null }, rest -> null },
+        rest -> null,
+    }
+}
+
+/// A body's instructions with registers numbered as they're defined, and each defined register's own
+/// number, in the order defined.
+type Numbered = { ins: List<Ins>, defined: List<Reg> }
+
+fn numbered(raw: List<Ins>, seats: int) -> Numbered {
+    Numbered {
+        ins: alpha_renamed(raw, seats),
+        defined: [d! for i in canon_not_if(raw) for d in [dst_of(i)] if d != null],
+    }
+}
+
+/// Each lambda the program layer lifted, mapped to the symbol the workspace lifts the lambda written
+/// at the same place under.
+fn lift_names(ws: Workspace, id: FileId, lifts: List<LiftedBody>) -> Map<string, string> {
+    mut names: Map<string, string> = {}
+    if lifts.is_empty() { return names }
+    let store = ws.parsed(id).store
+    for i in 0..store.exprs.count() {
+        let x = ExprId { index: i }
+        let span? = store.expr_span(x) else { continue }
+        if store.lambda_parts(x) == null { continue }
+        let l? = lifts.find(it.lo == span.lo && it.hi == span.hi) else { continue }
+        names.set(l.symbol, ws.decls.lifted_symbol(id, x))
+    }
+    names
+}
+
+/// How the lambdas a fn lifts here differ from the workspace's lifts of them, absent when each reads
+/// alike.
+fn lifts_difference(
+    ws: Workspace,
+    disk: Disk,
+    lifts: List<LiftedBody>,
+    bodies: List<Body>,
+    lifted: Map<string, string>,
+    tagged: List<SignedType>,
+    cuts: Cell<List<FlagCuts>>,
+) -> string? {
+    for l in lifts {
+        let name? = lifted.get(l.symbol) else { return "the workspace lifts no lambda at ${l.lo}" }
+        let theirs? = bodies.find(it.name == name) else { return "the workspace lowers no body for the lambda at ${l.lo}" }
+        let how = lift_difference(ws, disk, l, theirs, lifted, tagged, cuts)
+        if how != null { return "the lambda at ${l.lo}: ${how!}" }
+    }
+    null
+}
+
+/// How the lambda `l` lifts here differs from the workspace's body `theirs`, absent when alike; the
+/// cancel tests each side cuts go to `cuts`.
+fn lift_difference(
+    ws: Workspace,
+    disk: Disk,
+    l: LiftedBody,
+    theirs: Body,
+    lifted: Map<string, string>,
+    tagged: List<SignedType>,
+    cuts: Cell<List<FlagCuts>>,
+) -> string? {
+    let mine = LoweredFn {
+        params: l.params,
+        answer: l.answer,
+        ins: l.ins,
+        layouts: l.layouts,
+        callees: l.callees,
+        missing: [],
+        lifts: [],
+        statics: [],
+        tagged: tagged,
+    }
+    let agreed = tests_agreed(mine.ins, theirs.ins)
+    cuts.push(agreed.cut)
+    lowered_difference(
+        ws,
+        disk,
+        mine with { ins: agreed.ours },
+        theirs with { ins: agreed.theirs },
+        lifted,
+    )
+}
+
+/// How a fn lowered here differs from the workspace's lowering of it, absent when every seat,
+/// instruction and register reads alike; `lifted` names each lambda's symbol as the workspace's.
+fn lowered_difference(
+    ws: Workspace,
+    disk: Disk,
+    mine: LoweredFn,
+    theirs: Body,
+    lifted: Map<string, string>,
+) -> string? {
+    let seats = [ws.decls.register_layout(t) for t in theirs.params]
+    if [l.spelled() for l in mine.params].join(", ") != [l.spelled() for l in seats].join(", ") {
+        return "seats ${[l.spelled() for l in mine.params].join(", ")}, the workspace's ${[l.spelled() for l in seats].join(", ")}"
+    }
+    let answer = ws.decls.register_layout(theirs.ret)
+    if mine.answer.spelled() != answer.spelled() { return "answers ${mine.answer.spelled()}, the workspace's ${answer.spelled()}" }
+    let renames = known_symbols(callee_symbols(ws, disk, mine.callees), lifted)
+    let tags = type_tags(ws, disk, mine.tagged)
+    let ours = numbered(
+        [retagged(resymbolled(i, (s) -> workspace_symbol(ws, disk, renames, s)), tags) for i in mine.ins],
+        mine.params.length,
+    )
+    let workspace = numbered(theirs.ins, theirs.params.length)
+    for at, i in ours.ins {
+        if at >= workspace.ins.length { return "instruction ${at} is `${ins_text(i)}`, where the workspace's has ended" }
+        if !same_ins(i, workspace.ins[at]) {
+            return "instruction ${at} is `${ins_text(i)}`, the workspace's `${ins_text(workspace.ins[at])}`, amid `${leading(ours.ins, at)}`, the workspace's `${leading(workspace.ins, at)}`"
+        }
+    }
+    if workspace.ins.length > ours.ins.length { return "ends at instruction ${ours.ins.length}, where the workspace's has `${ins_text(workspace.ins[ours.ins.length])}`" }
+    for at, r in ours.defined {
+        let old = ws.decls.register_layout(theirs.reg_types[workspace.defined[at].index])
+        let new = mine.layouts[r.index]
+        if new.spelled() != old.spelled() { return "the register instruction ${at} defines is ${new.spelled()}, the workspace's ${old.spelled()}" }
+    }
+    null
+}
+
+/// How the data a fn and its lambdas read differs from what the workspace lays out under the same
+/// names, absent when each static holds alike; `lifted` names each lambda's symbol as the workspace's.
+fn statics_difference(
+    ws: Workspace,
+    disk: Disk,
+    mine: LoweredFn,
+    theirs: List<Static>,
+    lifted: Map<string, string>,
+) -> string? {
+    let renames = known_symbols(
+        callee_symbols(ws, disk, mine.callees.concat(flatten([l.callees for l in mine.lifts]))),
+        lifted,
+    )
+    for st in mine.statics {
+        let name = workspace_symbol(ws, disk, renames, st.name)
+        let old? = theirs.find(it.name == name) else { return "the workspace lays out no static `${name}`" }
+        let ours = static_block(
+            Static {
+                name: name,
+                boxes: [box_renamed(b, (s) -> workspace_symbol(ws, disk, renames, s)) for b in st.boxes],
+            },
+        )
+            .join(" ")
+        let workspace = static_block(old).join(" ")
+        if ours != workspace { return "the static `${name}` is `${ours}`, the workspace's `${workspace}`" }
+    }
+    null
+}
+
+/// `a`'s symbols beside `b`'s, `a`'s first where both name one.
+fn known_symbols(a: Map<string, string>, b: Map<string, string>) -> Map<string, string> {
+    mut known = b
+    for k, v in a { known.set(k, v) }
+    known
+}
+
+/// A symbol the program layer names, as the workspace's lowering names it: a declared fn's or a lifted
+/// lambda's by `renames`, a fn value's data, its wrapper and a code hash's body by the code they hold, and a literal's data
+/// by its file's own symbol for its site.
+fn workspace_symbol(ws: Workspace, disk: Disk, renames: Map<string, string>, s: string) -> string {
+    if s.starts_with(FN_DATA) { return FN_DATA + workspace_symbol(ws, disk, renames, s.substring(FN_DATA.length, s.length)) }
+    let hashing = code_hash_symbol("")
+    if s.starts_with(hashing) {
+        return code_hash_symbol(
+            workspace_symbol(ws, disk, renames, s.substring(hashing.length, s.length)),
+        )
+    }
+    if s.ends_with(WRAPPER) {
+        return workspace_symbol(ws, disk, renames, s.substring(0, s.length - WRAPPER.length)) +
+            WRAPPER
+    }
+    let held = s.index_of(CONST_DATA)
+    if held >= 0 {
+        return const_symbol_of(
+            ws,
+            disk,
+            s.substring(0, held),
+            s.substring(held + CONST_DATA.length, s.length),
+        ) ?? s
+    }
+    let lit = s.index_of(LITERAL_DATA)
+    if lit >= 0 {
+        return literal_symbol_of(
+            ws,
+            disk,
+            s.substring(0, lit),
+            s.substring(lit + LITERAL_DATA.length, s.length),
+        ) ?? s
+    }
+    renames.get(s) ?? s
+}
+
+/// The workspace's name for the literal data at `site` of the package's file `spelled`, absent for a
+/// file the workspace doesn't know.
+fn literal_symbol_of(ws: Workspace, disk: Disk, spelled: string, site: string) -> string? {
+    let id? = own_file(ws, disk, spelled) else { return null }
+    ws.decls.file_symbol(id, "lit${site}")
+}
+
+/// The workspace's name for the data the const `name` of the package's file `spelled` settles to,
+/// absent for a file or a const the workspace doesn't know.
+fn const_symbol_of(ws: Workspace, disk: Disk, spelled: string, name: string) -> string? {
+    let id? = own_file(ws, disk, spelled) else { return null }
+    let d? = ws
+        .decls
+        .decls_of_file(id)
+        .find((d) -> ws.decls.decl(d).parent == null && ws.decls.decl(d).name == name) else { return null }
+    ws.decls.symbol(d)
+}
+
+/// The workspace's file for the package's file `spelled`, absent for one it doesn't know.
+fn own_file(ws: Workspace, disk: Disk, spelled: string) -> FileId? {
+    let own = "${disk.name}/"
+    if !spelled.starts_with(own) { return null }
+    ws.decls.known_file_id(disk.on_disk(disk.name, spelled.substring(own.length, spelled.length)))
+}
+
+/// What a fn value's data is named for: the code it holds.
+const FN_DATA: string = "fn\$"
+
+/// What a declared fn's wrapper as a value is named for: the fn it calls.
+const WRAPPER: string = "\$w"
+
+/// What a const's data is named for beside its file: its name.
+const CONST_DATA: string = "\$const\$"
+
+/// What a literal's data is named for beside its file: its site.
+const LITERAL_DATA: string = "\$lit"
+
+/// `b` with each code address it holds named by `named`.
+fn box_renamed(b: StaticBox, named: fn(string) -> string) -> StaticBox {
+    match b {
+        .Slots(cells) -> StaticBox.Slots([slot_renamed(c, named) for c in cells]),
+        .Table(keys, values) -> StaticBox.Table(keys, [slot_renamed(c, named) for c in values]),
+        .Octets(_) -> b,
+    }
+}
+
+/// `c` named by `named` where it's a code address, else itself.
+fn slot_renamed(c: Slot, named: fn(string) -> string) -> Slot {
+    match c { .Code(sym) -> Slot.Code(named(sym)), rest -> c }
+}
+
+/// The lines the IR's text writes for the instructions up to a few past `at`, the last of them: a
+/// body's text is written from its start, where every region it closes opened.
+fn leading(ins: List<Ins>, at: int) -> string {
+    let lines = body_lines(ins.take(at + 4))
+    lines.drop(if lines.length > 12 { lines.length - 12 } else { 0 }).join(" ")
+}
+
+/// One instruction as the IR's text writes it.
+fn ins_text(i: Ins) -> string { body_lines([i]).join(" ") }
+
+/// Each callee's symbol, mapped to the one the workspace's lowering calls it by.
+fn callee_symbols(ws: Workspace, disk: Disk, callees: List<CalledFn>) -> Map<string, string> {
+    mut renames: Map<string, string> = {}
+    for c in callees.filter(it.parameters.is_empty() && it.given_by == null) {
+        let id? = ws.decls.known_file_id(disk.on_disk(c.file.package_name, c.file.path_in_package)) else { continue }
+        let d = match c.defaulted {
+            .Field -> default_decl(ws, id, c.owner!, c.name),
+            .Seat -> seat_default_decl(ws, id, c.owner!, c.name),
+            .Not -> if c.owner == null { file_fn_decl(ws, id, c.name) } else { method_decl(ws, id, c.owner!, c.name) },
+        }
+        if d != null { renames.set(c.symbol, ws.decls.symbol(d!)) }
+    }
+    renames
+}
+
+/// The workspace's top-level declaration of `name` the file `id` sees: one it binds, else one its
+/// annotations generated there.
+fn file_fn_decl(ws: Workspace, id: FileId, name: string) -> DeclId? {
+    ws.visible(id).fn_decl(name) ?? ws
+        .decls
+        .decls_of_file(id)
+        .find((d) -> ws.decls.decl(d).parent == null && ws.decls.decl(d).name == name)
+}
+
+/// The workspace's declaration of the default the record `owner` names from the file `id` writes for
+/// its field `field`.
+fn default_decl(ws: Workspace, id: FileId, owner: string, field: string) -> DeclId? {
+    let t? = ws.visible(id).type_decl(owner) else { return null }
+    let sig? = ws.decls.sig(t) else { return null }
+    match sig {
+        .Record(s) -> {
+            let at = s.names.index_of(field)
+            if at < 0 { null } else { s.defaults[at] }
+        },
+        rest -> null,
+    }
+}
+
+/// The workspace's declaration of the default the fn `owner` names from the file `id` writes for its
+/// seat `seat`.
+fn seat_default_decl(ws: Workspace, id: FileId, owner: string, seat: string) -> DeclId? {
+    let f? = ws.visible(id).fn_decl(owner) else { return null }
+    ws.decls.default_named(f, seat)
+}
+
+/// The tag each of `tagged` has in a `dyn` box here, mapped to the one the workspace's lowering gives
+/// it.
+fn type_tags(ws: Workspace, disk: Disk, tagged: List<SignedType>) -> Map<string, int> {
+    mut tags: Map<string, int> = {}
+    for ty in tagged {
+        let tag? = retag_of(ws, disk, ty) else { continue }
+        tags.set(tag.mine, tag.theirs)
+    }
+    tags
+}
+
+/// A type's tag here, as a map's key, beside the workspace's tag for it.
+type Retag = { mine: string, theirs: int }
+
+/// The tag the type `ty` names has here beside the workspace's, absent for a type the workspace
+/// doesn't declare.
+fn retag_of(ws: Workspace, disk: Disk, ty: SignedType) -> Retag? {
+    match ty.head {
+        .Declared(at, declared) -> {
+            let id? = ws.decls.known_file_id(disk.on_disk(at.package_name, at.path_in_package)) else { return null }
+            let d? = ws.visible(id).type_decl(declared) else { return null }
+            Retag { mine: "${fp_str(declared_symbol(at, declared))}", theirs: ws.decls.type_tag(d) }
+        },
+        rest -> null,
+    }
+}
+
+/// `i` with a constant that is a type's tag here written as the workspace's tag for that type.
+fn retagged(i: Ins, tags: Map<string, int>) -> Ins {
+    match i { .ConstInt(dst, n) -> Ins.ConstInt(dst, tags.get("${n}") ?? n), rest -> i }
+}
+
+/// The workspace's method `name` of the type `owner` names from the file `id`.
+fn method_decl(ws: Workspace, id: FileId, owner: string, name: string) -> DeclId? {
+    let t? = ws.visible(id).type_decl(owner) else { return null }
+    ws.decls.method(t, name)
+}
+
+/// The package `path` stands in: the nearest directory at or above it holding a manifest.
+fn package_holding(path: string) -> string? {
+    if text_at(joined_path(path, "avra.toml")) != null { return path }
+    let up = dir_of(path)
+    if up == path || up == "" { null } else { package_holding(up) }
+}
+
+/// A program test: its source, beside the output it must print, and whether the evaluator runs it:
+/// a `.native-only` marker beside it says the seam is the host's.
+type ProgramTest = { path: string, expected: string, evaluated: bool }
+
+/// Every program test at or under `dir`: a directory holding a source and an `.expected` both named
+/// for it.
+fn program_tests(dir: string) -> List<ProgramTest> {
+    let names = names_at(dir) ?? []
+    some_list(program_test_at(dir, names))
+        .concat(flatten([program_tests(joined_path(dir, n)) for n in names if !n.contains(".")]))
+}
+
+/// The program test the directory `dir`, holding `names`, is, absent when it's none.
+fn program_test_at(dir: string, names: List<string>) -> ProgramTest? {
+    let own = file_name(dir)
+    if !names.contains("${own}.av") { return null }
+    let expected? = text_at(joined_path(dir, "${own}.expected")) else { return null }
+    ProgramTest {
+        path: joined_path(dir, "${own}.av"),
+        expected: unended(expected),
+        evaluated: !names.contains("${own}.native-only"),
+    }
+}
+
+/// `text` without the one line end that closes it.
+fn unended(text: string) -> string { if text.ends_with("\n") { text.substring(0, text.length - 1) } else { text } }
+
+/// The line at `at`, quoted, or the end where there's none.
+fn line_at(lines: List<string>, at: int) -> string { if at < lines.length { "`${lines[at]}`" } else { "the end" } }
+
+/// Each program test under `dir`, made on the program layer and run as the suite's case runner runs
+/// one, in the evaluator and natively: under a case's schedules and clock, each schedule's output held
+/// to the test's `.expected`; one not made yet is counted by why. Answers 1 when a made test fails.
+fn ran_held(engine: QueryEngine, disk: Disk, dir: string, shown: bool) -> int {
+    let tests = program_tests(dir)
+    mut made = 0
+    mut evaluated = 0
+    mut native = 0
+    mut failing: List<string> = []
+    mut unmade: Map<string, int> = {}
+    for p in tests {
+        let path = p.path.substring(disk.root.length + 1, p.path.length)
+        let lowered = match made_program(engine, disk.file_at(path)) {
+            .Made(l) -> l,
+            .Unmade(why, at) -> {
+                unmade.set(why, (unmade.get(why) ?? 0) + 1)
+                if shown { println("left: ${why} in ${path}, at ${at}") }
+                continue
+            },
+        }
+        made = made + 1
+        let heard = if p.evaluated {
+            [
+                Ran {
+                    engine: "eval",
+                    differs: quarrel(
+                        lowered,
+                        ProgramCall {
+                            symbol: ENTRY_SYMBOL,
+                            label: path,
+                            expected: p.expected,
+                            evaluated: true,
+                        },
+                    )
+                        .first(),
+                },
+            ]
+        } else {
+            []
+        }
+        let legs = heard
+            .concat(
+                [
+                    Ran {
+                        engine: "native",
+                        differs: native_differs(
+                            heard_as_case(lowered, path, p.expected),
+                            joined_path(
+                                disk.root,
+                                ".avra-cache/tapes-ran/${file_name(dir_of(path))}",
+                            ),
+                        ),
+                    },
+                ],
+            )
+        for r in legs {
+            let differs? = r.differs else {
+                if r.engine == "eval" { evaluated = evaluated + 1 } else { native = native + 1 }
+                continue
+            }
+            failing.push("${path} (${r.engine}): ${differs}")
+        }
+    }
+    for f in failing { println("fails: ${f}") }
+    println(
+        "ran: ${tests.length} program tests, ${made} made on the program layer, ${evaluated} printing their `.expected` in the evaluator, ${native} natively, ${failing.length} runs failing; not made yet: ${tallied(unmade)}",
+    )
+    if failing.is_empty() { 0 } else { 1 }
+}
+
+/// The package's program made on the program layer, a body not lowered yet trapping by name, built
+/// natively and run with `argv` split on spaces: what it printed and how it left.
+fn entry_ran(engine: QueryEngine, disk: Disk, argv: string) -> int {
+    let bin = read_manifest(
+        new_source_file("avra.toml", text_at(joined_path(disk.root, "avra.toml")) ?? ""),
+    )
+        .bin ?? "src/main.av"
+    let lowered = match made_program(engine, disk.file_at(bin), true) {
+        .Made(l) -> l,
+        .Unmade(why, at) -> {
+            println("unmade: ${why}, at ${at}")
+            return 1
+        },
+    }
+    let stem = joined_path(disk.root, ".avra-cache/tapes-run/${file_name(disk.root)}")
+    let refused = unbuilt(lowered, stem, linked_words(engine, disk))
+    if refused != null {
+        println("unbuilt: ${refused!}")
+        return 1
+    }
+    match (cmd(tool_at(stem, stem), [w for w in argv.split(" ") if !w.is_empty()]) with { timeout: secs(60) })
+        .outcome() {
+        .Ok(o) -> {
+            println("stdout: ${o.out.stdout}")
+            println("stderr: ${o.out.stderr}")
+            println("exit: ${exit_spelled(o.exit)}")
+            if clean(o.exit) { 0 } else { 1 }
+        },
+        .Err(e) -> {
+            println("didn't run: ${e.describe().message}")
+            1
+        },
+    }
+}
+
+/// The objects and flags the packages a program on `disk` reaches link with, as a workspace that
+/// read the whole program says them.
+fn linked_words(engine: QueryEngine, disk: Disk) -> List<string> {
+    mut ws = root_workspace(disk.root)
+    for f in package_sources(engine, disk.name, "src") { let _ = ws.file_id(joined_path(disk.root, f)) }
+    ws.admit_all()
+    ws.link_words("")
+}
+
+/// How a child left, as words.
+fn exit_spelled(e: Exit) -> string {
+    match e { .Clean -> "clean", .Code(n) -> "code ${n}", .Signal(sig, _) -> "signal ${sig}" }
+}
+
+/// One engine's run of a program test: how it differs from what the test expects, absent when it
+/// printed exactly that under every schedule the case runner ran.
+type Ran = { engine: string, differs: string? }
+
+/// The symbol a made program's top level is known by.
+const ENTRY_SYMBOL: string = "main"
+
+/// A program test built natively at `stem` under the case runner and run: absent when it printed
+/// what it must under every schedule, else what the runner said or why it didn't run.
+fn native_differs(l: Lowered, stem: string) -> string? {
+    let why? = unbuilt(l, stem) else { return ran_natively(stem) }
+    "didn't run: ${why}"
+}
+
+/// Why the program didn't build at `stem`, absent when it did: emitted as an object, then linked
+/// with its packages' objects and flags `packaged` and the runtime.
+fn unbuilt(l: Lowered, stem: string, packaged: List<string> = []) -> string? {
+    let _ = make_dirs(dir_of(stem))
+    let object = "${stem}.o"
+    emit_object(l, emit_index(l), object, Owned.Whole, 0, "") ?? objects_made() ?? link_refused(
+        object,
+        stem,
+        packaged,
+    )
+}
+
+/// Why `object` didn't link into the binary `stem`, its packages' own objects and flags `packaged`
+/// beside it, absent when it did.
+fn link_refused(object: string, stem: string, packaged: List<string>) -> string? {
+    let cc = match process_tool("clang") {
+        .Ok(t) -> t,
+        .Err(_) -> { return "no `clang` on the PATH" },
+    }
+    match (cmd(
+        cc,
+        ["-w", unreached_dropped(), object]
+            .concat(packaged)
+            .concat([runtime_library(), "-lm", "-o", stem]),
+    ) with { env: inherited() })
+        .outcome() {
+        .Ok(o) -> if clean(o.exit) { null } else { "the link failed: ${o.out.stderr}" },
+        .Err(e) -> "the link didn't run: ${e.describe().message}",
+    }
+}
+
+/// The case runner's binary at `stem` run: absent when it left by a green verdict, else what it said.
+fn ran_natively(stem: string) -> string? {
+    match (cmd(tool_at(stem, stem), []) with { timeout: secs(30) }).outcome() {
+        .Ok(o) -> match o.exit {
+            .Clean -> null,
+            .Code(n) -> if n == 1 { unended(o.out.stdout) } else { "didn't run: exited ${n}: ${o.out.stderr}" },
+            .Signal(sig, _) -> "didn't run: killed by signal ${sig}",
+        },
+        .Err(e) -> "didn't run: ${e.describe().message}",
+    }
+}
+
+/// Whether a child ended cleanly.
+fn clean(e: Exit) -> bool { match e { .Clean -> true, .Code(_) or .Signal(_, _) -> false } }
+
+/// The address of the file at `path` on disk, absent for one in no package the disk holds.
+/// A file on disk as the program layer names it in an origin; a path it doesn't address as itself.
+fn origin_spelled(disk: Disk, path: string) -> string {
+    let file? = address_of(disk, path) else { return path }
+    template_home(file)
+}
+
+fn address_of(disk: Disk, path: string) -> SourceFileAddress? {
+    let spelled = disk.spelled(path)
+    let own = "${disk.name}/"
+    if spelled.starts_with(own) { return disk.file_at(spelled.substring(own.length, spelled.length)) }
+    if !spelled.starts_with(STD) { return null }
+    let rest = spelled.substring(STD.length, spelled.length)
+    let cut = rest.index_of("/")
+    if cut < 0 { return null }
+    SourceFileAddress {
+        package_name: STD + rest.substring(0, cut),
+        path_in_package: rest.substring(cut + 1, rest.length),
+    }
+}
+
+/// Every body the package's program reaches from its `[bin]` entry, walked past each one not lowered
+/// yet, stopped after `seconds` where that's past zero: how many of each kind are made, each
+/// reason one isn't ranked by how many it holds with the three bodies most called among them, and
+/// each package's share. With `shown`, every body not made. Answers 1 where any isn't.
+fn built_held(engine: QueryEngine, disk: Disk, seconds: int, shown: bool) -> int {
+    let bin = read_manifest(
+        new_source_file("avra.toml", text_at(joined_path(disk.root, "avra.toml")) ?? ""),
+    )
+        .bin ?? "src/main.av"
+    // LICENSED input.clock: a receipt's budget is timing, never an input of what is built
+    let t0 = now_ns()
+    // LICENSED input.clock: a receipt's budget is timing, never an input of what is built
+    let survey = reach_surveyed(
+        engine,
+        disk.file_at(bin),
+        () -> seconds > 0 && now_ns() - t0 > seconds * 1000000000,
+    )
+    let bodies = survey.bodies
+    let unmade = bodies.filter(it.why != null)
+    // LICENSED input.clock: a receipt's duration is timing, never an input of what is built
+    let secs_taken = (now_ns() - t0) / 1000000000
+    println(
+        "built: ${bodies.length} bodies ${bin} reaches, ${bodies.length - unmade.length} made, ${unmade.length} not yet; ${if survey.finished { "the walk reached its end" } else { "the walk stopped short" }} in ${secs_taken} s",
+    )
+    println(
+        "by kind: ${[kind_share(bodies, k) for k in BODY_KINDS if bodies.any(it.kind == k)].join(", ")}",
+    )
+    let reasons = tally_of([b.why! for b in unmade])
+    for why in sorted_by(reasons.keys(), (a, b) -> reasons.get(a)! > reasons.get(b)!) {
+        let most = sorted_by(
+            unmade.filter((u) -> u.why ?? "" == why),
+            (a, b) -> a.callers > b.callers,
+        )
+            .take(3)
+        println("  ${reasons.get(why)!} ${why}: ${[body_named(b) for b in most].join("; ")}")
+    }
+    let packages = tally_of([b.file.package_name for b in bodies])
+    println(
+        "by package: ${[package_share(bodies, p) for p in sorted_by(packages.keys(), (a, b) -> packages.get(a)! > packages.get(b)!)].join(", ")}",
+    )
+    if shown { for b in unmade { println("left: ${b.why!} in ${body_named(b)}") } }
+    if unmade.is_empty() { 0 } else { 1 }
+}
+
+/// Every kind of body a program reaches, in the order a receipt names them.
+const BODY_KINDS: List<BodyKind> = [
+    BodyKind.Entry,
+    BodyKind.Fn,
+    BodyKind.Method,
+    BodyKind.Static,
+    BodyKind.GenericUnit,
+    BodyKind.TraitDefault,
+    BodyKind.FieldDefault,
+    BodyKind.SeatDefault,
+    BodyKind.Lambda,
+    BodyKind.Data,
+    BodyKind.Wrapper,
+    BodyKind.Extern,
+]
+
+/// How many of the bodies of kind `k` are made, of how many reached.
+fn kind_share(bodies: List<ReachedBody>, k: BodyKind) -> string {
+    let all = bodies.filter(it.kind == k)
+    "${k.word()} ${all.filter(it.why == null).length} of ${all.length}"
+}
+
+/// How many of the bodies the package `p` declares are made, of how many reached.
+fn package_share(bodies: List<ReachedBody>, p: string) -> string {
+    let all = bodies.filter(it.file.package_name == p)
+    "${p} ${all.filter(it.why == null).length} of ${all.length}"
+}
+
+/// A body as a receipt names it: its symbol, its file, and how many bodies call it.
+fn body_named(b: ReachedBody) -> string { "`${b.symbol}` (${spelled_file(b.file)}, ${b.callers} calls)" }
+
+/// How many times each word stands in `words`.
+fn tally_of(words: List<string>) -> Map<string, int> {
+    mut counts: Map<string, int> = {}
+    for w in words { counts.set(w, (counts.get(w) ?? 0) + 1) }
+    counts
+}

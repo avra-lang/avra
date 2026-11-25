@@ -1,0 +1,26 @@
+//! A TIMER AMONG BUSY TASKS: eight tasks each compute 2 ms between
+//! yields, twelve rounds apiece; how long a 5 ms sleep takes among
+//! them. Prints `timer_latency_busy <ns> 1`.
+use @std.time.{ms, now_ns, sleep}
+
+fn works(rounds: int) -> int {
+    mut spins = 0
+    for r in 0..rounds {
+        let until = now_ns() + 2000000
+        while now_ns() < until { spins = spins + 1 }
+        sleep(ms(0))
+    }
+    spins
+}
+
+fn slept(n: int) -> int {
+    let t0 = now_ns()
+    sleep(ms(n))
+    now_ns() - t0
+}
+
+let workers = [spawn works(12) for i in 0..8]
+let sleeper = spawn slept(5)
+println("timer_latency_busy ${sleeper.await} 1")
+mut spun = 0
+for w in workers { spun = spun + w.await }

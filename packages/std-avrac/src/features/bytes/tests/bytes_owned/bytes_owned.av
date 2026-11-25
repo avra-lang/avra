@@ -1,0 +1,33 @@
+// proves: a Bytes is released exactly when its last holder lets go —
+// a list element written over, a struct field replaced in a loop, a
+// cell reassigned a thousand times, a capture that outlives its
+// scope, a slice minted per turn, and an absent answer in a chain.
+type Box = { b: Bytes }
+fn maker() -> fn(int) -> int {
+    let b = "captured".bytes()
+    (i: int) -> b.at(i)
+}
+fn grow(mut acc: List<Bytes>, b: Bytes) { acc.push(b.concat(b)) }
+mut xs = ["a".bytes(), "b".bytes()]
+for i in 0..50 { xs[0] = xs[0].concat("a".bytes()) }
+xs[1] = xs[0]
+mut box = Box { b: "a".bytes() }
+for i in 0..500 { box.b = box.b.concat("a".bytes()) }
+mut cur = "".bytes()
+for i in 0..1000 { cur = cur.concat([i % 256].bytes()!) }
+let f = maker()
+let big = [i % 256 for i in 0..4096].bytes()!
+mut acc = 0
+for i in 0..4000 { acc = acc + big.slice(i, i + 96).at(5) }
+mut misses = 0
+for i in 0..200 { if [i + 200].bytes() == null { misses = misses + 1 } }
+mut ys: List<Bytes> = []
+grow(ys, "ab".bytes())
+grow(ys, ys[0])
+mut popped: List<Bytes> = []
+for i in 0..100 { popped.push([i].bytes()!) }
+mut sum = 0
+while !popped.is_empty() { sum = sum + popped.pop().at(0) }
+mut texts = 0
+for i in 0..300 { texts = texts + "hé".bytes().text()!.length }
+"${xs[0].length} ${xs[1] == xs[0]} ${box.b.length} ${cur.length} ${cur.at(999)} ${f(0)} ${f(7)} ${acc} ${misses} ${ys[1].length} ${sum} ${texts}"

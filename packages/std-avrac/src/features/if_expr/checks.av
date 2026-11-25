@@ -1,0 +1,17 @@
+//! The typing rule of `if`: the condition is a `bool`, both branches check against what the seat
+//! wants, each under what the condition proves where it holds (a presence test's narrowed name, an
+//! `is`'s pattern), and the value is where the branches meet; an `if` whose value is dropped is
+//! `void` once its branches are known.
+use core.{Checking, Checks, ExprId, Expected, SignedType, owned_type}
+use core.expr.{If}
+
+impl Checks for If {
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let _ = cx.check(self.cond, Expected.Exactly(owned_type("bool")))
+        let yes = cx.check_proven(self.on_true, expected, cx.proof_when(self.cond, true))
+        let other? = self.on_false else { return if expected is .Dropped && yes != null { owned_type("void") } else { null } }
+        let no = cx.check_proven(other, expected, cx.proof_when(self.cond, false))
+        if !(expected is .Dropped) { return cx.branches_met([self.on_true, other], [yes, no], expected) }
+        if yes == null || no == null { null } else { owned_type("void") }
+    }
+}

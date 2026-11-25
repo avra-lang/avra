@@ -1,0 +1,126 @@
+// A module's producers (compiler/producers.av): what its record files for the bucket
+// readers and the load walk, kept as one small row beside the record and read back in place.
+use compiler.{Workspace}
+use compiler.host.{memory_host}
+use compiler.record.{read_fields}
+use compiler.producers.{producers_of, producers_text, producers_read}
+use core.{ModulePath, module_path}
+use @std.avrac.testing.{test_workspace}
+
+const PATH: string = "/w/src/main.av"
+
+fn workspace_of(lines: List<string>) -> Workspace {
+    test_workspace(
+        memory_host(
+            {
+                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+                "/w/src/main.av": lines.concat([""]).join("\n"),
+            },
+            ["/w/avra.toml", PATH],
+        ),
+        "/w",
+    )
+}
+
+fn here() -> ModulePath { module_path(["app"]) }
+
+/// The record lines a program writes for its declarations, as fields.
+fn record_of(lines: List<string>) -> List<List<string>> {
+    let ws = workspace_of(lines)
+    let _ = ws.analyze_file(PATH)
+    let f? = ws.decls.known_file_id(PATH) else { return [] }
+    [read_fields(ws.record_line(ws.decls.raw_decl(d), ordinal, false)) for ordinal, d in ws.decls.decls_of_file(f)]
+}
+
+fn program() -> List<string> {
+    [
+        "extern fn avra_fiber_sleep(ms: int)",
+        "fn nap() { avra_fiber_sleep(1) }",
+        "fn plain() -> int { 1 }",
+        "plain()",
+    ]
+}
+
+/// The row of a program's record, as text.
+fn row() -> string { producers_text(producers_of(here(), record_of(program()))) }
+
+spec "compiler/producers — what a record files" {
+    then "a declaration files its name under its file" {
+        let p = producers_of(here(), record_of(program()))
+        let names = [f.value for f in p.names]
+        names.contains("nap") &&
+            names.contains("plain") &&
+            [f.path for f in p.names].all(it == PATH)
+    }
+    then "an extern is noted with its module, file and name" {
+        let p = producers_of(here(), record_of(program()))
+        p.externs.length == 1 &&
+            p.externs[0].name == "avra_fiber_sleep" &&
+            p.externs[0].path == PATH &&
+            p.externs[0].module == "app"
+    }
+    then "a fn whose record says it links a scheduler files its file as linking" {
+        producers_of(here(), record_of(program())).links.join(",") == PATH
+    }
+    then "a fn that links nothing files no file as linking" {
+        producers_of(here(), record_of(["fn plain() -> int { 1 }", "plain()"])).links.is_empty()
+    }
+    then "a record that rebuilds whole has no fault" {
+        producers_of(here(), record_of(program())).fault == ""
+    }
+}
+
+spec "compiler/producers — the row" {
+    then "a row read back is the row that was written" {
+        let back = producers_read(here(), row())
+        back != null && producers_text(back!) == row()
+    }
+    then "a row read back files what the record filed" {
+        let p = producers_of(here(), record_of(program()))
+        let back = producers_read(here(), row())
+        back != null &&
+            [f.value for f in back!.names].join(",") == [f.value for f in p.names].join(",") &&
+            back!.externs.length == p.externs.length &&
+            back!.links.join(",") == p.links.join(",") &&
+            back!.placed.join(",") == p.placed.join(",")
+    }
+    then "a free fn is a plain name and an extern is not" {
+        let p = producers_of(here(), record_of(program()))
+        p.narrows.length == 1 &&
+            p.narrows[0].path == PATH &&
+            !p.narrows[0].generated &&
+            p.narrows[0].bound.contains("*plain")
+    }
+    then "a row read back keeps what binds each file's names" {
+        let p = producers_of(here(), record_of(program()))
+        let back = producers_read(here(), row())
+        back != null &&
+            back!.narrows[0].bound.join(",") == p.narrows[0].bound.join(",") &&
+            back!.seen == p.seen
+    }
+    then "a row read back keeps the forms digest" {
+        let p = producers_of(here(), record_of(program()))
+        let back = producers_read(here(), row())
+        back != null && back!.forms == p.forms && back!.forms_text == ""
+    }
+    then "a row with no last line is no row" {
+        let lines = row().split("\n")
+        producers_read(here(), lines.slice(0, lines.length - 1).join("\n")) == null
+    }
+    then "a row of another version is no row" {
+        producers_read(here(), row().replace("producers\t3", "producers\t4")) == null
+    }
+    then "a row with a line it does not know is no row" {
+        let lines = row().split("\n")
+        let cut = lines.slice(0, lines.length - 1).concat(["surprise\tx", "end"])
+        producers_read(here(), cut.join("\n")) == null
+    }
+    then "a row with a name line short of its path is no row" {
+        let lines = row().split("\n")
+        let cut = lines.slice(0, lines.length - 1).concat(["name\tonly", "end"])
+        producers_read(here(), cut.join("\n")) == null
+    }
+    then "an empty row is no row" {
+        producers_read(here(), "") == null
+    }
+}

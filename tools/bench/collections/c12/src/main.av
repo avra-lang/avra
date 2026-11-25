@@ -1,0 +1,31 @@
+//! C12: the first index in `0..n` at or past an early hit, ten times,
+//! at n = 1M and n = 10M — constant time means the two cost the same.
+//! Today, two spellings: a loop with an early return (C12l), and the
+//! idiom bar's comprehension, since a range takes no methods (C12c).
+//! Target: `(0..n).find(it >= hit)`.
+use @bench.input.{SEED, draw, folded, report}
+use @std.time.{now_ns}
+
+fn looped(n: int, hit: int) -> int {
+    for i in 0..n {
+        if i >= hit { return i }
+    }
+    -1
+}
+
+fn comprehended(n: int, hit: int) -> int { [i for i in 0..n if i >= hit].first() ?? -1 }
+
+/// Ten searches with `find`, each hit a little later, reported as `row`.
+fn search_row(row: string, n: int, find: fn(int, int) -> int) {
+    let hit = 1000 + draw(SEED, 0) % 7
+    let t0 = now_ns()
+    mut h = 0
+    // LICENSED loops.push_loop: a timed loop folds, it builds no list
+    for r in 0..10 { h = folded(h, find(n, hit + r)) }
+    report(row, h, t0, now_ns())
+}
+
+search_row("C12l1", 1000000, looped)
+search_row("C12l10", 10000000, looped)
+search_row("C12c1", 1000000, comprehended)
+search_row("C12c10", 10000000, comprehended)
