@@ -2,6 +2,9 @@
 // it — through a slow link (slow_link.mjs: 120 ms round trips, 4 Mbit/s each way) in an engine
 // Playwright drives under a phone's profile — and its fetches counted. Each claim is a count, never
 // a stopwatch, and one failure exits 1:
+//   - the first paint is the server's: the board's elements stand in the document as it arrives,
+//     and every one of them still stands once the module has adopted the page — none drawn again;
+//   - the tasks are in that paint: listed before the page asks for /tasks at all;
 //   - every file the page fetches is asked for before any of them has arrived: the chain after the
 //     document is one deep, because the document names them all;
 //   - each is asked for once (a preload whose mode is not the fetch's is a second request);
@@ -55,7 +58,20 @@ async function loaded(context) {
   await page.goto(slow, { waitUntil: "commit" });
   await page.waitForFunction((t) => document.documentElement.dataset.avra === "ready" && document.getElementById("app")?.textContent.includes(t), title, { timeout: 60000 });
   await page.waitForTimeout(250);
-  const times = await page.evaluate(() => ({ ...globalThis.__painted, fcp: performance.getEntriesByType("paint").find((p) => p.name === "first-contentful-paint")?.startTime ?? null }));
+  const times = await page.evaluate(() => {
+    const seen = globalThis.__painted;
+    const asked = performance.getEntriesByType("resource").filter((r) => new URL(r.name).pathname === "/tasks").map((r) => r.startTime);
+    return {
+      drawn: seen.drawn,
+      ready: seen.ready ?? null,
+      listed: seen.listed,
+      served: seen.served.length,
+      kept: seen.served.filter((el) => el.isConnected && document.getElementById("app").contains(el)).length,
+      tasks_asked: asked.length ? Math.min(...asked) : null,
+      document_end: performance.getEntriesByType("navigation")[0]?.responseEnd ?? null,
+      fcp: performance.getEntriesByType("paint").find((p) => p.name === "first-contentful-paint")?.startTime ?? null,
+    };
+  });
   const carried = link.carried();
   await page.close();
   return { asked, arrived, carried, times };
@@ -63,19 +79,27 @@ async function loaded(context) {
 
 const context = await browser.newContext({ ...(playwright.devices[device] ?? {}) });
 await context.addInitScript((t) => {
-  const seen = (globalThis.__painted = { drawn: null, listed: null });
+  const seen = (globalThis.__painted = { drawn: null, listed: null, served: [] });
+  // Every element the document holds once it is parsed, before any module script runs: the server's.
+  document.addEventListener("readystatechange", () => {
+    if (document.readyState === "interactive") seen.served = [...(document.getElementById("app")?.querySelectorAll("*") ?? [])];
+  });
   const look = () => {
     const app = document.getElementById("app");
     if (seen.drawn === null && app?.firstElementChild) seen.drawn = performance.now();
     if (seen.listed === null && app?.textContent.includes(t)) seen.listed = performance.now();
   };
   new MutationObserver(look).observe(document, { subtree: true, childList: true, characterData: true });
+  new MutationObserver(() => { if (seen.ready === undefined && document.documentElement?.dataset.avra === "ready") seen.ready = performance.now(); }).observe(document, { subtree: true, attributes: true, attributeFilter: ["data-avra"] });
 }, title);
 const cold = await loaded(context);
 const warm = await loaded(context);
 await browser.close();
 link.close();
 
+claim(`the first paint is the server's: ${cold.times.served} elements stand in the document as it arrives`, cold.times.served > 0);
+claim(`none is drawn again when the module adopts the page: ${cold.times.kept} of ${cold.times.served} still stand`, cold.times.served > 0 && cold.times.kept === cold.times.served);
+claim("the tasks are in the first paint: listed before the page asks for /tasks", cold.times.listed !== null && (cold.times.tasks_asked === null || cold.times.listed <= cold.times.tasks_asked), `listed at ${cold.times.listed}, /tasks asked at ${cold.times.tasks_asked}`);
 const firstArrival = Math.min(...cold.arrived.values());
 const late = cold.asked.filter((a) => a.at > firstArrival).map((a) => a.path);
 claim(`every file the page fetches is asked for before any has arrived (${cold.asked.length} files, one deep after the document)`, cold.asked.length > 0 && late.length === 0, `asked only after another arrived: ${late.join(", ")}`);
@@ -87,5 +111,6 @@ const module = cold.asked.find((a) => a.path.endsWith(".wasm"))?.path ?? "(none)
 claim(`a reload carries ${warm.carried} octets down: the module ${module} is kept, not carried again`, warm.carried <= budget.warm, `more than the recorded ${budget.warm}`);
 
 const ms = (v) => (v === null || v === undefined ? "-" : `${Math.round(v)} ms`);
-console.log(`reported (${engine}, ${device}, 120 ms / 4 Mbit/s): cold first paint ${ms(cold.times.fcp ?? cold.times.drawn)}, listed ${ms(cold.times.listed)}; warm first paint ${ms(warm.times.fcp ?? warm.times.drawn)}, listed ${ms(warm.times.listed)}`);
+const after = (t) => (t.fcp === null || t.document_end === null ? "-" : `${Math.round(t.fcp - t.document_end)} ms`);
+console.log(`reported (${engine}, ${device}, 120 ms / 4 Mbit/s): cold first paint ${ms(cold.times.fcp ?? cold.times.drawn)} (${after(cold.times)} after the document's last byte), listed ${ms(cold.times.listed)}, the module standing (a tap handled from then) ${ms(cold.times.ready)}; warm first paint ${ms(warm.times.fcp ?? warm.times.drawn)} (${after(warm.times)} after), listed ${ms(warm.times.listed)}, standing ${ms(warm.times.ready)}`);
 process.exit(failed === 0 ? 0 : 1);
