@@ -26,6 +26,7 @@ use @std.io.{
     read_text,
     remove,
     stamp,
+    truncate_to,
     write_text,
 }
 use @std.meta.{derive}
@@ -753,6 +754,9 @@ once fn share_read() -> Cell<bool> { Cell.new(false) }
 /// Whether this process has said it waits for a save.
 once fn wait_said() -> Cell<bool> { Cell.new(false) }
 
+/// Whether `r` holds.
+fn is_ok(r: Result<string, IoError>) -> bool { match r { .Ok(_) -> true, .Err(_) -> false } }
+
 /// Waits out a save of the store at `directory` a process left behind is still writing, so what
 /// the store is read as holds everything the process before it learned; a wait is said, once a
 /// process. A save that never finished is said by the first process to find it so, once.
@@ -769,11 +773,10 @@ fn saves_awaited(directory: string) {
         let _ = lock.awaited() catch 0
     }
     // LICENSED input.store_io: the store's own files, never an input of what is answered
-    let unfinished = read_text("${directory}/${UNFINISHED_FILE}") catch ""
-    if !unfinished.is_empty() {
-        let _ = remove("${directory}/${UNFINISHED_FILE}")
-        eprintln(unfinished)
-    }
+    // its first line: what follows it is the room the record took. SAID ONCE: every process that
+    // opens the store at once may read it, and the one whose removal of it holds says it
+    let unfinished = (read_text("${directory}/${UNFINISHED_FILE}") catch "").split("\n").first() ?? ""
+    if !unfinished.is_empty() && is_ok(remove("${directory}/${UNFINISHED_FILE}")) { eprintln(unfinished) }
     let _ = lock.closed() catch 0
 }
 
@@ -790,8 +793,17 @@ export fn save_held(directory: string) -> AppendFile? {
     null
 }
 
-/// The save of the store at `directory` left to an heir, unfinished until `save_finished`.
-export fn save_left(directory: string) { let _ = write_text("${directory}/${UNFINISHED_FILE}", save_unfinished(directory)) catch "" }
+/// The save of the store at `directory` left to an heir, unfinished until `save_finished`. ITS ROOM
+/// IS TAKEN NOW: the record is written padded to `UNFINISHED_ROOM`, while the disk may still hold
+/// it, so a save that fails because the disk is full can say why in the room it took.
+export fn save_left(directory: string) {
+    let said = "${save_unfinished(directory)}\n"
+    let padded = said + [" " for _i in 0..max_of(UNFINISHED_ROOM - said.length, 0)].join("")
+    let _ = write_text("${directory}/${UNFINISHED_FILE}", padded) catch ""
+}
+
+/// The room an unfinished save's record takes up front: more than any cause a failed save says.
+const UNFINISHED_ROOM: int = 4096
 
 /// The save of the store at `directory` finished: nothing is left to say of it, or `failed`, why it
 /// kept nothing, is.
@@ -800,7 +812,14 @@ export fn save_finished(directory: string, failed: string?) {
         let _ = remove("${directory}/${UNFINISHED_FILE}")
         return
     }
-    let _ = write_text("${directory}/${UNFINISHED_FILE}", save_failed(directory, why)) catch ""
+    // said IN PLACE, in the room `save_left` took: emptied, then written, so a full disk — the
+    // likeliest reason a save fails — holds the reason it failed, where a new file wouldn't fit
+    let record = "${directory}/${UNFINISHED_FILE}"
+    let said = "${save_failed(directory, why)}\n"
+    let _ = truncate_to(record, 0) catch ""
+    let into? = match opened_for_append(record) { .Ok(f) -> f, .Err(_) -> null } else { return }
+    let _ = into.write(said.bytes()) catch 0
+    let _ = into.closed() catch 0
 }
 
 // ── The voices ──

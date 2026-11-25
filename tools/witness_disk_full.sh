@@ -24,6 +24,16 @@ fi
 
 w=$(mktemp -d)
 fail() { echo "witness_disk_full: $*"; for m in "$w/disk" "$w/store/.avra-cache/tapes"; do umount "$m" 2>/dev/null; done; find "$w" -delete 2>/dev/null; exit 1; }
+# A STORE'S HEIR SAVES AFTER ITS BUILD ANSWERS, so a small disk is let go once the heir has: `$1`
+# unmounted within ten seconds, or said — a heir that holds a store past that holds it for good
+released() {
+    tries=0
+    until umount "$1" 2>/dev/null; do
+        tries=$((tries + 1))
+        [ $tries -lt 50 ] || fail "$2 still held 10 s after the last build: a store's heir outlived it"
+        sleep 0.2
+    done
+}
 package() { mkdir -p "$1/src" && printf '[package]\nname = "disk-full"\nversion = "0.1.0"\n' >"$1/avra.toml" && printf 'println("hi")\n' >"$1/src/main.av"; }
 # `$1` the build's words; `$2` what they must name; `$3` the case
 said() { grep -q "$2" "$1" && grep -q 'bytes free' "$1" || { cat "$1"; fail "$3: the build did not say the disk is full and where"; }; }
@@ -37,13 +47,13 @@ squeezed() {
     dd if=/dev/zero of="$w/disk/fill" bs=1k count=$((avail - $1)) 2>/dev/null
     AVRA_CACHE_DIR="$w/disk/machine" "$avra" build "$w/disk/p" >"$w/out" 2>&1 && fail "$2: the build passed on a full disk"
 }
-squeezed 40 "the object"
+squeezed 16 "the object"
 said "$w/out" '\.o needed' "the object"
 echo "witness_disk_full: an object that does not fit — named, its bytes and the disk's free bytes said"
 squeezed 400 "the link"
 said "$w/out" 'this link writes' "the link"
 echo "witness_disk_full: a link that does not fit — named, with the disk's free bytes"
-umount "$w/disk"
+released "$w/disk" "the small disk"
 
 # the store: only its directory small, saved by the build (`AVRA_STORE_KEPT_HERE`) and by its heir
 package "$w/store"
@@ -59,5 +69,5 @@ until [ -s "$w/store/.avra-cache/tapes/saving.unfinished" ] && ! grep -q 'did no
 env -u AVRA_STORE_KEPT_HERE AVRA_CACHE_DIR="$w/machine" "$avra" build "$w/store" >"$w/out" 2>&1
 said "$w/out" "save of .* failed: .*No space left" "the store saved by the heir"
 echo "witness_disk_full: a store the heir cannot save — said by the next build, with the cause and the disk's free bytes"
-umount "$w/store/.avra-cache/tapes"
+released "$w/store/.avra-cache/tapes" "the small store"
 find "$w" -delete

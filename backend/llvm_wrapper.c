@@ -20,6 +20,7 @@
 #include <string.h>
 void avra_trap(const char* msg);
 #include <stdio.h>
+#include <stdarg.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <pthread.h>
@@ -1295,6 +1296,22 @@ int64_t avra_llvm_print_module_to_file(LLVMModuleRef m, const char* path) {
     return 0;
 }
 
+// ONE LINE, ONE WRITE: objects are emitted side by side, and stderr's formatting may write a line in
+// pieces, which another emitter's words then split — so each line is formatted whole, then written
+// once (whole, as a pipe takes any write under PIPE_BUF), cut to fit with its newline kept.
+static void said_line(const char* fmt, ...) {
+    char said[1024];
+    va_list args;
+    va_start(args, fmt);
+    int len = vsnprintf(said, sizeof said, fmt, args);
+    va_end(args);
+    if (len <= 0) return;
+    size_t whole = (size_t)len < sizeof said ? (size_t)len : sizeof said - 1;
+    said[whole - 1] = '\n';
+    ssize_t wrote = write(2, said, whole);
+    (void)wrote;
+}
+
 // A FILE WRITTEN WHOLE, OR WHY NOT IN WORDS: `bytes` written to `tmp` and
 // flushed; a disk that fills mid-write is named — the file it was writing,
 // how many of its bytes did not reach it, and what the disk had free —
@@ -1302,7 +1319,7 @@ int64_t avra_llvm_print_module_to_file(LLVMModuleRef m, const char* path) {
 static int file_put(const char* tmp, const char* path, const char* bytes, size_t n) {
     int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
     if (fd < 0) {
-        fprintf(stderr, "avra: %s couldn't be written — %s\n", path, strerror(errno));
+        said_line("avra: %s couldn't be written — %s\n", path, strerror(errno));
         return 1;
     }
     size_t done = 0;
@@ -1322,10 +1339,10 @@ static int file_put(const char* tmp, const char* path, const char* bytes, size_t
     if (err == ENOSPC || err == EDQUOT) {
         struct statvfs fs;
         long long left = statvfs(tmp, &fs) == 0 ? (long long)fs.f_bavail * (long long)fs.f_frsize : -1;
-        fprintf(stderr, "avra: the disk is full: %s needed %zu bytes and %zu of them could not be written (%lld bytes free there)\n",
+        said_line("avra: the disk is full: %s needed %zu bytes and %zu of them could not be written (%lld bytes free there)\n",
             path, n, n - done, left);
     } else {
-        fprintf(stderr, "avra: %s couldn't be written — %s\n", path, strerror(err));
+        said_line("avra: %s couldn't be written — %s\n", path, strerror(err));
     }
     remove(tmp);
     return 1;
