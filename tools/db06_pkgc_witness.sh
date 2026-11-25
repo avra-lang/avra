@@ -5,7 +5,7 @@
 # the builder. This witness answers the PACKAGE half by measurement, in three parts.
 #
 # 1. THE INVENTORY. A package's C reaches a program only through its manifest's
-#    `[link] objects` / `[link] wasm_objects` rows — never its `.c` files, which the toolchain's
+#    `[link] objects` / `[link.objects_for]` rows — never its `.c` files, which the toolchain's
 #    own build reads. Printed per package, with the path each row resolves to in the tree.
 #
 # 2. WHAT ALREADY COVERS IT, ON THE NATIVE PATH. `linked_files` is the runtime archive plus
@@ -55,14 +55,14 @@ for m in packages/*/avra.toml; do
     v=$(find "$p" -name '*.c' -path '*/vendor/*' | wc -l | tr -d ' ')
     [ "$n" = 0 ] && [ "$v" = 0 ] && continue
     row=$(sh tools/manifest_objects.sh --rows objects "$m" | head -1)
-    wrow=$(sh tools/manifest_objects.sh --rows wasm_objects "$m" | head -1)
+    wrow=$(sh tools/manifest_objects.sh --platform wasm32 "${p#packages/}" | head -1)
     if [ -z "$row" ]; then
         printf '%-16s %-28s %s\n' "${p#packages/}" "- none -" "no program links this C (${n} src, ${v} vendor)"
         continue
     fi
     linked=$((linked + 1))
     printf '%-16s %-28s %s\n' "${p#packages/}" "$row" "$( [ -f "$p/$row" ] && echo "built" || echo "not built here" )"
-    [ -n "$wrow" ] && printf '%-16s %-28s %s\n' "" "$wrow" "$( [ -f "$p/$wrow" ] && echo "built" || echo "not built here" )"
+    [ -n "$wrow" ] && printf '%-16s %-28s %s\n' "" "$wrow" "$( [ -f "$wrow" ] && echo "built" || echo "not built here" )"
 done
 echo "packages that link objects into a program: $linked"
 

@@ -40,8 +40,14 @@ export type ToolRow = { name: string, from: Provenance, var: string?, default: s
 /// `budgets` is what a settlement may spend — `[lifted]`'s `steps` in
 /// instructions and `memory` in MiB of the compiler's heap, resolved
 /// to the measured defaults where the manifest writes none.
+/// The objects a package carries on one platform where they differ from its `objects`: the
+/// platform's object directory (`wasm32`, an Apple SDK's name), and its set, spelled as `objects`
+/// is — none where the package's C has no build there.
 @codec
-export type Manifest = { name: string, version: string, bin: string?, lib: string?, deps: List<Dependency>, deps_at: Span?, excludes: List<string>, objects: List<string>, wasm_objects: List<string>, search: List<string>, libs: List<string>, shared: string = "", dynamic_symbols: bool = false, raw: List<string>, tools: List<ToolRow> = [], budgets: Budgets, dev_server: string? = null }
+export type PlatformObjects = { dir: string, objects: List<string> }
+
+@codec
+export type Manifest = { name: string, version: string, bin: string?, lib: string?, deps: List<Dependency>, deps_at: Span?, excludes: List<string>, objects: List<string>, objects_for: List<PlatformObjects> = [], search: List<string>, libs: List<string>, shared: string = "", dynamic_symbols: bool = false, raw: List<string>, tools: List<ToolRow> = [], budgets: Budgets, dev_server: string? = null }
 
 /// A reader over one document: the source for positions, the
 /// document, and what it has said so far.
@@ -92,7 +98,6 @@ export fn manifest_read(src: SourceFile) -> ManifestRead {
                 deps_at: null,
                 excludes: [],
                 objects: [],
-                wasm_objects: [],
                 search: [],
                 libs: [],
                 raw: [],
@@ -116,7 +121,7 @@ export fn manifest_read(src: SourceFile) -> ManifestRead {
         dev_server: r.dev_server(),
         excludes: r.excludes(),
         objects: r.linked("objects"),
-        wasm_objects: r.linked("wasm_objects"),
+        objects_for: r.objects_for(),
         search: r.linked("search"),
         libs: r.linked("libs"),
         shared: r.link_name("shared"),
@@ -171,6 +176,7 @@ fn known_section(name: string) -> bool {
         name == "build" ||
         name == "link" ||
         name == "link.raw" ||
+        name == "link.objects_for" ||
         name == "lifted" ||
         name == "dev" ||
         name.starts_with("profile.") ||
@@ -203,8 +209,7 @@ fn known_key(section: string, key: string) -> bool {
     }
     if section == "bin" || section == "lib" { return key == "path" || key == "name" }
     if section == "link" {
-        return ["objects", "wasm_objects", "search", "libs", "shared", "dynamic_symbols"]
-            .contains(key)
+        return ["objects", "search", "libs", "shared", "dynamic_symbols"].contains(key)
     }
     if section == "link.raw" { return key == "flags" }
     if section == "lifted" { return key == "steps" || key == "memory" }
@@ -226,7 +231,6 @@ fn known_key(section: string, key: string) -> bool {
 fn link_shape(key: string) -> string {
     match key {
         "objects" -> "object files, by path from the package root",
-        "wasm_objects" -> "object files a wasm target links, by the same paths",
         "search" -> "directories",
         rest -> "library names",
     }
@@ -235,7 +239,6 @@ fn link_shape(key: string) -> string {
 fn link_help(key: string) -> string {
     match key {
         "objects" -> "write the path alone",
-        "wasm_objects" -> "write the path alone, as `objects`",
         "search" -> "write the directory alone — the `-L` is ours to add",
         rest -> "write the name alone — `m`, not `-lm`",
     }
@@ -590,6 +593,12 @@ impl Reader {
                 ""
             },
         }
+    }
+
+    /// `[link.objects_for]`: each platform whose set differs from `objects`, by its object
+    /// directory, each entry spelled as `objects` spells one.
+    fn objects_for() -> List<PlatformObjects> {
+        [PlatformObjects { dir: e.key, objects: self.words_of("link.objects_for", e.key) } for e in self.doc.entries_of("link.objects_for")]
     }
 
     fn words_of(section: string, key: string) -> List<string> {

@@ -2,7 +2,7 @@
 # tool-witness: run by the gate's witness-b slice
 # A PAGE'S WASM CLOSURE REACHES NO PACKAGE C THAT HAS NO WASM BODY, read on a host with no wasm
 # toolchain and nothing linked: the page's IR (`avra emit`) declares each symbol its reached fns
-# call, and no package whose manifest names objects but no `wasm_objects` may define one of them —
+# call, and no package whose manifest carries no objects on wasm32 may define one of them —
 # the wasm build's own refusal (backend/llvm.av `wasm_missing`), which a gate with no wasm run never
 # reaches.
 #   ui-board                   the board's page: reaches none
@@ -20,7 +20,7 @@ export LC_ALL=C
 unbodied() {
     for m in "$tree"/packages/*/avra.toml; do
         pkg=$(basename "$(dirname "$m")")
-        [ -z "$(sh "$here/manifest_objects.sh" --wasm "$pkg")" ] || continue
+        [ -z "$(sh "$here/manifest_objects.sh" --platform wasm32 "$pkg")" ] || continue
         for o in $(sh "$here/manifest_objects.sh" "$pkg"); do
             [ -f "$tree/$o" ] || (cd "$tree" && make -s "$o" > /dev/null 2>&1) || {
                 echo "page-closure: $o did not build" >&2
