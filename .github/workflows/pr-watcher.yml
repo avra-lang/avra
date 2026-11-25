@@ -1,32 +1,22 @@
 # THE DETERMINISTIC WATCHER. No LLM, one pass every five minutes — GitHub's
 # floor for a schedule, best-effort — and after every `checks` or `auto-merge`
-# run and every push to `main`: a PR whose `test` failed is told the exact failing
-# `job — line` and has its failed jobs re-run once; a green, mergeable PR
-# is enqueued, but only while the queue holds fewer than `AVRA_QUEUE_MAX`
-# entries (default 6), since N full trains in flight saturate the runners
-# and the queue then lands slower with more entries; a green DRAFT is named
-# and taken ready where auto-merge asks for it; a queued entry is put back
-# only when NOTHING is moving it — a live train is never touched (a train
-# takes ~45 minutes, and churning one cancels it and restarts forever); a
-# failed train is named on the PR. The decision is a pure function proved
-# against fixtures (tools/pr_watcher.py --self-test), so this job is the
-# same answer every pass. Every comment carries its own dedup marker, so a
-# stale state file can never re-post one.
+# run and every push to `main`. There is NO merge queue: `main` requires the
+# `test` check AND that a branch be up to date with it, so the watcher's job is
+# to keep every open PR able to merge itself:
+#   a PR whose `test` failed is told the exact failing `job — line` and has its
+#   failed jobs re-run once; a green, mergeable PR has auto-merge ARMED; a
+#   green PR behind `main` has its branch REFRESHED (`gh pr update-branch`) so
+#   "up to date" is met without a human; a conflicted PR is told the rebase its
+#   owner owes; a draft is named; a run whose PR closed is cancelled. The
+#   decision is a pure function proved against fixtures
+#   (tools/pr_watcher.py --self-test), so this job is the same answer every
+#   pass.
 #
-# THE CAP IS TUNED TO THE TRAIN'S COST, NOT CHOSEN ONCE. It was 3 when a
-# train paid a cold compiler rebuild in `prepare` (~7-16 min); a release
-# compiler made `prepare` ~76 s, so 6 is the default now. The merge-queue
-# ruleset allows `max_entries_to_build: 10` concurrent `merge_group` runs
-# (GitHub's range 1-100), so 6 stays under the build concurrency; re-tune
-# from `prepare` and train-duration data, not a guess.
-#
-# A token a workflow holds with the repository's GITHUB_TOKEN does not
-# start a new workflow for the events it causes; the merge queue's
-# `merge_group` run is one of them. So when the repo has a PAT or app
-# token it is used (`AVRA_QUEUE_TOKEN`), and the GITHUB_TOKEN is the
-# fallback that at least records the entry (`make ci` and the queue
-# keeper still see it). Set AVRA_QUEUE_TOKEN to make the enqueue start
-# its own train.
+# A token a workflow holds with the repository's GITHUB_TOKEN does not start a
+# new workflow for the events it causes; arming auto-merge is cheap either
+# way, but a merge by the repository's GITHUB_TOKEN does not run the `push`
+# runs that publish the compiler. So when the repo has a PAT or app token it
+# is used (`AVRA_QUEUE_TOKEN`), and the GITHUB_TOKEN is the fallback.
 name: pr-watcher
 
 on:
@@ -58,26 +48,12 @@ jobs:
         with: { sparse-checkout: tools/pr_watcher.py }
       - name: self-test
         run: python3 tools/pr_watcher.py --self-test
-      # THE STATE IS RESTORED AND SAVED AS TWO EXPLICIT STEPS, the pattern
-      # checks.yml proves. The combined action's post-step save has been
-      # denied ("token has no writable scopes") on this workflow, so the
-      # state froze and every pass re-commented; the save runs `always()` so
-      # a failed pass still records what it did. The comments carry their own
-      # dedup markers too, so correctness never rests on this cache.
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache@v4
         with:
           path: ~/.avra-pr-watcher
           key: pr-watcher-${{ github.run_id }}
           restore-keys: pr-watcher-
-      # The cap comes from the code default (tools/pr_watcher.py, QUEUE_MAX);
-      # set AVRA_QUEUE_MAX here only to measure a different value.
       - env:
           GH_TOKEN: ${{ secrets.AVRA_QUEUE_TOKEN || secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
         run: python3 tools/pr_watcher.py
-      - if: always()
-        name: save state
-        uses: actions/cache/save@v4
-        with:
-          path: ~/.avra-pr-watcher
-          key: pr-watcher-${{ github.run_id }}

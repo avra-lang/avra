@@ -1,16 +1,16 @@
 #!/bin/sh
-# THE CHANGED-FILE FMT CHECK — ONE definition, called by the train's own fmt
+# THE CHANGED-FILE FMT CHECK — ONE definition, called by the gate's own fmt
 # step (.github/workflows/checks.yml) and by `tools/work land`'s local
 # preflight, so the two can never drift into two instruments.
 #
-#   sh tools/fmt_changed.sh <base> <head>     # the caller has refs (the train)
+#   sh tools/fmt_changed.sh <base> <head>     # the caller has refs (the gate)
 #   sh tools/fmt_changed.sh --files <files…>  # the caller already diffed
 #
 # Every named `.av` file is run through `fmt --check`. The compiler is
 # `${AVRA:-build/avra}` — the tree under test's OWN build. THE BRANCH'S
 # COMPILER, NEVER A STALE STANDING ONE: a binary that predates the syntax a
 # branch added REFUSES that branch's files and cannot report the canonical
-# diff, so it would certify a file the train then refuses. The train has its
+# diff, so it would certify a file the gate then refuses. The gate has its
 # own build; a lane's Sprite holds a branch build (`tools/work run`), and its
 # synced tree carries no `.git`, which is why `--files` exists. Nothing
 # here polls `main`: the refs are named, never watched.
