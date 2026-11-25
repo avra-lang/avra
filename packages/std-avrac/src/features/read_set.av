@@ -1,8 +1,9 @@
 //! THE READ SET — which `state` places an expression reads, the one
 //! analysis invalidation and lowering share. A place is a `state` statement
 //! of a body, a top-level `state` declaration, or `Unknown`: whatever the
-//! analysis cannot name (an applied fn value, a dispatched method, an
-//! `extern` row, a callee's own local state) and so must assume. From it the compiler
+//! analysis cannot name (an applied fn value, a method or a verb no row or
+//! body speaks for, an `extern` row, a callee's own local state) and so must
+//! assume. From it the compiler
 //! picks a site's mechanism instead of one runtime diff for everyone:
 //! a subtree that reads no state AND no open input (a parameter, a
 //! receiver, a capture, a binding from outside the site) is CONSTANT,
@@ -47,6 +48,9 @@ export enum StatePlace {
     Kept(file: SourceFileAddress, name: string)
     /// a `state` statement of the body being read, which that body holds the cell of
     Own(stmt: StmtId)
+    /// a cell reached through the parameter or receiver `name`: one the caller hands, which the
+    /// identity of what it hands does not cover
+    Through(name: string)
     /// a place the analysis cannot name: assume any
     Unknown
 }
@@ -60,7 +64,7 @@ export fn place_key(p: StatePlace) -> int {
     match p {
         .Local(f, s) -> if f.index + 1 < max_files && s.index < max_stmts { (f.index + 1) * max_stmts + s.index } else { 0 - 1 },
         .Global(d) -> if d.index + 2 < max_decls { 0 - (d.index + 2) } else { 0 - 1 },
-        .Kept(_, _) or .Own(_) or .Unknown -> 0 - 1,
+        .Kept(_, _) or .Own(_) or .Through(_) or .Unknown -> 0 - 1,
     }
 }
 
@@ -111,6 +115,14 @@ export trait ReadFacts {
     /// The places a call's callee reaches; `Unknown` for a callee no
     /// declaration names.
     fn callee_places(call: ExprId) -> List<StatePlace>
+
+    /// The places a method call reaches, its verb's or its method's own:
+    /// `Unknown` where no row or body says.
+    fn method_places(call: ExprId) -> List<StatePlace>
+
+    /// The bodies of the lambdas a call applies where it stands — handed to
+    /// a verb whose row says it applies them — each read as the caller's own.
+    fn applied_bodies(call: ExprId) -> List<ExprId>
 }
 
 /// A body's names as the analysis resolved them, each callee answered by
@@ -140,6 +152,10 @@ impl ReadFacts for NamedReads {
         let d? = bound_decl_of(self.names, call) else { return [StatePlace.Unknown] }
         [place_at_key(k) for k in (self.reach)(d)]
     }
+
+    fn method_places(call: ExprId) -> List<StatePlace> { [StatePlace.Unknown] }
+
+    fn applied_bodies(call: ExprId) -> List<ExprId> { [] }
 }
 
 /// The analysis's names for a body, each callee answered by `reach`.
@@ -182,21 +198,23 @@ fn reads_of(f: dyn ReadFacts, root: ExprId) -> List<StatePlace> {
 }
 
 /// The places the calls in the subtree reach: a callee this compile can
-/// name answers its own transitive places, and a call whose body it cannot
-/// see (a fn value applied, a method dispatched on a runtime value, an
-/// `extern` row) answers `Unknown`. A CLOSURE is a frame of its own: its
-/// captures are the read, so its body is not walked, exactly as `reads_of`
-/// stops there.
+/// name answers its own transitive places, a method or a verb what its row
+/// or its body says, and a call whose body it cannot see (a fn value
+/// applied, an `extern` row) answers `Unknown`. A CLOSURE is a frame of its
+/// own: its captures are the read, so its body is not walked, exactly as
+/// `reads_of` stops there — but for a lambda a verb applies where it stands,
+/// whose body is read as the caller's.
 fn calls_of(f: dyn ReadFacts, root: ExprId) -> List<StatePlace> {
     let store = f.tree()
     if store.expr_is_closure(root) { return [] }
     let called = if store.expr_is_call(root) { f.callee_places(root) } else { [] }
-    let method = if applies_method(store, root) { [StatePlace.Unknown] } else { [] }
-    called.concat(method).concat(flatten([calls_of(f, k) for k in store.ran_with(root)]))
+    let method = if applies_method(store, root) { f.method_places(root) } else { [] }
+    let applied = flatten([site_places_in(f, b) for b in f.applied_bodies(root)])
+    called.concat(method).concat(applied).concat(flatten([calls_of(f, k) for k in store.ran_with(root)]))
 }
 
-/// Whether the expression APPLIES a method on a runtime value — the
-/// implementations are chosen at runtime, so a visitor cannot see one.
+/// Whether the expression APPLIES a method or a verb: its places are what
+/// the facts answer for it (`method_places`).
 fn applies_method(store: SyntaxArena, e: ExprId) -> bool {
     match store.expr(e) { .MethodCall(_, _, _) -> true, rest -> false }
 }
@@ -211,6 +229,7 @@ export fn same_state_place(a: StatePlace, b: StatePlace) -> bool {
         .Global(d) -> match b { .Global(g) -> d == g, rest -> false },
         .Kept(f, n) -> match b { .Kept(g, m) -> n == m && f.same_as(g), rest -> false },
         .Own(s) -> match b { .Own(t) -> s == t, rest -> false },
+        .Through(n) -> match b { .Through(m) -> n == m, rest -> false },
         .Unknown -> b is .Unknown,
     }
 }
@@ -284,10 +303,12 @@ fn structural_calls(
     let store = f.tree()
     if skip.contains(root) || covered(store, root) || store.expr_is_closure(root) { return [] }
     let called = if store.expr_is_call(root) { f.callee_places(root) } else { [] }
-    let method = if applies_method(store, root) { [StatePlace.Unknown] } else { [] }
+    let method = if applies_method(store, root) { f.method_places(root) } else { [] }
     let inner = skip.concat(sited_heads(store, root, answered))
+    let applied = flatten([structural_places_in(f, b, answered) for b in f.applied_bodies(root)])
     called
         .concat(method)
+        .concat(applied)
         .concat(flatten([structural_calls(f, k, inner, answered) for k in store.ran_with(root)]))
 }
 
