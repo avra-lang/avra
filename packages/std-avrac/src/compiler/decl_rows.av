@@ -85,8 +85,16 @@ impl Workspace {
     /// the file is made whole; else none.
     fn refs_in(path: string, name: string, standing: List<Decl>) -> List<string>? {
         let kept = self.line_refs_of(path)
-        if !kept.kept { return self.rows_in(path, standing) }
-        kept.by.get(name) ?? []
+        if !kept.kept {
+            let rows? = self.rows_in(path, standing) else { return null }
+            // PROBE
+            if traced() { qtrace("Q\tprobe\trefs_rows\t${name}\t${path}\t${rows.join(" ")}\n") }
+            return rows
+        }
+        let out = kept.by.get(name) ?? []
+        // PROBE
+        if traced() { qtrace("Q\tprobe\trefs_kept\t${name}\t${path}\t${out.join(" ")}\n") }
+        out
     }
 
     /// A file's kept declaration wires by name, off its kept lines.

@@ -907,12 +907,29 @@ impl Db {
 
     fn leaf_holds(l: Leaf) -> bool {
         match l {
-            .Rows(name, digest) -> self.rows_digest(name) == digest,
+            .Rows(name, digest) -> {
+                let now = self.rows_digest(name)
+                // PROBE
+                if now != digest && self.traced_now() { avra_qtrace("Q\tprobe\trows_moved\t${name}\t${digest}\t${now}\n") }
+                now == digest
+            },
             .Input(name, spelled, digest) -> {
-                let now? = self.input_digest(name, spelled) else { return self.unstaged(name) }
+                let now? = self.input_digest(name, spelled) else {
+                    // PROBE
+                    if self.traced_now() { avra_qtrace("Q\tprobe\tinput_unknown\t${name}\t${spelled}\t${digest}\n") }
+                    return self.unstaged(name)
+                }
+                // PROBE
+                if now != digest && self.traced_now() { avra_qtrace("Q\tprobe\tinput_moved\t${name}\t${spelled}\t${digest}\t${now}\n") }
                 now == digest
             },
         }
+    }
+
+    /// PROBE: whether this Db's kernel traces.
+    fn traced_now() -> bool {
+        let k? = self.kernel.get() else { return false }
+        k.tracing.get()
     }
 
     /// The digest of the read `Leaf.id` names, as it stands here; absent when this Db cannot
@@ -1670,6 +1687,10 @@ impl AnswersUnder<V> {
     /// An open call computed: `body` run, its answer settled under the
     /// reads the kernel recorded.
     fn ran(db: Db, arg: int, body: fn() -> V, again: fn() -> V, digest: fn(V) -> int) -> V {
+        // PROBE
+        if self.memo.kernel.tracing.get() {
+            avra_qtrace("Q\tprobe\tplain_ran\t${self.memo.kernel.family_name(self.memo.family)}\n")
+        }
         self.run(db, arg, body, again, digest).value
     }
 
@@ -1688,15 +1709,33 @@ impl AnswersUnder<V> {
         digest: fn(V) -> int,
         record: KeptRecord<V>,
     ) -> V {
-        let query? = record.query else { return self.ran(db, arg, body, again, digest) }
-        let spelled? = named else { return self.ran(db, arg, body, again, digest) }
+        let query? = record.query else {
+            // PROBE
+            if self.memo.kernel.tracing.get() {
+                avra_qtrace("Q\tprobe\tunnamed_record\t${self.memo.kernel.family_name(self.memo.family)}\n")
+            }
+            return self.ran(db, arg, body, again, digest)
+        }
+        let spelled? = named else {
+            // PROBE
+            if self.memo.kernel.tracing.get() {
+                avra_qtrace("Q\tprobe\tunnamed_call\t${self.memo.kernel.family_name(self.memo.family)}\n")
+            }
+            return self.ran(db, arg, body, again, digest)
+        }
         if self.answered(arg) { return self.ran(db, arg, body, again, digest) }
         let kept? = self.restored(db, query, record, spelled) else {
+            // PROBE
+            if self.memo.kernel.tracing.get() { avra_qtrace("Q\tprobe\tno_record\t${query}\n") }
             return self.made_lasting(db, arg, query, spelled, body, again, digest, record)
         }
         if !db.leaves_hold(kept.leaves) {
+            // PROBE
+            if self.memo.kernel.tracing.get() { avra_qtrace("Q\tprobe\tleaves_moved\t${query}\n") }
             return self.made_lasting(db, arg, query, spelled, body, again, digest, record)
         }
+        // PROBE
+        if self.memo.kernel.tracing.get() { avra_qtrace("Q\tprobe\tstood\t${query}\n") }
         self.again.keep(arg, again)
         db.read_leaves(kept.leaves)
         db.noted_numbers(edge_of(self.memo.query_key(arg)), kept.leaves)
@@ -1722,6 +1761,9 @@ impl AnswersUnder<V> {
     ) -> V {
         let done = self.run(db, arg, body, again, digest)
         let leaves = db.leaves_unheard(edge_of(self.memo.query_key(arg)))
+        if self.memo.kernel.tracing.get() {
+            avra_qtrace("Q\tprobe\tmade\t${query}\twrote ${done.wrote}\tleaves ${leaves == null}\n")
+        }
         if !done.wrote && leaves != null {
             if db.engine().tracing.get() { db.in_process_reads(query, leaves!) }
             let places = db.placed_leaves(leaves!)
@@ -1750,10 +1792,16 @@ impl AnswersUnder<V> {
     /// back is recomputed, never guessed at.
     fn restored(db: Db, query: string, record: KeptRecord<V>, spelled: string) -> Kept<V>? {
         let answer = db.durable.answer
-        let bytes? = answer(query, spelled_hash(query, db.saved_spelling(spelled))) else { return null }
+        let bytes? = answer(query, spelled_hash(query, db.saved_spelling(spelled))) else {
+            if self.memo.kernel.tracing.get() { avra_qtrace("Q\tprobe\tno_bytes\t${query}\n") }
+            return null
+        }
         match decoded_with(bytes, (r: Reader) -> proved(db, r, spelled, record.read)) {
             .Ok(value) -> value,
-            .Err(_) -> null,
+            .Err(fault) -> {
+                if self.memo.kernel.tracing.get() { avra_qtrace("Q\tprobe\tbad_record\t${query}\t${fault_word(fault)}\n") }
+                null
+            },
         }
     }
 
@@ -1823,4 +1871,19 @@ fn given_after_read(id: int) -> string {
 
 fn closed_db(id: int) -> string {
     "relation rows reached through Db ${id} after it closed — a closed Db's rows are gone; open a new Db"
+}
+
+/// PROBE: a codec fault's name.
+fn fault_word(f: CodecFault) -> string {
+    match f {
+        .Truncated -> "truncated"
+        .Overlong -> "overlong"
+        .NotFlag -> "notflag"
+        .NotText -> "nottext"
+        .Trailing -> "trailing"
+        .NotVariant -> "notvariant"
+        .OtherArguments -> "otherargs"
+        .OtherShape -> "othershape"
+        .Unresolved -> "unresolved"
+    }
 }
