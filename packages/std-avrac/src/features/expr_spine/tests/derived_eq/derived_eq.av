@@ -1,0 +1,45 @@
+// proves: `==` is the derived equality, by the type all the way down — a record of several fields,
+// flat or boxed; a record holding a list, a record and a nullable; a list of records and a list of
+// lists; an enum by its tag and then the payloads of that tag's variant, a value enum's word read by
+// its type (text by its content, not its address); a nullable record against a present one and
+// against absence. A value the binary laid out and one built at run time compare by content alike,
+// and `contains` and `index_of` scan by the same equality.
+type Pair = { a: int, b: int }
+type Named = { name: string, at: int }
+type Deep = { tags: List<string>, inner: Named, maybe: int? }
+enum Shape {
+    Dot
+    Line(len: int)
+    Label(text: string)
+    Box(w: int, h: int, note: string)
+}
+enum Small {
+    None
+    Word(text: string)
+    Num(n: int)
+}
+
+fn named(n: string, at: int) -> Named { Named { name: n, at: at } }
+fn deep(t: string, n: Named) -> Deep { Deep { tags: ["a", t], inner: n, maybe: null } }
+fn word(s: string) -> Small { Small.Word(s) }
+fn boxed(n: string) -> Shape { Shape.Box(1, 2, n) }
+
+let x = "x"
+let p1 = Pair { a: 1, b: 2 }
+let p3 = Pair { a: 1, b: 3 }
+let n1 = Named { name: "x", at: 1 }
+let d1 = Deep { tags: ["a", "b"], inner: n1, maybe: null }
+let d2 = Deep { tags: ["a", "b"], inner: Named { name: "x", at: 1 }, maybe: null }
+let d3 = Deep { tags: ["a", "b"], inner: Named { name: "x", at: 1 }, maybe: 4 }
+let built = deep("b", named(x, 1))
+let s1 = Shape.Label("hi")
+let s2 = Shape.Label("h" + "i")
+let s3 = Shape.Box(1, 2, "n")
+let o1: Named? = n1
+let o2: Named? = null
+println("${p1 == Pair { a: 1, b: 2 }} ${p1 == p3} ${p1 != p3}")
+println("${d1 == d2} ${d1 == d3} ${built == d1} ${[d1, d2] == [d2, d1]}")
+println("${s1 == s2} ${s1 == Shape.Dot} ${Shape.Line(3) == Shape.Line(3)} ${Shape.Line(3) == Shape.Line(4)} ${s3 == boxed("m")} ${s3 == boxed("n")}")
+println("${word("hi") == word("h" + "i")} ${word("hi") == Small.Word("hi")} ${Small.Num(2) == Small.Word("2")} ${Small.None == Small.None}")
+println("${[p1, p3] == [Pair { a: 1, b: 2 }, p3]} ${[p1] == [p3]} ${[n1].contains(named("x", 1))} ${[s1, s3].index_of(boxed("n"))}")
+println("${o1 == n1} ${o2 == n1} ${o1 == o2} ${[[1, 2], [3]] == [[1, 2], [3]]} ${[[1, 2], [3]] == [[1, 2], [4]]}")

@@ -16,6 +16,7 @@ use features.{
     Fix,
     Scan,
     DeclaredType,
+    FnHead,
     RuleType,
     fact_rule,
     rule,
@@ -727,6 +728,50 @@ fn body_scan_found(lit: Syntax) -> Fix {
 @says("the fix moves the body into the state's `impl` and drops the first argument at every call site")
 export fact_rule free_state_verb { quote { ${lit} } if free_state_param(lit) != null -> free_state_verb_found(lit) }
 
+/// A HAND-ROLLED EQUALITY, the trait family's first row: a top-level `fn same_<t>(a: T, b: T) ->
+/// bool` over one written type. `==` is derived — a record compares field by field, an enum by
+/// variant and then payload, a list by length and then element by element — so such a fn is the
+/// `Eq` trait spelled by hand, one more name for what `==` already says. A fn that IS another law —
+/// identity by index, a key over some of the fields, two absences that do not agree, a part `==`
+/// refuses (a float, a fn) — carries `// LICENSED compiler.trait_family: <that law>` on the line
+/// above its `fn`. A BARE-HOLE ROOT, structural GUARD, `free_state_verb`'s own door: the params
+/// through `Code.fn_params`, the name and answer through `Code.fn_head`.
+///
+/// NO REWRITE: every call site becomes `a == b` (or `!=` under a `!`) and the fn goes — a
+/// whole-declaration refactor one bound hole cannot perform.
+@keeps("fn same(a: int, b: string) -> bool { true }")
+@keeps("fn same_run(a: int, b: int) -> int { a }")
+@keeps("fn same_at(a: int) -> bool { a == 0 }")
+@keeps("fn equal(a: int, b: int) -> bool { a == b }")
+@says("the fix writes `==` at every call site and deletes the fn")
+export fact_rule trait_family { quote { ${lit} } if hand_rolled_eq(lit) -> hand_rolled_eq_found(lit) }
+
+/// Whether `lit` is a top-level `fn same` or `fn same_<t>` of two seats written with one type,
+/// answering `bool`.
+fn hand_rolled_eq(lit: Code) -> bool {
+    let params? = lit.fn_params() else { return false }
+    let head? = lit.fn_head() else { return false }
+    if params.length != 2 || head.answer != "bool" || !is_top_level(lit) { return false }
+    if head.name != "same" && !head.name.starts_with("same_") { return false }
+    let a? = params[0].decl_type() else { return false }
+    let b? = params[1].decl_type() else { return false }
+    a.text() == b.text()
+}
+
+fn hand_rolled_eq_found(lit: Code) -> Fix {
+    let head = lit.fn_head()!
+    let ty = lit.fn_params()![0].decl_type()!.text()
+    Fix
+        .Say(
+            said(
+                lit.loc(),
+                "`${head.name}` compares two `${ty}` by hand — `==` is derived for a value whose every part compares, so it already says this",
+                "this fn",
+                "write `a == b` at each call and delete the fn, or license it if it is another law: identity, a key over some fields, absences that do not agree",
+            ),
+        )
+}
+
 /// The states a vocabulary verb's OWN impl belongs to — `open_region`,
 /// `accepts`, `sig` and their like all read or write one of these.
 const state_types: List<string> = [
@@ -1301,6 +1346,7 @@ fn copy_literal_check(lit: Code) -> Fix? {
 /// value) wear the SAME interned type — `with`'s own requirement,
 /// never assumed from the field-name agreement alone. Absent (never
 /// matched) when either side's type did not resolve.
+// LICENSED compiler.trait_family: two nodes whose TYPES agree, never the nodes themselves
 fn same_type(lit: Code, subj: Code) -> bool {
     let lt? = lit.type() else { return false }
     let st? = subj.type() else { return false }

@@ -4526,23 +4526,67 @@ export type Shapes = {
 }
 
 impl Shapes {
-    /// Whether two values of `t` compare by value: a scalar, text or octets; an enum whose variants
-    /// carry nothing; a record of one field that does; a nullable of one of those; a name over one.
-    fn compares_by_value(t: SignedType) -> bool {
+    /// Whether two values of `t` compare by value — the derived equality every type whose parts
+    /// compare has, and no other: a scalar, text or octets; an enum whose variants' payloads all
+    /// compare; a record whose fields all do; a list of what does; a nullable of one of those; a name
+    /// over one. A float inside any of them is refused (a part compares exactly, and a float's `==`
+    /// is not its bits), and so is anything holding a fn, a cell, a map or a task.
+    fn compares_by_value(t: SignedType) -> bool { self.compared(t, [], false) }
+
+    /// `compares_by_value`, `seen` the declared types already being asked (a type that holds itself
+    /// does not compare), `part` whether `t` stands inside a record, a list or a variant, where a float
+    /// is refused.
+    fn compared(t: SignedType, seen: List<string>, part: bool) -> bool {
         let ty = self.unnamed(t)
-        if ty.nullable() { return self.compares_by_value(ty.unwrapped()) }
-        if ty.dynamic || !ty.args.is_empty() { return false }
+        if ty.nullable() { return self.compared(ty.unwrapped(), seen, part) }
+        if ty.dynamic { return false }
         match ty.head {
-            .Owned(word) -> COMPARED.contains(word),
-            .Declared(_, _) -> self.unit_enum(ty) || self.one_field(ty),
+            .Owned(word) -> when {
+                ty.args.is_empty() -> COMPARED.contains(word) && !(part && word == "float")
+                word == "List" -> ty.args.length == 1 && self.compared(ty.args[0], seen, true)
+                _ -> false
+            },
+            .Declared(_, _) -> {
+                if !ty.args.is_empty() { return false }
+                let name = ty.spelled()
+                // a type that holds itself has no derived equality yet: the comparison is written out
+                // whole, and one over itself would never end
+                if seen.contains(name) { return false }
+                let asking = seen.concat([name])
+                self.enum_compared(ty, asking) || self.record_compared(ty, asking)
+            },
             .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Union or .Never or .Meta -> false,
         }
     }
 
-    /// The shape `ty` stands over, through every name it wears.
-    fn unnamed(ty: SignedType) -> SignedType {
-        let shape? = (self.named_of)(ty) else { return ty }
-        self.unnamed(shape)
+    /// Whether `ty` names an enum every payload of whose variants compares.
+    fn enum_compared(ty: SignedType, seen: List<string>) -> bool {
+        let shape? = (self.enum_of)(ty) else { return false }
+        shape.variants.all(it.payloads.all((p) -> p.ty != null && self.compared(p.ty!, seen, true)))
+    }
+
+    /// Whether `ty` names a record every field of which compares — a `state` field is a cell, and
+    /// compares by nothing.
+    fn record_compared(ty: SignedType, seen: List<string>) -> bool {
+        let shape? = (self.record_of)(ty) else { return false }
+        !shape.fields.is_empty() &&
+            shape.fields.all((f) -> !f.state && f.ty != null && self.compared(f.ty!, seen, true))
+    }
+
+    /// Whether a value of `t` is FLAT: it compares by value and is one word to compare — a scalar,
+    /// text or octets; an enum whose variants carry nothing; a record of one field that is flat; a
+    /// nullable of one; a name over one. A component's prop that is flat is a cell its parent writes at
+    /// every paint, and a cached fn's context is flat; a record of more, a list or a payload compares
+    /// too, but by walking its parts, which neither of those laws reads.
+    fn compares_flat(t: SignedType) -> bool {
+        let ty = self.unnamed(t)
+        if ty.nullable() { return self.compares_flat(ty.unwrapped()) }
+        if ty.dynamic || !ty.args.is_empty() { return false }
+        match ty.head {
+            .Owned(word) -> COMPARED.contains(word),
+            .Declared(_, _) -> self.unit_enum(ty) || self.one_flat_field(ty),
+            .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Union or .Never or .Meta -> false,
+        }
     }
 
     /// Whether `ty` names an enum whose variants carry nothing.
@@ -4551,13 +4595,20 @@ impl Shapes {
         shape.variants.all(it.payloads.is_empty())
     }
 
-    /// Whether `ty` names a record of one field that compares by value.
-    fn one_field(ty: SignedType) -> bool {
+    /// Whether `ty` names a record of one field that is flat.
+    fn one_flat_field(ty: SignedType) -> bool {
         let fields = (self.record_of)(ty)?.fields ?? []
         if fields.length != 1 { return false }
         let field? = fields[0].ty else { return false }
-        self.compares_by_value(field)
+        self.compares_flat(field)
     }
+
+    /// The shape `ty` stands over, through every name it wears.
+    fn unnamed(ty: SignedType) -> SignedType {
+        let shape? = (self.named_of)(ty) else { return ty }
+        self.unnamed(shape)
+    }
+
 }
 
 /// What a value of `ty` offered where one that compares was wanted is.

@@ -213,6 +213,9 @@ export enum RuleType {
 /// name.
 export type DeclaredType = { package: string, name: string }
 
+/// A free `fn` declaration's own name and its written answer, spelled (`void` where it writes none).
+export type FnHead = { name: string, answer: string }
+
 fn interned_rule_type(t: Ty?, decls: Decls) -> RuleType? {
     let held? = t else { return null }
     RuleType.Interned(held, decls)
@@ -345,6 +348,19 @@ impl Code {
         match self.at {
             .Stmt(id) -> match self.of.view.store.stmt(id) {
                 .FnDecl(_, _, params, _, _) or .ExternFn(_, params, _) -> [Code { of: self.of, at: At.Param(id, i) } for i in 0..params.length],
+                _ -> null,
+            },
+            _ -> null,
+        }
+    }
+
+    /// This node's own NAME AND ANSWER — a free `fn` declaration's — absent for every other shape,
+    /// an `extern fn` among them: a rule reading a fn's whole signature reads its params through
+    /// `fn_params` and the rest here.
+    fn fn_head() -> FnHead? {
+        match self.at {
+            .Stmt(id) -> match self.of.view.store.stmt(id) {
+                .FnDecl(name, _, _, ret, _) -> FnHead { name: name.text(), answer: ret?.text() ?? "void" },
                 _ -> null,
             },
             _ -> null,
