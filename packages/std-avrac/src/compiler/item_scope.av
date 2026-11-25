@@ -101,7 +101,7 @@ export fn module_bindings(engine: QueryEngine, package: string, local: List<stri
         // the module's own declaration, again on its surface as one of its files re-exports it
         if prior.is(d) || clashes.any(it.lost.is(d)) { continue }
         let own = apart
-            .find((a) -> same_file(a.file, d.file) && a.name == d.name && space_of(a.kind) == space) ?? prior
+            .find((a) -> a.file == d.file && a.name == d.name && space_of(a.kind) == space) ?? prior
         if kept_apart(own, d) {
             if !apart.any(it.is(prior)) { apart.push(prior) }
             apart.push(d)
@@ -126,7 +126,7 @@ fn written_in(engine: QueryEngine, d: DeclaredName) -> bool {
 }
 
 /// Whether two declarations of one name are each their own file's: both private, in different files.
-fn kept_apart(a: DeclaredName, b: DeclaredName) -> bool { !a.exported && !b.exported && !same_file(a.file, b.file) }
+fn kept_apart(a: DeclaredName, b: DeclaredName) -> bool { !a.exported && !b.exported && a.file != b.file }
 
 /// `held`, each declaration bound under its own name, with every kept-apart one taken out.
 fn without(held: Bound, apart: List<DeclaredName>) -> Bound {
@@ -222,7 +222,7 @@ fn scope_built(engine: QueryEngine, file: SourceFileAddress) -> FileScope? {
     if !file_present(engine, file) { return null }
     let module = module_kept(engine, file.package_name, module_segments(file), true)
     mut own = nothing_bound()
-    for d in module.apart { if same_file(d.file, file) { own.bind(space_of(d.kind), d.name, d) } }
+    for d in module.apart { if d.file == file { own.bind(space_of(d.kind), d.name, d) } }
     mut clashes: List<NameClash> = []
     mut pending: List<PendingImport> = []
     for u in file_words(engine, file).uses {
@@ -252,14 +252,14 @@ fn scope_built(engine: QueryEngine, file: SourceFileAddress) -> FileScope? {
             }
         }
     }
-    let siblings = [d for d in module.apart if !same_file(d.file, file)]
+    let siblings = [d for d in module.apart if d.file != file]
     mut named: Map<string, List<DeclaredName>> = {}
     for d in siblings { named.set(d.name, (named.get(d.name) ?? []).concat([d])) }
     FileScope {
         own: own,
         siblings: siblings,
         siblings_named: named,
-        clashes: [c for c in module.clashes if same_file(c.lost.file, file)].concat(clashes),
+        clashes: [c for c in module.clashes if c.lost.file == file].concat(clashes),
         pending: pending,
     }
 }
@@ -354,7 +354,7 @@ fn imported(
 /// where a re-export claims the name itself (`claiming`), a sibling's private one.
 fn claimed(engine: QueryEngine, file: SourceFileAddress, space: Space, name: string, claiming: bool) -> DeclaredName? {
     let d? = winner(engine, file, space, name) else { return null }
-    if claiming || d.exported || same_file(d.file, file) { d } else { null }
+    if claiming || d.exported || d.file == file { d } else { null }
 }
 
 /// The prelude's export `file` sees as `name` in `space` where nothing else took it; a file of
@@ -580,4 +580,5 @@ collect listed_scope_facts: List<ListedQuery> = @query_definition in self as Lis
 export fn scope_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_scope_facts) }
 
 /// Whether two addresses name one file.
+// LICENSED compiler.trait_family: a file is one file by its key, the field derived from the other two
 fn same_file(a: SourceFileAddress, b: SourceFileAddress) -> bool { a.same_as(b) }
