@@ -5,6 +5,8 @@
 use tree.identity.{NodeId, Step, root as root_step, stepped, unplaced}
 use tree.node.{Node, Prim, Action}
 use realize.diff.matcher.{Diffable}
+use realize.diff.hearing.{Bound, Hears}
+use style.theme.{plain}
 use realize.native.fact.{Fact, attribute_facts, style_facts, layout_facts, theme_facts}
 
 /// One node as a native host draws it. `id` is the number a diff gave it —
@@ -16,6 +18,7 @@ export type Native = {
     facts: List<Fact> = [],
     hears: List<Action> = [],
     kids: List<Native> = [],
+    ordered: bool = false,
 }
 
 impl Diffable for Native {
@@ -29,22 +32,32 @@ impl Diffable for Native {
     fn keeps(now: Native) -> bool { self.prim == now.prim }
 }
 
-/// The tree as native elements: the root wears the theme it was drawn in.
-export fn lowered(root: Node) -> List<Native> {
-    let drawn = lower(root, root_step(root.box.key))
-    let theme? = root.theme?.theme else { return [drawn] }
-    [drawn with { facts: drawn.facts.concat(theme_facts(theme)) }]
+impl Hears for Native {
+    /// The handlers it binds.
+    fn bound() -> List<Bound> { [Bound { id: self.id, action: a, ordered: self.ordered } for a in self.hears] }
+
+    /// What it holds.
+    fn held() -> List<Native> { self.kids }
 }
 
-/// `n` standing at `at`, and its children each at its own step.
-fn lower(n: Node, at: Step) -> Native {
-    let steps = stepped([c.box.stand() for c in n.children]).steps
+/// The tree as native elements: the root wears the theme it was drawn in,
+/// the plain one when none was stamped.
+export fn lowered(root: Node) -> List<Native> {
+    let drawn = lower(root, root_step(root.box.key), false)
+    [drawn with { facts: drawn.facts.concat(theme_facts(root.theme?.theme ?? plain())) }]
+}
+
+/// `n` standing at `at`, and its children each at its own step. A node is
+/// ordered when it, or what holds it, is told from a sibling by order alone.
+fn lower(n: Node, at: Step, ordered: bool) -> Native {
+    let stands = stepped([c.box.stand() for c in n.children])
     Native {
         seat: at,
         prim: n.prim,
         facts: node_facts(n),
         hears: n.events,
-        kids: [lower(c, steps[j]) for j, c in n.children],
+        kids: [lower(c, stands.steps[j], ordered || c.drawn_by_order || stands.shared[j]) for j, c in n.children],
+        ordered: ordered,
     }
 }
 
