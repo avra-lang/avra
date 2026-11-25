@@ -42,7 +42,7 @@ use @std.errors.{Loc}
 use @std.sqlite.{Db, SqlValue, sql, prepared}
 use @std.sqlite.error.{SqlError}
 use @std.validate.{Checked, Issues, checker, decoder, stripped}
-use @std.time.{now_ms}
+use @std.time.{now_ms, Time}
 use error.{ModelError, UniqueField, or_attributed, or_invalid, modeled, parent_of, removed}
 
 /// The phantom a one-to-many relation is held as. `cards: Many<Card>`
@@ -99,11 +99,11 @@ fn has_id_field(t: Type) -> bool {
 }
 
 fn nullable_int(k: Kind) -> bool {
-    match k { .Opt(.Int) -> true, rest -> false }
+    match k { .Opt(.Int) -> true, .Opt(.Named("Time", [])) -> true, rest -> false }
 }
 
 fn plain_int(k: Kind) -> bool {
-    match k { .Int -> true, rest -> false }
+    match k { .Int -> true, .Named("Time", []) -> true, rest -> false }
 }
 
 /// The widest row this derive can build a constructor for — `row_ctor`
@@ -233,7 +233,7 @@ fn written_fields(t: Type) -> List<Field> { [f for f in non_id_fields(t) if !is_
 /// The model a link field points at, null for any other field.
 fn link_target(f: Field) -> string? {
     match f.kind {
-        .Named(n, args) or .Opt(.Named(n, args)) -> if n != "Many" && args.is_empty() { n } else { null },
+        .Named(n, args) or .Opt(.Named(n, args)) -> if n != "Many" && n != "Time" && args.is_empty() { n } else { null },
         rest -> null,
     }
 }
@@ -388,7 +388,7 @@ fn removal(t: Type) -> Code {
         let opened = modeled(db.begin_unless_open())?
         defer db.finish_if_opened(opened)
         ${[cascade_stmt(f) for f in cascading(t)]}
-        let changed = modeled(db.run(sql(${literal(soft_remove_sql_of(t))}, [.Int(now_ms()), .Int(self.id)])))?
+        let changed = modeled(db.run(sql(${literal(soft_remove_sql_of(t))}, [.Int(now_instant().ns), .Int(self.id)])))?
         if opened { let _ = modeled(db.commit())? }
         changed
     }
@@ -756,6 +756,7 @@ fn loc_file_code(file: string?) -> Code {
 fn sql_type_of(k: Kind) -> string {
     match k {
         .Int or .Bool -> "INTEGER",
+        .Named("Time", []) -> "INTEGER",
         .Float -> "REAL",
         .Str -> "TEXT",
         .Opt(inner) -> sql_type_of(inner),
@@ -874,6 +875,7 @@ fn bound_value(k: Kind, v: Code) -> Code {
         .Float -> quote { .Real(${v}) },
         .Str -> quote { .Text(${v}) },
         .Opt(inner) -> quote { if ${v} == null { .Null } else { ${bound_value(inner, quote { ${v}! })} } },
+        .Named("Time", []) -> quote { .Int(${v}.ns) },
         .Named(_, _) -> quote { .Int(${v}.id) },
         rest -> quote { a_model_field_kind_this_derive_does_not_bind_yet() },
     }
@@ -905,6 +907,7 @@ fn field_value(t: Type, j: int) -> Code {
 fn read_kind(k: Kind, i: int) -> Code {
     match k {
         .Int -> quote { s.int_at(${i})? },
+        .Named("Time", []) -> quote { Time { ns: s.int_at(${i})? } },
         .Bool -> quote { s.int_at(${i})? != 0 },
         .Float -> quote { s.real_at(${i})? },
         .Str -> quote { s.text_at(${i})? },
@@ -928,4 +931,10 @@ fn row_ctor(t: Type) -> Code {
         6 -> quote { ${t} { ${fs[0].name}: ${field_value(t, 0)}, ${fs[1].name}: ${field_value(t, 1)}, ${fs[2].name}: ${field_value(t, 2)}, ${fs[3].name}: ${field_value(t, 3)}, ${fs[4].name}: ${field_value(t, 4)}, ${fs[5].name}: ${field_value(t, 5)} } },
         rest -> quote { a_model_with_more_than_six_fields_needs_a_wider_row_constructor() },
     }
+}
+
+// Bridge until `now()` is on main: the same instant in nanoseconds, from the
+// monotonic clock's millisecond reading. Replaced by `now()` once #1106 lands.
+fn now_instant() -> Time {
+    Time { ns: now_ms() * 1000000 }
 }

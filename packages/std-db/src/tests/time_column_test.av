@@ -1,0 +1,37 @@
+// A `Time` column is stored as its nanoseconds and read back as the same
+// instant: the range's two ends and a fractional second survive sqlite.
+use @std.db.{model}
+use @std.sqlite.{Db}
+use @std.time.{Time, parse_iso}
+
+@model
+type Stamp = {
+    id: int = 0,
+    at: Time,
+}
+
+fn round_trip(instant: Time) -> string {
+    mut db = Db.memory()?
+    Stamp.create_table(db)?
+    let saved = Stamp { at: instant }.insert(db)?
+    let row = (Stamp.all(db)?)[0]
+    row.at.iso()
+}
+
+spec "std/db — a Time column" {
+    given "the range's first instant" {
+        then "it reads back as the same instant" {
+            round_trip(parse_iso("1677-09-21T00:12:43.145224192Z")!) == "1677-09-21T00:12:43.145224192Z"
+        }
+    }
+    given "the range's last instant" {
+        then "it reads back as the same instant" {
+            round_trip(parse_iso("2262-04-11T23:47:16.854775807Z")!) == "2262-04-11T23:47:16.854775807Z"
+        }
+    }
+    given "a fractional second" {
+        then "the nanoseconds are kept, not rounded" {
+            round_trip(parse_iso("2001-09-09T01:46:40.000000123Z")!) == "2001-09-09T01:46:40.000000123Z"
+        }
+    }
+}
