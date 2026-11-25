@@ -37,8 +37,8 @@ Docs on `ios-spike`, in reading order: `2026_11_25_IOS_SPIKE.md` (slice 0 and th
 - Device numbers are round 3's (before kept rows and the cheaper row recycle). QUEUED for when the phone is
   awake, unlocked and connected: five runs each of the direct-calls build, the twin, the current build, with
   the cold-start timeline, the memory parts and the in-app screenshots.
-- To lift into std-ui (commits on ios-spike): d8444df `moves_box`, b945fe1 the spacer's stable key, 73c4905
-  `stands_on`, 8a9113b element reuse and the matcher's fast path, cbecd1c the measure cache. Dies with the
+- To lift into std-ui (commits on ios-spike): d8444df `moves_box`, b945fe1 the spacer's stable key, 1b3e5c2
+  `stands_on`, 79be5f5 element reuse and the matcher's fast path, cbecd1c the measure cache. Dies with the
   spike: the UIKit host, `frame.av`, `kit.av`, `kept.av` (a hand-declared stand-in for the compiler's read-set
   query, unsound for a cell reached through a prop: never to land), the twin, 861678b (the spike-only item-row
   rule).
