@@ -30,7 +30,6 @@ use @std.io.{
     link,
     make_dirs,
     read_bytes,
-    read_text,
     remove,
 }
 use @std.path.{joined_path}
@@ -39,7 +38,7 @@ use @std.program.disk_store.{packs_answering}
 use @std.program.layered_store.{program_store_at}
 use @std.program.query_engine.{QueryEngine, query_engine}
 use @std.program.saved_query.{definitions_of}
-use @std.program.source_facts.{source_text}
+use @std.program.source_facts.{source_text, toolchain_verdict}
 
 /// What names a binary's mark in the machine's store: its std answers were laid in.
 const MARK: string = "std-answers-"
@@ -157,8 +156,8 @@ fn verdict_at(dir: string, print: string) -> string { joined_path(dir, "verdict-
 fn vouched_files(engine: QueryEngine, disk: Disk) -> List<string> {
     let shipped? = shipped_answers() else { return [] }
     let print? = own_print() else { return [] }
-    let verdict = read_text(verdict_at(shipped, print)) catch ""
-    let lines = [line for line in verdict.split("\n") if !line.is_empty()]
+    let at = verdict_at(shipped, print)
+    let lines = [line for line in toolchain_verdict(engine, at).split("\n") if !line.is_empty()]
     // the verdict is written a package at a time, so a line's package is read where its prefix changes
     mut seen: Map<string, bool> = {}
     mut prefix = "\t"
@@ -170,7 +169,7 @@ fn vouched_files(engine: QueryEngine, disk: Disk) -> List<string> {
     }
     let packages = seen.keys()
     if packages.is_empty() || packages.any((p) -> !p.starts_with("@std/") || disk.deps.has(p)) { return [] }
-    if !packages.all((p) -> verdict_package(engine, p, [l for l in lines if l.starts_with("${p}\t")])) { return [] }
+    if !packages.all((p) -> verdict_package(engine, at, p)) { return [] }
     let files = [SourceFileAddress { package_name: parts[0], path_in_package: parts[1] } for l in lines for parts in [l.split("\t")]]
     mut named: Map<string, bool> = {}
     for f in files { named.set("${f.package_name}\t${f.path_in_package}", true) }

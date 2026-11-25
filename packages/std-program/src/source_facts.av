@@ -5,6 +5,7 @@
 //! and where each item sits, which moves with anything above it and is read by nothing that only
 //! wants to know what an item says.
 use address.{DirectoryAddress, SourceFileAddress}
+use @std.io.{read_text}
 use @std.path.{normalized}
 use answer_parts.{AnswerParts, NamedValue, answer_parts}
 use answer_record.{ContentHash}
@@ -97,6 +98,14 @@ export enum FileOctets { Read(octets: Bytes), Missing, Linked, Refused(why: stri
 
 /// A world that reads no file's octets.
 fn unread_octets(_file: SourceFileAddress) -> FileOctets { FileOctets.Missing }
+
+/// THE TOOLCHAIN'S VERDICT ON ITS STD: the text of the file at `at`, beside the compiler that judged
+/// its std, empty where there is none. An input like a source's, held by the file's stamp, so a run
+/// where it didn't move reads nothing of it, and an answer that reads it carries no line of it.
+@input("laws")
+export fn toolchain_verdict(engine: QueryEngine, at: string) -> string {
+    read_stamped(engine, at, () -> read_text(at) catch "")
+}
 
 /// The names in a directory, absent when there's none, in one order whatever order the host
 /// lists them in.

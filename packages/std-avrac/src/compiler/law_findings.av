@@ -11,7 +11,7 @@ use @std.program.saved_derive.{Saved}
 use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
 use @std.program.sorted.{sorted_by}
 use @std.path.{dir_of, joined_path, normalized}
-use @std.program.source_facts.{source_octets, source_text}
+use @std.program.source_facts.{source_octets, source_text, toolchain_verdict}
 
 extern fn avra_utf8_bad_at(b: Bytes) -> int
 
@@ -585,13 +585,15 @@ fn guessed_fixes(guess: Guess?, at: FindingAt?, path: string) -> List<Suggestion
     [guess_fix(g, named)]
 }
 
-/// THE TOOLCHAIN'S VERDICT ON ONE STD PACKAGE AS AN ANSWER: whether every file of `package` its
-/// verdict's `lines` name (`package`, path, digest, by tabs) stands with the text the verdict judged,
-/// no line malformed. Its reads are those files' texts, so a run where none of them moved takes it as
-/// it stands, each file's stamp asked and no text read or hashed.
+/// THE TOOLCHAIN'S VERDICT ON ONE STD PACKAGE AS AN ANSWER: whether every file of `package` the
+/// verdict at `at` names (a line each: `package`, path, digest, by tabs) stands with the text the
+/// verdict judged, no line malformed. It reads the verdict and those files' texts, so a run where
+/// none of them moved takes it as it stands, each stamp asked and no text read or hashed, and its
+/// question carries no line of the verdict.
 @query("laws")
-export fn verdict_package(engine: QueryEngine, package: string, lines: List<string>) -> bool {
-    lines.all((l) -> judged_line_stands(engine, package, l.split("\t")))
+export fn verdict_package(engine: QueryEngine, at: string, package: string) -> bool {
+    let prefix = "${package}\t"
+    toolchain_verdict(engine, at).split("\n").filter(it.starts_with(prefix)).all((l) -> judged_line_stands(engine, package, l.split("\t")))
 }
 
 /// Whether a verdict's line, split at its tabs, names a file of `package` that holds the text it judged.
