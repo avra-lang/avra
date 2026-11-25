@@ -46,7 +46,7 @@ export function parseFrame(bytes) {
     else if (op === OP.set_attr) patches.push({ op, id: id(), name: str(), value: str() });
     else if (op === OP.drop_attr) patches.push({ op, id: id(), name: str() });
     else if (op === OP.set_prop) patches.push({ op, id: id(), name: str(), says: int(), value: str() });
-    else if (op === OP.define) patches.push({ op, kind: int(), says: int(), event: str(), reads: str(), prevents: int() !== 0 });
+    else if (op === OP.define) patches.push({ op, kind: int(), says: int(), event: str(), reads: str(), prevents: int() !== 0, key: str() });
     else if (op === OP.listen) patches.push({ op, id: id(), kind: int(), says: int() });
     else if (op === OP.unlisten) patches.push({ op, id: id(), kind: int() });
     else if (op === OP.style) patches.push({ op, css: str() });
@@ -207,8 +207,11 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null, repai
   // WHO HEARS WHAT IS DATA HERE, NEVER A LISTENER ON EACH ELEMENT: one
   // capturing listener per event word on the mount finds the hearers on the
   // way up from the target.
+  // A seat fired by one key (a field's submit, by Enter) hears that key alone, and never while a
+  // word is being composed: an input method's Enter confirms the word.
   const fire = (el, ev, def) => {
     if (def.event !== ev.type) return;
+    if (def.key && (ev.key !== def.key || ev.isComposing || ev.keyCode === 229)) return;
     if (def.prevents && ev.preventDefault) ev.preventDefault();
     send(el.__avra_id, def.kind, saidBy(el, def.says, def.reads));
   };
@@ -397,16 +400,26 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null, repai
 }
 
 // The module `source` names, compiled: a URL in a page, compiled AS IT ARRIVES — the bytes are
-// never held whole first — or the bytes themselves in a test or a node harness. One fetch, asked
-// as the document's preload of it asks (`fetch`'s own mode), so the browser answers both with one
-// request. A body served as something other than wasm cannot stream, and is read whole.
-export async function compiled(source, fetchFn = (...a) => globalThis.fetch(...a)) {
+// never held whole first — or the bytes themselves in a test or a node harness. ONE FETCH: the one
+// the document started as it was parsed (`avraFetched`, keyed by URL), taken once, else one asked
+// now. A body served as something other than wasm cannot stream, and is read whole.
+export async function compiled(source, fetchFn = (...a) => globalThis.fetch(...a), ahead = globalThis.avraFetched, base = globalThis.document?.baseURI) {
   if (source instanceof Uint8Array) return WebAssembly.compile(source);
-  const res = await fetchFn(source);
+  const res = await (taken(ahead, source, base) ?? fetchFn(source));
   if (!res.ok) throw new Error(`the module at ${source} answered ${res.status}`);
   const kind = res.headers.get("content-type") ?? "";
   if (typeof WebAssembly.compileStreaming === "function" && kind.split(";")[0].trim() === "application/wasm") return WebAssembly.compileStreaming(res);
   return WebAssembly.compile(await res.arrayBuffer());
+}
+
+// The fetch the document started for `source`, handed over once: a module asked again (a swap)
+// fetches anew.
+function taken(ahead, source, base) {
+  if (!ahead || !base) return null;
+  const key = new URL(source, base).href;
+  const started = ahead[key] ?? null;
+  delete ahead[key];
+  return started;
 }
 
 // Load the module and run it in a page. The host supplies `rt` (its own

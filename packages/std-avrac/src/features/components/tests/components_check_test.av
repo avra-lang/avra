@@ -55,3 +55,27 @@ spec "features/components — a record's check" {
         }
     }
 }
+
+/// The provider: a dial that checks its instances and keeps a place.
+fn dials() -> string {
+    "use @std.meta.{Diagnostic}\n\nexport component dial(label: string) {\n    state at: int = 0\n    fn check() -> List<Diagnostic> { [] }\n}"
+}
+
+spec "features/components — a component that checks its instances" {
+    given "an instance of it" {
+        then "still takes a place for a `state` member, and refuses a value" {
+            refused_in(
+                provided("use @x.c.{dial}\nlet d = dial \"a\" {\n    at: 3\n}\nd.label", dials()),
+                "`dial`'s `at` is `state`: it takes a place, and this is a value",
+            )
+        }
+        then "given a place, runs" {
+            answered(
+                provided(
+                    "use @x.c.{dial}\nstate n: int = 2\nlet d = dial \"a\" {\n    at: n\n}\n\"\${d.label}\${d.at}\"",
+                    dials(),
+                ),
+            ) == "a2"
+        }
+    }
+}

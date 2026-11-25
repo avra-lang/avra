@@ -65,7 +65,24 @@ spec "a document answered over HTTP" {
                 .text() ?? ""
             t.contains("data-avra-print=\"") &&
                 t.contains("data-avra-module=\"/app.wasm\"") &&
-                t.contains("<script type=\"module\">")
+                t.contains("<script type=\"module\" src=\"/avra/start.js\"></script>")
+        }
+        then "it names every file the page fetches in its head, the module as the fetch that compiles it" {
+            let t = Document {
+                title: "x",
+                body: home(),
+                module: "/app.wasm",
+                fetched: ["/avra/start.js", "/app.wasm"],
+            }
+                .response()
+                .body
+                .text() ?? ""
+            let head = t.split("</head>")[0]
+            head.contains("<link rel=\"modulepreload\" href=\"/avra/start.js\">") &&
+                head
+                    .contains(
+                        "<script>(globalThis.avraFetched ??= {})[new URL(\"/app.wasm\", document.baseURI).href] = fetch(\"/app.wasm\");</script>",
+                    )
         }
         then "the module's name is escaped where it lands" {
             let t = Document { title: "x", body: home(), module: "/a\"b.wasm" }

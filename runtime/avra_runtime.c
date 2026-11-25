@@ -5774,13 +5774,17 @@ const char* avra_str_concat_reusing(const char* a, const char* b) {
 #if !defined(__wasm32__)
 // A child's cwd bound through a file action: POSIX-2024's name where
 // the SDK has it (macOS 26), the `_np` spelling before (Darwin
-// 10.15, glibc 2.29); elsewhere a cwd is refused as unsupported.
+// 10.15, glibc 2.29); elsewhere — iOS among them — a cwd is refused
+// as unsupported.
 #if defined(__APPLE__)
 #include <Availability.h>
+#include <TargetConditionals.h>
+#if TARGET_OS_OSX
 #if defined(__MAC_OS_X_VERSION_MAX_ALLOWED) && __MAC_OS_X_VERSION_MAX_ALLOWED >= 260000
 #define AVRA_ADDCHDIR posix_spawn_file_actions_addchdir
 #else
 #define AVRA_ADDCHDIR posix_spawn_file_actions_addchdir_np
+#endif
 #endif
 #elif defined(__GLIBC__)
 #if __GLIBC_PREREQ(2, 29)
@@ -5788,6 +5792,18 @@ const char* avra_str_concat_reusing(const char* a, const char* b) {
 #endif
 #endif
 extern char** environ;
+
+// The cwd `dir` bound to a child's file actions: nonzero where the
+// platform binds none.
+static int cwd_bound(posix_spawn_file_actions_t* acts, const char* dir) {
+#if defined(AVRA_ADDCHDIR)
+    return AVRA_ADDCHDIR(acts, dir);
+#else
+    (void)acts;
+    (void)dir;
+    return -1;
+#endif
+}
 #endif
 #include <dirent.h>
 #include <time.h>
@@ -6384,7 +6400,7 @@ int64_t avra_spawn_in(const char* dir, const char* prog, void* args) {
     fflush(NULL);
     posix_spawn_file_actions_t acts;
     if (posix_spawn_file_actions_init(&acts) != 0) { free(argv); return 127; }
-    if (AVRA_ADDCHDIR(&acts, dir) != 0) { posix_spawn_file_actions_destroy(&acts); free(argv); return 127; }
+    if (cwd_bound(&acts, dir) != 0) { posix_spawn_file_actions_destroy(&acts); free(argv); return 127; }
     pid_t pid;
     avra_mem_settle();
     int started = posix_spawnp(&pid, prog, &acts, NULL, argv, environ);

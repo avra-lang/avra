@@ -1,0 +1,84 @@
+// proves: a view's own `state` is seeded at first need, from its
+// declaration's expression over the members the value holds then, so a
+// `with` before it stands moves what it starts from. A place the caller
+// gave stands untouched; a seed runs once for the instance that stands,
+// however often it is painted; a thousand views built and never stood
+// run no seed; a shipped place wins over a seed, and is written by a
+// swap into what stood without the own state it holds starting again.
+use @std.ui.components.{button, checkbox, column, text}
+use @std.ui.headless.{Screen, headless}
+use @std.ui.shipped.{applied, ship}
+use @std.ui.tree.outline.{outline}
+use @std.ui.tree.view.{tree_of}
+
+state seeds: int = 0
+state remembered: bool = false
+state lit: bool = false
+
+fn counted(v: int) -> int {
+    seeds = seeds + 1
+    v
+}
+
+component tallied(label: string) {
+    start: int = 0
+    state n: int = counted(self.start)
+    text "${self.label}=${self.n}"
+    button "${self.label}+" { on press { self.n = self.n + 1 } }
+}
+
+/// A view handed its place in its head, which no seed starts.
+component flag(label: string, state on: bool) {
+    button "${self.label}" { on press { self.on = !self.on } }
+    text "${self.label} ${self.on}"
+}
+
+fn base() -> checkbox { checkbox "Remember me" }
+
+fn texts(screen: Screen) -> string {
+    [l.trim() for l in screen.text().split("\n") if l.trim().starts_with("text") || l.trim().starts_with("checkbox")]
+        .join(" | ")
+}
+
+ship(
+    "remembered",
+    "bool",
+    () -> "${remembered}",
+    (j: string) -> {
+        remembered = j == "true"
+        true
+    },
+)
+
+println("a with before it stands: ${outline(tree_of(base() with { initial: true }))}")
+println("its read: ${(base() with { initial: true }).checked}")
+let handed = checkbox "x" { checked: remembered } with { initial: true }
+println("a given place: ${outline(tree_of(handed))} ${handed.checked}")
+
+let one = (tallied "t") with { start: 4 }
+println("built: seeds=${seeds}")
+let _ = one.n + one.n
+println("read twice: seeds=${seeds}")
+let s = headless(
+    () -> column {
+        (tallied "t") with { start: 4 }
+        checkbox "kept"
+        checkbox "shipped" { checked: remembered }
+        flag "lit" { on: lit }
+    },
+)
+println("stood: ${texts(s)} seeds=${seeds}")
+// LICENSED loops.push_loop: a count of turns, nothing gathered
+for turn in 0..3 { s.turn(() -> true) }
+println("painted three more times: seeds=${seeds}")
+let _ = s.press("t+")
+let _ = s.check("kept", true)
+let _ = s.press("lit")
+println("pressed: ${texts(s)} seeds=${seeds} lit=${lit}")
+
+let many = [tallied "${i}" { key: "${i}" } with { start: i } for i in 0..1000]
+println("a thousand built: ${many.length} seeds=${seeds}")
+
+let names = applied("{\"remembered\":{\"shape\":\"bool\",\"value\":true}}")
+s.turn(() -> true)
+println("swapped in: ${names.length} ${texts(s)} seeds=${seeds}")
