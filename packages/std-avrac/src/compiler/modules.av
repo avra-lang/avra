@@ -14,10 +14,11 @@ use core.{
     same_decl,
     same_file,
     touch,
+    fp_list,
 }
 use @std.path.{dir_of, under_dir, joined_path, normalized, file_name}
 use @std.relation.{query}
-use features.{Decl, Import, nothing, table_of, Listed}
+use features.{Decl, Import, nothing, table_of}
 use diagnostics.{Diag, loc_at, is_error}
 use @std.testing.{words}
 
@@ -330,12 +331,20 @@ impl Workspace {
 
     /// Every WRITTEN export of a name in a module, in file then declaration order.
     fn written_exports(m: ModulePath, name: string) -> List<DeclId> {
+        // the unrecorded lookup below is covered by this one recorded read
+        let _ = module_exports(self, m.text())
+        let named = self.decls.named_standing(name)
+        [x.id for f in self.module_file_ids(m) for x in named if self.written_export_in(x, f)]
+    }
+
+    /// A module's written exports as one fact: each export's row, in file then declaration order.
+    /// The module's files are admitted and its held rows minted here, once, so a reader of a name
+    /// depends on this and never on the name's bucket.
+    fn exports_made(m: ModulePath) -> int {
         let files = self.module_file_ids(m)
         for f in files { self.admission(f) }
-        let here = [self.decls.file(f).path for f in files]
-        self.minted_files([p for p in self.envs.listed(Listed.Name(name)) if here.contains(p)])
-        let named = self.decls.named_filed(name)
-        [x.id for f in files for x in named if self.written_export_in(x, f)]
+        self.minted_files([self.decls.file(f).path for f in files])
+        fp_list([self.row_print(d) for f in files for d in self.decls.decls_of_file(f) if self.written_export_in(self.decl_at(d), f)])
     }
 
     /// Whether a row is one of `f`'s own written top-level exports.
@@ -602,6 +611,12 @@ fn unbound(u: UseParts, imports: List<Import>) -> List<string> {
 /// lines reach them, and one admitted later answers for files it holds.
 @query
 fn module_at(ws: Workspace, _admitted: int, path: string) -> string { ws.module_named(path) }
+
+/// A module's written exports: a name is read through the module that exports it, so an edit
+/// that moves no export moves no reader. A package's modules carry its key, so no package
+/// admitted later holds a file of this one.
+@query
+fn module_exports(ws: Workspace, module: string) -> int { ws.exports_made(module_path(module.split("."))) }
 
 /// A module's files, through the host's listing, asked for one count of admitted packages.
 @query

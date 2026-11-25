@@ -1274,6 +1274,28 @@ if [ -x $R/bi.other ]; then
 fi
 rm -f $bi build/.avra.bi.print $R/bi.orig $R/bi.other
 
+if section nm; then
+# A MODULE'S NAMES MOVE ITS IMPORTERS, AND A BODY EDIT DOES NOT. `nm`'s module `m` has two files;
+# the entry imports one name from it. A name added to the module's other file, then moved into the
+# first, must resolve for the entry each time, and an edit of a body beside it must leave the entry's
+# answer standing.
+mkdir -p $R/nm/src/m
+printf '[package]\nname = "rt-nm"\nversion = "0.1.0"\n' > $R/nm/avra.toml
+printf 'export fn one() -> int { 1 }\n' > $R/nm/src/m/a.av
+printf '// nothing yet\n' > $R/nm/src/m/b.av
+printf 'use m.{one}\nprintln("nm ${one()}")\n' > $R/nm/src/main.av
+S "nm: the entry imports one name" nm
+printf 'export fn two() -> int { 2 }\n' >> $R/nm/src/m/b.av
+ed $R/nm/src/main.av 'use m.{one}' 'use m.{one, two}'
+ed $R/nm/src/main.av '${one()}' '${one() + two()}'
+S "nm: a name added to the module's other file" nm
+ed $R/nm/src/m/a.av "{ 1 }" "{ 10 }"
+S "nm: a body edit beside the names" nm
+ed $R/nm/src/m/b.av 'export fn two() -> int { 2 }' '// two moved'
+printf 'export fn two() -> int { 2 }\n' >> $R/nm/src/m/a.av
+S "nm: the name moved into the first file" nm
+fi
+
 echo "cache-attacks: $steps builds through one store, $holds under a hold, $fails failed"
     [ "$holds" -gt 0 ] || { echo "cache-attacks: no step ran under a hold — the sections named examined nothing"; exit 1; }
     [ "$fails" -eq 0 ]; exit $?

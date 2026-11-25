@@ -775,6 +775,11 @@ impl Db {
         false
     }
 
+    fn tracing_now() -> bool {
+        let kernel? = self.kernel.get() else { return false }
+        kernel.tracing.get()
+    }
+
     /// A relation's rows' hash here; an unreached relation holds none.
     fn rows_digest(name: string) -> int {
         let rel = self.relations.get().find(it.name == name)
@@ -1436,6 +1441,8 @@ impl AnswersUnder<V> {
             return self.made_lasting(db, arg, query, spelled, body, again, digest, record)
         }
         if !db.leaves_hold(kept.leaves) {
+            let bad = kept.leaves.find((l: Leaf) -> !db.leaf_holds(l))
+            if db.tracing_now() && bad != null { avra_qtrace("Q\trestore\t${query}\tleaf\t${bad!.id()}\n") }
             return self.made_lasting(db, arg, query, spelled, body, again, digest, record)
         }
         self.again.keep(arg, again)
