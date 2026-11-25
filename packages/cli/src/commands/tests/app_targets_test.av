@@ -1,0 +1,65 @@
+//! AN APP BUILDS EVERY TARGET IT SHIPS AS: `avra build` of a package whose `[app] targets` lists a
+//! target writes that target's binary under the package's `build/<word>/`, and `avra run` runs the
+//! first target, naming it first. A target whose host runs from a bundle refuses until the bundle
+//! slice lands, and `dev` refuses an app with no target beside a page. Real subprocesses over
+//! packages minted fresh.
+use @std.io.{make_dirs, write_text}
+use @std.time.{stamp}
+
+/// An app minted fresh, shipping as `targets` (TOML words), whose one program prints `said`.
+fn app_package(name: string, targets: string, said: string) -> string {
+    let root = "${scratch_dir()}/app_${name}_${stamp()}"
+    let _ = make_dirs("${root}/src")
+    let _ = write_text("${root}/.git", "")
+    let _ = write_text(
+        "${root}/avra.toml",
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[bin]\npath = \"src/main.av\"\n\n[app]\ntargets = [${targets}]\n",
+    )
+    let _ = write_text("${root}/src/main.av", "println(\"${said}\")\n")
+    root
+}
+
+/// What `avra` over `args` in `root` says on stderr, whatever its exit.
+fn errs_in(root: string, args: List<string>) -> string {
+    match avra_ran_in(root, args) { .Ok(o) -> o.out.stderr, .Err(_) -> "" }
+}
+
+/// Whether `avra` over `args` in `root` exits clean.
+fn clean_in(root: string, args: List<string>) -> bool {
+    match avra_ran_in(root, args) { .Ok(o) -> exit_is_zero(o.exit), .Err(_) -> false }
+}
+
+spec "cli — an app's targets" {
+    given "an app shipping as `terminal`" {
+        then "`avra build` writes its binary under `build/terminal/`" {
+            let root = app_package("built", "\"terminal\"", "hi")
+            (avra_said_in(root, ["build", "."]) ?? "").ends_with("/build/terminal/main")
+        }
+        then "`avra run` runs it attached, the first target named first" {
+            let root = app_package("ran", "\"terminal\"", "ran")
+            avra_said_in(root, ["run", "."]) == "ran" &&
+                errs_in(root, ["run", "."])
+                    .contains("avra: running `terminal`, the first of `[app] targets`")
+        }
+        then "`--target terminal` names the target, and says nothing of which is first" {
+            let root = app_package("named", "\"terminal\"", "named")
+            avra_said_in(root, ["run", ".", "--target", "terminal"]) == "named" &&
+                !errs_in(root, ["run", ".", "--target", "terminal"]).contains("the first of")
+        }
+    }
+    given "an app whose first target runs from a bundle" {
+        then "`avra run` refuses, saying the bundle slice has not landed" {
+            let root = app_package("bundled", "\"ios\"", "x")
+            !clean_in(root, ["run", "."]) &&
+                errs_in(root, ["run", "."])
+                    .contains("`ios` runs as an app, installed from its bundle")
+        }
+    }
+    given "an app no target of which stands beside a page" {
+        then "`avra dev` refuses, naming the hosts it can watch" {
+            let root = app_package("unpaged", "\"terminal\"", "x")
+            !clean_in(root, ["dev", "."]) &&
+                errs_in(root, ["dev", "."]).contains("the hosts it can watch are `Page`")
+        }
+    }
+}

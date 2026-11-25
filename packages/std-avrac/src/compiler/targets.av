@@ -1,5 +1,35 @@
-//! The platforms a build is for, read off its target triple: what its binary is, what it links
-//! with, and which runtime archive it carries.
+//! The targets an app ships as, and the platforms a build is for: a target's word names its triple
+//! and its host; the triple names what the binary is, what it links with, and which runtime archive
+//! it carries.
+use compiler.host.{
+    Manifest,
+    TargetDelta,
+    bad_target_min,
+    unknown_object_dir,
+    unknown_target,
+    unshipped_target,
+}
+use core.{flatten}
+use diagnostics.{Diag}
+use @std.text.{parse_int}
+
+/// A target is what you SHIP: its word, the triple it builds, and the host it stands beside. Where
+/// it runs — a simulator, a device, a browser — is `run`'s choice, never a second target.
+export type TargetRow = { name: string, triple: string, host: BuildHost }
+
+/// The targets a manifest's `[app] targets` and `--target` may name.
+export const TARGETS: List<TargetRow> = table<TargetRow> {
+    name       | triple                      | host
+    "terminal" | ""                          | BuildHost.Process
+    "web"      | "wasm"                      | BuildHost.Page
+    "ios"      | "arm64-apple-ios-simulator" | BuildHost.Ios
+}
+
+/// The target the word `word` names; absent for a word no row has.
+export fn target_named(word: string) -> TargetRow? { TARGETS.find(it.name == word) }
+
+/// The target words, spelled for a refusal.
+export fn target_words() -> string { ["`${r.name}`" for r in TARGETS].join(", ") }
 
 /// What a target triple names: a binary linked as the host links one (the host's own, the empty
 /// triple), a WebAssembly module, or a binary an Apple SDK (`sdk`, as `xcrun --sdk` names it)
@@ -35,13 +65,81 @@ fn apple_os(parts: List<string>) -> AppleOs? {
     APPLE_OSES.find((o) -> parts[2].starts_with(o.os))
 }
 
-/// The triple `spelled` as a build is made for: an Apple triple whose OS names no release takes its
-/// OS's oldest (`arm64-apple-ios-simulator` is `arm64-apple-ios17.0-simulator`); any other is itself.
-export fn triple_settled(spelled: string) -> string {
+/// The triple `spelled` as a build is made for: an Apple triple whose OS names no release takes
+/// `min`, else its OS's oldest (`arm64-apple-ios-simulator` is `arm64-apple-ios17.0-simulator`); any
+/// other is itself.
+export fn triple_settled(spelled: string, min: string? = null) -> string {
     let parts = spelled.split("-")
     let os? = apple_os(parts) else { return spelled }
     if parts[2] != os.os { return spelled }
-    parts.take(2).concat(["${os.os}${os.min}"]).concat(parts.drop(3)).join("-")
+    parts.take(2).concat(["${os.os}${min ?? os.min}"]).concat(parts.drop(3)).join("-")
+}
+
+/// The triple a build for the target `row` of the manifest `m` is made for: its row's, settled on the
+/// release its `[target.<name>] min` names.
+export fn target_triple(row: TargetRow, m: Manifest) -> string {
+    triple_settled(row.triple, m.deltas.find(it.name == row.name)?.min)
+}
+
+/// The oldest release the target `word` may name as its `min`; absent where its OS takes none.
+fn oldest_release(word: string) -> string? {
+    let row? = target_named(word) else { return null }
+    apple_os(row.triple.split("-"))?.min
+}
+
+/// Whether `written` is a release `oldest` or later: `MAJOR.MINOR`, an optional `.PATCH` after.
+fn release_lawful(written: string, oldest: string) -> bool {
+    let got? = release_parts(written) else { return false }
+    let floor? = release_parts(oldest) else { return false }
+    got[0] > floor[0] || got[0] == floor[0] && got[1] >= floor[1]
+}
+
+/// A release's major and minor numbers; absent for anything else.
+fn release_parts(written: string) -> List<int>? {
+    let parts = written.split(".")
+    if parts.length < 2 || parts.length > 3 { return null }
+    let numbers = [parse_int(p) for p in parts]
+    if numbers.any(it == null) { return null }
+    [numbers[0]!, numbers[1]!]
+}
+
+/// Every platform's object directory but the host's own, which is the build directory itself.
+export fn object_dirs() -> List<string> {
+    [object_dir(Platform.Wasm)]
+        .concat(
+            flatten(
+                [[object_dir(Platform.Apple(o.device)), object_dir(Platform.Apple(o.simulator))] for o in APPLE_OSES],
+            ),
+        )
+}
+
+/// WHAT A MANIFEST'S TARGETS OWE IT, where the text alone cannot say: every word names a target, a
+/// `[target.<name>]` is for one the app ships, a `min` is a release its OS builds for, and every
+/// `[link.objects_for]` key is a platform's object directory.
+export fn target_laws(m: Manifest) -> List<Diag> {
+    let shipped = [w.word for w in m.app?.targets ?? []]
+    let words = [unknown_target(w.at, w.word, target_words()) for w in m.app?.targets ?? [] if target_named(w.word) == null]
+    let deltas = flatten([delta_laws(d, shipped) for d in m.deltas])
+    let dirs = object_dirs()
+    let objects = [unknown_object_dir(p.at, p.dir, ["`${d}`" for d in dirs].join(", "), object_dir_of_word(p.dir)) for p in m.objects_for if !dirs.contains(p.dir)]
+    words.concat(deltas).concat(objects)
+}
+
+/// What the `[target.<name>]` `d` owes, where `shipped` are the targets the app lists.
+fn delta_laws(d: TargetDelta, shipped: List<string>) -> List<Diag> {
+    if target_named(d.name) == null { return [unknown_target(d.at, d.name, target_words())] }
+    let unshipped = if shipped.contains(d.name) { [] } else { [unshipped_target(d.at, d.name)] }
+    let written? = d.min else { return unshipped }
+    let oldest? = oldest_release(d.name) else { return unshipped }
+    if release_lawful(written, oldest) { return unshipped }
+    unshipped.concat([bad_target_min(d.min_at, d.name, written, oldest)])
+}
+
+/// The object directory of the target the word `word` names, where it is one.
+fn object_dir_of_word(word: string) -> string? {
+    let row? = target_named(word) else { return null }
+    let dir = object_dir(platform_of(row.triple))
+    if dir == "" { null } else { dir }
 }
 
 /// The suffix a build's binary carries beside the host's, so two platforms' builds of one source
