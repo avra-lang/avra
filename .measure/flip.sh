@@ -1,0 +1,19 @@
+#!/bin/sh
+R=build/flipdiag
+find $R .avra-cache -mindepth 1 -delete 2>/dev/null
+mkdir -p $R/p/src
+printf '[package]\nname = "sa-p"\nversion = "0.1.0"\n' > $R/p/avra.toml
+printf 'use more.{helper}\nfn twice(n: int) -> int {\n    n ?? 3\n}\nfn main() {\n    println("${twice(helper())}")\n}\n' > $R/p/src/main.av
+echo 'export fn helper() -> int { 4 }' > $R/p/src/more.av
+export AVRA_WATCH_HELD=1 AVRA_MAX_COMPILES=0
+AVRA_QTRACE=1 ./avra-try check $R/p > $R/a.out 2> $R/a.err
+ls -l .avra-cache/store
+python3 -I - <<'PY'
+import glob
+p=glob.glob('.avra-cache/store/body-*.pack')[-1]
+b=bytearray(open(p,'rb').read()); print(p,len(b),'flip at',len(b)//2)
+b[len(b)//2]^=1; open(p,'wb').write(bytes(b))
+PY
+AVRA_QTRACE=1 ./avra-try check $R/p > $R/b.out 2> $R/b.err
+grep '^Q	store' $R/b.err | cut -c1-160 | sort | uniq -c | sort -rn | head -30
+cat $R/b.out | head

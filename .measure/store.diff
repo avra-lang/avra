@@ -1,0 +1,2189 @@
+diff --git a/packages/std-avrac/src/compiler/answers.av b/packages/std-avrac/src/compiler/answers.av
+index ab85e296..3a38925d 100644
+--- a/packages/std-avrac/src/compiler/answers.av
++++ b/packages/std-avrac/src/compiler/answers.av
+@@ -7,7 +7,6 @@
+ use @std.relation.{input}
+ use @std.relation.db.{Db as RelDb, Durable}
+ use compiler.store.{Store, Stored, node_key}
+-use core.digest.{hex, unhex}
+ 
+ /// A source file's text as a query reads it. The workspace stages every text a
+ /// query is asked about (`stage_text`) before asking, so a record names the text
+@@ -54,11 +53,10 @@ fn answer_key(query: string, args: int) -> string { node_key(Stored.Answer, [que
+ 
+ fn kept_answer(slot: Cell<Store?>, query: string, args: int) -> Bytes? {
+     let store? = slot.get() else { return null }
+-    let text? = store.get(Stored.Answer, answer_key(query, args)) else { return null }
+-    unhex(text)
++    store.get_octets(Stored.Answer, answer_key(query, args))
+ }
+ 
+ fn keep_answer(slot: Cell<Store?>, query: string, args: int, record: Bytes) {
+     let store? = slot.get() else { return }
+-    let _ = store.keep(Stored.Answer, answer_key(query, args), hex(record), [])
++    let _ = store.keep_octets(Stored.Answer, answer_key(query, args), record, [])
+ }
+diff --git a/packages/std-avrac/src/compiler/store/body.av b/packages/std-avrac/src/compiler/store/body.av
+index e303dc7d..6d9fbc08 100644
+--- a/packages/std-avrac/src/compiler/store/body.av
++++ b/packages/std-avrac/src/compiler/store/body.av
+@@ -1,17 +1,33 @@
+ //! THE SEALED BODY — a segment's worth of records folded into one file, read
+-//! lazily. §6.1's `body-<rev>.pack` is a HEAD, then six sections: the INDEX, the
+-//! SLOTS (each referenced value's place in the `.val`, by its digest), the body's NAMES and interned READ SETS (compiler/store/names.av), the REVERSE
+-//! section, and the ROWS. The head is one commit-marked frame naming the sections'
+-//! places, so a half-written body is torn and never read. The values are NOT in the
+-//! file: a row names its value by digest, the slot section places it in
+-//! `body-<rev>.val`, and a read seeks one value and checks it against its digest.
++//! lazily. A body is a RUN: it names the run below it (`below`, 0 for none), and the
++//! newest run's chain is the store, newer runs winning. A seal folds the newest runs
++//! while what it folds is at least a quarter of the next, so each run is more than four
++//! times everything above it: a seal costs what it folds, and a row is folded a
++//! logarithmic number of times, so a small write never rewrites the whole store.
+ //!
+-//! THE INDEX is one fixed-width line a row, sorted by key: a newline, the first 32
+-//! hex digits of the row's action key, then the row's offset and length in the ROWS
+-//! section as zero-padded decimal. A lookup bisects those bytes, so it reads O(log n)
+-//! lines; the line's position is the row's ORDINAL, which the reverse section names. An open
+-//! reads the head and the index and decodes no row: a hit decodes the rows it asks
+-//! for, each checked against the key it was asked by.
++//! §6.1's `body-<rev>.pack` is a HEAD, then eight sections: the INDEX, the SLOTS
++//! (each referenced value's place in the `.val`), the FAMILIES, the NAMES its rows
++//! read, the READS (a name and the digest it was read at), the interned READ SETS
++//! (compiler/store/names.av), the HOLDERS of each set, and the ROWS. The head is one
++//! commit-marked frame naming the sections' places, so a half-written body is torn and
++//! never read. The values are NOT in the file: a row names its value by digest, the
++//! slot section places it in `body-<rev>.val`, and a read seeks one value and checks it
++//! against its digest.
++//!
++//! EVERY DIGEST IS ITS OCTETS: a key, a value digest or a read's digest that is a
++//! whole BLAKE3 hex spelling is written as its 32 octets, and a row names its family by
++//! its place in the body's family table, so a row costs what it says and no spelling.
++//!
++//! THE INDEX is one fixed-width line a row, sorted by key: the leading octets of the
++//! row's action key, then the row's offset and length in the ROWS section, high octet
++//! first. A lookup bisects those lines, so it reads O(log n) of them; the line's position
++//! is the row's ORDINAL, which the holders section names. An open reads the head and the
++//! index and decodes no row: a hit decodes the rows it asks for, each checked against the
++//! key it was asked by. THE SLOTS are sorted by digest the same way, and bisected.
++//!
++//! THE REVERSE IS TWO STEPS OVER WHAT THE BODY ALREADY HOLDS: an input name names the
++//! read sets that hold it (the tables), and a set names the rows that hold it (the
++//! holders), so a moved input finds its readers with no name spelled twice.
+ //!
+ //! NOTHING OF THE FILE IS HELD (`compiler/store/mapped.av`): the body is mapped
+ //! and every range — an index line, a row, a section — is copied out of the
+@@ -22,40 +38,31 @@ use @std.path.{joined_path}
+ use @std.relation.stable.{writer, reader, Writer, Reader}
+ use @std.relation.engine.{list_cell, map_cell}
+ use @std.text.{parse_int}
+-use core.{flatten, sorted_by, digest_of_octets, distinct}
++use core.{flatten, sorted_by, digest_of_octets, distinct, hex, unhex}
+ use @std.text.{text_before}
+-use compiler.store.mapped.{
+-    Mapped,
+-    Window,
+-    mapped,
+-    mapped_at,
+-    mapped_text,
+-    mapped_check,
+-    mapped_close,
+-    window_of,
+-    window_count,
+-    window_int,
+-    window_skip,
+-    window_text,
+-    window_under,
+-}
++use compiler.store.mapped.{Mapped, mapped, mapped_at, mapped_check, mapped_close}
+ use core.debug.{qtrace, traced}
+ 
+ const BODY_MAGIC: string = "AVRABODY"
+-const BODY_VERSION: int = 6
++const BODY_VERSION: int = 8
++
++/// An index line: the action key's leading octets, then the row's offset and length.
++const KEY_OCTETS: int = 16
++const OFFSET_OCTETS: int = 4
++const LENGTH_OCTETS: int = 4
++const LINE: int = KEY_OCTETS + OFFSET_OCTETS + LENGTH_OCTETS
+ 
+-/// An index line: a newline, the action key's leading hex digits, the row's offset and length.
+-const KEY_HEX: int = 32
+-const OFFSET_WIDTH: int = 10
+-const LENGTH_WIDTH: int = 8
+-/// The rows section is the last, and each row carries its own check.
+-const ROWS_AT: int = 5
++/// A slot line: a value's whole digest, then its place in the `.val` — at and length.
++const DIGEST_OCTETS: int = 32
++const AT_OCTETS: int = 6
++const SLOT_LINE: int = DIGEST_OCTETS + AT_OCTETS + LENGTH_OCTETS
+ 
+-const LINE: int = 1 + KEY_HEX + OFFSET_WIDTH + LENGTH_WIDTH
++/// The sections a head places; the rows are the last, and each row carries its own check.
++const SECTIONS: int = 8
++const ROWS_AT: int = 7
+ 
+-/// A slot line: a newline, a value's whole digest, then its place in the `.val` — at and length.
+-const DIGEST_HEX: int = 64
+-const SLOT_LINE: int = 1 + DIGEST_HEX + OFFSET_WIDTH + LENGTH_WIDTH
++/// A row's own check: the leading octets of its BLAKE3.
++const CHECK_OCTETS: int = 8
+ 
+ /// The path a sealed body stands at.
+ export fn body_path(dir: string, rev: int) -> string { joined_path(dir, "body-${rev}.pack") }
+@@ -72,6 +79,12 @@ export type ValueSlot = { at: int, len: int }
+ /// A referenced value and its place in the `.val` the new body will name.
+ type Placed = { digest: string, at: int, len: int }
+ 
++/// A seal folds the next run while what it holds is at least this fraction of it.
++const RUN_RATIO: int = 4
++
++/// A chain longer than this is folded whole.
++const RUNS_KEPT: int = 16
++
+ /// A value file is rewritten whole once more than this many bytes of it, past twice
+ /// what the store references, are garbage — so values are appended, never recopied.
+ const VAL_SLACK: int = 1048576
+@@ -134,15 +147,45 @@ fn framed(payload: Bytes) -> Bytes {
+ 
+ // ── Sealing ──
+ 
+-/// Fold this pack's index into one `body-<rev>.pack` + `.idx`. The values it
+-/// references are APPENDED to the value file the last body named, never recopied;
+-/// the file is rewritten whole only when garbage outgrows what is referenced. False
+-/// when there is nothing to seal or the seal cannot be written; the caller then
+-/// leaves the segments as the store.
++/// SEAL what this process holds: a new run over the runs it does not fold, or one whole
++/// body when it folds them all. False when there is nothing to seal or the seal cannot be
++/// written; the caller then leaves the segments as the store.
+ export fn seal(pack: Pack) -> bool {
++    if newest_rev(pack.dir) > pack.seen_rev.get() { return false }
++    let fresh = listed_keys(pack)
++    let runs = pack.sealed.get()
++    let k = runs_folded(runs, fresh.length)
++    if k >= runs.length || runs.length >= RUNS_KEPT || pack.val_rev.get() < 1 || any_withdrawn(pack) {
++        return sealed_whole(pack)
++    }
++    sealed_run(pack, fresh, k)
++}
++
++/// How many of the newest runs a seal of `fresh` rows folds: the next is taken while
++/// what is folded so far is at least `1 / RUN_RATIO` of it.
++fn runs_folded(runs: List<Sealed>, fresh: int) -> int {
++    mut held = fresh
++    mut k = 0
++    while k < runs.length && held * RUN_RATIO >= runs[k].count {
++        held = held + runs[k].count
++        k = k + 1
++    }
++    k
++}
++
++/// The rows no run carries yet: this process's writes and the segments it read.
++fn listed_keys(pack: Pack) -> List<string> { [k for k in pack.pending.get().keys() if !withdrawn(pack, k)] }
++
++/// Whether a key stands withdrawn: a run cannot say absent, so only a whole fold drops it.
++fn any_withdrawn(pack: Pack) -> bool { pack.withdrawn.get().values().any(it) }
++
++/// Fold every run and every listed row into one whole `body-<rev>.pack`. The values it
++/// references are APPENDED to the value file the last body named, never recopied;
++/// the file is rewritten whole only when garbage outgrows what is referenced.
++export fn sealed_whole(pack: Pack) -> bool {
+     if newest_rev(pack.dir) > pack.seen_rev.get() { return false }
+     materialized(pack)
+-    let keys = sorted_by([k for k in pack.records.get().keys() if !withdrawn(pack, k)], text_before)
++    let keys = [k for k in pack.records.get().keys() if !withdrawn(pack, k)]
+     if keys.is_empty() { return false }
+     let rev = newest_rev(pack.dir) + 1
+     let digests = referenced_digests(pack, keys)
+@@ -150,7 +193,7 @@ export fn seal(pack: Pack) -> bool {
+     let standing = standing_slots(pack, digests)
+     let fresh = [d for d in digests if !pack.slots.get().has(d) && value_of(pack, d) != null]
+     let live = sum_of([p.len for p in standing]) +
+-        sum_of([(value_of(pack, d) ?? "").bytes().length for d in fresh])
++        sum_of([value_of(pack, d)?.length ?? 0 for d in fresh])
+     let rewrite = pack.val_rev.get() < 1 || size > 2 * live + VAL_SLACK
+     let val_rev = if rewrite { rev } else { pack.val_rev.get() }
+     let laid = if rewrite { digests } else { fresh }
+@@ -158,16 +201,75 @@ export fn seal(pack: Pack) -> bool {
+     if rewrite { let _ = remove(path) }
+     let placed? = lay(pack, path, laid, if rewrite { 0 } else { size }) else { return false }
+     let slots = if rewrite { placed } else { standing.concat(placed) }
+-    if !wrote(body_path(pack.dir, rev), body_bytes(pack, keys, rev, val_rev, slots)) { return false }
++    if !wrote(body_path(pack.dir, rev), body_bytes(pack, keys, rev, val_rev, 0, slots)) { return false }
+     pack.rev.set(rev)
+     pack.seen_rev.set(rev)
+     pack.val_rev.set(val_rev)
+     pack.slots.set({})
+-    for p in slots { pack.slots.put(p.digest, ValueSlot { at: p.at, len: p.len }) }
++    placed_into(pack, slots)
+     pack.content.set({})
++    rechained(pack, rev, [])
++    true
++}
++
++/// Fold the listed rows and the newest `k` runs into one run over the rest. Its values
++/// are appended to the chain's one value file.
++fn sealed_run(pack: Pack, fresh: List<string>, k: int) -> bool {
++    let runs = pack.sealed.get()
++    let keys = distinct(fresh.concat(flatten([run_keys(pack, r) for r in runs.slice(0, k)])))
++    if keys.is_empty() { return false }
++    let rev = newest_rev(pack.dir) + 1
++    let val_rev = pack.val_rev.get()
++    let digests = referenced_digests(pack, keys)
++    let standing = [p! for d in digests for p in [placed_of(pack, d)] if p != null]
++    let unplaced = [d for d in digests if placed_of(pack, d) == null && value_of(pack, d) != null]
++    let placed? = lay(pack, val_path(pack.dir, val_rev), unplaced, val_size(pack.dir, val_rev)) else {
++        return false
++    }
++    let slots = standing.concat(placed)
++    if !wrote(body_path(pack.dir, rev), body_bytes(pack, keys, rev, val_rev, runs[k].rev, slots)) {
++        return false
++    }
++    pack.rev.set(rev)
++    pack.seen_rev.set(rev)
++    placed_into(pack, placed)
++    rechained(pack, rev, runs.slice(k, runs.length))
+     true
+ }
+ 
++/// Every record key one run holds, each row decoded once and carried: a newer row already
++/// resident stands over the run's, and the seal reads the carried rows, never the run again.
++fn run_keys(pack: Pack, s: Sealed) -> List<string> {
++    [carried(pack, h!) for k in 0..s.count for h in [sealed_held_at(pack, s, k)] if h != null]
++}
++
++fn carried(pack: Pack, h: Held) -> string {
++    let at = record_key(h.family, h.key)
++    if pack.records.get().get(at) == null { pack.records.put(at, h) }
++    at
++}
++
++/// Where the open value file holds a digest already, if it does.
++fn placed_of(pack: Pack, d: string) -> Placed? {
++    let s? = pack.slots.get().get(d) ?? sealed_slot(pack, d) else { return null }
++    placed_at(d, s)
++}
++
++/// The new run `rev` adopted over the runs `below` it: every pending row now stands in it, and
++/// a row held from a run it folded is let go, since its run's ids name nothing now.
++fn rechained(pack: Pack, rev: int, below: List<Sealed>) {
++    let top? = sealed_open(pack.dir, "body-${rev}.pack") else { return }
++    let folded = [s.rev for s in pack.sealed.get() if !below.any(it.rev == s.rev)]
++    if !folded.is_empty() {
++        pack
++            .records
++            .set(pack.records.get().filter((e) -> e.value.set < 0 || !folded.contains(e.value.rev)))
++        pack.whole.set(false)
++    }
++    adopted(pack, [top].concat(below))
++    pack.pending.set({})
++}
++
+ /// The shared-store blobs this pack's live rows name: what a collection must keep for it.
+ export fn pack_cas_refs(pack: Pack) -> List<string> {
+     opened_at(pack, true)
+@@ -184,12 +286,15 @@ export fn pack_cas_refs(pack: Pack) -> List<string> {
+ 
+ /// The places the open value file already holds for these digests.
+ fn standing_slots(pack: Pack, digests: List<string>) -> List<Placed> {
+-    mut out: List<Placed> = []
+-    for d in digests {
+-        let s? = pack.slots.get().get(d) else { continue }
+-        out.push(Placed { digest: d, at: s.at, len: s.len })
+-    }
+-    out
++    [placed_at(d, s!) for d in digests for s in [pack.slots.get().get(d)] if s != null]
++}
++
++/// A value's place, by its digest.
++fn placed_at(digest: string, s: ValueSlot) -> Placed { Placed { digest: digest, at: s.at, len: s.len } }
++
++/// Places a seal laid, opened for this process's reads.
++fn placed_into(pack: Pack, placed: List<Placed>) {
++    for p in placed { pack.slots.put(p.digest, ValueSlot { at: p.at, len: p.len }) }
+ }
+ 
+ /// The distinct digests the live rows name, in digest order.
+@@ -214,8 +319,7 @@ fn lay(pack: Pack, path: string, laid: List<string>, from: int) -> List<Placed>?
+     mut held = 0
+     mut at = from
+     for d in laid {
+-        let value? = value_of(pack, d) else { continue }
+-        let bytes = value.bytes()
++        let bytes? = value_of(pack, d) else { continue }
+         placed.push(Placed { digest: d, at: at, len: bytes.length })
+         batch.push(bytes)
+         held = held + bytes.length
+@@ -254,22 +358,36 @@ fn wrote(at: string, bytes: Bytes) -> bool {
+     match write_bytes(at, bytes) { .Ok(_) -> true, .Err(_) -> false }
+ }
+ 
+-/// The body's bytes: the head, then the index, names, sets, reverse section and rows.
+-fn body_bytes(pack: Pack, keys: List<string>, rev: int, val_rev: int, placed: List<Placed>) -> Bytes {
+-    let held = indexed(pack, keys)
+-    let reads = [reads_of(pack, h) for h in held]
++/// The body's bytes: the head, then the index, slots, families, names, reads, sets,
++/// holders and rows.
++fn body_bytes(
++    pack: Pack,
++    keys: List<string>,
++    rev: int,
++    val_rev: int,
++    base: int,
++    placed: List<Placed>,
++) -> Bytes {
++    let lined = indexed(pack, keys)
++    let held = [l.held for l in lined]
++    let lines = [reads_of(pack, h) for h in held]
++    let read = flatten(lines)
+     let n = names()
+-    n.filled(flatten(reads))
++    n.filled([read_part(l).name for l in read])
++    let reads_seen = read_table(n, read)
+     let s = sets()
+-    let set_ids = [s.intern(named_ids(n, r)) for r in reads]
+-    let rows = [row_bytes(held[i], set_ids[i]) for i in 0..held.length]
+-    let index = index_bytes(held, rows)
++    let set_ids = [s.intern([reads_seen.ids.get(l) ?? 0 for l in ls]) for ls in lines]
++    let families = sorted_by(distinct([h.family for h in held]), text_before)
++    let family_ids = ordinals_of(families)
++    let rows = [row_bytes(h, family_ids.get(h.family) ?? 0, set_ids[i]) for i, h in held]
+     let sections = [
+-        index,
++        index_bytes(lined, rows),
+         slot_bytes(placed),
++        texts_bytes(families),
+         n.encode(),
++        reads_bytes(reads_seen),
+         s.encode(),
+-        reverse_section(reads),
++        holders_bytes(set_ids, s.length()),
+         rows.bytes(),
+     ]
+     let head = writer()
+@@ -277,6 +395,7 @@ fn body_bytes(pack: Pack, keys: List<string>, rev: int, val_rev: int, placed: Li
+     head.int(BODY_VERSION)
+     head.int(rev)
+     head.int(val_rev)
++    head.int(base)
+     head.text(pack.print)
+     head.int(held.length)
+     mut at = 0
+@@ -289,84 +408,235 @@ fn body_bytes(pack: Pack, keys: List<string>, rev: int, val_rev: int, placed: Li
+     [framed(head.bytes())].concat(sections).bytes()
+ }
+ 
+-/// The live rows in index order: by the leading hex of their action key, the order a lookup bisects.
+-fn indexed(pack: Pack, keys: List<string>) -> List<Held> {
+-    [record_of(pack, t.substring(KEY_HEX, t.length))! for t in sorted_by(["${index_hex(k)}${k}" for k in keys], text_before)]
++/// A row and the leading hex of its action key, as its index line spells it.
++type Lined = { hex: string, held: Held }
++
++/// The live rows in index order: by the leading hex of their action key, the order a lookup
++/// bisects. The hex is made once a row and rides with it.
++fn indexed(pack: Pack, keys: List<string>) -> List<Lined> {
++    [Lined {
++        hex: t.substring(0, 2 * KEY_OCTETS),
++        held: record_of(pack, t.substring(2 * KEY_OCTETS, t.length))!,
++    } for t in sorted_by(["${index_hex(k)}${k}" for k in keys], text_before)]
+ }
+ 
+ /// The leading hex of the action key a record key's index line holds.
+-fn index_hex(at: string) -> string { digest_of_octets(at.bytes()).substring(0, KEY_HEX) }
++fn index_hex(at: string) -> string { digest_of_octets(at.bytes()).substring(0, 2 * KEY_OCTETS) }
++
++/// Each text's place in the list, by the text.
++fn ordinals_of(texts: List<string>) -> Map<string, int> {
++    mut out: Map<string, int> = {}
++    for i, t in texts { out.set(t, i) }
++    out
++}
+ 
+-/// One row as the rows section holds it: what a lookup decodes, and checks against its key.
+-fn row_bytes(h: Held, set_id: int) -> Bytes {
++/// One row as the rows section holds it: its family's place, its key, its value's digest
++/// and its read set, behind its own check — what a lookup decodes, and checks against its key.
++fn row_bytes(h: Held, family: int, set_id: int) -> Bytes {
+     let w = writer()
+-    w.text(h.family)
+-    w.text(h.key)
+-    w.text(h.digest)
+-    w.int(set_id)
+-    framed(w.bytes())
++    w.varint(family)
++    wrote_digest(w, h.key)
++    wrote_digest(w, h.digest)
++    w.varint(set_id)
++    let payload = w.bytes()
++    let framed_row = writer()
++    framed_row.octets(payload)
++    wrote_octets(framed_row, row_check(payload))
++    framed_row.bytes()
+ }
+ 
+-/// Where each referenced value stands in the `.val`: one line a digest.
++/// A row's check: the leading octets of its BLAKE3.
++fn row_check(payload: Bytes) -> Bytes { unhex(check_of(payload))! }
++
++/// Text the body spells as octets: a whole BLAKE3 hex digest is its 32 octets behind a 0,
++/// any other text itself behind a 1.
++fn wrote_digest(w: Writer, s: string) {
++    let raw? = digest_octets(s) else {
++        w.byte(1)
++        w.text(s)
++        return
++    }
++    w.byte(0)
++    wrote_octets(w, raw)
++}
++
++/// A digest's octets, absent for text that is no whole lowercase hex digest.
++fn digest_octets(s: string) -> Bytes? {
++    if s.length != 2 * DIGEST_OCTETS { return null }
++    unhex(s)
++}
++
++/// Octets written as they are, no length before them.
++fn wrote_octets(w: Writer, b: Bytes) {
++    for i in 0..b.length { w.byte(b.at(i)) }
++}
++
++/// `n` as `width` octets, high first.
++fn wrote_wide(w: Writer, n: int, width: int) {
++    for k in 0..width { w.byte(n >> 8 * (width - 1 - k)) }
++}
++
++/// The `width` octets at `at`, high first.
++fn wide_at(b: Bytes, at: int, width: int) -> int { (0..width).fold(0, (v, k) -> v * 256 + b.at(at + k)) }
++
++/// `wrote_digest` read back.
++fn read_digest(r: Reader) -> string? {
++    let tag? = ok(r.byte()) else { return null }
++    if tag == 1 { return ok(r.text()) }
++    let at = r.at.get()
++    if tag != 0 || at + DIGEST_OCTETS > r.b.length { return null }
++    r.at.set(at + DIGEST_OCTETS)
++    hex(r.b.slice(at, at + DIGEST_OCTETS))
++}
++
++/// Where each referenced value stands in the `.val`: one line a digest, sorted by digest.
+ fn slot_bytes(placed: List<Placed>) -> Bytes {
+-    ["\n${p.digest}${padded(p.at, OFFSET_WIDTH)}${padded(p.len, LENGTH_WIDTH)}" for p in placed]
+-        .join("")
+-        .bytes()
++    let w = writer()
++    for p in sorted_by(placed, (a: Placed, b: Placed) -> text_before(a.digest, b.digest)) {
++        let raw? = digest_octets(p.digest) else { continue }
++        wrote_octets(w, raw)
++        wrote_wide(w, p.at, AT_OCTETS)
++        wrote_wide(w, p.len, LENGTH_OCTETS)
++    }
++    w.bytes()
+ }
+ 
+ /// The index: one line a row, sorted by key — the line's position is the row's ordinal.
+-fn index_bytes(held: List<Held>, rows: List<Bytes>) -> Bytes {
++fn index_bytes(lined: List<Lined>, rows: List<Bytes>) -> Bytes {
++    let w = writer()
+     mut at = 0
+-    mut lines: List<string> = []
+-    for i, h in held {
+-        lines
+-            .push(
+-                "\n${action_key(h.family, h.key).substring(0, KEY_HEX)}${padded(at, OFFSET_WIDTH)}${padded(rows[i].length, LENGTH_WIDTH)}",
+-            )
++    for i, l in lined {
++        wrote_octets(w, unhex(l.hex)!)
++        wrote_wide(w, at, OFFSET_OCTETS)
++        wrote_wide(w, rows[i].length, LENGTH_OCTETS)
+         at = at + rows[i].length
+     }
+-    lines.join("").bytes()
+-}
+-
+-/// `n` in decimal, zero-padded to `width` digits.
+-fn padded(n: int, width: int) -> string {
+-    let digits = "${n}"
+-    let zeros = "0000000000".substring(0, width - digits.length)
+-    "${zeros}${digits}"
+-}
+-
+-/// THE REVERSE INDEX, as the body spells it: each input name a row reads, with the ordinals
+-/// (in the order the body lists its rows) of the rows that read it. A run is its own octets, so
+-/// a lookup skips every name it was not asked for without decoding a row.
+-fn reverse_section(reads: List<List<string>>) -> Bytes {
+-    mut at_of: Map<string, int> = {}
+-    mut runs: List<List<int>> = []
+-    for ordinal, lines in reads {
+-        for line in lines {
+-            let name? = read_name(line) else { continue }
+-            let at = at_of.get(name) ?? 0 - 1
+-            if at < 0 {
+-                at_of.set(name, runs.length)
+-                runs.push([ordinal])
+-            } else {
+-                runs[at].push(ordinal)
+-            }
+-        }
++    w.bytes()
++}
++
++/// A list of texts: its count, then each.
++fn texts_bytes(texts: List<string>) -> Bytes {
++    let w = writer()
++    w.count(texts.length)
++    for t in texts { w.text(t) }
++    w.bytes()
++}
++
++/// `texts_bytes` read back.
++fn texts_from(b: Bytes) -> List<string>? {
++    let r = reader(b)
++    let n? = ok(r.count()) else { return null }
++    mut out: List<string> = []
++    for _i in 0..n {
++        let t? = ok(r.text()) else { return null }
++        out.push(t)
++    }
++    if !r.done() { return null }
++    out
++}
++
++/// One read as the body files it: the name read, and the digest it was read at — empty for
++/// a line that carries none.
++export type ReadPart = { name: string, digest: string }
++
++/// A read line split at its first space: a line with no digest before its name is all name.
++fn read_part(line: string) -> ReadPart {
++    let at = line.index_of(" ")
++    if at <= 0 { return ReadPart { name: line, digest: "" } }
++    ReadPart { name: line.substring(at + 1, line.length), digest: line.substring(0, at) }
++}
++
++/// `read_part` spelled back as the line it came from.
++fn read_line(p: ReadPart) -> string { if p.digest.is_empty() { p.name } else { "${p.digest} ${p.name}" } }
++
++/// A body's reads, each once, sorted by name then digest — a read's id is its place — with
++/// each line's id and each name's.
++type ReadTable = { parts: List<ReadPart>, ids: Map<string, int>, names: Map<string, int> }
++
++fn read_table(n: Names, lines: List<string>) -> ReadTable {
++    let name_ids = ordinals_of(n.texts.get())
++    let parts = sorted_by(
++        [read_part(l) for l in distinct(lines)],
++        (a: ReadPart, b: ReadPart) -> read_before(name_ids, a, b),
++    )
++    ReadTable { parts: parts, ids: ordinals_of([read_line(p) for p in parts]), names: name_ids }
++}
++
++fn read_before(name_ids: Map<string, int>, a: ReadPart, b: ReadPart) -> bool {
++    let x = name_ids.get(a.name) ?? 0
++    let y = name_ids.get(b.name) ?? 0
++    x < y || x == y && text_before(a.digest, b.digest)
++}
++
++/// The reads: each its name's id, rising by delta, then its digest.
++fn reads_bytes(seen: ReadTable) -> Bytes {
++    let w = writer()
++    w.count(seen.parts.length)
++    mut prev = 0
++    for p in seen.parts {
++        let id = seen.names.get(p.name) ?? 0
++        w.varint(id - prev)
++        wrote_digest(w, p.digest)
++        prev = id
++    }
++    w.bytes()
++}
++
++/// `reads_bytes` read back over its names; absent when a read names no name.
++fn reads_from(n: Names, b: Bytes) -> List<ReadPart>? {
++    let r = reader(b)
++    let count? = ok(r.count()) else { return null }
++    mut out: List<ReadPart> = []
++    mut id = 0
++    for _i in 0..count {
++        let delta? = ok(r.varint()) else { return null }
++        id = id + delta
++        if delta < 0 || id >= n.length() { return null }
++        let digest? = read_digest(r) else { return null }
++        out.push(ReadPart { name: n.text_of(id), digest: digest })
+     }
++    if !r.done() { return null }
++    out
++}
++
++/// THE HOLDERS: each read set's rows, by ordinal, rising by delta — the second step of the
++/// reverse, a set to the rows that read it.
++fn holders_bytes(set_ids: List<int>, sets: int) -> Bytes {
++    mut held: List<List<int>> = [[] for _s in 0..sets]
++    for ordinal, s in set_ids { held[s].push(ordinal) }
+     let w = writer()
+-    let names = sorted_by(at_of.keys(), text_before)
+-    w.count(names.length)
+-    for name in names {
+-        w.text(name)
+-        let run = writer()
+-        let ords = runs[at_of.get(name) ?? 0]
+-        run.count(ords.length)
+-        for o in ords { run.int(o) }
+-        w.octets(run.bytes())
++    w.count(held.length)
++    for ords in held {
++        w.count(ords.length)
++        mut prev = 0
++        for o in ords {
++            w.varint(o - prev)
++            prev = o
++        }
+     }
+     w.bytes()
+ }
+ 
++/// `holders_bytes` read back; absent when it does not decode whole.
++fn holders_from(b: Bytes) -> List<List<int>>? {
++    let r = reader(b)
++    let n? = ok(r.count()) else { return null }
++    mut out: List<List<int>> = []
++    for _s in 0..n {
++        let k? = ok(r.count()) else { return null }
++        mut ords: List<int> = []
++        mut at = 0
++        for _i in 0..k {
++            let delta? = ok(r.varint()) else { return null }
++            at = at + delta
++            ords.push(at)
++        }
++        out.push(ords)
++    }
++    if !r.done() { return null }
++    out
++}
++
+ /// Where a section stands in the file, and the check its head holds for it.
+ type Place = { at: int, len: int, check: string }
+ 
+@@ -376,31 +646,44 @@ export type Sealed = {
+     m: Mapped,
+     rev: int,
+     val_rev: int,
++    /// The run below this one, 0 when this body is whole.
++    below: int,
+     print: string,
+     count: int,
+     /// Where the head's frame ends, so every section's place counts from it.
+     base: int,
+     slots: Place,
++    families: Place,
+     names: Place,
++    reads: Place,
+     sets: Place,
+-    reverse: Place,
++    holders: Place,
+     rows: Place,
+     /// The slot section, read once by the first value that asks where it stands.
+     slot_table: Cell<List<Bytes>>,
++    /// The family table, read once by the first row decoded.
++    family_table: Cell<List<List<string>>>,
+ }
+ 
+-/// The record keys of the sealed rows that read any of `moved`, from the body's reverse
+-/// section and its row order; a row since overwritten is left to the live scan. The
+-/// section is WALKED where it lies: a run it does not ask for is skipped, never copied.
++/// The record keys of the sealed rows that read any of `moved`: each run's sets that hold a
++/// moved name, then the rows that hold those sets. A row since overwritten is left to the
++/// live scan.
+ export fn sealed_readers(pack: Pack, moved: Map<string, bool>) -> List<string> {
+-    let s? = pack.sealed.get().first() else { return [] }
+-    let w? = walk_of(s, s.reverse) else { return [] }
+-    let count = window_count(w) ?? 0
++    flatten([run_readers(pack, s, moved) for s in pack.sealed.get()])
++}
++
++/// `sealed_readers` over one run: a row a newer run or this process overwrote is not its.
++fn run_readers(pack: Pack, s: Sealed, moved: Map<string, bool>) -> List<string> {
++    let t? = tables_for(pack, s) else { return [] }
++    let named = sets_by_name(t)
++    mut wanted: Map<string, bool> = {}
++    for m in moved.keys() {
++        for set in named.get(m) ?? [] { wanted.set("${set}", true) }
++    }
+     mut out: List<string> = []
+-    for _i in 0..count {
+-        let name = window_text(w) ?? ""
+-        let wanted = moved.get(name) != null
+-        for at in run_ordinals(w, wanted) {
++    for set in 0..t.holders.length {
++        if !wanted.has("${set}") { continue }
++        for at in t.holders[set] {
+             let h? = sealed_held_at(pack, s, at) else { continue }
+             let key = record_key(h.family, h.key)
+             if resident_held(pack, key, h) { out.push(key) }
+@@ -409,48 +692,49 @@ export fn sealed_readers(pack: Pack, moved: Map<string, bool>) -> List<string> {
+     out
+ }
+ 
+-/// The row ordinals one reverse run lists at the window's place. A run the walk
+-/// does not want is SKIPPED by its own length, never decoded: the section names
+-/// every input, and a warm command wants the one it moved.
+-fn run_ordinals(w: Window, wanted: bool) -> List<int> {
+-    let length = window_count(w) ?? 0
+-    if !wanted {
+-        let _ = window_skip(w, length)
+-        return []
++/// Each name a run's sets read, with the sets that read it — made on the first ask and kept.
++fn sets_by_name(t: Tables) -> Map<string, List<int>> {
++    let known = t.named.get().first()
++    if known != null { return known }
++    mut out: Map<string, List<int>> = {}
++    for set in 0..t.sets.length() {
++        for id in t.sets.members(set) {
++            let name = t.reads[id].name
++            out.set(name, (out.get(name) ?? []).concat([set]))
++        }
+     }
+-    let inner? = window_under(w, length) else { return [] }
+-    let n = window_count(inner) ?? 0
+-    mut at: List<int> = []
+-    for _j in 0..n { at.push(window_int(inner) ?? 0) }
+-    at
+-}
+-
+-/// Whether a row still stands as the body wrote it: not overwritten, not withdrawn.
+-fn resident(pack: Pack, key: string) -> bool {
+-    let h? = record_of(pack, key) else { return false }
+-    h.set >= 0 && !withdrawn(pack, key)
++    t.named.set([out])
++    out
+ }
+ 
+-/// `resident` for a row already in hand: no second find of what was just decoded.
++/// Whether a run's row still stands as that run wrote it: no newer run or write over it,
++/// not withdrawn.
+ fn resident_held(pack: Pack, key: string, h: Held) -> bool {
+-    let held = pack.records.get().get(key) ?? h
+-    held.set >= 0 && !withdrawn(pack, key)
++    if withdrawn(pack, key) { return false }
++    let mine = pack.records.get().get(key)
++    if mine != null { return mine!.set >= 0 && mine!.rev == h.rev }
++    !pack.sealed.get().take_while(it.rev != h.rev).any((s) -> sealed_held(pack, s, key) != null)
+ }
+ 
+-/// A row by its record key: this process's own (a segment, a write) over the sealed body's.
++/// A row by its record key: this process's own (a segment, a write) over the runs', the
++/// newest run first. A row decoded from a run is kept, so it is decoded once.
+ fn record_of(pack: Pack, at: string) -> Held? {
+     let held = pack.records.get().get(at)
+     if held != null { return held }
+-    let s? = pack.sealed.get().first() else { return null }
+-    sealed_held(pack, s, at)
++    for s in pack.sealed.get() {
++        let h? = sealed_held(pack, s, at) else { continue }
++        pack.records.put(at, h)
++        return h
++    }
++    null
+ }
+ 
+ /// The sealed body's row under a record key: found in the index, decoded, and held to the
+ /// key it was asked by — a row that decodes to another key is no answer.
+ fn sealed_held(pack: Pack, s: Sealed, at: string) -> Held? {
+-    let want = index_hex(at)
++    let want = unhex(index_hex(at))!
+     mut ordinal = first_from(pack, s, want)
+-    while ordinal < s.count && index_line_hex(pack, s, ordinal) == want {
++    while ordinal < s.count && octets_order(index_line_key(pack, s, ordinal), 0, want) == 0 {
+         let h? = sealed_held_at(pack, s, ordinal) else { return null }
+         if record_key(h.family, h.key) == at { return h }
+         ordinal = ordinal + 1
+@@ -460,70 +744,107 @@ fn sealed_held(pack: Pack, s: Sealed, at: string) -> Held? {
+ 
+ /// The first ordinal whose line holds `want` or more: a bisection of the key-sorted index,
+ /// one line read a step.
+-fn first_from(pack: Pack, s: Sealed, want: string) -> int {
++fn first_from(pack: Pack, s: Sealed, want: Bytes) -> int {
+     mut lo = 0
+     mut hi = s.count
+     while lo < hi {
+         let mid = (lo + hi) / 2
+-        if text_before(index_line_hex(pack, s, mid), want) { lo = mid + 1 } else { hi = mid }
++        if octets_order(index_line_key(pack, s, mid), 0, want) < 0 { lo = mid + 1 } else { hi = mid }
+     }
+     lo
+ }
+ 
+-/// The leading key hex one index line holds, counted as a probe and read
+-/// where it lies.
+-fn index_line_hex(pack: Pack, s: Sealed, ordinal: int) -> string {
++/// The leading key octets one index line holds, counted as a probe and read
++/// where they lie.
++fn index_line_key(pack: Pack, s: Sealed, ordinal: int) -> Bytes {
+     let t = pack.traffic.get()
+     pack.traffic.set(t with { probes: t.probes + 1 })
+-    let line = s.base + ordinal * LINE
+-    mapped_text(s.m, line + 1, KEY_HEX) ?? ""
++    mapped_at(s.m, s.base + ordinal * LINE, KEY_OCTETS) ?? "".bytes()
++}
++
++/// How the octets of `b` from `at` order against `want`: negative before, 0 equal,
++/// positive after — the first octet that differs decides, so a probe reads one or two.
++fn octets_order(b: Bytes, at: int, want: Bytes) -> int {
++    if b.length < at + want.length { return 0 - 1 }
++    for k in 0..want.length {
++        let d = b.at(at + k) - want.at(k)
++        if d != 0 { return d }
++    }
++    0
+ }
+ 
+ /// One row of the sealed body by ordinal, decoded from its span of the rows section; its
+ /// value's place joins the open slots. Absent when the row does not decode.
+ fn sealed_held_at(pack: Pack, s: Sealed, ordinal: int) -> Held? {
+     if ordinal < 0 || ordinal >= s.count { return null }
+-    let line = s.base + ordinal * LINE
+-    let offset? = parse_int(mapped_text(s.m, line + 1 + KEY_HEX, OFFSET_WIDTH) ?? "") else {
+-        return null
+-    }
+-    let length? = parse_int(mapped_text(s.m, line + 1 + KEY_HEX + OFFSET_WIDTH, LENGTH_WIDTH) ?? "") else {
+-        return null
+-    }
++    let line? = mapped_at(s.m, s.base + ordinal * LINE, LINE) else { return null }
++    let offset = wide_at(line, KEY_OCTETS, OFFSET_OCTETS)
++    let length = wide_at(line, KEY_OCTETS + OFFSET_OCTETS, LENGTH_OCTETS)
+     let raw? = mapped_at(s.m, s.base + s.rows.at + offset, length) else { return null }
+-    let h? = decoded_row(reader(raw)) else { return null }
++    let families? = families_of(s) else { return null }
++    let h? = decoded_row(reader(raw), families, s.rev) else { return null }
+     if traced() { qtrace("Q\tstore\trow\t${ordinal}\n") }
+     let t = pack.traffic.get()
+     pack.traffic.set(t with { rows: t.rows + 1 })
+     h
+ }
+ 
+-fn decoded_row(framed_row: Reader) -> Held? {
+-    let payload? = read_frame(framed_row) else { return null }
++/// A row read back and held to its own check, its family named through the body's table.
++fn decoded_row(framed_row: Reader, families: List<string>, rev: int) -> Held? {
++    let payload? = ok(framed_row.octets()) else { return null }
++    let at = framed_row.at.get()
++    if at + CHECK_OCTETS != framed_row.b.length { return null }
++    if hex(framed_row.b.slice(at, at + CHECK_OCTETS)) != check_of(payload) { return null }
+     let r = reader(payload)
+-    let family? = ok(r.text()) else { return null }
+-    let key? = ok(r.text()) else { return null }
+-    let digest? = ok(r.text()) else { return null }
+-    let set? = ok(r.int()) else { return null }
+-    Held { family: family, key: key, digest: digest, read: [], set: set, stamp: 0 }
++    let family? = ok(r.varint()) else { return null }
++    if family < 0 || family >= families.length { return null }
++    let key? = read_digest(r) else { return null }
++    let digest? = read_digest(r) else { return null }
++    let set? = ok(r.varint()) else { return null }
++    if !r.done() { return null }
++    Held {
++        family: families[family],
++        key: key,
++        digest: digest,
++        read: [],
++        set: set,
++        stamp: 0,
++        rev: rev,
++    }
+ }
+ 
+-/// Where the sealed body keeps a value: found by its digest in the slot section, which the
+-/// first ask reads. A line that does not parse is no answer.
++/// The body's family table, read once.
++fn families_of(s: Sealed) -> List<string>? {
++    let known = s.family_table.get().first()
++    if known != null { return known }
++    let families? = texts_from(section_of(s, s.families) ?? "".bytes()) else { return null }
++    s.family_table.set([families])
++    families
++}
++
++/// Where a run keeps a value: found by its digest in the newest slot section that names
++/// it, each read on its first ask. A line that does not parse is no answer.
+ export fn sealed_slot(pack: Pack, digest: string) -> ValueSlot? {
+-    let s? = pack.sealed.get().first() else { return null }
+-    let slot_lines? = slot_table_of(s) else { return null }
+-    let needle = "\n${digest}".bytes()
+-    mut from = 0
+-    while from < slot_lines.length {
+-        let found = slot_lines.index_of(needle, from)
+-        if found < 0 { return null }
+-        if found % SLOT_LINE == 0 { return slot_at(slot_lines, found / SLOT_LINE) }
+-        from = found + 1
++    for s in pack.sealed.get() {
++        let slot = run_slot(s, digest)
++        if slot != null { return slot }
+     }
+     null
+ }
+ 
++fn run_slot(s: Sealed, digest: string) -> ValueSlot? {
++    let want? = digest_octets(digest) else { return null }
++    let slot_lines? = slot_table_of(s) else { return null }
++    mut lo = 0
++    mut hi = slot_lines.length / SLOT_LINE
++    while lo < hi {
++        let mid = (lo + hi) / 2
++        if octets_order(slot_lines, mid * SLOT_LINE, want) < 0 { lo = mid + 1 } else { hi = mid }
++    }
++    if lo * SLOT_LINE >= slot_lines.length || octets_order(slot_lines, lo * SLOT_LINE, want) != 0 { return null }
++    slot_at(slot_lines, lo)
++}
++
+ fn slot_table_of(s: Sealed) -> Bytes? {
+     let known = s.slot_table.get().first()
+     if known != null { return known }
+@@ -532,16 +853,18 @@ fn slot_table_of(s: Sealed) -> Bytes? {
+     slot_lines
+ }
+ 
++/// The digest the slot section's line `k` names.
++fn slot_digest(slot_lines: Bytes, k: int) -> string {
++    hex(slot_lines.slice(k * SLOT_LINE, k * SLOT_LINE + DIGEST_OCTETS))
++}
++
+ /// The place the slot section's line `k` names.
+-fn slot_at(slot_lines: Bytes, k: int) -> ValueSlot? {
+-    let line = k * SLOT_LINE + 1 + DIGEST_HEX
+-    let at? = parse_int(slot_lines.slice(line, line + OFFSET_WIDTH).text() ?? "") else { return null }
+-    let len? = parse_int(
+-        slot_lines.slice(line + OFFSET_WIDTH, line + OFFSET_WIDTH + LENGTH_WIDTH).text() ?? "",
+-    ) else {
+-        return null
++fn slot_at(slot_lines: Bytes, k: int) -> ValueSlot {
++    let line = k * SLOT_LINE + DIGEST_OCTETS
++    ValueSlot {
++        at: wide_at(slot_lines, line, AT_OCTETS),
++        len: wide_at(slot_lines, line + AT_OCTETS, LENGTH_OCTETS),
+     }
+-    ValueSlot { at: at, len: len }
+ }
+ 
+ /// A section of the sealed body, read whole from its place and held to the check its head
+@@ -552,21 +875,18 @@ fn section_of(s: Sealed, place: Place) -> Bytes? {
+     bytes
+ }
+ 
+-/// A section read as a walk, its check held before an octet of it is decoded:
+-/// what a section is WALKED by (`sealed_readers`) is never held whole.
+-fn walk_of(s: Sealed, place: Place) -> Window? {
+-    let marker? = mapped_check(s.m, s.base + place.at, place.len) else { return null }
+-    if place.check != "" && marker != place.check { return null }
+-    window_of(s.m, s.base + place.at, place.len)
+-}
+-
+-/// EVERY SEALED ROW LIFTED INTO THE OPEN INDEX, once: a seal folds all the rows, so a writer
+-/// reads them all. Rows this process wrote since stand over the sealed ones.
++/// EVERY SEALED ROW LIFTED INTO THE OPEN INDEX, once: a whole seal folds all the rows, so
++/// it reads them all. Rows this process wrote since stand over the runs', a newer run's
++/// over an older's.
+ fn materialized(pack: Pack) {
+     if pack.whole.get() { return }
+     pack.whole.set(true)
+-    let s? = pack.sealed.get().first() else { return }
+-    let _ = tables_of(pack)
++    for s in pack.sealed.get() { lifted(pack, s) }
++}
++
++/// One run's rows and slots lifted where nothing newer stands.
++fn lifted(pack: Pack, s: Sealed) {
++    let _ = tables_for(pack, s)
+     for k in 0..s.count {
+         let h? = sealed_held_at(pack, s, k) else { return }
+         let at = record_key(h.family, h.key)
+@@ -575,14 +895,12 @@ fn materialized(pack: Pack) {
+     let slot_lines? = slot_table_of(s) else { return }
+     let count = slot_lines.length / SLOT_LINE
+     for k in 0..count {
+-        let line = k * SLOT_LINE
+-        let digest? = slot_lines.slice(line + 1, line + 1 + DIGEST_HEX).text() else { continue }
+-        let slot? = slot_at(slot_lines, k) else { continue }
+-        pack.slots.put(digest, slot)
++        let digest = slot_digest(slot_lines, k)
++        if !pack.slots.get().has(digest) { pack.slots.put(digest, slot_at(slot_lines, k)) }
+     }
+ }
+ 
+-/// The keys a row read: its own list, or its set in the open body's tables —
++/// The keys a row read: its own list, or its set in its run's tables —
+ /// decoded on the first ask, since an open reads values and never read sets.
+ /// A set the tables cannot name reads as none: a read set is a record of
+ /// edges, and a row stands without them.
+@@ -592,28 +910,34 @@ fn reads_of(pack: Pack, h: Held) -> List<string> { reads_known(pack, h) ?? [] }
+ /// prove its reads cannot take a list it could not read for none.
+ fn reads_known(pack: Pack, h: Held) -> List<string>? {
+     if h.set < 0 { return h.read }
+-    let t? = tables_of(pack) else { return null }
++    let t? = tables_of_rev(pack, h.rev) else { return null }
+     if h.set >= t.sets.length() { return null }
+     let ids = t.sets.members(h.set)
+-    if ids.any(it < 0 || it >= t.names.length()) { return null }
+-    [t.names.text_of(id) for id in ids]
++    if ids.any(it < 0 || it >= t.reads.length) { return null }
++    [read_line(t.reads[id]) for id in ids]
++}
++
++/// The tables of the run a row came from, decoded on the first ask and kept.
++fn tables_of_rev(pack: Pack, rev: int) -> Tables? {
++    let known = pack.tables.get().get("${rev}")
++    if known != null { return known }
++    let s? = pack.sealed.get().find(it.rev == rev) else { return null }
++    tables_for(pack, s)
+ }
+ 
+-fn tables_of(pack: Pack) -> Tables? {
+-    let known = pack.tables.get().first()
++fn tables_for(pack: Pack, s: Sealed) -> Tables? {
++    let known = pack.tables.get().get("${s.rev}")
+     if known != null { return known }
+-    let s? = pack.sealed.get().first() else { return null }
+     let n? = names_from(section_of(s, s.names) ?? "".bytes()) else { return null }
++    let reads? = reads_from(n, section_of(s, s.reads) ?? "".bytes()) else { return null }
+     let sets? = sets_from(section_of(s, s.sets) ?? "".bytes()) else { return null }
+-    let made = Tables { names: n, sets: sets }
+-    pack.tables.set([made])
++    let holders? = holders_from(section_of(s, s.holders) ?? "".bytes()) else { return null }
++    if holders.length != sets.length() || holders.any((ords) -> ords.any(it >= s.count)) { return null }
++    let made = Tables { reads: reads, sets: sets, holders: holders, named: list_cell() }
++    pack.tables.put("${s.rev}", made)
+     made
+ }
+ 
+-fn named_ids(n: Names, read: List<string>) -> List<int> {
+-    [n.id_of(r) ?? 0 for r in read]
+-}
+-
+ // ── Reading ──
+ 
+ /// How much of a body's start is read to find its head: the head is a few hundred octets.
+@@ -648,19 +972,32 @@ fn body_mapped(dir: string, name: string) -> Mapped? {
+     mapped(joined_path(dir, name))
+ }
+ 
+-/// A head decoded and its index checked where it lies.
+-fn sealed_from(m: Mapped, payload: Bytes, base: int) -> Sealed? {
+-    let r = reader(payload)
++/// A head's leading facts — its revision, the value file and run it names, its print — read
++/// off `r`, which then stands at the section places.
++fn head_fields(r: Reader) -> BodyHead? {
+     let magic? = ok(r.text()) else { return null }
+     if magic != BODY_MAGIC { return null }
+     let version? = ok(r.int()) else { return null }
+     if version != BODY_VERSION { return null }
+     let rev? = ok(r.int()) else { return null }
+     let val_rev? = ok(r.int()) else { return null }
++    let below? = ok(r.int()) else { return null }
++    if below < 0 || below >= rev { return null }
+     let print? = ok(r.text()) else { return null }
++    BodyHead { rev: rev, val_rev: val_rev, below: below, print: print }
++}
++
++/// A head decoded and its index checked where it lies.
++fn sealed_from(m: Mapped, payload: Bytes, base: int) -> Sealed? {
++    let r = reader(payload)
++    let head? = head_fields(r) else { return null }
++    let rev = head.rev
++    let val_rev = head.val_rev
++    let below = head.below
++    let print = head.print
+     let count? = ok(r.int()) else { return null }
+     mut places: List<Place> = []
+-    for _i in 0..6 {
++    for _i in 0..SECTIONS {
+         let at? = ok(r.int()) else { return null }
+         let len? = ok(r.int()) else { return null }
+         let check? = ok(r.text()) else { return null }
+@@ -670,57 +1007,102 @@ fn sealed_from(m: Mapped, payload: Bytes, base: int) -> Sealed? {
+     let last = places[ROWS_AT]
+     if !mapped_holds(m, base + last.at, last.len) { return null }
+     let index = places[0]
+-    if index.len != count * LINE { return null }
++    if index.len != count * LINE || places[1].len % SLOT_LINE != 0 { return null }
+     let marker? = mapped_check(m, base + index.at, index.len) else { return null }
+     if marker != index.check { return null }
+     Sealed {
+         m: m,
+         rev: rev,
+         val_rev: val_rev,
++        below: below,
+         print: print,
+         count: count,
+         base: base,
+         slots: places[1],
+-        names: places[2],
+-        sets: places[3],
+-        reverse: places[4],
+-        rows: places[5],
++        families: places[2],
++        names: places[3],
++        reads: places[4],
++        sets: places[5],
++        holders: places[6],
++        rows: places[ROWS_AT],
+         slot_table: list_cell(),
++        family_table: list_cell(),
+     }
+ }
+ 
+-/// How many rows the open sealed body holds, none when no body is open.
+-fn sealed_count(pack: Pack) -> int { pack.sealed.get().first()?.count ?? 0 }
++/// How many rows the open runs hold, a row two runs carry counted twice.
++fn sealed_count(pack: Pack) -> int { pack.sealed.get().fold(0, (n, s) -> n + s.count) }
++
++/// The pack's runs, newest first: the newest names the value file, every row lazy. A run
++/// the new chain does not keep has its mapping closed.
++fn adopted(pack: Pack, chain: List<Sealed>) {
++    for old in pack.sealed.get() {
++        if !chain.any(it.rev == old.rev) { mapped_close(old.m) }
++    }
++    pack.sealed.set(chain)
++    let top? = chain.first() else { return }
++    pack.rev.set(top.rev)
++    pack.val_rev.set(top.val_rev)
++}
++
++/// A body and every run below it, newest first — absent when any of them cannot be read,
++/// or names a value file other than the newest's.
++fn chain_open(dir: string, name: string) -> List<Sealed>? {
++    let top? = sealed_open(dir, name) else { return null }
++    mut chain = [top]
++    mut below = top.below
++    while below > 0 {
++        let s? = sealed_open(dir, "body-${below}.pack") else {
++            closed_all(chain)
++            return null
++        }
++        chain.push(s)
++        if s.val_rev != top.val_rev {
++            closed_all(chain)
++            return null
++        }
++        below = s.below
++    }
++    chain
++}
+ 
+-/// The pack's one sealed body: its value file named, its rows lazy.
+-fn adopted(pack: Pack, s: Sealed) {
+-    for old in pack.sealed.get() { mapped_close(old.m) }
+-    pack.sealed.set([s])
+-    pack.rev.set(s.rev)
+-    pack.val_rev.set(s.val_rev)
++fn closed_all(chain: List<Sealed>) {
++    for s in chain { mapped_close(s.m) }
+ }
+ 
+ /// Open ONE sealed revision into the pack — the time-travel read (§6.7). A
+ /// missing or torn revision answers false; `pack` is reset to hold only this
+ /// body's rows, so use a fresh pack and leave the live open alone.
+ export fn body_scan_rev(pack: Pack, rev: int) -> bool {
+-    let s? = sealed_open(pack.dir, "body-${rev}.pack") else {
++    let chain? = chain_open(pack.dir, "body-${rev}.pack") else {
+         torn_at(pack, 0)
+         return false
+     }
+     pack.records.set({})
++    pack.pending.set({})
+     pack.slots.set({})
+     pack.withdrawn.set({})
+-    pack.tables.set([])
++    pack.tables.set({})
+     pack.whole.set(false)
+-    adopted(pack, s)
++    adopted(pack, chain)
+     true
+ }
+ 
+-/// Every row of the open sealed body, in body order — what `explain` reads to say what changed.
++/// Every row the open runs hold, a newer run's over an older's, each run in body order —
++/// what `explain` reads to say what changed.
+ export fn sealed_rows(pack: Pack) -> List<Held> {
+-    let s? = pack.sealed.get().first() else { return [] }
+-    [h! for k in 0..s.count for h in [sealed_held_at(pack, s, k)] if h != null]
++    mut seen: Map<string, bool> = {}
++    mut out: List<Held> = []
++    for s in pack.sealed.get() {
++        for k in 0..s.count {
++            let h? = sealed_held_at(pack, s, k) else { continue }
++            let at = record_key(h.family, h.key)
++            if seen.has(at) { continue }
++            seen.set(at, true)
++            out.push(h)
++        }
++    }
++    out
+ }
+ 
+ /// The print the newest whole body was made under — what a compaction folds
+@@ -731,29 +1113,52 @@ export fn store_print(dir: string) -> string? {
+     body_print_of(dir, newest)
+ }
+ 
+-/// Open the newest whole body into the pack, before the segments so a later
+-/// segment wins. Only that body is read: each body holds everything its
+-/// writer had merged. A torn or foreign body is skipped, and says so once.
++/// Open the newest body's chain into the pack, before the segments so a later segment
++/// wins. Only that chain is read: it holds everything its writer had merged. A torn or
++/// foreign body, or one whose chain is broken, is skipped, and says so once.
+ export fn body_scan(pack: Pack) {
+     for name in bodies_newest_first(pack.dir) {
+-        let s? = sealed_open(pack.dir, name) else {
++        let chain? = chain_open(pack.dir, name) else {
+             torn_at(pack, 0)
+             continue
+         }
+-        if traced() { qtrace("Q\tstore\tbody\t${joined_path(pack.dir, name)}\t${s.count * LINE}\n") }
+-        adopted(pack, s)
++        if traced() {
++            qtrace(
++                "Q\tstore\tbody\t${joined_path(pack.dir, name)}\t${chain.length}\t${sealed_rows_held(chain) * LINE}\n",
++            )
++        }
++        adopted(pack, chain)
+         return
+     }
+ }
+ 
+-/// A sealed body's head: the value revision it names and the compiler print it was made
+-/// under — none when the body cannot be read.
+-type BodyHead = { val_rev: int, print: string }
++fn sealed_rows_held(chain: List<Sealed>) -> int { chain.fold(0, (n, s) -> n + s.count) }
+ 
++/// A sealed body's head: its revision, the value revision and run below it names, and the
++/// compiler print it was made under.
++type BodyHead = { rev: int, val_rev: int, below: int, print: string }
++
++/// A body's head alone — its frame checked, its index never read — so a walk over every
++/// body's chain costs a head each: none when the head cannot be read.
+ fn head_of(dir: string, name: string) -> BodyHead? {
+-    let s? = sealed_open(dir, name) else { return null }
+-    mapped_close(s.m)
+-    BodyHead { val_rev: s.val_rev, print: s.print }
++    let m? = body_mapped(dir, name) else { return null }
++    let head = mapped_at(m, 0, if m.len < HEAD_WINDOW { m.len } else { HEAD_WINDOW })
++    mapped_close(m)
++    let payload? = read_frame(reader(head ?? "".bytes())) else { return null }
++    head_fields(reader(payload))
++}
++
++/// The bodies a body's chain stands on, itself first; empty when a link is missing.
++export fn chain_names(dir: string, name: string) -> List<string> {
++    mut out = [name]
++    mut below = head_of(dir, name)?.below ?? 0 - 1
++    while below > 0 {
++        let next = "body-${below}.pack"
++        let h? = head_of(dir, next) else { return [] }
++        out.push(next)
++        below = h.below
++    }
++    if below < 0 { [] } else { out }
+ }
+ 
+ fn body_print_of(dir: string, name: string) -> string? { head_of(dir, name)?.print }
+diff --git a/packages/std-avrac/src/compiler/store/cas.av b/packages/std-avrac/src/compiler/store/cas.av
+index 1304db7c..e0a6f1fc 100644
+--- a/packages/std-avrac/src/compiler/store/cas.av
++++ b/packages/std-avrac/src/compiler/store/cas.av
+@@ -46,28 +46,31 @@ fn cas_dir() -> string? {
+ 
+ fn blob_at(dir: string, digest: string) -> string { joined_path(joined_path(dir, digest.substring(0, 2)), digest) }
+ 
+-/// Whether a stored value is a reference to a blob.
+-export fn cas_is_ref(stored: string) -> bool { stored.starts_with(cas_prefix()) }
+-
+ /// The digest a reference names.
+ export fn cas_digest_of(stored: string) -> string { stored.substring(cas_prefix().length, stored.length) }
+ 
+ /// The reference to a value's blob, minted from its content alone: the same value is the
+ /// same reference wherever it is written.
+-export fn cas_ref_of(value: string) -> string { cas_prefix() + digest_of_octets(value.bytes()) }
++export fn cas_ref_of(value: string) -> string { cas_ref_octets(value.bytes()) }
++
++/// `cas_ref_of` over octets.
++fn cas_ref_octets(value: Bytes) -> string { cas_prefix() + digest_of_octets(value) }
+ 
+ /// Whether a value belongs in the shared store rather than a store's own frames.
+-export fn cas_big(value: string) -> bool { value.length > CAS_CUT }
++export fn cas_big(value: string) -> bool { value.bytes().length > CAS_CUT }
+ 
+ /// A value's blob put in the shared store, once. False when there is no store to put it in.
+-export fn cas_blob(value: string) -> bool {
++export fn cas_blob(value: string) -> bool { cas_blob_octets(value.bytes()) }
++
++/// `cas_blob` over octets.
++fn cas_blob_octets(value: Bytes) -> bool {
+     let dir? = cas_dir() else { return false }
+-    let digest = digest_of_octets(value.bytes())
++    let digest = digest_of_octets(value)
+     let at = blob_at(dir, digest)
+     // LICENSED input.store_io: the shared store's blob, asked whether it stands before it is written
+     if exists(at) { return true }
+     match make_dirs(dir_of(at)) { .Ok(_) -> {}, .Err(_) -> { return false } }
+-    match write_bytes(at, value.bytes()) { .Ok(_) -> {}, .Err(_) -> { return false } }
++    match write_bytes(at, value) { .Ok(_) -> {}, .Err(_) -> { return false } }
+     if traced() { qtrace("Q\tcas\tput\t${digest}\t${value.length}\n") }
+     true
+ }
+@@ -75,16 +78,23 @@ export fn cas_blob(value: string) -> bool {
+ /// The reference a value is stored as when it belongs in the shared store: the blob put
+ /// there once, and `store_root` registered as one of its readers. Absent when the value
+ /// stays in the store's own frames — small, or no shared store to put it in.
+-export fn cas_put(value: string, store_root: string) -> string? {
+-    if !cas_big(value) && !cas_is_ref(value) { return null }
+-    if !cas_blob(value) { return null }
++export fn cas_put_octets(value: Bytes, store_root: string) -> string? {
++    if value.length <= CAS_CUT && cas_ref_in(value) == null { return null }
++    if !cas_blob_octets(value) { return null }
+     cas_register(store_root)
+-    cas_ref_of(value)
++    cas_ref_octets(value)
++}
++
++/// The reference a stored value IS, absent when it is a value.
++export fn cas_ref_in(stored: Bytes) -> string? {
++    let p = cas_prefix().bytes()
++    if stored.length < p.length || stored.slice(0, p.length).text() != cas_prefix() { return null }
++    stored.text()
+ }
+ 
+ /// Registers a store root as a reader of the shared store, when a value it holds names a blob.
+-export fn cas_register_if_named(stored: string, store_root: string) {
+-    if stored.contains(cas_prefix()) { cas_register(store_root) }
++export fn cas_register_if_named_octets(stored: Bytes, store_root: string) {
++    if stored.index_of(cas_prefix().bytes(), 0) >= 0 { cas_register(store_root) }
+ }
+ 
+ fn cas_register(store_root: string) {
+@@ -93,14 +103,28 @@ fn cas_register(store_root: string) {
+ }
+ 
+ /// The digests of every blob a stored value names, whole or inside its frames.
+-export fn cas_named_in(stored: string) -> List<string> {
++export fn cas_named_in(stored: Bytes) -> List<string> {
++    let p = cas_prefix().bytes()
+     let width = digest_of_octets("".bytes()).length
+-    [piece.substring(0, width) for piece in stored.split(cas_prefix()).drop(1) if piece.length >= width]
++    mut out: List<string> = []
++    mut at = stored.index_of(p, 0)
++    while at >= 0 && at + p.length + width <= stored.length {
++        let d = stored.slice(at + p.length, at + p.length + width).text()
++        if d != null { out.push(d!) }
++        at = stored.index_of(p, at + p.length)
++    }
++    out
+ }
+ 
+ /// The value a reference names, checked against its digest: absent when the blob is missing
+ /// or damaged, and a damaged one is removed so the next writer puts it back.
+ export fn cas_value(stored: string) -> string? {
++    let v? = cas_value_octets(stored) else { return null }
++    v.text()
++}
++
++/// `cas_value` as the octets the blob holds.
++export fn cas_value_octets(stored: string) -> Bytes? {
+     let dir? = cas_dir() else { return null }
+     let digest = cas_digest_of(stored)
+     let at = blob_at(dir, digest)
+@@ -108,12 +132,11 @@ export fn cas_value(stored: string) -> string? {
+     let o? = match open_beneath(dir_of(at), digest) { .Ok(o) -> o, .Err(_) -> null } else { return null }
+     let raw = match o.span(0, o.size) { .Ok(b) -> b, .Err(_) -> "".bytes() }
+     o.close()
+-    let v? = raw.text() else { return damaged(at) }
+-    if digest_of_octets(v.bytes()) != digest { return damaged(at) }
+-    v
++    if digest_of_octets(raw) != digest { return damaged(at) }
++    raw
+ }
+ 
+-fn damaged(at: string) -> string? {
++fn damaged(at: string) -> Bytes? {
+     let _ = remove(at)
+     null
+ }
+diff --git a/packages/std-avrac/src/compiler/store/pack.av b/packages/std-avrac/src/compiler/store/pack.av
+index 8cf5a20f..c5cd1f4b 100644
+--- a/packages/std-avrac/src/compiler/store/pack.av
++++ b/packages/std-avrac/src/compiler/store/pack.av
+@@ -10,10 +10,10 @@
+ //! unread rather than half read, and a torn frame ends that segment's
+ //! read. Nothing past a torn frame is trusted.
+ //!
+-//! `body-<rev>.pack` is the SEALED half (`store/body.av`), folded
+-//! by compaction under the flock at open: the process that takes the lock
+-//! seals what it read into one body and retires the dead segments it
+-//! folded; a process that cannot take the lock says it skipped.
++//! `body-<rev>.pack` is the SEALED half (`store/body.av`), a chain of runs,
++//! folded by compaction under the flock: the process that takes the lock seals
++//! what it read into a run and retires the dead segments it folded; a process
++//! that cannot take the lock says it skipped.
+ use @std.io.{
+     read_bytes,
+     make_dirs,
+@@ -31,7 +31,7 @@ use @std.path.{joined_path, dir_of, file_name}
+ use @std.relation.stable.{writer, reader, Reader, Writer, CodecFault, written_list, read_list}
+ use @std.relation.engine.{map_cell, list_cell}
+ use @std.text.{parse_int}
+-use core.{digest_of_octets, distinct, sorted_by, flatten}
++use core.{digest_of_octets, distinct, sorted_by, flatten, reversed}
+ use core.debug.{qtrace, traced}
+ use @std.time.{now_ns, wall_secs}
+ 
+@@ -97,7 +97,6 @@ export type CleanReport = {
+ 
+ /// Frames in live segments before a writer seals them into a body.
+ const SEAL_FRAMES: int = 32
+-const SEAL_SPARE: int = 64
+ 
+ fn hooked_frames() -> int? {
+     // LICENSED input.debug_flag: a test hook that sets the seal threshold, never an input of what is built
+@@ -105,19 +104,14 @@ fn hooked_frames() -> int? {
+     parse_int(raw)
+ }
+ 
+-/// The frames a derivation's end lets stand unsealed: SEAL_FRAMES, or in a larger store a
+-/// sixty-fourth of its sealed records — a one-function edit appends a few dozen frames and
+-/// must not rewrite the whole body, while the next open reads at most this many.
+-fn seal_frames(pack: Pack) -> int {
+-    let spare = sealed_count(pack) / SEAL_SPARE
+-    hooked_frames() ?? if spare > SEAL_FRAMES { spare } else { SEAL_FRAMES }
+-}
++fn seal_frames() -> int { hooked_frames() ?? SEAL_FRAMES }
+ 
+ /// ONE ROW: the family and key it answers, the digest of its value and the
+-/// keys it read — listed here, or, for a row a sealed body carries, the id of
+-/// its read set in that body's tables (`set` is -1 when `read` is the list).
+-/// `stamp` is when its writer appended it (0 for a sealed row): of two segment
+-/// frames for one key the later stands, whatever order the files merge in.
++/// keys it read — listed here, or, for a row a run carries, the id of its read
++/// set in that run's tables (`set` is -1 when `read` is the list). `stamp` is
++/// when its writer appended it (0 for a sealed row): of two segment frames for
++/// one key the later stands, whatever order the files merge in. `rev` is the run
++/// a sealed row came from, 0 for a listed one.
+ export type Held = {
+     family: string,
+     key: string,
+@@ -125,15 +119,22 @@ export type Held = {
+     read: List<string>,
+     set: int,
+     stamp: int,
++    rev: int,
+ }
+ 
+ /// A row whose read list is spelled out, as a segment frame or a write carries it.
+ fn listed_row(family: string, key: string, digest: string, read: List<string>, stamp: int) -> Held {
+-    Held { family: family, key: key, digest: digest, read: read, set: 0 - 1, stamp: stamp }
++    Held { family: family, key: key, digest: digest, read: read, set: 0 - 1, stamp: stamp, rev: 0 }
+ }
+ 
+-/// A sealed body's names and read sets, decoded the first time a read set is asked.
+-export type Tables = { names: Names, sets: Sets }
++/// A run's reads, read sets and their holders, decoded the first time a read set is asked;
++/// `named` is each name's sets, made on the first suspect ask.
++export type Tables = {
++    reads: List<ReadPart>,
++    sets: Sets,
++    holders: List<List<int>>,
++    named: Cell<List<Map<string, List<int>>>>,
++}
+ 
+ /// ONE ANSWER CLAIM for an action key: the value a writer named, and who.
+ /// A second claim from ANOTHER writer that names a different value is a
+@@ -148,15 +149,17 @@ export type Pack = {
+     dir: string,
+     print: string,
+     records: Cell<Map<string, Held>>,
++    /// The record keys no run carries yet: written here, or read from a segment.
++    pending: Cell<Map<string, bool>>,
+     withdrawn: Cell<Map<string, bool>>,
+     /// Values this process holds in memory: its own writes and segments.
+-    content: Cell<Map<string, string>>,
+-    /// Values the newest sealed body holds, read from its `.val` on demand.
++    content: Cell<Map<string, Bytes>>,
++    /// Values the runs hold, read from their `.val` on demand.
+     slots: Cell<Map<string, ValueSlot>>,
+-    /// The newest sealed body, open and lazy (none or one), whose rows a lookup decodes on
+-    /// demand, and the tables decoded from its names and sets.
++    /// The runs, newest first, open and lazy, whose rows a lookup decodes on demand, and
++    /// the tables decoded from each run's names and sets, by its revision.
+     sealed: Cell<List<Sealed>>,
+-    tables: Cell<List<Tables>>,
++    tables: Cell<Map<string, Tables>>,
+     /// Whether every sealed row has been lifted into `records`, as a seal needs.
+     whole: Cell<bool>,
+     opened: Cell<bool>,
+@@ -203,11 +206,12 @@ export fn pack_at(root: string, print: string) -> Pack {
+         dir: store_dir_of(root),
+         print: print,
+         records: map_cell(),
++        pending: map_cell(),
+         withdrawn: map_cell(),
+         content: map_cell(),
+         slots: map_cell(),
+         sealed: list_cell(),
+-        tables: list_cell(),
++        tables: map_cell(),
+         whole: Cell.new(false),
+         opened: Cell.new(false),
+         admitted: Cell.new(false),
+@@ -302,11 +306,11 @@ fn head_bytes(print: string) -> Bytes {
+     w.bytes()
+ }
+ 
+-fn content_body(digest: string, value: string) -> Bytes {
++fn content_body(digest: string, value: Bytes) -> Bytes {
+     let w = writer()
+     w.int(CONTENT_TAG)
+     w.text(digest)
+-    w.text(value)
++    w.octets(value)
+     w.bytes()
+ }
+ 
+@@ -421,7 +425,7 @@ fn applied(pack: Pack, body: Bytes, claims: Cell<Map<string, Claim>>, writer: st
+     let tag? = ok(r.int()) else { return }
+     if tag == CONTENT_TAG {
+         let digest? = ok(r.text()) else { return }
+-        let value? = ok(r.text()) else { return }
++        let value? = ok(r.octets()) else { return }
+         pack.content.put(digest, value)
+         return
+     }
+@@ -463,6 +467,7 @@ fn claimed(
+     let standing = pack.records.get().get(at)
+     if standing != null && standing!.stamp > stamp { return }
+     pack.records.put(at, listed_row(family, key, digest, read, stamp))
++    pack.pending.put(at, true)
+ }
+ 
+ /// A record folded in without a claim: this process's own writes are the only
+@@ -476,6 +481,7 @@ export fn held(
+     stamp: int,
+ ) {
+     pack.records.put(record_key(family, key), listed_row(family, key, digest, read, stamp))
++    pack.pending.put(record_key(family, key), true)
+ }
+ 
+ /// THE SEGMENTS OTHER WRITERS APPENDED since this pack opened — each worker's, once it
+@@ -512,12 +518,18 @@ fn segments(dir: string) -> List<string> {
+ /// that cannot take the lock says it skipped and returns without sealing.
+ fn admit(pack: Pack) {
+     if pack.lock_fd.get() < 0 && !locked(pack) { return }
++    // LICENSED input.store_clock: a seal's cost, said under the trace, never an input of what is built
++    let began = now_ns()
+     if seal(pack) {
+-        if traced() { qtrace("Q\tstore\tsealed\t${pack.rev.get()}\t${pack.records.get().length}\n") }
+         retire(pack)
+         enforce_limits(pack)
+         emptied(pack)
+         pack.frames.set(0)
++        if traced() {
++            qtrace(
++                "Q\tstore\tsealed\t${pack.rev.get()}\t${pack.sealed.get().length}\t${sealed_count(pack)}\t${(now_ns() - began) / 1000}us\n",
++            )
++        }
+     }
+ }
+ 
+@@ -543,20 +555,27 @@ fn emptied(pack: Pack) {
+     pack.headed.set(false)
+ }
+ 
+-/// Seals only from a write, once the segments hold SEAL_FRAMES frames — or, in a
+-/// larger store, half its records, so a cold run's seals sum to a few times its
+-/// size. A process that appended nothing never reaches here, so it takes no lock
+-/// and writes no store file.
++/// THE ONE SEALING RULE: the unsealed frames reach the floor, and — while the process
++/// still writes — a quarter of the newest run as well, so a long derivation seals in
++/// geometric steps and its end seals what it left, as a run of its own.
++fn seal_due(pack: Pack, closing: bool) -> bool {
++    let frames = pack.frames.get()
++    if frames < seal_frames() { return false }
++    closing ||
++        hooked_frames() != null ||
++        frames * RUN_RATIO >= pack.sealed.get().first()?.count ?? 0
++}
++
++/// Seals only from a write, under the one rule. A process that appended nothing never
++/// reaches here, so it takes no lock and writes no store file.
+ fn settled(pack: Pack) {
+-    let half = (pack.records.get().length + sealed_count(pack)) / 2
+-    let due = hooked_frames() ?? if half > SEAL_FRAMES { half } else { SEAL_FRAMES }
+-    if pack.frames.get() >= due { admit(pack) }
++    if seal_due(pack, false) { admit(pack) }
+ }
+ 
+-/// A derivation's end: what it left in the segments is folded into a body once it
+-/// is more than a floor's worth, so the next open reads an index and not a log.
++/// A derivation's end: what it left in the segments is folded into a run once it is a
++/// floor's worth, so the next open reads an index and not a log.
+ export fn pack_settle(pack: Pack) {
+-    if pack.opened.get() && pack.frames.get() >= seal_frames(pack) { admit(pack) }
++    if pack.opened.get() && seal_due(pack, true) { admit(pack) }
+ }
+ 
+ /// A test hook: hold the lock so a second process's admission fails.
+@@ -630,8 +649,8 @@ export fn pack_clean(pack: Pack, limits: StoreLimits) -> CleanReport {
+         }
+     }
+     mut sealed = false
+-    if pack.frames.get() > 0 || pack.torn.get() {
+-        if seal(pack) {
++    if pack.frames.get() > 0 || pack.torn.get() || pack.sealed.get().length > 1 {
++        if sealed_whole(pack) {
+             if traced() { qtrace("Q\tstore\tclean-sealed\t${pack.rev.get()}\n") }
+             retire(pack)
+             emptied(pack)
+@@ -727,45 +746,63 @@ fn kept_file(path: string) -> KeptFile? {
+ 
+ fn file_part(path: string) -> string { path.substring(dir_of(path).length + 1, path.length) }
+ 
+-/// Evict sealed revisions past the time window, past the age, or to fit the byte
+-/// ceiling — oldest first, and NEVER the newest, so a store always answers. A
+-/// value file is shared by the bodies that appended to it and goes only when the
+-/// last of them is evicted. Answers the revisions evicted.
++/// RECLAIM BY REACHABILITY (§6.7): every body is the head of its revision, and the window
++/// keeps the newest `revisions` heads that are not past the age — each with the runs its
++/// chain stands on, so a kept revision costs only what it alone holds. The newest whole
++/// chain is the roots, kept whatever the limit, so a store always answers. The byte
++/// ceiling then lets the oldest kept heads go. Answers the revisions evicted.
+ fn prune_bodies(dir: string, limits: StoreLimits) -> List<int> {
+     let names = sorted_by(all_body_names(dir), rev_before)
+-    // THE NEWEST REVISION IS THE ROOTS: it is never doomed, whatever the limit,
+-    // so a store always answers. Evict the history around it.
+-    let newest? = names.last() else { return [] }
+-    let over = if limits.revisions > 0 && names.length > limits.revisions { names.length - limits.revisions } else { 0 }
+-    let doomed = names
+-        .slice(0, over)
+-        .concat(aged_out(dir, names.slice(over, names.length), newest, limits))
++    let roots = roots_of(dir, names)
++    let window = if limits.revisions > 0 && names.length > limits.revisions { names.slice(names.length - limits.revisions, names.length) } else { names }
++    let heads = [n for n in window if !aged(dir, n, limits)]
++    let doomed = unreachable(dir, names, roots, heads)
+     for n in doomed { drop_body(dir, n) }
+     drop_unreferenced_values(dir)
+-    [body_rev_of(n) for n in doomed.concat(trimmed_to_fit(dir, limits))]
++    [body_rev_of(n) for n in doomed.concat(trimmed_to_fit(dir, roots, heads, limits))]
++}
++
++/// The newest whole chain: the bodies an open reads.
++fn roots_of(dir: string, names: List<string>) -> List<string> {
++    for n in reversed(names) {
++        let chain = chain_names(dir, n)
++        if !chain.is_empty() { return chain }
++    }
++    []
++}
++
++/// The bodies no kept head's chain reaches.
++fn unreachable(dir: string, names: List<string>, roots: List<string>, heads: List<string>) -> List<
++    string,
++> {
++    mut kept: Map<string, bool> = {}
++    for n in roots.concat(flatten([chain_names(dir, h) for h in heads])) { kept.set(n, true) }
++    [n for n in names if !kept.has(n)]
+ }
+ 
+-/// The bodies past the age limit, oldest first, never the newest.
+-fn aged_out(dir: string, names: List<string>, newest: string, limits: StoreLimits) -> List<string> {
+-    if limits.max_age_ns <= 0 { return [] }
++/// Whether a body is past the age limit.
++fn aged(dir: string, name: string, limits: StoreLimits) -> bool {
++    if limits.max_age_ns <= 0 { return false }
+     // The file's time is WALL seconds, so the clock is read the same way —
+     // `now_ns` is monotonic and would never compare to it.
+     // LICENSED input.store_clock: the age limit reads the wall clock, never an input of what is built
+     let now_s = wall_secs()
+-    let age_s = limits.max_age_ns / 1000000000
+-    [n for n in names if n != newest && now_s - (body_mtime_s(dir, n) ?? now_s) > age_s]
++    now_s - (body_mtime_s(dir, name) ?? now_s) > limits.max_age_ns / 1000000000
+ }
+ 
+-/// The oldest bodies dropped until the store fits its byte ceiling; the newest stays.
+-fn trimmed_to_fit(dir: string, limits: StoreLimits) -> List<string> {
++/// The oldest kept heads let go until the store fits its byte ceiling; the roots stay.
++fn trimmed_to_fit(dir: string, roots: List<string>, heads: List<string>, limits: StoreLimits) -> List<
++    string,
++> {
+     if limits.max_bytes <= 0 { return [] }
++    mut left = [h for h in heads if !roots.contains(h)]
+     mut gone: List<string> = []
+-    while store_bytes(dir) > limits.max_bytes {
+-        let keep = sorted_by(all_body_names(dir), rev_before)
+-        if keep.length <= 1 { break }
+-        drop_body(dir, keep.first()!)
++    while store_bytes(dir) > limits.max_bytes && !left.is_empty() {
++        left = left.slice(1, left.length)
++        let doomed = unreachable(dir, all_body_names(dir), roots, left)
++        for n in doomed { drop_body(dir, n) }
+         drop_unreferenced_values(dir)
+-        gone.push(keep.first()!)
++        gone = gone.concat(doomed)
+     }
+     gone
+ }
+@@ -815,10 +852,17 @@ fn body_mtime_s(dir: string, name: string) -> int? {
+ /// A row is present only when its value can be read back: a record whose value is
+ /// missing or damaged is absent, so `has` and `get` never disagree.
+ export fn pack_has(pack: Pack, family: string, key: string, read_only: bool = false) -> bool {
+-    pack_get(pack, family, key, read_only) != null
++    pack_get_octets(pack, family, key, read_only) != null
+ }
+ 
++/// A row's value as text: absent when it is not text.
+ export fn pack_get(pack: Pack, family: string, key: string, read_only: bool = false) -> string? {
++    let found? = pack_get_octets(pack, family, key, read_only) else { return null }
++    found.text()
++}
++
++/// A row's value as the octets it was kept as.
++export fn pack_get_octets(pack: Pack, family: string, key: string, read_only: bool = false) -> Bytes? {
+     let found = pack_found(pack, family, key, read_only)
+     let t = pack.traffic.get()
+     pack
+@@ -833,13 +877,14 @@ fn lookup_line(hit: bool, family: string) -> string {
+     "Q\tstore\t${if hit { "hit" } else { "miss" }}\t${family.split("@").first() ?? family}\n"
+ }
+ 
+-fn pack_found(pack: Pack, family: string, key: string, read_only: bool) -> string? {
++fn pack_found(pack: Pack, family: string, key: string, read_only: bool) -> Bytes? {
+     opened_at(pack, read_only)
+     let at = record_key(family, key)
+     if withdrawn(pack, at) { return null }
+     let held? = record_of(pack, at) else { return null }
+     let stored? = content_of(pack, held.digest) else { return null }
+-    if cas_is_ref(stored) { cas_value(stored) } else { stored }
++    let named? = cas_ref_in(stored) else { return stored }
++    cas_value_octets(named)
+ }
+ 
+ /// The reads a row was kept with, absent for a row not present or whose
+@@ -858,7 +903,8 @@ export fn pack_reads(pack: Pack, family: string, key: string, inspect: bool) ->
+ export fn pack_get_rev(pack: Pack, rev: int, family: string, key: string) -> string? {
+     if !body_scan_rev(pack, rev) { return null }
+     pack.opened.set(true)
+-    pack_found(pack, family, key, true)
++    let found? = pack_found(pack, family, key, true) else { return null }
++    found.text()
+ }
+ 
+ /// The rows a sealed revision holds, in body order — what `explain` reads to
+@@ -871,14 +917,14 @@ export fn pack_rows_rev(pack: Pack, rev: int) -> List<Held> {
+ 
+ /// A value by its digest without keeping it: held in memory, else read from the
+ /// sealed body.
+-fn value_of(pack: Pack, digest: string) -> string? {
++fn value_of(pack: Pack, digest: string) -> Bytes? {
+     let here? = pack.content.get().get(digest) else { return spilled(pack, digest) }
+     here
+ }
+ 
+ /// A value by its digest: held in memory, else read from the sealed body and
+ /// kept in memory, so a value is read and checked once.
+-fn content_of(pack: Pack, digest: string) -> string? {
++fn content_of(pack: Pack, digest: string) -> Bytes? {
+     let here? = pack.content.get().get(digest) else {
+         let v? = spilled(pack, digest) else { return null }
+         pack.content.put(digest, v)
+@@ -889,16 +935,15 @@ fn content_of(pack: Pack, digest: string) -> string? {
+ 
+ /// A sealed value: `get` seeks its slot in the newest body's `.val` and checks
+ /// the bytes against the digest, so a missing or damaged value answers absent.
+-fn spilled(pack: Pack, digest: string) -> string? {
++fn spilled(pack: Pack, digest: string) -> Bytes? {
+     let slot? = pack.slots.get().get(digest) ?? sealed_slot(pack, digest) else { return null }
+     if traced() { qtrace("Q\tstore\tvalue\t${pack.rev.get()}\t${digest}\n") }
+     let o? = value_file(pack) else { return null }
+     let raw = match o.span(slot.at, slot.len) { .Ok(b) -> b, .Err(_) -> "".bytes() }
+-    let v? = raw.text() else { return null }
+-    if content_digest(v) != digest { return null }
++    if digest_of_octets(raw) != digest { return null }
+     let t = pack.traffic.get()
+     pack.traffic.set(t with { values: t.values + 1, bytes: t.bytes + slot.len })
+-    v
++    raw
+ }
+ 
+ /// The value file for the open revision, opened once and kept: a value is a seek and a read,
+@@ -985,13 +1030,19 @@ fn kill_at_commit() {
+     if raw == "commit" { avra_process_exit(137) }
+ }
+ 
++/// A text row kept: its octets.
+ export fn pack_put(pack: Pack, family: string, key: string, value: string, read: List<string>) {
++    pack_put_octets(pack, family, key, value.bytes(), read)
++}
++
++/// A row kept as its octets, whatever they spell.
++export fn pack_put_octets(pack: Pack, family: string, key: string, value: Bytes, read: List<string>) {
+     opened_at(pack, false)
+     pack.withdrawn.put(record_key(family, key), false)
+     // a value too big for the frames is stored as a reference to the shared blob
+-    let stored = cas_put(value, dir_of(pack.dir)) ?? value
+-    cas_register_if_named(stored, dir_of(pack.dir))
+-    let digest = content_digest(stored)
++    let stored = cas_put_octets(value, dir_of(pack.dir))?.bytes() ?? value
++    cas_register_if_named_octets(stored, dir_of(pack.dir))
++    let digest = digest_of_octets(stored)
+     if content_of(pack, digest) == null {
+         append(pack, content_body(digest, stored))
+         pack.content.put(digest, stored)
+diff --git a/packages/std-avrac/src/compiler/store/store.av b/packages/std-avrac/src/compiler/store/store.av
+index 2bf2bde2..04e9bdef 100644
+--- a/packages/std-avrac/src/compiler/store/store.av
++++ b/packages/std-avrac/src/compiler/store/store.av
+@@ -81,7 +81,7 @@ impl Stored {
+ /// check does and leaves the store exactly as it found it (P7).
+ export enum Keeping {
+     Disk
+-    Aside(Cell<Map<string, string>>)
++    Aside(Cell<Map<string, Bytes>>)
+ }
+ 
+ /// THE STORE — one root, the packed index, and where its writes land.
+@@ -300,60 +300,71 @@ impl Store {
+     }
+ 
+     /// The row this process set aside under a key — none on a store that keeps to disk.
+-    fn aside_row(family: Stored, key: string) -> string? {
++    fn aside_row(family: Stored, key: string) -> Bytes? {
+         match self.keeping {
+             .Disk -> null,
+             .Aside(rows) -> rows.get().get(self.aside_key(family, key)),
+         }
+     }
+ 
+-    /// The bytes a key names, or nothing when the row is not committed.
++    /// The text a key names, or nothing when the row is not committed or is not text.
+     fn get(family: Stored, key: string) -> string? {
++        let found? = self.get_octets(family, key) else { return null }
++        found.text()
++    }
++
++    /// The octets a key names, or nothing when the row is not committed.
++    fn get_octets(family: Stored, key: string) -> Bytes? {
+         let found = self.read_row(family, key)
+         if traced() { qtrace(kind_line("get", found != null, family, key)) }
+         found
+     }
+ 
+-    fn read_row(family: Stored, key: string) -> string? {
++    fn read_row(family: Stored, key: string) -> Bytes? {
+         let aside = self.aside_row(family, key)
+         if aside != null { return aside }
+         if family.file_family() {
+             self.read_disk(family, key)
+         } else {
+-            pack_get(self.pack, self.packed(family), key, inspects(self.keeping))
++            pack_get_octets(self.pack, self.packed(family), key, inspects(self.keeping))
+         }
+     }
+ 
+-    fn read_disk(family: Stored, key: string) -> string? {
++    fn read_disk(family: Stored, key: string) -> Bytes? {
+         if !self.on_disk(family, key) { return null }
+         // LICENSED input.store_io: the store's own kept row, read to answer it
+-        match read_text(self.path(family, key)) { .Ok(text) -> text, .Err(_) -> null }
++        match read_bytes(self.path(family, key)) { .Ok(b) -> b, .Err(_) -> null }
++    }
++
++    /// REMEMBER A TEXT ROW: its octets.
++    fn keep(family: Stored, key: string, text: string, read: List<string>) -> bool {
++        self.keep_octets(family, key, text.bytes(), read)
+     }
+ 
+-    /// REMEMBER A ROW — on disk, or set aside where the store keeps none.
+-    fn keep(family: Stored, key: string, bytes: string, read: List<string>) -> bool {
++    /// REMEMBER A ROW AS ITS OCTETS — on disk, or set aside where the store keeps none.
++    fn keep_octets(family: Stored, key: string, bytes: Bytes, read: List<string>) -> bool {
+         match self.keeping {
+             .Disk -> self.disk_kept(family, key, bytes, read),
+             .Aside(rows) -> {
+                 rows.put(self.aside_key(family, key), bytes)
+-                rows.put(self.reads_key(family, key), joined(read, "\n"))
++                rows.put(self.reads_key(family, key), joined(read, "\n").bytes())
+                 true
+             },
+         }
+     }
+ 
+-    fn disk_kept(family: Stored, key: string, bytes: string, read: List<string>) -> bool {
++    fn disk_kept(family: Stored, key: string, bytes: Bytes, read: List<string>) -> bool {
+         if family.file_family() { return self.written(family, key, bytes, read) }
+-        pack_put(self.pack, self.packed(family), key, bytes, read)
++        pack_put_octets(self.pack, self.packed(family), key, bytes, read)
+         true
+     }
+ 
+     /// A file row on disk: the DATA first, then the EDGES, so the second write is what
+     /// makes the row visible and a crash between them leaves nothing rather than half.
+-    fn written(family: Stored, key: string, bytes: string, read: List<string>) -> bool {
++    fn written(family: Stored, key: string, bytes: Bytes, read: List<string>) -> bool {
+         match make_dirs(self.shard(family, key)) { .Ok(_) -> {}, .Err(_) -> { return false } }
+         if !self.uncommit(family, key) { return false }
+-        match write_text(self.path(family, key), bytes) {
++        match write_bytes(self.path(family, key), bytes) {
+             .Ok(_) -> {},
+             .Err(_) -> { return false },
+         }
+@@ -432,9 +443,14 @@ impl Store {
+ 
+     /// An aside row's reads, kept beside its bytes.
+     fn aside_reads(family: Stored, key: string) -> string {
++        let kept? = self.aside_reads_octets(family, key) else { return "" }
++        kept.text() ?? ""
++    }
++
++    fn aside_reads_octets(family: Stored, key: string) -> Bytes? {
+         match self.keeping {
+-            .Aside(rows) -> rows.get().get(self.reads_key(family, key)) ?? "",
+-            .Disk -> "",
++            .Aside(rows) -> rows.get().get(self.reads_key(family, key)),
++            .Disk -> null,
+         }
+     }
+ 
+diff --git a/packages/std-avrac/src/compiler/tests/guess_test.av b/packages/std-avrac/src/compiler/tests/guess_test.av
+index 7b354646..6c1cd22a 100644
+--- a/packages/std-avrac/src/compiler/tests/guess_test.av
++++ b/packages/std-avrac/src/compiler/tests/guess_test.av
+@@ -26,7 +26,7 @@ fn workspace() -> Workspace {
+ }
+ 
+ fn store_of(row: string?) -> Store {
+-    let rows: Cell<Map<string, string>> = Cell.new({})
++    let rows: Cell<Map<string, Bytes>> = Cell.new({})
+     let store = store_with("/w/.avra-cache", "print", Keeping.Aside(rows))
+     if row != null { let _ = store.keep(Stored.Unit, guess_key("/w/src/main.av", "edit"), row!, []) }
+     store
+diff --git a/packages/std-avrac/src/compiler/tests/pack_test.av b/packages/std-avrac/src/compiler/tests/pack_test.av
+index 39cdc83a..0e1576e8 100644
+--- a/packages/std-avrac/src/compiler/tests/pack_test.av
++++ b/packages/std-avrac/src/compiler/tests/pack_test.av
+@@ -3,18 +3,42 @@
+ // names another compiler's print is read all the same — a row's stamp, which is part
+ // of its family's name, says who may address it.
+ use @std.time.{stamp}
++use core.{hex}
+ use @std.io.{list_dir, remove, read_bytes, write_bytes}
+-use @std.path.{joined_path}
++use @std.path.{joined_path, file_name}
+ use compiler.store.{
++    Pack,
+     pack_at,
+     pack_put,
+     pack_has,
+     pack_get,
++    pack_get_octets,
++    pack_put_octets,
+     pack_suspects,
+     pack_readers,
++    pack_reads,
+     pack_traffic,
+     seal,
+     val_path,
++    content_digest,
++    store_file_bytes,
++    sealed_whole,
++    latest_body,
++}
++
++/// `n` rows as a family writes them: a long stamped family, digest keys, and each row reading
++/// its own input and one shared input at their digests; sealed, with the segments gone.
++fn digest_rows(name: string, n: int) -> string {
++    let root = pack_root(name)
++    let fam = "unit@own ${content_digest("print")}"
++    let w = pack_at(root, "print-one")
++    for i in 0..n {
++        let reads = ["${content_digest("d${i}")} input-${i}.av", "${content_digest("s")} shared.av"]
++        let _ = pack_put(w, fam, content_digest("k${i}"), "v${i}", reads)
++    }
++    let _ = seal(w)
++    segments_gone(root)
++    root
+ }
+ 
+ /// One store directory per case, so no case reads another's segments.
+@@ -32,9 +56,7 @@ fn damaged_root(name: string) -> string {
+     let writer = pack_at(root, "print-one")
+     let _ = pack_put(writer, "unit", "k", "v", [])
+     let _ = seal(writer)
+-    for file in pack_files(root) {
+-        if file.starts_with("seg-") { let _ = remove(joined_path("${root}/store", file)) }
+-    }
++    segments_gone(root)
+     let _ = write_bytes(val_path("${root}/store", writer.val_rev.get()), "X".bytes())
+     root
+ }
+@@ -46,14 +68,31 @@ fn sealed_many(name: string, n: int) -> string {
+     let w = pack_at(root, "print-one")
+     for i in 0..n { let _ = pack_put(w, "unit", "k${i}", "v${i}", ["d9 shared.av"]) }
+     let _ = seal(w)
+-    for file in pack_files(root) {
+-        if file.starts_with("seg-") { let _ = remove(joined_path("${root}/store", file)) }
+-    }
++    segments_gone(root)
+     root
+ }
+ 
+ fn segments_of(root: string) -> List<string> { [f for f in pack_files(root) if f.starts_with("seg-")] }
+ 
++/// Each open run's row count, newest first.
++fn run_counts(p: Pack) -> string { ["${s.count}" for s in p.sealed.get()].join(",") }
++
++/// Every segment removed, so an open reads the sealed runs alone.
++fn segments_gone(root: string) {
++    for f in segments_of(root) { let _ = remove(joined_path("${root}/store", f)) }
++}
++
++/// The sealed body of `sealed_many`, then `fresh` rows over it written and sealed, with
++/// the segments gone again: `k0`..`k<fresh>` answer `new<i>` and read `d1 moved.av`.
++fn run_over(name: string, fresh: int) -> string {
++    let root = sealed_many(name, 64)
++    let w = pack_at(root, "print-one")
++    for i in 0..fresh { let _ = pack_put(w, "unit", "k${i}", "new${i}", ["d1 moved.av"]) }
++    let _ = seal(w)
++    segments_gone(root)
++    root
++}
++
+ spec "store/pack — segments, commit markers, the two tiers" {
+     given "a row written to one writer's segment" {
+         then "a later open reads it back through the content tier" {
+@@ -134,7 +173,7 @@ spec "store/pack — segments, commit markers, the two tiers" {
+             let sealer = pack_at(root, "print-one")
+             let _ = pack_put(sealer, "unit", "first", "1", [])
+             let _ = seal(sealer)
+-            for f in segments_of(root) { let _ = remove(joined_path("${root}/store", f)) }
++            segments_gone(root)
+             let _ = pack_put(stale, "unit", "second", "2", [])
+             let refused = !seal(stale)
+             let fresh = pack_at(root, "print-one")
+@@ -151,9 +190,7 @@ spec "store/pack — segments, commit markers, the two tiers" {
+             let _ = pack_put(w, "unit", "b", "2", ["d2 b.av", "d9 shared.av"])
+             let _ = pack_put(w, "warn", "c", "3", ["d3 c.av"])
+             let _ = seal(w)
+-            for file in pack_files(root) {
+-                if file.starts_with("seg-") { let _ = remove(joined_path("${root}/store", file)) }
+-            }
++            segments_gone(root)
+             let r = pack_at(root, "print-one")
+             pack_suspects(r, ["a.av"], pack_readers(r)).length == 1 &&
+                 pack_suspects(r, ["shared.av"], pack_readers(r)).length == 2 &&
+@@ -199,9 +236,7 @@ spec "store/pack — segments, commit markers, the two tiers" {
+             let writer = pack_at(root, "print-one")
+             let _ = pack_put(writer, "unit", "k", "value", [])
+             let _ = seal(writer)
+-            for file in pack_files(root) {
+-                if file.starts_with("seg-") { let _ = remove(joined_path("${root}/store", file)) }
+-            }
++            segments_gone(root)
+             let reader = pack_at(root, "print-one")
+             let _ = pack_has(reader, "unit", "absent")
+             let _ = pack_get(reader, "unit", "k")
+@@ -209,4 +244,85 @@ spec "store/pack — segments, commit markers, the two tiers" {
+             t.hits == 1 && t.misses == 1 && t.values == 1 && t.bytes == 5
+         }
+     }
++    given "a seal over a body far larger than what it adds" {
++        then "folds only the new rows into a run that stands over the body" {
++            let r = pack_at(run_over("run", 2), "print-one")
++            pack_get(r, "unit", "k1") == "new1" &&
++                pack_get(r, "unit", "k40") == "v40" &&
++                run_counts(r).starts_with("2,")
++        }
++        then "a moved input names each reader once, by the run that wrote it last" {
++            let r = pack_at(run_over("run-suspects", 2), "print-one")
++            pack_suspects(r, ["shared.av"], pack_readers(r)).length == 62 &&
++                pack_suspects(r, ["moved.av"], pack_readers(r)).length == 2
++        }
++        then "a second seal folds the run above it, never the runs below" {
++            let root = run_over("run-fold", 1)
++            let before = pack_at(root, "print-one")
++            let _ = pack_has(before, "unit", "k0")
++            let below = run_counts(before).substring(2, run_counts(before).length)
++            let w = pack_at(root, "print-one")
++            let _ = pack_put(w, "unit", "extra", "e", [])
++            let _ = seal(w)
++            segments_gone(root)
++            let r = pack_at(root, "print-one")
++            pack_get(r, "unit", "extra") == "e" &&
++                pack_get(r, "unit", "k0") == "new0" &&
++                run_counts(r) == "2,${below}"
++        }
++        then "a run whose body is gone is skipped for the newest body that stands whole" {
++            let root = run_over("run-broken", 2)
++            let opened = pack_at(root, "print-one")
++            let _ = pack_has(opened, "unit", "k1")
++            let below = opened.sealed.get()[1].rev
++            let _ = remove(joined_path("${root}/store", "body-${below}.pack"))
++            let r = pack_at(root, "print-one")
++            pack_get(r, "unit", "k1") == "v1" && r.torn.get()
++        }
++    }
++    given "a seal that adds a quarter of the body or more" {
++        then "folds everything into one whole body" {
++            let r = pack_at(run_over("run-whole", 16), "print-one")
++            pack_get(r, "unit", "k3") == "new3" &&
++                pack_get(r, "unit", "k40") == "v40" &&
++                run_counts(r) == "64"
++        }
++    }
++    given "rows keyed and read by whole digests, the shape every family writes" {
++        then "read back whole: key, value and every read" {
++            let root = digest_rows("digests", 64)
++            let r = pack_at(root, "print-one")
++            let fam = "unit@own ${content_digest("print")}"
++            pack_get(r, fam, content_digest("k7")) == "v7" &&
++                (pack_reads(r, fam, content_digest("k7"), true) ?? []).join(",") == "${content_digest("d7")} input-7.av,${content_digest("s")} shared.av" &&
++                pack_suspects(r, ["input-7.av"], pack_readers(r)).length == 1 &&
++                pack_suspects(r, ["shared.av"], pack_readers(r)).length == 64
++        }
++        then "cost what they say: a row's family, key and digest are octets, never spellings" {
++            let root = digest_rows("digest-size", 256)
++            let w = pack_at(root, "print-one")
++            let _ = pack_has(w, "unit", "none")
++            let _ = sealed_whole(w)
++            let bytes = store_file_bytes(
++                "${root}/store",
++                file_name(latest_body("${root}/store") ?? ""),
++            ) ?? 0
++            w.sealed.get().length == 1 && bytes > 0 && bytes / 256 < 250
++        }
++    }
++    given "a row kept as octets that spell no text" {
++        then "reads back as those octets, from a segment and from a sealed body, and never as text" {
++            let root = pack_root("octets")
++            let raw = [0, 255, 128, 10].bytes()!
++            let w = pack_at(root, "print-one")
++            pack_put_octets(w, "answer", "k", raw, [])
++            let live = hex(pack_get_octets(pack_at(root, "print-one"), "answer", "k") ?? "".bytes())
++            let _ = seal(w)
++            segments_gone(root)
++            let r = pack_at(root, "print-one")
++            live == "00ff800a" &&
++                hex(pack_get_octets(r, "answer", "k") ?? "".bytes()) == "00ff800a" &&
++                pack_get(r, "answer", "k") == null
++        }
++    }
+ }
+diff --git a/packages/std-avrac/src/compiler/tests/record_held_runs_test.av b/packages/std-avrac/src/compiler/tests/record_held_runs_test.av
+index b5cf6b5c..5e4a1d1a 100644
+--- a/packages/std-avrac/src/compiler/tests/record_held_runs_test.av
++++ b/packages/std-avrac/src/compiler/tests/record_held_runs_test.av
+@@ -28,7 +28,7 @@ fn runs_after(n: int) -> int {
+     let ws = test_workspace(memory_host(files, files.keys()), "/w")
+     let m = ws.module_path_of(HERE)
+     let key = ws.record_key(m)
+-    let rows: Cell<Map<string, string>> = Cell.new({})
++    let rows: Cell<Map<string, Bytes>> = Cell.new({})
+     let store = store_with("/w/.avra-cache", "print", Keeping.Aside(rows))
+     ws.hold_only(HELD)
+     let _ = ws.ran_by(store, HELD)

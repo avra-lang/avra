@@ -1,0 +1,138 @@
+// THE PACK'S CONTRACT: one writer's segment, each frame ended by a commit
+// marker; a later open reads what committed; a segment whose plain header
+// names another compiler's print is read all the same — a row's stamp, which is part
+// of its family's name, says who may address it.
+use @std.time.{stamp}
+use @std.io.{list_dir, remove, read_bytes, write_bytes}
+use @std.path.{joined_path, file_name}
+use compiler.store.{
+    Pack,
+    pack_at,
+    pack_put,
+    pack_has,
+    pack_get,
+    pack_suspects,
+    pack_readers,
+    pack_reads,
+    pack_traffic,
+    seal,
+    val_path,
+    content_digest,
+    store_file_bytes,
+    sealed_whole,
+    latest_body,
+}
+
+/// `n` rows as a family writes them: a long stamped family, digest keys, and each row reading
+/// its own input and one shared input at their digests; sealed, with the segments gone.
+fn digest_rows(name: string, n: int) -> string {
+    let root = pack_root(name)
+    let fam = "unit@own ${content_digest("print")}"
+    let w = pack_at(root, "print-one")
+    for i in 0..n {
+        let reads = ["${content_digest("d${i}")} input-${i}.av", "${content_digest("s")} shared.av"]
+        let _ = pack_put(w, fam, content_digest("k${i}"), "v${i}", reads)
+    }
+    let _ = seal(w)
+    segments_gone(root)
+    root
+}
+
+/// One store directory per case, so no case reads another's segments.
+fn pack_root(name: string) -> string { "/tmp/avra-pack-test/${name}-${stamp()}" }
+
+/// The store's files, so a read-only open can be held to creating none.
+fn pack_files(root: string) -> List<string> {
+    match list_dir("${root}/store") { .Ok(names) -> names, .Err(_) -> [] }
+}
+
+/// A row sealed into a body with its segment gone, then its values overwritten: the
+/// record stands in the body's index and no value can be read back.
+fn damaged_root(name: string) -> string {
+    let root = pack_root(name)
+    let writer = pack_at(root, "print-one")
+    let _ = pack_put(writer, "unit", "k", "v", [])
+    let _ = seal(writer)
+    segments_gone(root)
+    let _ = write_bytes(val_path("${root}/store", writer.val_rev.get()), "X".bytes())
+    root
+}
+
+/// The store's segment files.
+/// `n` rows reading one shared input, sealed into a body with their segment gone.
+fn sealed_many(name: string, n: int) -> string {
+    let root = pack_root(name)
+    let w = pack_at(root, "print-one")
+    for i in 0..n { let _ = pack_put(w, "unit", "k${i}", "v${i}", ["d9 shared.av"]) }
+    let _ = seal(w)
+    segments_gone(root)
+    root
+}
+
+fn segments_of(root: string) -> List<string> { [f for f in pack_files(root) if f.starts_with("seg-")] }
+
+/// Each open run's row count, newest first.
+fn run_counts(p: Pack) -> string { ["${s.count}" for s in p.sealed.get()].join(",") }
+
+/// Every segment removed, so an open reads the sealed runs alone.
+fn segments_gone(root: string) {
+    for f in segments_of(root) { let _ = remove(joined_path("${root}/store", f)) }
+}
+
+/// The sealed body of `sealed_many`, then `fresh` rows over it written and sealed, with
+/// the segments gone again: `k0`..`k<fresh>` answer `new<i>` and read `d1 moved.av`.
+fn run_over(name: string, fresh: int) -> string {
+    let root = sealed_many(name, 64)
+    let w = pack_at(root, "print-one")
+    for i in 0..fresh { let _ = pack_put(w, "unit", "k${i}", "new${i}", ["d1 moved.av"]) }
+    let _ = seal(w)
+    segments_gone(root)
+    root
+}
+
+spec "probe" {
+    given "p" {
+        then "q" {
+            let root = pack_root("probe-suspects")
+            let w = pack_at(root, "print-one")
+            let _ = pack_put(w, "unit", "a", "1", ["d1 a.av", "d9 shared.av"])
+            let _ = pack_put(w, "unit", "b", "2", ["d2 b.av", "d9 shared.av"])
+            let _ = pack_put(w, "warn", "c", "3", ["d3 c.av"])
+            let _ = seal(w)
+            segments_gone(root)
+            let r = pack_at(root, "print-one")
+            eprintln(
+                "P get a=${pack_get(r, "unit", "a") ?? "-"} c=${pack_get(r, "warn", "c") ?? "-"}",
+            )
+            eprintln(
+                "P reads a=${(pack_reads(r, "unit", "a", true) ?? ["NULL"]).join(",")} c=${(pack_reads(r, "warn", "c", true) ?? ["NULL"]).join(",")}",
+            )
+            eprintln(
+                "P sus a=${pack_suspects(r, ["a.av"], pack_readers(r)).join(";")} shared=${pack_suspects(r, ["shared.av"], pack_readers(r)).length} c=${pack_suspects(r, ["c.av"], pack_readers(r)).length}",
+            )
+            let root2 = run_over("probe-whole", 16)
+            let r2 = pack_at(root2, "print-one")
+            eprintln(
+                "P whole k3=${pack_get(r2, "unit", "k3") ?? "-"} k40=${pack_get(r2, "unit", "k40") ?? "-"} runs=${run_counts(r2)}",
+            )
+            let root3 = digest_rows("probe-digests", 64)
+            let r3 = pack_at(root3, "print-one")
+            let fam = "unit@own ${content_digest("print")}"
+            eprintln(
+                "P dig get=${pack_get(r3, fam, content_digest("k7")) ?? "-"} reads=${(pack_reads(r3, fam, content_digest("k7"), true) ?? ["NULL"]).join(",")}",
+            )
+            eprintln(
+                "P dig bytes=${store_file_bytes("${root3}/store", "body-1.pack") ?? 0} files=${pack_files(root3).join(",")}",
+            )
+            let root4 = digest_rows("probe-size", 256)
+            let w4 = pack_at(root4, "print-one")
+            let _ = pack_has(w4, "unit", "none")
+            let _ = sealed_whole(w4)
+            let latest = latest_body("${root4}/store") ?? ""
+            eprintln(
+                "P size runs=${w4.sealed.get().length} latest=${latest} bytes=${store_file_bytes("${root4}/store", file_name(latest)) ?? 0} files=${pack_files(root4).join(",")}",
+            )
+            true
+        }
+    }
+}
