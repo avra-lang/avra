@@ -558,6 +558,12 @@ avra: $(COMPILER_OBJS)
 	@# climbs with reads this spelling, where only today's knows `--release`.
 	@sh tools/capped.sh build/avra-build.out 200000 env AVRA_PROGRAM_MODE=release ./avra build packages/cli || { cat build/avra-build.out; exit 1; }
 	@mkdir -p build
+	@# A PRODUCT WHOSE GENERATED PARSER IS STALE IS NEVER INSTALLED: it refuses to parse, so it is set
+	@# aside at build/avra-stale and the standing compiler stays. Its own grammar makes the fresh file.
+	@packages/cli/src/main grammar --untold > build/untold_parser.av.gen && cmp -s build/untold_parser.av.gen packages/std-avrac/src/compiler/untold_parser.av || { \
+	  mv -f packages/cli/src/main build/avra-stale; \
+	  echo "avra: compiler/untold_parser.av is not what this tree's grammar makes — build/avra was not replaced:"; \
+	  echo "avra:   ./wisp parser --write --avra build/avra-stale && make avra"; exit 1; }
 	@cp packages/cli/src/main build/avra.next && mv -f build/avra.next build/avra
 	@codesign -f -s - build/avra 2>/dev/null || true
 	@rm -f packages/cli/src/main packages/cli/src/main.av.ll
@@ -1309,17 +1315,13 @@ pool-check:
 
 # THE GRAMMAR'S CLAIM ON THE PARSER. compiler/untold_parser.av is the
 # assembled grammar's untold run written as code, one fn per rule. A
-# parser the grammar no longer prints never runs (`avra()` holds it to
-# the grammar's print and falls back to the engine), so a stale one is
-# a slow compiler, never a wrong one; this keeper refuses it. A fresh one
+# compiler whose parser another grammar made refuses to parse (`avra()`;
+# AVRA_ENGINE_PARSE is the one fallback), `make avra` never installs one,
+# and this keeper refuses the file (`./wisp parser`). A fresh one
 # is then held to the engine on every file of std-avrac: a form whose
 # rule the generated parser cannot hold traps or differs there.
 parser:
-	@./avra grammar --untold > build/untold_parser.av.gen
-	@cmp -s build/untold_parser.av.gen packages/std-avrac/src/compiler/untold_parser.av || { \
-	  echo "parser: packages/std-avrac/src/compiler/untold_parser.av is not what the grammar makes — it is generated, never edited:"; \
-	  echo "parser:   ./avra grammar --untold > packages/std-avrac/src/compiler/untold_parser.av"; \
-	  diff packages/std-avrac/src/compiler/untold_parser.av build/untold_parser.av.gen 2>/dev/null | head -20; exit 1; }
+	@./wisp parser
 	@./avra parsers packages/std-avrac > build/parsers.out 2>&1 || { \
 	  grep -vE '^watch' build/parsers.out | tail -20; \
 	  echo "parser: the generated parser and the grammar engine part on a file of std-avrac, whose feature cases hold every form"; exit 1; }
