@@ -11,19 +11,26 @@
 # fuzz, soak and gallery packages are its harnesses, never a program's import — but in a checkout the
 # compiler is a program's import (cli's), so STD_ANSWERS_COMPILER=1 judges std-avrac too. Prints one
 # line: how many packages, how many packs, how many kilobytes.
-# THE ANSWERS ARE KEYED BY WHAT MADE THEM: the compiler's bytes, where std and `out` stand, and every
-# file of the packages judged. Where `out` holds answers of that key, they stand as they are and
+# THE ANSWERS ARE KEYED BY WHAT MADE THEM: the compiler's bytes, this writer's, where std and `out`
+# stand, and every file of the packages judged. Where `out` holds answers of that key, they stand as they are and
 # nothing is worked out; any of it moved, and every package is judged again, since a package's
 # verdict reads the packages it uses.
 # A PACKAGE ITS OWN COMPILER REFUSES fails an install; STD_ANSWERS_REFUSED=skip (a checkout, whose std
 # may be mid-edit) keeps its answers, which are held to what they read, and leaves it no verdict, so a
 # program judges its files.
-# THE PACKAGES ARE WORKED OUT AT ONCE, one job a core (STD_ANSWERS_JOBS), each in a scratch cache of
-# its own, the prelude first so every job reads its answers; each job's verdict is its own file until
-# all are in. The packs are compacted into one at the end: the kept files name every question in
-# them, so the compaction drops nothing, and a reader maps one pack.
+# THE ANSWERS ARE THE SAME EVERY RUN, however the jobs are scheduled: a job that takes up an answer
+# another job published keeps other records than one that works it out, so no job reads what another
+# job of its wave writes. The packages are worked out in WAVES — each wave the packages whose std
+# imports are all in earlier waves, the prelude the first — one job a core (STD_ANSWERS_JOBS), each in
+# a scratch cache of its own over a private store linked from what the waves before it made (a pack
+# is immutable, so a link is a copy); a wave's stores are folded in and compacted before the next
+# begins. A build lowers its bodies in this process alone (AVRA_WORK_AHEAD_OFF): forked lowerers
+# publish into the store as they finish. Each job's verdict is its own file until all are in. The
+# packs are compacted into one at the end: the kept files name every question in them, so the
+# compaction drops nothing, and a reader maps one pack.
 #   sh tools/std_answers.sh <avra> <std> <out> [package…]   (default every std package but those)
 set -u
+export AVRA_WORK_AHEAD_OFF=1
 # one package's verdict and answers, a job of the run below: `--one <avra> <package> <out> <scratch>`
 if [ "${1:-}" = --one ]; then
     avra=$2; p=$3; out=$4; job="$5/$(basename "$3")"
@@ -66,10 +73,11 @@ judged() {
         echo "$p"
     done
 }
-# the key of what the answers are made from: the compiler's bytes, the paths, every judged file
+# the key of what the answers are made from: the compiler's bytes, this writer's, the paths, every judged file
 keyed() {
     {
         sha256sum < "$avra"
+        sha256sum < "$0"
         echo "$std $out"
         for p in $(judged); do find "$p/" -name .avra-cache -prune -o -type f -print; done | LC_ALL=C sort | xargs sha256sum
     } | sha256sum | cut -c1-64
@@ -84,12 +92,49 @@ trap 'find "$scratch" -delete' EXIT
 mkdir -p "$out"
 find "$out" -mindepth 1 -delete
 jobs=${STD_ANSWERS_JOBS:-$(nproc 2> /dev/null || echo 2)}
-# the prelude first, alone: every other package reads it, and reads its answers once they stand
-first=$(judged | grep '/std-prelude$' || :)
-rest=$(judged | grep -v '/std-prelude$' || :)
-for p in $first; do sh "$0" --one "$avra" "$p" "$out" "$scratch" || exit 1; done
-# shellcheck disable=SC2086
-printf '%s\n' $rest | xargs -r -P "$jobs" -I{} sh "$0" --one "$avra" {} "$out" "$scratch" || exit 1
+# the judged std packages the package at `$1` imports, one a line: the prelude is every package's
+imports() {
+    { [ "$(basename "$1")" = std-prelude ] || echo std-prelude
+      grep -rhoE '@std\.[a-z_]+' "$1/src" --include='*.av' 2> /dev/null | sed 's/@std\./std-/'; } |
+        LC_ALL=C sort -u | while read -r n; do [ "$n" != "$(basename "$1")" ] && judged | grep -qx "$std/$n" && echo "$n"; done
+}
+# the next wave: every package left whose imports are all made, sorted, on one line; an import
+# cycle's members, none of which can wait for another, are one wave
+wave() {
+    for p in $left; do
+        ready=1
+        for i in $(imports "$p"); do case " $made " in *" $i "*) ;; *) ready=0 ;; esac; done
+        [ "$ready" = 0 ] || printf '%s ' "$p"
+    done
+}
+# every file of the store `$1` not yet in the store `$2`, linked there: a pack, a kept file and a
+# frontier are each named by what they hold and never written again, so a link is a copy
+linked() {
+    for f in "$1"/*; do
+        [ -f "$f" ] || continue
+        [ -e "$2/${f##*/}" ] || ln "$f" "$2/${f##*/}" || return 1
+    done
+}
+# what a wave's jobs made, folded into `out` and compacted
+folded() {
+    for p in "$@"; do linked "$scratch/stores/$(basename "$p")" "$out" || return 1; done
+    (cd "$scratch" && AVRA_CACHE_DIR="$scratch/fold" AVRA_MACHINE_STORE_DIR="$out" "$avra" cache clean >/dev/null 2>&1)
+}
+left=$(judged | LC_ALL=C sort | tr '\n' ' ')
+made=""
+while [ -n "$(printf '%s' "$left" | tr -d ' ')" ]; do
+    now=$(wave)
+    [ -n "$now" ] || now=$left
+    for p in $now; do mkdir -p "$scratch/stores/$(basename "$p")" && linked "$out" "$scratch/stores/$(basename "$p")" || exit 1; done
+    # shellcheck disable=SC2086
+    printf '%s\n' $now | xargs -r -P "$jobs" -I{} sh -c 'sh "$0" --one "$1" "$2" "$3/stores/$(basename "$2")" "$3"' "$0" "$avra" {} "$scratch" || exit 1
+    # shellcheck disable=SC2086
+    folded $now || { echo "std_answers: a wave's answers were not folded" >&2; exit 1; }
+    for p in $now; do made="$made $(basename "$p")"; done
+    rest=$(for p in $left; do case " $now " in *" $p "*) ;; *) printf '%s ' "$p" ;; esac; done)
+    [ "$rest" != "$left" ] || { echo "std_answers: a wave made nothing of $left" >&2; exit 1; }
+    left=$rest
+done
 n=$(judged | wc -l | tr -d ' ')
 for v in "$scratch"/*/verdict/verdict-*; do [ ! -f "$v" ] || cat "$v" >> "$out/$(basename "$v")"; done
 # one pack: what every job published, folded with nothing dropped
