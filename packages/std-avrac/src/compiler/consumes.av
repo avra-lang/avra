@@ -22,7 +22,10 @@ impl Workspace {
         // A compile-time run infers no consuming seat and records
         // nothing: the references relation settles after typing, and
         // an unrecorded row leaves the program's own ask to decide.
-        if self.comptime_active() { return filled(n, false) }
+        if self.comptime_active() {
+            eprintln("DBGC comptime ${x.name}")
+            return filled(n, false)
+        }
         // A HELD DECLARATION'S BODY IS READ, NEVER RE-GUESSED: the bit this
         // scan would infer from a body this attempt does not have is
         // already sitting in the declaration's own kept record line —
@@ -39,11 +42,13 @@ impl Workspace {
             return kept
         }
         if x.root == null || self.taken_as_value(d) {
+            eprintln("DBGC none ${x.name} root=${x.root == null}")
             let none = filled(n, false)
             self.decls.record_consumed(d, none)
             return none
         }
         let seats: List<TypeId> = self.decls.sig(d)?.fn_sig()?.params ?? []
+        eprintln("DBGC scan ${x.name} n=${n} seats=${seats.length} el=${[if self.eligible_seat(x, i, seats) { "1" } else { "0" } for i in 0..n].join("")}")
         mut cx = Consumed {
             store: self.decls.store(d),
             names: self.names_of(d),
