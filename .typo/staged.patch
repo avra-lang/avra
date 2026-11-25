@@ -1,0 +1,422 @@
+diff --git a/packages/std-avrac/src/compiler/derive.av b/packages/std-avrac/src/compiler/derive.av
+index c046456b..95a9f0e8 100644
+--- a/packages/std-avrac/src/compiler/derive.av
++++ b/packages/std-avrac/src/compiler/derive.av
+@@ -539,8 +539,8 @@ impl Workspace {
+     /// The program derived with nothing held — the hold's oracle.
+     fn from_sources(entry: string?, want: Want) -> Result<Derived, string> { self.again(Attempt { entry: entry, want: want, hold: false }) }
+ 
+-    /// WHETHER THE STORE STANDS IN FOR A FILE under this want.
+-    fn stands_in(s: Store, okey: string, want: Want) -> bool {
++    /// Whether the rows a file's object key names are kept under this want.
++    fn kept_under(s: Store, okey: string, want: Want) -> bool {
+         if !s.has(Stored.Warn, said_key(okey)) ||
+             !s.has(Stored.Unit, self.asks_key(okey)) ||
+             !s.has(Stored.Unit, self.codes_key(okey)) {
+@@ -889,7 +889,7 @@ impl Workspace {
+         let _ = self.keep_const_units(store, moved)
+         let defects = self.defects.get()
+         if defects.length > p.defects.length { fail Turn.Refused(p.rendered(defects.drop(p.defects.length))) }
+-        let adrift = [path for path in held_paths(self) if !self.stands_in(store, self.held_okey(store, path), at.want)]
++        let adrift = [path for path in held_paths(self) if !self.kept_under(store, self.held_okey(store, path), at.want)]
+         if !adrift.is_empty() { fail at.adrift(adrift) }
+         let bodies = filed(lo.unmanaged, (b) -> b.file)
+         let statics = filed(lo.statics, (s) -> s.file)
+@@ -1187,7 +1187,7 @@ impl Workspace {
+     fn read_unkept(store: Store, readers: List<string>, want: Want) {
+         for reader in readers {
+             if self.hold.forced.get().get(reader) == null &&
+-                !self.stands_in(store, self.held_okey(store, reader), want) {
++                !self.file_rows_stand(store, reader, want) {
+                 self.force_read(reader, Reads.Unkept)
+             }
+         }
+@@ -1363,7 +1363,7 @@ fn boxed_name(parts: List<string>, path: string) -> string? {
+ }
+ 
+ /// A held file's `Said` under `want`: a diagnostics want reads its rule
+-/// findings beside it, and `stands_in` held it only where they were kept.
++/// findings beside it, and a file is held only where its rows stand.
+ fn held_said(store: Store, okey: string, said: Said, want: Want) -> Said? {
+     match want {
+         .Diagnostics -> {
+diff --git a/packages/std-avrac/src/compiler/filesaid.av b/packages/std-avrac/src/compiler/filesaid.av
+index b0b4ae39..9419fed5 100644
+--- a/packages/std-avrac/src/compiler/filesaid.av
++++ b/packages/std-avrac/src/compiler/filesaid.av
+@@ -32,6 +32,7 @@ enum FileRead {
+     SeenSet
+     SeenPart(string)
+     SeenForms(string)
++    Words(string)
+ }
+ 
+ impl FileRead {
+@@ -46,6 +47,7 @@ impl FileRead {
+             .SeenSet -> "seen-set ${path}",
+             .SeenPart(m) -> "sp ${m}",
+             .SeenForms(m) -> "sf ${m}",
++            .Words(m) -> "words ${m}",
+         }
+     }
+ }
+@@ -65,6 +67,7 @@ fn file_read_of(name: string, path: string) -> FileRead? {
+         name.starts_with("seen ") -> FileRead.Seen(name.substring(5, name.length))
+         name.starts_with("sp ") -> FileRead.SeenPart(name.substring(3, name.length))
+         name.starts_with("sf ") -> FileRead.SeenForms(name.substring(3, name.length))
++        name.starts_with("words ") -> FileRead.Words(name.substring(6, name.length))
+         _ -> null
+     }
+ }
+@@ -78,7 +81,7 @@ fn answer_in(k: KeyParts, r: FileRead) -> string? {
+         .Gathered -> digest_of(fields_wire(k.gathered)),
+         .Seen(m) -> seen_answer(k, m),
+         .SeenSet -> digest_of(seen_digest(k.seen)),
+-        .SeenPart(_) or .SeenForms(_) -> null,
++        .SeenPart(_) or .SeenForms(_) or .Words(_) -> null,
+     }
+ }
+ 
+@@ -111,8 +114,29 @@ impl Workspace {
+     fn keep_file_row(store: Store, path: string, family: Stored, key: string, bytes: string) {
+         if store.get(family, key) == bytes && self.file_kept(store, path, family, key) { return }
+         let k = self.key_parts_cached(store, self.module_path_of(path), path)
++        let words = Reading {
++            name: FileRead.Words(k.module).name(path),
++            digest: self.words_at(path),
++        }
+         let _ = store
+-            .keep_reading(family, key, bytes, reads_of_parts(k).concat(self.seen_stamps(store, k)))
++            .keep_version(
++                family,
++                key,
++                bytes,
++                reads_of_parts(k).concat(self.seen_stamps(store, k)).concat([words]),
++            )
++    }
++
++    /// THE COMPONENT WORDS A FILE PARSES UNDER: each file beside it in its module that declares
++    /// one, with the names it declares — the words `unread_words` hands its parse. A sibling
++    /// that renames, adds or drops a component moves every file of the module.
++    fn words_at(path: string) -> string {
++        digest_of(
++            joined(
++                ["${s}\t${joined(component_names(self, s), ",")}" for s in self.declaring_siblings(path)],
++                "\n",
++            ),
++        )
+     }
+ 
+     /// What each module a file reads stood as when its answer was kept — its frame and its plain
+@@ -139,10 +163,40 @@ impl Workspace {
+         store.get_valid(family, key, (name) -> self.stood_on(k, name))
+     }
+ 
+-    /// Whether a file's kept answer is there and still stands: unsuspected rows stand with
+-    /// nothing derived, the rest are judged by their reads.
++    /// Whether a version of a file's kept answer is there and still stands.
+     fn file_kept(store: Store, path: string, family: Stored, key: string) -> bool {
+-        let unsuspected = store.unsuspected(family, key, self.suspect_rows(store))
++        self.kept_version(store, path, family, key) != null
++    }
++
++    /// The bytes of a file's kept answer that still stands.
++    fn kept_answer(store: Store, path: string, family: Stored, key: string) -> string? {
++        let at? = self.kept_version(store, path, family, key) else { return null }
++        store.get(family, at)
++    }
++
++    /// The version of a file's kept answer that still stands, as the store chooses it.
++    fn kept_version(store: Store, path: string, family: Stored, key: string) -> string? {
++        let suspects = self.suspect_rows(store)
++        store
++            .valid_version(
++                family,
++                key,
++                (k: string) -> self.version_kept(store, path, family, k, k == key, suspects),
++            )
++    }
++
++    /// Whether one version stands: the newest, unsuspected, stands with nothing derived; the rest
++    /// are judged by their reads. The suspect set compares inputs against the newest row alone, so
++    /// an older version's quiet there says nothing.
++    fn version_kept(
++        store: Store,
++        path: string,
++        family: Stored,
++        key: string,
++        newest: bool,
++        suspects: Map<string, bool>,
++    ) -> bool {
++        let unsuspected = newest && store.unsuspected(family, key, suspects)
+         if unsuspected && !db_verified_files() { return true }
+         let kept = self.file_judged(store, path, family, key)
+         if unsuspected && !kept {
+@@ -158,16 +212,9 @@ impl Workspace {
+     /// TEXT having moved, not its narrowed interface, so a bystander fn would otherwise read every
+     /// reader of its module. The on-demand load's gate: a file whose rows so stand is never met.
+     fn file_rows_stand(store: Store, path: string, want: Want) -> bool {
+-        let suspects = self.suspect_rows(store)
+-        let said_key = self.said_row(path)
+-        let asks_key = self.asks_row(path)
+-        let codes_key = self.codes_row(path)
+-        let said = store.unsuspected(Stored.Warn, said_key, suspects) ||
+-            self.file_judged(store, path, Stored.Warn, said_key)
+-        let asks = store.unsuspected(Stored.Unit, asks_key, suspects) ||
+-            self.file_judged(store, path, Stored.Unit, asks_key)
+-        let codes = store.unsuspected(Stored.Unit, codes_key, suspects) ||
+-            self.file_judged(store, path, Stored.Unit, codes_key)
++        let said = self.file_kept(store, path, Stored.Warn, self.said_row(path))
++        let asks = self.file_kept(store, path, Stored.Unit, self.asks_row(path))
++        let codes = self.file_kept(store, path, Stored.Unit, self.codes_row(path))
+         if want is .Diagnostics {
+             said && asks && codes && self.file_ruled(store, path)
+         } else {
+@@ -237,6 +284,7 @@ impl Workspace {
+             .Text -> digest_of(self.text_digest(path)) == r.digest,
+             .SeenPart(_) or .SeenForms(_) -> true,
+             .Seen(_) or .SeenSet -> cheap || self.stood_on(self.key_parts_cached(store, m, path), r.name) == r.digest,
++            .Words(_) -> self.words_at(path) == r.digest,
+             .Run(_) or .Runs or .Gathered -> self.lite_answer(store, m, path, read) == r.digest,
+         }
+     }
+@@ -258,7 +306,7 @@ impl Workspace {
+     /// The digest a named answer has in these parts now.
+     fn stood_on(k: KeyParts, name: string) -> string? {
+         let r? = file_read_of(name, k.path) else { return null }
+-        answer_in(k, r)
++        match r { .Words(_) -> self.words_at(k.path), rest -> answer_in(k, r) }
+     }
+ 
+     /// Whether a file's rule findings were kept, rendered and as rows, and still stand.
+@@ -271,14 +319,13 @@ impl Workspace {
+     /// and what its analysis read, both named by the rows' reads, so a file read only because
+     /// something it reads re-ran is not walked by the rules again.
+     fn kept_ruled(store: Store, path: string) -> Ruled? {
+-        if !self.file_ruled(store, path) { return null }
+-        let rendered? = store.get(Stored.Warn, self.rules_row(path)) else { return null }
+-        let rows? = store.get(Stored.Warn, self.findings_row(path)) else { return null }
++        let rendered? = self.kept_answer(store, path, Stored.Warn, self.rules_row(path)) else { return null }
++        let rows? = self.kept_answer(store, path, Stored.Warn, self.findings_row(path)) else { return null }
+         Ruled { rendered: rendered, rows: findings_read(rows) }
+     }
+ 
+     /// A held file's `Said` under `want`: a diagnostics want reads its rule
+-    /// findings beside it, and `stands_in` held it only where they were kept.
++    /// findings beside it, and a file is held only where its rows stand.
+     fn held_said(store: Store, path: string, said: Said, want: Want) -> Said? {
+         match want {
+             .Diagnostics -> {
+@@ -312,10 +359,13 @@ impl Workspace {
+         let paths = self.decls.file_paths()
+         if self.keys.suspects.get().files == paths.length { return self.keys.suspects.get().rows }
+         mut row_of: Map<string, string> = {}
+-        for p in paths { row_of.set(store.suspect_key(Stored.Warn, self.said_row(p)), p) }
++        for p in paths {
++            for k in store.versions(Stored.Warn, self.said_row(p)) { row_of.set(store.suspect_key(Stored.Warn, k), p) }
++        }
+         let edited = [p for p in paths if self.text_moved(store, p)]
+         mut moved = [FileRead.Text.name(p) for p in edited]
+             .concat([self.seen_name(p) for p in edited])
++            .concat([FileRead.Words(self.module_of(p)).name(p) for p in edited])
+         mut rows: Map<string, bool> = {}
+         mut grown = true
+         while grown {
+diff --git a/packages/std-avrac/src/compiler/producers.av b/packages/std-avrac/src/compiler/producers.av
+index b99f3d1e..3c5ab9dc 100644
+--- a/packages/std-avrac/src/compiler/producers.av
++++ b/packages/std-avrac/src/compiler/producers.av
+@@ -456,13 +456,14 @@ impl Workspace {
+         digest_of("${seen}\n${joined(self.module_files(m), "\n")}")
+     }
+ 
+-    /// The compile-time-run tokens of a file, off its module's row.
++    /// The compile-time-run tokens of a file, off its module's row. A pending token is no
++    /// answer yet: it is kept only once every read is judged.
+     fn lite_runs(pr: Producers, path: string) -> List<string> {
+         let known: List<string>? = self.hold.lite_runs.get().get(path)
+         if known != null { return known! }
+         let line? = pr.files.find(it[1] == path) else { return [] }
+         let made = [self.read_token(path, read) for read in runs_of(line) ?? []]
+-        self.hold.lite_runs.put(path, made)
++        if !made.any(it.starts_with("?")) { self.hold.lite_runs.put(path, made) }
+         made
+     }
+ 
+diff --git a/packages/std-avrac/src/compiler/record.av b/packages/std-avrac/src/compiler/record.av
+index 2c7db51d..bc81aa05 100644
+--- a/packages/std-avrac/src/compiler/record.av
++++ b/packages/std-avrac/src/compiler/record.av
+@@ -1032,7 +1032,7 @@ fn read_why(
+     if forced != null { return forced! }
+     if !written_from(at, ws.text_digest(f)) { return Reads.Moved }
+     if ws.reads_pending(store, m, f) { return null }
+-    if !ws.stands_in(store, obj_key_cached(ws, store, m, f), want) { return Reads.Unkept }
++    if !ws.file_rows_stand(store, f, want) { return Reads.Unkept }
+     let rows = file_rows(record_fields(ws, store, m), at)
+     if !ws.const_rows_ready(store, m, f, rows) { return Reads.Consts }
+     if !holdable(rows) { return Reads.Unholdable }
+diff --git a/packages/std-avrac/src/compiler/store/store.av b/packages/std-avrac/src/compiler/store/store.av
+index e37e3423..b77c343d 100644
+--- a/packages/std-avrac/src/compiler/store/store.av
++++ b/packages/std-avrac/src/compiler/store/store.av
+@@ -11,6 +11,7 @@
+ //! A FILE ROW IS PRESENT ONLY WHEN ITS EDGES ARE, so a write that never finished reads
+ //! as ABSENT rather than as half a value. A packed row is present once its commit
+ //! marker lands, which is the same law one mechanism over.
++use @std.text.{parse_int}
+ use @std.io.{exists, read_text, write_text, read_bytes, write_bytes, make_dirs, remove}
+ use @std.path.{joined_path}
+ use @std.relation.engine.{map_cell}
+@@ -185,6 +186,19 @@ export fn store_stamped(root: string, print: string, producers: Producers, keepi
+ /// How a producer reads in the trace.
+ fn stamp_word(p: Producer) -> string { match p { .Hashed(_) -> "shared", .Absent -> "absent" } }
+ 
++/// HOW MANY VERSIONS OF ONE SAVED ANSWER A NAME KEEPS. An edit and its undo each leave an
++/// answer that will be asked again; four holds that and one round more before the least
++/// recently valid is let go, and bounds what one lookup judges. A name a file's edits wrote
++/// grows to this many rows; seals fold them like any row, and the store's collection lets an
++/// unreachable one go.
++const VERSIONS_KEPT: int = 4
++
++/// Where an older version of a name's answer is kept: the one spelling of a slot.
++fn slot_key(key: string, slot: int) -> string { "${key}\tv${slot}" }
++
++/// Where a name's older versions are listed, most recently valid first.
++fn order_key(key: string) -> string { "${key}\torder" }
++
+ /// ONE READ OF A SAVED ANSWER: what was read, named by its stable name, and the digest
+ /// of exactly what came back. A name holds no newline; a digest holds no space and is
+ /// not empty.
+@@ -366,13 +380,60 @@ impl Store {
+         self.keep(family, key, bytes, [r.spelled() for r in reads])
+     }
+ 
+-    /// THE SAVED-ANSWER RULE, PULLED: the row's bytes only if every read it was kept with
+-    /// still has the digest it was read at. `now` answers a name's digest at this moment,
+-    /// absent for a name that cannot be read. A row kept with no pairs, or whose reads
+-    /// cannot be read back, is a miss — no other check stands in.
++    /// REMEMBER ONE MORE VERSION OF AN ANSWER: `keep_reading`, with the answer it replaces kept
++    /// as an older version. For an answer that is whole in its row — never one that names an
++    /// artifact kept elsewhere, which has one version only.
++    fn keep_version(family: Stored, key: string, bytes: string, reads: List<Reading>) -> bool {
++        if reads.any(!it.writable()) { return false }
++        let read = [r.spelled() for r in reads]
++        self.shelve_latest(family, key, bytes, read)
++        self.keep(family, key, bytes, read)
++    }
++
++    /// THE SAVED-ANSWER RULE, PULLED: the bytes of the version whose every read still has the
++    /// digest it was read at. `now` answers a name's digest at this moment, absent for a name
++    /// that cannot be read. A row kept with no pairs, or whose reads cannot be read back, is a
++    /// miss — no other check stands in.
+     fn get_valid(family: Stored, key: string, now: fn(string) -> string?) -> string? {
+-        if !self.holds(family, key, now) { return null }
+-        self.get(family, key)
++        let at? = self.valid_version(family, key, (k) -> self.holds(family, k, now)) else { return null }
++        self.get(family, at)
++    }
++
++    /// WHICH VERSION OF A NAME STANDS — the one place a version is chosen. Judged newest first,
++    /// then most recently valid; an older one that stands becomes the most recently valid.
++    fn valid_version(family: Stored, key: string, stands: fn(string) -> bool) -> string? {
++        if stands(key) { return key }
++        let slots = self.older_slots(family, key)
++        let slot? = slots.find((n: int) -> stands(slot_key(key, n))) else { return null }
++        self.ordered(family, key, [slot].concat(slots.filter(it != slot)))
++        slot_key(key, slot)
++    }
++
++    /// Every version of a name: its newest, then the older ones, most recently valid first.
++    fn versions(family: Stored, key: string) -> List<string> {
++        [key].concat([slot_key(key, n) for n in self.older_slots(family, key)])
++    }
++
++    /// The older versions' slots, most recently valid first.
++    fn older_slots(family: Stored, key: string) -> List<int> {
++        let text = self.get(family, order_key(key)) ?? ""
++        [n! for w in text.split(" ") for n in [parse_int(w)] if n != null]
++    }
++
++    /// The name's newest answer, moved to an older slot before `bytes` replaces it — the
++    /// least recently valid version let go when every slot is taken.
++    fn shelve_latest(family: Stored, key: string, bytes: string, read: List<string>) {
++        let had? = self.get(family, key) else { return }
++        let had_read = self.reads_of(family, key) ?? []
++        if had == bytes && joined(had_read, "\n") == joined(read, "\n") { return }
++        let slots = self.older_slots(family, key)
++        let slot = (0..VERSIONS_KEPT - 1).find((n: int) -> !slots.contains(n)) ?? slots[slots.length - 1]
++        let _ = self.keep(family, slot_key(key, slot), had, had_read)
++        self.ordered(family, key, [slot].concat(slots.filter(it != slot)))
++    }
++
++    fn ordered(family: Stored, key: string, slots: List<int>) {
++        let _ = self.keep(family, order_key(key), joined(["${n}" for n in slots], " "), [])
+     }
+ 
+     /// Whether a row's reads all still have their digests — the rule alone, with no value
+diff --git a/packages/std-avrac/src/compiler/tests/store_test.av b/packages/std-avrac/src/compiler/tests/store_test.av
+index 033b8001..a09797d9 100644
+--- a/packages/std-avrac/src/compiler/tests/store_test.av
++++ b/packages/std-avrac/src/compiler/tests/store_test.av
+@@ -212,6 +212,60 @@ spec "store" {
+             s.get_valid(Stored.Unit, k, (n: string) -> "d1") == "answer" &&
+                 s.get_valid(Stored.Unit, k, (n: string) -> "d2") == null
+         }
++        then "an older version answers once its reads hold again" {
++            let s = at("undone")
++            let k = node_key(Stored.Unit, ["undone"])
++            let _ = s.keep_version(Stored.Unit, k, "A", [Reading { name: "a.av", digest: "d1" }])
++            let _ = s.keep_version(Stored.Unit, k, "B", [Reading { name: "a.av", digest: "d2" }])
++            s.get_valid(Stored.Unit, k, (n: string) -> "d1") == "A" &&
++                s.get_valid(Stored.Unit, k, (n: string) -> "d2") == "B"
++        }
++        then "the same answer kept twice is one version" {
++            let s = at("twice")
++            let k = node_key(Stored.Unit, ["twice"])
++            let _ = s.keep_version(Stored.Unit, k, "A", [Reading { name: "a.av", digest: "d1" }])
++            let _ = s.keep_version(Stored.Unit, k, "A", [Reading { name: "a.av", digest: "d1" }])
++            let _ = s.keep_version(Stored.Unit, k, "B", [Reading { name: "a.av", digest: "d2" }])
++            s.versions(Stored.Unit, k).length == 2
++        }
++        then "past the bound the least recently valid version is let go" {
++            let s = at("bounded")
++            let k = node_key(Stored.Unit, ["bounded"])
++            for i in 0..5 {
++                let _ = s
++                    .keep_version(Stored.Unit, k, "v${i}", [Reading { name: "a.av", digest: "d${i}" }])
++            }
++            s.versions(Stored.Unit, k).length == 4 &&
++                s.get_valid(Stored.Unit, k, (n: string) -> "d0") == null &&
++                s.get_valid(Stored.Unit, k, (n: string) -> "d1") == "v1"
++        }
++        then "a lookup judges no more versions than the bound" {
++            let s = at("judged")
++            let k = node_key(Stored.Unit, ["judged"])
++            for i in 0..9 {
++                let _ = s
++                    .keep_version(Stored.Unit, k, "v${i}", [Reading { name: "a.av", digest: "d${i}" }])
++            }
++            let asked: Cell<int> = Cell.new(0)
++            let _ = s
++                .get_valid(
++                    Stored.Unit,
++                    k,
++                    (n: string) -> {
++                        asked.set(asked.get() + 1)
++                        "none"
++                    },
++                )
++            asked.get() == 4
++        }
++        then "an answer kept without versions has one" {
++            let s = at("single")
++            let k = node_key(Stored.Unit, ["single"])
++            let _ = s.keep_reading(Stored.Unit, k, "A", [Reading { name: "a.av", digest: "d1" }])
++            let _ = s.keep_reading(Stored.Unit, k, "B", [Reading { name: "a.av", digest: "d2" }])
++            s.versions(Stored.Unit, k).length == 1 &&
++                s.get_valid(Stored.Unit, k, (n: string) -> "d1") == null
++        }
+         then "a file family's edges are judged too" {
+             let s = at("files")
+             let k = node_key(Stored.Obj, ["files"])

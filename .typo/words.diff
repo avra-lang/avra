@@ -1,0 +1,94 @@
+diff --git a/packages/std-avrac/src/compiler/filesaid.av b/packages/std-avrac/src/compiler/filesaid.av
+index 375e174b..b1cf83b8 100644
+--- a/packages/std-avrac/src/compiler/filesaid.av
++++ b/packages/std-avrac/src/compiler/filesaid.av
+@@ -22,6 +22,7 @@ enum FileRead {
+     SeenSet
+     SeenPart(string)
+     SeenForms(string)
++    Words(string)
+ }
+ 
+ impl FileRead {
+@@ -36,6 +37,7 @@ impl FileRead {
+             .SeenSet -> "seen-set ${path}",
+             .SeenPart(m) -> "sp ${m}",
+             .SeenForms(m) -> "sf ${m}",
++            .Words(m) -> "words ${m}",
+         }
+     }
+ }
+@@ -55,6 +57,7 @@ fn file_read_of(name: string, path: string) -> FileRead? {
+         name.starts_with("seen ") -> FileRead.Seen(name.substring(5, name.length))
+         name.starts_with("sp ") -> FileRead.SeenPart(name.substring(3, name.length))
+         name.starts_with("sf ") -> FileRead.SeenForms(name.substring(3, name.length))
++        name.starts_with("words ") -> FileRead.Words(name.substring(6, name.length))
+         _ -> null
+     }
+ }
+@@ -68,7 +71,7 @@ fn answer_in(k: KeyParts, r: FileRead) -> string? {
+         .Gathered -> digest_of(fields_wire(k.gathered)),
+         .Seen(m) -> seen_answer(k, m),
+         .SeenSet -> digest_of(seen_digest(k.seen)),
+-        .SeenPart(_) or .SeenForms(_) -> null,
++        .SeenPart(_) or .SeenForms(_) or .Words(_) -> null,
+     }
+ }
+ 
+@@ -101,8 +104,30 @@ impl Workspace {
+     fn keep_file_row(store: Store, path: string, family: Stored, key: string, bytes: string) {
+         if store.get(family, key) == bytes && self.file_kept(store, path, family, key) { return }
+         let k = self.key_parts_cached(store, self.module_path_of(path), path)
++        let words = Reading {
++            name: FileRead.Words(k.module).name(path),
++            digest: self.words_print(k.module),
++        }
+         let _ = store
+-            .keep_reading(family, key, bytes, reads_of_parts(k).concat(self.seen_stamps(store, k)))
++            .keep_reading(
++                family,
++                key,
++                bytes,
++                reads_of_parts(k).concat(self.seen_stamps(store, k)).concat([words]),
++            )
++    }
++
++    /// THE COMPONENT WORDS A MODULE'S FILES PARSE UNDER: each file that declares one, with the
++    /// names it declares. A file's parse knows its module's words by name, so a sibling that
++    /// renames, adds or drops a component moves every file of the module.
++    fn words_print(m: string) -> string {
++        let declaring = [path for path in self.module_files(module_path(m.split("."))) if file_declares_component(self, path)]
++        digest_of(
++            joined(
++                ["${path}\t${joined(component_names(self, path), ",")}" for path in declaring],
++                "\n",
++            ),
++        )
+     }
+ 
+     /// What each module a file reads stood as when its answer was kept — its frame and its plain
+@@ -224,6 +249,7 @@ impl Workspace {
+             .Text -> digest_of(self.text_digest(path)) == r.digest,
+             .SeenPart(_) or .SeenForms(_) -> true,
+             .Seen(_) or .SeenSet -> cheap || self.stood_on(self.key_parts_cached(store, m, path), r.name) == r.digest,
++            .Words(w) -> self.words_print(w) == r.digest,
+             .Run(_) or .Runs or .Gathered -> self.lite_answer(store, m, path, read) == r.digest,
+         }
+     }
+@@ -245,7 +271,7 @@ impl Workspace {
+     /// The digest a named answer has in these parts now.
+     fn stood_on(k: KeyParts, name: string) -> string? {
+         let r? = file_read_of(name, k.path) else { return null }
+-        answer_in(k, r)
++        match r { .Words(m) -> self.words_print(m), rest -> answer_in(k, r) }
+     }
+ 
+     /// Whether a file's rule findings were kept, rendered and as rows, and still stand.
+@@ -303,6 +329,7 @@ impl Workspace {
+         let edited = [p for p in paths if self.text_moved(store, p)]
+         mut moved = [FileRead.Text.name(p) for p in edited]
+             .concat([self.seen_name(p) for p in edited])
++            .concat([FileRead.Words(self.module_of(p)).name(p) for p in edited])
+         mut rows: Map<string, bool> = {}
+         mut grown = true
+         while grown {
