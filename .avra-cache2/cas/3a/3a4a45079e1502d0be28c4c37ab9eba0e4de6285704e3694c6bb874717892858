@@ -1,0 +1,1396 @@
+//! The lowering IR: what a program DOES, flat and typed. Virtual
+//! registers, one instruction list, and SCOPES as real structure —
+//! memory strategy is decided per scope by its LEVEL (the scoped
+//! abstraction levels design), so lowering never writes a memory op;
+//! the memory pass inserts them at the boundaries recorded here.
+//! The language binds every name once, so a definition's register IS
+//! its value everywhere it is read — the IR is born SSA.
+
+use @std.meta.{derive}
+use @std.relation.engine.{Table}
+
+/// A virtual register. Minted in instruction order: the Nth
+/// value-producing instruction defines register N.
+@derive(Fingerprint)
+export type Reg = { index: int }
+
+/// A scope's abstraction level — which memory strategy owns it.
+@derive(Fingerprint)
+export enum Level { Application, Systems, Bare, Hardware }
+
+/// How a float takes its int. `Nearest` ties away from zero.
+@derive(Fingerprint)
+export enum Rounding { Floor, Ceil, Nearest, Trunc }
+
+/// Whether two unary ops are the same op: a payload op compares its
+/// rounding, which is payload-free and compares by variant.
+export fn same_un(a: UnOp, b: UnOp) -> bool {
+    match a {
+        .Not -> b is .Not,
+        .ToFloat -> b is .ToFloat,
+        .ToInt(r) -> match b { .ToInt(s) -> r == s, .Not or .ToFloat -> false },
+    }
+}
+
+/// The one number each rounding is keyed by, in the evaluator's C body
+/// and the backend's intrinsic table alike.
+export fn rounding_code(r: Rounding) -> int {
+    match r { .Floor -> 0, .Ceil -> 1, .Nearest -> 2, .Trunc -> 3 }
+}
+
+/// The unary operators. `ToInt` rounds a float to the int it names; the
+/// lowering checks the range before it runs, so the conversion is defined.
+/// `ToFloat` is an int's nearest float, ties to even — total, exact to 2^53.
+@derive(Fingerprint)
+export enum UnOp { Not, ToInt(Rounding), ToFloat }
+
+/// A byte the runtime keeps about the running task, which compiled code
+/// reads in place: its unwind bit, and the tick the source sets so a
+/// checked back-edge can hear time passed.
+@derive(Fingerprint)
+export enum RtFlag { Unwinding, Tick }
+
+/// The runtime's own name for the byte.
+export fn flag_symbol(f: RtFlag) -> string {
+    match f { .Unwinding -> "avra_unwinding", .Tick -> "avra_tick" }
+}
+
+/// The flag's word in the IR's text.
+export fn flag_word(f: RtFlag) -> string {
+    match f { .Unwinding -> "unwinding", .Tick -> "tick" }
+}
+
+/// The operator's surface symbol — the projection beside its enum.
+export fn un_symbol(op: UnOp) -> string {
+    match op {
+        .Not -> "!",
+        .ToFloat -> "float",
+        .ToInt(r) -> match r {
+            .Floor -> "floor_int",
+            .Ceil -> "ceil_int",
+            .Nearest -> "round_int",
+            .Trunc -> "trunc_int",
+        },
+    }
+}
+
+/// THE INSTRUCTION VOCABULARY. Features lower into it and never
+/// grow it; growth is a core event with a protocol (CLAUDE.md),
+/// and performance is a first-class reason to grow — a shape the
+/// backend can exploit but cannot infer earns a variant.
+///
+/// A new variant owes EVERY consumer `make vocab` names, and the
+/// compiler names them for you because each dispatch is exhaustive:
+///   dst_of (below)          the register it defines
+///   body_symbol (below)     the program body it names
+///   hosted_symbol (below)   the hosted fn it calls
+///   interp.av  step         its MEANING, interpreted
+///   memory.av  memory_ins   its ownership effect
+///   ir_text.av body_lines   its human projection
+///   llvm.av    emit_ins     its machine projection
+///   facts.av   give         whether the runtime registry validates it
+///   memory.av  managed_dst  whether its answer is the caller's to release
+/// plus a program test (eval == native) and an IR golden.
+/// `avra new ins <Name>` prints the whole checklist.
+///
+/// GENERALIZE BEFORE ADDING: SwitchStart reuses ArmEnd/RegionEnd,
+/// so an N-arm region and a 2-arm `if` are ONE mechanism in every consumer —
+/// prefer making an existing concept more general over adding a
+/// parallel one. That is what keeps this vocabulary small while it
+/// grows.
+@derive(Roles)
+export enum Ins {
+    // Values.
+    ConstInt(@dst dst: Reg, v: int)
+    /// A REAL constant, carried as its IEEE-754 bit pattern because
+    /// the compiler that emits it holds no float of its own. THE
+    /// VARIANT IS THE TYPE: every value category has its own
+    /// constant, so what an instruction MEANS never depends on where
+    /// its answer is going.
+    ConstFloat(@dst dst: Reg, bits: int)
+    /// A string constant is the binary's own data — immortal, so it owns nothing.
+    ConstStr(@dst dst: Reg, s: string)
+    ConstBool(@dst dst: Reg, v: bool)
+    /// The eager binary operations — operands same-typed. The lazy
+    /// ops (And/Or) never reach here: they lower as regions.
+    Bin(@dst dst: Reg, op: BinOp, a: Reg, b: Reg)
+    /// The unary operations.
+    Un(@dst dst: Reg, op: UnOp, src: Reg)
+    /// An effect-only call into the runtime's C surface — no value
+    /// defined (seeding an aggregate, releasing early).
+    CallRtVoid(@host callee: string, args: List<Reg>)
+    /// A call into the runtime's C surface — THE escape hatch that
+    /// keeps this instruction set closed: features lower
+    /// value-producing runtime needs here, never as new variants.
+    CallRt(@dst @owns dst: Reg, @host callee: string, args: List<Reg>)
+    /// A small immutable aggregate built IN REGISTERS — the machine
+    /// shape behind the unboxed pair (a scalar nullable's
+    /// {present, value}); the backend keeps it out of memory
+    /// entirely, so the optimizer sees through it. A register holds
+    /// ONE VALUE, not one word — this is the variant that says so.
+    Pack(@dst @owns dst: Reg, elems: List<Reg>)
+    /// One element of a packed value.
+    Extract(@dst @view dst: Reg, src: Reg, at: int)
+    /// A named fn's ADDRESS as a value — the code pointer a dyn
+    /// box (and, ahead, a closure) carries; `CallPtr` calls
+    /// through it. An opaque word to every other consumer.
+    FnAddr(@dst @owns dst: Reg, @code sym: string)
+    /// A SETTLED aggregate's ADDRESS: the `Static` of that name in
+    /// the program, laid out before it runs as an immortal headered
+    /// box — never built, never released, so a read costs one
+    /// address and the memory pass owes it nothing. The one constant
+    /// that aims at a pointer register, and it is a name, never a
+    /// number.
+    StaticAddr(@dst dst: Reg, sym: string)
+    /// A `once fn`'s own persistent slot, READ: the pointer it
+    /// holds, null until the first successful `OnceCommit` for this
+    /// symbol, thereafter the immortal answer, forever. One load
+    /// against a global this symbol alone names — no call, and the
+    /// memory pass owes it no retain (the same immortal-register rule
+    /// `StaticAddr` reads by, memory.av's `immortal_dst`): the only
+    /// value this ever answers non-null is one `OnceCommit` already
+    /// made immortal.
+    OnceRead(@dst dst: Reg, sym: string)
+    /// The slot's first write, settled exactly as the runtime's keyed
+    /// table always has been — a later commit for the same symbol is
+    /// a no-op, and every `OnceRead` after this one answers whichever
+    /// value won. `value` is BORROWED, as a runtime row's seats are:
+    /// the commit takes its own reference.
+    OnceCommit(sym: string, value: Reg)
+    /// A runtime FLAG, READ as a bool: one load of a byte the runtime
+    /// writes, with no call. The runtime keeps it for the running task
+    /// and a switch swaps it, so a read always answers for the task
+    /// that reads. Nothing is owed for it: the answer is a scalar.
+    FlagRead(@dst dst: Reg, flag: RtFlag)
+
+    // Structure: scopes, regions, and calls — all BRACKETS in the
+    // one flat list, never labels or jumps. Each branch of a region
+    // is a scope to the memory pass and names the register it
+    // yields; `dst` merges the two.
+    ScopeEnter(tier: Level)
+    /// A scope YIELDS like a branch does: `gives` escapes upward —
+    /// released never here, adopted by the enclosing scope.
+    ScopeExit(gives: Reg?)
+    /// A CLEANUP REGION, the landing a trap unwinding through the frame enters:
+    /// its instructions run ONE deferred entry — emitted by the verb every exit
+    /// of the frame uses — and a `ScopeExit` closes it. Normal flow skips it; an
+    /// unwind runs it, newest first, over every call from its close to the end of
+    /// the enclosing scope (`cleanups_open`). `id` names the entry within the body:
+    /// an EMPTY region of the same `id` RETIRES it where an exit is about to run
+    /// that entry itself.
+    Cleanup(id: int)
+    /// A TWO-arm region on a bool — the special case of the region
+    /// shape below.
+    IfStart(cond: Reg)
+    /// An N-ARM region on an int selector: `cases` are the selector
+    /// values of arms 0..N-2 IN ARM ORDER, and the last arm is the
+    /// default, so a total match needs no fallthrough. The backend
+    /// emits one jump table; the arms are bracketed exactly like an
+    /// if's, because a region is a region.
+    SwitchStart(selector: Reg, cases: List<int>)
+    /// End of ONE arm, yielding — shared by both openers, which is
+    /// why it is not named for either.
+    ArmEnd(gives: Reg)
+    /// End of the LAST arm: every arm's yield merges into `dst`.
+    RegionEnd(@dst @owns dst: Reg, gives: Reg)
+    /// A call to an Avra fn body. A PARAMETER IS BORROWED: the caller
+    /// keeps each managed argument standing for the call, and the
+    /// callee owns none of them — what it keeps takes its own reference.
+    Call(@dst @owns dst: Reg, @body callee: string, @seats @lent args: List<Reg>)
+    /// An INDIRECT call through a register-held fn address — dyn
+    /// dispatch (and, ahead, closures). The ABI is `Call`'s.
+    CallPtr(@dst @owns dst: Reg, f: Reg, @seats @lent args: List<Reg>)
+    /// A fn body's answer, after its scope has settled its debts.
+    RetVal(r: Reg)
+    /// An EARLY answer — `return` from anywhere in a body. The
+    /// memory pass settles every open scope's debts at the site
+    /// (nothing pops: other paths continue); the backend returns
+    /// right here and opens a dead continuation for the arm's
+    /// unreachable tail.
+    FnExit(gives: Reg)
+
+    // Slots: mutation lives in MEMORY so registers stay
+    // single-assignment — a mut binding allocates a slot, loads
+    // mint fresh registers, stores update the slot. Scalars only
+    // until ownership analysis covers managed values.
+    Alloca(@dst dst: Reg)
+    Load(@dst @owns dst: Reg, slot: Reg)
+    Store(slot: Reg, src: Reg)
+
+    // Loops: the third bracket family. The condition's instructions
+    // sit between LoopStart and LoopCond and re-run each turn;
+    // LoopCond exits when false; LoopEnd closes the back edge.
+    LoopStart
+    LoopCond(c: Reg)
+    LoopEnd
+    /// An EARLY end of a loop's turn — `break` and `continue`. The
+    /// target is the loop `outward` brackets out (0 the innermost);
+    /// `again` starts its next turn at its condition, and otherwise
+    /// control stands just past its `LoopEnd`. The memory pass settles
+    /// every scope opened since that loop's `LoopCond` at the site,
+    /// exactly as the turn's own close would; the backend branches and
+    /// opens a dead continuation, as `FnExit` does.
+    LoopJump(outward: int, again: bool)
+
+    // Memory: inserted by the memory pass, never by lowering.
+    Retain(r: Reg)
+    Release(r: Reg)
+
+    // Effects.
+    Ret(code: int)
+}
+
+/// `Ins`'s content identity, written HERE because the IR vocabulary
+/// carries its own identity — the trait's exit for a type whose fold
+/// the derive cannot serve. The arms mirror `@derive(Fingerprint)`'s
+/// convention exactly: tag 1, the type's name, the variant's index,
+/// then each payload folded by its SHAPE (`fp_list` for a list,
+/// arity for an optional, the value's own `fingerprint()` for a
+/// declared name). A new variant lands an arm here or the fold is
+/// incomplete, which `make fingerprints` reads.
+impl Ins {
+    fn fingerprint_in(_ids: Ids) -> int { self.fingerprint() }
+
+    fn fingerprint() -> int {
+        match self {
+            .ConstInt(dst, v) -> derived([fp_str("Ins"), 0, dst.fingerprint(), v]),
+            .ConstFloat(dst, bits) -> derived([fp_str("Ins"), 1, dst.fingerprint(), bits]),
+            .ConstStr(dst, s) -> derived([fp_str("Ins"), 2, dst.fingerprint(), fp_str(s)]),
+            .ConstBool(dst, v) -> derived([fp_str("Ins"), 3, dst.fingerprint(), if v { 1 } else { 0 }]),
+            .Bin(dst, op, a, b) -> derived(
+                [
+                    fp_str("Ins"),
+                    4,
+                    dst.fingerprint(),
+                    op.fingerprint(),
+                    a.fingerprint(),
+                    b.fingerprint(),
+                ],
+            ),
+            .Un(dst, op, src) -> derived([fp_str("Ins"), 5, dst.fingerprint(), op.fingerprint(), src.fingerprint()]),
+            .CallRtVoid(callee, args) -> derived([fp_str("Ins"), 6, fp_str(callee), fp_list([x.fingerprint() for x in args])]),
+            .CallRt(dst, callee, args) -> derived(
+                [
+                    fp_str("Ins"),
+                    7,
+                    dst.fingerprint(),
+                    fp_str(callee),
+                    fp_list([x.fingerprint() for x in args]),
+                ],
+            ),
+            .Pack(dst, elems) -> derived(
+                [fp_str("Ins"), 8, dst.fingerprint(), fp_list([x.fingerprint() for x in elems])],
+            ),
+            .Extract(dst, src, at) -> derived([fp_str("Ins"), 9, dst.fingerprint(), src.fingerprint(), at]),
+            .FnAddr(dst, sym) -> derived([fp_str("Ins"), 10, dst.fingerprint(), fp_str(sym)]),
+            .StaticAddr(dst, sym) -> derived([fp_str("Ins"), 11, dst.fingerprint(), fp_str(sym)]),
+            .OnceRead(dst, sym) -> derived([fp_str("Ins"), 31, dst.fingerprint(), fp_str(sym)]),
+            .OnceCommit(sym, value) -> derived([fp_str("Ins"), 32, fp_str(sym), value.fingerprint()]),
+            .FlagRead(dst, flag) -> derived([fp_str("Ins"), 34, dst.fingerprint(), flag.fingerprint()]),
+            .ScopeEnter(tier) -> derived([fp_str("Ins"), 12, tier.fingerprint()]),
+            .Cleanup(id) -> derived([fp_str("Ins"), 35, id]),
+            .ScopeExit(gives) -> derived(
+                [
+                    fp_str("Ins"),
+                    13,
+                    if gives == null { derived([0]) } else { derived([1, gives!.fingerprint()]) },
+                ],
+            ),
+            .IfStart(cond) -> derived([fp_str("Ins"), 14, cond.fingerprint()]),
+            .SwitchStart(selector, cases) -> derived([fp_str("Ins"), 15, selector.fingerprint(), fp_list(cases)]),
+            .ArmEnd(gives) -> derived([fp_str("Ins"), 16, gives.fingerprint()]),
+            .RegionEnd(dst, gives) -> derived([fp_str("Ins"), 17, dst.fingerprint(), gives.fingerprint()]),
+            .Call(dst, callee, args) -> derived(
+                [
+                    fp_str("Ins"),
+                    18,
+                    dst.fingerprint(),
+                    fp_str(callee),
+                    fp_list([x.fingerprint() for x in args]),
+                ],
+            ),
+            .CallPtr(dst, f, args) -> derived(
+                [
+                    fp_str("Ins"),
+                    19,
+                    dst.fingerprint(),
+                    f.fingerprint(),
+                    fp_list([x.fingerprint() for x in args]),
+                ],
+            ),
+            .RetVal(r) -> derived([fp_str("Ins"), 20, r.fingerprint()]),
+            .FnExit(gives) -> derived([fp_str("Ins"), 21, gives.fingerprint()]),
+            .Alloca(dst) -> derived([fp_str("Ins"), 22, dst.fingerprint()]),
+            .Load(dst, slot) -> derived([fp_str("Ins"), 23, dst.fingerprint(), slot.fingerprint()]),
+            .Store(slot, src) -> derived([fp_str("Ins"), 24, slot.fingerprint(), src.fingerprint()]),
+            .LoopStart -> derived([fp_str("Ins"), 25]),
+            .LoopCond(c) -> derived([fp_str("Ins"), 26, c.fingerprint()]),
+            .LoopEnd -> derived([fp_str("Ins"), 27]),
+            .LoopJump(outward, again) -> derived([fp_str("Ins"), 33, outward, if again { 1 } else { 0 }]),
+            .Retain(r) -> derived([fp_str("Ins"), 28, r.fingerprint()]),
+            .Release(r) -> derived([fp_str("Ins"), 29, r.fingerprint()]),
+            .Ret(code) -> derived([fp_str("Ins"), 30, code]),
+        }
+    }
+}
+
+/// `i` absorbed into `d` WHOLE — its variant, every number and every
+/// text, each sequence folded with its length — so two instructions
+/// that differ anywhere digest apart. `fingerprint`'s strong twin, for
+/// identities that outlive the process.
+export fn digest_ins(d: Digest, i: Ins) -> Digest {
+    let w = ins_words(i)
+    let numbers = w
+        .ints
+        .fold(digest_int(digest_int(d, w.tag), w.ints.length), (acc, n) -> digest_int(acc, n))
+    w.texts.fold(digest_int(numbers, w.texts.length), (acc, t) -> digest_text(acc, t))
+}
+
+/// An instruction's payload as words: its tag, its numbers (a register
+/// by its index, a list by its length then its members), its texts.
+type InsWords = { tag: int, ints: List<int>, texts: List<string> }
+
+fn ins_words(i: Ins) -> InsWords {
+    match i {
+        .ConstInt(dst, v) -> InsWords { tag: 0, ints: [dst.index, v], texts: [] },
+        .ConstFloat(dst, bits) -> InsWords { tag: 1, ints: [dst.index, bits], texts: [] },
+        .ConstStr(dst, s) -> InsWords { tag: 2, ints: [dst.index], texts: [s] },
+        .ConstBool(dst, v) -> InsWords { tag: 3, ints: [dst.index, if v { 1 } else { 0 }], texts: [] },
+        .Bin(dst, op, a, b) -> InsWords { tag: 4, ints: [dst.index, op.fingerprint(), a.index, b.index], texts: [] },
+        .Un(dst, op, src) -> InsWords { tag: 5, ints: [dst.index, op.fingerprint(), src.index], texts: [] },
+        .CallRtVoid(callee, args) -> InsWords { tag: 6, ints: indices(args), texts: [callee] },
+        .CallRt(dst, callee, args) -> InsWords { tag: 7, ints: [dst.index].concat(indices(args)), texts: [callee] },
+        .Pack(dst, elems) -> InsWords { tag: 8, ints: [dst.index].concat(indices(elems)), texts: [] },
+        .Extract(dst, src, at) -> InsWords { tag: 9, ints: [dst.index, src.index, at], texts: [] },
+        .FnAddr(dst, sym) -> InsWords { tag: 10, ints: [dst.index], texts: [sym] },
+        .StaticAddr(dst, sym) -> InsWords { tag: 11, ints: [dst.index], texts: [sym] },
+        .OnceRead(dst, sym) -> InsWords { tag: 31, ints: [dst.index], texts: [sym] },
+        .OnceCommit(sym, value) -> InsWords { tag: 32, ints: [value.index], texts: [sym] },
+        .FlagRead(dst, flag) -> InsWords { tag: 34, ints: [dst.index, flag.fingerprint()], texts: [] },
+        .ScopeEnter(tier) -> InsWords { tag: 12, ints: [tier.fingerprint()], texts: [] },
+        .Cleanup(id) -> InsWords { tag: 35, ints: [id], texts: [] },
+        .ScopeExit(gives) -> InsWords { tag: 13, ints: if gives == null { [0] } else { [1, gives!.index] }, texts: [] },
+        .IfStart(cond) -> InsWords { tag: 14, ints: [cond.index], texts: [] },
+        .SwitchStart(selector, cases) -> InsWords { tag: 15, ints: [selector.index, cases.length].concat(cases), texts: [] },
+        .ArmEnd(gives) -> InsWords { tag: 16, ints: [gives.index], texts: [] },
+        .RegionEnd(dst, gives) -> InsWords { tag: 17, ints: [dst.index, gives.index], texts: [] },
+        .Call(dst, callee, args) -> InsWords { tag: 18, ints: [dst.index].concat(indices(args)), texts: [callee] },
+        .CallPtr(dst, f, args) -> InsWords { tag: 19, ints: [dst.index, f.index].concat(indices(args)), texts: [] },
+        .RetVal(r) -> InsWords { tag: 20, ints: [r.index], texts: [] },
+        .FnExit(gives) -> InsWords { tag: 21, ints: [gives.index], texts: [] },
+        .Alloca(dst) -> InsWords { tag: 22, ints: [dst.index], texts: [] },
+        .Load(dst, slot) -> InsWords { tag: 23, ints: [dst.index, slot.index], texts: [] },
+        .Store(slot, src) -> InsWords { tag: 24, ints: [slot.index, src.index], texts: [] },
+        .LoopStart -> InsWords { tag: 25, ints: [], texts: [] },
+        .LoopCond(c) -> InsWords { tag: 26, ints: [c.index], texts: [] },
+        .LoopEnd -> InsWords { tag: 27, ints: [], texts: [] },
+        .LoopJump(outward, again) -> InsWords { tag: 33, ints: [outward, if again { 1 } else { 0 }], texts: [] },
+        .Retain(r) -> InsWords { tag: 28, ints: [r.index], texts: [] },
+        .Release(r) -> InsWords { tag: 29, ints: [r.index], texts: [] },
+        .Ret(code) -> InsWords { tag: 30, ints: [code], texts: [] },
+    }
+}
+
+/// A register list as its length, then each index — one fixed arity.
+fn indices(rs: List<Reg>) -> List<int> { [rs.length].concat([r.index for r in rs]) }
+
+/// `i` WITH EVERY REGISTER PASSED THROUGH `m` — every `Reg`-typed
+/// payload, destination and operands alike, one arm per variant
+/// (compiler.refusal_assembled's registry: a new instruction owes this arm or the rewrite
+/// is silently incomplete). The ONE fn two callers share for an
+/// ALPHA-RENAMED comparison: fold `[remapped(i, m).fingerprint() for
+/// i in ins]` over a register-renumbering `m` and two bodies that
+/// differ only in which numbers their registers happened to mint
+/// compare equal.
+export fn remapped(i: Ins, m: fn(Reg) -> Reg) -> Ins {
+    match i {
+        .ConstInt(dst, v) -> Ins.ConstInt(m(dst), v),
+        .ConstFloat(dst, bits) -> Ins.ConstFloat(m(dst), bits),
+        .ConstStr(dst, s) -> Ins.ConstStr(m(dst), s),
+        .ConstBool(dst, v) -> Ins.ConstBool(m(dst), v),
+        .Bin(dst, op, a, b) -> Ins.Bin(m(dst), op, m(a), m(b)),
+        .Un(dst, op, src) -> Ins.Un(m(dst), op, m(src)),
+        .CallRtVoid(callee, args) -> Ins.CallRtVoid(callee, [m(x) for x in args]),
+        .CallRt(dst, callee, args) -> Ins.CallRt(m(dst), callee, [m(x) for x in args]),
+        .Pack(dst, elems) -> Ins.Pack(m(dst), [m(x) for x in elems]),
+        .Extract(dst, src, at) -> Ins.Extract(m(dst), m(src), at),
+        .FnAddr(dst, sym) -> Ins.FnAddr(m(dst), sym),
+        .StaticAddr(dst, sym) -> Ins.StaticAddr(m(dst), sym),
+        .OnceRead(dst, sym) -> Ins.OnceRead(m(dst), sym),
+        .OnceCommit(sym, value) -> Ins.OnceCommit(sym, m(value)),
+        .FlagRead(dst, flag) -> Ins.FlagRead(m(dst), flag),
+        .ScopeEnter(tier) -> Ins.ScopeEnter(tier),
+        .Cleanup(id) -> Ins.Cleanup(id),
+        .ScopeExit(gives) -> Ins.ScopeExit(remapped_opt(gives, m)),
+        .IfStart(cond) -> Ins.IfStart(m(cond)),
+        .SwitchStart(selector, cases) -> Ins.SwitchStart(m(selector), cases),
+        .ArmEnd(gives) -> Ins.ArmEnd(m(gives)),
+        .RegionEnd(dst, gives) -> Ins.RegionEnd(m(dst), m(gives)),
+        .Call(dst, callee, args) -> Ins.Call(m(dst), callee, [m(x) for x in args]),
+        .CallPtr(dst, f, args) -> Ins.CallPtr(m(dst), m(f), [m(x) for x in args]),
+        .RetVal(r) -> Ins.RetVal(m(r)),
+        .FnExit(gives) -> Ins.FnExit(m(gives)),
+        .Alloca(dst) -> Ins.Alloca(m(dst)),
+        .Load(dst, slot) -> Ins.Load(m(dst), m(slot)),
+        .Store(slot, src) -> Ins.Store(m(slot), m(src)),
+        .LoopStart -> Ins.LoopStart,
+        .LoopCond(c) -> Ins.LoopCond(m(c)),
+        .LoopEnd -> Ins.LoopEnd,
+        .LoopJump(outward, again) -> Ins.LoopJump(outward, again),
+        .Retain(r) -> Ins.Retain(m(r)),
+        .Release(r) -> Ins.Release(m(r)),
+        .Ret(code) -> Ins.Ret(code),
+    }
+}
+
+/// `i` WITH EVERY SYMBOL IT NAMES PASSED THROUGH `s` — a callee, a fn
+/// address, a once slot, a static; registers and runtime rows stand.
+/// `remapped`'s sibling, one arm per variant for the same reason: a
+/// rewrite that misses a variant compares two bodies wrongly.
+export fn resymbolled(i: Ins, s: fn(string) -> string) -> Ins {
+    match i {
+        .FnAddr(dst, sym) -> Ins.FnAddr(dst, s(sym)),
+        .StaticAddr(dst, sym) -> Ins.StaticAddr(dst, s(sym)),
+        .OnceRead(dst, sym) -> Ins.OnceRead(dst, s(sym)),
+        .OnceCommit(sym, value) -> Ins.OnceCommit(s(sym), value),
+        .Call(dst, callee, args) -> Ins.Call(dst, s(callee), args),
+        .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or .FlagRead(_, _) or .Bin(_, _, _, _) or .Un(_, _, _) or .CallRtVoid(_, _) or .CallRt(_, _, _) or .Pack(_, _) or .Extract(_, _, _) or .ScopeEnter(_) or .ScopeExit(_) or .Cleanup(_) or .IfStart(_) or .SwitchStart(_, _) or .ArmEnd(_) or .RegionEnd(_, _) or .CallPtr(_, _, _) or .RetVal(_) or .FnExit(_) or .Alloca(_) or .Load(_, _) or .Store(_, _) or .LoopStart or .LoopCond(_) or .LoopEnd or .LoopJump(_, _) or .Retain(_) or .Release(_) or .Ret(_) -> i,
+    }
+}
+
+/// The symbols `i` names — `resymbolled`'s read.
+export fn symbols_of(i: Ins) -> List<string> {
+    match i {
+        .FnAddr(_, sym) or .StaticAddr(_, sym) or .OnceRead(_, sym) or .OnceCommit(sym, _) or .Call(_, sym, _) -> [sym],
+        .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or .FlagRead(_, _) or .Bin(_, _, _, _) or .Un(_, _, _) or .CallRtVoid(_, _) or .CallRt(_, _, _) or .Pack(_, _) or .Extract(_, _, _) or .ScopeEnter(_) or .ScopeExit(_) or .Cleanup(_) or .IfStart(_) or .SwitchStart(_, _) or .ArmEnd(_) or .RegionEnd(_, _) or .CallPtr(_, _, _) or .RetVal(_) or .FnExit(_) or .Alloca(_) or .Load(_, _) or .Store(_, _) or .LoopStart or .LoopCond(_) or .LoopEnd or .LoopJump(_, _) or .Retain(_) or .Release(_) or .Ret(_) -> [],
+    }
+}
+
+fn remapped_opt(r: Reg?, m: fn(Reg) -> Reg) -> Reg? {
+    if r == null { return null }
+    m(r!)
+}
+
+/// `ins`, WITH EVERY `Un(dst, Not, c)` THAT FEEDS THE `IfStart`
+/// RIGHT AFTER IT — AND NOWHERE ELSE — REWRITTEN TO TEST `c`
+/// DIRECTLY, ITS TWO ARMS SWAPPED. `if !c {A} else {B}` and `if c
+/// {B} else {A}` are the SAME REGION: a rewrite that only flips
+/// which side of a test it reads (`x == null` becoming the coalesce
+/// it desugars to) must not compare unequal because of it — every
+/// other pair of programs still must. Nested regions canonicalize
+/// too: each arm's own body is walked before it is spliced back.
+export fn canon_not_if(ins: List<Ins>) -> List<Ins> {
+    canon_run(ins, 0, ins.length)
+}
+
+fn canon_run(ins: List<Ins>, lo: int, hi: int) -> List<Ins> {
+    mut out: List<Ins> = []
+    mut i = lo
+    while i < hi {
+        let sp = not_if_span(ins, i)
+        if sp == null {
+            out.push(ins[i])
+            i = i + 1
+        } else {
+            let s = sp!
+            // ARM1's close (`ArmEnd(gives1)`) and the region's close
+            // (`RegionEnd(dst, gives2)`) TRADE PLACES along with the
+            // bodies they used to follow — a NON-LAST arm closes
+            // with `ArmEnd`, the LAST with `RegionEnd`, whichever arm
+            // that is now.
+            let gives1 = arm_end_gives(ins[s.arm1_end])
+            let region = region_end_parts(ins[s.region_end])
+            out.push(Ins.IfStart(s.cond))
+            out = out.concat(canon_run(ins, s.arm2_lo, s.arm2_hi))
+            out.push(Ins.ArmEnd(region.gives))
+            out = out.concat(canon_run(ins, s.arm1_lo, s.arm1_end))
+            out.push(Ins.RegionEnd(region.dst, gives1))
+            i = s.region_end + 1
+        }
+    }
+    out
+}
+
+/// One `Un(dst, Not, c)` immediately followed by `IfStart(dst)`,
+/// `dst` read nowhere else — the SPAN its two arms occupy.
+type NotIfSpan = { cond: Reg, arm1_lo: int, arm1_end: int, arm2_lo: int, arm2_hi: int, region_end: int }
+
+fn not_if_span(ins: List<Ins>, i: int) -> NotIfSpan? {
+    if i + 1 >= ins.length { return null }
+    let dst_c? = not_pair(ins[i]) else { return null }
+    let cond? = if_cond(ins[i + 1]) else { return null }
+    if !same_reg(cond, dst_c.dst) { return null }
+    if !used_once(ins, dst_c.dst, i + 1) { return null }
+    let if_at = i + 1
+    let a1e = arm1_end(ins, if_at)
+    let re = region_end(ins, if_at)
+    NotIfSpan {
+        cond: dst_c.src,
+        arm1_lo: if_at + 1,
+        arm1_end: a1e,
+        arm2_lo: a1e + 1,
+        arm2_hi: re,
+        region_end: re,
+    }
+}
+
+type NotPair = { dst: Reg, src: Reg }
+
+fn not_pair(i: Ins) -> NotPair? {
+    match i { .Un(dst, op, src) if op is .Not -> NotPair { dst: dst, src: src }, rest -> null }
+}
+
+fn if_cond(i: Ins) -> Reg? {
+    match i { .IfStart(cond) -> cond, rest -> null }
+}
+
+/// Whether `dst` is read anywhere OTHER than the `IfStart` at
+/// `if_at` — a `Un(Not, …)` minted for any other reason keeps its
+/// pair unswapped.
+fn used_once(ins: List<Ins>, dst: Reg, if_at: int) -> bool {
+    [j for j, step in ins if j != if_at && reads_of(step).any(same_reg(it, dst))].is_empty()
+}
+
+/// A register that reads NOTHING — the trap-branch answer below,
+/// named once: the compiler's own defect, never a program's value.
+fn defect_reg() -> Reg { Reg { index: 0 - 1 } }
+
+/// `i`'s own `gives` — `arm1_end`'s own answer is always an `ArmEnd`,
+/// which is what makes the other arm a defect this compiler made,
+/// not a program it is reading.
+fn arm_end_gives(i: Ins) -> Reg {
+    match i {
+        .ArmEnd(gives) -> gives,
+        rest -> {
+            avra_trap("canon_not_if: arm1_end named a non-ArmEnd")
+            defect_reg()
+        },
+    }
+}
+
+type RegionEndParts = { dst: Reg, gives: Reg }
+
+/// `i`'s own parts — `region_end`'s own answer is always a
+/// `RegionEnd`.
+fn region_end_parts(i: Ins) -> RegionEndParts {
+    match i {
+        .RegionEnd(dst, gives) -> RegionEndParts { dst: dst, gives: gives },
+        rest -> {
+            avra_trap("canon_not_if: region_end named a non-RegionEnd")
+            RegionEndParts { dst: defect_reg(), gives: defect_reg() }
+        },
+    }
+}
+
+/// The index of arm1's OWN `ArmEnd` — the first one at the SAME
+/// nesting depth as `if_at`'s region (a nested region's own ArmEnd
+/// closes at a deeper depth and is skipped).
+fn arm1_end(ins: List<Ins>, if_at: int) -> int {
+    mut depth = 1
+    mut i = if_at + 1
+    mut found = 0 - 1
+    while found < 0 {
+        let step = ins[i]
+        if opens_region(step) { depth = depth + 1 }
+        if closes_region(step) { depth = depth - 1 }
+        if step is .ArmEnd && depth == 1 { found = i }
+        if found < 0 { i = i + 1 }
+    }
+    found
+}
+
+/// The index of the WHOLE region's own `RegionEnd`, bracket-matched
+/// from `if_at`'s own `IfStart`.
+fn region_end(ins: List<Ins>, if_at: int) -> int {
+    mut depth = 1
+    mut i = if_at + 1
+    mut found = 0 - 1
+    while found < 0 {
+        let step = ins[i]
+        if opens_region(step) { depth = depth + 1 }
+        if closes_region(step) { depth = depth - 1 }
+        if depth == 0 { found = i }
+        if found < 0 { i = i + 1 }
+    }
+    found
+}
+
+/// A REGISTER'S RENAME, BY FIRST APPEARANCE: every parameter maps to
+/// its own index (both sides open with the same seats, or they are
+/// not the same declaration), then every instruction's OWN
+/// destination (`dst_of`) is assigned the next sequential number the
+/// first time it is DEFINED — which, the IR being SSA, is the only
+/// time. A register no instruction defines (an operand alone) keeps
+/// its own index: nothing in a well-formed body reads before
+/// something writes.
+export fn alpha_table(ins: List<Ins>, nparams: int) -> Map<string, int> {
+    mut m: Map<string, int> = {}
+    for i in 0..nparams { m.set("${i}", i) }
+    mut next = nparams
+    for step in ins {
+        let d = dst_of(step)
+        if d != null {
+            m.set("${d!.index}", next)
+            next = next + 1
+        }
+    }
+    m
+}
+
+/// `raw`'s instructions, renamed by first appearance — the shape
+/// `alpha_fps` folds into fingerprints and `same_ins_list` compares
+/// structurally, so a hash pre-filter and its exact fallback walk the
+/// SAME renamed values.
+export fn alpha_renamed(raw: List<Ins>, nparams: int) -> List<Ins> {
+    let ins = canon_not_if(raw)
+    let renames = alpha_table(ins, nparams)
+    let rename = (r: Reg) -> Reg { index: renames.get("${r.index}") ?? r.index }
+    [remapped(i, rename) for i in ins]
+}
+
+/// One body's instructions as an ALPHA-RENAMED fingerprint list —
+/// the register NUMBERS folded (`Ins.fingerprint`'s `dst.fingerprint()`
+/// et al) never enter it; only their RENAMED positions do. A shared
+/// fingerprint is a FAST PRE-FILTER, never the verdict: the fold is an
+/// un-keyed rolling hash (`fp_mix`, core/fp.av) and two different
+/// instruction lists can share one — `same_ins_list` is the proof.
+export fn alpha_fps(raw: List<Ins>, nparams: int) -> List<int> {
+    [i.fingerprint() for i in alpha_renamed(raw, nparams)]
+}
+
+/// Two fingerprint lists, elementwise — `==` compares scalars only,
+/// so an instruction-list comparison spells the scan.
+export fn same_fps(a: List<int>, b: List<int>) -> bool {
+    a.length == b.length && [i for i in 0..a.length].all(a[it] == b[it])
+}
+
+// ── Static data ─────────────────────────────────────────────────
+// A value the compiler settled and the program only READS is laid
+// out, not built: the lowering folds it into boxes of slots under
+// its type, the backend emits the boxes as headered globals and the
+// evaluator builds them once per run. ONE tree, two projections.
+
+/// One slot of a static box — the word a cell holds before the
+/// program runs.
+@derive(Fingerprint)
+export enum Slot {
+    Int(v: int)
+    Float(bits: int)
+    Bool(v: bool)
+    Text(s: string)
+    /// The box at `at` in the same static, laid out BEFORE this one —
+    /// a static reads child-first, so no slot points ahead.
+    Box(at: int)
+    /// The null pointer — a niche nullable's absence.
+    Null
+    /// A nullable SCALAR that is not there: the word zero, its cell
+    /// marked absent (runtime/avra_box.h's `MARK_ABSENT`).
+    Absent
+    /// A CODE ADDRESS — the symbol a `FnAddr` would resolve at run
+    /// time, laid out once instead: a capture-free closure's slot 0.
+    Code(sym: string)
+}
+
+/// One box: a slot array, or a map's keys beside its values.
+export enum StaticBox {
+    Slots(cells: List<Slot>)
+    Table(keys: List<string>, values: List<Slot>)
+    /// Octets laid out as the binary's own immortal box — the layout
+    /// text shares.
+    Octets(b: Bytes)
+}
+
+/// A box's content identity, written by hand: its octets are `Bytes`, which no derive folds.
+impl StaticBox {
+    fn fingerprint() -> int {
+        match self {
+            .Slots(cells) -> fp(172, [fp_list([c.fingerprint() for c in cells])]),
+            .Table(keys, values) -> fp(
+                173,
+                [fp_list([fp_str(k) for k in keys]), fp_list([v.fingerprint() for v in values])],
+            ),
+            .Octets(o) -> fp(174, [fp_list([o.at(i) for i in 0..o.length])]),
+        }
+    }
+
+    fn fingerprint_in(_ids: Ids) -> int { self.fingerprint() }
+}
+
+/// The code addresses these boxes name — a `Slot.Code` is a body
+/// reference as real as an instruction's, just not one an `Ins` scan
+/// would ever see.
+export fn static_code_syms(boxes: List<StaticBox>) -> List<string> {
+    flatten([box_code_syms(b) for b in boxes])
+}
+
+fn box_code_syms(b: StaticBox) -> List<string> {
+    match b {
+        .Slots(cells) -> flatten([slot_code_sym(c) for c in cells]),
+        .Table(_, values) -> flatten([slot_code_sym(c) for c in values]),
+        .Octets(_) -> [],
+    }
+}
+
+/// One slot's code address, or none — every slot but `.Code` names one.
+fn slot_code_sym(c: Slot) -> List<string> {
+    match c { .Code(sym) -> [sym], rest -> [] }
+}
+
+/// A settled aggregate as its boxes, the ROOT last — the address a
+/// `StaticAddr` of this name answers.
+/// One settled aggregate's layout: every box, child-first, under the static's
+/// own name. `file` names the unit that first read it, so a per-file module
+/// knows which of them it owns — a GROWTH, defaulted, so the existing
+/// construction site is untouched. `debug` marks data a program READS but
+/// that is no part of what its code DOES — a body's frame, whose label and
+/// declaration span move when a line above the body is written — so the code
+/// graph resolves a reference to it without hashing it.
+@derive(Fingerprint)
+export type Static = { name: string, boxes: List<StaticBox>, file: FileId? = null, debug: bool = false }
+
+/// Which instructions BRACKET a region — kept beside the enum, like
+/// every fact about it, so no consumer re-derives the list.
+export fn opens_region(i: Ins) -> bool {
+    i is .IfStart || i is .SwitchStart
+}
+
+export fn closes_region(i: Ins) -> bool {
+    i is .RegionEnd
+}
+
+/// Register identity — two registers are one when their indexes
+/// agree.
+export fn same_reg(a: Reg, b: Reg) -> bool {
+    // LICENSED structs.index_compared: register identity, not type agreement — ids compare by index
+    a.index == b.index
+}
+
+/// Two register lists equal element by element — `same_fps`'s shape,
+/// for `Reg` rather than `int`.
+fn same_regs(a: List<Reg>, b: List<Reg>) -> bool {
+    a.length == b.length && [i for i in 0..a.length].all(same_reg(a[it], b[it]))
+}
+
+/// Two OPTIONAL registers equal — absent on both sides, or the same
+/// register on both.
+fn same_reg_opt(a: Reg?, b: Reg?) -> bool {
+    if a == null || b == null { return a == null && b == null }
+    same_reg(a!, b!)
+}
+
+/// `a` and `b` STRUCTURALLY EQUAL — the actual proof behind a
+/// fingerprint match. Every fingerprint bottoms out in an un-keyed
+/// rolling hash (core/fp.av), so `same_fps` agreeing is a claim two
+/// DIFFERENT instruction lists can make; this walks the values
+/// themselves. Like `fingerprint()` and `remapped()`, it answers by
+/// variant with no catch-all on `a` — a new `Ins` variant owes this
+/// arm too, or the proof silently favours "equal" for the case
+/// nobody wrote. The inner match against `b` is a PROJECTION (one
+/// variant answers, `rest` is honestly false for every other one,
+/// present or future) rather than a second registry: a different
+/// variant is never equal, so its answer needs no update when `Ins`
+/// grows.
+export fn same_ins(a: Ins, b: Ins) -> bool {
+    match a {
+        .ConstInt(d1, v1) -> match b { .ConstInt(d2, v2) -> same_reg(d1, d2) && v1 == v2, rest -> false },
+        .ConstFloat(d1, v1) -> match b { .ConstFloat(d2, v2) -> same_reg(d1, d2) && v1 == v2, rest -> false },
+        .ConstStr(d1, s1) -> match b { .ConstStr(d2, s2) -> same_reg(d1, d2) && s1 == s2, rest -> false },
+        .ConstBool(d1, v1) -> match b { .ConstBool(d2, v2) -> same_reg(d1, d2) && v1 == v2, rest -> false },
+        .Bin(d1, op1, l1, r1) -> match b {
+            .Bin(d2, op2, l2, r2) -> same_reg(d1, d2) && op1 == op2 && same_reg(l1, l2) && same_reg(r1, r2),
+            rest -> false,
+        },
+        .Un(d1, op1, s1) -> match b {
+            .Un(d2, op2, s2) -> same_reg(d1, d2) && same_un(op1, op2) && same_reg(s1, s2),
+            rest -> false,
+        },
+        .CallRtVoid(c1, args1) -> match b { .CallRtVoid(c2, args2) -> c1 == c2 && same_regs(args1, args2), rest -> false },
+        .CallRt(d1, c1, args1) -> match b {
+            .CallRt(d2, c2, args2) -> same_reg(d1, d2) && c1 == c2 && same_regs(args1, args2),
+            rest -> false,
+        },
+        .Pack(d1, e1) -> match b { .Pack(d2, e2) -> same_reg(d1, d2) && same_regs(e1, e2), rest -> false },
+        .Extract(d1, s1, at1) -> match b {
+            .Extract(d2, s2, at2) -> same_reg(d1, d2) && same_reg(s1, s2) && at1 == at2,
+            rest -> false,
+        },
+        .FnAddr(d1, s1) -> match b { .FnAddr(d2, s2) -> same_reg(d1, d2) && s1 == s2, rest -> false },
+        .StaticAddr(d1, s1) -> match b { .StaticAddr(d2, s2) -> same_reg(d1, d2) && s1 == s2, rest -> false },
+        .OnceRead(d1, s1) -> match b { .OnceRead(d2, s2) -> same_reg(d1, d2) && s1 == s2, rest -> false },
+        .OnceCommit(s1, v1) -> match b { .OnceCommit(s2, v2) -> s1 == s2 && same_reg(v1, v2), rest -> false },
+        .FlagRead(d1, f1) -> match b { .FlagRead(d2, f2) -> same_reg(d1, d2) && f1 == f2, rest -> false },
+        .ScopeEnter(t1) -> match b { .ScopeEnter(t2) -> t1 == t2, rest -> false },
+        .Cleanup(i1) -> match b { .Cleanup(i2) -> i1 == i2, rest -> false },
+        .ScopeExit(g1) -> match b { .ScopeExit(g2) -> same_reg_opt(g1, g2), rest -> false },
+        .IfStart(c1) -> match b { .IfStart(c2) -> same_reg(c1, c2), rest -> false },
+        .SwitchStart(s1, cs1) -> match b { .SwitchStart(s2, cs2) -> same_reg(s1, s2) && same_fps(cs1, cs2), rest -> false },
+        .ArmEnd(g1) -> match b { .ArmEnd(g2) -> same_reg(g1, g2), rest -> false },
+        .RegionEnd(d1, g1) -> match b { .RegionEnd(d2, g2) -> same_reg(d1, d2) && same_reg(g1, g2), rest -> false },
+        .Call(d1, c1, args1) -> match b {
+            .Call(d2, c2, args2) -> same_reg(d1, d2) && c1 == c2 && same_regs(args1, args2),
+            rest -> false,
+        },
+        .CallPtr(d1, f1, args1) -> match b {
+            .CallPtr(d2, f2, args2) -> same_reg(d1, d2) && same_reg(f1, f2) && same_regs(args1, args2),
+            rest -> false,
+        },
+        .RetVal(r1) -> match b { .RetVal(r2) -> same_reg(r1, r2), rest -> false },
+        .FnExit(g1) -> match b { .FnExit(g2) -> same_reg(g1, g2), rest -> false },
+        .Alloca(d1) -> match b { .Alloca(d2) -> same_reg(d1, d2), rest -> false },
+        .Load(d1, s1) -> match b { .Load(d2, s2) -> same_reg(d1, d2) && same_reg(s1, s2), rest -> false },
+        .Store(s1, v1) -> match b { .Store(s2, v2) -> same_reg(s1, s2) && same_reg(v1, v2), rest -> false },
+        .LoopStart -> match b { .LoopStart -> true, rest -> false },
+        .LoopCond(c1) -> match b { .LoopCond(c2) -> same_reg(c1, c2), rest -> false },
+        .LoopEnd -> match b { .LoopEnd -> true, rest -> false },
+        .LoopJump(o1, a1) -> match b { .LoopJump(o2, a2) -> o1 == o2 && a1 == a2, rest -> false },
+        .Retain(r1) -> match b { .Retain(r2) -> same_reg(r1, r2), rest -> false },
+        .Release(r1) -> match b { .Release(r2) -> same_reg(r1, r2), rest -> false },
+        .Ret(c1) -> match b { .Ret(c2) -> c1 == c2, rest -> false },
+    }
+}
+
+/// Two alpha-renamed instruction lists, STRUCTURALLY. `same_fps`
+/// compares their hashes as a cheap pre-filter; a hash match proves
+/// nothing on its own, so `same_ir` (compiler/rule_proof.av) never
+/// calls a rewrite proved without this walk agreeing too.
+export fn same_ins_list(a: List<Ins>, b: List<Ins>) -> bool {
+    a.length == b.length && [i for i in 0..a.length].all(same_ins(a[it], b[it]))
+}
+
+/// A slot in a runtime signature — the CallRt contract's currency,
+/// and an extern seat's machine WIDTH.
+///
+/// A WIDTH IS A PROPERTY OF A SEAT, NOT OF A VALUE. Avra keeps one
+/// integer; an extern's seat may name the width its C prototype
+/// uses, and the value crossing is still an Avra `int` — the
+/// compiler narrows at the argument and widens the answer with the
+/// sign the width names. A width word is a type NOWHERE else.
+///
+/// APPEND-ONLY: a new kind goes at the END — the integer widths did,
+/// then `F64` when a float VALUE arrived to construct it. `F32` is
+/// the same edit again the day a seat needs it.
+/// Nothing reads the ordinal today; the rule is here so that if
+/// anything ever does, it inherits an order that never moved.
+///
+/// A new variant owes FOUR consumers, all in language/llvm.av, and
+/// `make vocab` refuses a catch-all OR an `is .Variant` test at any
+/// of them: `ll_rt_kind` (the LLVM type it becomes), `rt_arg` (how
+/// an argument crosses), `answers_word` (whether an answer is a
+/// pointer's word) and `answered` (the SIGN a narrow answer widens
+/// with). An `is` test is a partial handler the compiler cannot see.
+export enum RtKind { I64, Ptr, Void, I32, U32, F64 }
+
+/// Where the interpreter HOSTS a runtime fn — one variant per host
+/// body, so the interpreter's dispatch is exhaustive: a new row
+/// names its host and the compiler demands the arm. A variant's PLACE
+/// means nothing: every reader matches it by name, and neither file
+/// generated from the rows (`avra_rt.h`, `features/rt.av`) spells it,
+/// so a new one goes where it reads best.
+export enum RtHost {
+    Puts
+    Streq
+    ArrayNew
+    ArrayPush
+    ArrayGet
+    ArrayLen
+    CellRelease
+    CellForget
+    CellUnique
+    CellThawed
+    EnumBoxed
+    EnumTag
+    EnumWord
+    SlotUnique
+    SlotSet
+    MapNew
+    MapLen
+    MapHas
+    MapGet
+    MapSet
+    StrJoin
+    Insist
+    InsistScalar
+    Text
+    /// The EVALUATOR's float rendering: it holds a float as bits,
+    /// so it cannot reach `Text`'s double seat. A row of its own is
+    /// what lets the memory pass know the text is MINTED — an extern
+    /// that is not a row answers `owns_result: false` and leaks.
+    FloatTextBits
+    Strlen
+    ArrayPop
+    ArrayConcat
+    ArrayExtend
+    ArraySlice
+    StrContains
+    StrStartsWith
+    StrEndsWith
+    StrIndexOf
+    StrSubstring
+    StrSplit
+    StrReplace
+    StrCharCode
+    /// EIGHT BYTES AS ONE WORD — the digest's fold, whose C is one call where
+    /// `StrCharCode` was eight. Its arm reads the same bytes, so eval == native.
+    StrWordAt
+    StrTrim
+    /// TEXT -> INT: a presence question and a value question over the
+    /// same guarded walk (`avra_int_parse_walk` in avra_runtime.c) —
+    /// two hosts because one `RtKind` answer is one scalar.
+    StrParsesInt
+    StrParsedInt
+    StrConcat
+    BytesLen
+    BytesEq
+    BytesAt
+    BytesSlice
+    BytesConcat
+    BytesIndexOf
+    BytesIndexIn
+    BytesOfStr
+    BytesOfList
+    StrOfBytes
+    Utf8BadAt
+    BytesRun
+    BytesEqAt
+    BytesIeqAt
+    BytesGathered
+    /// The one door a FOREIGN buffer enters by: an address the program
+    /// supplied and a length, copied into a box of ours.
+    BytesAdopted
+    /// An empty buffer with room: the evaluator's octets carry no room.
+    BytesWithRoom
+    FdRead
+    FdTaken
+    FdWrite
+    /// The process substrate: one host arm per row, each a thin call
+    /// into the same C the native program calls, so eval == native
+    /// holds by construction.
+    ErrnoText
+    NowNs
+    /// The evaluator's own change log: a box watched, let go, its key, the
+    /// turn's stamp and the keys written under it.
+    BoxObserve
+    BoxUnobserve
+    BoxKey
+    TurnNext
+    ChangesTake
+    FileTouch
+    HostEnv
+    Eputs
+    IoList
+    Embed
+    StrFromCodepoint
+    /// This image re-executed with new words. A ROW because its C
+    /// reads an `AvraArray` — §2.1's line — and because a uniform
+    /// frame cannot hand C a box the evaluator holds as a HANDLE. Its
+    /// arm materialises the words on the interpreted side.
+    ExecSelf
+    /// A program run with its words and waited for. A ROW for the same
+    /// two reasons as `ExecSelf`, and its words are resolved by the
+    /// host exactly as `execv`'s are.
+    SpawnStatus
+    /// The same spawn, run IN a directory — a child writes its outputs relative to where
+    /// it starts, so a batch handed to ONE invocation needs the directory as part of the
+    /// request rather than as an accident of where the compiler happens to stand.
+    SpawnIn
+    /// The once cache — a pure fn's answer, settled for the run and
+    /// keyed by the fn's own symbol.
+    OnceGet
+    OnceSet
+    // a nullable scalar in a slot: presence written and read
+    ArrayPushMaybe
+    SlotSetMaybe
+    SlotPresent
+    ArrayLastPresent
+    MapSetMaybe
+    MapValuePresent
+    // a key's one probe, and the slot it named read twice over
+    MapSlot
+    MapValueAt
+    MapPresentAt
+    // the scheduler's rows: the evaluator runs every task on its one
+    // machine, filed by the same policy a compiled program's are
+    TaskSpawn
+    TaskJoin
+    /// The join a `catch` reads: how the task ended, never its answer.
+    TaskJoinCaught
+    TaskDone
+    /// A guarded run: the evaluator enters the closure under a catch floor
+    /// on its own stack, and a trap on the task lands back at the call.
+    GuardRun
+    GuardWords
+    TaskSettle
+    TaskSettleAll
+    TasksPush
+    FiberYield
+    /// The checked back-edge's cold side: the source's tick was set, so
+    /// hear a done timer, a standing cancel, and let others run.
+    TickCold
+    FiberSleep
+    FiberParkFd
+    FiberInterrupted
+    FiberWithin
+    FiberWithinEnd
+    /// The shield's bracket around a cold exit's deferred calls.
+    ShieldEnter
+    ShieldLeave
+    /// A named TYPE, resolved from where the calling annotation
+    /// processor stands. Natively it traps — a running program has
+    /// no declaration table; the interpreter's arm reaches the
+    /// workspace directly, the one row whose C body is never its
+    /// real answer.
+    TypeNamed
+    /// A program's own trap, in its words. A settlement records it as the
+    /// const's refusal and goes on; a running program exits.
+    Trap
+    /// `embed`'s twin for a file of any octets: the interpreter's arm
+    /// answers the compiler's placed read, natively it traps.
+    EmbedOctets
+    /// The content digest of the file `embed_octets` reads: the
+    /// compiler's own BLAKE3, so a provider is handed it and calls no C.
+    EmbedDigest
+    /// Reached by the backend only — an instruction or a Bin op
+    /// covers it in the interpreter.
+    Unhosted
+    BoxThawed
+    // the wait set, gates, the tasks nothing runs, and what a task
+    // carries: the evaluator files its virtual tasks with the same
+    // policy, and keeps a task's slots and id itself
+    WaitFd
+    WaitUntil
+    WaitGate
+    WaitTask
+    WaitPark
+    /// A task parks on a signal: one waiter per signal, so a source
+    /// watching several files each as its own member never needs an
+    /// aggregate at the seat. Darwin watches `EVFILT_SIGNAL`, Linux a
+    /// process signalfd.
+    WaitSig
+    /// A scan over several arms begins, and rests on what it filed.
+    WaitEnter
+    WaitRest
+    /// When a task answered, as a stamp a scan compares.
+    TaskSince
+    GateNew
+    GateClaim
+    TaskPending
+    TaskAt
+    TaskAnswer
+    TaskCancel
+    TaskSlot
+    TaskSlotSet
+    TaskId
+    /// Who asked the cancel that ended a task, or its own id for an
+    /// answer: the record `avra_task_ended_by` reads.
+    TaskEndedBy
+    /// The running task's unwind frames — one pushed by each fn the
+    /// unwind passes, read back by the landing that answers `at`.
+    UnwindPush
+    UnwindCount
+    UnwindAt
+    /// How many frames a full list has dropped: the landing's `at`
+    /// says so in one `Frame`.
+    UnwindDropped
+    /// Its bounds law spoken, then the row's C body by name.
+    BytesRunBack
+    // a map's keys or values in insertion order, as a fresh list
+    MapKeys
+    MapVals
+    // a key removed, the rest keeping their insertion order
+    MapRemove
+    // a write under a key whose probe a token holds; the evaluator
+    // files by the key alone
+    MapSetAt
+    MapSetAtMaybe
+}
+
+/// One runtime fn's contract: its shape, whether its result is
+/// OWNED (a fresh allocation the memory pass must release), whether
+/// an OWNED TWIN (`<name>_owned`) exists for the memory pass to
+/// substitute when the value stored or answered is managed, whether
+/// it LENDS that answer, and its interpreter host.
+///
+/// `lends` is the memory pass's question and it is false by
+/// default: a row LENDS when the subject STILL HOLDS the value it
+/// answered, so the caller may borrow it instead of taking the
+/// owned twin. A row that HANDS OVER — `avra_array_pop`, which
+/// shrinks the list — must never be borrowed, and answering false
+/// is the safe side for every row nobody has thought about.
+///
+/// `keeps[j]` says seat `j` OUTLIVES the call: the body takes its own
+/// reference and stores it somewhere the callee owns, so the value
+/// ESCAPES. It is the mirror of `lends`, which is about the ANSWER.
+/// RETAINING IS NOT KEEPING — `avra_insist` retains its seat and
+/// ANSWERS it, which is `owns_result` and hands the reference to the
+/// caller; only a body that STORES what it retained keeps. Marking
+/// the answering kind would make every `!` unwrap read as an escape.
+/// Empty means the row keeps nothing, which is 82 of 86 rows.
+///
+/// `writes[j]` says seat `j`'s OWN CONTENTS CHANGE: a push, a set, a
+/// release, an in-place reusing transform — anything a caller must
+/// treat as invalidating a borrow taken from that seat before the
+/// call, since a view read out of it may now be stale or dangling.
+/// This is a THIRD axis from `keeps` and `lends`: `keeps` asks
+/// whether the CALLEE holds a reference past the call (an escape),
+/// `lends` asks whether the ANSWER still rides the SUBJECT's own
+/// reference; `writes` asks whether the SEAT'S OWN BOX is a
+/// different value after the call than before it. A row that only
+/// reads (`avra_array_get`), or only retains without touching
+/// contents (`avra_rc_retain`), leaves every seat's `writes` false —
+/// the pass must never guess from whether a seat is merely an
+/// OPERAND, since that also matches an ordinary read. Empty means
+/// the row writes through nothing.
+///
+/// `aliases_arg0` says an OWNED answer MAY BE THE SAME BOX as seat 0,
+/// not a fresh one — `avra_box_thawed`'s fast path is a retain of `p`
+/// itself, answering `p`; only the rare immortal-data case clones.
+/// `owns_result` alone stops `cell_root`'s trace at a row like this
+/// (an ordinary allocator's answer never aliases its argument, so the
+/// trace is right to stop there), which lost the identity a later
+/// write through the ANSWER needed to compare against the seat's own
+/// box — `self.names = fresh(0)` inside a `mut` method thaws `self`
+/// first, writes through the THAW's answer, and a borrow taken from
+/// `self` a line earlier read as safe with nothing between them,
+/// corrupting `old.first()` after the field it pointed into was
+/// freed (avra-8sb5.57.108). False for every row nobody has marked —
+/// the safe default here is on the SAME side as `owns_result`
+/// stopping the trace, since a wrongly-continued trace would compare
+/// two boxes that are not the same and answer safe when the seat
+/// changed.
+///
+/// `inert` says the C body reads its text as BYTES it was handed and
+/// resolves nothing outside the program — no path, no name, no
+/// command, no environment key, and no C-string call that stops at a
+/// NUL. Only such a row may skip the crossing check.
+///
+/// THE DEFAULT IS CHECKED, and the polarity is the whole point: a row
+/// nobody has thought about is checked, not exempt. An `exempt: false`
+/// default would make forgetting the field the same as deciding it,
+/// and the forgetting is silent. A package's extern can never be
+/// inert — its C is not ours to certify.
+///
+/// `cells[j]` is the width of the CELL BEHIND an inout seat — never
+/// the seat's own ABI kind, which is always `Ptr` because an inout
+/// carries an address. `Void` means seat `j` is not an inout. Only
+/// an extern fills it: the registry's own rows take addresses of
+/// nothing.
+/// What a runtime row REACHES: `Pure` answers from its arguments
+/// alone, so a settlement may run it; `Embed` reads a file the BUILD
+/// owns, beside the source, so a settlement may run it and records
+/// the file; `Lookup` reads the compiler's OWN declaration table —
+/// deterministic for a given program, never the process's world, so
+/// every compile-time run may use it; `World` reads or writes the
+/// process's world — io, time, env, a child — and no compile-time
+/// evaluation may.
+///
+/// `takes` says when the body takes its OWN reference to a seat, and
+/// `stood` that an owned answer is a box that ALREADY STOOD — a slot's,
+/// the once cache's, the seat `!` was handed — retained on the way
+/// out, never minted. Together they are every count a row's body
+/// moves, so an engine that hosts the row moves the same ones.
+///
+/// `traps` says the body can raise a trap — one a guard catches. A row says
+/// `traps: true` exactly when it can, and `tools/traps.py` holds the C to that
+/// both ways; a row that cannot is declared `nounwind`.
+///
+/// `waits` says the body may switch the calling task out — a CANCEL
+/// POINT: a cancel or a deadline standing there is heard there, so
+/// every caller that may reach the row tests for one after the call.
+export enum Reach { Pure, Embed, Lookup, World }
+
+export type RtSig = { name: string, ret: RtKind, params: List<RtKind>, owns_result: bool, has_owned_twin: bool, host: RtHost, lends: bool = false, keeps: List<bool> = [], writes: List<bool> = [], aliases_arg0: bool = false, cells: List<RtKind> = [], reach: Reach = Reach.Pure, boxes: List<Box> = [], answer: Box = Box.Any, inert: bool = false, has_reusing_twin: bool = false, has_moving_twin: bool = false, wasm: bool = true, takes: Takes = Takes.Never, stood: bool = false, waits: bool = false, traps: bool = false }
+
+/// WHEN A ROW'S BODY TAKES ITS OWN REFERENCE to a seat it keeps — the
+/// `avra_rc_retain` the C makes, as data. `keeps` says a seat escapes;
+/// this says who PAYS for it: an `_owned` twin's body does, a `_moved`
+/// twin's caller already did, which is `Never` beside a kept seat.
+export enum Takes {
+    Never
+    Always(seat: int)
+    /// When the flag seat says the value is present.
+    Present(seat: int, flag: int)
+    /// When bit `tag` of the `counted` seat says the word is a pointer.
+    Counted(seat: int, tag: int, counted: int)
+}
+
+/// WHICH BOX a `Ptr` seat takes — and, in `answer`, which box a `Ptr`
+/// ANSWER hands back. A pointer says only that a header
+/// stands there, and a text length read from a list's header is a
+/// plausible number. `Text` is C's `const char*`; `List` and `Map`
+/// are the runtime's own layouts; `Any` is a seat that takes every
+/// box and means it (`avra_rc_retain`). A row that names no boxes
+/// takes `Any` at every pointer seat — unconstrained, never wrongly
+/// constrained. `Bytes` is octets: C's `const char*` too, but the row
+/// reads the box's LENGTH from its header or a seat beside it, never
+/// to a NUL — and the Avra seat that fills it is `Bytes`.
+export enum Box {
+    Any
+    Text
+    Bytes
+    List
+    Map
+}
+
+impl RtSig {
+    /// Whether the evaluator runs this row by an arm of its own. A row
+    /// without one is called by name through the uniform frame, as an
+    /// extern is — so the frame's seat law holds for it.
+    fn armed() -> bool { !(self.host is .Unhosted) }
+
+    /// The box the j-th seat takes.
+    fn box_at(j: int) -> Box {
+        if j < self.boxes.length { self.boxes[j] } else { Box.Any }
+    }
+}
+
+// ── The role projections ──────────────────────────────────────────
+// A DERIVE'S DECLARATION IS ITS MODULE'S, NOT ITS PACKAGE'S: a
+// generated `export` does not reach the module surface, so each
+// projection's BODY is derived off the payload roles above and its
+// DOOR is written here. (`node_payload_rows` in core/nodes.av carries
+// the same one-line door for `@derive(Grammar)`.)
+
+/// The register an instruction DEFINES, when it defines one.
+export fn dst_of(i: Ins) -> Reg? { dst_of_role(i) }
+
+/// The registers a step READS — its operands, never its destination.
+/// ONE definition of what an instruction consumes, so a pass asking
+/// about a register's uses asks here. A slot is read by the step that
+/// touches it: a Load reads its cell, a Store the cell and the value.
+export fn reads_of(i: Ins) -> List<Reg> { reads_of_role(i) }
+
+/// Whether a step reads `r` — `reads_of(i).any(same_reg(it, r))`
+/// with no list built to answer it. A scanning pass asking about ONE
+/// register a step at a time asks here, never `reads_of`.
+export fn reads_reg(i: Ins, r: Reg) -> bool { reads_reg_role(i, r) }
+
+/// Whether a step reads any of `rs`.
+export fn reads_any(i: Ins, rs: List<Reg>) -> bool {
+    for r in rs { if reads_reg(i, r) { return true } }
+    false
+}
+
+/// Whether a step reads ANYTHING — `!reads_of(i).is_empty()`, same
+/// door. A position with no reads at all can never flag any register
+/// question `reads_of` answers, which is what a barrier scan skips.
+export fn reads_some(i: Ins) -> bool { reads_some_role(i) }
+
+/// An AVRA CALL's argument registers — the seats `retained_args`
+/// retains, and the only ones a conditional ABI could stop retaining.
+/// A runtime row BORROWS its arguments, so its are not seats.
+export fn seat_regs(i: Ins) -> List<Reg> { seat_regs_role(i) }
+
+/// The register an instruction DEFINES that OWNS a reference when
+/// its value is managed — the payload marked `@owns`. A destination
+/// carrying only `@dst` owns NOTHING: a scalar's word, a cell, an
+/// immortal static address. That absence is a role, not an omission.
+export fn owned_dst(i: Ins) -> Reg? { owned_dst_role(i) }
+
+/// The register that is a VIEW of another box — it rides a reference
+/// somebody else holds and owns nothing of its own.
+export fn viewed_dst(i: Ins) -> Reg? { viewed_dst_role(i) }
+
+/// An AVRA CALL's argument registers, as the memory pass reads them: the
+/// seats the caller LENDS. `@seats` is the structural claim (these are an
+/// Avra call's arguments); `@lent` is the ABI claim (the caller keeps each
+/// standing for the call, and holds a VIEW across it). A runtime row's
+/// arguments are its own registry's, and are no seats here.
+export fn lent_args(i: Ins) -> List<Reg> { lent_args_role(i) }
+
+/// The symbol an AVRA call names, when it is a known body — a
+/// `CallPtr` names none, so its seats can never be shown read-only.
+export fn call_symbol(i: Ins) -> string? { call_symbol_role(i) }
+
+/// THE USER BODY a step names — a call's callee, a fn value's
+/// address. Runtime and host callees name no body of ours. Every
+/// symbol a program's bodies name must be a body the program holds:
+/// the emitter's closure law.
+export fn body_symbol(i: Ins) -> string? { body_symbol_role(i) }
+
+/// THE HOSTED FN a step calls — the runtime's rows and the program's
+/// own externs share one call shape, so they share one projection.
+/// Every name here must be a declared row.
+export fn hosted_symbol(i: Ins) -> string? { hosted_symbol_role(i) }
+
+/// THE SETTLED AGGREGATE a step takes the address of — the one global
+/// a read looks up by name. Every such name must be a static the
+/// program holds, and a module lays out exactly the ones its own
+/// bodies name: the emitter's closure law, at the other end.
+export fn static_symbol(i: Ins) -> string? {
+    match i { .StaticAddr(_, sym) -> sym, rest -> null }
+}
+
+/// The cleanup regions open at each position of `ins`, as the positions of
+/// their openers, outermost first: the list at `p` is the state before
+/// instruction `p` runs, and the one at `ins.length` the state at the end. A
+/// cleanup covers every position from its region's close to the end of the
+/// scope, arm or loop that holds it, until an empty region of its `id` retires
+/// it; the positions inside a cleanup region are covered by none. THE ONE
+/// DEFINITION of what a call is covered by: the evaluator's unwind and the
+/// backend's landings both ask it.
+export fn cleanups_open(ins: List<Ins>) -> List<List<int>> {
+    mut brackets: List<Bracket> = [plain_bracket()]
+    mut out: List<List<int>> = []
+    for at, i in ins {
+        out.push(covering(brackets))
+        brackets = bracketed(brackets, ins, at, i)
+    }
+    out.push(covering(brackets))
+    out
+}
+
+/// One open bracket: the cleanups opened in it (a retirement is a negative
+/// entry naming the opener it ends, `-1 - position`), and, when the bracket is
+/// a cleanup region's own body, the position of its opener.
+type Bracket = { open: List<int>, region: int }
+
+/// A bracket that is no cleanup region's body.
+fn plain_bracket() -> Bracket { Bracket { open: [], region: 0 - 1 } }
+
+/// The cleanups standing over a position: none inside a cleanup region's body.
+fn covering(brackets: List<Bracket>) -> List<int> {
+    if brackets.any(it.region >= 0) { return [] }
+    let all = flatten([b.open for b in brackets])
+    [j for j in all if j >= 0 && !all.contains(0 - 1 - j)]
+}
+
+/// The brackets after `i` at `at`: a scope, region or loop opens one, an arm
+/// ends one and starts the next, a close drops the innermost — a cleanup
+/// region's close adds its opener to the bracket below — and an opener of a
+/// cleanup region starts one marked with its position. An empty region retires
+/// the opener of its `id` in the bracket below it.
+fn bracketed(brackets: List<Bracket>, ins: List<Ins>, at: int, i: Ins) -> List<Bracket> {
+    let outer = brackets.slice(0, brackets.length - 1)
+    let top = brackets.last()!
+    let fresh = plain_bracket()
+    match i {
+        .ScopeEnter(_) or .IfStart(_) or .SwitchStart(_, _) or .LoopStart -> brackets.concat([fresh]),
+        .Cleanup(id) -> if retires(ins, at) {
+            outer.concat([top with { open: top.open.concat([0 - 1 - opened_at(ins, id)]) }, fresh])
+        } else {
+            brackets.concat([Bracket { open: [], region: at }])
+        },
+        .ArmEnd(_) -> outer.concat([fresh]),
+        .ScopeExit(_) or .RegionEnd(_, _) or .LoopEnd -> closed(outer, top),
+        .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or .FlagRead(_, _) or .Bin(_, _, _, _) or .Un(_, _, _) or .CallRtVoid(_, _) or .CallRt(_, _, _) or .Pack(_, _) or .Extract(_, _, _) or .FnAddr(_, _) or .StaticAddr(_, _) or .OnceRead(_, _) or .OnceCommit(_, _) or .Call(_, _, _) or .CallPtr(_, _, _) or .RetVal(_) or .FnExit(_) or .Alloca(_) or .Load(_, _) or .Store(_, _) or .LoopCond(_) or .LoopJump(_, _) or .Retain(_) or .Release(_) or .Ret(_) -> brackets,
+    }
+}
+
+/// The bracket list after `top` closes over `outer`: a cleanup region's
+/// opener joins the bracket it sat in.
+fn closed(outer: List<Bracket>, top: Bracket) -> List<Bracket> {
+    if top.region < 0 { return outer }
+    let below = outer.last()!
+    outer.slice(0, outer.length - 1).concat([below with { open: below.open.concat([top.region]) }])
+}
+
+/// Whether the `Cleanup` at `at` is a retirement: its region is empty.
+export fn retires(ins: List<Ins>, at: int) -> bool {
+    at + 1 < ins.length && match ins[at + 1] { .ScopeExit(_) -> true, rest -> false }
+}
+
+/// The position of the cleanup region of `id` that opens a body.
+fn opened_at(ins: List<Ins>, id: int) -> int {
+    [at for at, i in ins if match i { .Cleanup(j) -> j == id && !retires(ins, at), rest -> false }]
+        .first() ?? 0 - 1
+}

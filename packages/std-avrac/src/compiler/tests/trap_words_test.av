@@ -1,0 +1,32 @@
+//! A settlement cut short speaks the words of what cut it, not only that it was cut.
+use @std.avrac.testing.{test_workspace, vendored_meta, vendored_meta_paths}
+use compiler.host.{memory_host}
+
+fn derive_source() -> string {
+    "use @std.meta.{Type, Directive}\n\nexport trait Boom {\n    static fn derive(t: Type) -> List<Directive> {\n        let zero = t.name.length - t.name.length\n        let n = 1 / zero\n        [Directive { twin: \"\", name: t.name, at: t.at, source: quote { impl \${t} { fn boom() -> int { \${n} } } } }]\n    }\n}\n"
+}
+
+fn files() -> Map<string, string> {
+    vendored_meta(
+        {
+            "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@x/b\" = { path = \"vendor/b\" }\n",
+            "/w/src/main.av": "use @std.meta.{derive}\nuse @x.b.{Boom}\n\n@derive(Boom)\ntype T = { n: int }\n\nT { n: 1 }.boom()\n",
+            "/w/vendor/b/avra.toml": "[package]\nname = \"@x/b\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n",
+            "/w/vendor/b/src/gen.av": derive_source(),
+        },
+    )
+}
+
+fn paths() -> List<string> {
+    ["/w/avra.toml", "/w/src/main.av", "/w/vendor/b/avra.toml", "/w/vendor/b/src/gen.av"]
+        .concat(vendored_meta_paths())
+}
+
+spec "compiler/expand — a trapped derive names its trap" {
+    given "a derive that divides by zero at compile time" {
+        then "the refusal carries what trapped, after the fact that it did" {
+            let ws = test_workspace(memory_host(files(), paths()), "/w")
+            ws.program("/w/src/main.av").report().contains("trapped while settling:")
+        }
+    }
+}
