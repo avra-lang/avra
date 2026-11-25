@@ -1,0 +1,43 @@
+// proves: a value enum and a nullable scalar ride registers as pairs,
+// and what a pair names is counted through it
+enum Read { Data(b: List<int>), End }
+
+type Src = { left: int }
+
+fn read(mut s: Src) -> Read {
+    if s.left == 0 { return Read.End }
+    s.left = s.left - 1
+    Read.Data([s.left, s.left, s.left])
+}
+
+fn firsts(xs: List<List<int>>) -> int {
+    mut t = 0
+    for x in xs { t = t + (x.first() ?? 0) }
+    t
+}
+
+/// The read a slow reader would keep: absent until the source runs low.
+fn kept(s: Src, r: Read) -> Read? {
+    if s.left < 3 { r } else { null }
+}
+
+fn shown() -> string {
+    mut s = Src { left: 400 }
+    mut t = 0
+    mut last: Read = Read.End
+    mut held: List<Read?> = []
+    while true {
+        let r = read(s)
+        match r { .Data(b) -> { t = t + b.length }, .End -> { break } }
+        if s.left % 50 == 0 { last = r }
+        held = [kept(s, r)]
+    }
+    let l = match last { .Data(b) -> b[0], .End -> -1 }
+    let h = match held[0] {
+        v? -> match v { .Data(b) -> b[0], .End -> -1 }
+        null -> -2
+    }
+    "${t} ${l} ${h} ${firsts([[1], [], [3]])}"
+}
+
+shown()

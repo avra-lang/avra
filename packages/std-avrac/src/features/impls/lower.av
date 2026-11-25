@@ -1,0 +1,249 @@
+//! The method call's lowering — the ONE meaning: a direct Call to
+//! the QUALIFIED name, the subject riding the self seat. The name
+//! derives from the receiver's type both here and at the fn loop,
+//! so no fact table carries it.
+use core.{ExprId, Reg, DeclId, TypeId, Type, BinOp, same_type}
+use features.{LowerCx, MethodCall, RunChoice}
+
+/// The receiver's value: seat 0 of the body, as its binding says.
+fn receiver_reg(mut cx: LowerCx, e: ExprId) -> Reg {
+    cx.def_reg(e) ?? cx.lower_defect(e, "a receiver outside a method survived resolve")
+}
+
+fn method_call_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, name: string, args: List<ExprId>) -> Reg {
+    match subject_callee(cx.view, cx.names, subject, cx.type_at(subject), name) {
+        .Variant(_, _) -> built_variant(cx, e, name, args),
+        .Static(m, _) -> static_dispatch(cx, e, m, args),
+        .Bounded(_, _, _) or .BoundStatic(_, _, _) -> cx.lower_defect(e, "a bounded receiver survived mono"),
+        .Contract(tdecl, _) -> dyn_dispatch(cx, e, subject, tdecl, name, args),
+        .FnField(slot, fty) -> fielded_dispatch(cx, e, subject, slot, fty, args),
+        .Row(r) -> r.lower(cx, MethodCall { e: e, subject: subject, args: args }),
+        .Declared(decl, _) -> declared_dispatch(cx, e, subject, decl, name, args),
+        .Nameless -> cx
+            .lower_defect(
+                e,
+                "a method `${name}` on a nameless receiver `${cx.view.types.name_of(cx.type_at(subject))}` survived typing",
+            ),
+    }
+}
+
+/// The contract's dispatch: the box carries [value, methods…] in
+/// trait-declaration order — slot 0 rides the self seat, slot
+/// 1+ordinal holds the code pointer.
+fn dyn_dispatch(
+    mut cx: LowerCx,
+    e: ExprId,
+    subject: ExprId,
+    tdecl: DeclId,
+    name: string,
+    args: List<ExprId>,
+) -> Reg {
+    let ordinal = cx.view.decls.trait_method_names(tdecl).index_of(name)
+    let member: DeclId? = cx.view.decls.trait_member(tdecl, name)
+    if ordinal < 0 || member == null { return cx.lower_defect(e, "a dyn method outside its trait survived typing") }
+    let s = seated(cx, subject, args)
+    let data = boxed_value(cx, subject, s.recv, dyn_writes(cx, tdecl, name))
+    let fp = cx.slot_read(s.recv, 1 + ordinal, null)
+    cx.call_ptr_at(e, fp, [data].concat(cx.seated_regs(e, member!, args, s.args)))
+}
+
+/// Whether the trait member named writes its receiver — a contract's
+/// declared `mut`, the same word `checks.av`'s `contract_judged` reads.
+fn dyn_writes(cx: LowerCx, tdecl: DeclId, name: string) -> bool {
+    let member? = cx.view.decls.trait_member(tdecl, name) else { return false }
+    cx.view.decls.declares_writing(member)
+}
+
+/// A contract box's value, the method's `self`. A copied receiver's box
+/// was opened unique, and its value is opened with it — the box alone
+/// would still share the value it wraps. A WRITING member opens the
+/// value unique on its own account too, and writes the open back into
+/// the box's own slot: nothing else names this value, so a later call
+/// through the same box must read what this one just opened.
+fn boxed_value(mut cx: LowerCx, subject: ExprId, box: Reg, writes: bool) -> Reg {
+    if !cx.facts.wants_alias_copy(subject) && !writes { return cx.slot_read(box, 0, cx.type_at(subject)) }
+    cx.owned_slot_unique(cx.shape_at(subject), box, cx.const_int(0))
+}
+
+/// A call's receiver register and its argument registers.
+type Seated = { recv: Reg, args: List<Reg> }
+
+/// Evaluation is left to right, but a receiver rooted in a `mut` CELL is
+/// READ after its arguments: an argument writing through the same cell
+/// may re-point it (a copy opened unique), and a receiver read first
+/// would be the box left behind. Its path's index operands still run
+/// first, in order.
+fn seated(mut cx: LowerCx, subject: ExprId, args: List<ExprId>) -> Seated {
+    if !in_cell(cx, subject) {
+        let recv = cx.reg_of(subject)
+        return Seated { recv: recv, args: [cx.reg_of(a) for a in args] }
+    }
+    for i in path_indexes(cx, subject) { let _ = cx.reg_of(i) }
+    let regs = [cx.reg_of(a) for a in args]
+    Seated { recv: cx.reg_of(subject), args: regs }
+}
+
+/// The index operands on a place's path, in written order.
+fn path_indexes(cx: LowerCx, e: ExprId) -> List<ExprId> {
+    let step? = cx.view.store.place_step(e) else { return [] }
+    match step {
+        .Root(_) -> [],
+        .Field(subject, _) or .Unwrap(subject) -> path_indexes(cx, subject),
+        .At(subject, index) -> path_indexes(cx, subject).concat([index]),
+    }
+}
+
+/// Whether a receiver is a place rooted in a `mut` binding's cell.
+fn in_cell(cx: LowerCx, subject: ExprId) -> bool {
+    let root? = cx.view.store.place_root(subject) else { return false }
+    cx.cell_of(root) != null
+}
+
+/// The fn-FIELD call's lowering: read the field's box, then the
+/// box's slot 0 — the code address — and go through the pointer,
+/// the box riding seat 0.
+fn fielded_dispatch(
+    mut cx: LowerCx,
+    e: ExprId,
+    subject: ExprId,
+    slot: int,
+    fty: TypeId,
+    args: List<ExprId>,
+) -> Reg {
+    let box = cx.field_read(cx.reg_of(subject), cx.type_at(subject), slot, fty)
+    cx.called_through(e, box, [cx.reg_of(a) for a in args])
+}
+
+/// The impl table's dispatch: a direct Call to the method's
+/// qualified symbol, the subject riding the self seat.
+fn declared_dispatch(
+    mut cx: LowerCx,
+    e: ExprId,
+    subject: ExprId,
+    decl: DeclId,
+    name: string,
+    args: List<ExprId>,
+) -> Reg {
+    let run? = cx.facts.dispatch_at(e) else { return chosen_dispatch(cx, e, subject, decl, name, args) }
+    dispatched(cx, e, subject, decl, name, args, run)
+}
+
+/// A member fixed at compile time — the name's one, or the one typing chose.
+fn chosen_dispatch(
+    mut cx: LowerCx,
+    e: ExprId,
+    subject: ExprId,
+    decl: DeclId,
+    name: string,
+    args: List<ExprId>,
+) -> Reg {
+    let s = seated(cx, subject, args)
+    let m? = cx.facts.chosen_at(e) ?? concrete_choice(cx, decl, name, args) ?? cx
+        .view
+        .decls
+        .method(decl, name) else {
+        return cx.lower_defect(e, "a method with no symbol survived typing")
+    }
+    let seats = [s.recv].concat(cx.seated_regs(e, m, args, s.args))
+    cx.call_decl_at(e, cx.method_symbol(m, e, cx.type_at(subject)), seats)
+}
+
+/// Inside a body typed over a type parameter, typing could not choose
+/// among a generic trait's members; under mono the arguments' types are
+/// concrete, and the ONE member whose seats they are is the callee.
+fn concrete_choice(cx: LowerCx, decl: DeclId, name: string, args: List<ExprId>) -> DeclId? {
+    let many = cx.view.decls.methods_named(decl, name)
+    if many.length < 2 { return null }
+    let fits = [m for m in many if seats_are(cx, m, args)]
+    if fits.length == 1 { fits[0] } else { null }
+}
+
+/// Whether the arguments' types are exactly the member's seats.
+fn seats_are(cx: LowerCx, m: DeclId, args: List<ExprId>) -> bool {
+    let sig? = cx.view.decls.sig(m)?.fn_sig() else { return false }
+    sig.params.length == args.length + 1 &&
+        [j for j, a in args if !same_type(cx.type_at(a), sig.params[j + 1])].is_empty()
+}
+
+/// A member chosen at RUN: the `dyn` argument's tag is tested against
+/// each member's in turn; the last is called only once its tag is
+/// proved, and a value no member takes traps in the call's words.
+fn dispatched(
+    mut cx: LowerCx,
+    e: ExprId,
+    subject: ExprId,
+    decl: DeclId,
+    name: string,
+    args: List<ExprId>,
+    d: RunChoice,
+) -> Reg {
+    let s = seated(cx, subject, args)
+    let arg = args[d.seat]
+    let tr? = cx.view.types.dyn_trait(cx.type_at(arg)) else { return cx.lower_defect(e, "a dispatch over no `dyn` survived typing") }
+    let int_ty = cx.view.decls.types.type(int)
+    let tag = cx.slot_read(s.args[d.seat], 1 + cx.view.decls.trait_method_names(tr).length, int_ty)
+    let value = boxed_value(cx, arg, s.args[d.seat], false)
+    let run = Run {
+        e: e,
+        recv_ty: cx.type_at(subject),
+        seated: s,
+        seat: d.seat,
+        tag: tag,
+        value: value,
+        words: "`${cx.view.decls.decl(decl).name}.${name}` has no member for this `dyn` value's type",
+    }
+    member_arm(cx, run, d.members, 0)
+}
+
+/// One `dyn`-dispatched call's parts, shared by every arm.
+type Run = { e: ExprId, recv_ty: TypeId, seated: Seated, seat: int, tag: Reg, value: Reg, words: string }
+
+fn member_arm(mut cx: LowerCx, run: Run, members: List<DeclId>, i: int) -> Reg {
+    let m = members[i]
+    if i == members.length - 1 {
+        let misses = tag_test(cx, run, m, BinOp.Ne)
+        cx.void_region(misses) { cx -> cx.trap(cx.const_str(run.words)) }
+        return member_called(cx, run, m)
+    }
+    let hits = tag_test(cx, run, m, BinOp.Eq)
+    cx
+        .region(hits, run.e) { cx -> member_called(cx, run, m) } else { cx -> member_arm(cx, run, members, i + 1) }
+}
+
+/// The run-time tag compared with the type a member takes at the seat.
+fn tag_test(mut cx: LowerCx, run: Run, m: DeclId, op: BinOp) -> Reg {
+    let want = cx.const_int(member_tag(cx, m, run.seat))
+    cx.bin(Type.Bool, op, run.tag, want)
+}
+
+/// The tag of the type a member takes at the dispatched seat.
+fn member_tag(cx: LowerCx, m: DeclId, seat: int) -> int {
+    let sig? = cx.view.decls.sig(m)?.fn_sig() else { return 0 }
+    let d? = cx.view.decls.implementor(sig.params[seat + 1]) else { return 0 }
+    cx.view.decls.type_tag(d)
+}
+
+fn member_called(mut cx: LowerCx, run: Run, m: DeclId) -> Reg {
+    let seats = [if j == run.seat { run.value } else { r } for j, r in run.seated.args]
+    cx.call_decl_at(run.e, cx.method_symbol(m, run.e, run.recv_ty), [run.seated.recv].concat(seats))
+}
+
+/// A STATIC's dispatch: a direct Call to the method's qualified
+/// symbol with NO receiver — the seats are the written ones.
+fn static_dispatch(mut cx: LowerCx, e: ExprId, m: DeclId, args: List<ExprId>) -> Reg {
+    // THE MINT LAW: the operands' registers first, the answer last
+    let regs = [cx.reg_of(a) for a in args]
+    let chosen = cx.facts.chosen_at(e) ?? m
+    let seated = cx.seated_regs(e, chosen, args, regs)
+    cx.call_decl_at(e, cx.method_symbol(chosen, e, cx.type_at(e)), seated)
+}
+
+/// The type-receiver half lowered: the variant's tagged box — the
+/// same shape enums' own lowering mints, through the same verbs.
+fn built_variant(mut cx: LowerCx, e: ExprId, name: string, args: List<ExprId>) -> Reg {
+    let sig? = cx.variants_at(e) else { return cx.lower_defect(e, "a variant built without an enum type") }
+    let which: int? = sig.tag_of(name)
+    if which == null || args.is_empty() { return cx.lower_defect(e, "an undeclared variant survived typing") }
+    let carried = [cx.reg_of(a) for a in args]
+    cx.tagged_value(cx.shape_at(e), which!, carried)
+}

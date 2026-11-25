@@ -1,0 +1,53 @@
+//! What the engine asks of a token, and nothing more: any type
+//! answering these questions can be matched, scanned for recovery,
+//! and reported on — the engine holds no lexer and no concrete token
+//! type of its own.
+//!
+//! A VALUE, never a trait bound: this engine's own helpers call each
+//! other through several layers of `<T, N>` generic functions, and a
+//! trait bound on `T` does not survive that — probed, both an
+//! explicit and an inferred type argument at the inner call refuse
+//! with "`T` does not implement `Lexeme`" even though the OUTER
+//! function's own `T` carries the identical bound. A record of verbs
+//! sidesteps the gap entirely (the same door `build` already opens on
+//! `MatchContext`) and reads no differently at a call site.
+use @std.errors.{Loc}
+
+export type Lexeme<T> = {
+    /// Does a grammar `Lit("...")` match this token — text equality,
+    /// never against quoted input (quoted text is data, not syntax).
+    lit_matches: fn(T, string) -> bool,
+    /// The end-of-input marker: a position, not a token — matched
+    /// without being consumed.
+    is_eof: fn(T) -> bool,
+    /// The recovery-sync boundary panic-mode recovery skips to. A
+    /// token type with no notion of "statement boundary" always
+    /// answers false; nothing else in the engine requires one.
+    ends_statement: fn(T) -> bool,
+    /// The kind id a named terminal class denotes as a grammar rule
+    /// writes it (`NUMBER`, `STRING`, ...), -1 for a name this lexer
+    /// has no kind for — asked once per class per parse.
+    kind_of: fn(string) -> int,
+    /// Does this token carry kind `k` (from `kind_of`) — every `.Named`
+    /// atom asks this, an int compare, never a name's.
+    wears_kind: fn(T, int) -> bool,
+    /// The token's own text — a captured terminal's payload.
+    text: fn(T) -> string,
+    /// Where the token sits in its source.
+    loc: fn(T) -> Loc,
+    /// The source range from one token to another covers: from the lower start to the higher end,
+    /// in the first's file — one place made, never one a token.
+    cover: fn(T, T) -> Loc,
+    /// A payload a grammar RULE states rather than one a token
+    /// captured (`-> Expr.BoolLit(value = true)`), worn as a terminal.
+    stated: fn(string, Loc?) -> T,
+}
+
+/// The range two places cover: from the lower start to the higher end, in the first's file.
+export fn loc_cover(a: Loc, b: Loc) -> Loc {
+    Loc {
+        file: a.file,
+        lo: if a.lo < b.lo { a.lo } else { b.lo },
+        hi: if a.hi > b.hi { a.hi } else { b.hi },
+    }
+}

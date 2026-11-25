@@ -1,0 +1,73 @@
+//! A THROWAWAY IDENTITY for tests: a certificate authority and a leaf
+//! for `localhost`, 127.0.0.1 and ::1, valid until 2126, whose private
+//! keys are published right here. Trust it in a test and nowhere else.
+//!
+//! `trusting_localhost` is a client config that trusts only this
+//! authority, and `serving_localhost` a server config presenting the
+//! leaf — a TLS pair in two calls, verification on.
+use tls.{Config, TlsError, anchored, server_config}
+
+/// The test authority's certificate, PEM.
+export fn localhost_ca() -> Bytes {
+    pem(
+        [
+            "-----BEGIN CERTIFICATE-----",
+            "MIIBzDCCAXOgAwIBAgIUBPuG00xCSnjoBEyKm8nzOn42m1swCgYIKoZIzj0EAwIw",
+            "MzExMC8GA1UEAwwoQXZyYSB0ZXN0IENBIC0gbmV2ZXIgdHJ1c3Qgb3V0c2lkZSB0",
+            "ZXN0czAgFw0yNjA5MzAwMjA0MDlaGA8yMTI2MDkwNjAyMDQwOVowMzExMC8GA1UE",
+            "AwwoQXZyYSB0ZXN0IENBIC0gbmV2ZXIgdHJ1c3Qgb3V0c2lkZSB0ZXN0czBZMBMG",
+            "ByqGSM49AgEGCCqGSM49AwEHA0IABAL+v5I9WC0ka5pxehjIf7c9rHOAHQydOnnN",
+            "GCLlirFFK+QSxlzinNBbBT1uCCBTXbDndIJ+3bZMsPY++A5KWamjYzBhMB0GA1Ud",
+            "DgQWBBQUdW2ReoHBdij2z8KXn8BtguvvBzAfBgNVHSMEGDAWgBQUdW2ReoHBdij2",
+            "z8KXn8BtguvvBzAPBgNVHRMBAf8EBTADAQH/MA4GA1UdDwEB/wQEAwIBBjAKBggq",
+            "hkjOPQQDAgNHADBEAiAk1BA9WJwhE238cyjw6ODrQNbHAMBxVwu8S1PBtKmzsAIg",
+            "P3ggtUynUXQleQdXO44GUcbjz56t8Nli1YuMmLBQK2U=",
+            "-----END CERTIFICATE-----",
+        ],
+    )
+}
+
+/// The leaf for localhost, signed by the test authority, PEM.
+export fn localhost_chain() -> Bytes {
+    pem(
+        [
+            "-----BEGIN CERTIFICATE-----",
+            "MIIB3TCCAYOgAwIBAgIBAjAKBggqhkjOPQQDAjAzMTEwLwYDVQQDDChBdnJhIHRl",
+            "c3QgQ0EgLSBuZXZlciB0cnVzdCBvdXRzaWRlIHRlc3RzMCAXDTI2MDkzMDAyMDQw",
+            "OVoYDzIxMjYwOTA2MDIwNDA5WjAUMRIwEAYDVQQDDAlsb2NhbGhvc3QwWTATBgcq",
+            "hkjOPQIBBggqhkjOPQMBBwNCAAQG8TzcSXOe8WZodzZfLZ+xDm+k7hSK+Dv6JLTF",
+            "nLI9/xTK9Y5fUK/VmpyjlUkU4dp1395MbiDWdAmE76Cx4QC6o4GkMIGhMCwGA1Ud",
+            "EQQlMCOCCWxvY2FsaG9zdIcEfwAAAYcQAAAAAAAAAAAAAAAAAAAAATAMBgNVHRMB",
+            "Af8EAjAAMA4GA1UdDwEB/wQEAwIHgDATBgNVHSUEDDAKBggrBgEFBQcDATAdBgNV",
+            "HQ4EFgQUcvTGAVesEmxmZKip4Z/xRRx7yAEwHwYDVR0jBBgwFoAUFHVtkXqBwXYo",
+            "9s/Cl5/AbYLr7wcwCgYIKoZIzj0EAwIDSAAwRQIhAJwigpZEk+dWWuuZFYd06tUZ",
+            "6l+XpbPrPC1Yx8gr2ACcAiBH3XAfbPUhPtPibtJ3FwK6pl8nOMCiS83s0OtFHJu3",
+            "ow==",
+            "-----END CERTIFICATE-----",
+        ],
+    )
+}
+
+/// The leaf's private key, PEM — public, which is the point.
+export fn localhost_key() -> Bytes {
+    pem(
+        [
+            "-----BEGIN PRIVATE KEY-----",
+            "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgsICdSTQakGWoCWLa",
+            "CoAP65aTdEVT1UmYb5YiGy+t78KhRANCAAQG8TzcSXOe8WZodzZfLZ+xDm+k7hSK",
+            "+Dv6JLTFnLI9/xTK9Y5fUK/VmpyjlUkU4dp1395MbiDWdAmE76Cx4QC6",
+            "-----END PRIVATE KEY-----",
+        ],
+    )
+}
+
+/// A client config trusting the test authority alone.
+export fn trusting_localhost() -> Result<Config, TlsError> { anchored(localhost_ca()) }
+
+/// A server config presenting the localhost leaf.
+export fn serving_localhost() -> Result<Config, TlsError> {
+    let s = server_config()?
+    s.presenting(localhost_chain(), localhost_key())
+}
+
+fn pem(lines: List<string>) -> Bytes { (lines.join("\n") + "\n").bytes() }

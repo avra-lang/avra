@@ -1,0 +1,54 @@
+//! THE WALL, binding family: values into a prepared statement's slots.
+//!
+//! THE TEXT AND BLOB BINDS TAKE A DESTRUCTOR SENTINEL, and both
+//! sentinels are spellable now: `SQLITE_STATIC` is `(void*)0`, which a
+//! `ptr?` seat has always reached as `null`, and `SQLITE_TRANSIENT` is
+//! `(void*)-1`, which this package's own C answers from the header
+//! (`src/c/sqlite_sentinel.c`, `vendor/sqlite3.h:6429-6430`,
+//! `boundary.av`). TRANSIENT is the default because SQLite COPIES under
+//! it and nothing has to outlive anything; STATIC is a named hatch with
+//! its contract at the site.
+//!
+//! PARAMETER INDICES ARE 1-BASED. Column indices are 0-based. The two
+//! families sit next to each other and disagree, which is the oldest
+//! off-by-one in this API.
+
+/// Text into the Nth parameter. `n` is the length in BYTES — never -1,
+/// because -1 asks C to measure with `strlen` and a text holding a NUL
+/// would be bound short. The last seat is the destructor sentinel.
+export extern fn sqlite3_bind_text(stmt: ptr?, index: i32, value: Bytes, n: i32, dtor: ptr?) -> i32
+
+/// Bytes into the Nth parameter, with the same length and sentinel
+/// laws. A ZERO-LENGTH blob is a real value and not a NULL.
+export extern fn sqlite3_bind_blob(stmt: ptr?, index: i32, value: Bytes, n: i32, dtor: ptr?) -> i32
+
+/// An integer into the Nth parameter, counting from 1. Exact at 64
+/// bits.
+export extern fn sqlite3_bind_int64(stmt: ptr?, index: i32, value: int) -> i32
+
+/// A float into the Nth parameter, counting from 1. A `double` on both
+/// sides, so nothing is converted crossing the wall.
+export extern fn sqlite3_bind_double(stmt: ptr?, index: i32, value: f64) -> i32
+
+/// SQL NULL into the Nth parameter.
+export extern fn sqlite3_bind_null(stmt: ptr?, index: i32) -> i32
+
+/// A blob of `n` zero bytes, which reserves the space without
+/// allocating the bytes to write it.
+export extern fn sqlite3_bind_zeroblob(stmt: ptr?, index: i32, n: i32) -> i32
+
+/// A value taken from another statement's row or from a function's
+/// argument, copied.
+export extern fn sqlite3_bind_value(stmt: ptr?, index: i32, value: ptr) -> i32
+
+/// How many parameters this statement has — the largest index, so a
+/// numbered hole leaves gaps in the count.
+export extern fn sqlite3_bind_parameter_count(stmt: ptr?) -> i32
+
+/// The index of a named parameter, or ZERO when there is no such name.
+/// Zero is the absence, because indices start at 1.
+export extern fn sqlite3_bind_parameter_index(stmt: ptr?, name: string) -> i32
+
+/// The Nth parameter's name including its sigil, or NULL for a
+/// positional `?`. Borrowed until the statement is finalized.
+export extern fn sqlite3_bind_parameter_name(stmt: ptr?, index: i32) -> ptr?

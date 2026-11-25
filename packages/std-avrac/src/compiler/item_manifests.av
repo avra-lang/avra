@@ -1,0 +1,110 @@
+//! THE MANIFESTS A PROGRAM STANDS ON, judged on the program layer: each package's `avra.toml` read
+//! through the engine as an input, and held to the manifest's laws in the old path's own voices
+//! (`manifest_read`). Each manifest is judged on its own, so an edit to one re-judges it alone; the
+//! walk over them reads only what each one's rows name.
+use compiler.host.{manifest_read}
+use features.{Budgets, budgets_of}
+use diagnostics.{Diag, new_source_file}
+use @std.meta.{derive}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.saved_derive.{Saved}
+use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+use @std.program.source_facts.{source_text}
+
+/// Where every package keeps its manifest.
+const MANIFEST: string = "avra.toml"
+
+/// A dependency row as the walk follows it: the key it names, and whether it serves tests only.
+@derive(Saved)
+export type ManifestRow = { key: string, dev: bool }
+
+/// One manifest judged: whether a voice of it refuses, whether one warns, and the rows the walk
+/// follows from it.
+@derive(Saved)
+export type ManifestJudged = {
+    refuses: bool,
+    warns: bool,
+    rows: List<ManifestRow>,
+    /// What a compile-time run in the package is held to: its `[lifted]` rows, the defaults where
+    /// it writes none.
+    steps: int,
+    bytes: int,
+}
+
+/// The manifest of `package` judged by its own laws: one with no text says nothing and names nothing.
+@query("laws")
+export fn manifest_judged(engine: QueryEngine, package: string) -> ManifestJudged {
+    let file = manifest_file(package)
+    let text? = source_text(engine, file) else {
+        return ManifestJudged {
+            refuses: false,
+            warns: false,
+            rows: [],
+            steps: budgets_of().steps,
+            bytes: budgets_of().bytes,
+        }
+    }
+    let read = manifest_read(new_source_file("${package}/${MANIFEST}", text))
+    ManifestJudged {
+        refuses: read.voices.any(refuses),
+        warns: read.voices.any((d) -> !refuses(d)),
+        rows: [ManifestRow { key: d.key, dev: d.dev } for d in read.manifest.deps],
+        steps: read.manifest.budgets.steps,
+        bytes: read.manifest.budgets.bytes,
+    }
+}
+
+/// The budgets a compile-time run in `package` is held to, as its manifest's `[lifted]` rows raise
+/// them.
+export fn lifted_budgets(engine: QueryEngine, package: string) -> Budgets {
+    let judged = manifest_judged(engine, package)
+    Budgets { steps: judged.steps, bytes: judged.bytes }
+}
+
+/// THE MANIFESTS OF THE PROGRAM ROOTED AT `package` THAT REFUSE IT: its own, then each package its
+/// rows reach, in the order the old path admits them — depth first, each key once, a row serving
+/// tests followed from the root alone, since tests' dependencies never travel.
+@query("laws")
+export fn manifests_refused(engine: QueryEngine, package: string) -> List<SourceFileAddress> {
+    [manifest_file(p) for p in manifests_reached(engine, package) if manifest_judged(engine, p).refuses]
+}
+
+/// The manifests of the program rooted at `package` that say anything, warning or refusing, in the
+/// order `manifests_refused` reads them.
+@query("laws")
+export fn manifests_voiced(engine: QueryEngine, package: string) -> List<SourceFileAddress> {
+    [manifest_file(p) for p in manifests_reached(engine, package) for j in [manifest_judged(engine, p)] if j.refuses || j.warns]
+}
+
+/// The packages whose manifests the program rooted at `package` stands on, root first.
+fn manifests_reached(engine: QueryEngine, package: string) -> List<string> {
+    mut reached: List<string> = []
+    reach(engine, package, true, reached)
+    reached
+}
+
+/// `package` and every package its rows reach and `reached` doesn't hold yet, appended in order.
+fn reach(engine: QueryEngine, package: string, root: bool, mut reached: List<string>) {
+    reached.push(package)
+    for row in manifest_judged(engine, package).rows {
+        if (!row.dev || root) && !reached.contains(row.key) { reach(engine, row.key, false, reached) }
+    }
+}
+
+/// Where `package` keeps its manifest.
+export fn manifest_file(package: string) -> SourceFileAddress { SourceFileAddress { package_name: package, path_in_package: MANIFEST } }
+
+/// Whether `file` is a package's manifest rather than a source.
+export fn is_manifest(file: SourceFileAddress) -> bool { file.path_in_package == MANIFEST }
+
+/// What the manifest `text`, standing at `path`, says, in the old path's voices.
+export fn manifest_voices(path: string, text: string) -> List<Diag> { manifest_read(new_source_file(path, text)).voices }
+
+/// Whether `d` fails a build: anything above a warning.
+fn refuses(d: Diag) -> bool { !(d.severity is .Warning) }
+
+collect listed_manifest_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries the manifests are judged through, for a process to hand its engine.
+export fn manifest_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_manifest_facts) }

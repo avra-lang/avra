@@ -1,0 +1,26 @@
+// proves: a `defer` bounds its own wait with a `within` whose answer it
+// discards — one that times out and one that does not, the frame's
+// exit unharmed either way
+use @std.time.{ms, secs, sleep}
+
+fn cleaned(seen: Cell<int>) -> int {
+    defer {
+        let _ = within ms(5) {
+            sleep(secs(60))
+            seen.set(seen.get() + 100)
+            0
+        }
+        seen.set(seen.get() + 1)
+    }
+    defer {
+        let _ = within secs(1) {
+            sleep(ms(1))
+            seen.set(seen.get() + 10)
+            0
+        }
+    }
+    7
+}
+
+let seen = Cell.new(0)
+"${cleaned(seen)} ${seen.get()}"

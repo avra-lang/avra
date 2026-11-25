@@ -1,0 +1,38 @@
+use @std.meta.{Type as MetaType, Variant as MetaVariant, Directive}
+
+/// Control: the SAME per-variant generation `Rows` (compiler/rows_derive.av)
+/// actually ships — one `impl Row { ... }` block holding all N methods,
+/// never N free-standing fns. If this succeeds where `Unwrap` (rows.av,
+/// free fns) fails identically shaped and identically placed, the
+/// impl-block-vs-free-fn shape is the load-bearing difference.
+export trait UnwrapImpl {
+    static fn derive(t: MetaType) -> List<Directive> {
+        [unwrap_method(t, v) for v in t.variants if v.fields.length == 1]
+    }
+
+    static fn marks(t: MetaType) -> List<string> { [] }
+}
+
+fn unwrap_method(t: MetaType, v: MetaVariant) -> Directive {
+    let ty = v.fields[0].ty
+    Directive {
+        twin: "",
+        name: v.name,
+        at: v.at,
+        source: quote {
+            impl ${t.name} {
+                fn ${method_name(v)}() -> ${ty} {
+                    match self {
+                        .${v}(value) -> value,
+                        rest -> {
+                            avra_trap("defect: unwrap expected")
+                            self.${method_name(v)}()
+                        },
+                    }
+                }
+            }
+        },
+    }
+}
+
+fn method_name(v: MetaVariant) -> string { "as_${v.name}" }

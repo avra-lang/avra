@@ -1,0 +1,38 @@
+//! A FILE AS ITS DECLARATIONS ALONE: its text with every top-level statement that runs blanked —
+//! each character of it a space, its line breaks kept, so every declaration stands where it stood.
+//! What a command reads a program's declarations by when it brings an entry of its own: a program
+//! runs its entry's statements alone, and a module's file may run none.
+use core.{Span}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+use @std.text.{repeat}
+
+/// `file`'s text with each top-level statement that runs blanked; the text as it stands where its
+/// parse speaks, since a tree with holes names no statement to trust.
+export fn declaring_text(engine: QueryEngine, file: SourceFileAddress) -> string {
+    let src = whole_source(engine, file)
+    let parsed = parse_program(avra(), src, whole_words(engine, file))
+    if !parsed.voices.list.is_empty() { return src.text }
+    blanked(
+        src.text,
+        [sp! for s in parsed.stmts if !parsed.store.is_hoisted(s) && !parsed.store.is_declaration(s) for sp in [parsed.store.stmt_span(s)] if sp != null],
+    )
+}
+
+/// `text` with each of `spans`, in the order written, blanked.
+fn blanked(text: string, spans: List<Span>) -> string {
+    mut out: List<string> = []
+    mut at = 0
+    for sp in spans {
+        if sp.lo < at || sp.hi > text.length { continue }
+        out.push(text.substring(at, sp.lo))
+        out
+            .push(
+                [repeat(" ", line.length) for line in text.substring(sp.lo, sp.hi).split("\n")]
+                    .join("\n"),
+            )
+        at = sp.hi
+    }
+    out.push(text.substring(at, text.length))
+    out.join("")
+}

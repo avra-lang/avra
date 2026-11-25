@@ -1,0 +1,128 @@
+// The structural set of a declaration, asked of the program layer: the
+// `state` places it reads at paint time that no reading answers for. A text
+// an instance says again through its minted closure is answered by the page;
+// a label, an `if`, a `for`, a helper the view calls and a captured local are
+// not, and a write to any of them takes the full paint.
+use @std.avrac.testing.{held_at, Judged}
+
+const STRUCT_PATH: string = "/w/src/main.av"
+
+/// The program whose views `body` writes beside two components and `state n`, judged on the layer.
+fn struct_judged(body: string) -> Judged {
+    held_at(
+        {
+            "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+            STRUCT_PATH: "fn none() -> string { \"\" }\ntype Words = fn() -> string\ncomponent said(content: string) {\n    words: Words = Words(none)\n}\ncomponent plain(content: string) {\n}\nstate n: int = 0\n" +
+                body,
+        },
+        "/w",
+    )
+        .judged_at(STRUCT_PATH)
+}
+
+/// The structural places the fn `name` reaches.
+fn structural_of(body: string, name: string) -> List<string> { struct_judged(body).state_reaches_of(STRUCT_PATH, name, true) }
+
+/// Whether `places` is the one place `state n`.
+fn only_n(places: List<string>) -> bool { places.length == 1 && places[0].ends_with("\tn") }
+
+spec "compiler/structural — the structural set on the layer" {
+    given "a text an instance says again" {
+        then "reads no structural place: its reading answers for it" {
+            structural_of("fn covered() -> said { said \"a \${n}\" }\n", "covered").is_empty()
+        }
+    }
+    given "a label no reading covers" {
+        then "makes the cell structural" { only_n(structural_of("fn labelled() -> plain { plain \"a \${n}\" }\n", "labelled")) }
+    }
+    given "a conditional that reads the cell" {
+        then "makes it structural, though a text beside it is sited" {
+            only_n(
+                structural_of(
+                    "fn branched() -> said {\n    if n > 1 { said \"big\" } else { said \"a \${n}\" }\n}\n",
+                    "branched",
+                ),
+            )
+        }
+    }
+    given "a loop over the cell" {
+        then "makes it structural" {
+            only_n(
+                structural_of(
+                    "fn looped() -> int {\n    mut t = 0\n    for i in 0..n { t = t + i }\n    t\n}\n",
+                    "looped",
+                ),
+            )
+        }
+    }
+    given "a helper the view calls" {
+        then "makes the cell structural through the call" {
+            only_n(
+                structural_of(
+                    "fn helper() -> int { n }\nfn viewed() -> plain { plain \"v \${helper()}\" }\n",
+                    "viewed",
+                ),
+            )
+        }
+        then "but not when the call sits inside a text an instance says again" {
+            structural_of(
+                "fn helper() -> int { n }\nfn viewed() -> said { said \"v \${helper()}\" }\n",
+                "viewed",
+            )
+                .is_empty()
+        }
+    }
+    given "a local state read outside any reading" {
+        then "is the declaration's own structural place" {
+            let own = struct_judged(
+                "fn local() -> plain {\n    state k: int = 1\n    plain \"k \${k}\"\n}\n",
+            )
+                .state_reads_of(STRUCT_PATH, "local", true)
+            own.length == 1 && own[0].starts_with("&") && own[0].contains("\tk@")
+        }
+    }
+    given "a handler an instance hears" {
+        then "reads no structural place: it runs when the user speaks" {
+            structural_of(
+                "component press(on go) {\n}\nfn pressed() -> press {\n    press { on go { n = n + 1 } }\n}\n",
+                "pressed",
+            )
+                .is_empty()
+        }
+    }
+    given "a cell read both inside a reading and outside it" {
+        then "is a plain place and a structural one, never one for the other" {
+            let j = struct_judged(
+                "fn both() -> plain {\n    let t = said \"a \${n}\"\n    plain \"b \${n}\"\n}\n",
+            )
+            only_n(j.state_reaches_of(STRUCT_PATH, "both")) &&
+                only_n(j.state_reaches_of(STRUCT_PATH, "both", true))
+        }
+        then "and a cell read only inside a reading is plain with no structural entry" {
+            let j = struct_judged("fn only() -> said { said \"a \${n}\" }\n")
+            only_n(j.state_reaches_of(STRUCT_PATH, "only")) &&
+                j.state_reaches_of(STRUCT_PATH, "only", true).is_empty()
+        }
+    }
+}
+
+/// The fingerprint of the view `v`'s declaring statement, as the program layer reads its item —
+/// the file's own words in hand — and its canonical reading (`item_canonical`) fingerprints it.
+fn last_fp(body: string) -> int {
+    let items = struct_judged(body).rule_items(STRUCT_PATH)
+    [i.file.view.store.stmt_fingerprint(s) for i in items for s in i.stmts if i.file.view.store.declared_name(s) == "v"]
+        .first() ?? 0
+}
+
+spec "compiler — a view's declaration fingerprint follows its sited text" {
+    given "two views that differ only inside a sited hole" {
+        then "an edit inside the hole moves the declaration's fingerprint" {
+            last_fp("fn v() -> said { said \"a \${n}\" }\n") != last_fp("fn v() -> said { said \"a \${n + 1}\" }\n")
+        }
+    }
+    given "two views written the same way" {
+        then "the same source fingerprints alike" {
+            last_fp("fn v() -> said { said \"a \${n}\" }\n") == last_fp("fn v() -> said { said \"a \${n}\" }\n")
+        }
+    }
+}

@@ -1,0 +1,104 @@
+//! A transaction the program's own writes and its durable sends share:
+//! one commit keeps them all and one rollback leaves none.
+//!
+//!     let tx = transaction(ctx.db)?
+//!     errdefer tx.rollback()
+//!     let saved = user.insert(tx.db)?
+//!     emails.send(welcome(saved), id: "welcome-${saved.id}", tx: tx)?
+//!     tx.commit()?
+//!
+//! A transaction is the connection's, so a send names it to be held to
+//! it: one that was committed, rolled back, or is open on another
+//! connection is refused rather than written on its own.
+use @std.queue.{HomeError, Transaction}
+use @std.sqlite.{Db, sql}
+use @std.time.{Duration, ms, secs, sleep}
+use fault.{ask_again, home_error, homed}
+use rows.{read_mark}
+
+/// A write transaction open on `db`. `done` holds once it was committed
+/// or rolled back: a transaction ends once. `committed` is what runs
+/// once it commits. Held by copy: every copy is the same transaction.
+export type Tx = { db: Db, done: Cell<bool>, committed: Cell<List<fn() -> void>> }
+
+/// The transaction just begun on `db`.
+export fn begun(db: Db) -> Tx {
+    Tx { db: db, done: Cell.new(false), committed: Cell.new([]) }
+}
+
+/// A write transaction begun on `db` once it holds no other. One a
+/// worker's handler stands in is waited out for up to `patience`; past
+/// it the connection is unreachable.
+export fn transaction(db: Db, patience: Duration = secs(30)) -> Result<Tx, HomeError> {
+    let _ = freed(db, patience)?
+    let _ = homed(db.begin())?
+    begun(db)
+}
+
+/// Wait until `db` holds no transaction, asking again at a doubling
+/// interval; unreachable once `patience` is spent. No task runs between
+/// this answer and the caller's next statement, so a transaction begun
+/// right after it is the only one on the connection.
+export fn freed(db: Db, patience: Duration) -> Result<bool, HomeError> {
+    mut waited = 0
+    mut step = 1
+    while db.in_transaction() {
+        if waited >= patience.ms() { return .Err(HomeError.Unreachable(ask_again)) }
+        sleep(ms(step))
+        waited = waited + step
+        if step < 64 { step = step * 2 }
+    }
+    true
+}
+
+impl Tx {
+    /// Keep the work: every send that named the transaction delivers. A
+    /// commit that fails throws the work away, so nothing it held stays
+    /// open on the connection.
+    fn commit() -> Result<int, HomeError> {
+        if !self.stands() { return .Err(ended()) }
+        self.done.set(true)
+        match self.db.commit() {
+            .Ok(n) -> {
+                for f in self.committed.get() { f() }
+                .Ok(n)
+            },
+            .Err(e) -> {
+                let _ = self.db.finish()
+                .Err(home_error(e))
+            },
+        }
+    }
+
+    /// Throw the work away: no send that named the transaction leaves an
+    /// item. One already ended rolls back nothing.
+    fn rollback() -> int {
+        if !self.stands() { return 0 }
+        self.done.set(true)
+        self.db.finish()
+    }
+}
+
+impl Transaction for Tx {
+    /// Open, and neither committed nor rolled back.
+    fn stands() -> bool {
+        !self.done.get() && self.db.in_transaction()
+    }
+
+    /// The mark of the database the transaction is open on; empty where
+    /// no home was ever opened there.
+    fn database() -> string {
+        match self.db.scalar(sql(read_mark)) { .Ok(v) -> v.text() catch "", .Err(_) -> "" }
+    }
+
+    /// Run `then_do` once the transaction commits.
+    fn after(then_do: fn() -> void) {
+        self.committed.push(then_do)
+    }
+}
+
+// ── The voices ──
+
+fn ended() -> HomeError {
+    HomeError.Refused("a transaction ends once, and this one was committed or rolled back")
+}

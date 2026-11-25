@@ -1,0 +1,87 @@
+// Every declaration's `///` doc and its `@name(args)` annotations, read back through the program
+// layer's one door, `file_docs` (compiler/item_docs.av), off the file's own parse; and a rule's
+// `Code` (features/code.av, as `rule_items` hands it) reads the same annotations off its declaring
+// statement. A declaration with no `///` of its own reads none, whatever `//!` header its file opens
+// with.
+use @std.avrac.testing.{judged}
+use @std.avrac.compiler.{example_roots, file_docs, DeclDoc}
+use @std.avrac.features.{Code}
+use @std.avrac.core.{At}
+
+/// What the program's file says of the name `name`.
+fn doc_entry(source: string, name: string) -> DeclDoc? {
+    let j = judged(source)
+    file_docs(j.engine, j.entry).decls.find(it.name == name)
+}
+
+fn doc_of(source: string, name: string) -> List<string>? { doc_entry(source, name)?.doc }
+
+fn annotations_of(source: string, name: string) -> List<string> { doc_entry(source, name)?.annotations ?? [] }
+
+/// The rule's Code over the top-level statement that declares `name`.
+fn declaring(source: string, name: string) -> Code? {
+    let items = judged(source).rule_items("/alone/src/main.av")
+    [Code { of: i.file, at: At.Stmt(s) } for i in items for s in i.stmts if i.file.view.store.declared_name(s) == name]
+        .first()
+}
+
+spec "declaration facts — one door, every declaration" {
+    given "a fn" {
+        then "its `///` lines come back, in written order" {
+            (doc_of("/// line one\n/// line two\nfn f() -> int {\n    1\n}\nf()", "f") ?? [])
+                .join("\n") == "line one\nline two"
+        }
+        then "no `///` at all reads null, never an empty-but-present list" {
+            doc_of("fn f() -> int {\n    1\n}\nf()", "f") == null
+        }
+        then "its `@name(args)` come back in written order, with literal argument text" {
+            annotations_of(
+                "fn tag(s: string, n: int) { }\n@tag(\"x\", 3)\nfn f() -> int {\n    1\n}\nf()",
+                "f",
+            )
+                .join(",") == "@tag(\"x\", 3)"
+        }
+        then "no annotation at all reads an empty list" {
+            annotations_of("fn f() -> int {\n    1\n}\nf()", "f").is_empty()
+        }
+        then "stacked annotations keep the author's order" {
+            annotations_of(
+                "fn a() { }\nfn b(n: int) { }\n@a\n@b(1)\nfn f() -> int {\n    1\n}\nf()",
+                "f",
+            )
+                .join(",") == "@a(),@b(1)"
+        }
+    }
+    given "a type" {
+        then "its doc and its annotation both read back" {
+            let src = "fn tag() { }\n/// a pair\n@tag\ntype P = { x: int, y: int }\nP { x: 1, y: 2 }.x"
+            (doc_of(src, "P") ?? []).join("\n") == "a pair" &&
+                annotations_of(src, "P").join(",") == "@tag()"
+        }
+    }
+    given "a const" {
+        then "its doc reads back" { (doc_of("/// the answer\nconst K: int = 42\nK", "K") ?? []).join("\n") == "the answer" }
+    }
+    given "the Code door (features/code.av), which every rule holds" {
+        then "annotations() reads the declaring statement's own, as the docs door does" {
+            let c? = declaring(
+                "fn tag() { }\n/// documented\n@tag\nfn f() -> int {\n    1\n}\nf()",
+                "f",
+            ) else { return false }
+            c.annotations().length == 1 && c.annotations()[0].name == "tag"
+        }
+        then "a node that is not itself a declaring statement answers empty, not its enclosing fn's" {
+            let items = judged("fn tag() { }\n@tag\nfn f() -> int {\n    1\n}\nf()")
+                .rule_items("/alone/src/main.av")
+            let fns = [Code { of: i.file, at: At.Stmt(s) } for i in items for s in i.stmts if i.file.view.store.declared_name(s) == "f"]
+            fns.length == 1 && fns[0].kids().all(it.annotations().is_empty())
+        }
+    }
+    given "a file that opens with a `//!` header" {
+        then "a declaration with no `///` of its own reads none — the header is the file's" {
+            let src = "//! What this file is for.\nfn f() -> int {\n    1\n}\nf()\n"
+            doc_of(src, "f") == null &&
+                (file_docs(judged(src).engine, judged(src).entry).header ?? []).join("\n") == "What this file is for."
+        }
+    }
+}

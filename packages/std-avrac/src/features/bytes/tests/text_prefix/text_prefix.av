@@ -1,0 +1,21 @@
+// proves: `b.text_prefix()` is the longest prefix that is whole UTF-8
+// — all of it for text, up to the unfinished character for a stream
+// cut mid-character, empty when the first octet is not text — and the
+// octets after it are a slice by its length. `b.text_lossy()` reads
+// every octet: each ill-formed subpart is one U+FFFD. A NUL is text.
+use @std.text.{codepoints}
+
+fn rest(b: Bytes) -> int { b.length - b.text_prefix().length }
+
+fn points(s: string) -> string { ["${c}" for c in codepoints(s)].join(",") }
+
+// "hé" then the first two octets of "€" (E2 82 AC)
+let cut = [104, 195, 169, 226, 130].bytes()!
+// a stray continuation, an overlong lead, a lone lead before ASCII
+let wild = [97, 128, 98, 192, 175, 99, 226, 100].bytes()!
+let whole = "hé".bytes()
+let nul = [97, 0, 98].bytes()!
+let empty = "".bytes()
+let stream = cut.concat([172, 33].bytes()!)
+let prefixes = "${cut.text_prefix().length} ${rest(cut)} ${wild.text_prefix()} ${rest(wild)} ${empty.text_prefix().length} ${nul.text_prefix().length} ${stream.text_prefix().length} ${rest(stream)}"
+"${prefixes} | ${points(cut.text_lossy())} | ${points(wild.text_lossy())} | ${points(nul.text_lossy())} ${whole.text_lossy().length}"

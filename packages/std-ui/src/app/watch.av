@@ -1,0 +1,97 @@
+//! `app/watch.av` — WHAT THE CACHE CAN SAY ABOUT ITSELF. Why an entry stopped being fresh, how many
+//! asks were sent, saved and joined, and one snapshot of every entry, stream and write in flight: the
+//! rows a dev HUD draws and `explain` prints are this value, never a second account. A snapshot is built
+//! only where a sink is installed; nothing else pays for it.
+/// Why an entry is no longer fresh.
+export enum Cause {
+    Wrote(names: List<string>)
+    Notice(id: int, names: List<string>)
+    Expired
+    Dropped
+    Refused
+    Hushed
+    Reconciled
+}
+
+impl Cause {
+    /// The cause in words, as a row says it.
+    fn words() -> string {
+        match self {
+            .Wrote(names) -> "a write to ${names.join(", ")}",
+            .Notice(id, names) -> "notice ${id} [${names.join(", ")}]",
+            .Expired -> "its stream's cursor expired",
+            .Dropped -> "its stream dropped",
+            .Refused -> "its stream was refused",
+            .Hushed -> "its stream was let go",
+            .Reconciled -> "a layer over it awaits the server's reading",
+        }
+    }
+}
+
+/// How many asks the cache sent, answered from a held version (304), skipped because the entry was
+/// fresh, joined to a request already out, and how many layers were laid and dropped.
+export type Counts = {
+    not_modified: Cell<int>,
+    skipped: Cell<int>,
+    joined: Cell<int>,
+    laid: Cell<int>,
+    dropped: Cell<int>,
+    built: Cell<int>,
+}
+
+export fn counts() -> Counts {
+    Counts {
+        not_modified: Cell.new(0),
+        skipped: Cell.new(0),
+        joined: Cell.new(0),
+        laid: Cell.new(0),
+        dropped: Cell.new(0),
+        built: Cell.new(0),
+    }
+}
+
+impl Counts {
+    /// A count moved by one.
+    fn bump(c: Cell<int>) { c.set(c.get() + 1) }
+
+    fn line(asks: int) -> string {
+        "asks ${asks} · skipped fresh ${self.skipped.get()} · joined ${self.joined.get()} · not modified ${self.not_modified.get()} · layers ${self.laid.get()} laid, ${self.dropped.get()} dropped"
+    }
+}
+
+/// One entry as the cache holds it now.
+export type Row = {
+    key: string,
+    state: string,
+    fresh: bool,
+    stale_by: string,
+    age_ms: int,
+    bytes: int,
+    readers: int,
+    parked: int,
+    layers: List<int>,
+    feed: string,
+}
+
+/// Everything the cache says of itself at one moment: entries, streams, writes, counts.
+export type Snapshot = { rows: List<Row>, streams: List<string>, writes: List<string>, counts: string }
+
+impl Row {
+    fn line() -> string {
+        let fresh = when {
+            self.fresh -> "fresh"
+            self.stale_by.is_empty() -> "not fresh"
+            _ -> "stale: ${self.stale_by}"
+        }
+        let layered = if self.layers.is_empty() { "" } else { " · layers ${["${l}" for l in self.layers].join(",")}" }
+        let feeds = if self.feed.is_empty() { "" } else { " · feed ${self.feed}" }
+        "${self.key}  ${self.state} · ${fresh} · ${self.bytes} B · readers ${self.readers} (+${self.parked} parked)${layered}${feeds}"
+    }
+}
+
+impl Snapshot {
+    /// The snapshot as lines: one per entry, stream and write, and the counts last.
+    fn lines() -> List<string> {
+        [r.line() for r in self.rows].concat(self.streams).concat(self.writes).concat([self.counts])
+    }
+}

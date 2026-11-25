@@ -1,0 +1,68 @@
+// AN ARM THAT YIELDS A VALUE ITS ENCLOSING SCOPE OWNS, dying at the merge, hands that scope's
+// reference to the merge: the other arms release it on their own way out. A value read past the
+// merge, or owned by a scope further out than the branch's, keeps its count.
+type Bag = { items: List<int>, name: string }
+
+fn fresh(n: int) -> Bag { Bag { items: [i for i in 0..n], name: "b${n}" } }
+
+fn maybe(n: int) -> Bag? { if n > 0 { fresh(n) } else { null } }
+
+fn picked(n: int, flag: bool) -> Bag {
+    let a = fresh(n)
+    let b = if flag { a } else { fresh(n + 1) }
+    b
+}
+
+fn read_past(n: int, flag: bool) -> int {
+    let a = fresh(n)
+    let b = if flag { a } else { fresh(n + 1) }
+    b.items.length + a.items.length
+}
+
+fn looped(n: int) -> int {
+    let a = fresh(n)
+    mut total = 0
+    for i in 0..3 {
+        let b = if i == 1 { a } else { fresh(i) }
+        total = total + b.items.length
+    }
+    total
+}
+
+fn switched(n: int) -> Bag {
+    let a = fresh(n)
+    match n % 3 { 0 -> a, 1 -> fresh(10), _ -> a }
+}
+
+fn left_early(n: int, flag: bool) -> Bag {
+    let a = fresh(n)
+    let b = if flag {
+        a
+    } else {
+        if n > 5 { return fresh(0) }
+        fresh(n + 1)
+    }
+    b
+}
+
+fn insisted(n: int) -> Bag {
+    let v? = maybe(n) else { return fresh(7) }
+    v
+}
+
+fn kept_twice(n: int, flag: bool) -> List<Bag> {
+    let a = fresh(n)
+    let b = if flag { a } else { fresh(n + 1) }
+    [b, a]
+}
+
+let p = picked(2, true)
+let q = picked(2, false)
+let s0 = switched(3)
+let s1 = switched(4)
+let s2 = switched(5)
+let e0 = left_early(2, true)
+let e1 = left_early(9, false)
+let e2 = left_early(2, false)
+let k = kept_twice(4, true)
+"${p.items.length} ${q.items.length} ${read_past(2, true)} ${read_past(2, false)} ${looped(4)} ${s0.name} ${s1.name} ${s2.name} ${e0.name} ${e1.name} ${e2.name} ${insisted(3).name} ${insisted(0).name} ${k[0].name} ${k[1].items.length}"

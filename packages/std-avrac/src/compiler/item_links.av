@@ -1,0 +1,58 @@
+//! WHAT A PROGRAM LINKS WITH: the packages it reaches, and the objects and flags their manifests
+//! name, read through whatever holds those manifests.
+use core.{flatten}
+use compiler.host.{Manifest, read_manifest}
+use diagnostics.{Diag, SourceFile}
+use @std.program.query_engine.{QueryEngine}
+use @std.program.sorted.{sorted_by}
+use @std.text.{text_before}
+
+/// How a link line reads what its packages stand on: where a package stands, its manifest, and
+/// the world its words' holes are filled in.
+export type LinkRead = { root_of: fn(string) -> string, manifest_of: fn(string) -> Manifest, world: LinkWorld }
+
+/// The packages the program rooted at `package` reaches, in name order.
+export fn program_packages(engine: QueryEngine, package: string) -> List<string> {
+    sorted_by(package_reach(engine, package).packages, (a, b) -> text_before(a, b))
+}
+
+/// Every hole inside a longer `[link]` word of the manifests the program rooted at `package`
+/// stands on whose variable `env` doesn't set, refused by name — the root's own `[link.raw]` among
+/// its words; `source_of` reads a package's manifest.
+export fn program_unset_holes(
+    engine: QueryEngine,
+    package: string,
+    source_of: fn(string) -> SourceFile,
+    env: fn(string) -> string?,
+) -> List<Diag> {
+    flatten(
+        [unset_link_holes_of(() -> source_of(p), read_manifest(source_of(p)), p == package, env) for p in program_packages(engine, package)],
+    )
+}
+
+/// The objects and flags the packages the program rooted at `package` reaches link with, read off
+/// their manifests, the packages in name order: for a non-host `target`, the wasm objects each
+/// names.
+export fn program_link_words(
+    engine: QueryEngine,
+    package: string,
+    read: LinkRead,
+    shared: bool = false,
+    target: string = "",
+) -> List<string> {
+    let reached = program_packages(engine, package)
+    if target != "" {
+        return flatten(
+            [manifest_wasm_words((read.manifest_of)(p), (read.root_of)(p), read.world) for p in reached],
+        )
+    }
+    flatten(
+        [manifest_link_words(
+            (read.manifest_of)(p),
+            (read.root_of)(p),
+            p == package,
+            read.world,
+            shared,
+        ) for p in reached],
+    )
+}

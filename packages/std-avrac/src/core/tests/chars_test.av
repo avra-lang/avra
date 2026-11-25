@@ -1,0 +1,29 @@
+// The whole-string half of the character vocabulary: the predicate
+// runs on EVERY byte, and the empty string decides nothing — the
+// caller owns emptiness, which is why every call site guards it.
+use @std.avrac.core.{all_codes, is_digit, is_upper_name_cont, is_name_start}
+
+spec "core/chars" {
+    given "all_codes over a predicate" {
+        then "every byte must satisfy it" {
+            all_codes("1234", is_digit)
+        }
+        then "one byte that fails is enough" {
+            !all_codes("12a4", is_digit)
+        }
+        then "the LAST byte counts — a scan that stops early would miss it" {
+            !all_codes("123a", is_digit)
+        }
+        then "the FIRST byte counts too" {
+            !all_codes("a234", is_digit)
+        }
+        then "one byte, satisfied" { all_codes("7", is_digit) }
+        then "one byte, not satisfied" { !all_codes("a", is_digit) }
+        then "the empty string is vacuously true, as `List.all` is" {
+            all_codes("", is_digit)
+        }
+        then "a different predicate reads the same string differently" {
+            all_codes("ABC_1", is_upper_name_cont) && !all_codes("ABC_1", is_name_start)
+        }
+    }
+}

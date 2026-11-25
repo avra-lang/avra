@@ -1,0 +1,34 @@
+//! THE FINDINGS ROWS — one row per rule hit: the rule that fired,
+//! the file it fired in, and the source line it named, trimmed. A row
+//! exists only where `rule_findings` (rule_pass.av) fired, so a
+//! `Finding` names a RULE alone, never a compiler-law warning — no
+//! kind-matching needed to tell the two apart, the way the rendered
+//! `warning[kind]: …` text once required.
+use core.{joined, flatten}
+use diagnostics.{Diag, SourceFile, new_source_file}
+use compiler.host.{Host}
+use @std.errors.{Loc}
+
+export type Finding = { rule: string, file: string, text: string }
+
+// ── THE ROW AS TEXT: one `rule\tfile\ttext` line — the `Findings` row
+// (db.av), a file's kept row, and a baseline file all read this one codec.
+
+export fn findings_text(rows: List<Finding>) -> string { joined([finding_line(f) for f in rows], "\n") }
+
+/// Every line that is a row; a line that is not — fewer than two fields,
+/// or the header prose a baseline opens with — names none.
+export fn findings_read(text: string) -> List<Finding> {
+    [f! for f in [finding_of_line(line) for line in text.split("\n")] if f != null]
+}
+
+export fn finding_line(f: Finding) -> string { "${f.rule}\t${f.file}\t${f.text}" }
+
+/// Total over any line: the text is everything after the second TAB, a
+/// TAB of its own included, and empty when the line ends there.
+fn finding_of_line(line: string) -> Finding? {
+    if line.starts_with("#") { return null }
+    let parts = line.split("\t")
+    if parts.length < 2 { return null }
+    Finding { rule: parts[0], file: parts[1], text: parts.slice(2, parts.length).join("\t") }
+}

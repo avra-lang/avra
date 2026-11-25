@@ -1,0 +1,486 @@
+//! `realize/dom/patch.av` — the DIFF: the page as it stands against the
+//! page as it should be, as the PATCHES that turn one into the other. Two
+//! element trees (`realize/html/element.av`) are matched by ID — an id is
+//! its node, so the same id is the same element — and only what differs
+//! is said. A first paint is a diff against nothing.
+//!
+//! A host applies patches and holds no tree of its own: every decision —
+//! what moved, what is a property, what an event says — is made here.
+use @std.meta.{derive}
+use tree.identity.{NodeId, StepTable, same_step}
+use tree.node.{Action, Handler, Said}
+use tree.codes.{Codes, Coded}
+use tree.seats.{Seat, row_at}
+use tree.trap.{trapped}
+use realize.html.css.{CssVar}
+use realize.html.delivery.{on_web, web_event}
+use realize.html.element.{Element, Tagged, Worded}
+use realize.html.tags.{HtmlTag, HtmlAttr, HtmlAttrName}
+
+/// One change to the page. `Place` puts an element under its parent —
+/// the page itself when absent — right after a sibling, or first. `Call`
+/// asks an element for a verb of its own, once everything is placed.
+export enum Patch {
+    Create(id: NodeId, tag: HtmlTag)
+    CreateText(id: NodeId, content: string)
+    Place(id: NodeId, parent: NodeId?, after: NodeId?)
+    Remove(id: NodeId)
+    SetAttr(id: NodeId, name: HtmlAttrName, value: string)
+    DropAttr(id: NodeId, name: HtmlAttrName)
+    SetProp(id: NodeId, name: HtmlAttrName, value: Held)
+    SetText(id: NodeId, content: string)
+    Listen(id: NodeId, to: Listening)
+    Unlisten(id: NodeId, seat: Seat)
+    Style(css: string)
+    Call(id: NodeId, verb: string)
+    SetVar(id: NodeId, property: string, value: string)
+    DropVar(id: NodeId, property: string)
+    Adopt(kinds: List<string>, words: int)
+}
+
+/// What a value a control holds IS — the tag a host is told to read a
+/// control's answer as, and writes a property's value as. ONE variant per
+/// thing a control can say, and one for saying nothing.
+@derive(Codes)
+export enum Says {
+    @code(0) Nothing
+    @code(1) Number
+    @code(2) Flag
+    @code(3) Text
+}
+
+/// How an element hears one event: the page's own word for it, what the
+/// event says and the property that answer is read from — none for an
+/// event that says nothing — whether the page's own answer to it is
+/// stopped, and the door that answer shuts when it is not.
+export type Listening = {
+    action: Action,
+    event: string,
+    says: Says,
+    reads: HtmlAttrName?,
+    prevents: bool,
+    shuts: HtmlAttrName? = null,
+}
+
+/// What the user was heard to do to an element: its property moved to
+/// this, or its door shut.
+export type Heard = { id: NodeId, name: HtmlAttrName, value: Held }
+
+/// What a property holds on the page: text, or a flag. A page's `value`
+/// is text whatever the control, so a number a control says is held as
+/// the text that spells it — ONE currency for what was drawn and what was
+/// heard.
+export enum Held {
+    Text(value: string)
+    Flag(value: bool)
+}
+
+/// What a control said, as the property it was read from now holds it.
+export fn held_as(said: Said) -> Held {
+    match said { .Text(t) -> .Text(t), .Number(n) -> .Text("${n}"), .Flag(on) -> .Flag(on) }
+}
+
+/// What a held value is, as the wire tags it.
+export fn held_says(value: Held) -> Says {
+    match value { .Text(_) -> .Text, .Flag(_) -> .Flag }
+}
+
+// ── the page's own facts ────────────────────────────────────────
+
+/// The door the page's own answer to an event shuts: a dialog dismissed
+/// is closed by the page before the program hears of it.
+fn shut_by(seat: Seat) -> HtmlAttrName? {
+    let web? = web_event(seat) else { return null }
+    match web { .Cancel -> .Open, _ -> null }
+}
+
+/// What a handler hears. ONE arm per thing a control can say.
+export fn says(h: Handler) -> Says {
+    match h { .Nothing(_) -> .Nothing, .Number(_) -> .Number, .Flag(_) -> .Flag, .Text(_) -> .Text }
+}
+
+/// The property a control's answer is read from, by what it says. Every
+/// answer spelled.
+fn read_from(s: Says) -> HtmlAttrName? {
+    match s { .Nothing -> null, .Text or .Number -> .Value, .Flag -> .Checked }
+}
+
+/// How the page hears an action.
+export fn listening_of(a: Action) -> Listening {
+    let told = says(a.handler)
+    let web = on_web(a.seat)
+    if web.by == null { trapped(unlistened(a.seat)) }
+    Listening {
+        action: a,
+        event: web.by!.word(),
+        says: told,
+        reads: read_from(told),
+        prevents: web.prevent,
+        shuts: shut_by(a.seat),
+    }
+}
+
+/// A PROPERTY is live state the user moves — a field's text, a box's
+/// tick — where its attribute only seeds it. What a property of this
+/// name holds AT REST, as an element new to the page does; none for a
+/// name that is an attribute. Every name spelled.
+fn rest_of(name: HtmlAttrName) -> Held? {
+    match name {
+        .Value -> Held.Text(""),
+        .Checked -> Held.Flag(false),
+        .DataKey or .DataV or .Class or .AriaLabel or .AriaSelected or .AriaInvalid or .AriaBusy or .AriaLive or .Title or .Href or .Min or .Max or .Open or .Placeholder or .Src or .Width or .Height or .Alt or .Disabled or .Type or .Role or .Closedby or .AriaHidden or .DataWindow or .DataSkip or .DataExtent or .AriaPosinset or .AriaSetsize or .DataReveal or .Hidden or .DataChord -> null,
+    }
+}
+
+/// An attribute of a property's name is set as that property, as the
+/// value it means; every other is an attribute.
+fn property(a: HtmlAttr) -> Held? {
+    let rest? = rest_of(a.name) else { return null }
+    match rest { .Text(_) -> Held.Text(a.value), .Flag(_) -> Held.Flag(true) }
+}
+
+/// A DOOR is state an element is taken into by a verb of its own, where
+/// the attribute of its name would take it another way: a dialog shown by
+/// `open` stands in the page's flow, and `showModal` stands it over the
+/// page with the focus inside. An attribute of these names is never set or
+/// dropped — its arriving and its going are each a call. Every name
+/// spelled.
+type Door = { name: HtmlAttrName, enter: string, leave: string }
+
+fn door(a: HtmlAttr) -> Door? {
+    match a.name {
+        .Open -> Door { name: a.name, enter: "showModal", leave: "close" },
+        .Value or .Checked or .DataKey or .DataV or .Class or .AriaLabel or .AriaSelected or .AriaInvalid or .AriaBusy or .AriaLive or .Title or .Href or .Min or .Max or .Placeholder or .Src or .Width or .Height or .Alt or .Disabled or .Type or .Role or .Closedby or .AriaHidden or .DataWindow or .DataSkip or .DataExtent or .AriaPosinset or .AriaSetsize or .DataReveal or .Hidden or .DataChord -> null,
+    }
+}
+
+fn doors_of(el: Tagged) -> List<Door> { [d for a in el.attrs for d in present(door(a))] }
+
+/// A property no attribute seeds, at rest.
+fn at_rest(value: Held) -> Held {
+    match value { .Text(_) -> Held.Text(""), .Flag(_) -> Held.Flag(false) }
+}
+
+fn rests(value: Held) -> bool { same_held(value, at_rest(value)) }
+
+/// Whether drawing `value` would tell the page anything: it is not what
+/// the program knows the page to hold, or the program knows nothing.
+fn news(known: Held?, value: Held) -> bool {
+    match known {
+        held? -> !same_held(held, value)
+        null -> true
+    }
+}
+
+/// Two values a property may hold, compared.
+fn same_held(a: Held, b: Held) -> bool {
+    match a {
+        .Text(x) -> match b { .Text(y) -> x == y, .Flag(_) -> false },
+        .Flag(x) -> match b { .Flag(y) -> x == y, .Text(_) -> false },
+    }
+}
+
+// ── the diff ────────────────────────────────────────────────────
+
+/// A diff's answer: the patches, the page as it now stands — every
+/// element wearing its number — and the next number to give.
+export type Diffed = { patches: List<Patch>, page: List<Element>, next: int }
+
+/// One property of an element, by its name.
+type Prop = { name: HtmlAttrName, value: Held }
+
+/// The properties an element NAMES: each its attributes seed, and each
+/// its node draws at rest.
+fn props_of(el: Tagged) -> List<Prop> {
+    [Prop { name: a.name, value: v } for a in el.attrs for v in present(property(a))]
+        .concat([Prop { name: name, value: rest } for name in el.rests for rest in present(rest_of(name))])
+}
+
+fn present<T>(value: T?) -> List<T> {
+    match value {
+        v? -> [v]
+        null -> []
+    }
+}
+
+fn attrs_of(el: Tagged) -> List<HtmlAttr> { [a for a in el.attrs if property(a) == null && door(a) == null] }
+
+/// How an element of the new run stands against the old one: new to the
+/// page, or the element that stood at `at` — text kept as text, an
+/// element kept as an element of the same tag. A seat whose node became
+/// another kind holds a new element.
+enum Stands {
+    Made(e: Element)
+    KeptText(at: int, was: Worded, now: Worded)
+    KeptTag(at: int, was: Tagged, now: Tagged)
+}
+
+/// `e` against the old element at `at`.
+fn standing_at(old: Element, at: int, e: Element) -> Stands {
+    match e {
+        .Text(now) -> match old { .Text(was) -> .KeptText(at, was, now), .Tag(_) -> .Made(e) },
+        .Tag(now) -> match old {
+            .Tag(was) -> if was.tag == now.tag { .KeptTag(at, was, now) } else { .Made(e) },
+            .Text(_) -> .Made(e),
+        },
+    }
+}
+
+impl Stands {
+    /// Where in the old run the element stood — nowhere for a new one.
+    fn stood() -> int? {
+        match self { .Made(_) -> null, .KeptText(at, _, _) or .KeptTag(at, _, _) -> at }
+    }
+
+    /// The old place this keeps, as a run of none or one.
+    fn keeps() -> List<int> {
+        match self { .Made(_) -> [], .KeptText(at, _, _) or .KeptTag(at, _, _) -> [at] }
+    }
+}
+
+/// Each element's place in a run, by its seat.
+fn places(run: List<Element>) -> StepTable { StepTable.of([e.seat() for e in run]) }
+
+/// `e` against whichever element of `old` stands at its seat.
+fn found(old: List<Element>, at: StepTable, e: Element) -> Stands {
+    let j? = at.find(e.seat()) else { return Stands.Made(e) }
+    standing_at(old[j], j, e)
+}
+
+/// Whether two runs hold the same seats in the same order.
+fn pair_off(old: List<Element>, new: List<Element>) -> bool {
+    if old.length != new.length { return false }
+    for j, e in new {
+        if !same_step(old[j].seat(), e.seat()) { return false }
+    }
+    true
+}
+
+/// Each element of `new` against the old run, matched by seat. Two runs
+/// that pair off in order, as an unchanged list does, are matched without
+/// a table.
+fn matched(old: List<Element>, new: List<Element>) -> List<Stands> {
+    if pair_off(old, new) { return [standing_at(old[j], j, e) for j, e in new] }
+    let at = places(old)
+    [found(old, at, e) for e in new]
+}
+
+/// One mark an element of a run of `length`, true at each place in `at`.
+fn marked(length: int, at: List<int>) -> List<bool> {
+    let marks: Cell<List<bool>> = Cell.new([false for j in 0..length])
+    for j in at { marks.set_at(j, true) }
+    marks.get()
+}
+
+/// The first place in `tails` whose element stood at or past `stood`,
+/// by halving: `tails` holds places in rising order of where they stood.
+fn first_not_before(tails: List<int>, was: List<int>, stood: int) -> int {
+    mut low = 0
+    mut high = tails.length
+    while low < high {
+        let mid = (low + high) / 2
+        if was[tails[mid]] < stood { low = mid + 1 } else { high = mid }
+    }
+    low
+}
+
+/// WHICH KEPT ELEMENTS STAND STILL: the longest run of them whose old
+/// places still rise, so the fewest are moved — a row carried to the
+/// front is one move, whatever the length of the list. `stood` is each
+/// new element's old place; the answer marks, per new element, the ones
+/// that stay where they are. Patience sorting: `tails[k]` is the element
+/// ending the best rising run of length k + 1, `before` the one it
+/// follows.
+fn still(stood: List<int?>) -> List<bool> {
+    let kept = [j for j, at in stood if at != null]
+    let was = [at ?? 0 for at in stood]
+    let tails: Cell<List<int>> = Cell.new([])
+    let before: Cell<List<int>> = Cell.new([-1 for j in stood])
+    for j in kept {
+        let k = first_not_before(tails.get(), was, was[j])
+        if k > 0 { before.set_at(j, tails.get()[k - 1]) }
+        if k == tails.get().length { tails.push(j) } else { tails.set_at(k, j) }
+    }
+    let run: Cell<List<int>> = Cell.new([])
+    mut at = tails.get().last() ?? -1
+    let follows = before.get()
+    // LICENSED loops.push_loop: a chain walked back link by link
+    while at >= 0 {
+        run.push(at)
+        at = follows[at]
+    }
+    marked(stood.length, run.get())
+}
+
+/// Whether two actions ask the page for the same listener: the kind, and
+/// what the event says.
+fn same_hearing(a: Action, b: Action) -> bool { a.seat == b.seat && says(a.handler) == says(b.handler) }
+
+/// One element on the page, wearing its number, and the next number to
+/// give.
+type Drawn = { element: Element, next: int }
+
+/// A run of elements on the page and the next number to give.
+type Run = { page: List<Element>, next: int }
+
+/// A diff under way: what the user was heard to do to the page since it
+/// was last drawn, and the patches said so far. EVERY PATCH IS SAID INTO
+/// THE ONE LIST, in the order a host applies them, so a level never
+/// copies what the levels under it said.
+/// A CALL WAITS FOR THE END (`after`): an element answers a verb of its
+/// own only once it stands on the page, and one made inside a new parent
+/// stands there when that parent is placed.
+type Differ = { heard: List<Heard>, said: Cell<List<Patch>> = Cell.new([]), after: Cell<List<Patch>> = Cell.new([]) }
+
+impl Differ {
+    fn say(patches: List<Patch>) {
+        // LICENSED loops.push_loop: a cell's list grows in place — a concat copies all said so far
+        for p in patches { self.said.push(p) }
+    }
+
+    fn later(calls: List<Patch>) { self.after.set(self.after.get().concat(calls)) }
+
+    /// One parent's children: what left is removed, what stays is diffed
+    /// where it stands, and what is new or moved is placed after the
+    /// sibling it now follows. Of the kept, the longest run still in
+    /// order stands still.
+    fn siblings(parent: NodeId?, old: List<Element>, new: List<Element>, next: int) -> Run {
+        let pairs = matched(old, new)
+        let held = marked(old.length, [at for p in pairs for at in p.keeps()])
+        self.say([Patch.Remove(e.id()) for j, e in old if !held[j]])
+        let stays = still([p.stood() for p in pairs])
+        mut page: List<Element> = []
+        mut free = next
+        // LICENSED loops.push_loop: each element takes the numbers the ones before it left
+        for j, p in pairs {
+            let d = self.drawn(p, free)
+            if !stays[j] { self.said.push(Patch.Place(d.element.id(), parent, page.last()?.id())) }
+            page.push(d.element)
+            free = d.next
+        }
+        Run { page: page, next: free }
+    }
+
+    /// An element on the page, by how it stands against the old one.
+    fn drawn(p: Stands, next: int) -> Drawn {
+        match p {
+            .Made(e) -> self.made(e, next),
+            .KeptText(_, was, now) -> {
+                if was.content != now.content { self.said.push(Patch.SetText(was.id, now.content)) }
+                Drawn { element: Element.Text(now with { id: was.id }), next: next }
+            },
+            .KeptTag(_, was, now) -> {
+                self.say(attributes(was.id, attrs_of(was), attrs_of(now)))
+                self.say(variables(was.id, was.vars, now.vars))
+                self.say(self.properties(was.id, props_of(was), props_of(now)))
+                self.say(hearing(was.id, was.hears, now.hears))
+                self.later(self.doors(was.id, doors_of(was), doors_of(now)))
+                let laid = self.siblings(was.id, was.kids, now.kids, next)
+                Drawn {
+                    element: Element.Tag(now with { id: was.id, kids: laid.page }),
+                    next: laid.next,
+                }
+            },
+        }
+    }
+
+    /// An element new to the page: given the next number and built whole,
+    /// for its parent to place.
+    fn made(e: Element, next: int) -> Drawn {
+        let id = NodeId { n: next }
+        match e {
+            .Text(run) -> {
+                self.said.push(Patch.CreateText(id, run.content))
+                Drawn { element: Element.Text(run with { id: id }), next: next + 1 }
+            },
+            .Tag(el) -> {
+                self.said.push(Patch.Create(id, el.tag))
+                self.say([Patch.SetAttr(id, a.name, a.value) for a in attrs_of(el)])
+                self.say(variables(id, [], el.vars))
+                self
+                    .say([Patch.SetProp(id, p.name, p.value) for p in props_of(el) if !rests(p.value)])
+                self.say([Patch.Listen(id, listening_of(a)) for a in el.hears])
+                self.later([Patch.Call(id, d.enter) for d in doors_of(el)])
+                let laid = self.siblings(id, [], el.kids, next + 1)
+                Drawn { element: Element.Tag(el with { id: id, kids: laid.page }), next: laid.next }
+            },
+        }
+    }
+
+    /// What the program KNOWS the page holds under a property of `id`:
+    /// what a handler of its own heard since the last paint, else what
+    /// that paint drew — nothing, for a property it neither drew nor
+    /// heard.
+    fn known(id: NodeId, name: HtmlAttrName, drawn: List<Prop>) -> Held? {
+        self.heard.find(it.id == id && it.name == name)?.value ?? drawn.find(it.name == name)?.value
+    }
+
+    /// Whether a door stands open on the page: as the user was heard to
+    /// leave it, else as it was last drawn.
+    fn stands_open(id: NodeId, d: Door, drawn: bool) -> bool {
+        match self.heard.find(it.id == id && it.name == d.name)?.value {
+            left? -> same_held(left, Held.Flag(true))
+            null -> drawn
+        }
+    }
+
+    /// A door is entered when the page does not stand in it, and left when
+    /// a paint no longer names it and the page still does.
+    fn doors(id: NodeId, old: List<Door>, new: List<Door>) -> List<Patch> {
+        [Patch.Call(id, d.enter) for d in new if !self.stands_open(id, d, old.any(it.name == d.name))]
+            .concat(
+                [Patch.Call(id, d.leave) for d in old if !new.any(it.name == d.name) && self.stands_open(id, d, true)],
+            )
+    }
+
+    /// A PROPERTY IS THE PROGRAM'S WHILE ITS TREE NAMES IT, AND THE
+    /// HOST'S OTHERWISE. One the tree names is written when what is drawn
+    /// is not what the program knows the page to hold, so a paint that
+    /// draws what the last one drew writes nothing over what a user did
+    /// between. One the tree stops naming is drawn at rest, that once.
+    /// One it does not name and did not name is never written, whatever
+    /// was heard of it.
+    fn properties(id: NodeId, old: List<Prop>, new: List<Prop>) -> List<Patch> {
+        [Patch.SetProp(id, p.name, p.value) for p in new if news(self.known(id, p.name, old), p.value)]
+            .concat(
+                [Patch.SetProp(id, was.name, at_rest(was.value)) for was in old if !new.any(it.name == was.name) &&
+                    news(self.known(id, was.name, old), at_rest(was.value))],
+            )
+    }
+}
+
+/// An attribute is set when it arrives or changes, and dropped when it goes.
+fn attributes(id: NodeId, old: List<HtmlAttr>, new: List<HtmlAttr>) -> List<Patch> {
+    [Patch.SetAttr(id, a.name, a.value) for a in new if !old.any(it.name == a.name && it.value == a.value)]
+        .concat([Patch.DropAttr(id, b.name) for b in old if !new.any(it.name == b.name)])
+}
+
+/// A custom property is written when it arrives or changes, and dropped
+/// when it goes: the values the element's classes read.
+fn variables(id: NodeId, old: List<CssVar>, new: List<CssVar>) -> List<Patch> {
+    [Patch.SetVar(id, v.property(), v.value) for v in new if !old.any(it.name == v.name && it.value == v.value)]
+        .concat([Patch.DropVar(id, v.property()) for v in old if !new.any(it.name == v.name)])
+}
+
+/// An event is heard anew when it is new, or says something else.
+fn hearing(id: NodeId, old: List<Action>, new: List<Action>) -> List<Patch> {
+    [Patch.Unlisten(id, was.seat) for was in old if !new.any((a) -> same_hearing(was, a))]
+        .concat(
+            [Patch.Listen(id, listening_of(a)) for a in new if !old.any((was) -> same_hearing(was, a))],
+        )
+}
+
+/// The patches that turn the page `old` into `new`, given what the user
+/// was heard to do to it since `old` was drawn. Every element of `old`
+/// wears its number; one that stays keeps it, and a new one takes the
+/// next from `next` on.
+export fn diff(old: List<Element>, new: List<Element>, heard: List<Heard>, next: int) -> Diffed {
+    let at = Differ { heard: heard }
+    let drawn = at.siblings(null, old, new, next)
+    Diffed { patches: at.said.get().concat(at.after.get()), page: drawn.page, next: drawn.next }
+}
+
+fn unlistened(seat: Seat) -> string {
+    let row = row_at(seat)
+    "a page listens only for an event it delivers, and its table delivers no `${row.owner}.${row.event}`"
+}

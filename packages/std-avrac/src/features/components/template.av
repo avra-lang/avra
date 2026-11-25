@@ -1,0 +1,157 @@
+//! A component's TEMPLATE, read off its provider's parse: the one
+//! `quote` its `expand` answers and the field each hole reads. An
+//! importing file's parse copies it where an instance stands, so the
+//! reading needs nothing but the provider's text — never its typing.
+use core.{
+    SyntaxArena,
+    StmtId,
+    ExprId,
+    TypeRef,
+    BodyView,
+    BodyParts,
+    ComponentParts,
+    FnParts,
+    Param,
+    flatten,
+    some_list,
+    body_behavior,
+}
+use core.{
+    ComponentWord,
+    Instancing,
+    Template,
+    Record,
+    ChildSlot,
+    Instanced,
+    Event,
+    record_of,
+    expand_of,
+    member,
+}
+use grammar.{Token, TokenKind, lex_source, after_type_args}
+
+/// An exported component as an importing file's block word.
+export fn word_of(store: SyntaxArena, s: StmtId, origin: string) -> ComponentWord? { word_among(store, s, origin, store.component_names()) }
+
+/// The same, its file declaring components by `components`.
+export fn word_among(store: SyntaxArena, s: StmtId, origin: string, components: List<string>) -> ComponentWord? {
+    let c? = store.component_parts(s) else { return null }
+    ComponentWord {
+        word: c.name,
+        declared: c.name,
+        form: instancing(store, c, components),
+        origin: origin,
+    }
+}
+
+/// A named instance's statement as a name a body may list.
+export fn instanced(store: SyntaxArena, s: StmtId) -> Instanced? {
+    let of? = store.instance_of(s) else { return null }
+    let name? = store.let_name(s) else { return null }
+    Instanced { name: name, declared: of }
+}
+
+/// Whether a named instance of the component binds its name: a
+/// record with no head.
+export fn binds_name(c: ComponentWord) -> bool {
+    match c.form {
+        .Record(r) -> r.head.is_empty(),
+        .Shaped(binds) -> binds,
+        .Template(_) or .Refused(_) or .Spoken or .Unread -> false,
+    }
+}
+
+/// How an instance of the component stands in place: its template,
+/// or the library's reason it cannot.
+fn instancing(store: SyntaxArena, c: ComponentParts, components: List<string>) -> Instancing {
+    let expand? = expand_of(store, c) else { return Instancing.Record(record_of(store, c, components)) }
+    let fields = c.fields()
+    if copies_events(store, c) { return Instancing.Spoken }
+    if fields.is_empty() { return Instancing.Refused(no_block_field(c.name)) }
+    if fields.length > 1 { return Instancing.Refused(many_fields(c.name, fields.length)) }
+    let head = [p.name.text() for p in c.head]
+    let block = fields[0].name.text()
+    let body? = template_body(store, expand) else { return Instancing.Refused(computes(c.name)) }
+    let reads = [self_field(store, h) ?? "" for h in body.holes]
+    if !reads.all((r) -> head.contains(r) || r == block) { return Instancing.Refused(computes(c.name)) }
+    Instancing
+        .Template(
+            Template {
+                head: head,
+                defaults: [p.default for p in c.head],
+                block: block,
+                reads: reads,
+                stmts: verbatim(body.view),
+                store: store,
+                formats: formats_of(c),
+            },
+        )
+}
+
+/// Whether a component copies its `expand` and declares an event: copied
+/// code hears no event, so its declaration is refused.
+export fn copies_events(store: SyntaxArena, c: ComponentParts) -> bool {
+    expand_of(store, c) != null && !c.events().is_empty()
+}
+
+/// The `quote` an `expand` answers, when its body is that one quote.
+export fn template_body(store: SyntaxArena, expand: FnParts) -> BodyParts? {
+    let quoted? = store.lone_value(expand.body) else { return null }
+    let body? = store.expr(quoted).body_of() else { return null }
+    if !(body_behavior(body.word) is .Quote) { return null }
+    body
+}
+
+/// The first CODE field of `self` a template reads more than once —
+/// a pattern is a value, read as often as the template likes.
+export fn read_twice(store: SyntaxArena, body: BodyParts, values: List<string>) -> string? {
+    let reads = [r for r in flatten([some_list(self_field(store, h)) for h in body.holes]) if !values.contains(r)]
+    reads.find([x for x in reads if x == it].length > 1)
+}
+
+/// The head fields a component declares as PATTERNS.
+export fn formats_of(c: ComponentParts) -> List<string> {
+    [p.name.text() for p in c.head if p.ty?.name == "Format"]
+}
+
+/// The one expression a `quote` holds; absent for any other expression.
+export fn quoted_value(store: SyntaxArena, e: ExprId) -> ExprId? {
+    let body? = store.expr(e).body_of() else { return null }
+    if !(body_behavior(body.word) is .Quote) { return null }
+    let stmts = verbatim(body.view)
+    if stmts.length != 1 { return null }
+    store.answer_of(stmts[0])
+}
+
+/// A quote's body as written.
+fn verbatim(view: BodyView) -> List<StmtId> {
+    match view { .Verbatim(stmts, _) -> stmts, .None or .Expanded(_) -> [] }
+}
+
+/// The field of `self` an expression reads, when that is all it does.
+fn self_field(store: SyntaxArena, e: ExprId) -> string? {
+    let step? = store.place_step(e) else { return null }
+    match step {
+        .Field(subject, name) -> if is_self(store, subject) { name.of } else { null },
+        _ -> null,
+    }
+}
+
+fn is_self(store: SyntaxArena, e: ExprId) -> bool {
+    let step? = store.place_step(e) else { return false }
+    match step { .Root(name) -> name.spells("self"), _ -> false }
+}
+
+// ── voices ──
+
+fn no_block_field(name: string) -> string {
+    "`${name}` declares no field for an instance's block"
+}
+
+fn many_fields(name: string, n: int) -> string {
+    "`${name}` declares ${n} fields beside its head, and an instance's block fills one"
+}
+
+fn computes(name: string) -> string {
+    "the `expand` of `${name}` is not one `quote` over its own fields, so an instance cannot be copied in place"
+}

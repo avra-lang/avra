@@ -1,0 +1,73 @@
+// proves: an enum's payload is judged by its layout, never by its type's name: a `Result` whose
+// sides are each one word is two words, so the enum carrying it keeps its box and carries it inline;
+// next to it a nullable of each such `Result` and a record of two fields, each read back
+// whole, with 0 and -1 among the values, in both engines.
+type Id = { index: int }
+
+type Pt = { x: int, y: int }
+
+enum Step {
+    Idle
+    IntText(r: Result<int, string>)
+    TextInt(r: Result<string, int>)
+    IntInt(r: Result<int, int>)
+    IdId(r: Result<Id, Id>)
+    MaybeIntText(r: Result<int, string>?)
+    MaybeIntInt(r: Result<int, int>?)
+    MaybeIdId(r: Result<Id, Id>?)
+    At(p: Pt)
+}
+
+fn int_text(r: Result<int, string>) -> string { match r { .Ok(v) -> "ok${v}", .Err(e) -> e } }
+
+fn int_int(r: Result<int, int>) -> string { match r { .Ok(v) -> "ok${v}", .Err(e) -> "err${e}" } }
+
+fn id_id(r: Result<Id, Id>) -> string { match r { .Ok(v) -> "ok${v.index}", .Err(e) -> "err${e.index}" } }
+
+fn read(s: Step) -> string {
+    match s {
+        .Idle -> "idle",
+        .IntText(r) -> int_text(r),
+        .TextInt(r) -> match r { .Ok(v) -> v, .Err(e) -> "err${e}" },
+        .IntInt(r) -> int_int(r),
+        .IdId(r) -> id_id(r),
+        .MaybeIntText(r) -> {
+            let got? = r else { return "null" }
+            int_text(got)
+        },
+        .MaybeIntInt(r) -> {
+            let got? = r else { return "null" }
+            int_int(got)
+        },
+        .MaybeIdId(r) -> {
+            let got? = r else { return "null" }
+            id_id(got)
+        },
+        .At(p) -> "${p.x},${p.y}",
+    }
+}
+
+fn found(n: int) -> Result<int, string> { if n < -1 { .Err("gone") } else { .Ok(n) } }
+
+let steps = [
+    Step.Idle,
+    Step.IntText(found(-1)),
+    Step.IntText(found(-4)),
+    Step.TextInt(.Ok("t")),
+    Step.TextInt(.Err(0)),
+    Step.IntInt(.Ok(0)),
+    Step.IntInt(.Err(-1)),
+    Step.IdId(.Ok(Id { index: 0 })),
+    Step.IdId(.Err(Id { index: -1 })),
+    Step.MaybeIntText(found(0)),
+    Step.MaybeIntText(null),
+    Step.MaybeIntInt(.Err(0)),
+    Step.MaybeIntInt(null),
+    Step.MaybeIdId(.Ok(Id { index: -1 })),
+    Step.MaybeIdId(null),
+    Step.At(Pt { x: 0, y: -1 }),
+]
+let held = Cell.new(Step.IntInt(.Ok(7)))
+held.set(Step.IntText(found(-1)))
+let by: Map<string, Step> = {"k": Step.IdId(.Err(Id { index: 3 }))}
+"${[read(s) for s in steps].join(" ")} | ${read(held.get())} ${read(by.get("k")!)}"

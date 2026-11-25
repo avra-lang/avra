@@ -1,0 +1,116 @@
+// `@lacks(field, why)`: a record names a field it leaves out ON
+// PURPOSE, and a read or a literal naming it refuses with that reason
+// rather than "no field". Judged by DECLARATION, like `@identity`, so
+// packaged: a lone source cannot import `@std/meta`.
+use @std.avrac.testing.{provided}
+
+/// A derive making `<T>Pub`, T's first field alone, lacking each other
+/// field — every `@lacks` written over the SPLICED declaration, so the
+/// row wears annotations its own template never spelled.
+fn pub_provider() -> string {
+    "use @std.meta.{Type, Field, Directive, Decls, literal, lacks}\n" +
+        "export trait Pub {\n" +
+        "    static fn derive(t: Type) -> List<Directive> {\n" +
+        "        let kept = [quote { type _ = { \${f.name}: \${f.ty} } } for f in t.fields.slice(0, 1)]\n" +
+        "        let row = worn(t.fields.slice(1, t.fields.length), quote { type \${t}Pub = { ..\${kept} } })\n" +
+        "        [Directive { twin: \"\", name: t.name, at: t.at, source: row }]\n" +
+        "    }\n" +
+        "}\n" +
+        "fn worn(gone: List<Field>, row: Decls) -> Decls {\n" +
+        "    let f? = gone.first() else { return row }\n" +
+        "    worn(gone.slice(1, gone.length), quote { @lacks(\${literal(f.name)}, \${literal(\"public rows omit it\")}) \${row} })\n" +
+        "}\n"
+}
+
+fn lacks_report(main: string) -> string {
+    provided("use @std.meta.{lacks}\n" + main, "").report()
+}
+
+fn pub_type() -> string {
+    "@lacks(\"secret\", \"it stays in the process that minted it\")\ntype Pub = { a: int }\n"
+}
+
+spec "features/structs (lacks)" {
+    given "a record lacking `secret` on purpose" {
+        then "a read of it refuses with the record's reason, never \"no field\"" {
+            let out = lacks_report(pub_type() + "let p = Pub { a: 1 }\np.secret")
+            out.contains("[type.unknown_prop]") &&
+                out
+                    .contains("`Pub` lacks `secret` on purpose — it stays in the process that minted it") &&
+                !out.contains("no field")
+        }
+        then "a literal writing it refuses with the reason" {
+            let out = lacks_report(pub_type() + "let p = Pub { a: 1, secret: 2 }\n1")
+            out.contains("[type.struct_fields]") && out.contains("`Pub` lacks `secret` on purpose")
+        }
+        then "a `with` writing it refuses with the reason" {
+            lacks_report(pub_type() + "let p = Pub { a: 1 }\nlet q = p with { secret: 2 }\n1")
+                .contains("`Pub` lacks `secret` on purpose")
+        }
+        then "a field it neither declares nor lacks is still \"no field\"" {
+            lacks_report(pub_type() + "let p = Pub { a: 1 }\np.other")
+                .contains("no field `other` on `Pub`")
+        }
+        then "the declared field reads clean" {
+            !lacks_report(pub_type() + "let p = Pub { a: 1 }\np.a").contains("error")
+        }
+    }
+    given "two fields lacked, each for its own reason" {
+        then "each read hears its own" {
+            let out = lacks_report(
+                "@lacks(\"x\", \"reason x\")\n@lacks(\"y\", \"reason y\")\ntype P = { a: int }\nlet p = P { a: 1 }\nlet u = p.x\np.y",
+            )
+            out.contains("`P` lacks `x` on purpose — reason x") &&
+                out.contains("`P` lacks `y` on purpose — reason y")
+        }
+    }
+    given "a generic record lacking a field" {
+        then "a read through an instantiation hears the reason" {
+            lacks_report(
+                "@lacks(\"gone\", \"never kept\")\ntype Box<T> = { held: T }\nlet b: Box<int> = Box { held: 1 }\nb.gone",
+            )
+                .contains("lacks `gone` on purpose — never kept")
+        }
+    }
+    given "a record lacking a field it DECLARES" {
+        then "the declaration refuses, naming the field" {
+            let out = lacks_report("@lacks(\"a\", \"why\")\ntype P = { a: int }\n1")
+            out.contains("[type.lacks]") && out.contains("`P` cannot lack `a` — it declares it")
+        }
+    }
+    given "a record lacking one field twice" {
+        then "the declaration refuses — one reason per field" {
+            lacks_report(
+                "@lacks(\"x\", \"first\")\n@lacks(\"x\", \"second\")\ntype P = { a: int }\n1",
+            )
+                .contains("`P` lacks `x` twice")
+        }
+    }
+    given "an enum wearing `@lacks`" {
+        then "the declaration refuses — only a record has fields to lack" {
+            lacks_report("@lacks(\"x\", \"why\")\nenum K { A, B }\n1")
+                .contains("an enum has no fields to lack")
+        }
+    }
+    given "a package's OWN fn named `lacks`, never `@std/meta`'s" {
+        then "a read is plain \"no field\" — lacking is a DECLARATION, not a word" {
+            provided(
+                "fn lacks(a: string, b: string) -> int { 1 }\n@lacks(\"s\", \"why\")\ntype P = { a: int }\nlet p = P { a: 1 }\np.s",
+                "",
+            )
+                .report()
+                .contains("no field `s` on `P`")
+        }
+    }
+    given "`@lacks` written over a SPLICED declaration in a quote" {
+        then "the filled declaration wears it, and a read hears the reason" {
+            let out = provided(
+                "use @std.meta.{derive}\nuse @x.c.{Pub}\n@derive(Pub)\ntype U = { name: string, hash: string, salt: string }\nlet p = UPub { name: \"a\" }\nlet h = p.hash\np.salt",
+                pub_provider(),
+            )
+                .report()
+            out.contains("`UPub` lacks `hash` on purpose — public rows omit it") &&
+                out.contains("`UPub` lacks `salt` on purpose — public rows omit it")
+        }
+    }
+}

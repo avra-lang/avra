@@ -1,0 +1,23 @@
+// A top-level `state` is a place a body reads: a fn that reads one, directly or through a callee, is
+// never constant — what it answers follows the state as it is when it is called, never as it stood
+// when the program was made.
+use @std.avrac.testing.{judged, shown}
+
+spec "features/read_set — a top-level state is never constant" {
+    given "a fn reading one directly" {
+        then "it answers the state as it is at the call" {
+            shown("state n: int = 0\nfn f() -> int { n + 1 }\nn = 5\nf()") == "6"
+        }
+    }
+    given "a caller of a fn reading one" {
+        then "the caller answers it too, through the callee" {
+            shown("state n: int = 0\nfn g() -> int { n }\nfn f() -> int { g() + 1 }\nn = 5\nf()") == "6"
+        }
+    }
+    given "a fn reading no state" {
+        then "it answers its own constant whatever the state holds, and the program is clean" {
+            let text = "state n: int = 0\nfn f() -> int { 1 + 2 }\nn = 5\nf() + n"
+            judged(text).clean() && shown(text) == "8"
+        }
+    }
+}

@@ -1,0 +1,22 @@
+// proves: a `once fn` that calls itself has no cycle guard — the
+// nested call runs the body again exactly as the runtime table does,
+// and being the one that FINISHES first, its own answer is what the
+// slot commits; the outer call still answers its OWN made value.
+once fn guard() -> Cell<int> {
+    Cell.new(0)
+}
+once fn cyc() -> Cell<int> {
+    if guard().get() == 0 {
+        guard().set(1)
+        let inner = cyc().get()
+        Cell.new(inner + 1)
+    } else {
+        Cell.new(100)
+    }
+}
+fn run() -> string {
+    let top = cyc().get()
+    let again = cyc().get()
+    "${top} ${again}"
+}
+run()

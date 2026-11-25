@@ -1,0 +1,98 @@
+#!/bin/sh
+# THE avra COMMAND — the compiler, hosted by itself. `build/avra` is
+# the working binary; it rebuilds from `make avra`, which uses the
+# binary that is already there. The seed is the cold path, and it is
+# taken only when there is no binary at all.
+root="$(cd "$(dirname "$0")" && pwd)"
+# THE CALLER'S DIRECTORY, kept before this script moves to the tree's
+# root: a command that reads "the package I stand in" (`explain`)
+# roots there, never at the tree — `cd` below rewrites PWD too.
+AVRA_CWD="$(pwd)"
+export AVRA_CWD
+# the link flags a manifest writes as ${LLVM_PREFIX}
+LLVM_PREFIX="${LLVM_PREFIX:-/opt/homebrew/opt/llvm}"
+export LLVM_PREFIX
+# the static LLVM link's platform answers (packages/std-avrac/avra.toml)
+if [ "$(uname -s)" = Darwin ]; then
+    AVRA_CXX_RUNTIME="${AVRA_CXX_RUNTIME:-c++}"
+    AVRA_SYS_SEARCH="${AVRA_SYS_SEARCH:-/opt/homebrew/lib}"
+    export AVRA_SYS_SEARCH
+else
+    AVRA_CXX_RUNTIME="${AVRA_CXX_RUNTIME:-stdc++}"
+fi
+export AVRA_CXX_RUNTIME
+export AVRA_BOOTSTRAPPING
+
+# A PACKAGE-SCALE RUN — any argument that is a directory — is a
+# heavy step: it takes the machine-wide build lock and runs under
+# the watchdog (tools/watch.sh), unless it already runs inside one.
+# A single-file run is light and runs directly. Judged where the
+# caller stands, before the move below.
+heavy=0
+n=0
+for a in "$@"; do n=$((n + 1)); [ "$n" -gt 1 ] && [ -d "$a" ] && heavy=1; done
+# A GUARDED PACKAGE RUN IS REFUSED: `AVRA_RC_GUARD` keeps every box that dies so a leak can
+# replay its life, which over a package is a machine's worth of memory — it ended a Sprite's
+# session. The guard is for one program; `AVRA_GUARDED_PACKAGE=1` takes the cost on purpose.
+case "${AVRA_RC_GUARD:-0}" in 0|"") ;; *)
+    if [ "$heavy" = 1 ] && [ -z "$AVRA_GUARDED_PACKAGE" ]; then
+        echo "avra: AVRA_RC_GUARD keeps every dead box, and a package-scale run makes a machine's worth of them" >&2
+        echo "avra:   guard one program — name a file — or set AVRA_GUARDED_PACKAGE=1 to take the cost on purpose." >&2
+        exit 2
+    fi ;;
+esac
+cd "$root" || exit 2
+# THE BINARY THAT ANSWERS: `build/avra`, or `AVRA_BIN` — `make try`'s
+# `build/avra-try`, which `./avra-try` names.
+bin="${AVRA_BIN:-build/avra}"
+if [ "$bin" != build/avra ] && [ ! -x "$bin" ]; then
+    echo "avra: no $bin — \`make try\` builds it" >&2
+    exit 2
+fi
+if [ -x "$bin" ]; then
+    # A SERVER IS NOT A STEP: `dev` lives as long as its developer does, and
+    # a lock held that long stops every other build on the machine.
+    [ "$1" = dev ] && exec "$bin" "$@"
+    if [ "$heavy" = 1 ] && [ -z "$AVRA_WATCH_HELD" ]; then
+        # WHETHER A RUN IS HEAVY IS THE COMPILER'S TO SAY, not an argument's
+        # shape: a `check` or a `build` the store answers reads a file or two,
+        # and a `fmt` over a small package parses a few. Asked to stay light,
+        # the compiler leaves with 75 BEFORE it reads a tree — having said
+        # nothing — and only then is the run the watchdog's.
+        # A suite and the evaluator run whole programs; they are never light.
+        case "$1" in check|build|fmt)
+            AVRA_LIGHT=1 "$bin" "$@"; st=$?
+            [ "$st" -ne 75 ] && exit "$st" ;;
+        esac
+        exec sh tools/watch.sh "${AVRA_CAP_MB:-6000}" "$bin" "$@"
+    fi
+    exec "$bin" "$@"
+fi
+
+# COLD TREE: no compiler yet. The SEED is the way back — the compiler
+# emitted, committed, and linkable by clang alone.
+if [ -f "$root/bootstrap/seed.ll" ]; then
+    # A BOOTSTRAP NEVER RE-ENTERS ITSELF. `make bootstrap` ends in
+    # `make avra`, which runs THIS script; if the bootstrap did not
+    # produce a compiler — a refused floor, a failed link, a full disk
+    # — that run finds no `build/avra` and bootstraps AGAIN, forever.
+    # It is not merely a spin: each level redirects to the same
+    # `build/avra-build.out` and truncates it while the level above
+    # still holds an open descriptor at a high offset, so the file
+    # grows by a hole per lap. It reached 4.5 GB in minutes and filled
+    # the volume TWICE, and it read as swap and as "something is
+    # regenerating what we freed" — because a runaway that writes
+    # nothing visible looks like the machine misbehaving.
+    if [ -n "$AVRA_BOOTSTRAPPING" ]; then
+        echo "avra: a bootstrap is already running and produced no build/avra — refusing to re-enter" >&2
+        echo "avra:   the seed's link did not leave a compiler. Read the bootstrap's own" >&2
+        echo "avra:   output; a refused disk floor and a failed link both land here." >&2
+        exit 2
+    fi
+    echo "avra: no build/avra — bootstrapping from the seed" >&2
+    AVRA_BOOTSTRAPPING=1 make -C "$root" -s bootstrap >&2 || exit 2
+    exec build/avra "$@"
+fi
+echo "avra: no build/avra and no bootstrap/seed.ll" >&2
+echo "      the seed is the only cold path; restore it from git." >&2
+exit 2

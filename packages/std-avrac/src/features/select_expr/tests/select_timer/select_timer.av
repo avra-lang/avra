@@ -1,0 +1,28 @@
+// proves: a timer arm takes the `select` when its task is still running —
+// a `quiet` counted from the entry, and a `Deadline` under a guard that
+// leaves a later one dead — and the arm taken cancels the task that lost,
+// which its await then hears — in both engines
+use @std.time.{after, ms, quiet, secs, sleep}
+
+fn slow(n: int) -> int {
+    sleep(secs(60))
+    n
+}
+
+let t = spawn slow(1)
+let timed = select {
+    r in t -> r
+    quiet(ms(5)) -> {
+        t.cancel()
+        0 - 1
+    }
+}
+let lost = t.await catch c -> { 0 - 2 }
+let limit = after(ms(5))
+let far = after(secs(60))
+let late = false
+let due = select {
+    far if late -> 1
+    limit -> 2
+}
+"${timed} ${lost} ${due}"

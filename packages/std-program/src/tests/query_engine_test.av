@@ -1,0 +1,175 @@
+// Two processes over one store: what stands is reused without running, what changed runs, an answer
+// that comes out the same stops the change there, and going back finds the earlier answer.
+use tests.support.store_in_memory.{StoreInMemory, store_in_memory}
+use answer_record.{question}
+use query_engine.{QueryDefinition, QueryEngine, query_engine}
+
+fn ask_text(engine: QueryEngine, query_name: string, argument: string) -> string {
+    engine.answer_to(question(query_name, "code", argument.bytes())).copied().text() ?? ""
+}
+
+/// `source` is an input; `is_long` reads it and throws most of it away; `summary` reads `is_long`.
+fn definitions(world: Cell<string>) -> List<QueryDefinition> {
+    [
+        QueryDefinition {
+            query_name: "source",
+            code_hash: "code",
+            is_input: true,
+            compute: (_e, _a) -> world.get().bytes(),
+        },
+        QueryDefinition {
+            query_name: "is_long",
+            code_hash: "code",
+            is_input: false,
+            compute: (e, a) -> "${ask_text(e, "source", a.text() ?? "").length > 5}".bytes(),
+        },
+        QueryDefinition {
+            query_name: "summary",
+            code_hash: "code",
+            is_input: false,
+            compute: (e, a) -> "long: ${ask_text(e, "is_long", a.text() ?? "")}".bytes(),
+        },
+    ]
+}
+
+/// `summary` reads `middle`, which has no code hash.
+fn unhashed_below(middle: string) -> List<QueryDefinition> {
+    [
+        QueryDefinition {
+            query_name: "middle",
+            code_hash: "",
+            is_input: false,
+            compute: (_e, _a) -> middle.bytes(),
+        },
+        QueryDefinition {
+            query_name: "summary",
+            code_hash: "code",
+            is_input: false,
+            compute: (e, _a) -> e.answer_to(question("middle", "", "x".bytes())).copied(),
+        },
+    ]
+}
+
+/// One process: a fresh engine over the store, asked for `summary` while the world says `text`.
+fn process(store: StoreInMemory, text: string) -> QueryEngine {
+    let engine = query_engine(store, definitions(Cell.new(text)))
+    let _ = ask_text(engine, "summary", "main")
+    engine.frontier_kept()
+    engine
+}
+
+fn summary_in(store: StoreInMemory, text: string) -> string {
+    ask_text(query_engine(store, definitions(Cell.new(text))), "summary", "main")
+}
+
+spec "query_engine — answers remembered across processes" {
+    given "a later process with nothing changed" {
+        then "it settles the input and the root, and touches nothing between them" {
+            let store = store_in_memory()
+            let _ = process(store, "short")
+            process(store, "short").settled_answers.values().length == 2
+        }
+    }
+    given "an edit that comes out the same" {
+        then "the walk finds it once, and the process after it touches nothing between" {
+            let store = store_in_memory()
+            let _ = process(store, "short")
+            let walked = process(store, "tiny")
+            let after = process(store, "tiny")
+            walked.settled_answers.values().length == 3 &&
+                after.settled_answers.values().length == 2
+        }
+    }
+    given "going back to an earlier input" {
+        then "that state's answer is reached without working anything out" {
+            let store = store_in_memory()
+            let _ = process(store, "short")
+            let _ = process(store, "tiny")
+            let back = process(store, "short")
+            back.worked_count() == 0 && ask_text(back, "summary", "main") == "long: false"
+        }
+    }
+    given "an input that moves the answer" {
+        then "the answer is the new one" {
+            let store = store_in_memory()
+            let _ = process(store, "short")
+            summary_in(store, "much longer") == "long: true"
+        }
+    }
+    given "a query with no code hash below a root, its code changed between processes" {
+        then "the later process answers from the code it runs, its frontier notwithstanding" {
+            let store = store_in_memory()
+            let earlier = query_engine(store, unhashed_below("m"))
+            let _ = ask_text(earlier, "summary", "main")
+            earlier.frontier_kept()
+            ask_text(query_engine(store, unhashed_below("n")), "summary", "main") == "n"
+        }
+    }
+    given "an empty store" {
+        then "every query runs once" { process(store_in_memory(), "short").computed_count() == 3 }
+        then "the answer is what the queries say" { summary_in(store_in_memory(), "short") == "long: false" }
+    }
+    given "a second process with nothing changed" {
+        then "only the input runs" {
+            let store = store_in_memory()
+            let _ = process(store, "short")
+            process(store, "short").computed_count() == 1
+        }
+        then "the answer is the same" {
+            let store = store_in_memory()
+            let _ = process(store, "short")
+            summary_in(store, "short") == "long: false"
+        }
+    }
+    given "an input that changed" {
+        then "its reader reruns, and stops there when its answer comes out the same" {
+            let store = store_in_memory()
+            let _ = process(store, "short")
+            process(store, "tiny").computed_count() == 2
+        }
+        then "a change that reaches the top runs everything, with the right answer" {
+            let store = store_in_memory()
+            let _ = process(store, "short")
+            process(store, "a much longer text").computed_count() == 3 &&
+                summary_in(store, "a much longer text") == "long: true"
+        }
+    }
+    given "going back to an earlier state" {
+        then "its earlier answers are found, and only the input runs" {
+            let store = store_in_memory()
+            let _ = process(store, "short")
+            let _ = process(store, "a much longer text")
+            process(store, "short").computed_count() == 1
+        }
+    }
+    given "a record whose read nobody can ask" {
+        then "it never stands" {
+            let store = store_in_memory()
+            let _ = process(store, "short")
+            let summary_only = query_engine(
+                store,
+                [
+                    QueryDefinition {
+                        query_name: "summary",
+                        code_hash: "code",
+                        is_input: false,
+                        compute: (_e, _a) -> "recomputed".bytes(),
+                    },
+                ],
+            )
+            ask_text(summary_only, "summary", "main") == "recomputed"
+        }
+    }
+}
+
+spec "query_engine — each engine of a process is its own" {
+    given "two engines over one store" {
+        then "their serials differ, and a copy keeps its engine's" {
+            let store = store_in_memory()
+            let one = process(store, "a")
+            let two = process(store, "a")
+            let held = one
+            one.serial != two.serial && held.serial == one.serial
+        }
+    }
+}

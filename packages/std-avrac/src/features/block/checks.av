@@ -1,0 +1,35 @@
+//! The typing rule of a block: its statements checked in a scope of their own, and its value its
+//! tail's, the last statement when that's a value; a block with no tail, or whose value is dropped,
+//! is `void`, and one that leaves (its last statement a `return`, `fail` or jump) is `never`.
+use core.{Checking, Checks, ExprId, Expected, SignedType, StmtId, never_type, owned_type}
+use core.expr.{Block}
+
+impl Checks for Block {
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        if cx.store.leaves(e) { return left(cx, self.stmts) }
+        cx.opened()
+        let ending = self.stmts.last()
+        let tail = if ending == null { null } else { cx.store.answer_of(ending!) }
+        for s in if tail == null { self.stmts } else { self.stmts.take(self.stmts.length - 1) } { cx.check_stmt(s) }
+        if tail != null { cx.annotations_read(ending!) }
+        let answered: SignedType? = if tail == null {
+            owned_type("void")
+        } else if expected is .Dropped {
+            let _ = cx.check(tail!, Expected.Dropped)
+            owned_type("void")
+        } else {
+            let read = cx.check(tail!, expected)
+            if expected.unknowing() { null } else { read }
+        }
+        cx.closed()
+        answered
+    }
+}
+
+/// A block that leaves: its statements checked in a scope of their own, and no value.
+fn left(mut cx: Checking, stmts: List<StmtId>) -> SignedType? {
+    cx.opened()
+    for s in stmts { cx.check_stmt(s) }
+    cx.closed()
+    never_type()
+}

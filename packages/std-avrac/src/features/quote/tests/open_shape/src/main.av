@@ -1,0 +1,28 @@
+// proves: a quote pattern that holds a node's name or type open reads its opens back as the
+// matcher laid them: a name open alone, a type open alone, and both on one node.
+use @std.avrac.testing.{judged}
+use @std.avrac.testing.held.{RuleItem}
+use @std.avrac.core.{At}
+use @std.avrac.features.{Code}
+
+/// The first item of a one-line program, as a rule reads it on the program layer.
+fn item_of(src: string) -> RuleItem { judged(src).rule_items("/alone/src/main.av")[0] }
+
+fn stmt_of(src: string) -> Code {
+    let i = item_of(src)
+    Code { of: i.file, at: At.Stmt(i.stmts[0]) }
+}
+
+fn named(src: string) -> string {
+    match stmt_of(src) { quote { let ${x} = 1 } -> x, _ -> "-" }
+}
+
+fn typed(src: string) -> string {
+    match stmt_of(src) { quote { let n: ${T} = 1 } -> T.text(), _ -> "-" }
+}
+
+fn both(src: string) -> string {
+    match stmt_of(src) { quote { mut ${x}: ${T} = ${v} } -> "${x}:${T.text()}", _ -> "-" }
+}
+
+"${named("let y = 1")} ${typed("let n: int = 1")} ${both("mut m: List<int> = []")} ${named("let y = 2")}"

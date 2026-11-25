@@ -1,0 +1,94 @@
+//! proves: a task unwound in a row loop leaves its statement as a
+//! finished one does — a gathering's is reset, so the same query
+//! answers again on the connection, and a script's is finalized
+use @std.sqlite.open.{Db}
+use @std.sqlite.error.{SqlError}
+use @std.sqlite.sql.{sql, Sql}
+use @std.sqlite.c.{sqlite3_next_stmt, sqlite3_stmt_busy}
+use @std.time.{ms, sleep}
+
+extern fn avra_sched_seed(schedule: int)
+extern fn avra_sched_settle() -> int
+
+/// The others run, `n` times over: under a schedule a task spinning
+/// in a loop yields at a drawn back-edge, and is heard there.
+fn yields(n: int) {
+    for _i in 0..n { sleep(ms(0)) }
+}
+
+/// The numbers from one to a bound, a row each.
+const counted: string = "with recursive n(i) as (select 1 union all select i + 1 from n where i < ?) select i from n"
+
+fn counting() -> Sql { sql(counted) }
+
+/// The others run until `began` is set: the task that set it has
+/// yielded since, so it stands in the loop that follows.
+fn until(began: Cell<bool>) {
+    while !began.get() { sleep(ms(0)) }
+}
+
+/// Rows gathered into `seen`, which keeps -7 unless the gathering ends.
+fn gathers(db: Db, upto: int, began: Cell<bool>, seen: Cell<int>) -> int {
+    began.set(true)
+    seen.set((db.all(counting().args([.Int(upto)])) catch []).length)
+    0
+}
+
+fn scripted(db: Db, began: Cell<bool>, seen: Cell<int>) -> int {
+    began.set(true)
+    seen.set(db.exec(counted.replace("?", "200000")) catch -1)
+    0
+}
+
+/// Whether the connection's first statement stands mid-run: stepped,
+/// and neither finished nor reset.
+fn held_busy(db: Db) -> bool {
+    let held? = db.raw.get() else { return false }
+    let s? = sqlite3_next_stmt(held, null) else { return false }
+    sqlite3_stmt_busy(s) != 0
+}
+
+/// A task cancelled while it gathers rows of a query the connection
+/// already holds compiled — so its first loop is the rows' — then the
+/// same query asked again: whether the task ended, whether its
+/// statement stands mid-run, and the rows the second asking answers.
+fn gathering_cut() -> Result<string, SqlError> {
+    let db = Db.memory()?
+    db.all(counting().args([.Int(1)]))?
+    let seen = Cell.new(-7)
+    let began = Cell.new(false)
+    let t = spawn gathers(db, 200000, began, seen)
+    until(began)
+    t.cancel()
+    while !t.done { sleep(ms(0)) }
+    let busy = held_busy(db)
+    let again = (db.all(counting().args([.Int(3)]))?).length
+    db.close()
+    "${seen.get()} ${busy} ${again}"
+}
+
+/// A task cancelled while a script's statement runs, then the
+/// statements the connection still holds: whether the task ended, and
+/// whether one is left.
+fn script_cut() -> Result<string, SqlError> {
+    let db = Db.memory()?
+    let seen = Cell.new(-7)
+    let began = Cell.new(false)
+    let t = spawn scripted(db, began, seen)
+    until(began)
+    yields(3)
+    t.cancel()
+    while !t.done { sleep(ms(0)) }
+    let held? = db.raw.get() else { return "closed" }
+    let left = sqlite3_next_stmt(held, null) != null
+    db.close()
+    "${seen.get()} ${left}"
+}
+
+fn shown(r: Result<string, SqlError>) -> string { r catch e -> e.cause.kind() }
+
+avra_sched_seed(1)
+let gathering = shown(gathering_cut())
+let script = shown(script_cut())
+let _ = avra_sched_settle()
+"gathering: ${gathering} | script: ${script}"

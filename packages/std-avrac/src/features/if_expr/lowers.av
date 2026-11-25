@@ -1,0 +1,33 @@
+//! The lowering rule of an `if` no meaning takes — one whose `else` is another `if`: a region on the
+//! condition, its block in one arm and its `else` in the other.
+use core.{ExprId, Lowering, Lowers, Reg, SignedType, owned_type}
+use core.expr.{If}
+
+impl Lowers for If {
+    /// A region of the `if`'s type on the condition: the block where it holds, else the `else`, or
+    /// nothing where there's none.
+    fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
+        let ty? = cx.type_at(e) else { return cx.unlowered(e) }
+        cx
+            .region(cx.lower(self.cond), cx.laid_out(ty)) { cx -> branch(cx, self.on_true, ty) } else { cx -> branch_or_nothing(cx, self.on_false, ty) }
+    }
+
+    /// A region on the condition whose arms are run for what they do.
+    fn lowered_dropped(mut cx: Lowering, e: ExprId) -> Reg {
+        cx
+            .void_branches(cx.lower(self.cond)) { cx -> let _ = cx.dropped(self.on_true) } else { cx -> if self.on_false != null { let _ = cx.dropped(self.on_false!) } }
+        cx.hollow_of(owned_type("void"))
+    }
+}
+
+/// A branch's value, or where it leaves, nothing of the `if`'s type `ty`.
+fn branch(mut cx: Lowering, x: ExprId, ty: SignedType) -> Reg {
+    let made = cx.lower(x)
+    if cx.store.leaves(x) { cx.hollow_of(ty) } else { made }
+}
+
+/// The `else`'s value, or where there's none or it leaves, nothing of the `if`'s type `ty`.
+fn branch_or_nothing(mut cx: Lowering, x: ExprId?, ty: SignedType) -> Reg {
+    let v? = x else { return cx.hollow_of(ty) }
+    branch(cx, v, ty)
+}

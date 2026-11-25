@@ -1,0 +1,122 @@
+//! `avra check` — everything wrong with a source file, or with every file
+//! of a package root. The program is DERIVED as a build derives it, so a
+//! file the store stands in for is not read and still speaks its warnings.
+//! `--baseline <file>` turns the rule findings (warnings) into a ratchet:
+//! a site the file does not list refuses the check, and `--baseline_accept`
+//! prunes it down to sites still found — never grows it (idiom_baseline.av).
+use @std.cli.{CliResult, Runnable, command, flag, option}
+use @std.io.{write_text}
+use @std.path.{dir_of, joined_path, relative_path, under_dir}
+use @std.avrac.compiler.host.{no_manifest, no_source}
+use @std.avrac.diagnostics.{render_among}
+use @std.program.sorted.{sorted_by}
+use @std.text.{text_before}
+
+use @std.avrac.compiler.{Finding}
+
+type CheckCmd = {}
+
+impl Runnable for CheckCmd {
+    fn run(args: CliResult) -> int {
+        let path? = slotted_path(args) else { return 2 }
+        program_door_checked(args, path)
+    }
+}
+
+/// `avra check` on the program layer: a package — or the package a file belongs to by the old
+/// path's own rule (`file_home`), or, belonging to none, a package of that one file — checked as the
+/// old `check` says it, held to its baseline where one is named.
+fn program_door_checked(args: CliResult, path: string) -> int {
+    if is_a_dir(path) {
+        let dir = rooted(path)
+        if !exists_at(joined_path(dir, "avra.toml")) {
+            println(render_among(no_manifest(dir, package_root(dir_of(dir))), []))
+            return 1
+        }
+        if !is_a_dir(joined_path(dir, "src")) { return root_programs_checked(args, dir) }
+    }
+    let disk? = checked_disk(path) else { return std_unfound() }
+    disk_checked(
+        disk,
+        args.option("baseline"),
+        timed(args),
+        args.has_flag("baseline_accept"),
+        args.has_flag("counts"),
+        args.has_flag("read_lists"),
+        if args.has_flag("passes_shown") { if args.has_flag("passes_rows") { LedgerSaid.Rows } else { LedgerSaid.Table } } else { LedgerSaid.Unsaid },
+    )
+}
+
+/// A package root with no `src/`: each source file directly in it checked as `check` checks that file
+/// alone, the worst exit theirs — or, holding none, refused: nothing was checked.
+fn root_programs_checked(args: CliResult, dir: string) -> int {
+    let names = sorted_by(
+        [n for n in names_at(dir) ?? [] if n.ends_with(".av")],
+        (a, b) -> text_before(a, b),
+    )
+    if names.is_empty() {
+        println(render_among(no_source(dir), []))
+        return 1
+    }
+    mut worst = 0
+    for n in names {
+        let code = program_door_checked(args, joined_path(dir, n))
+        if code > worst { worst = code }
+    }
+    worst
+}
+
+/// The program `check` of `path` reads on the program layer; absent where no std stands beside this
+/// compiler.
+fn checked_disk(path: string) -> Disk? {
+    if is_a_dir(path) { return disk_at(path, "") }
+    let at = rooted(path)
+    let home? = sourced_home(at) else { return lone_disk_at(at) }
+    disk_at(home, "")
+}
+
+/// A `// LICENSED` citation at `line` of the file at `path` that names nothing.
+fn stale_citation(path: string, line: string, id: string) -> string {
+    "${relative_path(here(), path)}:${line}: `// LICENSED ${id}` names no rule `avra rules` lists"
+}
+
+/// A stale `// LICENSED` id refuses unconditionally, baseline or not
+/// — it is never idiom debt to ratchet, it is a claim nothing backs
+/// (compiler/licenses.av finds them; `Checked.licenses` carries them).
+fn refused_licenses(stale: List<string>) -> int {
+    println("licenses: ${stale.length} stale `// LICENSED` id(s):")
+    for s in stale { println("  ${s}") }
+    1
+}
+
+fn joined_lines(lines: List<string>) -> string {
+    if lines.is_empty() { "" } else { lines.join("\n") + "\n" }
+}
+
+/// A new site is a REFUSAL, the same shape `make idioms` always gave:
+/// named, with what it names, never silently absorbed.
+fn refused_sites(bad: List<Finding>) -> int {
+    println("idioms: ${bad.length} NEW violation(s) — the baseline never grows:")
+    for s in bad { println("  ${s.file}\t[${s.rule}]\t${s.text}") }
+    1
+}
+
+export flag read_lists {
+    description: "after the check, each query's answers and the longest read list one stands on"
+    aliases: ["--read-lists"]
+}
+export flag baseline_accept {
+    description: "prune the idiom baseline to sites still found — never adds one"
+    aliases: ["--baseline-accept"]
+}
+export option baseline {
+    description: "an idiom baseline file: refuse any rule finding it does not already list"
+}
+
+export command check {
+    description: "Report everything wrong with a source file or a package root"
+    flags: [time, counts, passes_shown, passes_rows, read_lists, baseline_accept]
+    options: [baseline]
+    args: [file]
+    run: CheckCmd {}
+}

@@ -1,0 +1,81 @@
+//! The typing rules of `spawn` and `within`. `spawn`: its body is a thunk, and the task carries what
+//! the thunk answers. `within limit { body }`: the limit is `@std/time`'s span, and the whole is the
+//! `Result` of what the body answers or the deadline it ran past. `produce<T>(cap) { … }`: a
+//! `@std/task` `Source<T>`, its block checked with the sink each `yield` feeds in view; `channel<T>`:
+//! a `Channel<T>`.
+use core.{Checking, Checks, ExprId, Expected, OwnType, SignedType, owned_type}
+
+impl Checks for Spawn {
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let body? = cx.check(self.body, Expected.Free) else { return null }
+        let answer? = (if body.head is .Function && body.seats.is_empty() { body.answer } else { null }) else { return null }
+        owned_type("Task") with { args: [answer] }
+    }
+}
+
+impl Checks for Within {
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let span = cx.toolchain_type("@std.time", "Duration")
+        let late = cx.toolchain_type("@std.time", "TimedOut")
+        let before = cx.refused.get().length
+        let _ = cx
+            .check(self.limit, if span == null { Expected.Free } else { Expected.Exactly(span!) })
+        let limited = cx.refused.get().length == before
+        let body? = cx.check(self.body, Expected.Free) else { return null }
+        // as the old path judges it: a limit refused is the only word; then a block answering nothing,
+        // at the block; then a program loading no `@std/time`, at the `within`
+        if !limited { return null }
+        if body.owns(OwnType.Void) {
+            cx.within_refused(self.body, false)
+            return null
+        }
+        if span == null || late == null {
+            cx.within_refused(e, true)
+            return null
+        }
+        owned_type("Result") with { args: [body, late!] }
+    }
+}
+
+impl Checks for Produce {
+    /// `@std/task`'s `Source` of the element pinned; the capacity an `int`; the block checked with the
+    /// producer's sink in view of its `yield`s.
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let elem = cx.written(self.elem)
+        if self.cap != null { let _ = cx.check(self.cap!, Expected.Exactly(owned_type("int"))) }
+        let source = cx.toolchain_type(TASK_MODULE, "Source")
+        let sink = cx.toolchain_type(TASK_MODULE, "Sink")
+        cx.opened()
+        if sink != null { cx.bind(PRODUCER_SINK, sink! with { args: [elem] }) }
+        let _ = cx.check(self.body, Expected.Free)
+        cx.closed()
+        let s? = source else { return null }
+        s with { args: [elem] }
+    }
+}
+
+impl Checks for Emit {
+    /// `yield x` answers nothing; `x` checks against the element the enclosing producer's sink takes.
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let sink = cx.bound(PRODUCER_SINK)
+        let elem = if sink != null && sink!.args.length == 1 { Expected.Exactly(sink!.args[0]) } else { Expected.Free }
+        let _ = cx.check(self.value, elem)
+        owned_type("void")
+    }
+}
+
+impl Checks for Channel {
+    /// `@std/task`'s `Channel` of the element pinned; the capacity an `int`.
+    fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
+        let elem = cx.written(self.elem)
+        if self.cap != null { let _ = cx.check(self.cap!, Expected.Exactly(owned_type("int"))) }
+        let chan? = cx.toolchain_type(TASK_MODULE, "Channel") else { return null }
+        chan with { args: [elem] }
+    }
+}
+
+/// The module whose `Source`, `Sink` and `Channel` a producer is built of.
+const TASK_MODULE: string = "@std.task"
+
+/// The name a producer's sink is bound to in its block: one no program spells, read by each `yield`.
+const PRODUCER_SINK: string = " sink"

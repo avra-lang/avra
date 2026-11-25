@@ -1,0 +1,139 @@
+//! WHERE A BODY'S TASK TESTS STAND: each test is lowered once where it's met and held beside the
+//! body, its registers minted in place, and placed once the program's reach is known. A placement
+//! splices each test it keeps back where it stood and drops the rest with their registers, the
+//! others renumbered as they'd have minted, so the body reads as if lowered with exactly the tests
+//! kept. No register a test mints is read outside it.
+use @std.meta.{derive}
+use @std.program.saved_derive.{Saved}
+
+/// Where a task test stands, and what it waits on.
+@derive(Saved)
+export enum TestSite {
+    /// After a call of a row that may switch the task out, or through a value.
+    Waits
+    /// After a call of a declared fn, wanted where the fn may reach a cancel point.
+    Calls(callee: CalledFn)
+    /// At a `while`'s back edge: the tick, wanted where the program links a scheduler.
+    Ticks
+}
+
+impl TestSite {
+    /// The fn whose call it follows; absent at any other site.
+    fn callee() -> CalledFn? {
+        match self { .Calls(c) -> c, _ -> null }
+    }
+}
+
+/// A task test held beside a body: its site, how many of the body's instructions stand before it,
+/// its own instructions, its `count` registers from `first`, and what it noted wasn't lowered, after
+/// `missed_at` of the body's notes.
+@derive(Saved)
+export type TaskTest = {
+    site: TestSite,
+    at: int,
+    ins: List<Ins>,
+    first: int,
+    count: int,
+    missed_at: int,
+    missing: List<string>,
+}
+
+/// Notes spliced in after `at` of a body's notes.
+@derive(Saved)
+export type Noted = { at: int, notes: List<string> }
+
+/// A body with its tests placed: its instructions, each register's layout, and its notes.
+export type Placed = { ins: List<Ins>, layouts: List<Layout>, missing: List<string> }
+
+/// Which of `tests` `kept` answers for, in their order.
+export fn tests_chosen(tests: List<TaskTest>, kept: fn(TestSite) -> bool) -> List<bool> { [kept(t.site) for t in tests] }
+
+/// A body of `ins`, `layouts` and `missing`, holding `tests`, with the `j`th test placed where
+/// `keep[j]` says. In a program that can't unwind, no scheduler being linked to meet a cancel or a
+/// passed limit, a test placed calls none of the rows only an unwind reads.
+export fn tests_kept(
+    ins: List<Ins>,
+    layouts: List<Layout>,
+    missing: List<string>,
+    tests: List<TaskTest>,
+    keep: List<bool>,
+    unwinds: bool = true,
+) -> Placed {
+    if tests.is_empty() { return Placed { ins: ins, layouts: layouts, missing: missing } }
+    let placing = [if unwinds { t } else { t with { ins: t.ins.filter((i) -> !unwind_only(i)) } } for j, t in tests if keep[j]]
+    let spliced = Placed {
+        ins: spliced_ins(ins, placing),
+        layouts: layouts,
+        missing: notes_kept(missing, [Noted { at: t.missed_at, notes: t.missing } for t in tests], keep),
+    }
+    if placing.length == tests.length { return spliced }
+    let index = renumbering(layouts.length, [t for j, t in tests if !keep[j]])
+    spliced with { ins: [remapped(i, (r: Reg) -> renumbered(index, r)) for i in spliced.ins], layouts: [l for at, l in layouts if index[at] >= 0] }
+}
+
+/// `ins` with each of `tests` spliced in where it stood.
+fn spliced_ins(ins: List<Ins>, tests: List<TaskTest>) -> List<Ins> {
+    let starts = [0].concat([t.at for t in tests])
+    flatten(
+        flatten([[ins.slice(starts[k], t.at), t.ins] for k, t in tests])
+            .concat([ins.slice(starts[tests.length], ins.length)]),
+    )
+}
+
+/// A body's notes `missing` with what each kept test noted spliced in where it stood, the `j`th of
+/// `noted` kept where `keep[j]` says.
+export fn notes_kept(missing: List<string>, noted: List<Noted>, keep: List<bool>) -> List<string> {
+    spliced_notes(missing, [n for j, n in noted if keep[j] && !n.notes.is_empty()])
+}
+
+/// `notes` with each of `noted` spliced in where it stood.
+fn spliced_notes(notes: List<string>, noted: List<Noted>) -> List<string> {
+    if noted.is_empty() { return notes }
+    let starts = [0].concat([n.at for n in noted])
+    flatten(
+        flatten([[notes.slice(starts[k], n.at), n.notes] for k, n in noted])
+            .concat([notes.slice(starts[noted.length], notes.length)]),
+    )
+}
+
+/// Each of `count` registers' new index, `-1` for one a dropped test of `dropped` minted.
+fn renumbering(count: int, dropped: List<TaskTest>) -> List<int> {
+    mut index: List<int> = []
+    mut next = 0
+    mut d = 0
+    for r in 0..count {
+        while d < dropped.length && r >= dropped[d].first + dropped[d].count { d = d + 1 }
+        if d < dropped.length && r >= dropped[d].first {
+            index.push(0 - 1)
+            continue
+        }
+        index.push(next)
+        next = next + 1
+    }
+    index
+}
+
+/// Whether `i` calls a row only an unwind reads: the frame an unwind pushes, a shield around the
+/// deferred calls it runs.
+fn unwind_only(i: Ins) -> bool {
+    match i { .CallRtVoid(row, _) -> UNWIND_ROWS.contains(row), rest -> false }
+}
+
+/// The rows only an unwind reads.
+const UNWIND_ROWS: List<string> = [
+    "avra_unwind_push",
+    "avra_fiber_shield_enter",
+    "avra_fiber_shield_leave",
+]
+
+/// `r` as `index` renumbers it; a defect's register stands.
+fn renumbered(index: List<int>, r: Reg) -> Reg { if r.index < 0 { r } else { Reg { index: index[r.index] } } }
+
+impl LiftedBody {
+    /// The lambda's body with the `j`th test placed where `keep[j]` says, in a program that `unwinds`
+    /// or not.
+    fn placed_keeping(keep: List<bool>, unwinds: bool) -> LiftedBody {
+        let p = tests_kept(self.ins, self.layouts, [], self.tests, keep, unwinds)
+        self with { ins: p.ins, layouts: p.layouts, tests: [] }
+    }
+}

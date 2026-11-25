@@ -1,0 +1,55 @@
+// `avra check` AS A USER RUNS IT, ON THE PROGRAM LAYER: what the cli's check tests hold, now that
+// the old path's in-process `checked_at` is gone. The compiler runs as a child with the net off — the
+// check that stands once the old path goes — from `/`, so a path it says reads as its fixture's own.
+use @std.process.{tool, cmd, inherited}
+
+/// What a check said that passed: its warnings, as stdout carries them, and whether the store
+/// answered it whole — every answer it read kept from a check before (`time: check · cache hit`).
+type LayerChecked = { warnings: string, reused: bool }
+
+/// `avra check <path>` on the program layer: what it said where it passed, else its refusal.
+fn layer_checked(path: string, more: List<string> = []) -> Result<LayerChecked, string> {
+    let t = match tool(avra_bin()) {
+        .Ok(t) -> t,
+        .Err(e) -> { return .Err("no compiler: ${e.describe().message}") },
+    }
+    let run = (cmd(t, ["check", path, "--time"].concat(more)) with { cwd: "/", env: inherited().with_var("AVRA_PROGRAM_NET", "0"), timeout: hang_bound(), ok_exits: [0, 1, 2] })
+        .outcome()
+    match run {
+        .Ok(o) -> {
+            let said = rooted_said(o.out.stdout, path)
+            match o.exit {
+                .Code(0) or .Clean -> .Ok(
+                    LayerChecked {
+                        warnings: said,
+                        reused: o.out.stderr.contains("time: check · cache hit"),
+                    },
+                ),
+                .Code(_) or .Signal(_, _) -> .Err(if said != "" { said } else { rooted_said(spoken(o.out.stderr), path) }),
+            }
+        },
+        .Err(e) -> .Err("the check did not run: ${e.describe().message}"),
+    }
+}
+
+/// What a refusal said on stderr, past the lines `--time` adds.
+fn spoken(err: string) -> string { [l for l in err.split("\n") if !l.starts_with("time: ")].join("\n") }
+
+/// What a check of `path` run from `/` said, each fixture path it names whole again — the child
+/// renders a path under `/` relative to it, its leading `/` gone — and without the newline that
+/// ends its last line. The fixture's root is the checked path's top two directories, so a path the
+/// check names anywhere in that fixture reads whole, and no root is written here.
+fn rooted_said(out: string, path: string) -> string {
+    let root = fixture_root(path)
+    let whole = out
+        .replace(root, "@layer-rooted@")
+        .replace(root.substring(1, root.length), root)
+        .replace("@layer-rooted@", root)
+    if whole.ends_with("\n") { whole.substring(0, whole.length - 1) } else { whole }
+}
+
+/// The top two directories of an absolute `path`, as an absolute path: the root its fixture stands in.
+fn fixture_root(path: string) -> string {
+    let parts = path.split("/")
+    if path.starts_with("/") && parts.length > 3 { "/${parts.get(1) ?? ""}/${parts.get(2) ?? ""}" } else { path }
+}

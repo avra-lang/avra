@@ -1,0 +1,40 @@
+// proves: a writing member called through a `dyn` box writes the value where the box holds it — a
+// word, a record laid inline, a boxed record — through a `mut` binding, a `mut` seat, and a seat
+// that isn't `mut`, whose box a binding built at run time shares.
+trait Ticker {
+    mut fn tick()
+    fn count() -> int
+}
+type Counter = { n: int }
+impl Ticker for Counter {
+    fn tick() { self.n = self.n + 1 }
+    fn count() -> int { self.n }
+}
+type Wide = { n: int, m: int }
+impl Ticker for Wide {
+    fn tick() { self.n = self.n + 10 }
+    fn count() -> int { self.n + self.m }
+}
+type Boxy = { xs: List<int> }
+impl Ticker for Boxy {
+    fn tick() { self.xs.push(1) }
+    fn count() -> int { self.xs.length }
+}
+fn ticked(mut d: dyn Ticker) -> int {
+    d.tick()
+    d.tick()
+    d.count()
+}
+fn seat_ticked(d: dyn Ticker) -> int {
+    d.tick()
+    d.count()
+}
+mut a: dyn Ticker = Counter { n: 0 }
+a.tick()
+mut b: dyn Ticker = Wide { n: 0, m: 1 }
+b.tick()
+mut c: dyn Ticker = Boxy { xs: [] }
+c.tick()
+let k: dyn Ticker = Counter { n: 5 }
+mut tk: dyn Ticker = Counter { n: 1 }
+println("${a.count()} ${b.count()} ${c.count()} ${ticked(tk)} ${seat_ticked(k)} ${k.count()}")

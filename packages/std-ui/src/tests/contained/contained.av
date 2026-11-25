@@ -1,0 +1,39 @@
+// proves: a failure is CONTAINED TO ITS TURN — the state stands as the
+// handler left it, `failure()` reads the words and the view's own text
+// stays the view's alone, and the next turn that runs clears them and
+// still hears events. The failure is injected at the turn's door.
+use @std.ui.components.{button, column, text}
+use @std.ui.headless.{Screen, headless}
+
+state count: int = 0
+state failing: bool = false
+
+fn view() -> column {
+    column {
+        text "count ${count}"
+        button "add" { on press { count = count + 1 } }
+    }
+}
+
+/// The door as a containing runtime keeps it: a failed action leaves the
+/// state as it wrote it.
+fn contained(act: fn() -> bool) -> Result<bool, string> {
+    let ran = act()
+    if !failing { return .Ok(ran) }
+    .Err("boom")
+}
+
+fn shown(s: Screen) -> string {
+    [l.trim() for l in s.text().split("\n") if l.trim() != ""].join(" | ")
+}
+
+let s = headless(view)
+s.guarded(contained)
+println("press=${s.press("add")} failure=${s.failure() ?? "none"}")
+println(shown(s))
+failing = true
+println("press=${s.press("add")} failure=${s.failure() ?? "none"} count=${count}")
+println(shown(s))
+failing = false
+println("press=${s.press("add")} failure=${s.failure() ?? "none"} count=${count}")
+println(shown(s))

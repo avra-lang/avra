@@ -1,0 +1,143 @@
+//! THE COMPILER'S PRINT UNDER ATTACK, AS THE CLI NAMES IT (`own_print`, commands/disk_host.av): a
+//! binary's bytes as one digest, remembered beside it under the binary's stamp. Each attack runs a
+//! real copy of this compiler in a process of its own and reads the print it names off its trace
+//! (`AVRA_QTRACE`): a byte more, a rewrite that keeps the size and the time, three generations in a
+//! row. The degenerate binaries — empty, one byte, a directory, nothing at all — are asked of the
+//! digest itself, and the print a process mints where it can read no binary. The copy stands under
+//! the tree's `packages/`, where a binary finds its std. `tree_root`, `exit_is_zero` and
+//! `hang_bound` are the neighbouring tests' own: this module shares one namespace.
+use @std.avrac.compiler.{digest_of_binary, unnamed_print}
+use @std.io.{make_dirs, write_text}
+use @std.process.{tool, cmd, inherited}
+use @std.time.{stamp}
+
+/// A copy of this compiler of its own, named `name`, under the tree's packages, past the two seconds a
+/// stamp distrusts: its path.
+fn compiler_copy(name: string) -> string {
+    let dir = "${tree_root()}/packages/.print-adversarial/${name}-${stamp()}"
+    let _ = make_dirs(dir)
+    let at = "${dir}/avra"
+    let _ = shell_ran("cp '${tree_root()}/build/avra' '${at}' && sleep 3")
+    let _ = write_text("${dir}/m.av", "fn main() -> int { 0 }\n")
+    at
+}
+
+/// A copy and all that stands beside it let go: its print's record, its program, what running it kept.
+fn copy_gone(at: string) {
+    let _ = shell_ran("find '${at.substring(0, at.length - "/avra".length)}' -delete")
+}
+
+/// `sh -c line`, whether it ended clean.
+fn shell_ran(line: string) -> bool {
+    let sh = match tool("sh") { .Ok(t) -> t, .Err(_) -> { return false } }
+    match (cmd(sh, ["-c", line]) with { timeout: hang_bound() }).outcome() {
+        .Ok(o) -> exit_is_zero(o.exit),
+        .Err(_) -> false,
+    }
+}
+
+/// How the copy at `at` named its print running a program, and the print: `bytes <digest>` where it
+/// read its bytes, `stamp <digest>` where its record answered; absent where it named none.
+fn print_named(at: string) -> string? {
+    let t = match tool(at) { .Ok(t) -> t, .Err(_) -> { return null } }
+    let dir = at.substring(0, at.length - "/avra".length)
+    let ran = (cmd(t, ["run", "${dir}/m.av"]) with { env: inherited().with_var("AVRA_QTRACE", "1"), timeout: hang_bound() })
+        .outcome()
+    let err = match ran { .Ok(o) -> o.out.stderr, .Err(_) -> { return null } }
+    let line? = err.split("\n").find(it.starts_with("Q\tprint\t")) else { return null }
+    line.substring("Q\tprint\t".length, line.length).replace("\t", " ")
+}
+
+/// The digest alone of a print `print_named` said.
+fn digest_said(said: string?) -> string {
+    let s? = said else { return "" }
+    s.substring(s.index_of(" ") + 1, s.length)
+}
+
+/// The copy at `at` rewritten in place: its last eight bytes `tail`, its size and its times kept — the
+/// shape a rebuild landing in the same tick takes. Waits out the two seconds a stamp distrusts.
+fn rewritten_alike(at: string, tail: string) -> bool {
+    shell_ran(
+        "touch -r '${at}' '${at}.when' && printf '${tail}' | dd of='${at}' bs=1 seek=\$(( \$(wc -c < '${at}') - 8 )) conv=notrunc 2>/dev/null && touch -r '${at}.when' '${at}' && find '${at}.when' -delete && sleep 3",
+    )
+}
+
+/// The copy at `at` grown by `tail`, then the two seconds a stamp distrusts waited out.
+fn grown(at: string, tail: string) -> bool { shell_ran("printf '${tail}' >> '${at}' && sleep 3") }
+
+/// A file holding `bytes` under a scratch directory of its own: its path.
+fn binary_of(name: string, bytes: string) -> string {
+    let dir = "${scratch_dir()}/print-adversarial/${name}-${stamp()}"
+    let _ = make_dirs(dir)
+    let _ = write_text("${dir}/binary", bytes)
+    "${dir}/binary"
+}
+
+spec "avra — the compiler's print under degenerate and hostile binaries" {
+    given "the digest of degenerate binaries" {
+        then "an EMPTY binary (0 bytes) still names a real digest, no crash" {
+            digest_of_binary(binary_of("empty", "")) != null
+        }
+        then "an empty binary and a one-byte binary disagree" {
+            digest_of_binary(binary_of("empty2", "")) != digest_of_binary(binary_of("one-byte", "x"))
+        }
+        then "a DIRECTORY names no digest, so the print falls back, no crash" {
+            let dir = "${scratch_dir()}/print-adversarial/dir-${stamp()}"
+            let _ = make_dirs(dir)
+            digest_of_binary(dir) == null
+        }
+        then "a path naming nothing names no digest, no crash" {
+            digest_of_binary("${scratch_dir()}/print-adversarial/nowhere-${stamp()}") == null
+        }
+    }
+    given "the print a process mints where it reads no binary" {
+        then "three minted in a row are pairwise distinct, not just the first pair" {
+            let a = unnamed_print()
+            let b = unnamed_print()
+            let c = unnamed_print()
+            a != b && b != c && a != c
+        }
+        then "a minted print is never mistaken for a real binary's" {
+            unnamed_print() != digest_of_binary(binary_of("real", "a real compiler"))
+        }
+    }
+    given "a real copy of this compiler, run in processes of its own" {
+        then "its first run reads its bytes, its second reads its record, and both name one print" {
+            let at = compiler_copy("asked-twice")
+            let first = print_named(at)
+            let second = print_named(at)
+            copy_gone(at)
+            first?.starts_with("bytes ") == true &&
+                second?.starts_with("stamp ") == true &&
+                digest_said(first) == digest_said(second)
+        }
+        then "a binary one byte longer is another compiler" {
+            let at = compiler_copy("grown")
+            let before = digest_said(print_named(at))
+            let _ = grown(at, "A")
+            let after = digest_said(print_named(at))
+            copy_gone(at)
+            before != "" && after != "" && before != after
+        }
+        then "a rewrite that keeps the size and the times is another compiler — the record never answers for it" {
+            let at = compiler_copy("rewritten")
+            let _ = grown(at, "AAAAAAAA")
+            let before = digest_said(print_named(at))
+            let _ = rewritten_alike(at, "BBBBBBBB")
+            let after = digest_said(print_named(at))
+            copy_gone(at)
+            before != "" && after != "" && before != after
+        }
+        then "three rebuilds in a row are pairwise distinct, not just each from its predecessor" {
+            let at = compiler_copy("three")
+            let _ = grown(at, "AAAAAAAA")
+            let a = digest_said(print_named(at))
+            let _ = rewritten_alike(at, "BBBBBBBB")
+            let b = digest_said(print_named(at))
+            let _ = rewritten_alike(at, "CCCCCCCC")
+            let c = digest_said(print_named(at))
+            copy_gone(at)
+            a != "" && a != b && b != c && a != c
+        }
+    }
+}

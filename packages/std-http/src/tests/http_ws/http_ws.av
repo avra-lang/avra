@@ -1,0 +1,59 @@
+//! proves: a WebSocket opens on both sides — the server's handler
+//! answers the upgrade and its session owns the socket on the
+//! connection's task, the client dials and verifies the accept — and
+//! messages cross each way until the close handshake ends both
+use @std.net.{NetError, listen}
+use @std.time.{secs}
+use @std.http.frame.{limits}
+use @std.http.server.{served, timing}
+use @std.http.ws.{Socket, Message, WsError, accepted, dialed, ws_limits}
+
+type App = {}
+
+/// Every message answered — text marked heard, octets doubled — until
+/// the peer closes.
+fn answering(s: Socket) {
+    while true {
+        match s.receive() {
+            .Ok(m) -> match m {
+                .Text(t) -> { let _ = s.send_text("${t}, heard") },
+                .Binary(b) -> { let _ = s.send_binary(b.concat(b)) },
+                .Close(_, _) -> { return },
+            },
+            .Err(_) -> { return },
+        }
+    }
+}
+
+fn heard(r: Result<Message, WsError>) -> string {
+    match r {
+        .Ok(m) -> match m {
+            .Text(t) -> "text: ${t}",
+            .Binary(b) -> "binary: ${b.length} octets",
+            .Close(code, why) -> "close ${code} ${why}",
+        },
+        .Err(_) -> "failed",
+    }
+}
+
+fn shown() -> Result<string, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let s = served(l, () -> App {}, limits(), timing()) { _app, q -> accepted(q, ws_limits(), answering) }
+    spawn s.run(cores: 1)
+    defer s.stop()
+    let c = match dialed("127.0.0.1", l.port, "/talk", secs(2), ws_limits()) {
+        .Ok(c) -> c,
+        .Err(_) -> { return .Ok("could not dial") },
+    }
+    let _ = c.send_text("hello there")
+    let first = heard(c.receive())
+    let _ = c.send_binary([1, 2, 3].bytes()!)
+    let second = heard(c.receive())
+    let closed = match c.close(1000, "bye", secs(2)) {
+        .Ok(code) -> "closed with ${code}",
+        .Err(_) -> "close failed",
+    }
+    .Ok("${first}\n${second}\n${closed}")
+}
+
+match shown() { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" }

@@ -1,0 +1,16 @@
+//! proves `produce` and `for x in <Source>` end to end on the acceptance
+//! shape: a producer task spawned where the reader stands captures `urls`
+//! and feeds a bound channel, and the `for` drains it in FIFO order.
+//! Nobody closes the produce.
+use @std.task.{Source}
+
+type Page = { id: int, url: string }
+
+fn fetch(n: int) -> Page { Page { id: n, url: "u${n}" } }
+
+let urls = [1, 2, 3, 4, 5]
+let pages: Source<Page> = produce<Page>(8) { for u in urls { yield fetch(u) } }
+mut ids: List<int> = []
+// LICENSED loops.push_loop: a `Source` walk is a `for`, and its binder has no comprehension form here
+for p in pages { ids.push(p.id) }
+ids.map((n: int) -> "${n}").join(",")

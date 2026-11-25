@@ -1,0 +1,66 @@
+use @std.json.{Json, field, parse}
+use store.open.{Graph}
+use store.publish.{Publication}
+use store.query.{Entity, Edge}
+use transport.request.{Operation, operation}
+use data.{as_json}
+
+impl Graph {
+    fn dispatch(request: Json) -> Result<Json, string> {
+        match operation(request)? {
+            .Schema -> {
+                self.current()?
+                Json
+                    .Obj(
+                        [
+                            field("fingerprint", Json.Str(self.catalog.fingerprint)),
+                            field("revision", Json.Int(self.revision()?)),
+                            field("models", schema_document(self.catalog.document)?),
+                        ],
+                    )
+            },
+            .Observe(id, payload) -> Json
+                .Obj(
+                    [
+                        field("input_revision", Json.Int(self.observe(id, payload)?)),
+                        field("revision", Json.Int(self.revision()?)),
+                    ],
+                ),
+            .Observation(id, revision) -> self.observation(id, revision)?,
+            .Publish(p) -> Json.Obj([field("revision", Json.Int(self.publish(p)?))]),
+            .Get(id) -> (self.entity(id)?).json(),
+            .Value(id) -> as_json(self.value(id)?),
+            .Find(model, limit) -> Json.Arr([Json.Str(id) for id in self.find(model, limit)?]),
+            .Edges(id, incoming) -> Json.Arr([edge_json(e) for e in self.edges(id, incoming)?]),
+            .Traverse(id, depth, limit) -> Json.Arr([Json.Str(id) for id in self.traverse(id, depth, limit)?]),
+            .Explain(id, property) -> self.explain(id, property)?,
+            .Resolve(namespace, key) -> Json.Obj([field("entity", Json.Str(self.resolve(namespace, key)?))]),
+            .Aliases(id) -> Json.Arr([i.json() for i in self.aliases(id)?]),
+            .Merge(decision) -> Json.Obj([field("revision", Json.Int(self.merge(decision)?))]),
+            .Split(decision) -> Json.Obj([field("revision", Json.Int(self.split(decision)?))]),
+            .Merges(entity) -> Json.Arr([m.json() for m in self.merges(entity)?]),
+            .Tombstone(decision) -> Json.Obj([field("revision", Json.Int(self.tombstone(decision)?))]),
+            .Revive(decision) -> Json.Obj([field("revision", Json.Int(self.revive(decision)?))]),
+            .Tombstones(entity) -> Json.Arr([t.json() for t in self.tombstones(entity)?]),
+            .Dirty -> self.dirty()?,
+        }
+    }
+}
+
+export fn failure(message: string) -> Json { Json.Obj([field("error", Json.Str(message))]) }
+
+fn schema_document(text: string) -> Result<Json, string> {
+    match parse(text) { .Ok(j) -> j, .Err(_) -> { fail "catalog document is not JSON" } }
+}
+
+fn edge_json(e: Edge) -> Json {
+    Json
+        .Obj(
+            [
+                field("entity", Json.Str(e.entity)),
+                field("property", Json.Str(e.property)),
+                field("target", Json.Str(e.target)),
+                field("path", Json.Str(e.path)),
+            ],
+        )
+}

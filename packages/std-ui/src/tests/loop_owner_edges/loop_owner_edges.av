@@ -1,0 +1,91 @@
+// proves: the edges of ownership. A control that hides itself in the very
+// press that asks has its work dropped; of two controls wearing one set of
+// words only the one that left loses its work; work asked after a cancel
+// still runs on a fresh worker; a keyed row that moves keeps its work —
+// eval == native.
+use @std.ui.components.{button, item, list}
+use @std.ui.headless.{headless}
+use @std.ui.app.{later}
+use @std.time.{ms}
+
+type Row = { id: string }
+
+state shown: List<string> = ["a", "b"]
+state fired: List<string> = []
+
+fn mark(who: string) -> bool {
+    fired = fired.concat([who])
+    true
+}
+
+fn rows() -> list {
+    list [Row { id: x } for x in shown] by it.id { r ->
+        item { items: [button "Go" { on press { let _ = later(ms(50), () -> mark(r.id)) } }] }
+    }
+}
+
+state hidden: bool = false
+
+fn vanish() {
+    hidden = true
+    let _ = later(ms(10), () -> mark("self"))
+}
+
+fn lone() -> item {
+    item { items: [button "Self" { on press { vanish() } } for _n in 0..if hidden { 0 } else { 1 }] }
+}
+
+let screen = headless(rows)
+screen
+    .running(
+        () -> {
+            let _ = screen.press("Go", 0)
+            let _ = screen.press("Go", 1)
+            let _ = screen
+                .turn(
+                    () -> {
+                        shown = ["b"]
+                        true
+                    },
+                )
+            screen.advance(ms(100))
+            println("one of two left: ${fired.join(",")}")
+            let _ = screen
+                .turn(
+                    () -> {
+                        shown = ["c", "b"]
+                        true
+                    },
+                )
+            let _ = screen.press("Go", 1)
+            let _ = screen
+                .turn(
+                    () -> {
+                        shown = ["b", "c"]
+                        true
+                    },
+                )
+            screen.advance(ms(100))
+            println("a keyed row that moved: ${fired.join(",")}")
+            let _ = screen.press("Go", 1)
+            let _ = screen
+                .turn(
+                    () -> {
+                        shown = ["b"]
+                        true
+                    },
+                )
+            let _ = screen.press("Go", 0)
+            screen.advance(ms(100))
+            println("after a cancel, a fresh ask runs: ${fired.join(",")}")
+        },
+    )
+let alone = headless(lone)
+alone
+    .running(
+        () -> {
+            let _ = alone.press("Self")
+            alone.advance(ms(50))
+        },
+    )
+"hid itself in the press that asked: ${fired.join(",")}"

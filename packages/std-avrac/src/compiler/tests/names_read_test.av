@@ -1,0 +1,83 @@
+// The names a body reads, as typing resolves them: each binding's site, the lambdas a read crosses to
+// reach it, the program's own names, and the reads that write their seat.
+use compiler.{avra_fact_definitions, avra_source_world, fn_names}
+use core.{BindSite, NameBound, NameRead}
+use @std.program.disk_store.{disk_store_at}
+use @std.program.query_engine.{query_engine}
+use @std.program.source_facts.{use_source_world}
+use compiler.tests.support.{file_at, files, list_held, read_held, store_dir}
+
+/// The prelude's list verb as a call reaches it: its receiver a `mut` seat.
+const VERBS: string = "fn push<T>(mut xs: List<T>, x: T) {}\n"
+
+const BAG: string = "type Bag = { items: List<int> }\n\nimpl Bag {\n    mut fn add(n: int) { self.items = self.items.concat([n]) }\n\n    fn grown(n: int) { self.items = [n] }\n\n    fn size() -> int { self.items.length }\n}\n\nconst LIMIT: int = 3\n\nfn sort(mut b: Bag, k: int) -> int {\n    b.add(k)\n    b.grown(k)\n    let s = b.size()\n    match k {\n        LIMIT -> s,\n        other -> 0,\n    }\n}\n"
+
+const PINNED: string = "fn grow<T>(mut ys: List<T>, y: T) { ys = [y] }\n\nfn pinned_call(n: int) -> int {\n    mut zs: List<int> = []\n    grow<int>(zs, n)\n    zs.length\n}\n"
+
+const STATED: string = "fn stepper(state n: int) { n = n + 1 }\n\nfn counted() -> int {\n    state c: int = 0\n    stepper(c)\n    c\n}\n"
+
+const TRAITED: string = "trait Grow {\n    mut fn grow()\n\n    fn size() -> int\n}\n\ntype Kept = { n: int }\n\nimpl Grow for Kept {\n    fn grow() {}\n\n    fn size() -> int { self.n }\n}\n\nfn dyned(d: dyn Grow) -> int {\n    mut q = d\n    q.grow()\n    q.size()\n}\n\nfn bounded<T: Grow>(mut q: T) -> int {\n    q.grow()\n    q.size()\n}\n"
+
+const MAIN: string = "state count: int = 0\n\nfn grow(mut ys: List<int>) { ys = [] }\n\nfn bump(mut xs: List<int>, n: int) -> int {\n    let k = n + 1\n    mut total = k\n    total = total + count\n    grow(xs)\n    mut ws: List<int> = []\n    ws.push(n)\n    xs.push(k)\n    let f = (m: int) -> m + k + count\n    let g = () -> {\n        let k = 2\n        k\n    }\n    f(total) + g()\n}\n"
+
+/// The reads of the fn `main.av` declares as `name`, each as `name:site/crossed`, `!` where it writes.
+fn reads_of(dir: string, name: string) -> string {
+    use_source_world(avra_source_world(read_held, list_held, "avra-test"))
+    let store = disk_store_at(dir)
+    let engine = query_engine(store, avra_fact_definitions())
+    let names? = fn_names(engine, file_at("src/main.av"), name) else { return "untyped" }
+    let _ = store.saved()
+    [read_said(r) for r in names.reads].join(" ") +
+        " | " +
+        [bind_said(b) for b in names.binds].join(" ")
+}
+
+fn read_said(r: NameRead) -> string { "${r.name}:${site_said(r.binder)}/${r.crossed.length}${if r.writes { "!" } else { "" }}" }
+
+fn bind_said(b: NameBound) -> string { "${b.name}:${site_said(b.site)}:${b.ty?.spelled() ?? "_"}${if b.compared { "=" } else { "" }}" }
+
+fn site_said(b: BindSite?) -> string {
+    let site? = b else { return "program" }
+    match site {
+        .Stmt(_) -> "stmt",
+        .Expr(_) -> "expr",
+        .Pat(_) -> "pat",
+        .Seat(j) -> "seat${j}",
+        .Receiver -> "self",
+    }
+}
+
+spec "the names a body reads" {
+    given "seats, lets, a `mut`, a state, lambdas and a shadowing let" {
+        then "each read names its binding, a lambda's capture crosses it, and stores, `mut` seats and a verb's receiver write" {
+            files().set({"src/main.av": MAIN, "verbs/List.av": VERBS})
+            reads_of(store_dir("reads"), "bump") == "n:seat1/0 k:stmt/0 total:stmt/0! total:stmt/0 count:program/0 xs:seat0/0! grow:program/0 ws:stmt/0! n:seat1/0 xs:seat0/0! k:stmt/0 m:expr/0 k:stmt/1 count:program/0 k:stmt/0 total:stmt/0 f:stmt/0 g:stmt/0 | xs:seat0:List<int> n:seat1:int k:stmt:int total:stmt:int ws:stmt:List<int> m:expr:int f:stmt:fn(int) -> int k:stmt:int g:stmt:fn() -> int"
+        }
+    }
+    given "declared methods on a receiver, an unread arm binder and a const an arm compares with" {
+        then "a method that writes its receiver writes the read it's called on, and each arm name is bound or compares" {
+            files().set({"src/main.av": BAG, "verbs/List.av": VERBS})
+            reads_of(store_dir("bag"), "sort") == "b:seat0/0! k:seat1/0 b:seat0/0! k:seat1/0 b:seat0/0 k:seat1/0 s:stmt/0 | b:seat0:Bag k:seat1:int s:stmt:int LIMIT:pat:int= other:pat:int"
+        }
+    }
+    given "a generic fn's `mut` seat filled by a call that writes its type arguments" {
+        then "the value handed the seat writes it, as a call that writes none does" {
+            files().set({"src/main.av": PINNED, "verbs/List.av": VERBS})
+            reads_of(store_dir("pinned"), "pinned_call") == "zs:stmt/0! n:seat0/0 grow:program/0 zs:stmt/0 | n:seat0:int zs:stmt:List<int>"
+        }
+    }
+    given "a `state` seat handed a local `state`" {
+        then "the value handed the seat writes it, as a `mut` seat's does" {
+            files().set({"src/main.av": STATED, "verbs/List.av": VERBS})
+            reads_of(store_dir("stated"), "counted") == "c:stmt/0! stepper:program/0 c:stmt/0 | c:stmt:int"
+        }
+    }
+    given "a method a trait marks `mut`, called on a `dyn` value and on a type parameter it bounds" {
+        then "the read it's called on writes, as the trait writes it, whatever its impls do" {
+            files().set({"src/main.av": TRAITED, "verbs/List.av": VERBS})
+            reads_of(store_dir("dyned"), "dyned") +
+                " / " +
+                reads_of(store_dir("bounded"), "bounded") == "d:seat0/0 q:stmt/0! q:stmt/0 | d:seat0:dyn Grow q:stmt:dyn Grow / q:seat0/0! q:seat0/0 | q:seat0:T"
+        }
+    }
+}

@@ -1,0 +1,1190 @@
+//! The scheduler's rows, hosted: every interpreted task runs on this
+//! one machine, as its own call stack. The runtime's policy — the one a
+//! compiled program's fibers obey — files each task and names the next;
+//! the machine switches stacks. A row that must wait marks the machine
+//! PARKING and the run loop saves the task at that very instruction, so
+//! the row runs again when its task resumes and answers then.
+
+use @std.relation.stable.{text_hash}
+
+/// The slot of a task's four that holds its frame of contexts (runtime/avra_runtime.h's
+/// `AVRA_SLOT_CTX`).
+const ctx_slot = 2
+
+/// The slot that holds the task's recordings of what its open queries hear of contexts
+/// (`AVRA_SLOT_HEARD`).
+const heard_slot = 3
+
+/// How a running query tells a context's value apart, as the runtime does: by its word, its text, or
+/// not at all; a default read apart from every set.
+const heard_word = 0
+const heard_text = 1
+const heard_untold = 2
+const heard_default = 3
+
+extern fn avra_vtask_new_at(site: int, id: int) -> int
+extern fn avra_vtask_free(t: int)
+extern fn avra_vtask_end(t: int)
+extern fn avra_vtask_ready(t: int)
+extern fn avra_vtask_joins(t: int, on: int)
+extern fn avra_vtask_settle(t: int, task: ptr) -> int
+extern fn avra_vtask_cut(t: int) -> int
+extern fn avra_vtask_sited(t: int, site: string)
+extern fn avra_vtask_sleep(t: int, ms: int)
+extern fn avra_vtask_park_fd(t: int, fd: int, writable: int, timeout_ms: int) -> int
+extern fn avra_vtask_timed_out(t: int) -> int
+extern fn avra_vtask_interrupted(t: int) -> int
+extern fn avra_vtask_unwinding(t: int) -> int
+/// Who asked the request that stands on the task: the asker's id, or a
+/// scope's.
+extern fn avra_vtask_asker(t: int) -> int
+/// The task joined one that ended cancelled by `by`: the cancel is its
+/// own from here, and its unwind bit is set.
+extern fn avra_vtask_passed(t: int, by: int)
+/// The checked back-edge's cold side, over the evaluator's own task:
+/// 1 when it must yield, 0 when it goes on.
+extern fn avra_vtask_tick_cold(t: int) -> int
+extern fn avra_vtask_within(t: int, ms: int) -> int
+extern fn avra_vtask_within_end(t: int, id: int) -> int
+/// The shield's pair, over the task's own unwind bit.
+extern fn avra_vtask_shield_enter(t: int)
+extern fn avra_vtask_shield_leave(t: int)
+/// 1 while the task runs under a shield.
+extern fn avra_vtask_shielded(t: int) -> int
+/// 1 while a cancel stands on the task.
+extern fn avra_vtask_asked(t: int) -> int
+/// A yield's cancel point: a cancel that stands raises the task's bit,
+/// unless it runs shielded.
+extern fn avra_vtask_yield_met(t: int)
+extern fn avra_vtask_inherits(t: int, from: int)
+extern fn avra_vtask_next() -> int
+extern fn avra_vtask_wait_fd(t: int, fd: int, writable: int, arm: int, member: int)
+extern fn avra_vtask_wait_until(t: int, at_ns: int, arm: int, member: int)
+extern fn avra_vtask_wait_gate(t: int, gate: ptr, arm: int, member: int)
+extern fn avra_vtask_wait_sig(t: int, sig: int, arm: int, member: int)
+extern fn avra_vtask_join(t: int, task: ptr) -> int
+extern fn avra_sched_run_begins()
+extern fn avra_sched_run_ends()
+extern fn avra_sched_guest_waits()
+extern fn avra_sched_seed(schedule: int)
+extern fn avra_sched_settle() -> int
+extern fn avra_clock_virtual(on: int)
+extern fn avra_case_clock_virtual() -> int
+extern fn avra_task_at(at_ns: int) -> ptr
+extern fn avra_task_done(task: ptr) -> int
+extern fn avra_task_cancel(task: ptr)
+extern fn avra_vtask_park(t: int) -> int
+extern fn avra_vtask_claim(t: int) -> int
+/// A scan begins for the task: 0, or the claim a park would answer.
+extern fn avra_vtask_enter(t: int, site: string) -> int
+/// The task rests on what it filed: 1 parked, 0 claimed already, -1
+/// with nothing filed.
+extern fn avra_vtask_rest(t: int) -> int
+extern fn avra_vtask_cancel(t: int, by: int)
+extern fn avra_vgate_open(gate: ptr)
+extern fn avra_vgate_ended(gate: ptr, by: int)
+extern fn avra_vgate_claim(t: int, gate: ptr) -> int
+extern fn avra_gate_new() -> ptr
+extern fn avra_rc_release(p: ptr)
+
+/// One interpreted task — a JOB: its own call stack while it waits, the place it
+/// resumes, and — once it has one — its answer and whoever waits for it.
+type Job = {
+    // its place with the policy; 0 for a task nothing runs
+    vt: int,
+    // what `avra_task_id` answers in it: 0 for the program's own run,
+    // n for the n-th task spawned. A task nothing runs answers for
+    // nobody, and wears minus its place among the jobs.
+    id: int,
+    frames: List<List<Val?>>,
+    callers: List<Resume>,
+    // the frames the running task's unwind has passed, each pushed by a
+    // fn's cold exit; never the call stack `frames` above
+    unwound: List<Val>,
+    // how many frames a full list has dropped, for the landing to say
+    dropped: int,
+    // its unwind bit read set: a cancel point clears the list once
+    unwound_bit: bool,
+    at: Place?,
+    // its RECORD in the array table, as the runtime's task is one: its
+    // id, the body it owns, and the answer it leaves. The handle a
+    // program holds is this box; -1 for the program's own run.
+    record: int,
+    done: bool,
+    // the tasks joining it, for a ring to be seen: its gate wakes them
+    joiners: List<int>,
+    // it parked on the policy at the instruction it resumes on: that
+    // row reads its waking
+    resumed: bool,
+    // what it carries: four slots, released when it ends
+    slots: List<Val>,
+    // the gate a wait set files on to hear its end, made when the
+    // first one asks — for a task a timer ends, the runtime's own task,
+    // which begins as a gate and which the timer heap opens
+    gate: ptr?,
+    // a timer ends it: the heap, where its time comes, never a pick
+    clocked: bool,
+    // it ended with no answer
+    cancelled: bool,
+    // who ended it: its own id, or the id of the task that answered or
+    // cancelled it (a scope's id when a limit passed)
+    ended_by: int,
+    // when it answered, among the run's answers; 0 while it lives and
+    // for one that ended cancelled
+    since: int,
+    // a wait row filed for it and it has not parked on its set: one
+    // set at a time, so no other wait may begin
+    arming: bool,
+}
+
+impl Job {
+    /// Whether nothing runs it: a pending task, or a timer's.
+    fn unrun() -> bool { self.id < 0 }
+}
+
+/// A job at rest: nobody waits for it, and it carries nothing.
+fn job_of(vt: int, id: int, record: int, at: Place?, frames: List<List<Val?>>) -> Job {
+    Job {
+        vt: vt,
+        id: id,
+        frames: frames,
+        callers: [],
+        unwound: [],
+        dropped: 0,
+        unwound_bit: false,
+        at: at,
+        record: record,
+        done: false,
+        joiners: [],
+        resumed: false,
+        slots: [Val.N, Val.N, Val.N, Val.N],
+        gate: null,
+        clocked: false,
+        cancelled: false,
+        ended_by: 0,
+        since: 0,
+        arming: false,
+    }
+}
+
+/// A timer's task taken out of the heap before its time, its waiters
+/// woken: what ends it early, whoever ends it.
+fn stopped(time: ptr?) {
+    let held? = time else { return }
+    avra_task_cancel(held)
+}
+
+/// The reference the machine held to a gate, given up.
+fn let_go(gate: ptr?) {
+    let held? = gate else { return }
+    avra_rc_release(held)
+}
+
+impl Machine {
+    /// A RUN HAS ITS OWN SCHEDULE AND ITS OWN CLOCK. The machine runs in
+    /// its host's process — the compiler's — so a seed the program
+    /// takes, a clock it turns virtual and every jump it makes begin
+    /// here and end with the run: the host's stand again as they stood.
+    /// A jump inside a run also fires a timer the host's own tasks had
+    /// filed; the host parks no task while a run stands.
+    fn run_begun() {
+        avra_sched_run_begins()
+        if self.schedule < 0 { return }
+        avra_sched_seed(self.schedule)
+        // LICENSED input.test_setting: whether a suite's runs are on the virtual clock, never an input of what is built
+        if avra_case_clock_virtual() != 0 { avra_clock_virtual(1) }
+    }
+
+    fn run_ended() {
+        if self.schedule >= 0 { self.choices = avra_sched_settle() }
+        avra_sched_run_ends()
+    }
+
+    /// The program's own run, filed as a task the first time a row asks.
+    fn rooted() {
+        if !self.tasks.is_empty() { return }
+        avra_sched_guest_waits()
+        self.tasks.push(job_of(avra_vtask_new_at(0, 0), 0, -1, null, []))
+        self.running = 0
+        // A guard opened before the run was filed as a task is the root task's own.
+        self.guards = [if g.task < 0 { g with { task: 0 } } else { g } for g in self.guards]
+    }
+
+    /// Every task the run still holds leaves the policy — the root's,
+    /// and any a trap stopped — and every gate it still holds is let
+    /// go, so the next run starts from none.
+    fn retired() {
+        for t in self.tasks {
+            if t.done { continue }
+            if t.vt != 0 { avra_vtask_free(t.vt) }
+            if t.clocked { stopped(t.gate) }
+            let_go(t.gate)
+            for v in t.slots { self.releases_val(v) }
+        }
+        for gate in self.gates { let_go(gate) }
+        self.gates = []
+        self.clocked = []
+        self.tasks = []
+        self.running = -1
+    }
+
+    fn closureless() -> Val { self.defect_val("a task over a non-closure survived typing") }
+
+    fn task_spawn_val(vals: List<Val>) -> Val {
+        self.rooted()
+        let box? = array_id(vals[0]) else { return self.closureless() }
+        let target? = self.addressed_val(self.arrays[box].first() ?? Val.N) else { return self.closureless() }
+        // the record owns its body, and the task holds its own record
+        // until it answers
+        let record = self.fresh_array([Val.I(self.tasks.length), vals[0], Val.N])
+        self.retains(record)
+        self.spawned = self.spawned + 1
+        let vt = avra_vtask_new_at(self.whole(self.arrays[box].first() ?? Val.N), self.spawned)
+        avra_vtask_inherits(vt, self.tasks[self.running].vt)
+        if target.site != null { avra_vtask_sited(vt, target.site!) }
+        self
+            .tasks
+            .push(
+                job_of(
+                    vt,
+                    self.spawned,
+                    array_id(record) ?? -1,
+                    Place { body: target, pc: 0 },
+                    [self.frame_for(target, [vals[0]])],
+                ),
+            )
+        avra_vtask_ready(vt)
+        record
+    }
+
+    /// The task a handle names.
+    fn task_of(handle: Val) -> int {
+        let record? = array_id(handle) else {
+            self.defect("a task handle that is no record survived typing")
+            return 0
+        }
+        self.whole(self.arrays[record][0])
+    }
+
+    fn task_spent(handle: Val) -> bool { self.tasks[self.task_of(handle)].done }
+
+    /// The task's answer — the one-cell list its body answered. Parks
+    /// until done. A task that ended cancelled has none, and its cancel
+    /// is the awaiter's.
+    fn task_join_val(vals: List<Val>) -> Val {
+        let id = self.task_of(vals[0])
+        if id == self.running { return self.joined_itself() }
+        if !self.tasks[id].done { return self.joined_on(id) }
+        if self.tasks[id].cancelled { return self.cancel_passed(self.tasks[id].ended_by) }
+        self.arrays[self.tasks[id].record][2]
+    }
+
+    fn joined_itself() -> Val { self.trapped_val("a task joined itself — deadlock") }
+
+    /// How the task ended, for a `catch`: the two cells of its
+    /// `Cancelled` — who asked, where the cancel was met — or nothing
+    /// when it answered. Parks until done, and passes no cancel on.
+    fn task_join_caught_val(vals: List<Val>) -> Val {
+        let id = self.task_of(vals[0])
+        if id == self.running { return self.joined_itself() }
+        if !self.tasks[id].done { return self.joined_on(id) }
+        if !self.tasks[id].cancelled { return Val.N }
+        self.fresh_array([Val.I(self.tasks[id].ended_by), Val.I(0)])
+    }
+
+    /// A JOIN OF A TASK THAT ENDED CANCELLED CANCELS THE RUNNING TASK, by
+    /// the same asker: its bit is set at this cancel point, where its
+    /// unwind's list begins, and the join answers nothing. A task
+    /// already unwinding carries its own request, and takes on no other.
+    /// UNDER A SHIELD A DEFERRED CALL RUNS WHOLE: nothing may cut it, and
+    /// there is no answer for it to go on with, so there the join refuses.
+    /// The program's own run keeps who asked for its end to say.
+    fn cancel_passed(by: int) -> Val {
+        let vt = self.tasks[self.running].vt
+        if avra_vtask_unwinding(vt) != 0 { return Val.N }
+        if avra_vtask_shielded(vt) != 0 { return self.trapped_val("a join takes a task that answers, and this one was cancelled") }
+        avra_vtask_passed(vt, by)
+        if self.running == 0 { self.cancelled_by = avra_vtask_asker(vt) }
+        self.unwind_met(vt)
+        Val.N
+    }
+
+    /// A JOIN IS A CANCEL POINT: under a request that stands it waits
+    /// for nothing, and a cancel or the task's deadline that comes while
+    /// it waits wakes it here with the bit set — it leaves the task it
+    /// waited on, and its unwind's list begins.
+    fn joined_on(id: int) -> Val {
+        let vt = self.tasks[self.running].vt
+        if avra_vtask_unwinding(vt) == 0 && avra_vtask_cut(vt) == 0 { return self.waited_on(id, false) }
+        self.tasks[id].joiners = [w for w in self.tasks[id].joiners if w != self.running]
+        self.unwind_met(vt)
+        Val.N
+    }
+
+    /// The running task waits for `id`, parked with the POLICY on the
+    /// task's end gate as a compiled join parks: ONE LINE HOLDS A TASK'S
+    /// JOINERS AND THE SETS THAT WAIT ON IT, so its end wakes them in
+    /// the order they came. The row runs again to a task that is done.
+    /// A scope's end waits `deaf`: no cancel and no deadline cuts it.
+    /// A join that would close a ring traps first.
+    fn waited_on(id: int, deaf: bool) -> Val {
+        mut t = id
+        while t >= 0 {
+            if t == self.running { return self.trapped_val("tasks join each other in a ring — deadlock") }
+            t = self.joining_of(t)
+        }
+        if self.tasks[self.running].arming { return self.trapped_val("a task waited inside a wait it had not parked") }
+        avra_vtask_joins(self.tasks[self.running].vt, self.tasks[id].id)
+        self.tasks[id].joiners.push(self.running)
+        let vt = self.tasks[self.running].vt
+        let parked = if deaf { avra_vtask_settle(vt, self.end_gate(id)) } else { avra_vtask_join(vt, self.end_gate(id)) }
+        if parked == 0 { return self.defect_val("a task ended and the machine did not hear") }
+        self.parking = true
+        Val.N
+    }
+
+    /// The task `id` waits to join, or -1.
+    fn joining_of(id: int) -> int {
+        self.tasks.find_index(it.joiners.contains(id)) ?? -1
+    }
+
+    fn task_done_val(vals: List<Val>) -> Val {
+        Val.I(if self.task_spent(vals[0]) { 1 } else { 0 })
+    }
+
+    /// An owner's scope ended: its task joined, or each in its list.
+    /// AN OWNER LEAVING UNDER A CANCEL CANCELS WHAT IT OWNS, then waits
+    /// it out.
+    fn task_settle_val(vals: List<Val>) -> Val {
+        if vals[0] is .N { return Val.I(0) }
+        self.settled(self.task_of(vals[0]))
+    }
+
+    fn settled(id: int) -> Val {
+        if avra_vtask_asked(self.tasks[self.running].vt) != 0 { self.cancels(id, self.tasks[self.running].id) }
+        if !self.tasks[id].done { return self.waited_on(id, true) }
+        Val.I(0)
+    }
+
+    /// A task joins a `Tasks` owner; a long owner first sheds the tasks
+    /// that have finished, as the runtime's does, at every doubling.
+    fn tasks_push_val(vals: List<Val>) -> Val {
+        let list? = array_id(vals[0]) else { return self.defect_val("a `Tasks` owner that is not a list survived typing") }
+        let held = self.arrays[list]
+        if held.length >= 4 && held.length & held.length - 1 == 0 {
+            let shed = [v for v in held if self.task_spent(v)]
+            self.arrays.set(list, [v for v in held if !self.task_spent(v)])
+            for v in shed { self.releases_val(v) }
+        }
+        self.arrays[list].push(vals[1])
+        Val.I(0)
+    }
+
+    fn task_settle_all_val(vals: List<Val>) -> Val {
+        let list? = array_id(vals[0]) else { return self.defect_val("a list of tasks that is not a list survived typing") }
+        let open? = self.arrays[list].find((v) -> !self.task_spent(v)) else { return Val.I(0) }
+        self.settled(self.task_of(open))
+    }
+
+    /// A YIELD WAITS FOR NOTHING, SO A CANCEL CUTS NOTHING: one that
+    /// stands is met here, and the task still lets the others run —
+    /// unless a deferred call is running shielded.
+    fn yield_met() {
+        let vt = self.tasks[self.running].vt
+        avra_vtask_yield_met(vt)
+        self.unwind_met(vt)
+    }
+
+    fn fiber_yield_val() -> Val {
+        self.rooted()
+        if self.woke() { return Val.I(0) }
+        self.yield_met()
+        avra_vtask_ready(self.tasks[self.running].vt)
+        self.policy_parked()
+        Val.I(0)
+    }
+
+    /// The checked back-edge's cold side in the evaluator: the same turn
+    /// count and the same draw from the schedule as a compiled back-edge,
+    /// so both engines yield at the same turn. A yielding row re-runs as
+    /// it resumes, so its own waking is consumed.
+    fn tick_cold_val() -> Val {
+        self.rooted()
+        if self.woke() { return Val.I(0) }
+        let vt = self.tasks[self.running].vt
+        let cold = avra_vtask_tick_cold(vt)
+        self.unwind_met(vt)
+        if cold == 0 { return Val.I(0) }
+        avra_vtask_ready(vt)
+        self.policy_parked()
+        Val.I(0)
+    }
+
+    fn fiber_sleep_val(vals: List<Val>) -> Val {
+        self.rooted()
+        let vt = self.tasks[self.running].vt
+        if self.woke() {
+            self.unwind_met(vt)
+            return Val.I(0)
+        }
+        if self.whole(vals[0]) < 1 { self.yield_met() }
+        avra_vtask_sleep(vt, self.whole(vals[0]))
+        self.policy_parked()
+        Val.I(0)
+    }
+
+    fn fiber_park_fd_val(vals: List<Val>) -> Val {
+        self.rooted()
+        let vt = self.tasks[self.running].vt
+        if self.woke() ||
+            avra_vtask_park_fd(vt, self.whole(vals[0]), self.whole(vals[1]), self.whole(vals[2])) == 0 {
+            self.unwind_met(vt)
+            return Val.I(1 - avra_vtask_timed_out(vt))
+        }
+        self.policy_parked()
+        Val.I(0)
+    }
+
+    /// Whether the running task's last descriptor park ended by an
+    /// interrupt.
+    fn fiber_interrupted_val() -> Val { Val.I(avra_vtask_interrupted(self.tasks[self.running].vt)) }
+
+    /// A `within` opened on the running task with its own limit: its
+    /// scope's id is answered for the scope's end.
+    fn fiber_within_val(vals: List<Val>) -> Val {
+        self.rooted()
+        Val.I(avra_vtask_within(self.tasks[self.running].vt, self.whole(vals[0])))
+    }
+
+    /// A `within`'s landing: an unwind the scope asked for ends here,
+    /// and the task's own record of its bit follows.
+    fn fiber_within_end_val(vals: List<Val>) -> Val {
+        self.rooted()
+        let vt = self.tasks[self.running].vt
+        let landed = avra_vtask_within_end(vt, self.whole(vals[0]))
+        self.unwind_met(vt)
+        Val.I(landed)
+    }
+
+    /// A cold exit's deferred calls begin: the running task's bit is saved
+    /// and cleared, as the runtime's own row does for a compiled task.
+    fn shield_enter_val() -> Val {
+        self.rooted()
+        avra_vtask_shield_enter(self.tasks[self.running].vt)
+        Val.I(0)
+    }
+
+    /// They ended: the saved bit is back.
+    fn shield_leave_val() -> Val {
+        self.rooted()
+        avra_vtask_shield_leave(self.tasks[self.running].vt)
+        Val.I(0)
+    }
+
+    /// The running task parked on the POLICY — a sleep, a descriptor — so
+    /// the row that parked it re-runs as its waking, and reads it there.
+    fn policy_parked() {
+        self.tasks[self.running].resumed = true
+        self.parking = true
+    }
+
+    /// Whether the running task is resuming at the policy row that parked
+    /// it — consumed as it is read.
+    fn woke() -> bool {
+        if !self.tasks[self.running].resumed { return false }
+        self.tasks[self.running].resumed = false
+        true
+    }
+
+    /// The running task parked at `at`: its stack saved, the next task
+    /// the policy names loaded — answered as the place to run on.
+    fn switched(at: Place) -> Place {
+        self.tasks[self.running].frames = self.frames
+        self.tasks[self.running].callers = self.callers
+        self.tasks[self.running].at = at
+        self.resume_next()
+    }
+
+    /// The running task's body came back: it is done, whoever waited on
+    /// its end ready, and the machine runs whoever is next. A BODY THAT
+    /// COMES BACK UNWINDING ENDED CANCELLED, by whoever asked the request
+    /// that stands on it; one that answered names itself.
+    fn finished(answer: Val?) -> Place {
+        let t = self.tasks[self.running]
+        let cut = avra_vtask_unwinding(t.vt) != 0
+        self.tasks[self.running].frames = []
+        self.tasks[self.running].cancelled = cut
+        self.ended(self.running, answer ?? Val.N, if cut { avra_vtask_asker(t.vt) } else { t.id })
+        avra_vtask_end(t.vt)
+        if t.record >= 0 { self.releases_val(Val.A(t.record)) }
+        self.resume_next()
+    }
+
+    /// The task `id` ended: its answer left in its record, what it
+    /// carried released, and its gate — when a join or a wait set asked
+    /// for one — open for ever. `by` is who ended it: its own id, the
+    /// asker of the cancel it left by, or whoever answered or cancelled
+    /// a task nothing runs. Its waiters wake under the task's own id
+    /// when it ran, as a compiled task's do, and under `by` otherwise.
+    fn ended(id: int, answer: Val, by: int) {
+        let t = self.tasks[id]
+        self.tasks[id].ended_by = by
+        if t.record >= 0 { self.arrays[t.record].set(2, answer) }
+        self.tasks[id].done = true
+        if !self.tasks[id].cancelled { self.tasks[id].since = self.stamped() }
+        self.tasks[id].joiners = []
+        for v in t.slots { self.releases_val(v) }
+        self.tasks[id].slots = []
+        let gate? = t.gate else { return }
+        avra_vgate_ended(gate, if t.unrun() { by } else { t.id })
+        avra_rc_release(gate)
+        self.tasks[id].gate = null
+    }
+
+    /// A task nothing runs ended with `answer`: a timer's leaves the
+    /// heap, with the reference its time held to its record.
+    fn unrun_ended(id: int, answer: Val, by: int) {
+        let t = self.tasks[id]
+        if t.clocked { stopped(t.gate) }
+        self.ended(id, answer, by)
+        if t.clocked { self.releases_val(Val.A(t.record)) }
+    }
+
+    /// A timer's time came: its task answers a unit box.
+    fn fired(id: int) {
+        self.unrun_ended(id, self.fresh_array([Val.I(0)]), self.tasks[id].id)
+    }
+
+    /// Whether the heap has ended the timer's task at `id` and the
+    /// machine has not yet heard.
+    fn came(id: int) -> bool {
+        let time? = self.tasks[id].gate else { return false }
+        !self.tasks[id].done && avra_task_done(time) != 0
+    }
+
+    /// EVERY TIME THAT CAME SINCE THE MACHINE LAST LOOKED IS HEARD
+    /// HERE. The heap ended each task where its time came — its waiters
+    /// readied there, in no pick — so all that is left is the machine's
+    /// own record of it, and the policy is asked nothing.
+    fn times_heard() {
+        if self.clocked.is_empty() { return }
+        for id in self.clocked {
+            if self.came(id) { self.fired(id) }
+        }
+        self.clocked = [id for id in self.clocked if !self.tasks[id].done]
+    }
+
+    /// The next task to run, loaded, and every time that came while the
+    /// policy chose it heard first. When every task waits the run fails
+    /// with the deadlock, as a compiled one does.
+    fn resume_next() -> Place {
+        let vt = avra_vtask_next()
+        self.times_heard()
+        if vt == 0 {
+            self.trapped(all_waiting())
+            return self.tasks[self.running].at!
+        }
+        let next = self.tasks.find_index(it.vt == vt && !it.done) ?? -1
+        if next < 0 {
+            self.defect("the policy named a task the machine does not hold")
+            return self.tasks[self.running].at!
+        }
+        self.running = next
+        self.frames = self.tasks[next].frames
+        self.callers = self.tasks[next].callers
+        self.tasks[next].at!
+    }
+
+    // ── The wait set, gates, tasks nothing runs, what a task carries ──
+
+    fn running_vt() -> int {
+        self.rooted()
+        self.tasks[self.running].vt
+    }
+
+    /// The running task's place with the policy, as a wait row files
+    /// for it: it is arming a set until it parks on it.
+    fn arming_vt() -> int {
+        let vt = self.running_vt()
+        self.tasks[self.running].arming = true
+        vt
+    }
+
+    fn wait_fd_val(vals: List<Val>) -> Val {
+        avra_vtask_wait_fd(
+            self.arming_vt(),
+            self.whole(vals[0]),
+            self.whole(vals[1]),
+            self.whole(vals[2]),
+            self.whole(vals[3]),
+        )
+        Val.I(0)
+    }
+
+    fn wait_until_val(vals: List<Val>) -> Val {
+        avra_vtask_wait_until(
+            self.arming_vt(),
+            self.whole(vals[0]),
+            self.whole(vals[1]),
+            self.whole(vals[2]),
+        )
+        Val.I(0)
+    }
+
+    fn ungated() -> Val { self.defect_val("a gate that is no gate survived typing") }
+
+    /// A wait on a gate or on a task's end: a task's record begins as a
+    /// gate, so either files through either row.
+    fn wait_on_val(vals: List<Val>) -> Val {
+        let vt = self.arming_vt()
+        let own? = self.gate_of(vals[0]) else { return self.wait_on_task(vt, vals) }
+        avra_vtask_wait_gate(vt, own, self.whole(vals[1]), self.whole(vals[2]))
+        Val.I(0)
+    }
+
+    /// A signal files through the same scheduler a descriptor does: the
+    /// interpreter's task is a virtual task on the runtime's policy, so
+    /// a signal that arrives while it waits claims it exactly as a
+    /// compiled fiber's wait is claimed.
+    fn wait_sig_val(vals: List<Val>) -> Val {
+        avra_vtask_wait_sig(
+            self.arming_vt(),
+            self.whole(vals[0]),
+            self.whole(vals[1]),
+            self.whole(vals[2]),
+        )
+        Val.I(0)
+    }
+
+    fn wait_on_task(vt: int, vals: List<Val>) -> Val {
+        let id? = self.job_of_record(vals[0]) else { return self.ungated() }
+        let gate = self.end_gate(id)
+        avra_vtask_wait_gate(vt, gate, self.whole(vals[1]), self.whole(vals[2]))
+        if self.tasks[id].done { avra_rc_release(gate) }
+        Val.I(0)
+    }
+
+    /// The job whose record `v` is, or null: the record names its job,
+    /// and the job names that record back.
+    fn job_of_record(v: Val) -> int? {
+        let box? = array_id(v) else { return null }
+        let head = self.arrays[box].first() ?? Val.N
+        let at? = match head { .I(j) -> j, rest -> null } else { return null }
+        if at <= 0 || at >= self.tasks.length || self.tasks[at].record != box { return null }
+        at
+    }
+
+    /// The gate a wait on task `id` files on: the task's own while it
+    /// lives, opened at its end; once it is done, one already open that
+    /// the caller lets go.
+    fn end_gate(id: int) -> ptr {
+        let held? = self.tasks[id].gate else { return self.end_gate_made(id) }
+        held
+    }
+
+    fn end_gate_made(id: int) -> ptr {
+        let gate = avra_gate_new()
+        if self.tasks[id].done { avra_vgate_open(gate) } else { self.tasks[id].gate = gate }
+        gate
+    }
+
+    /// The running task parks on its set, and answers the claim: at
+    /// once when the set is claimed already, else when it resumes here.
+    fn wait_park_val() -> Val {
+        let vt = self.running_vt()
+        if self.woke() || avra_vtask_park(vt) == 0 {
+            self.unwind_met(vt)
+            return self.claimed(vt)
+        }
+        self.policy_parked()
+        Val.I(0)
+    }
+
+    /// The claim the running task's set answered: it arms no more.
+    fn claimed(vt: int) -> Val {
+        self.tasks[self.running].arming = false
+        Val.I(avra_vtask_claim(vt))
+    }
+
+    /// The next answer's stamp: answers are counted as they are made.
+    fn stamped() -> int {
+        self.answers = self.answers + 1
+        self.answers
+    }
+
+    /// When the task answered: its stamp, or 0.
+    fn task_since_val(vals: List<Val>) -> Val {
+        self.rooted()
+        Val.I(self.tasks[self.task_of(vals[0])].since)
+    }
+
+    /// A scan begins: a standing cancel or a passed limit is heard
+    /// before any arm is looked at, and answered as the claim a park
+    /// would have made.
+    fn wait_enter_val(vals: List<Val>) -> Val {
+        let vt = self.running_vt()
+        let claim = avra_vtask_enter(vt, self.text_val(vals[0]))
+        self.unwind_met(vt)
+        Val.I(claim)
+    }
+
+    /// The scan found nothing ready: the task rests on what it filed,
+    /// and the claim that wakes it is a hint — the scan decides again.
+    /// With nothing filed no arm can ever fire.
+    fn wait_rest_val() -> Val {
+        let vt = self.running_vt()
+        if self.woke() { return self.claimed(vt) }
+        let rested = avra_vtask_rest(vt)
+        if rested < 0 { return self.trapped_val("a `select` had no open arm") }
+        if rested == 0 { return self.claimed(vt) }
+        self.policy_parked()
+        Val.I(0)
+    }
+
+    /// A gate: the box a program holds, and the runtime's own gate
+    /// filed beside it under the box's id.
+    fn gate_new_val() -> Val {
+        let box = self.fresh_array([Val.I(0), Val.I(0), Val.I(0)])
+        let id? = array_id(box) else { return box }
+        while self.gates.length <= id { self.gates.push(null) }
+        self.gates.set(id, avra_gate_new())
+        box
+    }
+
+    /// The runtime's gate behind a program's.
+    fn gate_of(v: Val) -> ptr? {
+        let id? = array_id(v) else { return null }
+        if id >= self.gates.length { return null }
+        self.gates[id]
+    }
+
+    /// The box `id` died: the gate filed beside it, if any, is let go.
+    fn gate_closed(id: int) {
+        if id >= self.gates.length { return }
+        let_go(self.gates[id])
+        self.gates.set(id, null)
+    }
+
+    fn gate_claim_val(vals: List<Val>) -> Val {
+        let gate? = self.gate_of(vals[0]) else { return self.ungated() }
+        Val.I(avra_vgate_claim(self.running_vt(), gate))
+    }
+
+    /// A task nothing runs, filed as a job under `vt`: its record.
+    fn unrun(vt: int) -> Val {
+        let record = self.fresh_array([Val.I(self.tasks.length), Val.N, Val.N])
+        self.tasks.push(job_of(vt, 0 - self.tasks.length, array_id(record) ?? -1, null, []))
+        record
+    }
+
+    fn task_pending_val() -> Val {
+        self.rooted()
+        self.unrun(0)
+    }
+
+    /// A task the timer heap ends at `at_ns` — the runtime's own, so
+    /// it takes part in no pick, here as in a compiled program. Its
+    /// time holds its record until then, so one nobody else holds
+    /// still ends.
+    fn task_at_val(vals: List<Val>) -> Val {
+        self.rooted()
+        let record = self.unrun(0)
+        let id = self.tasks.length - 1
+        self.retains(record)
+        self.tasks[id].gate = avra_task_at(self.whole(vals[0]))
+        self.tasks[id].clocked = true
+        self.clocked.push(id)
+        record
+    }
+
+    fn task_answer_val(vals: List<Val>) -> Val {
+        let id = self.task_of(vals[0])
+        if self.tasks[id].done { return self.trapped_val("a task answered twice") }
+        if !self.tasks[id].unrun() { return self.trapped_val("a running task answers for itself") }
+        self.retains(vals[1])
+        self.unrun_ended(id, vals[1], self.tasks[self.running].id)
+        Val.I(0)
+    }
+
+    /// A cancel: a running task hears it at its wait; a task nothing
+    /// runs simply ends, with no answer.
+    fn task_cancel_val(vals: List<Val>) -> Val {
+        self.rooted()
+        self.cancels(self.task_of(vals[0]), self.tasks[self.running].id)
+        Val.I(0)
+    }
+
+    /// The task `id` cancelled by `by`.
+    fn cancels(id: int, by: int) {
+        if self.tasks[id].done { return }
+        if self.tasks[id].unrun() {
+            self.tasks[id].cancelled = true
+            self.unrun_ended(id, Val.N, by)
+            return
+        }
+        avra_vtask_cancel(self.tasks[id].vt, by)
+    }
+
+    /// The slot a key names in the running task, or null past the four.
+    fn slot_key(v: Val) -> int? {
+        let key = self.whole(v)
+        if key >= 0 && key < 4 { return key }
+        self.trapped("a task has four slots, and this is none of them")
+        null
+    }
+
+    fn task_slot_val(vals: List<Val>) -> Val {
+        self.rooted()
+        let key? = self.slot_key(vals[0]) else { return Val.N }
+        let held = self.tasks[self.running].slots[key]
+        self.retains(held)
+        held
+    }
+
+    fn task_slot_set_val(vals: List<Val>) -> Val {
+        self.rooted()
+        let key? = self.slot_key(vals[0]) else { return Val.I(0) }
+        let old = self.tasks[self.running].slots[key]
+        self.retains(vals[1])
+        self.tasks[self.running].slots.set(key, vals[1])
+        self.releases_val(old)
+        Val.I(0)
+    }
+
+    /// The running task's frame of contexts: the null pointer where nothing is set, or no task stands
+    /// yet.
+    fn ctx_frame() -> Val {
+        if self.running < 0 { return Val.N }
+        self.tasks[self.running].slots[ctx_slot]
+    }
+
+    /// `avra_ctx_read`: the cell the running task's frame holds for the key, or the null pointer
+    /// where nothing set it.
+    fn ctx_read_val(vals: List<Val>) -> Val {
+        let key = self.whole(vals[0])
+        let id? = array_id(self.ctx_frame()) else { return Val.N }
+        let held = self.arrays[id]
+        mut at = 1
+        while at + 1 < held.length {
+            if self.whole(held[at]) == key {
+                self.retains(held[at + 1])
+                return held[at + 1]
+            }
+            at = at + 2
+        }
+        Val.N
+    }
+
+    /// `avra_ctx_set`: the running task's frame with the key holding the cell, made current. The
+    /// frame it replaced is the new one's first slot, which takes the reference the task held.
+    fn ctx_set_val(vals: List<Val>) -> Val {
+        self.rooted()
+        let key = self.whole(vals[0])
+        let old = self.ctx_frame()
+        mut kept: List<Val> = []
+        let id = array_id(old)
+        if id != null {
+            let held = self.arrays[id!]
+            mut at = 1
+            while at + 1 < held.length {
+                if self.whole(held[at]) != key {
+                    self.retains(held[at + 1])
+                    kept = kept.concat([held[at], held[at + 1]])
+                }
+                at = at + 2
+            }
+        }
+        self.retains(vals[1])
+        let next = self.fresh_array([old].concat(kept).concat([Val.I(key), vals[1]]))
+        self.tasks[self.running].slots.set(ctx_slot, next)
+        Val.I(0)
+    }
+
+    /// `avra_ctx_back`: the frame the running task's frame replaced made current again.
+    fn ctx_back_val() -> Val {
+        self.rooted()
+        let now = self.ctx_frame()
+        let id? = array_id(now) else { return Val.I(0) }
+        let before = self.arrays[id].first() ?? Val.N
+        self.retains(before)
+        self.tasks[self.running].slots.set(ctx_slot, before)
+        self.releases_val(now)
+        Val.I(0)
+    }
+
+    /// `avra_ctx_frame`: the frame in force, the caller's reference to it its own.
+    fn ctx_frame_val() -> Val {
+        let now = self.ctx_frame()
+        self.retains(now)
+        now
+    }
+
+    /// `avra_ctx_enter`: a body made under the frame `vals[0]` entered. Where it is the one in force
+    /// nothing changes and the answer is 0; else the frame made current holds its contexts laid over
+    /// the ones in force, which stand under it for the body's end to put back, and the answer is 1.
+    fn ctx_enter_val(vals: List<Val>) -> Val {
+        self.rooted()
+        let now = self.ctx_frame()
+        if array_id(vals[0]) == array_id(now) { return Val.I(0) }
+        let made = self.frame_pairs(vals[0])
+        let running = [p for p in self.frame_pairs(now) if !made.any((m) -> self.whole(m.key) == self.whole(p.key))]
+        mut words: List<Val> = [now]
+        for p in running.concat(made) {
+            self.retains(p.cell)
+            words = words.concat([p.key, p.cell])
+        }
+        let next = self.fresh_array(words)
+        self.tasks[self.running].slots.set(ctx_slot, next)
+        Val.I(1)
+    }
+
+    /// The key and cell pairs the frame `frame` holds, in order; none for no frame.
+    fn frame_pairs(frame: Val) -> List<FramePair> {
+        let id? = array_id(frame) else { return [] }
+        let held = self.arrays[id]
+        [FramePair { key: held[at], cell: held[at + 1] } for at in 0..held.length if at % 2 == 1 && at + 1 < held.length]
+    }
+
+    /// `avra_ctx_frame_pushed`: the frame in force pushed onto the box `vals[0]`, its cell marked as
+    /// the box's frame.
+    fn ctx_frame_pushed_val(vals: List<Val>) -> Val {
+        let id? = array_id(vals[0]) else { return self.defect_val("a frame pushed onto no box") }
+        let now = self.ctx_frame()
+        self.retains(now)
+        self.arrays[id].push(now)
+        self.frame_cells.set(vals[0].handle(), self.arrays[id].length - 1)
+        Val.I(0)
+    }
+
+    /// `avra_ctx_reframed`: the box `vals[0]`, whose frame is its slot `vals[1]`, made under the frame
+    /// `vals[2]` instead — the same box where that slot holds it, or isn't the cell marked as its
+    /// frame, else a copy holding it there, marked, and the rest its own.
+    fn ctx_reframed_val(vals: List<Val>) -> Val {
+        let id? = array_id(vals[0]) else { return self.defect_val("a box to reframe that is no box") }
+        let held = self.arrays[id]
+        let at = self.whole(vals[1])
+        if at < 0 ||
+            self.frame_cells.get(vals[0].handle()) != at ||
+            array_id(held[at]) == array_id(vals[2]) {
+            self.retains(vals[0])
+            return vals[0]
+        }
+        let made = [if j == at { vals[2] } else { v } for j, v in held]
+        for v in made { self.retains(v) }
+        let copy = self.fresh_array(made)
+        self.frame_cells.set(copy.handle(), at)
+        copy
+    }
+
+    /// The task's stack of recordings, absent where no query is open on it.
+    fn heard_stack() -> int? {
+        let id? = array_id(self.heard_held()) else { return null }
+        if self.arrays[id].is_empty() { null } else { id }
+    }
+
+    /// Where the running task's recordings stand: its slot, or the machine's own while no task does.
+    fn heard_held() -> Val {
+        if self.running < 0 { return self.loose_heard }
+        self.tasks[self.running].slots[heard_slot]
+    }
+
+    /// The running task's recordings made `v`.
+    fn heard_made(v: Val) {
+        if self.running < 0 {
+            self.loose_heard = v
+            return
+        }
+        self.tasks[self.running].slots.set(heard_slot, v)
+    }
+
+    /// The word a context read tests: whether a query is open on the running task.
+    fn ctx_heard_now() -> Val { Val.I(if self.heard_stack() == null { 0 } else { 1 }) }
+
+    /// What tells the value a cell holds apart, as `kind` tells it.
+    fn heard_word_of(kind: int, cell: Val) -> int {
+        let id? = array_id(cell) else { return 0 }
+        let v = self.arrays[id].first() ?? Val.N
+        match v {
+            .I(n) -> n,
+            .F(bits) -> bits,
+            .B(b) -> if b { 1 } else { 0 },
+            .S(t) -> if kind == heard_text { text_hash(t) } else { 0 },
+            _ -> 0,
+        }
+    }
+
+    /// The innermost recording of the stack `st`, made at its first read.
+    fn recording_at(st: int, at: int) -> int {
+        let made = array_id(self.arrays[st][at])
+        if made != null { return made! }
+        let fresh = self.fresh_array([])
+        self.arrays[st].set(at, fresh)
+        array_id(fresh)!
+    }
+
+    /// `avra_ctx_entry`: the cell the frame in force holds for the key, as the word its handle is; 0
+    /// where nothing set it.
+    fn ctx_entry_val(vals: List<Val>) -> Val {
+        let id? = array_id(self.frame_cell(self.whole(vals[0]))) else { return Val.I(0) }
+        Val.I(id + 1)
+    }
+
+    /// `avra_ctx_heard`: a context read inside a query body filed on the innermost recording.
+    fn ctx_heard_val(vals: List<Val>) -> Val {
+        let st? = self.heard_stack() else { return Val.I(0) }
+        let top = self.recording_at(st, self.arrays[st].length - 1)
+        let key = self.whole(vals[0])
+        let kind = if array_id(vals[2]) == null { heard_default } else { self.whole(vals[1]) }
+        self.arrays[top].push(Val.I(key))
+        self.arrays[top].push(Val.I(kind))
+        self.arrays[top].push(Val.I(self.heard_word_of(kind, vals[2])))
+        Val.I(0)
+    }
+
+    /// `avra_ctx_listen`: a recording opened over the ones open on the running task, an empty place
+    /// until the body reads a context.
+    fn ctx_listen_val() -> Val {
+        let id = array_id(self.heard_held())
+        if id == null {
+            self.heard_made(self.fresh_array([Val.N]))
+        } else {
+            self.arrays[id!].push(Val.N)
+        }
+        Val.I(0)
+    }
+
+    /// `avra_ctx_listened`: the innermost recording closed and answered, the null pointer where it
+    /// heard nothing; what it heard heard by the recording open around it too.
+    fn ctx_listened_val() -> Val {
+        let st? = self.heard_stack() else { return Val.N }
+        let held = self.arrays[st]
+        let heard = held.last() ?? Val.N
+        self.arrays.set(st, held.slice(0, held.length - 1))
+        // The recording is the caller's from here, held as an uncounted `ptr` until it lets it go
+        // (`avra_ctx_heard_drop`): one count of its own keeps it, as the runtime's reference does.
+        self.retains(heard)
+        if self.arrays[st].is_empty() { return heard }
+        let mine? = array_id(heard) else { return heard }
+        let outer = self.recording_at(st, self.arrays[st].length - 1)
+        self.arrays.set(outer, self.arrays[outer].concat(self.arrays[mine]))
+        heard
+    }
+
+    /// `avra_ctx_reheard`: an answer reused inside a query body, what it heard heard again by the
+    /// query open.
+    fn ctx_reheard_val(vals: List<Val>) -> Val {
+        let h? = array_id(vals[0]) else { return Val.I(0) }
+        let st? = self.heard_stack() else { return Val.I(0) }
+        let top = self.recording_at(st, self.arrays[st].length - 1)
+        self.arrays.set(top, self.arrays[top].concat(self.arrays[h]))
+        Val.I(0)
+    }
+
+    /// `avra_ctx_holds`: whether every context a recording heard holds in the frame in force what it
+    /// held when it was heard.
+    fn ctx_holds_val(vals: List<Val>) -> Val {
+        let id? = array_id(vals[0]) else { return Val.I(1) }
+        let h = self.arrays[id]
+        mut at = 0
+        while at + 2 < h.length {
+            let key = self.whole(h[at])
+            let kind = self.whole(h[at + 1])
+            if kind == heard_untold { return Val.I(0) }
+            let cell = self.frame_cell(key)
+            if kind == heard_default {
+                if array_id(cell) != null { return Val.I(0) }
+            } else {
+                if array_id(cell) == null || self.heard_word_of(kind, cell) != self.whole(h[at + 2]) { return Val.I(0) }
+            }
+            at = at + 3
+        }
+        Val.I(1)
+    }
+
+    /// The cell the frame in force holds for `key`, borrowed; the null pointer where nothing set it.
+    fn frame_cell(key: int) -> Val {
+        let id? = array_id(self.ctx_frame()) else { return Val.N }
+        let held = self.arrays[id]
+        mut at = 1
+        while at + 1 < held.length {
+            if self.whole(held[at]) == key { return held[at + 1] }
+            at = at + 2
+        }
+        Val.N
+    }
+
+    /// `frame` the running task's frame, the one it replaces released: what a guard was entered
+    /// under, put back where it catches.
+    fn ctx_restored(frame: Val) {
+        if self.running < 0 { return }
+        let now = self.ctx_frame()
+        self.retains(frame)
+        self.tasks[self.running].slots.set(ctx_slot, frame)
+        self.releases_val(now)
+    }
+
+    fn task_id_val() -> Val {
+        Val.I(if self.running < 0 { 0 } else { self.tasks[self.running].id })
+    }
+
+    /// Who asked the cancel that ended the task, or the task's own id for
+    /// an answer — the same record the native `avra_task_ended_by` reads.
+    fn task_ended_by_val(vals: List<Val>) -> Val {
+        self.rooted()
+        let id = self.task_of(vals[0])
+        Val.I(self.tasks[id].ended_by)
+    }
+
+    /// The running task's frame list and its drop count — the runtime's
+    /// task record, mirrored here for the evaluator's own tasks.
+    fn unwind_push_val(vals: List<Val>) -> Val {
+        self.rooted()
+        let held = self.tasks[self.running].unwound
+        if held.length < 16 {
+            self.tasks[self.running].unwound.push(vals[0])
+            return Val.I(0)
+        }
+        self.tasks[self.running].unwound = held.removed_at(8).concat([vals[0]])
+        self.tasks[self.running].dropped = self.tasks[self.running].dropped + 1
+        Val.I(0)
+    }
+
+    fn unwind_count_val() -> Val {
+        self.rooted()
+        Val.I(self.tasks[self.running].unwound.length)
+    }
+
+    fn unwind_at_val(vals: List<Val>) -> Val {
+        self.rooted()
+        let i = self.whole(vals[0])
+        let held = self.tasks[self.running].unwound
+        if i < 0 || i >= held.length { return Val.N }
+        held[i]
+    }
+
+    fn unwind_dropped_val() -> Val {
+        self.rooted()
+        Val.I(self.tasks[self.running].dropped)
+    }
+
+    /// A cancel point: the first read of a set unwind bit begins an
+    /// unwind, whose list is exactly the frames from here on. The
+    /// runtime raises a virtual task's bit; a row that may be cut — the
+    /// checked back-edge, a sleep, a join, a park — reads it here as it
+    /// resumes, and a `within`'s landing where it clears.
+    fn unwind_met(vt: int) {
+        let bit = avra_vtask_unwinding(vt) != 0
+        if bit && !self.tasks[self.running].unwound_bit {
+            self.tasks[self.running].unwound = []
+            self.tasks[self.running].dropped = 0
+        }
+        self.tasks[self.running].unwound_bit = bit
+    }
+}
+
+fn all_waiting() -> string {
+    "every task is waiting — deadlock"
+}
+
+/// A context a frame holds: its key, and the cell it holds for it.
+type FramePair = { key: Val, cell: Val }

@@ -1,0 +1,50 @@
+//! `realize/html/delivery.av` — WHAT DELIVERS A PRIMITIVE'S EVENTS ON A PAGE:
+//! one row per primitive and event, naming the DOM event that fires it. A
+//! component declares `on press` and names no target; this table is the
+//! page's half of that. Every seat a program declares has its row here, or
+//! the program is refused as it builds.
+use tree.dom_event.{DomEvent}
+use tree.node.{Prim}
+use tree.seats.{Seat, SeatRow, seat_rows}
+
+/// What a page does with one primitive's event: the DOM event that fires it
+/// (none: a page never delivers it), whether the page's own answer is stopped
+/// before the program hears it (`prevent`), and whether the page listens with
+/// no handler bound (`always`: its own answer would undo what the program
+/// drew — a form's submit leaves the page, a dialog's cancel closes it).
+export type WebRow = { prim: Prim, event: string, by: DomEvent?, prevent: bool = false, always: bool = false }
+
+/// The page's rows.
+export const web_rows: List<WebRow> = table<WebRow> {
+    prim      | event     | by       | prevent | always
+    .Button   | "press"   | .Click   | false   | false
+    .Checkbox | "change"  | .Change  | false   | false
+    .Dialog   | "dismiss" | .Cancel  | false   | true
+    .Field    | "input"   | .Input   | false   | false
+    .Form     | "submit"  | .Submit  | true    | true
+    .Key      | "press"   | .Keydown | false   | false
+    .Link     | "press"   | .Click   | false   | false
+    .Slider   | "change"  | .Change  | false   | false
+    .Switch   | "change"  | .Change  | false   | false
+}
+
+/// The program's seats as a page delivers them, by seat number.
+const web_seats: List<WebRow> = [on_page(g.row) for g in seat_rows]
+
+/// The one row that says what delivers `s` on a page.
+fn on_page(s: SeatRow) -> WebRow {
+    let found = [r for r in web_rows if s.delivered_by(r.prim, r.event)]
+    s.delivered_once("a page", found.length)
+    found[0]
+}
+
+/// What a page does with a seat's event.
+export fn on_web(seat: Seat) -> WebRow { web_seats[seat.number()] }
+
+/// The DOM event a page hears a seat by, when it delivers one.
+export fn web_event(seat: Seat) -> DomEvent? { on_web(seat).by }
+
+/// The seat a primitive's page always listens for, when it has one.
+export fn always_seat_of(p: Prim) -> Seat? {
+    [Seat(j) for j, r in web_seats if r.prim == p && r.always].first()
+}

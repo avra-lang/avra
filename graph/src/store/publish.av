@@ -1,0 +1,231 @@
+use @std.validate.{Value, Entry}
+use @std.json.{Json, Field, field, to_text}
+use @std.sqlite.{Db}
+use schema.{Shape}
+use catalog.{Catalog}
+use data.{as_json, encoded, digest, json_safe}
+use store.open.{Graph, stored, modeled}
+use store.engine.{
+    EntityRow,
+    ObservationRow,
+    RunRow,
+    RunTrailRow,
+    ClaimRow,
+    SupportRow,
+    EdgeRow,
+    AliasRow,
+}
+use store.identity.{Identity}
+
+export enum RecordMode { Complete, Partial }
+
+export type Record = {
+    id: string,
+    model: string,
+    value: Value,
+    mode: RecordMode = .Complete,
+    locator: Value = Value.Null,
+    identities: List<Identity> = [],
+}
+
+impl Record {
+    fn request_value() -> Json {
+        let fields = [
+            field("id", Json.Str(self.id)),
+            field("model", Json.Str(self.model)),
+            field("value", as_json(self.value)),
+        ]
+        let mode = match self.mode {
+            .Complete -> [],
+            .Partial -> [field("mode", Json.Str("partial"))],
+        }
+        Json
+            .Obj(
+                fields
+                    .concat(mode)
+                    .concat(located(self.locator))
+                    .concat(identified(self.identities)),
+            )
+    }
+}
+
+/// No locator means no field, so a locator-free run keeps its identity.
+fn located(locator: Value) -> List<Field> {
+    match locator { .Null -> [], found -> [field("locator", as_json(found))] }
+}
+
+/// No identity means no field, so an identity-free run keeps its identity.
+fn identified(identities: List<Identity>) -> List<Field> {
+    if identities.is_empty() { [] } else { [field("identities", Json.Arr([i.json() for i in identities]))] }
+}
+
+/// A successful replacement of one producer's contribution in one scope.
+export type Publication = {
+    id: string,
+    producer: string,
+    scope: string,
+    input: string,
+    input_revision: int,
+    schema: string,
+    expected_revision: int,
+    records: List<Record>,
+}
+
+export type Link = { target: string, model: string, path: string }
+
+impl Publication {
+    fn fingerprint() -> string {
+        digest(
+            to_text(
+                Json
+                    .Obj(
+                        [
+                            field("id", Json.Str(self.id)),
+                            field("producer", Json.Str(self.producer)),
+                            field("scope", Json.Str(self.scope)),
+                            field("input", Json.Str(self.input)),
+                            field("input_revision", Json.Int(self.input_revision)),
+                            field("schema", Json.Str(self.schema)),
+                            field("expected_revision", Json.Int(self.expected_revision)),
+                            field("records", Json.Arr([r.request_value() for r in self.records])),
+                        ],
+                    ),
+            ),
+        )
+    }
+}
+
+impl Graph {
+    /// All validation, references, withdrawals, and inserts share one snapshot.
+    fn publish(publication: Publication) -> Result<int, string> {
+        let p = publication
+        if p.records.any(!json_safe(it.value) || !json_safe(it.locator)) { fail "graph values must contain only finite numbers" }
+        if p.records.any(it.identities.any(it.namespace.is_empty() || it.external_key.is_empty())) { fail "an identity needs a nonempty namespace and key" }
+        if p.id.is_empty() || p.producer.is_empty() || p.scope.is_empty() { fail "run id, producer, and scope must be nonempty" }
+        mut db = self.db
+        stored(db.begin())?
+        defer { let _ = db.finish() }
+        let revision = self.current()?
+        let previous = stored(RunRow.where(db, name: p.id))?
+        match previous {
+            [one] -> {
+                let trail = match stored(RunTrailRow.where(db, run: one))? {
+                    [only] -> only,
+                    rest -> { fail "a run has no trail: ${p.id}" },
+                }
+                if trail.request != p.fingerprint() { fail "run id was already used with a different publication" }
+                return one.revision
+            },
+            [] -> {},
+            rest -> { fail "run id is not unique: ${p.id}" },
+        }
+        if p.schema != self.catalog.fingerprint { fail "stale schema" }
+        if p.expected_revision != revision { fail "stale graph revision" }
+        let input = self.observation_row(p.input)?
+        if input.revision != p.input_revision { fail "stale or missing observation" }
+        let records = [self.checked(r)? for r in p.records]
+        for i, r in records {
+            if records.slice(0, i).any(it.id == r.id) { fail "one publication declares an entity at most once: ${r.id}" }
+            for j, a in r.identities {
+                if r.identities.slice(0, j).any(same_identity(it, a)) { fail "one record declares an identity twice: ${a.namespace}/${a.external_key}" }
+                if records.slice(0, i).any(it.id != r.id && it.identities.any(same_identity(it, a))) {
+                    fail "one identity cannot name two entities in one publication: ${a.namespace}/${a.external_key}"
+                }
+            }
+            self.identify(db, r, revision + 1)?
+        }
+        let run = modeled(
+            RunRow {
+                name: p.id,
+                producer: p.producer,
+                scope: p.scope,
+                revision: revision + 1,
+                input: input,
+            }
+                .insert(db),
+        )?
+        modeled(
+            RunTrailRow {
+                run: run,
+                input_revision: p.input_revision,
+                schema: p.schema,
+                request: p.fingerprint(),
+                stamp: p.id,
+            }
+                .insert(db),
+        )?
+        self.withdrawn(db, p, run, revision + 1)?
+        for r in records { self.contribute(db, p, run, r)? }
+        self.advanced()?
+        stored(db.commit())?
+        revision + 1
+    }
+
+    fn checked(record: Record) -> Result<Record, string> {
+        if record.id.is_empty() { fail "entity ids must be nonempty" }
+        let model = self.catalog.model(record.model)?
+        let checked = match record.mode {
+            .Complete -> (model.check)(record.value),
+            .Partial -> (model.check_fields)(record.value),
+        }
+        match checked {
+            .Ok(value) -> {
+                if !json_safe(value) { fail "model normalization produced a non-finite number" }
+                record with { value: observed(record.value, value) }
+            },
+            .Err(issues) -> { fail "${record.id}: ${issues.report()}" },
+        }
+    }
+
+    fn identify(mut db: Db, record: Record, revision: int) -> Result<int, string> {
+        match stored(EntityRow.where(db, name: record.id))? {
+            [one] -> {
+                if one.model != record.model { fail "an entity's model cannot change: ${record.id}" }
+                if self.hidden(record.id)? { fail "a tombstoned entity cannot receive publications: ${record.id}" }
+            },
+            [] -> {
+                let _ = modeled(
+                    EntityRow { name: record.id, model: record.model, born: revision }.insert(db),
+                )?
+            },
+            rest -> { fail "entity name is not unique: ${record.id}" },
+        }
+        0
+    }
+
+    /// A replacement closes the names and supports its producer's old runs owned.
+    fn withdrawn(mut db: Db, p: Publication, run: RunRow, revision: int) -> Result<int, string> {
+        let old = [r for r in stored(RunRow.where(db, producer: p.producer, scope: p.scope))? if r.id != run.id]
+        for s in stored(SupportRow.in_run(db, old))? {
+            if s.until == null { let _ = modeled((s with { until: revision }).update(db))? }
+        }
+        for a in stored(AliasRow.in_run(db, old))? {
+            if a.until == null { let _ = modeled((a with { until: revision }).update(db))? }
+        }
+        0
+    }
+
+    fn contribute(mut db: Db, p: Publication, run: RunRow, r: Record) -> Result<int, string> {
+        let model = self.catalog.model(r.model)?
+        let entity = self.entity_named(r.id)?
+        for entry in r.value.entries() {
+            let property? = model.properties.find(it.name == entry.key) else { fail "validated property is absent from its model" }
+            let links = property.shape.links(self.catalog, entry.value, entry.key)?
+            for link in links { self.attained(link)? }
+            let claim = self.claimed(db, entity, property.name, entry.value, p.schema)?
+            let _ = self.supported(db, run, claim, r.locator)?
+            for link in links { self.referenced(db, claim, link)? }
+        }
+        for a in r.identities { self.named_by(db, entity, a, run)? }
+        0
+    }
+}
+
+fn same_identity(a: Identity, b: Identity) -> bool {
+    a.namespace == b.namespace && a.external_key == b.external_key
+}
+
+/// Defaults construct records; only supplied fields become evidence.
+fn observed(original: Value, normalized: Value) -> Value {
+    Value.Map([e for e in normalized.entries() if original.entries().any(it.key == e.key)])
+}

@@ -1,0 +1,301 @@
+//! Append-only typed storage with a parallel span side table — the
+//! shape every node arena shares. Callers wrap the raw index in their
+//! typed id.
+use @std.meta.{identity, plain_field}
+use @std.relation.engine.{list_cell, map_cell}
+
+/// ONE IDENTITY: every table is a `Cell`, so a copy of the arena
+/// appends into the same storage as the original. `kinds` is the arena
+/// relation's `@index kind`: one bucket of raw indexes per variant tag,
+/// ascending, covering the first `kinded` nodes and caught up on each ask.
+@identity
+export type Arena<N> = {
+    nodes: Cell<List<N>>,
+    spans: Cell<List<Span?>>,
+    kinds: Cell<Map<string, Cell<List<int>>>>,
+    kinded: Cell<int>,
+    /// The first node replaced since the arena last forgot its rewrites, -1 for none.
+    rewritten: Cell<int>,
+}
+
+export fn new_arena<N>() -> Arena<N> {
+    Arena {
+        nodes: list_cell<N>(),
+        spans: list_cell<Span?>(),
+        kinds: map_cell(),
+        kinded: Cell.new(0),
+        rewritten: Cell.new(-1),
+    }
+}
+
+impl Arena {
+    /// Append a node and its span; the new raw index.
+    fn add(n: N, span: Span?) -> int {
+        self.nodes.push(n)
+        self.spans.push(span)
+        self.nodes.get().length - 1
+    }
+
+    /// The nodes and spans as they stand, in tables of their own; its kinds are filed again on the
+    /// first ask.
+    fn forked() -> Arena<N> {
+        Arena {
+            nodes: Cell.new(self.nodes.get()),
+            spans: Cell.new(self.spans.get()),
+            kinds: map_cell(),
+            kinded: Cell.new(0),
+            rewritten: Cell.new(self.rewritten.get()),
+        }
+    }
+
+    /// Node `i` is `n` now, a node of its own kind.
+    fn replaced(i: int, n: N) {
+        self.nodes.set_at(i, n)
+        if self.rewritten.get() < 0 || i < self.rewritten.get() { self.rewritten.set(i) }
+    }
+
+    /// The first node replaced since the arena last forgot its rewrites, -1 for none.
+    fn rewritten_from() -> int { self.rewritten.get() }
+
+    /// Its rewrites forgotten: what replaced a node from here on is a rewrite again.
+    fn rewrites_forgotten() { self.rewritten.set(-1) }
+
+    /// Sets the span of a node appended without one.
+    fn place(i: int, span: Span) { self.spans.set_at(i, span) }
+
+    fn node_at(i: int) -> N { self.nodes.get()[i] }
+    fn span_at(i: int) -> Span? {
+        let spans = self.spans.get()
+        if i >= 0 && i < spans.length { spans[i] } else { null }
+    }
+    fn count() -> int { self.nodes.get().length }
+
+    /// Every node tagged `k` inside `[lo, hi)`, ascending: `k`'s bucket
+    /// sliced by two binary searches, so no node of another kind is read.
+    fn of_kind(lo: int, hi: int, k: int, tag: fn(N) -> int) -> List<int> {
+        self.index_kinds(tag)
+        let ids = self.kinds.get().get("${k}")?.get() ?? []
+        ids.slice(lower_bound(ids, lo), lower_bound(ids, hi))
+    }
+
+    /// Files every node appended since the last ask under its tag.
+    fn index_kinds(tag: fn(N) -> int) {
+        let nodes = self.nodes.get()
+        for i in self.kinded.get()..nodes.length { self.bucket("${tag(nodes[i])}").push(i) }
+        self.kinded.set(nodes.length)
+    }
+
+    /// The bucket a tag files into, opened on first use.
+    fn bucket(key: string) -> Cell<List<int>> {
+        self.kinds.get().get(key) ?? {
+            let fresh: Cell<List<int>> = list_cell()
+            self.kinds.put(key, fresh)
+            fresh
+        }
+    }
+}
+
+/// The first index in `xs` (ascending) whose value is `>= target`;
+/// `xs.length` when every value is smaller.
+fn lower_bound(xs: List<int>, target: int) -> int {
+    mut lo = 0
+    mut hi = xs.length
+    while lo < hi {
+        let mid = (lo + hi) / 2
+        if xs[mid] < target { lo = mid + 1 } else { hi = mid }
+    }
+    lo
+}
+
+/// A FACT EVERY NODE HAS, by node, in a store that forks: the nodes a fork was made over are read
+/// off the list they stood in then, shared and never copied; the nodes made since, and an old node
+/// written again, are the column's own: a node written again is told apart by the table holding
+/// it, whatever its value. An identity: every holder sees one column.
+@identity
+@plain_field("below")
+export type TailColumn<V> = { below: List<V>, tail: Cell<List<V>>, rewritten: Cell<IndexTable<V>?> }
+
+/// A column holding no node.
+export fn tail_column<V>() -> TailColumn<V> {
+    let none: IndexTable<V>? = null
+    let nothing: List<V> = []
+    TailColumn { below: nothing, tail: Cell.new(nothing), rewritten: Cell.new(none) }
+}
+
+/// A column holding `values`, node by node: each as the column's own, as if pushed in order.
+export fn tail_column_of<V>(values: List<V>) -> TailColumn<V> {
+    let none: IndexTable<V>? = null
+    let nothing: List<V> = []
+    TailColumn { below: nothing, tail: Cell.new(values), rewritten: Cell.new(none) }
+}
+
+impl TailColumn {
+    /// Node `i`'s value.
+    fn at(i: int) -> V {
+        let shared = self.below.length
+        if i >= shared { return self.tail.get()[i - shared] }
+        let rewritten? = self.rewritten.get() else { return self.below[i] }
+        let position? = rewritten.position_of(i) else { return self.below[i] }
+        rewritten.values.get()[position]
+    }
+
+    /// The next node's value.
+    fn push(v: V) { self.tail.push(v) }
+
+    /// Node `i`'s value is `v` now.
+    fn set_at(i: int, v: V) {
+        let shared = self.below.length
+        if i >= shared { return self.tail.set_at(i - shared, v) }
+        let rewritten? = self.rewritten.get() else { return self.rewritten.set(index_table_of(i, v)) }
+        rewritten.put(i, v)
+    }
+
+    /// How many nodes it holds a value for.
+    fn count() -> int { self.below.length + self.tail.get().length }
+
+    /// The column as it stands, as the list a fork reads: its own, shared, where nothing below it
+    /// was written again; else every node's value, read once.
+    fn forked() -> TailColumn<V> {
+        let none: IndexTable<V>? = null
+        let nothing: List<V> = []
+        let below = if self.below.is_empty() && self.rewritten.get() == null { self.tail.get() } else { [self.at(i) for i in 0..self.count()] }
+        TailColumn { below: below, tail: Cell.new(nothing), rewritten: Cell.new(none) }
+    }
+}
+
+/// A FACT FEW NODES HAVE, by node: only the nodes whose value isn't `absent` are held, by index,
+/// so a column costs what it holds and a copy of it copies that, never one word per node. A node it
+/// holds nothing for reads `absent`; a column nothing was set in holds no table at all. An identity:
+/// every holder sees one column.
+@identity
+@plain_field("absent")
+export type SideColumn<V> = { held: Cell<IndexTable<V>?>, absent: V }
+
+/// A column holding nothing, every node reading `absent`.
+export fn side_column<V>(absent: V) -> SideColumn<V> {
+    let none: IndexTable<V>? = null
+    SideColumn { held: Cell.new(none), absent: absent }
+}
+
+impl SideColumn {
+    /// Node `i`'s value.
+    fn at(i: int) -> V { self.held.get()?.at(i) ?? self.absent }
+
+    /// Node `i`'s value is `v` now; the column's table is made on its first value.
+    fn set_at(i: int, v: V) {
+        let held? = self.held.get() else { return self.held.set(index_table_of(i, v)) }
+        held.put(i, v)
+    }
+
+    /// The column as it stands, in a table of its own: it starts as this one's and is copied out on
+    /// its first write.
+    fn forked() -> SideColumn<V> { SideColumn { held: Cell.new(self.held.get()?.forked()), absent: self.absent } }
+
+    /// Every node a value was set for, ascending.
+    fn indexes() -> List<int> { sorted_by(self.held.get()?.held_indexes() ?? [], (a, b) -> a < b) }
+
+    /// Every node reads `absent` again.
+    fn clear() {
+        let none: IndexTable<V>? = null
+        self.held.set(none)
+    }
+
+    /// Each held value replaced by what `remade` makes of it.
+    fn remade(remade: fn(V) -> V) { for i in self.held.get()?.held_indexes() ?? [] { self.set_at(i, remade(self.at(i))) } }
+}
+
+/// A TABLE KEYED BY A NODE'S INDEX: open addressing over a power-of-two list of slots, never more
+/// than half full, each slot two words — one more than the index it holds (zero when it's free),
+/// then where that index's value stands — so a probe reads one place, and nodes made side by side
+/// land in slots side by side. An identity: every holder sees one table.
+@identity
+type IndexTable<V> = { slots: Cell<List<int>>, values: Cell<List<V>>, indexes: Cell<List<int>> }
+
+/// The words one slot takes.
+const INDEX_SLOT_WORDS: int = 2
+
+/// The slots a table starts with.
+const FIRST_INDEX_SLOTS: int = 8
+
+/// A table holding `v` for node `i` alone.
+fn index_table_of<V>(i: int, v: V) -> IndexTable<V> {
+    let t = IndexTable {
+        slots: Cell.new([0 for _word in 0..FIRST_INDEX_SLOTS * INDEX_SLOT_WORDS]),
+        values: Cell.new([v]),
+        indexes: Cell.new([i]),
+    }
+    let at = free_index_slot(t.slots.get(), i)
+    t.slots.set_at(at, i + 1)
+    t
+}
+
+impl IndexTable {
+    /// Node `i`'s value, absent when the table holds none for it.
+    fn at(i: int) -> V? {
+        let position? = self.position_of(i) else { return null }
+        self.values.get()[position]
+    }
+
+    /// Every node the table holds, in the order each was first put.
+    fn held_indexes() -> List<int> { self.indexes.get() }
+
+    /// Node `i`'s value is `v` now.
+    fn put(i: int, v: V) {
+        let position? = self.position_of(i) else { return self.added(i, v) }
+        self.values.set_at(position, v)
+    }
+
+    /// The table as it stands, in lists of its own: each starts as this one's and is copied out on
+    /// its first write.
+    fn forked() -> IndexTable<V> {
+        IndexTable {
+            slots: Cell.new(self.slots.get()),
+            values: Cell.new(self.values.get()),
+            indexes: Cell.new(self.indexes.get()),
+        }
+    }
+
+    /// Where node `i`'s value stands, absent when it isn't here. A free slot ends the search.
+    fn position_of(i: int) -> int? {
+        let slots = self.slots.get()
+        let wrap = slots.length - 1
+        mut at = i * INDEX_SLOT_WORDS & wrap
+        while slots[at] != 0 {
+            if slots[at] == i + 1 { return slots[at + 1] }
+            at = at + INDEX_SLOT_WORDS & wrap
+        }
+        null
+    }
+
+    /// A node that isn't here yet, added.
+    fn added(i: int, v: V) {
+        let position = self.values.get().length
+        if (position + 1) * 2 * INDEX_SLOT_WORDS > self.slots.get().length {
+            self.slots.set(index_slots_holding(self.indexes.get(), self.slots.get().length * 2))
+        }
+        let at = free_index_slot(self.slots.get(), i)
+        self.slots.set_at(at, i + 1)
+        self.slots.set_at(at + 1, position)
+        self.values.push(v)
+        self.indexes.push(i)
+    }
+}
+
+/// The first word of the first free slot from where node `i` lands.
+fn free_index_slot(slots: List<int>, i: int) -> int {
+    let wrap = slots.length - 1
+    mut at = i * INDEX_SLOT_WORDS & wrap
+    while slots[at] != 0 { at = at + INDEX_SLOT_WORDS & wrap }
+    at
+}
+
+/// `words` words of slots holding each of `indexes` at its position.
+fn index_slots_holding(indexes: List<int>, words: int) -> List<int> {
+    mut slots = [0 for _word in 0..words]
+    for position, i in indexes {
+        let at = free_index_slot(slots, i)
+        slots[at] = i + 1
+        slots[at + 1] = position
+    }
+    slots
+}

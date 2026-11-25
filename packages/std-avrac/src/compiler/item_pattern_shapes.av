@@ -1,0 +1,134 @@
+//! WHERE A PATTERN OR A `??` CAN NEVER DO WHAT IT SAYS, read off a written item's syntax: a number
+//! pattern written as a fraction, which no `int` equals, and a `??` whose left side is `null`
+//! itself, so it always answers with its right; and, as the program layer types the subject a
+//! `match` reads, a format pattern matching a value that is no text, or a hole reading its span as
+//! a type text doesn't read as.
+use core.{At, ExprId, FormatPart, NodeKind, PatId, SyntaxArena, flatten}
+use compiler.laws.{Found, Reach, law}
+use diagnostics.{Voice}
+use features.enums.{fraction_unmatched, fraction_written}
+use features.nullable.{coalesce_always_absent}
+use features.formats.{adjacent_fault, format_on, hole_unread, repeated_fault}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+
+/// The number pattern `at` of `view`'s item where it writes a fraction; handed the fraction.
+fn fraction_patterns(view: ItemView, at: At) -> List<Found> {
+    let store = view.item.store
+    [Found { at: store.pat_span(p!), args: [fraction_written(b!)] } for p in [pat_at(at)] if p != null for b in [fraction_bits(store, p!)] if b != null]
+}
+
+/// The pattern the node `k` is, if it is one.
+fn pat_at(k: At) -> PatId? {
+    match k { .Pat(p) -> p, rest -> null }
+}
+
+/// The bits of the fraction the literal pattern `p` writes; absent for any other pattern.
+fn fraction_bits(store: SyntaxArena, p: PatId) -> int? {
+    match store.pat(p) { .Lit(v) -> store.expr(v).bits_of(), rest -> null }
+}
+
+/// The `??` `at` of `view`'s item where its left side is `null`, found at that side.
+fn coalesced_nulls(view: ItemView, at: At) -> List<Found> {
+    let store = view.item.store
+    [Found { at: store.expr_span(sides[0]), args: [] } for sides in [coalesce_sides(store, at)] if sides.length == 2 && store.null_literal(sides[0])]
+}
+
+/// The two sides of the `??` the node `k` is; none for any other node.
+fn coalesce_sides(store: SyntaxArena, k: At) -> List<ExprId> {
+    match k { .Expr(e) -> store.coalesced(e), rest -> [] }
+}
+
+/// A format pattern a `match` writes over its subject, where it stands, its holes, and what the
+/// subject's type is, spelled; absent where typing doesn't know it.
+type FormatArm = { at: PatId, store: SyntaxArena, parts: List<FormatPart>, subject: string? }
+
+/// Every format pattern an arm of the `match` `at` of `view`'s typed nodes writes, its file's own,
+/// with its subject's type.
+fn format_arms(view: ItemView, at: At) -> List<FormatArm> {
+    let e? = at.expr() else { return [] }
+    let t? = typed_of(view) else { return [] }
+    if t.store.home_of(e) != null { return [] }
+    [FormatArm { at: p, store: t.store, parts: parts!, subject: subject_spelled(view.engine, t, e) } for arm in t.store.match_arms(e) ?? [] for p in arm.pats for parts in [format_parts(t.store, p)] if parts != null]
+}
+
+/// What the subject of the `match` `e` is, spelled, where typing knows it whole: the text a named
+/// type stands over, where it stands over one.
+fn subject_spelled(engine: QueryEngine, t: TypedNodes, e: ExprId) -> string? {
+    let subject? = match t.store.expr(e) { .Match(s, _) -> s, rest -> null } else { return null }
+    let ty? = (t.type_at)(subject.index) else { return null }
+    if !plain_known(ty) { return null }
+    let shape = named_over(engine, ty)?.spelled()
+    if shape != null && TEXTS.contains(shape!) { shape } else { ty.spelled() }
+}
+
+/// The holes the format pattern `p` writes; absent for any other pattern.
+fn format_parts(store: SyntaxArena, p: PatId) -> List<FormatPart>? {
+    match store.pat(p) { .Format(_, parts) -> parts, rest -> null }
+}
+
+/// Every format pattern of the `match` `at` of `view`'s typed nodes matching a value that is no
+/// text; handed the value's type.
+fn formats_off_text(view: ItemView, at: At) -> List<Found> {
+    [Found { at: f.store.pat_span(f.at), args: [f.subject!] } for f in format_arms(view, at) if f.subject != null && !TEXTS.contains(f.subject!)]
+}
+
+/// The types a format pattern reads.
+const TEXTS: List<string> = ["string", "Bytes"]
+
+/// Every format pattern of the `match` `at` of `view`'s typed nodes over text, its holes apart and
+/// named once, with a hole reading its span as a type that crosses no text; handed the hole and the
+/// type.
+fn holes_unread(view: ItemView, at: At) -> List<Found> {
+    let signing = signing_in(view.engine, view.file, [])
+    [Found { at: f.store.pat_span(f.at), args: [h!.hole.name, h!.hole.ty!.name] } for f in format_arms(view, at) if f.subject != null &&
+        TEXTS.contains(f.subject!) &&
+        adjacent_fault(f.parts) == null &&
+        repeated_fault(f.parts) == null for h in [f.parts.find((p) -> !read_as_text(view.engine, view.file, signing, p.hole))] if h != null]
+}
+
+/// a format pattern reads text
+export law format_on_text {
+    kind: "type.format"
+    on: [NodeKind.ExprMatch]
+    judge: formats_off_text
+    reach: Reach.Typed
+    voice: format_words
+    witness: "fn f(n: int) -> int {\n    match n {\n        \"{a}b\" -> 1\n        _ -> 0\n    }\n}\n"
+}
+
+/// a typed hole reads its span as a type text reads as
+export law hole_read_as_text {
+    kind: "type.format_parse"
+    on: [NodeKind.ExprMatch]
+    judge: holes_unread
+    reach: Reach.Typed
+    voice: hole_words
+    witness: "fn f(s: string) -> int {\n    match s {\n        \"{n: float}z\" -> 1\n        _ -> 0\n    }\n}\n"
+}
+
+/// a number pattern matches an `int`
+export law fraction_pattern {
+    kind: "type.fraction_pattern"
+    on: [NodeKind.PatLit]
+    judge: fraction_patterns
+    voice: fraction_words
+    witness: "fn f(x: int) -> int {\n    match x {\n        1.5 -> 1\n        _ -> 0\n    }\n}\n"
+}
+
+/// `??` answers a nullable
+export law coalesce_on_null {
+    kind: "type.coalesce"
+    on: [NodeKind.ExprCoalesce]
+    judge: coalesced_nulls
+    voice: coalesce_words
+    witness: "fn f() -> int { null ?? 1 }\n"
+}
+
+fn fraction_words(a: List<string>) -> Voice { fraction_unmatched(a[0]) }
+
+fn coalesce_words(_a: List<string>) -> Voice { coalesce_always_absent() }
+
+fn format_words(a: List<string>) -> Voice { format_on(a[0]) }
+
+fn hole_words(a: List<string>) -> Voice { hole_unread(a[0], a[1]) }

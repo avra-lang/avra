@@ -1,0 +1,19 @@
+// proves: cookies end to end, evaluated and native alike — a request's
+// cookies read, a set-cookie line written and one refused.
+use @std.http.frame.{framed, limits}
+use @std.http.body.{Body}
+use @std.http.http.{Request, Unrouted}
+use @std.http.cookie.{SetCookie, SameSite}
+
+fn said(c: SetCookie) -> string {
+    match c.header() { .Ok(h) -> h.value, .Err(e) -> e.describe().message }
+}
+
+let raw = "GET / HTTP/1.1\r\nHost: h\r\nCookie: a=1; b=\"two\"\r\ncookie: c=3\r\n\r\n".bytes()
+let q = match framed(raw, 0, 0, limits()) {
+    .Complete(head) -> Request { raw: raw, head: head, body: Body.Empty, peer: "t", params: Unrouted {} },
+    .Partial or .Refused(_) -> null,
+}
+println([c.name + "=" + c.value for c in q!.cookies()].join(" "))
+println(said(SetCookie { name: "id", value: "42", max_age: 60, same_site: SameSite.Strict }))
+said(SetCookie { name: "id", value: "4;2" })

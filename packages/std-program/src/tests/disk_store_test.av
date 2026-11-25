@@ -1,0 +1,615 @@
+// Separate stores over one directory stand in for separate processes. What matters is what a later
+// process finds: answers that stand aren't run, and damage to the directory costs work, never a
+// wrong answer.
+use @std.io.{exists, list_dir, make_dirs, read_bytes, remove, write_bytes}
+use @std.time.{stamp}
+use answer_parts.{AnswerParts, NamedValue, answer_parts}
+use answer_record.{question}
+use disk_store.{DiskStore, PACK_SEAL, disk_store_at}
+use answer_record.{ContentHash}
+use frontier.{FrontierLearned, HeldEntry}
+use query_engine.{QueryDefinition, QueryEngine, query_engine}
+use worked_ahead.{WorkAhead, asked_across_while, engine_worked_ahead}
+use saved_query.{ListedQuery, definitions_of, input, parted_query, query, query_definition}
+
+once fn disk_world() -> Cell<Map<string, string>> {
+    let world: Map<string, string> = {}
+    Cell.new(world)
+}
+
+@input("summary")
+fn disk_text(_engine: QueryEngine, path: string) -> string { disk_world().get().get(path) ?? "" }
+
+@parted_query("summary")
+fn disk_names(engine: QueryEngine, path: string) -> AnswerParts {
+    answer_parts(
+        [NamedValue { name: word, value: word.bytes() } for word in disk_text(engine, path).split(" ")],
+    )
+}
+
+@query("summary")
+fn disk_is_named(engine: QueryEngine, path: string, word: string) -> bool { disk_names_part(engine, path, word) != null }
+
+@query("summary")
+fn disk_length(engine: QueryEngine, path: string) -> int { disk_text(engine, path).length }
+
+/// The length at the path one path names: which path it reads moves with what `chooser` holds.
+@query("summary")
+fn disk_chosen_length(engine: QueryEngine, chooser: string) -> int {
+    disk_shown_length(engine, disk_text(engine, chooser))
+}
+
+/// The length at `path`, read through `disk_length`.
+@query("summary")
+fn disk_shown_length(engine: QueryEngine, path: string) -> int { disk_length(engine, path) }
+
+@query("summary")
+fn disk_echo(_engine: QueryEngine, text: string) -> string { text }
+
+collect disk_queries: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+fn definitions_listed() -> List<QueryDefinition> { definitions_of(disk_queries) }
+
+/// The world's text at `path` made `text`: its length.
+fn edited_world(path: string, text: string) -> int {
+    disk_world().put(path, text)
+    text.length
+}
+
+fn numbered(count: int) -> List<string> { ["text ${i}" for i in 0..count] }
+
+fn work_on(items: List<string>, process_count: int) -> WorkAhead<string, string> {
+    WorkAhead {
+        items: (_engine: QueryEngine) -> items,
+        is_known: disk_echo_is_known,
+        ask: disk_echo,
+        process_count: process_count,
+    }
+}
+
+/// The text asked about, or a trap for the first numbered one, which ends the process whose turn
+/// it is.
+fn echo_or_trap(engine: QueryEngine, text: string) -> string {
+    if text == "text 0" { return [text][1] }
+    disk_echo(engine, text)
+}
+
+fn engine_over(store: DiskStore) -> QueryEngine { query_engine(store, definitions_of(disk_queries)) }
+
+fn fresh_directory(label: string) -> string { "/tmp/avra-disk-store/${stamp()}-${label}" }
+
+/// A whole process: opens the store, asks, publishes, and leaves its frontier. Answers its engine.
+fn process_over(directory: string, path: string, word: string) -> QueryEngine {
+    let store = disk_store_at(directory)
+    let engine = engine_over(store)
+    let _ = disk_is_named(engine, path, word)
+    engine.frontier_kept()
+    let _ = store.saved()
+    engine
+}
+
+/// What a whole process that asked two words of one path answered, and how many queries it worked out.
+type BothNamed = { answers: string, worked: int }
+
+/// A whole process asking whether `path` names `first` and `second`.
+fn both_named(directory: string, path: string, first: string, second: string) -> BothNamed {
+    let store = disk_store_at(directory)
+    let engine = engine_over(store)
+    let answers = "${disk_is_named(engine, path, first)},${disk_is_named(engine, path, second)}"
+    engine.frontier_kept()
+    let _ = store.saved()
+    BothNamed { answers: answers, worked: engine.computed_count() }
+}
+
+/// The queries a whole process worked out: it asks `padding` echoes, the length at the path
+/// `chooser` names, and whether `kept` names a word it doesn't, so `kept`'s text stays read.
+fn chosen_worked(directory: string, chooser: string, kept: string, padding: int) -> List<string> {
+    let store = disk_store_at(directory)
+    let engine = engine_over(store)
+    for i in 0..padding { let _ = disk_echo(engine, "padding ${i}") }
+    let _ = disk_chosen_length(engine, chooser)
+    let _ = disk_is_named(engine, kept, "absent")
+    engine.frontier_kept()
+    let _ = store.saved()
+    engine.computed_queries()
+}
+
+/// THE RENAME SHAPE: a path chosen, then another, so what read the first path's length stands no
+/// more while the first path's text, still read, stands; then that text edited and a third path
+/// chosen. The first process's echoes make the frontier big enough that each later write is a
+/// delta, which keeps what stands no more. The queries the third process worked out.
+fn chosen_after_edit(label: string) -> List<string> {
+    let directory = fresh_directory(label)
+    let first = "${label}-first"
+    let choice = "${label}-choice"
+    disk_world().put(first, "xx")
+    disk_world().put("${label}-second", "yyy")
+    disk_world().put("${label}-third", "z")
+    disk_world().put(choice, first)
+    let _ = chosen_worked(directory, choice, first, 60)
+    disk_world().put(choice, "${label}-second")
+    let _ = chosen_worked(directory, choice, first, 0)
+    disk_world().put(first, "xxxx")
+    disk_world().put(choice, "${label}-third")
+    chosen_worked(directory, choice, first, 0)
+}
+
+/// How many queries a whole process ran.
+fn process_asking(directory: string, path: string, word: string) -> int { process_over(directory, path, word).computed_count() }
+
+/// A binary whose one query, `measured`, reads `disk_text` and whose code is `version`: binaries of
+/// other versions ask other questions of the same input.
+fn binary_of(version: string) -> List<QueryDefinition> {
+    [
+        disk_text_definition(),
+        QueryDefinition {
+            query_name: "measured",
+            code_hash: version,
+            is_input: false,
+            compute: (e, a) -> "${disk_text(e, a.text() ?? "").length}".bytes(),
+        },
+    ]
+}
+
+/// A whole process of the binary `version`, asking how long `path` is. Answers its engine.
+fn version_asking(directory: string, version: string, path: string) -> QueryEngine {
+    let store = disk_store_at(directory)
+    let engine = query_engine(store, binary_of(version))
+    let _ = engine.answer_to(question("measured", version, path.bytes()))
+    engine.frontier_kept()
+    let _ = store.saved()
+    engine
+}
+
+/// A process of each of three binaries over one store, oldest first, then a compaction. Answers
+/// the oldest's engine.
+fn three_binaries_compacted(directory: string) -> QueryEngine {
+    disk_world().put("p.av", "alpha")
+    let oldest = version_asking(directory, "v1", "p.av")
+    let _ = version_asking(directory, "v2", "p.av")
+    let _ = version_asking(directory, "v3", "p.av")
+    let _ = disk_store_at(directory).compacted()
+    oldest
+}
+
+/// The newest file of the frontier `store` reads for the binary printed `print`, by its name; empty
+/// when it reads none.
+fn frontier_named(store: DiskStore, print: string) -> string {
+    let frontier? = store.frontier_of(print) else { return "" }
+    let id = frontier.id()
+    "${id.high_word}_${id.low_word}"
+}
+
+fn hash_of(n: int) -> ContentHash { ContentHash { high_word: n, low_word: n * 7 + 1 } }
+
+/// A root that read nothing, asking question `n`, answered by answer `1000 + version`.
+fn rooted_entry(n: int, version: int) -> HeldEntry {
+    HeldEntry {
+        question: hash_of(n),
+        answer: hash_of(1000 + version),
+        reads: [],
+        input: false,
+        root: true,
+    }
+}
+
+fn pack_files(directory: string) -> List<string> { (list_dir(directory) catch []).filter(it.ends_with(".pack")) }
+
+fn frontier_files(directory: string) -> List<string> { (list_dir(directory) catch []).filter(it.starts_with("frontier-")) }
+
+spec "disk_store — answers outlive the process" {
+    given "an input's text" {
+        then "it stays out of the store, and a later process still reuses what read it" {
+            let directory = fresh_directory("input")
+            disk_world().put("kept.x", "a text worth not saving twice")
+            let first = disk_store_at(directory)
+            let first_engine = engine_over(first)
+            let length = disk_length(first_engine, "kept.x")
+            let _ = first.saved()
+            let packed = [(read_bytes("${directory}/${file}") catch "".bytes()).text_lossy() for file in pack_files(directory)]
+            let later = engine_over(disk_store_at(directory))
+            let reused = disk_length(later, "kept.x")
+            length == 29 &&
+                reused == 29 &&
+                later.computed_count() == 1 &&
+                !packed.any(it.contains("worth not saving"))
+        }
+    }
+    given "a directory that isn't there" {
+        then "the store is empty, and publishing nothing makes nothing" {
+            let directory = fresh_directory("none")
+            let store = disk_store_at(directory)
+            (store.saved() catch -1) == 0 && !exists(directory)
+        }
+    }
+    given "a second process with nothing changed" {
+        then "only the input runs" {
+            let directory = fresh_directory("second")
+            disk_world().put("a.av", "alpha beta")
+            process_asking(directory, "a.av", "alpha") == 3 &&
+                process_asking(directory, "a.av", "alpha") == 1
+        }
+        then "it writes nothing" {
+            let directory = fresh_directory("quiet")
+            disk_world().put("b.av", "alpha")
+            let _ = process_asking(directory, "b.av", "alpha")
+            let before = pack_files(directory).length
+            let store = disk_store_at(directory)
+            let _ = disk_is_named(engine_over(store), "b.av", "alpha")
+            (store.saved() catch -1) == 0 && pack_files(directory).length == before
+        }
+    }
+    given "an empty answer" {
+        then "it is found again, and isn't taken for a missing one" {
+            let directory = fresh_directory("empty")
+            let first = disk_store_at(directory)
+            let _ = disk_echo(engine_over(first), "")
+            let _ = first.saved()
+            let later = engine_over(disk_store_at(directory))
+            disk_echo(later, "") == "" && later.computed_count() == 0
+        }
+    }
+    given "a reader of one part, across processes" {
+        then "it stands when another part appears" {
+            let directory = fresh_directory("part")
+            disk_world().put("c.av", "alpha")
+            let _ = process_asking(directory, "c.av", "alpha")
+            disk_world().put("c.av", "alpha gamma")
+            process_asking(directory, "c.av", "alpha") == 2
+        }
+        then "it is met and answers as a cold process when its own part goes, while a reader of another stands" {
+            let directory = fresh_directory("part-own")
+            disk_world().put("d.av", "alpha beta")
+            let _ = both_named(directory, "d.av", "alpha", "beta")
+            disk_world().put("d.av", "alpha")
+            let warm = both_named(directory, "d.av", "alpha", "beta")
+            let cold = both_named(fresh_directory("part-own-cold"), "d.av", "alpha", "beta")
+            warm.answers == cold.answers && warm.answers == "true,false" && warm.worked == 3
+        }
+        then "a reader no root reaches any more is met without asking what it read: an edit under it works out nothing" {
+            let worked = chosen_after_edit("unread-edited")
+            worked.filter(it == "disk_length").length == 1
+        }
+        then "a reader that saw a part absent is met when the part appears, and answers as a cold process" {
+            let directory = fresh_directory("part-absent")
+            disk_world().put("g.av", "alpha")
+            let _ = both_named(directory, "g.av", "alpha", "gamma")
+            disk_world().put("g.av", "alpha gamma")
+            let warm = both_named(directory, "g.av", "alpha", "gamma")
+            let cold = both_named(fresh_directory("part-absent-cold"), "g.av", "alpha", "gamma")
+            warm.answers == cold.answers && warm.answers == "true,true" && warm.worked == 3
+        }
+    }
+    given "going back to an earlier state" {
+        then "its answers are still found, across every pack" {
+            let directory = fresh_directory("back")
+            disk_world().put("d.av", "alpha")
+            let _ = process_asking(directory, "d.av", "alpha")
+            disk_world().put("d.av", "alpha gamma")
+            let _ = process_asking(directory, "d.av", "gamma")
+            disk_world().put("d.av", "alpha")
+            process_asking(directory, "d.av", "alpha") == 1
+        }
+    }
+    given "many processes, each learning something" {
+        then "packs stay few and nothing is lost" {
+            let directory = fresh_directory("many")
+            for i in 0..64 {
+                disk_world().put("many${i}.av", "word${i}")
+                let _ = process_asking(directory, "many${i}.av", "word${i}")
+            }
+            pack_files(directory).length <= 7 &&
+                (0..64)
+                    .all((i) -> process_over(directory, "many${i}.av", "word${i}").worked_count() == 0)
+        }
+    }
+    given "two processes at once" {
+        then "a later one finds what each published" {
+            let directory = fresh_directory("two")
+            disk_world().put("e.av", "alpha")
+            disk_world().put("f.av", "beta")
+            let one = disk_store_at(directory)
+            let other = disk_store_at(directory)
+            let one_engine = engine_over(one)
+            let other_engine = engine_over(other)
+            let _ = disk_is_named(one_engine, "e.av", "alpha")
+            let _ = disk_is_named(other_engine, "f.av", "beta")
+            one_engine.frontier_kept()
+            let _ = one.saved()
+            other_engine.frontier_kept()
+            let _ = other.saved()
+            process_over(directory, "e.av", "alpha").worked_count() == 0 &&
+                process_over(directory, "f.av", "beta").worked_count() == 0
+        }
+    }
+    given "a store that read its frontier" {
+        then "it reads the same one again while no other process writes one, and another's once it does" {
+            let directory = fresh_directory("frontier-again")
+            disk_world().put("g.av", "alpha")
+            let _ = process_over(directory, "g.av", "alpha")
+            let store = disk_store_at(directory)
+            let print = engine_over(store).frontier_print()
+            let first = frontier_named(store, print)
+            let again = frontier_named(store, print)
+            disk_world().put("g.av", "alpha beta")
+            let _ = process_over(directory, "g.av", "beta")
+            let after = frontier_named(store, print)
+            first != "" &&
+                again == first &&
+                after != first &&
+                after == frontier_named(disk_store_at(directory), print)
+        }
+    }
+    given "a delta holding an answer this process settled that nothing reads and no one asked" {
+        then "the frontier read back holds none of it: what no root reaches is never written as standing" {
+            let directory = fresh_directory("orphan")
+            let _ = make_dirs(directory) catch ""
+            let first = disk_store_at(directory)
+            first
+                .keep_frontier(
+                    "orphans",
+                    FrontierLearned {
+                        on: null,
+                        entries: [rooted_entry(i, 0) for i in 0..20],
+                        stale: [],
+                    },
+                )
+            let _ = first.saved()
+            let second = disk_store_at(directory)
+            let on = second.frontier_of("orphans")
+            let orphan = HeldEntry {
+                question: hash_of(500),
+                answer: hash_of(501),
+                reads: [],
+                input: false,
+                root: false,
+            }
+            second
+                .keep_frontier(
+                    "orphans",
+                    FrontierLearned { on: on, entries: [rooted_entry(3, 1), orphan], stale: [] },
+                )
+            let _ = second.saved()
+            let read? = disk_store_at(directory).frontier_of("orphans") else { return false }
+            let moved? = read.place_of(hash_of(3)) else { return false }
+            read.answer_at(moved).same_as(hash_of(1001)) && read.place_of(hash_of(500)) == null
+        }
+    }
+    given "a compaction" {
+        then "a pack published beside it after it opened is left standing" {
+            let directory = fresh_directory("compact-beside")
+            disk_world().put("n.av", "alpha")
+            disk_world().put("o.av", "beta")
+            let _ = process_asking(directory, "n.av", "alpha")
+            let compacting = disk_store_at(directory)
+            let _ = process_asking(directory, "o.av", "beta")
+            let _ = compacting.compacted()
+            process_over(directory, "o.av", "beta").worked_count() == 0 &&
+                process_over(directory, "n.av", "alpha").worked_count() == 0
+        }
+        then "of an empty store, it writes nothing" {
+            let directory = fresh_directory("compact-empty")
+            (disk_store_at(directory).compacted() catch -1) == 0 && !exists(directory)
+        }
+        then "what the newest root reaches stays in one pack, and a later process runs only its input" {
+            let directory = fresh_directory("compact")
+            disk_world().put("k.av", "alpha")
+            let _ = process_asking(directory, "k.av", "alpha")
+            disk_world().put("k.av", "alpha beta")
+            let _ = process_asking(directory, "k.av", "alpha")
+            let _ = disk_store_at(directory).compacted()
+            pack_files(directory).length == 1 && process_asking(directory, "k.av", "alpha") == 1
+        }
+        then "a pack it can't read goes, and what it can read stays" {
+            let directory = fresh_directory("foreign")
+            disk_world().put("m.av", "alpha")
+            let _ = process_asking(directory, "m.av", "alpha")
+            let _ = write_bytes("${directory}/older.pack", "another format's pack".bytes())
+            let _ = disk_store_at(directory).compacted()
+            !exists("${directory}/older.pack") &&
+                pack_files(directory).length == 1 &&
+                process_asking(directory, "m.av", "alpha") == 1
+        }
+        then "an edit one back still stands whole, and one three back reruns only below its root" {
+            let directory = fresh_directory("history")
+            for text in ["w1", "w2", "w3", "w4", "w5"] {
+                disk_world().put("l.av", "alpha ${text}")
+                let _ = process_asking(directory, "l.av", "alpha")
+            }
+            let _ = disk_store_at(directory).compacted()
+            disk_world().put("l.av", "alpha w4")
+            let one_back = process_asking(directory, "l.av", "alpha")
+            disk_world().put("l.av", "alpha w1")
+            one_back == 1 && process_asking(directory, "l.av", "alpha") == 2
+        }
+    }
+    given "three binaries' frontiers in one store, then a compaction" {
+        then "the two written most recently stand whole, and the oldest's file goes" {
+            let directory = fresh_directory("binaries")
+            let oldest = three_binaries_compacted(directory)
+            frontier_files(directory).length == 2 &&
+                !frontier_files(directory).any(it.starts_with("frontier-${oldest.print()}.")) &&
+                version_asking(directory, "v3", "p.av").worked_count() == 0 &&
+                version_asking(directory, "v2", "p.av").worked_count() == 0
+        }
+        then "what only the oldest named is worked out again" {
+            let directory = fresh_directory("binaries-oldest")
+            let _ = three_binaries_compacted(directory)
+            version_asking(directory, "v1", "p.av").worked_count() == 1
+        }
+    }
+    given "damage to the directory" {
+        then "a file that isn't a pack is ignored, whatever its size" {
+            let directory = fresh_directory("junk")
+            disk_world().put("g.av", "alpha")
+            let _ = process_asking(directory, "g.av", "alpha")
+            let _ = write_bytes("${directory}/empty.pack", "".bytes())
+            let _ = write_bytes("${directory}/short.pack", "x".bytes())
+            let _ = write_bytes("${directory}/seal.pack", PACK_SEAL.bytes())
+            let _ = write_bytes(
+                "${directory}/junk.pack",
+                "not a pack, and long enough to read".bytes(),
+            )
+            process_asking(directory, "g.av", "alpha") == 1
+        }
+        then "a pack that lost its tail is ignored, and the answer is worked out again" {
+            let directory = fresh_directory("torn")
+            disk_world().put("h.av", "alpha")
+            let _ = process_asking(directory, "h.av", "alpha")
+            let path = "${directory}/${pack_files(directory)[0]}"
+            let whole = read_bytes(path) catch "".bytes()
+            let _ = write_bytes(path, whole.slice(0, whole.length / 2))
+            process_asking(directory, "h.av", "alpha") == 3
+        }
+        then "a pack removed while it's being read still answers" {
+            let directory = fresh_directory("gone")
+            disk_world().put("i.av", "alpha")
+            let _ = process_asking(directory, "i.av", "alpha")
+            let store = disk_store_at(directory)
+            let engine = engine_over(store)
+            for file_name in pack_files(directory) { let _ = remove("${directory}/${file_name}") }
+            disk_is_named(engine, "i.av", "alpha") && engine.computed_count() == 1
+        }
+        then "with every pack gone, the answer is worked out again" {
+            let directory = fresh_directory("wiped")
+            disk_world().put("j.av", "alpha")
+            let _ = process_asking(directory, "j.av", "alpha")
+            for file_name in pack_files(directory) { let _ = remove("${directory}/${file_name}") }
+            process_asking(directory, "j.av", "alpha") == 3
+        }
+    }
+    given "too few unknown items to be worth a fork" {
+        then "nothing is worked ahead, and the store is empty" {
+            let directory = fresh_directory("few")
+            let store = engine_worked_ahead<string, string>(
+                directory,
+                definitions_listed(),
+                work_on(["a"], 8),
+            )
+                .store
+                .own
+            store.packs.get().is_empty()
+        }
+    }
+    given "no items" {
+        then "nothing is worked ahead" {
+            let directory = fresh_directory("no-items")
+            engine_worked_ahead<string, string>(directory, definitions_listed(), work_on([], 8))
+                .store
+                .own
+                .packs
+                .get()
+                .is_empty()
+        }
+    }
+    given "one process asked for" {
+        then "nothing forks" {
+            let directory = fresh_directory("one")
+            engine_worked_ahead<string, string>(
+                directory,
+                definitions_listed(),
+                work_on(numbered(64), 1),
+            )
+                .store
+                .own
+                .packs
+                .get()
+                .is_empty()
+        }
+    }
+    given "many unknown items" {
+        then "a process finds every answer without running anything, in one pack" {
+            let directory = fresh_directory("ahead")
+            let store = engine_worked_ahead<string, string>(
+                directory,
+                definitions_listed(),
+                work_on(numbered(64), 4),
+            )
+                .store
+                .own
+            let engine = engine_over(store)
+            numbered(64).all((text) -> disk_echo(engine, text) == text) &&
+                engine.computed_count() == 0 &&
+                pack_files(directory).length == 1
+        }
+        then "more processes than items still answers them all" {
+            let directory = fresh_directory("wide")
+            let store = engine_worked_ahead<string, string>(
+                directory,
+                definitions_listed(),
+                work_on(numbered(16), 32),
+            )
+                .store
+                .own
+            let engine = engine_over(store)
+            numbered(16).all((text) -> disk_echo(engine, text) == text) &&
+                engine.computed_count() == 0
+        }
+    }
+    given "an input no process had read, edited once the cores of a wave within a build are forked" {
+        then "the core that read it is refused, and the asking process answers from the edit" {
+            let directory = fresh_directory("within")
+            let worked = engine_worked_ahead<string, string>(
+                directory,
+                definitions_listed(),
+                work_on([], 1),
+            )
+            let paths = ["w${i}.av" for i in 0..32]
+            for path in paths { disk_world().put(path, "before") }
+            let forked = asked_across_while<string, int>(
+                worked.store,
+                worked.engine,
+                WorkAhead {
+                    items: (_engine: QueryEngine) -> paths,
+                    is_known: disk_length_is_known,
+                    ask: disk_length,
+                    process_count: 4,
+                },
+                () -> edited_world("w7.av", "after the fork"),
+            )
+            forked &&
+                disk_length(worked.engine, "w7.av") == 14 &&
+                disk_length(worked.engine, "w8.av") == 6 &&
+                worked.engine.computed_queries().contains("disk_length")
+        }
+    }
+    given "a process that traps at its first turn" {
+        then "the item it held is answered by the asking process, and every answer comes out right" {
+            let directory = fresh_directory("trapped")
+            let store = engine_worked_ahead<string, string>(
+                directory,
+                definitions_listed(),
+                work_on(numbered(64), 4) with { ask: echo_or_trap },
+            )
+                .store
+                .own
+            let engine = engine_over(store)
+            numbered(64).all((text) -> disk_echo(engine, text) == text) &&
+                engine.computed_count() == 1
+        }
+    }
+    given "a second run over what was worked ahead" {
+        then "nothing forks and nothing runs" {
+            let directory = fresh_directory("again")
+            let _ = engine_worked_ahead<string, string>(
+                directory,
+                definitions_listed(),
+                work_on(numbered(32), 4),
+            )
+                .store
+                .own
+            let before = pack_files(directory).join(",")
+            let store = engine_worked_ahead<string, string>(
+                directory,
+                definitions_listed(),
+                work_on(numbered(32), 4),
+            )
+                .store
+                .own
+            let engine = engine_over(store)
+            numbered(32).all((text) -> disk_echo(engine, text) == text) &&
+                engine.computed_count() == 0 &&
+                pack_files(directory).join(",") == before
+        }
+    }
+}

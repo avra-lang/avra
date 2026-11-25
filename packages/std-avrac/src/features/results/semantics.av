@@ -1,0 +1,23 @@
+//! The catch node's semantics: dispatch only. Typing lives in
+//! check.av, lowering in lower.av. The arms are hidden kids — each
+//! types and lowers under its own bind, inside its own bracket.
+use core.{ExprId, TypeId, Reg, Kids}
+use features.{named_bind, ResolveCx, TypeCx, LowerCx, nothing, Meaning}
+
+use core.expr.{Catch}
+
+impl Kids for Catch {
+    fn kids() -> List<ExprId> { [self.subject] }
+}
+
+impl Meaning for Catch {
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
+        for a in self.arms { cx.arm_scope(cx.bound_at(e, named_bind(a.bind.text())), a.value) }
+    }
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
+        catch_type(cx, e)
+    }
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
+        catch_reg(cx, e)
+    }
+}

@@ -1,0 +1,22 @@
+//! proves the worker loop drains: the handler runs for each item, `Ok`
+//! acks it, and the queue owes no fate.
+use @std.queue.{queue, worker, drain, key, Dead, Delivery}
+use @std.time.{ms}
+
+type Job = { n: int }
+type Receipt = { ok: bool }
+
+fn pay(d: Delivery<Job>) -> Result<Receipt, string> { .Ok(Receipt { ok: d.item.n > 0 }) }
+
+queue<Dead<Job, string>> letters {}
+queue<Job> jobs {
+    capacity: 8
+    lease: ms(60000)
+}
+worker settle {
+    reads: jobs
+    each: pay
+    dead: letters
+}
+for i in 1..4 { let _ = jobs.home().send(Job { n: i }, key("k${i}")) }
+match drain(settle) { .Ok(n) -> "${n} ${jobs.home().depth() catch 0 - 1}", .Err(_) -> "stopped" }

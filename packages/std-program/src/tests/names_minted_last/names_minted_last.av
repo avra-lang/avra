@@ -1,0 +1,28 @@
+// One answer holding names, saved and folded in a process that mints its names in its own order: the
+// bytes and the key are its names' TEXT, so every process says the same (names_minted_first,
+// names_minted_last, each its own process, each held to one expected output).
+use @std.meta.{derive}
+use saved_derive.{Saved}
+use names.{Name, name_of}
+use answer_record.{content_hash}
+use interned.{HIGH_LANE, LOW_LANE, key_of_lanes}
+
+@derive(Saved)
+type Named = { names: List<Name>, head: Name, note: string }
+
+let minted = [name_of(t) for t in ["omega", "psi", "chi", "phi", "gamma", "beta", "alpha"]]
+let named = Named {
+    names: [name_of("alpha"), name_of("beta"), name_of("gamma")],
+    head: name_of("beta"),
+    note: "n",
+}
+let bytes = named.saved_bytes()
+let saved = content_hash(bytes)
+let key = key_of_lanes(named.folded_into(HIGH_LANE, 0), named.folded_into(LOW_LANE, 0))
+let back = Named.from_saved_bytes(bytes)
+println("saved ${saved.high_word} ${saved.low_word}")
+println("key ${key.high_word} ${key.low_word}")
+println(
+    "read ${[n.text() for n in back.names].join(",")} ${back.head.text()} ${back.head == named.head}",
+)
+println("minted in its own order ${minted[0].id < name_of("alpha").id}")

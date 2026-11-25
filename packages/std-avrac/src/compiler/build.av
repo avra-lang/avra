@@ -1,0 +1,473 @@
+//! THE BUILD — a derivation's objects, linked. An unchanged program costs a
+//! hash: its binary is kept under a key over every input's bytes. A changed
+//! one makes the objects of the files that moved and links them with the ones
+//! the store holds for the rest.
+use core.{
+    EmbedKind,
+    new_digest,
+    digest_text,
+    digest_key,
+    digest_of,
+    digest_of_octets,
+    joined,
+    distinct,
+    flatten,
+    rt_sigs,
+    sorted_texts,
+    sorted_by,
+    fp_list,
+    RtSig,
+    TypeRegistry,
+    FileId,
+    DeclId,
+    qtrace,
+    traced,
+}
+use features.{Wanted}
+use @std.relation.{query, lasting}
+use @std.path.{joined_path, relative_path, dir_of, file_name}
+use @std.io.{read_bytes, make_dirs, remove}
+use @std.text.{parse_int, from_codepoint}
+use @std.time.{now_ns}
+use compiler.backend.{
+    in_symbol_order,
+    emit_object,
+    emit_index,
+    objects_made,
+    emit_cores,
+    emit_width,
+    turns_across,
+    Owned,
+    not_closed,
+    program_closed,
+}
+use compiler.lower.{Body, Lowered}
+use @std.grammar.{render_grammar}
+use compiler.memory.{sound_checked}
+use compiler.store.{Store, Stored, Keeping, node_key, store_beside, Reading}
+use compiler.store.mapped.{mapped, mapped_close, mapped_digest}
+use features.{tree_saved}
+use compiler.host.{Stamp, Read}
+use compiler.hosts.{BuildHost, hosts_of, host_word}
+use @std.errors.{Error, ErrorInfo, info}
+use diagnostics.{Diag, new_source_file}
+use @std.relation.engine.{map_cell}
+extern fn avra_spawn_status(prog: string, args: List<string>) -> int
+extern fn avra_pid_alive(pid: int) -> int
+extern fn avra_own_pid() -> int
+
+/// A BUILD'S OWN DEFECT: what the compiler itself could not do to turn an
+/// otherwise-analysed program into a binary. `Diagnosed` is the one variant
+/// with no shape of its own — a report already rendered elsewhere (the
+/// program's own diagnostics, or a workspace refusal with no line to point
+/// at) — carried through verbatim, since nothing here can improve on words
+/// already chosen.
+export enum BuildError {
+    /// The entry file has no statements to run.
+    Empty
+    /// A module `avra_llvm_*` wrote could not be written, or a worker never
+    /// wrote the object it was handed — LLVM's own words, passed through.
+    EmitFailed(message: string)
+    /// The entry's module was written but its bytes could not be read back.
+    ModuleUnreadable(path: string)
+    /// `clang` exited non-zero linking the objects into a binary.
+    LinkFailed(code: int, unanswered: List<string>)
+    /// A held object the store named is no longer where the store put it.
+    ObjectGone(path: string)
+    /// A body calls a symbol nothing in the program declares.
+    NotClosed(missing: string)
+    /// The program reaches a row or package this target has no body for.
+    UnsupportedOnWasm(names: List<string>)
+    /// The program's own analysis, or a workspace-level refusal, already
+    /// rendered this.
+    Diagnosed(report: string)
+    /// The finished binary could not be renamed onto its path.
+    Unpublished(path: string)
+    /// A reached package's C object is not where its manifest names it.
+    ObjectsMissing(paths: List<string>)
+}
+
+impl Error for BuildError {
+    fn describe() -> ErrorInfo {
+        match self {
+            .Empty -> info("build.empty", "the program is empty"),
+            .EmitFailed(m) -> info("build.emit_failed", m),
+            .ModuleUnreadable(p) -> info("build.module_unreadable", module_unreadable(p)),
+            .LinkFailed(code, unanswered) -> info("build.link_failed", clang_link_failed(code) + unanswered_note(unanswered)),
+            .ObjectGone(p) -> info("build.object_gone", object_gone(p)),
+            .NotClosed(missing) -> info("build.not_closed", not_closed(missing)),
+            .UnsupportedOnWasm(names) -> info("build.wasm_unsupported", wasm_unsupported(names)),
+            .Diagnosed(report) -> info("build.diagnosed", report),
+            .Unpublished(p) -> info("build.unpublished", unpublished(p)),
+            .ObjectsMissing(paths) -> info("build.objects_missing", objects_missing(paths)),
+        }
+    }
+}
+
+/// THE FEATURES A WASM MODULE BUILT HERE MAY USE: LLVM's baseline for a
+/// wasm triple that names no CPU, which is what the backend and the C beside
+/// it are built to, and exception handling, which the runtime's guarded run
+/// is built with (Makefile, `WASM_SJLJ_avra_runtime.c`). The optimizer is told
+/// these and no others: told "every feature it knows" it also writes the
+/// encodings no engine ships yet — the compact import section an iPhone's
+/// WebKit cannot parse — and a link carries no feature section it could read
+/// its own set from.
+const WASM_FEATURES = [
+    "bulk-memory",
+    "bulk-memory-opt",
+    "call-indirect-overlong",
+    "exception-handling",
+    "multivalue",
+    "mutable-globals",
+    "nontrapping-float-to-int",
+    "reference-types",
+    "sign-ext",
+]
+
+/// The names an older optimizer does not know: it refuses an `--enable` of a
+/// feature it has no word for, and the same set without them is the set it knows.
+const NEWER_FEATURES = ["bulk-memory-opt", "call-indirect-overlong"]
+
+/// `--enable-<f>` for each of `features`.
+fn enabling(features: List<string>) -> List<string> { ["--enable-${f}" for f in features] }
+
+/// The optimizer's words for `shrinking`, the spellings to try in order: the
+/// features above, then the ones an older optimizer knows. Never a spelling that
+/// lets the optimizer pick.
+fn feature_tries(shrinking: List<string>) -> List<List<string>> {
+    [
+        enabling(WASM_FEATURES).concat(shrinking),
+        enabling([f for f in WASM_FEATURES if !NEWER_FEATURES.contains(f)]).concat(shrinking),
+    ]
+}
+
+/// The optimizer's words to shrink `linked` into `shrunk`, for size.
+/// THE FUNCTIONS ARE NUMBERED BY USE, after the size passes: a call spells
+/// its callee's index in as many bytes as the index needs, and the runtime's
+/// rows — a push, a release, a slot read — are what a program calls most.
+fn wasm_opt_tries(linked: string, shrunk: string) -> List<List<string>> {
+    feature_tries(["-Oz", "--reorder-functions", linked, "-o", shrunk])
+}
+
+/// THE FALLBACK FOR A HOST THAT CANNOT SUSPEND A STACK: the same module with
+/// asyncify over the two host imports a hosted scheduler parks through, the
+/// spellings to try in the order `wasm_opt_tries` tries them.
+const ASYNCIFIED = ["--asyncify", "--pass-arg=asyncify-imports@avra_host.switch,avra_host.idle"]
+
+fn asyncify_tries(shipped: string, out: string) -> List<List<string>> {
+    feature_tries(ASYNCIFIED.concat(["-Oz", shipped, "-o", out]))
+}
+
+/// The module at `shipped` asyncified at `out` by the optimizer `wasm_opt`, for a host that cannot
+/// suspend a stack: its path, or the warning that none could be made.
+export fn asyncified(shipped: string, out: string, wasm_opt: string) -> Shrunk {
+    if asyncify_tries(shipped, out).any((words) -> wasm_opt_runs(wasm_opt, words)) { return Shrunk { path: out, said: "" } }
+    let _ = remove(out)
+    Shrunk { path: null, said: no_fallback(wasm_opt) }
+}
+
+/// A module the optimizer answered, or the words it did not: `path` is null when it made none.
+export type Shrunk = { path: string?, said: string }
+
+/// Where the fallback of `binary` stands: beside it, `app.wasm` to `app.asyncify.wasm`.
+export fn fallback_name(binary: string) -> string {
+    if binary.ends_with(".wasm") { "${binary.substring(0, binary.length - 5)}.asyncify.wasm" } else { "${binary}.asyncify" }
+}
+
+/// ONE OBJECT OF A BUILD: what it is an object of, the key it is kept under,
+/// where it stands for the link, and the source the link orders it by.
+export type Made = { which: Owned, key: string, obj: string, source: string }
+
+/// clang's `-O<n>` as its number, and `-Oz` as the SIZE level — negative, so
+/// the object's pipeline is `default<Oz>`.
+/// THE LEVEL A BUILD EMITS ITS OBJECTS AT unless told otherwise, the same on both paths: `-O1` for
+/// the host, `-Oz` for another `target`, whose module ships over a wire.
+export fn default_opt(target: string) -> string { if target == "" { "-O1" } else { "-Oz" } }
+
+export fn opt_level(opt: string) -> int {
+    if opt == "-Oz" { return -1 }
+    if opt.starts_with("-O") && opt.length == 3 { return opt.char_code(2) - 48 }
+    0
+}
+
+/// What one build links with: the optimisation level, the runtime object,
+/// the linker the host found, the stamp of the driver of each tool it runs —
+/// never what a driver runs in its turn — and the linker that driver is told
+/// to run (`ld`, its own choice when empty).
+export type Toolchain = { opt: string, runtime: string, linker: string, tools: List<Stamp>, target: string = "", reactor: bool = false, wasm_opt: string = "", debug: bool = false, ld: string = "", fallback: bool = false }
+
+/// A SERIAL FOR THIS PROCESS ALONE — `now_ns()`'s own clock cannot be
+/// trusted to tell two calls apart (a wall clock's resolution is not a
+/// promise), so a name minted from the timestamp is never the timestamp alone.
+once fn process_serial() -> Cell<int> { Cell.new(0) }
+
+/// The next serial: never the same twice in this process.
+fn next_serial() -> int {
+    let serial = process_serial()
+    let n = serial.get() + 1
+    serial.set(n)
+    n
+}
+
+/// A path beside `binary` that no other process names. A binary is written
+/// and made ready THERE, then renamed onto `binary` whole (`published`), so a
+/// reader of `binary` never meets it missing, half-written or not yet
+/// executable.
+// LICENSED input.scratch_name: a call-unique scratch path, renamed whole onto its target, never an input of what is built
+export fn staged_beside(binary: string) -> string { "${binary}.${now_ns()}-${next_serial()}.staged" }
+
+/// A path in `dir` that no other process names, for a file bound for `target`: staged there, never
+/// beside the target, so one a stopped build leaves behind lies in a cache and never among the
+/// sources. `dir` is made where it isn't.
+// LICENSED input.scratch_name: a call-unique scratch path, renamed whole onto its target, never an input of what is built
+export fn staged_within(dir: string, target: string) -> string {
+    let _ = make_dirs(dir)
+    // LICENSED input.scratch_name: a call-unique scratch name, never an input of what is built
+    joined_path(dir, "${file_name(target)}.${now_ns()}-${next_serial()}.staged")
+}
+
+/// `staged` renamed onto `to` in one step: what stands at `to` is the old
+/// file or the new one, whole. A failed rename leaves no staged file behind.
+export fn published(staged: string, to: string) -> bool {
+    if avra_spawn_status("mv", ["-f", staged, to]) == 0 { return true }
+    let _ = remove(staged)
+    false
+}
+
+/// THE PRINT OF A COMPILER THIS PROCESS CANNOT IDENTIFY — a host with no
+/// binary to name (a test's, in memory) or one whose binary this process
+/// could not read back. NEVER A SHARED CONSTANT: two such runs are two
+/// different compilers for all this door knows, so trusting one's rows
+/// for the other is exactly the hazard this file exists to refuse — a
+/// nonce this process mints once (`compiler_id`'s memoization) and never
+/// rolls, so it is never mistaken for a real compiler's print and never
+/// read back by a later process either. THE SERIAL, NOT THE CLOCK, IS
+/// WHAT MAKES TWO ASKS IN ONE PROCESS DISAGREE: two workspaces built
+/// back to back can land in the same tick of a coarse wall clock.
+export fn unnamed_print() -> string {
+    // LICENSED input.scratch_name: a call-unique scratch name, never an input of what is built
+    "unnamed-${now_ns()}-${next_serial()}"
+}
+
+/// The tools as their inputs' digests, one per line — none for no tools,
+/// and none when the host cannot tell one: a toolchain that names nothing
+/// it can tell makes nothing a kept binary can be trusted for.
+fn told(tools: List<Stamp>) -> string? {
+    if tools.is_empty() || tools.any(it.mark == null) { return null }
+    joined([Read.Tool(s.path, s).input().digest.key for s in tools], "\n")
+}
+
+/// A binary's bytes as one digest — null when it cannot be read back — read through a mapping a window
+/// at a time, so a compiler's own print never holds its binary whole. BLAKE3: the
+/// content hash that names a kept object and detects a stale one.
+export fn digest_of_binary(at: string) -> string? {
+    // LICENSED input.object_digest: the bytes are the key itself; a read that fails answers null and keys nothing
+    let m? = mapped(at) else { return null }
+    let digest = mapped_digest(m)
+    mapped_close(m)
+    digest
+}
+
+/// The checkout `root` stands in, asking `there` what stands at it and at each ancestor: the nearest
+/// holding a `.git`, `root` itself first.
+export fn tree_root_of(root: string, there: fn(string) -> bool) -> string {
+    if there(joined_path(root, ".git")) { return root }
+    mut manifest_root = root
+    mut up = dir_of(root)
+    while up != dir_of(up) {
+        if there(joined_path(up, ".git")) { return up }
+        if there(joined_path(up, "avra.toml")) { manifest_root = up }
+        up = dir_of(up)
+    }
+    manifest_root
+}
+
+/// What names a kept program: its name among the root's, and the inputs beside
+/// its sources.
+export type Keyed = { named: string, beside: List<string> }
+
+impl Toolchain {
+    /// WHAT THIS TOOLCHAIN'S OUTPUT IS FOR, beside the compiler that makes it:
+    /// every word that moves an object's bytes or the linked module's. The
+    /// host's own build is the empty mode.
+    fn mode() -> string {
+        if self.target == "" { return "" }
+        "${self.target}${marked(self.reactor, "+reactor")}${marked(self.wasm_opt != "", "+opt")}${marked(self.debug, "+debug")}${marked(self.fallback, "+fallback")}"
+    }
+}
+
+/// A mode's mark, written only when it holds.
+fn marked(holds: bool, mark: string) -> string { if holds { mark } else { "" } }
+
+/// A build's output path: a wasm module carries `.wasm`, so a native and a
+/// wasm build of one source never stand at one path.
+fn target_binary(entry: string, target: string) -> string {
+    if target == "" { binary_name(entry) } else { "${binary_name(entry)}.wasm" }
+}
+
+/// Whether an archive's index text names `name` as a whole symbol: the index ends
+/// each name with a NUL, and a mach-o name wears a leading `_`.
+fn named_in(archive: string, name: string) -> bool {
+    archive.contains(name + from_codepoint(0))
+}
+
+/// The text of an `ar` archive's first member when it is the symbol index —
+/// GNU's `/` or the BSD `__.SYMDEF` — and none otherwise. A member's header is
+/// 60 bytes after the 8-byte magic, its size the ten digits at offset 48.
+fn armap_text(archive: Bytes) -> string {
+    if archive.length < 68 { return "" }
+    let name = archive.slice(8, 24).text_lossy()
+    let size = parse_int(archive.slice(56, 66).text_lossy().trim()) ?? 0
+    let data = archive
+        .slice(68, if 68 + size > archive.length { archive.length } else { 68 + size })
+        .text_lossy()
+    if name.starts_with("/ ") || name.starts_with("#1/") && data.contains("__.SYMDEF") { data } else { "" }
+}
+
+fn unanswered_note(names: List<string>) -> string {
+    if names.is_empty() { return "" }
+    "\nno package's library and no host fn of this program defines ${["`${n}`" for n in names].join(", ")} — when the linker names one of them, a host answers it: build for that host, or answer it here with `extern fn ${names[0]}(…) { … }`"
+}
+
+/// THE LINKED FILE AS IT SHIPS, the one staged file left standing: a wasm
+/// module is what a browser downloads, so it is shrunk when the host offers
+/// the optimizer and that succeeds — the link's own answer otherwise, and the
+/// build says so. What a build keeps and what it publishes are both this file.
+export fn shipped(staged: string, tools: Toolchain) -> Shrunk {
+    if tools.target == "" || tools.wasm_opt == "" { return Shrunk { path: staged, said: "" } }
+    let shrunk = staged_beside(staged)
+    if !wasm_opt_tries(staged, shrunk).any((words) -> wasm_opt_runs(tools.wasm_opt, words)) {
+        let _ = remove(shrunk)
+        return Shrunk { path: staged, said: unoptimized(tools.wasm_opt) }
+    }
+    let _ = remove(staged)
+    Shrunk { path: shrunk, said: "" }
+}
+
+/// The declarations a program's module brings that nothing standing makes — each once.
+fn undeclared(brought: List<Body>, stand: List<Body>) -> List<Body> {
+    mut named: Map<string, bool> = {}
+    for bd in stand { named.set(bd.name, true) }
+    mut out: List<Body> = []
+    for c in brought {
+        if named.get(c.name) == null { out.push(c) }
+        named.set(c.name, true)
+    }
+    out
+}
+
+/// The program lowered whole, in emission order, or the symbol nothing declares.
+fn closed(full: Lowered) -> Result<Lowered, BuildError> {
+    let missing? = program_closed(full) else { return in_symbol_order(full) }
+    fail BuildError.NotClosed(missing)
+}
+
+/// EVERY OWED OBJECT WRITTEN, `made(i)` making `owed[i]`, across a process per core where there are
+/// enough to split, each taking the heaviest by `weights` that no other has taken; the first
+/// refusal, or null. Each object is the same bytes whichever process wrote it.
+export fn written_across(
+    made: fn(int) -> Lowered,
+    owed: List<Made>,
+    weights: List<int>,
+    opt: int,
+    target: string,
+) -> string? {
+    let all = [i for i in 0..owed.length]
+    let processes = if owed.length < WORTH_FORKING { 1 } else { [emit_cores(), owed.length].min() ?? 1 }
+    if processes < 2 { return written_each(made, owed, all, opt, target, emit_width()) }
+    // the machine's workers are shared among the processes, never multiplied by them
+    let workers = [emit_width() / processes, 1].max() ?? 1
+    let heaviest_first = sorted_by(all, (a: int, b: int) -> weights[a] > weights[b])
+    let ran = turns_across(
+        processes,
+        owed.length,
+        (turn: int) -> written_said(
+            written_each(made, owed, [heaviest_first[turn]], opt, target, workers),
+        ),
+    )
+    if ran == null { return written_each(made, owed, all, opt, target, emit_width()) }
+    if ran! { null } else { objects_not_written(owed.length) }
+}
+
+/// Below this many owed objects a fork costs more than it saves.
+const WORTH_FORKING: int = 4
+
+/// The objects `owed` names at `at`, each made by `made` at the same place and handed to one of
+/// `workers` workers, all waited for; the first refusal, or null.
+fn written_each(
+    made: fn(int) -> Lowered,
+    owed: List<Made>,
+    at: List<int>,
+    opt: int,
+    target: string,
+    workers: int,
+) -> string? {
+    let broke = [b! for b in [handed(made(i), [owed[i]], opt, target, workers) for i in at] if b != null]
+        .first()
+    let unwritten = objects_made()
+    broke ?? unwritten
+}
+
+/// Whether a share was written, its refusal said where it wasn't.
+fn written_said(refused: string?) -> bool {
+    if refused != null { eprintln(refused!) }
+    refused == null
+}
+
+/// Every owed object's module built and handed to a worker — the first
+/// refusal, or null: a module the memory pass's proof refused is never
+/// emitted. `objects_made` waits for them.
+export fn handed(full: Lowered, owed: List<Made>, opt: int, target: string, workers: int = 0) -> string? {
+    if !full.diagnostics.is_empty() { return unsound(full.diagnostics) }
+    let ix = emit_index(full)
+    for o in owed {
+        let broke = emit_object(full, ix, o.obj, o.which, opt, target, workers)
+        if broke != null { return broke }
+    }
+    null
+}
+
+// ── The voices ──
+
+/// The memory pass's own proof refused the bucket it left: each defect in its words.
+fn unsound(ds: List<Diag>) -> string {
+    ["defect: ${d.message}" for d in ds].join("\n")
+}
+
+fn object_gone(path: string) -> string {
+    "avra: a held object disappeared: ${path}"
+}
+
+fn objects_missing(paths: List<string>) -> string {
+    "avra: a package's C is not built: ${paths.join(", ")} — `make libs` builds the package objects of a checkout (`make wasm-packages` for a wasm target)"
+}
+
+fn unpublished(path: string) -> string {
+    "avra: the built binary could not be moved into place — ${path}"
+}
+
+fn objects_not_written(count: int) -> string {
+    "avra: of ${count} object(s), a process making some left without writing them all"
+}
+
+fn module_unreadable(path: string) -> string {
+    "avra: the entry's module could not be read back — ${path}"
+}
+
+fn unoptimized(tool: string) -> string {
+    "warning: `${tool}` refused the linked module under the features its link uses, so it ships unoptimized — a size cost, never another program"
+}
+
+fn no_fallback(tool: string) -> string {
+    "warning: `${tool}` could not asyncify the module, so none ships for a host that cannot suspend a stack"
+}
+
+export fn wasm_unsupported(names: List<string>) -> string {
+    "avra: a wasm module has no body for ${names.join(", ")} — a fiber, a core and a package's C are not available on this target"
+}
+
+/// Whether `wasm-opt` ran clean over `words`.
+fn wasm_opt_runs(tool: string, words: List<string>) -> bool {
+    // LICENSED input.staged_output: post-processes the program just built, never an input of what is built
+    avra_spawn_status(tool, words) == 0
+}
