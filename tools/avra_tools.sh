@@ -12,10 +12,11 @@
 #   1. build/avra-tools/<key>/avra-tools, already here;
 #   2. the published asset for the key, fetched — on Linux x86-64 only, the one platform CI
 #      publishes for; any other machine builds its own;
-#   3. built here by $AVRA_TOOLS_COMPILER, else by main's published compiler (Linux x86-64) or
-#      the standing build/avra (any other machine)
-#      (tools/compiler_release.py install, into $dir/compiler), for a tree whose tools/
-#      differs from anything published — run from build/, where a compiler stands;
+#   3. built here by $AVRA_TOOLS_COMPILER, else by the tree's own standing build/avra, for a
+#      tree whose tools/ differs from anything published — run from build/, where a compiler
+#      stands. NEVER BY A FETCHED COMPILER: a released one predates the rows this tree's std
+#      declares, and refuses the very packages the tools link (`type.host_seat`), so a keeper
+#      the tree is held to would fail on the fetch, not on the tree;
 #   4. the Python tool of the same name (tools/<command with _>.py), while no
 #      binary answers — said on stderr, so a fallback is never silent.
 set -eu
@@ -38,17 +39,6 @@ build_tools() {
     fi
 }
 
-# Main's compiler, installed beside (never over) the standing build/avra: main's own
-# key, else the newest published (main's key is unpublished until its run proves it).
-# A checkout of the PR's ref alone holds no origin/main, so it is fetched first.
-main_compiler() {
-    git rev-parse -q --verify origin/main >/dev/null 2>&1 ||
-        git fetch -q --depth 1 origin main:refs/remotes/origin/main >&2 || true
-    python3 tools/compiler_release.py install --into "$dir/compiler" >&2 && return 0
-    mkdir -p "$dir/compiler"
-    python3 tools/compiler_release.py latest "$dir/compiler/avra" >&2 && chmod +x "$dir/compiler/avra"
-}
-
 key=$(sh tools/tools_key.sh)
 dir=build/avra-tools/$key
 bin=$dir/avra-tools
@@ -59,13 +49,9 @@ if [ ! -x "$bin" ] && [ "$published" = 1 ]; then
     mkdir -p "$dir"
     python3 tools/compiler_release.py --asset avra-tools fetch "tools-$key" "$bin" >&2 && chmod +x "$bin" || true
 fi
-if [ ! -x "$bin" ] && [ -z "${AVRA_TOOLS_COMPILER:-}" ]; then
-    if [ "$published" = 1 ]; then
-        main_compiler && AVRA_TOOLS_COMPILER="$dir/compiler/avra" || true
-    elif [ -x build/avra ]; then
-        mkdir -p "$dir"
-        AVRA_TOOLS_COMPILER=build/avra
-    fi
+if [ ! -x "$bin" ] && [ -z "${AVRA_TOOLS_COMPILER:-}" ] && [ -x build/avra ]; then
+    mkdir -p "$dir"
+    AVRA_TOOLS_COMPILER=build/avra
 fi
 if [ ! -x "$bin" ] && [ -n "${AVRA_TOOLS_COMPILER:-}" ] && [ -x "$AVRA_TOOLS_COMPILER" ]; then
     build_tools "$AVRA_TOOLS_COMPILER" || true
