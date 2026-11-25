@@ -278,19 +278,17 @@ type TypedNodes = {
 /// didn't parse misses nothing.
 fn misses_seen(view: ItemView) -> ItemMisses {
     let held? = view.misses.get() else {
-        let made = misses_made(view.engine, view.file, view.at, view.item)
+        let made = misses_made(view)
         view.misses.set(made)
         return made
     }
     held
 }
 
-/// Every miss in the written item `at` of `file`, read back as `item`.
-fn misses_made(engine: QueryEngine, file: SourceFileAddress, at: ItemId, item: ReadItem) -> ItemMisses {
-    if !item.store.refusals().is_empty() { return ItemMisses { rows: [] } }
-    ItemMisses {
-        rows: flatten([misses_in(engine, t) for t in item_typed_nodes(engine, file, at, item)]),
-    }
+/// Every miss in the item `view` shows.
+fn misses_made(view: ItemView) -> ItemMisses {
+    if !view.item.store.refusals().is_empty() { return ItemMisses { rows: [] } }
+    ItemMisses { rows: flatten([misses_in(view.engine, t) for t in typed_seen(view)]) }
 }
 
 /// The nodes the written item `at` of `file`, read as `item`, holds, typed: the statements it runs

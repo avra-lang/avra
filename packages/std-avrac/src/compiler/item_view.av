@@ -329,9 +329,16 @@ fn impls_seen(view: ItemView) -> List<ImplAt> {
 fn item_typed_nodes(engine: QueryEngine, file: SourceFileAddress, at: ItemId, item: ReadItem) -> List<
     TypedNodes,
 > {
-    let view = item_view(engine, file, at)
+    typed_held(item_view(engine, file, at), engine, item)
+}
+
+/// The nodes the item `view` shows holds, typed.
+fn typed_seen(view: ItemView) -> List<TypedNodes> { typed_held(view, view.engine, view.item) }
+
+/// The nodes `view`'s item, read as `item` in `engine`, holds, typed: held on the view once made.
+fn typed_held(view: ItemView, engine: QueryEngine, item: ReadItem) -> List<TypedNodes> {
     let made? = view.typed.get() else {
-        let typed = typed_nodes_read(engine, file, at, item, impls_seen(view))
+        let typed = typed_nodes_read(engine, view.file, view.at, item, impls_seen(view))
         view.typed.set(typed)
         return typed
     }
@@ -347,7 +354,15 @@ export fn item_stated_bodies(
     at: ItemId,
     item: ReadItem,
 ) -> List<StatedBody> {
-    let view = item_view(engine, file, at)
+    stated_held(item_view(engine, file, at), engine, item)
+}
+
+/// Every body the item `view` shows holds, typed, each beside the statement that declares it.
+fn stated_seen(view: ItemView) -> List<StatedBody> { stated_held(view, view.engine, view.item) }
+
+/// Every body `view`'s item, read as `item` in `engine`, holds, typed, each beside the statement that
+/// declares it: held on the view once taken.
+fn stated_held(view: ItemView, engine: QueryEngine, item: ReadItem) -> List<StatedBody> {
     let mine? = view.stated.get() else { return stated_taken(engine, view, item).bodies }
     mine.bodies
 }
