@@ -1024,26 +1024,25 @@ impl TypeCx {
         self.view.types.intern(answers)
     }
 
-    /// The by-value law over a TYPE: the scalars and text, an enum whose
-    /// variants carry nothing — it compares by variant — and a record of
-    /// ONE field, which compares by that field. The one place equality is
-    /// decided: `==`, a list's scans and a literal pattern all ask here.
-    fn compares_by_value(ty: TypeId) -> bool {
-        // a compare READS: a name is judged by the shape it stands over
+    /// Whether a value of `ty` is FLAT: it compares by value and is one word to compare — the scalars
+    /// and text; an enum whose variants carry nothing; a record of one field that is flat; a nullable
+    /// of one. A component's prop that is flat is a cell, and a cached fn's context is flat; a record
+    /// of more, a list or a payload compares too, but by walking its parts, which neither law reads.
+    fn compares_flat(ty: TypeId) -> bool {
         let seen = self.view.types.seen_through(ty)
         let inner? = self.view.types.carried(seen) else {
             return comparable(self.view.types.shape_of(seen)) ||
                 self.unit_enum(seen) ||
-                self.one_field(seen)
+                self.one_flat_field(seen)
         }
-        self.compares_by_value(inner)
+        self.compares_flat(inner)
     }
 
-    /// A record of exactly one field that compares by value — read from
-    /// its declaration, never from the layout registry mid-flight.
-    fn one_field(ty: TypeId) -> bool {
+    /// A record of exactly one field that is flat — read from its declaration, never from the layout
+    /// registry mid-flight.
+    fn one_flat_field(ty: TypeId) -> bool {
         let sig? = self.fields_of(ty) else { return false }
-        sig.types.length == 1 && self.compares_by_value(sig.types[0])
+        sig.types.length == 1 && self.compares_flat(sig.types[0])
     }
 
     /// An enum every variant of which carries nothing — a tag alone.
@@ -1051,6 +1050,43 @@ impl TypeCx {
         if !(self.view.types.shape_of(ty) is .Enum) { return false }
         let sig: EnumSig? = self.variants_of(ty)
         sig != null && sig!.payloads.all(it.is_empty())
+    }
+
+    /// The by-value law over a TYPE — the derived equality every type whose parts compare has: the
+    /// scalars and text; an enum every payload of whose variants compares; a record every field of
+    /// which does; a list of what does; a nullable of one. A float inside any of them is refused (a
+    /// part compares exactly, and a float's `==` is not its bits), and so is anything holding a fn, a
+    /// cell, a map or a task. The one place equality is decided: `==`, a list's scans and a literal
+    /// pattern all ask here, and the core's `Shapes` law answers the same.
+    fn compares_by_value(ty: TypeId) -> bool { self.compared_by_value(ty, [], false) }
+
+    /// `compares_by_value`, `seen` the types already being asked (one that holds itself does not
+    /// compare), `part` whether `ty` stands inside a record, a list or a variant.
+    fn compared_by_value(ty: TypeId, seen: List<int>, part: bool) -> bool {
+        // a compare READS: a name is judged by the shape it stands over
+        let through = self.view.types.seen_through(ty)
+        let inner = self.view.types.carried(through)
+        if inner != null { return self.compared_by_value(inner!, seen, part) }
+        // a type that holds itself has no derived equality yet: the comparison is written out whole
+        if seen.contains(through.index) { return false }
+        let asking = seen.concat([through.index])
+        let sh = self.view.types.shape_of(through)
+        match sh {
+            .Float -> !part,
+            .List(elem) -> self.compared_by_value(elem, asking, true),
+            .Enum(_, _) -> {
+                let sig: EnumSig? = self.variants_of(through)
+                sig != null &&
+                    sig!.payloads.all(it.all((p) -> self.compared_by_value(p, asking, true)))
+            },
+            .Struct(_, _) -> {
+                let sig? = self.fields_of(through) else { return false }
+                !sig.types.is_empty() &&
+                    !sig.states.any(it) &&
+                    sig.types.all((f) -> self.compared_by_value(f, asking, true))
+            },
+            rest -> comparable(sh),
+        }
     }
 
     // ── The voices: every refusal worded HERE, once ──
@@ -2012,7 +2048,7 @@ impl TypeCx {
         let x: ExprId? = self.view.store.place_root(a)
         let ba: Binding? = if x == null { null } else { self.names.binding(x!) }
         let bb: Binding? = self.names.binding(b)
-        ba != null && bb != null && same_binding(ba!, bb!)
+        ba != null && bb != null && ba! == bb!
     }
 
     mut fn value_in_mut_seat(a: ExprId, callee: string, j: int) { self.emit(said_as("type.seat", self.loc_of(a), valued_seat(callee, j))) }
@@ -2413,7 +2449,7 @@ fn postfix_ready(e: Expr) -> bool {
 /// `op` beside a value of `found`, which compares by no value, `help` saying what to reach for.
 export fn uncompared(op: string, found: string, help: string) -> Voice {
     Voice {
-        message: "`${op}` compares by value — a scalar, text, a tagged enum, or a record of one such field",
+        message: "`${op}` compares by value — a value whose every part does: a scalar, text, an enum, a record or a list of those, never a float inside one, a fn, a cell, a map, a task or a type that holds itself",
         label: this_is(found),
         help: help,
     }
@@ -2450,7 +2486,7 @@ export fn compare_help(o: Offered) -> string {
         .Task -> "compare what it answers — `.await` it first",
         .Tasks -> "an owner of tasks is not a value to compare",
         .Record -> "compare a field instead",
-        .Enum -> "match on it instead — only an enum carrying nothing compares, by variant",
+        .Enum -> "match on it instead — a part of it does not compare",
         .Absence -> "answer the absence first — `??` gives it a value",
         .EmptyList -> "an empty list compares with nothing — give it elements or a declared type",
         .Map -> "maps do not compare — ask `get`",

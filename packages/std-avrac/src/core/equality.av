@@ -1,40 +1,105 @@
-//! TWO VALUES THE SAME: a number or a truth by one instruction, text and bytes by the runtime's row,
-//! an enum by its tag, a record of one field by that field, all the way down, two nullables of one
-//! of those by their presence, then what each carries, and two values of a named type as its shape.
+//! TWO VALUES THE SAME — the derived equality: a number or a truth by one instruction, text and bytes
+//! by the runtime's row, a value that rides a box by the runtime's walk of it, a word enum by its tag,
+//! a value enum by its tag and word, a flat record field by field, two nullables by their presence,
+//! then what each carries, and two values of a named type as its shape.
 
 impl Lowering {
-    /// Whether two values of `ty` compare by value: a number, a truth, text or bytes, an enum by its
-    /// tag, a record of one field that does, a nullable of one of those, or a named type over one.
-    fn equatable(ty: SignedType) -> bool {
-        let shape = self.program.checked.named_shape(ty)
-        if shape != null { return self.equatable(shape!) }
-        if ty.nullable() { return !ty.unwrapped().nullable() && self.equatable(ty.unwrapped()) }
-        if ty.dynamic || !ty.args.is_empty() { return false }
-        if ty.owned() != null { return comparing(self.program.checked.layout(ty)) != null }
-        if self.variants_of(ty) != null { return true }
-        let fields? = self.fields_of(ty) else { return false }
-        fields.length == 1 &&
-            !fields[0].state &&
-            fields[0].ty != null &&
-            self.equatable(fields[0].ty!)
-    }
+    /// Whether two values of `ty` compare by value: the typing law's own answer (`Shapes`), so what
+    /// typing admits is what lowers.
+    fn equatable(ty: SignedType) -> bool { self.program.checked.shapes().compares_by_value(ty) }
 
-    /// Whether `a` and `b`, two values of `ty` that `equatable` passes, are the same value.
+    /// Whether two values of `ty` compare as one word — `Shapes.compares_flat`.
+    fn flat(ty: SignedType) -> bool { self.program.checked.shapes().compares_flat(ty) }
+
+    /// Whether `a` and `b`, two values of `ty` that `equatable` passes, are the same value, by its
+    /// type all the way down: a scalar by its instruction or row; a list by its length, then each
+    /// element; an enum by its tag, then the payloads that tag's variant carries; a record field by
+    /// field, read where its layout keeps it — a box's slots or a flat record's registers. Typing
+    /// admits no type that holds itself, so the comparison it writes out ends.
     mut fn same_value(a: Reg, b: Reg, ty: SignedType) -> Reg {
         let shape = self.program.checked.named_shape(ty)
         if shape != null { return self.same_value(a, b, shape!) }
         if ty.nullable() { return self.same_held(a, b, ty) }
         if ty.owned() != null {
+            let listed = ty.listed()
+            if listed != null { return self.same_list(a, b, listed!) }
             return match comparing(self.program.checked.layout(ty))! {
                 .Instruction -> self.bin(Layout.Truth, BinOp.Eq, a, b),
                 .Row(name) -> self.call_row(Layout.Truth, rt_sig_of(name)!, [a, b]),
             }
         }
-        if self.variants_of(ty) != null { return self.bin(Layout.Truth, BinOp.Eq, self.tag_of(a), self.tag_of(b)) }
-        let field = self.fields_of(ty)![0].ty!
-        let fa = self.only_field(a, ty, field)
-        let fb = self.only_field(b, ty, field)
-        self.same_value(fa, fb, field)
+        let variants = self.variants_of(ty)
+        if variants != null { return self.same_variant(a, b, variants!) }
+        let fields = self.fields_of(ty) ?? []
+        let laids = [self.laid_out(f.ty!) for f in fields]
+        self.same_fields(a, b, ty, fields, laids, 0)
+    }
+
+    /// Two lists of `elem`s the same: one length, then each element the same as the one at its place
+    /// in the other.
+    mut fn same_list(a: Reg, b: Reg, elem: SignedType) -> Reg {
+        let lb = self.call_row(Layout.Word, rt_sig_of("avra_array_len")!, [b])
+        let w = self.walk_list(a, elem)
+        self
+            .region(self.bin(Layout.Truth, BinOp.Eq, w.len, lb), Layout.Truth) { cx -> cx.same_elements(w, b) } else { cx -> cx.const_bool(false) }
+    }
+
+    /// The walk `w` over one list, each element against the one at its place in `b`: false once any
+    /// differs.
+    mut fn same_elements(w: ListWalk, b: Reg) -> Reg {
+        let held = self.seeded_cell(Layout.Truth, self.const_bool(true))
+        let here = self.walk_turn(w)
+        self.labelled([])
+        let mine = self.walked_element(w, here)
+        let theirs = self.element_at(w.elem_layout, b, here)
+        self
+            .void_region(self.not(self.same_value(mine, theirs, w.elem))) { cx -> cx.stored(held, cx.const_bool(false)) }
+        self.loop_end()
+        self.loaded(Layout.Truth, held)
+    }
+
+    /// Two enums the same: one tag, then each payload the variant of that tag carries.
+    mut fn same_variant(a: Reg, b: Reg, variants: List<VariantSeat>) -> Reg {
+        let ta = self.tag_of(a)
+        let same_tag = self.bin(Layout.Truth, BinOp.Eq, ta, self.tag_of(b))
+        if variants.all(it.payloads.is_empty()) { return same_tag }
+        self
+            .region(same_tag, Layout.Truth) { cx -> cx.same_payloads_of(a, b, ta, variants, 0) } else { cx -> cx.const_bool(false) }
+    }
+
+    /// The payloads of the variant of tag `tag`, from variant `k` on: each variant asked in turn.
+    mut fn same_payloads_of(a: Reg, b: Reg, tag: Reg, variants: List<VariantSeat>, k: int) -> Reg {
+        if k >= variants.length { return self.const_bool(true) }
+        let payloads = variants[k].payloads
+        if payloads.is_empty() { return self.same_payloads_of(a, b, tag, variants, k + 1) }
+        let carried = [self.laid_out(p.ty!) for p in payloads]
+        self
+            .region(self.bin(Layout.Truth, BinOp.Eq, tag, self.const_int(k)), Layout.Truth) { cx -> cx.same_payloads(a, b, payloads, carried, 0) } else { cx -> cx.same_payloads_of(a, b, tag, variants, k + 1) }
+    }
+
+    /// Payloads `j` on of one variant, the same.
+    mut fn same_payloads(a: Reg, b: Reg, payloads: List<FieldSeat>, carried: List<Layout>, j: int) -> Reg {
+        if j >= payloads.length { return self.const_bool(true) }
+        let pa = self.payload_at(a, j, carried)
+        let pb = self.payload_at(b, j, carried)
+        self
+            .region(self.same_value(pa, pb, payloads[j].ty!), Layout.Truth) { cx -> cx.same_payloads(a, b, payloads, carried, j + 1) } else { cx -> cx.const_bool(false) }
+    }
+
+    /// Fields `n` on of the records `a` and `b` of `ty`, the same, the first that differs answering.
+    mut fn same_fields(
+        a: Reg,
+        b: Reg,
+        ty: SignedType,
+        fields: List<FieldSeat>,
+        laids: List<Layout>,
+        n: int,
+    ) -> Reg {
+        if n >= fields.length { return self.const_bool(true) }
+        let fa = self.field_read(a, ty, laids, n)
+        let fb = self.field_read(b, ty, laids, n)
+        self
+            .region(self.same_value(fa, fb, fields[n].ty!), Layout.Truth) { cx -> cx.same_fields(a, b, ty, fields, laids, n + 1) } else { cx -> cx.const_bool(false) }
     }
 
     /// Whether `a` and `b`, two values of the nullable `ty`, are the same: both absent, or both present

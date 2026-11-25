@@ -1735,7 +1735,7 @@ Wants the typer does not carry yet:
 - A bound method as a value (`xs.any(self.rides)`) is read as a property ("no field `rides` on `S`"); write `(k) -> self.rides(k)`.
 - `it` through a self-method wrapper (`xs.any(self.rides(it))`) is "`it` has no element here"; `it` binds to the nearest call, and a pipe stage is such a call.
 - `[1, 2].join(",")` is "`join` reads a list of text, this one holds `int`"; map to text first.
-- `==`, `contains`/`index_of` and a literal pattern compare a scalar, text, a tagged enum, or a one-field record; two fields is "`==` compares by value — …", and an enum carrying a payload is refused too (help: match on it).
+- `==`, `contains`/`index_of` and a literal pattern compare by value — derived, never written: a record field by field, an enum by variant and then payload, a list by length and then element. A value with a part that does not compare (a float inside a composite, a fn, a cell, a map, a task, a type that holds itself) is refused, "`==` compares by value — a value whose every part does: …". A hand-rolled `fn same_<t>(a: T, b: T) -> bool` is `compiler.trait_family`'s finding: write `==`, or license the fn if it is another law (identity by index, a key over some fields).
 - A named type is opaque at a seat and transparent at a read: a `Rows` seat refuses a computed `List<int>` ("wants `Rows`, found `List<int>`") and takes a literal.
 - `r catch null` answers the ok side, so `let x? = r catch null else { … }` is "a `catch` arm answers the ok side: `D`, this is `null`"; a `Result` read as absence is a `match` (`.Ok(d) -> d, .Err(_) -> null`).
 

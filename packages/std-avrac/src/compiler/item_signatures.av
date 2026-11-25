@@ -199,9 +199,9 @@ fn alias_written(engine: QueryEngine, file: SourceFileAddress, name: string) -> 
 fn alias_path(engine: QueryEngine, here: DeclaredAt, home: DeclaredAt, seen: List<DeclaredAt>) -> List<
     DeclaredAt,
 >? {
-    if seen.any((x) -> same_declared(x, here)) { return null }
+    if seen.any(it == here) { return null }
     let named = aliases_named(engine, here)
-    if named.any((d) -> same_declared(d, home)) { return [] }
+    if named.any(it == home) { return [] }
     named.find_map((d) -> alias_through(engine, d, home, seen.concat([here])))
 }
 
@@ -548,7 +548,7 @@ fn field_seat(engine: QueryEngine, signing: Signing, p: Param) -> FieldSeat {
     FieldSeat {
         name: p.name.text(),
         ty: ty,
-        state: p.state || p.prop && ty != null && declared_shapes(engine).compares_by_value(ty!),
+        state: p.state || p.prop && ty != null && declared_shapes(engine).compares_flat(ty!),
         over: shown_over(p),
     }
 }
@@ -604,8 +604,8 @@ fn spread_record(engine: QueryEngine, file: SourceFileAddress, name: string) -> 
 fn spread_chain(engine: QueryEngine, from: DeclaredAt, to: DeclaredAt, seen: List<DeclaredAt>) -> List<
     DeclaredAt,
 >? {
-    if same_declared(from, to) { return [] }
-    if seen.any((d) -> same_declared(d, from)) { return null }
+    if from == to { return [] }
+    if seen.any(it == from) { return null }
     let item? = record_item(engine, from.file, from.name) else { return null }
     let parts? = [p! for s in item.stmts for p in [item.store.struct_parts(s)] if p != null]
         .find(it.name == from.name) else { return null }
@@ -616,9 +616,6 @@ fn spread_chain(engine: QueryEngine, from: DeclaredAt, to: DeclaredAt, seen: Lis
     }
     null
 }
-
-/// Whether `a` and `b` are one declaration.
-fn same_declared(a: DeclaredAt, b: DeclaredAt) -> bool { same_file(a.file, b.file) && a.name == b.name }
 
 /// The declaration `file` makes as `name`, as a place.
 fn declared_place(file: SourceFileAddress, name: string) -> DeclaredAt { DeclaredAt { file: file, name: name } }
