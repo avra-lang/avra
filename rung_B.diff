@@ -1,0 +1,486 @@
+diff --git a/packages/std-avrac/src/compiler/mod.av b/packages/std-avrac/src/compiler/mod.av
+index 9b91ac0c..b5d67260 100644
+--- a/packages/std-avrac/src/compiler/mod.av
++++ b/packages/std-avrac/src/compiler/mod.av
+@@ -29,7 +29,7 @@
+ //!   dev/       the compiler's own proofs: attacks, diagnostic witnesses
+ use core.{flatten, some_list, row_for, PayloadRow, node_payload_rows, has_anchor}
+ use @std.meta.{Field}
+-use @std.grammar.{Grammar, Build, Diagnostic, Ready, ready, node_builder_name, defect}
++use @std.grammar.{Grammar, Build, Seq, Diagnostic, Ready, ready, node_builder_name, defect}
+ use grammar.{avra_known_terminals}
+ use compiler.format.{rule_scale, worded_nodes}
+ use features.{
+@@ -47,6 +47,7 @@ use features.{
+     bind_nodes,
+     node_builders,
+     computes,
++    computed_extras,
+     BlockWords,
+ }
+ use diagnostics.{Diag, DiagCode, new_source_file}
+@@ -134,7 +135,7 @@ export fn assemble(features: List<LanguageFeature>) -> Language {
+             bound.defects,
+             template_defects(bound.g, rows),
+             builder_defects(features, g),
+-            computed_defects(g),
++            computed_defects(g, rows),
+             code_defects(codes),
+             wording_defects(wordings, worded_nodes),
+         ],
+@@ -169,36 +170,62 @@ fn with_nodes(
+         let held? = out.get(name) else { continue }
+         out.set(name, held with { payloads: row.payloads, anchor: anchorage(row.payloads) })
+     }
+-    // a computed node's fn reads the labels of the node its rule names
+-    for c in computed_builds(g) {
++    // a computed node's fn reads its node's labels, then the branch's own
++    for c in computed_builds(g, rows) {
+         let row? = row_for(rows, c.owner, c.variant) else { continue }
+         let held? = out.get(c.by) else { continue }
+-        out.set(c.by, held with { payloads: row.payloads, anchor: anchorage(row.payloads) })
++        let extras = [Field { name: x, ty: "", at: null } for x in c.extras]
++        out
++            .set(
++                c.by,
++                held with { payloads: row.payloads.concat(extras), anchor: anchorage(row.payloads) },
++            )
+     }
+     out
+ }
+ 
+-/// One `-> Owner.Variant by fn` a rule writes.
+-type ComputedBuild = { rule: string, owner: string, variant: string, by: string }
++/// One `-> Owner.Variant by fn` a rule writes, and the labels it writes
++/// beyond the node's payloads.
++type ComputedBuild = { rule: string, owner: string, variant: string, by: string, extras: List<string> }
+ 
+ /// Every computed build the grammar's branches write.
+-fn computed_builds(g: Grammar) -> List<ComputedBuild> {
+-    flatten([some_list(computed_of(r.name, s.build)) for r in g.rules for s in r.body.seqs()])
++fn computed_builds(g: Grammar, rows: List<PayloadRow>) -> List<ComputedBuild> {
++    flatten([some_list(computed_of(r.name, s, rows)) for r in g.rules for s in r.body.seqs()])
+ }
+ 
+-fn computed_of(rule: string, b: Build?) -> ComputedBuild? {
+-    let held? = b else { return null }
++fn computed_of(rule: string, s: Seq, rows: List<PayloadRow>) -> ComputedBuild? {
++    let held? = s.build else { return null }
+     match held {
+-        .Computed(owner, variant, by, _) -> ComputedBuild { rule: rule, owner: owner, variant: variant, by: by },
++        .Computed(owner, variant, by, _) -> ComputedBuild {
++            rule: rule,
++            owner: owner,
++            variant: variant,
++            by: by,
++            extras: computed_extras(
++                s,
++                row_for(rows, owner, variant) ?? PayloadRow {
++                    owner: owner,
++                    variant: variant,
++                    payloads: [],
++                },
++            ),
++        },
+         _ -> null,
+     }
+ }
+ 
+-/// A computed build names a `@computed` fn, and each fn computes one node.
+-fn computed_defects(g: Grammar) -> List<Diagnostic> {
+-    let builds = computed_builds(g)
++/// A computed build names a `@computed` fn, and each fn computes one node
++/// from one set of labels.
++fn computed_defects(g: Grammar, rows: List<PayloadRow>) -> List<Diagnostic> {
++    let builds = computed_builds(g, rows)
+     let unknown = [defect(c.rule, no_computed_fn(c.by)) for c in builds if computes.find(it.name == c.by) == null]
+-    let split = [defect(c.rule, computes_two_nodes(c.by)) for c in builds if builds.any(it.by == c.by && (it.owner != c.owner || it.variant != c.variant))]
++    let split = [defect(c.rule, computes_two_nodes(c.by)) for c in builds if builds
++        .any(
++            it.by == c.by &&
++                (it.owner != c.owner ||
++                    it.variant != c.variant ||
++                    it.extras.join(",") != c.extras.join(",")),
++        )]
+     unknown.concat(split)
+ }
+ 
+@@ -395,5 +422,5 @@ fn no_computed_fn(by: string) -> string {
+ }
+ 
+ fn computes_two_nodes(by: string) -> string {
+-    "`${by}` computes two different nodes — a `@computed` fn computes the one node its rules name"
++    "`${by}` computes two different nodes, or one from two sets of labels — a `@computed` fn computes the one node its rules name, from one set"
+ }
+diff --git a/packages/std-avrac/src/core/computed.av b/packages/std-avrac/src/core/computed.av
+new file mode 100644
+index 00000000..2ee0517d
+--- /dev/null
++++ b/packages/std-avrac/src/core/computed.av
+@@ -0,0 +1,47 @@
++//! The nodes a rule COMPUTES from its labels (`-> Owner.Variant by fn`):
++//! each fn reads what the rule wrote and answers the node it means, its
++//! own law applied once, where the rule stands.
++use @std.meta.{Named}
++
++/// Marks a fn that computes a node from its rule's labels — the fn a
++/// rule's `by` names, gathered by `computes` (features/node_scaffold.av).
++export fn computed(_f: Named) {}
++
++/// THE BLOCK LAW: statements as a scope answering with its tail.
++@computed
++fn block_written(s: dyn Slots) -> Result<Built, string> {
++    .Ok(Built.Expr(s.arena().block_over(s.stmts_of("stmts")?, s.built_at())))
++}
++
++/// An expression alone on a line, or an assignment when an `=` follows
++/// it: one parse of the expression serves both.
++@computed
++fn expr_stmt_written(s: dyn Slots) -> Result<Built, string> {
++    let target = s.expr_of("target")?
++    let value? = s.expr_opt_of("value")? else { return .Ok(Built.Stmt(s.made_stmt(Stmt.ExprStmt(target))?)) }
++    .Ok(Built.Stmt(s.made_stmt(Stmt.Assign(target, value))?))
++}
++
++/// `let x? = subject { … } else { … }` — the subject takes the one
++/// trailing block written before the `else`; the `else` is the let's own.
++@computed
++fn let_else_written(s: dyn Slots) -> Result<Built, string> {
++    let subject = s.arena().trailed(s.expr_of("subject")?, s.exprs_of("trailing")?, s.built_at())?
++    .Ok(
++        Built
++            .Stmt(s.made_stmt(Stmt.LetElse(Scoped(s.text_of("name")?), subject, s.stmts_of("stmts")?))?),
++    )
++}
++
++/// `let pattern = subject [else { … }]` — a node still waiting for its
++/// block, wrapped in the statement that evaluates the subject; the block
++/// the statement lands in folds the statements after it into the node.
++@computed
++fn let_pattern_written(s: dyn Slots) -> Result<Built, string> {
++    let store = s.arena()
++    let otherwise = s.stmts_of("otherwise")?
++    let held: ExprId? = if otherwise.is_empty() { null } else { store.block_over(otherwise, store.stmts_extent(otherwise)) }
++    let node = store
++        .alloc_expr(Expr.LetPattern(s.pat_of("pat")?, s.expr_of("subject")?, held, null), s.built_at())
++    .Ok(Built.Stmt(store.alloc_stmt(Stmt.ExprStmt(node), s.built_at())))
++}
+diff --git a/packages/std-avrac/src/core/store.av b/packages/std-avrac/src/core/store.av
+index d86f7b10..eb7d41d2 100644
+--- a/packages/std-avrac/src/core/store.av
++++ b/packages/std-avrac/src/core/store.av
+@@ -971,6 +971,24 @@ impl SyntaxArena {
+     /// Null for every shape that is not a call.
+     fn called_with(e: ExprId, blocks: List<ExprId>) -> Expr? { self.expr(e).called_with(blocks) }
+ 
++    /// A head WIDENED by its trailing blocks — each marked as one, the
++    /// call given them as its last arguments through the call protocol,
++    /// at `span`. A head that is no call refuses in the block's words.
++    fn trailed(h: ExprId, blocks: List<ExprId>, span: Span?) -> Result<ExprId, string> {
++        if blocks.is_empty() { return .Ok(h) }
++        for k in blocks { self.mark_trailing(k) }
++        let widened? = self.called_with(h, blocks) else { return .Err(not_a_call_trailed()) }
++        .Ok(self.alloc_expr(widened, span))
++    }
++
++    /// The span from the first statement's start to the last one's end.
++    fn stmts_extent(stmts: List<StmtId>) -> Span? {
++        let first? = stmts.first() else { return null }
++        let a? = self.stmt_span(first) else { return null }
++        let b? = self.stmt_span(stmts.last()!) else { return a }
++        a.cover(b)
++    }
++
+     /// THE PIPE PROTOCOL: `value |> stage` IS the stage's call with
+     /// `value` as its FIRST argument — the call protocol's other end.
+     /// A name or a field read with no parentheses is a call with
+@@ -2017,3 +2035,7 @@ fn filler(labels: List<string>, seat: string, j: int) -> int {
+     if j < labels.length && labels[j] == "" { return j }
+     0 - 1
+ }
++
++fn not_a_call_trailed() -> string {
++    "a trailing block follows this expression, and only a call takes one — `f(…) { … }`, `a.m(…) { … }`, a name, a field read"
++}
+diff --git a/packages/std-avrac/src/features/block/builders.av b/packages/std-avrac/src/features/block/builders.av
+deleted file mode 100644
+index 45f9d455..00000000
+--- a/packages/std-avrac/src/features/block/builders.av
++++ /dev/null
+@@ -1,7 +0,0 @@
+-//! Parse-time lowering: captured statements -> the Block node,
+-//! under the Builder's one block law.
+-use features.{LangNode, Builder}
+-
+-fn build_block(b: Builder) -> Result<LangNode, string> {
+-    b.wrap_expr(b.block_of(b.stmts(0)?))
+-}
+diff --git a/packages/std-avrac/src/features/block/mod.av b/packages/std-avrac/src/features/block/mod.av
+index 792ed5c4..f4e24d99 100644
+--- a/packages/std-avrac/src/features/block/mod.av
++++ b/packages/std-avrac/src/features/block/mod.av
+@@ -3,18 +3,13 @@
+ //! passes through: a one-expression block costs no node, so every
+ //! one-line fn and if keeps its exact tree. The multi-line form
+ //! arrives by deferred commitment.
+-use features.{LanguageFeature, BuilderRow}
++use features.{LanguageFeature}
+ use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
+ export fn block() -> LanguageFeature {
+-    let rows = table<BuilderRow> {
+-        name    | build
+-        "block" | build_block
+-    }
+     LanguageFeature block {
+         gram: grammar {
+-            block = "{" ( s:stmt | BREAK )* "}" @expect("}", "expected `}` to close the block") -> block(s)
++            block = "{" ( stmts:stmt | BREAK )* "}" @expect("}", "expected `}` to close the block") -> Expr.Block by block_written
+         }
+-        builders: rows
+     }
+     // LICENSED compiler.duplicated_message: grammar TEXT — both branches need the message inline
+     block
+diff --git a/packages/std-avrac/src/features/builder.av b/packages/std-avrac/src/features/builder.av
+index 97aa5896..7fb33096 100644
+--- a/packages/std-avrac/src/features/builder.av
++++ b/packages/std-avrac/src/features/builder.av
+@@ -486,19 +486,9 @@ impl Builder {
+         .Ok(LangNode.NStmt(id))
+     }
+ 
+-    /// A head WIDENED by its trailing blocks — each marked as one,
+-    /// the call given them as its last arguments through the call
+-    /// protocol. A head that is no call refuses in the block's words.
++    /// A head widened by its trailing blocks, at this build's place.
+     fn trailed(h: ExprId, blocks: List<ExprId>) -> Result<ExprId, string> {
+-        if blocks.is_empty() { return .Ok(h) }
+-        for k in blocks { self.store.mark_trailing(k) }
+-        let widened: Expr? = self.store.called_with(h, blocks)
+-        if widened == null {
+-            return .Err(
+-                "a trailing block follows this expression, and only a call takes one — `f(…) { … }`, `a.m(…) { … }`, a name, a field read",
+-            )
+-        }
+-        .Ok(self.expr_node(widened!))
++        self.store.trailed(h, blocks, self.node_span())
+     }
+ 
+     /// THE BLOCK LAW: statements as a scope answering with its tail.
+@@ -520,12 +510,7 @@ impl Builder {
+     }
+ 
+     /// The span from the first statement's start to the last one's end.
+-    fn extent_of(stmts: List<StmtId>) -> Span? {
+-        let first? = stmts.first() else { return null }
+-        let a? = self.store.stmt_span(first) else { return null }
+-        let b? = self.store.stmt_span(stmts.last()!) else { return a }
+-        a.cover(b)
+-    }
++    fn extent_of(stmts: List<StmtId>) -> Span? { self.store.stmts_extent(stmts) }
+ 
+     /// Where this build's branch ENDED — the bound a positional
+     /// reconstruction measures against. Absent for a synthesized
+diff --git a/packages/std-avrac/src/features/expr_stmt/builders.av b/packages/std-avrac/src/features/expr_stmt/builders.av
+deleted file mode 100644
+index 64a1c764..00000000
+--- a/packages/std-avrac/src/features/expr_stmt/builders.av
++++ /dev/null
+@@ -1,13 +0,0 @@
+-//! Parse-time lowering: a captured expression -> the ExprStmt — or,
+-//! with the `=` tail, the Assign the mutation feature gives meaning
+-//! to. One parse serves both: the target is an ordinary expression
+-//! whose place-ness resolve judges.
+-use core.{Stmt}
+-use features.{LangNode, Builder}
+-
+-fn build_expr_stmt(b: Builder) -> Result<LangNode, string> {
+-    let v = b.expr(0)?
+-    let assigned = b.exprs(1)?
+-    let a? = assigned.first() else { return b.make_stmt(Stmt.ExprStmt(v)) }
+-    b.make_stmt(Stmt.Assign(v, a))
+-}
+diff --git a/packages/std-avrac/src/features/expr_stmt/mod.av b/packages/std-avrac/src/features/expr_stmt/mod.av
+index ec1aacba..1adcc41e 100644
+--- a/packages/std-avrac/src/features/expr_stmt/mod.av
++++ b/packages/std-avrac/src/features/expr_stmt/mod.av
+@@ -1,17 +1,12 @@
+ //! An expression alone on a line is a statement. Merges after the
+ //! keyword-led statement features, so their anchors win first.
+-use features.{LanguageFeature, BuilderRow}
++use features.{LanguageFeature}
+ use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
+ export fn expr_stmt() -> LanguageFeature {
+-    let rows = table<BuilderRow> {
+-        name        | build
+-        "expr_stmt" | build_expr_stmt
+-    }
+     LanguageFeature expr_stmt {
+         gram: grammar {
+-            stmt = v:expression ( "=" a:expression )? END -> expr_stmt(v, a) @recover(sync_to: "END")
++            stmt = target:expression ( "=" value:expression )? END -> Stmt.Assign by expr_stmt_written @recover(sync_to: "END")
+         }
+-        builders: rows
+     }
+     expr_stmt
+ }
+diff --git a/packages/std-avrac/src/features/let_stmt/builders.av b/packages/std-avrac/src/features/let_stmt/builders.av
+deleted file mode 100644
+index 7801bf98..00000000
+--- a/packages/std-avrac/src/features/let_stmt/builders.av
++++ /dev/null
+@@ -1,34 +0,0 @@
+-//! Parse-time lowering: captures -> the Let statement.
+-use core.{Stmt, Expr, ExprId, some_list, Scoped}
+-use features.{LangNode, Builder, expr_id_at, pat_ids_at}
+-/// `let b? = s else { ... }` — this feature owns the PARSE (the
+-/// branch must try before the recovering plain-let); nullability
+-/// gives the node meaning.
+-/// `let x? = subject { … } else { … }` — the subject may take ONE
+-/// trailing block; the `else` is the let's own, never a second seat.
+-fn build_let_else(b: Builder) -> Result<LangNode, string> {
+-    let n = b.token(0)?
+-    let s = b.trailed(b.expr(1)?, some_list(expr_id_at(b.args, 2)))?
+-    let e = b.stmts(3)?
+-    b.make_stmt(Stmt.LetElse(Scoped(n.text), s, e))
+-}
+-
+-/// `let pattern = subject [else { … }]` — a node still waiting for its
+-/// block, wrapped in the statement that evaluates the subject; the block
+-/// this statement ends up in folds the statements after it into the node
+-/// (`Builder.folded_lets`).
+-fn build_let_pattern(b: Builder) -> Result<LangNode, string> {
+-    let pats = pat_ids_at(b.args, 0)
+-    let subject = b.expr(1)?
+-    let else_stmts = b.stmts(2)?
+-    let otherwise: ExprId? = if else_stmts.is_empty() { null } else { b.block_at(else_stmts, b.extent_of(else_stmts)) }
+-    b
+-        .wrap_stmt(
+-            b
+-                .store
+-                .alloc_stmt(
+-                    Stmt.ExprStmt(b.expr_node(Expr.LetPattern(pats[0], subject, otherwise, null))),
+-                    b.span,
+-                ),
+-        )
+-}
+diff --git a/packages/std-avrac/src/features/let_stmt/mod.av b/packages/std-avrac/src/features/let_stmt/mod.av
+index ae62e480..95199642 100644
+--- a/packages/std-avrac/src/features/let_stmt/mod.av
++++ b/packages/std-avrac/src/features/let_stmt/mod.av
+@@ -7,17 +7,12 @@
+ //! nothing. `let [a, ..rest] = xs` and `let P { x, y } = p` take a value
+ //! apart by a pattern, `else { … }` for the shapes it may refuse; the
+ //! pattern scopes over the rest of the block as a `match` arm's does.
+-use features.{LanguageFeature, BuilderRow}
++use features.{LanguageFeature}
+ use features.let_stmt.{unmutated_mut}
+ use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
+ use diagnostics.{DiagCode, Remedy}
+ 
+ export fn let_stmt() -> LanguageFeature {
+-    let rows = table<BuilderRow> {
+-        name       | build
+-        "let_else" | build_let_else
+-        "let_pat"  | build_let_pattern
+-    }
+     let codes = table<DiagCode> {
+         kind               | summary                                       | remedy
+         "type.binding"     | "an annotated binding holds what it declares" | Remedy.Fix
+@@ -26,13 +21,12 @@ export fn let_stmt() -> LanguageFeature {
+     LanguageFeature let_stmt {
+         gram: grammar {
+             stmt = "let" "_" "=" value:expression END -> Stmt.Discard
+-            stmt = "let" b:NAME "?" "=" s:expression ( tb:trailing )? "else" "{" ( e:stmt | BREAK )* "}" END -> let_else(b, s, tb, e) @head(s)
+-            stmt = "let" p:destructure "=" s:expression ( "else" "{" ( e:stmt | BREAK )* "}" )? END -> let_pat(p, s, e)
++            stmt = "let" name:NAME "?" "=" subject:expression ( trailing:trailing )? "else" "{" ( stmts:stmt | BREAK )* "}" END -> Stmt.LetElse by let_else_written @head(subject)
++            stmt = "let" pat:destructure "=" subject:expression ( "else" "{" ( otherwise:stmt | BREAK )* "}" )? END -> Expr.LetPattern by let_pattern_written
+             stmt = "let" name:NAME ( ":" ty:type )? "=" value:expression END @recover(sync_to: "END") -> Stmt.Let
+             stmt = is_state:STATE name:NAME ( ":" ty:type )? "=" value:expression END -> Stmt.MutLet
+         }
+         diags: codes
+-        builders: rows
+     }
+     let_stmt
+ }
+diff --git a/packages/std-avrac/src/features/node_grammar.av b/packages/std-avrac/src/features/node_grammar.av
+index 65e91f6d..06bad91e 100644
+--- a/packages/std-avrac/src/features/node_grammar.av
++++ b/packages/std-avrac/src/features/node_grammar.av
+@@ -18,7 +18,17 @@
+ //! `Field.kind` answers "is this a list", "is this text-filled"
+ //! structurally, so the answer holds under renaming and cannot forget
+ //! the next declared type the way a string table would.
+-use core.{flatten, joined, PayloadRow, row_for, binop_of, facet_table, has_anchor, anchor_word}
++use core.{
++    flatten,
++    joined,
++    distinct,
++    PayloadRow,
++    row_for,
++    binop_of,
++    facet_table,
++    has_anchor,
++    anchor_word,
++}
+ use @std.meta.{Field, Kind}
+ use @std.grammar.{
+     Grammar,
+@@ -109,11 +119,26 @@ fn bound_build(held: Build?, outer: Seq, rows: List<PayloadRow>) -> Build? {
+     let b? = held else { return null }
+     match b {
+         .Node(owner, variant, fixed, _) -> Build.Node(owner, variant, fixed, filled_slots(outer, owner, variant, fixed, rows)),
+-        .Computed(owner, variant, by, _) -> Build.Computed(owner, variant, by, filled_slots(outer, owner, variant, [], rows)),
++        .Computed(owner, variant, by, _) -> Build.Computed(owner, variant, by, computed_slots(outer, owner, variant, rows)),
+         .Call(_, _) or .Var(_) -> b,
+     }
+ }
+ 
++/// A computed build's slots: the node's payloads, then each label the
++/// branch writes that names none of them — read by its fn under its own
++/// name (`computed_extras`).
++fn computed_slots(outer: Seq, owner: string, variant: string, rows: List<PayloadRow>) -> List<Slot>? {
++    let row? = row_for(rows, owner, variant) else { return null }
++    [filling(p, outer, [], rows) for p in row.payloads]
++        .concat([Slot.Label(x) for x in computed_extras(outer, row)])
++}
++
++/// The labels a computed build's branch writes beyond its node's
++/// payloads, in the order the branch first writes them.
++export fn computed_extras(outer: Seq, row: PayloadRow) -> List<string> {
++    distinct([l for l in outer.labels() if !row.payloads.any(it.name == l)])
++}
++
+ fn filled_slots(
+     outer: Seq,
+     owner: string,
+@@ -209,22 +234,18 @@ fn build_defects(
+     let b? = held else { return [] }
+     match b {
+         .Node(owner, variant, fixed, _) -> node_defects(rname, outer, owner, variant, fixed, rows, words),
+-        .Computed(owner, variant, _, _) -> computed_defects(rname, outer, owner, variant, rows),
++        .Computed(owner, variant, _, _) -> computed_defects(rname, owner, variant, rows),
+         .Call(_, _) or .Var(_) -> [],
+     }
+ }
+ 
+-/// A computed build's labels name the node's payloads; the fn decides
+-/// how each is read, so nothing else of the node is judged here.
+-fn computed_defects(
+-    rname: string,
+-    outer: Seq,
+-    owner: string,
+-    variant: string,
+-    rows: List<PayloadRow>,
+-) -> List<Diagnostic> {
+-    let row? = row_for(rows, owner, variant) else { return [node_refusal(rname, no_such_variant(owner, variant))] }
+-    stranger_defects(rname, outer, row, [], true)
++/// A computed build names a node the model answers; its fn decides how
++/// each label is read, so nothing else of the node is judged here.
++fn computed_defects(rname: string, owner: string, variant: string, rows: List<PayloadRow>) -> List<
++    Diagnostic,
++> {
++    if row_for(rows, owner, variant) != null { return [] }
++    [node_refusal(rname, no_such_variant(owner, variant))]
+ }
+ 
+ fn node_defects(
