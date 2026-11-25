@@ -1,0 +1,252 @@
+//! `wisp keepers [<name>…] [--set <set>] [--sets]` — THE KEEPERS, ONE REGISTRY. Every check the
+//! train holds a landing to is a row: its name (the Make target that runs it), the leg of CI that
+//! runs it, and whether a pull request's own check runs it too — with no compiler (`free` of one, the
+//! `static` set), or
+//! once its compiler is built (`pr`). A set is a question asked of the rows, never a list of its
+//! own, so a keeper cannot be named in a set and missing from the train.
+//! Each keeper runs, each refusal is said as it happens, and the LAST line names every refusal:
+//! a refusal mid-stream scrolls away under the ones after it. Exit 0 all held, 1 one refused,
+//! 2 usage.
+use @std.cli.{CliResult, Runnable, arg, command, flag, option}
+use @std.process.{Exit, Outcome, ProcessError, cmd, tool, inherited}
+use @std.time.{now_ms}
+
+/// Which CI leg runs a keeper. `Alone` keepers are held to a clock, so nothing shares their
+/// runner; `A1`/`A2` and `B` are balanced by measured seconds; `Wasm` is the wasm target's
+/// proof; `Train` runs only in the whole list.
+export enum Leg {
+    Train
+    Alone
+    A1
+    A2
+    B
+    Wasm
+}
+
+export type Keeper = { name: string, leg: Leg, free: bool, pr: bool }
+
+/// Every keeper, by the leg that runs it.
+export const KEEPERS: List<Keeper> = table<Keeper> {
+    name                   | leg    | free  | pr
+    "clock-holds"          | .Train | false | false
+    "runtime-tests"        | .Alone | false | false
+    "runtime-mutations"    | .Alone | false | false
+    "speed-ratchet"        | .A1    | false | true
+    "cost"                 | .A1    | false | false
+    "fmt-lossless"         | .A1    | false | false
+    "hash-door"            | .A1    | false | false
+    "stems"                | .A1    | false | false
+    "read-cost"            | .A2    | false | false
+    "read-lists"           | .A2    | false | false
+    "warm-edit"            | .A2    | false | true
+    "codecs"               | .A2    | false | false
+    "traps"                | .A2    | false | false
+    "compile-slots"        | .A2    | false | false
+    "witness"              | .A2    | false | false
+    "flow-trace"           | .A2    | false | false
+    "libscope"             | .B     | false | false
+    "ahead-edit-attack"    | .B     | false | false
+    "held-store-attack"    | .B     | false | false
+    "cutoff-witness"       | .B     | false | false
+    "heir-save-attack"     | .B     | false | false
+    "share-merge-attack"   | .B     | false | false
+    "wave-share-attack"    | .B     | false | false
+    "beside-attack"        | .B     | false | false
+    "h2spec"               | .B     | false | false
+    "pool-check"           | .B     | false | false
+    "fingerprints"         | .B     | true  | false
+    "vocab"                | .B     | true  | false
+    "families-left"        | .B     | true  | false
+    "layers"               | .B     | true  | false
+    "libs-self-test"       | .B     | true  | false
+    "speed-note"           | .B     | true  | false
+    "hooks-released"       | .B     | true  | false
+    "inputs"               | .B     | false | false
+    "whole-reads"          | .B     | false | false
+    "cited"                | .B     | true  | false
+    "http-cites"           | .B     | true  | false
+    "externs"              | .B     | true  | false
+    "trap-marks"           | .B     | false | false
+    "suites"               | .B     | true  | false
+    "rt-header"            | .B     | false | true
+    "rt-ns"                | .B     | false | true
+    "parser"               | .B     | false | true
+    "witnesses"            | .B     | false | true
+    "dogfooding-rules"     | .B     | false | true
+    "rule-examples"        | .B     | false | false
+    "attack"               | .B     | false | true
+    "voices"               | .B     | false | false
+    "defects"              | .B     | false | false
+    "ui-host"              | .B     | false | false
+    "host-events"          | .B     | true  | false
+    "ui-host-test"         | .B     | false | false
+    "ui-board"             | .B     | false | false
+    "exact-patches"        | .B     | false | false
+    "dev-server"           | .B     | false | false
+    "ui-browser"           | .B     | false | false
+    "ui-browser-skip"      | .B     | true  | false
+    "tool-witnesses"       | .B     | false | false
+    "footprint"            | .B     | false | true
+    "tick-object"          | .B     | false | false
+    "no-threads"           | .B     | false | false
+    "ci-invariants"        | .B     | true  | false
+    "ci-verdict"           | .B     | true  | false
+    "pr-watcher"           | .B     | true  | false
+    "pipeline-doc"         | .B     | true  | false
+    "workflows-yaml"       | .B     | true  | false
+    "tail-status"          | .B     | true  | false
+    "vendored-fixture"     | .B     | true  | false
+    "wasm-host-check"      | .Wasm  | false | false
+    "wasm-check"           | .Wasm  | false | false
+    "wasm-seam"            | .Wasm  | false | false
+    "wasm-refuses"         | .Wasm  | false | false
+    "wasm-tasks-mutations" | .Wasm  | false | false
+    "wasm-cache"           | .Wasm  | false | false
+    "wasm-archive"         | .Wasm  | false | false
+    "wasm-size-guard"      | .Wasm  | false | false
+    "wasm-routes-size"     | .Wasm  | false | false
+}
+
+/// The sets a keeper is asked by: `all` (the train), a leg, `a` (both A halves), `static`, `pr`.
+export fn in_set(k: Keeper, set: string) -> bool {
+    match set {
+        "all" -> true,
+        "alone" -> k.leg == .Alone,
+        "a" -> k.leg == .A1 || k.leg == .A2,
+        "a1" -> k.leg == .A1,
+        "a2" -> k.leg == .A2,
+        "b" -> k.leg == .B,
+        "wasm" -> k.leg == .Wasm,
+        "static" -> k.free,
+        "pr" -> k.pr,
+        rest -> false,
+    }
+}
+
+/// Each set's word and the Make variable it once was, which tools/ci_invariants.py still reads.
+type SetName = { word: string, variable: string }
+
+const SETS: List<SetName> = table<SetName> {
+    word     | variable
+    "all"    | "KEEPERS"
+    "alone"  | "KEEPERS_ALONE"
+    "a"      | "KEEPERS_A"
+    "a1"     | "KEEPERS_A1"
+    "a2"     | "KEEPERS_A2"
+    "b"      | "KEEPERS_B"
+    "wasm"   | "KEEPERS_WASM"
+    "static" | "KEEPERS_STATIC"
+    "pr"     | "KEEPERS_PR"
+}
+
+/// The sets as `KEEPERS_<SET> = <names>` lines.
+export fn sets_text() -> string {
+    SETS.map((s) -> "${s.variable} = ${members(s.word).join(" ")}").join("\n")
+}
+
+fn members(set: string) -> List<string> {
+    KEEPERS.filter((k) -> in_set(k, set)).map(it.name)
+}
+
+type KeepersCmd = {}
+
+impl Runnable for KeepersCmd {
+    fn run(args: CliResult) -> int {
+        if args.has_flag("sets") {
+            println(sets_text())
+            return 0
+        }
+        let set = args.option("set")
+        if !SETS.any(it.word == set) {
+            eprintln(no_set(set))
+            return 2
+        }
+        let named = args.args_of("names")
+        let unknown = named.filter((n) -> !KEEPERS.any(it.name == n))
+        if !unknown.is_empty() {
+            eprintln(no_keeper(unknown))
+            return 2
+        }
+        let chosen = members(set).filter((n) -> named.is_empty() || named.contains(n))
+        let refused = refusals(chosen, ran)
+        if refused.is_empty() {
+            0
+        } else {
+            eprintln(refused_all(refused))
+            1
+        }
+    }
+}
+
+export command keepers {
+    description: "Run the keepers: every one named, or every one in a set, the refusals named last"
+    arg names {
+        description: "the keepers to run; none runs the whole set"
+        variadic: true
+    }
+    option set {
+        description: "all, alone, a, a1, a2, b, wasm, static or pr"
+        default: "all"
+    }
+    flag sets { description: "print each set as a `KEEPERS_<SET> = …` line and run nothing" }
+    run: KeepersCmd {}
+}
+
+/// Runs each keeper in order through `held`; the names of those that refused.
+export fn refusals(names: List<string>, held: fn(string) -> bool) -> List<string> {
+    names.filter((n) -> !timed(n, held))
+}
+
+fn timed(name: string, held: fn(string) -> bool) -> bool {
+    eprintln(running(name))
+    let t0 = now_ms()
+    let ok = held(name)
+    if !ok { eprintln(refused_one(name)) }
+    println(took(name, (now_ms() - t0) / 1000))
+    ok
+}
+
+/// One keeper, run by its Make target with the invoker's environment: the recipe owns what it reads.
+fn ran(name: string) -> bool {
+    match tool("make") {
+        .Ok(make) -> clean(
+            (cmd(make, ["-s", "-o", "avra", name]) with { env: inherited(), streams: .Inherited })
+                .outcome(),
+        ),
+        .Err(_) -> false,
+    }
+}
+
+fn clean(o: Result<Outcome, ProcessError>) -> bool {
+    match o { .Ok(done) -> exited_clean(done.exit), .Err(_) -> false }
+}
+
+fn exited_clean(e: Exit) -> bool {
+    match e { .Clean -> true, .Code(_) or .Signal(_, _) -> false }
+}
+
+// ── voices ──
+
+fn running(name: string) -> string {
+    "keepers: running ${name}"
+}
+
+fn refused_one(name: string) -> string {
+    "keepers: ${name} refused"
+}
+
+fn took(name: string, seconds: int) -> string {
+    "keepers: ${name} ${seconds}s"
+}
+
+fn refused_all(names: List<string>) -> string {
+    "keepers: REFUSED: ${names.join(" ")}"
+}
+
+fn no_set(set: string) -> string {
+    "keepers: no set `${set}`; the sets are ${SETS.map(it.word).join(", ")}"
+}
+
+fn no_keeper(names: List<string>) -> string {
+    "keepers: no keeper named ${names.map("`${it}`").join(", ")}"
+}

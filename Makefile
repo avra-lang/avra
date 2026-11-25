@@ -1236,39 +1236,15 @@ tick-object: $(RUNTIME_LIB)
 no-threads:
 	@python3 tools/tick.py threads --self-test
 
-# THE KEEPERS, ONE LIST. The train's keepers job and a lane's own
-# tools/gate_changed.sh both run `make keepers`, so a keeper named here
-# is held on every train, and one left off is held by nobody. A pull
-# request's own check runs only those that need no compiler
-# (KEEPERS_STATIC); the train runs them all, before anything merges.
-# Each names what it links as its own prerequisites.
-# Every keeper runs, and each that refuses is named.
-# TWO HALVES OF ABOUT EQUAL COST, so the train's one keepers job can run
-# them side by side, each in its own copy of the tree (keepers-a,
-# keepers-b). KEEPERS is their union and the ones that run alone: a keeper
-# joins one of the three, never a list of its own. Each keeper's seconds
-# are printed, which is what balances the halves — the second is the
-# lighter because the train runs the seed check after it.
-# KEEPERS_ALONE are held to a clock (a timer firing within one round of the
-# scheduler), so nothing may compete with them for a core. The mutation run
-# drives the same clocked tests, so it stands here beside them.
-KEEPERS_ALONE = runtime-tests runtime-mutations
-# KEEPERS_A is two halves, one CI runner each, balanced by measured seconds
-# (speed-ratchet is the longest keeper, alone it is half the set).
-KEEPERS_A1 = speed-ratchet cost fmt-lossless hash-door stems
-KEEPERS_A2 = read-cost read-lists warm-edit codecs traps compile-slots witness flow-trace
-KEEPERS_A = $(KEEPERS_A1) $(KEEPERS_A2)
-KEEPERS_B = libscope ahead-edit-attack held-store-attack cutoff-witness heir-save-attack share-merge-attack wave-share-attack beside-attack h2spec pool-check fingerprints vocab families-left layers libs-self-test speed-note hooks-released inputs whole-reads cited http-cites externs trap-marks suites rt-header rt-ns parser witnesses dogfooding-rules rule-examples attack voices defects \
-            ui-host host-events ui-host-test ui-board exact-patches dev-server ui-browser ui-browser-skip tool-witnesses footprint tick-object no-threads \
-            ci-invariants ci-verdict pr-watcher pipeline-doc workflows-yaml tail-status vendored-fixture
-# KEEPERS_WASM is the wasm target's proof — the fixtures native and wasm32 alike, the seam,
-# the refusals, the hosted scheduler broken on purpose, the store across targets, the
-# archive's law and the size receipt — a CI
-# runner of its own, so its minutes ride beside the halves rather than after one.
-KEEPERS_WASM = wasm-host-check wasm-check wasm-seam wasm-refuses wasm-tasks-mutations wasm-cache wasm-archive wasm-size-guard wasm-routes-size
-KEEPERS = clock-holds $(KEEPERS_ALONE) $(KEEPERS_A) $(KEEPERS_B) $(KEEPERS_WASM)
-keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b keepers-wasm:
-	@sh tools/keepers_loop.sh "$(MAKE) -s -o avra" $(if $(filter keepers-alone,$@),$(KEEPERS_ALONE),$(if $(filter keepers-a1,$@),$(KEEPERS_A1),$(if $(filter keepers-a2,$@),$(KEEPERS_A2),$(if $(filter keepers-a,$@),$(KEEPERS_A),$(if $(filter keepers-b,$@),$(KEEPERS_B),$(if $(filter keepers-wasm,$@),$(KEEPERS_WASM),$(KEEPERS)))))))
+# THE KEEPERS, ONE REGISTRY (packages/wisp/src/commands/keepers.av): every
+# keeper is a row naming the CI leg that runs it and whether a pull request's
+# own check runs it too, with no compiler (`static`) or once its compiler is
+# built (`pr`). A set is asked of the rows, so a keeper cannot sit in a set
+# and be missing from the train. The train's keepers jobs and a lane's
+# tools/gate_changed.sh run these targets; each keeper names what it links
+# as its own prerequisites. `./wisp keepers --sets` prints every set.
+keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b keepers-wasm keepers-static:
+	@./wisp keepers --set $(if $(filter keepers,$@),all,$(patsubst keepers-%,%,$@))
 
 # THE TOOLS' OWN WITNESSES, DERIVED (tools/tool_witnesses.sh): every
 # witness_*.sh and *_test.sh, and every tool declaring `# tool-witness:
@@ -1345,29 +1321,11 @@ tail-status:
 pipeline-status:
 	@python3 tools/pipeline_status.py $(ARGS)
 
-# THE KEEPERS THAT NEED NO COMPILER, which a pull request's own check runs
-# before it builds anything: each reads the tree alone and all of them
-# together take half a minute, so a refusal stops on the PR instead of
-# failing a train and every PR riding it. Each is one of KEEPERS, which the
-# train runs whole.
-KEEPERS_STATIC = host-events fingerprints vocab families-left layers libs-self-test speed-note hooks-released cited http-cites externs suites ui-browser-skip ci-invariants ci-verdict pr-watcher pipeline-doc workflows-yaml tail-status vendored-fixture
 .PHONY: compiler compiler-files store-witnesses cache-attacks-w keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b keepers-wasm keepers-static keepers-pr pipeline-doc tail-status pipeline-status ci-invariants ci-verdict pr-watcher
-keepers-static:
-	@left="$(filter-out $(KEEPERS),$(KEEPERS_STATIC))"; [ -z "$$left" ] || { echo "keepers-static: $$left is no keeper — the train would not hold it" >&2; exit 1; }
-	@sh tools/keepers_loop.sh "$(MAKE) -s" $(KEEPERS_STATIC)
 
-# THE KEEPERS A PULL REQUEST CAN BREAK ALONE, which its own check runs once
-# its compiler is built: each holds a file the tree generates or carries to
-# what that compiler says — the runtime header and namespace, the
-# diagnostics index, the idiom registry, the runtime's footprint — or
-# attacks a feature mechanically, in seconds. A refusal stops on the PR
-# instead of failing a train. Each is one of KEEPERS, which the train runs
-# whole.
-KEEPERS_PR = rt-header rt-ns parser witnesses dogfooding-rules footprint attack speed-ratchet warm-edit
-# not a keeper — a lane's quick subset of KEEPERS before pushing; CI runs every keeper
+# not a keeper — a lane's quick subset of the keepers before pushing; CI runs every keeper
 keepers-pr:
-	@left="$(filter-out $(KEEPERS),$(KEEPERS_PR))"; [ -z "$$left" ] || { echo "keepers-pr: $$left is no keeper — the train would not hold it" >&2; exit 1; }
-	@sh tools/keepers_loop.sh "$(MAKE) -s -o avra" $(KEEPERS_PR)
+	@./wisp keepers --set pr
 
 # THE CODEC KEEPER: a record's wire ENCODER and its DECODER agree.
 # compiler/codecs.av's registry runs every pair over its exemplars,

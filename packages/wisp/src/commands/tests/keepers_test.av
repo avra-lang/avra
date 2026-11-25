@@ -1,0 +1,25 @@
+use commands.{KEEPERS, refusals, in_set, sets_text}
+
+fn refuses_two_and_four(name: string) -> bool {
+    name != "k2" && name != "k4"
+}
+
+fn always(_name: string) -> bool {
+    true
+}
+
+spec "keepers — one registry, its sets asked of the rows" {
+    then "every refusal is named, in order" {
+        refusals(["k1", "k2", "k3", "k4", "k5"], refuses_two_and_four).join(" ") == "k2 k4"
+    }
+    then "a clean run names none" { refusals(["k1", "k3"], always).is_empty() }
+    then "every keeper names itself once" { KEEPERS.all((k) -> KEEPERS.filter(it.name == k.name).length == 1) }
+    then "every keeper is in the train" { KEEPERS.all(in_set(it, "all")) }
+    then "the a set is both halves" {
+        KEEPERS.filter(in_set(it, "a")).length == KEEPERS.filter(in_set(it, "a1") || in_set(it, "a2")).length
+    }
+    then "an unknown set holds nothing" { !KEEPERS.any(in_set(it, "nope")) }
+    then "the sets print as the variables the CI checks read" {
+        sets_text().split("\n").map(it.split(" = ")[0]).join(" ") == "KEEPERS KEEPERS_ALONE KEEPERS_A KEEPERS_A1 KEEPERS_A2 KEEPERS_B KEEPERS_WASM KEEPERS_STATIC KEEPERS_PR"
+    }
+}

@@ -403,9 +403,9 @@ by nobody.
 | `make keepers` | every keeper, union of the above | `tools/gate_changed.sh` when not told `--no-keepers` |
 | `make gate` | the full local gate: keepers plus suites plus the vocabulary proofs | a lane proving a whole tree |
 
-`KEEPERS_STATIC` and `KEEPERS_PR` are quoted in `make keepers-static` and
-`make keepers-pr`, so a keeper named there but absent from the one
-`KEEPERS` list is refused by the target itself.
+Every set is a question asked of one registry, `packages/wisp/src/commands/keepers.av`
+(`./wisp keepers --sets` prints them), so a keeper cannot sit in a set and be
+missing from the train.
 
 ### What each keeper protects
 
