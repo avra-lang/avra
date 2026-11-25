@@ -3487,6 +3487,16 @@ the answer lands. The want: a change in flight is a value the view can read besi
 observation (the control shows what was asked until the answer or its refusal), without the
 board keeping a copy of the tasks. Wanting site: `task_row`'s checkbox.
 
+### Work that must not run on the thread that draws
+
+A native app's loop holds its one thread, and the program's tasks run between that loop's sources
+on the same thread (the host's idle, runtime/avra_fiber.c). So a task that computes for long holds
+the screen, up to the turn's budget at best. A core is no answer here: an app may not fork, and the
+runtime's counts are not atomic, so no value can cross to another thread. The want: a way to state
+that a piece of work runs off the drawing thread, with the values it takes and answers crossing by
+a rule the compiler checks, and its answer arriving as a turn. Wanting site: the iOS spike's
+spinning task (tools/ios-spike), and every handler that parses or decodes a large answer.
+
 ### Interim record — a `once fn` takes no type parameters
 
 std-ui keeps a stateful composition's instances in a derived
