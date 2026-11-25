@@ -71,6 +71,10 @@ edit-b     witness_program_edit, WITNESS_ONLY=1, the frontier walk checked
 edit-c     witness_program_edit, WITNESS_ONLY=5, the frontier walk checked
 edit-d     witness_program_edit, WITNESS_ONLY=10, the frontier walk checked
 edit-e     witness_program_edit, WITNESS_ONLY=rename, the frontier walk checked
+keepers-a1 every keeper of KEEPERS_A1 no other slice runs, a row each
+keepers-a2 the same of KEEPERS_A2
+keepers-wasm the same of KEEPERS_WASM, the browser's libraries beside it
+keepers-clock clock-holds, alone on its runner
 EOF
     splits | while IFS='|' read -r family parts what; do
         n=1
@@ -97,6 +101,8 @@ refusal|8|witness_program_refusal over its cases, dealt in turn
 needs|6|witness_program_needs over every package and refusal witness, dealt in turn
 witness-b|5|the witnesses and attacks of witness_b_rows, dealt in turn
 cost-warm|7|make cost, COST_PART=warm: the cli's cold check, then the warm edits (COST_EDITS) dealt in turn, the noop in every part
+keepers-b|3|every keeper of KEEPERS_B no other slice runs, a row each, dealt in turn, the browser's libraries beside it
+keepers-alone|2|KEEPERS_ALONE, held to a clock and alone on its runner: runtime-tests, and runtime-mutations' part (MUTATION_SHARD)
 EOF
 }
 
@@ -148,7 +154,8 @@ unpacked() {
 # THE RUNNER JOBS: the slices dealt into jobs by their measured seconds (tools/gate/slice.seconds; a slice
 # it does not name weighs 300), heaviest first, each into the first job it fits under the budget
 # (GATE_JOB_SECS, 420 s) — a slice past the budget is a job alone, and so is a cost slice, which holds
-# the one measuring directory and the census compiler. One a line: the job, then its slices;
+# the one measuring directory and the census compiler, and a keeper held to a clock, which nothing may
+# compete with for a core. One a line: the job, then its slices;
 # a job of one slice is named by it, a job of several `jobs-<n>`. Each slice of a job still runs alone,
 # in a tree of its own (gate.yml lays the unpacked tree down afresh before each).
 jobs() {
@@ -163,7 +170,7 @@ jobs() {
             bins = 0
             for (i = 1; i <= n; i++) {
                 placed = 0
-                alone = (w[i] >= budget || name[i] ~ /^cost-/)
+                alone = (w[i] >= budget || name[i] ~ /^cost-/ || name[i] ~ /^keepers-(alone|clock)/)
                 if (!alone) for (b = 1; b <= bins; b++) if (open[b] && load[b] + w[i] <= budget) { load[b] += w[i]; held[b] = held[b] " " name[i]; count[b]++; placed = 1; break }
                 if (!placed) { bins++; load[bins] = w[i]; held[bins] = name[i]; count[bins] = 1; open[bins] = !alone }
             }
@@ -616,6 +623,26 @@ rows_dealt() {
 # std-avrac's feature dirs whose names match `$1`, sorted
 features() { find packages/std-avrac/src/features -mindepth 1 -maxdepth 1 -type d -name "$1" | sort; }
 
+# THE KEEPERS ON THE GATE: every keeper the Makefile's KEEPERS names, each a row `keeper-<name>` run as
+# checks.yml runs it (`make -s -o avra <name>`), in the slice of its own list. Those another slice
+# already runs, as the same target over the same tree, are its rows and are not run twice.
+KEEPERS_RUN_ELSEWHERE="cost flow-trace rt-header rt-ns ui-host ui-host-test ui-board beside-attack heir-save-attack share-merge-attack wave-share-attack"
+# the keepers the Makefile's list `$1` names, those run elsewhere left out, one a line
+keepers_of() {
+    make -s -pn 2>/dev/null | awk -v v="$1" '$1 == v && $2 == "=" { $1 = ""; $2 = ""; print; exit }' | tr ' ' '\n' | grep . |
+        grep -vxF "$(printf '%s\n' $KEEPERS_RUN_ELSEWHERE)"
+}
+# each keeper named, a row
+keepers_run() {
+    for k in "$@"; do row "keeper-$k" env AVRA_NO_SUPERVISOR_TESTS=1 UI_BROWSER_ENGINES="firefox webkit webkit-iphone" make -s -o avra "$k"; done
+}
+# a keeper list that names nothing fails: a Makefile edit that renamed the list keeps nothing silently
+keepers_list() {
+    names=$(keepers_of "$1")
+    [ -n "$names" ] || { judged "keepers-$1-named" 1; return; }
+    keepers_run $names
+}
+
 # the part `$2` of `$3` of the split family `$1`; a family `splits` doesn't name, or a part past its
 # count, fails rather than passing on no rows
 part_of() {
@@ -636,6 +663,16 @@ part_of() {
         needs) row needs-witness sh tools/witness_program_needs.sh build/avra $(sh tools/witness_program_needs.sh --cases | dealt "$(($2 - 1))" "$3") ;;
         witness-b) rows_dealt witness_b_rows "$2" "$3" ;;
         cost-warm) slice_cost warm "$2/$3" ;;
+        keepers-b)
+            names=$(keepers_of KEEPERS_B | dealt "$(($2 - 1))" "$3")
+            [ -n "$names" ] || { judged "keepers-b-named" 1; return; }
+            keepers_run $names
+            ;;
+        keepers-alone)
+            names=$(keepers_of KEEPERS_ALONE)
+            [ -n "$names" ] || { judged "keepers-alone-named" 1; return; }
+            for k in $names; do row "keeper-$k" env AVRA_NO_SUPERVISOR_TESTS=1 MUTATION_SHARD="$(($2 - 1))/$3" sh tools/memcap.sh 6000 make -s -o avra "$k"; done
+            ;;
     esac
 }
 
@@ -749,6 +786,10 @@ if compiler; then
         cost-ledger-cold-a) slice_cost ledger-cold-a ;;
         cost-ledger-cold-b) slice_cost ledger-cold-b ;;
         cost-ledger-warm) slice_cost ledger-warm ;;
+        keepers-a1) keepers_list KEEPERS_A1 ;;
+        keepers-a2) keepers_list KEEPERS_A2 ;;
+        keepers-wasm) keepers_list KEEPERS_WASM ;;
+        keepers-clock) keepers_run clock-holds ;;
         *) part_of "${slice%-*}" "${slice##*-}" "$(splits | awk -F'|' -v f="${slice%-*}" '$1 == f { print $2 }')" ;;
     esac
 fi
