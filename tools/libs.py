@@ -190,7 +190,18 @@ def self_test():
           "0000000000002000 t _local\n                 w _weak_ref\n0000000000003000 W _strong_weak\n")
     got = defined_names(nm)
     assert got == {"avra_cz_decode", "local", "strong_weak"}, got
-    print("libs: self-test passed — defined names only")
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        obj, lib = os.path.join(d, "a.o"), os.path.join(d, "lib.so")
+        open(obj, "w").close()
+        assert not fresh(lib, [obj]), "a library that does not exist is not fresh"
+        open(lib, "w").close()
+        os.utime(obj, (1, 1))
+        os.utime(lib, (2, 2))
+        assert fresh(lib, [obj]), "a library newer than its input is fresh"
+        os.utime(obj, (3, 3))
+        assert not fresh(lib, [obj]), "a library older than its input is stale"
+    print("libs: self-test passed — defined names only, freshness by mtime")
     return 0
 
 
@@ -269,6 +280,7 @@ def libraries():
             "output": os.path.join(OUT, "lib" + stem + suffix),
             "objects": paths,
             "words": link_words(link),
+            "manifest": os.path.relpath(path, ROOT),
         })
     return rows
 
@@ -321,6 +333,16 @@ def row_named(name):
     return None
 
 
+def fresh(output, inputs):
+    """Whether `output` exists and no input is newer: a library is made of
+    its objects and its manifest's link rows, so a library older than either
+    is stale and one at least as new is current."""
+    if not os.path.exists(output):
+        return False
+    made = os.path.getmtime(output)
+    return all(os.path.getmtime(i) <= made for i in inputs)
+
+
 def build(name):
     row = row_named(name)
     if row is None:
@@ -331,6 +353,9 @@ def build(name):
         print(f"libs: {row['package']} names objects that are not built: "
               f"{' '.join(missing)}", file=sys.stderr)
         return 1
+    inputs = [os.path.join(ROOT, i) for i in row["objects"] + [row["manifest"]]]
+    if fresh(os.path.join(ROOT, row["output"]), inputs):
+        return 0
     _, mode = platform()
     argv = (["cc"] + mode + host_bound(row["objects"], host_symbols()) + ["-o", row["output"]]
             + [w for o in row["objects"] for w in linked_whole(o)] + row["words"])

@@ -475,7 +475,9 @@ bootstrap: recover
 	@$(MAKE) -s ready
 
 # THE TREE A PROGRAM BUILDS IN: every package's C object, which a native
-# link names, and the wasm runtime with the wasm package objects, which a
+# link names, the package libraries the evaluator loads (rebuilt only when an
+# object or a manifest is newer, so a changed C is never shadowed by a stale
+# library), and the wasm runtime with the wasm package objects, which a
 # page's build names. Without a wasm toolchain here the second half is
 # skipped, spoken — a page build then refuses by name.
 ready: $(PACKAGE_OBJS)
@@ -484,6 +486,7 @@ ready: $(PACKAGE_OBJS)
 	else \
 	    echo "ready: no WASI libc for $(WASM_CC) — a page build needs one (README.md); native programs are ready"; \
 	fi
+	@$(MAKE) -s libs
 
 # A REFUSAL MUST SPEAK: the build's own words went to /dev/null, so a compiler
 # that refused its own source reported only "make: *** Error 2" and the next
@@ -501,6 +504,7 @@ avra: $(COMPILER_OBJS)
 	@sh tools/work built-from . > build/.avra-built-from 2>/dev/null || rm -f build/.avra-built-from
 	@sh tools/work deposit . || true
 	@echo "avra: build/avra"
+	@$(MAKE) -s libs
 
 # WHAT A COMPILER BUILD LEAVES, one path a line: the binary, its hot leaves
 # and every object it links with each object's stamp and dependency list.
