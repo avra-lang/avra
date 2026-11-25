@@ -3,7 +3,7 @@
 use @std.io.{exists, make_dirs, read_bytes, write_bytes}
 use @std.time.{stamp}
 use answer_record.{content_hash}
-use input_stamps.{InputStamp, stamps_read, stamps_written}
+use input_stamps.{InputStamp, kept_stamps_at, stamps_read, stamps_written}
 
 fn directory_named(label: string) -> string {
     let d = "/tmp/avra-stamps-delta/${stamp()}-${label}"
@@ -26,11 +26,23 @@ fn holds_exactly(read: List<InputStamp>, wanted: List<InputStamp>) -> bool {
     read.length == wanted.length && wanted.all((w) -> read.any(it.same_as(w)))
 }
 
+/// Whether the stamps kept at `path`, read as they're asked, are exactly `wanted`: as many, each found
+/// by its question, and a question none of them answers finding none.
+fn kept_exactly(path: string, wanted: List<InputStamp>) -> bool {
+    let kept = kept_stamps_at(path, (p) -> p)
+    kept.length() == wanted.length &&
+        wanted.all((w) -> kept.get(w.question)?.same_as(w) ?? false) &&
+        kept.get(stamp_of(100000, 0).question) == null
+}
+
 fn many(count: int, mark: int) -> List<InputStamp> { [stamp_of(i, mark) for i in 0..count] }
 
 spec "input stamps — a base and one delta" {
     given "nothing kept" {
-        then "no file reads as no stamps" { stamps_read("${directory_named("none")}/inputs.stamps").is_empty() }
+        then "no file reads as no stamps" {
+            let path = "${directory_named("none")}/inputs.stamps"
+            stamps_read(path).is_empty() && kept_exactly(path, [])
+        }
     }
     given "a few stamps changed over a base" {
         then "only a delta is written, and the stamps read back as written" {
@@ -42,13 +54,16 @@ spec "input stamps — a base and one delta" {
                 .concat([stamp_of(97, 2), stamp_of(98, 2), stamp_of(200, 1)])
             stamps_written(path, moved)
             let base_after = read_bytes(path) catch "".bytes()
-            base == base_after && exists("${path}.delta") && holds_exactly(stamps_read(path), moved)
+            base == base_after &&
+                exists("${path}.delta") &&
+                holds_exactly(stamps_read(path), moved) &&
+                kept_exactly(path, moved)
         }
         then "a stamp that went reads as gone" {
             let path = "${directory_named("gone")}/inputs.stamps"
             stamps_written(path, many(100, 1))
             stamps_written(path, many(99, 1))
-            holds_exactly(stamps_read(path), many(99, 1))
+            holds_exactly(stamps_read(path), many(99, 1)) && kept_exactly(path, many(99, 1))
         }
     }
     given "most stamps changed" {
@@ -57,7 +72,9 @@ spec "input stamps — a base and one delta" {
             stamps_written(path, many(100, 1))
             stamps_written(path, many(100, 1).take(98).concat([stamp_of(98, 2), stamp_of(99, 2)]))
             stamps_written(path, many(100, 3))
-            !exists("${path}.delta") && holds_exactly(stamps_read(path), many(100, 3))
+            !exists("${path}.delta") &&
+                holds_exactly(stamps_read(path), many(100, 3)) &&
+                kept_exactly(path, many(100, 3))
         }
     }
     given "a delta over another base" {
@@ -68,7 +85,7 @@ spec "input stamps — a base and one delta" {
             let delta = read_bytes("${path}.delta") catch "".bytes()
             stamps_written(path, many(100, 5))
             let _ = write_bytes("${path}.delta", delta)
-            holds_exactly(stamps_read(path), many(100, 5))
+            holds_exactly(stamps_read(path), many(100, 5)) && kept_exactly(path, many(100, 5))
         }
     }
 }
