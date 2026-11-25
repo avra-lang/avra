@@ -1,0 +1,23 @@
+//! A SQLite refusal as a home's: which of a home's errors each cause is.
+use @std.queue.{HomeError}
+use @std.sqlite.error.{Cause, SqlError}
+use @std.time.{Duration, ms}
+
+/// How long a sender waits before it asks a busy or full home again.
+export const ask_again: Duration = ms(250)
+
+/// A store answer as a home's.
+export fn homed<V>(r: Result<V, SqlError>) -> Result<V, HomeError> {
+    match r { .Ok(v) -> .Ok(v), .Err(e) -> .Err(home_error(e)) }
+}
+
+/// A lock another connection holds is waited out and asked again; a
+/// database the caller may not write is a denial; every other cause is
+/// a refusal in SQLite's own words.
+export fn home_error(e: SqlError) -> HomeError {
+    match e.cause {
+        .Busy(_) or .Interrupted -> HomeError.Unreachable(ask_again),
+        .Denied(_) -> HomeError.Denied,
+        .Constraint(_) or .Mismatch(_, _, _) or .NoColumn(_) or .OutOfRow(_, _) or .OutOfSlots(_, _) or .Unfilled(_, _) or .NotUtf8(_, _) or .NoRow or .ManyRows or .Syntax or .Corrupt or .Full or .TooBig or .Io(_) or .NoMemory or .CantOpen or .NotADatabase or .Expired or .Defect(_) or .Other(_) or .EmptyPath or .UriPath or .HoldsNul or .ManyStatements or .NoStatement or .RowsDiscarded or .Finalized or .Done or .Closed or .Foreign or .NoTransaction or .TransactionOpen or .NegativeWait or .Unlogged -> HomeError.Refused(e.message),
+    }
+}

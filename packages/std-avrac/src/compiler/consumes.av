@@ -1,0 +1,148 @@
+//! THE CONSUMES PASS — which of a fn's own param seats the body
+//! CONSUMES: keeps whole on EVERY path to an answer — the bare subject
+//! of a `with` or a method call, a bare value stored into a fresh list
+//! or struct, or a `return` — the evidence a caller can hand a dying
+//! argument over for instead of retaining across the call. A seat kept
+//! on SOME paths stays borrowed and the keeping path takes its own
+//! reference, so a cold keep never charges every call a count. A path
+//! that fails is not an answer and is not asked (R3, docs/2026_09_23_REUSE_IN_PLACE.md
+//! §31). Unlike the seats pass (receivers.av), this asks nothing of
+//! any OTHER declaration: a seat's evidence lives wholly in its own
+//! body, so declarations settle independently, one seat's answer
+//! never depends on a fixpoint, and a recursive callee needs no
+//! special case.
+use core.{
+    At,
+    DeclId,
+    ExprId,
+    Control,
+    TypeId,
+    SyntaxArena,
+    MethodParts,
+    WithParts,
+    filled,
+    fp,
+    fp_list,
+    is_managed,
+    some_list,
+}
+use features.{NameFacts, Decls, Decl}
+use compiler.families.{Family}
+use @std.relation.{query}
+
+/// The seat a bare name read at `e` names, by the old path's bindings.
+fn param_read(names: NameFacts, e: ExprId) -> int? {
+    let b? = names.binding(e) else { return null }
+    match b { .Param(i) -> i, _ -> null }
+}
+
+/// THE SEATS A BODY CONSUMES: of the `eligible` ones, each its body `root` in `store` keeps whole on
+/// every path to an answer, `seat_read` naming the seat a bare read at a node reads, absent for any
+/// other node and for a capture.
+export fn kept_seats(
+    store: SyntaxArena,
+    root: ExprId,
+    eligible: List<bool>,
+    seat_read: fn(ExprId) -> int?,
+) -> List<bool> {
+    mut cx = Consumed {
+        store: store,
+        seat_read: seat_read,
+        eligible: eligible,
+        returned: filled(eligible.length, true),
+    }
+    cx.scan(root)
+}
+
+/// What one body's survey reads and gathers: its file's parts, how a read names a seat, which seats
+/// are still candidates, and the seats every path that RETURNS has kept.
+type Consumed = { store: SyntaxArena, seat_read: fn(ExprId) -> int?, eligible: List<bool>, returned: List<bool> }
+
+impl Consumed {
+    /// The ELIGIBLE seats every path through the body keeps: at its end
+    /// and at every `return`. A path that FAILS is not an answer and keeps
+    /// nothing it owes, so a body that only fails keeps every seat it may.
+    mut fn scan(root: ExprId) -> List<bool> {
+        let tail = self.through(At.Expr(root), filled(self.eligible.length, false))
+        [k && self.returned[i] && self.eligible[i] for i, k in tail]
+    }
+
+    /// The seats kept by the time control falls through `at`, entered
+    /// with `kept` — every seat, when it never falls through.
+    mut fn through(at: At, kept: List<bool>) -> List<bool> {
+        match at {
+            .Expr(e) -> self.keeping(self.flowed(self.store.expr_control(e), kept), self.kept_values(e)),
+            .Stmt(s) -> self.flowed(self.store.stmt_control(s), kept),
+            .Pat(_) or .Field(_, _) or .Param(_, _) -> kept,
+        }
+    }
+
+    mut fn flowed(f: Control, kept: List<bool>) -> List<bool> {
+        match f {
+            .Seq(steps) -> self.run(steps, kept),
+            .Branch(head, arms) -> self.branched(self.run(head, kept), arms),
+            .Returns(v) -> self.returns(some_list(v), kept),
+            .Fails(v) -> self.left(self.run([At.Expr(v)], kept)),
+            .Apart -> kept,
+        }
+    }
+
+    mut fn run(steps: List<At>, kept: List<bool>) -> List<bool> {
+        mut k = kept
+        for s in steps { k = self.through(s, k) }
+        k
+    }
+
+    /// The seats every arm keeps, each entered with `kept`.
+    mut fn branched(kept: List<bool>, arms: List<List<At>>) -> List<bool> {
+        if arms.length == 0 { return kept }
+        mut met = self.left(kept)
+        for a in arms { met = both(met, self.run(a, kept)) }
+        met
+    }
+
+    /// A return path's seats — a bare returned seat among them — meet
+    /// every other return's; control does not fall through.
+    mut fn returns(values: List<ExprId>, kept: List<bool>) -> List<bool> {
+        self.returned = both(
+            self.returned,
+            self.keeping(self.run([At.Expr(v) for v in values], kept), values),
+        )
+        self.left(kept)
+    }
+
+    /// Every seat: what a path that never falls through keeps there.
+    fn left(kept: List<bool>) -> List<bool> { filled(kept.length, true) }
+
+    /// `kept` with every seat among `values` added.
+    fn keeping(kept: List<bool>, values: List<ExprId>) -> List<bool> {
+        let seats = [self.seat_of(v) for v in values]
+        [k || seats.contains(i) for i, k in kept]
+    }
+
+    /// The seat a BARE occurrence names — null for anything else,
+    /// including a capture (a lambda's copy) and a seat this survey
+    /// already excluded.
+    fn seat_of(e: ExprId) -> int? {
+        let i? = (self.seat_read)(e) else { return null }
+        if i < self.eligible.length && self.eligible[i] { i } else { null }
+    }
+
+    /// The values an expression KEEPS whole: a `with`'s or a method
+    /// call's bare subject (the same shape a reusing row's first seat
+    /// takes, memory.av's `handed_seat`), or a value stored into a
+    /// fresh list or struct literal (the same shape a pushing row's
+    /// owned twin takes, memory.av's `pushes_managed`). Either way the
+    /// memory pass ALREADY owns what happens next once the seat is
+    /// scope-owned — this pass only says where looking pays off.
+    fn kept_values(e: ExprId) -> List<ExprId> {
+        let w: WithParts? = self.store.with_parts(e)
+        if w != null { return [w!.subject].concat(w!.values) }
+        let mp: MethodParts? = self.store.method_parts(e)
+        if mp != null { return [mp!.subject] }
+        self.store.struct_lit_parts(e)?.values ?? self.store.list_lit_values(e) ?? []
+    }
+}
+
+/// The seats both sides keep.
+fn both(a: List<bool>, b: List<bool>) -> List<bool> { [x && b[i] for i, x in a] }

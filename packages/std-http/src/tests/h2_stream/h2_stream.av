@@ -1,0 +1,135 @@
+//! proves: over HTTP/2, bodies stream both ways under flow control —
+//! a streamed answer is pulled only as fast as the client gives its
+//! windows back (the client stops giving them back mid-download and
+//! asks, on another stream, how far the server pulled), and a request
+//! body is read by its handler as it arrives, the stream's window given
+//! back only for what was read. So neither end ever holds more than a
+//! window and a piece, however large the body.
+use @std.net.{Conn, NetError, listen, connect}
+use @std.time.{secs, ms}
+use @std.http.frame.{limits, no_bytes}
+use @std.http.http.{Request, Unrouted, Response, Stream, Pulled, text}
+use @std.http.body.{Body}
+use @std.http.server.{served, timing}
+use @std.http.h2.{Frame, end_stream}
+use @std.http.h2_client_drive.{H2Client, h2_conversing, h2_request}
+use @std.http.wire.{plainly}
+
+type App = { pulled: Cell<int> }
+
+fn pieces() -> int { 64 }
+fn piece_size() -> int { 65536 }
+fn total_size() -> int { pieces() * piece_size() }
+
+once fn piece() -> Bytes { [120 for _i in 0..piece_size()].bytes()! }
+
+/// The answer: `pieces()` pulls of one piece, each counted.
+fn big(pulled: Cell<int>) -> Stream {
+    Stream { pull: () -> next_piece(pulled), length: total_size() }
+}
+
+fn next_piece(pulled: Cell<int>) -> Pulled {
+    if pulled.get() == pieces() { return .End }
+    pulled.set(pulled.get() + 1)
+    .Data(piece())
+}
+
+/// A request body read to its end as it arrives: the octets, and the
+/// largest piece one read answered.
+fn counted(b: Body) -> string {
+    mut total = 0
+    mut largest = 0
+    while true {
+        match b.read() {
+            .Ok(p) -> {
+                let got? = p else { return "${total} octets read, no piece past a window: ${largest <= 65535}" }
+                total = total + got.length
+                if got.length > largest { largest = got.length }
+            },
+            .Err(_) -> { return "failed after ${total}" },
+        }
+    }
+    "?"
+}
+
+fn answer(app: App, q: Request<Unrouted>) -> Response {
+    if q.head.method is .Post { return text(200, counted(q.body)) }
+    if q.path()! == "/pulled".bytes() { return text(200, "${app.pulled.get()}") }
+    Response { stream: big(app.pulled) }
+}
+
+// ── The client ──────────────────────────────────────────────────
+
+/// A driver failure as the net error this suite reports.
+fn driven<T>(r: Result<T, string>) -> Result<T, NetError> {
+    match r { .Ok(v) -> .Ok(v), .Err(e) -> .Err(NetError { verb: "h2", subject: e, errno: 0 }) }
+}
+
+/// The download on stream 1, under the stream's first window alone:
+/// the client reads that window's worth and gives nothing back, asks on
+/// another stream how many pieces the server has pulled, then gives the
+/// window back and reads the rest.
+fn downloaded(mut cl: H2Client) -> Result<string, NetError> {
+    let one = driven(cl.ask(h2_request("GET", "http", "a", "/big", [], no_bytes)))?
+    let first = driven(cl.frames_until((fs) -> data_octets(fs, one) >= 65535, ms(500)))?
+    let asked = driven(cl.ask(h2_request("GET", "http", "a", "/pulled", [], no_bytes)))?
+    let second = driven(
+        cl.frames_until((fs) -> fs.any(it.stream == asked && it.flags & end_stream != 0), ms(500)),
+    )?
+    let held = data_octets(first.concat(second), one)
+    let pulled = answered(second, asked)
+    mut total = drain(cl, one, 0)
+    while total < total_size() {
+        let seen = driven(cl.advance(1048576, ms(500)))?
+        if seen == null { break }
+        total = drain(cl, one, total)
+    }
+    .Ok(
+        "downloaded ${total} octets; with its window held shut after ${held}, the server had pulled ${pulled} piece(s)",
+    )
+}
+
+/// Stream `id`'s arrived body taken, added to `n` — the window given
+/// back for it, so the server sends its next piece.
+fn drain(mut cl: H2Client, id: int, n: int) -> int {
+    match cl.body(id) { .Whole(b) or .Flowing(b) -> n + b.length, .Cut -> n }
+}
+
+/// The upload on stream 5: a whole request body, sent only as the
+/// server's windows allow — the window updates read between sends — and
+/// then the answer's body.
+fn uploaded(mut cl: H2Client) -> Result<string, NetError> {
+    let id = driven(cl.ask(h2_request("POST", "http", "a", "/count", [], upload_body())))?
+    let frames = driven(
+        cl.frames_until((fs) -> fs.any(it.stream == id && it.flags & end_stream != 0), ms(500)),
+    )?
+    .Ok("uploaded ${total_size()} octets: ${answered(frames, id)}")
+}
+
+/// The whole upload body: `pieces()` pieces woven into one.
+fn upload_body() -> Bytes { [piece() for _i in 0..pieces()].bytes() }
+
+/// Whether these frames end stream `id`.
+fn data_octets(fs: List<Frame>, id: int) -> int {
+    mut n = 0
+    for f in fs { if f.kind is .Data && f.stream == id { n = n + f.payload.length } }
+    n
+}
+
+/// Stream `id`'s DATA, as text.
+fn answered(fs: List<Frame>, id: int) -> string { [f.payload for f in fs if f.stream == id && f.kind is .Data].bytes().text() ?? "?" }
+
+fn shown() -> Result<string, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let s = served(l, () -> App { pulled: Cell.new(0) }, limits(), timing()) { app, q -> answer(app, q) }
+    spawn s.run(cores: 1)
+    defer s.stop()
+    let c = connect("127.0.0.1", l.port, secs(2))?
+    defer { let _ = c.close() }
+    mut cl = h2_conversing(limits(), plainly(c))
+    let down = downloaded(cl)?
+    let up = uploaded(cl)?
+    .Ok("${down}\n${up}")
+}
+
+match shown() { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" }

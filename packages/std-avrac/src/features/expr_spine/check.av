@@ -1,0 +1,547 @@
+//! Typing rules: one homogeneous-operand law (`op_over`) — both
+//! sides `want`, or each PRESENT wrong side speaks; `==`/`!=` want
+//! MATCHING operands. An Error operand ABSORBS everywhere — its
+//! cause was diagnosed where it happened; the wording lives here
+//! with the operators.
+use core.{ExprId, BinOp, Type, TypeId, op_symbol, DeclId}
+use features.{TypeCx, EnumSig, this_is, no_variant_read_of, build_a_record, nothing}
+use diagnostics.{Voice, refusal, said_as}
+
+/// `subject[index]`: the subject is a List, the index an int, the
+/// answer the element type. A string has no element an int names.
+fn index_type(mut cx: TypeCx, subject: ExprId, index: ExprId) -> TypeId {
+    let elem: TypeId? = cx.view.types.element(cx.type_at(subject))
+    if elem == null {
+        if cx.errored(subject) { return cx.error_type }
+        if cx.seen_at(subject) is .Str { return text_unindexed(cx, subject) }
+        return not_indexable(cx, subject)
+    }
+    let ish = cx.shape_at(index)
+    if !(ish is .Int) && !(ish is .Error) { index_not_int(cx, index) }
+    elem!
+}
+
+/// A property read has THREE owners, asked in order: a TYPE NAME
+/// subject constructs a variant, a struct answers its field's type,
+/// and `.length` measures. (At self-host this becomes one
+/// member-resolution query; today the chain lives with the node.)
+fn prop_type(mut cx: TypeCx, e: ExprId, subject: ExprId, name: string) -> TypeId {
+    let sh: Type = cx.shape_at(subject)
+    if sh is .Error { return cx.error_type }
+    match sh {
+        .TypeName(decl, tname) -> variant_type(cx, e, decl, tname, name),
+        _ -> member_type(cx, e, subject, name),
+    }
+}
+
+/// A property on a TYPE NAME constructs one of its variants — the
+/// answer is the enum's own type.
+fn variant_type(mut cx: TypeCx, e: ExprId, decl: DeclId, tname: string, name: string) -> TypeId {
+    let tp = cx.tparams(decl)
+    if !tp.is_empty() {
+        if cx.seals_decl(cx.loc_of(e), decl, "built here") { return cx.error_type }
+        return cx.unit_instantiated(e, tname, name, decl, tp)
+    }
+    let ty = cx.view.types.intern(Type.Enum(decl, tname))
+    let declared? = cx.variants_of(ty) else { return record_name_read(cx, e, decl, tname, name) }
+    if declared.tag_of(name) == null { return no_variant_read(cx, e, tname, name, declared) }
+    if cx.seals_decl(cx.loc_of(e), decl, "built here") { return cx.error_type }
+    // A carrying variant named bare would build a value missing its
+    // payload — the arity law belongs on both construction paths.
+    let carried = declared.payloads_of(name)
+    if !carried.is_empty() { return named_without_payload(cx, e, tname, name, carried[0]) }
+    ty
+}
+
+/// The nullable side of `x == null` / `null != x` — exactly one
+/// nullable beside the absence; null otherwise. The lowering keeps
+/// a shape-twin of this projection.
+fn presence_subject(cx: TypeCx, l: ExprId, r: ExprId) -> ExprId? {
+    if cx.seen_at(l) is .Opt && cx.seen_at(r) is .Null { return l }
+    if cx.seen_at(r) is .Opt && cx.seen_at(l) is .Null { return r }
+    null
+}
+
+/// A property on a VALUE — the shared member law (checks.av), the
+/// subject shown by its expression's name.
+fn member_type(mut cx: TypeCx, e: ExprId, subject: ExprId, name: string) -> TypeId {
+    cx.member_type_of(e, cx.name_at(subject), cx.type_at(subject), name)
+}
+
+/// THE NAMED OPERAND LAW: a NAME and its bare shape never mix —
+/// the name is the whole point — but a LITERAL beside a name adopts
+/// it, exactly as a seat's does. Two values of one name answer THAT
+/// NAME; a test answers `bool` whatever it compared. The operator's
+/// own law still runs over the SHAPE, so `Rows + Rows` refuses in
+/// the shape's words.
+fn binary_type(mut cx: TypeCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
+    let mixed? = mixed_run(cx, e, op, l) else { return named_or_op(cx, e, op, l, r) }
+    mixed_bitwise(cx, e, mixed, op)
+}
+
+/// THE BITWISE BAND'S ONE LAW, and the reason it is one tier rather
+/// than five: A RUN THAT MIXES TWO DIFFERENT BITWISE OPERATORS IS
+/// REFUSED. `a | b & c` has two readings a reader must know a table to
+/// choose between, and a generated one is as likely to mean either —
+/// so it names both and asks for parentheses instead of picking. Only
+/// the run is in reach: `a << 1 + 2` is a different tier and reads as C
+/// reads it. What C gets wrong is `a & b == c`, and the band's PLACE in
+/// the table — tighter than comparison — fixes that without any law.
+///
+/// The band groups left, so a run's earlier operator is the left
+/// operand's; a left operand that begins where its parent begins was
+/// written in the same run, one in parentheses begins after them. An
+/// errored left operand has already spoken for the run.
+fn mixed_run(cx: TypeCx, e: ExprId, op: BinOp, l: ExprId) -> BinOp? {
+    if !in_band(op) || cx.errored(l) { return null }
+    let held? = binary_op(cx, l) else { return null }
+    let at? = cx.view.store.expr_span(e) else { return null }
+    let left_at? = cx.view.store.expr_span(l) else { return null }
+    if !in_band(held) || op_symbol(held) == op_symbol(op) || left_at.lo != at.lo { return null }
+    held
+}
+
+/// The operator of a binary node; null for any other node.
+fn binary_op(cx: TypeCx, e: ExprId) -> BinOp? {
+    match cx.view.store.expr(e) { .Binary(op, _, _) -> op, rest -> null }
+}
+
+/// Whether `op` is in the bitwise band.
+export fn in_band(op: BinOp) -> bool {
+    match op { .BitAnd or .BitOr or .BitXor or .Shl or .Shr -> true, rest -> false }
+}
+
+fn named_or_op(mut cx: TypeCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
+    let named: TypeId? = named_side(cx, l) ?? named_side(cx, r)
+    if named != null && !named_agree(cx, l, r, named!) { return cx.error_type }
+    let answer = op_type(cx, e, op, l, r)
+    if named == null || cx.errored_ty(answer) { return answer }
+    if cx.view.types.shape_of(answer) is .Bool { return answer }
+    named!
+}
+
+/// The NAME a side wears, when it wears one.
+fn named_side(cx: TypeCx, e: ExprId) -> TypeId? {
+    let ty = cx.type_at(e)
+    if cx.view.types.stands_for(ty) == null { return null }
+    ty
+}
+
+/// Both sides wear the name — the same name, or a literal that
+/// adopts it. A side that does not speaks the name's own remedy.
+fn named_agree(mut cx: TypeCx, l: ExprId, r: ExprId, named: TypeId) -> bool {
+    named_operand(cx, l, named) && named_operand(cx, r, named)
+}
+
+/// THE OTHER SIDE DECIDES WHICH REFUSAL IS TRUE. Its bare shape has
+/// a wrap and hears about it; ANOTHER NAME has none, and saying "its
+/// shape" would name a type that is not one; anything else is the
+/// operator's own law to refuse, in its own words.
+fn named_operand(mut cx: TypeCx, e: ExprId, named: TypeId) -> bool {
+    if cx.errored(e) || cx.accepts(e, named) { return true }
+    let ty = cx.type_at(e)
+    if !cx.types_disagree(ty, cx.seen(named)) {
+        mixed_with_shape(cx, e, named)
+        return false
+    }
+    if cx.view.types.stands_for(ty) == null { return true }
+    two_names(cx, e, named)
+    false
+}
+
+fn op_type(mut cx: TypeCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
+    match op {
+        .Add -> added_type(cx, op, l, r),
+        .Sub or .Mul or .Div -> arith_type(cx, op, l, r),
+        // `%` stays INT-ONLY: a remainder of two reals is `fmod`, a
+        // different operation wearing the same symbol, and nobody has
+        // asked for it. The refusal names `int` and is the whole law.
+        .Mod -> op_over(cx, op, l, r, Type.Int, Type.Int),
+        .Lt or .Le or .Gt or .Ge -> ordered_type(cx, op, l, r),
+        .And or .Or -> op_over(cx, op, l, r, Type.Bool, Type.Bool),
+        .BitAnd or .BitOr or .BitXor -> op_over(cx, op, l, r, Type.Int, Type.Int),
+        .Shl or .Shr -> shifted_type(cx, op, l, r),
+        .Eq or .Ne -> eq_type(cx, e, op, l, r),
+    }
+}
+
+/// A shift is an int law with ONE extra rule, and the rule is the
+/// compiler holding knowledge no other tool has: a count outside
+/// 0..63 has no answer on any machine, so a LITERAL one is refused
+/// where it is written rather than trapped when it runs. A count the
+/// compiler cannot read traps instead — `avra_int_shl` guards it, and
+/// both engines call that same body, so neither can be wrong alone.
+fn shifted_type(mut cx: TypeCx, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
+    let count? = cx.view.store.valued(r).int_of() else { return op_over(cx, op, l, r, Type.Int, Type.Int) }
+    if count < 0 || count > 63 { return bad_shift_count(cx, r, count) }
+    op_over(cx, op, l, r, Type.Int, Type.Int)
+}
+
+/// `+` joins two texts or adds two ints — the left side decides
+/// which law the right must meet.
+fn added_type(mut cx: TypeCx, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
+    if cx.seen_at(l) is .Str { return op_over(cx, op, l, r, Type.Str, Type.Str) }
+    arith_type(cx, op, l, r)
+}
+
+/// THE NUMERIC LAW: the LEFT operand names the kind and the right
+/// must wear it. `int` and `float` never mix on their own — an
+/// implicit widening is a precision decision nobody wrote down, and
+/// the two kinds answer differently for the same digits. A mixed
+/// expression says which it means by converting.
+fn arith_type(mut cx: TypeCx, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
+    if cx.seen_at(l) is .Float { return op_over(cx, op, l, r, Type.Float, Type.Float) }
+    op_over(cx, op, l, r, Type.Int, Type.Int)
+}
+
+/// The ordered comparisons, by the same law, answering a bool.
+fn ordered_type(mut cx: TypeCx, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
+    if cx.seen_at(l) is .Float { return op_over(cx, op, l, r, Type.Float, Type.Bool) }
+    op_over(cx, op, l, r, Type.Int, Type.Bool)
+}
+
+/// The homogeneous-operand law: both sides `want`, or each PRESENT
+/// wrong side speaks for itself.
+fn op_over(mut cx: TypeCx, op: BinOp, l: ExprId, r: ExprId, want: Type, answer: Type) -> TypeId {
+    if wears(cx.seen_at(l), want) && wears(cx.seen_at(r), want) {
+        return cx.view.types.intern(answer)
+    }
+    needs(cx, op, l, want)
+    needs(cx, op, r, want)
+    cx.error_type
+}
+
+fn needs(mut cx: TypeCx, op: BinOp, e: ExprId, want: Type) {
+    let sh = cx.seen_at(e)
+    if wears(sh, want) || sh is .Error { return }
+    wrong_operand(cx, op, e, want)
+}
+
+/// Whether a shape IS the scalar an operator wants — the three the
+/// operators speak.
+fn wears(sh: Type, want: Type) -> bool {
+    match want {
+        .Int -> sh is .Int,
+        .Float -> sh is .Float,
+        .Bool -> sh is .Bool,
+        .Str -> sh is .Str,
+        .Ptr or .Bytes or .List(_) or .Cell(_) or .Task(_) or .Tasks or .Struct(_, _) or .Enum(_, _) or .Res(_, _) or .App(_, _, _) or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or .EmptyList or .Error or .Void or .Map(_, _) or .EmptyMap or .Union(_) or .Range -> false,
+    }
+}
+
+/// `!` negates a bool; Error absorbs to the answer.
+fn not_type(mut cx: TypeCx, v: ExprId) -> TypeId {
+    let sh = cx.seen_at(v)
+    if sh is .Bool || sh is .Error { return cx.type(bool) }
+    not_negatable(cx, v)
+}
+
+/// A SIDE WITH NO TYPE OF ITS OWN HEARS THE OTHER SIDE'S: `tone ==
+/// .Danger` reads the enum off `tone` — through one `?` when `tone`
+/// is nullable — as a typed `let` or an argument seat would say it.
+fn heard_across(mut cx: TypeCx, side: ExprId, other: ExprId) {
+    if !cx.facts.hungry_at(side) || cx.facts.hungry_at(other) || cx.errored(other) { return }
+    cx.feed(side, cx.type_at(other))
+}
+
+/// What a nullable comparison compares — the carried type — when
+/// one side is a nullable and the other is what it carries, or the
+/// same nullable; absence otherwise.
+fn nullable_compared(cx: TypeCx, l: ExprId, r: ExprId) -> TypeId? {
+    let lc: TypeId? = cx.view.types.carried(cx.type_at(l))
+    let rc: TypeId? = cx.view.types.carried(cx.type_at(r))
+    if lc == null && rc == null { return null }
+    let inner: TypeId = lc ?? rc!
+    let other = if lc == null { cx.type_at(l) } else { cx.type_at(r) }
+    if !cx.types_disagree(other, inner) { return inner }
+    if lc != null && rc != null && !cx.types_disagree(lc!, rc!) { return inner }
+    null
+}
+
+/// The side that cannot be compared, LEFT first — the one the
+/// refusal should point at.
+fn uncomparable(cx: TypeCx, l: ExprId, r: ExprId) -> ExprId? {
+    if !cx.compares_by_value(cx.seen(cx.type_at(l))) { return l }
+    if !cx.compares_by_value(cx.seen(cx.type_at(r))) { return r }
+    null
+}
+
+fn eq_type(mut cx: TypeCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
+    heard_across(cx, l, r)
+    heard_across(cx, r, l)
+    let ls = cx.seen_at(l)
+    let rs = cx.seen_at(r)
+    if ls is .Error || rs is .Error { return cx.error_type }
+    // THE PRESENCE TEST: a nullable beside `null` asks IS IT THERE —
+    // the one comparison absence answers, and the answer is a bool.
+    // A NAMED subject records the ask as a fact `if` can query:
+    // `!= null` proves the then-branch, `== null` the else.
+    let asked: ExprId? = presence_subject(cx, l, r)
+    if asked != null {
+        if cx.view.store.expr(asked!) is .Ident {
+            cx.record_ask(e, asked!, op == BinOp.Ne)
+        }
+        return cx.type(bool)
+    }
+    // A GUARANTEE beside `null` is a question with only one answer.
+    if ls is .Null && rs is .Null { return both_absent(cx, op, l) }
+    if ls is .Null || rs is .Null {
+        let solid = if ls is .Null { r } else { l }
+        return not_askable(cx, op, solid)
+    }
+    // A NULLABLE beside its value, or beside its own nullable,
+    // compares THROUGH PRESENCE: absent equals nothing but absence.
+    let inner: TypeId? = nullable_compared(cx, l, r)
+    if inner != null {
+        if !cx.compares_by_value(inner!) { return cx.not_comparable(op_symbol(op), l) }
+        return cx.type(bool)
+    }
+    // An AGGREGATE would compare by ADDRESS — never what the writer
+    // meant, and the engines disagreed about it: the interpreter
+    // refused while the backend quietly answered `false` for two
+    // identical values.
+    let found: ExprId? = uncomparable(cx, l, r)
+    if found != null { return cx.not_comparable(op_symbol(op), found!) }
+    // A NAME IS TRANSPARENT AT A READ: the named law already held
+    // both sides to one name, so the shapes are what remain to agree.
+    if !cx.types_disagree(cx.seen(cx.type_at(l)), cx.seen(cx.type_at(r))) { return cx.type(bool) }
+    mismatched_sides(cx, op, l, r)
+}
+
+// ── The voices ──
+
+fn not_indexable(mut cx: TypeCx, subject: ExprId) -> TypeId { cx.spoken(said_as("type.mismatch", cx.loc_of(subject), unindexable(cx.name_at(subject)))) }
+
+/// `[…]` on a value of `found`, which is no list.
+export fn unindexable(found: string) -> Voice {
+    Voice {
+        message: "`[...]` indexes a `List`, found `${found}`",
+        label: this_is(found),
+        help: "`[…]` reads a list — a map answers `.get(key)`, and text answers `.substring(lo, hi)`",
+    }
+}
+
+fn text_unindexed(mut cx: TypeCx, subject: ExprId) -> TypeId { cx.spoken(said_as("type.mismatch", cx.loc_of(subject), text_unindexable())) }
+
+/// `[…]` on a `string`, whose elements are a view's.
+export fn text_unindexable() -> Voice {
+    Voice {
+        message: "an `int` names no place in a `string` — its elements are a view's",
+        label: this_is("string"),
+        help: "name the view: `s.bytes().at(i)` reads an octet, `s.chars()[i]` the code point `i` steps in, `s.substring(i, j)` a slice",
+    }
+}
+
+fn index_not_int(mut cx: TypeCx, index: ExprId) { cx.emit(said_as("type.mismatch", cx.loc_of(index), unplaced_index(cx.name_at(index)))) }
+
+/// An index holding `found`, which is no `int`.
+export fn unplaced_index(found: string) -> Voice {
+    Voice {
+        message: "an index is an `int`, found `${found}`",
+        label: "this decides the position",
+        help: "an index is a position — `xs[0]` is the first, `xs[xs.length - 1]` the last",
+    }
+}
+
+/// A record's name read without a call: its own static fn, or nothing.
+fn record_name_read(mut cx: TypeCx, e: ExprId, decl: DeclId, tname: string, name: string) -> TypeId {
+    let m? = cx.static_named(decl, name) else { return record_read(cx, e, tname) }
+    cx.static_not_value(e, tname, name, m)
+}
+
+fn record_read(mut cx: TypeCx, e: ExprId, tname: string) -> TypeId { cx.spoken(said_as("type.unknown_prop", cx.loc_of(e), record_not_enum(tname))) }
+
+/// A read through the name of the record `owner`, which holds no variant.
+export fn record_not_enum(owner: string) -> Voice {
+    Voice {
+        message: "`${owner}` is a record, not an enum",
+        label: "read here",
+        help: build_a_record(owner),
+    }
+}
+
+fn no_variant_read(mut cx: TypeCx, e: ExprId, tname: string, name: string, sig: EnumSig) -> TypeId {
+    cx
+        .spoken(said_as("type.unknown_prop", cx.loc_of(e), no_variant_read_of(tname, name, sig.names)))
+}
+
+fn named_without_payload(mut cx: TypeCx, e: ExprId, tname: string, name: string, carried: TypeId) -> TypeId {
+    cx
+        .spoken(
+            said_as(
+                "type.mismatch",
+                cx.loc_of(e),
+                variant_named_bare(tname, name, cx.view.types.name_of(carried)),
+            ),
+        )
+}
+
+/// The variant `name` of `tname`, which carries `carried`, named without it.
+export fn variant_named_bare(tname: string, name: string, carried: string) -> Voice {
+    Voice {
+        message: "`${tname}.${name}` carries `${carried}`",
+        label: "named without it here",
+        help: "write `${tname}.${name}(<value>)`",
+    }
+}
+
+fn wrong_operand(mut cx: TypeCx, op: BinOp, e: ExprId, want: Type) {
+    let n = cx.name_at(e)
+    cx
+        .emit(
+            said_as(
+                "type.mismatch",
+                cx.loc_of(e),
+                operand_needed(op_symbol(op), cx.view.types.name_of(cx.view.types.intern(want)), n),
+            ),
+        )
+}
+
+/// An operand of `op`, which needs `want` on both sides, holding `found`.
+export fn operand_needed(op: string, want: string, found: string) -> Voice {
+    Voice {
+        message: "`${op}` needs `${want}` operands, found `${found}`",
+        label: this_is(found),
+        help: "give the operand the type the operator needs — `.length` measures text and lists, and interpolation makes text of a number",
+    }
+}
+
+fn not_negatable(mut cx: TypeCx, v: ExprId) -> TypeId { cx.spoken(said_as("type.mismatch", cx.loc_of(v), unnegated(cx.name_at(v)))) }
+
+/// `!` over a value of `found`, which is no `bool`.
+export fn unnegated(found: string) -> Voice {
+    Voice {
+        message: "`!` negates a `bool`, found `${found}`",
+        label: this_is(found),
+        help: "`!` negates a `bool` — test a nullable with `v != null`, a number with `n == 0`",
+    }
+}
+
+fn both_absent(mut cx: TypeCx, op: BinOp, l: ExprId) -> TypeId { cx.spoken(said_as("type.mismatch", cx.loc_of(l), always_absent(op_symbol(op)))) }
+
+/// `op` between two `null`s, whose answer never moves.
+export fn always_absent(op: string) -> Voice {
+    Voice {
+        message: "both sides are always absent, so `${op}` always answers",
+        label: "always absent",
+        help: "write the answer alone",
+    }
+}
+
+fn not_askable(mut cx: TypeCx, op: BinOp, solid: ExprId) -> TypeId {
+    cx
+        .spoken(
+            said_as(
+                "type.mismatch",
+                cx.loc_of(solid),
+                null_unasked(op_symbol(op), cx.name_at(solid)),
+            ),
+        )
+}
+
+/// `op null` beside a value of `found`, which is never absent.
+export fn null_unasked(op: string, found: string) -> Voice {
+    Voice {
+        message: "`${op} null` asks a nullable, this is `${found}`",
+        label: this_is(found),
+        help: "`${found}` is never absent — drop the comparison",
+    }
+}
+
+fn mismatched_sides(mut cx: TypeCx, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
+    cx
+        .spoken(
+            said_as(
+                "type.mismatch",
+                cx.loc_of(r),
+                sides_unmatched(op_symbol(op), cx.name_at(l), cx.name_at(r)),
+            ),
+        )
+}
+
+/// `op` between a value of `left` and one of `right`, two types.
+export fn sides_unmatched(op: string, left: string, right: string) -> Voice {
+    Voice {
+        message: "`${op}` compares matching types, found `${left}` and `${right}`",
+        label: this_is(right),
+        help: "compare two values of one type — convert one side, or compare a field of each",
+    }
+}
+
+/// A NAME MEETS ITS OWN SHAPE — the remedy is the conversion.
+fn mixed_with_shape(mut cx: TypeCx, e: ExprId, named: TypeId) {
+    let n = cx.name_at(e)
+    cx
+        .emit(
+            cx
+                .seat_mismatch(
+                    "type.mismatch",
+                    cx.loc_of(e),
+                    e,
+                    shape_mixed(cx.view.types.name_of(named), n).message,
+                    named,
+                ),
+        )
+}
+
+/// An operand of `found`, the shape the name `named` stands over, beside one wearing it.
+export fn shape_mixed(named: string, found: string) -> Voice {
+    Voice {
+        message: "an operand of `${named}` meets `${found}` — a named type never mixes with its shape",
+        label: this_is(found),
+        help: "`${named}` is its own type — a value of its shape crosses by construction",
+    }
+}
+
+/// A NAME MEETS ANOTHER NAME. No wrap is honest — neither stands
+/// over the other — so the refusal offers none.
+fn two_names(mut cx: TypeCx, e: ExprId, named: TypeId) {
+    cx
+        .emit(
+            said_as(
+                "type.mismatch",
+                cx.loc_of(e),
+                two_named(cx.view.types.name_of(named), cx.name_at(e)),
+            ),
+        )
+}
+
+/// An operand of `found`, a name, beside one wearing the name `named`.
+export fn two_named(named: string, found: string) -> Voice {
+    Voice {
+        message: "`${named}` and `${found}` are two types — a named type never mixes with another",
+        label: this_is(found),
+        help: "a named type is its own type — `Name(value)` crosses in and `.of` reads its shape out",
+    }
+}
+
+fn bad_shift_count(mut cx: TypeCx, r: ExprId, count: int) -> TypeId { cx.spoken(said_as("type.shift_count", cx.loc_of(r), shift_out_of_range(count))) }
+
+/// A shift by `count`, a literal past what an `int` holds.
+export fn shift_out_of_range(count: int) -> Voice {
+    Voice {
+        message: "a shift count must be between 0 and 63, this is ${count}",
+        label: "shifted by this",
+        help: "an `int` is 64 bits, so a wider shift has no answer to give",
+    }
+}
+
+fn mixed_bitwise(mut cx: TypeCx, e: ExprId, first: BinOp, second: BinOp) -> TypeId {
+    cx
+        .spoken(
+            said_as(
+                "type.mixed_bitwise",
+                cx.loc_of(e),
+                bitwise_mixed(op_symbol(first), op_symbol(second)),
+            ),
+        )
+}
+
+/// A run of bitwise operators mixing `first` with `second`.
+export fn bitwise_mixed(first: string, second: string) -> Voice {
+    Voice {
+        message: "`${first}` and `${second}` in one expression have no agreed order",
+        label: "two bitwise operators in one run",
+        help: "write parentheses to say which binds first — `(a | b) & c`",
+    }
+}

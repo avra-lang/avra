@@ -1,0 +1,31 @@
+// proves: a fn that parks, reached only through a value from a loop, is
+// still cut by a cancel — its loop runs no further turn
+use @std.task.{open_channel}
+use @std.time.{secs, sleep}
+
+fn napped(seen: Cell<int>) {
+    sleep(secs(60))
+    seen.set(seen.get() + 1)
+}
+
+fn looped(nap: fn(Cell<int>) -> void, seen: Cell<int>) {
+    mut i = 0
+    while i < 3 {
+        nap(seen)
+        seen.set(seen.get() + 10)
+        i = i + 1
+    }
+}
+
+let seen = Cell.new(0)
+let up = open_channel<int>(1)
+let t = spawn {
+    let _ = up.sink.post(1)
+    let nap = napped
+    looped(nap, seen)
+    0
+}
+let _ = up.source.next()
+t.cancel()
+let _ = t.await catch c -> 0
+"${t.done} ${seen.get()}"

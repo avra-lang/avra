@@ -1,0 +1,21 @@
+// proves: a caught await is a value — the arm's answer for a cancelled
+// task, the task's own for one that answered, a managed one either way
+use @std.task.{open_channel, Sink}
+use @std.time.{secs, sleep}
+
+fn idle(up: Sink<int>) -> string {
+    let _ = up.post(1)
+    sleep(secs(60))
+    "never"
+}
+
+fn said(n: int) -> string { "said ${n}" }
+
+let up = open_channel<int>(1)
+let t = spawn idle(up.sink)
+let _ = up.source.next()
+t.cancel()
+let cut = t.await catch c -> { "cut by ${c.by}" }
+let u = spawn said(7)
+let kept = u.await catch c -> { "cut by ${c.by}" }
+"${cut}, ${kept}"

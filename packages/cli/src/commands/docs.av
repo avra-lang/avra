@@ -1,0 +1,170 @@
+//! `avra docs` — the documentation associated with a thing. No name:
+//! every exported symbol in this package, dumped. A name: that one
+//! thing's own doc — a diagnostic's meaning, or a declared symbol's
+//! `///` doc and its `@name(args)` annotations.
+use @std.cli.{CliResult, Runnable, command, arg, flag}
+use @std.avrac.compiler.{DeclDoc, FileDocs, avra, avra_fact_definitions, file_docs, package_sources}
+use @std.avrac.core.{sorted_texts}
+use @std.program.address.{SourceFileAddress}
+use @std.path.{joined_path}
+use @std.program.layered_store.{program_store_at}
+use @std.program.query_engine.{query_engine}
+use @std.avrac.diagnostics.{DiagCode}
+use @std.avrac.compiler.dev.{shown_code}
+use @std.json.{Json, field, to_text}
+
+type DocsCmd = {}
+
+impl Runnable for DocsCmd {
+    fn run(args: CliResult) -> int {
+        let json = args.has_flag("json")
+        let name = args.arg("name")
+        if name == "" { return dumped(json) }
+        let hit: DiagCode? = avra().rows.codes.find(it.kind == name)
+        if hit != null {
+            let c = hit!
+            if json { return print_json(kind_json(c)) }
+            println("${c.kind} — ${c.summary}")
+            shown_witness(c.kind)
+            return 0
+        }
+        explained_decl(name, json)
+    }
+}
+
+fn kind_json(c: DiagCode) -> Json {
+    Json.Obj([field("kind", Json.Str(c.kind)), field("summary", Json.Str(c.summary))])
+}
+
+fn print_json(j: Json) -> int {
+    println(to_text(j))
+    0
+}
+
+/// WHAT THE CODE LOOKS LIKE. The registry's witness, run: the source
+/// that triggers this code and the compiler's own words over it. A
+/// REAL refusal with its holes filled beats a template of the law,
+/// and it is the same rendering docs/DIAGNOSTICS.md pins.
+fn shown_witness(kind: string) {
+    let shown? = shown_code(kind) else { return }
+    if !shown.fired { return }
+    println("")
+    println(shown.witness_source())
+    println("")
+    println(shown.rendered)
+}
+
+/// `avra docs <name>` — a declared fn/type/enum/trait/const's own
+/// `///` doc — or, absent one, its FILE's `//!` header — and its
+/// `@name(args)` annotations, when `name` is not a known diagnostic
+/// kind. The package is the directory the command stands in. A name two
+/// of its modules both declare is named as a collision, never answered
+/// from whichever file was read first. Each file's facts are an answer
+/// the package's store keeps (`file_docs`), so a second asking reads no
+/// file nobody edited.
+fn explained_decl(name: string, json: bool) -> int {
+    let docs = match package_docs(here()) { .Ok(d) -> d, .Err(code) -> { return code } }
+    let text? = decl_said(name, docs) else {
+        eprintln(
+            "avra: nothing registered under `${name}` — no diagnostic kind or declared fn/type/enum/trait/const wears it",
+        )
+        return 1
+    }
+    print_decl(name, text, json)
+    0
+}
+
+/// What `avra docs <name>` says of the name `name` over a package's files: its doc and annotations,
+/// a collision named where several modules declare it, absent where none does.
+export fn decl_said(name: string, docs: List<FileDocs>) -> string? {
+    let found = [Documented { file: f, decl: d } for f in docs for d in f.decls if d.name == name]
+    if found.length > 1 { return collision_said(name, [m.file.module for m in found]) }
+    let one? = found.first() else { return null }
+    let lines = (one.decl.doc ?? one.file.header ?? []).concat(one.decl.annotations)
+    if lines.is_empty() { "${name} — no doc, no annotations" } else { lines.join("\n") }
+}
+
+/// A declaration's documentation beside its file's.
+type Documented = { file: FileDocs, decl: DeclDoc }
+
+fn collision_said(name: string, modules: List<string>) -> string {
+    "`${name}` names more than one declaration in this package — qualify it: ${["${m}.${name}" for m in modules].join(", ")}"
+}
+
+/// What each source file of the package at `root` and of every package it depends on says of the
+/// names it declares, read on the program layer; the exit spoken where no std stands beside this
+/// compiler.
+fn package_docs(root: string) -> Result<List<FileDocs>, int> {
+    let disk? = disk_at(root, "") else { return .Err(std_unfound()) }
+    let store = program_store_at(joined_path(root, ".avra-cache/tapes"))
+    let engine = query_engine(store, avra_fact_definitions(), disk.name)
+    let packages = [disk.name].concat(sorted_texts(disk.deps.keys()))
+    let docs = [file_docs(engine, SourceFileAddress { package_name: package, path_in_package: path }) for package in packages for path in package_sources(engine, package, "src")]
+    store_kept(engine, store)
+    docs
+}
+
+fn print_decl(name: string, text: string, json: bool) {
+    if json {
+        println(
+            to_text(Json.Obj([field("address", Json.Str(name)), field("text", Json.Str(text))])),
+        )
+        return
+    }
+    println(text)
+}
+
+/// One exported symbol's row: its address (`module.name`), its kind, its signature, its own `///`
+/// lines, and the package it stands in.
+export type DocRow = { address: string, kind: string, signature: string, prose_lines: List<string>, package: string }
+
+/// EVERY EXPORTED DECLARATION OF A PACKAGE'S OWN, one row each, addressed `module.name` so two
+/// modules exporting one bare name never collide. Each row's prose is its OWN `///` alone: an
+/// undocumented symbol does not borrow whatever `//!` its file opens with.
+export fn dump_rows(docs: List<FileDocs>, package: string) -> List<DocRow> {
+    [DocRow {
+        address: "${f.module}.${d.name}",
+        kind: d.kind,
+        signature: d.signature,
+        prose_lines: d.doc ?? [],
+        package: package,
+    } for f in docs for d in f.decls if d.exported]
+}
+
+/// `avra docs` with no name — every EXPORTED declaration's own facts,
+/// this package's own, one row per symbol: `{address, kind, signature,
+/// prose_lines, package}`.
+fn dumped(json: bool) -> int {
+    let docs = match package_docs(here()) { .Ok(d) -> d, .Err(code) -> { return code } }
+    let rows = dump_rows(docs, here())
+    println(if json { to_text(Json.Arr([dump_json(r) for r in rows])) } else { dump_listing(rows) })
+    0
+}
+
+fn dump_json(r: DocRow) -> Json {
+    Json
+        .Obj(
+            [
+                field("address", Json.Str(r.address)),
+                field("kind", Json.Str(r.kind)),
+                field("signature", Json.Str(r.signature)),
+                field("prose_lines", Json.Arr([Json.Str(line) for line in r.prose_lines])),
+                field("package", Json.Str(r.package)),
+            ],
+        )
+}
+
+/// Every exported symbol's address and signature, one per line, under
+/// a header naming the count.
+export fn dump_listing(rows: List<DocRow>) -> string {
+    ["this package exports — ${rows.length}"]
+        .concat(["${r.address} — ${r.signature}" for r in rows])
+        .join("\n")
+}
+
+export command docs {
+    description: "The documentation associated with a thing: no name dumps every exported symbol in this package, a name looks up one (a diagnostic kind or a declared fn/type/enum/trait/const)"
+    arg name { description: "a diagnostic kind or a declared name — every exported symbol in this package when absent" }
+    flag json { description: "JSON instead of text: an array of {address, kind, signature, prose_lines, package} when absent, one object for a name" }
+    run: DocsCmd {}
+}

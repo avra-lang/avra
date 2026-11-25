@@ -1,0 +1,42 @@
+// A worker's rows join the store through its own segment: the segment is
+// headed, merged by the parent once the worker has ended, and read twice by nobody.
+use @std.time.{stamp}
+use @std.relation.engine.{par}
+use compiler.store.{Pack, pack_at, pack_get, pack_merged, pack_put}
+
+once fn base() -> string { "/tmp/avra-store-merge/${stamp()}" }
+
+fn at(name: string) -> Pack { pack_at("${base()}/${name}", "print-merge") }
+
+/// A store the parent has written to, then two workers each filing a row of their own.
+fn filled(name: string) -> Pack {
+    let p = at(name)
+    pack_put(p, "unit", "own", "o", [])
+    par(2, (k: int) -> pack_put(p, "unit", "w${k}", "v${k}", []))
+    p
+}
+
+spec "compiler/store/merge — workers' segments join the parent" {
+    given "two workers that each filed a row" {
+        then "the parent reads both rows once it has merged" {
+            let p = filled("both")
+            let joined = pack_merged(p)
+            joined == 2 && pack_get(p, "unit", "w0") == "v0" && pack_get(p, "unit", "w1") == "v1"
+        }
+        then "the parent's own row stands beside them" {
+            let p = filled("own")
+            let _ = pack_merged(p)
+            pack_get(p, "unit", "own") == "o"
+        }
+        then "a second merge joins nothing" {
+            let p = filled("twice")
+            let _ = pack_merged(p)
+            pack_merged(p) == 0
+        }
+        then "a store opened afresh reads the workers' rows" {
+            let p = filled("fresh")
+            let q = at("fresh")
+            pack_get(q, "unit", "w0") == "v0" && pack_get(q, "unit", "w1") == "v1"
+        }
+    }
+}

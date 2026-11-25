@@ -1,0 +1,53 @@
+//! A template that names types ITS OWN file imports, in every seat a type
+//! is spelled: an annotation, a record literal, an enum variant, a static path.
+use @std.meta.{Type, Directive}
+use @test.shapes.{Mark, Tone, Filter, marked}
+
+export trait Kinded {
+    static fn derive(t: Type) -> List<Directive> {
+        [
+            Directive {
+                twin: "",
+                name: "${t.name}Row",
+                at: t.at,
+                source: quote {
+        type ${t}Row = { m: Mark, f: Filter<int> }
+    },
+            },
+            Directive {
+                twin: "",
+                name: t.name,
+                at: t.at,
+                source: quote {
+        impl ${t} {
+            fn mark() -> Mark { Mark { n: self.size } }
+
+            fn tone() -> Tone { if self.size > 1 { Tone.Warm } else { Tone.Cool } }
+
+            fn picked(f: Filter<int>) -> string {
+                match f {
+                    .Any -> "any",
+                    .Is(v) -> "is ${v}",
+                }
+            }
+
+            fn pair() -> List<Mark> { [Mark { n: 1 }, marked(2)] }
+
+            fn annotated() -> int {
+                let m: Mark = marked(5)
+                let f = (x: Mark) -> x.n + 1
+                f(m)
+            }
+
+            fn named() -> string {
+                match self.tone() {
+                    .Warm -> "warm ${marked(self.size).n}",
+                    .Cool -> "cool",
+                }
+            }
+        }
+    },
+            },
+        ]
+    }
+}

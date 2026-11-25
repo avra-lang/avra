@@ -1,0 +1,18 @@
+// proves: a single-int key looks up by its own number, below the cap, and
+// by its text past it or below zero — the same row either way, and an absent
+// key answers none.
+use @std.relation.{relation}
+use @std.relation.db.{Db, new_db}
+
+@relation
+type Item = { @key code: int, label: string }
+
+fn label_of(db: Db, code: int) -> string { Item.by_key(db, ItemKey { code: code })?.label ?? "none" }
+
+fn main_run() -> string {
+    let db = new_db()
+    for c in [0, 4095, 4096, -3, 1000000] { let _ = Item.insert(db, code: c, label: "l${c}") }
+    "${label_of(db, 0)} ${label_of(db, 4095)} ${label_of(db, 4096)} ${label_of(db, -3)} ${label_of(db, 1000000)} ${label_of(db, 7)}"
+}
+
+main_run()

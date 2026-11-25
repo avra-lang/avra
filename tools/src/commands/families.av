@@ -1,0 +1,68 @@
+//! `avra-tools families` — THE HAND-WRITTEN FAMILIES MAY ONLY FALL.
+//!
+//! Every `@family(` marker in non-test std-avrac source is a family not yet a `@query`. The count
+//! may only fall; `tools/families.ceiling` holds the most it may be. A family converted to a
+//! `@query` lowers the ceiling in the same PR. Exit 0 at or under the ceiling, else 1.
+use @std.cli.{CliResult, Runnable, command}
+use @std.io.{read_text, list_dir, is_dir}
+use @std.path.{joined_path}
+use @std.text.{parse_int}
+
+const CEILING_FILE: string = "tools/families.ceiling"
+const SOURCE_ROOT: string = "packages/std-avrac/src"
+
+type FamiliesCmd = {}
+
+impl Runnable for FamiliesCmd {
+    fn run(_args: CliResult) -> int {
+        let ceil? = parse_int((read_text(CEILING_FILE) catch "").trim()) else {
+            println(
+                "families-left: ${CEILING_FILE} holds no integer — the keeper examined nothing",
+            )
+            return 1
+        }
+        let count = hand_written(SOURCE_ROOT)
+        match ceiling_refusal(count, ceil) {
+            said? -> {
+                println(said)
+                1
+            }
+            null -> {
+                println(
+                    "families-left: ${count} still hand-written (@family), falling to 0 (ceiling ${ceil})",
+                )
+                0
+            }
+        }
+    }
+}
+
+export command families {
+    description: "Refuse a rise in the count of hand-written `@family` markers over tools/families.ceiling"
+    run: FamiliesCmd {}
+}
+
+/// `@family(` markers in non-test std-avrac source: the families not yet `@query`. Test trees hold
+/// fixtures, not families, and are skipped.
+fn hand_written(dir: string) -> int {
+    let names = list_dir(dir) catch []
+    let here = [n for n in names if n.ends_with(".av") && markers(joined_path(dir, n)) > 0]
+    let own = [markers(joined_path(dir, n)) for n in here].fold(0, (acc, k) -> acc + k)
+    let below = [hand_written(joined_path(dir, n)) for n in names if n != "tests" && is_dir(joined_path(dir, n))]
+    own + below.fold(0, (acc, k) -> acc + k)
+}
+
+fn markers(path: string) -> int {
+    markers_in(read_text(path) catch "")
+}
+
+/// Lines whose first words are `@family(`.
+export fn markers_in(text: string) -> int {
+    [l for l in text.split("\n") if l.trim().starts_with("@family(")].length
+}
+
+/// None when `count` does not rise above `ceil`, else the refusal.
+export fn ceiling_refusal(count: int, ceil: int) -> string? {
+    if count <= ceil { return null }
+    "families-left: ${count} family marker(s) still wear `@family`, above the ceiling ${ceil} in ${CEILING_FILE} — a family is converted to `@query`, never added as a `@family`. The count may only fall."
+}

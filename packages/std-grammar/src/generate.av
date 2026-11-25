@@ -1,0 +1,1180 @@
+//! A grammar's UNTOLD RUN as source: one fn per rule over `Untold` (untold.av), tokens matched
+//! by literal slot and class bit, captures as locals. It answers what the engine's untold run
+//! answers (executor.av) on every input — each construct below is that function's control
+//! flow, written out for one item — and a run that speaks is the engine's to word.
+use ast.{
+    Alt,
+    Seq,
+    Item,
+    Prim,
+    Rep,
+    Build,
+    Slot,
+    StartTerm,
+    BranchStart,
+    Tier,
+    Assoc,
+    node_builder_name,
+    closer_of,
+}
+use executor.{Ready}
+use render.{render_build, render_grammar}
+use util.{distinct, filled, is_end, some_list}
+
+/// What the generated source names: its fns' prefix, the token and node types and the lines
+/// that bring them into scope, and the print of the grammar it was made from.
+export type UntoldTarget = { prefix: string, token: string, node: string, uses: List<string>, print: int }
+
+/// The untold run of `rd` as source, or why it has none: the engine refuses to run the grammar, or
+/// a construct in it cannot be written.
+export fn untold_source(rd: Ready, target: UntoldTarget) -> Result<string, string> {
+    let defect? = rd.defects.first() else { return written_source(rd, target) }
+    .Err("a grammar the engine refuses to run has no untold run: ${defect.message}")
+}
+
+/// The untold run of a grammar the engine runs, as source, or which construct in it can't be written.
+fn written_source(rd: Ready, target: UntoldTarget) -> Result<string, string> {
+    mut gen = Gen {
+        rd: rd,
+        t: target,
+        lines: [],
+        depth: 0,
+        next: 0,
+        lits: rd.lit_slots,
+        lit_texts: lit_table(rd.lit_slots),
+        builder_ix: {},
+        builder_names: [],
+        guards: {},
+        guard_fns: [],
+        climbs: [],
+        refusal: null,
+        unremembered: unremembered(rd),
+    }
+    gen.literal("{")
+    gen.literal("}")
+    for o, r in rd.g.rules { gen.rule(o, r.body) }
+    mut done = 0
+    while done < gen.climbs.length {
+        let job = gen.climbs[done]
+        gen.climb(job.id, job.s)
+        done = done + 1
+    }
+    if gen.refusal != null { return .Err(gen.refusal!) }
+    .Ok(gen.header().concat(gen.guard_fns).concat(gen.lines).join("\n"))
+}
+
+/// What a generated parser is made from, as text: the start rule, the rules as written, and each
+/// node build's slots, which a host fills from outside the notation.
+export fn untold_made_from(rd: Ready) -> string {
+    let builds = [b for r in rd.g.rules for s in r.body.seqs() for b in branch_builds(s)]
+    [rd.g.start, render_grammar(rd.g)].concat([slots_written(b) for b in builds]).join("\n")
+}
+
+/// A branch's builds: its own, then each operator tier's and each suffix's.
+fn branch_builds(s: Seq) -> List<Build> {
+    let tiers = s.operators?.tiers ?? []
+    some_list(s.build)
+        .concat([b for t in tiers for b in some_list(t.build)])
+        .concat([b for t in tiers for x in t.suffixes for b in some_list(x.build)])
+}
+
+/// The slots a build fills its node's payloads from, `?` before they're bound; `-` for a build
+/// that names no node.
+fn slots_written(b: Build) -> string {
+    match b {
+        .Node(_, _, _, slots) or .Computed(_, _, _, slots) -> if slots == null { "?" } else { "{${[slot_written(x) for x in slots!].join(", ")}}" },
+        .Call(_, _) or .Var(_) -> "-",
+    }
+}
+
+fn slot_written(x: Slot) -> string {
+    match x {
+        .Label(name) -> name,
+        .Fixed(text) -> quoted(text),
+        .Nested(b) -> "${render_build(b)}${slots_written(b)}",
+        .Items(slots) -> "[${[slot_written(y) for y in slots].join(", ")}]",
+        .Empty -> "_",
+    }
+}
+
+/// Every literal by its slot.
+fn lit_table(slots: Map<string, int>) -> List<string> {
+    mut texts = filled(slots.length, "")
+    for text, at in slots { texts.set(at, text) }
+    texts
+}
+
+/// One branch being written: where it starts, what caps its items, and what its items written
+/// so far are known to have done — `surely` one consumed, `spoke` one may have said something;
+/// `an` and `ss` whether its code reads the anchored flag and the words at its entry.
+type Branch = {
+    s: Seq,
+    n: int,
+    entry: string,
+    cap: string,
+    capx: string,
+    acc: bool,
+    br: string,
+    scope: List<string>,
+    keep_v0: bool,
+    surely: bool,
+    spoke: bool,
+    an: bool,
+    ss: bool,
+}
+
+/// One arm of a climb's operator match: the first words it answers and what it runs.
+type Arm = { slots: List<int>, body: string }
+
+/// An operator branch whose climb is still to be written.
+type ClimbJob = { id: int, s: Seq }
+
+/// The generator's state: the source so far and the tables it names.
+type Gen = {
+    rd: Ready,
+    t: UntoldTarget,
+    lines: List<string>,
+    depth: int,
+    next: int,
+    lits: Map<string, int>,
+    lit_texts: List<string>,
+    builder_ix: Map<string, int>,
+    builder_names: List<string>,
+    // a literal-slot set's test fn, by the set
+    guards: Map<string, int>,
+    guard_fns: List<string>,
+    climbs: List<ClimbJob>,
+    refusal: string?,
+    // by ordinal, the rules asked at most once at any cursor: they keep no memo
+    unremembered: List<bool>,
+    // whether the fn being written reads the cap it was asked with
+    reads_cap: bool = false,
+}
+
+impl Gen {
+    mut fn line(s: string) {
+        if s.starts_with("}") { self.depth = self.depth - 1 }
+        self.lines.push("${indent(self.depth)}${s}")
+        if s.ends_with("{") { self.depth = self.depth + 1 }
+    }
+
+    /// The head of the fn `name` a rule or branch is written as: the run, the cursor and the cap, the
+    /// cap named apart where the fn doesn't read it.
+    fn run_header(name: string, reads_cap: bool) -> string { "fn ${name}(mut u: ${self.run_type()}, at: int, ${if reads_cap { "capped" } else { "_capped" }}: bool) -> int {" }
+
+    /// `cap` as the code being written reads it, which the fn it stands in then reads.
+    mut fn cap_read(cap: string) -> string {
+        self.reads_cap = true
+        cap
+    }
+
+    mut fn fresh() -> int {
+        self.next = self.next + 1
+        self.next
+    }
+
+    mut fn refuse(why: string) {
+        if self.refusal == null { self.refusal = why }
+    }
+
+    /// The slot of literal `text`, numbered when the grammar's items never spelled it.
+    mut fn literal(text: string) -> int {
+        let at? = self.lits.get(text) else {
+            let slot = self.lit_texts.length
+            self.lits.set(text, slot)
+            self.lit_texts.push(text)
+            return slot
+        }
+        at
+    }
+
+    /// The index of the builder named `name`.
+    mut fn builder(name: string) -> int {
+        let at? = self.builder_ix.get(name) else {
+            let ix = self.builder_names.length
+            self.builder_ix.set(name, ix)
+            self.builder_names.push(name)
+            return ix
+        }
+        at
+    }
+
+    fn cap_type() -> string { "Captured<${self.t.token}, ${self.t.node}>" }
+
+    fn run_type() -> string { "Untold<${self.t.token}, ${self.t.node}>" }
+
+    fn name(suffix: string) -> string { "${self.t.prefix}_${suffix}" }
+
+    /// The source's head: its uses, its tables and its entry.
+    fn header() -> List<string> {
+        let p = self.t.prefix
+        let tn = "${self.t.token}, ${self.t.node}"
+        let start = self.rd.ordinals.get(self.rd.g.start) ?? 0
+        [
+            "//! GENERATED by `avra grammar --untold` from the assembled grammar. DO NOT EDIT —",
+            "//! regenerate it; `make parser` refuses a parser the grammar did not make.",
+        ]
+            .concat(self.t.uses)
+            .concat(
+                [
+                    "use @std.grammar.{Captured, RunOutcome, Lexeme, Untold, TokenTables, untold, untold_outcome, no_end, broke_end, unasked, accumulate, accumulated_all, spliced}",
+                    "use @std.errors.{Loc}",
+                    "",
+                    "/// The print of the grammar this parser was made from.",
+                    "export const ${p}_print: int = ${self.t.print}",
+                    "",
+                    "/// Every builder a rule names, by its index.",
+                    "export const ${p}_builders: List<string> = [${[quoted(n) for n in self.builder_names].join(", ")}]",
+                    "",
+                    "/// Every literal, by its slot.",
+                    "const ${p}_lit_texts: List<string> = [${[quoted(n) for n in self.lit_texts].join(", ")}]",
+                    "",
+                    "/// Every terminal class, by its slot: what a run's `kinds` are the lexer's kinds of.",
+                    "export const ${p}_terms: List<string> = [${[quoted(n) for n in self.rd.terms].join(", ")}]",
+                    "",
+                    "/// Every literal's slot, by its text.",
+                    "export once fn ${p}_lits() -> Map<string, int> {",
+                    "    mut m: Map<string, int> = {}",
+                    "    for at, text in ${p}_lit_texts { m.set(text, at) }",
+                    "    m",
+                    "}",
+                    "",
+                    "/// The untold run of `${self.rd.g.start}` over `tokens`, read off `tables` (`${p}_lits`' slots),",
+                    "/// `kinds` the lexer's kind of each of `${p}_terms`.",
+                    "export fn ${p}_untold(tokens: List<${self.t.token}>, lex: Lexeme<${self.t.token}>, tables: TokenTables, kinds: List<int>, build: fn(int, List<Captured<${tn}>>, Loc?) -> Result<Captured<${tn}>, string>) -> RunOutcome<${tn}> {",
+                    "    mut u = untold<${tn}>(tokens, lex, tables, kinds, ${self.lits.get("{") ?? 0 - 1}, ${self.lits.get("}") ?? 0 - 1}, build)",
+                    "    if u.eof_at < 0 { return untold_outcome(u, ${quoted(self.rd.g.start)}, no_end) }",
+                    "    let end = ${p}_r${start}(u, 0, false)",
+                    "    untold_outcome(u, ${quoted(self.rd.g.start)}, end)",
+                    "}",
+                    "",
+                ],
+            )
+    }
+
+    /// Rule `o`: its memo, its captures, its body.
+    mut fn rule(o: int, body: Alt) {
+        let base = self.name("r${o}")
+        self.line("")
+        let header = self.lines.length
+        self.line(self.run_header(base, true))
+        if self.unremembered[o] {
+            self.reads_cap = false
+            self.line("mut res = no_end")
+            self.alt(body, "at", "at", "capped", false, "res", [], base)
+            self.line("res")
+            self.line("}")
+            if !self.reads_cap { self.lines.set(header, self.run_header(base, false)) }
+            for k, br in body.branches { self.branch("${base}_${k}", br) }
+            return
+        }
+        self.line("let key = u.key(${o}, at, capped)")
+        self.line("let seen = u.recall(key)")
+        self.line("if seen != unasked {")
+        self.line("return seen")
+        self.line("}")
+        self.line("let said0 = u.said")
+        self.line("mut res = no_end")
+        self.alt(body, "at", "at", "capped", false, "res", [], base)
+        self.line("u.remember(key, res, said0)")
+        self.line("}")
+        for k, br in body.branches { self.branch("${base}_${k}", br) }
+    }
+
+    /// One branch of a rule's own choice as its fn: it starts with nothing bound.
+    mut fn branch(name: string, s: Seq) {
+        let scope = written_scope(s)
+        self.line("")
+        let header = self.lines.length
+        self.reads_cap = false
+        self.line(self.run_header(name, true))
+        for x in scope { self.line("mut l_${x} = u.absent") }
+        self.line("mut br = no_end")
+        self.seq(s, "at", "at", "capped", false, "br", scope)
+        self.line("br")
+        self.line("}")
+        if !self.reads_cap { self.lines.set(header, self.run_header(name, false)) }
+    }
+
+    /// Ordered choice into `res`: a hit stands, a break defers, and the first break stands when
+    /// nothing hits. A rule's own choice starts each branch with nothing bound; a group's,
+    /// with what it was entered with.
+    mut fn alt(
+        a: Alt,
+        entry: string,
+        origin: string,
+        cap: string,
+        acc: bool,
+        res: string,
+        scope: List<string>,
+        branch_fns: string?,
+    ) {
+        let n = self.fresh()
+        let kept = if branch_fns == null { written(a) } else { [] }
+        if branch_fns == null && a.branches.length == 1 {
+            self.lone_alt(a.branches[0], n, kept, entry, origin, cap, acc, res, scope)
+            return
+        }
+        self.line("let as${n} = u.said")
+        for x in kept { self.line("let sv${n}_${x} = l_${x}") }
+        self.line("mut bs${n} = no_end")
+        self.line("for alt${n} in 0..1 {")
+        for k, br in a.branches {
+            let guard = self.guard(br.start, entry)
+            if guard != null { self.line("if ${guard!} {") }
+            if k > 0 {
+                self.line("u.said = as${n}")
+                for x in kept { self.line("l_${x} = sv${n}_${x}") }
+            }
+            let b = self.fresh()
+            if branch_fns == null {
+                self.line("mut br${b} = no_end")
+                self.seq(br, entry, origin, cap, acc, "br${b}", scope)
+            } else {
+                self.line("let br${b} = ${branch_fns!}_${k}(u, ${entry}, ${self.cap_read(cap)})")
+            }
+            self.line("if br${b} >= 0 {")
+            self.line("${res} = br${b}")
+            self.line("break alt${n}")
+            self.line("}")
+            self.line("if br${b} == broke_end && bs${n} < 0 {")
+            self.line("bs${n} = u.said")
+            self.line("}")
+            if guard != null { self.line("}") }
+        }
+        for x in kept { self.line("l_${x} = sv${n}_${x}") }
+        self.line("if bs${n} >= 0 {")
+        self.line("u.said = bs${n}")
+        self.line("${res} = broke_end")
+        self.line("} else {")
+        self.line("u.said = as${n}")
+        self.line("${res} = no_end")
+        self.line("}")
+        self.line("}")
+    }
+
+    /// A choice of one branch: what it answers, and on a miss nothing it bound or said.
+    mut fn lone_alt(
+        s: Seq,
+        n: int,
+        kept: List<string>,
+        entry: string,
+        origin: string,
+        cap: string,
+        acc: bool,
+        res: string,
+        scope: List<string>,
+    ) {
+        self.line("let as${n} = u.said")
+        for x in kept { self.line("let sv${n}_${x} = l_${x}") }
+        let guard = self.guard(s.start, entry)
+        if guard != null { self.line("if ${guard!} {") }
+        self.seq(s, entry, origin, cap, acc, res, scope)
+        if guard != null { self.line("}") }
+        self.line("if ${res} < 0 {")
+        for x in kept { self.line("l_${x} = sv${n}_${x}") }
+        self.line("if ${res} == no_end {")
+        self.line("u.said = as${n}")
+        self.line("}")
+        self.line("}")
+    }
+
+    /// Whether a branch can take the token at `at`, as `cannot_take` judges it; null when it
+    /// always tries.
+    mut fn guard(start: BranchStart?, at: string) -> string? {
+        let st? = start else { return null }
+        if st.nullable { return null }
+        let slots = [lit_slot_of(t) for t in st.terminals].flatten()
+        let parts = [
+            if st.kinds != 0 { ["(u.mask[${at}] & ${st.kinds}) != 0"] } else { [] },
+            if slots.is_empty() { [] } else { ["${self.slot_test(slots)}(u.lit[${at}])"] },
+            [self.asked(t, at) for t in st.asked],
+        ]
+            .flatten()
+        if parts.is_empty() { "false" } else { parts.join(" || ") }
+    }
+
+    /// The fn testing a literal slot against `slots`, one per set.
+    mut fn slot_test(slots: List<int>) -> string {
+        let set = [x for i, x in slots if slots.index_of(x) == i]
+        let key = set.map("${it}").join(" or ")
+        let id? = self.guards.get(key) else {
+            let fresh = self.guards.length
+            self.guards.set(key, fresh)
+            self.guard_fns.push("fn ${self.name("s${fresh}")}(x: int) -> bool {")
+            self.guard_fns.push("    match x { ${key} -> true, _ -> false }")
+            self.guard_fns.push("}")
+            self.guard_fns.push("")
+            return self.name("s${fresh}")
+        }
+        self.name("s${id}")
+    }
+
+    /// One first terminal no bit can say, asked the long way.
+    fn asked(t: StartTerm, at: string) -> string {
+        match t.prim {
+            .Lit(text) -> "u.spells(${at}, ${quoted(text)})",
+            .Named(term) -> {
+                let worn = "u.lex.wears_kind(u.tokens[${at}], u.lex.kind_of(${quoted(term)}))"
+                if is_end(term) { "${worn} || (u.mask[${at}] & ${closes_bit}) != 0" } else { worn }
+            },
+            .Ref(_) or .Group(_) or .NotChar(_) -> "false",
+        }
+    }
+
+    /// A branch into `br`: its items in order, then its build or its climb.
+    mut fn seq(
+        s: Seq,
+        entry: string,
+        origin: string,
+        cap: string,
+        acc: bool,
+        br: string,
+        scope: List<string>,
+    ) {
+        let n = self.fresh()
+        let pass = s.build == null || s.operators != null
+        let lone = pass && s.operators == null && s.items.length == 1
+        let opening = [m for i, m in s.items if i < s.items.length - 1 && opens(m.prim)].length > 0
+        mut b = Branch {
+            s: s,
+            n: n,
+            entry: entry,
+            cap: cap,
+            capx: if opening { "!open${n}" } else { cap },
+            acc: acc,
+            br: br,
+            scope: scope,
+            keep_v0: pass && !lone,
+            surely: false,
+            spoke: false,
+            an: false,
+            ss: false,
+        }
+        let outer = self.lines
+        self.lines = []
+        self.depth = self.depth + 1
+        for i, m in s.items { b = self.member(b, i, m) }
+        let v0 = if lone { "u.out" } else { "v0${n}" }
+        if s.operators != null {
+            let id = self.fresh()
+            self.climbs.push(ClimbJob { id: id, s: s })
+            b = b with { ss: true }
+            self
+                .line(
+                    "${br} = ${self.name("climb${id}")}(u, ${v0}, ${entry}, c${n}, 0, ${self.cap_read(cap)}, ss${n})",
+                )
+        } else {
+            let loc = "lc${n}"
+            if needs_loc(s.build) || s.items.is_empty() { b = b with { ss: true } }
+            if needs_loc(s.build) {
+                self.line("let ${loc} = u.span(${origin}, c${n})")
+            }
+            self
+                .built(
+                    s.build,
+                    scope,
+                    [],
+                    if s.items.is_empty() { null } else { v0 },
+                    loc,
+                    ["if u.refused(ss${n}) { ${br} = c${n} }", "break b${n}"],
+                )
+            self.line("${br} = c${n}")
+        }
+        self.line("}")
+        let body = self.lines
+        self.lines = outer
+        self.line("for b${n} in 0..1 {")
+        if b.ss { self.line("let ss${n} = u.said") }
+        self.line("mut c${n} = ${entry}")
+        if opening { self.line("mut open${n} = !(${self.cap_read(cap)})") }
+        if b.an { self.line("mut an${n} = false") }
+        if b.keep_v0 { self.line("mut v0${n} = u.absent") }
+        self.lines.push(body.join("\n"))
+        self.depth = self.depth - 1
+    }
+
+    /// Item `i` of branch `b`: matched, then judged as `match_seq` judges it. Answers the branch
+    /// with what its items are now known to have done.
+    mut fn member(b0: Branch, i: int, m: Item) -> Branch {
+        mut b = b0
+        let n = b.n
+        let s = b.s
+        let r = "r${n}_${i}"
+        let last = i == s.items.length - 1
+        let want = m.label != null ||
+            i == 0 && (b.keep_v0 || s.items.length == 1 && s.build == null)
+        let fold = s.fold != null && (m.rep == Rep.Star || m.rep == Rep.Opt)
+        let misses = m.trailer || !fold && (m.rep == Rep.One || m.rep == Rep.Plus)
+        let breaks = !fold && m.rep == Rep.One && can_break(m.prim)
+        self.line("mut ${r} = no_end")
+        if m.trailer {
+            self
+                .line("if ${if b.capx == b.cap { "!(${self.cap_read(b.cap)})" } else { "open${n}" }} {")
+        }
+        if fold {
+            self.fold(b, m, r)
+        } else {
+            match m.rep {
+                .One -> {
+                    self.prim(m, "c${n}", b.capx, b.acc, want, r, b.scope)
+                    if m.label != null {
+                        self.line("if ${r} >= 0 {")
+                        self.line(self.bound(m.label!, "u.out", b.acc || m.listed))
+                        self.line("}")
+                    }
+                },
+                .Opt -> {
+                    let quiet = can_speak(m.prim)
+                    if quiet { self.line("let os${n}_${i} = u.said") }
+                    self.prim(m, "c${n}", b.capx, b.acc, want, r, b.scope)
+                    self.line("if ${r} < 0 {")
+                    if quiet { self.line("u.said = os${n}_${i}") }
+                    self.line("${r} = c${n}")
+                    if want { self.line("u.out = u.absent") }
+                    if m.label != null {
+                        self.line("} else {")
+                        self.line(self.bound(m.label!, "u.out", b.acc || m.listed))
+                    }
+                    self.line("}")
+                },
+                .Star -> self.repetition(b, m, r, 0, want),
+                .Plus -> self.repetition(b, m, r, 1, want),
+            }
+        }
+        if m.trailer { self.line("}") }
+        let tracks = !last && !b.surely
+        if misses { self.line("if ${r} >= 0 {") }
+        if tracks {
+            b = b with { an: true }
+            self.line("if ${r} > c${n} {")
+            self.line("an${n} = true")
+            self.line("}")
+        }
+        if !last && opens(m.prim) { self.line("open${n} = true") }
+        self.line("c${n} = ${r}")
+        if i == 0 && b.keep_v0 { self.line("v0${n} = u.out") }
+        let spoke = b.spoke || can_speak(m.prim) || fold
+        let after = b with { surely: b.surely || consumes(m), spoke: spoke || m.expect != null }
+        if !misses { return after with { spoke: spoke } }
+        if breaks {
+            self.line("} else if ${r} == broke_end {")
+            self.line("${b.br} = broke_end")
+            self.line("break b${n}")
+        }
+        if i == 0 || !b.surely && !b.an {
+            self.line("} else {")
+            self.line("${b.br} = no_end")
+            self.line("break b${n}")
+            self.line("}")
+            return after
+        }
+        if !b.surely {
+            self.line("} else if !an${n} {")
+            self.line("${b.br} = no_end")
+            self.line("break b${n}")
+        }
+        if b.spoke {
+            b = b with { ss: true }
+            self.line("} else if u.said > ss${n} {")
+            if m.expect == null && s.recover == null {
+                self.line("${b.br} = broke_end")
+            } else {
+                self.line("${b.br} = ${self.synced(s.recover?.sync_to ?? "END", b)}")
+                self.line("u.out = u.absent")
+            }
+            self.line("break b${n}")
+        }
+        self.line("} else {")
+        self.line("u.said = u.said + 1")
+        if m.expect != null {
+            if m.label != null { self.line(self.bound(m.label!, "u.absent", b.acc)) }
+            if m.prim.answers_to("END") { self.line("c${n} = u.sync_to_end(${b.entry}, c${n})") }
+        } else if s.recover == null {
+            self.line("${b.br} = broke_end")
+            self.line("break b${n}")
+        } else {
+            self.line("${b.br} = ${self.synced(s.recover!.sync_to, b)}")
+            self.line("u.out = u.absent")
+            self.line("break b${n}")
+        }
+        self.line("}")
+        after with { an: b.an, ss: b.ss }
+    }
+
+    /// Where recovery to `target` lands from branch `b`'s cursor.
+    fn synced(target: string, b: Branch) -> string {
+        if is_end(target) { return "u.sync_to_end(${b.entry}, c${b.n})" }
+        if self.rd.known_terminals.contains(target) { return "u.sync_kind(u.lex.kind_of(${quoted(target)}), c${b.n})" }
+        "u.sync_text(${quoted(target)}, c${b.n})"
+    }
+
+    /// The capture written to `label`: collected or replaced.
+    fn bound(label: string, v: string, collects: bool) -> string {
+        if collects { "l_${label} = accumulate<${self.t.token}, ${self.t.node}>(l_${label}, ${v})" } else { "l_${label} = ${v}" }
+    }
+
+    /// One atom at `at` into `into`, its value in `u.out` when `want`.
+    mut fn prim(
+        m: Item,
+        at: string,
+        cap: string,
+        acc: bool,
+        want: bool,
+        into: string,
+        scope: List<string>,
+    ) {
+        match m.prim {
+            .Lit(text) -> {
+                let slot = if m.slot >= 0 { m.slot } else { self.literal(text) }
+                self.line("if u.lit[${at}] == ${slot} {")
+                self.line("${into} = ${at} + 1")
+                if want { self.line("u.out = u.term(${at})") }
+                self.line("}")
+            },
+            .Named(term) -> {
+                let worn = if m.slot >= 0 && m.slot < 62 { "(u.mask[${at}] & ${1 << m.slot}) != 0" } else { "u.lex.wears_kind(u.tokens[${at}], u.lex.kind_of(${quoted(term)}))" }
+                self.line("if ${worn} {")
+                self.line("${into} = ${at} + u.step(${at})")
+                if want { self.line("u.out = u.term(${at})") }
+                if is_end(term) {
+                    self.line("} else if (u.mask[${at}] & ${closes_bit}) != 0 {")
+                    self.line("${into} = ${at}")
+                    if want { self.line("u.out = u.term(${at})") }
+                }
+                self.line("}")
+            },
+            .Ref(target) -> {
+                let o? = self.rd.ordinals.get(target) else {
+                    self.line("u.said = u.said + 1")
+                    self.line("${into} = broke_end")
+                    return
+                }
+                self
+                    .line(
+                        "${into} = ${self.name("r${o}")}(u, ${at}, ${if m.head { "true" } else { self.cap_read(cap) }})",
+                    )
+            },
+            .Group(inner) -> {
+                self.alt(inner, at, at, cap, acc, into, scope, null)
+                if want && m.label == null {
+                    self.line("if ${into} >= 0 {")
+                    self.line("u.out = u.absent")
+                    self.line("}")
+                }
+            },
+            .NotChar(_) -> {
+                self.line("u.said = u.said + 1")
+                self.line("${into} = broke_end")
+            },
+        }
+    }
+
+    /// A greedy repetition of `m` from branch `b`'s cursor into `r`: a failed turn ends it, and a
+    /// turn that consumes nothing wrecks the run.
+    mut fn repetition(b: Branch, m: Item, r: string, min: int, want: bool) {
+        let k = self.fresh()
+        let collects = want || m.label != null
+        let counted = min > 0 && !collects
+        let quiet = can_speak(m.prim)
+        if min > 0 && quiet { self.line("let re${k} = u.said") }
+        self.line("mut rc${k} = c${b.n}")
+        if counted { self.line("mut nn${k} = 0") }
+        if collects { self.line("mut col${k}: List<${self.cap_type()}> = []") }
+        self.line("while true {")
+        if quiet { self.line("let rs${k} = u.said") }
+        self.line("mut ir${k} = no_end")
+        self.prim(m, "rc${k}", b.capx, true, collects, "ir${k}", b.scope)
+        self.line("if ir${k} < 0 {")
+        if quiet { self.line("u.said = rs${k}") }
+        self.line("break")
+        self.line("}")
+        self.line("if ir${k} == rc${k} {")
+        self.line("u.said = u.said + 1")
+        self.line("u.fatal = true")
+        self.line("break")
+        self.line("}")
+        if collects { self.line("col${k}.push(u.out)") }
+        self.line("rc${k} = ir${k}")
+        if counted { self.line("nn${k} = nn${k} + 1") }
+        self.line("}")
+        let count = if collects { "col${k}.length" } else { "nn${k}" }
+        if min > 0 {
+            self.line("if ${count} < ${min} {")
+            if quiet { self.line("u.said = re${k}") }
+            self.line("} else {")
+        }
+        self.line("${r} = rc${k}")
+        if m.label != null {
+            self.line("if !col${k}.is_empty() {")
+            self
+                .line(
+                    "l_${m.label!} = accumulated_all<${self.t.token}, ${self.t.node}>(l_${m.label!}, col${k})",
+                )
+            self.line("}")
+        }
+        if want { self.line("u.out = Captured.Many(col${k})") }
+        if min > 0 { self.line("}") }
+    }
+
+    /// A fold's turns from branch `b`'s cursor into `r`: each turn reads the value so far under
+    /// the seed's label, and what else it bound dies with it.
+    mut fn fold(b: Branch, m: Item, r: string) {
+        let field = b.s.fold!
+        let turns? = m.prim.group_alt() else {
+            self.refuse("a fold's turns are a group")
+            return
+        }
+        let k = self.fresh()
+        let dying = [x for x in written(turns) if x != field]
+        self.line("mut fa${k} = l_${field}")
+        self.line("mut fc${k} = c${b.n}")
+        for x in dying { self.line("let fs${k}_${x} = l_${x}") }
+        self.line("while true {")
+        self.line("l_${field} = fa${k}")
+        self.line("let fb${k} = u.said")
+        self.line("mut tr${k} = no_end")
+        self.alt(turns, "fc${k}", b.entry, b.capx, false, "tr${k}", b.scope, null)
+        for x in dying { self.line("l_${x} = fs${k}_${x}") }
+        self.line("if tr${k} < 0 {")
+        self.line("u.said = fb${k}")
+        self.line("break")
+        self.line("}")
+        self.line("if tr${k} == fc${k} {")
+        self.line("u.said = fb${k} + 1")
+        self.line("u.fatal = true")
+        self.line("break")
+        self.line("}")
+        self.line("fa${k} = u.out")
+        self.line("fc${k} = tr${k}")
+        if m.rep == Rep.Opt { self.line("break") }
+        self.line("}")
+        self.line("l_${field} = fa${k}")
+        self.line("u.out = fa${k}")
+        self.line("${r} = fc${k}")
+    }
+
+    /// A branch's value into `u.out`, as `built` makes it: the sole capture, a label, or a
+    /// builder over its slots. `pair` names the captures a climb's builds read; `refused` is
+    /// what a refusal runs, and leaves the branch.
+    mut fn built(
+        b: Build?,
+        scope: List<string>,
+        pair: List<string>,
+        v0: string?,
+        loc: string,
+        refused: List<string>,
+    ) {
+        let d? = b else {
+            if v0 == null {
+                for x in refused { self.line(x) }
+            } else {
+                self.line("u.out = ${v0!}")
+            }
+            return
+        }
+        match d {
+            .Var(name) -> self.line("u.out = ${capture(name, scope, pair)}"),
+            .Call(name, args) -> self.called(name, [capture(a, scope, pair) for a in args], loc, refused),
+            .Node(owner, variant, _, slots) -> {
+                let all? = slots else {
+                    for x in refused { self.line(x) }
+                    return
+                }
+                let args = self.slots(all, scope, pair, loc, refused)
+                self.called(node_builder_name(owner, variant), args, loc, refused)
+            },
+            .Computed(_, _, by, slots) -> {
+                let all? = slots else {
+                    for x in refused { self.line(x) }
+                    return
+                }
+                let args = self.slots(all, scope, pair, loc, refused)
+                self.called(by, args, loc, refused)
+            },
+        }
+    }
+
+    mut fn called(name: string, args: List<string>, loc: string, refused: List<string>) {
+        let ix = self.builder(name)
+        self.line("if !u.make(${ix}, [${args.join(", ")}], ${loc}) {")
+        for x in refused { self.line(x) }
+        self.line("}")
+    }
+
+    /// Each payload's expression, in order.
+    mut fn slots(
+        all: List<Slot>,
+        scope: List<string>,
+        pair: List<string>,
+        loc: string,
+        refused: List<string>,
+    ) -> List<string> {
+        [self.slot(sl, scope, pair, loc, refused) for sl in all]
+    }
+
+    /// One payload's expression; a node built in place is built here, first.
+    mut fn slot(
+        sl: Slot,
+        scope: List<string>,
+        pair: List<string>,
+        loc: string,
+        refused: List<string>,
+    ) -> string {
+        match sl {
+            .Label(name) -> capture(name, scope, pair),
+            .Fixed(text) -> "u.stated(${quoted(text)}, ${loc})",
+            .Nested(inner) -> {
+                let k = self.fresh()
+                self.built(inner, scope, pair, null, loc, refused)
+                self.line("let nb${k} = u.out")
+                "nb${k}"
+            },
+            .Items(parts) -> {
+                let each = self.slots(parts, scope, pair, loc, refused)
+                "spliced<${self.t.token}, ${self.t.node}>([${each.join(", ")}])"
+            },
+            .Empty -> "u.absent",
+        }
+    }
+
+    /// Operator branch `id`'s climb, its operators and its pairing.
+    mut fn climb(id: int, s: Seq) {
+        let ops = s.operators!
+        let p = self.t.prefix
+        let ct = self.cap_type()
+        let single = [i for i, t in ops.tiers if spends(t)]
+        self.line("")
+        self
+            .line(
+                "fn ${p}_climb${id}(mut u: ${self.run_type()}, left0: ${ct}, start: int, from: int, min: int, capped: bool, said0: int) -> int {",
+            )
+        self.line("mut left = left0")
+        self.line("mut cursor = from")
+        self.line("mut spent = no_end")
+        self.line("mut ceil = ${ops.tiers.length - 1}")
+        self.line("while true {")
+        self.line("let t = ${p}_take${id}(u, cursor, min, spent, ceil, capped)")
+        self.line("if t < 0 {")
+        self.line("break")
+        self.line("}")
+        self.line("let tier = u.t_tier")
+        self.line("let suffixed = u.t_suffixed")
+        let reads = pair_reads(s)
+        let seats = pair_seats(s)
+        if reads.contains("right") { self.line("let right = u.out") }
+        if reads.contains("loc") || reads.contains("op") { self.line("let loc = u.span(start, t)") }
+        if reads.contains("op") {
+            self
+                .line(
+                    "let op = if u.t_words == 1 { u.term(u.t_op_at) } else { u.stated(u.joined(u.t_op_at, u.t_words), loc) }",
+                )
+        }
+        let passed = [if x == "suffix" { "u.t_suffix" } else { x } for x in seats]
+        self.line("if !${p}_pair${id}(u, ${["tier"].concat(passed).join(", ")}) {")
+        self.line("if u.refused(said0) {")
+        self.line("return t")
+        self.line("}")
+        self.line("return no_end")
+        self.line("}")
+        self.line("left = u.out")
+        self.line("cursor = t")
+        if single.is_empty() {
+            self.line("spent = no_end")
+        } else {
+            self
+                .line("spent = match tier { ${single.map("${it}").join(" or ")} -> tier, _ -> no_end }")
+        }
+        self.line("if suffixed {")
+        self.line("ceil = tier")
+        self.line("}")
+        self.line("}")
+        self.line("u.out = left")
+        self.line("cursor")
+        self.line("}")
+        self.take(id, s)
+        self.pair(id, s)
+    }
+
+    /// The first operator at `cursor`, tightest tier first, whose right side also matches.
+    mut fn take(id: int, s: Seq) {
+        let ops = s.operators!
+        let p = self.t.prefix
+        self.line("")
+        self
+            .line(
+                "fn ${p}_take${id}(mut u: ${self.run_type()}, cursor: int, min: int, spent: int, ceil: int, capped: bool) -> int {",
+            )
+        self.line("match u.lit[cursor] {")
+        mut arms: List<Arm> = []
+        for first, entries in ops.by_first {
+            let slot = self.literal(first)
+            self.depth = self.depth + 1
+            let from = self.lines.length
+            for e in entries {
+                self.line("if ${e.tier} >= min && ${e.tier} != spent && ${e.tier} <= ceil {")
+                self.line("let tb = u.said")
+                let words = [w for j, w in e.words if j > 0]
+                mut checks: List<string> = []
+                for j, w in words {
+                    let slot = self.literal(w)
+                    checks.push("u.lit[cursor + ${j + 1}] == ${slot}")
+                }
+                self.line("if ${if checks.is_empty() { "true" } else { checks.join(" && ") }} {")
+                self.line("mut rt = no_end")
+                let at = "cursor + ${e.words.length}"
+                if e.rule == null {
+                    if s.items[0].prim.group_alt() != null {
+                        self.refuse("a climb's operand is a group")
+                        return
+                    }
+                    self.prim(s.items[0], at, "capped", true, true, "rt", [])
+                } else {
+                    let o? = self.rd.ordinals.get(e.rule!) else {
+                        self.refuse("an operator's rule `${e.rule!}` is no rule")
+                        return
+                    }
+                    self.line("rt = ${p}_r${o}(u, ${at}, capped)")
+                }
+                self.line("if rt >= 0 {")
+                if e.rule == null {
+                    self
+                        .line(
+                            "let tight = ${p}_climb${id}(u, u.out, ${at}, rt, ${e.tier + 1}, capped, tb)",
+                        )
+                    self.taken(e.tier, 0 - 1, false, e.words.length)
+                    self.line("return tight")
+                } else {
+                    self.taken(e.tier, e.at, true, e.words.length)
+                    self.line("return rt")
+                }
+                self.line("}")
+                self.line("}")
+                self.line("u.said = tb")
+                self.line("}")
+            }
+            self.line("no_end")
+            let body = [l for i, l in self.lines if i >= from]
+            self.lines = [l for i, l in self.lines if i < from]
+            self.depth = self.depth - 1
+            let text = body.join("\n")
+            let same? = [i for i, a in arms if a.body == text].first() else {
+                arms.push(Arm { slots: [slot], body: text })
+                continue
+            }
+            arms.set(same, arms[same] with { slots: arms[same].slots.concat([slot]) })
+        }
+        for arm in arms {
+            self.line("${arm.slots.map("${it}").join(" or ")} -> {")
+            self.lines.push(arm.body)
+            self.line("},")
+        }
+        self.line("_ -> no_end,")
+        self.line("}")
+        self.line("}")
+    }
+
+    mut fn taken(tier: int, suffix: int, suffixed: bool, words: int) {
+        self.line("u.t_tier = ${tier}")
+        self.line("u.t_suffix = ${if suffix < 0 { "no_end" } else { "${suffix}" }}")
+        self.line("u.t_suffixed = ${suffixed}")
+        self.line("u.t_op_at = cursor")
+        self.line("u.t_words = ${words}")
+    }
+
+    /// `left op right` built by the tier's build, the suffix's own first, else the branch's.
+    mut fn pair(id: int, s: Seq) {
+        let ops = s.operators!
+        let ct = self.cap_type()
+        let pair = ["left", "op", "right"]
+        self.line("")
+        let typed = [seat_typed(x, ct) for x in pair_seats(s)]
+        self
+            .line(
+                "fn ${self.t.prefix}_pair${id}(mut u: ${self.run_type()}, ${["tier: int"].concat(typed).join(", ")}) -> bool {",
+            )
+        for i, tier in ops.tiers {
+            self.line("if tier == ${i} {")
+            for j, x in tier.suffixes {
+                if x.build != null {
+                    self.line("if suffix == ${j} {")
+                    self.built(x.build, [], pair, "left", "loc", ["return false"])
+                    self.line("return true")
+                    self.line("}")
+                }
+            }
+            self.built(tier.build ?? s.build, [], pair, "left", "loc", ["return false"])
+            self.line("return true")
+            self.line("}")
+        }
+        self.line("false")
+        self.line("}")
+    }
+}
+
+/// Every build an operator branch's pairs may call: each tier's, a suffix's own first.
+fn pair_builds(s: Seq) -> List<Build?> {
+    let ops = s.operators!
+    [[x.build for x in t.suffixes if x.build != null].concat([t.build ?? s.build]) for t in ops.tiers]
+        .flatten()
+}
+
+/// What a pair's builds read of `left`, `op`, `right` and the range `loc`.
+fn pair_reads(s: Seq) -> List<string> {
+    let builds = pair_builds(s)
+    distinct(
+        [build_reads(b) for b in builds]
+            .flatten()
+            .concat(if builds.any(needs_loc(it)) { ["loc"] } else { [] }),
+    )
+}
+
+/// A pair fn's seats after its tier, in order: the suffix when one builds on its own, then what
+/// the builds read.
+fn pair_seats(s: Seq) -> List<string> {
+    let reads = pair_reads(s)
+    let suffixed = s.operators!.tiers.any(it.suffixes.any(it.build != null))
+    if suffixed { ["suffix"] } else { [] }
+        .concat([x for x in ["left", "op", "right", "loc"] if reads.contains(x)])
+}
+
+fn seat_typed(seat: string, cap: string) -> string {
+    if seat == "suffix" { return "suffix: int" }
+    if seat == "loc" { "loc: Loc?" } else { "${seat}: ${cap}" }
+}
+
+/// The labels a build reads: a pass-through reads the first capture, `left`.
+fn build_reads(b: Build?) -> List<string> {
+    let d? = b else { return ["left"] }
+    match d {
+        .Var(name) -> [name],
+        .Call(_, args) -> args,
+        .Node(_, _, _, slots) or .Computed(_, _, _, slots) -> [slot_reads(x) for x in slots ?? []].flatten(),
+    }
+}
+
+fn slot_reads(s: Slot) -> List<string> {
+    match s {
+        .Label(name) -> [name],
+        .Nested(inner) -> build_reads(inner),
+        .Items(parts) -> [slot_reads(x) for x in parts].flatten(),
+        .Fixed(_) or .Empty -> [],
+    }
+}
+
+/// Four spaces a level.
+fn indent(depth: int) -> string { ["    " for _d in 0..depth].join("") }
+
+/// The mask bit a token closing a body wears.
+const closes_bit: int = 4611686018427387904
+
+/// What a capture named `name` reads: a climb's own, a local the rule writes, or nothing.
+fn capture(name: string, scope: List<string>, pair: List<string>) -> string {
+    if pair.contains(name) { return name }
+    if scope.contains(name) { "l_${name}" } else { "u.absent" }
+}
+
+/// Whether a build needs the branch's range.
+fn needs_loc(b: Build?) -> bool {
+    let d? = b else { return false }
+    match d { .Var(_) -> false, .Call(_, _) or .Node(_, _, _, _) or .Computed(_, _, _, _) -> true }
+}
+
+/// Whether an item surely consumes a token when it matches: a literal, matched once.
+fn consumes(m: Item) -> bool {
+    if m.rep != Rep.One || m.trailer { return false }
+    match m.prim { .Lit(_) -> true, .Named(_) or .Ref(_) or .Group(_) or .NotChar(_) -> false }
+}
+
+/// Whether matching an atom can answer that it broke.
+fn can_break(p: Prim) -> bool {
+    match p { .Ref(_) or .Group(_) or .NotChar(_) -> true, .Lit(_) or .Named(_) -> false }
+}
+
+/// Whether matching an atom can say anything.
+fn can_speak(p: Prim) -> bool { can_break(p) }
+
+/// A delimiter that opens what follows it in its sequence.
+fn opens(p: Prim) -> bool {
+    match p {
+        .Lit(text) -> closer_of(text) != null,
+        .Ref(_) or .Named(_) or .Group(_) or .NotChar(_) -> false,
+    }
+}
+
+fn spends(t: Tier) -> bool {
+    match t.assoc { .Single -> true, .Left -> false }
+}
+
+/// A first terminal's literal slot, when it is a slotted literal.
+fn lit_slot_of(t: StartTerm) -> List<int> {
+    match t.prim {
+        .Lit(_) if t.slot >= 0 -> [t.slot],
+        .Lit(_) or .Named(_) or .Ref(_) or .Group(_) or .NotChar(_) -> [],
+    }
+}
+
+/// By ordinal, the rules that are asked at most once at any cursor and so keep no memo: each is
+/// named in one place only, at the head of a branch of a rule, which is itself asked at most once
+/// at a cursor — memoized or by this same law. A rule an operator's climb names is asked again
+/// for each operator tried at one cursor, and the start rule by the run.
+fn unremembered(rd: Ready) -> List<bool> {
+    let sites = [rule_sites(r.body) for r in rd.g.rules]
+        .flatten()
+        .concat([Site { rule: rd.g.start, head: false }])
+    [sites.filter(it.rule == r.name).length == 1 && sites.any(it.rule == r.name && it.head) for r in rd.g.rules]
+}
+
+/// One place a rule is named: whether it is a branch's head, matched at the branch's own entry.
+type Site = { rule: string, head: bool }
+
+/// Every place a rule's body names a rule.
+fn rule_sites(body: Alt) -> List<Site> {
+    [branch_sites(s) for s in body.branches].flatten()
+}
+
+fn branch_sites(s: Seq) -> List<Site> {
+    // a head capped by its own mark is asked alike by a capped and an open ask of its rule
+    let items = [item_sites(m, i == 0 && !m.head && (m.rep == Rep.One || m.rep == Rep.Opt)) for i, m in s.items]
+        .flatten()
+    let climbs = if s.operators == null { [] } else { climb_sites(s) }
+    items.concat(climbs)
+}
+
+fn item_sites(m: Item, head: bool) -> List<Site> {
+    match m.prim {
+        .Ref(target) -> [Site { rule: target, head: head }],
+        .Group(inner) -> [nested_sites(x) for x in inner.branches].flatten(),
+        .Lit(_) or .Named(_) or .NotChar(_) -> [],
+    }
+}
+
+/// A group's branch: no place in it is a rule's own head.
+fn nested_sites(s: Seq) -> List<Site> {
+    [item_sites(m, false) for m in s.items]
+        .flatten()
+        .concat(if s.operators == null { [] } else { climb_sites(s) })
+}
+
+/// What a climb names besides its branch's items: its operand again for every operator, and each
+/// suffix's rule.
+fn climb_sites(s: Seq) -> List<Site> {
+    let operand = [Site { rule: s.items[0].prim.rule()!, head: false } for _x in [0] if s.items[0].prim.rule() != null]
+    operand
+        .concat([Site { rule: e.rule!, head: false } for e in s.operators!.entries if e.rule != null])
+}
+
+/// Every label an alternation's items write, nested groups opened.
+fn written(a: Alt) -> List<string> {
+    distinct([m.label! for m in a.items() if m.label != null])
+}
+
+/// Every label a branch writes.
+fn written_scope(s: Seq) -> List<string> {
+    distinct([m.label! for m in s.deep_items() if m.label != null])
+}
+
+/// `text` as an Avra string literal.
+fn quoted(text: string) -> string {
+    "\"${text.replace("\\", "\\\\").replace("\"", "\\\"").replace("\$", "\\\$").replace("\n", "\\n").replace("\t", "\\t").replace("\r", "\\r")}\""
+}

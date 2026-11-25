@@ -1,0 +1,566 @@
+//! THE BYTES OF A SAVED ANSWER, read where they lie. An answer is a tree of nodes, so any part
+//! of it is a few loads from a mapped file and nothing is decoded to reach it. A child is written
+//! before its parent, and its slot says how far back it starts. One value has one byte form, so
+//! its bytes can be hashed.
+//!
+//! A node starts with a label. Its first octet holds two bits of slot width, three of variant
+//! and three of length, so a small node's label is that one octet. A variant or a length too big
+//! for three bits is written as seven there, and follows in two or four octets. A LIST's slots
+//! all share the width. A RECORD's slots each have their own: two bits per slot follow the
+//! label, so one large field widens nothing else. All of it is big-endian. An answer ends in how
+//! far back its root starts, in eight octets, so a load of eight octets anywhere in an answer stays
+//! inside it. Every position is relative, so an answer reads the same wherever it's embedded.
+//!
+//! Octets another process wrote may lie, so they're read through doors that check a node lies
+//! within them before reading it: a lie reads as absent, never as a trap.
+
+use defect.{defect}
+
+/// In a label's first octet, the value saying a variant or a length follows in full.
+const WRITTEN_IN_FULL: int = 7
+
+/// The octets saying how far back the root starts, at an answer's end.
+const ROOT_DISTANCE_LENGTH: int = 8
+
+/// The two-bit size codes one eight-octet load brings.
+const CODES_PER_WORD: int = 32
+
+/// The room a writer's buffer starts each answer with.
+const ANSWER_ROOM: int = 256
+
+extern fn avra_float_to_bits(value: float) -> int
+extern fn avra_float_of_bits(bits: int) -> float
+extern fn avra_mmap_word_at(mapping: ptr, position: int) -> int
+extern fn avra_mmap_slice(mapping: ptr, from: int, to: int) -> string
+
+/// What one slot of a node holds.
+export enum SavedSlot {
+    Number(value: int)
+    Child(position: int)
+    NoChild
+}
+
+/// An answer being written. An identity: every holder writes the one answer.
+///
+/// The writer is the runtime's (`avra_sw_*`): an answer's octets grow in one buffer, and a node's
+/// slots are pushed onto one stack of words as its values are written, two a slot — what it holds,
+/// then its number or child — and its node pops them, written whole in one call. The writer is
+/// reused answer after answer, so a slot makes nothing. A list being written opens with a mark
+/// holding where the list around it opened.
+export type SavedLayoutWriter = { handle: ptr }
+
+/// A writer with nothing written: one a finished answer left idle where there is one, else a new one.
+export fn saved_layout_writer() -> SavedLayoutWriter {
+    let pool = idle_writers()
+    let count = pool.count.get()
+    if count == 0 { return SavedLayoutWriter { handle: avra_sw_new(ANSWER_ROOM) } }
+    pool.count.set(count - 1)
+    pool.writers.get()[count - 1]
+}
+
+/// The writers whose answers are finished, the first `count` of `writers`: a writer's buffers
+/// outlive the answers it writes, so writing one makes only its octets.
+type IdleWriters = { writers: Cell<List<SavedLayoutWriter>>, count: Cell<int> }
+
+once fn idle_writers() -> IdleWriters {
+    let writers: Cell<List<SavedLayoutWriter>> = Cell.new([])
+    IdleWriters { writers: writers, count: Cell.new(0) }
+}
+
+/// What a pushed slot holds, its first word: a number, a child, or no child.
+const HELD_NUMBER: int = 0
+const HELD_CHILD: int = 1
+const HELD_NOTHING: int = 2
+
+extern fn avra_sw_new(room: int) -> ptr
+extern fn avra_sw_length(writer: ptr) -> int
+extern fn avra_sw_push(writer: ptr, held: int, word: int)
+extern fn avra_sw_record(writer: ptr, variant: int, count: int) -> int
+extern fn avra_sw_list_open(writer: ptr)
+extern fn avra_sw_list_close(writer: ptr) -> int
+extern fn avra_sw_label(writer: ptr, width: int, variant: int, length: int)
+extern fn avra_sw_big(writer: ptr, value: int, width: int)
+extern fn avra_sw_octets(writer: ptr, octets: Bytes) -> int
+extern fn avra_sw_text(writer: ptr, text: string) -> int
+extern fn avra_sw_closed(writer: ptr, root: int) -> int
+extern fn avra_sw_octets_at(writer: ptr) -> ptr
+extern fn avra_sw_emptied(writer: ptr)
+extern fn avra_bytes_adopted(p: ptr, n: int) -> Bytes
+
+impl SavedLayoutWriter {
+    /// A slot holding `value` pushed.
+    fn number(value: int) { avra_sw_push(self.handle, HELD_NUMBER, value) }
+
+    /// A slot holding the child that starts at `position` pushed.
+    fn child(position: int) { avra_sw_push(self.handle, HELD_CHILD, position) }
+
+    /// A slot holding no child pushed.
+    fn no_child() { avra_sw_push(self.handle, HELD_NOTHING, 0) }
+
+    /// A record of the last `count` slots pushed, as `variant`, popped: answers where it starts.
+    fn record_closed(variant: int, count: int) -> int { avra_sw_record(self.handle, variant, count) }
+
+    /// A record of the last `count` slots pushed, as `variant`, popped, and a slot holding it pushed.
+    fn record_child(variant: int, count: int) { self.child(self.record_closed(variant, count)) }
+
+    /// A list opened: each slot pushed until it closes is one of its items.
+    fn list_opened() { avra_sw_list_open(self.handle) }
+
+    /// The list opened last, of every slot pushed since, all as wide as the widest, popped with its
+    /// mark: answers where it starts.
+    fn list_closed() -> int { avra_sw_list_close(self.handle) }
+
+    /// The list opened last closed, and a slot holding it pushed.
+    fn list_child() { self.child(self.list_closed()) }
+
+    /// A record of `slots`, as `variant`, answering where it starts.
+    fn write_record(variant: int, slots: List<SavedSlot>) -> int {
+        for slot in slots { self.slot(slot) }
+        self.record_closed(variant, slots.length)
+    }
+
+    /// A list of `slots`, all as wide as the widest, answering where it starts.
+    fn write_list(slots: List<SavedSlot>) -> int {
+        self.list_opened()
+        for slot in slots { self.slot(slot) }
+        self.list_closed()
+    }
+
+    /// `slot` pushed.
+    fn slot(slot: SavedSlot) {
+        match slot {
+            .Number(value) -> self.number(value),
+            .Child(position) -> self.child(position),
+            .NoChild -> self.no_child(),
+        }
+    }
+
+    /// A list of `numbers`, the octets a list of their number slots takes, answering where it starts.
+    fn write_numbers(numbers: List<int>) -> int {
+        let start = self.written_length()
+        let width = widest_number(numbers)
+        avra_sw_label(self.handle, width, 0, numbers.length)
+        for number in numbers { avra_sw_big(self.handle, zigzagged(number), width) }
+        start
+    }
+
+    /// A node of one-octet slots holding `octets`, answering where it starts.
+    fn write_octets(octets: Bytes) -> int { avra_sw_octets(self.handle, octets) }
+
+    /// A text as a node of its octets, answering where it starts.
+    fn write_text(text: string) -> int { avra_sw_text(self.handle, text) }
+
+    /// The whole answer, with `root` as its root, ending in how far back the root starts. The
+    /// writer is idle after, for the next answer.
+    fn finished(root: int) -> Bytes {
+        let length = avra_sw_closed(self.handle, root)
+        let octets = avra_bytes_adopted(avra_sw_octets_at(self.handle), length)
+        avra_sw_emptied(self.handle)
+        self.idled()
+        octets
+    }
+
+    /// The whole answer as runs in order, with `root` as its root, for a caller that writes runs out
+    /// one by one. The writer is idle after.
+    fn finished_runs_of(root: int) -> List<Bytes> { [self.finished(root)] }
+
+    /// The writer, with nothing written, handed to the next answer.
+    fn idled() {
+        let pool = idle_writers()
+        let count = pool.count.get()
+        if count < pool.writers.get().length { pool.writers.set_at(count, self) } else { pool.writers.push(self) }
+        pool.count.set(count + 1)
+    }
+
+    /// How many octets the answer holds so far.
+    fn written_length() -> int { avra_sw_length(self.handle) }
+}
+
+/// A number as its slot stores it.
+fn zigzagged(value: int) -> int { value.wrapping_shl(1) ^ (value >> 63) }
+
+/// The fewest octets, of 1, 2, 4 or 8, that hold `value`. A negative slot value is one whose
+/// top bit is set, so it takes all eight.
+fn width_holding(value: int) -> int {
+    when {
+        value < 0 -> 8
+        value < 256 -> 1
+        value < 65536 -> 2
+        value < 4294967296 -> 4
+        _ -> 8
+    }
+}
+
+/// The fewest octets every one of `numbers` fits in as a slot stores it.
+fn widest_number(numbers: List<int>) -> int {
+    mut widest = 1
+    for number in numbers { widest = max_of(widest, width_holding(zigzagged(number))) }
+    widest
+}
+
+/// The octets holding `slot_count` two-bit size codes.
+fn size_code_octets(slot_count: int) -> int { (slot_count + 3) / 4 }
+
+/// A float's bits, so every float reads back exactly: an infinity, a NaN, a negative zero.
+export fn float_bits(value: float) -> int { avra_float_to_bits(value) }
+
+/// The float whose bits these are.
+export fn float_of_bits(bits: int) -> float { avra_float_of_bits(bits) }
+
+/// A map of these keys and values, in their order.
+export fn saved_map<V>(keys: List<string>, values: List<V>) -> Map<string, V> {
+    entries_map([Entry { key: key, value: values[at] } for at, key in keys])
+}
+
+/// A map of these entries, in their order.
+export fn entries_map<V>(entries: List<Entry<string, V>>) -> Map<string, V> {
+    mut held: Map<string, V> = {}
+    for entry in entries { held.set(entry.key, entry.value) }
+    held
+}
+
+/// The larger of two numbers.
+fn max_of(a: int, b: int) -> int { if a > b { a } else { b } }
+
+/// A logical right shift, the sign bit moving like any other.
+fn without_low_bits(value: int, count: int) -> int {
+    if count == 0 { return value }
+    (value >> count) & 1.wrapping_shl(64 - count) - 1
+}
+
+/// The top `count` octets of a word.
+fn high_octets(word: int, count: int) -> int { without_low_bits(word, 64 - 8 * count) }
+
+/// Where an answer's bytes are.
+export enum SavedSource {
+    InMemory(octets: Bytes)
+    Mapped(mapping: ptr)
+}
+
+impl SavedSource {
+    /// Eight octets at `at`, big-endian, as one number.
+    fn word_at(at: int) -> int {
+        match self {
+            // LICENSED input.store_io: the store's own bytes, read where they lie
+            .Mapped(mapping) -> avra_mmap_word_at(mapping, at),
+            .InMemory(octets) -> word_in(octets, at),
+        }
+    }
+
+    /// The octets from `from` up to `to`, copied out.
+    fn octets_at(from: int, to: int) -> Bytes {
+        match self {
+            // LICENSED input.store_io: the store's own bytes, a range copied out of the mapping
+            .Mapped(mapping) -> avra_mmap_slice(mapping, from, to).bytes(),
+            .InMemory(octets) -> octets.slice(from, to),
+        }
+    }
+}
+
+/// Saved bytes where they lie, in memory or in a mapped file. Nothing is copied until it's asked for.
+export type SavedBytes = { source: SavedSource, from: int, to: int }
+
+impl SavedBytes {
+    /// The root of the answer these bytes hold.
+    fn root() -> SavedRecord { saved_root_record(self.source, self.to) }
+
+    /// The root of the answer these bytes hold, beside where they are.
+    fn root_at() -> SavedAt<SavedRecord> { SavedAt { source: self.source, node: self.root() } }
+
+    /// These bytes, copied out.
+    fn copied() -> Bytes { self.source.octets_at(self.from, self.to) }
+}
+
+/// Bytes in memory as saved bytes.
+export fn saved_bytes_in_memory(octets: Bytes) -> SavedBytes {
+    SavedBytes { source: SavedSource.InMemory(octets), from: 0, to: octets.length }
+}
+
+/// A node of saved bytes beside where its bytes are: what a reader holding nothing else reads it from.
+export type SavedAt<N> = { source: SavedSource, node: N }
+
+/// A node of saved bytes where they lie, in memory or in a mapped file: where it starts and how
+/// many slots it holds. A node holds only numbers, so it travels in registers; the bytes it reads,
+/// its `source`, are handed beside it. Nothing is copied until it's asked for.
+export trait SavedSlots {
+    /// Where this node starts.
+    fn start() -> int
+
+    /// What slot `slot` stores, read in `source`.
+    fn stored_at(source: SavedSource, slot: int) -> int
+
+    /// How many slots it holds.
+    fn slot_count() -> int
+
+    /// Slot `slot` as a number.
+    fn number_at(source: SavedSource, slot: int) -> int {
+        let stored = self.stored_at(source, slot)
+        without_low_bits(stored, 1) ^ 0 - (stored & 1)
+    }
+
+    /// Slot `slot` as a float, from its bits.
+    fn float_at(source: SavedSource, slot: int) -> float { float_of_bits(self.number_at(source, slot)) }
+
+    /// Whether slot `slot` holds a child.
+    fn holds_child_at(source: SavedSource, slot: int) -> bool { self.stored_at(source, slot) != 0 }
+
+    /// Slot `slot` as a record, absent when it holds no child.
+    fn record_at(source: SavedSource, slot: int) -> SavedRecord? {
+        let child? = self.child_start_at(source, slot) else { return null }
+        record_starting_at(source, child)
+    }
+
+    /// Slot `slot` as a record: a defect where it holds no child.
+    fn record_in(source: SavedSource, slot: int) -> SavedRecord { record_starting_at(source, self.child_in(source, slot)) }
+
+    /// Slot `slot` as a list, absent when it holds no child.
+    fn list_at(source: SavedSource, slot: int) -> SavedList? {
+        let child? = self.child_start_at(source, slot) else { return null }
+        list_starting_at(source, child)
+    }
+
+    /// Slot `slot` as a list: a defect where it holds no child.
+    fn list_in(source: SavedSource, slot: int) -> SavedList { list_starting_at(source, self.child_in(source, slot)) }
+
+    /// Slot `slot` as octets, copied out of `source`, absent when it holds no child.
+    fn octets_at(source: SavedSource, slot: int) -> Bytes? {
+        let child? = self.child_start_at(source, slot) else { return null }
+        let label = label_at(source, child)
+        source.octets_at(label.contents_at, label.contents_at + label.length)
+    }
+
+    /// Slot `slot` as octets where they lie, absent when it holds no child.
+    fn octets_in_place_at(source: SavedSource, slot: int) -> SavedBytes? {
+        let child? = self.child_start_at(source, slot) else { return null }
+        let label = label_at(source, child)
+        SavedBytes { source: source, from: label.contents_at, to: label.contents_at + label.length }
+    }
+
+    /// Slot `slot` as text, absent when it holds no child or its octets aren't text.
+    fn text_at(source: SavedSource, slot: int) -> string? { self.octets_at(source, slot)?.text() }
+
+    /// Where slot `slot`'s child starts, absent when it holds none. A real child is never zero back.
+    fn child_start_at(source: SavedSource, slot: int) -> int? {
+        let stored = self.stored_at(source, slot)
+        if stored == 0 { null } else { self.start() - stored }
+    }
+
+    /// Where slot `slot`'s child starts: a defect where it holds none.
+    fn child_in(source: SavedSource, slot: int) -> int {
+        let stored = self.stored_at(source, slot)
+        if stored == 0 { defect(no_child(slot)) }
+        self.start() - stored
+    }
+
+    /// Slot `slot` as a record lying wholly before `end`, absent when it holds none or the record
+    /// doesn't.
+    fn record_within_at(source: SavedSource, slot: int, end: int) -> SavedRecord? {
+        if slot >= self.slot_count() { return null }
+        let child? = self.child_start_at(source, slot) else { return null }
+        record_within(source, child, end)
+    }
+
+    /// Slot `slot` as a list lying wholly before `end`, absent when it holds none or the list doesn't.
+    fn list_within_at(source: SavedSource, slot: int, end: int) -> SavedList? {
+        if slot >= self.slot_count() { return null }
+        let child? = self.child_start_at(source, slot) else { return null }
+        list_within(source, child, end)
+    }
+}
+
+fn no_child(slot: int) -> string { "a saved node's slot ${slot} holds no child where one was read" }
+
+/// A node's label, read: what it says, where the node's contents begin, and what the one load
+/// brought with it from there on, with how many octets of that it holds.
+type NodeLabel = {
+    width: int,
+    variant: int,
+    length: int,
+    contents_at: int,
+    contents_word: int,
+    contents_octets: int,
+}
+
+/// The label of the node at `start`, from one load.
+fn label_at(source: SavedSource, start: int) -> NodeLabel {
+    let word = source.word_at(start)
+    let first_octet = without_low_bits(word, 56)
+    let variant_bits = (first_octet >> 3) & 7
+    let length_bits = first_octet & 7
+    let after_variant = if variant_bits == WRITTEN_IN_FULL { 3 } else { 1 }
+    let label_length = if length_bits == WRITTEN_IN_FULL { after_variant + 4 } else { after_variant }
+    NodeLabel {
+        width: width_of_code(without_low_bits(first_octet, 6)),
+        variant: if variant_bits == WRITTEN_IN_FULL { without_low_bits(word, 40) & 65535 } else { variant_bits },
+        length: if length_bits == WRITTEN_IN_FULL {
+            high_octets(word, label_length) & 4294967295
+        } else {
+            length_bits
+        },
+        contents_at: start + label_length,
+        contents_word: word.wrapping_shl(8 * label_length),
+        contents_octets: 8 - label_length,
+    }
+}
+
+/// A record of a saved answer, read in place. Its label and its first size codes are read once,
+/// when it's reached, and nearly always by one load.
+export type SavedRecord = {
+    start: int,
+    variant: int,
+    field_count: int,
+    size_codes_at: int,
+    first_size_codes: int,
+}
+
+fn record_starting_at(source: SavedSource, start: int) -> SavedRecord { record_labelled(source, start, label_at(source, start)) }
+
+/// The record starting at `start`, absent unless all of it lies before `end`: its label, its size
+/// codes and its slots. The eight octets past `end` are read too, as a root's distance keeps them.
+export fn record_within(source: SavedSource, start: int, end: int) -> SavedRecord? {
+    if start < 0 || start >= end { return null }
+    let label = label_at(source, start)
+    if label.contents_at + size_code_octets(label.length) > end { return null }
+    let record = record_labelled(source, start, label)
+    if record.slots_end(source) > end { null } else { record }
+}
+
+/// The record a label read at `start` begins.
+fn record_labelled(source: SavedSource, start: int, label: NodeLabel) -> SavedRecord {
+    let codes_arrived = label.contents_octets >= size_code_octets(label.length)
+    SavedRecord {
+        start: start,
+        variant: label.variant,
+        field_count: label.length,
+        size_codes_at: label.contents_at,
+        first_size_codes: if codes_arrived { label.contents_word } else { source.word_at(label.contents_at) },
+    }
+}
+
+impl SavedSlots for SavedRecord {
+    fn start() -> int { self.start }
+
+    fn slot_count() -> int { self.field_count }
+
+    /// Finds the slot past the widths before it, then loads it.
+    fn stored_at(source: SavedSource, slot: int) -> int {
+        let slots_at = self.size_codes_at + size_code_octets(self.field_count)
+        high_octets(
+            source.word_at(slots_at + self.octets_before(source, slot)),
+            self.width_of_slot(source, slot),
+        )
+    }
+}
+
+impl SavedRecord {
+    /// Where the record's last slot ends.
+    fn slots_end(source: SavedSource) -> int {
+        self.size_codes_at +
+            size_code_octets(self.field_count) +
+            self.octets_before(source, self.field_count)
+    }
+
+    /// The width of one slot, from the size codes in hand when it's among the first thirty-two.
+    fn width_of_slot(source: SavedSource, slot: int) -> int {
+        let codes = if slot < CODES_PER_WORD { self.first_size_codes } else { source.word_at(self.size_codes_at + slot / 4) }
+        width_of_code(
+            without_low_bits(codes, 62 - 2 * if slot < CODES_PER_WORD { slot } else { slot % 4 }) & 3,
+        )
+    }
+
+    /// How many octets the slots before `slot` take, with one load per thirty-two past the first.
+    fn octets_before(source: SavedSource, slot: int) -> int {
+        mut octets = 0
+        mut counted = 0
+        while counted < slot {
+            let codes = if counted == 0 { self.first_size_codes } else { source.word_at(self.size_codes_at + counted / 4) }
+            let taken = if slot - counted < CODES_PER_WORD { slot - counted } else { CODES_PER_WORD }
+            for k in 0..taken { octets = octets + width_of_code(without_low_bits(codes, 62 - 2 * k) & 3) }
+            counted = counted + taken
+        }
+        octets
+    }
+
+    /// Which of `variant_count` variants this record is. A number past the last means the bytes
+    /// aren't this type's, which no reader can answer past.
+    fn variant_within(variant_count: int) -> int {
+        if self.variant >= variant_count { defect(unknown_variant(self.variant, variant_count)) }
+        self.variant
+    }
+}
+
+/// A list of a saved answer, read in place. Its label is read once, when it's reached.
+export type SavedList = { start: int, length: int, width: int, items_at: int }
+
+fn list_starting_at(source: SavedSource, start: int) -> SavedList {
+    let label = label_at(source, start)
+    SavedList {
+        start: start,
+        length: label.length,
+        width: label.width,
+        items_at: label.contents_at,
+    }
+}
+
+/// The list starting at `start`, absent unless its label and every item lie before `end`.
+export fn list_within(source: SavedSource, start: int, end: int) -> SavedList? {
+    if start < 0 || start >= end { return null }
+    let list = list_starting_at(source, start)
+    if list.items_at + list.length * list.width > end { null } else { list }
+}
+
+impl SavedList {
+    /// Where the first number at or after `wanted` sits, in a list of numbers sorted ascending.
+    fn first_at_or_after(source: SavedSource, wanted: int) -> int {
+        mut low = 0
+        mut high = self.length
+        while low < high {
+            let middle = (low + high) / 2
+            if self.number_at(source, middle) < wanted { low = middle + 1 } else { high = middle }
+        }
+        low
+    }
+}
+
+impl SavedSlots for SavedList {
+    fn start() -> int { self.start }
+
+    fn slot_count() -> int { self.length }
+
+    /// Every item has one width, so an item is one multiplication away.
+    fn stored_at(source: SavedSource, slot: int) -> int {
+        high_octets(source.word_at(self.items_at + slot * self.width), self.width)
+    }
+}
+
+/// The root record of the answer ending at `end` in `source`. A root's distance is relative, so the
+/// answer may sit anywhere.
+export fn saved_root_record(source: SavedSource, end: int) -> SavedRecord {
+    record_starting_at(source, end - source.word_at(end - ROOT_DISTANCE_LENGTH))
+}
+
+/// The root record of octets `length` long that end in `seal`, absent when they don't, or when the
+/// root doesn't lie within them: what lost its tail, or says its root stands elsewhere, never reads
+/// as whole.
+export fn sealed_root_record(source: SavedSource, length: int, seal: string) -> SavedRecord? {
+    let end = length - seal.length
+    if end < ROOT_DISTANCE_LENGTH || source.octets_at(end, length).text() != seal { return null }
+    let distance = source.word_at(end - ROOT_DISTANCE_LENGTH)
+    if distance <= ROOT_DISTANCE_LENGTH || distance > end { return null }
+    record_within(source, end - distance, sealed_end(length, seal))
+}
+
+/// Where the nodes of octets `length` long that end in `seal` end: before the root's distance.
+export fn sealed_end(length: int, seal: string) -> int { length - seal.length - ROOT_DISTANCE_LENGTH }
+
+/// A two-bit code as its width of 1, 2, 4 or 8 octets.
+fn width_of_code(code: int) -> int { 1 << code }
+
+/// Eight octets at `at`, big-endian, as one number.
+export fn word_in(octets: Bytes, at: int) -> int {
+    (octets.at(at) << 56) | (octets.at(at + 1) << 48) | (octets.at(at + 2) << 40) | (octets.at(at + 3) << 32) | (octets.at(at + 4) << 24) | (octets.at(at + 5) << 16) | (octets.at(at + 6) << 8) | octets.at(at + 7)
+}
+
+fn unknown_variant(variant: int, variant_count: int) -> string {
+    "a saved answer holds variant ${variant} of a type with ${variant_count}"
+}

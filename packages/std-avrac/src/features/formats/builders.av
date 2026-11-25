@@ -1,0 +1,140 @@
+//! Parse-time lowering: a STRING token in pattern position becomes
+//! the FORMAT it spells, or — when it spells no holes — the literal
+//! pattern it always was. The three TEXT faults refuse here in the
+//! builder's own words, because a literal that cannot be split into
+//! head and parts has no node to carry; the two LAWS over the holes
+//! are re-derived from the node and spoken by typing, where they
+//! carry a span and a code.
+use core.{
+    scoped,
+    Slots,
+    Built,
+    computed,
+    Expr,
+    Pat,
+    Stmt,
+    StmtId,
+    Param,
+    Scoped,
+    Span,
+    SyntaxArena,
+    GrammarSpec,
+    Hole,
+    named_ref,
+    binds,
+    plain_mark,
+}
+use features.formats.{read_format, has_holes, Format, Fault, Reads, read_type_name}
+
+/// A STRING in pattern position: the format it spells, or the literal
+/// pattern it always was when it spells no holes.
+///
+/// STAYS A FUNCTION: it parses the string's holes at build time and speaks the text faults in
+/// their own words.
+@computed
+fn format_written(s: dyn Slots) -> Result<Built, string> {
+    let store = s.arena()
+    let f = read_format(s.text_of("text")?)
+    let text: string? = refusal_of(f.fault)
+    if text != null { return .Err(text!) }
+    let pat = if has_holes(f) { Pat.Format(f.head, f.parts) } else { Pat.Lit(store.alloc_expr(Expr.StrLit(f.head), s.built_at())) }
+    .Ok(Built.Pat(store.alloc_pat(pat, s.built_at())))
+}
+
+/// The words a TEXT fault earns. The two laws over the holes answer
+/// absence here — typing speaks them, with a code and a span.
+fn refusal_of(fault: Fault?) -> string? {
+    if fault == null { return null }
+    match fault! {
+        .Unclosed(at) -> "a `{` at ${at} opens a hole that is never closed — write `{{` for a literal brace",
+        .Stray(at) -> "a `}` at ${at} closes nothing — write `}}` for a literal brace",
+        .Malformed(at, body) -> "`{${body}}` at ${at} is no hole — a hole is `{name}`, `{name: Type}`, or `{name...}` to take its literal at the last occurrence",
+        .Adjacent(_, _) or .Repeated(_) -> null,
+    }
+}
+
+/// `grammar Name = "…"` — the format's HOLES are a record's fields,
+/// declared once so the shape and the text it reads cannot drift.
+/// Every fault refuses here: a declaration's format is known whole at
+/// build time, so there is no later place that knows more.
+///
+/// STAYS A FUNCTION: it reads the format's holes into a record's fields and speaks every fault
+/// of a declaration.
+@computed
+fn grammar_written(s: dyn Slots) -> Result<Built, string> {
+    .Ok(
+        Built
+            .Stmt(
+                s
+                    .arena()
+                    .declared_format(s.text_of("name")?, s.text_of("text")?, s.built_at(), true)?,
+            ),
+    )
+}
+
+impl SyntaxArena {
+    /// A `grammar` declaration from a format's text: the record its
+    /// holes bind, marked as the grammar that reads it — the ONE
+    /// minting, for a written declaration and an instance's pattern
+    /// alike. A MINTED pattern may bind nothing (`get "/health"`), its
+    /// record then empty; a WRITTEN one names what its holes bind.
+    fn declared_format(name: string, text: string, span: Span?, written: bool) -> Result<
+        StmtId,
+        string,
+    > {
+        let f = read_format(text)
+        let broken: string? = undeclarable(f, name, written)
+        if broken != null { return .Err(broken!) }
+        let s = self
+            .alloc_stmt(
+                Stmt
+                    .StructDecl(
+                        scoped(name),
+                        [],
+                        [self.field_of(p.hole) for p in f.parts if binds(p.hole)],
+                        [],
+                    ),
+                span,
+            )
+        self.mark_grammar(s, GrammarSpec { head: f.head, parts: f.parts })
+        .Ok(s)
+    }
+}
+
+/// Why a format names no record — the FIRST law it breaks. A
+/// declaration keeps no format node, so every law speaks here; a
+/// pattern hears the last two at check time from its own node.
+fn undeclarable(f: Format, name: string, written: bool) -> string? {
+    let malformed: string? = refusal_of(f.fault)
+    if malformed != null { return malformed }
+    let unscannable: string? = adjacent_words(f.fault, name)
+    if unscannable != null { return unscannable }
+    if written && !has_holes(f) { return "`grammar ${name}` has no holes — a grammar names the fields its holes bind, and this format binds none" }
+    let anonymous = f.parts.find(!binds(it.hole))
+    if anonymous != null { return "`grammar ${name}` has a hole that binds nothing — every hole of a grammar names a field" }
+    null
+}
+
+/// Two holes with nothing between them, in a declaration's words.
+fn adjacent_words(fault: Fault?, name: string) -> string? {
+    if fault == null { return null }
+    match fault! {
+        .Adjacent(a, b) -> "`grammar ${name}` puts `{${a}}` and `{${b}}` next to each other — a scan needs a literal between them to stop at",
+        .Repeated(_) or .Unclosed(_) or .Stray(_) or .Malformed(_, _) -> null,
+    }
+}
+
+impl SyntaxArena {
+    /// One capture as a record field: its name, and the type it reads
+    /// its span as.
+    fn field_of(h: Hole) -> Param {
+        Param {
+            name: scoped(h.name),
+            ty: h.ty ?? named_ref(read_type_name(Reads.Text)),
+            default: null,
+            promises: plain_mark,
+            id: self.alloc_param_id(null),
+        }
+    }
+}
+

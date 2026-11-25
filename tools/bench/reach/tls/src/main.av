@@ -1,0 +1,21 @@
+// The server secured over TLS: mbedTLS is reached, through `over_tls`.
+use @std.net.{NetError, listen}
+use @std.http.frame.{limits}
+use @std.http.http.{text}
+use @std.http.server.{served, Timing}
+use @std.https.{over_tls}
+use @std.tls.{Config, server_config}
+
+type App = { name: string }
+
+fn serving(config: Config) -> Result<int, NetError> {
+    let l = listen("127.0.0.1", 18443)?
+    served(l, () -> App { name: "reach" }, limits(), Timing { requests: 1 }) { app, q -> text(200, "hello") }
+        .secured(over_tls(config))
+        .run()
+}
+
+match server_config() {
+    .Ok(c) -> match serving(c) { .Ok(n) -> "${n}", .Err(e) -> "failed: ${e.describe().message}" },
+    .Err(_) -> "no config",
+}

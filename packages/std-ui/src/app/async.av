@@ -1,0 +1,86 @@
+//! `app/async.av` — what a view shows of work that has not finished: the
+//! four states it can be in, as a library type a state holds.
+use app.{Entry, running, watching}
+
+/// Work asked for and not yet answered: nothing asked, under way, refused
+/// with its words, or answered.
+export enum Async<T> {
+    Idle
+    Loading
+    Failed(message: string)
+    Ready(value: T)
+}
+
+impl Async<T> {
+    /// Whether the answer is awaited.
+    fn is_loading() -> bool {
+        match self { .Loading -> true, .Idle or .Failed(_) or .Ready(_) -> false }
+    }
+
+    /// The answer, once there is one.
+    fn value() -> T? {
+        match self { .Ready(v) -> v, .Idle or .Loading or .Failed(_) -> null }
+    }
+
+    /// The refusal's words, when the work failed.
+    fn failure() -> string? {
+        match self { .Failed(m) -> m, .Idle or .Loading or .Ready(_) -> null }
+    }
+}
+
+/// An async state a view holds, following the entry of the observation it
+/// last asked: the entry is the loop's, shared by every view asking the same
+/// key, so `at` is which one this view reads, and `id` is how the entry tells
+/// this view from another.
+export type Fetch<T> = { now: Cell<Async<T>>, id: int, at: Cell<Entry?>, last: Cell<T?>, seen: Cell<int> }
+
+/// The numbers views are told apart by.
+once fn views() -> Cell<int> { Cell.new(0) }
+
+/// A fetch nothing has asked yet.
+export fn fetch<T>() -> Fetch<T> {
+    let idle: Async<T> = .Idle
+    let nothing: Entry? = null
+    let unread: T? = null
+    views().set(views().get() + 1)
+    Fetch {
+        now: Cell.new(idle),
+        id: views().get(),
+        at: Cell.new(nothing),
+        last: Cell.new(unread),
+        seen: Cell.new(0),
+    }
+}
+impl Fetch<T> {
+    /// The state now, to `match` on.
+    fn state() -> Async<T> {
+        let on? = running() else { return self.now.get() }
+        if on.painting.get() { self.shown(on) }
+        self.now.get()
+    }
+
+    /// A paint shows what this view reads: if an earlier paint left it out (a windowed list's unbuilt
+    /// rows) and it was let go, it reads its entry again.
+    fn shown(on: App) {
+        self.seen.set(on.walks.get())
+        let e? = self.at.get() else { return }
+        if e.rejoined(self.id) { watching(on, e) }
+    }
+
+    /// The key row `at` of the list this view reads is kept under, when its own key is `id`: a row
+    /// a write appended keeps the key of that write until the server's list names it, and after, so
+    /// its node is not made again.
+    fn key_of(at: int, id: string) -> string {
+        let entry? = self.at.get() else { return "s:${id}" }
+        entry.key_at(at, id)
+    }
+
+    /// Whether an answer is awaited.
+    fn is_loading() -> bool { self.state().is_loading() || self.at.get()?.loading() ?? false }
+
+    /// The answer, once there is one.
+    fn value() -> T? { self.state().value() ?? self.last.get() }
+
+    /// The refusal's words, when the work failed.
+    fn failure() -> string? { self.state().failure() }
+}

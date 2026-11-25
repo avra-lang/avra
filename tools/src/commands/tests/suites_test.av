@@ -1,0 +1,133 @@
+use @std.io.{make_dirs, write_text, env_or}
+use @std.time.{stamp}
+use commands.{suites_under, dep_path, std_use}
+
+once fn base() -> string { "${env_or("TMPDIR", "/tmp")}/avra-tools-suites/${stamp()}" }
+
+/// One package under a fresh root: manifest rows, a library source, and a test when asked.
+type Pkg = { name: string, deps: List<string>, dev: List<string>, tested: bool, lib_uses: List<string>, test_uses: List<string> }
+
+fn pkg(name: string, deps: List<string>, tested: bool) -> Pkg {
+    Pkg { name: name, deps: deps, dev: [], tested: tested, lib_uses: [], test_uses: [] }
+}
+
+fn rows(names: List<string>) -> string {
+    names.map((n) -> "\"@t/${n}\" = { path = \"../${n}\" }\n").join("")
+}
+
+fn uses(names: List<string>) -> string {
+    names.map((n) -> "use @std.${n}.{x}\n").join("")
+}
+
+fn written(root: string, p: Pkg) {
+    let dir = "${root}/packages/${p.name}"
+    let _ = make_dirs("${dir}/src/tests")
+    let _ = write_text(
+        "${dir}/avra.toml",
+        "[package]\nname = \"@t/${p.name}\"\n[dependencies]\n${rows(p.deps)}[dev-dependencies]\n${rows(p.dev)}",
+    )
+    let _ = write_text("${dir}/src/${p.name}.av", uses(p.lib_uses))
+    if p.tested { let _ = write_text("${dir}/src/tests/${p.name}_test.av", uses(p.test_uses)) }
+}
+
+/// A tree under its own root, answering the root.
+fn tree(label: string, pkgs: List<Pkg>) -> string {
+    let root = "${base()}/${label}"
+    for p in pkgs { written(root, p) }
+    root
+}
+
+fn found(root: string) -> string {
+    match suites_under(root) { .Ok(xs) -> xs.join(" "), .Err(said) -> "refused: ${said}" }
+}
+
+spec "suites — the gate's suites, derived" {
+    then "a package is ordered after what it depends on, and one with no tests is no suite" {
+        let root = tree(
+            "chain",
+            [
+                pkg("a", [], true),
+                pkg("b", ["a"], true),
+                pkg("c", ["b"], false),
+                pkg("d", ["c"], true),
+            ],
+        )
+        found(root) == "packages/a packages/b packages/d"
+    }
+    then "a dev-dependency orders nothing" {
+        let root = tree(
+            "dev",
+            [
+                pkg("io", ["text"], true),
+                Pkg {
+                    name: "text",
+                    deps: [],
+                    dev: ["io"],
+                    tested: true,
+                    lib_uses: [],
+                    test_uses: [],
+                },
+            ],
+        )
+        found(root) == "packages/text packages/io"
+    }
+    then "a cycle is refused and the path named" {
+        found(tree("cycle", [pkg("a", ["b"], true), pkg("b", ["a"], false)]))
+            .contains("suites: a cycle — packages/a -> packages/b -> packages/a")
+    }
+    then "a dependency that is no package is refused" {
+        found(tree("ghost", [pkg("a", ["ghost"], true)]))
+            .contains("packages/ghost is named as a dependency and is not a package")
+    }
+    then "a package without tests is no suite" {
+        found(tree("quiet", [pkg("quiet", [], false)])) == ""
+    }
+    then "a directory holding tests and no manifest is refused" {
+        let root = tree("loose", [pkg("a", [], true)])
+        let _ = make_dirs("${root}/packages/loose/src/tests")
+        let _ = write_text("${root}/packages/loose/src/tests/loose_test.av", "")
+        found(root).contains("packages/loose holds tests and no avra.toml")
+    }
+    then "a library's own use line is an edge with no manifest row" {
+        let http = Pkg {
+            name: "std-http",
+            deps: [],
+            dev: [],
+            tested: true,
+            lib_uses: ["net"],
+            test_uses: [],
+        }
+        found(tree("lib_use", [http, pkg("std-net", [], true)])) == "packages/std-net packages/std-http"
+    }
+    then "a test's use line is not an edge" {
+        let prelude = Pkg {
+            name: "std-prelude",
+            deps: [],
+            dev: [],
+            tested: true,
+            lib_uses: [],
+            test_uses: ["text"],
+        }
+        let text = Pkg {
+            name: "std-text",
+            deps: [],
+            dev: [],
+            tested: true,
+            lib_uses: ["prelude"],
+            test_uses: [],
+        }
+        found(tree("test_use", [prelude, text])) == "packages/std-prelude packages/std-text"
+    }
+    then "a dependency row is read from its line, and any other line is not one" {
+        dep_path("\"@t/a\" = { path = \"../a\" }") == "../a" &&
+            dep_path("  \"@t/b\"={path=\"../b\", version = \"1\"}") == "../b" &&
+            dep_path("name = \"@t/a\"") == null &&
+            dep_path("\"@t/a\" = \"1.0\"") == null
+    }
+    then "a std import is read from its use line" {
+        std_use("use @std.io.{read_text}") == "io" &&
+            std_use("use @std.text.{x, y}") == "text" &&
+            std_use("use @std.process") == null &&
+            std_use("use compiler.x") == null
+    }
+}

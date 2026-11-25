@@ -1,0 +1,64 @@
+//! `collect name: List<T> = kind in scope as Ty { field: it.path, … }
+//! by it.field, …` — every declaration of `kind`, in `scope`, as one
+//! typed, ordered value: docs/2026_09_22_COLLECTIONS.md. Its body is
+//! SYNTHESISED at lowering (compiler/lower/lower.av), from these same
+//! written parts — no code contributes by hand, a declaration of the
+//! kind IS its contribution.
+use features.{LanguageFeature}
+use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
+use diagnostics.{DiagCode}
+
+export fn collects() -> LanguageFeature {
+    let codes = table<DiagCode> {
+        kind                         | summary
+        "collect.kind"               | "a collect names a declaration kind it does not gather"
+        "collect.scope"              | "a collect names an unknown scope"
+        "collect.order"              | "a collection declares its order — `by …`"
+        "collect.not_a_list"         | "a collect's declared type is not a `List<T>`"
+        "collect.not_a_record"       | "a collect's projected type has no fields"
+        "collect.proj_type"          | "a collect's projection disagrees with its declared element"
+        "collect.fields"             | "a collect's projection does not fill its type's fields exactly once"
+        "collect.path"               | "a collect's `it` path is not in its kind's vocabulary"
+        "collect.order_key"          | "a collect's `by` key names no field its kind answers"
+        "collect.order_uncomparable" | "a collect's `by` key is not a value a comparison can read"
+        "collect.order_mixed"        | "a collect's `by` column mixes int and string kinds"
+        "collect.dense"              | "a `dense` order is not unique and gap-free from 0"
+        "collect.self_read"          | "a member reads its own collection while compiling"
+        "collect_enum.variant"       | "two collected members would name the same variant"
+        "collect_enum.empty"         | "a collected enum gathers at least one member"
+        "collect_enum.member"        | "a gathered member's record cannot be a variant's payload"
+        "collect_enum.scope"         | "an enum gathers its own file or package, never a closure"
+        "collect_enum.tie"           | "two members of a collected enum share an order key"
+        "collect_enum.trait"         | "every member of a `collect enum E: T` implements `T`"
+        "collect_enum.self"          | "a trait method taking `Self` answers `bool` to be delegated over members"
+    }
+    LanguageFeature collects {
+        gram: grammar {
+            stmt = "collect" name:NAME ":" ty:type "=" ( mark:PKG | kind:NAME ) "in" scope:NAME "as" of:NAME
+                "{" BREAK? ( fields:proj_field ( "," BREAK? fields:proj_field )* ","? BREAK? )? "}"
+                ( "by" BREAK? order:order_key ( "," BREAK? order:order_key )* ","? ( dense:"dense" )? )?
+                END
+                @expect("=", "expected `=` after a collect's type")
+                @expect("in", "expected `in` and a scope — `widget in closure`")
+                @expect("as", "expected `as` and the projected type — `as Entry { … }`")
+                @expect("{", "expected `{` to open the projection — `as Entry { name: it.name }`")
+                @expect("}", "expected `}` to close the projection — each field is `name: it.path`")
+                @expect("END", "expected the line to end after the collect's order — `by it.field, …`")
+                -> Stmt.Collect by collect_written
+            proj_field = field:NAME ":" "it" ( "." path:NAME )? @expect(":", "expected `:` after a projection field's name — `name: it.name`") -> Record.ProjField
+            order_key = "it" ( "." segs:NAME )+ ( "[" index:INTEGER "]" )? -> Record.OrderKey
+            collected_trait = name:NAME -> Expr.Ident
+            stmt = "collect" "enum" name:NAME ( ":" traits:collected_trait ( "," traits:collected_trait )* ","? )? "=" ( mark:PKG | kind:NAME ) "in" scope:NAME
+                ( "by" BREAK? order:order_key ( "," BREAK? order:order_key )* ","? ( dense:"dense" )? )?
+                END
+                @expect("NAME", "expected the collected enum's name — `collect enum Kind = …`")
+                @expect("=", "expected `=` after the collected enum's name")
+                @expect("in", "expected `in` and a scope — `widget in closure`")
+                @expect("END", "expected the line to end after the collect's order — `by it.field, …`")
+                -> Stmt.CollectEnum by collect_enum_written
+        }
+        diags: codes
+        soft_words: ["it", "by", "dense"]
+    }
+    collects
+}

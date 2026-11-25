@@ -1,0 +1,85 @@
+//! A long keyed list for measuring a paint. The rows are the board's own
+//! shape (a checkbox and a button inside an item, keyed by id), and the
+//! count is set before the first paint, so the same view is measured at
+//! 1,000 and at 100,000.
+use @std.ui.components.{button, checkbox, column, item, list, text}
+use @std.ui.tree.rows.{Show, windowed}
+
+/// One row. `id` is the item key.
+type Row = { id: string, title: string, done: bool }
+
+state rows: List<Row> = []
+
+/// A list of `n` rows, none done.
+export fn fill(n: int) {
+    rows = [Row { id: "r${j}", title: "Row number ${j} of the list", done: false } for j in 0..n]
+}
+
+/// Tick the row at `at`: one row changes, the other n - 1 do not.
+export fn tick(at: int) {
+    rows = [Row { id: r.id, title: r.title, done: if j == at { !r.done } else { r.done } } for j, r in rows]
+}
+
+/// A new first row, the rest shifted by one.
+export fn prepend(id: string) {
+    rows = [Row { id: id, title: "New row", done: false }].concat(rows)
+}
+
+component bench_row(row: Row) {
+    item {
+        checkbox self.row.title {
+            checked: self.row.done
+        }
+        button "Remove" {
+            on press { rows = [x for x in rows if x.id != self.row.id] }
+        }
+    }
+}
+
+export component bench {
+    column {
+        text "${rows.length} rows"
+        button "Tick the first" { on press { tick(0) } }
+        list {
+            for r in rows { bench_row r { key: r.id } }
+        }
+    }
+}
+
+export fn view() -> bench { bench {} }
+
+/// The same list, built a window at a time.
+export component bench_windowed {
+    state viewing: Show = Show {}
+    column {
+        text "${rows.length} rows"
+        button "Tick the first" { on press { tick(0) } }
+        button "Jump to the middle" { on press { self.viewing = self.viewing.to(rows[rows.length / 2].id) } }
+        list {
+            windowed(rows, (r: Row) -> r.id, (r: Row) -> bench_row r { key: r.id }, self.viewing)
+        }
+    }
+}
+
+export fn view_windowed() -> bench_windowed { bench_windowed {} }
+
+/// A row that keeps an instance state of its own.
+component held_row(row: Row) {
+    state opened: bool = false
+    item {
+        checkbox self.row.title {
+            checked: self.row.done
+        }
+    }
+}
+
+/// The windowed list, its rows each holding a state.
+export component bench_held {
+    column {
+        list {
+            windowed(rows, (r: Row) -> r.id, (r: Row) -> held_row r { key: r.id })
+        }
+    }
+}
+
+export fn view_held() -> bench_held { bench_held {} }

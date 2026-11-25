@@ -1,0 +1,332 @@
+// THE PACK'S CONTRACT: one writer's segment, each frame ended by a commit
+// marker; a later open reads what committed; a segment whose plain header
+// names another compiler's print is read all the same — a row's stamp, which is part
+// of its family's name, says who may address it.
+use @std.time.{stamp}
+use @std.text.{hex}
+use @std.io.{list_dir, remove, read_bytes, write_bytes}
+use @std.path.{joined_path, file_name}
+use compiler.store.{
+    Pack,
+    pack_at,
+    pack_put,
+    pack_has,
+    pack_get,
+    pack_get_octets,
+    pack_put_octets,
+    pack_suspects,
+    pack_readers,
+    pack_reads,
+    pack_traffic,
+    seal,
+    val_path,
+    content_digest,
+    store_file_bytes,
+    sealed_whole,
+    latest_body,
+}
+
+/// `n` rows as a family writes them: a long stamped family, digest keys, and each row reading
+/// its own input and one shared input at their digests; sealed, with the segments gone.
+fn digest_rows(name: string, n: int) -> string {
+    let root = pack_root(name)
+    let fam = "unit@own ${content_digest("print")}"
+    let w = pack_at(root, "print-one")
+    for i in 0..n {
+        let reads = ["${content_digest("d${i}")} input-${i}.av", "${content_digest("s")} shared.av"]
+        let _ = pack_put(w, fam, content_digest("k${i}"), "v${i}", reads)
+    }
+    let _ = seal(w)
+    segments_gone(root)
+    root
+}
+
+/// One store directory per case, so no case reads another's segments.
+fn pack_root(name: string) -> string { "/tmp/avra-pack-test/${name}-${stamp()}" }
+
+/// The store's files, so a read-only open can be held to creating none.
+fn pack_files(root: string) -> List<string> {
+    match list_dir("${root}/store") { .Ok(names) -> names, .Err(_) -> [] }
+}
+
+/// A row sealed into a body with its segment gone, then its values overwritten: the
+/// record stands in the body's index and no value can be read back.
+fn damaged_root(name: string) -> string {
+    let root = pack_root(name)
+    let writer = pack_at(root, "print-one")
+    let _ = pack_put(writer, "unit", "k", "v", [])
+    let _ = seal(writer)
+    segments_gone(root)
+    let _ = write_bytes(val_path("${root}/store", writer.val_rev.get()), "X".bytes())
+    root
+}
+
+/// The store's segment files.
+/// `n` rows reading one shared input, sealed into a body with their segment gone.
+fn sealed_many(name: string, n: int) -> string {
+    let root = pack_root(name)
+    let w = pack_at(root, "print-one")
+    for i in 0..n { let _ = pack_put(w, "unit", "k${i}", "v${i}", ["d9 shared.av"]) }
+    let _ = seal(w)
+    segments_gone(root)
+    root
+}
+
+fn segments_of(root: string) -> List<string> { [f for f in pack_files(root) if f.starts_with("seg-")] }
+
+/// Each open run's row count, newest first.
+fn run_counts(p: Pack) -> string { ["${s.count}" for s in p.sealed.get()].join(",") }
+
+/// Every segment removed, so an open reads the sealed runs alone.
+fn segments_gone(root: string) {
+    for f in segments_of(root) { let _ = remove(joined_path("${root}/store", f)) }
+}
+
+/// The sealed body of `sealed_many`, then `fresh` rows over it written and sealed, with
+/// the segments gone again: `k0`..`k<fresh>` answer `new<i>` and read `d1 moved.av`.
+fn run_over(name: string, fresh: int) -> string {
+    let root = sealed_many(name, 64)
+    let w = pack_at(root, "print-one")
+    for i in 0..fresh { let _ = pack_put(w, "unit", "k${i}", "new${i}", ["d1 moved.av"]) }
+    let _ = seal(w)
+    segments_gone(root)
+    root
+}
+
+spec "store/pack — segments, commit markers, the two tiers" {
+    given "a row written to one writer's segment" {
+        then "a later open reads it back through the content tier" {
+            let root = pack_root("reopen")
+            let _ = pack_put(pack_at(root, "print-one"), "unit", "k", "v", [])
+            pack_has(pack_at(root, "print-one"), "unit", "k") &&
+                pack_get(pack_at(root, "print-one"), "unit", "k") == "v"
+        }
+        then "another key in the same family is absent" {
+            let root = pack_root("absent")
+            let _ = pack_put(pack_at(root, "print-one"), "unit", "k", "v", [])
+            !pack_has(pack_at(root, "print-one"), "unit", "other")
+        }
+    }
+    given "a segment whose plain header names another compiler's print" {
+        then "its row is read, and the pack does not say foreign" {
+            let root = pack_root("other-print")
+            let _ = pack_put(pack_at(root, "print-one"), "unit", "k", "v", [])
+            let other = pack_at(root, "print-two")
+            pack_get(other, "unit", "k") == "v" && !other.foreign.get()
+        }
+    }
+    given "a read-only open" {
+        then "reads the row and creates no file" {
+            let root = pack_root("readonly")
+            let _ = pack_put(pack_at(root, "print-one"), "unit", "k", "v", [])
+            let before = pack_files(root).join(",")
+            let fresh = pack_at(root, "print-one")
+            let got = pack_get(fresh, "unit", "k", true)
+            got == "v" && pack_files(root).join(",") == before
+        }
+    }
+    given "a sealed body whose value file is damaged" {
+        then "the row is absent to has and to get alike" {
+            let fresh = pack_at(damaged_root("damaged-has"), "print-one")
+            let absent = !pack_has(fresh, "unit", "k") && pack_get(fresh, "unit", "k") == null
+            absent && fresh.rev.get() > 0
+        }
+        then "a write of the same value makes the row readable again" {
+            let root = damaged_root("damaged-heal")
+            let fresh = pack_at(root, "print-one")
+            let _ = pack_put(fresh, "unit", "k", "v", [])
+            fresh.rev.get() > 0 &&
+                pack_has(fresh, "unit", "k") &&
+                pack_get(fresh, "unit", "k") == "v"
+        }
+    }
+    given "two writers' segments for one key" {
+        then "the later write stands, whichever file merges last" {
+            let root = pack_root("order")
+            let _ = pack_put(pack_at(root, "print-one"), "unit", "k", "old", [])
+            for f in segments_of(root) {
+                let at = joined_path("${root}/store", f)
+                let _ = write_bytes(
+                    joined_path("${root}/store", "seg-99999999-moved.log"),
+                    read_bytes(at) catch "".bytes(),
+                )
+                let _ = remove(at)
+            }
+            let _ = pack_put(pack_at(root, "print-one"), "unit", "k", "new", [])
+            pack_get(pack_at(root, "print-one"), "unit", "k") == "new"
+        }
+    }
+    given "one process holding two compiler prints" {
+        then "rows under two stamped family names stand together" {
+            let root = pack_root("prints")
+            let _ = pack_put(pack_at(root, "print-one"), "unit@one", "k", "one", [])
+            let _ = pack_put(pack_at(root, "print-two"), "unit@two", "k", "two", [])
+            let read = pack_at(root, "print-one")
+            pack_get(read, "unit@one", "k") == "one" && pack_get(read, "unit@two", "k") == "two"
+        }
+    }
+    given "a seal over a view older than the newest body" {
+        then "is refused, and the rows of the body it missed still read" {
+            let root = pack_root("older")
+            let stale = pack_at(root, "print-one")
+            let _ = pack_has(stale, "unit", "absent")
+            let sealer = pack_at(root, "print-one")
+            let _ = pack_put(sealer, "unit", "first", "1", [])
+            let _ = seal(sealer)
+            segments_gone(root)
+            let _ = pack_put(stale, "unit", "second", "2", [])
+            let refused = !seal(stale)
+            let fresh = pack_at(root, "print-one")
+            refused &&
+                pack_get(fresh, "unit", "first") == "1" &&
+                pack_get(fresh, "unit", "second") == "2"
+        }
+    }
+    given "rows that read inputs, sealed into a body" {
+        then "a fresh open names the readers of a moved input from the reverse section alone" {
+            let root = pack_root("suspects")
+            let w = pack_at(root, "print-one")
+            let _ = pack_put(w, "unit", "a", "1", ["d1 a.av", "d9 shared.av"])
+            let _ = pack_put(w, "unit", "b", "2", ["d2 b.av", "d9 shared.av"])
+            let _ = pack_put(w, "warn", "c", "3", ["d3 c.av"])
+            let _ = seal(w)
+            segments_gone(root)
+            let r = pack_at(root, "print-one")
+            pack_suspects(r, ["a.av"], pack_readers(r)).length == 1 &&
+                pack_suspects(r, ["shared.av"], pack_readers(r)).length == 2 &&
+                pack_suspects(r, ["c.av", "a.av"], pack_readers(r)).length == 2 &&
+                pack_suspects(r, [], pack_readers(r)).is_empty() &&
+                pack_suspects(r, ["nothing.av"], pack_readers(r)).is_empty()
+        }
+        then "a row overwritten after the seal is judged by its new reads" {
+            let root = pack_root("suspects-over")
+            let w = pack_at(root, "print-one")
+            let _ = pack_put(w, "unit", "a", "1", ["d1 a.av"])
+            let _ = seal(w)
+            let r = pack_at(root, "print-one")
+            let _ = pack_put(r, "unit", "a", "2", ["d1 z.av"])
+            pack_suspects(r, ["a.av"], pack_readers(r)).is_empty() &&
+                pack_suspects(r, ["z.av"], pack_readers(r)).length == 1
+        }
+    }
+    given "a sealed body of many rows" {
+        then "a moved input names its readers by decoding each row once" {
+            let root = sealed_many("bulk", 64)
+            let r = pack_at(root, "print-one")
+            pack_suspects(r, ["shared.av"], pack_readers(r)).length == 64 &&
+                pack_traffic(r).rows == 64
+        }
+        then "a single lookup bisects the index and decodes one row" {
+            let root = sealed_many("bisect", 64)
+            let r = pack_at(root, "print-one")
+            let got = pack_get(r, "unit", "k17")
+            let t = pack_traffic(r)
+            got == "v17" && t.rows == 1 && t.probes <= 10
+        }
+        then "every key is found and an absent key is not" {
+            let root = sealed_many("every", 64)
+            let r = pack_at(root, "print-one")
+            [pack_get(r, "unit", "k${i}") == "v${i}" for i in 0..64].all(it) &&
+                pack_get(r, "unit", "absent") == null
+        }
+    }
+    given "lookups and value reads asked of a pack" {
+        then "are counted: a row found, a row absent, a value read out of the sealed body" {
+            let root = pack_root("traffic")
+            let writer = pack_at(root, "print-one")
+            let _ = pack_put(writer, "unit", "k", "value", [])
+            let _ = seal(writer)
+            segments_gone(root)
+            let reader = pack_at(root, "print-one")
+            let _ = pack_has(reader, "unit", "absent")
+            let _ = pack_get(reader, "unit", "k")
+            let t = pack_traffic(reader)
+            t.hits == 1 && t.misses == 1 && t.values == 1 && t.bytes == 5
+        }
+    }
+    given "a seal over a body far larger than what it adds" {
+        then "folds only the new rows into a run that stands over the body" {
+            let r = pack_at(run_over("run", 2), "print-one")
+            pack_get(r, "unit", "k1") == "new1" &&
+                pack_get(r, "unit", "k40") == "v40" &&
+                run_counts(r).starts_with("2,")
+        }
+        then "a moved input names each reader once, by the run that wrote it last" {
+            let r = pack_at(run_over("run-suspects", 2), "print-one")
+            pack_suspects(r, ["shared.av"], pack_readers(r)).length == 62 &&
+                pack_suspects(r, ["moved.av"], pack_readers(r)).length == 2
+        }
+        then "a second seal folds the run above it, never the runs below" {
+            let root = run_over("run-fold", 1)
+            let before = pack_at(root, "print-one")
+            let _ = pack_has(before, "unit", "k0")
+            let below = run_counts(before).substring(2, run_counts(before).length)
+            let w = pack_at(root, "print-one")
+            let _ = pack_put(w, "unit", "extra", "e", [])
+            let _ = seal(w)
+            segments_gone(root)
+            let r = pack_at(root, "print-one")
+            pack_get(r, "unit", "extra") == "e" &&
+                pack_get(r, "unit", "k0") == "new0" &&
+                run_counts(r) == "2,${below}"
+        }
+        then "a run whose body is gone is skipped for the newest body that stands whole" {
+            let root = run_over("run-broken", 12)
+            let w = pack_at(root, "print-one")
+            let _ = pack_put(w, "unit", "extra", "e", [])
+            let _ = seal(w)
+            segments_gone(root)
+            let opened = pack_at(root, "print-one")
+            let _ = pack_has(opened, "unit", "k1")
+            let below = opened.sealed.get()[1].rev
+            let _ = remove(joined_path("${root}/store", "body-${below}.pack"))
+            let r = pack_at(root, "print-one")
+            pack_get(r, "unit", "k1") == "v1" && r.torn.get()
+        }
+    }
+    given "a seal that adds a quarter of the body or more" {
+        then "folds everything into one whole body" {
+            let r = pack_at(run_over("run-whole", 16), "print-one")
+            pack_get(r, "unit", "k3") == "new3" &&
+                pack_get(r, "unit", "k40") == "v40" &&
+                run_counts(r) == "64"
+        }
+    }
+    given "rows keyed and read by whole digests, the shape every family writes" {
+        then "read back whole: key, value and every read" {
+            let root = digest_rows("digests", 64)
+            let r = pack_at(root, "print-one")
+            let fam = "unit@own ${content_digest("print")}"
+            pack_get(r, fam, content_digest("k7")) == "v7" &&
+                (pack_reads(r, fam, content_digest("k7"), true) ?? []).join(",") == "${content_digest("d7")} input-7.av,${content_digest("s")} shared.av" &&
+                pack_suspects(r, ["input-7.av"], pack_readers(r)).length == 1 &&
+                pack_suspects(r, ["shared.av"], pack_readers(r)).length == 64
+        }
+        then "cost what they say: a row's family, key and digest are octets, never spellings" {
+            let root = digest_rows("digest-size", 256)
+            let w = pack_at(root, "print-one")
+            let _ = pack_has(w, "unit", "none")
+            let _ = sealed_whole(w)
+            let bytes = store_file_bytes(
+                "${root}/store",
+                file_name(latest_body("${root}/store") ?? ""),
+            ) ?? 0
+            w.sealed.get().length == 1 && bytes > 0 && bytes / 256 < 250
+        }
+    }
+    given "a row kept as octets that spell no text" {
+        then "reads back as those octets, from a segment and from a sealed body, and never as text" {
+            let root = pack_root("octets")
+            let raw = [0, 255, 128, 10].bytes()!
+            let w = pack_at(root, "print-one")
+            pack_put_octets(w, "answer", "k", raw, [])
+            let live = hex(pack_get_octets(pack_at(root, "print-one"), "answer", "k") ?? "".bytes())
+            let _ = seal(w)
+            segments_gone(root)
+            let r = pack_at(root, "print-one")
+            live == "00ff800a" &&
+                hex(pack_get_octets(r, "answer", "k") ?? "".bytes()) == "00ff800a" &&
+                pack_get(r, "answer", "k") == null
+        }
+    }
+}

@@ -1,0 +1,690 @@
+//! The literal's typing law: the name resolved to a declaration
+//! (resolve spoke otherwise), and the written fields match it —
+//! each declared field exactly once, each value the field's type.
+use core.{ExprId, LiteralFault, Type, TypeId, DeclId, TypeRef, flatten, spread_entry}
+use features.{
+    no_pins,
+    Pins,
+    TypeCx,
+    StructSig,
+    this_is,
+    fields_are,
+    fields_named,
+    lacks_voice,
+    slot_worthy,
+    slot_want,
+    tparams_refused,
+    unpinned_of,
+}
+use diagnostics.{Voice, refusal, said_as, warning}
+
+/// `with` copies a STRUCT: the written fields obey the field law,
+/// and the answer IS the subject's type.
+fn with_type(mut cx: TypeCx, e: ExprId, subject: ExprId, fields: List<string>, values: List<ExprId>) -> TypeId {
+    let ty = cx.type_at(subject)
+    if cx.errored_ty(ty) { return cx.error_type }
+    let sig? = cx.fields_of(ty) else { return not_a_struct(cx, e, subject) }
+    let _ = cx.seals(cx.loc_of(e), ty, "copied with new fields here")
+    written_checks(cx, cx.view.types.name_of(ty), fields, values, sig)
+    ty
+}
+
+fn lit_type(mut cx: TypeCx, e: ExprId, name: string, fields: List<string>, values: List<ExprId>) -> TypeId {
+    cx.warn_use(e)
+    let bound? = cx.bound_decl(e) else { return cx.error_type }
+    let target? = cx.view.decls.named_by(bound) else { return fieldless_alias(cx, e, name, bound) }
+    let ty = cx.view.types.intern(Type.Struct(target, cx.view.decls.decl(target).name))
+    cx.view.decls.note_type(ty)
+    let sig? = cx.fields_of(ty) else { return not_a_record(cx, e, name) }
+    let _ = cx.seals(cx.loc_of(e), ty, "built here")
+    let targs = cx.view.store.struct_targs_of(e)
+    let spreads = fields.contains(spread_entry)
+    if cx.tparams(target).is_empty() {
+        if !targs.is_empty() { return not_generic(cx, e, name, targs.length) }
+        if spreads { merged_checks(cx, e, name, sig, fields, values) } else { check_fields(cx, e, name, fields, values, sig) }
+        return ty
+    }
+    if spreads { return generic_spread(cx, e, name, values) }
+    generic_lit(cx, e, name, fields, values, target, sig, targs)
+}
+
+/// A GENERIC record's literal INSTANTIATES: the declared field
+/// types unify against the written values — the call-site law,
+/// field-worded — every Var must land, and the slots re-judge
+/// under the bindings before the instantiation interns.
+fn generic_lit(
+    mut cx: TypeCx,
+    e: ExprId,
+    name: string,
+    fields: List<string>,
+    values: List<ExprId>,
+    decl: DeclId,
+    sig: StructSig,
+    targs: List<TypeRef>,
+) -> TypeId {
+    let tp = cx.tparams(decl)
+    if tparams_refused(tp) { return cx.error_type }
+    if !targs.is_empty() && targs.length != tp.length {
+        return lit_arg_count(cx, e, name, tp, targs.length)
+    }
+    mut bound = no_pins(tp.length)
+    for j, t in targs {
+        let written = cx.full_type(cx.loc_of(e), t)
+        if cx.errored_ty(written) { return cx.error_type }
+        bound.pin(j, written)
+    }
+    mut spoke = false
+    for j, f in fields {
+        if !generic_field(cx, name, sig, f, values[j], written_at(fields, j), decl, bound) {
+            spoke = true
+        }
+    }
+    if missing_fields(cx, e, name, fields, sig) || spoke { return cx.error_type }
+    let pinned = cx.pinned_by_want(e, decl, bound)
+    let missing: string? = unpinned_of(tp, pinned)
+    if missing != null { return if cx.starving { unpinned_by_fields(cx, e, missing!) } else { cx.hungry(e) } }
+    let concrete = cx.bound_closed(pinned)
+    if !cx.bounds_hold(e, decl, concrete, "in this literal") { return cx.error_type }
+    for ft in sig.types {
+        let landed = cx.view.types.substituted(ft, decl, concrete)
+        if !slot_worthy(cx.view.types.shape_of(landed)) { return unslottable_literal(cx, e, landed) }
+    }
+    cx.record_subst(e, decl, concrete, [])
+    cx.view.types.intern(Type.App(decl, name, concrete))
+}
+
+/// One written field of a generic literal: declared, written once,
+/// and its declared type UNIFIES with the value — a fully-bound
+/// field falls back to the ordinary law, so widening still rides.
+fn generic_field(
+    mut cx: TypeCx,
+    name: string,
+    sig: StructSig,
+    f: string,
+    v: ExprId,
+    w: Written,
+    decl: DeclId,
+    mut bound: Pins,
+) -> bool {
+    let slot? = field_slot(cx, name, sig, f, v, w) else { return false }
+    let want = slot_want(cx.view.types, sig, slot)
+    if cx.agreed(v, want, decl, bound) { return true }
+    wrong_field_type(cx, v, f, cx.as_bound(want, decl, bound))
+    false
+}
+
+/// How often a written field's name stood before it.
+enum Written { Once, Twice, Again }
+
+fn written_at(fields: List<string>, j: int) -> Written {
+    match [i for i in 0..j if fields[i] == fields[j]].length {
+        0 -> .Once,
+        1 -> .Twice,
+        _ -> .Again,
+    }
+}
+
+/// The field's slot, once the name is declared and written once —
+/// the half of the field law both paths share. A refused write's
+/// value is settled unjudged, and a field written twice speaks once
+/// however often it repeats: one mistake, one voice.
+fn field_slot(mut cx: TypeCx, name: string, sig: StructSig, f: string, v: ExprId, w: Written) -> int? {
+    let slot? = sig.slot_of(f) else {
+        cx.settled_value(v)
+        let why? = sig.lacked(f) else {
+            unknown_field(cx, v, name, f, sig)
+            return null
+        }
+        lacked_field(cx, v, name, f, sig, why)
+        return null
+    }
+    match w {
+        .Once -> slot,
+        .Twice -> {
+            cx.settled_value(v)
+            repeated_field(cx, v, f)
+            null
+        },
+        .Again -> {
+            cx.settled_value(v)
+            null
+        },
+    }
+}
+
+/// Every declared field without a default is written — the
+/// literal's completeness half. True when one spoke.
+fn missing_fields(mut cx: TypeCx, e: ExprId, name: string, fields: List<string>, sig: StructSig) -> bool {
+    mut spoke = false
+    for j, n in sig.names {
+        if !fields.contains(n) &&
+            sig.defaults[j] == null &&
+            !cx.view.decls.sited_slot(sig, j) &&
+            !cx.view.decls.cells_slot(sig, j) {
+            missing_field(cx, e, name, n)
+            spoke = true
+        }
+    }
+    spoke
+}
+
+/// Every written field checks against the table; every declared
+/// field must ALSO be written — the literal's completeness half.
+fn check_fields(
+    mut cx: TypeCx,
+    e: ExprId,
+    name: string,
+    fields: List<string>,
+    values: List<ExprId>,
+    sig: StructSig,
+) {
+    written_checks(cx, name, fields, values, sig)
+    let _ = missing_fields(cx, e, name, fields, sig)
+}
+
+/// The written-field half of the law, shared by literal and
+/// `with`.
+fn written_checks(
+    mut cx: TypeCx,
+    name: string,
+    fields: List<string>,
+    values: List<ExprId>,
+    sig: StructSig,
+) {
+    for j, f in fields {
+        field_check(cx, name, sig, f, values[j], written_at(fields, j))
+    }
+}
+
+/// One written field's law: declared, written once, right type.
+fn field_check(mut cx: TypeCx, name: string, sig: StructSig, f: string, v: ExprId, w: Written) {
+    if cx.view.store.refused_elsewhere(v) {
+        let _ = cx.type_at(v)
+        return
+    }
+    let slot: int? = field_slot(cx, name, sig, f, v, w)
+    if slot == null { return }
+    // the ONE assignment door — a field slot lifts like any other
+    // (auto-Ok, dyn boxing), and the lift is recorded for lowering
+    let want = slot_want(cx.view.types, sig, slot!)
+    if !cx.accepts(v, want) { wrong_field_type(cx, v, f, want) }
+}
+
+/// A literal that spreads: its entries in written order, a later
+/// entry winning what an earlier one wrote. Each spread must carry
+/// only fields the record declares, at the declared types; every
+/// field without a default must be covered; a field written before a
+/// spread that carries it is a dead write.
+fn merged_checks(
+    mut cx: TypeCx,
+    e: ExprId,
+    name: string,
+    sig: StructSig,
+    fields: List<string>,
+    values: List<ExprId>,
+) {
+    let covered = [entry_covers(cx, name, sig, fields, values, j) for j in 0..fields.length]
+    for j, f in fields {
+        if overwritten_later(fields, covered, j) { dead_field(cx, values[j], f) }
+    }
+    let written = flatten(covered)
+    for slot, n in sig.names {
+        if !written.contains(n) &&
+            sig.defaults[slot] == null &&
+            !cx.view.decls.sited_slot(sig, slot) {
+            spread_missing(cx, e, name, n)
+        }
+    }
+}
+
+/// The names entry `j` writes: a field its own name, a spread the
+/// fields it carries that the record declares.
+fn entry_covers(
+    mut cx: TypeCx,
+    name: string,
+    sig: StructSig,
+    fields: List<string>,
+    values: List<ExprId>,
+    j: int,
+) -> List<string> {
+    if fields[j] != spread_entry {
+        field_check(cx, name, sig, fields[j], values[j], written_at(fields, j))
+        return [fields[j]]
+    }
+    spread_carries(cx, name, sig, values[j])
+}
+
+/// Whether a spread after entry `j` carries the field `j` writes.
+fn overwritten_later(fields: List<string>, covered: List<List<string>>, j: int) -> bool {
+    fields[j] != spread_entry &&
+        (j + 1..fields.length).any(fields[it] == spread_entry && covered[it].contains(fields[j]))
+}
+
+/// What a spread's source carries, judged against the record's table. A
+/// source that is no record is refused once, and stands for every field so
+/// no second voice follows.
+fn spread_carries(mut cx: TypeCx, name: string, sig: StructSig, v: ExprId) -> List<string> {
+    if cx.view.store.refused_elsewhere(v) {
+        let _ = cx.type_at(v)
+        return []
+    }
+    let ty = cx.type_at(v)
+    if cx.errored_ty(ty) { return [] }
+    let from? = cx.fields_of(ty) else {
+        not_spreadable(cx, v)
+        return sig.names
+    }
+    for i, n in from.names {
+        spread_field_law(cx, name, sig, v, from, i)
+    }
+    carried_into(from.names, [n for n in sig.names if sig.lacked(n) == null])
+}
+
+/// The fields a spread of a record carrying `from` writes into a record declaring `declared`: those
+/// both name. A spread carrying a field the record doesn't declare is refused apart.
+export fn carried_into(from: List<string>, declared: List<string>) -> List<string> { [n for n in from if declared.contains(n)] }
+
+/// One carried field: declared by the record, at the record's type.
+fn spread_field_law(
+    mut cx: TypeCx,
+    name: string,
+    sig: StructSig,
+    v: ExprId,
+    from: StructSig,
+    i: int,
+) {
+    let slot? = sig.slot_of(from.names[i]) else { return unknown_carried(cx, v, name, from.names[i], sig) }
+    if sig.lacked(from.names[i]) != null { return unknown_carried(cx, v, name, from.names[i], sig) }
+    if from.types[i] != sig.types[slot] { carried_type(cx, v, name, from.names[i], from.types[i], sig.types[slot]) }
+}
+
+/// A spread inside a generic record's literal.
+fn generic_spread(mut cx: TypeCx, e: ExprId, name: string, values: List<ExprId>) -> TypeId {
+    for v in values {
+        let _ = cx.type_at(v)
+    }
+    spread_generic(cx, e, name)
+}
+
+// ── The field-law voices, worded once for both paths ──
+
+fn missing_field(mut cx: TypeCx, e: ExprId, name: string, n: string) {
+    cx.emit(said_as("type.struct_fields", cx.loc_of(e), needs_field(name, n)))
+}
+
+/// A record literal of `name` that writes no `n`, a field no default fills.
+export fn needs_field(name: string, n: string) -> Voice {
+    Voice {
+        message: "`${name}` needs field `${n}`",
+        label: "this literal",
+        help: "every declared field appears exactly once",
+    }
+}
+
+fn unknown_field(mut cx: TypeCx, v: ExprId, name: string, f: string, sig: StructSig) {
+    cx
+        .emit(
+            said_as(
+                "type.struct_fields",
+                cx.loc_of(v),
+                literal_fault(LiteralFault.Unknown(name, f, sig.names)),
+            ),
+        )
+}
+
+/// What a record literal is refused for, as `fault` says.
+export fn literal_fault(fault: LiteralFault) -> Voice {
+    match fault {
+        .Unknown(record, field, fields) -> Voice {
+            message: "`${record}` has no field `${field}`",
+            label: "written here",
+            help: fields_named(fields),
+        },
+        .Enum(name) -> Voice {
+            message: "`${name}` is an enum, not a record — it has no fields to fill",
+            label: "built here",
+            help: "construct a variant instead — `${name}.<variant>`",
+        },
+        .Fieldless(name, of) -> Voice {
+            message: "`${name}` names `${of}`, which has no fields to fill",
+            label: "built here",
+            help: "a literal `${name} { … }` builds the record an alias names",
+        },
+        .Owned(name) -> Voice {
+            message: "`${name}` is a type the language owns; a record literal can't make one",
+            label: "built here",
+            help: "write a value of `${name}` as its own literal, or take the one a verb answers",
+        },
+    }
+}
+
+fn lacked_field(mut cx: TypeCx, v: ExprId, name: string, f: string, sig: StructSig, why: string) {
+    cx
+        .emit(
+            refusal(
+                "type.struct_fields",
+                cx.loc_of(v),
+                lacks_voice(name, f, why),
+                "written here",
+                fields_are(sig),
+            ),
+        )
+}
+
+/// A field's value of the wrong type: a setting that names an event
+/// holds the event's handler, and is refused as that.
+fn wrong_field_type(mut cx: TypeCx, v: ExprId, f: string, want: TypeId) {
+    let heard? = cx.view.store.on_handler(v) else { return wrong_field_value(cx, v, f, want) }
+    wrong_handler_type(cx, v, heard.event, want)
+}
+
+fn wrong_handler_type(mut cx: TypeCx, v: ExprId, event: string, want: TypeId) {
+    cx
+        .emit(
+            said_as(
+                "type.component_event",
+                cx.loc_of(v),
+                handler_mistyped(event, cx.view.types.name_of(want), cx.name_at(v)),
+            ),
+        )
+}
+
+/// A setting that names `event` holds the event's handler, typed `want`, and this is `found`.
+export fn handler_mistyped(event: string, want: string, found: string) -> Voice {
+    Voice {
+        message: "`${event}` is heard by a handler, `${want}`, and this is `${found}`",
+        label: "heard here",
+        help: "hear it with `on ${event} { … }`, or set a fn",
+    }
+}
+
+fn wrong_field_value(mut cx: TypeCx, v: ExprId, f: string, want: TypeId) {
+    let n = cx.name_at(v)
+    cx
+        .emit(
+            cx
+                .seat_mismatch(
+                    "type.struct_fields",
+                    cx.loc_of(v),
+                    v,
+                    "field `${f}` is `${cx.view.types.name_of(want)}`, this is `${n}`",
+                    want,
+                ),
+        )
+}
+
+fn not_spreadable(mut cx: TypeCx, v: ExprId) {
+    let n = cx.name_at(v)
+    if cx.shape_at(v) is .Opt {
+        return cx.emit(said_as("type.spread_nullable", cx.loc_of(v), spread_absent(n)))
+    }
+    cx.emit(said_as("type.spread_value", cx.loc_of(v), spread_fieldless(n)))
+}
+
+fn unknown_carried(mut cx: TypeCx, v: ExprId, name: string, f: string, sig: StructSig) {
+    cx.emit(said_as("type.spread_field", cx.loc_of(v), carried_undeclared(name, f, sig.names)))
+}
+
+/// A spread into a literal of `name` carrying `f`, which `name` doesn't declare among `fields`.
+export fn carried_undeclared(name: string, f: string, fields: List<string>) -> Voice {
+    Voice {
+        message: "this spread carries `${f}`, and `${name}` declares no such field",
+        label: "spread here",
+        help: "spread a `${name}`, or write the fields of `${name}` directly — ${fields_named(fields)}",
+    }
+}
+
+fn carried_type(mut cx: TypeCx, v: ExprId, name: string, f: string, have: TypeId, want: TypeId) {
+    cx
+        .emit(
+            said_as(
+                "type.spread_field",
+                cx.loc_of(v),
+                carried_otherwise(name, f, cx.view.types.name_of(have), cx.view.types.name_of(want)),
+            ),
+        )
+}
+
+/// A spread into a literal of `name` carrying `f` as `have`, which `name` declares `want`.
+export fn carried_otherwise(name: string, f: string, have: string, want: string) -> Voice {
+    Voice {
+        message: "this spread carries `${f}` as `${have}`, and `${name}` declares it `${want}`",
+        label: "spread here",
+        help: "spread a record whose `${f}` is `${want}`, or write `${f}` after the spread",
+    }
+}
+
+fn spread_missing(mut cx: TypeCx, e: ExprId, name: string, n: string) { cx.emit(said_as("type.spread_missing", cx.loc_of(e), leaves_unset(name, n))) }
+
+/// A literal of `name` that spreads and leaves its field `n` unwritten.
+export fn leaves_unset(name: string, n: string) -> Voice {
+    Voice {
+        message: "this `${name}` leaves field `${n}` unset",
+        label: "this literal",
+        help: "add `${n}: …`, or spread a record that has it",
+    }
+}
+
+fn dead_field(mut cx: TypeCx, v: ExprId, f: string) {
+    let said = field_overwritten(f)
+    cx
+        .emit(
+            warning(
+                "type.spread_dead",
+                cx.loc_of(v),
+                said.message,
+                said.label ?? "",
+                said.help ?? "",
+            ),
+        )
+}
+
+/// A record literal's field `f` a spread after it overwrites.
+export fn field_overwritten(f: string) -> Voice {
+    Voice {
+        message: "field `${f}` is overwritten by a spread after it",
+        label: "overwritten",
+        help: "write `${f}` after the spread to keep it",
+    }
+}
+
+fn spread_generic(mut cx: TypeCx, e: ExprId, name: string) -> TypeId {
+    cx.spoken(said_as("type.spread_generic", cx.loc_of(e), spread_of_generic(name)))
+}
+
+fn not_a_struct(mut cx: TypeCx, e: ExprId, subject: ExprId) -> TypeId {
+    cx.spoken(said_as("type.with_struct", cx.loc_of(e), with_unstructured(cx.name_at(subject))))
+}
+
+/// `with` over a value of `found`, which is no struct.
+export fn with_unstructured(found: string) -> Voice {
+    Voice {
+        message: "`with` copies a struct, found `${found}`",
+        label: this_is(found),
+        help: "`with` copies a struct — `p with { x: 1 }`; build any other value directly",
+    }
+}
+
+/// `..` over a value of `found`, which may be null.
+export fn spread_absent(found: string) -> Voice {
+    Voice {
+        message: "`..` spreads `${found}`, which may be null",
+        label: "spread here",
+        help: "unwrap it first — `..(x ?? fallback)`",
+    }
+}
+
+/// `..` over a value of `found`, which has no fields.
+export fn spread_fieldless(found: string) -> Voice {
+    Voice {
+        message: "`..` spreads `${found}`, which has no fields",
+        label: "spread here",
+        help: "a literal spreads a record — `P { ..p, x: 1 }`; for any other value, write each field",
+    }
+}
+
+/// A literal of the generic record `name` that spreads.
+export fn spread_of_generic(name: string) -> Voice {
+    Voice {
+        message: "`${name}` takes type parameters, and a literal that spreads builds only a record that takes none",
+        label: "this literal",
+        help: "copy a generic record with `with` — `p with { x: 1 }`",
+    }
+}
+
+fn unslottable_literal(mut cx: TypeCx, e: ExprId, landed: TypeId) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.struct_fields",
+                cx.loc_of(e),
+                "this literal makes a slot `${cx.view.types.name_of(landed)}`, which is no value",
+                "in this literal",
+                "a field holds a value — give it one that is not `void` or a type name",
+            ),
+        )
+}
+
+fn repeated_field(mut cx: TypeCx, v: ExprId, f: string) {
+    cx.emit(said_as("type.struct_fields", cx.loc_of(v), field_repeated(f)))
+}
+
+/// The field `f` a literal writes a second time.
+export fn field_repeated(f: string) -> Voice {
+    Voice {
+        message: "field `${f}` is written more than once",
+        label: "written again here",
+        help: "write each field once — drop the repeat, or keep the value you mean",
+    }
+}
+
+fn unpinned_by_fields(mut cx: TypeCx, e: ExprId, tparam: string) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.struct_fields",
+                cx.loc_of(e),
+                "`${tparam}` is not pinned by the fields",
+                "in this literal",
+                "give `${tparam}`'s field a value of a concrete type",
+            ),
+        )
+}
+
+/// A generic literal writes exactly its record's type parameters.
+fn lit_arg_count(mut cx: TypeCx, e: ExprId, name: string, tp: List<string>, found: int) -> TypeId {
+    cx.spoken(said_as("type.struct_targs", cx.loc_of(e), literal_targs_counted(name, tp, found)))
+}
+
+/// A literal writing type arguments on a record that takes none.
+fn not_generic(mut cx: TypeCx, e: ExprId, name: string, found: int) -> TypeId {
+    cx.spoken(said_as("type.struct_targs", cx.loc_of(e), literal_targs_ungeneric(name, found)))
+}
+
+/// A count of type arguments, singular or plural.
+fn counted(n: int) -> string {
+    if n == 1 { return "1 type argument" }
+    "${n} type arguments"
+}
+
+/// A literal under a name that declares no fields — an enum's.
+fn not_a_record(mut cx: TypeCx, e: ExprId, name: string) -> TypeId {
+    let fault = if cx.view.decls.is_builtin(cx.bound_decl(e)!) { LiteralFault.Owned(name) } else { LiteralFault.Enum(name) }
+    cx.spoken(said_as("type.struct_fields", cx.loc_of(e), literal_fault(fault)))
+}
+
+/// A literal under an alias of a shape that declares no fields.
+fn fieldless_alias(mut cx: TypeCx, e: ExprId, name: string, d: DeclId) -> TypeId {
+    let of = cx.view.types.name_of(cx.view.decls.alias_of(d) ?? cx.error_type)
+    cx
+        .spoken(
+            said_as(
+                "type.struct_fields",
+                cx.loc_of(e),
+                literal_fault(LiteralFault.Fieldless(name, of)),
+            ),
+        )
+}
+
+/// THE DEFAULT LAW, at the declaration: a field's default (walked
+/// under the field's want) is accepted by the field — every literal
+/// that omits the field then calls it without judging it again.
+export fn fits_default(mut cx: TypeCx, d: ExprId, name: string, want: TypeId) {
+    if cx.accepts(d, want) { return }
+    let n = cx.name_at(d)
+    cx
+        .emit(
+            cx
+                .seat_mismatch(
+                    "type.struct_fields",
+                    cx.loc_of(d),
+                    d,
+                    "field `${name}` defaults to `${n}`, and it is `${cx.view.types.name_of(want)}`",
+                    want,
+                ),
+        )
+}
+
+// ── A NAME'S SHAPE ──
+
+/// A NAME IS OPAQUE AT A SEAT, so a named value reaching a seat of
+/// its shape needs a word for the crossing — `id.of` is that word,
+/// the declaration read backwards (`type Name = <of>`). The row takes
+/// every NOMINAL shape, which is a record's and a name's alike; a
+/// record answers its FIELDS first, so only a name reaches here.
+export fn on_nominal(t: Type) -> bool {
+    t is .Struct
+}
+
+/// `x.of` answers the shape the name stands over.
+export fn check_named_of(mut cx: TypeCx, e: ExprId, ty: TypeId) -> TypeId {
+    let of? = cx.view.types.stands_for(ty) else { return not_a_name(cx, e, ty) }
+    of
+}
+
+fn not_a_name(mut cx: TypeCx, e: ExprId, ty: TypeId) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.named",
+                cx.loc_of(e),
+                "`.of` reads a named type's shape, this is `${cx.view.types.name_of(ty)}`",
+                "read here",
+                "`of` is the shape after `=` in `type Name = <shape>`",
+            ),
+        )
+}
+
+/// A literal of the record `name`, whose parameters are `tparams`, writing `found` type arguments.
+export fn literal_targs_counted(name: string, tparams: List<string>, found: int) -> Voice {
+    Voice {
+        message: "`${name}` takes ${counted(tparams.length)}, and this literal writes ${found}",
+        label: "written here",
+        help: "write `${name}<${tparams.join(", ")}> { … }`",
+    }
+}
+
+/// A literal of the record `name` writing the leading type arguments `args`, which leaves its parameter
+/// `param` pinned by nothing; `fields` are the fields it leaves unwritten whose type names `param`.
+export fn literal_unpinned(name: string, param: string, shown: List<string>, fields: List<string>) -> Voice {
+    Voice {
+        message: "`${param}` is not pinned — `${name}` takes it, and nothing this literal writes names it",
+        label: "built here",
+        help: unpinned_help("`${name}<${shown.join(", ")}> { … }`", param, name, fields),
+    }
+}
+
+/// How a literal pins `param` of `name`: written out as `spelled`, else through one of `fields`.
+fn unpinned_help(spelled: string, param: string, name: string, fields: List<string>) -> string {
+    if fields.is_empty() { return "write it — ${spelled} — or give `${param}` a default where `${name}` declares it" }
+    "write it — ${spelled} — or write ${[f + ":" for f in fields].map("`${it}`").join(" or ")} with a value whose type names it"
+}
+
+/// A literal writing `found` type arguments on the record `name`, which takes none.
+export fn literal_targs_ungeneric(name: string, found: int) -> Voice {
+    Voice {
+        message: "`${name}` takes no type arguments, and this literal writes ${found}",
+        label: "written here",
+        help: "drop them — a literal pins a record's parameters through its fields",
+    }
+}

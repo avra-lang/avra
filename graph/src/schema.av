@@ -1,0 +1,54 @@
+use @std.meta.{Named, Marker}
+use @std.validate.{Value, Issues, Decoding, Slot}
+
+/// An independently identified entity, not an embedded record.
+export type Ref<T> = { id: string }
+
+impl Ref<T> {
+    static fn decoded(mut d: Decoding, s: Slot) -> Ref<T>? {
+        let id? = d.text(s) else { return null }
+        Ref { id: id }
+    }
+
+    static fn read_json(mut d: Decoding, depth: int, required: bool, secret: bool) -> Ref<T>? {
+        let id? = d.json_text(depth, required, secret) else { return null }
+        Ref { id: id }
+    }
+
+    fn graph_value() -> Value { Value.Text(self.id) }
+}
+
+export enum Shape {
+    Text
+    Integer
+    Number
+    Boolean
+    Optional(inner: Shape)
+    Many(element: Shape)
+    Reference(target: string)
+    Embedded(model: string)
+}
+
+export type Property = {
+    name: string,
+    shape: Shape,
+    description: string,
+    rules: List<string>,
+    default_source: string?,
+}
+
+/// A source declaration's runtime projection and its standard validator.
+export type Model = {
+    name: string,
+    description: string,
+    properties: List<Property>,
+    rules: List<string>,
+    check: fn(Value) -> Result<Value, Issues>,
+    validator_hash: string?,
+    check_fields: fn(Value) -> Result<Value, Issues>,
+    assertion_hash: string?,
+}
+
+export type Registration = { make: fn() -> Model }
+
+export fn registered(_d: Named) -> Marker { Marker {} }

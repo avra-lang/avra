@@ -1,0 +1,15 @@
+// A reactor with one host fn that parks: the page's callback enters it, and
+// what that callback may do depends on how it entered (tools/wasm-host-check.sh).
+use @std.task.{Sink, unbounded_channel}
+
+fn feed(to: Sink<int>, n: int) -> bool { to.send(n + 1) }
+
+// It waits on a channel only a task it spawned can fill, so it parks every
+// time: the spawned task has not run when the wait begins.
+extern fn avra_probe_wait(n: int) -> int {
+    let line = unbounded_channel<int>()
+    let _ = spawn feed(line.sink, n)
+    line.source.next() ?? 0
+}
+
+println("ready")

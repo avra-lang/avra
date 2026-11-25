@@ -1,0 +1,392 @@
+// `@derive(Saved)` over the program's addresses: every shape survives being saved and read back,
+// a generated address carries its source inside it, and two addresses that split their text
+// differently never share bytes.
+use @std.hash.{blake3_hex}
+use @std.meta.{derive}
+use saved_derive.{Saved}
+use interned.{HIGH_LANE, LOW_LANE}
+use saved_layout.{SavedLayoutWriter, SavedSlot, float_bits, saved_layout_writer}
+use address.{
+    DeclarationAddress,
+    DeclarationOrigin,
+    InstantiationAddress,
+    ModuleAddress,
+    SourceFileAddress,
+}
+
+/// An enum whose variants hold nothing, with no derive of its own.
+enum Shade {
+    Light
+    Dark
+}
+
+@derive(Saved)
+type Shaded = { shade: Shade, maybe: Shade?, all: List<Shade> }
+
+@derive(Saved)
+type EveryKind = {
+    ratio: float,
+    maybe_ratio: float?,
+    counts: Map<string, int>,
+    nested: Map<string, List<string>>,
+    outcome: Result<int, string>,
+    held: Cell<int>,
+    maybe_counts: Map<string, int>?,
+}
+
+fn every_kind(ratio: float, counts: Map<string, int>, outcome: Result<int, string>) -> EveryKind {
+    let nested: Map<string, List<string>> = {"a": ["x", "y"], "b": []}
+    EveryKind {
+        ratio: ratio,
+        maybe_ratio: null,
+        counts: counts,
+        nested: nested,
+        outcome: outcome,
+        held: Cell.new(7),
+        maybe_counts: null,
+    }
+}
+
+/// Lists of each shape a slot holds as a number.
+@derive(Saved)
+type Numbered = { ints: List<int>, flags: List<bool>, ratios: List<float>, shades: List<Shade> }
+
+/// `n` written by hand as a record of lists of number slots, its fields in order.
+fn slotted(n: Numbered) -> Bytes {
+    let w = saved_layout_writer()
+    let ints = w.write_list([SavedSlot.Number(i) for i in n.ints])
+    let flags = w.write_list([SavedSlot.Number(if f { 1 } else { 0 }) for f in n.flags])
+    let ratios = w.write_list([SavedSlot.Number(float_bits(r)) for r in n.ratios])
+    let shades = w.write_list([SavedSlot.Number(if s == .Dark { 1 } else { 0 }) for s in n.shades])
+    w
+        .finished(
+            w
+                .write_record(
+                    0,
+                    [
+                        SavedSlot.Child(ints),
+                        SavedSlot.Child(flags),
+                        SavedSlot.Child(ratios),
+                        SavedSlot.Child(shades),
+                    ],
+                ),
+        )
+}
+
+type Label = string
+
+@derive(Saved)
+type Labelled = { name: Label, nickname: Label?, others: List<Label> }
+
+fn read_back(value: EveryKind) -> EveryKind { EveryKind.from_saved_bytes(value.saved_bytes()) }
+
+fn plain_kind() -> EveryKind { every_kind(1.5, {"one": 1}, .Ok(1)) }
+
+fn outcome_words(outcome: Result<int, string>) -> string {
+    match outcome { .Ok(number) -> "ok ${number}", .Err(words) -> "err ${words}" }
+}
+
+fn sample_file() -> SourceFileAddress { SourceFileAddress { package_name: "cli", path_in_package: "src/shared.av" } }
+
+fn written_declaration() -> DeclarationAddress {
+    DeclarationAddress {
+        origin: DeclarationOrigin.WrittenInFile(sample_file()),
+        enclosing_names: ["impl Show for Row", "inner"],
+        name: "here",
+        same_name_index: 1,
+    }
+}
+
+fn origin_words(origin: DeclarationOrigin) -> string {
+    match origin {
+        .BuiltIn -> "built in",
+        .WrittenInFile(file) -> "written ${file.package_name} ${file.path_in_package}",
+        .GeneratedFrom(source, generator) -> "generated ${source.name} by ${generator}",
+    }
+}
+
+spec "program/saved_derive — addresses saved and read back" {
+    given "each way a declaration can come to exist" {
+        then "a built-in reads back built in" {
+            let address = DeclarationAddress {
+                origin: DeclarationOrigin.BuiltIn,
+                enclosing_names: [],
+                name: "int",
+                same_name_index: 0,
+            }
+            let back = DeclarationAddress.from_saved_bytes(address.saved_bytes())
+            origin_words(back.origin) == "built in" &&
+                back.name == "int" &&
+                back.enclosing_names.is_empty()
+        }
+        then "a written declaration reads back whole" {
+            let back = DeclarationAddress.from_saved_bytes(written_declaration().saved_bytes())
+            origin_words(back.origin) == "written cli src/shared.av" &&
+                back.enclosing_names.join("/") == "impl Show for Row/inner" &&
+                back.name == "here" &&
+                back.same_name_index == 1
+        }
+        then "a generated declaration carries its source" {
+            let address = DeclarationAddress {
+                origin: DeclarationOrigin.GeneratedFrom(written_declaration(), "derive Show"),
+                enclosing_names: [],
+                name: "show",
+                same_name_index: 0,
+            }
+            let back = DeclarationAddress.from_saved_bytes(address.saved_bytes())
+            origin_words(back.origin) == "generated here by derive Show" && back.name == "show"
+        }
+    }
+    given "an instantiation" {
+        then "its declaration and type arguments read back" {
+            let address = InstantiationAddress {
+                declaration: written_declaration(),
+                type_arguments: ["int", "string"],
+            }
+            let back = InstantiationAddress.from_saved_bytes(address.saved_bytes())
+            back.declaration.name == "here" && back.type_arguments.join(",") == "int,string"
+        }
+    }
+    given "the same text split differently" {
+        then "the bytes differ" {
+            let first = SourceFileAddress { package_name: "a.b", path_in_package: "c" }
+            let second = SourceFileAddress { package_name: "a", path_in_package: "b.c" }
+            blake3_hex(first.saved_bytes()) != blake3_hex(second.saved_bytes())
+        }
+    }
+    given "one address saved twice" {
+        then "its bytes are the same" {
+            blake3_hex(written_declaration().saved_bytes()) == blake3_hex(written_declaration().saved_bytes())
+        }
+    }
+}
+
+spec "saved_derive — an enum whose variants hold nothing" {
+    given "one alone, absent and in a list" {
+        then "each reads back as written" {
+            let back = Shaded
+                .from_saved_bytes(Shaded { shade: .Dark, maybe: null, all: [.Light, .Dark] }.saved_bytes())
+            back.shade == .Dark &&
+                back.maybe == null &&
+                back.all.length == 2 &&
+                back.all[0] == .Light
+        }
+    }
+}
+
+spec "saved_derive — a list of numbers" {
+    given "a list of each shape that is a number in its slot" {
+        then "it is saved as a list of the slots, and reads back" {
+            let n = Numbered {
+                ints: [0, -1, 4294967296, -9223372036854775807],
+                flags: [true, false, true],
+                ratios: [1.5, -0.0, 2.25],
+                shades: [.Dark, .Light],
+            }
+            let back = Numbered.from_saved_bytes(n.saved_bytes())
+            blake3_hex(n.saved_bytes()) == blake3_hex(slotted(n)) &&
+                back.ints[3] == -9223372036854775807 &&
+                !back.flags[1] &&
+                back.ratios[0] == 1.5 &&
+                back.shades[0] == .Dark
+        }
+        then "empty, each is a list of no slots" {
+            let n = Numbered { ints: [], flags: [], ratios: [], shades: [] }
+            blake3_hex(n.saved_bytes()) == blake3_hex(slotted(n))
+        }
+    }
+}
+
+spec "saved_derive — every kind with bytes reads back" {
+    given "floats" {
+        then "ordinary, infinite and negative ones read back exactly" {
+            read_back(plain_kind()).ratio == 1.5 &&
+                read_back(every_kind(1.0 / 0.0, {}, .Ok(1))).ratio == 1.0 / 0.0 &&
+                read_back(every_kind(-2.25, {}, .Ok(1))).ratio == -2.25
+        }
+        then "a present zero isn't an absent one" {
+            let back = read_back(plain_kind() with { maybe_ratio: 0.0 })
+            back.maybe_ratio == 0.0 && read_back(plain_kind()).maybe_ratio == null
+        }
+    }
+    given "an empty map" {
+        then "it reads back empty" { read_back(every_kind(1.5, {}, .Ok(1))).counts.is_empty() }
+        then "it isn't an absent one" {
+            let empty: Map<string, int> = {}
+            let back = read_back(plain_kind() with { maybe_counts: empty })
+            back.maybe_counts != null &&
+                back.maybe_counts!.is_empty() &&
+                read_back(plain_kind()).maybe_counts == null
+        }
+    }
+    given "a map" {
+        then "its order and values read back" {
+            let back = read_back(every_kind(1.5, {"z": 1, "a": 2}, .Ok(1))).counts
+            back.keys().join(",") == "z,a" && back.get("a") == 2
+        }
+        then "its values may be lists" {
+            read_back(plain_kind()).nested.get("a")!.join(",") == "x,y" &&
+                read_back(plain_kind()).nested.get("b")!.is_empty()
+        }
+        then "the same entries in another order are other bytes" {
+            let one = every_kind(1.5, {"z": 1, "a": 2}, .Ok(1)).saved_bytes()
+            let other = every_kind(1.5, {"a": 2, "z": 1}, .Ok(1)).saved_bytes()
+            blake3_hex(one) != blake3_hex(other)
+        }
+    }
+    given "a result" {
+        then "each side reads back" {
+            outcome_words(read_back(plain_kind()).outcome) == "ok 1" &&
+                outcome_words(read_back(every_kind(1.5, {}, .Err("no"))).outcome) == "err no"
+        }
+    }
+    given "fields whose types are names over plain values" {
+        then "they read back through the name" {
+            let saved = Labelled { name: Label("a"), nickname: null, others: [Label("b")] }
+            let back = Labelled.from_saved_bytes(saved.saved_bytes())
+            back.name.of == "a" && back.nickname == null && back.others[0].of == "b"
+        }
+    }
+    given "a cell" {
+        then "what it held reads back, in a cell of its own" {
+            let value = plain_kind()
+            let back = read_back(value)
+            back.held.set(8)
+            value.held.get() == 7 && back.held.get() == 8
+        }
+    }
+}
+
+/// An enum whose variants hold values, one of them none.
+@derive(Saved)
+enum Piece {
+    Bare
+    Named(label: string, at: int?)
+    Pair(right: List<string>, flag: bool)
+}
+
+/// A record of a text, an absent text and a list of texts.
+@derive(Saved)
+type Head = { name: string, nickname: string?, others: List<string> }
+
+/// Every way a slot is written, nested: a record, an enum's variants, lists of records and of
+/// lists, a result, a map and an absent number.
+@derive(Saved)
+type Stacked = {
+    head: Head,
+    pieces: List<Piece>,
+    words: List<List<string>>,
+    outcome: Result<int, string>,
+    counts: Map<string, int>,
+    gap: int?,
+}
+
+/// `s` written by hand, a list of slots per node, each child before the node holding it.
+fn stacked_by_slots(s: Stacked) -> Bytes {
+    let w = saved_layout_writer()
+    let head = head_by_slots(w, s.head)
+    let pieces = w.write_list([SavedSlot.Child(piece_by_slots(w, p)) for p in s.pieces])
+    let words = w.write_list([SavedSlot.Child(texts_by_slots(w, ws)) for ws in s.words])
+    let outcome = match s.outcome {
+        .Ok(n) -> w.write_record(0, [SavedSlot.Number(n)]),
+        .Err(e) -> w.write_record(1, [SavedSlot.Child(w.write_text(e))]),
+    }
+    let keys = texts_by_slots(w, s.counts.keys())
+    let counts = w
+        .write_record(0, [SavedSlot.Child(keys), SavedSlot.Child(w.write_numbers(s.counts.values()))])
+    let gap = number_by_slots(w, s.gap)
+    let slots = [
+        SavedSlot.Child(head),
+        SavedSlot.Child(pieces),
+        SavedSlot.Child(words),
+        SavedSlot.Child(outcome),
+        SavedSlot.Child(counts),
+        gap,
+    ]
+    w.finished(w.write_record(0, slots))
+}
+
+fn head_by_slots(w: SavedLayoutWriter, l: Head) -> int {
+    let name = w.write_text(l.name)
+    let nickname = if l.nickname == null { SavedSlot.NoChild } else { SavedSlot.Child(w.write_text(l.nickname!)) }
+    let others = texts_by_slots(w, l.others)
+    w.write_record(0, [SavedSlot.Child(name), nickname, SavedSlot.Child(others)])
+}
+
+fn piece_by_slots(w: SavedLayoutWriter, p: Piece) -> int {
+    match p {
+        .Bare -> w.write_record(0, []),
+        .Named(label, at) -> {
+            let written = w.write_text(label)
+            w.write_record(1, [SavedSlot.Child(written), number_by_slots(w, at)])
+        },
+        .Pair(right, flag) -> {
+            let texts = texts_by_slots(w, right)
+            w.write_record(2, [SavedSlot.Child(texts), SavedSlot.Number(if flag { 1 } else { 0 })])
+        },
+    }
+}
+
+fn texts_by_slots(w: SavedLayoutWriter, texts: List<string>) -> int { w.write_list([SavedSlot.Child(w.write_text(t)) for t in texts]) }
+
+/// An absent number as no child, a present one as a record of its slot.
+fn number_by_slots(w: SavedLayoutWriter, n: int?) -> SavedSlot {
+    if n == null { SavedSlot.NoChild } else { SavedSlot.Child(w.write_record(0, [SavedSlot.Number(n!)])) }
+}
+
+fn stacked(outcome: Result<int, string>, gap: int?) -> Stacked {
+    let counts: Map<string, int> = {"one": 1, "minus": -300, "big": 1 << 40}
+    Stacked {
+        head: Head { name: "head", nickname: if gap == null { null } else { "h" }, others: ["a", "bb"] },
+        pieces: [
+            Piece.Bare,
+            Piece.Named("n", null),
+            Piece.Named("m", -2),
+            Piece.Pair(["x", "", "a long text past one run of thirty-two octets"], true),
+        ],
+        words: [[], ["p", "q"], ["r"]],
+        outcome: outcome,
+        counts: counts,
+        gap: gap,
+    }
+}
+
+spec "saved_derive — slots pushed onto the writer's stack" {
+    given "every way a slot is written, nested" {
+        then "the bytes are the ones a list of slots per node writes" {
+            [stacked(.Ok(5), null), stacked(.Err("no"), 70000), stacked(.Ok(-1), 0)]
+                .all(blake3_hex(it.saved_bytes()) == blake3_hex(stacked_by_slots(it)))
+        }
+        then "and read back as written" {
+            let s = stacked(.Err("no"), 70000)
+            let back = Stacked.from_saved_bytes(s.saved_bytes())
+            back.gap == 70000 &&
+                back.pieces.length == 4 &&
+                back.words[1][1] == "q" &&
+                back.head.nickname == "h"
+        }
+    }
+}
+
+/// A value's key, both lanes folded from their seeds and finished, as one text to compare.
+fn key_of(s: Stacked) -> string {
+    "${HIGH_LANE.finished(s.folded_into(HIGH_LANE, HIGH_LANE.seed))}:${LOW_LANE.finished(s.folded_into(LOW_LANE, LOW_LANE.seed))}"
+}
+
+spec "saved_derive — a value folded into a key" {
+    given "every way a slot is folded, nested" {
+        then "equal values fold alike" { key_of(stacked(.Ok(5), null)) == key_of(stacked(.Ok(5), null)) }
+        then "a change anywhere folds apart" {
+            let keys = [
+                key_of(stacked(.Ok(5), null)),
+                key_of(stacked(.Ok(6), null)),
+                key_of(stacked(.Err("5"), null)),
+                key_of(stacked(.Ok(5), 0)),
+                key_of(stacked(.Ok(5), 1)),
+                key_of(stacked(.Ok(5), null) with { words: [["p"], ["q"], ["r"]] }),
+                key_of(stacked(.Ok(5), null) with { pieces: [Piece.Bare] }),
+            ]
+            (0..keys.length).all((i) -> (i + 1..keys.length).all(keys[i] != keys[it]))
+        }
+    }
+}

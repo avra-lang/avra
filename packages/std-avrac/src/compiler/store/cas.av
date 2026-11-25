@@ -1,0 +1,270 @@
+//! THE SHARED CONTENT STORE (§6.1, DB 11): a value too big for a store's own frames
+//! lives ONCE, under its content digest, beside every worktree's store, and a row
+//! holds a REFERENCE to it. `AVRA_CACHE_DIR` moves the root, else `$HOME/.avra/cache`.
+//!
+//! A blob is a cache entry like any row: damaged or missing, it answers ABSENT, the
+//! damaged one is removed, and the next writer puts it back. Each store root that
+//! holds a reference registers itself, so `avra cache gc` knows every live reader.
+//!
+//! IT NEVER OUTGROWS ITS CEILING: a process that put a blob trims the store as it settles,
+//! the least recently read first, to `AVRA_CAS_MAX_MB` (two gigabytes by default). A read
+//! marks its blob's time, so the time a blob carries is when it was last of use.
+use @std.io.{
+    env,
+    touch,
+    make_dirs,
+    write_bytes,
+    write_text,
+    read_text,
+    list_dir,
+    remove,
+    open_beneath,
+    exists,
+}
+use @std.path.{joined_path, dir_of}
+use @std.text.{from_codepoint, parse_int}
+use @std.time.{wall_secs}
+use core.{digest_of_octets, sorted_by, distinct}
+use core.debug.{qtrace, traced}
+
+/// A value over this many octets is shared; the rest stay in the store's frames.
+const CAS_CUT: int = 65536
+
+/// What a shared store may hold, in megabytes, when `AVRA_CAS_MAX_MB` says nothing.
+const CAS_MB_KEPT: int = 2048
+
+/// A stored value that NAMES a blob, never a value: it opens with a control byte no row
+/// value starts with, and a value that does is spelled as a reference too, so no value
+/// can read as one by accident.
+once fn cas_prefix() -> string { from_codepoint(1) + "avra-cas:" }
+
+/// THE MACHINE'S CACHE: `AVRA_CACHE_DIR`, else `$HOME/.avra/cache` — where every worktree's
+/// shared rows and blobs stand.
+export fn machine_cache() -> string? {
+    // LICENSED input.debug_flag: where the shared store lives is the machine's, never an input of what is built
+    let moved? = env("AVRA_CACHE_DIR") else {
+        // LICENSED input.debug_flag: where the shared store lives is the machine's, never an input of what is built
+        let home? = env("HOME") else { return null }
+        return joined_path(home, ".avra/cache")
+    }
+    moved
+}
+
+/// The machine cache this process keeps blobs in: none until a host that is a machine names
+/// one, so a process of in-memory hosts writes no blob.
+once fn machine_in_use() -> Cell<string> { Cell.new("") }
+
+/// The process keeps its blobs in the machine cache at `dir` from now on.
+export fn blobs_kept_in(dir: string) { machine_in_use().set(dir) }
+
+/// Where the shared blobs stand.
+fn cas_dir() -> string? {
+    let dir = machine_in_use().get()
+    if dir.is_empty() { return null }
+    joined_path(dir, "cas")
+}
+
+fn blob_at(dir: string, digest: string) -> string { joined_path(joined_path(dir, digest.substring(0, 2)), digest) }
+
+/// The digest a reference names.
+export fn cas_digest_of(stored: string) -> string { stored.substring(cas_prefix().length, stored.length) }
+
+/// `cas_ref_of` over octets.
+fn cas_ref_octets(value: Bytes) -> string { cas_prefix() + digest_of_octets(value) }
+
+/// A value's blob put in the shared store, once. False when there is no store to put it in.
+export fn cas_blob(value: string) -> bool { cas_blob_octets(value.bytes()) }
+
+/// `cas_blob` over octets.
+fn cas_blob_octets(value: Bytes) -> bool {
+    let dir? = cas_dir() else { return false }
+    let digest = digest_of_octets(value)
+    let at = blob_at(dir, digest)
+    // LICENSED input.store_io: the shared store's blob, asked whether it stands before it is written
+    if exists(at) { return true }
+    match make_dirs(dir_of(at)) { .Ok(_) -> {}, .Err(_) -> { return false } }
+    match write_bytes(at, value) { .Ok(_) -> {}, .Err(_) -> { return false } }
+    blobs_put().set(true)
+    if traced() { qtrace("Q\tcas\tput\t${digest}\t${value.length}\n") }
+    true
+}
+
+/// Whether this process put a blob: only a process that grew the store trims it.
+once fn blobs_put() -> Cell<bool> { Cell.new(false) }
+
+/// The reference a value is stored as when it belongs in the shared store: the blob put
+/// there once, and `store_root` registered as one of its readers. Absent when the value
+/// stays in the store's own frames — small, or no shared store to put it in.
+export fn cas_put_octets(value: Bytes, store_root: string) -> string? {
+    if value.length <= CAS_CUT && cas_ref_in(value) == null { return null }
+    if !cas_blob_octets(value) { return null }
+    cas_register(store_root)
+    cas_ref_octets(value)
+}
+
+/// The reference a stored value IS, absent when it is a value.
+export fn cas_ref_in(stored: Bytes) -> string? {
+    let p = cas_prefix().bytes()
+    if stored.length < p.length || stored.slice(0, p.length).text() != cas_prefix() { return null }
+    stored.text()
+}
+
+/// Registers a store root as a reader of the shared store, when a value it holds names a blob.
+export fn cas_register_if_named_octets(stored: Bytes, store_root: string) {
+    if stored.index_of(cas_prefix().bytes(), 0) >= 0 { cas_register(store_root) }
+}
+
+fn cas_register(store_root: string) {
+    let dir? = cas_dir() else { return }
+    registered(dir, store_root)
+}
+
+/// The digests of every blob a stored value names, whole or inside its frames.
+export fn cas_named_in(stored: Bytes) -> List<string> {
+    let p = cas_prefix().bytes()
+    let width = digest_of_octets("".bytes()).length
+    mut out: List<string> = []
+    mut at = stored.index_of(p, 0)
+    while at >= 0 && at + p.length + width <= stored.length {
+        let d = stored.slice(at + p.length, at + p.length + width).text()
+        if d != null { out.push(d!) }
+        at = stored.index_of(p, at + p.length)
+    }
+    out
+}
+
+/// `cas_value` as the octets the blob holds.
+export fn cas_value_octets(stored: string) -> Bytes? {
+    let dir? = cas_dir() else { return null }
+    let digest = cas_digest_of(stored)
+    let at = blob_at(dir, digest)
+    // LICENSED input.store_io: the shared store's blob, read to answer a row
+    let o? = match open_beneath(dir_of(at), digest) { .Ok(o) -> o, .Err(_) -> null } else { return null }
+    let raw = match o.span(0, o.size) { .Ok(b) -> b, .Err(_) -> "".bytes() }
+    o.close()
+    if digest_of_octets(raw) != digest { return damaged(at) }
+    // LICENSED input.store_io: a read marks its blob of use, so a trim lets the least used go
+    let _ = touch(at)
+    raw
+}
+
+fn damaged(at: string) -> Bytes? {
+    let _ = remove(at)
+    null
+}
+
+/// One store root's registration, under the shared store: a file named for the root's
+/// digest that holds the root's path, written once.
+fn registered(dir: string, store_root: string) {
+    let regs = joined_path(dir, "stores")
+    let at = joined_path(regs, digest_of_octets(store_root.bytes()).substring(0, 16))
+    // LICENSED input.saved_read: the shared store's own registry of readers, never an input of what is built
+    if exists(at) { return }
+    match make_dirs(regs) { .Ok(_) -> {}, .Err(_) -> { return } }
+    let _ = write_text(at, store_root)
+}
+
+/// The store roots that registered as readers, and the registrations whose root is gone are
+/// forgotten.
+export fn cas_readers() -> List<string> {
+    let dir? = cas_dir() else { return [] }
+    let regs = joined_path(dir, "stores")
+    // LICENSED input.saved_read: the shared store's own registry of readers, never an input of what is built
+    let names = match list_dir(regs) { .Ok(ns) -> ns, .Err(_) -> [] }
+    mut live: List<string> = []
+    for n in names {
+        let at = joined_path(regs, n)
+        // LICENSED input.saved_read: the shared store's own registry of readers, never an input of what is built
+        let root = match read_text(at) { .Ok(t) -> t, .Err(_) -> "" }
+        // LICENSED input.saved_read: the shared store's own registry of readers, never an input of what is built
+        if !root.is_empty() && exists(joined_path(root, "store")) { live.push(root) } else { let _ = remove(at) }
+    }
+    distinct(live)
+}
+
+/// What a collection did.
+export type CasReport = { kept: int, freed: int, kept_bytes: int, freed_bytes: int }
+
+/// One blob: where it stands, its digest, its size and its time.
+type Blob = { path: string, digest: string, bytes: int, at: int }
+
+/// The shared store collected. A blob no live store names goes; of those that remain,
+/// the limits drop the oldest past the age (`AVRA_CAS_MAX_AGE_DAYS`, none by default) and
+/// then to fit the byte ceiling. A blob dropped for a limit is a MISS its readers recompute.
+export fn cas_collect(live: List<string>) -> CasReport {
+    let dir? = cas_dir() else { return CasReport { kept: 0, freed: 0, kept_bytes: 0, freed_bytes: 0 } }
+    mut named: Map<string, bool> = {}
+    for d in live { named.set(d, true) }
+    let all = by_use(blobs_in(dir))
+    let unnamed = [b for b in all if !named.has(b.digest)]
+    let aged = [b for b in all if named.has(b.digest) && past_age(b)]
+    mut gone: List<Blob> = unnamed.concat(aged)
+    mut held = all.fold(0, (sum, b) -> sum + b.bytes) - gone.fold(0, (sum, b) -> sum + b.bytes)
+    let ceiling = cas_limit()
+    let doomed = distinct([b.digest for b in gone])
+    for b in [b for b in all if named.has(b.digest) && !doomed.contains(b.digest)] {
+        if ceiling <= 0 || held <= ceiling { break }
+        gone.push(b)
+        held = held - b.bytes
+    }
+    for b in gone { let _ = remove(b.path) }
+    CasReport {
+        kept: all.length - gone.length,
+        freed: gone.length,
+        kept_bytes: held,
+        freed_bytes: gone.fold(0, (sum, b) -> sum + b.bytes),
+    }
+}
+
+fn cas_limit() -> int {
+    // LICENSED input.debug_flag: the shared store's own ceiling, never an input of what is built
+    let mb = parse_int(env("AVRA_CAS_MAX_MB") ?? "") ?? CAS_MB_KEPT
+    mb * 1048576
+}
+
+/// Blobs, the least recently read first.
+fn by_use(bs: List<Blob>) -> List<Blob> { sorted_by(bs, (a: Blob, b: Blob) -> a.at < b.at) }
+
+/// The shared store trimmed to its ceiling as a process that grew it settles: the least recently
+/// read blobs go first, each a miss its next reader recomputes.
+export fn cas_fitted() {
+    if !blobs_put().get() { return }
+    let dir? = cas_dir() else { return }
+    let ceiling = cas_limit()
+    let all = by_use(blobs_in(dir))
+    mut held = all.fold(0, (sum, b) -> sum + b.bytes)
+    for b in all {
+        if held <= ceiling { break }
+        let _ = remove(b.path)
+        held = held - b.bytes
+    }
+    blobs_put().set(false)
+}
+
+/// Whether a blob is past `AVRA_CAS_MAX_AGE_DAYS`, by the file's wall-clock time.
+fn past_age(b: Blob) -> bool {
+    // LICENSED input.debug_flag: the shared store's own age limit, never an input of what is built
+    let raw? = env("AVRA_CAS_MAX_AGE_DAYS") else { return false }
+    let days? = parse_int(raw) else { return false }
+    // LICENSED input.store_clock: the age limit reads the wall clock, never an input of what is built
+    days > 0 && wall_secs() - b.at > days * 86400
+}
+
+fn blobs_in(dir: string) -> List<Blob> {
+    // LICENSED input.store_io: the shared store's shards, listed to collect them
+    let shards = match list_dir(dir) { .Ok(ns) -> ns, .Err(_) -> [] }
+    [f! for shard in shards if shard.length == 2 for name in names_in(joined_path(dir, shard)) for f in [blob_of(joined_path(dir, shard), name)] if f != null]
+}
+
+fn names_in(shard: string) -> List<string> {
+    // LICENSED input.store_io: one shard of the shared store, listed to collect it
+    match list_dir(shard) { .Ok(ns) -> ns, .Err(_) -> [] }
+}
+
+fn blob_of(shard: string, name: string) -> Blob? {
+    // LICENSED input.store_io: a blob, measured and dated for the collection
+    let o? = match open_beneath(shard, name) { .Ok(o) -> o, .Err(_) -> null } else { return null }
+    let b = Blob { path: joined_path(shard, name), digest: name, bytes: o.size, at: o.mtime }
+    o.close()
+    b
+}

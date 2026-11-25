@@ -1,0 +1,44 @@
+//! proves a handler that traps ends its own start and nothing else: the
+//! loop goes on, the other items are settled, and the trapping item is
+//! started as often as the terms allow and then buried unanswered.
+use @std.queue.{queue, worker, run, key, Dead, Delivery, DrainError, Fate, Order}
+use @std.time.{ms, secs, sleep}
+
+extern fn avra_clock_virtual(on: int)
+
+fn trapping(starts: Cell<int>, d: Delivery<int>) -> Result<int, string> {
+    if d.item != 7 { return .Ok(d.item) }
+    starts.set(starts.get() + 1)
+    let none: List<int> = []
+    none[d.item]
+}
+
+fn why(f: Fate<string>) -> string {
+    match f { .Failed(e) -> e, .Unanswered -> "unanswered" }
+}
+
+fn said(r: Result<int, DrainError>) -> string {
+    match r { .Ok(n) -> "settled ${n}", .Err(_) -> "failed" }
+}
+
+avra_clock_virtual(1)
+state starts: Cell<int> = Cell.new(0)
+queue<Dead<int, string>> letters {}
+queue<int> jobs {
+    retries: 2
+    backoff: ms(10)
+    order: Order.by_key
+}
+worker settle {
+    reads: jobs
+    at_once: 2
+    each: (d: Delivery<int>) -> trapping(starts, d)
+    dead: letters
+}
+use tests.support.letters.{first_letter}
+for i in [1, 7, 2, 3] { let _ = jobs.home().send(i, key("k${i}")) }
+let r = spawn run(settle)
+sleep(secs(1))
+settle.stop()
+let gone = first_letter(letters)
+"${said(r.await)} | starts ${starts.get()} | ${gone!.item} ${why(gone!.fate)} | depth ${jobs.home().depth() catch 0 - 1}"

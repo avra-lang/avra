@@ -1,0 +1,60 @@
+// A form body read as keyed text: `+` and `%XY`, first-wins repeats,
+// and a body refused whole when any of it cannot be read exactly.
+use @std.action.form.{form_fields}
+use @std.text.{from_codepoint}
+
+/// The field's value in a body, "absent" for a field not there and
+/// "unreadable" for a body refused whole.
+fn value_in(body: string, name: string) -> string {
+    let m? = form_fields(body.bytes()) else { return "unreadable" }
+    m.get(name) ?? "absent"
+}
+
+fn count_in(body: string) -> int {
+    let m? = form_fields(body.bytes()) else { return 0 - 1 }
+    m.length
+}
+
+spec "the form decoder" {
+    given "the encoding's two escapes" {
+        then "a plus is a space" { value_in("a=x+y", "a") == "x y" }
+        then "a percent escape is its octet" { value_in("a=x%26y", "a") == "x&y" }
+        then "an escaped plus stays a plus" { value_in("a=1%2B1", "a") == "1+1" }
+        then "escapes and plus decode in a name" { value_in("a%20b+c=v", "a b c") == "v" }
+        then "escapes are read in either case" { value_in("a=%2f%2F", "a") == "//" }
+        then "UTF-8 octets read as the text they spell" { value_in("a=%C3%A9", "a") == "é" }
+    }
+    given "the shape of the pairs" {
+        then "a later `=` belongs to the value" { value_in("a=b=c", "a") == "b=c" }
+        then "a key with no `=` holds the empty text" { value_in("a&b=1", "a") == "" }
+        then "an empty value is a value" { value_in("a=", "a") == "" }
+        then "an empty body has no fields" { count_in("") == 0 }
+        then "pairs with no name are dropped" { count_in("&&=v&a=1&") == 1 }
+        then "fields keep their own names apart" { value_in("a=1&ab=2", "a") == "1" && value_in("a=1&ab=2", "ab") == "2" }
+        then "names compare exactly, case included" { value_in("Page=2", "page") == "absent" }
+    }
+    given "a repeated name" {
+        then "the first is kept" { value_in("a=1&a=2&a=3", "a") == "1" }
+        then "a repeat does not add a field" { count_in("a=1&a=2&b=3") == 2 }
+        then "the first is kept when it is empty" { value_in("a=&a=2", "a") == "" }
+        then "a repeat differing only in escape is the same name" { value_in("a=1&%61=2", "a") == "1" }
+    }
+    given "a body that cannot be read exactly" {
+        then "a percent at the end refuses the body" { value_in("a=1&b=%", "a") == "unreadable" }
+        then "a percent with one digit refuses the body" { value_in("a=%4", "a") == "unreadable" }
+        then "a percent with a non-hex digit refuses the body" { value_in("a=%4G", "a") == "unreadable" }
+        then "a bad escape in a name refuses the body" { value_in("%zz=1&a=1", "a") == "unreadable" }
+        then "an octet that is not UTF-8 refuses the body" { value_in("a=%FF", "a") == "unreadable" }
+        then "a truncated multi-byte sequence refuses the body" { value_in("a=%C3", "a") == "unreadable" }
+        then "raw octets that are not UTF-8 refuse the body" {
+            let b = [97, 61, 255].bytes()
+            form_fields(b!) == null
+        }
+    }
+    given "a NUL" {
+        then "an escaped NUL is a character of the value, not its end" {
+            let v = value_in("a=x%00y", "a")
+            v == "x" + from_codepoint(0) + "y" && v.length == 3
+        }
+    }
+}

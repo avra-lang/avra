@@ -1,0 +1,195 @@
+// Interning a user's own type: ids dense in arrival order, one id per value, values whose hashes
+// collide kept apart; a content key the same in any table; and a memo per id telling an unknown
+// answer from a kept absence.
+use answer_record.{ContentHash}
+use interned.{
+    HIGH_LANE,
+    LOW_LANE,
+    IdMemo,
+    InternId,
+    Interned,
+    KeyLane,
+    hash_text,
+    hash_word,
+    id_memo,
+    interned,
+    key_of_lanes,
+}
+
+type Tile = { x: int, y: int, label: string }
+
+fn folded(t: Tile, lane: KeyLane, h: int) -> int { lane.text(lane.word(lane.word(h, t.x), t.y), t.label) }
+
+fn tile_key(t: Tile) -> ContentHash { key_of_lanes(folded(t, HIGH_LANE, HIGH_LANE.seed), folded(t, LOW_LANE, LOW_LANE.seed)) }
+
+fn tile(x: int, y: int, label: string) -> Tile { Tile { x: x, y: y, label: label } }
+
+fn tile_hash(t: Tile) -> int { hash_text(hash_word(hash_word(0, t.x), t.y), t.label) }
+
+fn same_tile(a: Tile, b: Tile) -> bool { a.x == b.x && a.y == b.y && a.label == b.label }
+
+fn tiles() -> Interned<Tile> { interned(tile_hash, same_tile) }
+
+/// Every tile hashing alike: only the comparison tells them apart.
+fn colliding() -> Interned<Tile> { interned((_t: Tile) -> 7, same_tile) }
+
+fn same_key(a: ContentHash, b: ContentHash) -> bool { a.same_as(b) }
+
+spec "interned — values as dense ids" {
+    given "an empty table" {
+        then "it holds nothing and finds nothing" {
+            let table_here = tiles()
+            table_here.count() == 0 && table_here.found(tile(0, 0, "")) == null
+        }
+    }
+    given "the empty value" {
+        then "it is minted like any other, as id zero" {
+            let table_here = tiles()
+            table_here.id_of(tile(0, 0, "")).index == 0 && table_here.count() == 1
+        }
+    }
+    given "values arriving one after another" {
+        then "each is minted the next id, and its value reads back" {
+            let table_here = tiles()
+            let a = table_here.id_of(tile(1, 2, "a"))
+            let b = table_here.id_of(tile(3, 4, "b"))
+            a.index == 0 && b.index == 1 && table_here.value_of(b).label == "b"
+        }
+    }
+    given "one content arriving twice" {
+        then "it keeps its first id and mints nothing" {
+            let table_here = tiles()
+            let first = table_here.id_of(tile(1, 2, "a"))
+            let _ = table_here.id_of(tile(9, 9, "z"))
+            let again = table_here.id_of(tile(1, 2, "a"))
+            first == again && table_here.count() == 2
+        }
+    }
+    given "contents differing in one field" {
+        then "each is its own id" {
+            let table_here = tiles()
+            let ids = [
+                table_here.id_of(tile(1, 2, "a")),
+                table_here.id_of(tile(2, 1, "a")),
+                table_here.id_of(tile(1, 2, "b")),
+                table_here.id_of(tile(1, 2, "")),
+            ]
+            ids.map("${it.index}").join(",") == "0,1,2,3"
+        }
+    }
+    given "text split at another place" {
+        then "the keys differ" {
+            !same_key(tile_key(tile(0, 0, "abcdefghi")), tile_key(tile(0, 0, "abcdefgh"))) &&
+                !same_key(tile_key(tile(0, 0, "a")), tile_key(tile(0, 0, "")))
+        }
+    }
+    given "two tables interning in different orders" {
+        then "ids differ while every value's key agrees" {
+            let one = tiles()
+            let two = tiles()
+            let a1 = one.id_of(tile(1, 2, "a"))
+            let b1 = one.id_of(tile(3, 4, "b"))
+            let b2 = two.id_of(tile(3, 4, "b"))
+            let a2 = two.id_of(tile(1, 2, "a"))
+            a1.index != a2.index &&
+                same_key(tile_key(one.value_of(a1)), tile_key(two.value_of(a2))) &&
+                same_key(tile_key(one.value_of(b1)), tile_key(two.value_of(b2)))
+        }
+    }
+    given "a value looked for before it arrives" {
+        then "it is found once it is minted" {
+            let table_here = tiles()
+            let before = table_here.found(tile(5, 5, "five"))
+            let minted = table_here.id_of(tile(5, 5, "five"))
+            before == null && table_here.found(tile(5, 5, "five")) == minted
+        }
+    }
+    given "values whose hashes all collide" {
+        then "each keeps its own id" {
+            let table_here = colliding()
+            let ids = [table_here.id_of(tile(i, 0, "")) for i in 0..50]
+            let again = [table_here.id_of(tile(i, 0, "")) for i in 0..50]
+            table_here.count() == 50 && (0..50).all((i) -> ids[i] == again[i] && ids[i].index == i)
+        }
+    }
+    given "texts sharing their length and their first and last eight bytes" {
+        then "they hash alike and stay two values" {
+            let table_here = tiles()
+            let one = tile(0, 0, "abcdefgh-x-12345678")
+            let two = tile(0, 0, "abcdefgh-y-12345678")
+            tile_hash(one) == tile_hash(two) && table_here.id_of(one) != table_here.id_of(two)
+        }
+    }
+    given "short texts" {
+        then "each hashes by every byte" {
+            tile_hash(tile(0, 0, "ab")) != tile_hash(tile(0, 0, "ba")) &&
+                tile_hash(tile(0, 0, "")) != tile_hash(tile(0, 0, "a")) &&
+                tile_hash(tile(0, 0, "abcdefg")) != tile_hash(tile(0, 0, "abcdefh"))
+        }
+    }
+    given "thousands of values" {
+        then "each keeps its id" {
+            let table_here = tiles()
+            for i in 0..3000 { let _ = table_here.id_of(tile(i, i * 3, "t${i}")) }
+            (0..3000).all((i) -> table_here.id_of(tile(i, i * 3, "t${i}")).index == i) &&
+                table_here.count() == 3000
+        }
+    }
+    given "two holders of one table" {
+        then "a value minted through one is found through the other" {
+            let one = tiles()
+            let other = one
+            let minted = one.id_of(tile(7, 7, "seven"))
+            other.found(tile(7, 7, "seven")) == minted
+        }
+    }
+}
+
+spec "interned — a memo per id" {
+    given "an empty memo" {
+        then "no id is known" {
+            let memo: IdMemo<string> = id_memo()
+            !memo.known(InternId { index: 0 }) && memo.held(InternId { index: 5 }) == null
+        }
+    }
+    given "an absent answer kept" {
+        then "it is known, and absent" {
+            let memo: IdMemo<string> = id_memo()
+            memo.keep(InternId { index: 3 }, null)
+            memo.known(InternId { index: 3 }) && memo.held(InternId { index: 3 }) == null
+        }
+    }
+    given "an answer kept past the end" {
+        then "the ids below it stay unknown" {
+            let memo: IdMemo<string> = id_memo()
+            memo.keep(InternId { index: 4 }, "four")
+            memo.held(InternId { index: 4 }) == "four" &&
+                !memo.known(InternId { index: 0 }) &&
+                !memo.known(InternId { index: 3 }) &&
+                !memo.known(InternId { index: 5 })
+        }
+    }
+    given "the empty answer kept" {
+        then "it reads back present" {
+            let memo: IdMemo<string> = id_memo()
+            memo.keep(InternId { index: 0 }, "")
+            memo.known(InternId { index: 0 }) && memo.held(InternId { index: 0 }) == ""
+        }
+    }
+    given "an answer kept again" {
+        then "the later one stands" {
+            let memo: IdMemo<string> = id_memo()
+            memo.keep(InternId { index: 1 }, "first")
+            memo.keep(InternId { index: 1 }, "later")
+            memo.held(InternId { index: 1 }) == "later"
+        }
+    }
+    given "two holders of one memo" {
+        then "an answer kept through one is known through the other" {
+            let memo: IdMemo<string> = id_memo()
+            let other = memo
+            memo.keep(InternId { index: 2 }, "two")
+            other.held(InternId { index: 2 }) == "two"
+        }
+    }
+}

@@ -1,0 +1,54 @@
+use models.{models}
+use store.open.{Graph}
+use @std.sqlite.{Db, sql}
+use @std.io.{remove}
+use @std.time.{stamp}
+
+fn temp_base(name: string) -> string { "/tmp/avra-graph-${name}-${stamp()}.db" }
+
+fn opened(path: string) -> Result<Db, string> {
+    match Db.open(path) {
+        .Ok(db) -> db,
+        .Err(e) -> { fail "could not make the fixture: ${e.message}" },
+    }
+}
+
+fn legacy_store_refused() -> Result<bool, string> {
+    let path = temp_base("legacy")
+    let _ = remove(path)
+    mut db = opened(path)?
+    let _ = db
+        .run(sql("CREATE TABLE IF NOT EXISTS graph_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"))
+    let _ = db.close()
+    let attach = match Graph.attach(path, models) { .Ok(_) -> false, .Err(_) -> true }
+    let open = match Graph.open(path, models) { .Ok(_) -> false, .Err(_) -> true }
+    let _ = remove(path)
+    attach && open
+}
+
+fn fresh_store_opens() -> Result<bool, string> {
+    let path = temp_base("fresh")
+    let _ = remove(path)
+    let g = match Graph.open(path, models) {
+        .Ok(graph) -> graph,
+        .Err(e) -> { fail "a fresh store must open: ${e}" },
+    }
+    let revision = g.revision()?
+    let _ = g.close()
+    let _ = remove(path)
+    revision == 1
+}
+
+fn passed(answer: Result<bool, string>) -> bool {
+    answer catch e -> {
+        println(e)
+        false
+    }
+}
+
+spec "graph storage format" {
+    given "a store is std-first" {
+        then "an old hand-table database is refused, by attach and by open" { passed(legacy_store_refused()) }
+        then "a fresh file opens at revision one" { passed(fresh_store_opens()) }
+    }
+}

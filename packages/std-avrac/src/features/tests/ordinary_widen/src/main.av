@@ -1,0 +1,26 @@
+// proves: a bare `quote` widens into `Fix.Rewrite` the same way
+// under an ORDINARY fn as under `rule` sugar — the declared answer
+// plants the want before the match's arms walk (fns/check.av's
+// `checked_fn`), the same channel a rule's synthesized match takes
+// (features/rules/check.av's `checked_rule`) — so the lift needs no
+// `rule` at all, only a `fn(Code) -> Fix?` shape.
+use @std.avrac.features.{Code, Fix}
+use @std.avrac.core.{At}
+use @std.avrac.testing.{judged}
+use @std.avrac.testing.held.{RuleItem}
+
+fn widen_add(e: Code) -> Fix? {
+    match e { quote { ${x} + 1 } -> quote { ${x} }, _ -> null }
+}
+
+let i = judged("a + 1").rule_items("/alone/src/main.av")[0]
+match i.stmts.first() {
+    s? -> match i.file.view.store.answer_of(s) {
+        e? -> match widen_add(Code { of: i.file, at: At.Expr(e) }) {
+            r? -> r.rendered() ?? "no text"
+            null -> "miss"
+        }
+        null -> "no answer"
+    }
+    null -> "no stmt"
+}

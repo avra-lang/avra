@@ -1,0 +1,236 @@
+//! WHERE A FN ASKS A VALUE OF ITS TYPE PARAMETER A METHOD THE BOUND DOESN'T GIVE: the bound decides
+//! what the parameter can do, and a parameter with no bound has no methods at all.
+use core.{Expr, ExprId, MethodParts, SignedType, Span, SyntaxArena, TypeHead, flatten, headed_type}
+use compiler.laws.{Aside, Found, law}
+use diagnostics.{Voice}
+use features.impls.{
+    bound_lacks_method,
+    bound_written,
+    receiver_through_type,
+    typewide_remedy,
+    unbounded_method,
+}
+use @std.meta.{derive}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.saved_derive.{Saved}
+use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+use @std.program.source_facts.{source_text}
+
+/// A method called on a value of a type parameter that its bound doesn't give: where, the method,
+/// the parameter, its bound's trait (absent for a parameter with no bound), whether an impl or a
+/// type declares the parameter rather than a fn, what the `?.` it's written with says it means, and
+/// whether the call is made through the parameter itself on a method the bound gives a receiver.
+@derive(Saved)
+type UngivenAt = {
+    at: FindingAt?,
+    method: string,
+    param: string,
+    bound: string?,
+    typewide: bool = false,
+    chained: string? = null,
+    receiving: bool = false,
+}
+
+impl UngivenAt {
+    /// The call as its law finds it, its voice handed `args`, and what a `?.` means said beside it.
+    fn found(args: List<string>) -> Found {
+        let place = span_of(self.at)
+        Found {
+            at: place,
+            args: args,
+            aside: if self.chained == null { null } else { Aside { label: self.chained!, at: place } },
+        }
+    }
+}
+
+/// Every method call in one written item that a type parameter's bound doesn't give.
+@derive(Saved)
+type ItemUngiven = { rows: List<UngivenAt> }
+
+/// Every method call in the fns and the impls' fns the written item `at` of `file` declares on a
+/// value of a type parameter that the parameter's bound doesn't give; a generic method is no
+/// method an impl lands, and asks nothing. A body that didn't parse asks
+/// nothing.
+fn item_ungiven(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemUngiven {
+    if !item_held(engine, file, at) { return ungiven_made(engine, file, at) }
+    ungiven_seen(item_view(engine, file, at))
+}
+
+/// What `item_ungiven` answers through the item's `view`, made the first time it is asked.
+fn ungiven_seen(view: ItemView) -> ItemUngiven {
+    let held? = view.ungiven.get() else {
+        let made = ungiven_made(view.engine, view.file, view.at)
+        view.ungiven.set(made)
+        return made
+    }
+    held
+}
+
+/// What `item_ungiven` answers, made.
+fn ungiven_made(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemUngiven {
+    if !item_held(engine, file, at) { return ItemUngiven { rows: [] } }
+    let item = read_item(engine, file, at)
+    if !item.store.refusals().is_empty() { return ItemUngiven { rows: [] } }
+    let text = item_under(engine, file, at).text
+    ItemUngiven {
+        rows: flatten([body_ungiven(engine, text, b) for b in item_signed_bodies(engine, file, at, item)]),
+    }
+}
+
+/// Each body the written item `at` of `file` declares, signed and typed as its query keeps it: each
+/// fn's, then each method's and static's an impl there writes.
+fn item_signed_bodies(engine: QueryEngine, file: SourceFileAddress, at: ItemId, item: ReadItem) -> List<
+    CheckedBody,
+> {
+    let fns = [CheckedBody { signed: b!, typed: typed_fn(engine, file, p!.name)! } for s in item.stmts for p in [item.store.fn_parts(s)] if p != null for b in [signed_body(engine, file, p!.name)] if b != null]
+    fns
+        .concat(
+            [CheckedBody { signed: m!.signed, typed: method_body_typed(engine, a, name, statics) } for a in impls_at(engine, file, at) for s in impl_fns(item, a) for name in [item.store.fn_parts(s)!.name] for statics in [item.store.is_static(s)] for m in [signed_method(engine, a, name, statics)] if m != null],
+        )
+}
+
+/// A body an item declares, signed, beside its typing.
+type CheckedBody = { signed: SignedBody, typed: TypedBody }
+
+/// Each method call in the body `b` that its type parameter's bound doesn't give.
+fn body_ungiven(engine: QueryEngine, text: string, b: CheckedBody) -> List<UngivenAt> {
+    let signed = b.signed
+    let typed = b.typed
+    let store = signed.item.store
+    let own = [p.name.text() for p in store.fn_parts(signed.stmt)?.tparams ?? []]
+    [r! for k in 0..typed.types.length if called_on(store, ExprId { index: k }) != null for r in [ungiven(engine, store, text, signed.signature, own, typed.types, ExprId { index: k })] if r != null]
+}
+
+/// The type parameter of `sig` the node `e` names, where it is written as a bare name: a static
+/// called through the parameter itself.
+fn parameter_named(store: SyntaxArena, sig: FnSignature, e: ExprId) -> SignedType? {
+    if sig.type_params.is_empty() { return null }
+    let name? = store.ident_name(e) else { return null }
+    let at = sig.type_params.index_of(name)
+    if at < 0 { null } else { headed_type(TypeHead.Parameter(at, name)) }
+}
+
+/// The node `e` as a method call on a value of one of `sig`'s type parameters, or a static called
+/// through one, that its bound doesn't give, `own` the parameters the body's fn writes itself; absent for any other node.
+fn ungiven(
+    engine: QueryEngine,
+    store: SyntaxArena,
+    text: string,
+    sig: FnSignature,
+    own: List<string>,
+    types: List<SignedType?>,
+    e: ExprId,
+) -> UngivenAt? {
+    let call? = called_on(store, e) else { return null }
+    let subject? = typed_at(types, call.subject.index) ?? parameter_named(store, sig, call.subject) else { return null }
+    let held = (subject.described() ?? subject) with { nulls: 0 }
+    let param? = match held.head { .Parameter(_, name) -> name, rest -> null } else { return null }
+    if held.dynamic { return null }
+    let index = sig.type_params.index_of(param)
+    let span = store.expr_span(e)
+    let row = UngivenAt {
+        at: kept_at(span),
+        method: call.name,
+        param: param,
+        bound: null,
+        typewide: !own.contains(param),
+        chained: chain_said(store, text, e, span),
+    }
+    let trait_bound? = typed_at(sig.bounds, index) else { return row }
+    let declared? = declared_at(trait_bound) else { return null }
+    let bound = trait_at(declared)
+    if subject.described() != null || typed_at(types, call.subject.index) == null {
+        if trait_writes(engine, bound, call.name, true) { return null }
+        return row with { bound: trait_bound.spelled(), receiving: trait_writes(engine, bound, call.name, false) }
+    }
+    if bound_signature(engine, bound, call.name, held, trait_bound.args) != null { return null }
+    row with { bound: trait_bound.spelled() }
+}
+
+/// What the `?.` call `e`, written as `text` spells it at `span`, says it means; absent for a call
+/// written `.`.
+fn chain_said(store: SyntaxArena, text: string, e: ExprId, span: Span?) -> string? {
+    let node = store.expr(e)
+    if !(node is .ChainCall) { return null }
+    let at? = span else { return null }
+    node.says(text.substring(at.lo, at.hi))
+}
+
+/// The method call `e` is, written `.` or `?.`; absent for any other node.
+fn called_on(store: SyntaxArena, e: ExprId) -> MethodParts? {
+    match store.expr(e) {
+        .MethodCall(subject, name, args) or .ChainCall(subject, name, args) -> MethodParts { subject: subject, name: name.of, args: args },
+        _ -> null,
+    }
+}
+
+/// The type at `k` of `types`, absent past its end.
+fn typed_at(types: List<SignedType?>, k: int) -> SignedType? { if k >= 0 && k < types.length { types[k] } else { null } }
+
+/// Each method call the written item `view` shows makes on a bounded type parameter's value that
+/// the bound doesn't give: the bound, the method, the parameter.
+fn bounds_lacking(view: ItemView) -> List<Found> {
+    [r.found([r.bound!, r.method, r.param]) for r in ungiven_seen(view).rows if r.bound != null && !r.receiving]
+}
+
+/// Each static call the written item `view` shows makes through a bounded type parameter itself
+/// of a method its bound gives a receiver: the bound, the method, the parameter.
+fn receivers_skipped(view: ItemView) -> List<Found> {
+    [r.found([r.bound!, r.method, r.param]) for r in ungiven_seen(view).rows if r.receiving]
+}
+
+/// Each method call the written item `view` shows makes on an unbounded type parameter's value:
+/// the parameter.
+fn unbounded_asked(view: ItemView) -> List<Found> {
+    [r.found([r.param, if r.typewide { TYPEWIDE } else { "" }]) for r in ungiven_seen(view).rows if r.bound == null]
+}
+
+/// a method called on a type parameter's value that its bound doesn't declare
+export law bound_lacks {
+    kind: "type.method"
+    reads_view: bounds_lacking
+    voice: lacking_words
+    witness: "trait Marked {}\n\nfn f<T: Marked>(x: T) -> int { x.size() }\n"
+}
+
+/// a method its bound gives a receiver is called on a value of the type parameter, not through it
+export law bound_receiver_skipped {
+    kind: "type.method"
+    reads_view: receivers_skipped
+    voice: skipped_words
+    witness: "trait Sized {\n    fn size() -> int\n}\n\nfn f<T: Sized>(x: T) -> int { T.size() }\n"
+}
+
+/// a method called on a value of a type parameter with no bound
+export law unbounded_called {
+    kind: "type.method"
+    reads_view: unbounded_asked
+    voice: unbounded_words
+    witness: "fn f<T>(x: T) -> int { x.size() }\n"
+}
+
+fn lacking_words(a: List<string>) -> Voice { bound_lacks_method(a[0], a[1], a[2]) }
+
+fn skipped_words(a: List<string>) -> Voice { receiver_through_type(a[0], a[1], a[2]) }
+
+fn unbounded_words(a: List<string>) -> Voice {
+    unbounded_method(
+        a[0],
+        if a[1] == TYPEWIDE { typewide_remedy(a[0]) } else { bound_written(a[0]) },
+    )
+}
+
+/// The word a finding is handed for a parameter an impl or a type declares.
+const TYPEWIDE: string = "typewide"
+
+/// Whether a written item of `file` calls a method on a type parameter's value that its bound
+/// doesn't give: a build that reaches the file fails on it.
+export fn asks_ungiven(engine: QueryEngine, file: SourceFileAddress) -> bool {
+    file_found_by(engine, file, ["bound_lacks", "unbounded_called"])
+}
+
+collect listed_bound_call_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries the bound-call laws are read through, for a process to hand its engine.
+export fn bound_call_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_bound_call_facts) }

@@ -1,0 +1,189 @@
+//! THE DERIVATION — every command's entry: a program parsed, typed, lowered and
+//! kept, and what it spent getting there.
+//!
+//! Every attempt reads what it needs. What survives is what it KEPT — rows
+//! under keys that name their own inputs — so a later run re-reads and finds
+//! the same answers, never a stored answer trusted in place of a read.
+use core.{
+    distinct,
+    flatten,
+    some_list,
+    joined,
+    sorted_texts,
+    sorted_by,
+    digest_of,
+    module_path,
+    ModulePath,
+    same_file,
+    qtrace,
+    traced,
+    db_verified,
+    touch,
+    Static,
+    FileId,
+    DeclId,
+    TypeId,
+}
+use features.{SettleRoot, Wanted, Analysed, FileInfo}
+use @std.path.{relative_path, joined_path}
+use @std.text.{text_before}
+use diagnostics.{Diag, render_among}
+use compiler.memory.{sound_checked}
+use core.{wreck}
+use compiler.store.{Store, Stored, node_key}
+use compiler.lower.{Lowered, Body, HashAsk, code_facts, code_facts_wire}
+use compiler.findings.{Finding}
+
+/// What a command wants of a program. A file's warnings stand in for it
+/// always; its object and its asks too when the want LINKS.
+export enum Want { Diagnostics, Binary }
+
+impl Want {
+    /// Whether the want links: a binary does, and only a link reads a program's code hashes.
+    fn links() -> bool {
+        match self { .Binary -> true, .Diagnostics -> false }
+    }
+}
+
+/// ONE ATTEMPT AT A PROGRAM: what it derives and for what, the files it reads
+/// whatever the store holds, whether it reads the program's instantiation HOMES,
+/// whether it holds anything, how many times the records moved under it, and
+/// the attempts that gave way to it.
+type Attempt = { entry: string?, want: Want, parse: List<ReadFile> = [], turned: int = 0, left: List<Left> = [], edit: string = "" }
+
+/// AN ATTEMPT THAT DID NOT STAND: what it spent, phase by phase up to where it
+/// left, and what the attempt made instead does that it did not.
+export type Left = { spans: List<Phase>, ns: int, turn: string }
+
+/// WHAT AN ATTEMPT THAT DOES NOT STAND ANSWERS: the attempt to make instead, or
+/// the refusal. It rides the failure channel, so a phase that finds the question
+/// was wrong leaves with `?`, and the derivation reads as its phases alone.
+enum Turn {
+    Again(Attempt)
+    Refused(string)
+}
+
+impl Attempt {
+    /// The same attempt, reading these files too.
+    fn reading(more: List<ReadFile>) -> Attempt { self with { parse: self.parse.concat(more) } }
+
+    /// STANDS when nothing more must be read — else the attempt that reads it.
+    fn having_read(more: List<ReadFile>) -> Result<int, Turn> {
+        if more.is_empty() { .Ok(0) } else { .Err(Turn.Again(self.reading(more))) }
+    }
+
+    /// The attempt refused: what it could not read has no other source.
+    fn unheld(why: string) -> Turn { Turn.Refused(nothing_held(why)) }
+
+    /// What the attempt asks, for a trace line.
+    fn shown() -> string {
+        "reading ${self.parse.length}"
+    }
+
+    /// Why this attempt gave way to `next`, as what `next` does that this did not.
+    fn gave_way(root: string, next: Attempt) -> string {
+        turn_said(root, next.parse.slice(self.parse.length, next.parse.length))
+    }
+}
+
+/// How many read files a turn names before it counts the rest.
+const TURN_NAMED: int = 3
+
+/// WHAT THE NEXT ATTEMPT DOES THAT THE ONE BEFORE DID NOT: the files it reads
+/// whatever the store holds, each with why.
+export fn turn_said(root: string, more: List<ReadFile>) -> string {
+    let said = if !more.is_empty() { ["reads ${more.length} more (${read_words(root, more)})"] } else { [] }
+    if said.is_empty() { "asks the same again" } else { joined(said, "; ") }
+}
+
+/// The first read files by path and why, the rest counted.
+fn read_words(root: string, more: List<ReadFile>) -> string {
+    let named = ["${read_label(root, r.path)} — ${r.why.says()}" for r in more.slice(0, TURN_NAMED)]
+    let rest = if more.length > TURN_NAMED { ["… and ${more.length - TURN_NAMED} more"] } else { [] }
+    joined(named.concat(rest), "; ")
+}
+
+/// A read as a turn names it: a file by its path, a kept verdict's read by its file and the
+/// unit it is a read of.
+fn read_label(root: string, path: string) -> string {
+    let parts = path.split("~")
+    if parts.length < 3 { return relative_path(root, path) }
+    let file? = unhex_text(parts[0]) else { return relative_path(root, path) }
+    let unit? = unhex_text(parts[2]) else { return relative_path(root, path) }
+    if file.is_empty() { return relative_path(root, path) }
+    "${relative_path(root, file)} · ${if unit.starts_with(file) { unit.substring(file.length + 1, unit.length) } else { unit }}"
+}
+
+/// One discarded attempt, as `--time` says it: its whole time, its phases, the turn.
+export fn left_line(l: Left) -> string {
+    "discarded: ${l.ns / 1000000}ms — ${joined([ph.shown() for ph in grouped_phases(l.spans)], ", ")} — next ${l.turn}"
+}
+
+/// The time a list of spans covers.
+fn spent(spans: List<Phase>) -> int {
+    mut total = 0
+    for ph in spans { total = total + ph.ns }
+    total
+}
+
+/// What a file SAID the last time it parsed: its warnings, rendered, and the
+/// cases it declares — what stands in for it under every want.
+export type Said = { path: string, warnings: string, cases: List<CaseCall>, findings: List<Finding> = [] }
+
+/// What was said, the silent dropped.
+fn spoken(texts: List<string>) -> string { joined([text for text in texts if !text.is_empty()], "\n\n") }
+
+/// The paths a row remembers.
+fn remembered(store: Store, key: string) -> List<string> { (store.get(Stored.Unit, key) ?? "").split("\n") }
+
+/// `paths` joined to the ones a row remembers — written when it grows.
+fn remember(store: Store, key: string, paths: List<string>) {
+    let known = remembered(store, key)
+    if paths.any((path) -> !known.contains(path)) { let _ = store.keep(Stored.Unit, key, joined(distinct(known.concat(paths)), "\n"), []) }
+}
+
+/// What `check` says of a clean program: its warnings, its stale
+/// `// LICENSED` citations (compiler/licenses.av) and its rule
+/// findings (compiler/findings.av's rows — a cache hit reads all
+/// three back, never rescanning or rebuilding), and whether they
+/// were kept from a check of these exact inputs — plus the PROGRAM
+/// this answer was derived from, when one was: a cache hit costs a
+/// hash and builds none, so a caller wanting the Program itself (a
+/// baseline ratchet's own `--baseline_accept` prune, which needs the
+/// files a check REACHED and not merely what it found) falls back to
+/// building its own rather than forcing every `check` to pay for a
+/// Program it does not otherwise need.
+export type Checked = { warnings: string, reused: bool, timed: string, licenses: string = "", findings: List<Finding> = [] }
+
+// ── The voices ──
+
+/// The law on one line: the phrase the cache-attack and hold-sweep tools
+/// read, the held attempt's first word of why, and where the rest is kept.
+export fn hold_refusal(why: string, at: string) -> string {
+    "avra: the hold was refused (${refusal_cause(why)}); built from its sources — the held attempt's words are in ${at}"
+}
+
+/// `hold_refusal` for an inspection, which keeps no words: a check keeps them.
+export fn hold_refusal_unkept(why: string) -> string {
+    "avra: the hold was refused (${refusal_cause(why)}); built from its sources — an inspection keeps nothing, and `avra check` keeps the held attempt's words"
+}
+
+/// The held attempt's first line that says anything.
+fn refusal_cause(why: string) -> string {
+    why.split("\n").find(!it.trim().is_empty())?.trim() ?? "it said nothing"
+}
+
+fn nothing_held(why: string) -> string {
+    "internal compiler error: ${why}, and nothing was held"
+}
+
+/// A list filed by the file each item belongs to, keyed by the file's index; items of no
+/// file are dropped.
+fn filed<T>(xs: List<T>, at: fn(T) -> FileId?) -> Map<string, List<T>> {
+    mut out: Map<string, List<T>> = {}
+    for x in xs {
+        let f = at(x)
+        if f != null { out.set("${f!.index}", (out.get("${f!.index}") ?? []).concat([x])) }
+    }
+    out
+}

@@ -1,0 +1,101 @@
+# THE BENCHMARK SUITE'S REGISTRY. A FAMILY directory holds benchmark
+# directories; a benchmark holds a `spec.toml` and one directory per
+# language. A language is added by a `[languages.X]` block here plus a
+# `<bench>/X/` directory whose program prints the row contract
+# (`benchmarks/README.md`). Nothing else in the tree names a language.
+#
+# The gate's floor: `run.sh --gate` with no `--lang` runs this language
+# alone, so the regression seam works with no compiler and no other
+# toolchain installed.
+schema = 1
+
+[suite]
+name = "avra-benchmarks"
+version = "0.0.1"
+description = "A multi-language concurrency and tasks benchmark suite with a generated report"
+
+[gate]
+# A row is refused past this ratio of its accepted baseline. A spec may
+# override a row or the whole benchmark.
+margin = 2.0
+floor = "c"
+
+# ── the G1 target against Go ─────────────────────────────────────────
+#
+# THE WORLD-CLASS TARGET, as data: the factor Avra's row may sit past
+# Go's on the SAME machine. `run.sh --gate` compares each Avra row to
+# Go's RECORDED row for this machine (never a fresh Go run, never
+# across machines); a machine with no Go row is a SKIP named, and
+# `--require` makes it a refusal. A witness count (a `check = "exact"`
+# row) is not a cost and carries no target.
+#
+# The ticket's numbers (avra-8sb5.34.53.21): within 2x on the time rows
+# — ping-pong, fan-in, select over N, the deadline row — and within 3x
+# on bytes per parked task. It is a row's own target, not prose.
+[gate.target]
+default = 2.0
+
+[gate.target.rows]
+parked_bytes = 3.0
+
+# ── the ticket's rows with no Avra twin ──────────────────────────────
+#
+# A missing row is a FINDING, printed by `--g1` and named here rather
+# than papered over. Each maps a row the ticket names to what blocks it.
+[gate.missing]
+"ping-pong over a buffered channel" = "no Avra twin; the Go twin is tools/flow_bench/go/spawn (FLOW_CHAN=1)"
+"fan-in at N = 1, 8, 64, 1024" = "tasks/fanin runs N=8 only; no N sweep (channels slice 05, avra-8sb5.34.53.6)"
+"select over N = 2, 8, 64" = "no benchmark; the Go twin is tools/flow_bench/go/selectn (FLOW 04, avra-8sb5.34.53.4)"
+"spawn+join at 1k / 100k / 1M" = "tasks/spawn runs 10k only; no size sweep"
+"bytes per parked task at 1k / 100k / 1M" = "tasks/parked runs 10k only; no size sweep"
+"a deadline around a wait" = "no benchmark; the Go twin is tools/flow_bench/go/deadline (FLOW 03, avra-8sb5.34.53.3)"
+"cancel a tree of 10k tasks" = "no benchmark; the Go twin is tools/flow_bench/go/canceltree (FLOW 03, avra-8sb5.34.53.3)"
+
+# ── languages ────────────────────────────────────────────────────────
+#
+# `version` prints the toolchain's version (first line is kept).
+# `present` is an argv whose success means the toolchain is installed; a
+# language it refuses is SKIPPED with the reason, never silently dropped.
+# `source` names the program file inside the language's directory when it
+# is not `main.<ext>`; `build` when present compiles it; `run` runs it.
+# `cwd` overrides the working directory (default: the language dir).
+# Placeholders: {src} {out} {dir} {avra}.
+# A program prints one row per line: `<name>\t<value>\t<unit>\t<samples>`.
+
+[languages.c]
+title = "C (the floor)"
+version = ["cc", "--version"]
+present = ["cc", "--version"]
+source = "main.c"
+build = ["cc", "-O2", "-pthread", "-o", "{out}", "{src}"]
+run = ["{out}"]
+
+[languages.rust]
+title = "Rust"
+version = ["rustc", "--version"]
+present = ["rustc", "--version"]
+source = "main.rs"
+build = ["rustc", "-O", "-o", "{out}", "{src}"]
+run = ["{out}"]
+
+[languages.go]
+title = "Go"
+version = ["go", "version"]
+present = ["go", "version"]
+source = "main.go"
+build = ["go", "build", "-o", "{out}", "{src}"]
+run = ["{out}"]
+
+[languages.python]
+title = "Python (threads, GIL-bound)"
+version = ["python3", "--version"]
+present = ["python3", "--version"]
+source = "main.py"
+run = ["python3", "{src}"]
+
+[languages.avra]
+title = "Avra"
+version = ["{avra}", "--version"]
+present = ["test", "-x", "{avra}"]
+build = ["{avra}", "build", "{dir}"]
+run = ["{dir}/src/main"]

@@ -1,0 +1,25 @@
+// proves: `grammar Name = "…"` names one shape once — its holes are
+// the fields of a record of that name, and `Name.parse(text)` reads
+// that text into that record, or answers absence. No format exists
+// at run time: the scan is the same one a pattern lowers.
+grammar RequestLine = "{method} {path} HTTP/{major}.{minor}"
+grammar Pair = "{left}={right}"
+
+fn request(line: string) -> string {
+    match RequestLine.parse(line) {
+        r? -> "${r.method} ${r.path} ${r.major}.${r.minor}"
+        null -> "none"
+    }
+}
+
+fn pair(text: string) -> string {
+    match Pair.parse(text) {
+        p? -> "${p.left}/${p.right}"
+        null -> "none"
+    }
+}
+
+// the name still constructs, as any type name does
+let built = RequestLine { method: "PUT", path: "/y", major: "1", minor: "0" }
+
+"${request("GET /x HTTP/1.1")} | ${request("nope")} | ${pair("a=b")} | ${pair("a=b=c")} | ${pair("")} | ${built.method}${built.minor}"

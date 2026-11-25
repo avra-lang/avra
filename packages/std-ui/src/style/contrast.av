@@ -1,0 +1,187 @@
+//! `style/contrast.av` — every colour pair a theme draws, held to WCAG 2.x
+//! in each scheme and at each contrast a reader may ask for: what sits on a
+//! surface against that surface, and each ink against every ground it is
+//! drawn on. `@legible(theme)` holds a theme to it at compile time, so a
+//! theme whose words a reader cannot read does not build; `shortfalls`
+//! answers the same over any theme.
+use @std.meta.{Named, Diagnostic, refuse_as_at, derive}
+use @std.text.{codepoints}
+use style.words.{Words}
+use style.tokens.{Tone, Ink}
+use style.theme.{Theme, Dial, Scheme, Contrast}
+
+/// What a pair owes: words 4.5:1; a line, a ring or a disabled control
+/// 3:1; a decorative line nothing.
+@derive(Words)
+export enum Bar {
+    @word(text) Text
+    @word(graphic) Graphic
+    @word(decorative) Decorative
+}
+
+/// The least ratio a bar holds a pair to.
+fn least(b: Bar) -> float {
+    match b { .Text -> 4.5, .Graphic -> 3.0, .Decorative -> 1.0 }
+}
+
+/// The bar an ink is held to by its role: words owe the text bar; the
+/// disabled ink, a control's line and the focus ring the graphic one; a
+/// divider is decorative. Every ink spelled.
+export fn bar_of(i: Ink) -> Bar {
+    match i {
+        .Text or .Muted or .Danger or .Success or .Warning or .Link -> .Text,
+        .Disabled or .Field or .Focus -> .Graphic,
+        .Border -> .Decorative,
+    }
+}
+
+/// The surfaces an ink is drawn on. A filled role carries the ink that
+/// sits on it, so no other ink is drawn there.
+const grounds = [Tone.Canvas, .Surface, .SurfaceRaised, .SurfaceSunk]
+
+/// A pair a theme draws: its name, what sits, on what, and what it owes.
+type Pair = { name: string, fore: Dial, back: Dial, bar: Bar }
+
+/// Every pair a theme draws: what sits on each surface, then each ink on
+/// each ground.
+fn pairs(t: Theme) -> List<Pair> {
+    [Pair {
+        name: "what sits on `${c.word()}`",
+        fore: t.tone.at(c).on,
+        back: t.tone.at(c).fill,
+        bar: .Text,
+    } for c in Tone.every()]
+        .concat(
+            [Pair {
+                name: "`${i.word()}` on `${g.word()}`",
+                fore: t.ink.at(i),
+                back: t.tone.at(g).fill,
+                bar: bar_of(i),
+            } for i in Ink.every() for g in grounds],
+        )
+}
+
+/// A pair short of its bar where a reader sees it in `scheme` at
+/// `contrast`: the two colours, and their ratio — none when one is not a
+/// colour the proof reads.
+export type Shortfall = {
+    pair: string,
+    scheme: Scheme,
+    contrast: Contrast,
+    fore: string,
+    back: string,
+    ratio: float?,
+    bar: Bar,
+}
+
+/// Every pair the theme draws that falls short, in each scheme, at standard
+/// and at more contrast. A theme that holds a contrast is read at both all
+/// the same: a reader's setting is not the theme's to choose.
+export fn shortfalls(t: Theme) -> List<Shortfall> {
+    [s for p in pairs(t) for scheme in Scheme.every() for c in [Contrast.Standard, .More] for s in judged(p, scheme, c)]
+}
+
+/// A pair as a reader sees it in one scheme at one contrast, when it falls
+/// short.
+fn judged(p: Pair, scheme: Scheme, c: Contrast) -> List<Shortfall> {
+    let fore = p.fore.read_at(c).of(scheme)
+    let back = p.back.read_at(c).of(scheme)
+    let r = ratio(fore, back)
+    let short = Shortfall {
+        pair: p.name,
+        scheme: scheme,
+        contrast: c,
+        fore: fore,
+        back: back,
+        ratio: r,
+        bar: p.bar,
+    }
+    let v? = r else { return [short] }
+    if v < least(p.bar) { [short] } else { [] }
+}
+
+/// The contrast ratio of two colours, the lighter's over the darker's.
+export fn ratio(a: string, b: string) -> float? {
+    let la? = luminance(a) else { return null }
+    let lb? = luminance(b) else { return null }
+    if la > lb { (la + 0.05) / (lb + 0.05) } else { (lb + 0.05) / (la + 0.05) }
+}
+
+/// A colour's relative luminance, or nothing for one not written `#RRGGBB`.
+export fn luminance(hex: string) -> float? {
+    let cs = codepoints(hex)
+    if cs.length != 7 || cs[0] != 35 { return null }
+    let r? = light_of(cs, 1) else { return null }
+    let g? = light_of(cs, 3) else { return null }
+    let b? = light_of(cs, 5) else { return null }
+    0.2126 * r + 0.7152 * g + 0.0722 * b
+}
+
+/// The channel whose two hex digits stand at `at`, as light.
+fn light_of(cs: List<int>, at: int) -> float? {
+    let hi? = digit(cs[at]) else { return null }
+    let lo? = digit(cs[at + 1]) else { return null }
+    linear((hi * 16 + lo).float() / 255.0)
+}
+
+/// A hex digit's value.
+fn digit(c: int) -> int? {
+    if c >= 48 && c <= 57 { return c - 48 }
+    if c >= 65 && c <= 70 { return c - 55 }
+    if c >= 97 && c <= 102 { return c - 87 }
+    null
+}
+
+/// An sRGB channel as light: x^2.4 is x^2 times the fifth root of x^2.
+fn linear(c: float) -> float {
+    if c <= 0.04045 { return c / 12.92 }
+    let x = (c + 0.055) / 1.055
+    x * x * fifth_root(x * x)
+}
+
+/// The fifth root of `a` in (0, 1], by Newton's method from above.
+fn fifth_root(a: float) -> float { root_below(a, 1.0) }
+
+/// Newton's steps from `y`, at or above the root, until a step no longer
+/// falls: from above every step falls until the root is reached.
+fn root_below(a: float, y: float) -> float {
+    let next = (4.0 * y + a / (y * y * y * y)) / 5.0
+    if next < y { root_below(a, next) } else { y }
+}
+
+/// A ratio to two places, cut rather than rounded, so a pair just short
+/// never reads as clearing its bar.
+export fn two_places(r: float) -> string {
+    match (r * 100.0).floor() {
+        .Ok(n) -> "${n / 100}.${if n % 100 < 10 { "0" } else { "" }}${n % 100}",
+        .Err(_) -> "${r}",
+    }
+}
+
+/// `@legible(theme)`: every pair the theme draws clears its bar, or the
+/// build names each one that does not.
+export fn legible(_n: Named, t: Theme) -> List<Diagnostic> { [short(s) for s in shortfalls(t)] }
+
+// ── voices ──────────────────────────────────────────────────────
+
+impl Shortfall {
+    /// The pair, the way it is seen, the two colours, their ratio and the
+    /// bar it owes.
+    fn said() -> string {
+        let seen = "${self.pair}, ${self.scheme.word()} at ${self.contrast.word()} contrast"
+        let r? = self.ratio else {
+            return "${seen}: `${self.fore}` on `${self.back}` — a colour the proof reads is written `#RRGGBB`"
+        }
+        "${seen}: ${self.fore} on ${self.back} is ${two_places(r)}:1, under the ${two_places(least(self.bar))}:1 a ${self.bar.word()} pair owes"
+    }
+}
+
+/// A pair a reader cannot read, refused.
+fn short(s: Shortfall) -> Diagnostic {
+    refuse_as_at(
+        "contrast",
+        null,
+        s.said(),
+        "move the lighter colour lighter or the darker darker until the pair clears its bar",
+    )
+}

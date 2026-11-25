@@ -1,0 +1,125 @@
+// An answer remembered beside the engine: the question that works it out and every question that
+// takes it from the memo read what the working-out read, so an edit of that read reaches them all.
+use tests.support.store_in_memory.{StoreInMemory, store_in_memory}
+use answer_record.{question}
+use interned.{InternId}
+use query_engine.{QueryDefinition, QueryEngine, query_engine}
+use read_memo.{ReadMemo, read_memo}
+
+fn ask_text(engine: QueryEngine, query_name: string, argument: string) -> string {
+    engine.answer_to(question(query_name, "code", argument.bytes())).copied().text() ?? ""
+}
+
+/// The memo's one answer: the source's text, worked out the first time it's asked.
+fn remembered(engine: QueryEngine, memo: ReadMemo<string>) -> string {
+    memo.answer(engine, InternId { index: 0 }, () -> ask_text(engine, "source", "x")) ?? ""
+}
+
+/// The memo's answer taken twice by one asker: alone, then inside `outer`'s working-out.
+fn nested(engine: QueryEngine, memo: ReadMemo<string>, outer: ReadMemo<string>) -> string {
+    let _ = remembered(engine, memo)
+    outer.answer(engine, InternId { index: 0 }, () -> remembered(engine, memo)) ?? ""
+}
+
+/// `source` is an input; `first` and `second` each take the memo's answer, which `first` works out;
+/// `both` reads `first` then `second`; `deep` takes a second memo's answer, worked out by asking
+/// `first`; `nest` takes the memo's answer by `nested`.
+fn definitions(world: Cell<string>, memo: ReadMemo<string>, outer: ReadMemo<string>) -> List<
+    QueryDefinition,
+> {
+    [
+        QueryDefinition {
+            query_name: "source",
+            code_hash: "code",
+            is_input: true,
+            compute: (_e, _a) -> world.get().bytes(),
+        },
+        QueryDefinition {
+            query_name: "first",
+            code_hash: "code",
+            is_input: false,
+            compute: (e, _a) -> remembered(e, memo).bytes(),
+        },
+        QueryDefinition {
+            query_name: "second",
+            code_hash: "code",
+            is_input: false,
+            compute: (e, _a) -> "second ${remembered(e, memo)}".bytes(),
+        },
+        QueryDefinition {
+            query_name: "both",
+            code_hash: "code",
+            is_input: false,
+            compute: (e, a) -> "${ask_text(e, "first", a.text() ?? "")} ${ask_text(e, "second", a.text() ?? "")}"
+                .bytes(),
+        },
+        QueryDefinition {
+            query_name: "deep",
+            code_hash: "code",
+            is_input: false,
+            compute: (e, _a) -> (outer.answer(e, InternId { index: 0 }, () -> ask_text(e, "first", "x")) ?? "")
+                .bytes(),
+        },
+        QueryDefinition {
+            query_name: "nest",
+            code_hash: "code",
+            is_input: false,
+            compute: (e, _a) -> nested(e, memo, outer).bytes(),
+        },
+    ]
+}
+
+/// One process asking `root` while the world says `text`, its memos fresh.
+fn process(store: StoreInMemory, text: string, root: string) -> QueryEngine {
+    let memo: ReadMemo<string> = read_memo()
+    let outer: ReadMemo<string> = read_memo()
+    let engine = query_engine(store, definitions(Cell.new(text), memo, outer))
+    let _ = ask_text(engine, root, "x")
+    engine.frontier_kept()
+    engine
+}
+
+spec "read_memo — a remembered answer is read as its working-out read" {
+    given "a question that takes the answer another worked out, then an edit of what that read" {
+        then "the later process answers both from the edit" {
+            let store = store_in_memory()
+            let _ = process(store, "old", "both")
+            ask_text(process(store, "new", "both"), "both", "x") == "new second new"
+        }
+        then "the question that took it from the memo runs again" {
+            let store = store_in_memory()
+            let _ = process(store, "old", "both")
+            process(store, "new", "both").computed_queries().any(it == "second")
+        }
+    }
+    given "nothing edited" {
+        then "the later process works nothing out" {
+            let store = store_in_memory()
+            let _ = process(store, "same", "both")
+            process(store, "same", "both").worked_count() == 0
+        }
+    }
+    given "a working-out that asks a question" {
+        then "the memo keeps the read of that question, not the reads made answering it" {
+            let store = store_in_memory()
+            let memo: ReadMemo<string> = read_memo()
+            let outer: ReadMemo<string> = read_memo()
+            let engine = query_engine(store, definitions(Cell.new("text"), memo, outer))
+            let _ = ask_text(engine, "deep", "x")
+            outer.reads.held(InternId { index: 0 })?.length == 1
+        }
+        then "a kept answer taken inside it keeps its reads there, though its asker has them already" {
+            let store = store_in_memory()
+            let memo: ReadMemo<string> = read_memo()
+            let outer: ReadMemo<string> = read_memo()
+            let engine = query_engine(store, definitions(Cell.new("text"), memo, outer))
+            let _ = ask_text(engine, "nest", "x")
+            outer.reads.held(InternId { index: 0 })?.length == 1
+        }
+        then "an edit below that question reaches the asker" {
+            let store = store_in_memory()
+            let _ = process(store, "old", "deep")
+            ask_text(process(store, "new", "deep"), "deep", "x") == "new"
+        }
+    }
+}

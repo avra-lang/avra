@@ -1,0 +1,172 @@
+//! NAMES, INTERNED: a name's text is minted a dense id the first time it arrives in a process, so two
+//! names are one exactly when their ids are, one compare. A text is found by its 128-bit content key
+//! and its length, never by comparing it with a text already minted: the trust the store gives a
+//! content hash. AN ID IS THE PROCESS'S OWN: another process
+//! mints its own, in its own order, so nothing an id stands for may leave the process as the id. A
+//! name is saved as its TEXT and interned again where it is read back, and every fold of a name is a
+//! fold of its text: a saved answer, a content key and a print are the same in every process.
+use answer_record.{ContentHash}
+use interned.{HIGH_LANE, LOW_LANE, Interned, KeyLane, interned}
+use saved_layout.{SavedLayoutWriter, SavedRecord, SavedSource}
+use saved_derive.{Saved}
+use @std.meta.{derive, sealed}
+
+/// A name: its text's place among the names this process has minted. Sealed: only `name_of` makes one.
+@sealed
+export type Name = { id: int }
+
+/// What a name is saved and folded as: its text.
+@derive(Saved)
+type NameText = { text: string }
+
+/// The names this process has minted, by their texts' keys: a name's id is its key's.
+once fn names() -> Interned<NameKey> { interned(key_hashed, same_key) }
+
+/// Each name's text, by id, kept beside the keys it was minted under.
+once fn name_texts() -> Cell<List<string>> { Cell.new([]) }
+
+/// What a name's text is found by: its content key over both lanes, and its length.
+type NameKey = { high: int, low: int, length: int }
+
+/// The key `text` is found by.
+fn name_key(text: string) -> NameKey {
+    NameKey {
+        high: HIGH_LANE.text(HIGH_LANE.seed, text),
+        low: LOW_LANE.text(LOW_LANE.seed, text),
+        length: text.length,
+    }
+}
+
+fn key_hashed(k: NameKey) -> int { k.high }
+
+fn same_key(a: NameKey, b: NameKey) -> bool { a.high == b.high && a.low == b.low && a.length == b.length }
+
+/// The name the text numbered `number` of a tape's `texts` spells, minted once for the tape's meaning;
+/// the text is read only to mint it. Every reading shares one list of slots, by text number: each
+/// holds an id with the meaning it was read under (`mine`, the meaning's process-wide number), so
+/// readings of one meaning, whose texts are the same, mint each name once. A slot another meaning
+/// wrote is mere absence, so readings of different tapes that interleave mint again, never misread.
+export fn tape_name(mine: int, texts: List<string>, number: int) -> Name {
+    let slots = name_slots()
+    let held = slot_held(slots, number)
+    if held >= 0 && held / ID_SPAN == mine { return Name { id: held % ID_SPAN } }
+    let minted = name_of(texts[number])
+    if number >= slots.get().length { widen(slots, texts.length) }
+    slots.set_at(number, mine * ID_SPAN + minted.id)
+    minted
+}
+
+/// The number of the tape meaning `meaning` hashes to: one for every reading of that meaning, never
+/// 0, and never another meaning's.
+export fn reading_of(meaning: ContentHash) -> int { meanings().id_of(meaning).index + 1 }
+
+/// The tape meanings read in this process, each numbered once, told apart by their hash's two words.
+once fn meanings() -> Interned<ContentHash> { interned(meaning_hashed, same_meaning) }
+
+fn meaning_hashed(h: ContentHash) -> int { h.high_word ^ h.low_word }
+
+fn same_meaning(a: ContentHash, b: ContentHash) -> bool { a.high_word == b.high_word && a.low_word == b.low_word }
+
+/// What the slots hold at `number`, read and let go before they are written; -1 past their end.
+fn slot_held(slots: Cell<List<int>>, number: int) -> int {
+    let held = slots.get()
+    if number < held.length { held[number] } else { 0 - 1 }
+}
+
+/// The slots widened to hold `count` texts, every new one empty.
+fn widen(slots: Cell<List<int>>, count: int) {
+    let from = slots.get().length
+    // LICENSED loops.push_loop: widening the cell in place — a concat would copy every slot held
+    for _slot in from..count { slots.push(0 - 1) }
+}
+
+/// The ids every reading of a tape holds, by text number.
+once fn name_slots() -> Cell<List<int>> { Cell.new([]) }
+
+/// A slot's id is below this; the reading that wrote it is the slot over it.
+const ID_SPAN: int = 2147483648
+
+/// The text the name `n` spells, as a free fn: what code typed while its own file's generators
+/// still run reads, where a method would be resolved against the impls they are making.
+export fn text_of(n: Name) -> string { n.text() }
+
+/// The print of the name `n`, as a free fn, for the same code `text_of` serves.
+export fn text_print_of(n: Name) -> int { n.text_print() }
+
+/// A text's fold: its bytes eight to a word, the tail byte by byte, then its length. A content
+/// print, the same in every process: std-avrac's `fp_str` is this fold.
+export fn text_fold(text: string) -> int {
+    mut h = 0
+    mut i = 0
+    // A string's `.length` is a header load: asked once, not per word.
+    let n = text.length
+    while i + 8 <= n {
+        h = fold_mix(h, avra_str_word_at(text, i))
+        i = i + 8
+    }
+    while i < n {
+        h = fold_mix(h, text.char_code(i))
+        i = i + 1
+    }
+    fold_mix(h, n)
+}
+
+/// One step of the fold: both operands normalized under a prime, so mixing never overflows,
+/// negative words included.
+fn fold_mix(h: int, v: int) -> int {
+    mut nv = v % 1000000007
+    if nv < 0 { nv = nv + 1000000007 }
+    (h * 131 + nv + 7) % 1000000007
+}
+
+/// Each name's print, by id: filled through every name minted so far the first time a print past
+/// the filled ones is asked.
+once fn prints() -> Cell<List<int>> { Cell.new([]) }
+
+/// The prints filled through every name minted so far, answering `id`'s.
+fn printed_through(id: int) -> int {
+    let held = prints()
+    let texts = name_texts().get()
+    let from = held.get().length
+    // LICENSED loops.push_loop: pushing onto the cell in place — a concat would copy every print made
+    for i in from..texts.length { held.push(text_fold(texts[i])) }
+    held.get()[id]
+}
+
+/// The name `text` spells, minted the first time its key arrives.
+export fn name_of(text: string) -> Name {
+    let minted = names()
+    let before = minted.count()
+    let id = minted.id_of(name_key(text)).index
+    if id == before { name_texts().push(text) }
+    Name { id: id }
+}
+
+impl Name {
+    /// The text this name spells.
+    fn text() -> string { name_texts().get()[self.id] }
+
+    /// A print of this name: its text's fold, made once a name, never its id.
+    fn text_print() -> int {
+        let filled = prints().get()
+        if self.id < filled.length { return filled[self.id] }
+        printed_through(self.id)
+    }
+
+    /// The name as saved bytes: its text.
+    fn saved_bytes() -> Bytes { NameText { text: self.text() }.saved_bytes() }
+
+    /// The name saved bytes spell, interned here.
+    static fn from_saved_bytes(bytes: Bytes) -> Name { name_of(NameText.from_saved_bytes(bytes).text) }
+
+    /// The name written into a bigger answer: its text.
+    fn written_into(writer: SavedLayoutWriter) -> int { NameText { text: self.text() }.written_into(writer) }
+
+    /// The name folded into a content key: its text, never its id.
+    fn folded_into(lane: KeyLane, key_fold: int) -> int { NameText { text: self.text() }.folded_into(lane, key_fold) }
+
+    /// The name read back from a bigger answer, interned here.
+    static fn read_from(source: SavedSource, record: SavedRecord) -> Name { name_of(NameText.read_from(source, record).text) }
+}
+
+extern fn avra_str_word_at(s: string, at: int) -> int

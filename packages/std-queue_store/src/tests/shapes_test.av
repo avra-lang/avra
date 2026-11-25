@@ -1,0 +1,300 @@
+// Items of two builds in one queue: a store reads what another shape wrote as far as its
+// verdict allows, lets go what a newer build alone can read, and sets aside the rest. Every
+// case runs over a database in memory and over one in a file.
+use @std.io.{list_dir, make_dirs, remove}
+use @std.queue.{HomeError, Order, Terms, key}
+use @std.relation.{codec}
+use @std.relation.shape.{descriptor_unspelled}
+use @std.sqlite.{Db, sql}
+use @std.time.{Time, ms, stamp}
+use fault.{homed}
+use queue_store.{Store, Wire, store_home, store_home_with}
+use unread.{Unread}
+use @std.queue.tests.support.laws.{terms}
+
+/// One job as two builds declare it: the later holds one more slot, with a default.
+@codec
+type JobOld = { n: int }
+
+@codec
+type JobNew = { n: int, note: string = "none" }
+
+/// A job whose only slot is another's.
+@codec
+type JobMoved = { name: string }
+
+/// One step as two builds declare it: the later holds one more variant.
+@codec
+enum StepOld {
+    Go
+    Stop(why: string)
+}
+
+@codec
+enum StepNew {
+    Go
+    Stop(why: string)
+    Pause
+}
+
+@codec
+type Nothing = {}
+
+@codec
+type Something = { n: int = 5 }
+
+const root: string = "/tmp/avra-queue-shapes"
+
+/// Whether `work` holds over a database in memory and over one in a file of its own.
+fn over_both(work: fn(Db) -> Result<bool, HomeError>) -> bool {
+    (in_memory(work) catch false) && in_file(work)
+}
+
+fn in_memory(work: fn(Db) -> Result<bool, HomeError>) -> Result<bool, HomeError> {
+    work(homed(Db.memory())?)
+}
+
+fn in_file(work: fn(Db) -> Result<bool, HomeError>) -> bool {
+    let dir = "${root}/${stamp()}"
+    let _ = make_dirs(dir)
+    let held = on_file("${dir}/queue.db", work) catch false
+    for name in list_dir(dir) catch [] { let _ = remove("${dir}/${name}") }
+    let _ = remove(dir)
+    let _ = remove(root)
+    held
+}
+
+fn on_file(path: string, work: fn(Db) -> Result<bool, HomeError>) -> Result<bool, HomeError> {
+    let db = homed(Db.open(path))?
+    defer { let _ = db.close() }
+    work(db)
+}
+
+fn by_key() -> Terms { terms(60000, Order.by_key) }
+
+/// A count read straight from the database.
+fn count(db: Db, text: string) -> Result<int, HomeError> {
+    homed((homed(db.scalar(sql(text)))?).int())
+}
+
+/// A wire that writes text under another type's shape.
+fn posing(shape: int, descriptor: string) -> Wire<string> {
+    Wire {
+        shape: shape,
+        descriptor: descriptor,
+        encode: (s: string) -> s.bytes(),
+        decode: (b: Bytes) -> b.text(),
+    }
+}
+
+fn why_word(why: Unread) -> string {
+    match why { .Shape -> "shape", .Octets -> "octets", .Other(_) -> "other" }
+}
+
+fn round_trips(db: Db) -> Result<bool, HomeError> {
+    let q = store_home<JobNew>(db, "jobs", by_key())?
+    let _ = q.send(JobNew { n: 4, note: "" }, key("a"))?
+    let d? = q.take()? else { return false }
+    d.item.n == 4 && d.item.note == "" && q.ack(d)? && q.depth()? == 0
+}
+
+fn empty_item(db: Db) -> Result<bool, HomeError> {
+    let q = store_home<Nothing>(db, "jobs", by_key())?
+    let _ = q.send(Nothing {}, key("a"))?
+    q.take()? != null && q.unreadable_count()? == 0
+}
+
+fn shape_is_kept(db: Db) -> Result<bool, HomeError> {
+    let _ = store_home<JobNew>(db, "jobs", by_key())?
+    let _ = store_home<JobNew>(db, "jobs", by_key())?
+    let row? = homed(db.first(sql("SELECT \"descriptor\", \"hash\" FROM \"FlowShape\"")))? else { return false }
+    let d? = descriptor_unspelled(homed(row.text(0))?) else { return false }
+    count(db, "SELECT count(*) FROM \"FlowShape\"")? == 1 &&
+        d.hash == JobNew.codec_shape() &&
+        homed(row.int(1))? == d.hash &&
+        d.slots.length == 2 &&
+        d.slots[1].name == "note" &&
+        d.slots[1].defaulted
+}
+
+fn older_item_is_filled(db: Db) -> Result<bool, HomeError> {
+    let _ = (store_home<JobOld>(db, "jobs", by_key())?).send(JobOld { n: 1 }, key("a"))?
+    let q = store_home<JobNew>(db, "jobs", by_key())?
+    let d? = q.take()? else { return false }
+    d.item.n == 1 &&
+        d.item.note == "none" &&
+        d.attempt == 0 &&
+        q.unreadable_count()? == 0 &&
+        q.ack(d)?
+}
+
+fn no_slots_are_filled(db: Db) -> Result<bool, HomeError> {
+    let _ = (store_home<Nothing>(db, "jobs", by_key())?).send(Nothing {}, key("a"))?
+    let q = store_home<Something>(db, "jobs", by_key())?
+    let d? = q.take()? else { return false }
+    d.item.n == 5 && q.unreadable_count()? == 0
+}
+
+fn grown_item_is_read(db: Db) -> Result<bool, HomeError> {
+    let _ = (store_home<JobNew>(db, "jobs", by_key())?)
+        .send(JobNew { n: 2, note: "later" }, key("a"))?
+    let _ = (store_home<Something>(db, "jobs", by_key())?).send(Something { n: 9 }, key("b"))?
+    let q = store_home<JobOld>(db, "jobs", by_key())?
+    let none = store_home<Nothing>(db, "jobs", by_key())?
+    let d? = q.take()? else { return false }
+    let _ = q.ack(d)?
+    d.item.n == 2 && none.take()? != null && q.unreadable_count()? == 0
+}
+
+fn many_of_another_shape(db: Db) -> Result<bool, HomeError> {
+    let old = store_home<JobOld>(db, "jobs", by_key())?
+    for i in 0..4 { let _ = old.send(JobOld { n: i }, key("k${i}"))? }
+    let taken = (store_home<JobNew>(db, "jobs", by_key())?).taken(4)?
+    taken.length == 4 && taken.all(it.item.note == "none") && taken[3].item.n == 3
+}
+
+fn moved_item_is_set_aside(db: Db) -> Result<bool, HomeError> {
+    let _ = (store_home<JobMoved>(db, "jobs", by_key())?).send(JobMoved { name: "x" }, key("a"))?
+    let q = store_home<JobOld>(db, "jobs", by_key())?
+    let _ = q.send(JobOld { n: 3 }, key("b"))?
+    let d? = q.take()? else { return false }
+    let aside = q.unreadable()?
+    d.item.n == 3 &&
+        aside.length == 1 &&
+        why_word(aside[0].why) == "shape" &&
+        aside[0].shape == JobMoved.codec_shape()
+}
+
+fn undescribed_shape_is_set_aside(db: Db) -> Result<bool, HomeError> {
+    let _ = (store_home_with<string>(db, "jobs", by_key(), posing(77, "by hand"))?)
+        .send("words", key("a"))?
+    let q = store_home<JobOld>(db, "jobs", by_key())?
+    q.take()? == null && why_word(q.unreadable()?[0].why) == "shape"
+}
+
+fn no_item_under_a_known_shape(db: Db) -> Result<bool, HomeError> {
+    let liar = posing(JobNew.codec_shape(), JobNew.codec_descriptor())
+    let _ = (store_home_with<string>(db, "jobs", by_key(), liar)?).send("zz", key("a"))?
+    let q = store_home<JobOld>(db, "jobs", by_key())?
+    q.take()? == null && why_word(q.unreadable()?[0].why) == "octets" && q.depth()? == 0
+}
+
+/// The row of the one item still in the queue: its attempt, its epoch and whether it is held.
+fn standing(db: Db) -> Result<string, HomeError> {
+    let row? = homed(
+        db.first(sql("SELECT \"attempt\", \"epoch\", \"leased_until\" IS NULL FROM \"FlowItem\"")),
+    )? else {
+        return "none"
+    }
+    "${homed(row.int(0))?} ${homed(row.int(1))?} ${homed(row.int(2))?}"
+}
+
+fn newer_item_is_let_go(db: Db, order: Order) -> Result<bool, HomeError> {
+    let at: Cell<int> = Cell.new(1000)
+    let clock = () -> Time { ns: at.get() }
+    let t = terms(60000, order)
+    let newer = store_home<StepNew>(db, "jobs", t)? with { clock: clock }
+    let _ = newer.send(StepNew.Pause, key("a"))?
+    let old = store_home<StepOld>(db, "jobs", t)? with { clock: clock, yields: ms(5) }
+    let first = old.take()?
+    let let_go = standing(db)?
+    let soon = newer.take()?
+    at.set(1000 + ms(5).ns)
+    let again = old.take()?
+    at.set(1000 + ms(10).ns)
+    let d? = newer.take()? else { return false }
+    first == null &&
+        let_go == "0 1 1" &&
+        soon == null &&
+        again == null &&
+        old.unreadable_count()? == 0 &&
+        old.depth()? == 1 &&
+        d.attempt == 0 &&
+        d.epoch == 3 &&
+        newer.ack(d)?
+}
+
+fn known_variant_of_a_newer_enum(db: Db) -> Result<bool, HomeError> {
+    let newer = store_home<StepNew>(db, "jobs", by_key())?
+    let _ = newer.send(StepNew.Pause, key("a"))?
+    let _ = newer.send(StepNew.Stop("done"), key("b"))?
+    let old = store_home<StepOld>(db, "jobs", by_key())?
+    let d? = old.take()? else { return false }
+    match d.item { .Stop(why) -> why == "done", .Go -> false } &&
+        old.depth()? == 2 &&
+        old.unreadable_count()? == 0
+}
+
+fn older_enum_is_read_whole(db: Db) -> Result<bool, HomeError> {
+    let _ = (store_home<StepOld>(db, "jobs", by_key())?).send(StepOld.Stop(""), key("a"))?
+    let d? = (store_home<StepNew>(db, "jobs", by_key())?).take()? else { return false }
+    match d.item { .Stop(why) -> why == "", .Go or .Pause -> false }
+}
+
+fn let_go_without_a_wait(db: Db) -> Result<bool, HomeError> {
+    let clock = () -> Time { ns: 1000 }
+    let _ = (store_home<StepNew>(db, "jobs", by_key())?).send(StepNew.Pause, key("a"))?
+    let old = store_home<StepOld>(db, "jobs", by_key())? with { clock: clock, yields: ms(0) }
+    old.take()? == null && old.take()? == null && standing(db)? == "0 1 1"
+}
+
+spec "std/queue_store — a coded item's home is derived from its type" {
+    given "a store opened on a coded type" {
+        then "an item is sent and taken back, an empty text among its fields" {
+            over_both(round_trips)
+        }
+        then "a record of no fields is an item" {
+            over_both(empty_item)
+        }
+        then "the home keeps the type's descriptor once, however often it is opened" {
+            over_both(shape_is_kept)
+        }
+    }
+}
+
+spec "std/queue_store — an item another build wrote" {
+    given "an older build's, lacking trailing slots" {
+        then "it is delivered with each missing slot's default, no attempt counted" {
+            over_both(older_item_is_filled)
+        }
+        then "an item of no slots is filled whole" {
+            over_both(no_slots_are_filled)
+        }
+        then "a queue full of them is delivered in one take" {
+            over_both(many_of_another_shape)
+        }
+        then "an enum with fewer variants is read whole" {
+            over_both(older_enum_is_read_whole)
+        }
+    }
+    given "a newer build's, holding more trailing slots" {
+        then "it is delivered as far as the reader knows it, to a reader of no slots too" {
+            over_both(grown_item_is_read)
+        }
+        then "a variant the reader knows is delivered past one it does not" {
+            over_both(known_variant_of_a_newer_enum)
+        }
+    }
+    given "a newer build's variant the reader does not know" {
+        then "under `by_key` it is let go for a while, no attempt counted, and a newer reader takes it" {
+            over_both((db: Db) -> newer_item_is_let_go(db, Order.by_key))
+        }
+        then "under `fifo` it is let go the same, and never set aside" {
+            over_both((db: Db) -> newer_item_is_let_go(db, Order.fifo))
+        }
+        then "a wait of nothing still ends the take" {
+            over_both(let_go_without_a_wait)
+        }
+    }
+    given "a shape the reader cannot follow" {
+        then "a moved one is set aside as a shape, and the item behind it flows" {
+            over_both(moved_item_is_set_aside)
+        }
+        then "one the home holds no descriptor of is set aside as a shape" {
+            over_both(undescribed_shape_is_set_aside)
+        }
+        then "octets that are no item of a shape the verdict let through are set aside as octets" {
+            over_both(no_item_under_a_known_shape)
+        }
+    }
+}

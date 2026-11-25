@@ -1,0 +1,57 @@
+// proves: a capture stays a copy under every carrier a write can reach
+// it by — a nested lambda's capture of a capture, a flat record, a
+// nullable, a copied lambda value, a `defer` in a loop, and `self`.
+type L = { items: List<int>, pad: int }
+type C = { n: int }
+
+impl L {
+    mut fn add(v: int) { self.items.push(v) }
+    fn later() -> int {
+        let f = () -> self.add(1)
+        f()
+        self.items.length
+    }
+}
+
+impl C {
+    mut fn inc() { self.n = self.n + 1 }
+}
+
+fn seed(n: int) -> List<int> { [n] }
+
+fn looped(mut s: L) -> int {
+    mut t = s
+    for i in 0..3 { defer t.add(i) }
+    s.items.length + t.items.length
+}
+
+mut t = L { items: seed(1), pad: 0 }
+let outer = () -> {
+    let inner = () -> t.add(9)
+    inner()
+    t.items.length
+}
+let nested = outer()
+
+mut c = C { n: 1 }
+let bump = () -> c.inc()
+bump()
+
+mut m: L? = L { items: seed(1), pad: 0 }
+let through = () -> m!.add(9)
+through()
+
+mut k = L { items: seed(1), pad: 0 }
+let f = () -> {
+    k.add(9)
+    k.items.length
+}
+let g = f
+let first = f()
+let second = g()
+
+mut s = L { items: seed(1), pad: 0 }
+let l = looped(s)
+let own = L { items: seed(1), pad: 0 }
+
+"${nested} ${t.items.length} ${c.n} ${m!.items.length} ${k.items.length} ${first} ${second} ${l} ${s.items.length} ${own.later()} ${own.items.length}"

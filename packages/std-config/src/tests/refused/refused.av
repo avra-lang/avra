@@ -1,0 +1,30 @@
+// proves: a config that cannot be read reports every issue at once — a required file not there, a
+// path that is a directory, a variable that spells no integer, a flag naming no field, a secret set
+// from a flag, a file key no field names, a rule refused with the origin of the value it judged,
+// and a required field nothing set — and the secret's text appears nowhere in the report.
+use @std.meta.{derive}
+use @std.io.{write_text, make_dirs, env_or}
+use @std.time.{stamp}
+use @std.validate.{Decode, range}
+use @std.config.{Configured, Secret, file, env, flags}
+
+once fn run_base() -> string { "${env_or("TMPDIR", "/tmp")}/avra-config-refused/${stamp()}" }
+
+@derive(Decode)
+component Shop {
+    @range(1, 512) pool: int = 10
+    workers: int = 2
+    name: string
+    password: Secret<string>
+
+    file "${run_base()}/shop.toml"
+    file "${run_base()}/absent.toml" { required: true }
+    file run_base()
+    env "SHOP" { only: {"SHOP__WORKERS": "four"} }
+    flags ["--password=hunter2", "--db.pol=3", "--quiet"]
+}
+
+let _ = make_dirs(run_base())
+let _ = write_text("${run_base()}/shop.toml", "pool = 900\nprot = 1\n")
+let said = match Shop.load() { .Ok(_) -> "loaded", .Err(e) -> e.report() }
+"${said.replace(run_base(), "<dir>")}\nthe text shown: ${said.contains("hunter2")}"

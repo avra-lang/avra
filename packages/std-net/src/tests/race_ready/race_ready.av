@@ -1,0 +1,67 @@
+//! proves: the race answers the first dial that actually connects, and
+//! a connect still in progress is never taken as ready. A listener
+//! whose backlog is already full drops a further SYN, so that connect
+//! stays in progress and the race answers its own deadline, never a
+//! descriptor.
+use @std.net.{connect, listen, Listener, NetError}
+use @std.time.{ms, secs}
+
+extern fn avra_net_listen(host: string, port: int, backlog: int) -> int
+extern fn avra_net_local_port(fd: int) -> int
+extern fn avra_net_dial_address(address: string, port: int) -> int
+extern fn avra_net_close(fd: int) -> int
+
+/// A listener that queues one connection: a further SYN is dropped, so
+/// the handshake never completes.
+fn crowded() -> Listener {
+    let fd = avra_net_listen("127.0.0.1", 0, 1)
+    Listener { fd: fd, port: avra_net_local_port(fd) }
+}
+
+/// More attempts than the listener can queue, held open so the kernel
+/// keeps refusing to complete a further handshake.
+fn filled(l: Listener) -> List<int> {
+    mut out: List<int> = []
+    mut k = 0
+    while k < 8 {
+        let fd = avra_net_dial_address("127.0.0.1", l.port)
+        if fd >= 0 { out.push(fd) }
+        k = k + 1
+    }
+    out
+}
+
+/// Whether a name reaches a v4 listener across its families: the `::1`
+/// dial refuses, the v4 dial connects, and the race answers it.
+fn reaches() -> Result<bool, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let c = connect("localhost", l.port, secs(2))?
+    let reached = c.peer().starts_with("127.0.0.1:")
+    let _ = c.close()
+    let _ = l.close()
+    .Ok(reached)
+}
+
+/// Whether a connect that cannot complete is taken as ready: the race
+/// must answer the deadline, and any other outcome is the defect.
+fn pending_is_not_ready() -> bool {
+    let l = crowded()
+    let held = filled(l)
+    let taken_as_ready = match connect("127.0.0.1", l.port, ms(300)) {
+        .Ok(c) -> {
+            let _ = c.close()
+            true
+        },
+        .Err(e) -> !e.timed_out(),
+    }
+    for fd in held { let _ = avra_net_close(fd) }
+    let _ = l.close()
+    !taken_as_ready
+}
+
+fn run() -> Result<string, NetError> {
+    let reached = reaches()?
+    .Ok("${reached} ${pending_is_not_ready()}")
+}
+
+match run() { .Ok(line) -> line, .Err(e) -> "failed: ${e.verb}" }

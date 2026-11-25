@@ -1,0 +1,39 @@
+// A UNIT'S LOWERING STANDS ON WHAT IT READ: two processes over one store make one program of one
+// source. A sibling file's edit moves nothing; a const the body READS moving moves the code.
+use @std.avrac.testing.held.{empty_store, held_at}
+use @std.program.tests.support.store_in_memory.{StoreInMemory}
+
+const UF_MAIN: string = "/w/src/main.av"
+
+fn uf_files(konst: int, sibling: int) -> Map<string, string> {
+    {
+        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+        UF_MAIN: "const K: int = ${konst}\nexport fn f() -> int { K + 1 }\nf()\n",
+        "/w/src/b.av": "export fn g() -> int { ${sibling} }\n",
+    }
+}
+
+/// The program a process over `files` and `store` makes, as IR.
+fn uf_unit(files: Map<string, string>, store: StoreInMemory) -> string {
+    held_at(files, "/w").passed_over(UF_MAIN, store).ir
+}
+
+spec "compiler/lowered_unit — a unit stands on what it read" {
+    given "a fn reading a const, said once" {
+        then "a second process over the same files makes one program" {
+            let s = empty_store()
+            let before = uf_unit(uf_files(1, 2), s)
+            !before.starts_with("not made") && uf_unit(uf_files(1, 2), s) == before
+        }
+        then "a process after a sibling edit makes the program it made before" {
+            let s = empty_store()
+            let before = uf_unit(uf_files(1, 2), s)
+            uf_unit(uf_files(1, 3), s) == before
+        }
+        then "a process after the const's value changed makes different code" {
+            let s = empty_store()
+            let before = uf_unit(uf_files(1, 2), s)
+            uf_unit(uf_files(5, 2), s) != before
+        }
+    }
+}

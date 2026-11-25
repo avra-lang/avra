@@ -1,0 +1,44 @@
+// Booleans and comparisons, vertically: keyword anchors merge ahead
+// of NAME under the gate, comparisons answer bool, `==` demands
+// matching operands, and programs compute truth end to end.
+use @std.avrac.testing.{shown, judged}
+
+spec "features/bool_lit" {
+    given "the literals" {
+        then "they parse ahead of NAME, type as bool, and run" {
+            let a = judged("let t = true\nt")
+            a.clean() && shown("let t = true\nt") == "true" && shown("false") == "false"
+        }
+    }
+    given "comparisons" {
+        then "`<` answers bool over ints" {
+            shown("1 < 2") == "true" &&
+                shown("2 < 1") == "false" &&
+                shown("let x = 1 + 1\nx < 3") == "true"
+        }
+        then "`==` compares ints, strings, and bools by value" {
+            shown("1 == 1") == "true" &&
+                shown("1 == 2") == "false" &&
+                shown("\"a\" == \"a\"") == "true" &&
+                shown("\"a\" == \"b\"") == "false" &&
+                shown("1 < 2 == true") == "<refused>"
+        }
+    }
+    given "wrong operands" {
+        then "`<` points at the non-int" {
+            let expected = """error[type.mismatch]: `<` needs `int` operands, found `bool`
+  ╭─[<source>:1:1]
+1 │ true < 1
+  · ┬
+  · ╰── this is `bool`
+──╯
+help: give the operand the type the operator needs — `.length` measures text and lists, and interpolation makes text of a number"""
+            judged("true < 1").report() == expected
+        }
+        then "`==` names both sides" {
+            let a = judged("1 == \"a\"")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`==` compares matching types, found `int` and `string`")
+        }
+    }
+}

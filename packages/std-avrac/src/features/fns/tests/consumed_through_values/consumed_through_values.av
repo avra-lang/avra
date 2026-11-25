@@ -1,0 +1,33 @@
+// proves: a seat the body keeps whole is handed over by a direct caller where the argument dies and
+// retained where it is read after, a fn value's call through its wrapper retains first, and a const
+// settled through such a fn at compile time reads what a run reads
+type P = { n: int, items: List<int> }
+
+fn always(p: P) -> List<P> { [p] }
+
+fn sometimes(p: P, b: bool) -> List<P> {
+    if b { return [p] }
+    []
+}
+
+fn tagged(s: string, k: int) -> List<string> { [s, "${k}"] }
+
+fn apply(f: fn(P) -> List<P>, p: P) -> int { f(p).length + p.items.length }
+
+const SETTLED: int = always(P { n: 3, items: [1, 2] }).length + tagged("x${1}", 2).length
+
+fn run() -> int {
+    mut t = 0
+    for i in 0..200 {
+        let p = P { n: i, items: [i, i + 1] }
+        let s = "w${i}"
+        let kept = always(p)
+        t = t + kept.length + p.items.length + kept[0].items[1] - i
+        t = t + sometimes(P { n: i, items: [i] }, i % 2 == 0).length
+        t = t + apply(always, p) + tagged(s, i).length + s.length
+        t = t + always(P { n: 0, items: [] }).length
+    }
+    t
+}
+
+println("${run()} ${SETTLED}")

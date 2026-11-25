@@ -1,0 +1,540 @@
+// L2's own proof: the five voices, pinned by their exact words over
+// HAND-BUILT IR (never through a real compile — a correct memory pass
+// never emits any of these shapes, so the witness is the only way to
+// reach them), plus a run of real programs whose lowered IR must stay
+// clean — the false positives this pass found and fixed, kept found.
+use @std.avrac.core.{Ins, Reg, Level, SeatMark, Layout, BoxKind, new_type_registry, flatten}
+use @std.avrac.diagnostics.{Diag}
+use @std.avrac.testing.{ir_of}
+use compiler.lower.{Body, Lowered}
+use compiler.soundness.{checked}
+
+fn settled(slot: Reg) -> Ins {
+    // LICENSED compiler.raw_rt_call_void: a hand-built witness has no `cx` to emit through
+    Ins.CallRtVoid("avra_cell_release", [slot])
+}
+
+fn forgot(slot: Reg) -> Ins {
+    // LICENSED compiler.raw_rt_call_void: a hand-built witness has no `cx` to emit through
+    Ins.CallRtVoid("avra_cell_forget", [slot])
+}
+
+fn reused(dst: Reg, a: Reg, b: Reg) -> Ins {
+    // LICENSED compiler.raw_rt_call: a hand-built witness has no `cx` to emit through
+    Ins.CallRt(dst, "avra_array_concat_reusing", [a, b])
+}
+
+fn length_of(dst: Reg, r: Reg) -> Ins {
+    // LICENSED compiler.raw_rt_call: a hand-built witness has no `cx` to emit through
+    Ins.CallRt(dst, "avra_array_len", [r])
+}
+
+fn reg(i: int) -> Reg { Reg { index: i } }
+
+/// A fresh, owned box — the one owning definition every witness
+/// below births its subject with. LICENSED compiler.raw_rt_call: a
+/// hand-built witness has no `cx` to emit through, one bare row
+/// named once for every witness that needs a birth.
+fn new_list(dst: Reg) -> Ins { Ins.CallRt(dst, "avra_array_new", []) }
+
+/// One body, `n` registers wide, no params — every witness below
+/// tests ONE body's own span, standing alone in its own `Lowered`.
+fn witness(name: string, ins: List<Ins>, n: int) -> List<Diag> {
+    witness_with(name, ins, n, {})
+}
+
+/// The same, with the callee marks map the memory pass builds over
+/// every body it lowers — stubs included — in the witness's hand.
+fn witness_with(name: string, ins: List<Ins>, n: int, by_name: Map<string, List<SeatMark>>) -> List<
+    Diag,
+> {
+    witness_typed(name, ins, n, by_name, [])
+}
+
+/// The same, the registers in `cells` wearing `Cell<_>`, every other a
+/// managed string.
+fn witness_typed(
+    name: string,
+    ins: List<Ins>,
+    n: int,
+    by_name: Map<string, List<SeatMark>>,
+    cells: List<int>,
+) -> List<Diag> {
+    let types = new_type_registry()
+    let b = Body {
+        name: name,
+        params: [],
+        ret: types.type(string),
+        gives: null,
+        ins: ins,
+        reg_types: [],
+        layouts: [Layout.Boxed(if cells.contains(i) { BoxKind.Cell } else { BoxKind.List }) for i in 0..n],
+    }
+    checked(
+        Lowered { fns: [], entry: b, types: types, diagnostics: [], externs: [], statics: [] },
+        by_name,
+    )
+}
+
+fn words(ds: List<Diag>) -> string {
+    [d.message for d in ds].join(" | ")
+}
+
+/// A fresh box that reaches its scope's end still alive — no
+/// `Release`, no answer, no transfer.
+fn leak_ins() -> List<Ins> {
+    [Ins.ScopeEnter(Level.Application), new_list(reg(0)), Ins.ScopeExit(null), Ins.Ret(0)]
+}
+
+/// The same box released twice — the second `Release` reads a
+/// register this walk already brought to zero.
+fn double_release_ins() -> List<Ins> {
+    [
+        Ins.ScopeEnter(Level.Application),
+        new_list(reg(0)),
+        Ins.Release([reg(0)]),
+        Ins.Release([reg(0)]),
+        Ins.ScopeExit(null),
+        Ins.Ret(0),
+    ]
+}
+
+/// A register this body never owns (never an owning definition —
+/// what a param or a view rides) released anyway.
+fn release_unowned_ins() -> List<Ins> {
+    [Ins.ScopeEnter(Level.Application), Ins.Release([reg(0)]), Ins.ScopeExit(null), Ins.Ret(0)]
+}
+
+/// A box born BEFORE an `IfStart` region, released on one arm and
+/// standing on the other — the two paths must agree at the merge.
+fn region_disagreement_ins() -> List<Ins> {
+    [
+        Ins.ScopeEnter(Level.Application),
+        new_list(reg(0)),
+        Ins.ConstBool(reg(1), true),
+        Ins.IfStart(reg(1)),
+        Ins.Release([reg(0)]),
+        new_list(reg(2)),
+        Ins.ArmEnd(reg(2)),
+        new_list(reg(3)),
+        Ins.RegionEnd(reg(4), reg(3)),
+        Ins.Release([reg(4)]),
+        Ins.ScopeExit(null),
+        Ins.Ret(0),
+    ]
+}
+
+/// A view (`Extract`) handed to an Avra call alongside its own root —
+/// the callee may empty the box the view looks into, and the view
+/// carries no reference of its own to survive that.
+fn unprotected_view_ins() -> List<Ins> {
+    [
+        Ins.ScopeEnter(Level.Application),
+        Ins.Extract(reg(1), reg(0), 0),
+        Ins.Call(reg(2), "somefn", [reg(0), reg(1)]),
+        Ins.Release([reg(2)]),
+        Ins.ScopeExit(null),
+        Ins.Ret(0),
+    ]
+}
+
+/// A slot seeded with a fresh box: r0 the slot, r1 the seed.
+fn slot_seeded() -> List<Ins> {
+    [
+        Ins.ScopeEnter(Level.Application),
+        Ins.Alloca(reg(0)),
+        new_list(reg(1)),
+        Ins.Store(reg(0), reg(1)),
+    ]
+}
+
+/// A forget's own frame: r0 the slot seeded with r1, then `body`, then
+/// the cell settled at the scope's end.
+fn forget_frame(body: List<Ins>) -> List<Ins> {
+    flatten([slot_seeded(), body, [settled(reg(0)), Ins.ScopeExit(null), Ins.Ret(0)]])
+}
+
+/// The reusing hand-over: r2 loaded, the cell forgotten, r2 handed to
+/// the twin, its answer r3 storing the cell back.
+fn handed_over() -> List<Ins> {
+    [
+        Ins.Load(reg(2), reg(0)),
+        forgot(reg(0)),
+        reused(reg(3), reg(2), reg(2)),
+        Ins.Store(reg(0), reg(3)),
+    ]
+}
+
+/// A region whose first arm yields `r` and whose second yields a fresh
+/// box after `second`; the answer r6 released after the merge, then
+/// `after`.
+fn yielding(r: Reg, second: List<Ins>, after: List<Ins>) -> List<Ins> {
+    flatten(
+        [
+            [
+                Ins.ScopeEnter(Level.Application),
+                new_list(reg(1)),
+                Ins.ConstBool(reg(4), true),
+                Ins.IfStart(reg(4)),
+                Ins.ArmEnd(r),
+            ],
+            second,
+            [new_list(reg(5)), Ins.RegionEnd(reg(6), reg(5)), Ins.Release([reg(6)])],
+            after,
+            [Ins.ScopeExit(null), Ins.Ret(0)],
+        ],
+    )
+}
+
+fn pushed_in(boxed: Reg, v: Reg) -> Ins {
+    // LICENSED compiler.raw_rt_call_void: a hand-built witness has no `cx` to emit through
+    Ins.CallRtVoid("avra_array_push", [boxed, v])
+}
+
+fn slot_read(dst: Reg, boxed: Reg, at: Reg) -> Ins {
+    // LICENSED compiler.raw_rt_call: a hand-built witness has no `cx` to emit through
+    Ins.CallRt(dst, "avra_slot_get", [boxed, at])
+}
+
+fn cell_opened(dst: Reg, slot: Reg) -> Ins {
+    // LICENSED compiler.raw_rt_call: a hand-built witness has no `cx` to emit through
+    Ins.CallRt(dst, "avra_cell_unique", [slot])
+}
+
+fn slot_opened(dst: Reg, boxed: Reg, at: Reg) -> Ins {
+    // LICENSED compiler.raw_rt_call: a hand-built witness has no `cx` to emit through
+    Ins.CallRt(dst, "avra_slot_unique", [boxed, at])
+}
+
+/// A slot seeded with a fresh box r1, `body` between, the cell settled.
+fn cell_frame(body: List<Ins>) -> List<Ins> {
+    flatten(
+        [
+            [
+                Ins.ScopeEnter(Level.Application),
+                Ins.Alloca(reg(0)),
+                new_list(reg(1)),
+                Ins.Store(reg(0), reg(1)),
+                Ins.ConstInt(reg(9), 0),
+            ],
+            body,
+            [settled(reg(0)), Ins.ScopeExit(null), Ins.Ret(0)],
+        ],
+    )
+}
+
+spec "compiler/soundness" {
+    given "the five voices, over hand-built IR a correct memory pass never emits" {
+        then "a fresh box left alive at its scope's end is LEAKED" {
+            let ds = witness("leaks", leak_ins(), 1)
+            ds.length == 1 &&
+                words(ds).contains("r0 is a fresh box still alive") &&
+                words(ds).contains("never released, transferred, or answered")
+        }
+        then "a second Release reads what the first already brought to zero" {
+            let ds = witness("double_release", double_release_ins(), 1)
+            ds.length == 1 &&
+                words(ds).contains("reads r0 after it was released") &&
+                words(ds).contains("use-after-free")
+        }
+        then "releasing a register this body never owned names the mistake" {
+            let ds = witness("release_unowned", release_unowned_ins(), 1)
+            ds.length == 1 &&
+                words(ds).contains("releases r0") &&
+                words(ds).contains("never this body's own reference")
+        }
+        then "an IfStart region whose arms disagree on a pre-existing box is refused at the merge" {
+            let ds = witness("disagree", region_disagreement_ins(), 5)
+            ds.length == 1 && words(ds).contains("leaves r0 released on one arm and not on another")
+        }
+        then "an unprotected view handed to a call alongside its own root is refused" {
+            let ds = witness("view_case", unprotected_view_ins(), 3)
+            ds.length == 1 &&
+                words(ds).contains("r1") &&
+                words(ds).contains("a view with no reference of its own")
+        }
+    }
+    given "the callee marks map reaches the checker — a consuming seat spends, a borrowed one still leaks" {
+        then "a box moved into a callee's CONSUMING seat is spent, never leaked" {
+            let ds = witness_with(
+                "consumed",
+                [
+                    Ins.ScopeEnter(Level.Application),
+                    new_list(reg(0)),
+                    Ins.Call(reg(1), "taker", [reg(0)]),
+                    Ins.Release([reg(1)]),
+                    Ins.ScopeExit(null),
+                    Ins.Ret(0),
+                ],
+                2,
+                {"taker": [SeatMark { mutable: false, settled: false, consumed: true }]},
+            )
+            ds.is_empty()
+        }
+        then "a box a callee only BORROWS is still a leak — the marks map is read, not assumed" {
+            let ds = witness_with(
+                "borrowed",
+                [
+                    Ins.ScopeEnter(Level.Application),
+                    new_list(reg(0)),
+                    Ins.Call(reg(1), "reader", [reg(0)]),
+                    Ins.Release([reg(1)]),
+                    Ins.ScopeExit(null),
+                    Ins.Ret(0),
+                ],
+                2,
+                {"reader": [SeatMark { mutable: false, settled: false }]},
+            )
+            ds.length == 1 && words(ds).contains("r0")
+        }
+    }
+    given "a forget hands its cell's reference to the load that takes it" {
+        then "the reusing hand-over — load, forget, twin, store back — reads clean" {
+            witness("handed", forget_frame(handed_over()), 10).is_empty()
+        }
+        then "a forget with no load of its cell to take the reference is refused" {
+            let ds = witness(
+                "untaken",
+                forget_frame([forgot(reg(0)), new_list(reg(3)), Ins.Store(reg(0), reg(3))]),
+                10,
+            )
+            ds.length == 1 && words(ds).contains("with no load of it to take its reference")
+        }
+        then "a taker never handed on is a leaked box" {
+            let ds = witness(
+                "kept_taker",
+                forget_frame(
+                    [
+                        Ins.Load(reg(2), reg(0)),
+                        forgot(reg(0)),
+                        new_list(reg(3)),
+                        Ins.Store(reg(0), reg(3)),
+                    ],
+                ),
+                10,
+            )
+            ds.length == 1 && words(ds).contains("r2 is a fresh box still alive")
+        }
+        then "a taker read after the twin consumed it is a use after release" {
+            let ds = witness(
+                "reread",
+                forget_frame(handed_over().concat([length_of(reg(4), reg(2))])),
+                10,
+            )
+            ds.length == 1 && words(ds).contains("reads r2 after it was released")
+        }
+        then "another load of the cell read while it stands empty is refused" {
+            let ds = witness(
+                "alias",
+                forget_frame(
+                    [
+                        Ins.Load(reg(4), reg(0)),
+                        Ins.Load(reg(2), reg(0)),
+                        forgot(reg(0)),
+                        reused(reg(3), reg(2), reg(4)),
+                        Ins.Store(reg(0), reg(3)),
+                    ],
+                ),
+                10,
+            )
+            ds.length == 1 &&
+                words(ds).contains("reads r4 from the cell r0 after a forget emptied it")
+        }
+        then "an earlier load holding its own reference reads clean after the forget" {
+            witness(
+                "retained_alias",
+                forget_frame(
+                    [
+                        Ins.Load(reg(4), reg(0)),
+                        Ins.Retain(reg(4)),
+                        Ins.Load(reg(2), reg(0)),
+                        forgot(reg(0)),
+                        reused(reg(3), reg(2), reg(2)),
+                        Ins.Store(reg(0), reg(3)),
+                        Ins.Release([reg(4)]),
+                    ],
+                ),
+                10,
+            )
+                .is_empty()
+        }
+        then "a load of the emptied cell itself before the store is refused" {
+            let ds = witness(
+                "reload",
+                forget_frame(
+                    [
+                        Ins.Load(reg(2), reg(0)),
+                        forgot(reg(0)),
+                        Ins.Load(reg(5), reg(0)),
+                        reused(reg(3), reg(2), reg(5)),
+                        Ins.Store(reg(0), reg(3)),
+                    ],
+                ),
+                10,
+            )
+            ds.length == 1 && words(ds).contains("reads r0 from the cell r0")
+        }
+        then "a sibling arm loading the cell is another path, never after the forget" {
+            witness(
+                "sibling",
+                forget_frame(
+                    [
+                        Ins.ConstBool(reg(5), true),
+                        Ins.IfStart(reg(5)),
+                        Ins.Load(reg(2), reg(0)),
+                        forgot(reg(0)),
+                        reused(reg(3), reg(2), reg(2)),
+                        Ins.ArmEnd(reg(3)),
+                        Ins.Load(reg(6), reg(0)),
+                        forgot(reg(0)),
+                        reused(reg(7), reg(6), reg(6)),
+                        Ins.RegionEnd(reg(8), reg(7)),
+                        Ins.Store(reg(0), reg(8)),
+                    ],
+                ),
+                10,
+            )
+                .is_empty()
+        }
+    }
+    given "an arm's yield hands the region one reference" {
+        then "an outer box yielded with no retain, released on the other arm, reads clean (R2a)" {
+            witness("r2a", yielding(reg(1), [Ins.Release([reg(1)])], []), 8).is_empty()
+        }
+        then "a borrowed register yielded with no reference of its own is refused" {
+            let ds = witness("borrowed_yield", yielding(reg(7), [], [Ins.Release([reg(1)])]), 8)
+            ds.length == 1 && words(ds).contains("yields r7 holding no reference of its own")
+        }
+        then "an outer box read after the merge took its count is a use after release" {
+            let ds = witness(
+                "read_after",
+                yielding(reg(1), [Ins.Release([reg(1)])], [length_of(reg(7), reg(1))]),
+                8,
+            )
+            ds.length == 1 && words(ds).contains("reads r1 after it was released")
+        }
+        then "an outer box the merge took and the scope releases again is refused" {
+            let ds = witness(
+                "twice",
+                yielding(reg(1), [Ins.Release([reg(1)])], [Ins.Release([reg(1)])]),
+                8,
+            )
+            ds.length == 1 && words(ds).contains("r1")
+        }
+        then "an outer box yielded on one arm and kept on the other is refused at the merge" {
+            let ds = witness("one_arm", yielding(reg(1), [], []), 8)
+            words(ds).contains("leaves r1 released on one arm and not on another")
+        }
+    }
+    given "a write in place opens its box first" {
+        then "a push into the binary's own data is refused" {
+            let ds = witness(
+                "static_push",
+                [
+                    Ins.ScopeEnter(Level.Application),
+                    Ins.StaticAddr(reg(1), "lit"),
+                    Ins.ConstInt(reg(2), 1),
+                    pushed_in(reg(1), reg(2)),
+                    Ins.ScopeExit(null),
+                    Ins.Ret(0),
+                ],
+                4,
+            )
+            ds.length == 1 &&
+                words(ds)
+                    .contains(
+                        "hands r1 to `avra_array_push`, which writes it in place — a box never opened for writing",
+                    )
+        }
+        then "a push into a cell's bare load is refused" {
+            let ds = witness(
+                "bare_load",
+                cell_frame([Ins.Load(reg(2), reg(0)), pushed_in(reg(2), reg(9))]),
+                10,
+            )
+            ds.length == 1 && words(ds).contains("hands r2 to `avra_array_push`")
+        }
+        then "a push into a view read out of another box is refused" {
+            let ds = witness(
+                "view_push",
+                cell_frame(
+                    [
+                        Ins.Load(reg(2), reg(0)),
+                        slot_read(reg(3), reg(2), reg(9)),
+                        pushed_in(reg(3), reg(9)),
+                    ],
+                ),
+                10,
+            )
+            ds.length == 1 && words(ds).contains("hands r3 to `avra_array_push`")
+        }
+        then "a push into the cell's box opened first reads clean" {
+            witness(
+                "opened_push",
+                cell_frame([cell_opened(reg(2), reg(0)), pushed_in(reg(2), reg(9))]),
+                10,
+            )
+                .is_empty()
+        }
+        then "a push into a box this body made reads clean" {
+            witness(
+                "fresh_push",
+                [
+                    Ins.ScopeEnter(Level.Application),
+                    new_list(reg(1)),
+                    Ins.ConstInt(reg(2), 1),
+                    pushed_in(reg(1), reg(2)),
+                    Ins.Release([reg(1)]),
+                    Ins.ScopeExit(null),
+                    Ins.Ret(0),
+                ],
+                4,
+            )
+                .is_empty()
+        }
+        then "a Cell's slot opened through the Cell itself, then written, reads clean" {
+            witness_typed(
+                "cell_slot",
+                cell_frame(
+                    [
+                        Ins.Load(reg(2), reg(0)),
+                        slot_opened(reg(3), reg(2), reg(9)),
+                        pushed_in(reg(3), reg(9)),
+                    ],
+                ),
+                10,
+                {},
+                [0, 1, 2],
+            )
+                .is_empty()
+        }
+    }
+    given "real programs whose lowered IR must stay clean — the false positives this pass found and fixed" {
+        then "a managed struct PACK's own birth-retain reads clean (PACK IS IDENTITY, always retained)" {
+            ir_of("type P = { s: string }\nfn make() -> P { P { s: \"a\" } }\nmake().s")
+                .diagnostics
+                .is_empty()
+        }
+        then "a mut accumulator folded across a loop reads clean — the escaping Load's birth-retain" {
+            ir_of(
+                "fn built(head: List<int>, rest: List<List<int>>) -> List<int> {\n    mut acc = head\n    for p in rest {\n        acc = acc.concat(p)\n    }\n    acc\n}\nbuilt([1], [[2], [3]]).length",
+            )
+                .diagnostics
+                .is_empty()
+        }
+        then "a view rooted at the same call's own mut seat is protected — borrowed_params' own shape" {
+            ir_of(
+                "type Bag = { items: List<string>, rows: List<List<string>>, tag: string }\nfn emptied(mut b: Bag, row: List<string>) -> string {\n    b.rows = []\n    b.tag = \"gone\"\n    row[1]\n}\nmut b = Bag { items: [], rows: [[\"a\", \"b\"]], tag: \"\" }\nemptied(b, b.rows[0])",
+            )
+                .diagnostics
+                .is_empty()
+        }
+        then "a settled empty record's static address reads clean through a bare Result tail — the stripped immortal retain left its paired release behind" {
+            ir_of(
+                "type Empty = {}\nfn f(x: int) -> Result<Empty, string> {\n    let row = Empty {}\n    if x == 0 { fail \"trailing\" }\n    row\n}\nmatch f(1) { .Ok(_) -> 1, .Err(_) -> 0 }",
+            )
+                .diagnostics
+                .is_empty()
+        }
+    }
+}

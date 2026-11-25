@@ -1,0 +1,65 @@
+// A LOOKUP NEVER MUTATES THE PROGRAM. The import remedy looks for a component's
+// home across every package in reach and asks records and tokens alone, so a
+// parse refusal reads and analyses exactly what its clean twin does. Asked of
+// the program layer.
+use @std.avrac.testing.{held_at, Held, Judged}
+
+const manifest: string = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@x/widgets\" = { path = \"vendor/widgets\" }\n"
+const widgets_manifest: string = "[package]\nname = \"@x/widgets\"\nversion = \"0.1.0\"\n"
+const widget: string = "export component Widget {\n    label: string\n}\n"
+const unused: string = "export fn far() -> int { 1 }\n"
+const widget_test: string = "use @x.widgets.{Widget}\nspec \"w\" { given \"g\" { then \"t\" { true } } }\n"
+
+fn widgets_held(main: string) -> Held {
+    held_at(
+        {
+            "/w/avra.toml": manifest,
+            "/w/vendor/widgets/avra.toml": widgets_manifest,
+            "/w/vendor/widgets/src/widget.av": widget,
+            "/w/vendor/widgets/src/far/far.av": unused,
+            "/w/vendor/widgets/src/tests/widget_test.av": widget_test,
+            "/w/src/main.av": main,
+        },
+        "/w",
+    )
+}
+
+fn program_of(main: string) -> Judged { widgets_held(main).judged_at("/w/src/main.av") }
+
+/// The files a program's check analysed.
+fn analysed(main: string) -> int { program_of(main).source_paths().length }
+
+/// The files the layer read the text of while judging the program.
+fn files_met(main: string) -> List<string> {
+    let held = widgets_held(main)
+    let _ = held.judged_at("/w/src/main.av")
+    held.files_read()
+}
+
+fn report_of(main: string) -> string { program_of(main).report() }
+
+spec "compiler/parse refusal" {
+    given "a parse error beside a name no package exports as a component" {
+        then "the program analyses as many files as its clean twin" {
+            analysed("use @x.widgets.{Widget}\nlet x y = 1\n") == analysed("use @x.widgets.{Widget}\nlet x = 1\n")
+        }
+        then "the layer reads the same files as its clean twin" {
+            let refused = files_met("use @x.widgets.{Widget}\nlet x y = 1\n")
+            let clean = files_met("use @x.widgets.{Widget}\nlet x = 1\n")
+            refused.length == clean.length && refused.all((f) -> clean.contains(f))
+        }
+        then "a dependency's unreached module and its tests stay out" {
+            !program_of("use @x.widgets.{Widget}\nlet x y = 1\n")
+                .source_paths()
+                .any(it.contains("/far/") || it.contains("/tests/"))
+        }
+    }
+    given "a parse error beside a component word nobody imported" {
+        then "the help names the `use` that brings it" {
+            report_of("Widget w { label: \"a\" }\n").contains("`use @x.widgets.{Widget}`")
+        }
+        then "the remedy's search adds no file to the program" {
+            !program_of("Widget w { label: \"a\" }\n").source_paths().any(it.contains("/widgets/"))
+        }
+    }
+}

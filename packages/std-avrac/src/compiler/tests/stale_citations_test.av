@@ -1,0 +1,66 @@
+// A file's licence citations that name nothing, as the program layer's check refuses them:
+// an id no rule carries and no keeper's family holds is stale; a rule's id and a family's member
+// are not; a citation's words inside a string are no comment at all.
+use compiler.{StaleCitation, avra_fact_definitions, stale_citations}
+use @std.avrac.testing.held.{empty_store, held_at}
+use @std.program.query_engine.{query_engine}
+
+/// The stale citations of `src/main.av` holding `main`, in a package of its own.
+fn stale_in(main: string) -> List<StaleCitation> {
+    let held = held_at(
+        {
+            "/c/avra.toml": "[package]\nname = \"cited\"\nversion = \"0.1.0\"\n",
+            "/c/src/main.av": main,
+        },
+        "/c",
+    )
+    held.entered()
+    stale_citations(
+        query_engine(empty_store(), avra_fact_definitions()),
+        held.file_at("/c/src/main.av"),
+    )
+}
+
+spec "stale `// LICENSED` citations on the program layer" {
+    given "a citation naming no rule" {
+        then "it is stale, at its own line, by its id" {
+            let found = stale_in(
+                "fn f() -> int { 1 }\n// LICENSED style.no_such_rule: nothing backs it\nf()\n",
+            )
+            found.length == 1 && found[0].line == 2 && found[0].id == "style.no_such_rule"
+        }
+    }
+    given "a rule's own id and a keeper's family member" {
+        then "neither is stale" {
+            stale_in(
+                "// LICENSED loops.push_loop: a rule\n// LICENSED input.clock: a keeper's\nfn f() -> int { 1 }\nf()\n",
+            )
+                .is_empty()
+        }
+    }
+    given "a citation's words inside a string" {
+        then "nothing is stale: a string is no comment" {
+            stale_in("fn f() -> string { \"// LICENSED style.no_such_rule: in a string\" }\nf()\n")
+                .is_empty()
+        }
+    }
+    given "a citation wherever a file holds one" {
+        then "on its first line, inside a body, and after its last statement, each at its own line" {
+            let found = stale_in(
+                "// LICENSED style.first: at the top\nfn f() -> int {\n    // LICENSED style.inner: in a body\n    1\n}\nf()\n// LICENSED style.last: at the end\n",
+            )
+            found.length == 3 &&
+                found[0].line == 1 &&
+                found[0].id == "style.first" &&
+                found[1].line == 3 &&
+                found[1].id == "style.inner" &&
+                found[2].line == 7 &&
+                found[2].id == "style.last"
+        }
+    }
+    given "a bare doctrine exemption with no id" {
+        then "it claims nothing, so nothing is stale" {
+            stale_in("// LICENSED — a doctrine exemption\nfn f() -> int { 1 }\nf()\n").is_empty()
+        }
+    }
+}

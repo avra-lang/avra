@@ -1,0 +1,89 @@
+//! The formatter's idioms for this feature — `rule`s, reached by
+//! this feature's `mod.av`, the way any declaration is.
+use core.{StmtId, ExprId, SyntaxArena}
+use features.{Code, Fix, fact_rule}
+
+/// An `impl Trait for T` method whose body is the trait's own
+/// DEFAULT body for that name, span-blind and with a written no-op
+/// (`nothing()`) elided on either side, is a copy: omitting it
+/// inherits the identical default (`Decls.defaulted`), so the
+/// override says nothing the trait does not already say.
+///
+/// A BARE-HOLE ROOT, structural GUARD: `trait_default` reads the
+/// trait member sharing this method's name off the DECLARATION
+/// table — a cross-declaration fact no quote pattern spells, the
+/// same door `for_range`/`is_nullable_flag_mut` already open for a
+/// structural read a pattern's own grammar cannot hold.
+///
+/// A `Fix.Delete`, never a rewrite: the method — its own doc and
+/// trailing break included — is gone whole, never replaced by empty
+/// code standing in its place. The trait's default leads the example
+/// below and the impl it overrides follows it: the walk covers every
+/// top-level statement, so setup above the fn under test reaches it.
+// LICENSED compiler.duplicated_message: a fixture and its near-twin, held as strings under test — not a message that can drift
+@fixes("impl Greeter for Loud {\n    fn greet() -> string {\n        \"hi\"\n    }\n}\ntrait Greeter {\n    fn greet() -> string {\n        \"hi\"\n    }\n}\ntype Loud = {}")
+// LICENSED compiler.duplicated_message: a fixture and its near-twin, held as strings under test — not a message that can drift
+@keeps("trait Greeter {\n    fn greet() -> string {\n        \"hi\"\n    }\n}\nimpl Greeter for Loud {\n    fn greet() -> string {\n        \"hey\"\n    }\n}\ntype Loud = {}")
+@keeps("impl Loud {\n    fn greet() -> string {\n        \"hi\"\n    }\n}\ntype Loud = {}")
+@law("an impl method identical to its trait's default answers the same as the default")
+export fact_rule default_override { quote { ${m} } if overrides_default(m) -> Fix.Delete(m.deleted()) }
+
+/// Whether `m` is a method statement standing in an `impl Trait for
+/// T` block, its trait naming a DEFAULT member of the same name, and
+/// the two bodies match once each side's own written no-ops are
+/// dropped.
+fn overrides_default(m: Code) -> bool {
+    let own? = m.own_body() else { return false }
+    let inherited? = m.overridden_default() else { return false }
+    bodies_equivalent(own.store, own.body, inherited.store, inherited.body)
+}
+
+/// Whether two fn bodies answer the same program: the same statement
+/// count once a bare `nothing()` call is dropped from each, every
+/// kept statement's fingerprint equal in order (`core.SyntaxArena`'s
+/// own span-blind fold — a copy in a different file still matches),
+/// and the same tail.
+fn bodies_equivalent(os: SyntaxArena, ome: ExprId, ds: SyntaxArena, dme: ExprId) -> bool {
+    let ok? = kept_block(os, ome) else { return false }
+    let dk? = kept_block(ds, dme) else { return false }
+    ok.stmts.length == dk.stmts.length &&
+        same_tail(os, ok.tail, ds, dk.tail) &&
+        [i for i, s in ok.stmts if os.stmt_fingerprint(s) != ds.stmt_fingerprint(dk.stmts[i])]
+            .is_empty()
+}
+
+/// A block's own statements with every written no-op DROPPED, and
+/// its tail bare — absent for anything that is not a block (a fn's
+/// body always is one; the guard stays honest for a shape that
+/// somehow is not).
+type KeptBlock = { stmts: List<StmtId>, tail: ExprId? }
+
+fn kept_block(store: SyntaxArena, e: ExprId) -> KeptBlock? {
+    match store.expr(e) {
+        .Block(_) -> KeptBlock {
+            stmts: [s for s in store.lead_of(e) if !is_nothing_call(store, s)],
+            tail: store.tail_of(e),
+        },
+        rest -> null,
+    }
+}
+
+fn same_tail(os: SyntaxArena, ot: ExprId?, ds: SyntaxArena, dt: ExprId?) -> bool {
+    if ot == null || dt == null { return ot == null && dt == null }
+    os.expr_fingerprint(ot!) == ds.expr_fingerprint(dt!)
+}
+
+/// Whether `s` is exactly `nothing()` — the written-out no-op a pass
+/// method calls to say it deliberately does no work
+/// (`features.nothing`), which two otherwise-identical bodies may
+/// carry on either side, or neither.
+fn is_nothing_call(store: SyntaxArena, s: StmtId) -> bool {
+    match store.stmt(s) { .ExprStmt(e) -> is_nothing_call_expr(store, e), rest -> false }
+}
+
+fn is_nothing_call_expr(store: SyntaxArena, e: ExprId) -> bool {
+    match store.expr(e) {
+        .Call(callee, _, args) -> callee.spells("nothing") && args.is_empty(),
+        rest -> false,
+    }
+}
