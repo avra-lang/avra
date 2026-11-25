@@ -19,6 +19,8 @@ use realize.html.css.{class_names, box_vars, drawn_box, CssVar, scopes_of}
 use tree.sites.{Reading}
 use @std.meta.{Structural, Opaque}
 use @std.assets.{Picture}
+use realize.diff.matcher.{Diffable}
+use realize.diff.hearing.{Bound, Hears}
 
 /// One piece of a page: an element, or a run of text.
 export enum Element {
@@ -51,7 +53,8 @@ export type Tagged = {
     says: List<HtmlAttrName> = [],
 }
 
-impl Element {
+impl Diffable for Element {
+    /// Its number on the page.
     fn id() -> NodeId {
         match self { .Tag(el) -> el.id, .Text(run) -> run.id }
     }
@@ -61,6 +64,31 @@ impl Element {
         match self { .Tag(el) -> el.seat, .Text(run) -> run.seat }
     }
 
+    /// Text keeps text, and an element keeps an element of the same tag.
+    fn keeps(now: Element) -> bool {
+        match self {
+            .Text(_) -> match now { .Text(_) -> true, .Tag(_) -> false },
+            .Tag(was) -> match now { .Tag(n) -> was.tag == n.tag, .Text(_) -> false },
+        }
+    }
+}
+
+impl Hears for Element {
+    /// The handlers it binds: a run of text binds none.
+    fn bound() -> List<Bound> {
+        match self {
+            .Tag(el) -> [Bound { id: el.id, action: a, ordered: el.crowded } for a in el.hears],
+            .Text(_) -> [],
+        }
+    }
+
+    /// What it holds.
+    fn held() -> List<Element> {
+        match self { .Tag(el) -> el.kids, .Text(_) -> [] }
+    }
+}
+
+impl Element {
     /// Where this stands, as a reader's path shows it: made only when a reader asks.
     fn reads() -> string { self.seat().shown() }
 

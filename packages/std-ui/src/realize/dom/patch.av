@@ -7,7 +7,7 @@
 //! A host applies patches and holds no tree of its own: every decision —
 //! what moved, what is a property, what an event says — is made here.
 use @std.meta.{derive}
-use tree.identity.{NodeId, StepTable, same_step}
+use tree.identity.{NodeId}
 use tree.node.{Action, Handler, Said}
 use tree.codes.{Codes, Coded}
 use tree.seats.{Seat, row_at}
@@ -16,6 +16,7 @@ use realize.html.css.{CssVar}
 use realize.html.delivery.{on_web, web_event}
 use realize.html.element.{Element, Tagged, Worded}
 use realize.html.tags.{HtmlTag, HtmlAttr, HtmlAttrName}
+use realize.diff.matcher.{Draws, Drawn, Stands, siblings}
 
 /// One change to the page. `Place` puts an element under its parent —
 /// the page itself when absent — right after a sibling, or first. `Call`
@@ -208,123 +209,9 @@ fn present<T>(value: T?) -> List<T> {
 
 fn attrs_of(el: Tagged) -> List<HtmlAttr> { [a for a in el.attrs if property(a) == null && door(a) == null] }
 
-/// How an element of the new run stands against the old one: new to the
-/// page, or the element that stood at `at` — text kept as text, an
-/// element kept as an element of the same tag. A seat whose node became
-/// another kind holds a new element.
-enum Stands {
-    Made(e: Element)
-    KeptText(at: int, was: Worded, now: Worded)
-    KeptTag(at: int, was: Tagged, now: Tagged)
-}
-
-/// `e` against the old element at `at`.
-fn standing_at(old: Element, at: int, e: Element) -> Stands {
-    match e {
-        .Text(now) -> match old { .Text(was) -> .KeptText(at, was, now), .Tag(_) -> .Made(e) },
-        .Tag(now) -> match old {
-            .Tag(was) -> if was.tag == now.tag { .KeptTag(at, was, now) } else { .Made(e) },
-            .Text(_) -> .Made(e),
-        },
-    }
-}
-
-impl Stands {
-    /// Where in the old run the element stood — nowhere for a new one.
-    fn stood() -> int? {
-        match self { .Made(_) -> null, .KeptText(at, _, _) or .KeptTag(at, _, _) -> at }
-    }
-
-    /// The old place this keeps, as a run of none or one.
-    fn keeps() -> List<int> {
-        match self { .Made(_) -> [], .KeptText(at, _, _) or .KeptTag(at, _, _) -> [at] }
-    }
-}
-
-/// Each element's place in a run, by its seat.
-fn places(run: List<Element>) -> StepTable { StepTable.of([e.seat() for e in run]) }
-
-/// `e` against whichever element of `old` stands at its seat.
-fn found(old: List<Element>, at: StepTable, e: Element) -> Stands {
-    let j? = at.find(e.seat()) else { return Stands.Made(e) }
-    standing_at(old[j], j, e)
-}
-
-/// Whether two runs hold the same seats in the same order.
-fn pair_off(old: List<Element>, new: List<Element>) -> bool {
-    if old.length != new.length { return false }
-    for j, e in new {
-        if !same_step(old[j].seat(), e.seat()) { return false }
-    }
-    true
-}
-
-/// Each element of `new` against the old run, matched by seat. Two runs
-/// that pair off in order, as an unchanged list does, are matched without
-/// a table.
-fn matched(old: List<Element>, new: List<Element>) -> List<Stands> {
-    if pair_off(old, new) { return [standing_at(old[j], j, e) for j, e in new] }
-    let at = places(old)
-    [found(old, at, e) for e in new]
-}
-
-/// One mark an element of a run of `length`, true at each place in `at`.
-fn marked(length: int, at: List<int>) -> List<bool> {
-    let marks: Cell<List<bool>> = Cell.new([false for j in 0..length])
-    for j in at { marks.set_at(j, true) }
-    marks.get()
-}
-
-/// The first place in `tails` whose element stood at or past `stood`,
-/// by halving: `tails` holds places in rising order of where they stood.
-fn first_not_before(tails: List<int>, was: List<int>, stood: int) -> int {
-    mut low = 0
-    mut high = tails.length
-    while low < high {
-        let mid = (low + high) / 2
-        if was[tails[mid]] < stood { low = mid + 1 } else { high = mid }
-    }
-    low
-}
-
-/// WHICH KEPT ELEMENTS STAND STILL: the longest run of them whose old
-/// places still rise, so the fewest are moved — a row carried to the
-/// front is one move, whatever the length of the list. `stood` is each
-/// new element's old place; the answer marks, per new element, the ones
-/// that stay where they are. Patience sorting: `tails[k]` is the element
-/// ending the best rising run of length k + 1, `before` the one it
-/// follows.
-fn still(stood: List<int?>) -> List<bool> {
-    let kept = [j for j, at in stood if at != null]
-    let was = [at ?? 0 for at in stood]
-    let tails: Cell<List<int>> = Cell.new([])
-    let before: Cell<List<int>> = Cell.new([-1 for j in stood])
-    for j in kept {
-        let k = first_not_before(tails.get(), was, was[j])
-        if k > 0 { before.set_at(j, tails.get()[k - 1]) }
-        if k == tails.get().length { tails.push(j) } else { tails.set_at(k, j) }
-    }
-    let run: Cell<List<int>> = Cell.new([])
-    mut at = tails.get().last() ?? -1
-    let follows = before.get()
-    // LICENSED loops.push_loop: a chain walked back link by link
-    while at >= 0 {
-        run.push(at)
-        at = follows[at]
-    }
-    marked(stood.length, run.get())
-}
-
 /// Whether two actions ask the page for the same listener: the kind, and
 /// what the event says.
 fn same_hearing(a: Action, b: Action) -> bool { a.seat == b.seat && says(a.handler) == says(b.handler) }
-
-/// One element on the page, wearing its number, and the next number to
-/// give.
-type Drawn = { element: Element, next: int }
-
-/// A run of elements on the page and the next number to give.
-type Run = { page: List<Element>, next: int }
 
 /// A diff under way: what the user was heard to do to the page since it
 /// was last drawn, and the patches said so far. EVERY PATCH IS SAID INTO
@@ -343,53 +230,33 @@ impl Differ {
 
     fn later(calls: List<Patch>) { self.after.set(self.after.get().concat(calls)) }
 
-    /// One parent's children: what left is removed, what stays is diffed
-    /// where it stands, and what is new or moved is placed after the
-    /// sibling it now follows. Of the kept, the longest run still in
-    /// order stands still.
-    fn siblings(parent: NodeId?, old: List<Element>, new: List<Element>, next: int) -> Run {
-        let pairs = matched(old, new)
-        let held = marked(old.length, [at for p in pairs for at in p.keeps()])
-        self.say([Patch.Remove(e.id()) for j, e in old if !held[j]])
-        let stays = still([p.stood() for p in pairs])
-        mut page: List<Element> = []
-        mut free = next
-        // LICENSED loops.push_loop: each element takes the numbers the ones before it left
-        for j, p in pairs {
-            let d = self.drawn(p, free)
-            if !stays[j] { self.said.push(Patch.Place(d.element.id(), parent, page.last()?.id())) }
-            page.push(d.element)
-            free = d.next
+    /// A kept element: its differences said, its children matched under it.
+    /// One of another kind stands anew.
+    fn kept(was: Element, now: Element, next: int) -> Drawn<Element> {
+        match was {
+            .Text(w) -> match now { .Text(n) -> self.kept_text(w, n, next), .Tag(_) -> self.made(now, next) },
+            .Tag(w) -> match now { .Tag(n) -> self.kept_tag(w, n, next), .Text(_) -> self.made(now, next) },
         }
-        Run { page: page, next: free }
     }
 
-    /// An element on the page, by how it stands against the old one.
-    fn drawn(p: Stands, next: int) -> Drawn {
-        match p {
-            .Made(e) -> self.made(e, next),
-            .KeptText(_, was, now) -> {
-                if was.content != now.content { self.said.push(Patch.SetText(was.id, now.content)) }
-                Drawn { element: Element.Text(now with { id: was.id }), next: next }
-            },
-            .KeptTag(_, was, now) -> {
-                self.say(attributes(was.id, attrs_of(was), attrs_of(now)))
-                self.say(variables(was.id, was.vars, now.vars))
-                self.say(self.properties(was.id, props_of(was), props_of(now)))
-                self.say(hearing(was.id, was.hears, now.hears))
-                self.later(self.doors(was.id, doors_of(was), doors_of(now)))
-                let laid = self.siblings(was.id, was.kids, now.kids, next)
-                Drawn {
-                    element: Element.Tag(now with { id: was.id, kids: laid.page }),
-                    next: laid.next,
-                }
-            },
-        }
+    fn kept_text(was: Worded, now: Worded, next: int) -> Drawn<Element> {
+        if was.content != now.content { self.said.push(Patch.SetText(was.id, now.content)) }
+        Drawn { element: Element.Text(now with { id: was.id }), next: next }
+    }
+
+    fn kept_tag(was: Tagged, now: Tagged, next: int) -> Drawn<Element> {
+        self.say(attributes(was.id, attrs_of(was), attrs_of(now)))
+        self.say(variables(was.id, was.vars, now.vars))
+        self.say(self.properties(was.id, props_of(was), props_of(now)))
+        self.say(hearing(was.id, was.hears, now.hears))
+        self.later(self.doors(was.id, doors_of(was), doors_of(now)))
+        let laid = siblings(self, was.id, was.kids, now.kids, next)
+        Drawn { element: Element.Tag(now with { id: was.id, kids: laid.page }), next: laid.next }
     }
 
     /// An element new to the page: given the next number and built whole,
     /// for its parent to place.
-    fn made(e: Element, next: int) -> Drawn {
+    fn made(e: Element, next: int) -> Drawn<Element> {
         let id = NodeId { n: next }
         match e {
             .Text(run) -> {
@@ -404,7 +271,7 @@ impl Differ {
                     .say([Patch.SetProp(id, p.name, p.value) for p in props_of(el) if !rests(p.value)])
                 self.say([Patch.Listen(id, listening_of(a)) for a in el.hears])
                 self.later([Patch.Call(id, d.enter) for d in doors_of(el)])
-                let laid = self.siblings(id, [], el.kids, next + 1)
+                let laid = siblings(self, id, [], el.kids, next + 1)
                 Drawn { element: Element.Tag(el with { id: id, kids: laid.page }), next: laid.next }
             },
         }
@@ -452,6 +319,16 @@ impl Differ {
     }
 }
 
+impl Draws<Element> for Differ {
+    fn removed(id: NodeId) { self.said.push(Patch.Remove(id)) }
+
+    fn placed(id: NodeId, parent: NodeId?, after: NodeId?) { self.said.push(Patch.Place(id, parent, after)) }
+
+    fn drawn(p: Stands<Element>, next: int) -> Drawn<Element> {
+        match p { .Made(e) -> self.made(e, next), .Kept(_, was, now) -> self.kept(was, now, next) }
+    }
+}
+
 /// An attribute is set when it arrives or changes, and dropped when it goes.
 fn attributes(id: NodeId, old: List<HtmlAttr>, new: List<HtmlAttr>) -> List<Patch> {
     [Patch.SetAttr(id, a.name, a.value) for a in new if !old.any(it.name == a.name && it.value == a.value)]
@@ -479,7 +356,7 @@ fn hearing(id: NodeId, old: List<Action>, new: List<Action>) -> List<Patch> {
 /// next from `next` on.
 export fn diff(old: List<Element>, new: List<Element>, heard: List<Heard>, next: int) -> Diffed {
     let at = Differ { heard: heard }
-    let drawn = at.siblings(null, old, new, next)
+    let drawn = siblings(at, null, old, new, next)
     Diffed { patches: at.said.get().concat(at.after.get()), page: drawn.page, next: drawn.next }
 }
 

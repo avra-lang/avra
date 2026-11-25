@@ -1,0 +1,106 @@
+//! The native target over the page's own matcher: one element per node, facts
+//! compared and sent, and a diff that says only what changed.
+use @std.ui.realize.native.element.{Native, lowered}
+use @std.ui.realize.native.patch.{NativePatch, native_diff}
+use @std.ui.realize.native.fact.{Fact, Scalar, What, same, style_facts}
+use @std.ui.realize.tests.support.{holding, keyed, leaf, text_node, button_node, switch_node}
+use @std.ui.realize.tests.support.spoken.{stamped_with}
+use @std.ui.tree.node.{Node, Prim}
+use @std.ui.style.style.{Style, StateStyle, Interaction}
+use @std.ui.style.tokens.{Tone}
+use @std.ui.style.theme.{default_theme}
+
+fn counter(n: int) -> Node { holding(.Column, [text_node("taps: ${n}"), button_node("taps+")]) }
+
+fn row(title: string, done: bool) -> Node { keyed(holding(.Item, [switch_node(title, done), button_node("Remove")]), title) }
+
+fn board(titles: List<string>) -> Node { holding(.List, [row(t, false) for t in titles]) }
+
+/// The patches between `old` drawn first and `new`, one word each.
+fn patched(old: Node, new: Node) -> List<string> {
+    let first = native_diff([], lowered(old), 0)
+    [word(p) for p in native_diff(first.page, lowered(new), first.next).patches]
+}
+
+/// A fact's word, as its code names it.
+fn named(w: What) -> string { What.coded().find(it.code == w.code())?.word ?? "" }
+
+fn word(p: NativePatch) -> string {
+    match p {
+        .Create(_, _) -> "create",
+        .SetFact(_, f) -> "set ${named(f.what)}",
+        .DropFact(_, what, _) -> "drop ${named(what)}",
+        .Place(_, _, _) -> "place",
+        .Remove(_) -> "remove",
+        .Listen(_, _) -> "listen",
+        .Unlisten(_, _) -> "unlisten",
+    }
+}
+
+/// How many elements a tree lowers to.
+fn count(e: List<Native>) -> int { e.fold(0, (a: int, x: Native) -> a + 1 + count(x.kids)) }
+
+fn nodes_in(n: Node) -> int { n.children.fold(1, (a: int, c: Node) -> a + nodes_in(c)) }
+
+/// A node of every prim, each holding a child, so none can lower to two.
+fn every_prim() -> Node { holding(.Column, [holding(p, [text_node("x")]) for p in Prim.every()]) }
+
+spec "std/ui native — one element per node" {
+    given "every prim" {
+        then "there are 24" { Prim.every().length == 24 }
+        then "each node lowers to exactly one element" { count(lowered(every_prim())) == nodes_in(every_prim()) }
+    }
+    given "a root drawn in a theme" {
+        then "the root carries its mode and contrast" {
+            let facts = lowered(stamped_with(counter(0), default_theme))[0].facts
+            facts.any(named(it.what) == "mode") && facts.any(named(it.what) == "contrast")
+        }
+    }
+    given "a style with a pressed state" {
+        then "the state's facts wear the same codes under it" {
+            let facts = style_facts(
+                Style {
+                    fill: Tone.Surface,
+                    states: [
+                        StateStyle {
+                            state: Interaction.Pressed,
+                            style: Style { fill: Tone.Accent },
+                        },
+                    ],
+                },
+            )
+            facts.length == 2 && facts[0].under == null && facts[1].under == Interaction.Pressed
+        }
+    }
+}
+
+spec "std/ui native — the diff" {
+    given "the counter" {
+        then "a first paint creates, sets, listens and places" { native_diff([], lowered(counter(0)), 0).patches.length > 0 }
+        then "a text change is one set fact" { patched(counter(0), counter(1)).join(" | ") == "set words" }
+        then "an unchanged tree says nothing" { patched(counter(2), counter(2)).is_empty() }
+    }
+    given "a board's keyed rows" {
+        then "a reorder is places only" { patched(board(["a", "b", "c"]), board(["c", "a", "b"])).join(" | ") == "place" }
+        then "a removed row is one remove" { patched(board(["a", "b", "c"]), board(["a", "c"])).join(" | ") == "remove" }
+        then "a toggled disabled is one fact" {
+            patched(
+                holding(.Column, [leaf(.Button, [.Label("Add")])]),
+                holding(.Column, [leaf(.Button, [.Label("Add"), .Disabled(true)])]),
+            )
+                .join(" | ") == "set disabled"
+        }
+        then "and toggled back, one drop" {
+            patched(
+                holding(.Column, [leaf(.Button, [.Label("Add"), .Disabled(true)])]),
+                holding(.Column, [leaf(.Button, [.Label("Add")])]),
+            )
+                .join(" | ") == "drop disabled"
+        }
+    }
+    given "a fraction" {
+        then "NaN is the same NaN, so it never reads as changed" { same(Scalar.Fraction(0.0 / 0.0), Scalar.Fraction(0.0 / 0.0)) }
+        then "two fractions differ by value" { !same(Scalar.Fraction(0.5), Scalar.Fraction(0.25)) }
+        then "a number is never a fraction" { !same(Scalar.Number(1), Scalar.Fraction(1.0)) }
+    }
+}
