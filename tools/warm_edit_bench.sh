@@ -185,6 +185,11 @@ counted() { # <scenario>: `counts <scenario> <counter> <n>` rows from one check,
     printf '%s\n' "$out" | grep '^counts:' | tail -n 1 | tr ' ' '\n' | grep = \
         | while IFS== read -r name n; do printf 'counts %s %s %s\n' "$1" "$name" "$n"; done
 }
+# A STAMP IS WITHHELD FROM A FILE WRITTEN IN ITS LAST TWO SECONDS (io.stamp), and the last timed round
+# checked the edited file just after writing it, so no stamp of it was kept and the next check reads it
+# again. One check past the window keeps it, so the unchanged count is the compiler's noop
+sleep 3
+"$avra" check "$target" > /dev/null 2>&1
 counted unchanged >> "$raw"
 edit "counts"
 counted edit >> "$raw"
