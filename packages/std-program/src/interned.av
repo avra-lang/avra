@@ -7,7 +7,7 @@
 //! A content key is folded by the value's own type over two LANES (`HIGH_LANE`, `LOW_LANE`), each a
 //! multiply-xor-rotate fold of 64-bit words with its own seed and prime: no box is made, and the two
 //! lanes together are the 128-bit key, equal for equal values in every process.
-use answer_record.{ContentHash}
+use answer_record.{ContentHash, ContentKey}
 use @std.meta.{identity, plain_field}
 
 /// A value's place in the table that interned it. Meaningless in any other table or process, so
@@ -222,6 +222,26 @@ impl KeyLane {
     fn finished(h: int) -> int {
         let x = (h ^ shifted_right(h, 33)).wrapping_mul(self.prime)
         x ^ shifted_right(x, 29)
+    }
+}
+
+/// THE DOOR A CONTENT KEY IS MINTED AT: `octets` folded on both lanes, each finished, and their length.
+/// No box is made, and no digest read back.
+export fn content_key(octets: Bytes) -> ContentKey {
+    ContentKey {
+        high: HIGH_LANE.finished(HIGH_LANE.bytes(HIGH_LANE.seed, octets)),
+        low: LOW_LANE.finished(LOW_LANE.bytes(LOW_LANE.seed, octets)),
+        length: octets.length,
+    }
+}
+
+/// The same door over a text's bytes: `text_key(t)` is `content_key(t.bytes())`, its bytes folded where
+/// they stand and nothing copied.
+export fn text_key(text: string) -> ContentKey {
+    ContentKey {
+        high: HIGH_LANE.finished(HIGH_LANE.text(HIGH_LANE.seed, text)),
+        low: LOW_LANE.finished(LOW_LANE.text(LOW_LANE.seed, text)),
+        length: text.length,
     }
 }
 
