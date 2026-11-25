@@ -1,0 +1,27 @@
+//! IDLE WAITERS, what they cost: `WAIT_OBSERVERS` SSE observers read an
+//! empty feed for `WAIT_MS` each, then one event published wakes them
+//! all. Run it under `time`: the CPU the process spends is what the
+//! waiting costs, and the wall time is the wait. The wake line says how
+//! long after the publish the last observer heard it.
+use @std.io.{env_or}
+use @std.text.{parse_int}
+use @std.time.{ms, now_ms, sleep}
+use @std.http.sse.{Event, Next, feed}
+
+fn number(name: string, fallback: int) -> int { parse_int(env_or(name, "")) ?? fallback }
+
+fn heard(n: Next) -> int {
+    match n { .Event(_) -> now_ms(), .Quiet or .Failed or .End -> -1 }
+}
+
+let observers = number("WAIT_OBSERVERS", 1000)
+let idle = number("WAIT_MS", 3000)
+let f = feed(16)
+let tasks = [spawn heard(f.source_from(1).next(ms(idle + 2000))) for i in 0..observers]
+sleep(ms(idle))
+let at = now_ms()
+let _ = f.publish(Event { data: "go" })
+let times = [t.await for t in tasks]
+mut last = 0
+for t in times { if t - at > last { last = t - at } }
+"${observers} observers idle ${idle} ms; ${[t for t in times if t >= 0].length} woke, the last ${last} ms after the publish"

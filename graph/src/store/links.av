@@ -1,0 +1,22 @@
+use @std.validate.{Value}
+use catalog.{Catalog}
+use schema.{Shape}
+use store.publish.{Link}
+
+impl Shape {
+    fn links(catalog: Catalog, value: Value, path: string) -> Result<List<Link>, string> {
+        match self {
+            .Text or .Integer or .Number or .Boolean -> [],
+            .Reference(target) -> {
+                let id? = match value { .Text(id) -> id, rest -> null } else { fail "a reference must be text" }
+                [Link { target: id, model: target, path: path }]
+            },
+            .Optional(inner) -> if value is .Null { [] } else { inner.links(catalog, value, path)? },
+            .Many(inner) -> [link for i, v in value.items() for link in inner.links(catalog, v, "${path}[${i}]")?],
+            .Embedded(name) -> {
+                let model = catalog.model(name)?
+                [link for e in value.entries() for p in model.properties if p.name == e.key for link in p.shape.links(catalog, e.value, "${path}.${e.key}")?]
+            },
+        }
+    }
+}

@@ -1,0 +1,85 @@
+//! `tree/seats.av` — THE SEATS A PROGRAM'S COMPONENTS DECLARE. Each event
+//! seat of a primitive is a const the View derive writes beside the component
+//! (`@seat`), naming its owner, its event and its primitive, and no target:
+//! each target's own table says what delivers a primitive's event there.
+//! `seat_rows` gathers them over everything the program imports, in name
+//! order, so a seat's number is its place in that list: dense, and the same
+//! wherever the build is read.
+use @std.meta.{Named, Marker}
+use tree.node.{Prim}
+use tree.trap.{trapped}
+
+/// A seat's number: its place among the program's seats.
+export type Seat = int
+
+impl Seat {
+    /// The number the wire spells a seat with: its place in the table.
+    fn number() -> int { self.of }
+}
+
+/// The seat a wire number names, when the table has one there.
+export fn seat_numbered(n: int) -> Seat? {
+    if n < 0 || n >= seat_rows.length { return null }
+    Seat(n)
+}
+
+/// The mark the View derive puts on a seat's row.
+export fn seat(_d: Named) -> Marker { Marker {} }
+
+/// One event seat: the component and event it is, and the primitive that
+/// declares it.
+export type SeatRow = { owner: string, event: string, prim: Prim }
+
+impl SeatRow {
+    /// Whether a target's row for `prim`'s `event` is this seat's.
+    fn delivered_by(prim: Prim, event: string) -> bool { self.prim == prim && self.event == event }
+
+    /// That `found` rows of `target`'s table say what delivers this seat. A
+    /// target says it of every event a primitive declares, once, so none and
+    /// two are refused while the program builds.
+    fn delivered_once(target: string, found: int) {
+        if found == 0 { trapped(undelivered(self, target)) }
+        if found > 1 { trapped(delivered_twice(self, target)) }
+    }
+}
+
+/// A gathered row. The collection holds rows and nothing else.
+export type Gathered = { row: SeatRow }
+
+/// Every seat in the program's closure, ordered by the row's const name.
+export collect seat_rows: List<Gathered> = @seat in closure as Gathered { row: it } by it.name
+
+/// The seat a component's event is, when the program declares one.
+export fn seat_of(owner: string, event: string) -> Seat? {
+    [Seat(j) for j, g in seat_rows if g.row.owner == owner && g.row.event == event].first()
+}
+
+/// The seats two components of one name declare, as `owner.event`: a name
+/// the table orders by must name one seat.
+export fn ties(rows: List<SeatRow>) -> List<string> {
+    ["${r.owner}.${r.event}" for j, r in rows if rows.slice(0, j).any(it.owner == r.owner && it.event == r.event)]
+}
+
+/// A seat's row.
+export fn row_at(seat: Seat) -> SeatRow { seat_rows[seat.of].row }
+
+/// The seat a component's event is. A program whose components do not declare
+/// it has none, and an `on` handler cannot be bound to a seat that is not
+/// there.
+export fn seat_named(owner: string, event: string) -> Seat {
+    let found = seat_of(owner, event)
+    if found == null { trapped(no_seat_row(owner, event)) }
+    found!
+}
+
+fn no_seat_row(owner: string, event: string) -> string {
+    "no component declares `${owner}.${event}` in this program: the component is imported where the program is built, or it is declared in the entry file, which a closure collection does not reach"
+}
+
+fn undelivered(row: SeatRow, target: string) -> string {
+    "${target} names nothing that delivers a `${row.prim.word()}`'s `${row.event}` (`${row.owner}.${row.event}`): a target's table says what delivers every event a primitive declares, or that nothing does"
+}
+
+fn delivered_twice(row: SeatRow, target: string) -> string {
+    "${target} says twice what delivers a `${row.prim.word()}`'s `${row.event}`: one row per primitive and event"
+}

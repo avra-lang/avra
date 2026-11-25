@@ -1,0 +1,138 @@
+use @std.db.{model, Many}
+
+/// Engine rows are ordinary `@std/db` models: one table each, generated
+/// DDL and CRUD, links by identity. User ontology models never become
+/// tables — their claims land in `ClaimRow`, generically.
+
+@model
+export type Meta = {
+    id: int = 0,
+    @unique key: string,
+    value: string,
+}
+
+@model
+export type Schema = {
+    id: int = 0,
+    @unique fingerprint: string,
+    document: string,
+}
+
+@model
+export type EntityRow = {
+    id: int = 0,
+    @unique name: string,
+    model: string,
+    born: int,
+    claims: Many<ClaimRow> = Many {},
+}
+
+@model
+export type ObservationRow = {
+    id: int = 0,
+    @unique name: string,
+    revision: int,
+    payload: string,
+    digest: string,
+}
+
+@model
+export type ObservationVersionRow = {
+    id: int = 0,
+    observation: ObservationRow,
+    revision: int,
+    payload: string,
+    @unique stamp: string,
+}
+
+@model
+export type RunRow = {
+    id: int = 0,
+    @unique name: string,
+    producer: string,
+    scope: string,
+    revision: int,
+    input: ObservationRow,
+}
+
+@model
+export type RunTrailRow = {
+    id: int = 0,
+    run: RunRow,
+    input_revision: int,
+    schema: string,
+    request: string,
+    @unique stamp: string,
+}
+
+@model
+export type ClaimRow = {
+    id: int = 0,
+    entity: EntityRow,
+    property: string,
+    value: string,
+    schema: string,
+    @unique stamp: string,
+}
+
+@model
+export type SupportRow = {
+    id: int = 0,
+    run: RunRow,
+    claim: ClaimRow,
+    until: int? = null,
+    locator: string? = null,
+    @unique stamp: string,
+}
+
+@model
+export type EdgeRow = {
+    id: int = 0,
+    claim: ClaimRow,
+    target: EntityRow,
+    path: string,
+    @unique stamp: string,
+}
+
+@model
+export type AliasRow = {
+    id: int = 0,
+    entity: EntityRow,
+    namespace: string,
+    key: string,
+    run: RunRow,
+    until: int? = null,
+}
+
+@model
+export type MergeRow = {
+    id: int = 0,
+    @unique decision: string,
+    left: EntityRow,
+    right: EntityRow,
+    decider: string,
+    revision: int,
+}
+
+@model
+export type MergeEndRow = {
+    id: int = 0,
+    merge: MergeRow,
+    until: int,
+}
+
+@model
+export type TombstoneRow = {
+    id: int = 0,
+    @unique decision: string,
+    entity: EntityRow,
+    decider: string,
+    revision: int,
+}
+
+@model
+export type TombstoneEndRow = {
+    id: int = 0,
+    tombstone: TombstoneRow,
+    until: int,
+}

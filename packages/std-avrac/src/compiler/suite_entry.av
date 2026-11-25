@@ -1,0 +1,303 @@
+//! THE TEST BINARY'S ENTRY, built in IR. No source declares it: the
+//! cases are declarations the program already holds, and this entry
+//! calls each one by its symbol, prints its verdict and its tally,
+//! and leaves a VERDICT in the exit status — 0 all passed, 1 some
+//! failed. Running the cases NATIVELY is what keeps a suite of a
+//! thousand cases in seconds instead of an hour.
+use core.{Ins, Reg, TypeId, TypeRegistry, BinOp, Level, RtKind, RtSig, extern_row, counted, FileId}
+use compiler.lower.{Body}
+use @std.relation.{codec}
+
+/// One case as the entry needs it: the symbol that runs it and the
+/// line its verdict prints.
+@codec
+export type CaseCall = { symbol: string, label: string }
+
+/// The host fns the test binary declares: the status it leaves by, the
+/// marker naming the case in flight — a suite runs in ONE process, so a
+/// trap kills every case after it, and the marker is how the wreck says
+/// which case it was running — and the runner's verdict on a case: its
+/// body run as a task under each schedule (runtime/avra_fiber.h), and the
+/// count of schedules said once at the end.
+export const runner_rows: List<RtSig> = [
+    extern_row("avra_process_exit", RtKind.Void, [RtKind.I64]),
+    extern_row("avra_case_begin", RtKind.Void, [RtKind.Ptr]),
+    extern_row("avra_case_verdict", RtKind.I64, [RtKind.I64, RtKind.Ptr]),
+    extern_row("avra_case_schedules_said", RtKind.Void, []),
+]
+
+/// One program test as the entry needs it: the symbol that runs it,
+/// the line its verdict prints, the text it must print, and whether
+/// the EVALUATOR ran it too. The label travels with the artifact: the
+/// binary's own line names the engines that agreed, so a reader of
+/// the gate's output learns a program is single-engine without
+/// opening a document.
+export type ProgramCall = { symbol: string, label: string, expected: string, evaluated: bool }
+
+/// The host fns a programs binary declares beyond the runner's: the
+/// runner's verdict on a program — run under a case's schedules and clock,
+/// everything it prints captured and compared in-process.
+export const program_rows: List<RtSig> = runner_rows
+    .concat([extern_row("avra_program_verdict", RtKind.I64, [RtKind.I64, RtKind.Ptr, RtKind.Ptr])])
+
+/// What a test or programs binary's status MEANS. It says its tally
+/// itself and answers 0 or 1; 127 is a binary that could not start;
+/// anything else is a death — a case or program trapped, or a
+/// signal killed it, and everything after it never ran.
+export enum Verdict {
+    Green
+    Red
+    CouldNotStart
+    Died
+}
+
+export fn verdict_of(status: int) -> Verdict {
+    match status {
+        0 -> Verdict.Green,
+        1 -> Verdict.Red,
+        127 -> Verdict.CouldNotStart,
+        _ -> Verdict.Died,
+    }
+}
+
+/// THE HAND-OFF'S FIRST WORD: no command wears it, so a fresh image
+/// reads it before its commands do, and no one reaches the light
+/// phase by name.
+const stage_word = "@stage"
+
+/// A hand-off's words: the stage word, then the binaries to run.
+export fn stage_words(binaries: List<string>) -> List<string> {
+    [stage_word].concat(binaries)
+}
+
+/// The binaries a hand-off carries — null for any other line, the stage
+/// word alone included: a hand-off always carries one.
+export fn staged_binaries(words: List<string>) -> List<string>? {
+    if words.first() != stage_word || words.length < 2 { return null }
+    words.slice(1, words.length)
+}
+
+/// THE SUITE'S ENTRY: each case called and judged, the tally said; then each
+/// program run with its output captured and held to what it must print. A cell
+/// counts failures, and the verdict leaves through the exit status. One
+/// compiler, one link, one process for every proof a package carries.
+export fn suite_entry(types: TypeRegistry, cases: List<CaseCall>, programs: List<ProgramCall>) -> ProgramMain {
+    mut e = new_entry(types)
+    let tally = e.counter()
+    for c in cases { one_case(e, c, tally) }
+    if !cases.is_empty() {
+        e.tally(cases.length, e.failures(tally))
+        e.give(Ins.CallRtVoid("avra_case_schedules_said", []))
+    }
+    for pr in programs { one_program(e, pr, tally) }
+    e
+        .leaves_by_verdict(
+            e.failures(tally),
+            if programs.is_empty() { null } else { "${counted(programs.length, "program")} proved" },
+        )
+    e.built()
+}
+
+/// One program: named for the wreck, run under a case's schedules —
+/// its output captured and held to what it must print under each — and
+/// counted when one prints otherwise, which the runtime says.
+fn one_program(mut e: EntryBuild, pr: ProgramCall, tally: Reg) {
+    e.give(Ins.CallRtVoid("avra_case_begin", [e.text(pr.label)]))
+    // the runtime owns what the program printed: it captures, compares and releases it
+    e.give(Ins.IfStart(e.zero_test(e.program_verdict(pr))))
+    let held = e.mint(e.types.type(int))
+    e.give(Ins.Load(held, tally))
+    // THE MINT LAW: operands first, the answer last
+    let one = e.constant(1)
+    let more = e.mint(e.types.type(int))
+    e.give(Ins.Bin(more, BinOp.Add, held, one))
+    e.give(Ins.Store(tally, more))
+    e.give(Ins.ArmEnd(e.constant(0)))
+    e.say("${pr.label}: ${legs_of(pr)} == expected")
+    let gives = e.constant(0)
+    let merged = e.mint(e.types.type(int))
+    e.give(Ins.RegionEnd(merged, gives))
+}
+
+/// The engines a program's line names — the evaluator ran it here
+/// before the binary was built, or the marker beside it said not to.
+fn legs_of(pr: ProgramCall) -> string {
+    if pr.evaluated { "eval == native" } else { "native" }
+}
+
+/// The suite's own line: `N/M tests passed`, printed by the binary
+/// that ran them — the runner reads a VERDICT from the exit code,
+/// never a number it could truncate.
+fn tally_line(mut e: EntryBuild, total: int, failed: Reg) {
+    // THE MINT LAW: every operand minted before the answer that reads it
+    let count = e.constant(total)
+    let passed = e.mint(e.types.type(int))
+    e.give(Ins.Bin(passed, BinOp.Sub, count, failed))
+    let text = e.mint(e.types.type(string))
+    e.give(Ins.CallRt(text, "avra_int_text", [passed]))
+    let tail = e.text("/${total} tests passed")
+    let line = e.mint(e.types.type(string))
+    e.give(Ins.CallRt(line, "avra_str_concat", [text, tail]))
+    // `text` and `line` are each a fresh owned string this hand-built
+    // entry minted and the memory pass never walks — release both
+    // once their one use (the concat, then the print) has read them.
+    e.give(Ins.Release([text]))
+    e.give(Ins.CallRtVoid("avra_puts", [line]))
+    e.give(Ins.Release([line]))
+}
+
+/// One case: run as a task under its schedules, judged, and counted
+/// when it fails.
+fn one_case(mut e: EntryBuild, c: CaseCall, tally: Reg) {
+    e.give(Ins.CallRtVoid("avra_case_begin", [e.text(c.label)]))
+    e.give(Ins.IfStart(e.zero_test(e.verdict(c))))
+    // only a FAILURE speaks — a green case is the tally's business
+    e.say("    ✗ ${c.label}")
+    let held = e.mint(e.types.type(int))
+    e.give(Ins.Load(held, tally))
+    // THE MINT LAW: operands first, the answer last
+    let one = e.constant(1)
+    let more = e.mint(e.types.type(int))
+    e.give(Ins.Bin(more, BinOp.Add, held, one))
+    e.give(Ins.Store(tally, more))
+    e.give(Ins.ArmEnd(e.constant(0)))
+    let gives = e.constant(0)
+    let merged = e.mint(e.types.type(int))
+    e.give(Ins.RegionEnd(merged, gives))
+}
+
+/// A PROGRAM'S `main`, AND THE REGISTRY IT WAS BUILT OVER. A registry is a value:
+/// a type the entry interned is in ITS registry alone, and with every file held
+/// nothing else has interned even `int` — so the module is emitted over these.
+/// `verdict` is the type a case answers, as this registry knows it.
+export type ProgramMain = { body: Body, types: TypeRegistry, verdict: TypeId }
+
+/// A body under construction: registers minted in instruction order,
+/// which is the law every consumer reads back.
+type EntryBuild = { types: TypeRegistry, ins: List<Ins>, tys: List<TypeId> }
+
+fn new_entry(types: TypeRegistry) -> EntryBuild {
+    let empty_ins: List<Ins> = []
+    let empty_tys: List<TypeId> = []
+    mut e = EntryBuild { types: types, ins: empty_ins, tys: empty_tys }
+    e.give(Ins.ScopeEnter(Level.Application))
+    e
+}
+
+impl EntryBuild {
+    fn give(i: Ins) { self.ins.push(i) }
+
+    fn mint(ty: TypeId) -> Reg {
+        self.tys.push(ty)
+        Reg { index: self.tys.length - 1 }
+    }
+
+    /// A call of a fn of no arguments.
+    fn called(symbol: string, ret: TypeId) -> Reg {
+        let answer = self.mint(ret)
+        self.give(Ins.Call(answer, symbol, []))
+        answer
+    }
+
+    /// The runner's verdict on a case: 1 it held under every schedule
+    /// it ran, else 0. The case's body is handed over by its address.
+    fn verdict(c: CaseCall) -> Reg {
+        let code = self.mint(self.types.type(int))
+        self.give(Ins.FnAddr(code, c.symbol))
+        // THE MINT LAW: operands first, the answer last
+        let label = self.text(c.label)
+        let held = self.mint(self.types.type(int))
+        self.give(Ins.CallRt(held, "avra_case_verdict", [code, label]))
+        held
+    }
+
+    /// The runner's verdict on a program test: 1 it printed what it must
+    /// under every schedule it ran, else 0.
+    fn program_verdict(pr: ProgramCall) -> Reg {
+        let code = self.mint(self.types.type(int))
+        self.give(Ins.FnAddr(code, pr.symbol))
+        // THE MINT LAW: operands first, the answer last
+        let label = self.text(pr.label)
+        let wanted = self.text(pr.expected)
+        let held = self.mint(self.types.type(int))
+        self.give(Ins.CallRt(held, "avra_program_verdict", [code, label, wanted]))
+        held
+    }
+
+    /// An int constant in a fresh register.
+    fn constant(v: int) -> Reg {
+        let r = self.mint(self.types.type(int))
+        self.give(Ins.ConstInt(r, v))
+        r
+    }
+
+    /// A string literal in a fresh register.
+    fn text(s: string) -> Reg {
+        let r = self.mint(self.types.type(string))
+        self.give(Ins.ConstStr(r, s))
+        r
+    }
+
+    /// One line to standard output.
+    fn say(s: string) {
+        self.give(Ins.CallRtVoid("avra_puts", [self.text(s)]))
+    }
+
+    /// The suite's closing line.
+    fn tally(total: int, failed: Reg) { tally_line(self, total, failed) }
+
+    /// A cell counting failures, seeded at zero.
+    fn counter() -> Reg {
+        let tally = self.mint(self.types.type(int))
+        self.give(Ins.Alloca(tally))
+        self.give(Ins.Store(tally, self.constant(0)))
+        tally
+    }
+
+    /// The failures counted so far.
+    fn failures(tally: Reg) -> Reg {
+        let failed = self.mint(self.types.type(int))
+        self.give(Ins.Load(failed, tally))
+        failed
+    }
+
+    /// THE STATUS IS A VERDICT, never a count: a status is eight bits,
+    /// and 256 failures would read as success. A closing word is said
+    /// on the green side alone.
+    fn leaves_by_verdict(failed: Reg, green: string?) {
+        self.give(Ins.IfStart(self.zero_test(failed)))
+        if green != null { self.say(green!) }
+        self.give(Ins.CallRtVoid("avra_process_exit", [self.constant(0)]))
+        self.give(Ins.ArmEnd(self.constant(0)))
+        self.give(Ins.CallRtVoid("avra_process_exit", [self.constant(1)]))
+        let gives = self.constant(0)
+        let merged = self.mint(self.types.type(int))
+        self.give(Ins.RegionEnd(merged, gives))
+        self.give(Ins.ScopeExit(null))
+        self.give(Ins.Ret(0))
+    }
+
+    /// Whether the tally is zero — the suite's verdict.
+    fn zero_test(failed: Reg) -> Reg {
+        let zero = self.constant(0)
+        let same = self.mint(self.types.type(bool))
+        self.give(Ins.Bin(same, BinOp.Eq, failed, zero))
+        same
+    }
+
+    fn built() -> ProgramMain {
+        let ret = self.types.type(int)
+        ProgramMain {
+            body: Body {
+                name: "main",
+                params: [],
+                ret: ret,
+                gives: null,
+                ins: self.ins,
+                reg_types: self.tys,
+            },
+            types: self.types,
+            verdict: self.types.type(bool),
+        }
+    }
+}

@@ -1,0 +1,400 @@
+//! `realize/dom/live.av` — a live page: the elements it holds, each
+//! under the number it was given, the sheet it wears and the handlers it
+//! heard — kept so the next paint says only what changed and a host's
+//! echo finds the handler it names.
+use tree.identity.{NodeId, Owner}
+use tree.node.{Node, Action, Said}
+use tree.seats.{Seat}
+use tree.standing.{Standing, standing}
+use tree.view.{View, rooted}
+use realize.html.element.{Element, lowered, lowered_on}
+use realize.html.print.{kinds_of, print_of, words_of}
+use realize.dom.snapshot.{Page, said as said_page}
+use realize.html.css.{
+    CssRule,
+    PageDrawn,
+    distinct_rules,
+    page_drawn,
+    page_sheet_of,
+    worn_by_page,
+    rules_of,
+    scopes_of,
+}
+use realize.dom.patch.{Patch, Heard, Held, diff, held_as, listening_of}
+use realize.html.tags.{HtmlAttrName}
+use realize.dom.wire.{frame}
+use realize.dom.exact.{Watch, watching, disagreement}
+use style.theme.{Theme}
+use tree.trap.{trapped}
+use @std.io.{env}
+
+/// An element that hears an event, and what it does then.
+type Bound = { id: NodeId, action: Action, ordered: bool }
+
+/// A page as last painted: its elements, the next number it will give
+/// one, every rule a paint has named so far and what the page wore of its
+/// theme when the sheet was last written, the handlers its elements bound, and
+/// what the user was heard to do to it since. `stood` is the print of the page
+/// a server sent, none when it sent none, and `adopting` the elements the
+/// first frame tells the host it keeps. `sheet` is the sheet the host
+/// holds, and `handed` the page a module that stood down said.
+export type Live = {
+    page: Cell<List<Element>> = Cell.new([]),
+    next: Cell<int> = Cell.new(0),
+    rules: Cell<List<CssRule>> = Cell.new([]),
+    worn: Cell<string?> = Cell.new(null),
+    bound: Cell<List<Bound>> = Cell.new([]),
+    heard: Cell<List<Heard>> = Cell.new([]),
+    told: Cell<List<int>> = Cell.new([]),
+    watch: Cell<Watch?> = Cell.new(null),
+    why: Cell<string> = Cell.new(""),
+    answered: Cell<int> = Cell.new(0),
+    declined: Cell<int> = Cell.new(0),
+    stands: Standing = standing(),
+    stood: Cell<int> = Cell.new(0),
+    adopting: Cell<Patch?> = Cell.new(null),
+    sheet: Cell<string> = Cell.new(""),
+    handed: Cell<Page?> = Cell.new(null),
+}
+
+/// A page nothing was painted on.
+export fn live() -> Live { Live {} }
+
+/// How the exact path runs, from `AVRA_EXACT`: unset is off, `check` runs it
+/// beside every full paint and traps when they disagree, and any other value
+/// runs it ALONE — the full paint speaks only for a turn the exact path
+/// declines.
+// LICENSED input.debug_flag: a staging flag is the process's own, not an input
+once fn exact_mode() -> string { env("AVRA_EXACT") ?? "" }
+
+/// The rules a notice's classes need, none when there is none.
+fn rules_of_notice(notice: Node?) -> List<CssRule> {
+    let node? = notice else { return [] }
+    rules_of(node)
+}
+
+/// An element and what it holds, hearing nothing: the page as a server's
+/// HTML stands before any listener is on it.
+fn unheard(e: Element) -> Element {
+    match e {
+        .Text(_) -> e,
+        .Tag(el) -> Element.Tag(el with { hears: [], kids: [unheard(k) for k in el.kids] }),
+    }
+}
+
+/// The patch that opens a first frame over a server's page, none otherwise.
+fn present_adopt(adopting: Patch?) -> List<Patch> {
+    let said? = adopting else { return [] }
+    [said]
+}
+
+/// Every handler an element and what it holds bound, by who hears it.
+fn bound_in(e: Element) -> List<Bound> {
+    let el? = e.tagged() else { return [] }
+    [Bound { id: el.id, action: a, ordered: el.crowded } for a in el.hears]
+        .concat([b for k in el.kids for b in bound_in(k)])
+}
+
+/// A page holding the words `said` gave its text runs.
+fn synced(page: List<Element>, said: List<Patch>) -> List<Element> { [synced_in(e, said) for e in page] }
+
+fn synced_in(e: Element, said: List<Patch>) -> Element {
+    match e {
+        .Text(run) -> .Text(run with { content: words_set(run.id, said).last() ?? run.content }),
+        .Tag(el) -> .Tag(el with { kids: synced(el.kids, said) }),
+    }
+}
+
+/// The words `said` gives the run `id`, in order.
+fn words_set(id: NodeId, said: List<Patch>) -> List<string> { [c for p in said for c in patch_words(p, id)] }
+
+fn patch_words(p: Patch, id: NodeId) -> List<string> {
+    match p { .SetText(at, content) -> if at == id { [content] } else { [] }, _ -> [] }
+}
+
+impl Live {
+    /// The patches that turn the page into `root` under `theme`: the
+    /// sheet when it changed, then the elements that did. An unchanged
+    /// page says nothing. A RULE ONCE NAMED STAYS IN THE SHEET, so the
+    /// sheet is resent only for a class the page has never worn or a new
+    /// theme — never because the tree named its classes in another order.
+    /// The handlers are kept anew EVERY paint: two trees that draw alike
+    /// may still close over different values. A tree built anywhere but
+    /// over this page's `stands` is a snapshot: it is painted whole and the
+    /// page stops watching, so the exact path never answers for it.
+    fn patches(drawn: Node, notice: Node? = null) -> List<Patch> {
+        let p = page_drawn(drawn)
+        let root = p.root
+        let theme = p.theme
+        self.take_handed(root, theme)
+        let adopted = self.adopted(root, theme)
+        let full = self.painted(root, theme, notice)
+        self.unwatched()
+        adopted.concat(full)
+    }
+
+    /// `patches`, for a tree drawn by a walk over this page's `stands` — the
+    /// walk an app opens, or `paint_view` — whose instances are the ones the
+    /// page's readings watch. The exact path may answer for it.
+    fn patches_drawn(drawn: Node, notice: Node? = null) -> List<Patch> {
+        let p = page_drawn(drawn)
+        let root = p.root
+        let theme = p.theme
+        self.take_handed(root, theme)
+        let adopted = self.adopted(root, theme)
+        adopted.concat(self.drawn_turn(root, theme, notice))
+    }
+
+    /// The turn a tree drawn over this page's `stands` paints, by the exact
+    /// path or the full one.
+    fn drawn_turn(root: Node, theme: Theme, notice: Node?) -> List<Patch> {
+        if exact_mode() == "" { return self.painted(root, theme, notice) }
+        if exact_mode() != "check" { return self.exactly(root, theme, notice) }
+        let exact = self.exact_turn()
+        let full = self.painted(root, theme, notice)
+        self.rewatched()
+        let mine? = exact else { return full }
+        let why? = disagreement(mine, full) else { return full }
+        trapped("exact patches disagree with the full paint: ${why}")
+        full
+    }
+
+    /// The page watches nothing: a paint no walk of its own drew.
+    fn unwatched() {
+        self.watch.get()?.released()
+        self.watch.set(null)
+    }
+
+    /// The exact path alone: its patches stand for the turn, the page's words
+    /// follow them, and the full paint speaks only where the exact path
+    /// declines or the theme moved. SOUND BECAUSE every read a handler can
+    /// capture is a reading, a cell or structural, so a read the walkers cannot
+    /// see declines and no handler outlives the value it holds.
+    fn exactly(root: Node, theme: Theme, notice: Node?) -> List<Patch> {
+        let said = if self.worn.get() == worn_by_page(drawn_as(root, theme)) { self.exact_turn() } else { null }
+        let mine? = said else {
+            let full = self.painted(root, theme, notice)
+            self.rewatched()
+            return full
+        }
+        self.page.set(synced(self.page.get(), mine))
+        mine
+    }
+
+    /// What the exact path says of this turn: the readings under the cells
+    /// written since the last paint. None before a paint has placed any.
+    fn exact_turn() -> List<Patch>? {
+        let w? = self.watch.get() else {
+            self.why.set("nothing was painted yet")
+            return null
+        }
+        let said = w.turn()
+        self.why.set(w.said.get())
+        if said == null { self.declined.set(self.declined.get() + 1) } else { self.answered.set(self.answered.get() + 1) }
+        said
+    }
+
+    /// How many turns the exact path answered and how many it declined (a
+    /// structural cell was written, or the page cannot be placed), since this
+    /// page was made.
+    /// Why the exact path declined the last turn, or empty when it answered.
+    fn exact_why() -> string { self.why.get() }
+
+    fn exact_counts() -> string { "answered ${self.answered.get()} declined ${self.declined.get()}" }
+
+    /// The page's readings, watched anew after a paint: the old watch is let
+    /// go first, then every reading the paint placed is observed.
+    fn rewatched() {
+        let old = self.watch.get()
+        if old != null { old!.released() }
+        self.watch.set(watching(self.page.get()))
+    }
+
+    /// The page a server sent, adopted as this paint opens: the patch that
+    /// tells a host which elements it keeps, or none when no page stood.
+    fn adopted(root: Node, theme: Theme) -> List<Patch> {
+        let print = self.stood.get()
+        if print == 0 { return [] }
+        self.stood.set(0)
+        self.adopt(root, theme, print)
+        let said = self.adopting.get()
+        self.adopting.set(null)
+        present_adopt(said)
+    }
+
+    /// THE PAGE A SERVER SENT, ADOPTED: when the tree this module draws folds
+    /// to the print the server stamped, the page stands as that tree with its
+    /// numbers counted out as a first paint counts them — hearing nothing yet,
+    /// wearing the sheet — and the paint after it is the ordinary diff against
+    /// it: listeners and nothing built. When it does not, the page stays empty
+    /// and the first frame tells the host to clear what it holds, so the two
+    /// never diverge in silence.
+    fn adopt(root: Node, theme: Theme, print: int) {
+        let run = lowered(root)
+        let rules = distinct_rules(rules_of(root))
+        let drawn = drawn_as(root, theme)
+        let css = page_sheet_of(rules, drawn)
+        if print_of(run, css) != print {
+            self.adopting.set(Patch.Adopt([], 0))
+            return
+        }
+        self.sheet.set(css)
+        let placed = diff([], run, [], 0)
+        self.page.set([unheard(e) for e in placed.page])
+        self.next.set(placed.next)
+        self.rules.set(rules)
+        self.worn.set(worn_by_page(drawn))
+        self.adopting.set(Patch.Adopt(kinds_of(placed.page), words_of(placed.page)))
+    }
+
+    /// The page a module left, taken over once: the first paint only.
+    fn take_handed(root: Node, theme: Theme) {
+        let left? = self.handed.get() else { return }
+        self.handed.set(null)
+        self.take_over(left, root, theme)
+    }
+
+    /// THE PAGE A MODULE LEFT, TAKEN OVER: the elements the host holds stand
+    /// as the module that stood down said them, under their numbers, hearing
+    /// nothing yet — so the first paint is a diff against them: what an edit
+    /// changed, and the listeners this module binds. The sheet is kept when
+    /// this tree's classes write the same one, and sent again when they do not.
+    fn take_over(left: Page, root: Node, theme: Theme) {
+        self.page.set([unheard(e) for e in left.elements])
+        self.next.set(left.next)
+        let rules = distinct_rules(rules_of(root))
+        let drawn = drawn_as(root, theme)
+        if page_sheet_of(rules, drawn) != left.sheet { return }
+        self.rules.set(rules)
+        self.worn.set(worn_by_page(drawn))
+        self.sheet.set(left.sheet)
+    }
+
+    /// The page as it stands, said for a module that takes over.
+    fn said() -> Bytes {
+        said_page(
+            Page { elements: self.page.get(), next: self.next.get(), sheet: self.sheet.get() },
+        )
+    }
+
+    /// The full paint, as it always was.
+    fn painted(root: Node, theme: Theme, notice: Node? = null) -> List<Patch> {
+        let restyled = self.restyled(root, theme, notice)
+        let now = diff(
+            self.page.get(),
+            lowered(root).concat(self.noticed(notice, root)),
+            self.heard.get(),
+            self.next.get(),
+        )
+        self.page.set(now.page)
+        self.next.set(now.next)
+        self.heard.set([])
+        self.bound.set([b for e in now.page for b in bound_in(e)])
+        restyled.concat(now.patches)
+    }
+
+    /// The page as the module first drew it: nothing built, nothing held —
+    /// what a host that lost its elements asks for, so its numbers start over.
+    fn reset() {
+        self.forget_host()
+        self.next.set(0)
+    }
+
+    /// A notice stands BESIDE the view: after its elements, at the page's
+    /// top, so nothing the view drew is displaced by it.
+    fn noticed(notice: Node?, root: Node) -> List<Element> {
+        let node? = notice else { return [] }
+        lowered_on(node, scopes_of(root))
+    }
+
+    /// Everything the page keeps of what a host holds: its elements, the
+    /// sheet, the handlers and what the host was told of each seat. A host
+    /// that lost any of it is told all of it again, so the next paint says
+    /// the whole.
+    fn forget_host() {
+        self.page.set([])
+        self.rules.set([])
+        self.worn.set(null)
+        self.bound.set([])
+        self.heard.set([])
+        self.told.set([])
+        self.adopting.set(null)
+        self.stood.set(0)
+        self.sheet.set("")
+        self.handed.set(null)
+    }
+
+    /// A page that has nothing: a new connection to the same app.
+    fn reconnected() { self.forget_host() }
+
+    /// The owner keys of the elements that hear something: a node's
+    /// number, the identity a page gives it while it stays.
+    fn owners() -> List<Owner> { [Owner { key: "${b.id.n}", ordered: b.ordered } for b in self.bound.get()] }
+
+    /// The sheet, when it must be sent again: the page has never worn one
+    /// of the tree's classes, or what it wears of its theme moved. The sheet's
+    /// text is built only then.
+    fn restyled(root: Node, theme: Theme, notice: Node?) -> List<Patch> {
+        let rules = distinct_rules(
+            self.rules.get().concat(rules_of(root)).concat(rules_of_notice(notice)),
+        )
+        let drawn = drawn_as(root, theme)
+        let wears = worn_by_page(drawn)
+        if rules.length == self.rules.get().length && self.worn.get() == wears { return [] }
+        self.rules.set(rules)
+        self.worn.set(wears)
+        let css = page_sheet_of(rules, drawn)
+        self.sheet.set(css)
+        [Patch.Style(css)]
+    }
+
+    /// `patches`, as the frame a host applies.
+    fn paint(root: Node) -> Bytes { frame(self.patches(root), self.told) }
+
+    /// `view` drawn on this page: the walk stands where the last paint's
+    /// stood, so an instance the view reaches again keeps its state and a prop
+    /// written to it moves its cells. The page owns that one standing — a
+    /// tree built any other way is a snapshot (`tree_of`), which keeps no
+    /// instance.
+    fn drawn(view: dyn View) -> Node {
+        self.stands.begun()
+        rooted(view.describe(self.stands))
+    }
+
+    /// `view` painted on this page: drawn, then painted by the exact path or
+    /// the full one.
+    fn paint_view(view: dyn View) -> Bytes { self.paint_drawn(self.drawn(view)) }
+
+    /// A tree this page drew, painted as the frame a host applies.
+    fn paint_drawn(root: Node) -> Bytes { frame(self.patches_drawn(root), self.told) }
+
+    /// The host's echo: element `id` spoke `seat`, saying `said`. The
+    /// handler the last paint bound there runs; false when nothing
+    /// answered. What a control said is what its property now holds, so
+    /// the next paint compares against that.
+    fn fire(id: NodeId, seat: Seat, said: Said?) -> bool {
+        let found? = self.bound.get().find(it.id == id && it.action.seat == seat) else { return false }
+        self.hear(id, found.action, said)
+        found.action.fire(said)
+    }
+
+    /// What the page holds once an element has spoken: the door the page's
+    /// own answer shut, and the property the control said its value from.
+    fn hear(id: NodeId, action: Action, said: Said?) {
+        let heard = listening_of(action)
+        self.keep(id, heard.shuts, Held.Flag(false))
+        let value? = said else { return }
+        self.keep(id, heard.reads, held_as(value))
+    }
+
+    /// ONE record a name: the latest replaces the one before, so what was
+    /// heard between two paints never outgrows the page.
+    fn keep(id: NodeId, name: HtmlAttrName?, value: Held) {
+        let named? = name else { return }
+        let others = [h for h in self.heard.get() if h.id != id || h.name != named]
+        self.heard.set(others.concat([Heard { id: id, name: named, value: value }]))
+    }
+}
+
+/// A page drawn: its root, drawn unscoped, and the theme the whole page wears.
+fn drawn_as(root: Node, theme: Theme) -> PageDrawn { PageDrawn { root: root, theme: theme } }

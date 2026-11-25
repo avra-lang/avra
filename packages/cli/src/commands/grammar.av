@@ -1,0 +1,53 @@
+//! `avra grammar` — print the assembled language grammar, exactly
+//! as feature merging built it; `--untold`, the generated parser it makes.
+use @std.cli.{CliResult, Runnable, command, flag}
+use @std.avrac.compiler.{avra, avra_untold_target, parse_source}
+use @std.avrac.compiler.format.{render_source_of}
+use @std.grammar.{render_grammar, untold_source}
+
+type GrammarCmd = {}
+
+impl Runnable for GrammarCmd {
+    fn run(args: CliResult) -> int {
+        let lang = avra()
+        if lang.syntax == null {
+            for d in lang.diagnostics { println("${d.kind}: ${d.message}") }
+            return 1
+        }
+        if !args.has_flag("untold") {
+            println(render_grammar(lang.syntax!.g))
+            return 0
+        }
+        match untold_source(lang.syntax!, avra_untold_target(lang.syntax!)) {
+            .Ok(text) -> {
+                println(canonical(text))
+                0
+            },
+            .Err(why) -> {
+                eprintln("grammar: the parser cannot be generated — ${why}")
+                1
+            },
+        }
+    }
+}
+
+/// Generated source as `avra fmt` writes it, its last line's break left to the printer.
+fn canonical(text: string) -> string {
+    let p = parse_source(text)
+    let printed = render_source_of(p.store, p.stmts, text)
+    if printed.ends_with("\n") { printed.substring(0, printed.length - 1) } else { printed }
+}
+
+export flag untold {
+    description: "print the generated parser the grammar makes"
+    aliases: ["--untold"]
+}
+
+// `grammar` is a keyword, so the command binds `language` and is
+// named by its setting
+export command language {
+    name: "grammar"
+    description: "Print the assembled language grammar"
+    flags: [untold]
+    run: GrammarCmd {}
+}

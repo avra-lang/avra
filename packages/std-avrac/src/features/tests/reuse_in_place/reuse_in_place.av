@@ -1,0 +1,229 @@
+// REUSE IN PLACE: a value handed to a reusing twin is written only when
+// nothing else holds it. Each shape keeps a SECOND hold on a box — a list,
+// a record, a capture, a param, an earlier borrow, an outer scope — then
+// grows or cuts the first, and reads the second back unchanged. Every box
+// is made at run time: a literal is immortal and never written.
+type Rec = { name: string, tags: List<string>, n: int }
+
+fn made(s: string) -> string { "${s}${s.length}" }
+
+/// A list holds the text the local grows.
+fn held_by_list() -> string {
+    mut s = made("a")
+    let keep = [s]
+    s = s + "x"
+    "${keep[0]}/${s}"
+}
+
+/// Each turn files the text before growing it.
+fn pushed_each_turn() -> string {
+    mut s = made("b")
+    mut keep: List<string> = []
+    for i in 0..3 {
+        keep.push(s)
+        s = s + "x"
+    }
+    "${keep.join(",")}/${s}"
+}
+
+/// A lambda captured the text before it grew.
+fn captured() -> string {
+    mut s = made("c")
+    let f = () -> s
+    s = s + "x"
+    "${f()}/${s}"
+}
+
+fn grown(s: string) -> string { s + "x" }
+
+/// A param is the caller's: the callee's growth copies.
+fn param_kept() -> string {
+    let s = made("d")
+    let t = grown(s)
+    "${s}/${t}"
+}
+
+/// Text and its octets share one box; growing the octets copies.
+fn octets_shared() -> string {
+    let s = made("e")
+    let c = s.bytes().concat("!".bytes())
+    "${s}/${c.text() ?? "?"}"
+}
+
+/// One value in both seats, long enough that the append must move.
+fn doubled() -> string {
+    let s = made("fffffffff")
+    let b = made("ggggggggg").bytes()
+    "${s + s}/${b.concat(b).text() ?? "?"}"
+}
+
+/// A borrow of the cell read after the growth, before the store.
+fn borrow_read_past() -> string {
+    mut s = made("h")
+    let a = s
+    s = s + "x" + a
+    s
+}
+
+/// An outer value consumed inside a loop runs once per turn.
+fn outer_in_loop() -> string {
+    let base = made("i")
+    mut out = ""
+    for i in 0..3 { out = base + "${i}" }
+    out
+}
+
+/// The text is read after the growth.
+fn read_after() -> string {
+    let s = made("j")
+    let t = s + "x"
+    "${s}/${t}"
+}
+
+/// A field read before a `with` rewrites the record.
+fn view_before_with() -> string {
+    let r = Rec { name: made("k"), tags: [made("l")], n: 1 }
+    let tags = r.tags
+    let r2 = r with { tags: [made("m")] }
+    "${tags[0]}/${r2.tags[0]}"
+}
+
+/// A list holds the record a `with` rewrites.
+fn with_on_shared() -> string {
+    let r = Rec { name: made("n"), tags: [], n: 1 }
+    let xs = [r]
+    let r2 = r with { n: 2 }
+    "${xs[0].n}/${r2.n}"
+}
+
+/// A slice drops an element another name still holds.
+fn cut() -> string {
+    let a = made("o")
+    let xs = [a, made("p"), made("q")]
+    let ys = xs.slice(1, 3)
+    "${a}/${ys.join(",")}"
+}
+
+/// A record holds the list the local grows.
+fn concat_held() -> string {
+    mut xs = [made("r")]
+    let r = Rec { name: "", tags: xs, n: 0 }
+    xs = xs.concat([made("s")])
+    "${r.tags.length}/${xs.length}"
+}
+
+/// A list holds the octets a slice cuts.
+fn octets_cut_shared() -> string {
+    let b = made("tuv").bytes()
+    let keep = [b]
+    let c = b.slice(1, 3)
+    "${keep[0].text() ?? "?"}/${c.text() ?? "?"}"
+}
+
+/// A snapshot taken mid-growth, past the size classes.
+fn grown_past_classes() -> string {
+    mut s = made("w")
+    mut snap = ""
+    for i in 0..400 {
+        s = s + "x"
+        if i == 200 { snap = s }
+    }
+    "${snap.length}/${s.length}/${snap.ends_with("x")}"
+}
+
+/// An interpolation of one hole IS the hole's text: the alias holds the
+/// same box, so growing the original copies.
+fn interpolated_alias() -> string {
+    mut s = made("y")
+    let t = "${s}"
+    let u = "${s}!"
+    s = s + "x"
+    "${t}/${u}/${s}/${"${7}"}/${"" + "${""}"}."
+}
+
+/// A literal is immortal: growing it copies, and it reads the same after.
+fn literal_grown() -> string {
+    mut s = "lit"
+    s = s + "x"
+    "${s}/${"lit"}"
+}
+
+/// A block grown once, truncated to empty and appended into again, many
+/// times over: the LENGTH a truncation resets must never be read back
+/// as the block's own room (R14 — `sized_capacity` read the class from
+/// the length, so a shrunk box answered a smaller class than its block
+/// actually held).
+fn truncated_then_regrown() -> string {
+    mut b = "".bytes()
+    mut i = 0
+    while i < 40 {
+        b = b.slice(0, 0)
+        b = b.concat(made("z").bytes())
+        i = i + 1
+    }
+    b.text() ?? "?"
+}
+
+/// A copy taken before the truncation keeps its own bytes: truncating
+/// in place must still reach only a SOLE-owned box.
+fn truncated_shared_kept() -> string {
+    mut b = made("aa").bytes().concat(made("bb").bytes())
+    let keep = b
+    b = b.slice(0, 0)
+    b = b.concat(made("cc").bytes())
+    "${keep.text() ?? "?"}/${b.text() ?? "?"}"
+}
+
+/// A literal Bytes value truncated and grown never writes through the
+/// immortal box: the literal reads the same after.
+fn static_bytes_truncated() -> string {
+    mut b = "lit".bytes()
+    b = b.slice(0, 0)
+    b = b.concat("grown".bytes())
+    "${b.text() ?? "?"}/${"lit".bytes().text() ?? "?"}"
+}
+
+/// Truncated small, then grown well past the room the ORIGINAL block
+/// ever held: the shortcut that skips a move when the block still fits
+/// must still move — correctly — the moment it genuinely does not.
+fn truncated_past_kept_room() -> string {
+    mut b = made("q").bytes()
+    mut i = 0
+    while i < 5 {
+        b = b.concat(made("r").bytes())
+        i = i + 1
+    }
+    let before = b.length
+    b = b.slice(0, 0)
+    mut j = 0
+    while j < 50 {
+        b = b.concat(made("s").bytes())
+        j = j + 1
+    }
+    "${before}/${b.length}/${(b.text() ?? "").ends_with("s1")}"
+}
+
+[
+    held_by_list(),
+    pushed_each_turn(),
+    captured(),
+    param_kept(),
+    octets_shared(),
+    doubled(),
+    borrow_read_past(),
+    outer_in_loop(),
+    read_after(),
+    view_before_with(),
+    with_on_shared(),
+    cut(),
+    concat_held(),
+    octets_cut_shared(),
+    grown_past_classes(),
+    interpolated_alias(),
+    literal_grown(),
+    truncated_then_regrown(),
+    truncated_shared_kept(),
+    static_bytes_truncated(),
+    truncated_past_kept_room(),
+]
+    .join(" ")

@@ -1,0 +1,164 @@
+// A flat type — a record of one scalar field, or a named type over a scalar — is
+// its scalar's column: written as the scalar, read back wrapped, matched by a
+// `where` seat, held unique or indexed, and the same column as the bare scalar,
+// so moving a field onto one is no migration.
+use @std.db.{model}
+use @std.db.error.{ModelError, modeled}
+use @std.db.migrate.{diff, is_current}
+use @std.db.shape.{shape_read}
+use @std.sqlite.{Db}
+use @std.sqlite.error.{SqlError}
+use @std.time.{Time}
+
+type Ratio = { r: float }
+type Count = { n: int }
+type Label = { text: string }
+type Flag = { on: bool }
+type Cents = int
+
+@model
+type Ledger = {
+    id: int = 0,
+    @unique share: Ratio,
+    @index count: Count,
+    label: Label,
+    flag: Flag,
+    at: Time,
+    cents: Cents,
+    maybe: Ratio? = null,
+    tag: Label? = null,
+}
+
+@model
+type Bare = {
+    id: int = 0,
+    share: float,
+    count: int,
+    label: string,
+    flag: bool,
+}
+
+@model
+type Wrapped = {
+    id: int = 0,
+    share: Ratio,
+    count: Count,
+    label: Label,
+    flag: Flag,
+}
+
+fn ledger() -> Result<Db, SqlError> {
+    let db = Db.memory()?
+    Ledger.create_table(db)?
+    db
+}
+
+/// A row of zeros and empties, and one of values.
+fn filled() -> Result<Db, ModelError> {
+    let db = modeled(ledger())?
+    let _ = Ledger {
+        share: Ratio { r: 0.0 },
+        count: Count { n: 0 },
+        label: Label { text: "" },
+        flag: Flag { on: false },
+        at: Time { ns: 0 },
+        cents: Cents(0),
+    }
+        .insert(db)?
+    let _ = Ledger {
+        share: Ratio { r: 0.5 },
+        count: Count { n: 3 },
+        label: Label { text: "x" },
+        flag: Flag { on: true },
+        at: Time { ns: 9 },
+        cents: Cents(7),
+        maybe: Ratio { r: 0.0 },
+        tag: Label { text: "" },
+    }
+        .insert(db)?
+    db
+}
+
+fn shown(l: Ledger) -> string {
+    "${l.share.r} ${l.count.n} [${l.label.text}] ${l.flag.on} ${l.at.ns} ${l.cents.of} ${if l.maybe == null { "-" } else { "${l.maybe!.r}" }} ${if l.tag == null { "-" } else { "[${l.tag!.text}]" }}"
+}
+
+fn read_back() -> Result<string, ModelError> {
+    let db = filled()?
+    [shown(l) for l in modeled(Ledger.all(db))?].join(" | ")
+}
+
+fn matched() -> Result<string, ModelError> {
+    let db = filled()?
+    let by_count = (modeled(Ledger.where(db, count: Count { n: 3 }))?).length
+    let by_cents = (modeled(Ledger.where(db, cents: Cents(0)))?).length
+    let absent = (modeled(Ledger.where(db, maybe: Ledger_maybe_filter.Is(null)))?).length
+    let zero = (modeled(Ledger.where(db, maybe: Ledger_maybe_filter.Is(Ratio { r: 0.0 })))?).length
+    let empty = (modeled(Ledger.where(db, tag: Ledger_tag_filter.Is(Label { text: "" })))?).length
+    "${by_count} ${by_cents} ${absent} ${zero} ${empty}"
+}
+
+fn kept_unique() -> Result<string, ModelError> {
+    let db = filled()?
+    let again = Ledger {
+        share: Ratio { r: 0.5 },
+        count: Count { n: 1 },
+        label: Label { text: "y" },
+        flag: Flag { on: true },
+        at: Time { ns: 1 },
+        cents: Cents(1),
+    }
+        .insert(db)
+    match again { .Ok(_) -> "kept", .Err(e) -> e.describe().kind }
+}
+
+fn from_json() -> string {
+    match Ledger
+        .from_json(
+            "{\"share\": 0.25, \"count\": 2, \"label\": \"\", \"flag\": true, \"at\": \"1970-01-01T00:00:00.000000001Z\", \"cents\": 0, \"maybe\": 0.0}",
+        ) { .Ok(l) -> shown(l), .Err(_) -> "refused" }
+}
+
+fn json_round_trip() -> string {
+    let l = Ledger {
+        share: Ratio { r: 0.5 },
+        count: Count { n: 3 },
+        label: Label { text: "x" },
+        flag: Flag { on: true },
+        at: Time { ns: 9 },
+        cents: Cents(7),
+    }
+    match Ledger.decode(l.value()) { .Ok(back) -> shown(back), .Err(_) -> "refused" }
+}
+
+spec "std/db flat types" {
+    given "a model of flat fields" {
+        then "stores each as its scalar's column" {
+            Ledger.shape().contains("\ncents|INTEGER|notnull|") &&
+                Ledger.shape().contains("\nlabel|TEXT|notnull|") &&
+                Ledger.shape().contains("\nmaybe|REAL|null|") &&
+                Ledger.shape().contains("\nshare|REAL|notnull|-|unique|")
+        }
+        then "indexes one as its column" { Ledger.shape().ends_with("\nindex(count)") }
+        then "reads each back wrapped, zero, false and the empty text kept, null kept apart from zero" {
+            (read_back() catch _ -> "") == "0.0 0 [] false 0 0 - - | 0.5 3 [x] true 9 7 0.0 []"
+        }
+        then "matches each by a `where` seat, null apart from zero and the empty text" {
+            (matched() catch _ -> "") == "1 1 1 1 1"
+        }
+        then "holds a unique one unique" { (kept_unique() catch _ -> "") == "db.constraint.unique" }
+        then "reads it from JSON as its scalar" { from_json() == "0.25 2 [] true 1 0 0.0 -" }
+        then "writes it as its scalar and decodes it back" { json_round_trip() == "0.5 3 [x] true 9 7 - -" }
+    }
+    given "a field moved onto a flat type" {
+        then "is the same column, so the move is no migration" {
+            is_current(
+                diff(
+                    shape_read(Bare.shape().replace("Bare", "T")),
+                    shape_read(Wrapped.shape().replace("Wrapped", "T"))!,
+                    [],
+                ),
+            )
+        }
+    }
+}

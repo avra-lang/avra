@@ -1,0 +1,43 @@
+//! `avra licences` — the licence families the keepers hold at a site
+//! (compiler/licenses.av's `families`), the one definition the keepers read
+//! their patterns from. `--cites <id>` answers whether a family holds an id.
+use @std.cli.{CliResult, Runnable, command, flag, option}
+use @std.avrac.compiler.{LicenceFamily, families, belongs}
+use @std.json.{Json, field, to_text}
+
+type LicencesCmd = {}
+
+impl Runnable for LicencesCmd {
+    fn run(args: CliResult) -> int {
+        let id = args.option("cites")
+        println(
+            when {
+                id != "" -> "${families().any(belongs(id, it))}"
+                args.has_flag("json") -> to_text(Json.Arr([family_json(f) for f in families()]))
+                _ -> [f.prefix + " " + f.shape + " " + f.keeper for f in families()].join("\n")
+            },
+        )
+        0
+    }
+}
+
+fn family_json(f: LicenceFamily) -> Json {
+    Json
+        .Obj(
+            [
+                field("prefix", Json.Str(f.prefix)),
+                field("shape", Json.Str(f.shape)),
+                field("keeper", Json.Str(f.keeper)),
+            ],
+        )
+}
+
+export command licences {
+    description: "The licence families the keepers hold at a site — the one definition they read their patterns from"
+    flag json { description: "one JSON array of {prefix, shape, keeper}" }
+    option {
+        name: "cites"
+        description: "answer `true` when a family holds this licence id, else `false`"
+    }
+    run: LicencesCmd {}
+}

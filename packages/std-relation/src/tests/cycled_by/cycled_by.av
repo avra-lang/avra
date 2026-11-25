@@ -1,0 +1,33 @@
+// proves: `@cycled_by(f)` answers a call re-entered before it settles with what `f` says
+// stands — the run that re-entered finishes on it and settles once — in both engines
+use @std.relation.{query, cycled_by}
+use @std.relation.db.{Db, new_db}
+
+once fn runs() -> Cell<int> { Cell.new(0) }
+
+once fn inside() -> Cell<bool> { Cell.new(false) }
+
+/// What stands for `k` while its own run is open.
+fn standing(_db: Db, k: string) -> int { k.length * 10 }
+
+/// One more than what its own re-entry answers.
+@query
+@cycled_by(standing)
+fn grown(db: Db, k: string) -> int {
+    let r = runs()
+    r.set(r.get() + 1)
+    if inside().get() { return 0 }
+    inside().set(true)
+    let inner = grown(db, k)
+    inside().set(false)
+    inner + 1
+}
+
+fn main_run() -> string {
+    let db = new_db()
+    let first = grown(db, "abc")
+    let again = grown(db, "abc")
+    "${first} ${again} ${runs().get()}"
+}
+
+main_run()

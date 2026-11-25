@@ -1,0 +1,65 @@
+//! A VALUE CROSSING A ROW: a runtime row's seat and answer are one word each, so a value wider than a
+//! word crosses in a box of its own — a value record's fields in a list of them, a value enum in its
+//! tagged box — and an answer that wide is read back out of the box the row answers.
+
+impl Lowering {
+    /// `r` as a row's seat takes it: a value record's fields pushed into a box sized for them, a value
+    /// enum in its tagged box, else itself.
+    mut fn crossed(r: Reg) -> Reg {
+        match self.layout_of(r) {
+            .Fields(_) -> {
+                let parts = self.leaves(r)
+                let dst = self
+                    .call_row(
+                        Layout.Boxed(BoxKind.List),
+                        rt_sig_of("avra_array_sized")!,
+                        [self.const_int(parts.length)],
+                    )
+                for p in parts { self.run_row(rt_sig_of("avra_array_push")!, [dst, p]) }
+                dst
+            },
+            .Tagged(counted) -> self
+                .call_row(
+                    Layout.Boxed(BoxKind.List),
+                    rt_sig_of("avra_enum_boxed")!,
+                    [
+                        self.extracted(Layout.Word, r, 0),
+                        self.extracted(Layout.Word, r, 1),
+                        self.const_int(counted),
+                    ],
+                ),
+            .Void or .Word or .Truth or .Real or .Boxed(_) or .Bare or .Maybe(_) -> r,
+        }
+    }
+
+    /// A value of layout `l` read back out of `held`, the box it crossed in: a value enum's tag and word
+    /// as its tagged box answers them, a value record's fields from its slots, else `held` itself.
+    mut fn uncrossed(held: Reg, l: Layout) -> Reg {
+        match l {
+            .Tagged(_) -> self
+                .pack(
+                    l,
+                    [
+                        self.call_row(Layout.Word, rt_sig_of("avra_enum_tag")!, [held]),
+                        self.call_row(Layout.Word, rt_sig_of("avra_enum_word")!, [held]),
+                    ],
+                ),
+            .Fields(_) -> self.unboxed_at(l, held, 0),
+            .Void or .Word or .Truth or .Real or .Boxed(_) or .Bare or .Maybe(_) -> held,
+        }
+    }
+
+    /// A call of the row `row` answering a value of layout `l`, each argument crossed: an answer wider
+    /// than a word read back out of the box the row answers.
+    mut fn call_crossed(l: Layout, row: RtSig, args: List<Reg>) -> Reg {
+        let seats = [self.crossed(a) for a in args]
+        if !l.inline() { return self.call_row(l, row, seats) }
+        self.uncrossed(self.call_row(Layout.Boxed(BoxKind.List), row, seats), l)
+    }
+
+    /// A call of the row `row`, which answers nothing, each argument crossed.
+    mut fn run_crossed(row: RtSig, args: List<Reg>) { self.run_row(row, [self.crossed(a) for a in args]) }
+
+    /// Whether each of `regs` crosses a row's seat: one word, or a value its own box carries.
+    fn crossable(regs: List<Reg>) -> bool { [self.layout_of(r) for r in regs].all(it.one_word() || it.inline()) }
+}

@@ -1,0 +1,43 @@
+//! THE VALUE PROTOCOL, derived — `Expr`'s literal payload projections.
+//! Five categories take the variant's one payload; the map and the
+//! hole-bearing body take their payloads and build a record. A feature
+//! reads a payload through these methods instead of matching a variant.
+use @std.meta.{Type as MetaType, Variant as MetaVariant, Directive, Decls, beside}
+
+/// The five single-payload categories: variant -> accessor.
+fn accessor(name: string) -> string? {
+    match name {
+        "BoolLit" -> "bool_of",
+        "IntLit" -> "int_of",
+        "FloatLit" -> "bits_of",
+        "StrLit" -> "text_of",
+        "ListLit" -> "elems_of",
+        _ -> null,
+    }
+}
+
+/// The compiler's derive for the value protocol.
+trait ValueProtocol {
+    static fn derive(t: MetaType) -> List<Directive> {
+        let methods = [projection_of(v) for v in t.variants if accessor(v.name) != null]
+            .concat([entries_of_method(), body_of_method()])
+        [beside(t, quote { impl ${t} { ${methods} } })]
+    }
+}
+
+/// One category's accessor: the payload, or null.
+fn projection_of(v: MetaVariant) -> Decls {
+    let method = accessor(v.name)!
+    let payload = v.payload[0]
+    quote { fn ${method}() -> ${payload}? { match self { .${v}(s) -> s, _ -> null } } }
+}
+
+/// The categories with SEVERAL payloads — a record each, not a
+/// payload — and the map literal's entries.
+fn entries_of_method() -> Decls {
+    quote { fn entries_of() -> List<MapEntry>? { match self { .MapLit(entries) -> entries, _ -> null } } }
+}
+
+fn body_of_method() -> Decls {
+    quote { fn body_of() -> BodyParts? { match self { .Body(word, parts, holes, view) -> BodyParts { word: word, parts: parts, holes: holes, view: view }, _ -> null } } }
+}

@@ -1,0 +1,43 @@
+// Typing, as a program says it: an unresolved name or a hole speaks once and never cascades into a
+// second diagnostic, every body of a file is typed, and what several bodies say reads in source order.
+use @std.avrac.testing.{judged}
+
+spec "compiler/typing" {
+    given "a clean program" {
+        then "every expression types, idents through their definition, and nothing is said" {
+            judged("let x = 1 + 2\nx").diagnostics.is_empty()
+        }
+    }
+    given "an unresolved name in an expression" {
+        then "it is said once, and typing adds no echo" {
+            judged("let x = 1 + y").diagnostics.length == 1
+        }
+    }
+    given "a recovery hole between good statements" {
+        then "the hole is said once, and the statements around it type silently" {
+            judged("let a = 1\nlet = 3\nlet y = 2").diagnostics.length == 1
+        }
+    }
+    given "several declarations in one file" {
+        then "every body types — the file checks clean" {
+            judged(
+                "type P = { x: int }\nenum E {\n    a\n    b\n}\nfn f(p: P) -> int {\n    p.x\n}\nfn g(e: E) -> int {\n    match e {\n        .a -> 1\n        .b -> 2\n    }\n}\nf(P { x: 1 }) + g(E.b)",
+            )
+                .diagnostics
+                .is_empty()
+        }
+        then "two erroring bodies report in SOURCE order, whatever order they were asked in" {
+            // the entry calls `b` before `a`, so `b`'s body is asked first; the report still reads
+            // top to bottom.
+            let p = judged("fn a() -> int {\n    \"s\"\n}\nfn b() -> int {\n    true\n}\nb() + a()")
+            p.diagnostics.length == 2 &&
+                p.diagnostics[0].message.contains("`a` declares") &&
+                p.diagnostics[1].message.contains("`b` declares")
+        }
+    }
+    given "a use before its definition" {
+        then "the use is said once, and typing stays quiet" {
+            judged("x\nlet x = 1").diagnostics.length == 1
+        }
+    }
+}

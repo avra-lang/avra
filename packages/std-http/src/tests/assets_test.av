@@ -1,0 +1,144 @@
+// Content-named bytes served: a hit with its validators and an immutable year,
+// a conditional hit that is a 304 with no body, and every other name a 404.
+use @std.http.http.{Request, Unrouted, Response}
+use @std.http.route.{compiled, dispatch}
+use @std.http.assets.{Hosted, Coded, assets}
+
+fn served() -> List<Hosted> {
+    [
+        Hosted {
+            name: "0123456789abcdef0123456789abcdef.png",
+            media: "image/png",
+            octets: [137, 80, 78, 71].bytes()!,
+        },
+        Hosted {
+            name: "fedcba9876543210fedcba9876543210.svg",
+            media: "image/svg+xml",
+            octets: "<svg/>".bytes(),
+        },
+        Hosted {
+            name: "app.0123abcd.wasm",
+            media: "application/wasm",
+            octets: "plain".bytes(),
+            coded: [
+                Coded { coding: "br", octets: "B".bytes() },
+                Coded { coding: "gzip", octets: "GZ".bytes() },
+            ],
+        },
+        Hosted {
+            name: "boot.js",
+            media: "text/javascript",
+            octets: "plain".bytes(),
+            coded: [Coded { coding: "br", octets: "B".bytes() }],
+            kept: false,
+            tag: "t1",
+        },
+    ]
+}
+
+/// The body and the fields a coded asset is answered with, for an `Accept-Encoding` of `accepts`.
+fn coded_as(target: string, accepts: string) -> string {
+    let r = served_by(
+        "GET ${target} HTTP/1.1",
+        if accepts == "" { "" } else { "Accept-Encoding: ${accepts}\r\n" },
+    )
+    "${r.body.text() ?? ""} ${field_of(r, "content-encoding")} ${field_of(r, "vary")} ${field_of(r, "etag")}"
+}
+
+fn served_by(line: string, fields: string) -> Response {
+    let q = framed_from("${line}\r\nHost: h\r\n${fields}\r\n".bytes())!
+    dispatch(compiled(assets("/assets", served())), q)
+}
+
+fn got(target: string) -> Response { served_by("GET ${target} HTTP/1.1", "") }
+
+fn field_of(r: Response, name: string) -> string { r.headers.find(it.name == name)?.value ?? "-" }
+
+spec "std/http — served assets" {
+    given "a name the table holds" {
+        then "its octets, whole" { got("/assets/0123456789abcdef0123456789abcdef.png").body.length == 4 }
+        then "its media type, from the table and never the extension" {
+            field_of(got("/assets/fedcba9876543210fedcba9876543210.svg"), "content-type") == "image/svg+xml"
+        }
+        then "a strong tag that is its name" {
+            field_of(got("/assets/0123456789abcdef0123456789abcdef.png"), "etag") == "\"0123456789abcdef0123456789abcdef.png\""
+        }
+        then "a year, immutable" {
+            field_of(got("/assets/0123456789abcdef0123456789abcdef.png"), "cache-control") == "public, max-age=31536000, immutable"
+        }
+        then "nosniff" { field_of(got("/assets/0123456789abcdef0123456789abcdef.png"), "x-content-type-options") == "nosniff" }
+    }
+    given "a conditional request" {
+        then "the tag it holds is a 304 with no body" {
+            let r = served_by(
+                "GET /assets/0123456789abcdef0123456789abcdef.png HTTP/1.1",
+                "If-None-Match: \"0123456789abcdef0123456789abcdef.png\"\r\n",
+            )
+            r.status == 304 && r.body.length == 0 && field_of(r, "etag") != "-"
+        }
+        then "another tag is the whole answer" {
+            served_by(
+                "GET /assets/0123456789abcdef0123456789abcdef.png HTTP/1.1",
+                "If-None-Match: \"other\"\r\n",
+            )
+                .status == 200
+        }
+        then "a star is a 304" {
+            served_by(
+                "GET /assets/0123456789abcdef0123456789abcdef.png HTTP/1.1",
+                "If-None-Match: *\r\n",
+            )
+                .status == 304
+        }
+    }
+    given "a name the table does not hold" {
+        then "unknown" { got("/assets/nope.png").status == 404 }
+        then "the prefix itself" { got("/assets/").status == 404 }
+        then "a parent segment" { got("/assets/../0123456789abcdef0123456789abcdef.png").status == 404 }
+        then "an encoded dot-dot" { got("/assets/%2e%2e/x").status == 404 }
+        then "a name with its extension changed" { got("/assets/0123456789abcdef0123456789abcdef.jpg").status == 404 }
+        then "a sibling of the prefix" { got("/assetsx/0123456789abcdef0123456789abcdef.png").status == 404 }
+    }
+    given "a HEAD" {
+        then "answers the same fields" {
+            let r = served_by("HEAD /assets/0123456789abcdef0123456789abcdef.png HTTP/1.1", "")
+            r.status == 200 && field_of(r, "etag") != "-"
+        }
+    }
+    given "an asset coded before it is served" {
+        then "a client that weighs brotli highest is sent the brotli octets, tagged as such" {
+            coded_as("/assets/app.0123abcd.wasm", "gzip, deflate, br") == "B br accept-encoding \"app.0123abcd.wasm.br\""
+        }
+        then "a client that refuses brotli is sent gzip" {
+            coded_as("/assets/app.0123abcd.wasm", "br;q=0, gzip") == "GZ gzip accept-encoding \"app.0123abcd.wasm.gzip\""
+        }
+        then "a client that weighs gzip higher is sent gzip" {
+            coded_as("/assets/app.0123abcd.wasm", "br;q=0.5, gzip;q=0.9") == "GZ gzip accept-encoding \"app.0123abcd.wasm.gzip\""
+        }
+        then "a client that accepts no coding is sent the octets, and still told the answer varies" {
+            coded_as("/assets/app.0123abcd.wasm", "") == "plain - accept-encoding \"app.0123abcd.wasm\""
+        }
+        then "a star takes the first coding" { coded_as("/assets/app.0123abcd.wasm", "*") == "B br accept-encoding \"app.0123abcd.wasm.br\"" }
+        then "the tag a client holds for one coding is a 304 for it" {
+            served_by(
+                "GET /assets/app.0123abcd.wasm HTTP/1.1",
+                "Accept-Encoding: br\r\nIf-None-Match: \"app.0123abcd.wasm.br\"\r\n",
+            )
+                .status == 304
+        }
+        then "and the whole answer for another" {
+            served_by(
+                "GET /assets/app.0123abcd.wasm HTTP/1.1",
+                "Accept-Encoding: gzip\r\nIf-None-Match: \"app.0123abcd.wasm.br\"\r\n",
+            )
+                .status == 200
+        }
+    }
+    given "an asset whose name is fixed" {
+        then "it is asked again each time" { field_of(got("/assets/boot.js"), "cache-control") == "no-cache" }
+        then "its tag is the one it was given" { coded_as("/assets/boot.js", "br") == "B br accept-encoding \"t1.br\"" }
+        then "the tag it holds is a 304" {
+            served_by("GET /assets/boot.js HTTP/1.1", "If-None-Match: \"t1\"\r\n").status == 304
+        }
+    }
+}

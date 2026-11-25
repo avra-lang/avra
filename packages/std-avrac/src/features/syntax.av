@@ -1,0 +1,293 @@
+//! THE SYNTAX HANDLE a syntax rule holds: one node of a file's tree beside the file's text, and no
+//! fact a pass adds — so a rule over it reads only what the source says, and the compiler refuses
+//! one that reaches for a name, a type or a declaration. `Code` carries the same vocabulary through
+//! `syntax()`, every verb here written once.
+use core.{
+    At,
+    ExprId,
+    StmtId,
+    SyntaxArena,
+    body_behavior,
+    flatten,
+    own_name_at,
+    same_expr,
+    some_list,
+}
+use diagnostics.{SourceFile, loc_at}
+use @std.errors.{Loc}
+use @std.meta.{Subject}
+use @std.program.defect.{defect}
+
+/// What a syntax rule reads of its file: the tree and the text.
+///
+/// `whole` where the store holds every item of the file, beside the file's whole text; else one item
+/// alone, beside its own text, which no read of the rest of the file may be asked of.
+export type SyntaxView = { store: SyntaxArena, source: SourceFile, whole: bool = true }
+
+/// A file as its syntax handles share it.
+export type SyntaxFile = { view: SyntaxView }
+
+/// One node of a file's syntax: the subject a syntax rule matches, and what its pattern's holes bind.
+export type Syntax = { of: SyntaxFile, at: At }
+
+/// A range `for` loop's own head, `for_range`'s answer: the loop variable, its bound and its body.
+export type SyntaxRange = { name: string, from: Syntax, to: Syntax, body: List<Syntax> }
+
+/// A handle on each of `ats`, in `of`: what a run hole binds.
+export fn syntax_coded(of: SyntaxFile, ats: List<At>) -> List<Syntax> { [Syntax { of: of, at: a } for a in ats] }
+
+/// A held `Syntax`'s own text, spliced as an expression — parenthesised when its top node is not
+/// atomic, so `${x}` filling `${x} * 2` never lets an outer operator read past what `x` bound.
+export fn spliced_syntax(s: Syntax) -> string {
+    if s.atomic() { s.text() } else { "(${s.text()})" }
+}
+
+impl Subject for Syntax {
+    /// The node's own source, verbatim — "" for one no span names (a generated node).
+    fn text() -> string {
+        let sp? = self.of.view.store.span_at(self.at) else { return "" }
+        self.of.view.source.text.substring(sp.lo, sp.hi)
+    }
+}
+
+impl Syntax {
+    /// The expression `e`, in this node's file.
+    fn coded(e: ExprId) -> Syntax { Syntax { of: self.of, at: At.Expr(e) } }
+
+    /// Where this code stands in its file — a Say's own location, so
+    /// a rule's finding points at the code that earned it rather than
+    /// at the rule's declaration.
+    fn loc() -> Loc? {
+        loc_at(self.of.view.source.file, self.of.view.store.span_at(self.at))
+    }
+
+    /// This node's children, each still this file's syntax —
+    /// `kids_at`'s walk, wrapped.
+    fn kids() -> List<Syntax> {
+        [Syntax { of: self.of, at: k } for k in self.of.view.store.kids_at(self.at)]
+    }
+
+    /// An ident's own text; a struct literal FIELD's or a fn PARAM's
+    /// own name — null for every other seat.
+    fn name() -> string? {
+        match self.at {
+            .Expr(id) -> self.of.view.store.ident_name(id),
+            .Field(_, _) or .Param(_, _) -> own_name_at(self.of.view.store, self.at),
+            .Stmt(_) or .Pat(_) -> null,
+        }
+    }
+
+    /// A property read's own NAME — `x.name` answers `"name"` — null
+    /// for every other seat, so a field's VALUE is confirmed a `Prop`
+    /// before its subject is trusted, never guessed from text alone.
+    fn prop_name() -> string? {
+        match self.at {
+            .Expr(id) -> match self.of.view.store.expr(id) { .Prop(_, name) -> name.of, _ -> null },
+            .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> null,
+        }
+    }
+
+    /// This node's own CALL ARGUMENTS: its kids past the ones the node
+    /// says are no argument (`args_after` — a method's subject) — empty
+    /// for a node that is no call. A name found here is HANDED to this
+    /// call, never a name merely read as a method's own RECEIVER.
+    fn call_args() -> List<Syntax> {
+        match self.at {
+            .Expr(id) -> {
+                let skip? = self.of.view.store.expr(id).args_after() else { return [] }
+                self.kids().slice(skip, self.kids().length)
+            },
+            .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> [],
+        }
+    }
+
+    /// Whether this node is a method call (`subject.name(args)`) —
+    /// false for every other seat, a plain `Call` by NAME included.
+    fn is_method_call() -> bool {
+        match self.at {
+            .Expr(id) -> match self.of.view.store.expr(id) { .MethodCall(_, _, _) -> true, _ -> false },
+            .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> false,
+        }
+    }
+
+    /// Every OTHER expression in this FILE sharing this node's own
+    /// fingerprint — never itself, and never raw text: two sites
+    /// answering the same fingerprint answer the same STRUCTURE, the
+    /// identity a hash-based dedup names rather than re-derives.
+    /// Empty for every seat but `.Expr`.
+    ///
+    /// A SIBLING SHARING THIS NODE'S OWN SPAN IS THE SAME TEXT, NOT A
+    /// SECOND COPY: a `grammar { … }` literal desugars into hundreds
+    /// of `Rule`/`Alt`/`Seq`/`Item` struct literals that all carry the
+    /// DSL string's ONE span (features/grammar_lit/builders.av), so a
+    /// grammar with two rules taking a bare `NAME` looks, to a
+    /// span-blind reader, like the same `Item{…}` written a thousand
+    /// times over. Filtering by span costs nothing a human-authored
+    /// duplicate has: two hand-written sites never share one span.
+    /// A SIBLING WITH NO SPAN AT ALL IS NOT A SECOND COPY EITHER — a
+    /// node minted with none is compiler-generated, invisible in the
+    /// source a reader would dedupe, so nothing here is written twice.
+    fn fingerprint_siblings() -> List<Syntax> {
+        self.file_read()
+        match self.at {
+            .Expr(id) -> {
+                let want = self.of.view.store.expr_fingerprint(id)
+                let mine = self.of.view.store.expr_span(id)
+                [self.coded(e) for e in self.of.view.store.expr_ids() if !same_expr(e, id) &&
+                    self.of.view.store.expr_fingerprint(e) == want &&
+                    sibling_span(mine, self.of.view.store.expr_span(e))]
+            },
+            .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> [],
+        }
+    }
+
+    /// Whether this node is an expression, or a statement that answers
+    /// one — a `let` or a loop is not.
+    fn is_value() -> bool {
+        match self.at {
+            .Expr(_) -> true,
+            .Stmt(s) -> self.of.view.store.answer_of(s) != null,
+            .Pat(_) or .Field(_, _) or .Param(_, _) -> false,
+        }
+    }
+
+    /// Whether this node is a `mut` LOCAL declared with an explicit
+    /// nullable type, seeded `null` — `mut best: T? = null`. A TYPE
+    /// hole binds a BARE written type (`let ${x}: ${T} = …`), never a
+    /// nullable one — `?` is decoration a lone hole cannot carry, the
+    /// same law a NAME hole's `l${x}_y` is refused under — so the
+    /// OPTIONALITY itself still reads structurally, off the
+    /// declaration's own `ty` field.
+    fn is_nullable_flag_mut() -> bool {
+        match self.at {
+            .Stmt(id) -> match self.of.view.store.stmt(id) {
+                .MutLet(_, ty, value) -> mut_ty_optional(ty) && self.of.view.store.null_literal(value),
+                _ -> false,
+            },
+            _ -> false,
+        }
+    }
+
+    /// Whether this node is a block — false for every other seat.
+    fn is_block() -> bool {
+        match self.at {
+            .Expr(id) -> match self.of.view.store.expr(id) { .Block(_) -> true, _ -> false },
+            .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> false,
+        }
+    }
+
+    /// A method call's own NAME — `xs.find(p)` answers `"find"` —
+    /// null for every other seat.
+    fn method_name() -> string? {
+        match self.at {
+            .Expr(id) -> match self.of.view.store.expr(id) { .MethodCall(_, name, _) -> name.of, _ -> null },
+            _ -> null,
+        }
+    }
+
+    /// This string literal's own decoded value — null for every
+    /// other seat. `Expr.StrLit` carries the value already unescaped,
+    /// so no quote-stripping of its own `.text()` is needed.
+    fn str_lit_value() -> string? {
+        match self.at {
+            .Expr(id) -> match self.of.view.store.expr(id) { .StrLit(v) -> v, _ -> null },
+            .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> null,
+        }
+    }
+
+    /// Whether this node is a struct literal — false for every other
+    /// seat, `.Field` included: a rule guards `lit.is_struct_lit()`
+    /// before reading `lit.kids()` as its fields.
+    fn is_struct_lit() -> bool {
+        match self.at {
+            .Expr(id) -> match self.of.view.store.expr(id) { .StructLit(_, _, _) -> true, _ -> false },
+            .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> false,
+        }
+    }
+
+    /// This node's own structural fingerprint — the identity `make
+    /// fingerprints` gates the tree on; null for a seat fingerprinting
+    /// does not cover.
+    fn fp() -> int? {
+        match self.at {
+            .Expr(id) -> self.of.view.store.expr_fingerprint(id),
+            .Stmt(id) -> self.of.view.store.stmt_fingerprint(id),
+            .Pat(_) or .Field(_, _) or .Param(_, _) -> null,
+        }
+    }
+
+    /// A text literal's leading text — a plain literal's value, or an
+    /// interpolated one's run before its first hole — null for every
+    /// other seat.
+    fn text_head() -> string? { self.str_lit_value() ?? self.text_body_head() }
+
+    fn text_body_head() -> string? {
+        match self.at {
+            .Expr(id) -> match self.of.view.store.expr(id) {
+                .Body(word, parts, _, _) -> if body_behavior(word) is .Text {
+                    parts.first()
+                } else {
+                    null
+                },
+                _ -> null,
+            },
+            .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> null,
+        }
+    }
+
+    /// A read of this node's whole file: a defect where the view holds one item alone, since a rule
+    /// that reads the file is walked over all of it (`compiler.rules_table`'s `reads_the_file`).
+    fn file_read() {
+        if !self.of.view.whole {
+            defect(
+                "a rule that reads its item alone read the rest of its file — name it in `reads_the_file`",
+            )
+        }
+    }
+
+    /// Every name this node's FILE calls a fn by, once per call.
+    fn file_callees() -> List<string> {
+        self.file_read()
+        flatten(
+            [some_list(self.of.view.store.callee_name(e)) for e in self.of.view.store.expr_ids()],
+        )
+    }
+
+    /// Whether this node prints unambiguously wherever it is
+    /// spliced — no operator outside it can steal its neighbours.
+    /// A registry over `Expr`, the way `pure()`'s is; a Stmt/Pat
+    /// seat is never atomic on its own terms (a rule's held fills
+    /// are always expression holes).
+    fn atomic() -> bool {
+        match self.at {
+            .Expr(id) -> self.of.view.store.expr(id).atomic(),
+            .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> false,
+        }
+    }
+
+    /// This node's own RANGE `for` head — `for NAME in FROM..TO {
+    /// STMTS }` — absent for every other shape: a `for` over anything
+    /// but a range, and every other statement.
+    fn for_range() -> SyntaxRange? {
+        match self.at {
+            .Stmt(id) -> match self.of.view.store.stmt(id) {
+                .ForEach(null, name, subject, stmts) -> self.ranged(name.text(), subject, stmts),
+                _ -> null,
+            },
+            _ -> null,
+        }
+    }
+
+    /// The range a `for` walks, with its binder and body.
+    fn ranged(name: string, subject: ExprId, stmts: List<StmtId>) -> SyntaxRange? {
+        match self.of.view.store.expr(subject) {
+            .Range(from, to) -> SyntaxRange {
+                name: name,
+                from: Syntax { of: self.of, at: At.Expr(from) },
+                to: Syntax { of: self.of, at: At.Expr(to) },
+                body: [Syntax { of: self.of, at: At.Stmt(s) } for s in stmts],
+            },
+            _ -> null,
+        }
+    }
+}

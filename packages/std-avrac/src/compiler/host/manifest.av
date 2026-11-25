@@ -1,0 +1,855 @@
+//! THE MANIFEST — `avra.toml` read into facts: the package's name and
+//! version, its targets, its dependencies, and every voice the
+//! manifest's rules speak (`manifest.*`, F4000–F4099). Pure in the
+//! text; what needs the disk — a dependency's directory, the name it
+//! calls itself, the cycle — is the workspace's to judge, in this
+//! file's words.
+use core.{span_of, joined, is_package_key, is_name_word, is_digit, all_codes, Span}
+use @std.toml.{TomlDoc, TomlValue, TomlEntry, parse_toml, toml_text, toml_field}
+use features.{Budgets, budgets_of}
+use diagnostics.{SourceFile, Diag, refusal, warning, loc_at}
+use @std.errors.{Loc}
+use @std.relation.{codec}
+
+/// A dependency as the manifest names it: its key (`@scope/name`),
+/// its path when it is a path dependency, whether it serves tests
+/// only, and where its line is.
+@codec
+export type Dependency = { key: string, path: string?, dev: bool, at: Loc? }
+
+/// Where a declared tool comes from: one PATH lookup at start; the
+/// environment's variable `var`, else `default`; or the file `at`.
+@codec
+export enum Provenance {
+    Path
+    Env
+    Abs
+}
+
+/// A tool the package declares it may run — `[process.tools]`.
+/// `terminator` is the word after which the tool reads no options;
+/// absent when the tool has none (`terminator = false`).
+@codec
+export type ToolRow = { name: string, from: Provenance, var: string?, default: string?, at_path: string?, terminator: string?, at: Loc? }
+
+/// A manifest's facts. `bin` and `lib` are entry files relative to
+/// the package root — the written path, or the section's default.
+/// `deps_at` is where a new dependency line goes: after the last
+/// one, else after the `[dependencies]` header, else absent (the
+/// file has no such section yet).
+/// `budgets` is what a settlement may spend — `[lifted]`'s `steps` in
+/// instructions and `memory` in MiB of the compiler's heap, resolved
+/// to the measured defaults where the manifest writes none.
+@codec
+export type Manifest = { name: string, version: string, bin: string?, lib: string?, deps: List<Dependency>, deps_at: Span?, excludes: List<string>, objects: List<string>, wasm_objects: List<string>, search: List<string>, libs: List<string>, shared: string = "", dynamic_symbols: bool = false, raw: List<string>, tools: List<ToolRow> = [], budgets: Budgets, dev_server: string? = null }
+
+/// A reader over one document: the source for positions, the
+/// document, and what it has said so far.
+type Reader = { src: SourceFile, doc: TomlDoc, voices: List<Diag> }
+
+/// A manifest as a value, and what reading it said — two answers, so the value carries no voice.
+export type ManifestRead = { manifest: Manifest, voices: List<Diag> }
+
+/// A manifest's value.
+export fn read_manifest(src: SourceFile) -> Manifest { manifest_read(src).manifest }
+
+/// A manifest read whole: its value and its voices.
+export fn manifest_read(src: SourceFile) -> ManifestRead {
+    mut r = Reader { src: src, doc: parse_toml(src.text), voices: [] }
+    for e in r.doc.errors {
+        r
+            .speak(
+                refusal(
+                    "manifest.syntax",
+                    r.at(e.lo, e.hi),
+                    e.message,
+                    "here",
+                    "a manifest is TOML — `key = value` lines under `[section]` headers",
+                ),
+            )
+    }
+    r.unknowns()
+    if !r.doc.has_section("package") {
+        if !r.unreadable() {
+            r
+                .speak(
+                    refusal(
+                        "manifest.no_package",
+                        r.at(0, 0),
+                        "a manifest declares its package — `[package]` is missing",
+                        "this manifest",
+                        "add `[package]` with `name` and `version`",
+                    ),
+                )
+        }
+        return ManifestRead {
+            manifest: Manifest {
+                name: "",
+                version: "",
+                bin: null,
+                lib: null,
+                deps: [],
+                deps_at: null,
+                excludes: [],
+                objects: [],
+                wasm_objects: [],
+                search: [],
+                libs: [],
+                raw: [],
+                budgets: budgets_of(),
+            },
+            voices: r.voices,
+        }
+    }
+    let name = r.word("name", "manifest.no_name", "a name — `name = \"@scope/name\"`")
+    let version = r.word("version", "manifest.no_version", "a version — `version = \"0.1.0\"`")
+    if name != "" {
+        if lawful_name(name) { r.lib_named(name) } else { r.speak(r.bad_name(name)) }
+    }
+    if version != "" && !is_semver(version) { r.speak(r.bad_version(version)) }
+    r.profiles()
+    let made = Manifest {
+        name: name,
+        version: version,
+        bin: r.target("bin", "src/main.av"),
+        lib: r.target("lib", "src/lib.av"),
+        dev_server: r.dev_server(),
+        excludes: r.excludes(),
+        objects: r.linked("objects"),
+        wasm_objects: r.linked("wasm_objects"),
+        search: r.linked("search"),
+        libs: r.linked("libs"),
+        shared: r.link_name("shared"),
+        dynamic_symbols: r.link_flag("dynamic_symbols"),
+        raw: r.words_of("link.raw", "flags"),
+        deps: r
+            .dependencies("dependencies", false, name)
+            .concat(r.dependencies("dev-dependencies", true, name)),
+        deps_at: r.deps_at(),
+        tools: r.tools(),
+        budgets: budgets_of(r.budget("steps"), r.budget("memory")),
+    }
+    ManifestRead { manifest: made, voices: r.voices }
+}
+
+/// A package name: `@scope/name`, or one bare word for a program
+/// that nothing imports.
+fn lawful_name(name: string) -> bool {
+    is_package_key(name) || is_name_word(name)
+}
+
+/// A package's name as a library stem: `@std/sqlite` becomes
+/// `std-sqlite` — ONE leading `@` dropped, every `/` a `-`. The rule
+/// is spelled twice, here and in `tools/libs.py`, and the halves must
+/// be copyable into each other: "strip one leading `@`" is,
+/// "strip every `@`" is not.
+export fn library_stem(named: string) -> string {
+    let stripped = if named.starts_with("@") { named.substring(1, named.length) } else { named }
+    stripped.replace("/", "-")
+}
+
+/// `MAJOR.MINOR.PATCH`, an optional `-` suffix after.
+fn is_semver(v: string) -> bool {
+    let cut = v.index_of("-")
+    let core = if cut < 0 { v } else { v.substring(0, cut) }
+    let parts = core.split(".")
+    parts.length == 3 && parts.all(is_number(it))
+}
+
+fn is_number(s: string) -> bool {
+    !s.is_empty() && all_codes(s, is_digit)
+}
+
+/// The sections a manifest may hold, and the keys each takes.
+fn known_section(name: string) -> bool {
+    name == "package" ||
+        name == "bin" ||
+        name == "lib" ||
+        name == "dependencies" ||
+        name == "dev-dependencies" ||
+        name == "features" ||
+        name == "build" ||
+        name == "link" ||
+        name == "link.raw" ||
+        name == "lifted" ||
+        name == "dev" ||
+        name.starts_with("profile.") ||
+        is_process_section(name)
+}
+
+/// `[process]` and what hangs off it: the tools, each inline or as
+/// its own table, and the environment a child sees.
+fn is_process_section(name: string) -> bool {
+    name == "process" || name == "process.tools" || name == "process.env" || is_tool_table(name)
+}
+
+fn is_tool_table(name: string) -> bool {
+    name.starts_with("process.tools.")
+}
+
+fn known_key(section: string, key: string) -> bool {
+    if section == "package" {
+        return [
+            "name",
+            "version",
+            "edition",
+            "authors",
+            "license",
+            "description",
+            "repository",
+            "exclude",
+        ]
+            .contains(key)
+    }
+    if section == "bin" || section == "lib" { return key == "path" || key == "name" }
+    if section == "link" {
+        return ["objects", "wasm_objects", "search", "libs", "shared", "dynamic_symbols"]
+            .contains(key)
+    }
+    if section == "link.raw" { return key == "flags" }
+    if section == "lifted" { return key == "steps" || key == "memory" }
+    if section == "dev" { return key == "server" }
+    if section.starts_with("profile.") { return ["opt_level", "debug", "overflow_checks", "incremental", "coverage"].contains(key) }
+    if section == "process" { return key == "max_capture" || key == "enforce" }
+    if section == "process.env" { return key == "base" || key == "pass" || key == "set" }
+    if is_tool_table(section) { return is_tool_key(key) }
+    true
+}
+
+/// What a `[link]` row holds, in the words its refusal uses.
+///
+/// AN OBJECT ROW IS ROOTED AT THE PACKAGE, NOT BOUNDED BY IT. The path
+/// is joined to the package's root (`package_link`, workspace.av) and
+/// nothing refuses one that climbs out — every row in this tree does,
+/// because the build tree sits ABOVE every package. Saying "under the
+/// package root" claimed a boundary no row keeps.
+fn link_shape(key: string) -> string {
+    match key {
+        "objects" -> "object files, by path from the package root",
+        "wasm_objects" -> "object files a wasm target links, by the same paths",
+        "search" -> "directories",
+        rest -> "library names",
+    }
+}
+
+fn link_help(key: string) -> string {
+    match key {
+        "objects" -> "write the path alone",
+        "wasm_objects" -> "write the path alone, as `objects`",
+        "search" -> "write the directory alone — the `-L` is ours to add",
+        rest -> "write the name alone — `m`, not `-lm`",
+    }
+}
+
+fn is_tool_key(key: string) -> bool {
+    ["from", "var", "default", "at", "terminator", "min"].contains(key)
+}
+
+/// The provenance a row's `from` word names; absence for a word that
+/// names none.
+fn provenance_of(word: string) -> Provenance? {
+    if word == "path" { return Provenance.Path }
+    if word == "env" { return Provenance.Env }
+    if word == "abs" { return Provenance.Abs }
+    null
+}
+
+/// The opt levels the spec names.
+fn lawful_opt_level(v: TomlValue) -> bool {
+    match v {
+        .Int(n) -> n >= 0 && n <= 3,
+        .Str(s) -> s == "s" || s == "z",
+        .Bool(_) or .Strs(_) or .Table(_) -> false,
+    }
+}
+
+impl Reader {
+    fn speak(d: Diag) {
+        self.voices.push(d)
+    }
+
+    /// Whether the text had a syntax error: what the document lacks may
+    /// be what the error swallowed, so an absence is no finding.
+    fn unreadable() -> bool { !self.doc.errors.is_empty() }
+
+    fn at(lo: int, hi: int) -> Loc? {
+        loc_at(self.src.file, span_of(lo, hi))
+    }
+
+    fn entry_at(e: TomlEntry) -> Loc? {
+        self.at(e.lo, e.hi)
+    }
+
+    /// A required `[package]` word; "" when missing or empty — the
+    /// voice speaks, the caller judges nothing further.
+    fn word(key: string, kind: string, wanted: string) -> string {
+        let e: TomlEntry? = self.doc.entry("package", key)
+        let text: string? = if e == null { null } else { toml_text(e!.value) }
+        if text != null && text!.length > 0 { return text! }
+        if e == null && self.unreadable() { return "" }
+        let at: Loc? = if e == null { self.header_at("package") } else { self.entry_at(e!) }
+        self
+            .speak(refusal(kind, at, "`[package]` needs ${wanted}", "here", "add it under `[package]`"))
+        ""
+    }
+
+    fn header_at(section: string) -> Loc? {
+        let h? = self.doc.headers.find(it.name == section) else { return self.at(0, 0) }
+        self.at(h.lo, h.hi)
+    }
+
+    /// Unknown sections and keys warn — a newer manifest loads on
+    /// an older compiler, degraded and said so. Under `[process]` they
+    /// REFUSE: a typo in a block that bounds what a program may run is
+    /// never a degraded load.
+    fn unknowns() {
+        for s in self.doc.sections() {
+            if s.is_empty() {
+                for e in self.doc.entries_of(s) { self.speak(self.rootless_key(e)) }
+                continue
+            }
+            if !known_section(s) {
+                self
+                    .speak(
+                        warning(
+                            "manifest.unknown_section",
+                            self.header_at(s),
+                            "`[${s}]` is not a section this compiler reads",
+                            "ignored",
+                            "check the spelling — a section this compiler does not read has no effect",
+                        ),
+                    )
+            } else {
+                for e in self.doc.entries_of(s) {
+                    if !known_key(s, e.key) { self.speak(self.unknown_key(s, e)) }
+                }
+            }
+        }
+    }
+
+    fn rootless_key(e: TomlEntry) -> Diag {
+        warning(
+            "manifest.unknown_key",
+            self.entry_at(e),
+            "`${e.key}` sits before any `[section]` header, so nothing reads it",
+            "ignored",
+            "move it under the section it belongs to — `name` and `version` go under `[package]`",
+        )
+    }
+
+    fn unknown_key(s: string, e: TomlEntry) -> Diag {
+        if is_process_section(s) { return unknown_process_key(self.entry_at(e), e.key, "`[${s}]`") }
+        warning(
+            "manifest.unknown_key",
+            self.entry_at(e),
+            "`${e.key}` is not a key of `[${s}]`",
+            "ignored",
+            "check the spelling — a key this compiler does not read has no effect",
+        )
+    }
+
+    /// `[process.tools]`: every tool the package may run, spelled inline
+    /// (`git = { from = "path" }`) or as its own table
+    /// (`[process.tools.clang]`), each checked for a lawful provenance.
+    fn tools() -> List<ToolRow> {
+        let inline = [self.tool_row(e.key, e.value, self.entry_at(e)) for e in self.doc.entries_of("process.tools")]
+        let tabled = [self.tool_table(s) for s in self.doc.sections() if is_tool_table(s)]
+        inline.concat(tabled)
+    }
+
+    fn tool_row(name: string, v: TomlValue, at: Loc?) -> ToolRow {
+        for key in inline_keys(v) {
+            if !is_tool_key(key) { self.speak(unknown_process_key(at, key, "a tool row")) }
+        }
+        let row = ToolRow {
+            name: name,
+            from: self.provenance(text_field(v, "from"), name, at),
+            var: text_field(v, "var"),
+            default: text_field(v, "default"),
+            at_path: text_field(v, "at"),
+            terminator: terminator_field(toml_field(v, "terminator")),
+            at: at,
+        }
+        self.judged_tool(row)
+    }
+
+    fn tool_table(section: string) -> ToolRow {
+        let name = section.substring(14, section.length)
+        let at = self.header_at(section)
+        let row = ToolRow {
+            name: name,
+            from: self.provenance(self.table_text(section, "from"), name, at),
+            var: self.table_text(section, "var"),
+            default: self.table_text(section, "default"),
+            at_path: self.table_text(section, "at"),
+            terminator: terminator_field(self.doc.get(section, "terminator")),
+            at: at,
+        }
+        self.judged_tool(row)
+    }
+
+    /// The row's provenance: the PATH when unsaid; a word naming none
+    /// is refused and read as the PATH.
+    fn provenance(word: string?, name: string, at: Loc?) -> Provenance {
+        if word == null { return Provenance.Path }
+        let p: Provenance? = provenance_of(word!)
+        if p == null {
+            self
+                .speak(
+                    refusal(
+                        "manifest.bad_tool_from",
+                        at,
+                        "`${name}` comes from `${word!}` — a tool comes from `path`, `env` or `abs`",
+                        "here",
+                        "write `from = \"path\"`, `\"env\"` or `\"abs\"`",
+                    ),
+                )
+            return Provenance.Path
+        }
+        p!
+    }
+
+    fn table_text(section: string, key: string) -> string? {
+        let v? = self.doc.get(section, key) else { return null }
+        toml_text(v)
+    }
+
+    /// The row spoken for: an `env` row with no `var`, an `abs` row
+    /// with no `at`.
+    fn judged_tool(row: ToolRow) -> ToolRow {
+        if row.from is .Env && row.var == null {
+            self
+                .speak(
+                    refusal(
+                        "manifest.tool_env_var",
+                        row.at,
+                        "`${row.name}` comes from the environment and names no `var`",
+                        "here",
+                        "add `var = \"CC\"`",
+                    ),
+                )
+        }
+        if row.from is .Abs && row.at_path == null {
+            self
+                .speak(
+                    refusal(
+                        "manifest.tool_abs_at",
+                        row.at,
+                        "`${row.name}` is an absolute tool and names no `at`",
+                        "here",
+                        "add `at = \"/usr/bin/…\"`",
+                    ),
+                )
+        }
+        row
+    }
+
+    /// A `[lifted]` row: a count of at least one, or absent. Anything
+    /// else is refused and read as absent — the default, never zero.
+    fn budget(key: string) -> int? {
+        let e? = self.doc.entry("lifted", key) else { return null }
+        let n: int? = match e.value {
+            .Int(v) -> v,
+            .Str(_) or .Bool(_) or .Strs(_) or .Table(_) -> null,
+        }
+        if n != null && n! >= 1 { return n }
+        self
+            .speak(
+                refusal(
+                    "manifest.bad_budget",
+                    self.entry_at(e),
+                    "`[lifted] ${key}` is a count of at least 1",
+                    "here",
+                    "`steps = 600000` counts instructions; `memory = 5` counts MiB of the compiler's heap",
+                ),
+            )
+        null
+    }
+
+    /// A target's entry path: the written one, the section's
+    /// default when the section is declared bare, absence when it
+    /// is not declared.
+    /// `[dev] server`: the package, beside this one, whose program `avra dev`
+    /// runs to answer what the page does not.
+    fn dev_server() -> string? {
+        let v? = self.doc.get("dev", "server") else { return null }
+        toml_text(v)
+    }
+
+    fn target(section: string, default_path: string) -> string? {
+        if !self.doc.has_section(section) { return null }
+        let v? = self.doc.get(section, "path") else { return default_path }
+        toml_text(v) ?? default_path
+    }
+
+    /// `[lib] name`, when written, is the stem the package's name
+    /// derives — the one name its library is built and found by.
+    fn lib_named(package: string) {
+        let e? = self.doc.entry("lib", "name") else { return }
+        let written = toml_text(e.value) ?? ""
+        if written != library_stem(package) { self.speak(self.lib_name(e, written, package)) }
+    }
+
+    /// Every profile's name is a word, and its opt level is one the
+    /// spec names.
+    fn profiles() {
+        for s in self.doc.sections() {
+            if s.starts_with("profile.") {
+                let pname = s.substring(8, s.length)
+                if !is_name_word(pname) {
+                    self
+                        .speak(
+                            refusal(
+                                "manifest.bad_profile",
+                                self.header_at(s),
+                                "a profile name is `[a-z0-9_-]+` — `${pname}` is not",
+                                "this profile",
+                                "name the profile in lowercase letters, digits, `_` and `-` — `[profile.release]`",
+                            ),
+                        )
+                }
+                let opt_level: TomlEntry? = self.doc.entry(s, "opt_level")
+                if opt_level != null && !lawful_opt_level(opt_level!.value) {
+                    self
+                        .speak(
+                            refusal(
+                                "manifest.bad_opt_level",
+                                self.entry_at(opt_level!),
+                                "`opt_level` is 0, 1, 2, 3, \"s\" or \"z\"",
+                                "here",
+                                "write one of those — `opt_level = 2`",
+                            ),
+                        )
+                }
+            }
+        }
+    }
+
+    /// The path dependencies of a section; every other form speaks
+    /// and is not a dependency.
+    fn dependencies(section: string, dev: bool, own: string) -> List<Dependency> {
+        mut out: List<Dependency> = []
+        for e in self.doc.entries_of(section) {
+            let d: Dependency? = self.dependency(e, dev, own)
+            if d != null { out.push(d!) }
+        }
+        out
+    }
+
+    fn dependency(e: TomlEntry, dev: bool, own: string) -> Dependency? {
+        let at = self.entry_at(e)
+        if e.key == own { return self.spoken(self.self_dependency(at, e.key)) }
+        if !is_package_key(e.key) { return self.spoken(self.unscoped(at, e.key)) }
+        let path: string? = path_of(e.value)
+        if path == null { return self.spoken(self.unsupported(at, e.key)) }
+        Dependency { key: e.key, path: path, dev: dev, at: at }
+    }
+
+    /// Speak, and answer no dependency.
+    fn spoken(d: Diag) -> Dependency? {
+        self.speak(d)
+        null
+    }
+
+    /// Source paths the package EXCLUDES — vendored code another
+    /// toolchain reads from inside `src/`; the compiler never sees it.
+    fn excludes() -> List<string> { self.words_of("package", "exclude") }
+
+    /// A key's list of words — absent, or written as something else,
+    /// is no words at all.
+    /// A `[link]` row's words, each refused if it spells a clang
+    /// OPTION where the row takes a name or a path.
+    fn linked(key: string) -> List<string> {
+        let words = self.words_of("link", key)
+        for w in words {
+            if w.starts_with("-") { self.speak(self.link_option(key, w)) }
+        }
+        words
+    }
+
+    /// A `[link]` flag: `true` or `false`, absent read as `false`; any
+    /// other value is refused and read as `false`.
+    fn link_flag(key: string) -> bool {
+        let e? = self.doc.entry("link", key) else { return false }
+        match e.value {
+            .Bool(b) -> b,
+            .Int(_) or .Str(_) or .Strs(_) or .Table(_) -> {
+                self.speak(self.not_a_flag(e))
+                false
+            },
+        }
+    }
+
+    /// A `[link]` name: a word, absent read as none; any other value is refused and read as none.
+    fn link_name(key: string) -> string {
+        let e? = self.doc.entry("link", key) else { return "" }
+        match e.value {
+            .Str(w) -> w,
+            .Bool(_) or .Int(_) or .Strs(_) or .Table(_) -> {
+                self.speak(self.not_a_name(e))
+                ""
+            },
+        }
+    }
+
+    fn words_of(section: string, key: string) -> List<string> {
+        let e? = self.doc.entry(section, key) else { return [] }
+        match e.value { .Strs(items) -> items, _ -> [] }
+    }
+
+    /// Where the next dependency line goes.
+    fn deps_at() -> Span? {
+        let last: TomlEntry? = self.doc.entries_of("dependencies").last()
+        if last != null { return after(last!.hi) }
+        let h? = self.doc.headers.find(it.name == "dependencies") else { return null }
+        after(h.hi)
+    }
+
+    // ── voices ──
+
+    fn bad_name(name: string) -> Diag {
+        refusal(
+            "manifest.bad_name",
+            self.entry_at(self.doc.entry("package", "name")!),
+            "a package is named `@scope/name` — `${name}` is not",
+            "here",
+            "scope and name are words of `[a-z0-9_-]`",
+        )
+    }
+
+    fn bad_version(version: string) -> Diag {
+        refusal(
+            "manifest.bad_version",
+            self.entry_at(self.doc.entry("package", "version")!),
+            "a version is `MAJOR.MINOR.PATCH` — `${version}` is not",
+            "here",
+            "write three dot-separated numbers — `version = \"0.1.0\"`",
+        )
+    }
+
+    fn lib_name(e: TomlEntry, written: string, package: string) -> Diag {
+        refusal(
+            "manifest.lib_name",
+            self.entry_at(e),
+            "a library is named for its package — `${package}` is `${library_stem(package)}`, not `${written}`",
+            "here",
+            "write `name = \"${library_stem(package)}\"`, or drop the key",
+        )
+    }
+
+    fn link_option(key: string, word: string) -> Diag {
+        refusal(
+            "manifest.link_option",
+            self.entry_at(self.doc.entry("link", key)!),
+            "`${key}` takes ${link_shape(key)}, and `${word}` spells a linker option",
+            "here",
+            "${link_help(key)} — `[link.raw]` carries an option, and only in the program's own manifest",
+        )
+    }
+
+    fn not_a_name(e: TomlEntry) -> Diag {
+        refusal(
+            "manifest.link_name",
+            self.entry_at(e),
+            "`${e.key}` under `[link]` is one library's name",
+            "here",
+            "write `${e.key} = \"LLVM\"`",
+        )
+    }
+
+    fn not_a_flag(e: TomlEntry) -> Diag {
+        refusal(
+            "manifest.link_flag",
+            self.entry_at(e),
+            "`${e.key}` under `[link]` is `true` or `false`",
+            "here",
+            "write `${e.key} = true`",
+        )
+    }
+
+    fn self_dependency(at: Loc?, key: string) -> Diag {
+        refusal(
+            "manifest.self_dependency",
+            at,
+            "`${key}` is this package — a package does not depend on itself",
+            "here",
+            "remove the row — a package reaches its own modules with `use`",
+        )
+    }
+
+    fn unscoped(at: Loc?, key: string) -> Diag {
+        refusal(
+            "manifest.unscoped_dependency",
+            at,
+            "a dependency is named `@scope/name` — `${key}` has no scope",
+            "here",
+            "name it as its own manifest does, `\"@scope/${key}\"`",
+        )
+    }
+
+    fn unsupported(at: Loc?, key: string) -> Diag {
+        refusal(
+            "manifest.unsupported_dependency",
+            at,
+            "`${key}` is not a path dependency — only `{ path = \"…\" }` resolves",
+            "here",
+            "write a path — `name = { path = \"../name\" }`",
+        )
+    }
+}
+
+/// The one voice for a key `[process]` does not take: a bound on what
+/// may run is never a degraded load.
+fn unknown_process_key(at: Loc?, key: string, where: string) -> Diag {
+    refusal(
+        "manifest.unknown_process_key",
+        at,
+        "`${key}` is not a key of ${where} — and `[process]` bounds what this program may run",
+        "here",
+        "the keys are from, var, default, at, terminator, min",
+    )
+}
+
+/// The `path` of a `{ path = "…" }` value; absence for every other
+/// form.
+fn path_of(v: TomlValue) -> string? {
+    text_field(v, "path")
+}
+
+/// An inline table's keys; none for any other value.
+fn inline_keys(v: TomlValue) -> List<string> {
+    match v { .Table(pairs) -> [p.key for p in pairs], rest -> [] }
+}
+
+/// A text field of an inline table; absence when missing or not text.
+fn text_field(v: TomlValue, key: string) -> string? {
+    let f? = toml_field(v, key) else { return null }
+    toml_text(f)
+}
+
+/// A tool's end-of-options word: `--` unless written; `false` is none.
+fn terminator_field(v: TomlValue?) -> string? {
+    if v == null { return "--" }
+    match v! { .Str(s) -> s, .Bool(b) if !b -> null, rest -> "--" }
+}
+
+// ── The workspace's voices, in the manifest's words ──
+
+export fn bad_dependency_path(at: Loc?, key: string, dir: string) -> Diag {
+    refusal(
+        "manifest.bad_path",
+        at,
+        "`${key}` points at `${dir}`, which holds no `avra.toml`",
+        "this dependency",
+        "point `path` at a directory holding `avra.toml`",
+    )
+}
+
+export fn name_mismatch(at: Loc?, key: string, found: string, dir: string) -> Diag {
+    refusal(
+        "manifest.name_mismatch",
+        at,
+        "the package at `${dir}` calls itself `${found}`, not `${key}`",
+        "this dependency",
+        "key it as `\"${found}\"`",
+    )
+}
+
+export fn dependency_cycle(at: Loc?, chain: List<string>) -> Diag {
+    refusal(
+        "manifest.cycle",
+        at,
+        "packages depend in a cycle: ${joined(chain, " -> ")}",
+        "closes the cycle here",
+        "a package graph is acyclic — cut one edge",
+    )
+}
+
+export fn prelude_depends(at: Loc?) -> Diag {
+    refusal(
+        "manifest.prelude_floor",
+        at,
+        "`@std/prelude` depends on nothing — it is the floor every package stands on",
+        "this dependency",
+        "move the verb that needs this package up, into the package that depends on it",
+    )
+}
+
+export fn duplicate_package(at: Loc?, key: string, first: string, second: string) -> Diag {
+    refusal(
+        "manifest.duplicate_package",
+        at,
+        "`${key}` is claimed by two directories: `${first}` and `${second}`",
+        "this dependency",
+        "one name is one package — point both at one directory",
+    )
+}
+
+/// Where a manifest writes `section.key`; none where it does not.
+export fn row_at(src: SourceFile, section: string, key: string) -> Loc? {
+    let e? = parse_toml(src.text).entry(section, key) else { return null }
+    loc_at(src.file, span_of(e.lo, e.hi))
+}
+
+/// A `[link]` word whose hole names a variable this machine does not set,
+/// with more of the word around it.
+export fn unset_link_variable(at: Loc?, key: string, word: string, name: string) -> Diag {
+    refusal(
+        "manifest.unset_link_variable",
+        at,
+        "`${word}` in `${key}` needs `${name}`, which is not set — without it the word names another path",
+        "here",
+        "set `${name}`, or write the word without the hole",
+    )
+}
+
+export fn no_target(root: string) -> Diag {
+    refusal(
+        "manifest.no_target",
+        null,
+        "`${root}/avra.toml` declares no `[bin]`, and `src/main.av` does not exist — nothing to run",
+        "",
+        "add `[bin]` with `path`, or `src/main.av`",
+    )
+}
+
+/// The voice for a root `check` reaches with nothing to examine: no
+/// `src/` to walk, and no `.av` file directly in the root either —
+/// `programs_workspace`'s own contract (a directory of programs) reaches
+/// every direct file, so an empty listing here means none exist.
+export fn no_source(root: string) -> Diag {
+    refusal(
+        "manifest.no_source",
+        null,
+        "nothing to check under `${root}`: no `src/` and no program files",
+        "",
+        "add a `src/` directory, or a `.av` file directly under this root",
+    )
+}
+
+/// The voice for a directory `check` is handed that holds no manifest: it is no package's root, so
+/// nothing was checked — never a pass. `root` is the package it stands in, where one does.
+export fn no_manifest(dir: string, root: string?) -> Diag {
+    refusal(
+        "manifest.no_manifest",
+        null,
+        "`${dir}` holds no `avra.toml`: nothing was checked",
+        "",
+        if root == null {
+            "check a package's root — the directory its `avra.toml` stands in — or a source file by its path"
+        } else {
+            "it stands in the package at `${root!}`: check that root, or a source file by its path"
+        },
+    )
+}
+
+/// Where a new dependency line goes, as an offset — what the fix
+/// and its tests read.
+export fn deps_offset(m: Manifest) -> int? {
+    m.deps_at?.hi
+}
+
+/// The empty span at an offset — where a line goes.
+fn after(at: int) -> Span {
+    Span { lo: at, hi: at }
+}

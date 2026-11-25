@@ -1,0 +1,13 @@
+use @std.meta.{Type, Directive, Variant, Arms, beside, name}
+
+/// The arm of `v` testing whether its one payload is the seat `r`.
+fn holds_arm(v: Variant) -> Arms { quote { .${v.name}(${v.fields[0].name}) -> ${name(v.fields[0].name)} == r } }
+
+/// A fn over the annotated enum asking whether a variant's payload is the seat `r`, each arm's binder
+/// named by a hole for the payload's field.
+export trait Holds {
+    static fn derive(t: Type) -> List<Directive> {
+        let arms = [holds_arm(v) for v in t.variants]
+        [beside(t, quote { fn holds(i: ${t}, r: int) -> bool { match i { ${arms} } } })]
+    }
+}

@@ -1,0 +1,272 @@
+//! WHETHER A CALL MAY REACH A CANCEL POINT, AND WHETHER IT LINKS A SCHEDULER. A body may reach one
+//! when it, or a lambda it lifts, calls a runtime row that may switch the task out, calls through a
+//! value, which may be any fn, lowers a `while`, whose back edge is a cancel point, or calls a fn that
+//! may; a fn no body here gives, and a body not lowered whole, may reach both ways. A body LINKS A
+//! SCHEDULER when it calls such a row or a fn that links; a call through a value says nothing of the
+//! program's rows. A survey lowers each body once, its task tests held beside it: its evidence is
+//! read off that lowering, which the walk then takes to place its tests, and a call's answer walks
+//! every body it reaches in one visiting list, so a recursion asks nothing twice.
+use core.{
+    CalledFn,
+    Defaulting,
+    Ins,
+    ParameterLayout,
+    SignedType,
+    TaskChecks,
+    TestSite,
+    distinct,
+    flatten,
+    hosted_symbol,
+    rt_waits,
+}
+use @std.meta.{derive}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+use @std.program.saved_derive.{Saved}
+use @std.relation.engine.{map_cell}
+
+/// A body a call runs: the fn, method, static, trait's body or field default `CalledFn` names, and
+/// for a generic one's unit, the type filling each type parameter.
+@derive(Saved)
+export type BodyAt = {
+    file: SourceFileAddress,
+    name: string,
+    external: bool,
+    owner: string?,
+    of: SourceFileAddress?,
+    statics: bool,
+    defaulted: Defaulting,
+    seat_of: string?,
+    given_by: string?,
+    fills: List<SignedType>,
+    /// Whether each type parameter carries a bound.
+    bounded: List<bool> = [],
+}
+
+impl BodyAt {
+    /// The body as a walk tells it from another.
+    fn key() -> string {
+        let of = if self.of == null { "" } else { spelled_file(self.of!) }
+        "${spelled_file(self.file)} ${self.name} ${self.owner ?? ""} ${of} ${self.statics} ${self.defaulted.word()} ${self.seat_of ?? ""} ${self.given_by ?? ""} ${[f.spelled() for f in self.fills].join(",")}"
+    }
+
+    /// The call of this body, as the program layer reaches it, a generic one's unit under `parameters`.
+    fn called(parameters: List<ParameterLayout>) -> CalledFn {
+        CalledFn {
+            file: self.file,
+            name: self.name,
+            symbol: self.name,
+            external: self.external,
+            plain: true,
+            owner: self.owner,
+            of: self.of,
+            statics: self.statics,
+            defaulted: self.defaulted,
+            seat_of: self.seat_of,
+            parameters: parameters,
+            fills: self.fills,
+            bounded: self.bounded,
+            given_by: self.given_by,
+        }
+    }
+}
+
+/// The body a call of `c` runs.
+export fn body_at(c: CalledFn) -> BodyAt {
+    BodyAt {
+        file: c.file,
+        name: c.name,
+        external: c.external,
+        owner: c.owner,
+        of: c.of,
+        statics: c.statics,
+        defaulted: c.defaulted,
+        seat_of: c.seat_of,
+        given_by: c.given_by,
+        fills: c.fills,
+        bounded: c.bounded,
+    }
+}
+
+/// What a call may reach: a cancel point it waits at, a back edge that is one, and a row that links
+/// a scheduler.
+@derive(Saved)
+export type CancelFact = { parks: bool, spins: bool, links: bool }
+
+impl CancelFact {
+    /// Whether a call may reach a cancel point.
+    fn may() -> bool { self.parks || self.spins }
+
+    fn linked() -> bool { self.links }
+}
+
+/// One body's own evidence, and the bodies it calls.
+@derive(Saved)
+export type BodyCancels = { own: CancelFact, callees: List<BodyAt> }
+
+/// What `cell`'s map holds under `key`, read in a frame of its own, so the map is held by no one but
+/// the cell once the read is done and a write after it lands in place.
+fn held_at<V>(cell: Cell<Map<string, V>>, key: string) -> V? { cell.get().get(key) }
+
+/// What the bodies a program reaches reach, each read from its saved facts: a body's evidence, by its
+/// key, and whether a call of each body asked about reaches a cancel point and links a scheduler. It
+/// is one walk's working set, made for that walk and never outliving it; nothing in it is saved.
+export type TaskSurvey = {
+    engine: QueryEngine,
+    met: Cell<Map<string, BodyCancels>>,
+    reaching: Cell<Map<string, bool>>,
+    linking: Cell<Map<string, bool>>,
+}
+
+/// A survey over `engine`'s program that has met nothing yet.
+export fn task_survey(engine: QueryEngine) -> TaskSurvey { TaskSurvey { engine: engine, met: map_cell(), reaching: map_cell(), linking: map_cell() } }
+
+impl TaskSurvey {
+    /// The body a call of `c` runs, lowered with its tests held; absent where its declaration gives
+    /// none.
+    fn body(c: CalledFn) -> LoweredFn? { reached_body(self.engine, c) }
+
+    /// `f` with the tests `checks` names placed, a fn's call tested where the fn may reach a cancel
+    /// point.
+    fn placed(f: LoweredFn, checks: TaskChecks) -> LoweredFn { f.placed_keeping(self.kept(f, checks)) }
+
+    /// Which of `f`'s tests `checks` names are placed, a fn's call tested where the fn may reach a
+    /// cancel point.
+    fn kept(f: LoweredFn, checks: TaskChecks) -> TestsKept { self.kept_at(f.test_sites(), checks) }
+
+    /// Which of the tests a body's `facts` hold `checks` names are placed.
+    fn kept_in(facts: UnitFacts, checks: TaskChecks) -> TestsKept { self.kept_at([t.site for t in facts.tests].concat(flatten(facts.lift_sites)), checks) }
+
+    /// The rule placing tests at `sites` as `checks` names: each fn called there that may reach a
+    /// cancel point, by its body's key, in name order.
+    fn kept_at(sites: List<TestSite>, checks: TaskChecks) -> TestsKept {
+        if !checks.tests() { return kept_bare(checks) }
+        let called = [body_at(c!) for s in sites for c in [s.callee()] if c != null && self.reaches(c!)]
+        TestsKept { checks: checks, reaching: sorted_names(distinct([b.key() for b in called])) }
+    }
+
+    /// Whether `checks` places a test at `site`, a fn's call tested where the fn may reach a cancel
+    /// point.
+    fn keeps(site: TestSite, checks: TaskChecks) -> bool { checks.keeps(site, (c: CalledFn) -> self.reaches(c)) }
+
+    /// Whether a call of `c` may reach a cancel point.
+    fn reaches(c: CalledFn) -> bool { self.reaches_at(body_at(c)) }
+
+    /// Whether a call of the body `at` may reach a cancel point.
+    fn reaches_at(at: BodyAt) -> bool { self.finds(at, self.reaching, (f: CancelFact) -> f.may()) }
+
+    /// Whether a call of the body `at` links a scheduler.
+    fn links(at: BodyAt) -> bool { self.finds(at, self.linking, (f: CancelFact) -> f.linked()) }
+
+    /// Whether the lowered body `f` links a scheduler, or a body it calls does.
+    fn links_from(f: LoweredFn) -> bool {
+        let own = lowered_cancels(f)
+        own.own.links || own.callees.any((c) -> self.links(c))
+    }
+
+    /// Whether `at`, or a body it reaches, holds evidence `found` answers for, kept in `known`: each
+    /// surveyed once, in one walk that stops at the first.
+    fn finds(at: BodyAt, known: Cell<Map<string, bool>>, found: fn(CancelFact) -> bool) -> bool {
+        let key = at.key()
+        let asked = held_at(known, key)
+        if asked != null { return asked! }
+        let answer = self.walk_finds(at, key, known, found)
+        known.put(key, answer)
+        answer
+    }
+
+    /// Whether a body `at` reaches holds evidence `found` answers for: a walk that stops at the
+    /// first, and goes past a body `known` answers for. A walk that finds none answers for every
+    /// body it met, since all each reaches was met.
+    fn walk_finds(
+        at: BodyAt,
+        key: string,
+        known: Cell<Map<string, bool>>,
+        found: fn(CancelFact) -> bool,
+    ) -> bool {
+        mut reached = [at]
+        mut seen: Map<string, bool> = {}
+        seen.set(key, true)
+        mut i = 0
+        while i < reached.length {
+            let own = self.cancels(reached[i])
+            if found(own.own) { return true }
+            for c in own.callees {
+                let met = c.key()
+                if seen.has(met) { continue }
+                seen.set(met, true)
+                let asked = held_at(known, met)
+                if asked != null {
+                    if asked! { return true }
+                    continue
+                }
+                reached.push(c)
+            }
+            i = i + 1
+        }
+        for met, _held in seen { known.put(met, false) }
+        false
+    }
+
+    /// The body `at`'s evidence, read once for the walk.
+    fn cancels(at: BodyAt) -> BodyCancels {
+        let key = at.key()
+        let met = held_at(self.met, key)
+        if met != null { return met! }
+        let cancels = self.evidence(at)
+        self.met.put(key, cancels)
+        cancels
+    }
+
+    /// The layout of each type filling `at`'s type parameters, absent where one isn't laid out.
+    fn laid(at: BodyAt) -> List<ParameterLayout>? {
+        let program = program_of(
+            self.engine,
+            at.file,
+            Signing { engine: self.engine, file: at.file, type_params: [] },
+        )
+        program.parameters_laid(at.fills, at.bounded)
+    }
+
+    /// The body `at`'s own evidence: a row's by its column, any other extern's none, and a declared
+    /// body's from its saved facts; a body whose fills aren't laid out, one its declaration doesn't
+    /// give and one not lowered whole may reach either way.
+    fn evidence(at: BodyAt) -> BodyCancels {
+        if at.external { return BodyCancels { own: row_fact(at.name), callees: [] } }
+        let laid? = self.laid(at) else { return unseen() }
+        let facts? = facts_lying(self.engine, at.called(laid)) else { return unseen() }
+        if !facts.whole() { return unseen() }
+        facts.cancels()
+    }
+}
+
+/// What a body lowered with its tests held apart reaches itself, and the bodies it and its lambdas
+/// call.
+/// The rule that keeps `checks` and no test for a callee's sake.
+fn kept_bare(checks: TaskChecks) -> TestsKept { TestsKept { checks: checks, reaching: [] } }
+
+export fn lowered_cancels(f: LoweredFn) -> BodyCancels {
+    let ins = f.ins.concat(flatten([l.ins for l in f.lifts]))
+    let rows = ins.any(waits_at)
+    let valued = ins.any(through_value)
+    BodyCancels {
+        own: CancelFact { parks: rows || valued, spins: f.spins || valued, links: rows },
+        callees: [body_at(c) for c in every_callee_of(f)],
+    }
+}
+
+/// Whether an instruction calls a runtime row that may switch the task out.
+fn waits_at(i: Ins) -> bool {
+    let row? = hosted_symbol(i) else { return false }
+    rt_waits(row)
+}
+
+/// Whether an instruction calls through a value.
+fn through_value(i: Ins) -> bool { match i { .CallPtr(_, _, _) -> true, rest -> false } }
+
+/// A row's evidence: one that may switch the task out parks and links.
+fn row_fact(name: string) -> CancelFact { CancelFact { parks: rt_waits(name), spins: false, links: rt_waits(name) } }
+
+/// The evidence of a body this layer can't read: it may reach either way, and is known to link
+/// nothing.
+fn unseen() -> BodyCancels { BodyCancels { own: CancelFact { parks: true, spins: true, links: false }, callees: [] } }

@@ -1,0 +1,22 @@
+// proves: a producer's block runs as a task feeding its channel — each
+// `yield` an item the reader takes in order, the block's end the
+// channel's end — and a `channel` pair carries what its sink posts until
+// it is closed — in both engines
+use @std.task.{Source}
+
+let squares: Source<int> = produce<int>(2) {
+    for i in 0..4 {
+        yield i * i
+    }
+}
+mut sum = 0
+while true {
+    let v? = squares.next() else { break }
+    sum = sum + v
+}
+let pair = channel<int>(2)
+let _ = pair.sink.post(5)
+pair.sink.close()
+let first = pair.source.next() ?? 0
+let after = pair.source.next() ?? 0 - 1
+"${sum} ${first} ${after}"

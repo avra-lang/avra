@@ -1,0 +1,43 @@
+// A component word nobody imported is looked up across every package in reach, and the lookup
+// reads each file at most once per build, however many words are looked up, found or absent.
+use @std.avrac.testing.held.{Held, held_at}
+
+fn component_file(name: string) -> string { "export component ${name} {\n}\n" }
+
+/// An app whose entry is `main`, reaching a vendored package of twelve modules, each exporting
+/// one component.
+fn provider(main: string) -> Held {
+    mut files = {
+        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@acme/kit\" = { path = \"vendor/kit\" }\n",
+        "/w/src/main.av": main,
+        "/w/vendor/kit/avra.toml": "[package]\nname = \"@acme/kit\"\nversion = \"0.1.0\"\n",
+    }
+    for k in 0..12 { files.set("/w/vendor/kit/src/c${k}.av", component_file("c${k}")) }
+    held_at(files, "/w")
+}
+
+/// A program opening each of `words` as an unimported component instance.
+fn opening(words: List<string>) -> string { ["${w} {\n}\n" for w in words].join("") + "1\n" }
+
+spec "component_home — one lookup's reads do not grow with the lookups" {
+    given "twelve modules each exporting a component" {
+        then "a word nobody imported is told the module that exports it" {
+            provider(opening(["c3"]))
+                .judged_at("/w/src/main.av")
+                .report()
+                .contains("@acme.kit.{c3}")
+        }
+        then "nine lookups, found or absent, read no file of the package twice" {
+            let held = provider(
+                opening(["c3", "c0", "c7", "c11", "c5", "nope", "c9", "c1", "gone"]),
+            )
+            let _ = held.judged_at("/w/src/main.av").report()
+            held.most_reads_under("/w/vendor/kit/src") <= 1
+        }
+        then "a word no module exports reads each candidate file once" {
+            let held = provider(opening(["nope", "nope"]))
+            let _ = held.judged_at("/w/src/main.av").report()
+            held.most_reads_under("/w/vendor/kit/src") <= 1
+        }
+    }
+}

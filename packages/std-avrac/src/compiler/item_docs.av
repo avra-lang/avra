@@ -1,0 +1,79 @@
+//! WHAT A FILE SAYS OF EACH NAME IT DECLARES — `avra docs`'s facts: a declaration's own `///` doc,
+//! the `@name(args)` annotations it wears, whether it's exported, and a fn's signature; with the
+//! file's `//!` header beside them. Read off the file's text parsed whole (the parse `fmt` prints
+//! from), since a doc group stands before its declaration in the file, not in the item it opens.
+use core.{ExprId, StmtId, SyntaxArena}
+use compiler.format.{render_expression}
+use @std.meta.{derive}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.saved_derive.{Saved}
+use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+
+/// One declaration's documentation: its name, its kind's word, whether it's exported, its own `///`
+/// lines (absent when it has none), its annotations as written, and its signature — a fn's seats
+/// and answer by type, any other kind's word and name.
+@derive(Saved)
+export type DeclDoc = { name: string, kind: string, exported: bool, doc: List<string>?, annotations: List<string>, signature: string }
+
+/// A file's documentation: its `//!` header, absent when it opens with anything else, the module it
+/// stands in, and each top-level name it declares, in the order written.
+@derive(Saved)
+export type FileDocs = { header: List<string>?, module: string, decls: List<DeclDoc> }
+
+/// What `file` says of each name it declares.
+@query("summary")
+export fn file_docs(engine: QueryEngine, file: SourceFileAddress) -> FileDocs {
+    let parsed = parse_program(avra(), whole_source(engine, file), whole_words(engine, file))
+    let declared = file_declares(engine, file).names
+    FileDocs {
+        header: parsed.store.file_doc(),
+        module: module_segments(file).join("."),
+        decls: [DeclDoc {
+            name: d.name,
+            kind: kind_said(d.kind),
+            exported: d.exported,
+            doc: parsed.store.doc_comment(s),
+            annotations: [annotation_said(parsed.store, a.name, a.args) for a in parsed.store.annotations_of(s)],
+            signature: signature_said(engine, file, d),
+        } for s in parsed.stmts for name in [written_name(parsed.store, s)] if name != null for d in declared if d.name == name!],
+    }
+}
+
+/// The name a top-level statement declares: a declaration's, or a `const`'s.
+fn written_name(store: SyntaxArena, s: StmtId) -> string? {
+    store.declared_name(s) ?? if store.const_value(s) != null { store.let_name(s) } else { null }
+}
+
+/// An annotation as its author wrote it: its word, then its arguments.
+fn annotation_said(store: SyntaxArena, name: string, args: List<ExprId>) -> string {
+    "@${name}(${[render_expression(store, x) for x in args].join(", ")})"
+}
+
+/// A declaration's signature: a fn's seats and answer by type, any other kind's word and name.
+fn signature_said(engine: QueryEngine, file: SourceFileAddress, d: DeclaredName) -> string {
+    let signed? = (if d.kind is .Fn { fn_signature(engine, file, d.name) } else { null }) else { return "${kind_said(d.kind)} ${d.name}" }
+    "fn ${d.name}(${[p.ty?.spelled() ?? "_" for p in signed.params].join(", ")}) -> ${signed.answer.spelled()}"
+}
+
+/// A kind of declaration, in the word its author writes.
+fn kind_said(k: ItemKind) -> string {
+    match k {
+        .Fn -> "fn",
+        .Record or .Named or .Alias -> "type",
+        .Enum -> "enum",
+        .Trait -> "trait",
+        .Component -> "component",
+        .Syntax -> "syntax",
+        .Collect -> "collect",
+        .CollectEnum -> "collect_enum",
+        .Const -> "const",
+        .State -> "state",
+        .Ctx -> "ctx",
+    }
+}
+
+collect listed_doc_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries a file's documentation is read through, for a process to hand its engine.
+export fn doc_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_doc_facts) }

@@ -1,0 +1,42 @@
+//! THE VERBS OF `string`, as typing reads them: each a fn whose first seat is the receiver. A verb
+//! with a body is that body; an empty one is the compiler's, and says only what it takes and answers.
+
+fn contains(s: string, part: string) -> bool {}
+fn starts_with(s: string, part: string) -> bool {}
+fn ends_with(s: string, part: string) -> bool {}
+fn index_of(s: string, part: string) -> int {}
+fn substring(s: string, lo: int, hi: int) -> string {}
+fn split(s: string, between: string) -> List<string> {}
+fn replace(s: string, old: string, new: string) -> string {}
+fn char_code(s: string, at: int = 0) -> int {}
+fn trim(s: string) -> string {}
+fn is_empty(s: string) -> bool { s.length == 0 }
+/// The text's code points, decoded from its UTF-8: a lead byte's sequence whole where its tails are
+/// all there, else the byte itself.
+fn chars(s: string) -> List<int> {
+    mut out: List<int> = []
+    mut at = 0
+    while at < s.length {
+        let lead = s.char_code(at)
+        let declared = if lead >= 240 && lead <= 247 { 4 } else if lead >= 224 && lead <= 239 { 3 } else if lead >= 192 && lead <= 223 { 2 } else { 1 }
+        mut whole = at + declared <= s.length
+        mut k = 1
+        while whole && k < declared {
+            let tail = s.char_code(at + k)
+            whole = tail >= 128 && tail <= 191
+            k = k + 1
+        }
+        let width = if whole { declared } else { 1 }
+        mut code = lead - if width == 4 { 240 } else if width == 3 { 224 } else if width == 2 { 192 } else { 0 }
+        k = 1
+        while k < width {
+            code = code * 64 + s.char_code(at + k) - 128
+            k = k + 1
+        }
+        // LICENSED loops.push_loop: a code point's width is known only once its lead is read
+        out.push(code)
+        at = at + width
+    }
+    out
+}
+fn bytes(s: string) -> Bytes {}

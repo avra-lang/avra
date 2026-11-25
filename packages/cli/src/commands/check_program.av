@@ -1,0 +1,323 @@
+//! `avra check` on the program layer (`AVRA_PROGRAM=1`): what the old `check` says, its laws' and
+//! rules' findings read off saved per-file answers instead of a whole package typed again. A law
+//! that refuses the program refuses the check, as a derivation's error would; `--baseline <file>`
+//! holds the rule sites to a ratchet, a site the baseline doesn't list refusing it.
+use @std.program.pass.{Pass}
+use @std.avrac.compiler.{
+    Finding,
+    ProgramFile,
+    file_law_diags,
+    avra_fact_definitions,
+    file_rule_rows,
+    file_warned,
+    finding_diag,
+    made_program,
+    program_erring,
+    program_strays,
+    file_refusals,
+    program_files,
+    phased,
+    WorkCounts,
+    counts_said,
+    item_count,
+    file_items_question,
+    file_declares,
+    file_impls,
+    ItemKind,
+    said_diag,
+    StaleCitation,
+    stale_citations,
+}
+use @std.avrac.core.{distinct, flatten}
+use @std.avrac.compiler.memory.{sound_checked}
+use @std.avrac.diagnostics.{Diag, SourceFile, defect_kind, new_source_file, render, rendered_among}
+use @std.io.{env, write_text}
+use @std.path.{joined_path, relative_path, under_dir}
+use @std.program.address.{SourceFileAddress}
+use @std.program.held_clock.{decodes_said}
+use @std.program.layered_store.{program_store_at}
+use @std.program.pass_ledger.{PassUnits, ledger_rows, ledger_table, pass_ledger}
+use @std.program.query_engine.{QueryEngine, query_engine}
+use @std.program.sorted.{sorted_by}
+use @std.text.{text_before}
+use @std.time.{now_ns}
+
+/// One rule site the program layer found: the finding a baseline reads, and the line it stands on.
+type SiteAt = { finding: Finding, line: int }
+
+/// `check` of the program `disk` reads on the program layer: what its laws refuse in any file it
+/// reads, or where none does, each statement a file but its entry runs, exit 1; else — held to the
+/// file `baseline` where one is named — a rule site of the package's own files it doesn't list
+/// refuses it, and the package's own warnings are said, exit 0. A dependency's warnings, rule sites
+/// and stale citations are its own check's, and said to be. `pruning`, the baseline is
+/// pruned to the sites still found instead, as `accepted` prunes it. Where the net accepted the
+/// program (`net`), a refusal is said as the program layer's defect.
+fn disk_checked(
+    disk: Disk,
+    baseline: string,
+    timed: bool,
+    pruning: bool,
+    counted: bool = false,
+    read_listed: bool = false,
+    ledger: LedgerSaid = LedgerSaid.Unsaid,
+) -> int {
+    // LICENSED input.clock: a check's duration is timing, never an input of what is found
+    let t0 = now_ns()
+    let root = disk.root
+    let store = program_store_at(joined_path(root, checks_kept_at()))
+    let engine = query_engine(store, avra_fact_definitions(), disk.name)
+    // LICENSED input.timing: a phase timing is reported, never an input of what is found
+    if timed || env("AVRA_QUERY_TIMES") == "1" || !(ledger is .Unsaid) { engine.time_queries() }
+    let refused = manifests_door(engine, disk)
+    if refused != null { return refused! }
+    let files = sorted_by(
+        [program_file(disk, f) for f in program_files(engine, disk.name)],
+        (a, b) -> said_before(disk, a, b),
+    )
+    let own = [h for h in files if h.file.package_name == disk.name]
+    let apart = distinct([h.file.package_name for h in files if disk.deps.has(h.file.package_name)])
+    let vouched = vouched_files(engine, disk)
+    let erring = phased(
+        engine,
+        "the refusals",
+        Pass.Laws,
+        () -> program_erring(engine, disk.name, vouched),
+    )
+    let strays = if erring.is_empty() { phased(engine, "the strays", Pass.Laws, () -> entry_strays(engine, disk)) } else { "" }
+    let found = phased(
+        engine,
+        "the warnings",
+        Pass.Laws,
+        () -> if erring.is_empty() { [file_found(engine, disk.name, h) for h in own] } else { [] },
+    )
+    let stale = phased(
+        engine,
+        "the citations",
+        Pass.Laws,
+        () -> if erring.is_empty() { [citation_said(h, c) for h in own for c in stale_citations(engine, h.file)] } else { [] },
+    )
+    let warned = if erring.is_empty() && !pruning { files_said(found) } else { "" }
+    let refused = [erring_said(engine, program_file(disk, f)) for f in erring].join("\n")
+    let proved = if erring.is_empty() && strays == "" && sound_checked() { phased(engine, "the proof", Pass.Laws, () -> program_proved(engine, disk)) } else { [] }
+    phased(engine, "the frontier kept", Pass.StoreSave, () -> engine.frontier_kept())
+    let saved = phased(engine, "the store saved", Pass.StoreSave, () -> store.saved())
+    let unsaved = unsaved_said(store, saved)
+    times_said(engine)
+    if unsaved != null { eprintln("avra: ${unsaved!}") }
+    if timed {
+        eprintln(program_time_line(files.length, t0, engine.worked_count() == 0))
+        eprintln(time_rows_said(engine, CHECK_ROWS))
+    }
+    if counted {
+        eprintln(counts_said(layer_counts(engine, files)))
+        eprintln(decodes_said())
+    }
+    ledger_said(engine, ledger, () -> program_units(engine, [h.file for h in files], 0))
+    if read_listed { for r in engine.read_lists() { eprintln("read-list ${r.query} ${r.answers} ${r.longest}") } }
+    if !erring.is_empty() {
+        println(refused)
+        return 1
+    }
+    if strays != "" {
+        println(strays)
+        return 1
+    }
+    if !proved.is_empty() {
+        println(rendered_among(proved, []))
+        return 1
+    }
+    let sites = [s for f in found for s in f.sites]
+    if pruning { return program_pruned(root, baseline, own, sites) }
+    if !stale.is_empty() { return refused_licenses(stale) }
+    if baseline != "" {
+        let bad = loaded_baseline(baseline).news([s.finding for s in sites])
+        if !bad.is_empty() { return refused_sites(bad) }
+    }
+    if warned != "" { println(warned) }
+    if !apart.is_empty() { eprintln(warnings_apart(apart)) }
+    verdict_kept(engine, own)
+    0
+}
+
+/// Why a check says nothing of what its path dependencies warn of: each is its own check's.
+fn warnings_apart(packages: List<string>) -> string {
+    "avra: dependencies' warnings are theirs: `avra check <dep>` (${packages.join(", ")})"
+}
+
+/// Where a check keeps what it worked out: under the sound check, a store of its own, since its memory
+/// pass proves what it lowers and a lowering kept without the proof never answers one asked with it.
+fn checks_kept_at() -> string { if sound_checked() { ".avra-cache/tapes-sound" } else { ".avra-cache/tapes" } }
+
+/// THE MEMORY PASS'S OWN PROOF, where `AVRA_SOUND_CHECK=1` asks it: the program the package's entry
+/// runs, made — its memory pass proving its own output as it makes it — and each defect the proof
+/// finds, in the words the old path's check says them. None for a package that runs nothing. Its
+/// answers are kept in the sound check's own store (`checks_kept_at`).
+fn program_proved(engine: QueryEngine, disk: Disk) -> List<Diag> {
+    let entry? = entry_written(disk.root) else { return [] }
+    match made_program(engine, disk.file_at(entry)) {
+        .Made(l) -> [d for d in l.diagnostics if d.kind == defect_kind],
+        .Unmade(_why, _at) -> [],
+        .Refused(_files) -> [],
+    }
+}
+
+/// What `check` says of each file of the program `disk` reads, its entry aside, that runs a statement
+/// at its top, which only the entry may; nothing for a package that runs nothing, or where none does.
+fn entry_strays(engine: QueryEngine, disk: Disk) -> string {
+    let entry? = entry_written(disk.root) else { return "" }
+    let home = program_file(disk, disk.file_at(entry))
+    let held = [program_file(disk, f) for f in program_strays(engine, home.file, [], with_tests: true)]
+    if held.is_empty() { return "" }
+    rendered_among(
+        flatten([file_refusals(engine, h, home) for h in held]),
+        [new_source_file(h.full, text_at(h.full) ?? "") for h in held],
+    )
+}
+
+/// What `check` says of a file a law refuses: everything its laws find there, warnings among the
+/// refusals, in the order they find it — each thing said at a site once.
+fn erring_said(engine: QueryEngine, h: ProgramFile) -> string {
+    let found = file_law_diags(engine, h)
+    if found.all(it.severity is .Warning) { return refusal_unworded(h.full) }
+    let src = new_source_file(h.full, text_at(h.full) ?? "")
+    [render(d, src) for i, d in found if !found.take(i).any((e) -> same_said(e, d))].join("\n\n")
+}
+
+/// Whether two diagnostics say one thing: one kind, in the same words, at one place.
+fn same_said(a: Diag, b: Diag) -> bool { a.kind == b.kind && a.primary.loc?.lo == b.primary.loc?.lo && a.message == b.message }
+
+/// THE COUNTS `check --counts` SAYS ON THE PROGRAM LAYER, each row the work the old path counted
+/// under that name, as the layer does it:
+///   files_loaded       the source texts read (`source_text`, an input — read whenever it is asked)
+///   files_parsed       the files split into items anew (`file_items` worked out)
+///   files_minted       the files whose declarations were made anew (`file_declares` worked out)
+///   queries_computed   every ask worked out, its inputs aside
+///   store_rows_written the answers this run kept: every one it worked out
+///   modules_minted, whole_reads, judge_fallbacks, spell_lookups — 0: the layer mints no module scope
+///                      (a file reads its scope off saved declarations), reads no whole relation,
+///                      judges no kept verdict and keeps no spelling table
+///   program_files, program_modules, program_decls — the files the program reads, the packages they
+///                      stand in, and their items
+/// The rule pass's counts are its own, as on the old path.
+fn layer_counts(engine: QueryEngine, files: List<ProgramFile>) -> WorkCounts {
+    let computed = engine.computed_queries()
+    let worked = engine.worked_count()
+    WorkCounts {
+        files_loaded: computed.filter(it == "source_text").length,
+        files_parsed: computed.filter(it == "file_items").length,
+        files_minted: computed.filter(it == "file_declares").length,
+        modules_minted: 0,
+        queries_computed: worked,
+        whole_reads: 0,
+        judge_fallbacks: 0,
+        store_rows_written: worked,
+        program_files: files.length,
+        program_modules: distinct([h.file.package_name for h in files]).length,
+        program_decls: [item_count(engine, h.file) for h in files].fold(0, (sum, n) -> sum + n),
+        spell_lookups: 0,
+    }
+}
+
+/// Whether a run says its pass ledger, and how: as a table, or the table and its rows for a ratchet.
+export enum LedgerSaid {
+    Unsaid
+    Table
+    Rows
+}
+
+/// The pass ledger of the run `engine` made, said on stderr as `said` asks, its units counted by
+/// `units` once its asks are taken.
+fn ledger_said(engine: QueryEngine, said: LedgerSaid, units: fn() -> PassUnits) {
+    if said is .Unsaid { return }
+    let computed = engine.computed_queries()
+    let counted = units()
+    let rows = pass_ledger(engine, computed, counted)
+    eprintln(ledger_table(rows, counted))
+    if said is .Rows { for line in ledger_rows(rows, counted).split("\n") { eprintln("pass-row\t${line}") } }
+}
+
+/// What the run over `files` worked over, by unit: the files, their written items, the bodies their
+/// fns and impls declare, the `objects` a build emitted and those it `linked`, and the items of each file whose items were
+/// read anew — what an edit moved.
+fn program_units(engine: QueryEngine, files: List<SourceFileAddress>, objects: int, linked: int = 0) -> PassUnits {
+    let moved = [item_count(engine, f) for f in files if engine.worked_here(file_items_question(engine, f))]
+        .fold(0, (sum, n) -> sum + n)
+    PassUnits {
+        files: files.length,
+        items: [item_count(engine, f) for f in files].fold(0, (sum, n) -> sum + n),
+        bodies: [bodies_declared(engine, f) for f in files].fold(0, (sum, n) -> sum + n),
+        objects: objects,
+        linked: linked,
+        moved: moved,
+    }
+}
+
+/// The bodies `file` declares: each fn's, and each method's and static's its impls give.
+fn bodies_declared(engine: QueryEngine, file: SourceFileAddress) -> int {
+    let fns = [d for d in file_declares(engine, file).names if d.kind == ItemKind.Fn].length
+    let impls = [i.methods.length + i.statics.length for item in file_impls(engine, file) for i in item]
+    fns + impls.fold(0, (sum, n) -> sum + n)
+}
+
+/// The order `check` says files in: the root package's first, then by path.
+fn said_before(disk: Disk, a: ProgramFile, b: ProgramFile) -> bool {
+    let ra = a.file.package_name == disk.name
+    let rb = b.file.package_name == disk.name
+    if ra != rb { return ra }
+    text_before(a.full, b.full)
+}
+
+/// What one file of a program says: its rule sites, and its warnings rendered.
+type FileFound = { sites: List<SiteAt>, said: string }
+
+/// What the file `h` of the program `program` says: what its laws warn of, then its rule findings,
+/// each rendered over its text.
+fn file_found(engine: QueryEngine, program: string, h: ProgramFile) -> FileFound {
+    let rules = file_rule_rows(engine, program, h.file)
+    let laws = [d! for f in file_warned(engine, h.file).findings for d in [finding_diag(f, h.full)] if d != null]
+    FileFound {
+        sites: [SiteAt { finding: Finding { rule: r.rule, file: h.full, text: r.text }, line: r.line } for r in rules.rows],
+        said: warned_among(laws.concat([said_diag(k, h.full) for k in rules.said]), h.full),
+    }
+}
+
+/// The warnings among `found`, rendered over the text of the file `full` — "" when none spoke, and
+/// the file then never read.
+fn warned_among(found: List<Diag>, full: string) -> string {
+    let warned = found.filter(!(it.severity is .Error))
+    if warned.is_empty() { return "" }
+    let src = new_source_file(full, text_at(full) ?? "")
+    [render(d, src) for d in warned].join("\n\n")
+}
+
+/// What a clean program's files say, in their order.
+fn files_said(found: List<FileFound>) -> string { spoken([f.said for f in found]) }
+
+/// What was said, the silent dropped.
+fn spoken(texts: List<string>) -> string { [t for t in texts if !t.is_empty()].join("\n\n") }
+
+/// `--baseline_accept`'s verb over the program layer's sites: the baseline pruned to what is still
+/// found in the package's own files (`Baseline.pruned`, the one prune), written, said; exit 0.
+fn program_pruned(root: string, baseline: string, files: List<ProgramFile>, sites: List<SiteAt>) -> int {
+    let own = relative_path(here(), root)
+    let reached = [f for f in [relative_path(here(), h.full) for h in files] if f == own || under_dir(f, own)]
+    let kept = loaded_baseline(baseline)
+        .pruned(
+            (f) -> exists_at(joined_path(here(), f)),
+            keyed(reached),
+            keyed(fresh_keys([s.finding for s in sites])),
+        )
+    let _ = write_text(baseline, baseline_header + joined_lines(kept))
+    println("baseline: ${kept.length} site(s) kept")
+    0
+}
+
+/// A check's time line: a cache hit where every answer it read stood in the store and it worked none
+/// out, else what it checked; then its files and its wall time.
+fn program_time_line(files: int, t0: int, stood: bool) -> string {
+    // LICENSED input.clock: a check's duration is timing, never an input of what is found
+    "time: check · ${if stood { "cache hit" } else { "checked" }} — ${files} files in ${(now_ns() - t0) / 1000000} ms"
+}
+
+/// A citation of the file `h` that names nothing, as `check` says it.
+fn citation_said(h: ProgramFile, c: StaleCitation) -> string { stale_citation(h.full, "${c.line}", c.id) }

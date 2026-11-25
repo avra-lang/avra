@@ -1,0 +1,23 @@
+// A `state` local is a Cell, written or not its type: each call seeds its
+// own, a lambda's write lands in that call's, and a write through it never
+// lands in the binary's own data.
+use @std.avrac.testing.{shown}
+
+const unannotated: string = "type R = { xs: List<string> }\nfn a() -> int {\n    state r = R { xs: [\"a\"] }\n    let f = () -> {\n        r = R { xs: [\"b\", \"c\"] }\n        1\n    }\n    let n = r.xs.length\n    let _ = f()\n    n * 10 + r.xs.length\n}\nfn b() -> int {\n    state r = R { xs: [\"a\"] }\n    r.xs.length\n}\n\"\${a()} \${a()} \${b()}\""
+
+const annotated: string = "type R = { xs: List<string> }\nfn a() -> int {\n    state r: R = R { xs: [\"a\"] }\n    let f = () -> {\n        r = R { xs: [\"b\", \"c\"] }\n        1\n    }\n    let n = r.xs.length\n    let _ = f()\n    n * 10 + r.xs.length\n}\n\"\${a()} \${a()}\""
+
+const pushed: string = "type R = { xs: List<string> }\nfn c() -> int {\n    state r = R { xs: [\"a\"] }\n    let f = () -> { r.xs.push(\"b\") }\n    f()\n    r.xs.length\n}\n\"\${c()} \${c()}\""
+
+const counted: string = "fn d() -> int {\n    state n = 1\n    let f = () -> { n = n + 1 }\n    f()\n    n\n}\n\"\${d()} \${d()}\""
+
+spec "features/mutation — a `state` local is a Cell" {
+    given "an unannotated `state` local" {
+        then "its seed is its own, never the binary's literal" { shown(unannotated) == "12 12 1" }
+        then "a lambda's push lands in this call's cell" { shown(pushed) == "2 2" }
+        then "a scalar one counts per call" { shown(counted) == "2 2" }
+    }
+    given "an annotated `state` local" {
+        then "its seed is its own, and a lambda's write lands in this call's cell" { shown(annotated) == "12 12" }
+    }
+}

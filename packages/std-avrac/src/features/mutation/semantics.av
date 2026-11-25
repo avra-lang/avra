@@ -1,0 +1,44 @@
+//! Mutation's StmtSemantics — one impl per statement kind, dispatch
+//! one-liners: a mut binding walks and binds like a let, then lives
+//! in a cell; an assignment writes its target's cell. The rule
+//! bodies live beside this file, by concern.
+use core.{StmtId, Reg}
+use core.stmt.{MutLet, Assign}
+use features.{StmtSemantics, ResolveCx, TypeCx, LowerCx}
+
+impl StmtSemantics for MutLet {
+    fn resolve_stmt(mut cx: ResolveCx, s: StmtId) {
+        cx.walk_value(s)
+        cx.bind_checked(s)
+    }
+
+    fn type_stmt(mut cx: TypeCx, s: StmtId) {
+        check_mut(cx, s)
+    }
+
+    fn lower_stmt(mut cx: LowerCx, s: StmtId) -> Reg? {
+        // A MODULE-LEVEL state is a DECLARATION: its own unit builds
+        // the shared cell when first read, so nothing runs here — the
+        // initializer must not run in the entry as well.
+        if cx.view.store.is_module_state(s) { return null }
+        let v? = cx.view.store.stmt_value(s) else { return null }
+        lower_mut(cx, s, cx.reg_of(v))
+    }
+}
+
+impl StmtSemantics for Assign {
+    fn resolve_stmt(mut cx: ResolveCx, s: StmtId) {
+        cx.walk_value(s)
+        resolve_assign(cx, s)
+    }
+
+    fn type_stmt(mut cx: TypeCx, s: StmtId) {
+        check_assign(cx, s)
+    }
+
+    fn lower_stmt(mut cx: LowerCx, s: StmtId) -> Reg? {
+        let v? = cx.view.store.stmt_value(s) else { return null }
+        lower_assign(cx, s, cx.reg_of(v))
+        null
+    }
+}

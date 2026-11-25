@@ -1,0 +1,68 @@
+// proves: a borrowed cell read stays a borrow across a call that cannot reach the cell — an out-of-line
+// fn of pure int arithmetic, handed only scalars — so a search that names its slot arithmetic as a fn
+// takes no owned read (`find_at`, the shape of `HashKeyedTable.position_at`); the same search calling a
+// fn that writes a cell, handed the same scalars, still owns every read it makes before the call
+// (`find_noted`, whose callee writes a module `state`).
+use @std.avrac.compiler.{analyze_source}
+use @std.avrac.compiler.lower.{Body}
+use @std.avrac.core.{Ins}
+use @std.text.{from_codepoint}
+
+let lines = [
+    "type Table = { slots: Cell<List<int>>, highs: Cell<List<int>>, lows: Cell<List<int>> }",
+    "state probes: List<int> = [0]",
+    "fn slot_of(word: int, count: int) -> int { word & count - 1 }",
+    "fn noted_slot(word: int, count: int) -> int {",
+    "    probes = [word]",
+    "    word & count - 1",
+    "}",
+    "impl Table {",
+    "    fn find_at(high: int, low: int) -> int? {",
+    "        let slots = self.slots.get()",
+    "        if slots.is_empty() { return null }",
+    "        let highs = self.highs.get()",
+    "        let lows = self.lows.get()",
+    "        mut slot = slot_of(low, slots.length)",
+    "        while slots[slot] != 0 {",
+    "            let position = slots[slot] - 1",
+    "            if highs[position] == high && lows[position] == low { return position }",
+    "            slot = slot_of(slot + 1, slots.length)",
+    "        }",
+    "        null",
+    "    }",
+    "    fn find_noted(high: int, low: int) -> int? {",
+    "        let slots = self.slots.get()",
+    "        if slots.is_empty() { return null }",
+    "        let highs = self.highs.get()",
+    "        let lows = self.lows.get()",
+    "        mut slot = noted_slot(low, slots.length)",
+    "        while slots[slot] != 0 {",
+    "            let position = slots[slot] - 1",
+    "            if highs[position] == high && lows[position] == low { return position }",
+    "            slot = noted_slot(slot + 1, slots.length)",
+    "        }",
+    "        null",
+    "    }",
+    "}",
+    "let t = Table { slots: Cell.new([0, 1, 0, 0]), highs: Cell.new([7]), lows: Cell.new([1]) }",
+    "(t.find_at(7, 1) ?? -1) + (t.find_noted(7, 1) ?? -1)",
+]
+
+let fns = analyze_source(lines.join(from_codepoint(10))).lowered().fns
+
+/// How many of the reads named `row` the body whose name ends `name` makes.
+fn reads(fns: List<Body>, name: string, row: string) -> int {
+    mut n = 0
+    for b in fns {
+        if b.name.ends_with(name) {
+            for i in b.ins { if i is .CallRt && row_of(i) == row { n = n + 1 } }
+        }
+    }
+    n
+}
+
+fn row_of(i: Ins) -> string {
+    match i { .CallRt(_, callee, _) -> callee, rest -> "" }
+}
+
+"find_at ${reads(fns, "find_at", "avra_slot_get")} borrowed ${reads(fns, "find_at", "avra_slot_get_owned")} owned; find_noted ${reads(fns, "find_noted", "avra_slot_get_owned")} owned"

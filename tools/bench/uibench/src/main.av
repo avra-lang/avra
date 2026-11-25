@@ -1,0 +1,53 @@
+//! probe: where a UI paint spends its work. A tree is built directly
+//! as `Node` data — no component layer — so a first paint (lower, diff
+//! against nothing, serialize) and an unchanged repaint (lower, diff) are
+//! measured against the mere construction of the same tree.
+use @std.time.{now_ns}
+use @std.ui.realize.dom.live.{Live, live}
+use @std.ui.tree.node.{Attribute, Node, Prim}
+use @std.ui.style.box.{Box}
+use @std.ui.style.theme.{default_theme}
+
+/// a leaf carrying one word.
+fn leaf(i: int) -> Node {
+    Node { prim: Prim.Text, attrs: [Attribute.Text("n${i}")], box: Box {}, children: [] }
+}
+
+/// a column of `width` leaves — the tree a paint walks.
+fn branch(width: int) -> Node {
+    Node { prim: Prim.Column, attrs: [], box: Box {}, children: [leaf(i) for i in 0..width] }
+}
+
+once fn painted() -> Live { live() }
+
+/// A whole page from nothing, as the frame a host applies.
+fn first_paint(n: Node) -> Bytes { live().paint(n) }
+
+let a = first_paint(branch(40))
+let b = first_paint(branch(40))
+println("same tree, same bytes: ${a == b} bytes ${a.length}")
+
+let node = branch(40)
+println("frame bytes: ${first_paint(node).length}")
+
+let runs = 200
+mut acc = 0
+let t2 = now_ns()
+// LICENSED loops.push_loop: a timed loop counts, it does not build a list
+for i in 0..runs { acc = acc + first_paint(node).length }
+let t3 = now_ns()
+println("first paint: ${(t3 - t2) / runs} ns/run")
+
+let t4 = now_ns()
+// LICENSED loops.push_loop: a timed loop counts, it does not build a list
+for i in 0..runs { acc = acc + painted().paint(node).length }
+let t5 = now_ns()
+println("repaint: ${(t5 - t4) / runs} ns/run")
+
+let t6 = now_ns()
+// LICENSED loops.push_loop: a timed loop counts, it does not build a list
+for i in 0..runs { acc = acc + branch(40).children.length }
+let t7 = now_ns()
+println("construct: ${(t7 - t6) / runs} ns/run (${acc})")
+
+"done"

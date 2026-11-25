@@ -1,0 +1,47 @@
+// proves: a cancel takes the job and leaves the worker. A control that
+// asks for a period is shown, pressed and hidden 100 times over; the loop
+// holds two tasks at most, however many jobs were cancelled (a cancelled
+// job's worker is free once it has said so), and the period of the last cycle still ticks — eval == native.
+// The real loop (`looped`), not the driven one: the claim is how many tasks the loop holds.
+use @std.ui.components.{button, item}
+use @std.ui.headless.{headless}
+use @std.ui.app.{repeating}
+use @std.time.{ms}
+
+state standing: int = 1
+state ticks: int = 0
+
+fn tick() -> bool {
+    ticks = ticks + 1
+    true
+}
+
+fn view() -> item {
+    item { items: [button "Go" { on press { let _ = repeating(ms(10), tick) } } for _n in 0..standing] }
+}
+
+fn show(set: int) -> bool {
+    standing = set
+    true
+}
+
+let screen = headless(view)
+screen
+    .looped(
+        () -> {
+            mut most = 0
+            for _cycle in 0..100 {
+                let _ = screen.press("Go")
+                screen.advance(ms(15))
+                let _ = screen.turn(() -> show(0))
+                screen.advance(ms(5))
+                let _ = screen.turn(() -> show(1))
+                most = if screen.shown.app.jobs.get() > most { screen.shown.app.jobs.get() } else { most }
+            }
+            let _ = screen.press("Go")
+            let before = ticks
+            screen.advance(ms(55))
+            println("most tasks held over 100 cycles: ${most}")
+            println("the last period still ticks: ${ticks - before >= 4}")
+        },
+    )

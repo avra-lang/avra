@@ -1,0 +1,45 @@
+//! A PACKED LIST UNDER THE GUARD: the packed lists program test (features/lists/tests/packed_lists),
+//! built natively and run under `AVRA_RC_GUARD=1`, where a freed box is kept and poisoned, so a row
+//! that read a packed list's missing marks, or released a cell it never owned, would trip instead of
+//! printing. It prints what its `.expected` says, as both engines do. `avra_ran`, `binary_ran`,
+//! `scratch_dir`, `tree_root` and `exit_is_zero` are the neighbouring tests' own.
+use @std.io.{make_dirs, read_text, write_text}
+use @std.process.{Outcome, ProcessError, cmd, inherited, tool}
+use @std.time.{stamp}
+
+/// The program test's own directory in the tree.
+fn packed_program() -> string { "${tree_root()}/packages/std-avrac/src/features/lists/tests/packed_lists" }
+
+/// A package minted fresh whose `main` is the program test's text. Answers the package's root.
+fn packed_package() -> string? {
+    let text = read_text("${packed_program()}/packed_lists.av") catch ""
+    if text == "" { return null }
+    let root = "${scratch_dir()}/packed_guard_${stamp()}"
+    let _ = make_dirs("${root}/src")
+    let _ = write_text(
+        "${root}/avra.toml",
+        "[package]\nname = \"packed_guard\"\nversion = \"0.1.0\"\n",
+    )
+    let _ = write_text("${root}/src/main.av", text)
+    root
+}
+
+/// The built program run under the guard.
+fn guarded_run(root: string) -> Result<Outcome, ProcessError> {
+    (cmd(tool("${root}/src/main")?, []) with { env: inherited().with_var("AVRA_RC_GUARD", "1"), timeout: hang_bound() })
+        .outcome()
+}
+
+spec "packed lists under the guard" {
+    given "the packed lists program, built natively" {
+        then "under `AVRA_RC_GUARD=1` it prints what its `.expected` says, and exits clean" {
+            let root? = packed_package() else { return false }
+            let built = match avra_ran(["build", root]) {
+                .Ok(o) -> exit_is_zero(o.exit),
+                .Err(_) -> false,
+            }
+            let want = read_text("${packed_program()}/packed_lists.expected") catch ""
+            built && want != "" && clean_stdout(guarded_run(root)) == want
+        }
+    }
+}

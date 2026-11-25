@@ -1,0 +1,199 @@
+//! A screen written in place, on a fake terminal: the bytes it writes are
+//! kept and asserted whole, so "a one-cell change writes one cursor move and
+//! one character" is a string, not a feeling.
+use @std.ui.terminal.tests.support.{at, esc}
+use @std.text.{codepoints, from_codepoint}
+use @std.ui.realize.tui.paint.{Grid, Pos, Tile}
+use @std.ui.terminal.keys.{kitty_off, modes_off, modes_on}
+use @std.ui.terminal.screen.{Screen, parted, parting, screen}
+
+fn enter() -> string { "${esc()}[?1049h${esc()}[?25l${esc()}[2J${modes_on()}" }
+
+fn synced(body: string) -> string { "${esc()}[?2026h${body}${esc()}[?2026l" }
+
+fn plain(ch: string) -> Tile { Tile { text: ch, wide: false, style: 0 } }
+
+/// A grid of ASCII rows, equal in length.
+fn grid(rows: List<string>) -> Grid {
+    Grid {
+        width: codepoints(rows.first() ?? "").length,
+        height: rows.length,
+        cells: [plain(from_codepoint(c)) for r in rows for c in codepoints(r)],
+        cursor: null,
+    }
+}
+
+/// The same grid with its caret at `x`, `y`.
+fn caret(g: Grid, x: int, y: int) -> Grid { g with { cursor: Pos { x: x, y: y } } }
+
+/// A screen on a fake terminal, and what has been written to it.
+type Fake = { screen: Screen, wrote: Cell<List<string>> }
+
+fn fake() -> Fake {
+    let wrote: Cell<List<string>> = Cell.new([])
+    Fake { screen: screen((bytes: string) -> wrote.push(bytes)), wrote: wrote }
+}
+
+/// Everything written so far, as one string.
+fn everything(f: Fake) -> string { f.wrote.get().join("") }
+
+/// What `next` writes on top of what stands.
+fn after(f: Fake, next: Grid) -> string {
+    let before = f.wrote.get().length
+    f.screen.paint(next)
+    f.wrote.get().drop(before).join("")
+}
+
+spec "a screen written in place" {
+    given "the first paint" {
+        then "enters the alternate screen, hides the caret and clears, then draws what is not blank" {
+            let f = fake()
+            after(f, grid(["a ", " d"])) == enter() + synced(at(0, 0) + "a" + at(1, 1) + "d")
+        }
+        then "draws only the cells that are not blank, with a move to each run" {
+            let f = fake()
+            after(f, grid(["    ", "  x "])) == enter() + at(2, 1) + "x"
+        }
+        then "a blank grid writes only the entry" {
+            let f = fake()
+            after(f, grid(["  ", "  "])) == enter()
+        }
+    }
+    given "a paint after the first" {
+        then "a one-cell change writes one cursor move and one character, and nothing else" {
+            let f = fake()
+            let _ = after(f, grid(["abc", "def"]))
+            after(f, grid(["abc", "dxf"])) == at(1, 1) + "x"
+        }
+        then "a grid the terminal already shows writes nothing" {
+            let f = fake()
+            let _ = after(f, grid(["abc", "def"]))
+            after(f, grid(["abc", "def"])) == ""
+        }
+        then "two changes close together in a line are one run, the cells between rewritten" {
+            let f = fake()
+            let _ = after(f, grid(["abcdef"]))
+            after(f, grid(["xbcyef"])) == at(0, 0) + "xbcy"
+        }
+        then "two changes far apart are two runs inside one synchronized update" {
+            let f = fake()
+            let _ = after(f, grid(["abcdefghijkl"]))
+            after(f, grid(["xbcdefghijkz"])) == synced(at(0, 0) + "x" + at(11, 0) + "z")
+        }
+        then "a run that ends a line leaves the cursor unknown, so the next run moves" {
+            let f = fake()
+            let _ = after(f, grid(["ab", "cd"]))
+            after(f, grid(["ax", "xd"])) == synced(at(1, 0) + "x" + at(0, 1) + "x")
+        }
+        then "the next cell of a run needs no move" {
+            let f = fake()
+            let _ = after(f, grid(["abcdef", "ghijkl"]))
+            after(f, grid(["abxdef", "ghixkl"])) == synced(at(2, 0) + "x" + at(3, 1) + "x")
+        }
+    }
+    given "style" {
+        then "a styled cell is written after the escape that sets it, and the style is reset after" {
+            let f = fake()
+            let _ = after(f, grid(["ab"]))
+            let g = grid(["ab"])
+            let bolded = g with { cells: [Tile { text: "a", wide: false, style: 1 }, plain("b")] }
+            after(f, bolded) == at(0, 0) + "${esc()}[0;1m" + "a" + "${esc()}[0m"
+        }
+        then "a colour is a 256-colour escape" {
+            let f = fake()
+            let _ = after(f, grid(["a"]))
+            let g = grid(["a"]) with { cells: [Tile { text: "a", wide: false, style: 4 + 256 * 2 + 65536 * 5 }] }
+            after(f, g) == at(0, 0) + "${esc()}[0;3;38;5;1;48;5;4m" + "a" + "${esc()}[0m"
+        }
+        then "a style change inside a run is written where it changes" {
+            let f = fake()
+            let _ = after(f, grid(["abc"]))
+            let g = grid(["abc"]) with { cells: [plain("x"), Tile { text: "y", wide: false, style: 16 }, plain("z")] }
+            after(f, g) == at(0, 0) + "x" + "${esc()}[0;7m" + "y" + "${esc()}[0m" + "z"
+        }
+    }
+    given "a wide glyph" {
+        then "is written whole, left half and continuation, from its left" {
+            let f = fake()
+            let wide = Tile { text: "界", wide: true, style: 0 }
+            let gone = Tile { text: "", wide: false, style: 0 }
+            let g = Grid { width: 3, height: 1, cells: [wide, gone, plain("a")], cursor: null }
+            let empty = Grid {
+                width: 3,
+                height: 1,
+                cells: [plain(" "), plain(" "), plain(" ")],
+                cursor: null,
+            }
+            let _ = after(f, empty)
+            after(f, g) == at(0, 0) + "界" + "" + "a"
+        }
+        then "a change to the continuation alone starts the run at the glyph" {
+            let f = fake()
+            let wide = Tile { text: "界", wide: true, style: 0 }
+            let gone = Tile { text: "", wide: false, style: 0 }
+            let was = Grid { width: 3, height: 1, cells: [wide, gone, plain("a")], cursor: null }
+            let _ = after(f, was)
+            let now = was with { cells: [wide, Tile { text: "", wide: false, style: 2 }, plain("a")] }
+            after(f, now) == at(0, 0) + "界" + "${esc()}[0;2m" + "" + "${esc()}[0m"
+        }
+    }
+    given "the caret" {
+        then "is placed and shown after the first writes" {
+            let f = fake()
+            after(f, caret(grid(["ab", "cd"]), 1, 0)) == enter() + synced(at(0, 0) + "ab" + at(0, 1) + "cd" + at(1, 0) + "${esc()}[?25h")
+        }
+        then "writes nothing more while it and the grid stand" {
+            let f = fake()
+            let g = caret(grid(["ab"]), 1, 0)
+            let _ = after(f, g)
+            after(f, g) == ""
+        }
+        then "moves alone when only it moves" {
+            let f = fake()
+            let _ = after(f, caret(grid(["abc"]), 0, 0))
+            after(f, caret(grid(["abc"]), 2, 0)) == at(2, 0)
+        }
+        then "is put back after a write moved it" {
+            let f = fake()
+            let _ = after(f, caret(grid(["abc"]), 2, 0))
+            after(f, caret(grid(["xbc"]), 2, 0)) == at(0, 0) + "x" + at(2, 0)
+        }
+        then "is hidden when the grid says none" {
+            let f = fake()
+            let _ = after(f, caret(grid(["ab"]), 1, 0))
+            after(f, grid(["ab"])) == "${esc()}[?25l"
+        }
+    }
+    given "a terminal of another size" {
+        then "is cleared and written in full" {
+            let f = fake()
+            let _ = after(f, grid(["ab", "cd"]))
+            after(f, grid(["abc", "def"])) == "${esc()}[2J" + synced(at(0, 0) + "abc" + at(0, 1) + "def")
+        }
+        then "a resize the terminal reports clears it and the next paint writes in full" {
+            let f = fake()
+            let _ = after(f, grid(["ab"]))
+            f.screen.resized()
+            after(f, grid(["ab"])) == at(0, 0) + "ab"
+        }
+    }
+    given "leaving" {
+        then "writes the style reset, the caret shown and the alternate screen left, once" {
+            let f = fake()
+            let _ = after(f, grid(["ab"]))
+            f.screen.leave()
+            f.screen.leave()
+            f.wrote.get().drop(2).join("") == parting()
+        }
+        then "a paint after leaving enters again" {
+            let f = fake()
+            let _ = after(f, grid(["ab"]))
+            f.screen.leave()
+            after(f, grid(["ab"])) == enter() + at(0, 0) + "ab"
+        }
+        then "is what the runtime writes at an exit" {
+            parting() == "${modes_off()}${esc()}[0m${esc()}[?25h${esc()}[?1049l" &&
+                parted(true) == kitty_off() + parting()
+        }
+    }
+}

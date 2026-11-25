@@ -1,0 +1,483 @@
+//! `avra explain` — the program layer's own answers, made visible (P7): a thin
+//! read of what its store keeps for the package the command stands in. A
+//! target names answers — a file's, a declaration's, or one by its question
+//! `query(subject)` — and each says what it read; one answer named exactly
+//! says who reads it too. `--stats` counts the answers per query, `--why`
+//! says why the last build was worked out again, `--sites @name` says
+//! what each call of a fn's body was resolved to, and `--cost @name` where
+//! a representation technique declined in it, and why. Every form but `--sites`
+//! reads the store and keeps nothing, so a second asking answers what the
+//! first did. This file is wiring and text alone.
+use @std.cli.{CliResult, Runnable, command, arg, flag}
+use @std.avrac.compiler.{ItemKind, avra_fact_definitions, cost_remarks, file_declares, lowered_fn}
+use @std.avrac.core.{CalledFn, CostRemark, distinct, flatten, hex_word}
+use @std.io.{read_text}
+use @std.path.{is_absolute, joined_path, normalized, relative_path}
+use @std.program.answer_record.{ContentHash, KeptRecord, Question, content_hash}
+use @std.program.disk_store.{DiskStore, disk_store_at, pack_questions, packs_listed}
+use @std.program.layered_store.{program_store_at}
+use @std.program.query_engine.{query_engine}
+use @std.program.sorted.{sorted_by}
+use @std.text.{pad_left, pad_right, parse_int, text_before}
+
+type ExplainCmd = {}
+
+/// What `avra explain` was asked: about what, in which form, and the
+/// directory a relative target is read from.
+type Asked = { target: string, from: string, stats: bool = false, why: bool = false, sites: bool = false, cost: bool = false }
+
+/// What an answer or a refusal prints, line by line.
+alias Lines = Result<List<string>, List<string>>
+
+/// What a target names, by its spelling alone: the whole package, a file, a
+/// declaration by name, or an answer by its question, `query(subject)`.
+enum Subject {
+    Package
+    File(at: string)
+    Decl(name: string)
+    Query(label: string)
+}
+
+/// A subject and the package it is asked of.
+type Aim = { root: string, subject: Subject }
+
+impl Runnable for ExplainCmd {
+    fn run(args: CliResult) -> int {
+        printed(
+            explain_answer(
+                Asked {
+                    target: args.arg("target"),
+                    from: here(),
+                    stats: args.has_flag("stats"),
+                    why: args.has_flag("why"),
+                    sites: args.has_flag("sites"),
+                    cost: args.has_flag("cost"),
+                },
+            ),
+        )
+    }
+}
+
+/// An answer's lines to stdout and 0, a refusal's to stderr and 1.
+fn printed(said: Lines) -> int {
+    match said {
+        .Ok(lines) -> {
+            for line in lines { println(line) }
+            0
+        },
+        .Err(lines) -> {
+            for line in lines { eprintln(line) }
+            1
+        },
+    }
+}
+
+/// What a form answers: the lines it prints, or the lines of its refusal.
+/// Every refusal the words alone decide is spoken before anything is read.
+fn explain_answer(a: Asked) -> Lines {
+    let aim = match aimed(a.target, a.from) { .Ok(aim) -> aim, .Err(why) -> { return .Err([why]) } }
+    if a.stats && a.why { return .Err([stats_or_why()]) }
+    if a.sites && (a.stats || a.why) { return .Err([sites_alone()]) }
+    if a.cost && (a.stats || a.why || a.sites) { return .Err([cost_alone()]) }
+    let subject = match placed(a.target, aim.subject) {
+        .Ok(subject) -> subject,
+        .Err(why) -> { return .Err([why]) },
+    }
+    if a.why { return why_answer(aim.root) }
+    if a.sites { return sites_answer(a, aim.root, subject) }
+    if a.cost { return cost_answer(a, aim.root, subject) }
+    match subject {
+        .Package -> if a.stats { stats_answer(kept_at(aim.root)) } else { .Err([needs_target()]) },
+        .File(at) -> if a.stats { .Err([stats_wants_package(a.target)]) } else { file_answer(kept_at(aim.root), aim.root, at) },
+        .Decl(name) -> if a.stats { .Err([stats_wants_package(a.target)]) } else { decl_answer(kept_at(aim.root), name) },
+        .Query(label) -> if a.stats { .Err([stats_wants_package(a.target)]) } else { query_answer(kept_at(aim.root), aim.root, a.from, label) },
+    }
+}
+
+// ── what a target names ──
+
+/// A target read by its spelling alone, and the package it is asked of:
+/// nothing is the package, `@name` a declaration, `query(subject)` an answer —
+/// each asked of the package above `from` — and anything else a path, asked of
+/// the package at or above it.
+fn aimed(target: string, from: string) -> Result<Aim, string> {
+    if target == "" { return under(from, Subject.Package) }
+    if target.starts_with("@") {
+        if target.length == 1 { return .Err(decl_unnamed()) }
+        return under(from, Subject.Decl(target.substring(1, target.length)))
+    }
+    if target.contains("(") {
+        if !target.ends_with(")") { return .Err(query_unclosed(target)) }
+        return under(from, Subject.Query(target))
+    }
+    let path = if is_absolute(target) { normalized(target) } else { normalized(joined_path(from, target)) }
+    under(path, Subject.File(path))
+}
+
+fn under(dir: string, subject: Subject) -> Result<Aim, string> {
+    let root? = package_root(dir) else { return .Err(no_package_above(dir)) }
+    Aim { root: root, subject: subject }
+}
+
+/// A subject against the disk: a path nothing stands at is refused, and one a
+/// directory stands at is its package.
+fn placed(target: string, subject: Subject) -> Result<Subject, string> {
+    match subject {
+        .File(at) -> {
+            if !exists_at(at) { return .Err(no_such_path(target)) }
+            if is_a_dir(at) { Subject.Package } else { subject }
+        },
+        .Package or .Decl(_) or .Query(_) -> subject,
+    }
+}
+
+// ── the store, read ──
+
+/// What a package's store keeps, read with no engine: a store answering for
+/// each compiler that wrote packs there, newest first, and every question a
+/// pack holds, each once — a question two compilers answered, as the newest
+/// pack asks it.
+type Kept = { stores: List<DiskStore>, questions: List<Question> }
+
+fn kept_at(root: string) -> Kept {
+    let dir = joined_path(root, ".avra-cache/tapes")
+    let packs = sorted_by(packs_listed(dir), (a, b) -> a.generation > b.generation)
+    mut seen: Map<string, bool> = {}
+    mut questions: List<Question> = []
+    for p in packs {
+        for q in pack_questions(dir, p.name) ?? [] {
+            let asked = "${q.query_name} ${named(content_hash(q.arguments))}"
+            if seen.has(asked) { continue }
+            seen.set(asked, true)
+            questions.push(q)
+        }
+    }
+    Kept {
+        stores: [answering(dir, print) for print in distinct([p.print for p in packs])],
+        questions: sorted_by(questions, (a, b) -> text_before(spoken(a), spoken(b))),
+    }
+}
+
+/// The store at `dir` answering for the compiler printed `print`.
+fn answering(dir: string, print: string) -> DiskStore {
+    let store = disk_store_at(dir)
+    store.answering_for(print)
+    store
+}
+
+fn named(h: ContentHash) -> string { "${h.high_word}_${h.low_word}" }
+
+/// One thing an answer read: the question, and the answer it saw.
+type Read = { question: ContentHash, saw: ContentHash }
+
+impl Kept {
+    /// The newest record the store keeps of `question`, absent where it keeps none.
+    fn record_of(question: ContentHash) -> KeptRecord? { self.stores.find_map(it.records_of(question).last()) }
+
+    /// The question a hash names, absent where no pack holds it.
+    fn asked_as(question: ContentHash) -> Question? { self.stores.find_map(it.question_known_as(question)) }
+
+    /// What the newest answer to `question` read: each whole read, then each part read.
+    fn reads_of(question: ContentHash) -> List<Read> {
+        let r? = self.record_of(question) else { return [] }
+        [Read { question: r.whole_reads.hash_at(4 * i), saw: r.whole_reads.hash_at(4 * i + 2) } for i in 0..r.whole_reads.length() / 4]
+            .concat(
+                [Read { question: r.part_reads.hash_at(8 * i), saw: r.part_reads.hash_at(8 * i + 2) } for i in 0..r.part_reads.length() / 8],
+            )
+    }
+
+    /// A read as its line says it: the question it asked, and the answer it saw.
+    fn read_line(r: Read) -> string { "    ${spoken_or_unknown(self.asked_as(r.question))}  ${digest(r.saw)}" }
+
+    /// An answer's page: its question and its answer's digest, then what it read.
+    fn page(q: Question) -> List<string> {
+        let reads = self.reads_of(q.known_as)
+        let answer = self.record_of(q.known_as)?.answer
+        [
+            "${spoken(q)}  ${if answer == null { "-" } else { digest(answer!) }}",
+            "  reads ${reads.length}",
+        ]
+            .concat([self.read_line(r) for r in reads])
+    }
+
+    /// Each question whose newest answer read `question`.
+    fn readers_of(question: ContentHash) -> List<Question> {
+        [q for q in self.questions if self.reads_of(q.known_as).any(it.question.same_as(question))]
+    }
+}
+
+/// A question as `explain` names it: its query, then its keys where its
+/// arguments are keys — a file as its package and path. Saved arguments that
+/// are no keys are never read back: only the query that wrote them knows
+/// their shape.
+fn spoken(q: Question) -> string {
+    if !q.keyed { return q.query_name }
+    "${q.query_name}(${keys_of(q).join(", ")})"
+}
+
+fn spoken_or_unknown(q: Question?) -> string { if q == null { "an answer no pack names" } else { spoken(q!) } }
+
+/// A keyed question's keys, each as it reads: a file `package/path`, a text
+/// itself, an int its digits, a bool `true` or `false`; `…` from the first key
+/// this reads no shape for.
+fn keys_of(q: Question) -> List<string> {
+    let keys = q.arguments.text() ?? ""
+    mut out: List<string> = []
+    mut at = 0
+    while at < keys.length {
+        let c = keys.substring(at, at + 1)
+        if c == "T" || c == "F" {
+            out.push(if c == "T" { "true" } else { "false" })
+            at = at + 1
+            continue
+        }
+        if c == "i" {
+            let end = at + 1 + (keys.substring(at + 1, keys.length).index_of(";") ?? -1)
+            if end <= at { break }
+            out.push(keys.substring(at + 1, end))
+            at = end + 1
+            continue
+        }
+        let texts = match c { "f" -> 2, "s" -> 1, _ -> 0 }
+        if texts == 0 {
+            out.push("…")
+            break
+        }
+        mut parts: List<string> = []
+        mut from = if c == "f" { at + 1 } else { at }
+        for _t in 0..texts {
+            let colon = from + (keys.substring(from, keys.length).index_of(":") ?? -1)
+            let size = parse_int(
+                keys.substring(from + 1, if colon < from { from + 1 } else { colon }),
+            ) ?? -1
+            if colon < from || size < 0 || colon + 1 + size > keys.length { return out.concat(["…"]) }
+            parts.push(keys.substring(colon + 1, colon + 1 + size))
+            from = colon + 1 + size
+        }
+        out.push(parts.join("/"))
+        at = from
+    }
+    out
+}
+
+fn digest(h: ContentHash) -> string { hex_word(h.high_word) }
+
+// ── a file, a declaration, one answer ──
+
+/// A file as the program names it: its package, then its path there.
+fn file_named(root: string, at: string) -> string { "${package_named(root)}/${relative_path(root, at)}" }
+
+/// Every answer keyed by the file, each with what it read.
+fn file_answer(kept: Kept, root: string, at: string) -> Lines {
+    let file = file_named(root, at)
+    let about = [q for q in kept.questions if q.keyed && keys_of(q).first() == file]
+    if about.is_empty() { return .Err([file_unanswered(file)]) }
+    flatten_lines([kept.page(q) for q in about])
+}
+
+/// Every answer one of whose keys past the first is the name.
+fn decl_answer(kept: Kept, name: string) -> Lines {
+    let about = [q for q in kept.questions if q.keyed && keys_of(q).drop(1).contains(name)]
+    if about.is_empty() { return .Err([decl_unanswered(name)]) }
+    flatten_lines([kept.page(q) for q in about])
+}
+
+/// The answers a question names: itself where it's spelled whole, else every
+/// answer of its query keyed first by its subject — a path read from where
+/// the command stands, or a file as the program names it. Each says what it
+/// read, then who reads it.
+fn query_answer(kept: Kept, root: string, from: string, label: string) -> Lines {
+    let open = label.index_of("(") ?? 0
+    let query = label.substring(0, open)
+    let subject = label.substring(open + 1, label.length - 1)
+    if !kept.questions.any(it.query_name == query) {
+        return .Err(
+            [no_such_query(query)]
+                .concat(["  ${n}" for n in distinct([q.query_name for q in kept.questions])]),
+        )
+    }
+    let path = normalized(joined_path(from, subject))
+    let first = if !subject.is_empty() && exists_at(path) { file_named(root, path) } else { subject }
+    let about = [q for q in kept.questions if q.query_name == query &&
+        (spoken(q) == label ||
+            subject.is_empty() && !q.keyed ||
+            q.keyed && keys_of(q).first() == first)]
+    if about.is_empty() { return .Err([no_such_answer(label)]) }
+    flatten_lines([kept.page(q).concat(read_by(kept, q)) for q in about])
+}
+
+fn read_by(kept: Kept, q: Question) -> List<string> {
+    let readers = kept.readers_of(q.known_as)
+    ["  read by ${readers.length}"].concat(["    ${spoken(r)}" for r in readers])
+}
+
+fn flatten_lines(pages: List<List<string>>) -> Lines { .Ok([line for page in pages for line in page]) }
+
+// ── the package: `--stats`, `--why` ──
+
+/// One query's row: how many answers the store keeps for it, and how many reads they made in all.
+type Row = { query: string, answers: int, reads: int }
+
+/// The table: a row a query, in name order, then their total.
+fn stats_answer(kept: Kept) -> Lines {
+    let rows = [Row {
+        query: name,
+        answers: kept.questions.filter(it.query_name == name).length,
+        reads: [kept.reads_of(q.known_as).length for q in kept.questions if q.query_name == name].sum(),
+    } for name in distinct([q.query_name for q in kept.questions])]
+    let total = Row {
+        query: "total",
+        answers: [r.answers for r in rows].sum(),
+        reads: [r.reads for r in rows].sum(),
+    }
+    let wide = [r.query.length for r in rows].fold(5, (most, n) -> if n > most { n } else { most })
+    .Ok(
+        ["${pad_right("query", wide)}  ${pad_left("answers", 8)}  ${pad_left("reads", 9)}"]
+            .concat([row_said(r, wide) for r in rows])
+            .concat([row_said(total, wide)]),
+    )
+}
+
+fn row_said(r: Row, wide: int) -> string { "${pad_right(r.query, wide)}  ${pad_left("${r.answers}", 8)}  ${pad_left("${r.reads}", 9)}" }
+
+/// Why the program layer last built the package again, as that build kept it.
+fn why_answer(root: string) -> Lines {
+    let said? = last_rebuild_said(root) else { return .Err([no_rebuild_kept(root)]) }
+    .Ok([line for line in said.split("\n") if !line.is_empty()])
+}
+
+// ── `--sites`: what each call of a body was resolved to ──
+
+/// Each fn a declaration's body calls, as lowering resolved it (`CalledFn`): the symbol its code is
+/// known by, what it is, and whether it's hosted or gathers. The fn is looked up in each source of
+/// the package; the first that declares it answers.
+fn sites_answer(a: Asked, root: string, subject: Subject) -> Lines {
+    let name = match subject {
+        .Decl(name) -> name,
+        .Package or .File(_) or .Query(_) -> { return .Err([sites_wants_decl(a.target)]) },
+    }
+    let disk? = disk_at(root, "") else { return .Err([no_std()]) }
+    let store = program_store_at(joined_path(root, ".avra-cache/tapes"))
+    let engine = query_engine(store, avra_fact_definitions(), disk.name)
+    let file? = [disk.file_at(p) for p in disk.held(engine)]
+        .find((f) -> file_declares(engine, f).names.any(it.kind is .Fn && it.name == name)) else { return .Err([no_such_fn(name)]) }
+    let lowered? = lowered_fn(engine, file, name) else { return .Err([no_sites(name)]) }
+    store_kept(engine, store)
+    if lowered.callees.is_empty() { return .Err([no_sites(name)]) }
+    .Ok(
+        ["${name} calls ${lowered.callees.length}"]
+            .concat(["  ${c.symbol} — ${resolved_as(c)}" for c in lowered.callees]),
+    )
+}
+
+// ── `--cost`: where a representation technique declined, and why ──
+
+/// Each site of a declaration's body, and its lambdas', where a technique it is a candidate for
+/// declined (`cost_remarks`): grouped by technique and reason, counted, each site by its place. The
+/// fn is looked up as `--sites` looks it up.
+fn cost_answer(a: Asked, root: string, subject: Subject) -> Lines {
+    let name = match subject {
+        .Decl(name) -> name,
+        .Package or .File(_) or .Query(_) -> { return .Err([cost_wants_decl(a.target)]) },
+    }
+    let disk? = disk_at(root, "") else { return .Err([no_std()]) }
+    let store = program_store_at(joined_path(root, ".avra-cache/tapes"))
+    let engine = query_engine(store, avra_fact_definitions(), disk.name)
+    let file? = [disk.file_at(p) for p in disk.held(engine)]
+        .find((f) -> file_declares(engine, f).names.any(it.kind is .Fn && it.name == name)) else { return .Err([no_such_fn_cost(name)]) }
+    let remarks = cost_remarks(engine, file, name).remarks
+    store_kept(engine, store)
+    if remarks.is_empty() { return .Ok(["${name}: no technique declined in its body"]) }
+    let text = match read_text(disk.on_disk(file.package_name, file.path_in_package)) {
+        .Ok(t) -> t,
+        .Err(_) -> "",
+    }
+    let reasons = distinct([reason_line(r) for r in remarks])
+    .Ok(
+        ["${name}: ${remarks.length} declined"]
+            .concat(
+                flatten(
+                    [["  ${why} (${[r for r in remarks if reason_line(r) == why].length})"]
+                        .concat(
+                            ["    ${file.path_in_package}:${line_col(text, r.lo)}" for r in remarks if reason_line(r) == why],
+                        ) for why in reasons],
+                ),
+            ),
+    )
+}
+
+/// A remark's technique and reason, as one line.
+fn reason_line(r: CostRemark) -> string { "${r.declined.technique()} — ${r.declined.words()}" }
+
+/// The line and the column the offset `at` of `text` stands at, from one each.
+fn line_col(text: string, at: int) -> string {
+    let before = text.substring(0, if at < text.length { at } else { text.length })
+    let lines = before.split("\n")
+    "${lines.length}:${(lines.last() ?? "").length + 1}"
+}
+
+/// What a call was resolved to, in a line.
+fn resolved_as(c: CalledFn) -> string {
+    let what = when {
+        c.external -> "an extern row"
+        c.owner != null && c.statics -> "a static fn of `${c.owner!}`"
+        c.owner != null -> "a method of `${c.owner!}`${if c.given_by == null { "" } else { ", its body the trait `${c.given_by!}`'s" }}"
+        !c.fills.is_empty() -> "a generic fn's instance over ${[t.spelled() for t in c.fills].join(", ")}"
+        _ -> "a declared fn of ${c.file.package_name}/${c.file.path_in_package}"
+    }
+    "${what}${if c.hosted { ", hosted" } else { "" }}${if c.gathers_closure { ", gathering in closure" } else { "" }}"
+}
+
+export command explain {
+    description: "The program layer's own answers: what it keeps of a file, a declaration or one answer and what each read; how many answers each query holds; why the last build was worked out again"
+    arg target {
+        description: "a file, a package's directory, `@name` for a declaration, or an answer as `query(subject)` — the package the command stands in when absent"
+    }
+    flag stats { description: "count the package's kept answers and their reads, a row a query" }
+    flag why { description: "why the last build of the package was worked out again: the way from the input that moved to the build" }
+    flag sites { description: "for a fn `@name`, what each call of its body was resolved to: a declared fn, a method, a generic instance, an extern row; hosted, gathering" }
+    flag cost { description: "for a fn `@name`, each site of its body where a representation technique declined, and why, grouped by reason and counted" }
+    run: ExplainCmd {}
+}
+
+// ── voices ──
+
+fn needs_target() -> string { "avra: `explain` needs a file, `@name` or `query(subject)` — or `--stats` or `--why` for the whole package" }
+
+fn stats_or_why() -> string { "avra: `explain` takes `--stats` or `--why`, never both — one counts answers, the other says what moved" }
+
+fn no_std() -> string { "avra: no std stands beside this compiler" }
+
+fn cost_alone() -> string { "avra: `explain --cost` is a form of its own — it goes with none of `--stats`, `--why` or `--sites`" }
+
+fn cost_wants_decl(target: string) -> string { "avra: `explain --cost` reads one fn's body — `${target}` is not a `@name`" }
+
+fn no_such_fn_cost(name: string) -> string { "avra: `explain --cost`: no source of this package declares a fn `${name}`" }
+
+fn sites_alone() -> string { "avra: `explain --sites` is a form of its own — it goes with neither `--stats` nor `--why`" }
+
+fn sites_wants_decl(target: string) -> string { "avra: `explain --sites` reads one fn's body — `${target}` is not a `@name`" }
+
+fn no_sites(name: string) -> string { "avra: `explain --sites`: `${name}` has no lowered body that calls a fn" }
+
+fn no_such_fn(name: string) -> string { "avra: `explain --sites`: no source of this package declares a fn `${name}`" }
+
+fn stats_wants_package(target: string) -> string { "avra: `explain --stats` counts a whole package — `${target}` names one thing in it" }
+
+fn file_unanswered(file: string) -> string { "avra: `explain`: this package's store keeps no answer keyed by ${file} — build or check the package first" }
+
+fn decl_unanswered(name: string) -> string { "avra: `explain`: no answer this package's store keeps is keyed by `${name}`" }
+
+fn no_such_query(word: string) -> string { "avra: `explain`: the store keeps no answer of a query `${word}` — it keeps these:" }
+
+fn no_such_answer(label: string) -> string { "avra: `explain`: this package's store keeps no answer `${label}`" }
+
+fn no_rebuild_kept(root: string) -> string { "avra: no program-layer build of ${root} has kept why it was built — build it with `avra build`" }
+
+fn decl_unnamed() -> string { "avra: `explain @` names no declaration — write `@name`" }
+
+fn query_unclosed(target: string) -> string { "avra: `${target}` opens an answer's subject and never closes it — write `query(subject)`" }
+
+fn no_such_path(target: string) -> string { "avra: no `${target}` — `explain` reads a file, a package's directory, `@name` or `query(subject)`" }
+
+fn no_package_above(dir: string) -> string { "avra: no `avra.toml` at or above ${dir} — `explain` answers for a package" }

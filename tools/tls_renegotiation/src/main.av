@@ -1,0 +1,21 @@
+//! The server `tools/tls_renegotiation.sh` points `openssl s_client` at:
+//! one TLS connection on `RENEG_PORT` (the test authority's certificate)
+//! read until the read fails or the peer ends, and that ending printed —
+//! so a peer that asks to renegotiate is seen to fail the read, which is
+//! what lets HTTP/2 end its connection with PROTOCOL_ERROR (RFC 9113
+//! §9.2.1).
+use @std.io.{env_or}
+use @std.text.{parse_int}
+use @std.net.{listen}
+use @std.tls.{TlsError, handshake, wired}
+use @std.tls.testing.{serving_localhost}
+
+fn ending() -> Result<string, TlsError> {
+    let l = wired(listen("127.0.0.1", parse_int(env_or("RENEG_PORT", "0")) ?? 0))?
+    let t = handshake(wired(l.accept())?, (serving_localhost()?).offering(["h2"])?, "")?
+    mut open = true
+    while open { open = t.read(65536)? != null }
+    .Ok("the peer ended the connection")
+}
+
+match ending() { .Ok(t) -> t, .Err(e) -> "read failed: ${e.describe().message}" }

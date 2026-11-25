@@ -1,0 +1,654 @@
+//! WHAT A FILE'S ANNOTATIONS MAKE: the declarations a generator writes beside a declaration that
+//! names it, a trait's under `@derive` or a declaring annotation's, each an item of its file after
+//! the written ones, read back and signed as one. Each copied node carries the file whose template
+//! wrote it, so a type it names is read there. A wrap's item holds the wrapper under the fn's own
+//! name and the written fn moved to its body's name.
+//!
+//! What a generator makes over a declaration is a saved answer keyed by the declaration's tape and
+//! the generator's made program, so it runs once per change of either. A generator the program
+//! layer doesn't make says why instead.
+use core.{
+    scoped,
+    distinct,
+    template_file,
+    template_home,
+    INFERRED,
+    Expr,
+    ForeignOrigin,
+    Scoped,
+    Stmt,
+    StmtId,
+    SyntaxArena,
+    flatten,
+    new_node_store,
+    seat_spelled,
+    some_list,
+    spelled,
+}
+use @std.meta.{Diagnostic, Directive, derive}
+use @std.program.address.{SourceFileAddress}
+use @std.program.answer_record.{ContentHash}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.saved_derive.{Saved}
+use @std.program.saved_query.{cut_query, definitions_of, ListedQuery, query, query_definition}
+use @std.program.source_facts.{PlacedTape, item_tape}
+use @std.program.syntax_tape.{SyntaxTape}
+
+/// Declarations one generator made over one declaration, on one tape, and whether they wrap it: hold
+/// the fn it's written as, under its own name, and its written body moved aside. A method's wrap
+/// holds its moved body as a method of its owner, and its wrapper apart, on a tape no file declares:
+/// the body the written method is read as.
+@derive(Saved)
+export type GeneratedItem = {
+    tape: SyntaxTape,
+    wraps: bool = false,
+    wrapper: SyntaxTape? = null,
+    /// Where it was made: the written item holding the declaration its generator ran over, that
+    /// declaration, and the annotation that names the generator — where what it holds is said.
+    site: ItemId? = null,
+    owner: string = "",
+    by: string = "",
+    /// The file the generator is written in: where a mistake of its own is said.
+    from: SourceFileAddress? = null,
+}
+
+/// What generators made, in the order their declarations are written, and what they said instead
+/// wherever they made nothing or the splice couldn't place what they made.
+@derive(Saved)
+export type GeneratedItems = { items: List<GeneratedItem>, said: List<string>, problems: List<KeptProblem> = [] }
+
+/// What a generator said about the declaration it ran over, kept whole: its words, where it points —
+/// a span in the file `home` spells by package and path, absent for the declaration itself — its own
+/// kind, and whether it only warns; then the site it ran at — the item, the declaration — and what
+/// ran there: `@std/meta`'s `delegate` over a `collect enum`, else the annotation's name.
+@derive(Saved)
+export type KeptProblem = {
+    message: string,
+    help: string?,
+    kind: string?,
+    warning: bool,
+    at: FindingAt?,
+    home: string?,
+    item: ItemId = ItemId(-1),
+    owner: string = "",
+    by: string = "",
+    from: string = "",
+    trapped: bool = false,
+    unplaced: bool = false,
+    /// A validator the program layer didn't run, for what it doesn't cross yet: counted, never said.
+    unrun: bool = false,
+    /// A name the generator made that the file already declares, `message` holding the name.
+    taken: bool = false,
+    /// A wrap that doesn't stand, how: `missing`, `bodiless` or `mismatch`; `message` holds the fn.
+    wrapped: string = "",
+}
+
+/// What a site hands its generator past the declaration it stands on: each argument, and what the
+/// item writing each declaration among them means, so a site runs again when one changes.
+@derive(Saved)
+export type Handing = { args: List<HandedArg>, meanings: List<ContentHash> }
+
+/// What `generator` makes over the declaration `file` writes as `name`, its item's tape meaning
+/// `_declaration`, the generator's made program printing as `print`, handed `handed`; a method of the
+/// impl `method` where it's one.
+@query("generate")
+export fn generated(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    _declaration: ContentHash,
+    name: string,
+    generator: GeneratorAt,
+    print: ContentHash,
+    handed: Handing,
+    method: MethodSite?,
+) -> GeneratedItems {
+    let l? = generator_program(engine, generator, print) else { return said_only(generator_moved(generator)) }
+    match generator_run(
+        engine,
+        l,
+        generator,
+        file,
+        name,
+        handed.args,
+        lifted_budgets(engine, file.package_name),
+        generator_plan(print, l),
+        method,
+    ) {
+        .Ran(made, problems) -> {
+            let made_here = items_spliced(engine, file, name, made, method)
+            made_here with { problems: made_here.problems.concat([kept_problem(p) for p in problems]) }
+        },
+        .Stopped(why, fault, said) -> if said { said_only([why]) } else { stopped_run(engine, generator, why, fault) },
+        .Trapped(why) -> unsettled_run(why),
+    }
+}
+
+/// A run of `g` that its site stopped before it began, for `why`: said where `g` judges and the
+/// program is at `fault`, counted where `g` judges and the layer can't hand it what it takes.
+fn stopped_run(engine: QueryEngine, g: GeneratorAt, why: string, fault: bool) -> GeneratedItems {
+    if !judges(engine, g) { return said_only([why]) }
+    if fault { unsettled_run(didnt_run(g, why)) } else { unrun(didnt_run(g, why)) }
+}
+
+/// `g` named as a run that didn't happen, and why.
+fn didnt_run(g: GeneratorAt, why: string) -> string { "`${annotation_named(g)}` didn't run: ${why}" }
+
+/// A validator's run the program layer couldn't make, for what it doesn't cross yet: kept as a
+/// problem no law says, which the layer's gaps count.
+fn unrun(why: string) -> GeneratedItems {
+    said_only([why]) with { problems: [
+        KeptProblem {
+            message: why,
+            help: null,
+            kind: null,
+            warning: false,
+            at: null,
+            home: null,
+            unrun: true,
+        },
+    ] }
+}
+
+/// A run that didn't settle, kept as the problem its site says: `why`, as an annotation that could
+/// not run.
+fn unsettled_run(why: string) -> GeneratedItems {
+    said_only([why]) with { problems: [
+        KeptProblem {
+            message: why,
+            help: null,
+            kind: null,
+            warning: false,
+            at: null,
+            home: null,
+            trapped: true,
+        },
+    ] }
+}
+
+/// What the generators every declaration of a file names make, in the order written, then what each
+/// format gives the record it reads.
+@cut_query("generate")
+export fn file_generated(engine: QueryEngine, file: SourceFileAddress) -> GeneratedItems {
+    gathered_items(
+        [site_generated(engine, file, site) for site in generator_sites(engine, file)]
+            .concat(format_generated(engine, file)),
+    )
+}
+
+/// What the validating annotations every declaration of a file wears say of it: no item, only their
+/// problems. Apart from what the file's generators make, so nothing a validator's own body needs of
+/// its package — an impl a generator there makes — waits on the validator's run.
+@cut_query("generate")
+export fn file_validated(engine: QueryEngine, file: SourceFileAddress) -> GeneratedItems {
+    gathered_items([site_generated(engine, file, site) for site in validator_sites(engine, file)])
+}
+
+/// Each validator the program the package `package` roots reads didn't run, for what the program
+/// layer doesn't cross yet: a gap of the layer's, never a pass.
+export fn package_unrun(engine: QueryEngine, package: string) -> List<KeptProblem> { [p for f in program_files(engine, package) for p in file_validated(engine, f).problems if p.unrun] }
+
+/// Every problem a generator or a validating annotation kept about a declaration of `file`.
+export fn file_problems(engine: QueryEngine, file: SourceFileAddress) -> List<KeptProblem> { file_generated(engine, file).problems.concat(file_validated(engine, file).problems) }
+
+/// What the generators the fn `file` writes as `name` wears make: what the written declaration
+/// names, never what generated items do.
+export fn fn_generated(engine: QueryEngine, file: SourceFileAddress, name: string) -> GeneratedItems {
+    let d? = file_declares_named(engine, file, name)
+        .names
+        .find(it.name == name && it.kind == ItemKind.Fn) else { return said_only([]) }
+    gathered_items(
+        [site_generated(engine, file, site) for site in declaration_sites(engine, file, d) if !validates(engine, site.generator)],
+    )
+}
+
+/// What the generators the method `name` of the impl `m` wears make.
+export fn method_generated(engine: QueryEngine, m: MethodSite, name: string) -> GeneratedItems {
+    gathered_items([site_generated(engine, m.at.file, x) for x in method_sites_of(engine, m, name)])
+}
+
+/// Several sites' items and words, in order.
+fn gathered_items(made: List<GeneratedItems>) -> GeneratedItems {
+    GeneratedItems {
+        items: flatten([m.items for m in made]),
+        said: flatten([m.said for m in made]),
+        problems: flatten([m.problems for m in made]),
+    }
+}
+
+/// The quote the file `home` names holds at the offset `at` of its text, as the written item holding
+/// it reads back: the store holding it and the quote; absent where none does.
+fn written_quote(engine: QueryEngine, home: string, at: int) -> Scratch? {
+    let file? = template_file(home) else { return null }
+    let i? = quote_item(engine, file, at).first() else { return null }
+    let store = read_item(engine, file, i).store
+    let q? = store.quote_at(at - item_start(engine, file, i)) else { return null }
+    Scratch { store: store, body: q }
+}
+
+/// The written item of `file` holding the quote at the offset `at` of its text, none where none
+/// does: the item whose text holds the offset, where a quote stands there in it.
+@query("generate")
+fn quote_item(engine: QueryEngine, file: SourceFileAddress, at: int) -> List<ItemId> {
+    [i for i in item_ids(engine, file) for start in [item_start(engine, file, i)] if start <= at &&
+        at < start + item_under(engine, file, i).text.length &&
+        read_item(engine, file, i).store.quote_at(at - start) != null]
+        .take(1)
+}
+
+/// Every item of `file` by id: its written items, then its generated ones, each in order.
+export fn every_item_id(engine: QueryEngine, file: SourceFileAddress) -> List<ItemId> {
+    item_ids(engine, file)
+        .concat([generated_id(k) for k in 0..file_generated(engine, file).items.length])
+}
+
+/// The items of `file` the laws judge, by id: its written items, then every one its generators make
+/// but a wrap's, whose wrapper is judged as the written fn it wraps.
+export fn swept_item_ids(engine: QueryEngine, file: SourceFileAddress) -> List<ItemId> {
+    item_ids(engine, file)
+        .concat(
+            [generated_id(k) for k in 0..file_generated(engine, file).items.length if item_judged(engine, file, generated_id(k))],
+        )
+}
+
+/// The items of `file` that stand before the item `at`, by id, in order: for a written item, the
+/// written ones before it; for a generated one, every written item and the generated ones made
+/// before it; every written item where the file holds no `at`.
+export fn items_before(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<ItemId> {
+    let ids = item_ids(engine, file)
+    let k? = generated_rank(at) else {
+        let rank = ids.index_of(at)
+        return if rank < 0 { ids } else { ids.take(rank) }
+    }
+    ids.concat([generated_id(j) for j in 0..k])
+}
+
+/// Where the item `at` stands among every item of `file`, counted from the first: a written item by
+/// its place among the written ones, a generated one past them all by its place among those made;
+/// past every written item for one the file doesn't hold. Read without what generators make.
+export fn item_order(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> int {
+    let ids = item_ids(engine, file)
+    let k? = generated_rank(at) else {
+        let rank = ids.index_of(at)
+        return if rank < 0 { ids.length } else { rank }
+    }
+    ids.length + k
+}
+
+/// What a file's generated items declare, each by its generated id.
+export fn generated_declares(engine: QueryEngine, file: SourceFileAddress) -> Declarations {
+    Declarations {
+        names: [tape_declared(file, generated_id(k), n) for k, g in file_generated(engine, file).items for n in g.tape.declares],
+    }
+}
+
+/// What one site's generator makes, or why its generator isn't made.
+export fn site_generated(engine: QueryEngine, file: SourceFileAddress, site: GeneratorSite) -> GeneratedItems {
+    let made = generator_print(engine, site.generator)
+    // a generator the layer can't make is said at the annotation that names it, never only downstream
+    let print? = made.print else { return if made.speaks { sited(unsettled_run(made.unmade), site) } else { said_only([made.unmade]) } }
+    let handed = Handing {
+        args: site.handed,
+        meanings: [item_meaning(engine, d.file, d.item) for h in site.handed for d in handed_decl(h)],
+    }
+    let made_here = generated(
+        engine,
+        file,
+        item_meaning(engine, file, site.item),
+        site.name,
+        site.generator,
+        print,
+        handed,
+        site.method,
+    )
+    let taken = taken_names(engine, file, made_here.items)
+    let kept = if taken.is_empty() { made_here } else { GeneratedItems { items: [], said: [], problems: [name_taken(n) for n in taken] } }
+    sited(kept, site)
+}
+
+/// What a site's generator made and said, each item and problem kept beside the site: the written
+/// item, the declaration, the annotation naming the generator.
+fn sited(kept: GeneratedItems, site: GeneratorSite) -> GeneratedItems {
+    kept with { items: [g with { site: site.item, owner: site.name, by: annotation_named(site.generator), from: site.generator.file } for g in kept.items], problems: [p with { item: site.item, owner: site.name, by: annotation_named(site.generator), from: site.generator.file.package_name } for p in kept.problems] }
+}
+
+/// The names the items a generator made over `file` declare that the file already declares in
+/// writing, or imports: a generated one would lose to it in silence. A wrap's own name aside, which
+/// the wrap means to take.
+fn taken_names(engine: QueryEngine, file: SourceFileAddress, items: List<GeneratedItem>) -> List<
+    string,
+> {
+    if items.is_empty() { return [] }
+    let scope? = written_file_scope(engine, file) else { return [] }
+    distinct(
+        [n.name for g in items if !g.wraps for n in g.tape.declares if stratum_resolved(engine, scope, file, Space.Value, n.name).named() != null ||
+            stratum_resolved(engine, scope, file, Space.Type, n.name).named() != null],
+    )
+}
+
+/// A name a generator made that its file already declares, kept as the problem its site says.
+fn name_taken(name: string) -> KeptProblem {
+    KeptProblem {
+        message: name,
+        help: null,
+        kind: null,
+        warning: false,
+        at: null,
+        home: null,
+        taken: true,
+    }
+}
+
+/// The declaration an argument hands, where it hands one.
+fn handed_decl(h: HandedArg) -> List<HandedDecl> { match h { .Decl(d) -> [d], rest -> [] } }
+
+/// What the item `at` of `file` means: its tape's meaning hash, a generated item's own.
+fn item_meaning(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ContentHash {
+    let made = generated_at(engine, file, at)
+    if made != null { return made!.tape.meaning_hash }
+    let item = item_under(engine, file, at)
+    item_tape(engine, item.text, item.context).meaning_hash
+}
+
+/// The declarations directives' sources make over what `file` writes as `name`, spliced as one
+/// item; a wrap's beside the written fn moved to its body's name, its wrapper signed as the written
+/// fn is, and a twin beside it; a method's wrap with its moved body a method of its owner and its
+/// wrapper apart.
+fn items_spliced(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    name: string,
+    made: List<Directive>,
+    method: MethodSite? = null,
+) -> GeneratedItems {
+    let spliced = generated_spliced(
+        [d.source!.node for d in made if d.source != null],
+        template_home(file),
+        (home: string, at: int) -> written_quote(engine, home, at),
+    )
+    let wraps = made.any(it.wraps)
+    if wraps && method != null { return method_wrap(engine, method!, name, spliced) }
+    let moved: StmtId? = if wraps { moved_body(engine, file, name, spliced.store) } else { null }
+    let fault = if wraps { wrap_fault(spliced.store, spliced.stmts, name, moved) } else { null }
+    if fault != null { return wrap_refused(fault!, name) }
+    let twins = [twin_of(engine, file, name, d.twin, spliced.store) for d in made if d.source == null && !d.twin.is_empty()]
+    let stmts = spliced
+        .stmts
+        .concat(some_list(moved))
+        .concat(flatten([some_list(t) for t in twins]))
+    GeneratedItems {
+        items: if stmts.is_empty() { [] } else { [GeneratedItem { tape: tape_of_item(spliced.store, stmts), wraps: wraps }] },
+        said: spliced
+            .refused
+            .concat(if twins.any(it == null) { [twin_unmade(name)] } else { [] })
+            .concat(
+                if stmts.is_empty() && made.all(it.twin.is_empty()) { some_list(unplaced(made)) } else { [] },
+            ),
+        problems: [KeptProblem {
+            message: w,
+            help: null,
+            kind: null,
+            warning: false,
+            at: null,
+            home: null,
+            unplaced: true,
+        } for w in spliced.unplaced],
+    }
+}
+
+/// A method's wrap over the method `name` the impl `m` writes: its written body moved to its body's
+/// name as a method of the impl's owner, beside what else the directives declare, and the wrapper
+/// they make of its name apart.
+fn method_wrap(engine: QueryEngine, m: MethodSite, name: string, spliced: SplicedDecls) -> GeneratedItems {
+    let store = spliced.store
+    let moved = moved_method(engine, m, name, store)
+    let fault = wrap_fault(store, spliced.stmts, name, moved?.moved)
+    if fault != null { return wrap_refused(fault!, name) }
+    let wrapper = spliced.stmts.find((s) -> store.fn_parts(s)?.name == name)
+    if moved == null || wrapper == null { return said_only(spliced.refused) }
+    let beside = [s for s in spliced.stmts if s != wrapper!]
+    GeneratedItems {
+        items: [
+            GeneratedItem {
+                tape: tape_of_item(store, beside.concat([moved!.held])),
+                wraps: true,
+                wrapper: tape_of_item(store, [wrapper!]),
+            },
+        ],
+        said: spliced.refused,
+    }
+}
+
+/// A written method moved aside: the fn under its body's name, and the impl holding it alone.
+type MovedMethod = { moved: StmtId, held: StmtId }
+
+/// The method `name` the impl `m` writes, read into `store` under the name a wrap moves its body to,
+/// marked as it's written, in an impl of its own for the type the written one is for.
+fn moved_method(engine: QueryEngine, m: MethodSite, name: string, store: SyntaxArena) -> MovedMethod? {
+    let stmts = read_into(
+        engine,
+        m.at.file,
+        store,
+        m.at.item,
+        item_start(engine, m.at.file, m.at.item),
+    )
+    let read = ReadItem { store: store, stmts: stmts, written: store.expr_count() }
+    let held? = impl_stmt_at(read, m.at) else { return null }
+    let s? = store.impl_parts(held)!
+        .fns
+        .find((x) -> store.fn_parts(x)?.name == name && store.is_static(x) == m.statics) else { return null }
+    let parts = store.fn_parts(s)!
+    let moved = store
+        .alloc_stmt(
+            Stmt
+                .FnDecl(scoped(moved_name(name)), parts.tparams, parts.params, parts.ret, parts.body),
+            store.stmt_span(s),
+        )
+    let marks = store.marks_at(s)
+    store.update_marks(moved, (_m) -> marks)
+    let alone? = match store.stmt(held) {
+        .ImplDecl(of, of_args, target, target_args, _) -> Stmt.ImplDecl(of, of_args, target, target_args, [moved]),
+        rest -> null,
+    } else { return null }
+    MovedMethod { moved: moved, held: store.alloc_stmt(alone, store.stmt_span(held)) }
+}
+
+/// How a wrap of `name` among `stmts` doesn't stand, beside the written fn moved to `moved`: the fn
+/// has no written body to move, `bodiless`; the directives make no fn of its name, `missing`; or the
+/// one they make is signed otherwise — its seats, its answer, its `static` or `mut fn` word —
+/// `mismatch`. Absent for one that stands.
+fn wrap_fault(store: SyntaxArena, stmts: List<StmtId>, name: string, moved: StmtId?) -> string? {
+    let written? = moved else { return WRAP_BODILESS }
+    let wrapper? = stmts.find((s) -> store.fn_parts(s)?.name == name) else { return WRAP_MISSING }
+    if signature_spelled(store, wrapper) != signature_spelled(store, written) ||
+        store.is_static(wrapper) != store.is_static(written) ||
+        store.is_mutating(wrapper) != store.is_mutating(written) { WRAP_MISMATCH } else { null }
+}
+
+const WRAP_BODILESS: string = "bodiless"
+
+const WRAP_MISSING: string = "missing"
+
+const WRAP_MISMATCH: string = "mismatch"
+
+/// A wrap of `name` that doesn't stand, how `fault` says: nothing made, and the problem its site
+/// says.
+fn wrap_refused(fault: string, name: string) -> GeneratedItems {
+    said_only([wrap_unmade(name)]) with { problems: [
+        KeptProblem {
+            message: name,
+            help: null,
+            kind: null,
+            warning: false,
+            at: null,
+            home: null,
+            wrapped: fault,
+        },
+    ] }
+}
+
+/// A fn's signature as written: its type parameters, each seat's promises and type, and its answer.
+fn signature_spelled(store: SyntaxArena, s: StmtId) -> string {
+    let parts = store.fn_parts(s)!
+    let seats = [seat_spelled(
+        p.promises.mutable,
+        p.promises.settled,
+        if p.ty == null { INFERRED } else { spelled(p.ty!) },
+    ) for p in parts.params]
+    "<${[t.name.text() for t in parts.tparams].join(", ")}>(${seats.join(", ")}) -> ${spelled(parts.ret)}"
+}
+
+/// The fn `file` writes as `name`, read into `store` under the name a wrap moves its body to, at the
+/// place it's written; absent when it writes none.
+fn moved_body(engine: QueryEngine, file: SourceFileAddress, name: string, store: SyntaxArena) -> StmtId? {
+    let d? = file_declares_named(engine, file, name)
+        .names
+        .find(it.name == name && it.kind == ItemKind.Fn) else { return null }
+    let s? = read_into(engine, file, store, d.item, item_start(engine, file, d.item))
+        .find((x) -> store.fn_parts(x)?.name == name) else { return null }
+    let parts = store.fn_parts(s)!
+    let moved = store
+        .alloc_stmt(
+            Stmt
+                .FnDecl(scoped(moved_name(name)), parts.tparams, parts.params, parts.ret, parts.body),
+            store.stmt_span(s),
+        )
+    let marks = store.marks_at(s)
+    store.update_marks(moved, (_m) -> marks)
+    moved
+}
+
+/// The twin a directive asks for beside the fn `file` writes as `name`, read into `store`: a fn
+/// named `twin`, signed as the written one, answering what a call of it with its own seats answers;
+/// absent when the file writes no fn of the name.
+fn twin_of(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    name: string,
+    twin: string,
+    store: SyntaxArena,
+) -> StmtId? {
+    let d? = file_declares_named(engine, file, name)
+        .names
+        .find(it.name == name && it.kind == ItemKind.Fn) else { return null }
+    let s? = read_into(engine, file, store, d.item, item_start(engine, file, d.item))
+        .find((x) -> store.fn_parts(x)?.name == name) else { return null }
+    let parts = store.fn_parts(s)!
+    let at = store.stmt_span(s)
+    let call = store
+        .alloc_expr(
+            Expr
+                .Call(scoped(name), [], [store.alloc_expr(Expr.Ident(p.name), at) for p in parts.params]),
+            at,
+        )
+    store.alloc_stmt(Stmt.FnDecl(scoped(twin), parts.tparams, parts.params, parts.ret, call), at)
+}
+
+/// The name a wrap moves a written fn's body to, which no written name can take.
+fn moved_name(name: string) -> string { "${name}\$body" }
+
+/// What annotations on the fn `file` writes as `name` make of its body, as `wrapping` reads it.
+fn annotated_body(engine: QueryEngine, file: SourceFileAddress, name: string) -> Wrapping { wrapping(engine, file, name) }
+
+fn said_only(words: List<string>) -> GeneratedItems { GeneratedItems { items: [], said: words } }
+
+/// The annotation a generator's site wears: `derive` for a trait's own, else the generator's name.
+fn annotation_named(g: GeneratorAt) -> string { if g.kind is .Derive { "derive" } else { g.name } }
+
+/// A generator's problem, kept whole.
+fn kept_problem(d: Diagnostic) -> KeptProblem {
+    KeptProblem {
+        message: d.message,
+        help: d.help,
+        kind: d.kind,
+        warning: d.warning,
+        at: if d.at == null { null } else { FindingAt { lo: d.at!.lo, hi: d.at!.hi } },
+        home: d.at?.file,
+    }
+}
+
+/// The generated item `at` names among a file's items, counting past its written ones; absent for
+/// a written one, and past the generated ones: a question kept from an older state of the file may
+/// name a place it no longer has, and is answered as a written place past the file's end is.
+export fn generated_at(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> GeneratedItem? {
+    let k? = generated_rank(at) else { return null }
+    let items = file_generated(engine, file).items
+    if k >= items.length { return null }
+    items[k]
+}
+
+/// Where what the generated item `at` of `file` holds is said: the annotation on the written
+/// declaration that names its generator, else that declaration, counted from the file's start;
+/// absent for a written item, or one no site made.
+export fn generated_mark(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> FindingAt? {
+    let g? = generated_at(engine, file, at) else { return null }
+    let site? = g.site else { return null }
+    let item = read_item(engine, file, site)
+    let store = item.store
+    let s? = item.stmts.find((x) -> store.declared_name(x) == g.owner) else { return null }
+    let span? = store.annotations_of(s).find(it.name == g.by)?.span ?? store.stmt_span(s) else { return null }
+    file_placed(engine, file, site, FindingAt { lo: span.lo, hi: span.hi })
+}
+
+/// What each generated item of a file keeps for its words, in the order made.
+fn generated_abouts(engine: QueryEngine, file: SourceFileAddress) -> List<ItemAbout> {
+    [about_of(g.tape.about) for g in file_generated(engine, file).items]
+}
+
+/// How two generated items differ, where their nodes stand and the files that wrote them aside: the
+/// first statement and method that mean something else; absent when alike.
+export fn item_difference(one: SyntaxTape, other: SyntaxTape) -> string? {
+    let ours = unhomed(one)
+    let theirs = unhomed(other)
+    if ours.tape.meaning_hash.same_as(theirs.tape.meaning_hash) { return null }
+    if ours.stmts.length != theirs.stmts.length { return "${ours.stmts.length} statements, the other's ${theirs.stmts.length}" }
+    for j, s in ours.stmts {
+        let t = theirs.stmts[j]
+        if ours.store.stmt_fingerprint(s) == theirs.store.stmt_fingerprint(t) { continue }
+        return "statement ${j}${method_differing(ours.store, s, theirs.store, t)} means something else"
+    }
+    "its meaning, though every statement's fingerprint agrees"
+}
+
+/// An item read back with every node's file dropped, and its tape written again.
+type Unhomed = { store: SyntaxArena, stmts: List<StmtId>, tape: SyntaxTape }
+
+fn unhomed(tape: SyntaxTape) -> Unhomed {
+    let store = new_node_store()
+    let stmts = item_read_back(store, PlacedTape { start: 0, tape: tape })
+    store.expr_origins.clear()
+    store.stmt_origins.clear()
+    store.pat_origins.clear()
+    Unhomed { store: store, stmts: stmts, tape: tape_of_item(store, stmts) }
+}
+
+/// The first method two impls write differently, as `, method <name>`; nothing for any other pair.
+fn method_differing(ours: SyntaxArena, s: StmtId, theirs: SyntaxArena, t: StmtId) -> string {
+    let a? = ours.impl_parts(s) else { return "" }
+    let b? = theirs.impl_parts(t) else { return "" }
+    let at? = [j for j, f in a.fns if j >= b.fns.length || ours.stmt_fingerprint(f) != theirs.stmt_fingerprint(b.fns[j])]
+        .first() else { return "" }
+    ", method ${ours.fn_parts(a.fns[at])?.name ?? "${at}"}"
+}
+
+collect listed_generated_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries what annotations make reads through, for a process to hand its engine.
+export fn generated_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_generated_facts) }
+
+fn generator_moved(g: GeneratorAt) -> List<string> { ["`${g.name}`'s generator made here doesn't print as the one asked for"] }
+
+/// What a generator says whose directives placed no statement: what the first declares. Directives
+/// that carry no declaration make nothing, so the written declaration stands; nothing is said.
+fn unplaced(made: List<Directive>) -> string? {
+    let source? = made.find(it.source != null)?.source else { return null }
+    let text = source.node.text()
+    "its declarations place no statement: ${text.substring(0, if text.length > SHOWN { SHOWN } else { text.length })}"
+}
+
+/// The most of a generator's text a word about it shows.
+const SHOWN: int = 80
+
+fn twin_unmade(name: string) -> string { "a twin of `${name}` stands beside no fn of its name" }
+
+fn wrap_unmade(name: string) -> string { "a wrap of `${name}` makes no fn of its name beside its written one" }
+

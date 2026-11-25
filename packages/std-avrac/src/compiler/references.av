@@ -1,0 +1,104 @@
+//! THE REFERENCES PASS — fills `Decls`'s references relation: one
+//! row per named USE of a declaration (`Ref`, features/decls.av),
+//! filled per file as that file is resolved and typed, replaced
+//! whole when the file changes. A WHOLE-PROGRAM PASS MUST NOT RUN
+//! INSIDE A RESOLVE — receivers.av's law, held here too: the pass
+//! answers nothing while a resolve is in flight, and runs whole at
+//! the first ask after.
+//!
+//! A ROW'S TARGET IS A DECLARATION, never a local: a param or a
+//! `mut` local is scoped to its own body, so `Code.reads`/
+//! `Code.writes` (features/code.av) answer those with a bounded walk
+//! of their own, no whole-program relation needed — this pass only
+//! ever settles rows keyed by `DeclId`, which is what crosses files.
+//!
+//! A WRITTEN TYPE NAMES A DECLARATION TOO: a param's, a field's, a
+//! `let`'s annotation, a bound, a return — none of them a nested
+//! EXPRESSION, so `expr_refs`'s walk never sees them on its own.
+//! `type_use_refs` reads `SyntaxArena.type_roots` (core/parts.av) and
+//! resolves every name it reaches — arguments and `or` alternatives
+//! included — through the file's namespace, exactly as a written
+//! type resolves under typing (`declare.av`'s `named_type`/
+//! `trait_decl_named` both bottom out at `names.type_decl`). A name
+//! bound as the STATEMENT's OWN type parameter names no declaration.
+//!
+//! AN ANNOTATION'S CALLEE IS AN ORDINARY EXPRESSION (`@name(args)` is
+//! the call `name(...)`), so `expr_refs`'s blanket walk already sees
+//! it — a decl and a type position alike. A FIELD MARK is not: it is
+//! a free-standing WORD the compiler judges no reader over (marks
+//! stay free names everywhere else), so `mark_refs` is the one place
+//! that treats a mark's word as a POSSIBLE use — a fn visible under
+//! that name reads through it, and a mark matching nothing answers
+//! no row, exactly as an unclaimed mark answers no reader elsewhere.
+use core.{
+    DeclId,
+    FileId,
+    ExprId,
+    StmtId,
+    At,
+    SyntaxArena,
+    Nominal,
+    TypeRef,
+    UseParts,
+    Mark,
+    touch,
+    fp,
+    fp_list,
+    flatten,
+    some_list,
+    Span,
+    wire_fields,
+    distinct,
+    same_decl,
+}
+use features.{
+    NameFacts,
+    TypeFacts,
+    Decls,
+    Decl,
+    Ref,
+    UseKind,
+    Import,
+    bound_decl_of,
+    declaring_decl,
+    LANGUAGE_HOME,
+}
+use core.{Ids, same_file, sorted_by, fp_list}
+use compiler.families.{Family}
+use @std.relation.{codec}
+use @std.relation.stable.{Scope}
+use compiler.store.{Store}
+
+/// A set of references: the answer of the queries below, which cross by their codec.
+@codec
+export type Uses = { rows: List<Ref> }
+
+/// Every named use of a declaration, from every file's own rows and the held files' kept
+/// ones, indexed by declaration. In the process only: a reader asks the projection `refs_to`,
+/// whose digest moves only with its own rows.
+type RefsIndex = {
+    by_decl: Cell<Map<string, Cell<List<Ref>>>>,
+    digest: int,
+}
+
+impl RefsIndex {
+    fn fingerprint() -> int { self.digest }
+}
+
+/// Whether an expression is written inside one of the quote spans —
+/// never the quote itself.
+fn spanned_in(store: SyntaxArena, e: ExprId, quotes: List<Span>) -> bool {
+    let sp? = store.expr_span(e) else { return false }
+    !store.spanned_elsewhere(e) && quotes.any((q: Span) -> q.lo < sp.lo && sp.hi <= q.hi)
+}
+
+/// Rows grouped by the index of their declaration, in row order.
+fn grouped(rows: List<Ref>) -> Map<string, Cell<List<Ref>>> {
+    mut out: Map<string, Cell<List<Ref>>> = {}
+    for r in rows {
+        let k = "${r.decl.index}"
+        let held = out.get(k)
+        if held == null { out.set(k, Cell.new([r])) } else { held!.push(r) }
+    }
+    out
+}

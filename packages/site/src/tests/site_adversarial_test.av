@@ -1,0 +1,43 @@
+// How the site breaks: targets that are almost a screen, methods the
+// routes do not take, and the 404's own shape.
+use @std.text.{repeat}
+
+spec "site — adversarial" {
+    given "targets that are almost a screen" {
+        then "a query string leaves the screen's route intact" {
+            status_of("GET /why?x=1&y=2 HTTP/1.1") == 200
+        }
+        then "a trailing slash is another address, and a 404 page" {
+            status_of("GET /why/ HTTP/1.1") == 404 && is_html_page(replied("GET /why/ HTTP/1.1"))
+        }
+        then "dot segments are not normalized into a screen" {
+            status_of("GET /../ HTTP/1.1") == 404 &&
+                status_of("GET /principles/../why HTTP/1.1") == 404
+        }
+        then "case matters in a route" {
+            status_of("GET /WHY HTTP/1.1") == 404
+        }
+        then "a 5000-octet target is a 404 page, not a trap" {
+            let long = "GET /" + repeat("a", 5000) + " HTTP/1.1"
+            status_of(long) == 404 && is_html_page(replied(long))
+        }
+    }
+    given "methods the routes do not take" {
+        then "a POST to a screen is refused as a page too" {
+            let r = replied("POST / HTTP/1.1")
+            r.status != 200 && is_html_page(r)
+        }
+    }
+    given "the 404's own shape" {
+        then "every 404 is a full page in the shell, with the home link" {
+            let doc = replied("GET /nope HTTP/1.1").body.text() ?? ""
+            doc.contains("<title>Not found</title>") &&
+                doc.contains("href=\"/\"") &&
+                !doc.contains("<script")
+        }
+        then "a 404 body never echoes the target" {
+            let doc = replied("GET /<b>x</b> HTTP/1.1").body.text() ?? ""
+            !doc.contains("<b>x") && !doc.contains("&lt;b&gt;x")
+        }
+    }
+}

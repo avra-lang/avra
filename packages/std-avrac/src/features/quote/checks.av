@@ -1,0 +1,38 @@
+//! The typing rule of a code-shape pattern: each hole binds what stands at its seat in the code the
+//! pattern matches — that code for a code hole, a list of it for a run, the text for a name, the
+//! compiler's own written type for a type.
+use core.{
+    Checking,
+    PatChecks,
+    PatId,
+    QuoteHole,
+    SignedType,
+    list_of,
+    owned_type,
+    quote_pat_holes,
+    quote_pat_is_run,
+    quote_pat_is_text,
+    quote_pat_is_type,
+    quote_pat_names,
+}
+use core.pat.{Quote}
+
+impl PatChecks for Quote {
+    fn pat_checked(mut cx: Checking, p: PatId, subject: SignedType?) {
+        let holes = quote_pat_holes(cx.store, self.body)
+        for name in quote_pat_names(holes) { cx.bind(name, binder_type(cx, holes, name, subject)) }
+    }
+}
+
+/// What the binder `name` of a pattern over code of `subject` holds.
+fn binder_type(cx: Checking, holes: List<QuoteHole>, name: string, subject: SignedType?) -> SignedType? {
+    if quote_pat_is_type(holes, name) { return cx.toolchain_type(WRITTEN_TYPES, WRITTEN_TYPE) }
+    if quote_pat_is_text(holes, name) { return owned_type("string") }
+    let code? = subject else { return null }
+    if quote_pat_is_run(holes, name) { list_of(code) } else { code }
+}
+
+/// The module declaring the compiler's own written type, and its name.
+const WRITTEN_TYPES: string = "@std.avrac.core"
+
+const WRITTEN_TYPE: string = "TypeRef"

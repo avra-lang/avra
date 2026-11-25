@@ -1,0 +1,18 @@
+//! EACH ENGINE'S TYPE MEMOS: kept apart by the engine's serial, so engines over different sources
+//! never read each other's answers.
+use core.{TypeMemos, fresh_type_memos}
+use @std.program.query_engine.{QueryEngine}
+
+/// The memos of each engine this process made, by its serial.
+once fn memos_by_engine() -> Cell<Map<string, TypeMemos>> { Cell.new({}) }
+
+/// The memos `engine` keeps, made the first time it's asked.
+export fn type_memos(engine: QueryEngine) -> TypeMemos {
+    let serial = "${engine.serial}"
+    let standing? = memos_by_engine().get().get(serial) else {
+        let made = fresh_type_memos(engine)
+        memos_by_engine().put(serial, made)
+        return made
+    }
+    standing
+}

@@ -1,0 +1,67 @@
+//! A grammar assembled from annotated builder functions, not a
+//! hand-written `Grammar` value referencing scattered ones. This
+//! module holds the NODE-TYPE-AGNOSTIC half only — the annotation
+//! itself, and synthesizing a rule's build directive from its own
+//! captured labels. The `collect` statement, the node type, and the
+//! assembly function are per-grammar and live with that grammar's own
+//! rules (`@std/sql`, or any future consumer) — a `collect` only sees
+//! its own module, so there is nothing generic left to share there.
+//!
+//! `@grammar_rule` is a Records-effect annotation (`-> void`) — it
+//! never runs itself; it rides as metadata on the function it marks,
+//! read back later by a `collect` in the SAME module. Confirmed
+//! directly, not assumed: a bare `it` in a collect over a fn-targeted
+//! annotation crosses as a REAL, callable reference to the function
+//! itself (not `@std.meta` reflection data) — `it.mark` is the
+//! matched `@grammar_rule` instance, whose `args: List<string>`
+//! carries the rule's own text.
+//!
+//! A rule's NAME is its function's own name — never written twice.
+//! One rule referencing another (`cols:column_list`) writes that
+//! OTHER function's name directly; there is one namespace, the one
+//! Avra already has for functions.
+
+use @std.meta.{Fn}
+use ast.{Alt, Seq, Item, Build}
+use util.{distinct}
+
+export fn grammar_rule(f: Fn, text: string) {}
+
+impl Seq {
+    /// This branch's captured labels, deduped: a label repeating
+    /// itself across a repetition (`c:IDENT (\",\" c:IDENT)*`) names
+    /// ONE accumulated binding (the executor's capture accumulation),
+    /// so it is one build argument, not one per occurrence — `labels`
+    /// (validate.av's coherence check) already walks nested groups for
+    /// this same reason; here it is deduped too.
+    fn distinct_labels() -> List<string> {
+        distinct(self.labels())
+    }
+
+    /// This branch, its sole item labeled when nothing else names it.
+    /// `atom = IDENT` carries no label for a build to reference — it
+    /// wears one (`_0`) so the builder still receives it as its one
+    /// argument; a branch that names nothing at all otherwise passes
+    /// nothing, which is what the hand-authored `no build, one item`
+    /// passthrough (validate.av) is for elsewhere.
+    fn sole_labeled() -> Seq {
+        if self.items.length != 1 || self.items[0].label != null { return self }
+        self with { items: [self.items[0] with { label: "_0" }] }
+    }
+
+    /// This branch, with its build directive replaced by a call to
+    /// `fn_name` passing its own captured labels, in the order they
+    /// appear — never written by hand, since the labels are already
+    /// right there in the rule's own text.
+    fn synthesized_build(fn_name: string) -> Seq {
+        let labeled = self.sole_labeled()
+        labeled with { build: Build.Call(fn_name, labeled.distinct_labels()) }
+    }
+}
+
+impl Alt {
+    /// Every branch, its build directive synthesized the same way.
+    fn synthesized_build(fn_name: string) -> Alt {
+        self with { branches: [b.synthesized_build(fn_name) for b in self.branches] }
+    }
+}

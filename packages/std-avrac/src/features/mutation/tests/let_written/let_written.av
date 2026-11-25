@@ -1,0 +1,41 @@
+// proves: a write through a plain `let` lands in the binding, never in
+// what the binding was read from (spec 11.5: a local read from a place
+// is a copy). A writing method's receiver rooted in a `let` — at the
+// entry, in a fn, in a loop — is seeded in a cell as a `mut` binding's
+// is, and the const it was read from, the local it was read from and a
+// fresh value each keep their own items.
+type Bag = { items: List<int> }
+
+impl Bag {
+    mut fn add(n: int) {
+        self.items.push(n)
+    }
+}
+
+const start = Bag { items: [1] }
+
+fn from_const() -> int {
+    let c = start
+    c.add(3)
+    c.items.length
+}
+
+fn from_local() -> string {
+    let s = Bag { items: [1] }
+    let c = s
+    c.add(3)
+    c.add(4)
+    "${c.items.length} ${s.items.length}"
+}
+
+fn in_loop() -> int {
+    let c = Bag { items: [] }
+    for i in 0..3 {
+        c.add(i)
+    }
+    c.items.length
+}
+
+let c = start
+c.add(3)
+"${c.items.length} ${start.items.length} ${from_const()} ${from_local()} ${in_loop()}"

@@ -1,0 +1,43 @@
+//! proves a failed item waits its backoff before each next attempt:
+//! the queue's backoff doubled for every attempt already made, never
+//! past the cap, and buried once the attempts reach the terms.
+use @std.queue.{queue, worker, run, key, Dead, Delivery, DrainError, Fate}
+use @std.time.{mins, now_ms, secs, sleep}
+
+extern fn avra_clock_virtual(on: int)
+
+fn refused(starts: Cell<List<int>>, began: int, d: Delivery<int>) -> Result<int, string> {
+    starts.push((now_ms() - began) / 1000)
+    .Err("no ${d.attempt}")
+}
+
+fn why(f: Fate<string>) -> string {
+    match f { .Failed(e) -> e, .Unanswered -> "unanswered" }
+}
+
+fn said(r: Result<int, DrainError>) -> string {
+    match r { .Ok(n) -> "settled ${n}", .Err(_) -> "failed" }
+}
+
+state began: Cell<int> = Cell.new(0)
+state starts: Cell<List<int>> = Cell.new([])
+avra_clock_virtual(1)
+began.set(now_ms())
+queue<Dead<int, string>> letters {}
+queue<int> jobs {
+    retries: 6
+    backoff: secs(5)
+    backoff_cap: secs(30)
+}
+worker never {
+    reads: jobs
+    each: (d: Delivery<int>) -> refused(starts, began.get(), d)
+    dead: letters
+}
+use tests.support.letters.{first_letter}
+let _ = jobs.home().send(7, key("k"))
+let r = spawn run(never)
+sleep(mins(5))
+never.stop()
+let gone = first_letter(letters)
+"starts at ${["${s}s" for s in starts.get()].join(" ")} | ${said(r.await)} | buried ${gone!.item} ${why(gone!.fate)} | depth ${jobs.home().depth() catch 0 - 1}"

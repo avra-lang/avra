@@ -1,0 +1,51 @@
+//! WHERE AN INTERPOLATION HOLE HOLDS WHAT PRINTS AS NO TEXT: a hole of a text literal whose type is
+//! one the language owns that is no number, truth or text — a list, a map, bytes, a result, a task,
+//! a range, a cell. Read off the item's typed nodes; a hole typing
+//! doesn't know whole, or a declared type, is left alone.
+use core.{At, ExprId, NodeKind, OwnType, SignedType, body_behavior}
+use compiler.laws.{Found, Reach, law}
+use diagnostics.{Voice}
+use features.str_lit.{unprintable_hole}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+
+/// Each hole of the text literal `at` of `view`'s item, its file's own, whose type prints as no
+/// text, with that type spelled.
+fn unprintable_holes(view: ItemView, at: At) -> List<Found> {
+    let e? = at.expr() else { return [] }
+    let t? = typed_of(view) else { return [] }
+    if t.store.home_of(e) != null { return [] }
+    [Found { at: t.store.expr_span(h), args: [ty!.spelled()] } for h in text_holes(t, e) for ty in [(t.type_at)(h.index)] if ty != null && unprintable(view.engine, ty!)]
+}
+
+/// The holes of the text literal `e`; none for any other node.
+fn text_holes(t: TypedNodes, e: ExprId) -> List<ExprId> {
+    let body? = t.store.expr(e).body_of() else { return [] }
+    if body_behavior(body.word) is .Text { body.holes } else { [] }
+}
+
+/// Whether a hole of type `ty` prints as no text: a type the language owns, never absent, that is no
+/// number, truth or text, or a declared type that is no name standing over one that prints. One
+/// that may be absent is left alone: a read narrowed past its absence prints.
+fn unprintable(engine: QueryEngine, ty: SignedType) -> bool {
+    if ty.dynamic || ty.generic() || ty.inferred() || ty.nulls > 0 { return false }
+    if ty.head is .Declared {
+        let shape? = named_over(engine, ty) else { return true }
+        return unprintable(engine, shape)
+    }
+    if !(ty.head is .Owned) { return false }
+    !(ty.owns(OwnType.Int) || ty.owns(OwnType.Float) || ty.owns(OwnType.Bool) || ty.owns(OwnType.Str))
+}
+
+/// an interpolation hole prints as a scalar or text
+export law hole_prints {
+    kind: "type.interp_hole"
+    on: [NodeKind.ExprBody]
+    judge: unprintable_holes
+    reach: Reach.Typed
+    judged_if: read_cleanly
+    voice: unprintable_words
+    witness: "let xs = [1, 2]\n\"\${xs}\"\n"
+}
+
+fn unprintable_words(a: List<string>) -> Voice { unprintable_hole(a[0]) }

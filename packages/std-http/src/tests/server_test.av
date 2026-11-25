@@ -1,0 +1,310 @@
+//! The server on its own task beside the test: a client on the
+//! loopback writes a request and reads the response, each side parked
+//! while the other runs. Every exchange is exact bytes.
+use @std.http_message.message.{Method}
+use @std.net.{Conn, NetError, listen, connect, timely}
+use @std.time.{Duration, ms, secs, sleep}
+use @std.http.frame.{limits, Limits}
+use @std.http.http.{Request, Unrouted, Response, text}
+use @std.http.route.{Table, routed, compiled, dispatch}
+use @std.http.server.{Server, Timing, served, timing}
+
+grammar Note = "/notes/{id}"
+
+fn serve_note(q: Request<Note>) -> Response {
+    text(200, "note ${q.params.id} redirect:${q.query().has("redirect")}")
+}
+
+once fn notes_table() -> Table {
+    compiled(
+        [routed<Note>(Method.Get, "/notes/{id}", (t: Bytes) -> Note.parse_octets(t), serve_note)],
+    )
+}
+
+/// A handler that is the router: the loop hands it the request, the
+/// table answers.
+fn routed_app(app: App, q: Request<Unrouted>) -> Response {
+    let _ = bumped(app)
+    dispatch(notes_table(), q)
+}
+
+/// The application: a counter every connection shares, so a test can
+/// see the state handlers write across the server.
+type App = { hits: Cell<int> }
+
+/// The counter bumped; answers the new count.
+fn bumped(app: App) -> int {
+    app.hits.set(app.hits.get() + 1)
+    app.hits.get()
+}
+
+fn echo(app: App, q: Request<Unrouted>) -> Response {
+    let n = bumped(app)
+    text(200, "${q.head.method is .Get} ${q.target() ?? "?"} ${q.body.text() ?? "?"} ${n}")
+}
+
+/// A server under test and a client connected to it. A test spawns
+/// `s.run()` and then defers `done()` — in that order, so the server
+/// stops before the block joins its task.
+type Bed = { s: Server<App>, c: Conn }
+
+/// A server running `handle` under `lim` and `t`, with a client
+/// attached — THE ONE BED BUILDER. A suite that spells its own is
+/// testing its own scaffolding beside the server.
+fn bed_with(handle: fn(mut App, Request<Unrouted>) -> Response, lim: Limits, t: Timing) -> Result<
+    Bed,
+    NetError,
+> {
+    let l = listen("127.0.0.1", 0)?
+    let c = connect("127.0.0.1", l.port, secs(2))?
+    .Ok(Bed { s: served(l, () -> App { hits: Cell.new(0) }, lim, t, handle), c: c })
+}
+
+fn bed(t: Timing) -> Result<Bed, NetError> { bed_with(echo, limits(), t) }
+
+impl Bed {
+    /// The client closed and the server stopped.
+    fn done() {
+        let _ = self.c.close()
+        self.s.stop()
+    }
+}
+
+/// How long a test waits for bytes it expects — generous, since a read
+/// answers the moment they land and a loaded machine is slow.
+fn patience() -> Duration { secs(5) }
+
+/// How long silence is listened for before it counts as silence.
+fn quiet() -> Duration { ms(300) }
+
+/// `sent` written whole, then read until `expected` bytes have come,
+/// the peer ends, or `patience()` passes with nothing more.
+fn exchanged_bytes(c: Conn, sent: Bytes, expected: int) -> Result<Bytes, NetError> {
+    c.write(sent)?
+    mut got = "".bytes()
+    mut open = true
+    while open && got.length < expected {
+        match timely(within patience() { c.read(65536) }) {
+            .Ok(b) -> {
+                open = b != null
+                got = got.concat(b ?? "".bytes())
+            },
+            .Err(e) -> {
+                if !e.timed_out() { return .Err(e) }
+                open = false
+            },
+        }
+    }
+    .Ok(got)
+}
+
+fn exchanged(c: Conn, sent: string, expected: int) -> Result<Bytes, NetError> {
+    exchanged_bytes(c, sent.bytes(), expected)
+}
+
+/// `sent` written whole, then `quiet()` listened to: whether nothing
+/// came back.
+fn unanswered(c: Conn, sent: Bytes) -> Result<bool, NetError> {
+    c.write(sent)?
+    match timely(within quiet() { c.read(65536) }) {
+        .Ok(_) -> .Ok(false),
+        .Err(e) -> if e.timed_out() { .Ok(true) } else { .Err(e) },
+    }
+}
+
+fn reply(c: Conn, sent: string) -> Result<string, NetError> {
+    let got = exchanged(c, sent, 1)?
+    .Ok(got.text() ?? "<not text>")
+}
+
+/// Whether the server's open connections fall to `n` within
+/// `patience()` — a close is the server's to notice, on its own task.
+fn settles_to(s: Server<App>, n: int) -> bool {
+    mut waited = 0
+    while s.connections() != n && waited < patience().ms() {
+        sleep(ms(5))
+        waited = waited + 5
+    }
+    s.connections() == n
+}
+
+fn get_root() -> Result<bool, NetError> {
+    let b = bed(timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let r = reply(b.c, "GET /x HTTP/1.1\r\nHost: a\r\n\r\n")?
+    .Ok(
+        undated(r) == "HTTP/1.1 200 OK\r\ncontent-type: text/plain; charset=utf-8\r\ncontent-length: 10\r\n\r\ntrue /x  1",
+    )
+}
+
+fn keep_alive_twice() -> Result<bool, NetError> {
+    let b = bed(timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let first = reply(b.c, "GET /a HTTP/1.1\r\nHost: a\r\n\r\n")?
+    let second = reply(b.c, "GET /b HTTP/1.1\r\nHost: a\r\n\r\n")?
+    .Ok(first.ends_with("true /a  1") && second.ends_with("true /b  2") && b.s.connections() == 1)
+}
+
+fn pipelined() -> Result<bool, NetError> {
+    let b = bed(timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let both = exchanged(
+        b.c,
+        "GET /a HTTP/1.1\r\nHost: a\r\n\r\nGET /b HTTP/1.1\r\nHost: a\r\n\r\n",
+        200,
+    )?
+    let t = both.text() ?? ""
+    .Ok(t.index_of("true /a  1") < t.index_of("true /b  2") && t.index_of("true /b  2") > 0)
+}
+
+fn posted() -> Result<bool, NetError> {
+    let b = bed(timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let r = reply(b.c, "POST /p HTTP/1.1\r\nHost: a\r\nContent-Length: 5\r\n\r\nhello")?
+    .Ok(r.ends_with("false /p hello 1"))
+}
+
+fn body_in_two_reads() -> Result<bool, NetError> {
+    let b = bed(timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let silent = unanswered(
+        b.c,
+        "POST /p HTTP/1.1\r\nHost: a\r\nContent-Length: 5\r\n\r\nhel".bytes(),
+    )?
+    let rest = reply(b.c, "lo")?
+    .Ok(silent && rest.ends_with("false /p hello 1"))
+}
+
+fn chunked_body() -> Result<bool, NetError> {
+    let b = bed(timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let r = reply(
+        b.c,
+        "POST /c HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nhel\r\n2\r\nlo\r\n0\r\n\r\n",
+    )?
+    .Ok(r.ends_with("false /c hello 1"))
+}
+
+fn refused_then_closed() -> Result<bool, NetError> {
+    let b = bed(timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let got = exchanged(b.c, "GET  /x HTTP/1.1\r\nHost: a\r\n\r\n", 1000)?
+    let t = got.text() ?? ""
+    .Ok(
+        t.starts_with("HTTP/1.1 400 Bad Request\r\n") &&
+            t.contains("connection: close\r\n") &&
+            settles_to(b.s, 0),
+    )
+}
+
+fn head_carries_no_body() -> Result<bool, NetError> {
+    let b = bed(timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let r = reply(b.c, "HEAD /h HTTP/1.1\r\nHost: a\r\n\r\n")?
+    .Ok(r.ends_with("content-length: 11\r\n\r\n"))
+}
+
+fn expect_continue() -> Result<bool, NetError> {
+    let b = bed(timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let first = reply(
+        b.c,
+        "POST /e HTTP/1.1\r\nHost: a\r\nContent-Length: 2\r\nExpect: 100-continue\r\n\r\n",
+    )?
+    let second = reply(b.c, "ok")?
+    .Ok(first == "HTTP/1.1 100 Continue\r\n\r\n" && second.ends_with("false /e ok 1"))
+}
+
+fn closes_when_asked() -> Result<bool, NetError> {
+    let b = bed(timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let got = exchanged(b.c, "GET /x HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n", 1000)?
+    let t = got.text() ?? ""
+    .Ok(t.contains("connection: close\r\n") && settles_to(b.s, 0))
+}
+
+fn idle_is_dropped() -> Result<bool, NetError> {
+    let b = bed(Timing { idle: ms(20) })?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let _ = reply(b.c, "GET /x HTTP/1.1\r\nHost: a\r\n\r\n")?
+    let before = b.s.connections()
+    let _ = exchanged(b.c, "", 1)?
+    .Ok(before == 1 && settles_to(b.s, 0))
+}
+
+fn peer_ends_first() -> Result<bool, NetError> {
+    let b = bed(timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let _ = b.c.write("GET /x HTTP/1.1\r\nHost: a\r\n\r\n".bytes())?
+    let _ = b.c.shutdown_write()?
+    let got = exchanged(b.c, "", 1000)?
+    .Ok((got.text() ?? "").ends_with("true /x  1") && settles_to(b.s, 0))
+}
+
+fn old_client_keeps_alive() -> Result<bool, NetError> {
+    let b = bed(timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let r = reply(b.c, "GET /k HTTP/1.0\r\nHost: a\r\nConnection: keep-alive\r\n\r\n")?
+    .Ok(r.contains("connection: keep-alive\r\n") && b.s.connections() == 1)
+}
+
+fn old_client_is_closed() -> Result<bool, NetError> {
+    let b = bed(timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let got = exchanged(b.c, "GET /c HTTP/1.0\r\nHost: a\r\n\r\n", 1000)?
+    .Ok((got.text() ?? "").contains("connection: close\r\n") && settles_to(b.s, 0))
+}
+
+/// The loop under the router: a target with a query holding a `/`
+/// still finds its route, and the query is read beside the path.
+fn routed_through_the_loop() -> Result<bool, NetError> {
+    let b = bed_with(routed_app, limits(), timing())?
+    spawn b.s.run(cores: 1)
+    defer b.done()
+    let found = reply(b.c, "GET /notes/7?redirect=/home HTTP/1.1\r\nHost: a\r\n\r\n")?
+    let missing = reply(b.c, "GET /nope HTTP/1.1\r\nHost: a\r\n\r\n")?
+    .Ok(found.ends_with("note 7 redirect:true") && missing.starts_with("HTTP/1.1 404 Not Found"))
+}
+
+/// A verdict's bool, or false when the exchange itself failed.
+fn passes<E>(r: Result<bool, E>) -> bool {
+    match r { .Ok(b) -> b, .Err(_) -> false }
+}
+
+spec "std.http server" {
+    given "one request" {
+        then "a GET is answered exactly, and the handler saw its state" { passes(get_root()) }
+        then "a POST's body arrives whole" { passes(posted()) }
+        then "a body split across reads is gathered before the handler runs" { passes(body_in_two_reads()) }
+        then "a chunked body is decoded before the handler runs" { passes(chunked_body()) }
+        then "a HEAD carries the body's length and none of its bytes" { passes(head_carries_no_body()) }
+        then "100 Continue is written before the body is sent" { passes(expect_continue()) }
+    }
+    given "a connection's life" {
+        then "two requests ride one connection and the state counts both" { passes(keep_alive_twice()) }
+        then "two pipelined requests are answered in order" { passes(pipelined()) }
+        then "a refused head is answered 400 and the connection closed" { passes(refused_then_closed()) }
+        then "connection: close is honoured" { passes(closes_when_asked()) }
+        then "an idle connection is dropped at its deadline" { passes(idle_is_dropped()) }
+        then "a peer that ends first still gets its answer" { passes(peer_ends_first()) }
+        then "an HTTP/1.0 peer asking to keep alive is told the connection persists" { passes(old_client_keeps_alive()) }
+        then "an HTTP/1.0 peer not asking is told close, and closed" { passes(old_client_is_closed()) }
+    }
+    given "the router in the loop" {
+        then "a target with a slash inside its query still finds its route, and the query reads beside the path" { passes(routed_through_the_loop()) }
+    }
+}

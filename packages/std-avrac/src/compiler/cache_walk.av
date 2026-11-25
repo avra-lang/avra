@@ -1,0 +1,90 @@
+//! THE CACHE, WALKED (P7, P12): every form of `avra explain` is a fold here
+//! over the graph as the compiler's `Db` reads it — a cell by its key, the
+//! cells by family, an edge by its reader, an edge by what it reads
+//! (compiler/db.av). Nothing here reaches past those four. Two derivations
+//! feed them, never alive together: `--why`'s hold, judged against the kept
+//! `KeyParts` and let go, and the program analysed with nothing held, whose
+//! kernel is the graph. Nothing here runs in a check, and nothing here
+//! keeps: the walk inspects (`inspecting`), so its store sets every write
+//! aside and a second walk answers what the first did.
+use core.{FileId, ModuleId, DeclId, reversed, sorted_by, sorted_texts, some_list}
+use @std.text.{text_before}
+use @std.path.{relative_path, joined_path, normalized}
+use @std.text.{parse_int}
+use compiler.families.{Family}
+use compiler.host.{InputName, InputKind}
+use compiler.store.{Traffic}
+use features.{Decl}
+use @std.relation.engine.{Key, same_key, no_key_marks}
+
+/// An answer as a person reads it, with its digest — none for an answer the
+/// kernel never digested.
+export type Digested = { label: string, digest: int? }
+
+/// A moved input and the answers it reaches, cited in label order.
+export type Changed = { input: string, answers: List<Digested> }
+
+/// One family's answers, counted: its cells, the reads they recorded, and how
+/// long one cell's list of reads runs — the median, the ninety-ninth in a
+/// hundred, the longest.
+export type FamilyCount = { family: string, cells: int, edges: int, served: int, computed: int, ns: int, p50: int, p99: int, longest: int }
+
+/// What a target names, by its spelling alone: the whole package, a file,
+/// a declaration by `name` or `Owner.name`, or an answer by its label,
+/// `Family(subject)`.
+export enum Subject {
+    Package
+    File(at: string)
+    Decl(name: string)
+    Query(label: string)
+}
+
+/// Every family holding an answer, counted, and their cells and edges in all.
+export type Counted = { families: List<FamilyCount>, cells: int, edges: int }
+
+/// A family by its word — a relation's minted family by its place.
+
+/// One query met going down from a root, and where in the walk the query
+/// that first read it stands (none for the root).
+export type Reached = { key: Key, by: int? }
+
+/// A query no walk has met.
+const UNMET: int = 0
+
+/// A query a walk has met.
+const MET: int = 1
+
+/// `root`, then every key `next` reaches from it at any depth, breadth first,
+/// each once, with where the key that first reached it stands.
+fn reached(root: Key, next: fn(Key) -> List<Key>) -> List<Reached> {
+    let seen = no_key_marks()
+    seen.mark(root, MET)
+    mut out = [Reached { key: root, by: null }]
+    mut at = 0
+    while at < out.length {
+        for d in next(out[at].key) {
+            if seen.mark_of(d) == UNMET {
+                seen.mark(d, MET)
+                out.push(Reached { key: d, by: at })
+            }
+        }
+        at = at + 1
+    }
+    out
+}
+
+fn total(ns: List<int>) -> int {
+    mut sum = 0
+    for n in ns { sum = sum + n }
+    sum
+}
+
+/// A module by its name, the root's empty one spelled out.
+fn module_shown(name: string) -> string { if name == "" { ROOT_MODULE } else { name } }
+
+/// The module a shown name names.
+fn module_named(shown: string) -> string { if shown == ROOT_MODULE { "" } else { shown } }
+
+// The words a label is spelled with, one spelling for the label and its reading.
+
+const ROOT_MODULE: string = "the root module"

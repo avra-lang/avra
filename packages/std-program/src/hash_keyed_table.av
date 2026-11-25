@@ -1,0 +1,375 @@
+//! A TABLE KEYED BY CONTENT HASH, or by any two words: a key's words, mixed, pick the slot its
+//! search starts at, and no text is made. Open addressing over a power-of-two list of slots, never
+//! more than half full. Values keep the order they were first put in. An identity: every
+//! holder sees one table.
+use answer_record.{AnswerRecord, ContentHash, PartSeen, RecordedRead}
+use @std.meta.{identity}
+
+/// The slots a table starts with when its first key arrives.
+const FIRST_SLOT_COUNT: int = 8
+
+@identity
+export type HashKeyedTable<T> = {
+    high_words: Cell<List<int>>,
+    low_words: Cell<List<int>>,
+    held_values: Cell<List<T>>,
+    /// Each slot holds one more than a key's position, or zero when it's free.
+    slots: Cell<List<int>>,
+}
+
+export fn hash_keyed_table<T>() -> HashKeyedTable<T> {
+    let high_words: Cell<List<int>> = Cell.new([])
+    let low_words: Cell<List<int>> = Cell.new([])
+    let held_values: Cell<List<T>> = Cell.new([])
+    let slots: Cell<List<int>> = Cell.new([])
+    HashKeyedTable {
+        high_words: high_words,
+        low_words: low_words,
+        held_values: held_values,
+        slots: slots,
+    }
+}
+
+impl HashKeyedTable<T> {
+    /// The value under `key`, absent when there's none.
+    fn get(key: ContentHash) -> T? { self.get_at(key.high_word, key.low_word) }
+
+    /// `value` under `key`. A key already here keeps its place.
+    fn put(key: ContentHash, value: T) { self.put_at(key.high_word, key.low_word, value) }
+
+    /// The value under the key of these two words, absent when there's none.
+    fn get_at(high_word: int, low_word: int) -> T? {
+        let position? = self.position_at(high_word, low_word) else { return null }
+        self.held_values.get()[position]
+    }
+
+    /// `value` under the key of these two words. A key already here keeps its place.
+    fn put_at(high_word: int, low_word: int, value: T) {
+        match self.position_at(high_word, low_word) {
+            position? -> { self.held_values.set_at(position, value) }
+            null -> { self.added(high_word, low_word, value) }
+        }
+    }
+
+    /// `value` under `key` where no value is yet, saying whether it was put: one look at the table
+    /// where `get` and `put` would make two.
+    fn first_put(key: ContentHash, value: T) -> bool {
+        if self.position_at(key.high_word, key.low_word) != null { return false }
+        self.added(key.high_word, key.low_word, value)
+        true
+    }
+
+    /// Every value, in the order its key first arrived.
+    fn values() -> List<T> { self.held_values.get() }
+
+    fn is_empty() -> bool { self.high_words.get().is_empty() }
+
+    /// Only the values `keep` answers true for, each under its key, in the order they arrived.
+    fn keep_only(keep: fn(T) -> bool) {
+        let highs = self.high_words.get()
+        let lows = self.low_words.get()
+        let values = self.held_values.get()
+        let kept = [at for at in 0..values.length if keep(values[at])]
+        let kept_highs = [highs[at] for at in kept]
+        let kept_lows = [lows[at] for at in kept]
+        self.held_values.set([values[at] for at in kept])
+        self.high_words.set(kept_highs)
+        self.low_words.set(kept_lows)
+        self
+            .slots
+            .set(
+                if kept.is_empty() { [] } else { slots_holding(kept_highs, kept_lows, slot_count_for(kept.length)) },
+            )
+    }
+
+    /// Nothing under any key.
+    fn clear() {
+        self.high_words.set([])
+        self.low_words.set([])
+        self.held_values.set([])
+        self.slots.set([])
+    }
+
+    /// Where the key of these two words sits, absent when it's not here. A free slot ends the search.
+    fn position_at(high_word: int, low_word: int) -> int? {
+        let start = slot_of(high_word, low_word)
+        let slots = self.slots.get()
+        if slots.is_empty() { return null }
+        let highs = self.high_words.get()
+        let lows = self.low_words.get()
+        mut slot = start & slots.length - 1
+        while slots[slot] != 0 {
+            let position = slots[slot] - 1
+            if highs[position] == high_word && lows[position] == low_word { return position }
+            slot = slot + 1 & slots.length - 1
+        }
+        null
+    }
+
+    /// How many slots a search for `key` steps past before it ends, found or not: what a search
+    /// costs beyond its first slot, nought in an empty table.
+    fn steps_to(key: ContentHash) -> int {
+        let start = slot_of(key.high_word, key.low_word)
+        let slots = self.slots.get()
+        if slots.is_empty() { return 0 }
+        let highs = self.high_words.get()
+        let lows = self.low_words.get()
+        mut slot = start & slots.length - 1
+        mut steps = 0
+        while slots[slot] != 0 {
+            let position = slots[slot] - 1
+            if highs[position] == key.high_word && lows[position] == key.low_word { return steps }
+            slot = slot + 1 & slots.length - 1
+            steps = steps + 1
+        }
+        steps
+    }
+
+    /// A key that isn't here yet, added.
+    fn added(high_word: int, low_word: int, value: T) {
+        let position = self.high_words.get().length
+        if (position + 1) * 2 > self.slots.get().length {
+            self
+                .slots
+                .set(
+                    slots_holding(
+                        self.high_words.get(),
+                        self.low_words.get(),
+                        slot_count_after(self.slots.get().length),
+                    ),
+                )
+        }
+        self.slots.set_at(free_slot(self.slots.get(), high_word, low_word), position + 1)
+        self.high_words.push(high_word)
+        self.low_words.push(low_word)
+        self.held_values.push(value)
+    }
+}
+
+fn slot_count_after(count: int) -> int { if count == 0 { FIRST_SLOT_COUNT } else { count * 2 } }
+
+/// The fewest slots that hold `keys` keys at most half full.
+fn slot_count_for(keys: int) -> int {
+    mut count = FIRST_SLOT_COUNT
+    while (keys + 1) * 2 > count { count = count * 2 }
+    count
+}
+
+/// The first free slot from where `low_word` lands.
+fn free_slot(slots: List<int>, high_word: int, low_word: int) -> int {
+    mut slot = slot_of(high_word, low_word) & slots.length - 1
+    while slots[slot] != 0 { slot = slot + 1 & slots.length - 1 }
+    slot
+}
+
+/// `slot_count` slots holding every key so far.
+fn slots_holding(high_words: List<int>, low_words: List<int>, slot_count: int) -> List<int> {
+    mut slots = [0 for _slot in 0..slot_count]
+    for position, low_word in low_words { slots[free_slot(slots, high_words[position], low_word)] = position + 1 }
+    slots
+}
+
+/// WHERE A KEY'S SEARCH STARTS, ITS WORDS MIXED: a table probes on from the slot a key's low bits
+/// name, so keys whose low bits run on — places, ids, any number counted up — would fill one run of
+/// slots and send every miss landing in it to the run's end, a search as long as the run. Both
+/// words are folded, times an odd number, and the high bits brought down, so a run of keys lands
+/// apart and keys differing only in their high bits do too. Only the start of a search: the slot is
+/// in memory, never written.
+fn slot_of(high_word: int, low_word: int) -> int {
+    let mixed = (low_word ^ high_word.wrapping_mul(SLOT_FOLD)).wrapping_mul(SLOT_SPREAD)
+    mixed ^ (mixed >> 29)
+}
+
+/// The odd numbers `slot_of` multiplies by: the golden ratio's and another's, in 64 bits.
+const SLOT_SPREAD: int = -7046029254386353131
+const SLOT_FOLD: int = -4658895280553007687
+
+/// THE READS A QUESTION MAKES, AS COLUMNS: a read is its key's two words, the two words of the whole
+/// answer it saw, and for a part read its question and the part's name and hash beside them; no read
+/// is a record until one is asked for. Keyed as a `HashKeyedTable` is.
+@identity
+export type ReadTable = {
+    key_highs: Cell<List<int>>,
+    key_lows: Cell<List<int>>,
+    answer_highs: Cell<List<int>>,
+    answer_lows: Cell<List<int>>,
+    /// Where a part read's six words start among `part_words` — its question's, then its part's
+    /// name's and hash's; -1 for a whole read.
+    part_at: Cell<List<int>>,
+    part_words: Cell<List<int>>,
+    /// Each slot holds one more than a row, or zero when it's free.
+    slots: Cell<List<int>>,
+}
+
+export fn read_table() -> ReadTable {
+    let key_highs: Cell<List<int>> = Cell.new([])
+    let key_lows: Cell<List<int>> = Cell.new([])
+    let answer_highs: Cell<List<int>> = Cell.new([])
+    let answer_lows: Cell<List<int>> = Cell.new([])
+    let part_at: Cell<List<int>> = Cell.new([])
+    let part_words: Cell<List<int>> = Cell.new([])
+    let slots: Cell<List<int>> = Cell.new([])
+    ReadTable {
+        key_highs: key_highs,
+        key_lows: key_lows,
+        answer_highs: answer_highs,
+        answer_lows: answer_lows,
+        part_at: part_at,
+        part_words: part_words,
+        slots: slots,
+    }
+}
+
+impl ReadTable {
+    /// A read of the whole answer `answer` to the question known as `question`; one here already under
+    /// that question is this read after.
+    fn whole(question: ContentHash, answer: ContentHash) {
+        let row? = self.row_at(question.high_word, question.low_word) else {
+            return self.added(question.high_word, question.low_word, answer, -1)
+        }
+        self.answer_highs.set_at(row, answer.high_word)
+        self.answer_lows.set_at(row, answer.low_word)
+        self.part_at.set_at(row, -1)
+    }
+
+    /// `read`, kept under its key; one here already under that key is `read` after.
+    fn put(read: RecordedRead) {
+        let part? = read.part else { return self.whole(read.question, read.whole_answer) }
+        let key = read.read_key()
+        let at = self.part_words.get().length
+        self.part_words.push(read.question.high_word)
+        self.part_words.push(read.question.low_word)
+        self.part_words.push(part.part_name.high_word)
+        self.part_words.push(part.part_name.low_word)
+        self.part_words.push(part.part_hash.high_word)
+        self.part_words.push(part.part_hash.low_word)
+        let row? = self.row_at(key.high_word, key.low_word) else {
+            return self.added(key.high_word, key.low_word, read.whole_answer, at)
+        }
+        self.answer_highs.set_at(row, read.whole_answer.high_word)
+        self.answer_lows.set_at(row, read.whole_answer.low_word)
+        self.part_at.set_at(row, at)
+    }
+
+    /// The read kept under `key`, made a record; absent when there's none.
+    fn get(key: ContentHash) -> RecordedRead? {
+        let row? = self.row_at(key.high_word, key.low_word) else { return null }
+        self.read_at(row)
+    }
+
+    /// Every read, made records, in the order its key first arrived.
+    fn values() -> List<RecordedRead> { [self.read_at(row) for row in 0..self.key_highs.get().length] }
+
+    /// The question words of every read, two a read, in the order its key first arrived.
+    fn question_words() -> List<int> {
+        let parts = self.part_at.get()
+        let words = self.part_words.get()
+        let highs = self.key_highs.get()
+        let lows = self.key_lows.get()
+        mut out: List<int> = []
+        for row, at in parts {
+            out.push(if at < 0 { highs[row] } else { words[at] })
+            out.push(if at < 0 { lows[row] } else { words[at + 1] })
+        }
+        out
+    }
+
+    /// The record of `answer`, worked out with these reads: the whole reads' words, then the part
+    /// reads', as `answer_record` lays them.
+    fn record_of(answer: ContentHash) -> AnswerRecord {
+        let parts = self.part_at.get()
+        let words = self.part_words.get()
+        let highs = self.key_highs.get()
+        let lows = self.key_lows.get()
+        let answer_highs = self.answer_highs.get()
+        let answer_lows = self.answer_lows.get()
+        mut whole: List<int> = []
+        mut parted: List<int> = []
+        for row, at in parts {
+            if at < 0 {
+                whole.push(highs[row])
+                whole.push(lows[row])
+                whole.push(answer_highs[row])
+                whole.push(answer_lows[row])
+            } else {
+                parted.push(words[at])
+                parted.push(words[at + 1])
+                parted.push(answer_highs[row])
+                parted.push(answer_lows[row])
+                parted.push(words[at + 2])
+                parted.push(words[at + 3])
+                parted.push(words[at + 4])
+                parted.push(words[at + 5])
+            }
+        }
+        AnswerRecord { answer: answer, whole_reads: whole, part_reads: parted }
+    }
+
+    fn is_empty() -> bool { self.key_highs.get().is_empty() }
+
+    /// The read at `row`, made a record.
+    fn read_at(row: int) -> RecordedRead {
+        let at = self.part_at.get()[row]
+        let answer = ContentHash {
+            high_word: self.answer_highs.get()[row],
+            low_word: self.answer_lows.get()[row],
+        }
+        if at < 0 {
+            return RecordedRead {
+                question: ContentHash {
+                    high_word: self.key_highs.get()[row],
+                    low_word: self.key_lows.get()[row],
+                },
+                whole_answer: answer,
+                part: null,
+            }
+        }
+        let words = self.part_words.get()
+        RecordedRead {
+            question: ContentHash { high_word: words[at], low_word: words[at + 1] },
+            whole_answer: answer,
+            part: PartSeen {
+                part_name: ContentHash { high_word: words[at + 2], low_word: words[at + 3] },
+                part_hash: ContentHash { high_word: words[at + 4], low_word: words[at + 5] },
+            },
+        }
+    }
+
+    /// Where the key of these two words sits, absent when it's not here. A free slot ends the search.
+    fn row_at(high_word: int, low_word: int) -> int? {
+        let start = slot_of(high_word, low_word)
+        let slots = self.slots.get()
+        if slots.is_empty() { return null }
+        let highs = self.key_highs.get()
+        let lows = self.key_lows.get()
+        mut slot = start & slots.length - 1
+        while slots[slot] != 0 {
+            let row = slots[slot] - 1
+            if highs[row] == high_word && lows[row] == low_word { return row }
+            slot = slot + 1 & slots.length - 1
+        }
+        null
+    }
+
+    /// A key that isn't here yet, added with the answer its read saw and where its part words start.
+    fn added(high_word: int, low_word: int, answer: ContentHash, part: int) {
+        let row = self.key_highs.get().length
+        if (row + 1) * 2 > self.slots.get().length {
+            self
+                .slots
+                .set(
+                    slots_holding(
+                        self.key_highs.get(),
+                        self.key_lows.get(),
+                        slot_count_after(self.slots.get().length),
+                    ),
+                )
+        }
+        self.slots.set_at(free_slot(self.slots.get(), high_word, low_word), row + 1)
+        self.key_highs.push(high_word)
+        self.key_lows.push(low_word)
+        self.answer_highs.push(answer.high_word)
+        self.answer_lows.push(answer.low_word)
+        self.part_at.push(part)
+    }
+}

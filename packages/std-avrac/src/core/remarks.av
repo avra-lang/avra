@@ -1,0 +1,177 @@
+//! MISSED-OPTIMIZATION REMARKS: where a representation technique a site is a candidate for declines,
+//! the lowering notes what it met there (`NodeMet.Declined`): the technique, why, and the node — as
+//! `-Rpass-missed` does. Noted only where a lowering is handed notes, as `cost_remarks` hands them; a
+//! build's own lowering holds none, so its answers never move with them. Each reason is a variant of
+//! its technique's own decline, its words the voice below renders.
+use @std.meta.{derive}
+use @std.program.saved_derive.{Saved}
+
+/// Why a deferred call kept its closure box, where its body is a call.
+@derive(Saved)
+export enum DeferDecline {
+    /// The body is no single call of a declared fn or method.
+    NotOneCall
+    /// The callee writes a seat or its receiver, which a copy taken at the `defer` must absorb.
+    CalleeWrites
+    /// An operand holds a counted reference, which holding at the `defer` would keep alive.
+    OperandCounted
+    /// An operand is computed, not a literal or a name, so it is read where the box is made.
+    OperandComputed
+    /// An operand is a `state` local, shared rather than copied.
+    OperandShared
+}
+
+/// Why a map write probed again rather than storing at the probe its value's read found.
+@derive(Saved)
+export enum ProbeDecline {
+    /// The place is no path of fields from a name the body binds: an index, an unwrap, a `state`
+    /// field or a capture stands on it, which code that never names it may move.
+    PlaceShared
+    /// The value names the place's root again, beside the read.
+    RootNamedAgain
+    /// The value names the key again, beside the read.
+    KeyNamedAgain
+    /// The read's root or key is bound otherwise where it stands than where the write found it.
+    ReadRebound
+}
+
+/// Why a call of a fn with `const` seats ran the fn's one unit rather than one per settled value.
+@derive(Saved)
+export enum SettleDecline {
+    /// The fn is a method, whose units a dispatch reaches.
+    Method
+    /// The call names or spreads an argument.
+    NamedOrSpread
+    /// The call leaves a seat to its default.
+    Defaulted
+    /// An argument at a `const` seat settles to no literal: an aggregate, or a const that settled to
+    /// data.
+    NotLiteral
+}
+
+/// Why a seat a body keeps whole on every path is not consumed, so its caller retains across the
+/// call.
+@derive(Saved)
+export enum ConsumeDecline {
+    /// The fn is a method, whose receiver or impl a dispatch may stand between.
+    Method
+    /// The host calls it, unaware of what it consumes.
+    Hosted
+    /// It is a `once` fn or a case.
+    OnceOrCase
+    /// The seat promises something a consumed one can't: `mut`, `const`, `state`, isolated, spread or
+    /// rest.
+    SeatPromises
+}
+
+/// Why a call through a `dyn` box stayed indirect.
+@derive(Saved)
+export enum DynDecline {
+    /// No pass yet learns which types reach the box, so every table's code may answer.
+    TargetsUnknown
+}
+
+/// Why a list of scalars or flat values was made a box a slot.
+@derive(Saved)
+export enum PackDecline {
+    /// The element is a nullable scalar, a presence beside its word.
+    NullableScalar
+    /// The element is a flat record of scalars, a strided list's candidate.
+    FlatRecord
+    /// The element is an enum whose variants carry payloads.
+    CarryingEnum
+}
+
+/// A technique declined, and why.
+@derive(Saved)
+export enum Declined {
+    Defer(why: DeferDecline)
+    Probe(why: ProbeDecline)
+    Settle(why: SettleDecline)
+    Consume(why: ConsumeDecline)
+    Dyn(why: DynDecline)
+    Pack(why: PackDecline)
+}
+
+/// A site where a technique declined, as `cost_remarks` answers it: why, and where in the body's file
+/// it stands.
+@derive(Saved)
+export type CostRemark = { declined: Declined, lo: int, hi: int }
+
+impl Declined {
+    /// The technique, as the registry (docs/ZERO_COST.md) names it.
+    fn technique() -> string {
+        match self {
+            .Defer(_) -> "deferred call in place",
+            .Probe(_) -> "map write at its read's probe",
+            .Settle(_) -> "a unit per settled value",
+            .Consume(_) -> "move at last use (consumed seats)",
+            .Dyn(_) -> "devirtualization",
+            .Pack(_) -> "packed lists",
+        }
+    }
+
+    /// Why it declined, in words.
+    fn words() -> string {
+        match self {
+            .Defer(why) -> match why {
+                .NotOneCall -> "the deferred body is no single call, so it keeps its closure box",
+                .CalleeWrites -> "the callee writes what it is handed, so the call runs on the box's copy",
+                .OperandCounted -> "an operand holds a counted reference, which holding at the `defer` would keep alive",
+                .OperandComputed -> "an operand is computed, so it is read where the box is made",
+                .OperandShared -> "an operand is a `state` local, shared rather than copied",
+            },
+            .Probe(why) -> match why {
+                .PlaceShared -> "the place stands where code that never names it can move it",
+                .RootNamedAgain -> "the value names the map again, which may move it before the write",
+                .KeyNamedAgain -> "the value names the key again, which may move it before the write",
+                .ReadRebound -> "the read's map or key is bound otherwise where it stands",
+            },
+            .Settle(why) -> match why {
+                .Method -> "the fn is a method, whose units a dispatch reaches",
+                .NamedOrSpread -> "the call names or spreads an argument",
+                .Defaulted -> "the call leaves a seat to its default",
+                .NotLiteral -> "an argument at a `const` seat settles to no literal",
+            },
+            .Consume(why) -> match why {
+                .Method -> "the fn is a method, whose receiver or impl a dispatch may stand between",
+                .Hosted -> "the host calls it, unaware of what it consumes",
+                .OnceOrCase -> "it is a `once` fn or a case",
+                .SeatPromises -> "the seat promises `mut`, `const`, `state`, isolation, a spread or a rest",
+            },
+            .Dyn(why) -> match why {
+                .TargetsUnknown -> "no pass learns which types reach the box, so the call reads its code from the table",
+            },
+            .Pack(why) -> match why {
+                .NullableScalar -> "the element is a nullable scalar, a presence beside its word",
+                .FlatRecord -> "the element is a flat record, a box a slot until strided lists land",
+                .CarryingEnum -> "the element is an enum whose variants carry payloads",
+            },
+        }
+    }
+}
+
+impl Lowering {
+    /// `why` a technique the node `e` is a candidate for declined, noted where a law or a reader of
+    /// remarks asks: at `e` where it is written, else at the written node this lowering stands in.
+    fn declined(e: ExprId, why: Declined) {
+        let notes? = self.program.notes else { return }
+        let at = if e.index < notes.written { e.index } else { notes.at.get() }
+        if at >= 0 { notes.met.push(NodeMet.Declined(at, why)) }
+    }
+}
+
+/// A body's cost remarks, as one answer.
+@derive(Saved)
+export type CostRemarks = { remarks: List<CostRemark> }
+
+/// The remark the note `m` is, at its node's span in `store`; absent for a note of anything else.
+export fn remark_of(store: SyntaxArena, m: NodeMet) -> CostRemark? {
+    match m {
+        .Declined(node, why) -> {
+            let span = store.expr_span(ExprId { index: node })
+            CostRemark { declined: why, lo: span?.lo ?? 0, hi: span?.hi ?? 0 }
+        },
+        rest -> null,
+    }
+}

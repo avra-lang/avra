@@ -1,0 +1,56 @@
+// proves: a cell's writes file its key once per turn, in first-write order, alike in both engines — an empty log, a re-armed turn, an unwatched cell and twenty thousand takes
+extern fn avra_box_observe(box: Cell<int>) -> int
+extern fn avra_box_unobserve(box: Cell<int>) -> int
+extern fn avra_box_key(box: Cell<int>) -> int
+extern fn avra_turn_next() -> int
+extern fn avra_changes_take() -> List<int>
+
+fn taken() -> List<int> {
+    avra_changes_take()
+}
+
+fn only(keys: List<int>, k: int) -> bool {
+    keys.length == 1 && keys[0] == k
+}
+
+fn pair_of(keys: List<int>, first: int, second: int) -> bool {
+    keys.length == 2 && keys[0] == first && keys[1] == second
+}
+
+fn turn() -> List<int> {
+    let _ = avra_turn_next()
+    taken()
+}
+
+let a = Cell.new(0)
+let b = Cell.new(0)
+let loose = Cell.new(0)
+let _ = avra_box_observe(a)
+let _ = avra_box_observe(b)
+println("the empty log ${taken().length}")
+b.set(1)
+loose.set(1)
+a.set(1)
+b.set(2)
+println(
+    "cells written, one twice and one unwatched ${pair_of(taken(), avra_box_key(b), avra_box_key(a))}",
+)
+println("a take empties the log ${taken().length}")
+a.set(3)
+println("a second write in a turn files nothing ${taken().length} ${a.get()}")
+let _ = avra_turn_next()
+a.set(4)
+println("a written cell files once a turn ${only(taken(), avra_box_key(a))}")
+let _ = avra_box_unobserve(a)
+let _ = avra_turn_next()
+a.set(5)
+println("an unwatched cell files nothing ${taken().length}")
+println(
+    "keys are nonzero and distinct ${avra_box_key(b) != 0 && avra_box_key(a) != avra_box_key(b)}",
+)
+mut total = 0
+for n in 0..20000 {
+    b.set(n)
+    total = total + turn().length
+}
+println("twenty thousand turns of one write each ${total}")

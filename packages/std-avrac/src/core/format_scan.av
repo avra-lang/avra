@@ -1,0 +1,275 @@
+//! A FORMAT PATTERN'S SCAN: one anchored left-to-right pass over the subject's octets — the head a
+//! prefix, the last piece a suffix, and each piece between them found at its first place at or past
+//! the cursor, or its last where its hole is greedy. Nothing goes back, so the scan is linear in the
+//! subject, and a greedy hole may fail where its lazy twin would take: the place it took can leave a
+//! later piece unfound. Each step runs only where every step before it held, which keeps a cursor
+//! past the end from the search, whose start must stand inside. Each hole's span lands in cells the
+//! steps write; a value is cut from them only where an arm binds it. A hole that reads as an `int`,
+//! or as a type that crosses text, reads its span once every span is found, still inside the
+//! verdict: a span that spells no `int`, or that the type's `from_text_form` answers absence for,
+//! fails the scan, as a missing piece does, and the value lands in the hole's own cell.
+
+/// A format's scan over a subject: whether it took it, the octets it read, the cells holding each
+/// hole's span, its start then its end, in hole order, and a cell per hole for the `int` a hole that
+/// reads as one read.
+export type FormatScan = { ok: Reg, octets: Reg, spans: List<Reg>, reads: List<Reg> }
+
+impl Lowering {
+    /// The scan of `v`, octets where `bytes` and text otherwise, by the format whose head is `head`
+    /// and whose holes, each with the piece after it, are `parts`.
+    mut fn format_scanned(v: Reg, bytes: bool, head: string, parts: List<FormatPart>) -> FormatScan {
+        let octets = if bytes { v } else { self.call_row(Layout.Boxed(BoxKind.Bytes), rt_sig_of("avra_bytes_of_str")!, [v]) }
+        let len = self.call_row(Layout.Word, rt_sig_of("avra_bytes_len")!, [octets])
+        let spans = flatten(
+            [[
+                self.seeded_cell(Layout.Word, self.const_int(0)),
+                self.seeded_cell(Layout.Word, self.const_int(0)),
+            ] for _p in parts],
+        )
+        let last? = parts.last() else {
+            return FormatScan {
+                ok: self.format_whole(octets, len, head),
+                octets: octets,
+                spans: [],
+                reads: [],
+            }
+        }
+        let stop = self
+            .seeded_cell(
+                Layout.Word,
+                self.bin(Layout.Word, BinOp.Sub, len, self.const_int(octet_count(last.piece))),
+            )
+        let cur = self.seeded_cell(Layout.Word, self.const_int(octet_count(head)))
+        let s = FormatScan {
+            ok: self.format_anchored(octets, len, head, last.piece),
+            octets: octets,
+            spans: spans,
+            reads: [self.read_cell(self.hole_read_as(p.hole)) for p in parts],
+        }
+        self.format_read(v, bytes, self.format_spanned(s, parts, cur, stop, 0), parts, 0)
+    }
+
+    /// What each hole that binds holds once the scan `s` of `v` took it, in hole order: its span cut,
+    /// as octets where `bytes` and as text otherwise.
+    mut fn format_cut(v: Reg, bytes: bool, s: FormatScan, parts: List<FormatPart>) -> List<Reg> {
+        [self.hole_cut(v, bytes, s, k, self.hole_read_as(p.hole)) for k, p in parts if binds(p.hole)]
+    }
+
+    /// What hole `k` of the scan `s` of `v` holds, read as `reading` says: its span cut, the `int` it
+    /// read, or the value its type read from its text.
+    mut fn hole_cut(v: Reg, bytes: bool, s: FormatScan, k: int, reading: HoleReading) -> Reg {
+        match reading {
+            .Text -> self.span_cut(v, bytes, s, k),
+            .Int -> self.loaded(Layout.Word, s.reads[k]),
+            .Form(ty) -> self
+                .carried(self.loaded(self.laid_out(ty with { nulls: 1 }), s.reads[k]), ty with { nulls: 1 }),
+        }
+    }
+
+    /// How the hole `h` reads its span, its written type resolved where the body stands.
+    fn hole_read_as(h: Hole) -> HoleReading {
+        let written? = h.ty else { return HoleReading.Text }
+        hole_reading((self.program.checked.written)(written, null))
+    }
+
+    /// The cell hole `k` of a scan reads its value into: a word for an `int` or a span, the absence
+    /// of the value's type for one read through its text.
+    mut fn read_cell(reading: HoleReading) -> Reg {
+        match reading {
+            .Text or .Int -> self.seeded_cell(Layout.Word, self.const_int(0)),
+            .Form(ty) -> {
+                let held = ty with { nulls: 1 }
+                let l = self.laid_out(held)
+                self.seeded_cell(l, self.absent_of(held, l))
+            },
+        }
+    }
+
+    /// Hole `k`'s span of the scan `s` of `v`, cut: from the octets where `bytes`, else from the text
+    /// itself, whose byte places the octets share.
+    mut fn span_cut(v: Reg, bytes: bool, s: FormatScan, k: int) -> Reg {
+        let lo = self.loaded(Layout.Word, s.spans[2 * k])
+        let hi = self.loaded(Layout.Word, s.spans[2 * k + 1])
+        if bytes {
+            return self
+                .call_row(Layout.Boxed(BoxKind.Bytes), rt_sig_of("avra_bytes_slice")!, [s.octets, lo, hi])
+        }
+        self.call_row(Layout.Boxed(BoxKind.Text), rt_sig_of("avra_str_substring")!, [v, lo, hi])
+    }
+
+    /// Each hole from `k` on that reads its span as an `int` or through its type's text form, read,
+    /// each only where the scan so far took the subject.
+    mut fn format_read(v: Reg, bytes: bool, s: FormatScan, parts: List<FormatPart>, k: int) -> FormatScan {
+        if k == parts.length { return s }
+        let reading = self.hole_read_as(parts[k].hole)
+        let reads = match reading { .Text -> false, .Int or .Form(_) -> true }
+        if !reads { return self.format_read(v, bytes, s, parts, k + 1) }
+        let ok = self
+            .region(s.ok, Layout.Truth) { cx -> cx.value_read(v, bytes, s, k, reading) } else { cx -> cx.const_bool(false) }
+        self.format_read(v, bytes, s with { ok: ok }, parts, k + 1)
+    }
+
+    /// Whether hole `k`'s span reads as `reading` asks, its value landing in its cell.
+    mut fn value_read(v: Reg, bytes: bool, s: FormatScan, k: int, reading: HoleReading) -> Reg {
+        match reading {
+            .Text -> self.const_bool(true),
+            .Int -> self.int_read(v, bytes, s, k),
+            .Form(ty) -> self.form_read(v, bytes, s, k, ty),
+        }
+    }
+
+    /// Whether hole `k`'s span reads as a `ty` through `ty`'s own `from_text_form`, the value landing in
+    /// its cell: octets only where they are text.
+    mut fn form_read(v: Reg, bytes: bool, s: FormatScan, k: int, ty: SignedType) -> Reg {
+        let callee? = (self.program.statics)(ty, FROM_TEXT_FORM) else {
+            self
+                .missed(
+                    "`${ty.spelled()}.${FROM_TEXT_FORM}`, which a format hole of the type reads its span through",
+                )
+            return self.const_bool(false)
+        }
+        let span = self.span_cut(v, bytes, s, k)
+        if !bytes { return self.formed_into(callee, span, s.reads[k], ty) }
+        let text = owned_type("string") with { nulls: 1 }
+        let held = self.call_row(self.laid_out(text), rt_sig_of("avra_str_of_bytes")!, [span])
+        self
+            .region(self.present(held, text), Layout.Truth) { cx -> cx.formed_into(callee, cx.carried(held, text), s.reads[k], ty) } else { cx -> cx.const_bool(false) }
+    }
+
+    /// Whether `text` reads as a `ty` through `callee`; where it does, the value lands in `cell`.
+    mut fn formed_into(callee: CalledFn, text: Reg, cell: Reg, ty: SignedType) -> Reg {
+        let held = ty with { nulls: 1 }
+        let read = self.call_fn(self.laid_out(held), callee, [text])
+        self.stored(cell, read)
+        self.present(read, held)
+    }
+
+    /// Whether hole `k`'s span spells an `int`, which lands in its cell: octets only where they are
+    /// text.
+    mut fn int_read(v: Reg, bytes: bool, s: FormatScan, k: int) -> Reg {
+        let span = self.span_cut(v, bytes, s, k)
+        if !bytes { return self.parsed_into(span, s.reads[k]) }
+        let text = owned_type("string") with { nulls: 1 }
+        let held = self.call_row(self.laid_out(text), rt_sig_of("avra_str_of_bytes")!, [span])
+        self
+            .region(self.present(held, text), Layout.Truth) { cx -> cx.parsed_into(cx.carried(held, text), s.reads[k]) } else { cx -> cx.const_bool(false) }
+    }
+
+    /// Whether `text` spells an `int`; where it does, the `int` lands in `cell`.
+    mut fn parsed_into(text: Reg, cell: Reg) -> Reg {
+        self
+            .region(self.call_row(Layout.Truth, rt_sig_of("avra_str_parses_int")!, [text]), Layout.Truth) { cx ->
+                cx.stored(cell, cx.call_row(Layout.Word, rt_sig_of("avra_str_parsed_int")!, [text]))
+                cx.const_bool(true)
+            } else { cx -> cx.const_bool(false) }
+    }
+
+    /// Whether the octets are the head whole, a format of no holes: exactly as long, the same bytes.
+    mut fn format_whole(octets: Reg, len: Reg, head: string) -> Reg {
+        let need = self.const_int(octet_count(head))
+        self
+            .region(self.bin(Layout.Truth, BinOp.Eq, len, need), Layout.Truth) { cx -> cx.octets_are(octets, cx.const_int(0), need, head) } else { cx -> cx.const_bool(false) }
+    }
+
+    /// THE TWO ANCHORS, before any cursor moves: the octets hold the head and the last piece without
+    /// them overlapping, the head is their prefix, and the last piece their suffix.
+    mut fn format_anchored(octets: Reg, len: Reg, head: string, last: string) -> Reg {
+        let need = self.const_int(octet_count(head) + octet_count(last))
+        let prefix = self
+            .region(self.bin(Layout.Truth, BinOp.Ge, len, need), Layout.Truth) { cx -> cx.octets_are(octets, cx.const_int(0), cx.const_int(octet_count(head)), head) } else { cx -> cx.const_bool(false) }
+        self
+            .region(prefix, Layout.Truth) { cx ->
+                let from = cx.bin(Layout.Word, BinOp.Sub, len, cx.const_int(octet_count(last)))
+                cx.octets_are(octets, from, len, last)
+            } else { cx -> cx.const_bool(false) }
+    }
+
+    /// Hole `k` onward spanned, each only where the scan so far took the octets.
+    mut fn format_spanned(s: FormatScan, parts: List<FormatPart>, cur: Reg, stop: Reg, k: int) -> FormatScan {
+        if k == parts.length { return s }
+        let ok = self
+            .region(s.ok, Layout.Truth) { cx -> cx.hole_spanned(s, parts, k, cur, stop) } else { cx -> cx.const_bool(false) }
+        self.format_spanned(s with { ok: ok }, parts, cur, stop, k + 1)
+    }
+
+    /// Whether hole `k` finds its span: the last runs from the cursor to the suffix; any other ends
+    /// at the piece after it, taken at its first place at or past the cursor, or its last where the
+    /// hole is greedy, the cursor moved past it.
+    mut fn hole_spanned(s: FormatScan, parts: List<FormatPart>, k: int, cur: Reg, stop: Reg) -> Reg {
+        let from = self.loaded(Layout.Word, cur)
+        self.stored(s.spans[2 * k], from)
+        if k == parts.length - 1 {
+            let upto = self.loaded(Layout.Word, stop)
+            self.stored(s.spans[2 * k + 1], upto)
+            return self.bin(Layout.Truth, BinOp.Le, from, upto)
+        }
+        let piece = parts[k].piece
+        let needle = self.octets_of(piece)
+        let first = self.found_from(s.octets, needle, from)
+        let at = if parts[k].hole.greedy { self.found_last(s.octets, needle, first) } else { first }
+        self.stored(s.spans[2 * k + 1], at)
+        self.stored(cur, self.bin(Layout.Word, BinOp.Add, at, self.const_int(octet_count(piece))))
+        self.bin(Layout.Truth, BinOp.Ge, at, self.const_int(0))
+    }
+
+    /// The last place `needle` stands in `octets` from `first`, its first place there: each place
+    /// found kept and the search taken up one past it, until none is; -1 where `first` is.
+    mut fn found_last(octets: Reg, needle: Reg, first: Reg) -> Reg {
+        let probe = self.seeded_cell(Layout.Word, first)
+        let best = self.seeded_cell(Layout.Word, self.const_int(-1))
+        self.loop_start()
+        self
+            .loop_cond(self.bin(Layout.Truth, BinOp.Ge, self.loaded(Layout.Word, probe), self.const_int(0)))
+        let here = self.loaded(Layout.Word, probe)
+        self.stored(best, here)
+        self
+            .stored(
+                probe,
+                self
+                    .found_from(octets, needle, self.bin(Layout.Word, BinOp.Add, here, self.const_int(1))),
+            )
+        self.loop_end()
+        self.loaded(Layout.Word, best)
+    }
+
+    /// The first place `needle` stands in `octets` at or past `from`, -1 where it stands nowhere.
+    mut fn found_from(octets: Reg, needle: Reg, from: Reg) -> Reg { self.call_row(Layout.Word, rt_sig_of("avra_bytes_index_of")!, [octets, needle, from]) }
+
+    /// Whether the octets from `lo` up to `hi` are the text `piece`'s.
+    mut fn octets_are(octets: Reg, lo: Reg, hi: Reg, piece: string) -> Reg {
+        self
+            .call_row(Layout.Truth, rt_sig_of("avra_bytes_eq_at")!, [octets, lo, hi, self.octets_of(piece)])
+    }
+
+    /// The text `piece` as octets.
+    mut fn octets_of(piece: string) -> Reg {
+        self
+            .call_row(Layout.Boxed(BoxKind.Bytes), rt_sig_of("avra_bytes_of_str")!, [self.const_str(piece)])
+    }
+}
+
+/// How many octets the text `piece` is, which is what the scan counts.
+fn octet_count(piece: string) -> int { piece.bytes().length }
+
+/// What a hole reads its span as: the text itself, the `int` it spells, or a value of a type that
+/// crosses text, read through the type's own `from_text_form`.
+export enum HoleReading {
+    Text
+    Int
+    Form(ty: SignedType)
+}
+
+/// How a hole whose written type is `ty` reads its span, by the type's identity: text where it writes
+/// none or a `string`, an `int` where it writes one, and any other type through its text form.
+export fn hole_reading(ty: SignedType?) -> HoleReading {
+    let t? = ty else { return HoleReading.Text }
+    if t.owns(OwnType.Str) { return HoleReading.Text }
+    if t.owns(OwnType.Int) { return HoleReading.Int }
+    HoleReading.Form(t)
+}
+
+/// The static a type that crosses text reads a value from its text through.
+export const FROM_TEXT_FORM: string = "from_text_form"
+
+/// The method a value of such a type writes its text through.
+export const TEXT_FORM: string = "text_form"

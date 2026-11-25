@@ -1,0 +1,363 @@
+
+//! THE PIPELINE — a walk described as a value, then run through the
+//! walk's own verbs. Its clauses run in order: a head opens a walk
+//! inside every walk before it, a keep guards every clause after it, a
+//! map replaces the element in hand; past the last clause the element
+//! reaches the sink. A comprehension is a pipeline whose sink pushes.
+use core.{ExprId, DeclId, Reg, TypeId, Ins, Type, BinOp}
+
+/// A head's source: a list, a `Bytes`, a string's `chars` view, a map
+/// (its key and value both bound), or the range `source..hi`. `index`
+/// binds the position before the element; a `lookup` is read in the
+/// source's place.
+export type Source = { source: ExprId, hi: ExprId?, index: bool, lookup: Lookup? }
+
+/// A relation's narrower read: `lookup(db, value)`, the value written
+/// in the filter `cond`.
+export type Lookup = { lookup: DeclId, db: ExprId, value: ExprId, cond: ExprId }
+
+/// A fn box asked per element: the box, and the code pointer read
+/// from it once — a method chain's adapter, boxed before the loop.
+export type FnBox = { box: Reg, code: Reg }
+
+/// How a clause computes: an expression written over the heads'
+/// binders, or a fn box applied to the element in hand.
+export enum Step {
+    Written(e: ExprId)
+    Applied(f: FnBox, ret: TypeId)
+    Inline(lam: ExprId, ret: TypeId)
+}
+
+export enum Clause {
+    Head(s: Source)
+    Keep(s: Step)
+    Map(s: Step)
+    Take(count: Reg, n: Reg)
+    Drop(count: Reg, n: Reg)
+    TakeWhile(pred: Step)
+    DropWhile(pred: Step, started: Reg)
+    FilterMap(f: Step, opt: TypeId)
+    FlatMap(f: Step, e: ExprId, list: TypeId, elem: TypeId)
+    Flatten(e: ExprId, list: TypeId, elem: TypeId)
+}
+
+/// Where each element that passes every clause goes: a pushed list, a
+/// map its entry is put into, or a terminal's answer cell — a verdict,
+/// the first hit, its place. `ret` is the sink's own answer type;
+/// `cell` was seeded before the loop.
+export enum Sink {
+    Push(dst: Reg)
+    Put(dst: Reg)
+    Any(ret: TypeId, cell: Reg, pred: Step)
+    All(ret: TypeId, cell: Reg, pred: Step)
+    Find(ret: TypeId, cell: Reg, pred: Step)
+    FindMap(ret: TypeId, cell: Reg, pred: Step)
+    FindLast(ret: TypeId, cell: Reg, pred: Step)
+    FindIndex(ret: TypeId, cell: Reg, seen: Reg, pred: Step)
+    Contains(ret: TypeId, cell: Reg, needle: Reg, elem: TypeId)
+    IndexOf(ret: TypeId, cell: Reg, seen: Reg, needle: Reg, elem: TypeId)
+    Fold(ret: TypeId, cell: Reg, f: Step)
+    Count(ret: TypeId, cell: Reg)
+    Sum(ret: TypeId, cell: Reg)
+    MinMax(ret: TypeId, has: Reg, best: Reg, less: bool)
+    MinBy(ret: TypeId, has: Reg, best: Reg, key: Reg, f: Step, key_ty: TypeId, less: bool)
+}
+
+export type Pipeline = { clauses: List<Clause>, sink: Sink }
+
+/// Every head's registers so far, which a written step binds, and the
+/// element in hand — a pipeline opens with a head, so a sink has one.
+type Turn = { regs: List<Reg>, value: Reg?, pair: Pair? = null }
+
+/// A map's turn as it was read: the key and the value an entry packs.
+type Pair = { key: Reg, value: Reg }
+
+impl LowerCx {
+    /// The pipeline run, answering its sink's value.
+    mut fn piped(p: Pipeline) -> Reg {
+        self.staged(p, 0, Turn { regs: [], value: null })
+        self.sink_answer(p.sink)
+    }
+
+    /// The clause at `at`, every later one inside it.
+    mut fn staged(p: Pipeline, at: int, t: Turn) {
+        if at >= p.clauses.length { return self.sunk(p.sink, t) }
+        match p.clauses[at] {
+            .Head(s) -> self.headed(p, at, t, s),
+            .Keep(s) -> self.void_region(self.stepped(s, t)) { cx -> cx.staged(p, at + 1, t) },
+            .Map(s) -> self.staged(p, at + 1, t with { value: self.stepped(s, t) }),
+            .Take(count, n) -> {
+                let seen = self.loaded_as(self.type(int), count)
+                let keep = self.bin(Type.Bool, BinOp.Lt, seen, n)
+                self
+                    .void_region(keep) { cx ->
+                        cx.count_past(count, seen)
+                        cx.staged(p, at + 1, t)
+                    }
+                self.void_region(self.un(keep)) { cx -> cx.walk_done() }
+            },
+            .Drop(count, n) -> {
+                let seen = self.arrival(count)
+                let past = self.bin(Type.Bool, BinOp.Ge, seen, n)
+                self.void_region(past) { cx -> cx.staged(p, at + 1, t) }
+            },
+            .TakeWhile(pred) -> {
+                let ok = self.pred_call(pred, t)
+                self.void_region(ok) { cx -> cx.staged(p, at + 1, t) }
+                self.void_region(self.un(ok)) { cx -> cx.walk_done() }
+            },
+            .FilterMap(f, opt) -> {
+                let v = self.stepped(f, t)
+                let has = self.presence_of(v, opt)
+                self
+                    .void_region(has) { cx ->
+                        cx.staged(p, at + 1, t with { value: cx.carried_of(v, opt) })
+                    }
+            },
+            .FlatMap(f, e, list, elem) -> {
+                let xs = self.stepped(f, t)
+                self.inner_walk(p, at, xs, e, list, elem)
+            },
+            .Flatten(e, list, elem) -> self.inner_walk(p, at, t.value!, e, list, elem),
+            .DropWhile(pred, started) -> {
+                let began = self.loaded_as(self.type(bool), started)
+                self.void_region(began) { cx -> cx.staged(p, at + 1, t) }
+                self
+                    .void_region(self.un(began)) { cx ->
+                        let ok = cx.pred_call(pred, t)
+                        cx
+                            .void_region(cx.un(ok)) { c2 ->
+                                c2.emit(Ins.Store(started, c2.const_bool(true)))
+                                c2.staged(p, at + 1, t)
+                            }
+                    }
+            },
+        }
+    }
+
+    /// A head binds its source under the earlier heads' registers — its
+    /// range bound shares that anchor — reads its lookup, and opens its
+    /// walk with every later clause inside the turn.
+    mut fn headed(p: Pipeline, at: int, t: Turn, s: Source) {
+        self.bind_patterns(s.source, t.regs)
+        self.looked_up(s.source, t.regs, s.lookup)
+        let value: TypeId? = if s.hi == null { self.view.types.map_value(self.type_at(s.source)) } else { null }
+        if value != null { return self.keyed_head(p, at, t, s, value!) }
+        let w = if s.hi == null { self.opened(s.source, self.elem_of(s.source)) } else { self.counted(s.source, s.hi!) }
+        let here = self.turn_open(w)
+        let v = if s.hi == null { self.turn_elem(w, here) } else { here }
+        self
+            .staged(
+                p,
+                at + 1,
+                Turn {
+                    regs: t.regs.concat(if s.index { [self.turn_place(w, here), v] } else { [v] }),
+                    value: v,
+                },
+            )
+        self.loop_end()
+    }
+
+    /// A map's head, in the map's order: a paired head binds the key
+    /// and the value; a chain's walks the entry packed from them.
+    mut fn keyed_head(p: Pipeline, at: int, t: Turn, s: Source, value: TypeId) {
+        let k = self.keyed(s.source, value)
+        let here = self.turn_open(k.keys)
+        let pair = Pair { key: self.turn_elem(k.keys, here), value: self.keyed_value(k, here) }
+        let turn = if s.index {
+            Turn { regs: t.regs.concat([pair.key, pair.value]), value: pair.value }
+        } else {
+            let entry = self.packed_struct(self.elem_of(s.source), [pair.key, pair.value])
+            Turn { regs: t.regs.concat([entry]), value: entry, pair: pair }
+        }
+        self.staged(p, at + 1, turn)
+        self.loop_end()
+    }
+
+    /// The head's source read through its lookup, when one narrows it:
+    /// the value, written in a filter, reads only earlier heads'
+    /// binders, bound here.
+    mut fn looked_up(source: ExprId, regs: List<Reg>, lookup: Lookup?) {
+        let l? = lookup else { return }
+        self.bind_patterns(l.cond, regs)
+        let rows = self
+            .call_decl_at(
+                source,
+                self.method_symbol(l.lookup, source, self.type_at(source)),
+                [self.reg_of(l.db), self.reg_of(l.value)],
+            )
+        self.body.set_reg(source, rows)
+    }
+
+    mut fn stepped(s: Step, t: Turn) -> Reg {
+        match s {
+            .Written(e) -> {
+                self.bind_patterns(e, t.regs)
+                self.reg_of(e)
+            },
+            .Applied(f, ret) -> self.call_ptr(ret, f.code, [f.box, t.value!]),
+            .Inline(lam, _) -> self.inlined(lam, [t.value!]),
+        }
+    }
+
+    /// `fold`'s fn asked once: the accumulator in hand and the element.
+    mut fn folded(f: Step, acc: Reg, v: Reg) -> Reg {
+        match f {
+            .Written(e) -> self.lower_defect(e, "a fold's fn written over the heads"),
+            .Applied(box, ret) -> self.call_ptr(ret, box.code, [box.box, acc, v]),
+            .Inline(lam, _) -> self.inlined(lam, [acc, v]),
+        }
+    }
+
+    /// An element reaches the sink: push it, or answer the terminal —
+    /// each terminal stores into its cell and ends the walk on its hit.
+    mut fn sunk(s: Sink, t: Turn) {
+        match s {
+            .Push(dst) -> self.push_slot(dst, t.value!),
+            .Put(dst) -> self.map_write(dst, t.pair!.key, t.pair!.value),
+            .Any(_, cell, pred) -> {
+                self
+                    .void_region(self.pred_call(pred, t)) { cx -> cx.store_hit(cell, cx.const_bool(true)) }
+            },
+            .All(_, cell, pred) -> {
+                self
+                    .void_region(self.un(self.pred_call(pred, t))) { cx ->
+                        cx.store_hit(cell, cx.const_bool(false))
+                    }
+            },
+            .Find(ret, cell, pred) -> {
+                self
+                    .void_region(self.pred_call(pred, t)) { cx ->
+                        cx.store_hit(cell, cx.adopted(ret, false, t.value!))
+                    }
+            },
+            .FindMap(ret, cell, pred) -> {
+                let ans = self.stepped(pred, t)
+                self
+                    .void_region(self.presence_of(ans, ret)) { cx ->
+                        cx.store_hit(cell, ans)
+                    }
+            },
+            .FindLast(ret, cell, pred) -> {
+                self
+                    .void_region(self.pred_call(pred, t)) { cx ->
+                        cx.emit(Ins.Store(cell, cx.adopted(ret, false, t.value!)))
+                    }
+            },
+            .FindIndex(ret, cell, seen, pred) -> {
+                let place = self.arrival(seen)
+                self
+                    .void_region(self.pred_call(pred, t)) { cx ->
+                        cx.store_hit(cell, cx.adopted(ret, false, place))
+                    }
+            },
+            .Contains(_, cell, needle, elem) -> {
+                self
+                    .void_region(self.same_value(t.value!, needle, elem)) { cx ->
+                        cx.store_hit(cell, cx.const_bool(true))
+                    }
+            },
+            .IndexOf(_, cell, seen, needle, elem) -> {
+                let place = self.arrival(seen)
+                self
+                    .void_region(self.same_value(t.value!, needle, elem)) { cx ->
+                        cx.store_hit(cell, place)
+                    }
+            },
+            .Fold(ret, cell, f) -> self.emit(Ins.Store(cell, self.folded(f, self.loaded_as(ret, cell), t.value!))),
+            .Count(_, cell) -> self.accumulate(cell, self.const_int(1)),
+            .Sum(_, cell) -> self.accumulate(cell, t.value!),
+            .MinMax(_, has, best, less) -> {
+                let value = t.value!
+                let held = self.loaded_as(self.type(int), best)
+                let op: BinOp = if less { BinOp.Lt } else { BinOp.Gt }
+                let beats = self.bin(Type.Bool, op, value, held)
+                let have = self.loaded_as(self.type(bool), has)
+                let better = self
+                    .region_as(have, self.type(bool)) { _cx -> beats } else { cx -> cx.const_bool(true) }
+                self
+                    .void_region(better) { cx ->
+                        cx.emit(Ins.Store(has, cx.const_bool(true)))
+                        cx.emit(Ins.Store(best, value))
+                    }
+            },
+            .MinBy(_, has, best, key, f, key_ty, less) -> {
+                let k = self.stepped(f, t)
+                let held = self.loaded_as(key_ty, key)
+                let op: BinOp = if less { BinOp.Lt } else { BinOp.Gt }
+                let beats = self.bin(Type.Bool, op, k, held)
+                let have = self.loaded_as(self.type(bool), has)
+                let better = self
+                    .region_as(have, self.type(bool)) { _cx -> beats } else { cx -> cx.const_bool(true) }
+                self
+                    .void_region(better) { cx ->
+                        cx.emit(Ins.Store(has, cx.const_bool(true)))
+                        cx.emit(Ins.Store(best, t.value!))
+                        cx.emit(Ins.Store(key, k))
+                    }
+            },
+        }
+    }
+
+    /// `flat_map`'s inner walk: the computed list opened as a loop
+    /// inside the outer turn, each inner element carrying on.
+    mut fn inner_walk(p: Pipeline, at: int, xs: Reg, e: ExprId, list: TypeId, elem: TypeId) {
+        let w = self.opened_reg(e, xs, list, elem)
+        let here = self.turn_open(w)
+        let v = self.turn_elem(w, here)
+        self.staged(p, at + 1, Turn { regs: [v], value: v })
+        self.loop_end()
+    }
+
+    /// How many elements reached `count` before this one — its place in
+    /// the stream a clause or a sink sees — counted past as it is read.
+    mut fn arrival(count: Reg) -> Reg {
+        let seen = self.loaded_as(self.type(int), count)
+        self.count_past(count, seen)
+        seen
+    }
+
+    /// `take`/`drop` count the elements that REACH them — one more past
+    /// this one, kept or dropped.
+    mut fn count_past(cell: Reg, seen: Reg) {
+        self.emit(Ins.Store(cell, self.bin(Type.Int, BinOp.Add, seen, self.const_int(1))))
+    }
+
+    /// One more into an accumulator cell — `count` adds one, `sum` adds
+    /// the element; the walk runs whole, nothing ends early.
+    mut fn accumulate(cell: Reg, v: Reg) {
+        let next = self.bin(Type.Int, BinOp.Add, self.loaded_as(self.type(int), cell), v)
+        self.emit(Ins.Store(cell, next))
+    }
+
+    /// The predicate asked about this element.
+    mut fn pred_call(pred: Step, t: Turn) -> Reg { self.stepped(pred, t) }
+
+    /// The terminal's hit: write its cell and end the walk.
+    mut fn store_hit(cell: Reg, v: Reg) {
+        self.emit(Ins.Store(cell, v))
+        self.walk_done()
+    }
+
+    mut fn sink_answer(s: Sink) -> Reg {
+        match s {
+            .Push(dst) or .Put(dst) -> dst,
+            .Any(ret, cell, _) or .All(ret, cell, _) or .Find(ret, cell, _) or .FindMap(ret, cell, _) or .FindLast(ret, cell, _) or .FindIndex(ret, cell, _, _) or .Contains(ret, cell, _, _) or .IndexOf(ret, cell, _, _, _) or .Fold(ret, cell, _) or .Count(ret, cell) or .Sum(ret, cell) -> self.loaded_as(ret, cell),
+            .MinMax(ret, has, best, _) or .MinBy(ret, has, best, _, _, _, _) -> self
+                .region_as(self.loaded_as(self.type(bool), has), ret) { cx ->
+                    cx.adopted(ret, false, cx.loaded_as(self.type(int), best))
+                } else { cx -> cx.absent_of(ret) },
+        }
+    }
+
+    /// What the source's walk yields: a list's element, the int a
+    /// `Bytes` or a string reads, or a map's entry.
+    fn elem_of(source: ExprId) -> TypeId {
+        let ty = self.type_at(source)
+        match self.view.types.seen_shape(ty) {
+            .Bytes or .Str -> self.type(int),
+            .Map(_, value) -> self.view.decls.entry_of(value) ?? ty,
+            _ -> self.view.types.element(ty) ?? ty,
+        }
+    }
+}

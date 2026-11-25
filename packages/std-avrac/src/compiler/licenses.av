@@ -1,0 +1,109 @@
+//! `// LICENSED <id>` citations (CLAUDE.md's exemption law), a colon
+//! and a reason after the id — the dotted id right after that word
+//! must still name a rule `avra rules` lists, or be an `input.<why>`
+//! or a `whole.<why>`: the input keeper's and the whole-read keeper's
+//! own (tools/inputs.py, tools/whole_reads.py), which hold it at its
+//! site. `Workspace.checked()` finds stale ones per file and keeps
+//! them in the program's verdict (verdict.av) — never `here()`-relative: a kept line is read back by
+//! a check that may run from a different directory than the one
+//! that minted it, so the CLI layer (`avra check`) renders the final
+//! message, this file only finds and encodes the citation.
+//! `site_licensed` is the SAME exemption read the other way: not
+//! "is this citation stale" but "does a finding's own site carry
+//! one" — `rule_pass.av`'s door, before a finding is even reported.
+use @std.text.{chars}
+use core.{SyntaxArena, Remark, joined}
+use diagnostics.{SourceFile}
+
+/// One keeper's family of licence ids, held at its site by the keeper
+/// that owns it: `prefix` then a word of `shape` — `snake` (lower-case
+/// letters and underscores) or exactly that text.
+export type LicenceFamily = { prefix: string, shape: string, keeper: string }
+
+/// The keepers' families — the one definition: `avra licences` projects
+/// it, and the keepers read their patterns from that answer.
+export fn families() -> List<LicenceFamily> {
+    [
+        LicenceFamily { prefix: "input.", shape: "snake", keeper: "tools/inputs.py" },
+        LicenceFamily { prefix: "whole.", shape: "cold", keeper: "tools/whole_reads.py" },
+    ]
+}
+
+fn snake(word: string) -> bool {
+    word != "" && chars(word).all((c) -> "abcdefghijklmnopqrstuvwxyz_".contains(c))
+}
+
+/// Whether `id` is a member of `f`: its prefix, then its shape.
+export fn belongs(id: string, f: LicenceFamily) -> bool {
+    id.starts_with(f.prefix) && fits(id.substring(f.prefix.length, id.length), f.shape)
+}
+
+fn fits(tail: string, shape: string) -> bool { if shape == "snake" { snake(tail) } else { tail == shape } }
+
+/// Every rule a citation may name, as a set: a citation is one lookup, never a walk of the rules.
+once fn known_rule_ids() -> Map<string, bool> {
+    mut known: Map<string, bool> = {}
+    for r in rule_entries() { known.set(rule_id(r), true) }
+    known
+}
+
+/// Whether a citation's id names nothing that reads it: no rule among
+/// `known`, and no member of a keeper's family.
+export fn cites_nothing(id: string, known: Map<string, bool>) -> bool {
+    !known.has(id) && !families().any(belongs(id, it))
+}
+
+/// A remark's `// LICENSED` citation that names nothing: the offset the remark stands at, and its id.
+export type UnbackedClaim = { at: int, id: string }
+
+/// Each of `remarks` whose `// LICENSED` citation names nothing among `known`.
+export fn claims_naming_nothing(remarks: List<Remark>, known: Map<string, bool>) -> List<
+    UnbackedClaim,
+> {
+    [UnbackedClaim { at: r.at, id: c!.id } for r in remarks for c in [claimed(r)] if c != null && cites_nothing(c!.id, known)]
+}
+
+/// One `// LICENSED <id>: <reason>` comment, parsed — the id and
+/// what follows its colon, trimmed (empty when the author wrote
+/// none).
+type Cited = { id: string, reason: string }
+
+/// A remark's own claim, or absence — a bare `// LICENSED — reason`
+/// (no id: a doctrine exemption, never a rule's) claims nothing, and
+/// neither does a comment that merely mentions the word.
+/// A remark's license claim, as a shape reads it.
+fn license_claimed(r: Remark) -> Cited? { claimed(r) }
+
+fn claimed(r: Remark) -> Cited? {
+    match r.trivia { .Comment(text) -> claimed_in(text), .Blank -> null }
+}
+
+fn claimed_in(text: string) -> Cited? {
+    if !text.contains("LICENSED") { return null }
+    let rest = text.substring(text.index_of("LICENSED") + "LICENSED".length, text.length).trim()
+    if rest == "" || rest.starts_with("—") || rest.starts_with("-") { return null }
+    let colon = rest.index_of(":")
+    if colon < 0 { return null }
+    let id = rest.substring(0, colon).trim()
+    if id == "" { return null }
+    Cited { id: id, reason: rest.substring(colon + 1, rest.length).trim() }
+}
+
+/// A rule's own SITE LICENSE (CLAUDE.md's exemption law): the line
+/// directly above `line` is its OWN `// LICENSED <id>: <reason>` —
+/// naming `id` exactly, a non-empty reason — read by `rule_pass.av`
+/// before a finding is even reported. Never a loose proximity guess
+/// (`licensed_just_above`'s 200-byte window, `avra fix`'s own door)
+/// and never a different rule's citation, or one whose colon closes
+/// on nothing.
+export fn site_licensed(store: SyntaxArena, source: SourceFile, line: int, id: string) -> bool {
+    line > 1 && store.remarks.get().any(licenses(it, source, line - 1, id))
+}
+
+fn licenses(r: Remark, source: SourceFile, line: int, id: string) -> bool {
+    !r.same_line && source.linecol(r.at).line == line && cites(claimed(r), id)
+}
+
+fn cites(c: Cited?, id: string) -> bool {
+    c != null && c!.id == id && c!.reason != ""
+}

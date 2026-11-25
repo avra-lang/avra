@@ -1,0 +1,112 @@
+//! ERROR UNIONS PHASE 2 — the whole-program fixpoint behind
+//! `Result<T, _>`: which error types a `_`-declared fn's `fail` and
+//! `?` sites can actually raise. Mirrors receivers.av's shape (a
+//! Summary per fn, edges between fns, a Kleene loop to a fixpoint,
+//! ONE whole-program kernel key rather than a per-decl memo — see
+//! docs/2026_09_25_ERROR_UNIONS_PHASE2_DESIGN.md §6 for why the
+//! kernel's own Cycle/start_recursive answers a different question).
+//! A structural walk over the RESOLVED body alone, no unification —
+//! structural_types.av's DeclaredTypes proved this enough for
+//! receivers.av's writer inference, and the same declared-type
+//! questions answer a fail/`?` site's raised type here.
+//!
+//! THE ONE LAW A NAIVE REUSE OF DeclaredTypes WOULD BREAK: asking
+//! another `_`-declared fn's `sig()` for its answer type, mid-
+//! fixpoint, reads whatever the sig table holds RIGHT NOW — not yet
+//! the truth for a fn this same pass is still settling, and `null`
+//! for one nobody has signed yet. A callee is checked against its
+//! OWN WRITTEN return shape FIRST (`declared_result_hole`, pure AST,
+//! no `sig()` at all); only once that says "not `_`-declared" is
+//! `sig()` asked. This is not merely a recursion guard — it is the
+//! mechanism that makes the transitive fixpoint answer through
+//! EDGES rather than through a call to `sig()` that would just
+//! answer null for exactly the fns the edge exists to reach.
+use core.{
+    IndexRange,
+    DeclId,
+    Expr,
+    ExprId,
+    Stmt,
+    StmtId,
+    TypeId,
+    TypeRef,
+    Type,
+    SyntaxArena,
+    Span,
+    flatten,
+    fp,
+    fp_list,
+    same_expr,
+    some_list,
+    same_type as same_type_id,
+    touch,
+}
+use features.{Decls, Decl, TypeCx, bound_decl_of, Inferred}
+use @std.meta.{bracket}
+use @std.relation.{relation, query}
+use compiler.families.{Family}
+use @std.relation.engine.{FixpointRefusal, spoken as fixpoint_spoken}
+
+/// `Result<_, _>`'s error side — a bare `_`, checked by SHAPE: `_?`,
+/// `_<T>` and `_ or E` are not this, and stay ordinary unresolved
+/// names.
+fn is_bare_underscore(tr: TypeRef) -> bool {
+    tr.name == "_" &&
+        tr.applied.is_empty() &&
+        !tr.optional &&
+        !tr.dynamic &&
+        tr.alternatives.is_empty()
+}
+
+/// A written return type spells `Result<_, _>`.
+export fn result_infers(ret: TypeRef) -> bool {
+    ret.name == "Result" && ret.applied.length == 2 && is_bare_underscore(ret.applied[1])
+}
+
+/// One row per fail/propagate/catch site. Keyless: a site has no name
+/// of its own, only a position. `errors` is the site's own DIRECT
+/// contribution only, never the fixpoint's transitive answer — that
+/// is `Raised`, a second relation with its own owner, never folded
+/// back into a site. `owner`, not `fn`: `fn` is a keyword, refused as
+/// a field name.
+/// `callee` is nullable: a site files under it only when it has one,
+/// so the reverse edge `chain` walks up is a lookup. `within` is an
+/// `ExprId`, which no index files, so its reader scans.
+export enum SiteHow { Fail, Propagate, Catch }
+
+@relation
+export type ErrorSite = {
+    @local at: ExprId,
+    @local @index owner: DeclId,
+    how: SiteHow,
+    @local @index callee: DeclId?,
+    @local enclosing: ExprId?,
+    @local errors: List<TypeId>,
+    /// the structural walk could not tell this site's type
+    unresolved: bool,
+}
+
+/// One inferring fn's settled error set, written by the fixpoint's
+/// solve alone — one row per `owner` per solve, the last solve's rows
+/// removed. `@index`, never `@key`: a `DeclId` is dense, so it is
+/// `@local`, and a key is never local. Inside the solve it holds the
+/// LAST solve's sets: a member reads a fellow's in-flight answer through
+/// the fixpoint, never through this.
+@relation
+export type Raised = { @local @index owner: DeclId, @local errors: List<TypeId> }
+
+fn fail_value(store: SyntaxArena, s: StmtId) -> List<ExprId> {
+    match store.stmt(s) { .Fail(v) -> [v], rest -> [] }
+}
+
+fn refusal_of(r: Result<int, FixpointRefusal>) -> FixpointRefusal? {
+    match r { .Ok(_) -> null, .Err(e) -> e }
+}
+
+/// A walked error topology, rooted at one site — a tree, since one fn
+/// may have many callers and a catch may re-raise several ways.
+export type Chain = { site: ErrorSite, next: List<Chain> }
+
+impl Decls {
+
+}

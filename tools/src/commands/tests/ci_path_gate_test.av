@@ -1,0 +1,37 @@
+use commands.{owes}
+
+spec "ci_path_gate — which jobs a change owes" {
+    given "the runtime-keep job" {
+        then "a changed runtime file, the Makefile and its own script are owed" {
+            owes("runtime-keep", "pull_request", ["runtime/avra_fiber.c"]) &&
+                owes("runtime-keep", "pull_request", ["runtime/tests/flow_test.c"]) &&
+                owes("runtime-keep", "pull_request", ["Makefile"]) &&
+                owes("runtime-keep", "pull_request", ["tools/memcap.sh"])
+        }
+        then "other paths, no paths and a lookalike directory are not owed" {
+            !owes("runtime-keep", "pull_request", ["packages/cli/src/main.av"]) &&
+                !owes("runtime-keep", "pull_request", ["docs/x.md", "tools/other.py"]) &&
+                !owes("runtime-keep", "pull_request", []) &&
+                !owes("runtime-keep", "pull_request", ["runtimes/x.c"])
+        }
+    }
+    given "the layout-oracle job" {
+        then "the UI and text packages and the oracle's own tools are owed" {
+            owes("layout-oracle", "pull_request", ["packages/std-ui/src/place/solve.av"]) &&
+                owes("layout-oracle", "pull_request", ["packages/std-text/src/display.av"]) &&
+                owes("layout-oracle", "pull_request", ["tools/layout-oracle/oracle.mjs"])
+        }
+        then "other paths and a lookalike package are not owed" {
+            !owes("layout-oracle", "pull_request", ["packages/cli/src/main.av", "docs/x.md"]) &&
+                !owes("layout-oracle", "pull_request", ["packages/std-uix/a.av"])
+        }
+    }
+    given "an event that is no pull request" {
+        then "every job is owed" {
+            owes("runtime-keep", "push", []) &&
+                owes("runtime-keep", "push", ["packages/cli/src/main.av"]) &&
+                owes("runtime-keep", "workflow_dispatch", []) &&
+                owes("layout-oracle", "push", [])
+        }
+    }
+}

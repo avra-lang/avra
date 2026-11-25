@@ -1,0 +1,106 @@
+//! THE PRELUDE: every file in every package sees these names without
+//! a `use`, and a file's own declaration or explicit import shadows
+//! them silently. It depends on nothing, and the compiler refuses a
+//! manifest that says otherwise: it is the floor of the layering
+//! `prelude <- text <- io <- process <- …`. Its contents are what the
+//! compiler already emits for a program — a line printed, a map's
+//! entry, a task's cancelled end — and no more; a name a program can be compiled without
+//! belongs to a package above.
+extern fn avra_puts(line: string)
+extern fn avra_eputs(line: string)
+extern fn avra_str_parses_int(s: string) -> bool
+extern fn avra_str_parsed_int(s: string) -> int
+
+/// One line to standard output.
+export fn println(line: string) {
+    avra_puts(line)
+}
+
+/// One line to standard error.
+export fn eprintln(line: string) {
+    avra_eputs(line)
+}
+
+/// One key of a map beside its value — what `m.entries()` answers,
+/// in the map's own order.
+export type Entry<K, V> = { key: K, value: V }
+
+/// A task ended cancelled: who asked (`by`, the asker's task id) and
+/// where the cancel was met (`at`). What `t.await catch c ->` binds.
+export type Cancelled = { by: int, at: int }
+
+/// Why a float has no int: it is NaN, or past the range an int holds. The
+/// value carried is the float that was refused. What the float rounding
+/// methods answer on failure.
+export enum ToInt {
+    NotANumber
+    TooLarge(value: float)
+    TooSmall(value: float)
+}
+
+/// A format's shape as its declaration reads it: its literal head, then each hole with the literal
+/// after it. What a grammar's `parts()` answers.
+export type FormatShape = { head: string, holes: List<FormatHole> }
+
+/// One hole of a format: the name it binds, the type it reads its span as (`string` where it writes
+/// none) and how it reads it, whether it is greedy, and the literal after it.
+export type FormatHole = { name: string, ty: string, reads: HoleRead, greedy: bool, piece: string }
+
+/// How a hole reads its span: as the text itself, as the `int` it spells, or through its type's text
+/// form.
+export enum HoleRead {
+    Text
+    Int
+    Form
+}
+
+/// The spans a format's holes take of `octets`, a lo and a hi per hole in order; absent where the
+/// format doesn't match. The head is a prefix and the last piece a suffix, neither overlapping; each
+/// interior hole runs from the cursor to its piece's first occurrence at or after it, or its last
+/// when `greedy` marks the hole, and the cursor moves past that piece; the last hole runs to the
+/// suffix. No step goes back to try another occurrence. What a format's `parse` and pattern read.
+export fn format_spans(octets: Bytes, head: Bytes, pieces: List<Bytes>, greedy: List<bool>) -> List<
+    int,
+>? {
+    let len = octets.length
+    let none: List<int> = []
+    let last? = pieces.last() else { return if len == head.length && octets.eq_at(0, head.length, head) { none } else { null } }
+    if len < head.length + last.length { return null }
+    if !octets.eq_at(0, head.length, head) || !octets.eq_at(len - last.length, len, last) { return null }
+    let stop = len - last.length
+    mut cur = head.length
+    mut spans: List<int> = []
+    for i, piece in pieces {
+        if i == pieces.length - 1 {
+            if cur > stop { return null }
+            // LICENSED loops.push_loop: each hole's span is known only once the cursor reaches it
+            spans.push(cur)
+            spans.push(stop)
+            continue
+        }
+        let end = if greedy[i] { last_at(octets, piece, cur) } else { octets.index_of(piece, cur) }
+        if end < 0 { return null }
+        spans.push(cur)
+        spans.push(end)
+        cur = end + piece.length
+    }
+    spans
+}
+
+/// The last place `piece` stands in `octets` at or after `from`, -1 where it stands nowhere there.
+fn last_at(octets: Bytes, piece: Bytes, from: int) -> int {
+    mut best = 0 - 1
+    mut probe = octets.index_of(piece, from)
+    while probe >= 0 {
+        best = probe
+        probe = octets.index_of(piece, probe + 1)
+    }
+    best
+}
+
+/// The int `text` spells — `-`? digits, the smallest int whole — absent for any other text. What a
+/// format's `int` hole reads.
+export fn format_int(text: string) -> int? {
+    if !avra_str_parses_int(text) { return null }
+    avra_str_parsed_int(text)
+}

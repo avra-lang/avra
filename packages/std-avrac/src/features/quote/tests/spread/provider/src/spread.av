@@ -1,0 +1,31 @@
+use @std.meta.{Type, Field, Directive, Decls, Code}
+
+fn field_of(f: Field) -> Decls { quote { type _ = { ${f.name}: ${f.ty} } } }
+
+fn five_of(f: Field) -> Decls { quote { type _ = { ${f.name}: ${f.ty} = 5 } } }
+
+fn twice_of(f: Field) -> Code { quote { W { ${f.name}: self.${f.name} * 2 } } }
+
+/// A copy of the type, a copy with defaults around a written field,
+/// and the record rebuilt from its own fields doubled.
+export trait Spread {
+    static fn derive(t: Type) -> List<Directive> {
+        let all = [field_of(f) for f in t.fields]
+        let fives = [five_of(f) for f in t.fields]
+        let twices = [twice_of(f) for f in t.fields]
+        [
+            Directive {
+                twin: "",
+                name: t.name,
+                at: t.at,
+                source: quote {
+                    type ${t}Copy = { ..${all} }
+                    type ${t}Around = { first: int, ..${fives}, last: int = 9 }
+                    impl ${t} {
+                        fn doubled() -> ${t} { ${t} { ..${twices} } }
+                    }
+                },
+            },
+        ]
+    }
+}

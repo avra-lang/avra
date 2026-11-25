@@ -1,0 +1,84 @@
+//! @std.errors — the base error model every Avra error shares.
+//! Compiler diagnostics and user error types alike join through the
+//! same trait. Kinds are hierarchical stable identifiers
+//! ("io.not_found", "parse.expected") — dotted namespaces, matched by
+//! prefix, never by class hierarchies.
+
+/// A position in some source: an optional file identity and a byte
+/// range. The exchange form — compact in-store spans project into
+/// this at boundaries; line/col exists only in renderings.
+export type Loc = { file: string?, lo: int, hi: int }
+
+/// One located annotation: a trace step, a `context` note, a labeled
+/// source position — anything an error says about a place.
+export type Frame = { label: string?, loc: Loc? }
+
+/// How sure a suggestion is — for a HUMAN reading it, never for
+/// `avra fix`: confidence and proof are independent axes, and a
+/// `Confidence.High` suggestion with no proof stays shown, same as a
+/// `Low` one. Only a suggestion whose edits prove the same program
+/// before and after ever applies without a human.
+export enum Confidence { High, Medium, Low }
+
+/// One text replacement.
+export type Edit = { loc: Loc, replacement: string }
+
+/// A structured remedy: what to do, how sure, and the edits that
+/// do it. Whether the edits are PROVED (the same program before and
+/// after) is asked of them later, by whoever holds the program they
+/// touch — this type carries no verdict of its own, since @std/errors
+/// knows no program to lower.
+export type Suggestion = {
+    confidence: Confidence,
+    description: string,
+    edits: List<Edit>,
+}
+
+/// A described error: its stable hierarchical kind and its human
+/// message, together — one row per variant at the definition site.
+export type ErrorInfo = { kind: string, message: string }
+
+/// One description row.
+export fn info(kind: string, message: string) -> ErrorInfo {
+    ErrorInfo { kind: kind, message: message }
+}
+
+/// What every Avra error IS: a value that describes itself, names
+/// what caused it, and says what it passed through on the way here.
+/// Every answer but `describe` defaults to none — a leaf error costs
+/// nothing to write.
+export trait Error {
+    fn describe() -> ErrorInfo
+    fn cause() -> dyn Error? { null }
+    fn context() -> List<Frame> { [] }
+    fn trace() -> List<Frame> { [] }
+}
+
+/// An error wrapped at the point it starts propagating, plus the
+/// frames it picks up along the way. `cause` answers the concrete
+/// `E` it holds, never erased to `dyn Error?` — a trait member's
+/// answer is fixed by its signature, so no `impl Error` could do
+/// that. `cause`/`context`/`trace` are `Traced<E>`'s own methods
+/// instead.
+export type Traced<E> = { error: E, frames: List<Frame> }
+
+/// Starts a propagation path at `error`, with no frames yet.
+export fn traced<E: Error>(error: E) -> Traced<E> {
+    Traced { error: error, frames: [] }
+}
+
+impl Traced<E> {
+    /// The wrapped error, whole.
+    fn cause() -> E { self.error }
+
+    /// The labeled notes among the attached frames.
+    fn context() -> List<Frame> { [f for f in self.frames if f.label != null] }
+
+    /// Every frame attached along the way, notes and positions alike.
+    fn trace() -> List<Frame> { self.frames }
+
+    /// One more frame, attached at the end of the path.
+    fn framed(f: Frame) -> Traced<E> {
+        self with { frames: self.frames.concat([f]) }
+    }
+}

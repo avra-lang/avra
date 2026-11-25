@@ -1,0 +1,84 @@
+//! `rule` — the formatter's own rewrite, dogfooded as a component:
+//! `export rule name { pattern -> value, ... }` is an instance of
+//! `component rule` below, its arms filling `run`
+//! (features/components/builders.av's arms sugar, the implicit
+//! `_ -> null` tail included — a rule's answer is always `Fix?`),
+//! its own `///` filling `doc`, and its `@fixes`/`@keeps`/`@law`
+//! annotations filling `fixes`/`keeps`/`law`
+//! (features/components/lower.av's `augmented`). THE SUBJECT IS
+//! `it`, the general arms-sugar's own pronoun — no bespoke grammar,
+//! no second binding name; `compiler/idioms.av`'s own rules read it
+//! the same way every other component's arms body does. `check`
+//! judges only what it can without running the compiler — whether
+//! the rule proves itself against anything at all; the examples
+//! themselves run in `avra test`'s own suite
+//! (compiler/rule_examples.av). `compiler/rules_table.av`'s own
+//! collect reads one more field this component declares none of:
+//! `root_kind`, folded from `run`'s WRITTEN arms
+//! (compiler/lower/lower.av's `component_root_kind`) — the ROOT-KIND
+//! INDEX every `.Component` kind's collect may ask for, not a `rule`
+//! special case either.
+//!
+//! `@law("...")` is a rule's own EQUIVALENCE CLAIM — a rewrite whose
+//! before and after forms answer the same program by construction
+//! (a different control shape or runtime call, never a different
+//! MEANING), which `avra fix`'s IR proof compares instruction
+//! sequences too literally to ever confirm (compiler/rule_proof.av's
+//! `law_proved`). The words state WHAT is equivalent, never "trust
+//! me" — a law worded as a symptom goes stale the moment the rule's
+//! own implementation moves (CLAUDE.md's "a voice states the law,
+//! not the symptom"). A rule with no `@law` stays behind the IR
+//! proof alone.
+//!
+//! `@says("reason")` records that a rule only SAYS: its finding names the
+//! shape and no rewrite of the matched node is honest, and the reason says
+//! why (what the rewrite would have to touch beyond the node, or decide for
+//! the author). A rule carries `@fixes` or `@says`, never both —
+//! `avra voices` holds a rule with neither to its baseline.
+use features.{Code, Fix, Syntax}
+use @std.meta.{Diagnostic, refuse}
+
+/// One `@fixes` example: code the rule rewrites. `@fixes("before",
+/// "after")` proves a rewrite; `@fixes("before")` — `after` absent —
+/// proves a `Fix.Delete` instead, over `before`'s nearest hit: no
+/// rewritten form exists to compare against, only that the finding's
+/// declaration is gone and the rest still parses
+/// (`compiler/rule_examples.av`'s `checks_delete`).
+///
+/// `files` makes the example a PACKAGE: a rule over a `use` line has
+/// nothing to read in a lone file, so `before` is the entry
+/// (`/w/src/main.av`) of a package those files (path -> text) complete,
+/// under a lawful manifest — `@fixes("use util.{f}\n1\n", null,
+/// {"/w/src/util/util.av": "export fn f() -> int { 1 }\n"})`.
+export type Fixes = { before: string, after: string? = null, files: Map<string, string> = {} }
+
+export component rule {
+    run: fn(Syntax) -> Fix?
+    doc: string = ""
+    fixes: List<Fixes> = []
+    keeps: List<string> = []
+    law: List<string> = []
+    says: List<string> = []
+
+    fn check() -> List<Diagnostic> { rule_judged(self.fixes, self.keeps, self.law, self.says) }
+}
+
+/// What a rule's own declaration must hold to prove itself: an example, at most one `@law`, at most
+/// one `@says`, and never `@says` beside `@fixes`.
+fn rule_judged(fixes: List<Fixes>, keeps: List<string>, law: List<string>, says: List<string>) -> List<
+    Diagnostic,
+> {
+    if fixes.is_empty() && keeps.is_empty() {
+        return [refuse("a rule with no `@fixes` or `@keeps` has nothing to prove itself against")]
+    }
+    if law.length > 1 { return [refuse("a rule takes at most one `@law` — the claim is singular")] }
+    if says.length > 1 { return [refuse("a rule takes at most one `@says` — one reason no rewrite is honest")] }
+    if !says.is_empty() && !fixes.is_empty() {
+        return [
+            refuse(
+                "a rule that carries `@fixes` rewrites, and `@says` states that it does not — one of them",
+            ),
+        ]
+    }
+    []
+}

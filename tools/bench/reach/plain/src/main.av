@@ -1,0 +1,15 @@
+// A plain HTTP server: no TLS anywhere in its reach.
+use @std.net.{NetError, listen}
+use @std.http.frame.{limits}
+use @std.http.http.{text}
+use @std.http.server.{served, Timing}
+
+type App = { name: string }
+
+fn serving() -> Result<int, NetError> {
+    let l = listen("127.0.0.1", 18080)?
+    served(l, () -> App { name: "reach" }, limits(), Timing { requests: 1 }) { app, q -> text(200, "hello") }
+        .run()
+}
+
+match serving() { .Ok(n) -> "${n}", .Err(e) -> "failed: ${e.describe().message}" }

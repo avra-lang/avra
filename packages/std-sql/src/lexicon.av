@@ -1,0 +1,40 @@
+//! SQL's lexicon — one `Grammar` value, one `grammar { }` block, the
+//! same DSL text notation the compiler's own grammar uses. No
+//! constructor calls, no separate keyword list (a keyword is just an
+//! ordinary `IDENT`-shaped match whose text a PARSER rule later
+//! matches literally — the same way this compiler's own keywords work,
+//! not a lexer-level concept), no skip-list metadata baked into the
+//! grammar (filtering WS/comments out of `lex`'s result is the
+//! caller's ordinary business, one line, not a library concept).
+
+use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep}
+
+// Rule order is tie-break order (`lexing.av`'s `longest_rule_match`
+// keeps the first-listed rule on an equal-length match), so IDENT and
+// NUMBER are listed before the `alpha`/`digit` fragments they are built
+// from — a one-character identifier or digit would otherwise tie its
+// own fragment rule and read as `alpha`/`digit` rather than IDENT/NUMBER.
+//
+// A rule whose line ends in a bare `*` or `+` is wrapped in one more
+// pair of parens: the compiler's own lexer treats a trailing `*`/`+`
+// as a continuing (multiplication/addition) operator and drops the
+// line's break, so the NEXT rule's tokens silently run on into this
+// one's — the two rules merge into a single failed parse and both
+// vanish from the built grammar with no diagnostic. Ending the line
+// in `)` instead (a closer, never continuing) keeps every rule its
+// own statement. `?` is not a continuing operator and needs no wrap.
+export const SQL: Grammar = grammar {
+    IDENT         = alpha ((alpha | digit)*)
+    NUMBER        = digit+ ("." digit+)?
+    STRING        = "'" (not("'") | "'" "'")* "'"
+    QUOTED_IDENT  = "\"" (not("\""))* "\""
+    LINE_COMMENT  = "--" ((not("\n"))*)
+    BLOCK_COMMENT = "/*" (not("*/"))* "*/"
+    WS            = ((" "|"\t"|"\n"|"\r")+)
+    HOLE          = "${" (not("}"))* "}"
+    OP            = "<="|">="|"<>"|"!="|"("|")"|","|"."|";"|"="|"<"|">"|"+"|"-"|"*"|"/"
+
+    alpha = "a"|"b"|"c"|"d"|"e"|"f"|"g"|"h"|"i"|"j"|"k"|"l"|"m"|"n"|"o"|"p"|"q"|"r"|"s"|"t"|"u"|"v"|"w"|"x"|"y"|"z"
+          |"A"|"B"|"C"|"D"|"E"|"F"|"G"|"H"|"I"|"J"|"K"|"L"|"M"|"N"|"O"|"P"|"Q"|"R"|"S"|"T"|"U"|"V"|"W"|"X"|"Y"|"Z"|"_"
+    digit = "0"|"1"|"2"|"3"|"4"|"5"|"6"|"7"|"8"|"9"
+}

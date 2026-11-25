@@ -1,0 +1,57 @@
+// A store in memory answers only the compiler it answers for, as a store on disk does: two compilers
+// over one store share nothing they kept, and each reads its own back.
+use tests.support.store_in_memory.{StoreInMemory, store_in_memory}
+use answer_record.{question}
+use query_engine.{QueryDefinition, QueryEngine, query_engine}
+
+fn ask_text(engine: QueryEngine, query_name: string, argument: string) -> string {
+    engine.answer_to(question(query_name, "code", argument.bytes())).copied().text() ?? ""
+}
+
+/// The queries of a compiler whose `summary` was built from `code`: `source` an input, `summary`
+/// reading it.
+fn compiler(world: string, code: string) -> List<QueryDefinition> {
+    [
+        QueryDefinition {
+            query_name: "source",
+            code_hash: "code",
+            is_input: true,
+            compute: (_e, _a) -> world.bytes(),
+        },
+        QueryDefinition {
+            query_name: "summary",
+            code_hash: code,
+            is_input: false,
+            compute: (e, a) -> "length ${ask_text(e, "source", a.text() ?? "").length}".bytes(),
+        },
+    ]
+}
+
+/// What one process of the compiler built from `code` works out — inputs aside — asked for
+/// `summary` over `store`.
+fn worked(store: StoreInMemory, code: string) -> int {
+    let engine = query_engine(store, compiler("hello world", code))
+    let _ = ask_text(engine, "summary", "main")
+    engine.frontier_kept()
+    engine.worked_count()
+}
+
+spec "store in memory — a compiler reads no other's answers" {
+    given "two compilers over one store" {
+        then "the second works out what the first already kept" {
+            let s = store_in_memory()
+            worked(s, "one") == 1 && worked(s, "two") == 1
+        }
+        then "the first, back over that store, reads its own and works nothing out" {
+            let s = store_in_memory()
+            let _ = worked(s, "one")
+            let _ = worked(s, "two")
+            worked(s, "one") == 0
+        }
+        then "one compiler twice works nothing out the second time" {
+            let s = store_in_memory()
+            let _ = worked(s, "one")
+            worked(s, "one") == 0
+        }
+    }
+}
