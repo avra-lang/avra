@@ -14,6 +14,13 @@ binaries, and prints what the smallest programs weigh.
   nothing until a scheduler names its own; and the task stack an
   unoptimised binary asks for, which a scheduler reads once linked. Any OTHER scheduler-named global outside the
   scheduler members is refused, so a moved fn or a new object asks here.
+  A PACKAGE'S C IS THE SAME LAW ONE LEVEL UP: every `[link]` row of a
+  package under packages/ names archives, so a program links the members
+  it reaches; and no clean program carries a member of a package archive
+  whose globals its own code never names. A bare object rides every
+  program whose closure imports its package (SQLite's, through @std/crud,
+  rode a board that calls no database: 1.3 MB). A package that declares
+  `dynamic_symbols` is found by name at run time, so its C stays whole.
   THE SIZE is the stripped file and its code, per platform, against
   tools/footprint.baseline. The cap is RELATIVE (CEILING): a tenth of the
   floor is one small fn family or the toolchain's own drift between
@@ -34,6 +41,8 @@ import os, platform, re, shutil, subprocess, sys, tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIXTURES = os.path.join(ROOT, "tools", "footprint")
+PACKAGES = os.path.join(ROOT, "packages")
+MANIFEST_OBJECTS = os.path.join(ROOT, "tools", "manifest_objects.sh")
 BASELINE = os.environ.get("FOOTPRINT_BASELINE", os.path.join(ROOT, "tools", "footprint.baseline"))
 SCHEDULER = ("avra_fiber.o", "avra_cores.o", "avra_tick.o")
 SCHEDULER_NAMED = re.compile(r"avra_(fiber|wait_|gate_|vgate_|vtask|task_|tasks_|sched_|cores|tick)")
@@ -50,11 +59,11 @@ TASK_STATE = {
 # Programs that spawn nothing, and the one that must be refused.
 # A call through a fn VALUE may be any fn and links nothing: beside a
 # `while` or a `defer` it must not bring the scheduler in.
-CLEAN = ("hello", "data", "slot", "closure_loop", "defer_closure")
+CLEAN = ("hello", "data", "slot", "closure_loop", "defer_closure", "crud_paths")
 # The witnesses: a spawn written plainly, and one only a value-called
 # closure makes.
 SPAWNING = ("spawns", "spawns_by_value")
-SIZED = ("hello", "data")
+SIZED = ("hello", "data", "crud_paths")
 CEILING = 10
 # A C program that only reads the runtime's unwind byte. The tree cannot
 # spell that read in Avra yet, so the fixture is C: it proves the read
@@ -118,6 +127,29 @@ def pulled_by(found, banned, members, ir):
         return f"the program's own code calls `{'`, `'.join(own[:3])}`{' …' if len(own) > 3 else ''}"
     by = sorted({m for m, (_, wants) in members.items() if wants & set(found)})
     return f"reached from {', '.join(by)}" if by else "reached from an object outside the runtime archive"
+
+
+def unarchived(entries, dynamic):
+    """A `[link]` row's entries that are no archive, for a package not found by name at run time."""
+    return [] if dynamic else [e for e in entries if not e.endswith(".a")]
+
+
+def dynamic_of(manifest):
+    """Whether a manifest's `[link]` table declares `dynamic_symbols = true`."""
+    inlink = False
+    for line in manifest.splitlines():
+        if line.startswith("["):
+            inlink = line.strip() == "[link]"
+        elif inlink and re.match(r"\s*dynamic_symbols\s*=\s*true\b", line):
+            return True
+    return False
+
+
+def unreached_archives(symbols, globals_by_archive, ir):
+    """The package archives (or bare objects) a binary carries a global of while its own code names none of theirs."""
+    named = {n for line in ir.splitlines() if not line.lstrip().startswith("declare ")
+             for n in re.findall(r"@([\w.$]+)", line)}
+    return sorted(a for a, defined in globals_by_archive.items() if symbols & defined and not named & defined)
 
 
 def shown(found, banned):
@@ -224,6 +256,26 @@ def gate(accept):
     say(f"{len(members)} runtime member(s), {len(banned)} scheduler global(s) in {' + '.join(SCHEDULER)}; "
         f"what a task carries ({len(TASK_STATE)} name(s)) is the core runtime's")
 
+    manifests = sorted(os.path.join(PACKAGES, p, "avra.toml") for p in os.listdir(PACKAGES)
+                       if os.path.isfile(os.path.join(PACKAGES, p, "avra.toml")))
+    for m in manifests:
+        dynamic = dynamic_of(open(m).read())
+        for key in ("objects", "wasm_objects"):
+            rows = ran("sh", MANIFEST_OBJECTS, "--rows", key, m).stdout.split()
+            for entry in unarchived(rows, dynamic):
+                say(f"{os.path.relpath(m, ROOT)} links `{entry}` bare in `{key}` — a bare object rides every "
+                    "program that imports the package; archive it, as std-tls's are")
+                fail = 1
+    globals_by_archive = {}
+    for path in ran("sh", MANIFEST_OBJECTS).stdout.split():
+        full = os.path.join(ROOT, path)
+        if path.endswith((".a", ".o")) and os.path.isfile(full):
+            listing = ran("nm", full).stdout
+            if path.endswith(".o"):
+                listing = f"{os.path.basename(path)}:\n{listing}"
+            globals_by_archive[path] = set().union(*[d for d, _ in members_of(listing).values()] or [set()])
+    say(f"{len(manifests)} package manifest(s) read; {len(globals_by_archive)} package object(s) and archive(s) read")
+
     accepted = baseline_rows(open(BASELINE).read()) if os.path.isfile(BASELINE) else {}
     here = (host(), toolchain())
     say(f"{here[0]}, {here[1]}")
@@ -253,6 +305,10 @@ def gate(accept):
             if found:
                 say(f"{name} spawns nothing and carries {shown(found, banned)}; "
                     f"{pulled_by(found, banned, members, ir)}")
+                fail = 1
+            for a in unreached_archives(symbols, globals_by_archive, ir):
+                say(f"{name} carries {a}'s C and its own code names none of it — a package's C rides only a "
+                    "program that calls into it")
                 fail = 1
             if name in SIZED:
                 sizes[name] = (stripped_size(binary), code_size(binary))
@@ -300,7 +356,7 @@ def gate(accept):
     if fail:
         say("REFUSED")
         return 1
-    say(f"clean — {len(CLEAN)} Avra program(s) and the C flag read carry no scheduler, {len(SPAWNING)} witness(es) refused, {read} symbol(s) read, "
+    say(f"clean — {len(CLEAN)} Avra program(s) and the C flag read carry no scheduler and no package C they never call, {len(SPAWNING)} witness(es) refused, {read} symbol(s) read, "
         f"{len(sizes)} sized, {sum(1 for n in sizes if here + (n,) in accepted)} held to a baseline")
     return 0
 
@@ -346,6 +402,19 @@ def self_test():
         ("a row with no toolchain is no row", baseline_rows("linux-x86_64 hello 10 20\n") == {}),
         ("a binary's names are read", symbols_of("0000 T main\n     U malloc\n") == {"main", "malloc"}),
         ("the read fixture reads the flag", "avra_unwinding" in open(READ).read()),
+        ("an archive in a row is lazy", unarchived(["../../build/std_tls.a"], False) == []),
+        ("a bare object in a row is named", unarchived(["../../build/sqlite3.o", "../../build/x.a"], False) == ["../../build/sqlite3.o"]),
+        ("a package found by name at run time keeps its objects", unarchived(["../../build/ffi.o"], True) == []),
+        ("dynamic_symbols is read in [link] alone",
+         dynamic_of("[link]\nobjects = []\ndynamic_symbols = true\n") and not dynamic_of("[lib]\ndynamic_symbols = true\n")),
+        ("an archive the code never names is carried unreached",
+         unreached_archives({"main", "sqlite3_open"}, {"build/std_sqlite.a": {"sqlite3_open"}}, "call i32 @main()") == ["build/std_sqlite.a"]),
+        ("an archive the code calls into is reached",
+         unreached_archives({"sqlite3_open"}, {"build/std_sqlite.a": {"sqlite3_open"}}, "call ptr @sqlite3_open(ptr %p)") == []),
+        ("a declaration is not a use",
+         unreached_archives({"sqlite3_open"}, {"build/std_sqlite.a": {"sqlite3_open"}}, "declare ptr @sqlite3_open(ptr)") == ["build/std_sqlite.a"]),
+        ("an archive the binary does not carry is no finding",
+         unreached_archives({"main"}, {"build/std_sqlite.a": {"sqlite3_open"}}, "") == []),
     ]
     failed = [what for what, held in checks if not held]
     for what in failed:

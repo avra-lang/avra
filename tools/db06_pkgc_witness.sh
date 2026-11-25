@@ -22,7 +22,7 @@ set -u
 . "$(dirname "$0")/lib/attack.sh"
 R=build/db06-pkgc
 pkg=packages/std-time
-obj=build/std_time.o
+obj=build/std_time.a
 src=$pkg/src/c/std_time.c
 
 # The reuse line a timed build prints: `· cache hit` or `· built`.
@@ -69,8 +69,8 @@ echo "packages that link objects into a program: $linked"
 echo
 echo "=== 2. the native path: does a package object's byte move the kept answer?"
 cp "$src" $R/std_time.c.kept
-cp "$obj" $R/std_time.o.kept
-restore() { cp $R/std_time.c.kept "$src"; cp $R/std_time.o.kept "$obj"; }
+cp "$obj" $R/std_time.a.kept
+restore() { cp $R/std_time.c.kept "$src"; cp $R/std_time.a.kept "$obj"; }
 trap restore EXIT INT TERM
 if [ -d .avra-cache ]; then find .avra-cache -delete; fi
 built() { ./avra build --time $R/p/src/main.av >$R/$1.out 2>$R/$1.err; echo "$(reused $R/$1.err)"; }
@@ -83,7 +83,7 @@ echo "binary $kept"
 echo "--- one package's C gains a symbol; nothing it does changes"
 printf '\n/* the witness`s own symbol: the package C of a second build */\nint avra_db06_pkgc_probe(void) { return 0; }\n' >> "$src"
 make -s $obj >$R/make.log 2>&1 || { echo "MAKE FAILED"; tail -20 $R/make.log; exit 1; }
-echo "the object: $(shasum -a 256 $R/std_time.o.kept | cut -d' ' -f1 | cut -c1-16) -> $(shasum -a 256 "$obj" | cut -d' ' -f1 | cut -c1-16)"
+echo "the object: $(shasum -a 256 $R/std_time.a.kept | cut -d' ' -f1 | cut -c1-16) -> $(shasum -a 256 "$obj" | cut -d' ' -f1 | cut -c1-16)"
 echo "third build: $(built moved)"
 now=$(shasum -a 256 "$(tail -1 $R/moved.out)" | cut -d' ' -f1 | cut -c1-16)
 # A read set is exact about its INPUTS, not about its output: the appended symbol is unused, so

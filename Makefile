@@ -219,6 +219,34 @@ build/std_hash.a: $(MEMBERS_std_hash.a)
 	@rm -f $@
 	ar rcs $@ $^
 
+# EVERY PACKAGE'S C IS ARCHIVED, never linked bare: a program links the
+# members it reaches and no more, as it does the runtime's. A bare object
+# rides every program whose closure imports its package, reached or not, and
+# one whose constructor names its library (SQLite's sentinel registers fork
+# and run hooks that close connections) roots all of that library: the board,
+# which calls no database, carried 1.3 MB of SQLite through @std/crud's import.
+# tools/footprint.py holds every manifest's `[link]` row to an archive.
+MEMBERS_std_sqlite.a = build/sqlite3.o build/sqlite_sentinel.o
+MEMBERS_std_io.a = build/std_io.o build/std_io_watch.o
+MEMBERS_std_net.a = build/std_net.o
+MEMBERS_std_process.a = build/std_process.o
+MEMBERS_std_time.a = build/std_time.o
+MEMBERS_width_witness.a = build/width_witness.o
+PACKAGE_ARCHIVES := build/std_sqlite.a build/std_io.a build/std_net.a build/std_process.a build/std_time.a build/width_witness.a
+.SECONDEXPANSION:
+$(PACKAGE_ARCHIVES): build/%.a: $$(MEMBERS_%.a)
+	@rm -f $@
+	ar rcs $@ $^
+
+# The same packages' wasm C, archived by the tool that reads a wasm object's
+# symbols.
+WASM_MEMBERS_std_io.a = build/wasm32/std_io.o build/wasm32/std_io_watch.o
+WASM_MEMBERS_std_time.a = build/wasm32/std_time.o
+WASM_PACKAGE_ARCHIVES := build/wasm32/std_io.a build/wasm32/std_time.a
+$(WASM_PACKAGE_ARCHIVES): build/wasm32/%.a: $$(WASM_MEMBERS_%.a)
+	@rm -f $@
+	@$(WASM_AR) rcs $@ $^
+
 # THE HASHER'S DOOR, FORGED: @std/hash takes a hasher's state back as a
 # value, so forged states are pushed through it with the package's C
 # rebuilt under ASan and UBSan, each unit under its own flags. A machine
@@ -253,7 +281,7 @@ build/%.o: %.c build/%.sha
 	@mkdir -p build
 	cc -c -O2 -fPIC -MMD -MP $(STACK_PROBES) $(SECTIONS) $(if $(findstring /vendor/,$<),,-Wall -Werror) $(CFLAGS_$*) -o $@ $<
 
--include $(patsubst %.o,%.d,$(filter %.o,$(sort $(COMPILER_OBJS) $(PACKAGE_OBJS) $(TLS_OBJS) $(COMPRESS_OBJS) $(HASH_OBJS))))
+-include $(patsubst %.o,%.d,$(filter %.o,$(sort $(COMPILER_OBJS) $(PACKAGE_OBJS) $(TLS_OBJS) $(COMPRESS_OBJS) $(HASH_OBJS) $(foreach a,$(PACKAGE_ARCHIVES),$(MEMBERS_$(notdir $(a)))))))
 
 # THE HOT LEAVES AS BYTES THE COMPILER CARRIES (runtime/avra_hot.h):
 # runtime/avra_hot.c compiled to bitcode by the LLVM the compiler links,
@@ -327,7 +355,7 @@ build/wasm32/%.o: %.c build/%.sha
 	@mkdir -p build/wasm32
 	$(WASM_CC) --target=$(WASM_TARGET) $(if $(WASI_SYSROOT),--sysroot=$(WASI_SYSROOT)) $(WASM_EMULATED) -Iruntime -I$(dir $<) -MMD -MP -ffunction-sections -fdata-sections -Oz -Wno-deprecated -c -o $@ $<
 
--include $(patsubst %.o,%.d,$(WASM_RUNTIME_OBJS) $(WASM_PACKAGE_OBJS))
+-include $(patsubst %.o,%.d,$(filter %.o,$(WASM_RUNTIME_OBJS) $(WASM_PACKAGE_OBJS) $(foreach a,$(WASM_PACKAGE_ARCHIVES),$(WASM_MEMBERS_$(notdir $(a))))))
 
 # THE CORE OBJECT IS THE ARCHIVE'S FIRST MEMBER: the program imports every
 # runtime row from `avra:rt`, and a member that names one of them plain
