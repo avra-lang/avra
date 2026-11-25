@@ -1,0 +1,52 @@
+//! `realize/native/live.av` — A NATIVE PAGE: the elements a native host holds
+//! between paints, the next number to give, and who hears what. Each paint is
+//! a full diff over the page's own matcher; what a control says reaches the
+//! handler its element bound.
+use tree.identity.{NodeId, Owner}
+use tree.node.{Node, Said}
+use tree.seats.{Seat}
+use tree.standing.{Standing, standing}
+use tree.view.{View, rooted}
+use realize.diff.hearing.{Bound, bound_at, bound_on, owners_of}
+use realize.native.element.{Native, lowered}
+use realize.native.patch.{NativePatch, native_diff}
+
+/// A native page as last painted.
+export type NativeLive = {
+    page: Cell<List<Native>> = Cell.new([]),
+    next: Cell<int> = Cell.new(0),
+    bound: Cell<List<Bound>> = Cell.new([]),
+    stands: Standing = standing(),
+}
+
+/// A native page nothing was painted on.
+export fn native_live() -> NativeLive { NativeLive {} }
+
+impl NativeLive {
+    /// The patches that turn the page into `root`. The handlers are kept anew
+    /// every paint: two trees that draw alike may close over different values.
+    fn patches(root: Node) -> List<NativePatch> {
+        let now = native_diff(self.page.get(), lowered(root), self.next.get())
+        self.page.set(now.page)
+        self.next.set(now.next)
+        self.bound.set(bound_on(now.page))
+        now.patches
+    }
+
+    /// `view` drawn on this page: the walk stands where the last paint's
+    /// stood, so an instance the view reaches again keeps its state.
+    fn drawn(view: dyn View) -> Node {
+        self.stands.begun()
+        rooted(view.describe(self.stands))
+    }
+
+    /// The host's echo: element `id` spoke `seat`, saying `said`. The handler
+    /// the last paint bound there runs; false when nothing answered.
+    fn fire(id: NodeId, seat: Seat, said: Said?) -> bool {
+        let action? = bound_at(self.bound.get(), id, seat) else { return false }
+        action.fire(said)
+    }
+
+    /// The owner keys of the elements that hear something.
+    fn owners() -> List<Owner> { owners_of(self.bound.get()) }
+}

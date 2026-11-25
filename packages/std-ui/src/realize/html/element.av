@@ -19,6 +19,7 @@ use tree.sites.{Reading}
 use @std.meta.{Structural, Opaque}
 use @std.assets.{Picture}
 use realize.diff.matcher.{Diffable}
+use realize.diff.hearing.{Bound, Hears}
 
 /// One piece of a page: an element, or a run of text.
 export enum Element {
@@ -68,6 +69,21 @@ impl Diffable for Element {
             .Text(_) -> match now { .Text(_) -> true, .Tag(_) -> false },
             .Tag(was) -> match now { .Tag(n) -> was.tag == n.tag, .Text(_) -> false },
         }
+    }
+}
+
+impl Hears for Element {
+    /// The handlers it binds: a run of text binds none.
+    fn bound() -> List<Bound> {
+        match self {
+            .Tag(el) -> [Bound { id: el.id, action: a, ordered: el.crowded } for a in el.hears],
+            .Text(_) -> [],
+        }
+    }
+
+    /// What it holds.
+    fn held() -> List<Element> {
+        match self { .Tag(el) -> el.kids, .Text(_) -> [] }
     }
 }
 
