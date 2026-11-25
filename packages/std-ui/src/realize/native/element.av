@@ -1,0 +1,56 @@
+//! `realize/native/element.av` — A NATIVE ELEMENT: one per node, its prim,
+//! its facts, what it hears and its children, standing at the node's own
+//! step. A native host composes its own control from the prim and its facts,
+//! so a title, a label or a control's words are facts, never children.
+use tree.identity.{NodeId, Step, root as root_step, stepped, unplaced}
+use tree.node.{Node, Prim, Action}
+use realize.diff.matcher.{Diffable}
+use realize.native.fact.{Fact, attribute_facts, style_facts, layout_facts, theme_facts}
+
+/// One node as a native host draws it. `id` is the number a diff gave it —
+/// none until one places it.
+export type Native = {
+    id: NodeId = unplaced,
+    seat: Step,
+    prim: Prim,
+    facts: List<Fact> = [],
+    hears: List<Action> = [],
+    kids: List<Native> = [],
+}
+
+impl Diffable for Native {
+    /// Its number on the page.
+    fn id() -> NodeId { self.id }
+
+    /// Where it stands among its siblings.
+    fn seat() -> Step { self.seat }
+
+    /// An element keeps one of its own prim.
+    fn keeps(now: Native) -> bool { self.prim == now.prim }
+}
+
+/// The tree as native elements: the root wears the theme it was drawn in.
+export fn lowered(root: Node) -> List<Native> {
+    let drawn = lower(root, root_step(root.box.key))
+    let theme? = root.theme?.theme else { return [drawn] }
+    [drawn with { facts: drawn.facts.concat(theme_facts(theme)) }]
+}
+
+/// `n` standing at `at`, and its children each at its own step.
+fn lower(n: Node, at: Step) -> Native {
+    let steps = stepped([c.box.stand() for c in n.children]).steps
+    Native {
+        seat: at,
+        prim: n.prim,
+        facts: node_facts(n),
+        hears: n.events,
+        kids: [lower(c, steps[j]) for j, c in n.children],
+    }
+}
+
+/// What a node says: its attributes, its style and its layout.
+fn node_facts(n: Node) -> List<Fact> {
+    [f for a in n.attrs for f in attribute_facts(a)]
+        .concat(style_facts(n.box.style))
+        .concat(layout_facts(n.box.layout))
+}

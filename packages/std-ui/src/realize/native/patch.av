@@ -1,0 +1,87 @@
+//! `realize/native/patch.av` — THE NATIVE DIFF: what turns a native host's
+//! elements into the ones it should hold, said by the same matcher the page
+//! uses. A kept element says the facts that changed and the ones it no
+//! longer holds; a new one is created with its facts and placed.
+use tree.identity.{NodeId}
+use tree.node.{Action, Prim}
+use tree.seats.{Seat}
+use style.style.{Interaction}
+use realize.diff.matcher.{Draws, Drawn, Stands, siblings}
+use realize.native.element.{Native}
+use realize.native.fact.{Fact, What, about, agree}
+
+/// One change to a native host's elements. `Place` puts an element under its
+/// parent — the root when absent — right after a sibling, or first.
+export enum NativePatch {
+    Create(id: NodeId, prim: Prim)
+    SetFact(id: NodeId, fact: Fact)
+    DropFact(id: NodeId, what: What, under: Interaction?)
+    Place(id: NodeId, parent: NodeId?, after: NodeId?)
+    Remove(id: NodeId)
+    Listen(id: NodeId, seat: Seat)
+    Unlisten(id: NodeId, seat: Seat)
+}
+
+/// The patches between two native trees, the elements as they now stand
+/// wearing their numbers, and the next number to give.
+export type NativeDiffed = { patches: List<NativePatch>, page: List<Native>, next: int }
+
+/// A diff under way: the patches said so far, in the order a host applies them.
+type NativeDiffer = { said: Cell<List<NativePatch>> = Cell.new([]) }
+
+impl NativeDiffer {
+    fn say(patches: List<NativePatch>) {
+        // LICENSED loops.push_loop: a cell's list grows in place — a concat copies all said so far
+        for p in patches { self.said.push(p) }
+    }
+
+    /// A new element: numbered, created with its facts and its hearing, its
+    /// children made under it.
+    fn made(e: Native, next: int) -> Drawn<Native> {
+        let id = NodeId { n: next }
+        self.said.push(NativePatch.Create(id, e.prim))
+        self.say([NativePatch.SetFact(id, f) for f in e.facts])
+        self.say([NativePatch.Listen(id, a.seat) for a in e.hears])
+        let laid = siblings(self, id, [], e.kids, next + 1)
+        Drawn { element: e with { id: id, kids: laid.page }, next: laid.next }
+    }
+
+    /// A kept element: the facts that changed or left, the hearing that
+    /// changed, its children matched under it.
+    fn kept(was: Native, now: Native, next: int) -> Drawn<Native> {
+        self.say(facts(was.id, was.facts, now.facts))
+        self.say(hearing(was.id, was.hears, now.hears))
+        let laid = siblings(self, was.id, was.kids, now.kids, next)
+        Drawn { element: now with { id: was.id, kids: laid.page }, next: laid.next }
+    }
+}
+
+impl Draws<Native> for NativeDiffer {
+    fn removed(id: NodeId) { self.said.push(NativePatch.Remove(id)) }
+
+    fn placed(id: NodeId, parent: NodeId?, after: NodeId?) { self.said.push(NativePatch.Place(id, parent, after)) }
+
+    fn drawn(p: Stands<Native>, next: int) -> Drawn<Native> {
+        match p { .Made(e) -> self.made(e, next), .Kept(_, was, now) -> self.kept(was, now, next) }
+    }
+}
+
+/// A fact is set when it arrives or changes, and dropped when it goes.
+fn facts(id: NodeId, old: List<Fact>, new: List<Fact>) -> List<NativePatch> {
+    [NativePatch.SetFact(id, f) for f in new if !old.any((o) -> agree(o, f))]
+        .concat([NativePatch.DropFact(id, o.what, o.under) for o in old if !new.any((f) -> about(o, f))])
+}
+
+/// A seat is heard anew when it arrives, and no longer when it goes.
+fn hearing(id: NodeId, old: List<Action>, new: List<Action>) -> List<NativePatch> {
+    [NativePatch.Unlisten(id, o.seat) for o in old if !new.any(it.seat == o.seat)]
+        .concat([NativePatch.Listen(id, a.seat) for a in new if !old.any(it.seat == a.seat)])
+}
+
+/// The patches that turn `old` into `new`. Every element of `old` wears its
+/// number; one that stays keeps it, and a new one takes the next from `next`.
+export fn native_diff(old: List<Native>, new: List<Native>, next: int) -> NativeDiffed {
+    let at = NativeDiffer {}
+    let drawn = siblings(at, null, old, new, next)
+    NativeDiffed { patches: at.said.get(), page: drawn.page, next: drawn.next }
+}
