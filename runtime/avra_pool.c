@@ -32,6 +32,7 @@
 #include <sys/sysctl.h>
 #endif
 #include "avra_door.h"
+#include "avra_settings.h"
 #include "avra_platform.h"
 
 #if AVRA_MEASURES_MEMORY && !defined(__wasm32__)
@@ -78,12 +79,12 @@ void avra_pool_forked(void) {
 static void pool_settled(void) {
     if (g_slot_count >= 0) return;
     g_slot_count = 0;
-    const char* sized = getenv("AVRA_MEM_POOL_MB");
+    const char* sized = getenv(AVRA_SET_MEM_POOL_MB);
     int64_t bytes = sized && *sized ? (int64_t)atoll(sized) << 20 : machine_bytes() / 100 * POOL_PERCENT;
-    const char* waits = getenv("AVRA_MEM_POOL_WAIT_MS");
+    const char* waits = getenv(AVRA_SET_MEM_POOL_WAIT_MS);
     if (waits && *waits) g_wait_ms = atoll(waits);
     if (bytes <= 0) return;
-    const char* placed = getenv("AVRA_MEM_POOL_DIR");
+    const char* placed = getenv(AVRA_SET_MEM_POOL_DIR);
     if (placed && *placed) {
         snprintf(g_dir, sizeof g_dir, "%s", placed);
     } else {

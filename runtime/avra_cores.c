@@ -38,6 +38,7 @@
 #endif
 
 #include "avra_cores.h"
+#include "avra_settings.h"
 #include "avra_fiber.h"
 #include "avra_runtime.h"
 
@@ -391,7 +392,7 @@ int64_t avra_cores_heir(int64_t quiet) {
         if (null > 2) close(null);
     }
     // the test hook that holds an heir back, so a witness meets its work unfinished
-    const char* lingers = getenv("AVRA_HEIR_LINGERS_MS");
+    const char* lingers = getenv(AVRA_SET_HEIR_LINGERS_MS);
     if (lingers && *lingers) {
         avra_clock_hold(1);
         usleep((useconds_t)atoll(lingers) * 1000);
@@ -694,8 +695,8 @@ int64_t avra_shared_logged_end(void* h, int64_t kind, int64_t at) {
 static void claim_counted(Shared* sh) {
     static int64_t kill_at = -1, trap_at = -1;
     if (kill_at < 0) {
-        const char* k = getenv("AVRA_SHARED_KILL_AT");
-        const char* t = getenv("AVRA_SHARED_TRAP_AT");
+        const char* k = getenv(AVRA_SET_SHARED_KILL_AT);
+        const char* t = getenv(AVRA_SET_SHARED_TRAP_AT);
         kill_at = k && *k ? atoll(k) : 0;
         trap_at = t && *t ? atoll(t) : 0;
     }

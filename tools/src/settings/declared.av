@@ -3,9 +3,9 @@
 //! person sets; `debug` is what an oracle reading sets. A field's
 //! variable is its exact name; `null` is "unset". `wisp tree settings
 //! --write` projects each package's records into its `src/settings.av`,
-//! and `--check` holds them fresh. The runtime's C reads its own names
-//! (`AVRA_HASH_SEED`, `AVRA_MEM_*`, `AVRA_FIBER_*`) and is not covered
-//! here.
+//! and `--check` holds them fresh. `runtime` is what the runtime's C reads:
+//! its projection is a header naming every declared variable, with a
+//! reader per switch.
 use @std.meta.{derive}
 use @std.validate.{Decode}
 use @std.config.{Configured, Loaded, Unloaded, env, variable}
@@ -153,12 +153,89 @@ export component CliDebug {
     @variable("AVRA_QUERY_FAMILIES") query_families: bool = false
 }
 
+/// The runtime's settings a person sets.
+@derive(Decode)
+export component RuntimeUser {
+    /// The map hash's seed, pinned; else a fresh one each run.
+    @variable("AVRA_HASH_SEED") hash_seed: int? = null
+    /// Each task's stack in bytes.
+    @variable("AVRA_FIBER_STACK") fiber_stack: int? = null
+    /// The stacks' guard pages: `all`, or how many stacks get one.
+    @variable("AVRA_FIBER_GUARDS") fiber_guards: string? = null
+    /// The scheduler's tick in microseconds.
+    @variable("AVRA_TICK_US") tick_us: int? = null
+    /// The most switches a due timer waits.
+    @variable("AVRA_TIMER_TURNS") timer_turns: int? = null
+    /// The machine's memory pool in megabytes; `0` is none.
+    @variable("AVRA_MEM_POOL_MB") mem_pool_mb: int? = null
+    /// How long a run waits for the pool, in milliseconds.
+    @variable("AVRA_MEM_POOL_WAIT_MS") mem_pool_wait_ms: int? = null
+    /// Where the pool's slots stand.
+    @variable("AVRA_MEM_POOL_DIR") mem_pool_dir: string? = null
+    /// A run's memory ceiling in megabytes.
+    @variable("AVRA_MEM_CEILING_MB") mem_ceiling_mb: int? = null
+    /// How many compiles the machine runs at once; `0` is no bound.
+    @variable("AVRA_MAX_COMPILES") max_compiles: int? = null
+    /// Where the machine's compile slots stand.
+    @variable("AVRA_SLOT_DIR") slot_dir: string? = null
+}
+
+/// The runtime's instruments and test hooks.
+@derive(Decode)
+export component RuntimeDebug {
+    /// The compiler's own debug lines on stderr.
+    @variable("AVRA_DEBUG") debug: bool = false
+    /// Every count checked, and a dead box kept to replay its life.
+    @variable("AVRA_RC_GUARD") rc_guard: bool = false
+    /// The guard's log bound in bytes.
+    @variable("AVRA_RC_LOG_BUDGET") rc_log_budget: int? = null
+    /// Live bytes by category, capacity and site, at exit.
+    @variable("AVRA_MEM_STATS") mem_stats: bool = false
+    /// How many allocation sites the accounting names.
+    @variable("AVRA_MEM_SITES") mem_sites: int? = null
+    /// The one site whose sample is replayed, unslid hex.
+    @variable("AVRA_MEM_SITE") mem_site: string? = null
+    /// The live megabytes the accounting dumps at.
+    @variable("AVRA_MEM_DUMP_AT") mem_dump_at: int? = null
+    /// The fewest cells a list counts as wide at.
+    @variable("AVRA_MEM_WIDE") mem_wide: int? = null
+    /// The census's own rows, by site.
+    @variable("AVRA_CENSUS_SITES") census_sites: bool = false
+    /// The census's deaths, by site.
+    @variable("AVRA_CENSUS_DEATHS") census_deaths: bool = false
+    /// How many sites a census table shows.
+    @variable("AVRA_CENSUS_TOP") census_top: int? = null
+    /// How many rows the census's row table shows.
+    @variable("AVRA_CENSUS_ROWS_TOP") census_rows_top: int? = null
+    /// How many types the census's type table shows.
+    @variable("AVRA_CENSUS_TYPES_TOP") census_types_top: int? = null
+    /// A trap's stack on stderr.
+    @variable("AVRA_TRAP_TRACE") trap_trace: bool = false
+    /// Each box a write cloned, on stderr.
+    @variable("AVRA_ALIAS_LOG") alias_log: bool = false
+    /// A run's map probes, at exit.
+    @variable("AVRA_MAP_STATS") map_stats: bool = false
+    /// The scheduler's trace: `1` for stderr, else a file.
+    @variable("AVRA_FLOW_TRACE") flow_trace: string? = null
+    /// The trace's bound in bytes.
+    @variable("AVRA_FLOW_TRACE_CAP") flow_trace_cap: int? = null
+    /// How long an heir is held back, in milliseconds.
+    @variable("AVRA_HEIR_LINGERS_MS") heir_lingers_ms: int? = null
+    /// The claim whose holder is killed.
+    @variable("AVRA_SHARED_KILL_AT") shared_kill_at: int? = null
+    /// The claim whose holder traps.
+    @variable("AVRA_SHARED_TRAP_AT") shared_trap_at: int? = null
+    /// Set by a compile holding a slot, so its children take none.
+    @variable("AVRA_COMPILE_SLOT") compile_slot: string? = null
+}
+
 /// The settings a person sets, by the package that reads them.
 @derive(Decode)
 export component User {
     program: ProgramUser = ProgramUser {}
     avrac: AvracUser = AvracUser {}
     cli: CliUser = CliUser {}
+    runtime: RuntimeUser = RuntimeUser {}
 }
 
 /// The switches an oracle reading sets, by the package that reads them.
@@ -167,9 +244,10 @@ export component Debug {
     program: ProgramDebug = ProgramDebug {}
     avrac: AvracDebug = AvracDebug {}
     cli: CliDebug = CliDebug {}
+    runtime: RuntimeDebug = RuntimeDebug {}
 }
 
-/// Every setting the compiler's Avra reads.
+/// Every setting the compiler reads, in its Avra and its C.
 @derive(Decode)
 export component Settings {
     user: User = User {}

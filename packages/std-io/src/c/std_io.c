@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+#include "avra_settings.h"
 #include <pthread.h>
 
 #include "avra_door.h"
@@ -546,12 +547,12 @@ int64_t avra_io_compile_slot(void) {
     // own tools take one, and a wasm program is never one of them.
     return -1;
 #else
-    const char* held = getenv("AVRA_COMPILE_SLOT");
+    const char* held = getenv(AVRA_SET_COMPILE_SLOT);
     if (held && *held) return -1;
-    const char* max = getenv("AVRA_MAX_COMPILES");
+    const char* max = getenv(AVRA_SET_MAX_COMPILES);
     long n = (max && *max) ? strtol(max, NULL, 10) : 3;
     if (n <= 0) return -1;
-    const char* dir = getenv("AVRA_SLOT_DIR");
+    const char* dir = getenv(AVRA_SET_SLOT_DIR);
     if (!dir || !*dir) dir = "/tmp/avra-slots";
     mkdir(dir, 0777);
     int mine;
