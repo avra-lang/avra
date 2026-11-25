@@ -67,7 +67,7 @@ cost-matrix-check-bare make cost, COST_PART=matrix-check-bare: the warm-edit mat
 cost-matrix-check-laid make cost, COST_PART=matrix-check-laid: the same, the std answers laid beside the compiler
 doors-a    test std-json std-task std-validate std-text std-sql std-queue std-time
 doors-b    test std-ui std-http; make ui-host-test and ui-host, std-ui's program tests built and run
-ui-browser the UI board: its wasm claims over the page glue (tools/ui_board.sh), then its claims in headless Firefox (tools/ui_board_browser.sh)
+ui-browser the UI board: its wasm claims over the page glue (tools/ui_board.sh), its native binary's symbols and bytes (tools/ui_board_native.sh), then its claims in headless Firefox (tools/ui_board_browser.sh)
 storyboard test std-ui_gallery: every view std-ui declares told by a story, every case's semantic snapshot on each target held to its golden; then every case under every dial judged in headless Firefox (tools/storyboard_browser.sh)
 findings-a tapes --findings on std-avrac and cli, 0 refusals
 findings-b the same on a third of every other package, dealt in turn
@@ -723,6 +723,7 @@ slice_doors_b() {
 slice_ui_browser() {
     row ui-machine sh -c 'node --version && firefox --version && wasm-ld-22 --version 2>/dev/null | head -1; for d in /usr/lib/wasm32-wasi /usr/lib/wasm32-wasip1 "${WASI_SYSROOT:-/nonexistent}/lib/wasm32-wasip1"; do [ ! -d "$d" ] || echo "libc $d: setjmp $(ls "$d"/libsetjmp.a 2>/dev/null || echo absent)"; done'
     row ui-board sh tools/ui_board.sh
+    row ui-board-native sh tools/ui_board_native.sh
     judged ui-board-ran "$(grep -c 'SKIPPED' "$out/ui-board.log")"
     row ui-browser env CI=true sh tools/ui_board_browser.sh
     row board-dev env CI=true sh tools/witness_board_dev.sh build/avra

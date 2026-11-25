@@ -1,0 +1,62 @@
+// A PACKAGE'S OBJECTS RIDE A PROGRAM THAT CALLS ONE OF ITS EXTERNS. A package's `[link]` row
+// defines the externs it declares, so a program that reaches the package and calls none of them
+// links none of its words, while one that calls an extern — directly or through the package's own
+// fns — links them all; the root package's own row always rides.
+use @std.avrac.testing.held.{held_at}
+
+const APP: string = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@app/c\" = { path = \"c\" }\n"
+
+const C_MANIFEST: string = "[package]\nname = \"@app/c\"\nversion = \"0.1.0\"\n\n[link]\nobjects = [\"c.o\"]\nlibs = [\"cdep\"]\n"
+
+const C_SOURCE: string = "extern fn c_answer() -> int\n\nexport fn asked() -> int { c_answer() }\n\nexport fn plain() -> int { 1 }\n"
+
+const ROOT_LINKED: string = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@app/c\" = { path = \"c\" }\n\n[link]\nobjects = [\"own.o\"]\n"
+
+/// The words the build of a program whose entry is `main` links with, the root's manifest `root`.
+fn linked(root: string, main: string) -> List<string> {
+    held_at(
+        {
+            "/w/avra.toml": root,
+            "/w/src/main.av": main,
+            "/w/c/avra.toml": C_MANIFEST,
+            "/w/c/src/c.av": C_SOURCE,
+        },
+        "/w",
+    )
+        .judged_at("/w/src/main.av")
+        .link_words(called: true)
+}
+
+fn carries_c(words: List<string>) -> bool { words.any(it.ends_with("c.o")) && words.contains("-lcdep") }
+
+spec "compiler/linked" {
+    given "a program that reaches a package with a [link] row" {
+        then "one calling none of its externs links none of its words" {
+            let words = linked(APP, "use @app.c.{plain}\nplain()\n")
+            !words.any(it.ends_with("c.o")) && !words.contains("-lcdep")
+        }
+        then "one calling a fn of the package that calls its extern links its objects and libs" {
+            carries_c(linked(APP, "use @app.c.{asked}\nasked()\n"))
+        }
+        then "the root's own row rides a program that calls no extern" {
+            linked(ROOT_LINKED, "use @app.c.{plain}\nplain()\n").any(it.ends_with("own.o"))
+        }
+    }
+    given "the words read without a program" {
+        then "every package the program reaches links its words" {
+            carries_c(
+                held_at(
+                    {
+                        "/w/avra.toml": APP,
+                        "/w/src/main.av": "use @app.c.{plain}\nplain()\n",
+                        "/w/c/avra.toml": C_MANIFEST,
+                        "/w/c/src/c.av": C_SOURCE,
+                    },
+                    "/w",
+                )
+                    .judged_at("/w/src/main.av")
+                    .link_words(),
+            )
+        }
+    }
+}
