@@ -508,7 +508,7 @@ static CGFloat g_row_h;
 static CGFloat g_list_top;
 static NSInteger g_win_from = -1;
 static NSInteger g_win_to = -1;
-static const NSInteger overscan = 10;
+static const NSInteger overscan = 3;
 
 static void list_found(void) {
     for (SpikeNode* n in g_nodes.allValues) {
@@ -535,7 +535,7 @@ static void window_asked(void) {
     g_last_t = now;
     NSInteger top = MAX(0, (NSInteger)floor(y / g_row_h));
     NSInteger bottom = top + (NSInteger)ceil(g_scroll.bounds.size.height / g_row_h);
-    const NSInteger margin = 5;
+    const NSInteger margin = 1;
     if (g_win_from >= 0 && top - margin >= g_win_from && bottom + margin <= g_win_to) return;
     // too fast for any row to be read: the placeholders carry the scroll, and
     // the rows come when it slows (the scroll's own end asks again)
@@ -623,6 +623,12 @@ static void painted(void) {
 // THE POOL: a removed element's view, and every view under it, waits by its
 // prim for the next create of that prim, as a table's cells wait for reuse.
 static NSMutableDictionary<NSString*, NSMutableArray<SpikeNode*>*>* g_pool;
+// The first window: the rows the screen shows at UIKit's standard row height, and
+// the overscan this target keeps.
+int64_t avra_spike_visible_rows(void) {
+    return (int64_t)ceil(UIScreen.mainScreen.bounds.size.height / 44.0) + overscan;
+}
+
 // A pooled element as a fresh one of its prim: everything a fact could have set, unset.
 static void reset(SpikeNode* n) {
     UIView* v = n.view;

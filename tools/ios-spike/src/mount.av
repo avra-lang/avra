@@ -15,6 +15,7 @@ use @std.ui.tree.identity.{Stand}
 use @std.ui.realize.native.patch.{NativePatch, moves_boxes}
 use @std.time.{now_ns}
 use frame.{neutral, said_directly}
+use kept.{paint_begun, kept_tally}
 use kit.{rects, placed_directly, remembered, solve_ns, rects_split}
 
 extern fn avra_spike_attach()
@@ -164,7 +165,7 @@ export fn mount<V: View>(view: fn() -> V, first_rows: int = 0) {
 fn paint_line(patches: List<NativePatch>, lower: int, serialize: int, place: int, bytes: int) -> string {
     let facts = [p for p in patches if is_fact(p)].length
     let made = [p for p in patches if is_create(p)].length
-    "paint tree_us=${tree_ns().get() / 1000} lower_diff_us=${lower / 1000} serialize_us=${serialize / 1000} place_us=${place / 1000} patches=${patches.length} facts=${facts} creates=${made} page_get_us=${page_get_ns().get() / 1000} solve_us=${solve_ns().get() / 1000} ${rects_split().get()} rows_built=${built_rows().get()} nodes=${node_count(shown_root().get())} ${remembered().tally()} live_bytes_delta=${bytes}"
+    "paint tree_us=${tree_ns().get() / 1000} lower_diff_us=${lower / 1000} serialize_us=${serialize / 1000} place_us=${place / 1000} patches=${patches.length} facts=${facts} creates=${made} ${kept_tally()} page_get_us=${page_get_ns().get() / 1000} solve_us=${solve_ns().get() / 1000} ${rects_split().get()} rows_built=${built_rows().get()} nodes=${node_count(shown_root().get())} ${remembered().tally()} live_bytes_delta=${bytes}"
 }
 
 fn is_fact(p: NativePatch) -> bool {
@@ -209,6 +210,7 @@ impl View for Timed {
     fn stand() -> Stand { self.inner.stand() }
 
     fn describe(at: Standing) -> List<Node> {
+        paint_begun()
         let t = now_ns()
         let drawn = self.inner.describe(at)
         tree_ns().set(now_ns() - t)

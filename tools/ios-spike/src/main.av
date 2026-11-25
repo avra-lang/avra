@@ -10,6 +10,9 @@ use @std.time.{ms, sleep}
 
 extern fn avra_spike_tick(n: int)
 
+/// The rows the host's screen shows, plus its own overscan: the first window.
+extern fn avra_spike_visible_rows() -> int
+
 component counter(label: string) {
     state n: int = 0
     text "${self.label}: ${self.n}"
@@ -53,7 +56,7 @@ let spinner = if env("AVRA_SPIKE_SPIN") == "1" { spawn spun() } else { spawn 0 }
 let board_rows = parse_int(env("AVRA_SPIKE_ROWS") ?? "") ?? 0
 if env("AVRA_SPIKE_BOARD") == "2" {
     fill(if board_rows > 0 { board_rows } else { 10000 })
-    mount(windowed_view, 40)
+    mount(windowed_view, avra_spike_visible_rows())
 } else if env("AVRA_SPIKE_BOARD") == "1" {
     let tasks = if board_rows > 0 { seeded(board_rows) } else { read_once("/tasks") }
     if tasks != null { let _ = tasks_written(tasks!) }

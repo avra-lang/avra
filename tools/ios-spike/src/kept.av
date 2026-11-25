@@ -1,0 +1,90 @@
+//! A ROW KEPT WHILE ITS INPUTS STAND: spike code, standing in for the compiler's
+//! read-set query. A `KeptRow` wraps one row's view; while it stands at the same
+//! route with the same row — the same box, held here so its address cannot be
+//! another value's — its last nodes are its nodes, and what stands under it is
+//! not reached again. THE DECLARATION THIS RESTS ON, written by hand for the
+//! spike's row and never to land: the row reads nothing outside its props and
+//! its own state. `AVRA_SPIKE_CHECK=1` describes anyway and traps where a kept
+//! row's nodes would have differed.
+use @std.ui.tree.view.{View}
+use @std.ui.tree.identity.{Stand}
+use @std.ui.tree.standing.{Standing}
+use @std.ui.tree.node.{Node}
+use @std.ui.realize.html.html.{fragment}
+use @std.ui.tree.trap.{trapped}
+use @std.io.{env}
+
+/// One task: the row the spike's list shows.
+export type Row = { id: string, title: string, done: bool }
+
+/// A row's address: its identity while something holds it.
+extern fn avra_box_key(cell: Row) -> int
+
+/// The row a kept row was described from, held, its identity, its nodes, and the
+/// paint that last reached it.
+type KeptNodes = { row: Row, ident: int, nodes: List<Node>, seen: int }
+
+/// A row's view, kept while its row stands.
+export type KeptRow = { row: Row, inner: dyn View }
+
+/// `inner`, drawn for `row`, kept while `row` stands.
+export fn kept_row(row: Row, inner: dyn View) -> KeptRow { KeptRow { row: row, inner: inner } }
+
+/// The kept rows by the route they stand at.
+once fn kept_rows() -> Cell<Map<string, KeptNodes>> { Cell.new({}) }
+
+once fn check_setting() -> string { env("AVRA_SPIKE_CHECK") ?? "" }
+
+/// The paints counted, so a row no paint reaches is let go.
+once fn paints() -> Cell<int> { Cell.new(0) }
+
+/// How many rows were kept and described since the counts were last read.
+once fn kept_count() -> Cell<int> { Cell.new(0) }
+
+once fn described_count() -> Cell<int> { Cell.new(0) }
+
+/// A paint begins: rows no paint reached in the last two are let go.
+export fn paint_begun() {
+    paints().set(paints().get() + 1)
+    let now = paints().get()
+    let all = kept_rows().get()
+    if all.length > 400 { kept_rows().set(all.filter(now - it.value.seen <= 2)) }
+}
+
+/// The rows kept and described since the last read, as words.
+export fn kept_tally() -> string {
+    let said = "rows_kept=${kept_count().get()} rows_described=${described_count().get()}"
+    kept_count().set(0)
+    described_count().set(0)
+    said
+}
+
+impl View for KeptRow {
+    fn stand() -> Stand { self.inner.stand() }
+
+    fn describe(at: Standing) -> List<Node> {
+        let route = at.route.get()
+        let ident = avra_box_key(self.row)
+        let was = kept_rows().get().get(route)
+        let same = was != null && was!.ident == ident
+        if same && check_setting() != "1" {
+            at.stands_on()
+            kept_count().set(kept_count().get() + 1)
+            kept_rows().put(route, was! with { seen: paints().get() })
+            return was!.nodes
+        }
+        let nodes = self.inner.describe(at)
+        described_count().set(described_count().get() + 1)
+        if same && check_setting() == "1" && said(nodes) != said(was!.nodes) {
+            trapped(
+                "a kept row's nodes differ from its description at ${route}: kept ${said(was!.nodes)} described ${said(nodes)}",
+            )
+        }
+        kept_rows()
+            .put(route, KeptNodes { row: self.row, ident: ident, nodes: nodes, seen: paints().get() })
+        nodes
+    }
+}
+
+/// Nodes as the page would write them: what the check compares.
+fn said(nodes: List<Node>) -> string { [fragment(n) for n in nodes].join("") }
