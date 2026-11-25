@@ -72,7 +72,7 @@ WORLD = {
         "write_text": W, "write_bytes": W, "append_bytes": W, "synced": W,
         "Draft": T, "drafted": W, "drafts_leaving": E, "drafts_left": E, "abandoned_drafts": "read",
         "this_process": "pid",
-        "opened_for_append": W, "truncate_to": W, "make_dirs": W, "remove": W, "touch": W,
+        "opened_for_append": W, "truncate_to": W, "make_dirs": W, "remove": W, "touch": W, "link": W,
         "println": E, "eprintln": E,
         "one_path": P, "refused": P, "enoent": P, "eacces": P, "enotdir": P,
         "IoError": T, "Entry": T, "Opened": T, "AppendFile": T, "Watch": T, "OwnDir": T,

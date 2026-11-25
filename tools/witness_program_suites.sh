@@ -1,4 +1,5 @@
 #!/bin/sh
+# tool-witness: run by the gate's witness-b slice (tools/gate.sh), never twice
 # A PACKAGE'S SUITE ON THE PROGRAM LAYER SAYS WHAT THE OLD RUNNER SAID, AND AN EDIT OF ONE CASE
 # WORKS OUT THAT CASE ALONE. tools/program-suites/suited holds a spec whose cases pass but one,
 # which is wrong on purpose, a lone case in no group, a program test and a test run as a child:

@@ -1,4 +1,5 @@
 #!/bin/sh
+# tool-witness: run by the gate's witness-b slice (tools/gate.sh), never twice
 # A KEPT ARTIFACT IS ITS COMPILER'S, EMITTED AS IT ASKED: an object or a binary another compiler
 # made, or this one made emitting otherwise, is never taken for this one's. A package is built by compiler A, then by B — A's bytes and one more, the least a
 # compiler can differ by, its code and every answer it works out the same — and B must emit every

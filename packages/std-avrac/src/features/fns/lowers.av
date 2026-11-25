@@ -48,6 +48,7 @@ impl Lowers for Call {
         if self.args.length == 1 && metas(cx, named, PROVIDED) { return provided_read(cx, e, self.args[0]) }
         if self.args.length == 1 && metas(cx, named, REHOMED) { return rehomed_value(cx, self.args[0]) }
         if self.args.length == 1 && metas(cx, named, CTX_ENTRY) { return ctx_entry_read(cx, self.args[0]) }
+        if self.args.length == 1 && metas(cx, named, SEEDED) { return seeded_value(cx, self.args[0]) }
         let reached? = reached_unit(cx, named, self, e) else { return cx.missed_as(unlaid(named)) }
         let settled = settled_args(cx, reached, self.args, e)
         let callee = if settled == null { reached } else { settled_unit(reached, settled!) }
@@ -142,6 +143,9 @@ const REHOMED: string = "rehomed"
 /// `@std/meta`'s fn whose answer is the frame entry a context read reads.
 const CTX_ENTRY: string = "ctx_entry"
 
+/// `@std/meta`'s fn that seeds a value's `state` fields seeded at need, now.
+const SEEDED: string = "seeded"
+
 /// `@std/meta`'s fn whose file's text a const reads.
 const EMBED: string = "embed"
 
@@ -235,6 +239,13 @@ fn rehomed_value(mut cx: Lowering, f: ExprId) -> Reg {
     let r = cx.lower(f)
     let ty? = cx.type_at(f) else { return r }
     if ty.callable() { cx.rehomed(r) } else { r }
+}
+
+/// `seeded(v)`: `v`, each `state` field of it seeded at need given its cell now.
+fn seeded_value(mut cx: Lowering, v: ExprId) -> Reg {
+    let r = cx.lower(v)
+    let ty? = cx.type_at(v) else { return r }
+    cx.seeded_now(r, ty)
 }
 
 /// `ctx_entry(ctx.name)`: the cell the frame in force holds for the context, as a word, 0 where its

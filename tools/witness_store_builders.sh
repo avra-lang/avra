@@ -1,4 +1,5 @@
 #!/bin/sh
+# tool-witness: owed by wisp — it needs three compilers whose queries differ; a `wisp fixtures` verb builds them and runs it
 # THREE BINARIES SHARING A STORE EACH BUILD WHAT THEY BUILD COLD. Three compilers whose queries
 # differ build the cli on the program layer over one store: each once cold, its product kept; then
 # each in turn edits a literal, builds, takes the edit back and builds again, and that last product

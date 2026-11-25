@@ -1,4 +1,5 @@
 #!/bin/sh
+# tool-witness: owed by lane-run — (avra-8sb5.112.6) "a second run is BUSY" flakes under load (2 of 3 runs): the killed follower's run is not always seen still holding
 # FIXTURES FOR tools/work's lanes and its PR state — no Sprite and no
 # GitHub: a scratch repository with its own origin, AVRA_SPRITES naming a
 # pool of two, AVRA_SPRITE_CLI standing in for `sprite` (the names in

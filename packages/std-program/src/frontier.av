@@ -40,7 +40,7 @@ use saved_layout.{
 use sorted.{sorted_by}
 
 /// What ends every frontier file: a torn one never reads as one.
-export const FRONTIER_SEAL: string = "avrafront3"
+export const FRONTIER_SEAL: string = "avrafront4"
 
 /// THE CHAIN IS BOUNDED BY WHAT IT MOVED, NEVER BY THE BASE: it holds at most this many deltas, and
 /// the write after them rebases the chain and itself into one delta over the base, holding every
@@ -136,10 +136,11 @@ type FrontierColumns = {
     readers: List<int> = [],
 }
 
-/// A base as written: its answers, each at its own place, the places that are stale, and the
-/// generation it was written in.
+/// A base as written: its answers, each at its own place, the places that are stale, the generation
+/// it was written in, and THE PLACE OF EVERY INPUT, in place order: a warm open asks its inputs
+/// first, and finds them here, read whole, without reading every place's input mark.
 @derive(Saved)
-type FrontierBase = { columns: FrontierColumns, stale: List<int>, generation: int }
+type FrontierBase = { columns: FrontierColumns, stale: List<int>, generation: int, input_places: List<int> }
 
 /// A delta as written: the state it was built on, the answers it writes, sorted by question, the place
 /// of each, the places that went stale, how many places the state holds after it, and the generation
@@ -278,7 +279,13 @@ fn places_below(source: SavedSource, list: SavedList, extent: int) -> bool { (0.
 fn place_below(place: int, extent: int) -> bool { place >= 0 && place < extent }
 
 /// A base read where it lies.
-type BaseLayer = { id: ContentHash, columns: LaidColumns, stale: SavedList, generation: int }
+type BaseLayer = {
+    id: ContentHash,
+    columns: LaidColumns,
+    stale: SavedList,
+    generation: int,
+    input_places: SavedList,
+}
 
 /// A delta read where it lies.
 type DeltaLayer = {
@@ -304,11 +311,14 @@ fn base_read(file: FrontierFile) -> BaseLayer? {
     let columns? = laid_columns(file.source, held, end) else { return null }
     let stale? = FrontierBase.stale_within(file.source, root, end) else { return null }
     if !places_below(file.source, stale, columns.length()) || !columns.turned_round() { return null }
+    let inputs? = FrontierBase.input_places_within(file.source, root, end) else { return null }
+    if !places_below(file.source, inputs, columns.length()) { return null }
     BaseLayer {
         id: file.id,
         columns: columns,
         stale: stale,
         generation: FrontierBase.generation_in(file.source, root),
+        input_places: inputs,
     }
 }
 
@@ -457,18 +467,18 @@ impl Frontier {
     /// Whether the entry at `at` still stands: a stale one is never answered from here.
     fn stands(at: int) -> bool { !self.entry_at(at).stale }
 
-    /// THE PLACE OF EVERY INPUT THAT STANDS, in place order: the base's input column read straight
-    /// through, each place a delta wrote or found stale as the chain left it.
+    /// THE PLACE OF EVERY INPUT THAT STANDS, in place order: the base's inputs as it lists them,
+    /// less each the chain overlays, and each place the chain overlays that stands an input as it
+    /// left it — what the chain wrote, not every place's input mark.
     fn standing_inputs() -> List<int> {
-        mut overlaid = [false for _i in 0..self.extent]
-        mut input = [false for _i in 0..self.extent]
-        for o in self.overlaid.values() {
-            overlaid.set(o.place, true)
-            let columns = if o.delta == null { self.base.columns } else { self.chain[o.delta ?? 0].columns }
-            input.set(o.place, !o.stale && columns.input_at(o.index))
-        }
-        let base = self.base.columns
-        [at for at in 0..self.extent if input[at] || !overlaid[at] && at < base.length() && base.input_at(at)]
+        let source = self.base.columns.source
+        let listed = self.base.input_places
+        let base = [p for i in 0..listed.length for p in [listed.number_at(source, i)] if self.overlaid.get(place_key(p)) == null]
+        let written = [o.place for o in self.overlaid.values() if !o.stale &&
+            if o.delta == null { self.base.columns } else { self.chain[o.delta!].columns }
+                .input_at(o.index)]
+        if written.is_empty() { return base }
+        merged_places(base, sorted_by(written, (a, b) -> a < b))
     }
 
     /// Whether it holds `question` standing, with the answer `answer`.
@@ -1551,7 +1561,12 @@ export fn base_file(entries: List<FrontierEntry>, stale: List<int>, generation: 
 /// A base of the answers `columns` holds, sorted by question, each at its own place, the places
 /// `stale` stale.
 fn base_file_of(columns: FrontierColumns, stale: List<int>, generation: int) -> FrontierWrite {
-    let base = FrontierBase { columns: turned_round(columns), stale: stale, generation: generation }
+    let base = FrontierBase {
+        columns: turned_round(columns),
+        stale: stale,
+        generation: generation,
+        input_places: [at for at, input in columns.inputs if input],
+    }
     let writer = saved_layout_writer()
     file_written(FrontierKind.Base, writer.finished_runs_of(base.written_into(writer)))
 }
@@ -1566,4 +1581,21 @@ fn way_forth(read_by: List<int>, from: int) -> List<int> {
         way.push(at)
     }
     way
+}
+
+/// Two lists of places, each in place order, as one in place order.
+fn merged_places(a: List<int>, b: List<int>) -> List<int> {
+    mut out: List<int> = []
+    mut i = 0
+    mut j = 0
+    while i < a.length || j < b.length {
+        if j >= b.length || i < a.length && a[i] < b[j] {
+            out.push(a[i])
+            i = i + 1
+        } else {
+            out.push(b[j])
+            j = j + 1
+        }
+    }
+    out
 }

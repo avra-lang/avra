@@ -3,7 +3,9 @@
 //! this machine, run on a loopback port of its own, told that port as `PORT`,
 //! and run again whenever a file its build reads moves. Every request the
 //! page does not own is sent on to it, so the page and what it asks for stand
-//! on one origin.
+//! on one origin. It is TOLD THE PAGE'S FILES — the module, where the glue
+//! stands, every file the page fetches (`AVRA_PAGE_*`, what `app_page`
+//! reads) — and run again when they move, so the page it draws names them.
 use @std.http_message.message.{Header, Method}
 use @std.http.http.{Request, Unrouted, Response, text}
 use @std.http.route.{Route, Reach}
@@ -25,6 +27,8 @@ export type Backend = {
     port: int,
     child: Cell<Child?>,
     watched: Cell<List<Watched>>,
+    binary: Cell<string>,
+    page: Cell<List<EnvPair>>,
 }
 
 /// The server the page at `page_root` names, nothing built yet — absent when
@@ -42,6 +46,7 @@ export fn backend_of(page_root: string, compiler: Tool) -> Result<Backend?, stri
     let _ = door.close()
     let none: List<Watched> = []
     let idle: Child? = null
+    let no_page: List<EnvPair> = []
     .Ok(
         Backend {
             root: root,
@@ -49,6 +54,8 @@ export fn backend_of(page_root: string, compiler: Tool) -> Result<Backend?, stri
             port: port,
             child: Cell.new(idle),
             watched: Cell.new(none),
+            binary: Cell.new(""),
+            page: Cell.new(no_page),
         },
     )
 }
@@ -107,7 +114,8 @@ impl Backend {
     /// waited on, so the first request after a build finds it listening.
     fn restarted(binary: string) {
         self.stopped()
-        let run = cmd(tool_at("server", binary), []) with { env: Env.Inherit([EnvPair { name: "PORT", value: "${self.port}" }]), streams: .Inherited }
+        self.binary.set(binary)
+        let run = cmd(tool_at("server", binary), []) with { env: Env.Inherit([EnvPair { name: "PORT", value: "${self.port}" }].concat(self.page.get())), streams: .Inherited }
         // LICENSED input.live_process: the server dev runs is a child, and no compile answer reads it
         match run.start(Ready.Started, secs(5)) {
             .Ok(c) -> {
@@ -116,6 +124,22 @@ impl Backend {
             },
             .Err(e) -> eprintln(server_failed(self.root, e.describe().message)),
         }
+    }
+
+    /// The server told the page's files, and run again with them when they
+    /// moved and it has been built.
+    fn told(page: List<EnvPair>) {
+        if spelled(page) == spelled(self.page.get()) { return }
+        self.page.set(page)
+        if self.binary.get() != "" { self.restarted(self.binary.get()) }
+    }
+
+    /// The page the server draws: its answer to `q` when that is a
+    /// document, else nothing — the server draws no page.
+    fn drawn(q: Request<Unrouted>) -> Response? {
+        let r = self.forward(q)
+        if r.status != 200 || !(r.header("content-type") ?? "").starts_with("text/html") { return null }
+        r
     }
 
     /// Whether the server's port takes a connection within five seconds.
@@ -146,21 +170,36 @@ impl Backend {
     }
 
     /// `q` sent on to the server as it came, and its answer sent back as it
-    /// came. A server that does not answer is a 502 saying so.
+    /// came. A server being run again is waited for, so a request made
+    /// while it restarts reaches the new one; a server that does not answer
+    /// is a 502 saying so.
     fn forward(q: Request<Unrouted>) -> Response {
-        if wants_events(q) { return relayed(self.port, self.root, q) }
+        if wants_events(q) {
+            let first = relayed(self.port, self.root, q)
+            return if first.status == 502 && self.listening() { relayed(self.port, self.root, q) } else { first }
+        }
+        match self.sent(q) {
+            .Ok(r) -> r,
+            .Err(why) -> if self.listening() { self.sent(q) catch text(502, not_answered(self.root, why)) } else { text(502, not_answered(self.root, why)) },
+        }
+    }
+
+    /// `q` sent on to the server once: its answer, or why none came.
+    fn sent(q: Request<Unrouted>) -> Result<Response, string> {
         let target = q.target() ?? "/"
         let body = q.body.octets() ?? "".bytes()
         let payload = if body.length == 0 { Payload.Empty } else { Payload.Octets(body, q.header("content-type") ?? "application/octet-stream") }
-        let sent = options() with { headers: [h for h in fields_of(q) if passes(h.name)], redirects: Redirects.Stop }
+        let options_sent = options() with { headers: [h for h in fields_of(q) if passes(h.name)], redirects: Redirects.Stop }
         // LICENSED input.live_process: a request dev forwards to its server, which no compile answer reads
-        match fetch(q.method(), "http://127.0.0.1:${self.port}${target}", payload, sent) {
-            .Ok(a) -> Response {
-                status: a.status,
-                headers: [h for h in a.headers if passes(h.name)],
-                body: a.body,
-            },
-            .Err(e) -> text(502, not_answered(self.root, e.describe().message)),
+        match fetch(q.method(), "http://127.0.0.1:${self.port}${target}", payload, options_sent) {
+            .Ok(a) -> .Ok(
+                Response {
+                    status: a.status,
+                    headers: [h for h in a.headers if passes(h.name)],
+                    body: a.body,
+                },
+            ),
+            .Err(e) -> .Err(e.describe().message),
         }
     }
 
@@ -211,6 +250,9 @@ export fn relayed(port: int, root: string, q: Request<Unrouted>) -> Response {
         stream: Stream { pull: () -> flow.pulled(), ended: () -> { let _ = c.close() } },
     }
 }
+
+/// An environment's pairs as one text, for comparing two.
+fn spelled(pairs: List<EnvPair>) -> string { ["${p.name}=${p.value}" for p in pairs].join("\n") }
 
 /// Every method the page never answers: the server's alone.
 fn methods() -> List<Method> { [.Post, .Put, .Delete, .Patch, .Options] }

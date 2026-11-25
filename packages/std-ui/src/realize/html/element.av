@@ -11,7 +11,8 @@
 //! part's (`tree/identity.av`). A page that keeps it gives it a number. A URL arrives as a `Url`, which has no unsafe
 //! value, and every other value is escaped by whoever writes it.
 use tree.identity.{NodeId, Step, Stepped, root as root_step, stepped, unplaced}
-use tree.node.{Node, Attribute, Prim, Action, submits_among, masked_among}
+use tree.node.{Node, Attribute, Prim, Action, SubmitLabel, submits_among, masked_among}
+use tree.seats.{row_at}
 use realize.html.delivery.{always_seat_of, web_event}
 use realize.html.tags.{HtmlTag, HtmlAttr, HtmlAttrName, carries, control_attrs, tag_of}
 use realize.html.css.{class_names, box_vars, drawn_box, CssVar, scopes_of}
@@ -135,7 +136,7 @@ fn wrote(a: Attribute) -> List<Wrote> {
             Wrote { name: .AriaSetsize, value: "${of}" },
             Wrote { name: .DataReveal, on: reveal },
         ],
-        .Text(_) or .Level(_) or .Submits(_) or .Masked(_) -> [],
+        .Text(_) or .Level(_) or .Submits(_) or .Masked(_) or .SubmitLabel(_) -> [],
     }
 }
 
@@ -165,6 +166,19 @@ fn element_attrs(n: Node) -> List<HtmlAttr> {
     let masked = masked_among(n.attrs)
     control_attrs(n.prim, submits_among(n.attrs), masked, n.words())
         .concat(attrs_of([a for a in n.attrs if !masked || !(a is .Value)]))
+        .concat(return_key(n))
+}
+
+/// What a field's return key says, where the field hears its own submit: its label, Done where it
+/// names none. A field that hears none wears no hint, so its key reads as the keyboard's own.
+fn return_key(n: Node) -> List<HtmlAttr> {
+    if n.prim != .Field || !n.events.any(row_at(it.seat).event == "submit") { return [] }
+    let label = [l for a in n.attrs for l in submit_label_in(a)].first() ?? SubmitLabel.Done
+    [HtmlAttr { name: .EnterKeyHint, value: label.word() }]
+}
+
+fn submit_label_in(a: Attribute) -> List<SubmitLabel> {
+    match a { .SubmitLabel(l) -> [l], _ -> [] }
 }
 
 // ── the class attribute ─────────────────────────────────────────

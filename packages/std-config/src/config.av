@@ -45,15 +45,20 @@ use @std.meta.{
     refuse_as_at,
     type_named,
     marks,
+    unbranched,
+    literal,
+    Named,
+    Marker,
+    Code,
 }
-use @std.json.reading.{inner}
-use @std.text.{pad_right, cells}
+use @std.json.reading.{inner, literal_list}
+use @std.text.{pad_right, cells, nul_at}
 use @std.errors.{Error, ErrorInfo, info}
 use @std.validate.{Value, Issue, Issues, FieldShape, root, secret}
 use @std.json.typed.{Path}
 use layer.{Stack, Layer, bottom}
 use origin.{Origin, From, covers, joined}
-use source.{Source, Want, Leaf}
+use source.{Source, Want, Leaf, Variable}
 use sources.{path_of}
 
 /// A stage's overlay: the sources read when the program runs under its
@@ -89,7 +94,8 @@ export trait Configured {
     static fn derive(t: Type) -> Declared {
         let body? = t.body else { return Declared { made: [] } }
         Declared {
-            problems: [secret_text(x.field, x.path) for x in texts_marked_secret(t.fields, "", [t.name])],
+            problems: [secret_text(x.field, x.path) for x in texts_marked_secret(t.fields, "", [t.name])]
+                .concat(claim_problems(claimed(t.fields, "", [t.name]))),
             made: [
                 Directive {
                     twin: "",
@@ -105,11 +111,11 @@ export trait Configured {
                             }
 
                             static fn load() -> Result<Loaded<${t}>, Unloaded> {
-                                loaded(${name(t.name)}.sourced(), ${name(t.name)}.fields(), (v) -> ${name(t.name)}.decode(v), (c) -> c.value(), null)
+                                loaded(${name(t.name)}.sourced(), ${name(t.name)}.fields(), (v) -> ${name(t.name)}.decode(v), (c) -> c.value(), ${variables_code(t)}, null)
                             }
 
                             static fn load_as(named: string) -> Result<Loaded<${t}>, Unloaded> {
-                                loaded(${name(t.name)}.sourced(), ${name(t.name)}.fields(), (v) -> ${name(t.name)}.decode(v), (c) -> c.value(), named)
+                                loaded(${name(t.name)}.sourced(), ${name(t.name)}.fields(), (v) -> ${name(t.name)}.decode(v), (c) -> c.value(), ${variables_code(t)}, named)
                             }
                         }
                     },
@@ -122,7 +128,20 @@ export trait Configured {
 /// A config read: its value, every leaf's origin, the origins later
 /// layers replaced, the stage it ran under, and each leaf as a report
 /// shows it.
-export type Loaded<T> = { value: T, origins: List<Origin>, shadowed: List<Origin>, stage: string, rows: List<Row> }
+export type Loaded<T> = { value: T, origins: List<Origin>, shadowed: List<Origin>, stage: StageName, rows: List<Row> }
+
+/// The name of the stage a config was read under ("" for none): read —
+/// printed, interpolated into a metric's label — and never chosen by
+/// (`type.unbranched`). What differs by stage is a field the stage's
+/// sources set. `label()` is the one door to it as plain text, for a
+/// caller that must hand text on.
+@unbranched
+export type StageName = string
+
+impl StageName {
+    /// The name as plain text.
+    fn label() -> string { "${self}" }
+}
 
 /// One leaf of a report: its path, its value as shown — a secret never
 /// — and where it came from.
@@ -175,6 +194,7 @@ export fn loaded<T>(
     fields: List<FieldShape>,
     decode: fn(Value) -> Result<T, Issues>,
     encode: fn(T) -> Value,
+    variables: List<Variable>,
     named: string?,
 ) -> Result<Loaded<T>, Unloaded> {
     let under = named ?? [x.stage_named()! for x in s.sources if x.stage_named() != null].last() ?? ""
@@ -185,13 +205,13 @@ export fn loaded<T>(
             origins: [],
         }
     }
-    let want = Want { fields: fields, stage: under }
+    let want = Want { fields: fields, stage: under, variables: variables }
     let read = stacked(laid_order(s.sources, overlay?.sources ?? []), want, under)
     let value = match decode(read.stack.top.value) {
         .Ok(v) -> v,
         .Err(e) -> {
             fail Unloaded {
-                issues: Issues { all: read.issues.concat(e.all) },
+                issues: Issues { all: read.issues.concat(read.unsaid(e.all)) },
                 origins: read.standing(),
             }
         },
@@ -203,7 +223,7 @@ export fn loaded<T>(
         value: value,
         origins: origins,
         shadowed: read.stack.shadowed,
-        stage: under,
+        stage: StageName(under),
         rows: [row(l, encode(value), origins) for l in leaves],
     }
 }
@@ -224,6 +244,14 @@ type Laid = { source: dyn Source, staged: bool }
 type Read = { stack: Stack, issues: List<Issue> }
 
 impl Read {
+    /// The decode's issues a source's own issue has not already said: a
+    /// leaf whose source was refused reads as unset to the decode, and
+    /// one mistake is one message.
+    fn unsaid(judged: List<Issue>) -> List<Issue> {
+        let refused = [i.path.text() for i in self.issues]
+        [j for j in judged if !refused.any(covers(it, j.path.text()))]
+    }
+
     /// The origins an issue may be told beside: none at a path a
     /// source's own issue names, since that source's layer never stood
     /// and the origin beneath it is not where the judged value came from.
@@ -277,6 +305,70 @@ fn shown_path(p: Path) -> string { if p.up.is_empty() { "(value)" } else { p.tex
 /// A field and its dotted path from the config's root.
 type Placed = { field: Field, path: string }
 
+/// A field read from the environment variable `name` exactly, in place of
+/// the `<PREFIX>__<PATH>` its path derives — for a name already in use
+/// (`@variable("AVRA_CACHE_DIR") cache_dir: string? = null`). Two fields
+/// claiming one name are refused where they are declared.
+// LICENSED fns.dead_parameter: a mark's fn wears the mark's argument list, which its derive reads
+export fn variable(_d: Named, name: string) -> Marker { Marker {} }
+
+/// A field wearing `@variable`, at its dotted path, and the name it
+/// claims — null where the mark names none.
+type Claim = { field: Field, path: string, name: string?, record: bool }
+
+/// Every field under `fields` wearing `@variable`, a dependency's
+/// record's fields among them, each record walked once.
+fn claimed(fields: List<Field>, at: string, seen: List<string>) -> List<Claim> {
+    [claims_of(f, joined(at, f.name), seen) for f in fields].flatten()
+}
+
+fn claims_of(f: Field, path: string, seen: List<string>) -> List<Claim> {
+    let below = record_below(f, seen)
+    let own = [Claim { field: f, path: path, name: claimed_name(m.args), record: below != null } for m in f.marks if m.name == "variable"]
+    if below == null { return own }
+    own.concat(claimed(below!.fields, path, seen.concat([below!.name])))
+}
+
+/// The record a field holds, when it is one not walked already.
+fn record_below(f: Field, seen: List<string>) -> Type? {
+    let k = inner(f.kind)
+    if hides(k) { return null }
+    match k { .Named(n, _) -> if seen.contains(n) { null } else { type_named(n) }, _ -> null }
+}
+
+/// A mark's one argument as the text it spells; none where it could
+/// name no variable — empty, or holding `=` or a NUL.
+fn claimed_name(args: List<string>) -> string? {
+    let word? = args.first() else { return null }
+    let spelled = if word.length >= 2 && word.starts_with("\"") && word.ends_with("\"") { word.substring(1, word.length - 1) } else { word }
+    if spelled.is_empty() || spelled.contains("=") || nul_at(spelled) >= 0 { null } else { spelled }
+}
+
+/// Every claim that cannot stand: one naming nothing, one on a record,
+/// and the second of two claiming one name.
+fn claim_problems(claims: List<Claim>) -> List<Diagnostic> {
+    let named = [c for c in claims if c.name != null && !c.record]
+    [claim_problem(c, named) for c in claims].filter(it != null).map(it!)
+}
+
+fn claim_problem(c: Claim, named: List<Claim>) -> Diagnostic? {
+    when {
+        c.name == null -> variable_unnamed(c.field, c.path)
+        c.record -> variable_record(c.field, c.path)
+        _ -> {
+            let first? = named.find(it.name == c.name) else { return null }
+            if first.path == c.path { null } else { variable_twice(c.field, c.path, first.path, c.name!) }
+        }
+    }
+}
+
+/// The claims as the list literal a load hands the environment.
+fn variables_code(t: Type) -> Code {
+    literal_list(
+        [quote { Variable { path: ${literal(c.path)}, name: ${literal(c.name!)} } } for c in claimed(t.fields, "", [t.name]) if c.name != null && !c.record],
+    )
+}
+
 /// Every field under `fields` that wears `@secret` and holds its text —
 /// a dependency's record's fields among them, each record walked once.
 fn texts_marked_secret(fields: List<Field>, at: string, seen: List<string>) -> List<Placed> {
@@ -303,6 +395,33 @@ fn hides(k: Kind) -> bool {
 }
 
 // ── voices ──────────────────────────────────────────────────────
+
+fn variable_unnamed(f: Field, path: string) -> Diagnostic {
+    refuse_as_at(
+        "config_variable_unnamed",
+        f.at,
+        "`@variable` on `${path}` names no variable",
+        "name it in a literal — `@variable(\"AVRA_CACHE_DIR\")`",
+    )
+}
+
+fn variable_record(f: Field, path: string) -> Diagnostic {
+    refuse_as_at(
+        "config_variable_record",
+        f.at,
+        "`@variable` on `${path}` names a record, and a variable sets one leaf",
+        "move the mark to the leaf it names, inside the record",
+    )
+}
+
+fn variable_twice(f: Field, path: string, first: string, name: string) -> Diagnostic {
+    refuse_as_at(
+        "config_variable_twice",
+        f.at,
+        "`${path}` claims the variable ${name}, which `${first}` claims already: one variable sets one leaf",
+        "give one of the two another name",
+    )
+}
 
 fn secret_text(f: Field, path: string) -> Diagnostic {
     refuse_as_at(

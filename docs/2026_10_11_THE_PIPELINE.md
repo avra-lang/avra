@@ -158,7 +158,7 @@ so no PR run publishes a binary.
 | `keepers-a` / `keepers-b` | any non-push run with `build=1`; `keepers-a` is two shards (`keepers-a1`, `keepers-a2`) and `keepers-b` one, each on its own runner |
 | `seed-check` | any non-push run with `build=1`; the committed seed must compile HEAD |
 | `gate` | any non-push run with a changed `.av` or an affected package; `fmt` + idioms |
-| `cache-attacks` | whenever `cache=1` (a push to `main`, a hand-run gate, or a PR that reaches the store or the attacks); two shards: `cache-attacks-a` (`tools/cache_attacks.sh`) and `cache-attacks-b` (the other attacks, plus `code-hash-attacks`) |
+| `cache-attacks` | whenever `cache=1` (a push to `main`, a hand-run gate, or a PR that reaches the store or the attacks); three shards: `cache-attacks-b1` and `cache-attacks-b2` (the store's attacks, `b2` plus `code-hash-attacks`) and `cache-attacks-w` (the store's witnesses and the db corpus) |
 | `flow-gate` | whenever `runtime/` moved |
 | `runtime-keep` | the C runtime's own tests and mutation breaks: on a PR only when `runtime/`, the Makefile or `tools/memcap.sh` changed (`sh tools/avra_tools.sh ci_path_gate`); always on main's push and a hand-run |
 | `suites` | any non-push run with a non-empty affected closure; sharded (4 shards) |

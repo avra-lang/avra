@@ -306,12 +306,16 @@ const offered = () => cleared().attrs["disabled"] === undefined;
 }
 
 // A HELD MODE IS ONE WORD: every colour carries its light and its dark value,
-// the page follows the reader's settings until a mode is held, and holding
-// one rewrites the scheme and moves no colour and no element.
-const theme = named("Dark mode")[0];
+// the page follows the reader's settings until a mode is held (Auto), and
+// holding one rewrites the scheme and moves no colour and no element.
 const sheet = style.textContent;
-fire(theme);
-claim("the dark mode holds the dark scheme and renames its button", sheet.includes("color-scheme:light dark;") && style.textContent === sheet.replace("color-scheme:light dark;", "color-scheme:dark;") && named("Light mode").length === 1);
+fire(named("Dark")[0]);
+const darkened = style.textContent;
+fire(named("Light")[0]);
+const lightened = style.textContent;
+fire(named("Auto")[0]);
+claim("Auto follows the reader's scheme, Dark and Light each hold their own, and Auto goes back", sheet.includes("color-scheme:light dark;") && darkened === sheet.replace("color-scheme:light dark;", "color-scheme:dark;") && lightened === sheet.replace("color-scheme:light dark;", "color-scheme:light;") && style.textContent === sheet, [darkened.match(/color-scheme:[a-z ]+;/)?.[0], lightened.match(/color-scheme:[a-z ]+;/)?.[0], style.textContent.match(/color-scheme:[a-z ]+;/)?.[0]]);
+fire(named("Dark")[0]);
 
 // EVERY WORD READS ON EVERY SURFACE, AND EVERY PAIR ON ITSELF: the colours
 // the sheet names, in each scheme, as WCAG contrast — the least a reader
@@ -391,7 +395,7 @@ spent();
 // An answer lands, then the user presses before the frame: the press meets the
 // screen the user saw, so the pending paint is shown first.
 walked = walks();
-const mode = named("Light mode")[0] ?? named("Dark mode")[0];
+const mode = named("Light")[0];
 const [, mode_ear] = ears(mode.__avra_id)[0];
 const dark = () => dispatch(mount, mode, mode_ear.event, { bubbles: false });
 typed = "Press after";
@@ -404,7 +408,7 @@ walked = walks();
 dark();
 claim("a press after a pending answer shows the answer first, then its own change", frames === 1 && walks() - walked === 1 && keyed(String(table.rows.at(-1).id)) !== null, `${frames} frame(s), ${walks() - walked} walk(s)`);
 frame();
-claim("and the press's own frame follows at the display's frame", walks() - walked === 2 && named("Dark mode").length + named("Light mode").length === 1, `${walks() - walked}`);
+claim("and the press's own frame follows at the display's frame", walks() - walked === 2 && style.textContent.includes("color-scheme:light;"), `${walks() - walked}`);
 spent();
 
 // ── a server's page, adopted ──

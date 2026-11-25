@@ -194,7 +194,10 @@ fn moded_nothing(_mode: int) {}
 /// the control says on a key, and a control that sends its form sends it
 /// when the form's seat names the key.
 fn keyed(c: Control, k: Key) -> bool {
-    let own = c.node.events.find(said_by_control(it) && answers(it.seat, k))?.fire(key_said(c)) ?? false
+    let mine = c.node.events.find(said_by_control(it) && answers(it.seat, k))
+    let own = mine?.fire(key_said(c)) ?? false
+    // A field that hears its own submit sends that alone, never its form's too.
+    if mine != null && c.node.prim == .Field { return own }
     let form = sends_form(c) &&
         (c.form?.events ?? []).find(!said_by_control(it) && answers(it.seat, k))?.fire(null) ?? false
     own || form

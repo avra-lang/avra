@@ -22,9 +22,12 @@ impl StmtLowers for MutLet {
 }
 
 impl StmtLowers for Assign {
-    /// The value first, then the write where its target names.
+    /// The value first, then the write where its target names; a target that is a `state` field seeded
+    /// at need is kept first, so a value that reads it reads the cell the write lands in.
     fn stmt_lowered(mut cx: Lowering, s: StmtId) {
+        let kept = cx.kept_target(self.target)
         let v = cx.lower(self.value)
+        if kept != null { return cx.slot_written(kept!, cx.const_int(0), v, true) }
         cx.written_to(self.target, v)
     }
 }

@@ -357,6 +357,31 @@ spec "a key acts on the control that holds the focus" {
             on.feed("\t${from_codepoint(27)}[200~\n\n${from_codepoint(27)}[201~")
             filled && b.told() == ""
         }
+        then "Enter sends a field's own submit, the whole of what was typed already its place's" {
+            let sent: Cell<string> = Cell.new("")
+            let held: Cell<string> = Cell.new("")
+            let on = terminal(
+                () -> field "Task" {
+                    shown: held.get()
+                    on input { typed -> held.set(typed) }
+                    on submit { sent.set(held.get()) }
+                },
+            )
+            on.feed("Write the tour\n")
+            sent.get() == "Write the tour"
+        }
+        then "a field's own submit inside a form is sent alone, never the form's too" {
+            let own: Cell<int> = Cell.new(0)
+            let sent: Cell<int> = Cell.new(0)
+            let on = terminal(
+                () -> form {
+                    on submit { sent.set(sent.get() + 1) }
+                    field "Name" { on submit { own.set(own.get() + 1) } }
+                },
+            )
+            on.feed("Ada\n")
+            own.get() == 1 && sent.get() == 0
+        }
         then "Enter outside a form does nothing" {
             let b = Board {}
             let _ = after(b, "Buy\n")

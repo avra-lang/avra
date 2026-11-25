@@ -1,4 +1,5 @@
 #!/bin/sh
+# tool-witness: owed by wrong-answers — a store saved onto a full disk ends without saying the disk is full and where (the object and link cases do say it)
 # A BUILD THAT FILLS ITS DISK SAYS SO, AND WHERE. A package is built on a small filesystem with less
 # room each time, so the build runs out at its object, then at its link; then its store alone stands
 # on a small one, saved by the build itself and by its heir. Every one of them must end with words that

@@ -1,4 +1,5 @@
 #!/bin/sh
+# tool-witness: run by the gate's warnings-* slice (tools/gate.sh), never twice
 # A PROGRAM-LAYER BUILD WARNS, AND WARNS AS THE OLD PATH DID. The cli built cold says warnings, a
 # no-op build again says the same ones, and a warm build of an edit that adds one says it too. Each
 # package under tools/program-warnings/ warns on the program layer exactly as its `warns.expected`

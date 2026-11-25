@@ -1,4 +1,5 @@
 #!/bin/sh
+# tool-witness: owed by wrong-answers — a build killed between placing its binary and saving its store placed the unedited binary (the store's place/save path)
 # A BUILD KILLED BETWEEN PLACING ITS BINARY AND SAVING ITS STORE LEAVES BOTH RIGHT. A build places
 # its binary first and saves its store after; this kills one between the two (AVRA_KILL_AFTER_PLACE)
 # and asks of what it leaves: the binary it placed is the cold build's of the edited tree; the store

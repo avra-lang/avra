@@ -24,7 +24,7 @@
 //! terminal (`term/`).
 use @std.json.{DecodeError}
 use @std.json.codec.{json}
-use @std.json.typed.{array_of, as_bool, bool_text, elements}
+use @std.json.typed.{array_of, as_text, elements, quoted}
 use @std.time.{ms}
 use @std.ui.app.{Async, Fetch, Overlay, ask_list, fetch, later, send}
 use @std.ui.shipped.{ship}
@@ -48,7 +48,7 @@ use @std.ui.components.{
 }
 use @std.ui.style.layout.{Layout, around}
 use @std.ui.style.style.{Style}
-use @std.ui.style.theme.{theme}
+use @std.ui.style.theme.{Mode, theme}
 use @std.ui.tree.view.{View}
 
 /// Which tasks the board shows.
@@ -61,7 +61,7 @@ fn title() -> string { "Tasks" }
 // ── state ───────────────────────────────────────────────────────
 
 state filter: Show = .All
-state dark: bool = false
+state mode: Mode = .System
 state newest_first: bool = false
 state dialog_open: bool = false
 state reminded: bool = false
@@ -75,7 +75,7 @@ state removing: Fetch<Nothing> = fetch()
 /// reads and a request decides. A state not named here is never shipped.
 export fn ship_state() {
     ship("filter", Show.json_shape(), () -> filter.json_text(), (j: string) -> filter_written(j))
-    ship("dark", "bool", () -> bool_text(dark), (j: string) -> dark_written(j))
+    ship("mode", mode_shape(), () -> quoted(mode.word()), (j: string) -> mode_written(j))
     ship(
         "tasks",
         "[${Todo.json_shape()}]",
@@ -88,7 +88,7 @@ export fn ship_state() {
 /// handler would before it draws the page.
 export fn requested() {
     filter = .Done
-    dark = true
+    mode = .Dark
 }
 
 fn filter_written(j: string) -> bool {
@@ -101,14 +101,16 @@ fn filter_written(j: string) -> bool {
     }
 }
 
-fn dark_written(j: string) -> bool {
-    match as_bool(j, "") {
-        .Ok(on) -> {
-            dark = on
-            true
-        },
-        .Err(_) -> false,
-    }
+/// The schemes a page can wear, as the words a page carries them in.
+const MODES: List<Mode> = [Mode.System, Mode.Light, Mode.Dark]
+
+/// The shape `mode` is shipped in: its type and every word it can be, so a scheme added moves it.
+fn mode_shape() -> string { "Mode|${MODES.map(it.word()).join("|")}" }
+
+fn mode_written(j: string) -> bool {
+    let chosen? = match as_text(j, "") { .Ok(word) -> Mode.worded(word), .Err(_) -> null } else { return false }
+    mode = chosen
+    true
 }
 
 /// The tasks a server's page carries stand as the answer of an ask already made.
@@ -145,9 +147,13 @@ fn admits(t: Todo) -> bool {
 fn doors() -> Routes<Todo> { Todo.paths("/tasks") }
 
 /// `title` is sent as the next task — nothing, when it says nothing. It is a row once the server names it.
-fn add(title: string) {
-    if title == "" { return }
-    let _ = send(saving, doors().create!, Todo { title: title }, foresee: Overlay.Append("id"))
+/// The task typed as `draft` sent, where it says anything: what the field holds after — empty once
+/// sent, the draft as it stands where it was empty or only spaces. The one rule Add and the return
+/// key both keep.
+fn added(draft: string) -> string {
+    if draft.trim().is_empty() { return draft }
+    let _ = send(saving, doors().create!, Todo { title: draft }, foresee: Overlay.Append("id"))
+    ""
 }
 
 /// The task is sent with the state the box now shows, and shown so at once.
@@ -167,8 +173,6 @@ fn remove(t: Todo) {
 
 // ── view: state in, tree out ────────────────────────────────────
 
-fn theme_label() -> string { if dark { "Light mode" } else { "Dark mode" } }
-
 fn tab_style(on: bool) -> Style {
     if on { sunk_style() } else { Style { radius: .S } }
 }
@@ -184,9 +188,19 @@ fn inline_layout() -> Layout { Layout { gap: .S, align: .Center } }
 
 fn spread_layout() -> Layout { Layout { gap: .M, align: .Center, distribute: .SpaceBetween } }
 
-/// One choice among several: pressed, the place it was handed holds what it shows.
+/// One choice among the filters: pressed, the place it was handed holds what it shows.
 component tab(label: string, state chosen: Show) {
     shows: Show
+    button self.label {
+        on press { self.chosen = self.shows }
+        style: tab_style(self.chosen == self.shows)
+    }
+}
+
+/// One choice among the schemes: pressed, the place it was handed holds what it shows. `tab`'s twin
+/// over `Mode`.
+component scheme_tab(label: string, state chosen: Mode) {
+    shows: Mode
     button self.label {
         on press { self.chosen = self.shows }
         style: tab_style(self.chosen == self.shows)
@@ -220,9 +234,11 @@ component header {
             text "Every task is a value; the screen is a function of state." { style: Style { color: .Muted } }
         }
         trailing {
-            button theme_label() {
-                on press { dark = !dark }
-                style: sunk_style()
+            row {
+                layout: inline_layout()
+                scheme_tab "Auto" { chosen: mode, shows: .System }
+                scheme_tab "Light" { chosen: mode, shows: .Light }
+                scheme_tab "Dark" { chosen: mode, shows: .Dark }
             }
         }
     }
@@ -252,12 +268,10 @@ component new_task {
         field "New task" {
             value: self.draft
             placeholder: "Type a task…"
+            on submit { self.draft = added(self.draft) }
         }
         button "Add" {
-            on press {
-                add(self.draft)
-                self.draft = ""
-            }
+            on press { self.draft = added(self.draft) }
             style: sunk_style()
         }
     }
@@ -371,12 +385,12 @@ component about {
     }
 }
 
-/// THE BOARD'S PAGE, and the theme it is drawn in: the one in force where it is placed — Crisp, unless
-/// its target sets another — in the mode the user chose, dark or as the system is. The board changes
-/// the mode only, so a target keeps its own look. The one set of `ctx theme`, so everything the page
-/// places wears it.
+/// THE BOARD'S PAGE, and the theme it is drawn in: the one in force where it is placed — Crisp,
+/// unless its target sets another — in the scheme the user chose: the reader's own (Auto), light or
+/// dark. The board changes the mode only, so a target keeps its own look. The one set of `ctx theme`,
+/// so everything the page places wears it.
 component board_page {
-    ctx theme = ctx.theme with { mode: if dark { .Dark } else { .System } }
+    ctx theme = ctx.theme with { mode: mode }
     surface {
         style: Style { fill: .Surface, radius: .M }
         layout: Layout { gap: .M, pad: around(.L) }

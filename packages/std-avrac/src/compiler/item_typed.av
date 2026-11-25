@@ -338,6 +338,18 @@ fn sealed_home(engine: QueryEngine, file: SourceFileAddress, ty: SignedType) -> 
     if at.file.package_name == file.package_name { local } else { [at.file.package_name.replace("/", ".")].concat(home).join(".") }
 }
 
+/// Whether `ty`, a type the program declares, wears `@unbranched`.
+fn unbranched_type(engine: QueryEngine, ty: SignedType) -> bool {
+    let at? = declared_at(ty with { nulls: 0 }) else { return false }
+    let d? = file_declares_named(engine, at.file, at.name)
+        .names
+        .find(it.name == at.name && it.kind != ItemKind.Fn) else { return false }
+    wears_mark(engine, d, UNBRANCHED_MARK)
+}
+
+/// The mark a type wears whose value is read and never chosen by.
+const UNBRANCHED_MARK: string = "unbranched"
+
 /// The mark a type wears that only its declaring module builds or rewrites it under.
 const SEALED_MARK: string = "sealed"
 
@@ -393,6 +405,7 @@ fn program_answered(
         named_next: (ty: SignedType) -> named_next_over(engine, ty),
         owner: (ty: SignedType) -> marked_owner(engine, ty),
         sealed_home: (ty: SignedType) -> sealed_home(engine, file, ty),
+        unbranched: (ty: SignedType) -> unbranched_type(engine, ty),
         declared_here: (ty: SignedType) -> declared_in(ty, file),
         enum_of: (ty: SignedType) -> kept_answer(
             memos,
