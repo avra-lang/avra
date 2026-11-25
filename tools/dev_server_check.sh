@@ -1,6 +1,6 @@
 #!/bin/sh
 # `avra dev` RUNS THE SERVER A PAGE NAMES: a page package whose manifest says
-# `[dev] server = "server"` is served with its server beside it on one origin —
+# `[app] server = "server"` is served with its server beside it on one origin —
 # a route the page does not own is answered by the server's program, built for
 # this machine — and a save to the server's source is answered by the server
 # built again, with no restart of `avra dev`. The server writes no port: a
@@ -13,7 +13,7 @@ who=dev-server
 . "$tree/tools/lib/steps.sh"
 
 mkdir -p "$work/page/src" "$work/page/server/src"
-printf '[package]\nname = "dev-page"\nversion = "0.1.0"\n\n[dev]\nserver = "server"\n' > "$work/page/avra.toml"
+printf '[package]\nname = "dev-page"\nversion = "0.1.0"\n\n[bin]\npath = "src/main.av"\n\n[app]\nserver = "server"\n' > "$work/page/avra.toml"
 # The page bundles a picture and draws its served name, so the module carries the name its page asks by.
 mkdir -p "$work/page/art"
 printf '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><circle cx="12" cy="12" r="10" fill="#335"/><circle cx="12" cy="12" r="6" fill="#ccd"/></svg>\n' > "$work/page/art/dot.svg"
