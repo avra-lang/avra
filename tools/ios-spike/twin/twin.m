@@ -115,6 +115,7 @@
 
 - (void)viewDidLoad {
     [super viewDidLoad];
+    bench_mark("view did load");
     NSInteger n = NSProcessInfo.processInfo.environment[@"AVRA_SPIKE_ROWS"].integerValue ?: 10000;
     self.tasks = [NSMutableArray arrayWithCapacity:n];
     for (NSInteger i = 0; i < n; i++) {
@@ -133,6 +134,7 @@
     self.table.tableHeaderView = [self header];
     [self counted];
     [self.view addSubview:self.table];
+    bench_mark("rows and header made");
     __weak Board* me = self;
     bench_attach(self.table, ^{
         Task* t = me.tasks.firstObject;
@@ -183,6 +185,7 @@
 @end
 @implementation TwinScene
 - (void)scene:(UIScene*)scene willConnectToSession:(UISceneSession*)session options:(UISceneConnectionOptions*)options {
+    bench_mark("scene connects");
     self.window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene*)scene];
     self.window.rootViewController = [Board new];
     [self.window makeKeyAndVisible];
@@ -195,6 +198,7 @@
 @end
 
 int main(int argc, char* argv[]) {
+    bench_mark("main");
     @autoreleasepool {
         return UIApplicationMain(argc, argv, nil, NSStringFromClass([TwinApp class]));
     }

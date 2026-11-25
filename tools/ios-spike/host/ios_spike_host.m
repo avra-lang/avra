@@ -678,6 +678,10 @@ static NSString* shape_of(SpikeNode* n) {
 // its shape, for a create of the same shape — as a table's cell is reused whole.
 static NSMutableDictionary<NSString*, NSMutableArray<SpikeNode*>*>* g_rows;
 
+// What the pools keep: a window move's worth, no more; the rest is released.
+static const NSUInteger row_pool_cap = 8;
+static const NSUInteger view_pool_cap = 32;
+
 // Every node of a subtree, in order: the root, then each child's subtree.
 static void preorder(SpikeNode* n, NSMutableArray<SpikeNode*>* out) {
     if (!n) return;
@@ -697,12 +701,14 @@ static void pooled(SpikeNode* n) {
         for (SpikeNode* m in all) [g_nodes removeObjectForKey:@(m.nid)];
         if (!g_rows) g_rows = [NSMutableDictionary new];
         if (!g_rows[shape]) g_rows[shape] = [NSMutableArray new];
+        if (g_rows[shape].count >= row_pool_cap) { [n.view removeFromSuperview]; return; }
         [g_rows[shape] addObject:n];
         return;
     }
     [g_nodes removeObjectForKey:@(n.nid)];
     if (!g_pool) g_pool = [NSMutableDictionary new];
     if (!g_pool[n.prim]) g_pool[n.prim] = [NSMutableArray new];
+    if (g_pool[n.prim].count >= view_pool_cap) { [n.view removeFromSuperview]; return; }
     [g_pool[n.prim] addObject:n];
 }
 
@@ -902,6 +908,7 @@ void avra_spike_content_still(void) { [g_ops addObject:@[ @"content", @"still" ]
 
 void avra_spike_end(void) {
     if (!g_root) {
+        if (!g_pending_ops.count) bench_mark("first frame said");
         if (!g_pending_ops) g_pending_ops = [NSMutableArray new];
         [g_pending_ops addObject:g_ops];
         return;
@@ -1214,6 +1221,7 @@ int64_t avra_spike_narrowest(const char* prim, const char* words) {
 
 @implementation SpikeScene
 - (void)scene:(UIScene*)scene willConnectToSession:(UISceneSession*)session options:(UISceneConnectionOptions*)options {
+    bench_mark("scene connects");
     UIWindow* w = [[UIWindow alloc] initWithWindowScene:(UIWindowScene*)scene];
     UIViewController* vc = [SpikeVC new];
     vc.view.backgroundColor = UIColor.systemBackgroundColor;
@@ -1279,6 +1287,7 @@ static void host_loop(void) {
 }
 
 void avra_spike_attach(void) {
+    bench_mark("program reaches the host");
     g_started_ms = started_ms();
     g_nodes = [NSMutableDictionary new];
     g_pending = [NSMutableArray new];

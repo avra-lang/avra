@@ -12,3 +12,5 @@ void bench_first_applied(void);
 void bench_toggle_applied(void);
 // Runs the script when AVRA_SPIKE_BENCH is set: memory, toggle, fling, report, exit.
 void bench_start(void);
+// A named moment on the way to the first frame, for the cold-start timeline.
+void bench_mark(const char* name);

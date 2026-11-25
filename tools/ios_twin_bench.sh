@@ -13,7 +13,7 @@ fail() { echo "ios-twin: FAIL — $*" >&2; exit 1; }
 app=$work/Twin.app
 mkdir -p "$app"
 xcrun --sdk iphonesimulator clang -target arm64-apple-ios17.0-simulator -fobjc-arc -O2 -Wall -Werror \
-    -framework UIKit -framework QuartzCore -o "$app/twin" \
+    -framework UIKit -framework QuartzCore -Wl,-U,_avra_mem_live -o "$app/twin" \
     "$tree/tools/ios-spike/twin/twin.m" "$tree/tools/ios-spike/host/spike_bench.m" || fail "the twin did not build"
 cat > "$app/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -49,7 +49,7 @@ trap 'xcrun simctl shutdown "$udid" > /dev/null 2>&1' EXIT
 xcrun simctl install "$udid" "$app" || fail "install failed"
 out=$work/$name.out
 : > "$out"
-env SIMCTL_CHILD_AVRA_SPIKE_BENCH=1 ${AVRA_SPIKE_ROWS:+SIMCTL_CHILD_AVRA_SPIKE_ROWS=$AVRA_SPIKE_ROWS} \
+env SIMCTL_CHILD_AVRA_SPIKE_BENCH=1 ${AVRA_SPIKE_SHOTS:+SIMCTL_CHILD_AVRA_SPIKE_SHOTS=1} ${AVRA_SPIKE_ROWS:+SIMCTL_CHILD_AVRA_SPIKE_ROWS=$AVRA_SPIKE_ROWS} \
     timeout ${AVRA_BOARD_FOR:-20} xcrun simctl launch --console-pty --terminate-running-process "$udid" "$id" > "$out" 2>&1 &
 n=0; t0=0
 for at in ${AVRA_BOARD_SHOTS:-}; do

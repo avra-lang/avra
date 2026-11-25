@@ -4,6 +4,10 @@
 #include <mach/mach.h>
 #include <sys/sysctl.h>
 #include <unistd.h>
+#include <malloc/malloc.h>
+
+extern int64_t avra_mem_live(void) __attribute__((weak_import));
+
 
 static double bench_now_s(void) { return CACurrentMediaTime(); }
 
@@ -24,6 +28,23 @@ static double footprint_mb(void) {
     mach_msg_type_number_t n = TASK_VM_INFO_COUNT;
     if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&info, &n) != KERN_SUCCESS) return -1;
     return info.phys_footprint / 1048576.0;
+}
+
+static NSInteger views_in(UIView* v) {
+    NSInteger n = 1;
+    for (UIView* k in v.subviews) n += views_in(k);
+    return n;
+}
+
+static void say(NSString* line);
+
+// Where the footprint goes, as the app itself can see it.
+static NSString* memory_parts(UIWindow* window) {
+    malloc_statistics_t st;
+    malloc_zone_statistics(NULL, &st);
+    double avra = avra_mem_live ? avra_mem_live() / 1048576.0 : 0;
+    return [NSString stringWithFormat:@"footprint %.1f MB, malloc in use %.1f MB, avra live %.1f MB, views %ld",
+        footprint_mb(), st.size_in_use / 1048576.0, avra, (long)views_in(window)];
 }
 
 static void say(NSString* line) {
@@ -54,6 +75,26 @@ static void say(NSString* line) {
 @end
 
 static BenchLink* g_bench;
+static NSMutableArray<NSString*>* g_marks;
+static double g_start_s;
+
+void bench_mark(const char* name) {
+    if (g_start_s == 0) g_start_s = started_s();
+    if (!g_marks) g_marks = [NSMutableArray new];
+    [g_marks addObject:[NSString stringWithFormat:@"%s=%.1f", name, (bench_now_s() - g_start_s) * 1000]];
+}
+
+// The app's own window drawn into a PNG in its Documents directory, when AVRA_SPIKE_SHOTS is set.
+static void shot(NSString* name) {
+    if (!NSProcessInfo.processInfo.environment[@"AVRA_SPIKE_SHOTS"]) return;
+    UIWindow* w = g_bench.scroll.window;
+    if (!w) return;
+    UIGraphicsImageRenderer* r = [[UIGraphicsImageRenderer alloc] initWithBounds:w.bounds];
+    NSData* png = [r PNGDataWithActions:^(UIGraphicsImageRendererContext* ctx) { [w drawViewHierarchyInRect:w.bounds afterScreenUpdates:NO]; }];
+    NSURL* docs = [NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject;
+    [png writeToURL:[docs URLByAppendingPathComponent:name] atomically:YES];
+    say([NSString stringWithFormat:@"shot: %@", name]);
+}
 static const double fling_s = 3.0;
 
 @implementation BenchLink
@@ -92,7 +133,10 @@ void bench_attach(UIScrollView* scroll, void (^toggle)(void)) {
 }
 
 void bench_first_applied(void) {
-    if (g_bench && g_bench.first_applied == 0) g_bench.first_applied = bench_now_s();
+    if (g_bench && g_bench.first_applied == 0) {
+        g_bench.first_applied = bench_now_s();
+        bench_mark("first frame applied");
+    }
 }
 
 void bench_toggle_applied(void) {
@@ -114,11 +158,13 @@ static void flung(void) {
         say([NSString stringWithFormat:@"fling: %ld frames in %.1f s, longest gap %.1f ms, gaps over 16.7 ms %ld, over 8.3 ms %ld",
             (long)g_bench.fling_frames, fling_s, g_bench.fling_longest, (long)g_bench.over16, (long)g_bench.over8]);
         say([NSString stringWithFormat:@"memory after the fling: %.1f MB", footprint_mb()]);
+        say([@"memory parts after the fling: " stringByAppendingString:memory_parts(g_bench.scroll.window)]);
         say(@"slow scroll begins");
         g_bench.fling_frames = 0;
         g_bench.fling_longest = 0;
         g_bench.over16 = g_bench.over8 = 0;
         g_bench.fling_last = 0;
+        later(1.5, ^{ shot(@"shot-mid.png"); });
         g_bench.slow = YES;
         g_bench.gaps = [NSMutableArray new];
         g_bench.slow_from_y = g_bench.scroll.contentOffset.y;
@@ -148,8 +194,13 @@ static void toggled_wait(void) {
 static void scripted(void) {
     say([NSString stringWithFormat:@"cold start to first frame drawn: %.1f ms", (g_bench.first_drawn - g_bench.started) * 1000]);
     say([NSString stringWithFormat:@"display: up to %ld frames a second", (long)UIScreen.mainScreen.maximumFramesPerSecond]);
+    bench_mark("first frame drawn");
+    g_marks[g_marks.count - 1] = [NSString stringWithFormat:@"first frame drawn=%.1f", (g_bench.first_drawn - g_start_s) * 1000];
+    say([@"timeline (ms from process start): " stringByAppendingString:[g_marks componentsJoinedByString:@", "]]);
+    shot(@"shot-top.png");
     later(1, ^{
         say([NSString stringWithFormat:@"memory after first frame: %.1f MB", footprint_mb()]);
+        say([@"memory parts after first frame: " stringByAppendingString:memory_parts(g_bench.scroll.window)]);
         g_bench.toggle_asked = bench_now_s();
         g_bench.toggle();
         toggled_wait();
