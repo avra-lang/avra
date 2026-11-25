@@ -2256,11 +2256,195 @@ error[manifest.lib_name]: a library is named for its package — `app` is `app`,
 help: write `name = "app"`, or drop the key
 ```
 
-## manifest.no_target
+## manifest.no_entry
 
 running a package needs a `[bin]` or `src/main.av`
 
 No witness here: it is what `avra run` says of a package with no entry, which a check never asks.
+
+## manifest.app_without_bin
+
+an app runs a program: `[app]` stands beside a `[bin]`
+
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[app]
+targets = ["terminal"]
+
+// /w/src/main.av
+1
+
+```
+
+```
+error[manifest.app_without_bin]: an app runs a program, and this manifest declares no `[bin]`
+  ╭─[/w/avra.toml:5:1]
+5 │ [app]
+  · ┬
+  · ╰── this app
+──╯
+help: add `[bin]` with `path` — the entry is `[bin] path`, never an `[app]` key
+```
+
+## manifest.dev_server_moved
+
+the server beside an app is `[app] server`
+
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dev]
+server = "server"
+
+// /w/src/main.av
+1
+
+```
+
+```
+warning[manifest.dev_server_moved]: `[dev] server` is `[app] server` — the server is part of what the app is
+  ╭─[/w/avra.toml:6:1]
+6 │ server = "server"
+  · ┬
+  · ╰── read as `[app] server`
+──╯
+help: move the line under `[app]` — `[app]
+server = "server"`
+```
+
+## manifest.unknown_target
+
+a target word names a target the compiler builds
+
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[bin]
+path = "src/main.av"
+
+[app]
+targets = ["watch"]
+
+// /w/src/main.av
+1
+
+```
+
+```
+error[manifest.unknown_target]: `watch` is no target this compiler builds — the targets are `terminal`, `web`, `ios`
+  ╭─[/w/avra.toml:9:1]
+9 │ targets = ["watch"]
+  · ┬
+  · ╰── here
+──╯
+help: name one of `terminal`, `web`, `ios`; a raw triple goes to `--target`, never to the manifest
+```
+
+## manifest.unshipped_target
+
+a `[target.<name>]` is for a target `[app] targets` lists
+
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[bin]
+path = "src/main.av"
+
+[app]
+targets = ["terminal"]
+
+[target.ios]
+min = "17.0"
+
+// /w/src/main.av
+1
+
+```
+
+```
+warning[manifest.unshipped_target]: `[target.ios]` is for a target `[app] targets` does not list, so no build reads it
+   ╭─[/w/avra.toml:11:1]
+11 │ [target.ios]
+   · ┬
+   · ╰── read by no build
+───╯
+help: add `"ios"` to `[app] targets`, or drop the section
+```
+
+## manifest.bad_target_min
+
+a target's `min` is a release its OS builds for
+
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[bin]
+path = "src/main.av"
+
+[app]
+targets = ["ios"]
+
+[target.ios]
+min = "16.0"
+
+// /w/src/main.av
+1
+
+```
+
+```
+error[manifest.bad_target_min]: `[target.ios] min` is a release, `17.0` or later — `16.0` is not
+   ╭─[/w/avra.toml:12:1]
+12 │ min = "16.0"
+   · ┬
+   · ╰── here
+───╯
+help: write the oldest release the app runs on — `min = "17.0"`
+```
+
+## manifest.unknown_object_dir
+
+`[link.objects_for]` is keyed by a platform's object directory
+
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[link.objects_for]
+web = []
+
+// /w/src/main.av
+1
+
+```
+
+```
+error[manifest.unknown_object_dir]: `web` is no platform's object directory — the directories are `wasm32`, `iphoneos`, `iphonesimulator`
+  ╭─[/w/avra.toml:6:1]
+6 │ web = []
+  · ┬
+  · ╰── here
+──╯
+help: `web` is a target — objects are keyed by platform: `wasm32`
+```
 
 ## manifest.no_source
 
