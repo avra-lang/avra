@@ -1,0 +1,80 @@
+//! ADVERSARIAL: `Family.Lifted` is a NAMED answer. A `@derive` crossing
+//! mints it, typing the annotated declaration reads it, and its name
+//! spells the declaration and the call's place inside it — never a
+//! position — so another process spells the same answer wherever the
+//! file sits. A read with no name is a read no saved answer can stand
+//! on. (red-team, class "names against names": the answer's identity
+//! across two fresh processes.)
+use @std.avrac.testing.{provided_workspace}
+use compiler.{Workspace}
+use compiler.families.{Family}
+use core.{DeclId}
+use @std.relation.engine.{Key}
+
+/// The provider package's own source: a trait whose `derive` mints the
+/// crossing's answer and one generated declaration beside it.
+fn lift_provider() -> string {
+    "use @std.meta.{Type, Directive}\nexport trait Shape {\n    static fn derive(t: Type) -> List<Directive> {\n        [Directive { twin: \"\", name: t.name, at: t.at, source: quote { fn made_row() -> int { 7 } } }]\n    }\n}\n"
+}
+
+/// The program: `@derive(Shape)` over `Row`, so typing `Row`'s
+/// declaration crosses and reads `Family.Lifted`.
+fn lift_main() -> string {
+    "use @std.meta.{derive}\nuse @x.c.{Shape}\n@derive(Shape)\ntype Row = { a: int }\nexport fn read(t: Row) -> int { t.a }\n"
+}
+
+fn lift_workspace() -> Workspace {
+    let ws = provided_workspace(lift_main(), lift_provider())
+    let _ = ws.program("/w/src/main.av")
+    ws
+}
+
+/// The file's own `main` pseudo-declaration — the frame typing a
+/// declaration's ANNOTATION runs in, so the crossing's reads land there.
+fn lift_decl(ws: Workspace) -> DeclId {
+    [x.id for x in ws.decls.all_decls() if x.kind is .Main && ws.decls.file(x.file).path == "/w/src/main.av"][0]
+}
+
+/// The `Lifted` key `Typed(T)` read, or null where the body stands on
+/// nothing named there.
+fn lift_read(ws: Workspace, d: DeclId) -> Key? {
+    ws
+        .db
+        .edges_by_reader(Key { family: Family.Typed.ordinal, arg: d.index })
+        .find((k: Key) -> k.family == Family.Lifted.ordinal)
+}
+
+/// The spelling of the one `Lifted` answer a fresh workspace mints.
+fn lift_spelling() -> string? {
+    let ws = lift_workspace()
+    let arg? = lift_read(ws, lift_decl(ws)) else { return null }
+    ws.spelled_lift(arg.arg)
+}
+
+spec "compiler/leaves — Family.Lifted is a named answer" {
+    given "a `@derive` crossing typed over its declaration" {
+        then "`Typed` reads `Family.Lifted`" {
+            let ws = lift_workspace()
+            lift_read(ws, lift_decl(ws)) != null
+        }
+        then "the answer is named: the spelling reads back to the same key" {
+            let ws = lift_workspace()
+            let d = lift_decl(ws)
+            let arg? = lift_read(ws, d) else { return false }
+            let spelled? = ws.spelled_lift(arg.arg) else { return false }
+            let back? = ws.lift_arg(spelled) else { return false }
+            back == arg.arg
+        }
+        then "the name spells the crossed annotation, never a position" {
+            let ws = lift_workspace()
+            let d = lift_decl(ws)
+            let arg? = lift_read(ws, d) else { return false }
+            let spelled? = ws.spelled_lift(arg.arg) else { return false }
+            spelled.contains("Shape")
+        }
+        then "the name is durable: two fresh workspaces spell it alike" {
+            let first? = lift_spelling() else { return false }
+            first == lift_spelling()
+        }
+    }
+}
