@@ -141,6 +141,7 @@ static double g_parse_s;
 static double g_pair_s;
 static NSMutableDictionary<NSString*, NSNumber*>* g_row_op_s;
 static NSInteger g_rows_reused;
+static NSInteger g_creates_made;
 static NSMutableDictionary<NSString*, NSNumber*>* g_op_s;
 static double g_measure_s;
 static BOOL g_toggling;
@@ -454,8 +455,11 @@ static void fact_dropped(SpikeNode* n, int code) {
 }
 
 // An element goes into its parent's view; the solver's `rect` says where.
+static double g_place_book_s, g_place_view_s;
+
 static void placed(SpikeNode* n, NSInteger parent, NSInteger after) {
     if (!n) return;
+    double b0 = CACurrentMediaTime();
     SpikeNode* was = g_nodes[@(n.parent)];
     if (was) [was.kid_nodes removeObject:n];
     n.parent = parent;
@@ -471,10 +475,14 @@ static void placed(SpikeNode* n, NSInteger parent, NSInteger after) {
         return;
     }
     UIView* into_view = holder ? holder.view : g_root;
+    double v0 = CACurrentMediaTime();
+    g_place_book_s += v0 - b0;
     if (n.view.hidden) n.view.hidden = NO;
-    if (n.view.superview == into_view) return;
-    [n.view removeFromSuperview];
-    [into_view addSubview:n.view];
+    if (n.view.superview != into_view) {
+        [n.view removeFromSuperview];
+        [into_view addSubview:n.view];
+    }
+    g_place_view_s += CACurrentMediaTime() - v0;
 }
 
 // The solver's box for an element, relative to its parent's; a container's
@@ -594,6 +602,11 @@ static UIColor* placeholder_rows(void) {
 @end
 static SpikeScrollWatch* g_scroll_watch;
 
+static void prefilled(NSInteger count);
+
+// A pooled row waits visible but off the screen: moving it back is a frame, never a show.
+static void parked(UIView* v) { v.frame = CGRectMake(-10000, -10000, v.frame.size.width, v.frame.size.height); }
+
 // A paint reached the views: what it cost the host, and the instrument told.
 static void painted(void) {
     if (g_win_pending) {
@@ -613,9 +626,12 @@ static void painted(void) {
             NSMutableString* per = [NSMutableString new];
             double all = 0;
             for (NSString* k in g_row_op_s) { [per appendFormat:@" %@_us=%.1f", k, g_row_op_s[k].doubleValue * 1e6 / g_rows_reused]; all += g_row_op_s[k].doubleValue; }
+            said([NSString stringWithFormat:@"host place parts: bookkeeping_us=%.0f views_us=%.0f creates=%ld", g_place_book_s * 1e6, g_place_view_s * 1e6, (long)g_creates_made]);
             said([NSString stringWithFormat:@"host per recycled row: records_us=%.1f pair_us=%.1f layout_share_us=%.1f%@", all * 1e6 / g_rows_reused, g_pair_s * 1e6 / g_rows_reused, layout_s * 1e6 / MAX(1, (NSInteger)g_nodes.count / 3), per]);
         }
         [g_row_op_s removeAllObjects];
+        g_place_book_s = g_place_view_s = 0;
+        g_creates_made = 0;
         g_rows_reused = 0;
         g_pair_s = 0;
         [g_op_s removeAllObjects];
@@ -627,6 +643,11 @@ static void painted(void) {
     g_measure_s = 0;
     bench_first_applied();
     if (g_toggling) { g_toggling = NO; bench_toggle_applied(); }
+    static BOOL filled;
+    if (!filled && g_row_h > 0) {
+        filled = YES;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ prefilled(2 * overscan + 10); });
+    }
     if (g_row_h <= 0) {
         list_found();
         if (g_row_h > 0) dispatch_async(dispatch_get_main_queue(), ^{ window_asked(); });
@@ -700,7 +721,7 @@ static NSMutableDictionary<NSString*, NSMutableArray<SpikeNode*>*>* g_rows;
 static NSMutableArray<SpikeNode*>* g_pooled_now;
 
 // What the pools keep: a window move's worth, no more; the rest is released.
-static const NSUInteger row_pool_cap = 8;
+static const NSUInteger row_pool_cap = 32;
 static const NSUInteger view_pool_cap = 32;
 
 // Every node of a subtree, in order: the root, then each child's subtree.
@@ -800,6 +821,37 @@ static NSMutableSet<NSNumber*>* paired(NSArray<NSArray<NSString*>*>* records, NS
     return carried;
 }
 
+// A node of `prim`, and its children of the same prims, made fresh with no facts.
+static SpikeNode* shaped_like(SpikeNode* model, UIView* into) {
+    SpikeNode* n = [SpikeNode new];
+    n.prim = model.prim;
+    made(n);
+    parked(n.view);
+    [into addSubview:n.view];
+    for (SpikeNode* k in model.kid_nodes) {
+        SpikeNode* c = shaped_like(k, n.view);
+        if (!n.kid_nodes) n.kid_nodes = [NSMutableArray new];
+        [n.kid_nodes addObject:c];
+    }
+    return n;
+}
+
+// THE POOL FILLED AHEAD: after the first frame is drawn, the list's row shape is
+// made `count` times into the row pool, so a scroll recycles from the start.
+static void prefilled(NSInteger count) {
+    for (SpikeNode* list in g_nodes.allValues) {
+        if (!is(list, @"list")) continue;
+        for (SpikeNode* row in list.kid_nodes) {
+            if (row.kid_nodes.count == 0) continue;
+            NSString* shape = shape_of(row);
+            if (!g_rows) g_rows = [NSMutableDictionary new];
+            if (!g_rows[shape]) g_rows[shape] = [NSMutableArray new];
+            for (NSInteger i = 0; i < count && g_rows[shape].count < row_pool_cap; i++) [g_rows[shape] addObject:shaped_like(row, list.view)];
+            return;
+        }
+    }
+}
+
 static NSString* rest(NSArray<NSString*>* w, NSUInteger from) {
     return w.count > from ? [[w subarrayWithRange:NSMakeRange(from, w.count - from)] componentsJoinedByString:@" "] : @"";
 }
@@ -820,7 +872,10 @@ static void apply_records(NSArray<NSArray<NSString*>*>* records) {
         SpikeNode* n = g_nodes[@(nid)];
         double t1 = CACurrentMediaTime();
         if ([op isEqualToString:@"create"]) {
-            if (![carried containsObject:@(nid)]) g_nodes[@(nid)] = taken(w[2], nid);
+            if (![carried containsObject:@(nid)]) {
+                g_nodes[@(nid)] = taken(w[2], nid);
+                g_creates_made++;
+            }
         } else if ([op isEqualToString:@"fact"] && w.count >= 5) {
             NSString* key = [NSString stringWithFormat:@"%@|%@", w[2], w[3]];
             NSString* value = rest(w, 4);
@@ -879,7 +934,7 @@ static void apply_records(NSArray<NSArray<NSString*>*>* records) {
         m.fresh = nil;
     }
     for (SpikeNode* r in g_pooled_now) {
-        for (NSArray* pool in g_rows.allValues) if ([pool containsObject:r]) { r.view.hidden = YES; break; }
+        for (NSArray* pool in g_rows.allValues) if ([pool containsObject:r]) { parked(r.view); break; }
     }
     [g_pooled_now removeAllObjects];
     [CATransaction commit];

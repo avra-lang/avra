@@ -157,11 +157,14 @@
 - (NSInteger)tableView:(UITableView*)t numberOfRowsInSection:(NSInteger)s { return self.tasks.count; }
 
 static double g_cell_s;
+static double g_dequeue_s, g_configure_s, g_layout_s;
 static NSInteger g_cells;
 
 - (UITableViewCell*)tableView:(UITableView*)t cellForRowAtIndexPath:(NSIndexPath*)p {
     double c0 = CACurrentMediaTime();
     TaskCell* c = [t dequeueReusableCellWithIdentifier:@"task" forIndexPath:p];
+    double c1 = CACurrentMediaTime();
+    g_dequeue_s += c1 - c0;
     Task* task = self.tasks[p.row];
     c.title.text = task.title;
     c.title.textColor = task.done ? UIColor.secondaryLabelColor : UIColor.labelColor;
@@ -180,10 +183,14 @@ static NSInteger g_cells;
         [me counted];
         [me.table deleteRowsAtIndexPaths:@[ [NSIndexPath indexPathForRow:at inSection:0] ] withRowAnimation:UITableViewRowAnimationAutomatic];
     };
+    double c2 = CACurrentMediaTime();
+    g_configure_s += c2 - c1;
     [c layoutIfNeeded];
+    g_layout_s += CACurrentMediaTime() - c2;
     g_cell_s += CACurrentMediaTime() - c0;
     if (++g_cells % 50 == 0) {
-        printf("bench: twin per cell (dequeue, configure, layout): %.1f us over 50\n", g_cell_s * 1e6 / 50);
+        printf("bench: twin per cell (dequeue, configure, layout): %.1f us over 50, dequeue %.1f configure %.1f layout %.1f\n", g_cell_s * 1e6 / 50, g_dequeue_s * 1e6 / 50, g_configure_s * 1e6 / 50, g_layout_s * 1e6 / 50);
+        g_dequeue_s = g_configure_s = g_layout_s = 0;
         fflush(stdout);
         g_cell_s = 0;
     }
