@@ -1058,6 +1058,12 @@ a member's default reads only its component's plain inputs
 
 No witness here: only the program layer speaks it, and a witness here runs the old path — the golden is tools/program-refusals/state_member_default_reads_state.
 
+## type.seed_ring
+
+a seed at need never starts from a seed that starts from it
+
+No witness here: only the program layer speaks it, and a witness here runs the old path — the golden is tools/program-refusals/seed_ring.
+
 ## type.slot_shadows
 
 an instance's block names its component's slot before a component of that name
@@ -6424,6 +6430,40 @@ error[type.mismatch]: argument 1 of `f` wants `int`, found `int?`
 help: `v` may be null — `v ?? <default>` supplies a value, `if let n? = v { … } else { … }` branches, and `!` asserts presence
 fix (low): assert it is present — `v!` (traps when it is null)
   v!
+```
+
+## type.unbranched
+
+a value of an @unbranched type is read, never chosen by
+
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "vendor/meta" }
+
+// /w/src/main.av
+use stages.{Stage}
+let s: Stage = "prod"
+if s == "prod" { 1 } else { 2 }
+// /w/src/stages/stages.av
+use @std.meta.{unbranched}
+@unbranched
+export type Stage = string
+
+```
+
+```
+error[type.unbranched]: a `Stage` is read, never chosen by — `==` decides on it here
+  ╭─[/w/src/main.av:3:4]
+3 │ if s == "prod" { 1 } else { 2 }
+  ·    ┬
+  ·    ╰── chosen by here
+──╯
+help: read it — print it, interpolate it — and hold what would differ by it as a value of its own
 ```
 
 ## type.unknown_prop
