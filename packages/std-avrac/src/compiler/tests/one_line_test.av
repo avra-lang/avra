@@ -5,7 +5,7 @@
 // guessing at what the printer knew, and no dependence on strings
 // embedded in a larger file.
 use @std.avrac.compiler.{parse_source}
-use @std.avrac.compiler.format.{render_source_of}
+use @std.avrac.compiler.format.{render_source_of, lossless_defect}
 
 /// The source formatted with its own text in hand — what `avra fmt`
 /// does — equal to itself when the form was already canonical.
@@ -14,6 +14,22 @@ fn kept(source: string) -> bool {
     if !p.voices.list.is_empty() { return false }
     render_source_of(p.store, p.stmts, source) == source
 }
+
+/// The source as `avra fmt` prints it.
+fn printed(source: string) -> string {
+    let p = parse_source(source)
+    render_source_of(p.store, p.stmts, source)
+}
+
+/// One print of the source moves it, keeps every token, remark and doc of it, and a second print
+/// moves nothing — the first print was already the canonical form.
+fn settles(source: string) -> bool {
+    let once = printed(source)
+    once != source && lossless_defect(source, once) == null && printed(once) == once
+}
+
+/// A call too wide for any line, so its print breaks.
+const too_wide: string = "self.line(\"spent = match tier { ${single.map(\"${it}\").join(\" or \")} -> tier, _ -> no_end }\")"
 
 spec "one-line bodies" {
     given "a body written on one line" {
@@ -29,6 +45,17 @@ spec "one-line bodies" {
         then "an explicit block value keeps its braces" { kept("let x = { 7 }") }
         then "a nested explicit block value keeps both pairs of braces" { kept("let x = { { 7 } }") }
         then "an explicit block value in a struct field keeps its braces" { kept("type P = { a: int }\nlet p = P { a: { 5 } }") }
+    }
+    given "a body written on one line whose content does not fit there" {
+        then "an if whose else branch breaks prints expanded, and that print is its own" {
+            settles("type G = { n: int }\nimpl G {\n    mut fn f(single: List<int>) {\n        if single.is_empty() { self.line(\"x\") } else { ${too_wide} }\n    }\n}")
+        }
+        then "a fn body that breaks prints expanded, and that print is its own" {
+            settles("type G = { n: int }\nimpl G {\n    mut fn f(single: List<int>) { ${too_wide} }\n}")
+        }
+        then "an if that fits stays on its line" {
+            kept("fn f() -> int { if true { 1 } else { 2 } }")
+        }
     }
     given "a body written across lines" {
 

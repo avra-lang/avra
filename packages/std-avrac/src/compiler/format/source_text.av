@@ -314,6 +314,10 @@ impl SourceText {
     fn stmt_flat(s: StmtId) -> bool { self.span_flat(self.store.stmt_span(s)) }
 }
 
+/// Whether a body is one line, printed: a body written on one line keeps its braces on the line
+/// only while what it prints fits there, or the next print reads it as written across lines.
+fn single(lines: List<string>) -> bool { lines.length == 1 && !lines[0].contains("\n") }
+
 /// Where the code of a span ending at `end` really ends — a span may
 /// carry the break that follows it.
 fn code_end(t: string, end: int) -> int {
@@ -851,7 +855,7 @@ impl SourceText {
         }
         let all = lines.concat(self.trivia_before(end, depth + 1))
         if all.is_empty() { return if head.is_empty() { "{}" } else { "{ ${head} }" } }
-        if one_line && all.length == 1 {
+        if one_line && single(all) {
             let first = unpadded(all[0], depth + 1)
             return if head.is_empty() { "{ ${first} }" } else { "{ ${head} ${first} }" }
         }
@@ -863,7 +867,7 @@ impl SourceText {
         let body = flatten([self.statement(s, depth + 1) for s in stmts])
             .concat(self.trivia_before(end, depth + 1))
         if body.is_empty() { return source_line(depth, "${head} {}") }
-        if one_line && body.length == 1 { return source_line(depth, "${head} { ${unpadded(body[0], depth + 1)} }") }
+        if one_line && single(body) { return source_line(depth, "${head} { ${unpadded(body[0], depth + 1)} }") }
         "${source_line(depth, "${head} {")}\n${joined(body, "\n")}\n${source_line(depth, "}")}"
     }
 
@@ -910,7 +914,7 @@ impl SourceText {
                 "${exported}trait ${source_name(name)}${self.named_type_params(tparams)} {}",
             )
         }
-        if one_line && body.length == 1 {
+        if one_line && single(body) {
             return source_line(
                 depth,
                 "${exported}trait ${source_name(name)}${self.named_type_params(tparams)} { ${unpadded(body[0], depth + 1)} }",
@@ -1105,7 +1109,7 @@ impl SourceText {
         let body = flatten([self.given_lines(g, one_line, depth + 1) for g in groups])
             .concat(self.trivia_before(end, depth + 1))
         if body.is_empty() { return source_line(depth, "spec ${quoted_text(name)} {}") }
-        if one_line && body.length == 1 {
+        if one_line && single(body) {
             return source_line(
                 depth,
                 "spec ${quoted_text(name)} { ${unpadded(body[0], depth + 1)} }",
@@ -1197,7 +1201,7 @@ impl SourceText {
         let lead = self.trivia_before(self.given_split(target), depth)
         let at = depth + 1
         let thens = flatten([self.then_line(c, at) for c in g.cases])
-        if one_line && thens.length == 1 {
+        if one_line && single(thens) {
             return lead
                 .concat(
                     [
@@ -1738,7 +1742,19 @@ impl SourceText {
     /// An `if`'s branches, one-line when the whole form was; an else-less
     /// guard ends at its first block.
     mut fn if_group(cond: ExprId, yes: ExprId, no: ExprId?, id: ExprId, depth: int, col: int = -1) -> string {
-        let one = self.span_flat(self.store.expr_span(id))
+        if !self.span_flat(self.store.expr_span(id)) { return self.if_text(cond, yes, no, false, depth, col) }
+        // ONE FORM FOR EVERY BRANCH: written on one line, the if keeps the line only while all of
+        // it prints there — a branch that broke would read as written across lines next time
+        let next = self.next
+        let unbroken = self.unbroken
+        let flat = self.if_text(cond, yes, no, true, depth, col)
+        if !flat.contains("\n") { return flat }
+        self.next = next
+        self.unbroken = unbroken
+        self.if_text(cond, yes, no, false, depth, col)
+    }
+
+    mut fn if_text(cond: ExprId, yes: ExprId, no: ExprId?, one: bool, depth: int, col: int) -> string {
         let head = "if ${self.expression(cond, loosest_tier, depth, resolved_col(col, depth) + 3)} ${self.block(yes, one, depth)}"
         let other? = no else { return head }
         "${head} else ${self.if_group_else(other, one, depth)}"
