@@ -63,14 +63,14 @@ fn binding_holes(view: ItemView) -> List<Found> {
 /// laws reading the one answer: each `match`'s subject typed as the body that holds it types it, and
 /// an item with no `match` typing nothing.
 fn registry_holes(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemHoles {
-    if !item_held(engine, file, at) { return holes_made(engine, file, at) }
+    if !item_held(engine, file, at) { return ItemHoles { holes: [] } }
     registry_holes_seen(item_view(engine, file, at))
 }
 
 /// What `registry_holes` answers through the item's `view`, made the first time it is asked.
 fn registry_holes_seen(view: ItemView) -> ItemHoles {
     let held? = view.holes.get() else {
-        let made = holes_made(view.engine, view.file, view.at)
+        let made = holes_made(view)
         view.holes.set(made)
         return made
     }
@@ -78,9 +78,12 @@ fn registry_holes_seen(view: ItemView) -> ItemHoles {
 }
 
 /// What `registry_holes` answers, made.
-fn holes_made(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemHoles {
+fn holes_made(view: ItemView) -> ItemHoles {
+    let engine = view.engine
+    let file = view.file
+    let at = view.at
     if !item_held(engine, file, at) { return ItemHoles { holes: [] } }
-    let item = read_item(engine, file, at)
+    let item = view.item
     let matches = [e for i in 0..item.store.exprs.count() for e in [ExprId { index: i }] if match_at(item.store, e) != null]
     if matches.is_empty() { return ItemHoles { holes: [] } }
     let typed = item_node_types(engine, file, at, item)
