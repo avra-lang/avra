@@ -104,6 +104,7 @@ static int slot_taken(void) {
         snprintf(path, sizeof path, "%s/slot-%d", g_dir, i);
         int fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
         if (fd < 0) continue;
+        // the clock: LOCK_NB answers at once, taken or not
         if (flock(fd, LOCK_EX | LOCK_NB) == 0) {
             char pid[24];
             int n = snprintf(pid, sizeof pid, "%d\n", (int)getpid());
@@ -133,6 +134,7 @@ static int deadlock_ends_here(void) {
         snprintf(path, sizeof path, "%s/slot-%d", g_dir, i);
         int fd = open(path, O_RDONLY | O_CLOEXEC);
         if (fd < 0) return 0;
+        // the clock: LOCK_NB answers at once, taken or not
         int free_now = flock(fd, LOCK_SH | LOCK_NB) == 0;
         char text[32] = {0};
         ssize_t got = free_now ? 0 : pread(fd, text, sizeof text - 1, 0);
@@ -174,6 +176,7 @@ static void holders_said(char* out, size_t room) {
         snprintf(path, sizeof path, "%s/slot-%d", g_dir, i);
         int fd = open(path, O_RDONLY | O_CLOEXEC);
         if (fd < 0) continue;
+        // the clock: LOCK_NB answers at once, taken or not
         int free_now = flock(fd, LOCK_SH | LOCK_NB) == 0;
         char text[24] = {0};
         ssize_t got = free_now ? 0 : pread(fd, text, sizeof text - 1, 0);
@@ -195,6 +198,9 @@ static void holders_said(char* out, size_t room) {
 
 static void napped(int64_t ms) {
     struct timespec t = { (time_t)(ms / 1000), (long)(ms % 1000) * 1000000L };
+    // A HOLD WOULD BE WRONG HERE: it would move a virtual clock by however long another process kept
+    // its memory, and give every growth a path to the clock's own traps.
+    // the clock: a wait for another process's memory, timed by its own naps
     nanosleep(&t, NULL);
 }
 

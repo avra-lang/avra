@@ -119,6 +119,14 @@ export trait Decode {
         Issues,
     >
 
+    /// JSON text read as this type: it, or every issue — what `decode`
+    /// answers over the text's `Value`, read with no tree between.
+    static fn from_json(
+        text: string,
+        coercion: Coercion = Coercion.Strict,
+        limits: Limits = Limits {},
+    ) -> Result<Self, Issues>
+
     /// The fields a form draws, in declaration order — none for a type
     /// that is no record.
     static fn fields() -> List<FieldShape>
@@ -257,20 +265,8 @@ export fn decoder(t: Type) -> Decls {
             static fn fields() -> List<FieldShape> { ${shape_list(t)} }
 
             fn value() -> Value { ${valued(t)} }
-        }
 
-        impl Args for ${t} {
-            fn args() -> Value { self.value() }
-        }
-
-        impl ${t} {
-
-            /// JSON text read as this type: it, or every issue — what
-            /// `decode` answers over the text's `Value`.
-            static fn from_json(text: string, coercion: Coercion = Coercion.Strict, limits: Limits = Limits {}) -> Result<
-                ${t},
-                Issues,
-            > {
+            static fn from_json(text: string, coercion: Coercion, limits: Limits) -> Result<${t}, Issues> {
                 decode_json(
                     text,
                     (mut ${bind().d}: Decoding, ${bind().depth}: int, ${bind().required}: bool, secret: bool) -> ${name(t.name)}.read_json(${name(bind().d)}, ${name(bind().depth)}, ${name(bind().required)}, secret),
@@ -279,6 +275,13 @@ export fn decoder(t: Type) -> Decls {
                     limits,
                 )
             }
+        }
+
+        impl Args for ${t} {
+            fn args() -> Value { self.value() }
+        }
+
+        impl ${t} {
 
             static fn decoded(mut ${bind().d}: Decoding, s: Slot) -> ${t}? {
                 ${b.lines}

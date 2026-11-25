@@ -24,6 +24,7 @@ use @std.net.{Bell}
 use @std.text.{parse_int}
 use @std.time.{Duration, ms, now_ms, secs}
 use @std.http.route.{Route, Mounted, fixed, routed, mounted}
+use @std.http.typed.{created, problem}
 use @std.json.{Json, Field, field, to_text}
 use @std.db.apply.{commits, last_of, touched}
 use @std.db.reads.{observing}
@@ -31,7 +32,7 @@ use @std.db.error.{ModelError}
 use @std.db.scope.{Op, Where}
 use @std.sqlite.{Db, SqlValue}
 use @std.sqlite.error.{SqlError}
-use @std.validate.{Issue, Issues}
+use @std.validate.{Issues}
 
 grammar Whole = "/{id: int}"
 grammar Restored = "/{id: int}/restore"
@@ -327,7 +328,7 @@ fn opened(w: Wire, access: Access?, held: Hub) -> List<Opened> {
                 (q: Request<Unrouted>) -> scoped(
                     access,
                     q,
-                    (sc) -> nudged(held, () -> created(q, (body: string) -> w.create(sc, body))),
+                    (sc) -> nudged(held, () -> made_from(q, (body: string) -> w.create(sc, body))),
                 ),
             ),
         },
@@ -512,7 +513,7 @@ fn bodied<P>(q: Request<P>, read: fn(string) -> Result<Json, Failure>) -> Respon
 
 /// A door that makes a row: the body read as the row, answered 201 with the
 /// new row's address under the path it was posted to.
-fn created<P>(q: Request<P>, read: fn(string) -> Result<Json, Failure>) -> Response {
+fn made_from<P>(q: Request<P>, read: fn(string) -> Result<Json, Failure>) -> Response {
     match q.json() { .Ok(doc) -> located(q, read(to_text(doc))), .Err(refusal) -> refusal }
 }
 
@@ -522,9 +523,7 @@ fn located<P>(q: Request<P>, r: Result<Json, Failure>) -> Response {
 
 fn placed(row: Json, path: string) -> Response {
     let at = if path.ends_with("/") { path } else { "${path}/" }
-    let key = keyed(row.get("id"))
-    let body = Response.json(row)
-    body with { status: 201, headers: body.headers.concat([Header { name: "location", value: at + key }]) }
+    created(row, at + keyed(row.get("id")))
 }
 
 /// A row's key as the text an address ends in; empty for a row with none.
@@ -535,26 +534,11 @@ fn keyed(id: Json?) -> string {
 
 fn refused(f: Failure) -> Response {
     match f {
-        .Invalid(issues) -> Response.json(issues_json(issues)) with { status: 422 },
+        .Invalid(issues) -> problem(issues),
         .Missing -> status(404),
         .Conflict(why) -> text(409, why),
         .Broken(why) -> text(500, why),
     }
-}
-
-fn issues_json(all: Issues) -> Json {
-    Json.Obj([field("issues", Json.Arr([issue_json(i) for i in all.all]))])
-}
-
-fn issue_json(i: Issue) -> Json {
-    Json
-        .Obj(
-            [
-                field("path", Json.Str(i.path.text())),
-                field("rule", Json.Str(i.rule)),
-                field("message", Json.Str(i.message)),
-            ],
-        )
 }
 
 // ── What a model's derive calls ─────────────────────────────────

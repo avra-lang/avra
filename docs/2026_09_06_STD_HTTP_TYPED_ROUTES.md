@@ -65,6 +65,12 @@ Unknown-field handling is a declared schema policy; compatibility and signed
 requests can need different policies. A literal plus and a space are distinct
 in generic URI syntax; form decoding is a separately selected codec.
 
+Built for a query record (std-http `typed.av`'s `query_as`, std-validate's
+`from_keyed`): each name and value decoded once after the split, an
+undecodable one a 400; absent takes the default, a bare key reads `true`,
+an empty value is text, a list keeps repeats in order, a scalar sent twice
+is refused, and a key the record does not name is passed by.
+
 Split URI components before decoding reserved delimiters; decode each value
 once. The router, authorization, cache keys, and handler must consume the
 same resolved target, with the raw target retained separately for signatures

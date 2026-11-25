@@ -56,7 +56,7 @@ fn laws_of(capacity: int, retries: int, delivery: Guarantee, overflow: Overflow,
 /// The laws a job is held to whose letter, the program's, overflows
 /// with `o`.
 fn spilled(o: Overflow) -> string {
-    let spill = queue<Dead<int, string>> {
+    let spill = queue<Dead<int>> {
         name: "spill"
         overflow: o
     }
@@ -73,8 +73,8 @@ fn spilled(o: Overflow) -> string {
 fn lettered(
     name: string,
     durable: Durable<int>?,
-    letter: Durable<Dead<int, string>>?,
-    theirs: queue<Dead<int, string>>?,
+    letter: Durable<Dead<int>>?,
+    theirs: queue<Dead<int>>?,
 ) -> string {
     said(
         job<int, int, string> {
@@ -87,7 +87,7 @@ fn lettered(
     )
 }
 
-fn fate_of(f: Fate<string>) -> string {
+fn fate_of(f: Fate) -> string {
     match f { .Failed(e) -> e, .Unanswered -> "unanswered" }
 }
 
@@ -149,7 +149,7 @@ fn every_term() -> Result<string, HomeError> {
 /// Two items through a job's drain: one settles, one is buried in the
 /// job's own letter.
 fn drained_once() -> string {
-    job<int, int, string> doubling {
+    job doubling {
         name: "doubling"
         retries: 1
         each: doubled
@@ -163,14 +163,14 @@ fn drained_once() -> string {
 
 /// A job whose buried items go to a letter the program declares.
 fn shared_letter() -> string {
-    queue<Dead<int, string>> undeliverable { name: "undeliverable" }
-    job<int, int, string> a {
+    queue<Dead<int>> undeliverable { name: "undeliverable" }
+    job a {
         name: "a"
         retries: 1
         each: doubled
         buries_in: undeliverable
     }
-    job<int, int, string> b {
+    job b {
         name: "b"
         retries: 1
         each: doubled
@@ -189,14 +189,14 @@ fn shared_letter() -> string {
 /// worker's fires.
 fn events() -> string {
     let seen: Cell<List<string>> = Cell.new([])
-    job<int, int, string> watched {
+    job watched {
         name: "watched"
         retries: 1
         each: doubled
         took: (d: Delivery<int>) -> seen.push("took ${d.item}")
         acked: (d: Delivery<int>) -> seen.push("acked ${d.item}")
         failed: (d: Delivery<int>, e: string) -> seen.push("failed ${d.item}: ${e}")
-        buried: (gone: Dead<int, string>) -> seen.push("buried ${gone.item}")
+        buried: (gone: Dead<int>) -> seen.push("buried ${gone.item}")
     }
     let _ = watched.send(1)
     let _ = watched.send(0 - 1)
@@ -206,7 +206,7 @@ fn events() -> string {
 
 /// A job run for as long as its scope stands, then stopped.
 fn running() -> string {
-    job<int, int, string> serving {
+    job serving {
         name: "serving"
         at_once: 2
         each: doubled
@@ -220,7 +220,7 @@ fn running() -> string {
 
 /// A delayed send to a job is taken only once it is due.
 fn delayed() -> string {
-    job<int, int, string> later {
+    job later {
         name: "later"
         each: doubled
     }
@@ -233,7 +233,7 @@ fn delayed() -> string {
 /// A job read through two copies and two asks is one queue and one
 /// worker.
 fn one_crew() -> string {
-    job<int, int, string> single {
+    job single {
         name: "single"
         each: doubled
     }
@@ -246,11 +246,11 @@ fn one_crew() -> string {
 /// Two jobs of one name in memory are two queues: the name is a
 /// durable home's to share.
 fn one_name_in_memory() -> string {
-    job<int, int, string> first {
+    job first {
         name: "twin"
         each: doubled
     }
-    job<int, int, string> second {
+    job second {
         name: "twin"
         each: doubled
     }
@@ -274,28 +274,18 @@ spec "std/queue — a job" {
                 spilled(Overflow.fail) == ""
         }
         then "refuses a durable job with no name, and a job whose own letter is durable with none" {
-            lettered("", unopenable<int>(), unopenable<Dead<int, string>>(), null) == "a durable queue is named, and this has no `name:`" &&
-                lettered("", null, unopenable<Dead<int, string>>(), null) == "a durable queue is named, and this has no `name:`"
+            lettered("", unopenable<int>(), unopenable<Dead<int>>(), null) == "a durable queue is named, and this has no `name:`" &&
+                lettered("", null, unopenable<Dead<int>>(), null) == "a durable queue is named, and this has no `name:`"
         }
         then "refuses a durable job whose buried items would go to memory" {
             lettered("resize", unopenable<int>(), null, null) == "a durable job's letter outlives the process too, and `resize` buries into memory — name `letter:` or `buries_in:`"
         }
         then "takes a durable job whose letter is its own and durable, or the program's" {
-            lettered("resize", unopenable<int>(), unopenable<Dead<int, string>>(), null) == "" &&
-                lettered(
-                    "resize",
-                    unopenable<int>(),
-                    null,
-                    queue<Dead<int, string>> { name: "theirs" },
-                ) == ""
+            lettered("resize", unopenable<int>(), unopenable<Dead<int>>(), null) == "" &&
+                lettered("resize", unopenable<int>(), null, queue<Dead<int>> { name: "theirs" }) == ""
         }
         then "refuses a job that names a letter of the program's and one of its own" {
-            lettered(
-                "both",
-                null,
-                unopenable<Dead<int, string>>(),
-                queue<Dead<int, string>> { name: "theirs" },
-            ) == "a job's buried items go to `buries_in:` or to its own `letter:`, and this names both"
+            lettered("both", null, unopenable<Dead<int>>(), queue<Dead<int>> { name: "theirs" }) == "a job's buried items go to `buries_in:` or to its own `letter:`, and this names both"
         }
     }
     given "the queue and worker it declares" {

@@ -1,0 +1,58 @@
+// A coded type's shape folds every coded type it reaches, whole: `reach_twin_one.av` and
+// `reach_twin_two.av` declare each outer type alike, in one module, and change only what it
+// reaches through a coded type.
+
+use @std.relation.{Storable, codec}
+use @std.relation.shape.{Form, descriptor_unspelled}
+use tests.reach_home.{Limb, limb_shape}
+
+@codec
+type Stem = { l: Limb }
+
+/// The header `Stem`'s descriptor records for `Limb`, and how many types it says `Stem`
+/// reaches.
+fn stem_reads() -> string {
+    let d = descriptor_unspelled(Stem.codec_descriptor())!
+    let header = d.reached.find(it.name == "Limb")?.form ?? Form.Unsaid
+    match header {
+        .Coded(h, _, _) -> "${h == limb_shape()} ${d.reached.length}",
+        .Unsaid or .Record or .Variants or .Over or .Dense -> "uncoded ${d.reached.length}",
+    }
+}
+
+spec "std/relation — a shape folds what a nested coded type reaches" {
+    given "a type reached through a coded one gained a field" {
+        then "the coded one's shape moved" { one_bough() != two_bough() }
+        then "the outer's shape moved with it" { one_trunk() != two_trunk() }
+    }
+    given "the attacks" {
+        then "an empty record reached through a coded one that gains a field moves the outer" {
+            one_shell() != two_shell()
+        }
+        then "a field moved from one record a coded type reaches to its sibling moves the outer" {
+            one_frame() != two_frame()
+        }
+        then "a nullable and a list of a coded type move the outer" { one_crate() != two_crate() }
+        then "a type reaching itself and a coded type moves, and still reads back" {
+            one_vine() != two_vine() && one_vine_kept()
+        }
+        then "two types reaching each other hash apart, alike in either order, and read back" {
+            one_ping() != one_pong() &&
+                one_ping() == two_ping() &&
+                one_pong() == two_pong() &&
+                one_ping_kept()
+        }
+        then "a field gained across a cycle moves the type on its other side" { one_tick() != two_tick() }
+        then "two fields swapped move the shape, and so do two swapped in a record it reaches" {
+            one_swapped() != two_swapped() && one_wears() != two_wears()
+        }
+        then "a coded type reached by two paths moves the outer, and is described once" {
+            one_lattice() != two_lattice() && one_lattice_reaches() == "Arm Bough Sprig"
+        }
+    }
+    given "a coded type from another module reaching a type private there" {
+        then "the outer's descriptor records the nested type's own header and its private reach" {
+            stem_reads() == "true 2"
+        }
+    }
+}
