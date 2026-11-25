@@ -118,8 +118,6 @@ void avra_trap(const char* msg) __attribute__((noreturn));
 #define AVRA_SET_DB_FAST "AVRA_DB_FAST"
 // debug.avrac.db_verify: text, else unset
 #define AVRA_SET_DB_VERIFY "AVRA_DB_VERIFY"
-// debug.avrac.engine_parse: a switch, off when unset
-#define AVRA_SET_ENGINE_PARSE "AVRA_ENGINE_PARSE"
 // debug.avrac.query_times: a switch, off when unset
 #define AVRA_SET_QUERY_TIMES "AVRA_QUERY_TIMES"
 // debug.avrac.dep_audit: text, `` when unset
@@ -240,7 +238,6 @@ static inline int avra_set_rc_reasons(void) { return avra_setting_switch(AVRA_SE
 static inline int avra_set_type_memo_check(void) { return avra_setting_switch(AVRA_SET_TYPE_MEMO_CHECK, 0); }
 static inline int avra_set_db_graph(void) { return avra_setting_switch(AVRA_SET_DB_GRAPH, 0); }
 static inline int avra_set_db_fast(void) { return avra_setting_switch(AVRA_SET_DB_FAST, 0); }
-static inline int avra_set_engine_parse(void) { return avra_setting_switch(AVRA_SET_ENGINE_PARSE, 0); }
 static inline int avra_set_query_times(void) { return avra_setting_switch(AVRA_SET_QUERY_TIMES, 0); }
 static inline int avra_set_soundness(void) { return avra_setting_switch(AVRA_SET_SOUNDNESS, 0); }
 static inline int avra_set_suite_all(void) { return avra_setting_switch(AVRA_SET_SUITE_ALL, 0); }

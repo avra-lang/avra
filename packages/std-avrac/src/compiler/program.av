@@ -172,8 +172,8 @@ fn parsed_as(lang: Language, store: SyntaxArena, src: SourceFile, words: BlockWo
     }
 }
 
-/// The untold run of `tokens`: the generated parser's where the language has it, the engine's
-/// otherwise.
+/// The untold run of `tokens`: the generated parser's, which `avra()` always carries — the engine
+/// runs only a language assembled without one (a test's partial grammar, the generator's reading).
 fn quietly(
     lang: Language,
     tokens: List<Token>,
@@ -215,13 +215,8 @@ export fn parse_type_ref(lang: Language, text: string) -> TypeRef? {
         text,
         BlockWords {},
     )
-    let o = run_from<Token, LangNode>(
-        lang.syntax!,
-        "type",
-        [t for t in lexed.tokens if t.kind != TokenKind.Break],
-        avra_lexeme(),
-        build,
-    )
+    let tokens = [t for t in lexed.tokens if t.kind != TokenKind.Break]
+    let o = run_from<Token, LangNode>(lang.syntax!, "type", tokens, avra_lexeme(), build)
     if o.result == null || !o.diagnostics.is_empty() { return null }
     type_ref_at([o.result!], 0)
 }

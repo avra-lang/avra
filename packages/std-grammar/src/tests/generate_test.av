@@ -140,4 +140,32 @@ spec "grammar/generate" {
             untold_made_from(ready(started_at("a"), [])) != untold_made_from(ready(started_at("b"), []))
         }
     }
+    given "a target that enters a rule beside the start" {
+        then "the source carries an entry fn for it, running that rule" {
+            entered(["b"]).contains("export fn t_untold_b(") &&
+                entered(["b"]).contains("untold_outcome(u, \"b\", end)")
+        }
+        then "the start's entry stands beside it" { entered(["b"]).contains("export fn t_untold(") }
+        then "an entry naming no rule is refused, named" {
+            entered(["nope"]) == "refused: the entry `nope` names no rule of the grammar"
+        }
+        then "an entry moves what the parser is made from" {
+            let rd = ready(generate_g(headed()), [])
+            untold_made_from(rd, ["b"]) != untold_made_from(rd)
+        }
+    }
+}
+
+fn entered(entries: List<string>) -> string {
+    match untold_source(
+        ready(generate_g(headed()), []),
+        UntoldTarget {
+            prefix: "t",
+            token: "Tok",
+            node: "Node",
+            uses: [],
+            print: 7,
+            entries: entries,
+        },
+    ) { .Ok(text) -> text, .Err(why) -> "refused: ${why}" }
 }
