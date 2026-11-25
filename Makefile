@@ -1221,7 +1221,9 @@ ui-board:
 # A PAGE'S SERVER RUNS BESIDE IT UNDER `avra dev`: a page package naming
 # `[dev] server` is served with that package's program on one origin, and a
 # save to the server's source is served without a restart (tools/dev_server_check.sh).
-dev-server:
+# `avra dev` serves the page a wasm build makes, so the wasm runtime and package objects come first,
+# as every wasm keeper makes them (tools/lib/wasm_ready.sh)
+dev-server: wasm-runtime wasm-packages
 	@sh tools/bounded.sh 600 sh tools/dev_server_check.sh
 
 # THE BOARD IN A REAL BROWSER: the same module served over an HTTP origin and
