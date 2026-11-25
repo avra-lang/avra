@@ -507,19 +507,6 @@ fn kids_view(v: BodyView) -> List<At> {
     }
 }
 
-/// Two `At`s name the same node — same kind, same arena index (a
-/// `Field`/`Param` compares its owner and its position instead, since
-/// neither has an arena index of its own).
-fn same_at(a: At, b: At) -> bool {
-    match a {
-        .Expr(x) -> match b { .Expr(y) -> same_expr(x, y), _ -> false },
-        .Stmt(x) -> match b { .Stmt(y) -> same_stmt(x, y), _ -> false },
-        .Pat(x) -> match b { .Pat(y) -> same_pat(x, y), _ -> false },
-        .Field(ox, ix) -> match b { .Field(oy, iy) -> same_expr(ox, oy) && ix == iy, _ -> false },
-        .Param(ox, ix) -> match b { .Param(oy, iy) -> same_stmt(ox, oy) && ix == iy, _ -> false },
-    }
-}
-
 /// Two subtrees, EXACTLY — never `subtree_fp` alone. `fp`/`fp_str`
 /// are un-keyed rolling hashes (core/fp.av) and two different
 /// subtrees can share one (`same_ins_list`'s sibling law, core/ir.av)
@@ -554,7 +541,7 @@ fn same_subtree(store: SyntaxArena, a: At, b: At) -> bool {
 fn hole_index(holes: List<At>, at: At) -> int? {
     mut i = 0
     while i < holes.length {
-        if same_at(holes[i], at) { return i }
+        if holes[i] == at { return i }
         i = i + 1
     }
     null
@@ -568,7 +555,7 @@ fn hole_index(holes: List<At>, at: At) -> int? {
 /// under the root, or there is no pattern: a raw index a walk could
 /// never produce is not a defect to discover later at a match.
 ///
-/// `holes` is DEDUPED first, same_at, first occurrence winning — the
+/// `holes` is DEDUPED first, by `==`, first occurrence winning — the
 /// SEED a binder index is computed the same way as its every later
 /// read (CLAUDE.md): a placeholder listed twice must share ONE
 /// index, or the index after it sits at a position `matched` can

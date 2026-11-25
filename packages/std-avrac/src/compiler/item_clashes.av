@@ -10,13 +10,13 @@ use @std.program.query_engine.{QueryEngine}
 /// Every declaration in the written item `at` of `file` that lost its name to one its file declared
 /// first, a value's.
 fn values_twice(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    [named_lost(engine, c) for c in lost_in(engine, file, at) if same_file(c.holder.file, file) && names_value(c.lost.kind)]
+    [named_lost(engine, c) for c in lost_in(engine, file, at) if c.holder.file == file && names_value(c.lost.kind)]
 }
 
 /// Every declaration in the written item `at` of `file` that lost its name to one its file declared
 /// first, a type's.
 fn types_twice(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
-    [named_lost(engine, c) for c in lost_in(engine, file, at) if same_file(c.holder.file, file) && !names_value(c.lost.kind)]
+    [named_lost(engine, c) for c in lost_in(engine, file, at) if c.holder.file == file && !names_value(c.lost.kind)]
 }
 
 /// Every declaration in the written item `at` of `file` that lost its name to another file of its
@@ -25,7 +25,7 @@ fn module_twice(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> Lis
     [Found {
         at: declaration_span(engine, c.lost),
         args: [c.lost.name, below_root(c.holder.file.path_in_package)],
-    } for c in lost_in(engine, file, at) if !same_file(c.holder.file, file)]
+    } for c in lost_in(engine, file, at) if c.holder.file != file]
 }
 
 /// A declaration that lost its name, found where it's written, its voice handed the name.
@@ -38,7 +38,7 @@ export fn lost_a_name(engine: QueryEngine, file: SourceFileAddress, at: ItemId) 
 fn lost_in(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<NameClash> {
     if !item_held(engine, file, at) { return [] }
     let scope? = file_scope(engine, file) else { return [] }
-    [c for c in scope.clashes if !c.imported && same_file(c.lost.file, file) && c.lost.item == at]
+    [c for c in scope.clashes if !c.imported && c.lost.file == file && c.lost.item == at]
 }
 
 /// Whether a declaration of `kind` names a value: a fn's, a const's, a collection's, a state's.
