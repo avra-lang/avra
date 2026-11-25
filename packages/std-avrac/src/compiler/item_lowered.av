@@ -5,6 +5,7 @@ use @std.program.saved_derive.{Saved}
 use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
 use core.{
     scoped,
+    decl_key,
     NodeNotes,
     node_notes,
     CostRemark,
@@ -519,6 +520,8 @@ fn lowered_program(
             () -> read_from(engine, file, home).find_map((f) -> named_value(engine, f, n)),
             named_said,
         ),
+        trait_key: (n: string, home: string?) -> read_from(engine, file, home)
+            .find_map((f) -> trait_key_in(engine, f, n)),
         method: (ty: SignedType, m: string) -> kept_by_key(
             memos,
             memos.methods,
@@ -665,6 +668,13 @@ fn lowering_refused(signed: SignedBody, parameters: List<ParameterLayout>?) -> s
     if params.any(it.ty == null) { return "an untyped seat" }
     if params.any(it.state) { return "a `state` seat" }
     null
+}
+
+/// The identity of the trait `file` writes as `name`, among written names alone, so asking it of a
+/// file whose generators are being made never asks what they make; absent where it writes no trait.
+fn trait_key_in(engine: QueryEngine, file: SourceFileAddress, name: string) -> string? {
+    let d? = written_resolution(engine, file, Space.Type, name).named() else { return null }
+    if d.kind == ItemKind.Trait { decl_key(d.file, d.name) } else { null }
 }
 
 /// What a top-level value's name is from `file`, as code reads it: a fn the program declares, or a

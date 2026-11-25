@@ -24,6 +24,8 @@ use features.annotations.{
     foreign_diagnostics,
     miscounted,
     names_no_fn,
+    names_fn_and_trait,
+    derive_spelled,
     mark_unimported,
     takes_another_kind,
     takes_nothing,
@@ -92,8 +94,14 @@ fn fnless_annotations(view: ItemView) -> List<Found> {
     worn_where_viewed(
         view,
         (w: Worn) -> w.named != null && w.named?.kind != ItemKind.Fn ||
-            w.named == null && bound.contains(w.name),
+            w.named == null && (bound.contains(w.name) || names_no_trait(engine, file, w.name)),
     )
+}
+
+/// Whether `name`, read in `file`, names a type that is no trait: what no annotation can mean.
+fn names_no_trait(engine: QueryEngine, file: SourceFileAddress, name: string) -> bool {
+    let t? = resolved(engine, file, Space.Type, name).named() else { return false }
+    t.kind != ItemKind.Trait
 }
 
 /// Every annotation naming a fn that takes no seat for the declaration.
@@ -110,7 +118,7 @@ fn takes_no_seat(engine: QueryEngine, d: DeclaredName?) -> bool {
     s.params.is_empty()
 }
 
-/// an annotation names a fn over a declaration
+/// an annotation names a fn or a trait
 export law annotation_names_a_fn {
     kind: "annotation.callee"
     reads_view: fnless_annotations
@@ -123,7 +131,7 @@ export law mark_imported {
     kind: "annotation.unimported"
     reads_view: marks_unimported
     voice: unimported_mark_words
-    witness: "use @std.meta.{derive}\nuse kit.{Reads}\n\n@derive(Reads)\ntype R = { @flag n: int }\n0\n"
+    witness: "use kit.{Reads}\n\n@Reads\ntype R = { @flag n: int }\n0\n"
     witness_files: {
         "src/kit/kit.av": "use @std.meta.{Named, Marker, Type, Directive}\n\nexport fn flag(_d: Named) -> Marker { Marker {} }\n\nexport trait Reads {\n    static fn derive(t: Type) -> List<Directive> { [] }\n    static fn marks(t: Type) -> List<string> { [\"flag\"] }\n}\n",
     }
@@ -388,14 +396,136 @@ fn effectless_words(a: List<string>) -> Voice { answers_no_effect(a[0], a[1]) }
 /// The fn `@std/meta` runs a trait's own `derive` through.
 const DERIVING: string = "derive"
 
-/// Every argument of a `@derive` the written item `view` shows wears that names a declaration no
-/// trait is, or a trait that writes no `derive`: the annotation's name, what it names, and whether
-/// it's a trait.
+/// What an annotation's word names where it's written: THE ONE ANNOTATION SPELLING. A fn of that name
+/// is the annotation fn (a declaring one, a rule, a mark); else a trait of that name is that trait's
+/// derive; else nothing. The value space is asked first and the type space only where it misses, so a
+/// fn annotation reads nothing more; a word naming both is `annotation.ambiguous`'s to refuse.
+export enum AnnotationMeant {
+    Fn(d: DeclaredName)
+    Derive(d: DeclaredName)
+    Nothing
+}
+
+/// What the word `name`, read where `file` writes it in `scope`, means as an annotation.
+export fn annotation_meant(
+    engine: QueryEngine,
+    scope: FileScope,
+    file: SourceFileAddress,
+    name: string,
+) -> AnnotationMeant {
+    let f = stratum_resolved(engine, scope, file, Space.Value, name).named()
+    if f != null { return AnnotationMeant.Fn(f!) }
+    let t? = stratum_resolved(engine, scope, file, Space.Type, name).named() else { return AnnotationMeant.Nothing }
+    if t.kind == ItemKind.Trait { AnnotationMeant.Derive(t) } else { AnnotationMeant.Nothing }
+}
+
+/// Every trait a `@derive` the written item `view` shows names, or that an annotation names by its own
+/// word, that is no trait or writes no `derive`, or whose `derive` takes another kind of declaration:
+/// the annotation's name, what it names, and whether it's a trait.
 fn derives_refused(view: ItemView) -> List<Found> {
     let item = view.item
-    if !item.store.refusals().is_empty() { return [] }
-    [f! for s in item.stmts if source_wrote_stmt(item.store, s) for a in item.store.annotations_of(s) if source_wrote_annotation(item.store, a) && derives_by_meta(view.engine, view.file, a.name) for kind in some_list(stmt_kind(view.engine, view.file, view.at, item.store, s)) for e in a.args for f in [derive_arg(view.engine, view.file, item.store, a, kind, e)] if f != null]
+    if !item.store.refusals().is_empty() ||
+        item.stmts.all((s) -> item.store.annotations_of(s).is_empty()) { return [] }
+    let scope? = written_file_scope(view.engine, view.file) else { return [] }
+    flatten(
+        [derives_worn(view, scope, a, kind) for s in item.stmts if source_wrote_stmt(item.store, s) for a in item.store.annotations_of(s) if source_wrote_annotation(item.store, a) for kind in some_list(stmt_kind(view.engine, view.file, view.at, item.store, s))],
+    )
 }
+
+/// What one annotation `a` on a declaration of `kind` refuses of the traits it derives: each argument
+/// of a `@derive`, or the trait its own word names.
+fn derives_worn(view: ItemView, scope: FileScope, a: Annotation, kind: ItemKind) -> List<Found> {
+    let store = view.item.store
+    match annotation_meant(view.engine, scope, view.file, a.name) {
+        .Fn(d) -> if derive_fn(d) { [f! for e in a.args for f in [derive_arg(view.engine, view.file, store, a, kind, e)] if f != null] } else { [] },
+        .Derive(t) -> some_list(derive_trait_refused(view.engine, t, a.name, a.span, kind)),
+        .Nothing -> [],
+    }
+}
+
+/// `@derive(X)` is `@X`: a trait's word is its derive
+export law derive_spelled_by_trait {
+    kind: "annotation.derive_spelled"
+    reads_view: derives_spelled
+    voice: derive_spelled_words
+    warns: true
+    witness: "use @std.meta.{derive}\nuse kit.{Plain}\n\n@derive(Plain)\ntype R = { n: int }\n0\n"
+    witness_files: {
+        "src/kit/kit.av": "use @std.meta.{Type, Directive}\n\nexport trait Plain {\n    static fn derive(t: Type) -> List<Directive> { [] }\n}\n",
+    }
+}
+
+/// Every `@derive` the written item `view` shows whose every argument derives soundly, said as the
+/// words it derives, each carrying the fix that writes it `@A @B`: a `@derive` refused stands as
+/// `annotation.derive`'s alone, since its fix would write an annotation that refuses too. The `use`
+/// of `derive` it leaves unread is `modules.unused_import`'s to drop.
+fn derives_spelled(view: ItemView) -> List<Found> {
+    let item = view.item
+    if !item.store.refusals().is_empty() { return [] }
+    let scope? = written_file_scope(view.engine, view.file) else { return [] }
+    let worn = [a for s in item.stmts if source_wrote_stmt(item.store, s) for a in item.store.annotations_of(s) if source_wrote_annotation(item.store, a) &&
+        a.name == DERIVING &&
+        !a.args.is_empty() &&
+        derives_by_meta(view.engine, view.file, a.name) for kind in some_list(stmt_kind(view.engine, view.file, view.at, item.store, s)) if derives_soundly(view, scope, a, kind)]
+    [derive_spelled_found(item.store, a) for a in worn]
+}
+
+/// Whether every argument of the `@derive` `a` on a declaration of `kind` names a trait whose derive
+/// takes it.
+fn derives_soundly(view: ItemView, scope: FileScope, a: Annotation, kind: ItemKind) -> bool {
+    traits_derived(view.engine, scope, view.file, view.item.store, a).length == a.args.length &&
+        derives_worn(view, scope, a, kind).is_empty()
+}
+
+/// One `@derive` `a`, said as the words it derives, with the fix that writes each as its own
+/// annotation: over the annotation alone, from its `@` to the `)` after its last argument, as fmt
+/// writes it. A splice that misses is refused by the repair door, which reads the edited file.
+fn derive_spelled_found(store: SyntaxArena, a: Annotation) -> Found {
+    let words = [w! for e in a.args for w in [store.ident_name(e)] if w != null]
+    let spelled = words.map("@" + it).join(" ")
+    let said = Found { at: a.span, args: [words.join(", "), spelled] }
+    let lo? = a.span?.lo else { return said }
+    let last? = a.args.last() else { return said }
+    let after? = store.expr_span(last)?.hi else { return said }
+    if words.length != a.args.length { return said }
+    let fix = FoundFix {
+        description: "write `${spelled}`",
+        at: Span { lo: lo, hi: after + 1 },
+        replacement: spelled,
+        sure: true,
+    }
+    said with { fixes: [fix] }
+}
+
+fn derive_spelled_words(a: List<string>) -> Voice { derive_spelled(a[0], a[1]) }
+
+/// a word an annotation wears names one thing: a fn or a trait, never both
+export law annotation_names_one {
+    kind: "annotation.ambiguous"
+    reads_view: annotations_ambiguous
+    voice: ambiguous_words
+    witness: "use @std.meta.{Named, Diagnostic}\ntrait Pair { fn left() -> int }\nfn Pair(_d: Named) -> List<Diagnostic> { [] }\n@Pair\ntype T = { x: int }\n0\n"
+}
+
+/// Every annotation of the written item `view` shows whose word names both a fn and a trait.
+fn annotations_ambiguous(view: ItemView) -> List<Found> {
+    let item = view.item
+    if !item.store.refusals().is_empty() { return [] }
+    let worn = [a for s in item.stmts if source_wrote_stmt(item.store, s) for a in item.store.annotations_of(s) if source_wrote_annotation(item.store, a)]
+    if worn.is_empty() { return [] }
+    let scope? = written_file_scope(view.engine, view.file) else { return [] }
+    [Found { at: a.span, args: [a.name] } for a in worn if names_both(view.engine, scope, view.file, a.name)]
+}
+
+/// Whether `name`, read in `file` through its scope `scope` as an annotation's word is read, names
+/// both a fn and a trait.
+fn names_both(engine: QueryEngine, scope: FileScope, file: SourceFileAddress, name: string) -> bool {
+    let f? = stratum_resolved(engine, scope, file, Space.Value, name).named() else { return false }
+    if f.kind != ItemKind.Fn { return false }
+    stratum_resolved(engine, scope, file, Space.Type, name).named()?.kind == ItemKind.Trait
+}
+
+fn ambiguous_words(a: List<string>) -> Voice { names_fn_and_trait(a[0]) }
 
 /// The kind of the declaration the statement `s` of the item `at` of `file` makes; absent for one
 /// that declares nothing.
@@ -427,6 +557,25 @@ fn meta_fn(engine: QueryEngine, file: SourceFileAddress, name: string, meta: str
 
 fn derives_by_meta(engine: QueryEngine, file: SourceFileAddress, name: string) -> bool { meta_fn(engine, file, name, DERIVING) }
 
+/// Whether the declared name `d` is `@std/meta`'s `derive`, the fn whose arguments name traits.
+export fn derive_fn(d: DeclaredName) -> bool { d.file.package_name == META && d.name == DERIVING && d.kind == ItemKind.Fn }
+
+/// The traits the annotation `a`, written in `file`, derives: the one its own word names, or each
+/// trait a `@derive(…)` names; none for any other annotation.
+export fn traits_derived(
+    engine: QueryEngine,
+    scope: FileScope,
+    file: SourceFileAddress,
+    store: SyntaxArena,
+    a: Annotation,
+) -> List<DeclaredName> {
+    match annotation_meant(engine, scope, file, a.name) {
+        .Fn(d) -> if derive_fn(d) { [t! for e in a.args for n in [store.ident_name(e)] if n != null for t in [stratum_resolved(engine, scope, file, Space.Type, n!).named()] if t != null && t!.kind == ItemKind.Trait] } else { [] },
+        .Derive(t) -> [t],
+        .Nothing -> [],
+    }
+}
+
 /// The argument `e` of the `@derive` `a` on a declaration of `kind`, refused where it names no trait,
 /// a trait with no `derive`, or one whose `derive` takes another kind of declaration; absent where
 /// its `derive` takes this one, or it names nothing — another law's.
@@ -441,18 +590,27 @@ fn derive_arg(
     let n? = store.ident_name(e) else { return null }
     let d? = resolved(engine, file, Space.Type, n).named() else { return null }
     if d.kind != ItemKind.Trait { return Found { at: store.expr_span(e), args: [a.name, d.name, "decl"] } }
+    derive_trait_refused(engine, d, a.name, store.expr_span(e), kind)
+}
+
+/// The trait `d` an annotation `ann` derives over a declaration of `kind`, said at `at`: refused where
+/// it writes no `derive`, or its `derive` takes another kind of declaration; absent where it takes this
+/// one.
+fn derive_trait_refused(
+    engine: QueryEngine,
+    d: DeclaredName,
+    ann: string,
+    at: Span?,
+    kind: ItemKind,
+) -> Found? {
     let held? = declaring_item(engine, d.file, d.name, ItemKind.Trait) else { return null }
     let derived? = trait_fns(held)
         .find((f: StmtId) -> held.store.fn_parts(f)?.name == DERIVING && held.store.is_static(f)) else {
-        return Found { at: store.expr_span(e), args: [a.name, d.name, "trait"] }
+        return Found { at: at, args: [ann, d.name, "trait"] }
     }
     let took? = meta_seat_named(held.store.fn_parts(derived)?.params?.first()?.ty) else { return null }
     if took.takes(kind) { return null }
-    Found {
-        at: store.expr_span(e),
-        args: [d.name, took.spelled(), stood_on(kind)],
-        kind: "annotation.receiver",
-    }
+    Found { at: at, args: [d.name, took.spelled(), stood_on(kind)], kind: "annotation.receiver" }
 }
 
 /// The `@std/meta` seat a written type names by its name alone: `Fn`, `Type`, `Trait` or `Named`.

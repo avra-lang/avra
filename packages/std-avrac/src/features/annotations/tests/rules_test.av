@@ -22,10 +22,9 @@ fn checker() -> string {
 
 /// A record whose one field wears `mark`, beside a rule `long`.
 fn record(mark: string, field: string) -> string {
-    "use @std.meta.{derive}\n" +
-        "use @x.c.{Checks}\n" +
+    "use @x.c.{Checks}\n" +
         "fn long(v: string, n: int = 0, most: int = 99) -> bool { v.length > n && v.length <= most }\n" +
-        "@derive(Checks)\n" +
+        "@Checks\n" +
         "type R = { ${mark} ${field} }\n"
 }
 
@@ -71,19 +70,19 @@ spec "features/annotations — rule annotations" {
     given "a rule the field cannot take" {
         then "is refused at the annotation, once" {
             let p = provided(record("@long(3)", "n: int") + "0", checker())
-            refused_in(p, "`int`") && p.report().contains("main.av:5:12]")
+            refused_in(p, "`int`") && p.report().contains("main.av:4:12]")
         }
         then "a bounded rule on a type outside its bound is refused at the annotation" {
             let p = provided(
-                "use @std.meta.{derive}\nuse @x.c.{Checks}\ntrait Sized { fn size() -> int }\nimpl Sized for string { fn size() -> int { self.length } }\nfn fits<T: Sized>(v: T, most: int) -> bool { v.size() <= most }\n@derive(Checks)\ntype R = { @fits(3) n: int }\n0",
+                "use @x.c.{Checks}\ntrait Sized { fn size() -> int }\nimpl Sized for string { fn size() -> int { self.length } }\nfn fits<T: Sized>(v: T, most: int) -> bool { v.size() <= most }\n@Checks\ntype R = { @fits(3) n: int }\n0",
                 checker(),
             )
             refused_in(p, "`int` does not implement `Sized`") &&
-                p.report().contains("main.av:7:12]")
+                p.report().contains("main.av:6:12]")
         }
         then "a misspelled rule is refused at the annotation" {
             let p = provided(record("@lnog(3)", "s: string") + "0", checker())
-            refused_in(p, "no `fn lnog` is defined") && p.report().contains("main.av:5:12]")
+            refused_in(p, "no `fn lnog` is defined") && p.report().contains("main.av:4:12]")
         }
     }
     given "what carries a call" {
@@ -93,7 +92,7 @@ spec "features/annotations — rule annotations" {
                     "use @std.meta.{derive}\nuse @x.c.{Calls, stamped}\nfn sane(r: R) -> bool { r.n >= 0 }\n@derive(Calls)\n@stamped\n@sane\ntype R = { n: int }\nR { n: 1 }.calls()",
                     reporter(),
                 ),
-            ) == "derive=false stamped=false sane=true"
+            ) == "Calls=false stamped=false sane=true"
         }
         then "a declaring annotation standing in its own file is refused by name" {
             let p = provided(

@@ -173,6 +173,8 @@ export type FileScope = {
     siblings_named: Map<string, List<DeclaredName>>,
     clashes: List<NameClash>,
     pending: List<PendingImport> = [],
+    /// The names a `use` binds from a module that answers none of them: written, and bound to nothing.
+    unreached: List<string> = [],
 }
 
 /// What is `file`'s own at its top level; absent for a file that isn't there. THE WRITTEN SCOPE,
@@ -225,8 +227,12 @@ fn scope_built(engine: QueryEngine, file: SourceFileAddress) -> FileScope? {
     for d in module.apart { if d.file == file { own.bind(space_of(d.kind), d.name, d) } }
     mut clashes: List<NameClash> = []
     mut pending: List<PendingImport> = []
+    mut unreached: List<string> = []
     for u in file_words(engine, file).uses {
-        let at? = imported_module(engine, file, u) else { continue }
+        let at? = imported_module(engine, file, u) else {
+            unreached = unreached.concat([u.bound_as(j) for j in 0..u.items.length])
+            continue
+        }
         let privately = tests_of(file, at)
         for j, item in u.items {
             let written = declarations_of(engine, at.package, at.local, at.as_root, item)
@@ -261,6 +267,7 @@ fn scope_built(engine: QueryEngine, file: SourceFileAddress) -> FileScope? {
         siblings_named: named,
         clashes: [c for c in module.clashes if c.lost.file == file].concat(clashes),
         pending: pending,
+        unreached: unreached,
     }
 }
 
@@ -411,7 +418,7 @@ impl Resolution {
 /// What `name` names in `space` from `file`'s top level: what written names name, and only where
 /// they leave it unbound, what its module's generators declare. A file that isn't there names
 /// nothing. One question per name, so what reads a name depends on that name alone, and a name
-/// something writes never asks what generators make.
+/// something writes, a declaration or an import, never asks what its module's generators make.
 @cut_query("resolve")
 export fn resolved(engine: QueryEngine, file: SourceFileAddress, space: Space, name: string) -> Resolution {
     let scope? = written_file_scope(engine, file) else { return Resolution.Unbound }
@@ -422,7 +429,9 @@ export fn resolved(engine: QueryEngine, file: SourceFileAddress, space: Space, n
     }
     let written = resolved_in(engine, scope, file, space, name)
     match written {
-        .Unbound -> if written_elsewhere(engine, scope, file, space, name) { written } else { generated_resolution(engine, file, space, name) },
+        .Unbound -> if p != null ||
+            scope.unreached.contains(name) ||
+            written_elsewhere(engine, scope, file, space, name) { written } else { generated_resolution(engine, file, space, name) },
         .Named(_) or .KeptApart(_) -> written,
     }
 }
