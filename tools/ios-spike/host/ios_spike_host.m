@@ -104,6 +104,7 @@ static void sources_armed(void) {
 @property(nonatomic) NSInteger said_seat;
 @property(nonatomic) double max;
 @property(nonatomic, strong) UIViewController* sheet;
+@property(nonatomic, strong) UIColor* ink;
 @end
 @implementation SpikeNode
 @end
@@ -218,6 +219,7 @@ static void run_shown(SpikeNode* run) {
     } else {
         ((UILabel*)run.view).text = run.words;
         run.view.accessibilityLabel = run.words;
+        if (holder.ink) ((UILabel*)run.view).textColor = holder.ink;
     }
 }
 
@@ -274,16 +276,98 @@ static void dialog_shown(SpikeNode* n, BOOL open) {
     }
 }
 
+// A tone's UIKit colour: the system's semantic colours, so light and dark follow the device.
+static UIColor* tone_colour(NSString* tone) {
+    NSDictionary<NSString*, UIColor*>* by = @{
+        @"canvas" : UIColor.systemBackgroundColor,
+        @"surface" : UIColor.secondarySystemBackgroundColor,
+        @"surface-raised" : UIColor.tertiarySystemBackgroundColor,
+        @"surface-sunk" : UIColor.tertiarySystemFillColor,
+        @"accent" : UIColor.tintColor,
+        @"neutral" : UIColor.systemGray5Color,
+        @"danger" : UIColor.systemRedColor,
+        @"success" : UIColor.systemGreenColor,
+        @"warning" : UIColor.systemOrangeColor,
+    };
+    return by[tone];
+}
+
+static UIColor* ink_colour(NSString* ink) {
+    NSDictionary<NSString*, UIColor*>* by = @{
+        @"text" : UIColor.labelColor,
+        @"muted" : UIColor.secondaryLabelColor,
+        @"accent" : UIColor.tintColor,
+        @"danger" : UIColor.systemRedColor,
+        @"success" : UIColor.systemGreenColor,
+        @"warning" : UIColor.systemOrangeColor,
+    };
+    return by[ink];
+}
+
+// A spacing step in points.
+static CGFloat step(NSString* z) {
+    NSDictionary<NSString*, NSNumber*>* by = @{ @"none" : @0, @"xs" : @4, @"s" : @8, @"m" : @12, @"l" : @20, @"xl" : @28, @"xxl" : @40 };
+    return by[z] ? by[z].doubleValue : 8;
+}
+
+static void padded(UIView* v, NSString* side, NSString* z) {
+    if (![v isKindOfClass:[UIStackView class]]) {
+        if ([v isKindOfClass:[UIButton class]]) {
+            UIButtonConfiguration* c = ((UIButton*)v).configuration ?: [UIButtonConfiguration plainButtonConfiguration];
+            ((UIButton*)v).configuration = c;
+        }
+        return;
+    }
+    UIStackView* s = (UIStackView*)v;
+    s.layoutMarginsRelativeArrangement = YES;
+    NSDirectionalEdgeInsets m = s.directionalLayoutMargins;
+    CGFloat p = step(z);
+    if ([side isEqualToString:@"pad-start"]) m.leading = p;
+    if ([side isEqualToString:@"pad-end"]) m.trailing = p;
+    if ([side isEqualToString:@"pad-top"]) m.top = p;
+    if ([side isEqualToString:@"pad-bottom"]) m.bottom = p;
+    s.directionalLayoutMargins = m;
+}
+
+// A role record: what a class word named, drawn natively.
+static void role_set(SpikeNode* n, NSString* op, NSString* value) {
+    UIView* v = n.view;
+    if ([op isEqualToString:@"dir"] && [v isKindOfClass:[UIStackView class]]) {
+        BOOL row = [value isEqualToString:@"row"];
+        ((UIStackView*)v).axis = row ? UILayoutConstraintAxisHorizontal : UILayoutConstraintAxisVertical;
+        ((UIStackView*)v).alignment = row ? UIStackViewAlignmentCenter : UIStackViewAlignmentLeading;
+    } else if ([op isEqualToString:@"tone"]) {
+        UIColor* c = tone_colour(value);
+        if (!c) { [g_unused addObject:[NSString stringWithFormat:@"tone %@", value]]; return; }
+        v.backgroundColor = c;
+        if ([v isKindOfClass:[UIButton class]]) {
+            UIButton* b = (UIButton*)v;
+            UIButtonConfiguration* cfg = [UIButtonConfiguration plainButtonConfiguration];
+            cfg.contentInsets = NSDirectionalEdgeInsetsMake(6, 12, 6, 12);
+            cfg.title = [b titleForState:UIControlStateNormal];
+            b.configuration = cfg;
+        }
+    } else if ([op isEqualToString:@"ink"]) {
+        UIColor* c = ink_colour(value);
+        if (!c) { [g_unused addObject:[NSString stringWithFormat:@"ink %@", value]]; return; }
+        if ([v isKindOfClass:[UILabel class]]) ((UILabel*)v).textColor = c;
+        else if ([v isKindOfClass:[UIButton class]]) [(UIButton*)v setTitleColor:c forState:UIControlStateNormal];
+        n.ink = c;
+    } else if ([op isEqualToString:@"radius"]) {
+        NSDictionary<NSString*, NSNumber*>* by = @{ @"xs" : @4, @"s" : @6, @"m" : @10, @"l" : @16, @"xl" : @24 };
+        v.layer.cornerRadius = by[value] ? by[value].doubleValue : 8;
+        v.layer.cornerCurve = kCACornerCurveContinuous;
+        v.clipsToBounds = YES;
+    } else if ([op isEqualToString:@"gap"] && [v isKindOfClass:[UIStackView class]]) {
+        ((UIStackView*)v).spacing = step(value);
+    } else if ([op hasPrefix:@"pad-"]) {
+        padded(v, op, value);
+    }
+}
+
 static void attr_set(SpikeNode* n, NSString* name, NSString* value) {
     UIView* v = n.view;
     if ([name isEqualToString:@"class"]) {
-        if ([v isKindOfClass:[UIStackView class]]) {
-            BOOL row = [[value componentsSeparatedByString:@" "] containsObject:@"dir-row"];
-            ((UIStackView*)v).axis = row ? UILayoutConstraintAxisHorizontal : UILayoutConstraintAxisVertical;
-            ((UIStackView*)v).alignment = row ? UIStackViewAlignmentCenter : UIStackViewAlignmentLeading;
-        }
-        if ([v isKindOfClass:[UILabel class]] && [value containsString:@"color-muted"]) ((UILabel*)v).textColor = UIColor.secondaryLabelColor;
-        [g_unused addObject:@"attr class (styling beyond row/column and muted)"];
     } else if ([name isEqualToString:@"aria-label"]) {
         v.accessibilityLabel = value;
     } else if ([name isEqualToString:@"type"] && [n.prim isEqualToString:@"field"]) {
@@ -365,6 +449,8 @@ static void applied(NSString* frame) {
         } else if ([op isEqualToString:@"prop"]) {
             if ([w[2] isEqualToString:@"checked"] && [n.view isKindOfClass:[UISwitch class]]) ((UISwitch*)n.view).on = [w[3] isEqualToString:@"true"];
             else attr_set(n, w[2], rest(w, 3));
+        } else if ([@[ @"dir", @"tone", @"ink", @"radius", @"gap", @"pad-start", @"pad-end", @"pad-top", @"pad-bottom" ] containsObject:op]) {
+            role_set(n, op, w[2]);
         } else if ([op isEqualToString:@"call"]) {
             if ([w[2] isEqualToString:@"showModal"] || [w[2] isEqualToString:@"show"]) dialog_shown(n, YES);
             else if ([w[2] isEqualToString:@"close"]) dialog_shown(n, NO);
@@ -508,6 +594,10 @@ static void board_said(NSString* when) {
 // The board's script: "Buy milk" typed and added at 3 s, ticked done at 7 s;
 // the About dialog opened at 15 s when AVRA_SPIKE_BOARD_SCRIPT is 1.
 static void board_scripted(void) {
+    if ([NSProcessInfo.processInfo.environment[@"AVRA_SPIKE_BOARD_SCRIPT"] isEqualToString:@"3"]) {
+        after(3, ^{ [(UIButton*)a11y_find(g_root, @"Dark mode") sendActionsForControlEvents:UIControlEventTouchUpInside]; });
+        return;
+    }
     after(3, ^{
         board_said(@"loaded");
         UITextField* f = (UITextField*)found_kind(g_root, [UITextField class]);

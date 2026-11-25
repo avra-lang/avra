@@ -25,7 +25,8 @@ fn recorded(p: Patch) -> List<string> {
         .SetText(id, content) -> ["text ${wire_id(id)} ${unbroken(content)}"],
         .Listen(id, to) -> ["listen ${wire_id(id)} ${to.action.seat.number()} ${row_at(to.action.seat).prim.word()}"],
         .Unlisten(id, seat) -> ["unlisten ${wire_id(id)} ${seat.number()}"],
-        .SetAttr(id, name, value) -> ["attr ${wire_id(id)} ${name.word()} ${unbroken(value)}"],
+        .SetAttr(id, name, value) -> ["attr ${wire_id(id)} ${name.word()} ${unbroken(value)}"]
+            .concat(roles(id, name.word(), value)),
         .DropAttr(id, name) -> ["dropattr ${wire_id(id)} ${name.word()}"],
         .SetProp(id, name, value) -> ["prop ${wire_id(id)} ${name.word()} ${held_word(value)}"],
         .Call(id, verb) -> ["call ${wire_id(id)} ${verb}"],
@@ -34,6 +35,40 @@ fn recorded(p: Patch) -> List<string> {
         .Style(css) -> ["style ${css.length}"],
         .Adopt(kinds, _) -> ["adopt ${kinds.join(",")}"],
     }
+}
+
+/// The roles a class names, as records a native host draws by: `tone <id>
+/// <tone>`, `ink <id> <ink>`, `radius <id> <size>`, `gap <id> <size>`, `pad
+/// <id> <size>` per side (`pad-start`, `pad-end`, `pad-top`, `pad-bottom`), `dir <id> row|col`. A class word with a state prefix
+/// (`hover:`) or no role is left to the page.
+fn roles(id: NodeId, name: string, value: string) -> List<string> {
+    if name != "class" { return [] }
+    [r for w in value.split(" ") for r in role_of(wire_id(id), w)]
+}
+
+/// One class word's role record, if it names one.
+fn role_of(id: int, w: string) -> List<string> {
+    if w == "dir-row" { return ["dir ${id} row"] }
+    if w == "dir-col" { return ["dir ${id} col"] }
+    let r? = [p for p in prefixes() if w.starts_with(p.prefix)].first() else { return [] }
+    ["${r.kind} ${id} ${w.substring(r.prefix.length, w.length)}"]
+}
+
+/// A class word's prefix and the record it becomes.
+type Prefix = { prefix: string, kind: string }
+
+/// Every role a class word carries a native host.
+fn prefixes() -> List<Prefix> {
+    [
+        Prefix { prefix: "fill-", kind: "tone" },
+        Prefix { prefix: "color-", kind: "ink" },
+        Prefix { prefix: "radius-", kind: "radius" },
+        Prefix { prefix: "gap-", kind: "gap" },
+        Prefix { prefix: "pis-", kind: "pad-start" },
+        Prefix { prefix: "pie-", kind: "pad-end" },
+        Prefix { prefix: "pt-", kind: "pad-top" },
+        Prefix { prefix: "pb-", kind: "pad-bottom" },
+    ]
 }
 
 /// A held value as one word run.

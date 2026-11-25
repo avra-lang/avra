@@ -33,7 +33,10 @@ for at in ${AVRA_BOARD_SHOTS:-8}; do
     sleep $((at - t0)); t0=$at; n=$((n + 1))
     name=$shot; [ "$n" -gt 1 ] && name=$shot-$n
     xcrun simctl io "$udid" screenshot "$work/$name.png" > /dev/null 2>&1 && echo "ios-board: screenshot: $work/$name.png"
+    # AVRA_BOARD_DARK_AFTER=<n>: the device turns dark after the n-th shot
+    if [ "$n" = "${AVRA_BOARD_DARK_AFTER:-0}" ]; then xcrun simctl ui "$udid" appearance dark && echo "ios-board: appearance dark"; fi
 done
+xcrun simctl ui "$udid" appearance light
 xcrun simctl terminate "$udid" "$id" > /dev/null 2>&1
 wait
 echo "ios-board: $(grep -c 'frame:' "$out") frames logged in $out"
