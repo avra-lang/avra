@@ -58,6 +58,7 @@ use @std.meta.{
     name,
     literal,
     type_named,
+    type_exported,
     stored_scalar,
     flat,
     flat_field,
@@ -380,8 +381,7 @@ fn decoded(t: Type) -> bool { shape_ok(t) && !t.fields.any(link_target(it) != nu
 
 // ── The draft: what a create is handed. ──
 
-/// The record a create takes: `Todo`'s is `TodoDraft`. EXPORTED ALWAYS: `Type` says nothing of
-/// whether the model is, and a page that names an exported model's create door names its draft.
+/// The record a create takes: `Todo`'s is `TodoDraft`, exported exactly when its model is.
 export fn draft_name(t: Type) -> string { "${t.name}Draft" }
 
 /// The fields a create is handed: every column but the key and the ones the store sets.
@@ -401,7 +401,7 @@ fn drafts(t: Type, read: Type) -> List<Directive> {
 fn drafted(t: Type, read: Type) -> Decls {
     let d = draft_of(read)
     quote {
-        ${draft_type(d)}
+        ${draft_type(d, type_exported(t.module, t.name) != null)}
         ${decoder(d)}
         impl ${draft_name(t)} {
             /// The draft stored as a new row within `scope` (none: unheld), by the model's own
@@ -414,9 +414,10 @@ fn drafted(t: Type, read: Type) -> Decls {
     }
 }
 
-fn draft_type(d: Type) -> Decls {
-    if d.fields.is_empty() { return quote { export type ${d.name} = {} } }
-    quote { export type ${d.name} = { ..${[draft_field(f) for f in d.fields]} } }
+fn draft_type(d: Type, exported: bool) -> Decls {
+    let fields = [draft_field(f) for f in d.fields]
+    if exported { return quote { export type ${d.name} = { ..${fields} } } }
+    quote { type ${d.name} = { ..${fields} } }
 }
 
 /// One drafted field as the draft declares it, its default kept.

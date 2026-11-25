@@ -11,6 +11,10 @@ use @std.validate.{Issue, Issues, issue, length, range}
 @model
 type Keyonly = { id: int = 0 }
 
+/// Private here; `model_draft_apart_test.av` holds another `Note`, and each reads its own draft.
+@model
+type Note = { id: int = 0, title: string }
+
 /// A row ranked 0 is filed under a tag.
 fn filed(j: Jot) -> Result<Jot, Issue> {
     if j.rank == 0 && j.tag == null { fail issue("tag", "a row ranked 0 is filed under a tag") }
@@ -31,6 +35,7 @@ type Jot = {
 fn seeded() -> Result<Db, SqlError> {
     let db = Db.memory()?
     Keyonly.create_table(db)?
+    Note.create_table(db)?
     Jot.create_table(db)?
     db
 }
@@ -52,6 +57,12 @@ fn keys_only() -> Result<string, ModelError> {
     "${a.id} ${b.id}"
 }
 
+fn titled() -> Result<string, ModelError> {
+    let db = modeled(seeded())?
+    let n = NoteDraft { title: "mine" }.insert(db)?
+    n.title
+}
+
 fn stored() -> Result<string, ModelError> {
     let db = modeled(seeded())?
     let n = JotDraft { text: "hi" }.insert(db)?
@@ -68,6 +79,7 @@ spec "std/db a model's draft" {
     given "a model that holds nothing but its key" {
         then "its draft is empty, and each one stored is a new key" { (keys_only() catch _ -> "") == "1 2" }
         then "an empty body is its draft" { KeyonlyDraft.from_json("{}") is .Ok }
+        then "a private model's draft is this file's own" { (titled() catch _ -> "") == "mine" }
     }
     given "a model with rules, defaults and columns the store sets" {
         then "a draft takes the fields it leaves out as their defaults" { read("{\"text\":\"a\"}") == "a - 3" }
