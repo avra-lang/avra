@@ -44,3 +44,13 @@ Nothing uncommitted. Working tree /work/p14 clean (worktree of /work/avra).
   over build/avra and use `make compiler RUNGS="..."` (space-separated) to ladder.
 - Disk: the full witness harness needs >14 GB; run it in chunks (scratchpad wit-chunks.sh pattern).
 - Push: `git -c push.negotiate=true push gh <branch>:refs/heads/lane/replay-defects/<what>`.
+
+## Resumed 2026-11-25 (session avra-lane-r2-replay-defects)
+All six rebased onto program 574c2840 with no conflicts, pushed as `lane/replay-defects/<what>-574c`
+(old e02d71ab refs untouched): type-exported-generated-privates bcf2bb19b294 (rung 8246ba6a),
+file-key 453d09f76e65 (on top), component-setting fd4a0a4dda1b, zero-enum-name 76ec16f8e952,
+two-composers d4c39f9e9a32, named-head-goldens e054fb8c2f0d; all six combined: combined-574c d0334eb9.
+Verified on 574c2840: `make compiler RUNGS=8246ba6a` green (rung 572 s, then HEAD twice);
+std-program saved_*/source_facts 75/75, std-avrac item_tapes/settle_named + type_content_key 23/23 +
+program proved, cli objects_salt 4/4; combined `make try` green, 7/7 program-refusal cases hold,
+voices no new gap, VOICES.md unchanged. Not re-censused; not run: full suites, idioms, cost.
