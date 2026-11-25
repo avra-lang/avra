@@ -1,0 +1,62 @@
+// THE PAGE'S START, the one script every Avra page runs, whoever drew it: `avra dev`'s page or
+// a server's document. It runs the module the mount names (`data-avra-module`) over what the
+// mount holds, its glue imported beside this file wherever the page serves it.
+//
+// A page that cannot start, or stops working once it has, says so in plain words. Under `avra dev`
+// (the page names its module) the error's own words and stack follow; a built page offers a reload
+// and leaves them to the console.
+let started = false;
+const dev = document.querySelector('meta[name="avra-module"]') !== null;
+// Each failure, for the dev relay: held here until `dev.js` takes them and posts every one after.
+const relay = (globalThis.avraRelay ??= { held: [], post: null });
+const relayed = (line) => (relay.post ? relay.post(line) : relay.held.push(line));
+const told = (e) => {
+  const plain = started ? "This page stopped working." : "This page could not start.";
+  // What went wrong first, then where: a stack names frames and carries no
+  // message line outside V8, so both are said.
+  const detail = [e?.message, e?.stack].filter((part) => typeof part === "string" && part !== "").join("\n") || String(e);
+  console.error(`${plain}\n${detail}`);
+  relayed(`${plain} ${detail}`);
+  const shown = document.createElement("div");
+  shown.setAttribute("role", "alert");
+  shown.style.cssText = "padding:16px;font:16px/1.5 system-ui,sans-serif;color:#b00020";
+  const words = document.createElement("p");
+  words.textContent = plain;
+  shown.append(words);
+  if (dev) {
+    const said = document.createElement("pre");
+    said.style.cssText = "white-space:pre-wrap;font:13px/1.4 ui-monospace,monospace;color:inherit";
+    said.textContent = detail;
+    shown.append(said);
+  } else {
+    const again = document.createElement("button");
+    again.textContent = "Reload";
+    again.addEventListener("click", () => location.reload());
+    shown.append(again);
+  }
+  document.body.prepend(shown);
+};
+// An error with no error object and no file is the browser's masked form: a script the page does
+// not own (an extension's, an in-app browser's) failed. It is never drawn over the app: the console
+// hears it, and the dev relay carries it with the browser that ran it.
+const masked = (ev) => !ev.error && !ev.filename;
+addEventListener("error", (ev) => {
+  if (!masked(ev)) return told(ev.error ?? `${ev.message} (${ev.filename}:${ev.lineno}:${ev.colno})`);
+  console.warn(`a script this page does not own failed: ${ev.message}`);
+  relayed(`a script this page does not own failed (no error, no file): ${ev.message} — ${globalThis.navigator?.userAgent ?? "an unknown browser"}`);
+});
+addEventListener("unhandledrejection", (ev) => told(ev.reason));
+try {
+  const [{ run }, { wasiPreview1 }] = await Promise.all([import("./bootstrap.js"), import("./wasi.js")]);
+  const mount = document.getElementById("app");
+  await run(mount.dataset.avraModule, {
+    document,
+    mount,
+    style: document.getElementById("avra-style"),
+    // The dev client swaps the module under the page; a production page has none.
+    hot: document.querySelector('meta[name="avra-module"]') ? (swap) => { globalThis.avraSwap = swap; } : null,
+    wasi: (memory) => wasiPreview1(memory, (code) => { throw new Error(`the program exited ${code}`); }),
+    failed: told,
+  });
+  started = true;
+} catch (e) { told(e); }

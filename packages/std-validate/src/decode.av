@@ -19,13 +19,14 @@
 //! `decode(value, signup)` runs one. A decoder reads every field
 //! before it answers, so one pass finds every issue. Coercion is a
 //! policy: `Strict` takes each value only as itself, `Lax` also reads
-//! text as the number or truth it spells (a query string's `"42"`).
+//! text as the number or truth it spells (a query string's `"42"`),
+//! and blank text as absence wherever text is not what is read.
 //! The nesting depth and a list's length are bounded before anything
 //! below them is read.
 use validate.{Refusal, nearest}
 use issue.{Issue, Issues, root}
 use value.{Value, Entry}
-use @std.text.{parse_int}
+use @std.text.{parse_float, parse_int}
 use @std.json.typed.{Path, Reader, no_reader}
 
 /// How a value may be read as another kind.
@@ -262,10 +263,20 @@ impl Decoding {
 fn scalar<T>(mut d: Decoding, s: Slot, want: string, read: fn(Coercion, Value) -> T?) -> T? {
     let v? = d.present(s) else { return null }
     let x? = read(d.coercion, v) else {
-        d.mistyped(s, v, want)
+        if blank(d.coercion, v) {
+            let _ = d.present(s with { value: null })
+        } else {
+            d.mistyped(s, v, want)
+        }
         return null
     }
     x
+}
+
+/// Under `Lax`, text that says nothing: a field left blank, which is
+/// absence for every kind that text cannot be.
+fn blank(c: Coercion, v: Value) -> bool {
+    match v { .Text(t) -> c is .Lax && t.trim() == "", rest -> false }
 }
 
 fn as_entries(_c: Coercion, v: Value) -> List<Entry>? {
@@ -284,8 +295,13 @@ fn as_text(_c: Coercion, v: Value) -> string? {
     match v { .Text(t) -> t, rest -> null }
 }
 
-fn as_float(_c: Coercion, v: Value) -> float? {
-    match v { .Float(x) -> x, rest -> null }
+/// Itself, or under `Lax` the text that spells one.
+fn as_float(c: Coercion, v: Value) -> float? {
+    match v {
+        .Float(x) -> x,
+        .Text(t) -> if c is .Lax { parse_float(t.trim()) } else { null },
+        rest -> null,
+    }
 }
 
 /// Itself, or under `Lax` the text that spells one.

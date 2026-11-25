@@ -9,11 +9,17 @@ use compiler.backend.{
     link_named,
 }
 
+/// WHERE A WASM MODULE'S OWN DATA BEGINS: past the low 64 KiB, which the runtime reads as holding no
+/// box (`AVRA_NULL_PAGE`, runtime/avra_hot.h). A static box laid lower is taken for none, so an open
+/// before a write passes it by and the write lands in the binary's data. Linkers differ in where they
+/// lay data unasked — from 1024, or after the stack — so the link says it.
+export const DATA_BASE: int = 65536
+
 /// The words a wasm link for `target` starts with: the driver's own target, which names crt1 and a
-/// libc; its debug sections stripped unless `debug`; a reactor's entry where `reactor`; the host
-/// fns and the function table exported.
+/// libc; the binary's own data laid from `DATA_BASE`; its debug sections stripped unless `debug`; a
+/// reactor's entry where `reactor`; the host fns and the function table exported.
 export fn wasm_link_head(target: string, reactor: bool, debug: bool) -> List<string> {
-    ["-w", "--target=${target}", "-Wno-deprecated"]
+    ["-w", "--target=${target}", "-Wno-deprecated", "-Wl,--global-base=${DATA_BASE}"]
         .concat(if debug { [] } else { ["-Wl,--strip-all"] })
         .concat(if reactor { ["-mexec-model=reactor"].concat(reactor_entry_words()) } else { [] })
         .concat(host_export_words())

@@ -7,7 +7,7 @@ use @std.http.http.{Request, Unrouted}
 use @std.http.route.{Route, compiled, dispatch, get}
 use @std.queue.{queue, worker, drain, Dead, Delivery, HomeError}
 use @std.relation.{codec}
-use @std.sqlite.{Db}
+use @std.sqlite.{Db, sql}
 use @std.time.{Time, now_ns, secs}
 use admin.{queue_admin}
 use durable.{db, stored}
@@ -54,7 +54,7 @@ fn stocked() -> Result<List<Route>, HomeError> {
         durable: stored<Order>(clock: ticking)
         retries: 1
     }
-    queue<Dead<Order, string>> unpacked {
+    queue<Dead<Order>> unpacked {
         name: "orders/dead"
         durable: stored_dead<Order>(clock: ticking)
     }
@@ -68,6 +68,25 @@ fn stocked() -> Result<List<Route>, HomeError> {
     let _ = orders.send(Order { sku: "a1", qty: 2 })?
     let _ = orders.send(Order { sku: "b2", qty: 1 })?
     let _ = orders.home().take()?
+    queue_admin(ctx.db, operator, ticking).found
+}
+
+/// A database with one order whose kept descriptor no build wrote,
+/// paged through the routes.
+fn undescribed() -> string {
+    let routes = undescribed_routes() catch []
+    if routes.is_empty() { return "no routes" }
+    answered(routes, "GET /orders/items HTTP/1.1")
+}
+
+fn undescribed_routes() -> Result<List<Route>, HomeError> {
+    ctx db = homed(Db.memory())?
+    queue<Order> orders {
+        name: "orders"
+        durable: stored<Order>(clock: ticking)
+    }
+    let _ = orders.send(Order { sku: "a1", qty: 2 })?
+    let _ = homed(ctx.db.run(sql("UPDATE \"FlowShape\" SET \"descriptor\" = 'x'")))?
     queue_admin(ctx.db, operator, ticking).found
 }
 
@@ -125,8 +144,18 @@ spec "std/queue_store — the operating routes" {
             lines(["GET /orders/items?limit=1 HTTP/1.1"])
                     .contains("\"stage\":\"held\",\"attempt\":0") &&
                 lines(["GET /orders/items?limit=1 HTTP/1.1"])
-                    .contains("\"item\":{\"sku\":\"a1\",\"qty\":2},\"read\":true}]") &&
+                    .contains("\"item\":{\"sku\":\"a1\",\"qty\":2},\"read\":true,\"unread\":null}]") &&
                 !lines(["GET /orders/items?limit=1 HTTP/1.1"]).contains("b2")
+        }
+        then "a readable item's `unread` is null" {
+            lines(["GET /orders/items HTTP/1.1"]).split("\"unread\":null").length == 3 &&
+                !lines(["GET /orders/items HTTP/1.1"]).contains("\"unread\":\"")
+        }
+        then "an item its descriptor cannot read answers no item and the reason" {
+            undescribed()
+                .ends_with(
+                    "\"item\":null,\"read\":false,\"unread\":\"the descriptor kept for its shape spells no shape this build reads\"}]",
+                )
         }
         then "reads a letter's item, fate and path" {
             lines(["GET /orders%2Fdead/items HTTP/1.1"])
@@ -156,7 +185,7 @@ spec "std/queue_store — the operating routes" {
         then "an unknown queue is a 404, and its pages are empty" {
             lines(["GET /nope HTTP/1.1", "GET /nope/items HTTP/1.1"]) == "404 no queue `nope` stands in this database\n200 []"
         }
-        then "a bad limit, a repeated one, a page after no item and a NUL in a name are refused" {
+        then "a bad, past-bound or repeated limit is a 422; a page after no item, a NUL or a bad escape in a name a 400" {
             lines(
                 [
                     "GET /orders/items?limit=x HTTP/1.1",
@@ -169,7 +198,16 @@ spec "std/queue_store — the operating routes" {
             )
                 .split("\n")
                 .map(it.split(" ")[0])
-                .join(" ") == "400 400 400 400 400 400"
+                .join(" ") == "422 422 422 400 400 400"
+        }
+        then "a refused page names every field it refused" {
+            lines(["GET /orders/items?limit=5000&after HTTP/1.1"]) == "422 {\"title\":\"the request does not validate\",\"status\":422,\"issues\":[{\"path\":\"limit\",\"rule\":\"range\",\"message\":\"must be between 0 and 1000\"},{\"path\":\"after\",\"rule\":\"type\",\"message\":\"must be text, not a boolean\"}]}"
+        }
+        then "a name that is no text is a 400 saying so" {
+            lines(["GET /ord%zzers HTTP/1.1"]) == "400 the segment `ord%zzers` is not percent-encoded text"
+        }
+        then "an after escaped in the query is the id it encodes" {
+            lines(["GET /orders/items?after=MARK2 HTTP/1.1"]) == lines(["GET /orders/items?after=MARK%32 HTTP/1.1"])
         }
         then "an id that names no item, or one of another queue, is a 404" {
             lines(

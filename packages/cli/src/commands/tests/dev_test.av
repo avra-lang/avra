@@ -515,9 +515,11 @@ spec "avra dev — what a page is answered before any build" {
                 null -> true
             }
         }
-        then "the page is never kept" {
+        then "the page is asked for again each time, and the tag it was sent is a 304" {
             match unbuilt() {
-                d? -> got(d, "/").header("cache-control") == "no-store"
+                d? -> got(d, "/").header("cache-control") == "no-cache" &&
+                    got_with(d, "/", "If-None-Match: ${got(d, "/").header("etag") ?? "-"}\r\n")
+                        .status == 304
                 null -> true
             }
         }

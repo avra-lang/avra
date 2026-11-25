@@ -1,16 +1,27 @@
 // proves: forms end to end, evaluated and native alike — a urlencoded
 // body decoded after its split, a multipart body's field kept and its
-// file saved to a path the server chose, a form read as a `@form`
-// record, and a bomb of parts refused.
+// file saved to a path the server chose, a form read as a record by its
+// own rules, and a bomb of parts refused.
 use @std.io.{env_or, read_text, remove}
 use @std.http.frame.{framed, limits}
 use @std.http.body.{whole}
 use @std.http.http.{Request, Unrouted}
-use @std.http.form.{Part, Sink, FormLimits, saved_to, form_body}
-use @std.http.form_codec.{form}
+use @std.http.form.{Part, Sink, FormLimits, saved_to}
+use @std.http.http.{Response}
+use @std.meta.{derive}
+use @std.validate.{Decode, range}
 
-@form
-type Vote = { idea: int, up: bool, note: string? }
+@derive(Decode)
+type Vote = { @range(1, 99) idea: int, up: bool = false, note: string? = null }
+
+/// A form read as a `Vote`, or the status and body refusing it.
+fn voted(q: Request<Unrouted>) -> string {
+    let read: Result<Vote, Response> = q.form_as()
+    match read {
+        .Ok(v) -> "vote ${v.idea} ${v.up} ${v.note ?? "-"}",
+        .Err(r) -> "${r.status} ${r.body.text() ?? "?"}",
+    }
+}
 
 fn posted(ct: string, body: string) -> Request<Unrouted> {
     let raw = "POST /f HTTP/1.1\r\nHost: h\r\nContent-Type: ${ct}\r\n\r\n".bytes()
@@ -33,13 +44,8 @@ match posted("application/x-www-form-urlencoded", "name=Ada+Lovelace&note=1%2B1%
     ),
     .Err(r) -> println("${r.status}"),
 }
-match form_body(
-    posted("application/x-www-form-urlencoded", "idea=7&up=on"),
-    (f) -> Vote.from_form(f),
-) {
-    .Ok(v) -> println("vote ${v.idea} ${v.up} ${v.note ?? "-"}"),
-    .Err(r) -> println("${r.status} ${r.body.text() ?? "?"}"),
-}
+println(voted(posted("application/x-www-form-urlencoded", "idea=7&up=on")))
+println(voted(posted("application/x-www-form-urlencoded", "idea=700&up=maybe")))
 let body = "--b1\r\nContent-Disposition: form-data; name=\"title\"\r\n\r\nhello\r\n--b1\r\nContent-Disposition: form-data; name=\"doc\"; filename=\"../../etc/passwd\"\r\nContent-Type: text/plain\r\n\r\nkept on disk\r\n--b1--\r\n"
 match posted("multipart/form-data; boundary=b1", body).multipart(to_disk) {
     .Ok(p) -> println(

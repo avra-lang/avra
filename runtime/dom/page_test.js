@@ -4,8 +4,7 @@
 // and a clean start — as a built page and as the page `avra dev` serves.
 import fs from "node:fs";
 
-const html = fs.readFileSync(new URL("./page.html", import.meta.url), "utf8");
-const script = html.match(/<script type="module">([\s\S]*?)<\/script>/)[1];
+const script = fs.readFileSync(new URL("./start.js", import.meta.url), "utf8");
 // The script's dynamic imports go through `load`, so a test can fail them.
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
 const page = new AsyncFunction("document", "addEventListener", "load", script.replaceAll("import(", "load("));

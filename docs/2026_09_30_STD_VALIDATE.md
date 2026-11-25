@@ -261,7 +261,10 @@ Error paths reach into anything: `items[3].qty`, `payment.Card.exp`,
 ## 10. Other APIs and services
 
 **Inbound.** A route's typed parameter is decoded and validated before
-the handler runs. A refusal is RFC 9457 problem+json with every issue:
+the handler runs. A refusal is RFC 9457 problem+json with every issue.
+Built (std-http `typed.av`, `problem`) as `{"title", "status": 422,
+"issues": [{"path", "rule", "message"}]}` — what was received is never
+echoed; the sketch below predates it:
 
 ```json
 { "type": "validation", "status": 422,
@@ -493,9 +496,10 @@ Recorded as each decision landed on `lane/validate`.
   a list waits on it (ticketed). A field of any type without a length
   is refused where the rule is used: "`int` does not implement
   `Counted`".
-- **The derived entry point is `Signup.decode(v)`.** `decode<Signup>(v)`
-  needs a static trait fn reached through a type parameter, which the
-  language lacks (sugar backlog).
+- **The derived entry point is `Signup.decode(v)`.** A static trait fn
+  is reached through a type parameter too — `T.decode(v)` and
+  `T.from_json(text)` under `T: Decode` (re-probed; std-http's
+  `body_as`/`query_as` and std-ui's `model_form` read so).
 - **Bounds are the parser's, and the decoder's.** `@std/json` refuses
   nesting past its `MAX_DEPTH` (512) at the opener, so 200,000 nested
   `[` is one refusal, never a crash. The decoder bounds its own depth

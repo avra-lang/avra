@@ -1,0 +1,18 @@
+// proves: a bundled picture — its octets the binary's own static data — is drawn by a page's first
+// paint: the image is made and its source attribute set, its words said, and the asset left as it was.
+use @std.assets.{Picture, served_name}
+use @std.ui.components.{image}
+use @std.ui.realize.dom.live.{live}
+use @std.ui.realize.dom.page.{paged}
+
+asset logo: Picture = "art/logo.png"
+
+let frames: Cell<List<Bytes>> = Cell.new([])
+let on = paged(() -> image logo { alt: "Logo" }, live(), (sent: Bytes) -> frames.push(sent))
+on.app.paint()
+on.app.paint()
+let sizes = match logo {
+    .Bundled(_, w, h, _, _, octets) -> "${w}x${h} ${octets.length}",
+    .Remote(_, _, _) -> "remote",
+}
+"${frames.get().length} frame(s), ${frames.get()[0].length} octets; ${served_name(logo)} ${sizes}"
