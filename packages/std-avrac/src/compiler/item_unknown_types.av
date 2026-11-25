@@ -59,14 +59,14 @@ type TypeScope = {
 /// Every type name a statement of the written item `at` of `file` writes in its signature that names
 /// no type, statement by statement.
 fn item_unknown_types(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemUnnamed {
-    if !item_held(engine, file, at) { return unknown_types_made(engine, file, at) }
+    if !item_held(engine, file, at) { return ItemUnnamed { rows: [] } }
     unknown_types_seen(item_view(engine, file, at))
 }
 
 /// What `item_unknown_types` answers through the item's `view`, made the first time it is asked.
 fn unknown_types_seen(view: ItemView) -> ItemUnnamed {
     let held? = view.unknown_types.get() else {
-        let made = unknown_types_made(view.engine, view.file, view.at)
+        let made = unknown_types_made(view)
         view.unknown_types.set(made)
         return made
     }
@@ -74,13 +74,16 @@ fn unknown_types_seen(view: ItemView) -> ItemUnnamed {
 }
 
 /// What `item_unknown_types` answers, made.
-fn unknown_types_made(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemUnnamed {
+fn unknown_types_made(view: ItemView) -> ItemUnnamed {
+    let engine = view.engine
+    let file = view.file
+    let at = view.at
     if !item_held(engine, file, at) { return ItemUnnamed { rows: [] } }
-    let item = read_item(engine, file, at)
+    let item = view.item
     if !item.store.refusals().is_empty() { return ItemUnnamed { rows: [] } }
     let stmts = flatten([stmts_under(item.store, At.Stmt(top)) for top in item.stmts])
     let params = flatten([item.store.tparams_in_scope(s) for s in stmts])
-        .concat(flatten([a.params for a in impls_at(engine, file, at)]))
+        .concat(flatten([a.params for a in impls_seen(view)]))
     let refused = imports_refused(engine, file)
     let scoped = (s: StmtId) -> TypeScope {
         engine: engine,

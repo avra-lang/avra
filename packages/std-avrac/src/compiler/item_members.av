@@ -283,10 +283,14 @@ fn misses_made(engine: QueryEngine, file: SourceFileAddress, at: ItemId, item: R
 
 /// The nodes the written item `at` of `file`, read as `item`, holds, typed: the statements it runs
 /// where its file is an entry, as the entry types them, else its own bodies'.
-fn typed_nodes_read(engine: QueryEngine, file: SourceFileAddress, at: ItemId, item: ReadItem) -> List<
-    TypedNodes,
-> {
-    let bodies = written_types(engine, file, at, item)
+fn typed_nodes_read(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    at: ItemId,
+    item: ReadItem,
+    impls: List<ImplAt>,
+) -> List<TypedNodes> {
+    let bodies = written_types(engine, file, item, impls)
     let own = TypedNodes {
         store: item.store,
         type_at: (k: int) -> first_typed(bodies, k),
@@ -325,15 +329,15 @@ fn case_misses(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> Item
 /// A method an impl writes: its name, and whether it's a static.
 type WrittenMethod = { name: string, statics: bool }
 
-/// The types of each body the written item `at` of `file` holds that is typed in the item's own
-/// store: each fn's and then each impl's method's and static's an annotation doesn't wrap.
-fn written_types(engine: QueryEngine, file: SourceFileAddress, at: ItemId, item: ReadItem) -> List<
+/// The types of each body the written item `item` of `file` holds that is typed in the item's own
+/// store: each fn's and then each method's and static's of its `impls` an annotation doesn't wrap.
+fn written_types(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, impls: List<ImplAt>) -> List<
     List<SignedType?>,
 > {
     let names = [p!.name for s in item.stmts for p in [item.store.fn_parts(s)] if p != null && !wraps_body(engine, file, p!.name)]
     [b!.types for n in names for b in [typed_fn(engine, file, n)] if b != null]
         .concat(
-            [method_body_typed(engine, a, m.name, m.statics).types for a in impls_at(engine, file, at) for s in impl_fns(item, a) for m in [
+            [method_body_typed(engine, a, m.name, m.statics).types for a in impls for s in impl_fns(item, a) for m in [
                 WrittenMethod {
                     name: item.store.fn_parts(s)!.name,
                     statics: item.store.is_static(s),

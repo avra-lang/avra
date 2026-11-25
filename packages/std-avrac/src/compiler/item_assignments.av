@@ -76,16 +76,22 @@ fn unplaced(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Fo
     if !item_held(engine, file, at) { return [] }
     let item = read_item(engine, file, at)
     if !item.store.refusals().is_empty() { return [] }
-    flatten([assignments_in(engine, file, b) for b in bodies_of(engine, file, at, item)])
+    flatten(
+        [assignments_in(engine, file, b) for b in bodies_of(engine, file, at, item, impls_at(engine, file, at))],
+    )
 }
 
-/// The bodies the written item `at` of `file` writes: each fn's, each method's of its impls, and its
-/// share of its file's entry, each typed as its query keeps it.
-fn bodies_of(engine: QueryEngine, file: SourceFileAddress, at: ItemId, item: ReadItem) -> List<
-    AssignedBody,
-> {
+/// The bodies the written item `at` of `file` writes: each fn's, each method's of its `impls`, and
+/// its share of its file's entry, each typed as its query keeps it.
+fn bodies_of(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    at: ItemId,
+    item: ReadItem,
+    impls: List<ImplAt>,
+) -> List<AssignedBody> {
     let fns = [whole(sb! with { typed: typed_fn(engine, file, p!.name) }) for s in item.stmts for p in [item.store.fn_parts(s)] if p != null for sb in [signed_body(engine, file, p!.name)] if sb != null]
-    let methods = [whole(m!.signed with { typed: method_body_typed(engine, a, name, statics) }) for a in impls_at(engine, file, at) for s in impl_fns(item, a) for name in [item.store.fn_parts(s)!.name] for statics in [item.store.is_static(s)] for m in [signed_method(engine, a, name, statics)] if m != null]
+    let methods = [whole(m!.signed with { typed: method_body_typed(engine, a, name, statics) }) for a in impls for s in impl_fns(item, a) for name in [item.store.fn_parts(s)!.name] for statics in [item.store.is_static(s)] for m in [signed_method(engine, a, name, statics)] if m != null]
     fns.concat(methods).concat(entry_share(engine, file, at))
 }
 
@@ -309,7 +315,7 @@ fn unslotted(view: ItemView) -> List<Found> {
     let item = view.item
     if !item.store.refusals().is_empty() { return [] }
     flatten(
-        [slots_missed(b).concat(types_written(view.engine, view.file, b)) for b in bodies_of(view.engine, view.file, view.at, item)],
+        [slots_missed(b).concat(types_written(view.engine, view.file, b)) for b in bodies_of(view.engine, view.file, view.at, item, impls_seen(view))],
     )
 }
 
