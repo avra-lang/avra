@@ -1,0 +1,25 @@
+// Prints the terminal key each gathered seat row carries, for
+// tools/seat_row_attack.sh, which edits the dialog's `@host` between runs. A
+// dialog is shown first, so the rows are read the way a program reads them.
+use @std.ui.components.{button, dialog}
+use @std.ui.terminal.{terminal}
+use @std.ui.tree.seats.{row_at, seat_rows}
+
+spec "seat row probe" {
+    given "a shown dialog" {
+        then "each seat row's terminal key is printed" {
+            let open: Cell<bool> = Cell.new(true)
+            let on = terminal(
+                () -> dialog "About" {
+                    open: open.get()
+                    items: [button "Close" { on press {} }]
+                    on dismiss { open.set(false) }
+                },
+            )
+            let over = on.shown.over()
+            let all = ["${g.row.owner}.${g.row.event}:${g.row.terminal != null}" for g in seat_rows].join(",")
+            println("seat-rows ${over != null} ${all}")
+            true
+        }
+    }
+}
