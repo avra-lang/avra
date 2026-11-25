@@ -27,6 +27,7 @@ use compiler.lower.{code_facts, code_facts_wire}
 use @std.relation.db.{AnswerRef, Leaf}
 use @std.relation.engine.{Key, edge_of}
 use compiler.families.{Family}
+use compiler.workspace_analysis.{settled_owner}
 use compiler.host.{InputName}
 
 const CLOSURE_OF: string = "closure of "
@@ -88,18 +89,6 @@ impl Workspace {
 
     /// The consts' types, spelled by the const's declaration and the seats it was asked
     /// under — the name `Settled` wears too.
-    fn named_consts(name: string, fam: Family) -> AnswerRef {
-        let ws = self
-        let ordinal = fam.ordinal
-        AnswerRef {
-            name: name,
-            family: () -> ordinal,
-            spelled: (arg: int) -> ws.spelled_settle(arg),
-            arg: (spelled: string) -> ws.settle_arg(spelled),
-            hash: (arg: int) -> ws.db.kernel.hash_forced(key_at(ordinal, arg)),
-        }
-    }
-
     /// A const's settlement name: its declaration's wire and the fingerprints of the seats it was
     /// asked under. Nothing in it is a position.
     fn settle_name(d: DeclId, seats: List<SeatValue>) -> string {
@@ -224,7 +213,6 @@ impl Workspace {
         let rdb = self.decls.rows_db.get()
         self.db.kernel.keep_folds()
         rdb.answer_known(self.named_impl_sets())
-        rdb.answer_known(self.named_consts("Settled", Family.Settled))
         let ws = self
         rdb.answer_known(self.named_by_decl("Syntax", Family.Syntax))
         rdb.answer_known(self.named_units())
@@ -267,7 +255,7 @@ impl Workspace {
 
     fn spelled_closure(arg: int) -> string? {
         let g? = self.hold.groups.get().get(arg) else { return null }
-        if g.owner != Family.Settled.ordinal { return null }
+        if g.owner != settled_owner { return null }
         let settled? = self.spelled_settle(g.id) else { return null }
         "${CLOSURE_OF}${settled}"
     }
@@ -275,7 +263,7 @@ impl Workspace {
     fn closure_arg(spelled: string) -> int? {
         if !spelled.starts_with(CLOSURE_OF) { return null }
         let settled? = self.settle_arg(spelled.substring(CLOSURE_OF.length, spelled.length)) else { return null }
-        self.hold.group_index.get().get("${Family.Settled.ordinal}:${settled}")
+        self.hold.group_index.get().get("${settled_owner}:${settled}")
     }
 
     /// The lifted units, spelled by their wanted and digested with arena ids folded by durable
@@ -404,13 +392,13 @@ impl Workspace {
     /// The meter for every family: how many settled answers of `fam`, of the `count` keys it
     /// may have, stand on names alone, and for the rest the family each unnamed read belonged
     /// to, once per answer. One call per family the report covers.
-    fn leaves_meter(fam: Family, count: int) -> string {
+    fn leaves_meter(name: string, ordinal: int, count: int) -> string {
         let rdb = self.decls.rows_db.get()
         mut blocked: Map<string, int> = {}
         mut named = 0
         mut settled = 0
         for arg in 0..count {
-            let reads = self.db.kernel.deps_of(key_at(fam.ordinal, arg))
+            let reads = self.db.kernel.deps_of(key_at(ordinal, arg))
             if reads.is_empty() { continue }
             settled = settled + 1
             let unnamed = distinct(
@@ -419,7 +407,7 @@ impl Workspace {
             if unnamed.is_empty() { named = named + 1 }
             for n in unnamed { blocked.set(n, (blocked.get(n) ?? 0) + 1) }
         }
-        "leaves ${fam.name}: ${named} of ${settled} answers stand on names; unnamed reads by family: ${blocked.entries().map("${it.key} ${it.value}").join(", ")}"
+        "leaves ${name}: ${named} of ${settled} answers stand on names; unnamed reads by family: ${blocked.entries().map("${it.key} ${it.value}").join(", ")}"
     }
 
     /// One settled answer as a line: its family, its name and its digest; nothing for an
@@ -472,8 +460,8 @@ impl Workspace {
     /// Every family the meter covers.
     fn leaves_report() -> string {
         [
-            self.leaves_meter(Family.Lowered, self.asks.get().length),
-            self.leaves_meter(Family.Settled, self.settle_asks.get().length),
+            self.leaves_meter(Family.Lowered.name, Family.Lowered.ordinal, self.asks.get().length),
+            self.leaves_meter("Settled", self.settled_family(), self.settled_calls()),
         ]
             .concat(self.leaves_digests())
             .concat(self.leaves_reads())

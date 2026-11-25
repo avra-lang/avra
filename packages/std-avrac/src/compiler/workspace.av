@@ -161,7 +161,7 @@ type ExternNames = { decls: int, names: List<string> }
 type Suspects = { files: int, rows: Map<string, bool>, paths: Map<string, bool> }
 
 @identity
-type Keys = { bytes_keys: Cell<Map<string, string>>, view_parts: Cell<Map<string, List<SeenPart>>>, view_index: Cell<Map<string, NarrowIndex>>, file_fns: Cell<Map<string, List<FnForm>>>, typed_files: Cell<Map<string, Map<string, List<string>>>>, file_owners: Cell<Map<string, string>>, placed_from: Cell<Map<string, bool>>, object_keys: Cell<Map<string, string>>, object_parts: Cell<Map<string, KeyParts>>, staged: Cell<Map<string, int>>, lex_words: Cell<Map<string, LexWords>>, placing: Cell<Map<string, List<Token>>>, file_tokens: Cell<Map<string, Spelling>>, seen_views: Cell<Map<string, SeenView>>, suspects: Cell<Suspects>, name_index: Cell<Map<string, int>>, name_seen: Cell<Map<string, int>>, viewed: Cell<Map<string, List<ModulePath>>>, view_marks: Cell<Map<string, bool>>, store_root: Cell<string>, held_pack: Cell<string>, keeping: Cell<Keeping>, compiler_id: Cell<string>, build_mode: Cell<string>, one_shot: Cell<bool>, modules_of: Cell<Map<string, string>> }
+type Keys = { bytes_keys: Cell<Map<string, string>>, view_parts: Cell<Map<string, List<SeenPart>>>, view_index: Cell<Map<string, NarrowIndex>>, file_fns: Cell<Map<string, List<FnForm>>>, typed_files: Cell<Map<string, Map<string, List<string>>>>, file_owners: Cell<Map<string, string>>, placed_from: Cell<Map<string, bool>>, object_keys: Cell<Map<string, string>>, object_parts: Cell<Map<string, KeyParts>>, staged: Cell<Map<string, int>>, lex_words: Cell<Map<string, LexWords>>, placing: Cell<Map<string, List<Token>>>, suspects: Cell<Suspects>, name_index: Cell<Map<string, int>>, name_seen: Cell<Map<string, int>>, store_root: Cell<string>, held_pack: Cell<string>, keeping: Cell<Keeping>, compiler_id: Cell<string>, build_mode: Cell<string>, one_shot: Cell<bool>, modules_of: Cell<Map<string, string>> }
 
 fn new_keys() -> Keys {
     let no_bytes: Map<string, string> = {}
@@ -175,12 +175,8 @@ fn new_keys() -> Keys {
     let no_staged: Map<string, int> = {}
     let no_words: Map<string, LexWords> = {}
     let no_placing: Map<string, List<Token>> = {}
-    let no_tokens: Map<string, Spelling> = {}
-    let no_views: Map<string, SeenView> = {}
     let no_named: Map<string, int> = {}
     let no_seen: Map<string, int> = {}
-    let no_viewed: Map<string, List<ModulePath>> = {}
-    let no_marks: Map<string, bool> = {}
     Keys {
         bytes_keys: Cell.new(no_bytes),
         view_parts: Cell.new(no_view),
@@ -194,13 +190,9 @@ fn new_keys() -> Keys {
         staged: Cell.new(no_staged),
         lex_words: Cell.new(no_words),
         placing: Cell.new(no_placing),
-        file_tokens: Cell.new(no_tokens),
-        seen_views: Cell.new(no_views),
         suspects: Cell.new(Suspects { files: -1, rows: {}, paths: {} }),
         name_index: Cell.new(no_named),
         name_seen: Cell.new(no_seen),
-        viewed: Cell.new(no_viewed),
-        view_marks: Cell.new(no_marks),
         store_root: Cell.new(""),
         held_pack: Cell.new(""),
         one_shot: Cell.new(false),
@@ -231,8 +223,7 @@ fn new_keys() -> Keys {
 /// row on the ask that names it, so a row that names another still
 /// unfilled in the same module can fill it first (`row_filled`); and what
 /// moved in each file's key when this build replaced its kept parts
-/// (`moved`); each open
-/// settlement's kept lines, innermost last (`settle_frames`), what each
+/// (`moved`); what each
 /// settlement read, by its ask (`settle_reads`), each reader's list generation
 /// and the reads seen under it (`read_gen`, `read_seen`, `read_gens`), the units being lowered,
 /// innermost last (`lowering`), and the consts each unit's lowering asked
@@ -245,14 +236,9 @@ fn new_keys() -> Keys {
 /// as a whole file, so the run generation — not a "seen" mark — invalidates it.
 type Followed = { reads: List<RunRead>, gen: int }
 
-/// A view's standing, memoized for the attempt: the file count and body-ask
-/// count it was judged under. `view_stands` judges the module and file facts a
-/// build is building, so a file minted or a body asked while the attempt runs
-/// makes the standing stale.
-type ViewStand = { files: int, asks: int, stands: bool }
-
 /// The name buckets one answer's run read, held for the group cell that stands for them.
-type Group = { owner: int, id: int, buckets: List<int> }
+/// The owner is a word — an answer that is no family still owns its group.
+type Group = { owner: string, id: int, buckets: List<int> }
 
 /// THE NAME ENVIRONMENTS, as the modules' kept producers file them: the files declaring under
 /// each declaration name, component word and annotation mark; every extern; and the files
@@ -350,7 +336,6 @@ type Hold = {
     read_gens: Cell<int>,
     ran_followed: Cell<Map<string, Followed>>,
     runs_gen: Cell<Map<string, int>>,
-    view_standing: Cell<Map<string, ViewStand>>,
     settle_reads: Cell<Map<string, List<RunRead>>>,
     pending_reads: Cell<List<PendingRead>>,
     pending_resolved: Cell<Map<string, string>>,
@@ -377,13 +362,12 @@ type Hold = {
     moved: Cell<Map<string, List<PartMoved>>>,
     // each held file's re-exports, read off its record as it loads
     reexports: Cell<Map<string, List<Reexport>>>,
-    settle_frames: Cell<List<Cell<List<KeptLine>>>>,
     // each held collector, with the set its record says it gathered
     gathered: Cell<List<HeldGather>>,
     lowering: Cell<List<int>>,
     unit_asks: Cell<Map<string, Cell<Map<string, ConstAsk>>>>,
     /// The family a frame's gathered name reads stand under as one read, the groups minted
-    /// for it, and each group's place by its owner's family and id.
+    /// for it, and each group's place by its owner's word and id.
     closure: Cell<int>,
     groups: Cell<List<Group>>,
     group_index: Cell<Map<string, int>>,
@@ -459,7 +443,6 @@ fn new_hold() -> Hold {
         read_gens: Cell.new(0),
         ran_followed: map_cell(),
         runs_gen: map_cell(),
-        view_standing: map_cell(),
         settle_reads: map_cell(),
         pending_reads: Cell.new(no_pending()),
         pending_resolved: map_cell(),
@@ -477,7 +460,6 @@ fn new_hold() -> Hold {
         held_flat: Cell.new(no_flat),
         moved: Cell.new(no_moved),
         reexports: Cell.new(no_reexports),
-        settle_frames: list_cell(),
         gathered: list_cell(),
         lowering: list_cell(),
         unit_asks: map_cell(),
@@ -851,10 +833,6 @@ fn folded_verified(ws: Workspace, arg: int) -> int {
     touch(ws.folded(file_at(arg)))
     ws.db.changed_at(key(Family.Folded, arg))
 }
-fn settled_verified(ws: Workspace, arg: int) -> int {
-    touch(ws.settled_at(arg))
-    ws.db.changed_at(key(Family.Settled, arg))
-}
 fn lowered_verified(ws: Workspace, arg: int) -> int {
     touch(ws.lowered(arg))
     ws.db.changed_at(key(Family.Lowered, arg))
@@ -918,7 +896,6 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
         .Resolved -> resolved_verified(ws, arg),
         .Methods -> methods_verified(ws, arg),
         .Folded -> folded_verified(ws, arg),
-        .Settled -> settled_verified(ws, arg),
         .Lowered -> lowered_verified(ws, arg),
         .LiftLowered -> lift_lowered_verified(ws, arg),
         .Lifted -> lifted_verified(ws, arg),
@@ -2532,7 +2509,6 @@ export fn family_code_hash(f: Family) -> string {
         .Resolved -> code_hash(resolved_verified) ?? "",
         .Methods -> code_hash(methods_verified) ?? "",
         .Folded -> code_hash(folded_verified) ?? "",
-        .Settled -> code_hash(settled_verified) ?? "",
         .Lowered -> code_hash(lowered_verified) ?? "",
         .LiftLowered -> code_hash(lift_lowered_verified) ?? "",
         .Lifted -> code_hash(lifted_verified) ?? "",

@@ -57,7 +57,7 @@ use core.{watched_kernel, digest_of, joined, sorted_texts, flatten, DeclId, Type
 use compiler.store.{Store, Stored, node_key}
 use compiler.host.{Manifest, Read}
 use compiler.lower.{Unit}
-use features.{Namespace, NameFacts, TypeFacts, Settlement}
+use features.{Namespace, NameFacts, TypeFacts}
 use @std.io.{list_dir, is_dir, exists, read_text}
 use @std.path.{joined_path, dir_of}
 use @std.text.{parse_int}
@@ -89,7 +89,6 @@ export enum DbKind {
     Folded
     Lifted
     Expanded
-    Settled
     Sig
     Answer
     Input
@@ -106,7 +105,6 @@ impl DbKind {
             .Folded -> "Folded",
             .Lifted -> "Lifted",
             .Expanded -> "Expanded",
-            .Settled -> "Settled",
             .Sig -> "Sig",
             .Answer -> "Answer",
             .Input -> "Input",
@@ -125,8 +123,7 @@ extern fn avra_trap(message: string)
 /// `Plain`, `Items`; a RECURSIVE one — `Lowered`,
 /// `Visible`, `Resolved`, `Typed`, `Folded`, `Analysis`, `Expanded`,
 /// each re-entering itself or a peer; a manual ask/begin/finish one
-/// folding real work between the two — `Lifted`,
-/// `Settled`). The last (`Sig`, `Answer`) are `Db`'s own
+/// folding real work between the two — `Lifted`). The last (`Sig`, `Answer`) are `Db`'s own
 /// durable rows, string-keyed, surviving across processes on disk
 /// (`Stored.Rows`) — `key()` is only ever asked of these three; a
 /// dense variant reaching it is a defect, since nothing ever calls it
@@ -180,7 +177,6 @@ export enum DbRow {
     Folded(TypeFacts)
     Lifted(LiftResult)
     Expanded(List<DeclId>)
-    Settled(Settlement)
     /// A module's interface record (`record.av`) — already flat,
     /// structurally-encoded text; validity is record.av's own
     /// business (a moved-records retry), not this row's.
@@ -204,7 +200,6 @@ impl DbRow {
             .Folded(_) -> DbKind.Folded,
             .Lifted(_) -> DbKind.Lifted,
             .Expanded(_) -> DbKind.Expanded,
-            .Settled(_) -> DbKind.Settled,
             .Sig(_, _) -> DbKind.Sig,
             .Answer(_, _) -> DbKind.Answer,
             .Input(_) -> DbKind.Input,
@@ -297,16 +292,6 @@ fn lowered_of(r: DbRow) -> Unit {
         rest -> {
             avra_trap("defect: DbRow.Lowered expected")
             lowered_of(r)
-        },
-    }
-}
-
-fn settled_of(r: DbRow) -> Settlement {
-    match r {
-        .Settled(value) -> value,
-        rest -> {
-            avra_trap("defect: DbRow.Settled expected")
-            settled_of(r)
         },
     }
 }

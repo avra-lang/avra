@@ -77,8 +77,9 @@ use compiler.lower.{
 }
 use compiler.memory.{memory}
 use @std.relation.{query, scoped_by, recursive}
-use @std.relation.stable.{Scope}
-use @std.relation.engine.{FixpointRefusal, Key, spoken as fixpoint_spoken}
+use @std.relation.db.{Answers, Db as RelDb, DenseNames, KeptRecord, answers, named_spelling}
+use @std.relation.stable.{Scope, Writer, written_dense}
+use @std.relation.engine.{FixpointRefusal, Key, MemoAsk, spoken as fixpoint_spoken}
 
 /// An interned table's answer for one name: already there, or freshly
 /// minted at `next` (the table's own current length) — registered in
@@ -107,6 +108,178 @@ fn typed_body(ws: Workspace, d: DeclId) -> TypeFacts {
     let out = t.type_decl(x)
     if ws.db.active(key(Family.Expanded, x.file.index)) { ws.query_db().unkept() }
     out
+}
+
+/// THE SETTLEMENT ANSWER, ONE PER CALL AND SAVED PAST THE PROCESS: a const's value (or its
+/// refusal) as a lasting answer, keyed by the settlement's ask and named by the ask's own
+/// spelling. The reads a run made are the relation's leaves, so a call this process never asked
+/// restores when every one of them still holds, and is kept when the run wrote no row.
+fn settled_answers() -> Answers<Settlement> {
+    answers("Settled(settle-int) -> Settlement", settled_owner, true, true)
+}
+
+/// A settlement's own word: its groups' owner, and the answers' family name.
+const settled_owner: string = "Settled"
+
+/// A settlement run as the program — the body its record is keyed by.
+fn settled_run(ws: Workspace, id: int) -> Settlement {
+    let ask = ws.settle_asks.get()[id]
+    ws.decls.gather_open()
+    let r = ws.settle_result(ask)
+    ws.grouped(settled_owner, id, ws.decls.gather_close())
+    // every file `embed` read is this query's input
+    match r {
+        .Ok(value) -> { for path in value.embeds { let _ = ws.embedded(path, EmbedKind.Octets) } },
+        .Err(_) -> { _ = 0 },
+    }
+    match r { .Ok(x) -> Settlement.Held(x), .Err(why) -> Settlement.Refused(why) }
+}
+
+/// What a settlement's answer stands on, for its record: the body, and a wire that keeps a
+/// value's symbolical form, so a verdict laid out under another program still reads back.
+fn settlement_record() -> KeptRecord<Settlement> {
+    KeptRecord {
+        query: code_keyed("Settled(settle-int) -> Settlement", code_hash(settled_run)),
+        write: settlement_written,
+        read: settlement_read,
+    }
+}
+
+/// A settlement written: its value's wire, or its refusal's own variant and reason. A re-entry's
+/// answer (`Recursive`) and a cause already spoken are no facts to keep — the record is not
+/// written, so the call runs.
+fn settlement_written(w: Writer, s: Settlement) {
+    match s {
+        .Held(value) -> {
+            w.int(1)
+            w.text(kept_wire(value))
+        },
+        .Refused(why) -> match refusal_tag(why) {
+            tag? -> {
+                w.int(tag! + 1)
+                w.text(refusal_reason(why))
+            }
+            null -> w.nameless.set(true),
+        },
+    }
+}
+
+/// A settlement read back: a value, or a refusal of the variant it was written with. A record
+/// that does not decode is recomputed, never guessed at.
+fn settlement_read(r: Reader) -> Result<Settlement, CodecFault> {
+    let tag = r.int()?
+    let raw = r.text()?
+    if tag == 1 {
+        let value? = settled_from_wire(raw) else { fail CodecFault.OtherShape }
+        return .Ok(Settlement.Held(value))
+    }
+    let why? = refusal_of_tag(tag - 1, raw) else { fail CodecFault.NotVariant }
+    return .Ok(Settlement.Refused(why))
+}
+
+/// A refusal's own variant, as a record names it — none for an answer that is not a fact.
+fn refusal_tag(why: Unsettled) -> int? {
+    match why {
+        .Reach(_) -> 0,
+        .Budget(_) -> 1,
+        .Trap(_) -> 2,
+        .Param(_) -> 3,
+        .Spoken or .Recursive -> null,
+    }
+}
+
+/// What a refusal carries, apart from its variant.
+fn refusal_reason(why: Unsettled) -> string {
+    match why {
+        .Reach(reason) or .Budget(reason) or .Trap(reason) or .Param(reason) -> reason,
+        .Spoken or .Recursive -> "",
+    }
+}
+
+/// A refusal of the variant a record named.
+fn refusal_of_tag(tag: int, reason: string) -> Unsettled? {
+    match tag {
+        0 -> .Reach(reason),
+        1 -> .Budget(reason),
+        2 -> .Trap(reason),
+        3 -> .Param(reason),
+        rest -> null,
+    }
+}
+
+/// The cycle a value asking for its own type is: spoken at the read that made it.
+fn cycle_trap() -> Unsettled { Unsettled.Trap("asks for its own value while settling") }
+
+/// A saved settlement as the caller's answer.
+fn settled_result(value: Settlement) -> Result<Settled, Unsettled> {
+    match value { .Held(held) -> .Ok(held), .Refused(why) -> .Err(why) }
+}
+
+/// What a file says to a body it does not hold: every declaration in its outline, and every
+/// `use` line — what a run's read of a declaration stands on when the file moves.
+fn outline(ws: Workspace, path: string) -> string {
+    let f? = ws.decls.known_file_id(path) else { return "" }
+    whole_outline(ws, f)
+}
+
+/// A file's outline, folded once a revision however many units ask it.
+@query
+fn whole_outline(ws: Workspace, f: FileId) -> string {
+    let decls = [
+        fp_str("${outline_syntax(ws, d)}") for d in ws.decls.decls_of_file(f) if outlined(ws.decls.decl(d).kind) && !plain_free(ws, d)
+    ]
+    "${fp(311, [fp_list(decls), fp_list(use_fps(ws, f))])}"
+}
+
+/// A declaration's entry in a file's outline: an impl block is its trait, target and members'
+/// signatures, since a member's body is the member's own declaration; any other is its syntax.
+fn outline_syntax(ws: Workspace, d: DeclId) -> int {
+    let x = ws.decls.decl(d)
+    match x.kind {
+        .Impl -> {
+            let _ = ws.parsed(x.file)
+            let mut store = ws.decls.store(d)
+            store.impl_outline_fp(x.stmt)
+        },
+        rest -> ws.syntax(d),
+    }
+}
+
+/// Whether a declaration kind is in a file's outline: a body's own kind is its declaration's
+/// syntax, and a fn-like one is reached at its call sites.
+fn outlined(k: DeclKind) -> bool {
+    match k {
+        .Fn or .Method or .Main or .Case -> false,
+        .Const or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Default or .Impl or .Collect or .CollectEnum or .Builtin or .State -> true,
+    }
+}
+
+/// Whether a declaration is a free fn or const nothing generated and no annotation touches.
+fn plain_free(ws: Workspace, d: DeclId) -> bool {
+    let x = ws.decls.decl(d)
+    reached_by_name(x.kind) &&
+        x.owner.is_empty() &&
+        x.maker.is_empty() &&
+        x.enclosing.is_empty() &&
+        x.word == null &&
+        x.marks.is_empty()
+}
+
+/// A file's `use` lines, each a fingerprint of its path, items and aliases.
+fn use_fps(ws: Workspace, f: FileId) -> List<int> {
+    [fp(312, [texts_fp(u.path), texts_fp(u.items), texts_fp(u.aliases)]) for u in use_lines(ws.parsed(f))]
+}
+
+/// A list of texts as one number, each text one value.
+fn texts_fp(xs: List<string>) -> int { fp_list([fp_str(x) for x in xs]) }
+
+/// One unit a settlement lowers: every const its lowering asked is asked again here, so a run
+/// that REUSES the unit reads what the run that lowered it read.
+fn unit_asked_again(ws: Workspace, w: Wanted) -> Unit {
+    let id = ws.spec_id(w)
+    let u = ws.lowered_for_eval(id)
+    for ask in ws.asks_of(id) { let _ = ws.settled_replay(ask.file, ask.root, ask.seats) }
+    u
 }
 
 /// A const's type as the program answers it: its declaration's typing found it. Its value asking for its own type is the typing still open.
@@ -704,7 +877,6 @@ impl Workspace {
         let id = self.settle_id(f, root, seats)
         let r = self.settled_at(id)
         if reader != null { self.read_by(reader!, self.hold.settle_reads.get().get("${id}") ?? []) }
-        self.logged_const_read(f, root, seats, r)
         r
     }
 
@@ -714,10 +886,8 @@ impl Workspace {
     /// whether to speak) asks here instead — after `settled` has run once for
     /// the same id, so the relation already holds the id's one real verdict.
     fn settle_verdict(f: FileId, root: SettleRoot, seats: List<SeatValue>) -> Settlement? {
-        match self.relation(Family.Settled).ask(self.settle_id(f, root, seats)) {
-            .Reuse(held) -> settled_of(held),
-            .Compute or .Cycle -> null,
-        }
+        let id = self.settle_id(f, root, seats)
+        self.settled_armed().under(self.query_db()).peeked(self.settled_arg(id))
     }
 
     /// A COMPILE-TIME RUN'S READ OF THE WORLD, the one door for it: the path
@@ -822,7 +992,7 @@ impl Workspace {
             digest: self.text_digest(path),
             ref: self.decl_ref(d),
             print: "${self.syntax(d!)}",
-            outline: self.outline(path),
+            outline: outline(self, path),
         }
     }
 
@@ -899,7 +1069,7 @@ impl Workspace {
         let ws = self
         let reader = self.decls.file(f).path
         self.hold.settling.set(self.hold.settling.get().concat([reader]))
-        let l = memory(self.decls.settlement(root, (w: Wanted) -> ws.logged_unit(w), refuses_hash))
+        let l = memory(self.decls.settlement(root, (w: Wanted) -> unit_asked_again(ws, w), refuses_hash))
         let open = self.hold.settling.get()
         self.hold.settling.set(open.slice(0, open.length - 1))
         l
@@ -932,9 +1102,9 @@ impl Workspace {
     /// THE NAMES AN ANSWER'S RUN READ stand as one read: the declarations a run's code
     /// reaches are looked up by name, thousands of them, and each bucket read alone would
     /// make the answer's read list the size of the program. The buckets are held under the
-    /// owner's family and its own id for the answer, and the one cell it reads is their
+    /// owner's word and its own id for the answer, and the one cell it reads is their
     /// digest, live: it moves exactly when a bucket does.
-    fn grouped(owner: Family, id: int, buckets: List<int>) {
+    fn grouped(owner: string, id: int, buckets: List<int>) {
         if buckets.is_empty() { return }
         let at = self.group_at(owner, id)
         self.hold.groups.set_at(at, self.hold.groups.get()[at] with { buckets: buckets })
@@ -944,11 +1114,11 @@ impl Workspace {
     }
 
     /// The group of an owner's answer, minted on first sight.
-    fn group_at(owner: Family, id: int) -> int {
-        let name = "${owner.ordinal}:${id}"
+    fn group_at(owner: string, id: int) -> int {
+        let name = "${owner}:${id}"
         let known? = self.hold.group_index.get().get(name) else {
             let at = self.hold.groups.get().length
-            self.hold.groups.push(Group { owner: owner.ordinal, id: id, buckets: [] })
+            self.hold.groups.push(Group { owner: owner, id: id, buckets: [] })
             self.hold.group_index.put(name, at)
             return at
         }
@@ -958,25 +1128,84 @@ impl Workspace {
     /// The digest of a group's buckets, as they stand.
     fn group_print(at: int) -> int { self.decls.buckets_print(self.hold.groups.get()[at].buckets) }
 
+    /// A settlement, asked: `.Reuse` is a call this process already answered, `.Cycle` a value
+    /// asking for its own, and `.Compute` a call that runs or restores.
     fn settled_at(id: int) -> Result<Settled, Unsettled> {
-        match self.relation(Family.Settled).ask(id) {
-            .Cycle -> { return .Err(Unsettled.Trap("asks for its own value while settling")) },
-            .Reuse(held) -> { return reused_settlement(settled_of(held)) },
-            .Compute -> self.relation(Family.Settled).begin(id),
+        match self.settled_answering(id) {
+            .Cycle -> .Err(cycle_trap()),
+            .Reuse(value) -> reused_settlement(value),
+            .Compute -> settled_result(self.settled_made(id)),
         }
-        let ask = self.settle_asks.get()[id]
-        self.decls.gather_open()
-        let r = self.settle_result(ask)
-        self.grouped(Family.Settled, id, self.decls.gather_close())
-        // every file `embed` read is this query's input, a held answer's too
-        match r {
-            .Ok(value) -> { for path in value.embeds { let _ = self.embedded(path, EmbedKind.Octets) } },
-            .Err(_) -> { let _ = 0 },
-        }
-        let held = match r { .Ok(x) -> Settlement.Held(x), .Err(why) -> Settlement.Refused(why) }
-        let _ = self.relation(Family.Settled).finish(id, DbRow.Settled(held), settlement_hash(held))
-        r
     }
+
+    /// Settlement `id` as the relation answers it, its asks opened on the way: the settlement is
+    /// keyed by its place in this process's ask table, so its number is interned here.
+    fn settled_answering(id: int) -> MemoAsk<Settlement> {
+        let held = self.settled_armed().under(self.query_db())
+        held.memo.ask(held.int_arg(id))
+    }
+
+    /// The settlement answers, armed: a call keyed by its place in the ask table is named past
+    /// the process by the ask's own spelling, so a record naming a call this process never asked
+    /// asks it by that name.
+    fn settled_armed() -> Answers<Settlement> {
+        let answers = settled_answers()
+        let held = answers.under(self.query_db())
+        let ws = self
+        if !held.durably_named() {
+            held
+                .durable_by(
+                    DenseNames {
+                        spell: (n: int) -> ws.spelled_settle(n),
+                        number: (s: string) -> ws.settle_arg(s),
+                        ask: (n: int) -> {
+                            let _ = ws.settled_kept(n)
+                        },
+                    },
+                )
+        }
+        answers
+    }
+
+    /// The family the settlement answers live in, the number settlement `id` was asked with, and
+    /// the calls the family holds.
+    fn settled_family() -> int { self.settled_armed().under(self.query_db()).memo.family }
+
+    fn settled_arg(id: int) -> int { self.settled_armed().under(self.query_db()).int_arg(id) }
+
+    fn settled_calls() -> int { self.settled_armed().under(self.query_db()).next.get() }
+
+    /// Settlement `id` computed or restored, its ask opened first so a value that asks for itself
+    /// is the cycle — the answer a record keeps.
+    fn settled_made(id: int) -> Settlement {
+        let held = self.settled_armed().under(self.query_db())
+        let arg = held.int_arg(id)
+        held.memo.begin(arg)
+        let ws = self
+        held
+            .ran_lasting(
+                ws.query_db(),
+                arg,
+                ws.spelled_settle(id) ?? "",
+                () -> ws.settled_value(id),
+                () -> ws.settled_kept(id),
+                (v: Settlement) -> settlement_hash(v),
+                settlement_record(),
+            )
+    }
+
+    /// Settlement `id` as the record keeps it, and as the relation re-asks it: a value, or the
+    /// cycle's own refusal.
+    fn settled_kept(id: int) -> Settlement {
+        match self.settled_answering(id) {
+            .Reuse(value) -> value,
+            .Cycle -> Settlement.Refused(cycle_trap()),
+            .Compute -> self.settled_made(id),
+        }
+    }
+
+    /// Settlement `id` run as the program.
+    fn settled_value(id: int) -> Settlement { settled_run(self, id) }
 
     /// A HELD CONST'S VALUE IS THE RECORD'S, NEVER RE-EVALUATED: `analysis`
     /// would fold and type its whole file to read its own initializer, and
@@ -988,6 +1217,18 @@ impl Workspace {
             .Const(s) -> self.const_settlement(ask, s),
             .Expr(e) -> self.settlement_of(ask.file, e, ask.name, ask.seats),
         }
+    }
+
+    /// A const's settlement run, its own reads closed and filed by its ask: a reader of the
+    /// const records what its run read.
+    fn const_settlement(ask: SettleAsk, s: StmtId) -> Result<Settled, Unsettled> {
+        let id = "${self.settle_id(ask.file, SettleRoot.Const(s), ask.seats)}"
+        let reader = self.decls.file(ask.file).path
+        let scope = self.opened_reads(reader)
+        let r = self.settlement_of(ask.file, self.parsed(ask.file).store.const_value(s)!, ask.name, ask.seats)
+        let read = self.closed_reads(reader, scope)
+        self.hold.settle_reads.put(id, read)
+        r
     }
 
     /// One settlement run: the initializer lowered as a program, its
@@ -1037,7 +1278,7 @@ impl Workspace {
             .decls
             .settlement_until(
                 entry_wanted(f, root, name, seats),
-                (w: Wanted) -> ws.logged_unit(w),
+                (w: Wanted) -> unit_asked_again(ws, w),
                 (b: Body) -> reaches_world(b, true),
             )
         let open = self.hold.settling.get()
