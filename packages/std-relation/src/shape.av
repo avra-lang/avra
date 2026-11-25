@@ -8,20 +8,46 @@
 //! variants. A record crosses by POSITION and an enum by its variant's
 //! PLACE, so either may grow at its end and nowhere else.
 use @std.text.{parse_int}
+use stable.{StableHasher, stable_hasher, text_hash}
 
 /// One slot: a record's field or an enum's variant. `ty` spells what
 /// it carries, marks included; `defaulted` says a reader may fill it
 /// where a writer left none.
 export type ShapeSlot = { name: string, ty: string, defaulted: bool = false }
 
-/// A named type a shape's slots reach, and its declaration's
-/// fingerprint.
-export type ShapeReach = { name: string, shape: int }
+/// How a reached type crosses. `Record`: its slots in order. `Variants`:
+/// a variant by place, then its payload. `Over`: the one shape its only
+/// slot spells. `Dense`: an id as the scope spells it. `Coded`: its own
+/// codec's header `hash`, then its slots — `scoped` says how its texts
+/// cross. `Unsaid`: the descriptor names it and says nothing more, as an
+/// earlier spelling did and as a type with no form here does.
+export enum Form {
+    Unsaid
+    Record
+    Variants
+    Over
+    Dense
+    Coded(hash: int, scoped: bool, tagged: bool)
+}
 
-/// A coded type's shape: its fingerprint, the number of the byte
-/// layout it is written in, whether it is an enum, its slots in wire
-/// order, and every type they reach.
-export type Descriptor = { hash: int, format: int, tagged: bool, slots: List<ShapeSlot>, reached: List<ShapeReach> }
+/// A named type a shape's slots reach: its declaration's fingerprint,
+/// how it crosses, and its slots.
+export type ShapeReach = { name: string, shape: int, form: Form = Form.Unsaid, slots: List<ShapeSlot> = [] }
+
+/// A coded type's shape: its name, its fingerprint, the number of the
+/// byte layout it is written in, whether it is an enum, whether its
+/// texts cross through a scope, its slots in wire order, and every type
+/// they reach. A slot names a reached type by the reach's name, and the
+/// type itself by its own.
+export type Descriptor = {
+    hash: int,
+    format: int,
+    tagged: bool,
+    slots: List<ShapeSlot>,
+    reached: List<ShapeReach>,
+    name: string = "",
+    scoped: bool = false,
+}
 
 /// What a reader makes of a writer's shape. `Same`: decode. `Grew`:
 /// the writer holds more trailing slots — decode the ones known.
@@ -55,64 +81,247 @@ fn reach_agrees(reader: Descriptor, writer: Descriptor) -> bool {
 }
 
 /// The head of every spelled descriptor: the spelling's own number.
-const spelling: string = "avra.shape.1"
+const spelling: string = "avra.shape.2"
+
+/// The head an earlier spelling wrote: no name, no scope, and each
+/// reached type its name and fingerprint alone.
+const first_spelling: string = "avra.shape.1"
 
 impl Descriptor {
     /// The descriptor as text a column keeps: its parts in order, each
     /// run behind its count.
     fn spelled() -> string {
-        let slots = [p for s in self.slots for p in [part(s.name), part(s.ty), flag(s.defaulted)]]
-        let reached = [p for r in self.reached for p in [part(r.name), "${r.shape}"]]
-        [spelling, "${self.hash}", "${self.format}", flag(self.tagged), "${self.slots.length}"]
-            .concat(slots)
+        let head = [
+            spelling,
+            part(self.name),
+            "${self.hash}",
+            "${self.format}",
+            flag(self.tagged),
+            flag(self.scoped),
+        ]
+        head
+            .concat(slots_spelled(self.slots))
             .concat(["${self.reached.length}"])
-            .concat(reached)
+            .concat([p for r in self.reached for p in reach_spelled(r)])
             .join("|")
     }
 }
 
+fn slots_spelled(slots: List<ShapeSlot>) -> List<string> {
+    ["${slots.length}"]
+        .concat([p for s in slots for p in [part(s.name), part(s.ty), flag(s.defaulted)]])
+}
+
+/// A reach's parts: its name, fingerprint and form word, a coded one's
+/// header and marks, then its slots.
+fn reach_spelled(r: ShapeReach) -> List<string> {
+    let form = match r.form {
+        .Unsaid -> ["u"],
+        .Record -> ["r"],
+        .Variants -> ["v"],
+        .Over -> ["o"],
+        .Dense -> ["d"],
+        .Coded(hash, scoped, tagged) -> ["c", "${hash}", flag(scoped), flag(tagged)],
+    }
+    [part(r.name), "${r.shape}"].concat(form).concat(slots_spelled(r.slots))
+}
+
+/// A run of reaches as text: its count, then each reach's parts.
+export fn reaches_spelled(rs: List<ShapeReach>) -> string {
+    ["${rs.length}"].concat([p for r in rs for p in reach_spelled(r)]).join("|")
+}
+
+/// Each reach a spelled run holds that `met` has none of that name for, kept in order, each the
+/// fingerprint of its declaration's spelling in `declared`.
+export fn reaches_met(mut met: Map<string, ShapeReach>, run: string, declared: List<string>) {
+    let c = Parts { all: run.split("|"), at: Cell.new(0) }
+    let n = c.count(reach_width) ?? 0
+    for i in 0..n {
+        let r? = c.reach() else { return }
+        if !met.has(r.name) { met.set(r.name, r with { shape: text_hash(declared[i]) }) }
+    }
+}
+
+/// A reach spelled as a run of one, the fingerprint of its declaration's spelling `declared`.
+export fn reach_declared(run: string, declared: string) -> ShapeReach {
+    Parts { all: run.split("|"), at: Cell.new(1) }.reach()! with { shape: text_hash(declared) }
+}
+
+/// A coded type as a reach of a type that wears it, read from its own descriptor `own`: its
+/// declaration's fingerprint `shape`, its codec's header `hash`, its texts' crossing and its
+/// slots.
+export fn reach_described(own: string, shape: int, hash: int) -> ShapeReach {
+    let d = descriptor_unspelled(own)!
+    ShapeReach {
+        name: d.name,
+        shape: shape,
+        form: Form.Coded(hash, d.scoped, d.tagged),
+        slots: d.slots,
+    }
+}
+
+/// A coded type's fingerprint: its name's fingerprint `seed`, the byte layout's number, the
+/// reached run's count, then each reach's value.
+export fn shape_fold(seed: int, format: int, parts: List<int>) -> int {
+    parts
+        .fold(stable_hasher(seed).int(format).count(parts.length), (h: StableHasher, p: int) -> h.int(p))
+        .finish()
+}
+
+/// A reach with no declaration here, as a fold's part: its spelling.
+export fn reach_undeclared(spelled: string) -> int { stable_hasher(text_hash(spelled)).int(0).finish() }
+
+/// A reach crossed by helpers: its spelling, then its declaration's.
+export fn reach_told(spelled: string, declared: string) -> int {
+    stable_hasher(text_hash(spelled)).int(1).text(declared).finish()
+}
+
+/// A coded reach whose fold is already under way: its spelling alone.
+export fn reach_again(spelled: string) -> int { stable_hasher(text_hash(spelled)).int(2).finish() }
+
+/// A coded reach: its spelling, then its codec's fold.
+export fn reach_coded(spelled: string, fold: int) -> int {
+    stable_hasher(text_hash(spelled)).int(3).int(fold).finish()
+}
+
+/// Whether no name of `a` is among `b`.
+export fn apart(a: List<string>, b: List<string>) -> bool { !a.any((n: string) -> b.contains(n)) }
+
+/// A coded type's descriptor: what `own` spells, its fingerprint and reaches filled.
+export fn descriptor_filled(own: string, hash: int, reached: List<ShapeReach>) -> string {
+    (descriptor_unspelled(own)! with { hash: hash, reached: reached }).spelled()
+}
+
 /// The descriptor a text spells, or absent for any other text.
 export fn descriptor_unspelled(text: string) -> Descriptor? {
-    let parts = text.split("|")
-    if parts.length < 6 || parts[0] != spelling { return null }
-    let hash? = parse_int(parts[1]) else { return null }
-    let format? = parse_int(parts[2]) else { return null }
-    let tagged? = unflag(parts[3]) else { return null }
-    let slots? = slots_at(parts, 4) else { return null }
-    let after = 5 + slots.length * 3
-    let reached? = reached_at(parts, after) else { return null }
-    if parts.length != after + 1 + reached.length * 2 { return null }
+    let c = Parts { all: text.split("|"), at: Cell.new(1) }
+    let d? = spelled_under(c.all.first() ?? "", c) else { return null }
+    if c.at.get() != c.all.length { return null }
+    d
+}
+
+/// The descriptor the parts after `head` spell, by the spelling it names.
+fn spelled_under(head: string, c: Parts) -> Descriptor? {
+    when {
+        head == spelling -> spelled_now(c)
+        head == first_spelling -> spelled_first(c)
+        _ -> null
+    }
+}
+
+fn spelled_now(c: Parts) -> Descriptor? {
+    let name? = c.text() else { return null }
+    let hash? = c.int() else { return null }
+    let format? = c.int() else { return null }
+    let tagged? = c.flag() else { return null }
+    let scoped? = c.flag() else { return null }
+    let slots? = c.slots() else { return null }
+    let n? = c.count(reach_width) else { return null }
+    mut reached: List<ShapeReach> = []
+    for _i in 0..n {
+        let r? = c.reach() else { return null }
+        reached.push(r)
+    }
+    Descriptor {
+        hash: hash,
+        format: format,
+        tagged: tagged,
+        slots: slots,
+        reached: reached,
+        name: name,
+        scoped: scoped,
+    }
+}
+
+fn spelled_first(c: Parts) -> Descriptor? {
+    let hash? = c.int() else { return null }
+    let format? = c.int() else { return null }
+    let tagged? = c.flag() else { return null }
+    let slots? = c.slots() else { return null }
+    let n? = c.count(2) else { return null }
+    mut reached: List<ShapeReach> = []
+    for _i in 0..n {
+        let name? = c.text() else { return null }
+        let shape? = c.int() else { return null }
+        reached.push(ShapeReach { name: name, shape: shape })
+    }
     Descriptor { hash: hash, format: format, tagged: tagged, slots: slots, reached: reached }
 }
 
-/// The run a count at `at` heads, `width` parts an item: where its
-/// items begin, or absent when the parts hold no such run.
-fn run_at(parts: List<string>, at: int, width: int) -> List<int>? {
-    if at >= parts.length { return null }
-    let n? = parse_int(parts[at]) else { return null }
-    if n < 0 || at + 1 + n * width > parts.length { return null }
-    [at + 1 + i * width for i in 0..n]
-}
+/// The fewest parts a reach is spelled in: name, fingerprint, form, count.
+const reach_width: int = 4
 
-fn slots_at(parts: List<string>, at: int) -> List<ShapeSlot>? {
-    let starts? = run_at(parts, at, 3) else { return null }
-    mut out: List<ShapeSlot> = []
-    for i in starts {
-        let defaulted? = unflag(parts[i + 2]) else { return null }
+/// A spelling's parts, read in order from `at`.
+type Parts = { all: List<string>, at: Cell<int> }
+
+impl Parts {
+    fn next() -> string? {
+        let at = self.at.get()
+        if at >= self.all.length { return null }
+        self.at.set(at + 1)
+        self.all[at]
+    }
+
+    fn text() -> string? {
+        let s? = self.next() else { return null }
+        unpart(s)
+    }
+
+    fn int() -> int? {
+        let s? = self.next() else { return null }
+        parse_int(s)
+    }
+
+    fn flag() -> bool? {
+        let s? = self.next() else { return null }
+        unflag(s)
+    }
+
+    /// A run's count, refused where the parts left could not hold that
+    /// many items of `width` parts.
+    fn count(width: int) -> int? {
+        let n? = self.int() else { return null }
+        if n < 0 || n > (self.all.length - self.at.get()) / width { return null }
+        n
+    }
+
+    fn slots() -> List<ShapeSlot>? {
+        let n? = self.count(3) else { return null }
+        mut out: List<ShapeSlot> = []
+        for _i in 0..n {
+            let name? = self.text() else { return null }
+            let ty? = self.text() else { return null }
+            let defaulted? = self.flag() else { return null }
+            out.push(ShapeSlot { name: name, ty: ty, defaulted: defaulted })
+        }
         out
-            .push(ShapeSlot { name: unpart(parts[i]), ty: unpart(parts[i + 1]), defaulted: defaulted })
     }
-    out
-}
 
-fn reached_at(parts: List<string>, at: int) -> List<ShapeReach>? {
-    let starts? = run_at(parts, at, 2) else { return null }
-    mut out: List<ShapeReach> = []
-    for i in starts {
-        let shape? = parse_int(parts[i + 1]) else { return null }
-        out.push(ShapeReach { name: unpart(parts[i]), shape: shape })
+    fn reach() -> ShapeReach? {
+        let name? = self.text() else { return null }
+        let shape? = self.int() else { return null }
+        let form? = self.form() else { return null }
+        let slots? = self.slots() else { return null }
+        ShapeReach { name: name, shape: shape, form: form, slots: slots }
     }
-    out
+
+    fn form() -> Form? {
+        let word? = self.next() else { return null }
+        match word {
+            "u" -> Form.Unsaid,
+            "r" -> Form.Record,
+            "v" -> Form.Variants,
+            "o" -> Form.Over,
+            "d" -> Form.Dense,
+            "c" -> {
+                let hash? = self.int() else { return null }
+                let scoped? = self.flag() else { return null }
+                let tagged? = self.flag() else { return null }
+                Form.Coded(hash, scoped, tagged)
+            },
+            _ -> null,
+        }
+    }
 }
 
 /// A text as one part: the separator and the escape's own mark spelled

@@ -5,19 +5,46 @@ use @std.http.frame.{limits}
 use @std.http.body.{Body, whole, measured}
 use @std.http.wire.{Transport, WireError}
 use @std.http.http.{Request, Unrouted, Response}
-use @std.http.form.{Form, Filled, Part, Sink, FormLimits, Posted, FormError, form_of, form_body}
-use @std.http.form_codec.{form}
+use @std.http.form.{Form, Filled, Part, Sink, FormLimits, Posted, form_of}
+use @std.meta.{derive}
+use @std.validate.{Decode}
 
-@form
-type Signup = { email: string, age: int, height: float?, plan: string?, agree: bool, tags: List<string>, scores: List<int> }
+@derive(Decode)
+type Signup = {
+    email: string,
+    age: int,
+    height: float? = null,
+    plan: string? = null,
+    agree: bool = false,
+    tags: List<string> = [],
+    scores: List<int> = [],
+}
 
-/// What a urlencoded body read as a `Signup` answered.
-fn signed_up(body: string) -> string {
-    match form_body(urlencoded(body), (f) -> Signup.from_form(f)) {
+/// What a form read as a `Signup` answered: its fields, or the status and
+/// each issue as `path rule`.
+fn read_as_signup(q: Request<Unrouted>) -> string {
+    let read: Result<Signup, Response> = q.form_as()
+    match read {
         .Ok(s) -> "${s.email} ${s.age} ${s.height ?? 0.0 - 1.0} ${s.plan ?? "-"} ${s.agree} ${s.tags.join(",")} ${s.scores.length}",
-        .Err(r) -> "${r.status} ${r.body.text() ?? "?"}",
+        .Err(r) -> "${r.status} ${issues_of(r.body.text() ?? "")}",
     }
 }
+
+/// A problem body's issues as `path rule`, in order.
+fn issues_of(problem: string) -> string {
+    ["${between(piece, "\"path\":\"")} ${between(piece, "\"rule\":\"")}" for piece in problem.split("},{") if piece.contains("\"rule\":")]
+        .join(", ")
+}
+
+/// The text after `open` up to the next quote.
+fn between(s: string, open: string) -> string {
+    let at = s.index_of(open)
+    if at < 0 { return "" }
+    let rest = s.substring(at + open.length, s.length)
+    rest.substring(0, rest.index_of("\""))
+}
+
+fn signed_up(body: string) -> string { read_as_signup(urlencoded(body)) }
 
 /// A transport handing a body over `k` octets per read.
 type Trickle = { body: Bytes, k: int, at: Cell<int> }
@@ -351,33 +378,33 @@ spec "std/http — a form read as a record" {
                 "email=a%40b.c&age=36&height=1.8&plan=pro&agree=on&tags=x&tags=y&scores=1&scores=2&scores=3",
             ) == "a@b.c 36 1.8 pro true x,y 3"
         }
-        then "what may be absent is" { signed_up("email=e&age=1") == "e 1 -1.0 - false  0" }
-        then "an empty number is absent, an empty text is text" { signed_up("email=e&age=1&height=&plan=") == "e 1 -1.0  false  0" }
-        then "a checkbox's other spellings" {
-            signed_up("email=e&age=1&agree=TRUE") == "e 1 -1.0 - true  0" &&
-                signed_up("email=e&age=1&agree=0") == "e 1 -1.0 - false  0"
+        then "what may be absent takes its default" { signed_up("email=e&age=1") == "e 1 -1.0 - false  0" }
+        then "an empty text is text" { signed_up("email=e&age=1&plan=") == "e 1 -1.0  false  0" }
+        then "a number or a checkbox left blank is absent" { signed_up("email=e&age=1&height=&agree=") == "e 1 -1.0 - false  0" }
+        then "a checkbox's spellings" {
+            signed_up("email=e&age=1&agree=true") == "e 1 -1.0 - true  0" &&
+                signed_up("email=e&age=1&agree=0") == "e 1 -1.0 - false  0" &&
+                signed_up("email=e&age=1&agree=off") == "e 1 -1.0 - false  0"
         }
+        then "one value reads as a list of one" { signed_up("email=e&age=1&tags=x") == "e 1 -1.0 - false x 0" }
+        then "a key the record does not name is passed by" { signed_up("email=e&age=1&utm=x") == "e 1 -1.0 - false  0" }
         then "a multipart body reads alike" {
             let body = "--XyZ\r\nContent-Disposition: form-data; name=\"email\"\r\n\r\nm\r\n--XyZ\r\nContent-Disposition: form-data; name=\"age\"\r\n\r\n9\r\n--XyZ--"
-            match form_body(posted_as(mp(), body.bytes(), 5), (f) -> Signup.from_form(f)) {
-                .Ok(s) -> s.email == "m" && s.age == 9,
-                .Err(_) -> false,
-            }
+            read_as_signup(posted_as(mp(), body.bytes(), 5)) == "m 9 -1.0 - false  0"
         }
     }
-    given "refusals name the field" {
-        then "a missing field" { signed_up("age=1") == "400 field `email` wants a value" }
-        then "a field sent twice" { signed_up("email=a&email=b&age=1") == "400 field `email` wants one value, not several" }
-        then "not an integer" { signed_up("email=e&age=old") == "400 field `age` wants an integer" }
-        then "not a number" { signed_up("email=e&age=1&height=tall") == "400 field `height` wants a number" }
-        then "not a checkbox" { signed_up("email=e&age=1&agree=maybe") == "400 field `agree` wants `on` or `off`" }
-        then "a list element" { signed_up("email=e&age=1&scores=1&scores=x") == "400 field `scores` wants an integer" }
+    given "refusals are one 422 naming every field" {
+        then "a missing field" { signed_up("age=1") == "422 email required" }
+        then "every issue at once" { signed_up("age=old&height=tall&agree=maybe") == "422 email required, age type, height type, agree type" }
+        then "an empty required number is required" { signed_up("email=e&age=") == "422 age required" }
+        then "a field sent twice" { signed_up("email=a&email=b&age=1") == "422 email type" }
+        then "a list element" { signed_up("email=e&age=1&scores=1&scores=x") == "422 scores[1] type" }
+        then "a body that is no form keeps the form's refusal" {
+            read_as_signup(posted_as("text/plain", "email=e".bytes(), 99)).starts_with("415 ")
+        }
         then "a file in a form read as a record" {
             let body = "--XyZ\r\nContent-Disposition: form-data; name=\"email\"; filename=\"f\"\r\n\r\nm\r\n--XyZ--"
-            match form_body(posted_as(mp(), body.bytes(), 5), (f) -> Signup.from_form(f)) {
-                .Ok(_) -> false,
-                .Err(r) -> r.status == 500,
-            }
+            read_as_signup(posted_as(mp(), body.bytes(), 5)).starts_with("500 ")
         }
     }
 }

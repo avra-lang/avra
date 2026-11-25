@@ -29,7 +29,7 @@ use @std.time.{ms}
 use @std.ui.app.{Async, Fetch, Overlay, ask_list, fetch, later, send}
 use @std.ui.shipped.{ship}
 use @std.http_message.route.{Nothing, Routes}
-use @ui.board_model.model.{Todo}
+use @ui.board_model.model.{Todo, TodoDraft}
 use @std.ui.components.{
     button,
     card,
@@ -125,7 +125,7 @@ export fn tasks_written(j: string) -> bool {
 /// The tasks the server last answered with; none until one has come.
 fn tasks() -> List<Todo> { [t for t in tasks_ask.value() ?? [] if named(t)] }
 
-/// Whether the server has named the task. Id 0 is a task the server has not stored; it names each on insert.
+/// Whether the server has named the task. An appended draft reads as id 0 until the server answers with its key.
 fn named(t: Todo) -> bool { t.id != 0 }
 
 fn todos_of(j: string) -> Result<List<Todo>, DecodeError> {
@@ -142,12 +142,12 @@ fn admits(t: Todo) -> bool {
 }
 
 /// The server's doors, described by the model both sides share.
-fn doors() -> Routes<Todo> { Todo.paths("/tasks") }
+fn doors() -> Routes<Todo, TodoDraft> { Todo.paths("/tasks") }
 
-/// `title` is sent as the next task — nothing, when it says nothing. It is a row once the server names it.
+/// `title` is sent as the next task's draft — nothing, when it says nothing. It is a row once the server names it.
 fn add(title: string) {
     if title == "" { return }
-    let _ = send(saving, doors().create!, Todo { title: title }, foresee: Overlay.Append("id"))
+    let _ = send(saving, doors().create!, TodoDraft { title: title }, foresee: Overlay.Append("id"))
 }
 
 /// The task is sent with the state the box now shows, and shown so at once.

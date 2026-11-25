@@ -3497,6 +3497,35 @@ was typed as text (std-ui/src/forms). The split is clean in its own right;
 the want is a `once fn` with type parameters — one cache per
 instantiation — so `$kept` can be derived for `X<T>`.
 
+### A type holds a computed answer under its own name
+
+A derive that holds a per-type answer writes it as a top-level `once fn`, because
+`static once fn` does not parse ("expected BREAK") and a `once fn` in an `impl` is
+`type.once_fn`. The top-level name must be unique in the module, so `@codec` names its
+three held fns `<snake>_codec_<file mark>_…`, hashing the declaration's file name at compile
+time because two files of one module may each declare a private type of one name
+(`held_names`, `file_mark`). A `once fn` answering `int` is refused too ("which the runtime
+cannot keep"), so the fingerprint is held as `List<int>` and read back as `[0]`. The want: a
+`static once fn` on a type, which has no receiver and so answers from nothing but the
+program, as a top-level one does. It answers any type, a scalar held beside its done mark.
+Wanting sites: std-relation's `stored_generated` and `held_names`, and `@relation`'s
+`stores_name`/`filing_name`. Second user: std-ui's derived `once fn X$kept()`
+(tree/view.av's `composition`), which spells a `$` so the name cannot collide. Repro:
+`engine_repros/static_once_fn`.
+
+### Eight octets of `Bytes` read as one word
+
+`Bytes` has `at` and no word read, so every binary format hand-rolls one: eight `at` calls
+with shifts and ors (`b.word_le(at)` is "`Bytes` has none"). In the evaluator that is about
+ten steps per octet, which is what a compile-time hash pays: before the hashing moved to run
+time, `@codec`'s fingerprint spent 208k of the TypeFacts derive's 585k steps (budget 600k)
+in that loop. The want: `word_le(at)`/`word_be(at)`, one runtime row each, trapping past the
+end as `at` does. Wanting sites: std-relation's `stable.av` `word_at` (every stable hash),
+std-program's `saved_layout.av` `word_in` (whose mapped twin is already the row
+`avra_mmap_word_at`), std-avrac's `core/digest.av`, std-program's `syntax_tape.av`. Second
+user: std-http's SHA-1 `word_at` (`codec.av`) and HTTP/2's `u32_at` (`h2.av`), the same read
+at width four. Repro: `engine_repros/bytes_word_read`.
+
 ### A `match` in a component body composes its arms' views
 
 In a component body `if`/`else` draws whichever branch holds, while a
@@ -3752,6 +3781,28 @@ left is ceremony and one silent hole.
   `Example: "db".upper() == "DB"`.
   Today: none; `@std/config` keeps a private ASCII `shouted`.
   `Callsite:` the env source's variable names.
+
+### Interim record — the storyboard's asks
+
+Filed here because this session's tasks server holds no `avra-8sb5.10`; each moves to that epic as
+its own ticket. The wanting site of both is the storyboard (`docs/2026_11_24_STORYBOARD.md`).
+
+- **A build-time law over a settled value.** A const or a collection whose check refuses the BUILD,
+  naming what it found: here, a gathered declaration of one kind with no partner of another (a view
+  `@viewed` gathers that no `@case_of` story tells). `Example:` a law over `views` and `stories` that
+  refuses `checkbox has no story` where the build stands. Today the check is a suite's `then`, red
+  in the gate but green in a build. `Callsite:` `@std/ui_gallery`'s coverage test (`untold`).
+- **An instance followed by `with` binds `with` to the instance.** `Example:` `alert "Saved" with {
+  urgency: .Assertive }`. Today: `type.with_struct` ("`with` copies a struct, found `string`") — the
+  head's literal takes the `with`, so the instance is written `(alert "Saved") with { … }`.
+  `Callsite:` `scratch-probes/storyboard/p7/src/main.av` (`(alert "Saved") with { urgency: .Assertive }`).
+
+- **For the layout study: a wrapping row whose items hold a least width.** A row that wraps moves
+  an item to a line of its own once the row is narrower than the item's least width, so frames stand
+  side by side on a wide page and one a row on a phone, with no width written per screen. Today
+  `Layout` sizes a box by `Hug`, `Fill`, `Fixed` or `Percent`, none of which a wrapping row breaks
+  at. `Callsite:` `@std/ui_gallery`'s storyboard frames (`frame`, `storyboard.av`), where "one frame
+  a row" is a reader's checkbox meanwhile.
 
 ### Interim record — the tasks server was unreachable at landing
 

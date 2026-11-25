@@ -66,6 +66,7 @@ use rows.{
     tables_made,
     take_next,
     terms_kept,
+    untaken_index,
     waiting_index,
 }
 use tx.{begun, freed}
@@ -243,6 +244,9 @@ fn kept_terms(queue: string, terms: Terms, dedupe: Duration, shape: int) -> List
 fn made(db: Db, terms: Terms) -> Result<bool, HomeError> {
     let _ = tables_made(db)?
     if terms.overflow == Overflow.latest { let _ = homed(db.run(sql(waiting_index)))? }
+    if terms.overflow == Overflow.latest || terms.overflow == Overflow.drop_oldest {
+        let _ = homed(db.run(sql(untaken_index)))?
+    }
     true
 }
 
@@ -856,7 +860,9 @@ const back: string = "ROLLBACK TO \"flow_step\""
 
 const find_shape: string = "SELECT \"descriptor\" FROM \"FlowShape\" WHERE \"hash\" = ?1"
 
-const know_shape: string = "INSERT OR IGNORE INTO \"FlowShape\" (\"hash\", \"descriptor\") VALUES (?1, ?2)"
+/// A shape's descriptor, kept as the home opened last spells it: an
+/// earlier build's spelling of the same shape is written over.
+const know_shape: string = "INSERT INTO \"FlowShape\" (\"hash\", \"descriptor\") VALUES (?1, ?2) ON CONFLICT (\"hash\") DO UPDATE SET \"descriptor\" = excluded.\"descriptor\" WHERE \"descriptor\" <> excluded.\"descriptor\""
 
 /// The least instant there is: the `ready_at` of an item due from the
 /// first.

@@ -20,7 +20,7 @@ use @std.sqlite.{Db, Row, sql}
 use @std.time.{Duration, Time, nanos, now}
 use fault.{homed}
 use letters.{dead_parts}
-use readout.{read_out}
+use readout.{read_through}
 use rows.{order_coded, overflow_coded, read_mark}
 use @std.relation.stable.{CodecFault, reader}
 use unread.{aside_count}
@@ -51,7 +51,7 @@ export enum Stage { Waiting, Delayed, Held, Lapsed, Backing }
 
 /// One item as an operator reads it. `item` is its record, read through
 /// the descriptor of the shape it was written under, and absent where
-/// that descriptor cannot be followed.
+/// that descriptor cannot be followed; `unread` then says why.
 export type Peeked = {
     id: string,
     key: string,
@@ -64,6 +64,7 @@ export type Peeked = {
     reader: string?,
     shape: int,
     item: Json?,
+    unread: string?,
 }
 
 /// What an operator's verb did: it acted, answering the id the item now
@@ -242,6 +243,7 @@ fn peeked(db: Db, mark: string, r: Row, t: Time, shapes: Cell<Map<string, string
     let ready = homed(r.int(5))?
     let leased = int_or_null(r, 8)
     let epoch = homed(r.int(7))?
+    let read = read_through(descriptor, blob_at(r, 3))
     .Ok(
         Peeked {
             id: "${mark}${homed(r.int(0))?}",
@@ -254,7 +256,8 @@ fn peeked(db: Db, mark: string, r: Row, t: Time, shapes: Cell<Map<string, string
             leased_until: if leased == null { null } else { Time { ns: leased! } },
             reader: text_or_null(r, 9),
             shape: shape,
-            item: read_out(descriptor, blob_at(r, 3)),
+            item: match read { .Ok(j) -> j, .Err(_) -> null },
+            unread: match read { .Ok(_) -> null, .Err(why) -> why },
         },
     )
 }
