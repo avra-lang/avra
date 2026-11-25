@@ -5,7 +5,7 @@ use @std.ui.native.sources.{opened, served}
 use @std.ui.native.net.{over_http, unwired}
 use @std.http_message.message.{Method, Reply, Request}
 use @std.io.{env}
-use @std.ui.realize.dom.live.{Live, live}
+use @std.ui.realize.native.live.{NativeLive, native_live}
 use @std.ui.tree.identity.{Owner, NodeId}
 use @std.ui.tree.node.{Node, Said}
 use @std.ui.tree.seats.{seat_numbered}
@@ -33,13 +33,13 @@ extern fn avra_spike_said(id: int, seat: int, flag: int, words: string) {
 }
 
 /// A control on `node` at `seat` said `s`, left as a turn for the program's loop.
-fn spoke(app: App, at: Live, node: NodeId, seat: int, s: Said?) -> bool {
+fn spoke(app: App, at: NativeLive, node: NodeId, seat: int, s: Said?) -> bool {
     let seated? = seat_numbered(seat) else { return false }
     app.send(Msg.Turn(() -> at.fire(node, seated, s), "${node.n}"))
 }
 
 /// A tap on `node` at `seat`, left as a turn for the program's loop.
-fn tapped(app: App, at: Live, node: NodeId, seat: int) -> bool {
+fn tapped(app: App, at: NativeLive, node: NodeId, seat: int) -> bool {
     let s? = seat_numbered(seat) else { return false }
     app.send(Msg.Turn(() -> at.fire(node, s, null), "${node.n}"))
 }
@@ -75,12 +75,12 @@ fn idle() {}
 /// `view` drawn by the UIKit host until the program's loop ends.
 export fn mount<V: View>(view: fn() -> V) {
     avra_spike_attach()
-    let at = live()
+    let at = native_live()
     let on_screen: Cell<List<Owner>> = Cell.new([])
     let app = owned_app(
         view,
         (root: Node) -> {
-            let patches = at.patches_drawn(root, null)
+            let patches = at.patches(root)
             on_screen.set(at.owners())
             if !patches.is_empty() { avra_spike_frame(neutral(patches)) }
         },

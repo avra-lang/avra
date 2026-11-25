@@ -1,79 +1,43 @@
-//! The neutral frame: std-ui's DOM patches as records a native host reads,
-//! one a line — `create <id> <tag>`, `text <id> <words>`, `place <id>
-//! <parent> <after>`, `remove <id>`, `listen <id> <seat> <prim>`,
-//! `unlisten <id> <seat>`, `attr <id> <name> <value>`, `dropattr <id> <name>`,
-//! `prop <id> <name> <value>`, `call <id> <verb>`, `var <id> <property>
-//! <value>`, `dropvar <id> <property>`, `style <bytes>`, `adopt <kinds>`. An id
-//! is one more than the page's number, so 0 names none. Words carry no line
-//! break.
-use @std.ui.realize.dom.patch.{Patch, Held}
+//! The neutral frame: a native page's patches as records a host reads, one a
+//! line — `create <id> <prim>`, `fact <id> <code> <under> <scalar>`, `drop
+//! <id> <code> <under>`, `place <id> <parent> <after>`, `remove <id>`,
+//! `listen <id> <seat> <kind>`, `unlisten <id> <seat>`. An id is one more than
+//! the page's number, so 0 names none; `under` is an interaction's word or
+//! `-`; a scalar is `t <words>`, `f 0|1`, `n <int>` or `x <float>`. Words
+//! carry no line break.
+use @std.ui.realize.native.patch.{NativePatch}
+use @std.ui.realize.native.fact.{Fact, Scalar}
+use @std.ui.style.style.{Interaction}
 use @std.ui.tree.identity.{NodeId}
 use @std.ui.tree.seats.{row_at}
 
 /// The frame `patches` say, as the host reads it.
-export fn neutral(patches: List<Patch>) -> string {
-    [line for p in patches for line in recorded(p)].join("\n")
-}
+export fn neutral(patches: List<NativePatch>) -> string { [recorded(p) for p in patches].join("\n") }
 
-/// One patch's records.
-fn recorded(p: Patch) -> List<string> {
+fn recorded(p: NativePatch) -> string {
     match p {
-        .Create(id, tag) -> ["create ${wire_id(id)} ${tag.word()}"],
-        .CreateText(id, content) -> ["create ${wire_id(id)} text", "text ${wire_id(id)} ${unbroken(content)}"],
-        .Place(id, parent, after) -> ["place ${wire_id(id)} ${wire_id_of(parent)} ${wire_id_of(after)}"],
-        .Remove(id) -> ["remove ${wire_id(id)}"],
-        .SetText(id, content) -> ["text ${wire_id(id)} ${unbroken(content)}"],
-        .Listen(id, to) -> ["listen ${wire_id(id)} ${to.action.seat.number()} ${row_at(to.action.seat).prim.word()}"],
-        .Unlisten(id, seat) -> ["unlisten ${wire_id(id)} ${seat.number()}"],
-        .SetAttr(id, name, value) -> ["attr ${wire_id(id)} ${name.word()} ${unbroken(value)}"]
-            .concat(roles(id, name.word(), value)),
-        .DropAttr(id, name) -> ["dropattr ${wire_id(id)} ${name.word()}"],
-        .SetProp(id, name, value) -> ["prop ${wire_id(id)} ${name.word()} ${held_word(value)}"],
-        .Call(id, verb) -> ["call ${wire_id(id)} ${verb}"],
-        .SetVar(id, property, value) -> ["var ${wire_id(id)} ${property} ${unbroken(value)}"],
-        .DropVar(id, property) -> ["dropvar ${wire_id(id)} ${property}"],
-        .Style(css) -> ["style ${css.length}"],
-        .Adopt(kinds, _) -> ["adopt ${kinds.join(",")}"],
+        .Create(id, prim) -> "create ${wire_id(id)} ${prim.word()}",
+        .SetFact(id, f) -> "fact ${wire_id(id)} ${f.what.code()} ${under_word(f.under)} ${scalar_words(f.holds)}",
+        .DropFact(id, what, under) -> "drop ${wire_id(id)} ${what.code()} ${under_word(under)}",
+        .Place(id, parent, after) -> "place ${wire_id(id)} ${wire_id_of(parent)} ${wire_id_of(after)}",
+        .Remove(id) -> "remove ${wire_id(id)}",
+        .Listen(id, seat) -> "listen ${wire_id(id)} ${seat.number()} ${row_at(seat).prim.word()}",
+        .Unlisten(id, seat) -> "unlisten ${wire_id(id)} ${seat.number()}",
     }
 }
 
-/// The roles a class names, as records a native host draws by: `tone <id>
-/// <tone>`, `ink <id> <ink>`, `radius <id> <size>`, `gap <id> <size>`, `pad
-/// <id> <size>` per side (`pad-start`, `pad-end`, `pad-top`, `pad-bottom`), `dir <id> row|col`. A class word with a state prefix
-/// (`hover:`) or no role is left to the page.
-fn roles(id: NodeId, name: string, value: string) -> List<string> {
-    if name != "class" { return [] }
-    [r for w in value.split(" ") for r in role_of(wire_id(id), w)]
+fn under_word(i: Interaction?) -> string {
+    let named? = i else { return "-" }
+    named.word()
 }
 
-/// One class word's role record, if it names one.
-fn role_of(id: int, w: string) -> List<string> {
-    if w == "dir-row" { return ["dir ${id} row"] }
-    if w == "dir-col" { return ["dir ${id} col"] }
-    let r? = [p for p in prefixes() if w.starts_with(p.prefix)].first() else { return [] }
-    ["${r.kind} ${id} ${w.substring(r.prefix.length, w.length)}"]
-}
-
-/// A class word's prefix and the record it becomes.
-type Prefix = { prefix: string, kind: string }
-
-/// Every role a class word carries a native host.
-fn prefixes() -> List<Prefix> {
-    [
-        Prefix { prefix: "fill-", kind: "tone" },
-        Prefix { prefix: "color-", kind: "ink" },
-        Prefix { prefix: "radius-", kind: "radius" },
-        Prefix { prefix: "gap-", kind: "gap" },
-        Prefix { prefix: "pis-", kind: "pad-start" },
-        Prefix { prefix: "pie-", kind: "pad-end" },
-        Prefix { prefix: "pt-", kind: "pad-top" },
-        Prefix { prefix: "pb-", kind: "pad-bottom" },
-    ]
-}
-
-/// A held value as one word run.
-fn held_word(h: Held) -> string {
-    match h { .Text(t) -> unbroken(t), .Flag(on) -> if on { "true" } else { "false" } }
+fn scalar_words(s: Scalar) -> string {
+    match s {
+        .Text(t) -> "t ${t.replace("\n", " ")}",
+        .Flag(on) -> if on { "f 1" } else { "f 0" },
+        .Number(n) -> "n ${n}",
+        .Fraction(x) -> "x ${x}",
+    }
 }
 
 fn wire_id(id: NodeId) -> int { id.n + 1 }
@@ -82,6 +46,3 @@ fn wire_id_of(id: NodeId?) -> int {
     let named? = id else { return 0 }
     wire_id(named)
 }
-
-/// Words on one line.
-fn unbroken(s: string) -> string { s.replace("\n", " ") }

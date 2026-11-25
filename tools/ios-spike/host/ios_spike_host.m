@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <sys/sysctl.h>
 #include <unistd.h>
+#include "avra_facts.gen.h"
 
 void avra_host_attach(void (*loop)(void));
 int avra_host_poller(void);
@@ -94,15 +95,21 @@ static void sources_armed(void) {
 
 // ── The tree the records build ──────────────────────────────────
 
+// One element: its prim, the view it stands as, the control inside that view
+// that speaks, the label a control composes beside itself, and the title a
+// container composes above its children.
 @interface SpikeNode : NSObject
 @property(nonatomic) NSInteger nid;
 @property(nonatomic, copy) NSString* prim;
-@property(nonatomic, copy) NSString* words;
 @property(nonatomic, strong) UIView* view;
+@property(nonatomic, strong) UIView* control;
+@property(nonatomic, strong) UILabel* label;
+@property(nonatomic, strong) UILabel* title;
 @property(nonatomic) NSInteger parent;
 @property(nonatomic) NSInteger seat;
 @property(nonatomic) NSInteger said_seat;
 @property(nonatomic) double max;
+@property(nonatomic) double amount;
 @property(nonatomic, strong) UIViewController* sheet;
 @property(nonatomic, strong) UIColor* ink;
 @end
@@ -126,25 +133,10 @@ static double g_started_ms;
 
 static SpikeTarget* g_target;
 
-// What a page's tag stands for natively: the prim the host draws it as.
-static NSString* prim_of(NSString* tag) {
-    if ([tag isEqualToString:@"text"]) return @"text";
-    if ([tag isEqualToString:@"button"]) return @"button";
-    if ([tag isEqualToString:@"a"]) return @"link";
-    if ([tag hasPrefix:@"h"] && tag.length == 2 && ![tag isEqualToString:@"hr"]) return @"heading";
-    if ([tag isEqualToString:@"input"]) return @"field";
-    if ([tag isEqualToString:@"progress"]) return @"progress";
-    if ([tag isEqualToString:@"hr"]) return @"divider";
-    if ([tag isEqualToString:@"dialog"]) return @"dialog";
-    NSArray* boxes = @[ @"div", @"span", @"article", @"ul", @"li", @"form", @"label", @"fieldset", @"legend" ];
-    if ([boxes containsObject:tag]) return @"surface";
-    return nil;
-}
-
-static UIStackView* stack(void) {
+static UIStackView* stack(UILayoutConstraintAxis axis) {
     UIStackView* s = [UIStackView new];
-    s.axis = UILayoutConstraintAxisVertical;
-    s.alignment = UIStackViewAlignmentLeading;
+    s.axis = axis;
+    s.alignment = axis == UILayoutConstraintAxisHorizontal ? UIStackViewAlignmentCenter : UIStackViewAlignmentLeading;
     s.spacing = 8;
     return s;
 }
@@ -158,125 +150,115 @@ static UILabel* label(UIFontTextStyle style) {
     return l;
 }
 
-static UIView* made_view(NSString* tag, NSString* prim, NSInteger nid) {
-    UIView* v;
-    if (!prim) {
-        UILabel* l = label(UIFontTextStyleCaption1);
-        l.textColor = UIColor.systemRedColor;
-        l.text = [NSString stringWithFormat:@"<%@>", tag];
-        v = l;
-    } else if ([prim isEqualToString:@"button"] || [prim isEqualToString:@"link"]) {
+static BOOL is(SpikeNode* n, NSString* prim) { return [n.prim isEqualToString:prim]; }
+
+static BOOL is_any(SpikeNode* n, NSArray<NSString*>* prims) { return [prims containsObject:n.prim]; }
+
+// The view a prim stands as: the platform's own control, composed with its
+// label where the control has one.
+static void made(SpikeNode* n) {
+    NSString* p = n.prim;
+    if ([p isEqualToString:@"button"] || [p isEqualToString:@"link"]) {
         UIButton* b = [UIButton buttonWithType:UIButtonTypeSystem];
         b.titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
-        b.tag = nid;
+        b.tag = n.nid;
         [b addTarget:g_target action:@selector(tapped:) forControlEvents:UIControlEventTouchUpInside];
         b.isAccessibilityElement = YES;
-        b.accessibilityTraits = [prim isEqualToString:@"link"] ? UIAccessibilityTraitLink : UIAccessibilityTraitButton;
-        v = b;
-    } else if ([prim isEqualToString:@"text"]) {
-        v = label(UIFontTextStyleBody);
-    } else if ([prim isEqualToString:@"heading"]) {
-        NSInteger rank = [tag substringFromIndex:1].integerValue;
-        UILabel* l = label(rank <= 1 ? UIFontTextStyleLargeTitle : rank == 2 ? UIFontTextStyleTitle2 : UIFontTextStyleTitle3);
-        l.accessibilityTraits = UIAccessibilityTraitHeader;
-        v = l;
-    } else if ([prim isEqualToString:@"field"]) {
+        b.accessibilityTraits = [p isEqualToString:@"link"] ? UIAccessibilityTraitLink : UIAccessibilityTraitButton;
+        n.view = n.control = b;
+    } else if ([p isEqualToString:@"text"]) {
+        n.view = n.label = label(UIFontTextStyleBody);
+    } else if ([p isEqualToString:@"heading"]) {
+        n.view = n.label = label(UIFontTextStyleTitle2);
+        n.label.accessibilityTraits = UIAccessibilityTraitHeader;
+    } else if ([p isEqualToString:@"field"]) {
         UITextField* f = [UITextField new];
         f.borderStyle = UITextBorderStyleRoundedRect;
-        f.tag = nid;
+        f.tag = n.nid;
         [f.widthAnchor constraintGreaterThanOrEqualToConstant:200].active = YES;
         [f addTarget:g_target action:@selector(typed:) forControlEvents:UIControlEventEditingChanged];
         [f addTarget:g_target action:@selector(returned:) forControlEvents:UIControlEventEditingDidEndOnExit];
-        v = f;
-    } else if ([prim isEqualToString:@"progress"]) {
-        UIProgressView* p = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleDefault];
-        [p.widthAnchor constraintEqualToConstant:200].active = YES;
-        v = p;
-    } else if ([prim isEqualToString:@"divider"]) {
+        UIStackView* s = stack(UILayoutConstraintAxisVertical);
+        n.label = label(UIFontTextStyleBody);
+        [s addArrangedSubview:n.label];
+        [s addArrangedSubview:f];
+        n.control = f;
+        n.view = s;
+    } else if ([p isEqualToString:@"switch"] || [p isEqualToString:@"checkbox"]) {
+        UISwitch* w = [UISwitch new];
+        w.tag = n.nid;
+        [w addTarget:g_target action:@selector(flipped:) forControlEvents:UIControlEventValueChanged];
+        w.isAccessibilityElement = YES;
+        UIStackView* s = stack(UILayoutConstraintAxisHorizontal);
+        n.label = label(UIFontTextStyleBody);
+        [s addArrangedSubview:w];
+        [s addArrangedSubview:n.label];
+        n.control = w;
+        n.view = s;
+    } else if ([p isEqualToString:@"progress"] || [p isEqualToString:@"slider"]) {
+        UIView* c;
+        if ([p isEqualToString:@"progress"]) c = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleDefault];
+        else c = [UISlider new];
+        [c.widthAnchor constraintEqualToConstant:200].active = YES;
+        UIStackView* s = stack(UILayoutConstraintAxisVertical);
+        n.label = label(UIFontTextStyleBody);
+        [s addArrangedSubview:n.label];
+        [s addArrangedSubview:c];
+        n.control = c;
+        n.view = s;
+    } else if ([p isEqualToString:@"divider"]) {
         UIView* d = [UIView new];
         d.backgroundColor = UIColor.separatorColor;
         [d.heightAnchor constraintEqualToConstant:1.0 / UIScreen.mainScreen.scale].active = YES;
         [d.widthAnchor constraintEqualToConstant:300].active = YES;
-        v = d;
+        n.view = d;
+    } else if ([p isEqualToString:@"spinner"]) {
+        UIActivityIndicatorView* a = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
+        [a startAnimating];
+        n.view = a;
+    } else if ([p isEqualToString:@"image"] || [p isEqualToString:@"icon"]) {
+        n.view = n.label = label(UIFontTextStyleCaption1);
+        n.label.text = @"▢";
+    } else if ([p isEqualToString:@"key"]) {
+        n.view = [UIView new];
+        n.view.hidden = YES;
+    } else if ([@[ @"row", @"column", @"surface", @"list", @"item", @"card", @"form", @"fieldset", @"alert", @"dialog" ] containsObject:p]) {
+        n.view = stack([p isEqualToString:@"row"] ? UILayoutConstraintAxisHorizontal : UILayoutConstraintAxisVertical);
     } else {
-        v = stack();
+        UILabel* l = label(UIFontTextStyleCaption1);
+        l.textColor = UIColor.systemRedColor;
+        l.text = [NSString stringWithFormat:@"<%@>", p];
+        n.view = l;
     }
-    v.accessibilityIdentifier = [NSString stringWithFormat:@"avra-%ld", (long)nid];
-    return v;
+    n.view.accessibilityIdentifier = [NSString stringWithFormat:@"avra-%ld", (long)n.nid];
 }
 
-// A text run takes its words into what holds it: a button's title, a heading's
-// text, or a label of its own in a container.
-static void run_shown(SpikeNode* run) {
-    SpikeNode* holder = g_nodes[@(run.parent)];
-    NSString* p = holder.prim;
-    if ([p isEqualToString:@"button"] || [p isEqualToString:@"link"]) {
-        [(UIButton*)holder.view setTitle:run.words forState:UIControlStateNormal];
-        if (!holder.view.accessibilityLabel.length) holder.view.accessibilityLabel = run.words;
-    } else if ([p isEqualToString:@"heading"]) {
-        ((UILabel*)holder.view).text = run.words;
-        holder.view.accessibilityLabel = run.words;
+// A container's title stands above its children.
+static void titled(SpikeNode* n, NSString* words) {
+    if (![n.view isKindOfClass:[UIStackView class]]) return;
+    if (!n.title) {
+        n.title = label(is(n, @"card") ? UIFontTextStyleTitle3 : UIFontTextStyleHeadline);
+        [(UIStackView*)n.view insertArrangedSubview:n.title atIndex:0];
+    }
+    n.title.text = words;
+    n.title.accessibilityLabel = words;
+}
+
+// What a control shows as its words: a button's title, a label's text, a
+// container's title.
+static void worded(SpikeNode* n, NSString* words) {
+    if ([n.control isKindOfClass:[UIButton class]]) {
+        [(UIButton*)n.control setTitle:words forState:UIControlStateNormal];
+        n.control.accessibilityLabel = words;
+    } else if (n.label) {
+        n.label.text = words;
+        n.label.accessibilityLabel = words;
+        if (n.control) n.control.accessibilityLabel = words;
     } else {
-        ((UILabel*)run.view).text = run.words;
-        run.view.accessibilityLabel = run.words;
-        if (holder.ink) ((UILabel*)run.view).textColor = holder.ink;
+        titled(n, words);
     }
 }
 
-static BOOL holds_runs(SpikeNode* holder) {
-    NSString* p = holder.prim;
-    return [p isEqualToString:@"button"] || [p isEqualToString:@"link"] || [p isEqualToString:@"heading"];
-}
-
-static void placed(SpikeNode* n, NSInteger parent, NSInteger after) {
-    if (!n) return;
-    n.parent = parent;
-    SpikeNode* holder = g_nodes[@(parent)];
-    if ([n.prim isEqualToString:@"text"] && holder && holds_runs(holder)) {
-        if (n.words) run_shown(n);
-        return;
-    }
-    if ([n.prim isEqualToString:@"dialog"]) return;
-    UIStackView* into = holder ? (UIStackView*)holder.view : g_root;
-    if (![into isKindOfClass:[UIStackView class]]) {
-        [g_unused addObject:[NSString stringWithFormat:@"place into %@", holder.prim]];
-        return;
-    }
-    [n.view removeFromSuperview];
-    NSUInteger at = 0;
-    if (after) {
-        NSUInteger i = [into.arrangedSubviews indexOfObject:g_nodes[@(after)].view];
-        at = i == NSNotFound ? into.arrangedSubviews.count : i + 1;
-    }
-    [into insertArrangedSubview:n.view atIndex:at];
-    if ([n.prim isEqualToString:@"text"] && n.words) run_shown(n);
-}
-
-// A dialog stands as a sheet over the page while it is open.
-static void dialog_shown(SpikeNode* n, BOOL open) {
-    if (open && !n.sheet) {
-        UIViewController* c = [UIViewController new];
-        c.view.backgroundColor = UIColor.systemBackgroundColor;
-        UIStackView* s = (UIStackView*)n.view;
-        s.alignment = UIStackViewAlignmentCenter;
-        s.translatesAutoresizingMaskIntoConstraints = NO;
-        [c.view addSubview:s];
-        [NSLayoutConstraint activateConstraints:@[
-            [s.centerXAnchor constraintEqualToAnchor:c.view.centerXAnchor],
-            [s.topAnchor constraintEqualToAnchor:c.view.safeAreaLayoutGuide.topAnchor constant:24],
-            [s.widthAnchor constraintLessThanOrEqualToAnchor:c.view.widthAnchor constant:-32],
-        ]];
-        c.sheetPresentationController.detents = @[ UISheetPresentationControllerDetent.mediumDetent ];
-        n.sheet = c;
-        [g_vc presentViewController:c animated:NO completion:nil];
-    } else if (!open && n.sheet) {
-        [n.sheet dismissViewControllerAnimated:NO completion:nil];
-        [n.view removeFromSuperview];
-        n.sheet = nil;
-    }
-}
-
-// A tone's UIKit colour: the system's semantic colours, so light and dark follow the device.
 static UIColor* tone_colour(NSString* tone) {
     NSDictionary<NSString*, UIColor*>* by = @{
         @"canvas" : UIColor.systemBackgroundColor,
@@ -310,105 +292,172 @@ static CGFloat step(NSString* z) {
     return by[z] ? by[z].doubleValue : 8;
 }
 
-static void padded(UIView* v, NSString* side, NSString* z) {
-    if (![v isKindOfClass:[UIStackView class]]) {
-        if ([v isKindOfClass:[UIButton class]]) {
-            UIButtonConfiguration* c = ((UIButton*)v).configuration ?: [UIButtonConfiguration plainButtonConfiguration];
-            ((UIButton*)v).configuration = c;
-        }
-        return;
-    }
-    UIStackView* s = (UIStackView*)v;
+static void padded(SpikeNode* n, int code, NSString* z) {
+    if (![n.view isKindOfClass:[UIStackView class]]) return;
+    UIStackView* s = (UIStackView*)n.view;
     s.layoutMarginsRelativeArrangement = YES;
     NSDirectionalEdgeInsets m = s.directionalLayoutMargins;
     CGFloat p = step(z);
-    if ([side isEqualToString:@"pad-start"]) m.leading = p;
-    if ([side isEqualToString:@"pad-end"]) m.trailing = p;
-    if ([side isEqualToString:@"pad-top"]) m.top = p;
-    if ([side isEqualToString:@"pad-bottom"]) m.bottom = p;
+    if (code == AVRA_FACT_pad_start) m.leading = p;
+    if (code == AVRA_FACT_pad_end) m.trailing = p;
+    if (code == AVRA_FACT_pad_top) m.top = p;
+    if (code == AVRA_FACT_pad_bottom) m.bottom = p;
     s.directionalLayoutMargins = m;
 }
 
-// A role record: what a class word named, drawn natively.
-static void role_set(SpikeNode* n, NSString* op, NSString* value) {
+static void progressed(SpikeNode* n) {
+    if ([n.control isKindOfClass:[UIProgressView class]]) ((UIProgressView*)n.control).progress = n.max > 0 ? n.amount / n.max : 0;
+    if ([n.control isKindOfClass:[UISlider class]]) {
+        ((UISlider*)n.control).maximumValue = n.max;
+        ((UISlider*)n.control).value = n.amount;
+    }
+}
+
+// A dialog stands as a sheet over the page while it is open.
+static void dialog_shown(SpikeNode* n, BOOL open) {
+    if (open && !n.sheet) {
+        UIViewController* c = [UIViewController new];
+        c.view.backgroundColor = UIColor.systemBackgroundColor;
+        UIStackView* s = (UIStackView*)n.view;
+        s.alignment = UIStackViewAlignmentCenter;
+        s.translatesAutoresizingMaskIntoConstraints = NO;
+        [c.view addSubview:s];
+        [NSLayoutConstraint activateConstraints:@[
+            [s.centerXAnchor constraintEqualToAnchor:c.view.centerXAnchor],
+            [s.topAnchor constraintEqualToAnchor:c.view.safeAreaLayoutGuide.topAnchor constant:24],
+            [s.widthAnchor constraintLessThanOrEqualToAnchor:c.view.widthAnchor constant:-32],
+        ]];
+        c.sheetPresentationController.detents = @[ UISheetPresentationControllerDetent.mediumDetent ];
+        n.sheet = c;
+        [g_vc presentViewController:c animated:NO completion:nil];
+    } else if (!open && n.sheet) {
+        [n.sheet dismissViewControllerAnimated:NO completion:nil];
+        [n.view removeFromSuperview];
+        n.sheet = nil;
+    }
+}
+
+// The theme's mode: the device's own, or the one the program holds.
+static void moded(NSString* mode) {
+    UIUserInterfaceStyle s = [mode isEqualToString:@"dark"] ? UIUserInterfaceStyleDark : [mode isEqualToString:@"light"] ? UIUserInterfaceStyleLight : UIUserInterfaceStyleUnspecified;
+    g_vc.view.window.overrideUserInterfaceStyle = s;
+}
+
+// One fact, by its code. A fact under an interaction is the host's control
+// state to draw, and is carried only.
+static void fact_set(SpikeNode* n, int code, NSString* under, NSString* kind, NSString* value) {
+    if (![under isEqualToString:@"-"]) { [g_unused addObject:[NSString stringWithFormat:@"fact %d under %@", code, under]]; return; }
+    BOOL on = [kind isEqualToString:@"f"] && [value isEqualToString:@"1"];
     UIView* v = n.view;
-    if ([op isEqualToString:@"dir"] && [v isKindOfClass:[UIStackView class]]) {
-        BOOL row = [value isEqualToString:@"row"];
-        ((UIStackView*)v).axis = row ? UILayoutConstraintAxisHorizontal : UILayoutConstraintAxisVertical;
-        ((UIStackView*)v).alignment = row ? UIStackViewAlignmentCenter : UIStackViewAlignmentLeading;
-    } else if ([op isEqualToString:@"tone"]) {
+    switch (code) {
+    case AVRA_FACT_words: worded(n, value); break;
+    case AVRA_FACT_label:
+        if (is_any(n, @[ @"card", @"fieldset", @"dialog", @"column", @"surface", @"form", @"list", @"item", @"row", @"alert" ])) titled(n, value);
+        else worded(n, value);
+        break;
+    case AVRA_FACT_rank:
+        if (n.label) n.label.font = [UIFont preferredFontForTextStyle:value.integerValue <= 1 ? UIFontTextStyleLargeTitle : value.integerValue == 2 ? UIFontTextStyleTitle2 : UIFontTextStyleTitle3];
+        break;
+    case AVRA_FACT_value:
+        if ([n.control isKindOfClass:[UITextField class]]) ((UITextField*)n.control).text = value;
+        break;
+    case AVRA_FACT_amount: n.amount = value.doubleValue; progressed(n); break;
+    case AVRA_FACT_max: n.max = value.doubleValue; progressed(n); break;
+    case AVRA_FACT_placeholder:
+        if ([n.control isKindOfClass:[UITextField class]]) ((UITextField*)n.control).placeholder = value;
+        break;
+    case AVRA_FACT_disabled:
+        if ([n.control isKindOfClass:[UIControl class]]) ((UIControl*)n.control).enabled = !on;
+        break;
+    case AVRA_FACT_checked:
+        if ([n.control isKindOfClass:[UISwitch class]]) ((UISwitch*)n.control).on = on;
+        break;
+    case AVRA_FACT_masked:
+        if ([n.control isKindOfClass:[UITextField class]]) ((UITextField*)n.control).secureTextEntry = on;
+        break;
+    case AVRA_FACT_open: dialog_shown(n, on); break;
+    case AVRA_FACT_name: (n.control ?: v).accessibilityLabel = value; break;
+    case AVRA_FACT_title:
+        if (!n.control && !n.label) titled(n, value);
+        else [g_unused addObject:@"fact title on a control"];
+        break;
+    case AVRA_FACT_fill: {
         UIColor* c = tone_colour(value);
-        if (!c) { [g_unused addObject:[NSString stringWithFormat:@"tone %@", value]]; return; }
         v.backgroundColor = c;
-        if ([v isKindOfClass:[UIButton class]]) {
-            UIButton* b = (UIButton*)v;
+        if ([n.control isKindOfClass:[UIButton class]]) {
+            UIButton* b = (UIButton*)n.control;
             UIButtonConfiguration* cfg = [UIButtonConfiguration plainButtonConfiguration];
             cfg.contentInsets = NSDirectionalEdgeInsetsMake(6, 12, 6, 12);
             cfg.title = [b titleForState:UIControlStateNormal];
             b.configuration = cfg;
         }
-    } else if ([op isEqualToString:@"ink"]) {
+        break;
+    }
+    case AVRA_FACT_ink: {
         UIColor* c = ink_colour(value);
-        if (!c) { [g_unused addObject:[NSString stringWithFormat:@"ink %@", value]]; return; }
-        if ([v isKindOfClass:[UILabel class]]) ((UILabel*)v).textColor = c;
-        else if ([v isKindOfClass:[UIButton class]]) [(UIButton*)v setTitleColor:c forState:UIControlStateNormal];
         n.ink = c;
-    } else if ([op isEqualToString:@"radius"]) {
+        if (n.label) n.label.textColor = c;
+        if ([n.control isKindOfClass:[UIButton class]]) [(UIButton*)n.control setTitleColor:c forState:UIControlStateNormal];
+        break;
+    }
+    case AVRA_FACT_radius: {
         NSDictionary<NSString*, NSNumber*>* by = @{ @"xs" : @4, @"s" : @6, @"m" : @10, @"l" : @16, @"xl" : @24 };
         v.layer.cornerRadius = by[value] ? by[value].doubleValue : 8;
         v.layer.cornerCurve = kCACornerCurveContinuous;
         v.clipsToBounds = YES;
-    } else if ([op isEqualToString:@"gap"] && [v isKindOfClass:[UIStackView class]]) {
-        ((UIStackView*)v).spacing = step(value);
-    } else if ([op hasPrefix:@"pad-"]) {
-        padded(v, op, value);
+        break;
     }
-}
-
-static void attr_set(SpikeNode* n, NSString* name, NSString* value) {
-    UIView* v = n.view;
-    if ([name isEqualToString:@"class"]) {
-    } else if ([name isEqualToString:@"aria-label"]) {
-        v.accessibilityLabel = value;
-    } else if ([name isEqualToString:@"type"] && [n.prim isEqualToString:@"field"]) {
-        if ([value isEqualToString:@"checkbox"]) {
-            UISwitch* s = [UISwitch new];
-            s.tag = n.nid;
-            [s addTarget:g_target action:@selector(flipped:) forControlEvents:UIControlEventValueChanged];
-            s.accessibilityIdentifier = v.accessibilityIdentifier;
-            s.isAccessibilityElement = YES;
-            s.accessibilityLabel = v.accessibilityLabel;
-            n.prim = @"checkbox";
-            n.view = s;
+    case AVRA_FACT_gap:
+        if ([v isKindOfClass:[UIStackView class]]) ((UIStackView*)v).spacing = step(value);
+        break;
+    case AVRA_FACT_pad_start: case AVRA_FACT_pad_end: case AVRA_FACT_pad_top: case AVRA_FACT_pad_bottom: padded(n, code, value); break;
+    case AVRA_FACT_direction:
+        if ([v isKindOfClass:[UIStackView class]]) {
+            BOOL row = [value isEqualToString:@"row"];
+            ((UIStackView*)v).axis = row ? UILayoutConstraintAxisHorizontal : UILayoutConstraintAxisVertical;
+            ((UIStackView*)v).alignment = row ? UIStackViewAlignmentCenter : UIStackViewAlignmentLeading;
         }
-    } else if ([name isEqualToString:@"type"]) {
-    } else if ([name isEqualToString:@"placeholder"] && [v isKindOfClass:[UITextField class]]) {
-        ((UITextField*)v).placeholder = value;
-    } else if ([name isEqualToString:@"disabled"] && [v isKindOfClass:[UIControl class]]) {
-        ((UIControl*)v).enabled = NO;
-    } else if ([name isEqualToString:@"checked"] && [v isKindOfClass:[UISwitch class]]) {
-        ((UISwitch*)v).on = YES;
-    } else if ([name isEqualToString:@"max"]) {
-        n.max = value.doubleValue;
-    } else if ([name isEqualToString:@"value"]) {
-        if ([v isKindOfClass:[UITextField class]]) ((UITextField*)v).text = value;
-        if ([v isKindOfClass:[UIProgressView class]]) ((UIProgressView*)v).progress = n.max > 0 ? value.doubleValue / n.max : 0;
-    } else if ([name isEqualToString:@"open"]) {
-        dialog_shown(n, YES);
-    } else if ([name isEqualToString:@"hidden"]) {
-        v.hidden = YES;
-    } else {
-        [g_unused addObject:[NSString stringWithFormat:@"attr %@", name]];
+        break;
+    case AVRA_FACT_mode: moded(value); break;
+    default: [g_unused addObject:[NSString stringWithFormat:@"fact %d", code]];
     }
 }
 
-static void attr_dropped(SpikeNode* n, NSString* name) {
-    UIView* v = n.view;
-    if ([name isEqualToString:@"disabled"] && [v isKindOfClass:[UIControl class]]) ((UIControl*)v).enabled = YES;
-    else if ([name isEqualToString:@"checked"] && [v isKindOfClass:[UISwitch class]]) ((UISwitch*)v).on = NO;
-    else if ([name isEqualToString:@"open"]) dialog_shown(n, NO);
-    else if ([name isEqualToString:@"hidden"]) v.hidden = NO;
-    else [g_unused addObject:[NSString stringWithFormat:@"dropattr %@", name]];
+// A fact gone: the control as it stands without it.
+static void fact_dropped(SpikeNode* n, int code) {
+    switch (code) {
+    case AVRA_FACT_disabled:
+        if ([n.control isKindOfClass:[UIControl class]]) ((UIControl*)n.control).enabled = YES;
+        break;
+    case AVRA_FACT_checked:
+        if ([n.control isKindOfClass:[UISwitch class]]) ((UISwitch*)n.control).on = NO;
+        break;
+    case AVRA_FACT_open: dialog_shown(n, NO); break;
+    case AVRA_FACT_fill: n.view.backgroundColor = nil; break;
+    case AVRA_FACT_value:
+        if ([n.control isKindOfClass:[UITextField class]]) ((UITextField*)n.control).text = @"";
+        break;
+    default: [g_unused addObject:[NSString stringWithFormat:@"drop %d", code]];
+    }
+}
+
+static void placed(SpikeNode* n, NSInteger parent, NSInteger after) {
+    if (!n) return;
+    n.parent = parent;
+    if (is(n, @"dialog")) return;
+    SpikeNode* holder = g_nodes[@(parent)];
+    UIStackView* into = holder ? (UIStackView*)holder.view : g_root;
+    if (![into isKindOfClass:[UIStackView class]] || (holder && holder.control)) {
+        [g_unused addObject:[NSString stringWithFormat:@"a child placed in %@", holder.prim]];
+        return;
+    }
+    [n.view removeFromSuperview];
+    NSUInteger at = holder.title ? 1 : 0;
+    if (after) {
+        NSUInteger i = [into.arrangedSubviews indexOfObject:g_nodes[@(after)].view];
+        at = i == NSNotFound ? into.arrangedSubviews.count : i + 1;
+    }
+    [into insertArrangedSubview:n.view atIndex:at];
 }
 
 static NSString* rest(NSArray<NSString*>* w, NSUInteger from) {
@@ -425,12 +474,13 @@ static void applied(NSString* frame) {
         if ([op isEqualToString:@"create"]) {
             SpikeNode* m = [SpikeNode new];
             m.nid = nid;
-            m.prim = prim_of(w[2]) ?: @"unknown";
-            m.view = made_view(w[2], prim_of(w[2]), nid);
+            m.prim = w[2];
+            made(m);
             g_nodes[@(nid)] = m;
-        } else if ([op isEqualToString:@"text"]) {
-            n.words = rest(w, 2);
-            if (n.parent || n.view.superview) run_shown(n);
+        } else if ([op isEqualToString:@"fact"] && w.count >= 5) {
+            fact_set(n, w[2].intValue, w[3], w[4], rest(w, 5));
+        } else if ([op isEqualToString:@"drop"]) {
+            fact_dropped(n, w[2].intValue);
         } else if ([op isEqualToString:@"place"]) {
             placed(n, w[2].integerValue, w[3].integerValue);
         } else if ([op isEqualToString:@"remove"]) {
@@ -438,23 +488,9 @@ static void applied(NSString* frame) {
             [n.view removeFromSuperview];
             [g_nodes removeObjectForKey:@(nid)];
         } else if ([op isEqualToString:@"listen"]) {
-            NSString* prim = w.count > 3 ? w[3] : @"";
-            if ([prim isEqualToString:@"button"] || [prim isEqualToString:@"link"]) n.seat = w[2].integerValue;
-            else if ([prim isEqualToString:@"dialog"]) n.seat = w[2].integerValue;
+            if ([w[3] isEqualToString:@"button"] || [w[3] isEqualToString:@"link"] || [w[3] isEqualToString:@"dialog"]) n.seat = w[2].integerValue;
             else n.said_seat = w[2].integerValue;
-        } else if ([op isEqualToString:@"attr"]) {
-            attr_set(n, w[2], rest(w, 3));
-        } else if ([op isEqualToString:@"dropattr"]) {
-            attr_dropped(n, w[2]);
-        } else if ([op isEqualToString:@"prop"]) {
-            if ([w[2] isEqualToString:@"checked"] && [n.view isKindOfClass:[UISwitch class]]) ((UISwitch*)n.view).on = [w[3] isEqualToString:@"true"];
-            else attr_set(n, w[2], rest(w, 3));
-        } else if ([@[ @"dir", @"tone", @"ink", @"radius", @"gap", @"pad-start", @"pad-end", @"pad-top", @"pad-bottom" ] containsObject:op]) {
-            role_set(n, op, w[2]);
-        } else if ([op isEqualToString:@"call"]) {
-            if ([w[2] isEqualToString:@"showModal"] || [w[2] isEqualToString:@"show"]) dialog_shown(n, YES);
-            else if ([w[2] isEqualToString:@"close"]) dialog_shown(n, NO);
-            else [g_unused addObject:[NSString stringWithFormat:@"call %@", w[2]]];
+        } else if ([op isEqualToString:@"unlisten"]) {
         } else {
             [g_unused addObject:op];
         }
