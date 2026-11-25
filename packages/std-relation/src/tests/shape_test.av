@@ -89,31 +89,10 @@ fn same(a: Descriptor, b: Descriptor?) -> bool {
     a.hash == d.hash &&
         a.format == d.format &&
         a.tagged == d.tagged &&
-        a.slots.length == d.slots.length &&
-        (0..a.slots.length).all((i: int) -> a.slots[i] == d.slots[i]) &&
+        a.slots == d.slots &&
         a.name == d.name &&
         a.scoped == d.scoped &&
-        a.reached.length == d.reached.length &&
-        (0..a.reached.length).all((i: int) -> same_reach(a.reached[i], d.reached[i]))
-}
-
-fn same_reach(a: ShapeReach, b: ShapeReach) -> bool {
-    a.name == b.name &&
-        a.shape == b.shape &&
-        form_word(a.form) == form_word(b.form) &&
-        a.slots.length == b.slots.length &&
-        (0..a.slots.length).all((i: int) -> a.slots[i] == b.slots[i])
-}
-
-fn form_word(f: Form) -> string {
-    match f {
-        .Unsaid -> "unsaid",
-        .Record -> "record",
-        .Variants -> "variants",
-        .Over -> "over",
-        .Dense -> "dense",
-        .Coded(hash, scoped, tagged) -> "coded ${hash} ${scoped} ${tagged}",
-    }
+        a.reached == d.reached
 }
 
 fn reach(name: string, shape: int, form: Form, slots: List<ShapeSlot>) -> ShapeReach {
@@ -194,7 +173,7 @@ spec "std/relation — a descriptor survives its spelling" {
                 d!.name == "" &&
                 !d!.scoped &&
                 d!.slots.length == 1 &&
-                same_reach(d!.reached[0], ShapeReach { name: "Inner", shape: 5 })
+                d!.reached[0] == ShapeReach { name: "Inner", shape: 5 }
         }
         then "a reader of this build judges it by the fingerprints as before" {
             let theirs = descriptor_unspelled("avra.shape.1|8|3|0|2|i|Inner|0|n|int|0|1|Inner|5")!
@@ -378,23 +357,17 @@ spec "std/relation — a coded type describes itself" {
             d.name == "Holder" &&
                 d.scoped &&
                 d.reached.length == 2 &&
-                same_reach(
-                    d.reached[0],
-                    reach(
-                        "Flat",
-                        d.reached[0].shape,
-                        Form.Record,
-                        [slot("a", "int"), slot("b", "string")],
-                    ),
+                d.reached[0] == reach(
+                    "Flat",
+                    d.reached[0].shape,
+                    Form.Record,
+                    [slot("a", "int"), slot("b", "string")],
                 ) &&
-                same_reach(
-                    d.reached[1],
-                    reach(
-                        "Carried",
-                        d.reached[1].shape,
-                        Form.Coded(Carried.codec_shape(), false, false),
-                        [slot("n", "int")],
-                    ),
+                d.reached[1] == reach(
+                    "Carried",
+                    d.reached[1].shape,
+                    Form.Coded(Carried.codec_shape(), false, false),
+                    [slot("n", "int")],
                 )
         }
         then "an enum that reaches itself is named for itself, never reached" {

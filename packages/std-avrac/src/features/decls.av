@@ -3426,7 +3426,7 @@ impl Decls {
     /// member for each one the trait leaves to its impls.
     fn implements_at(recv: TypeId, g: DeclId, args: List<TypeId>) -> bool {
         match self.types.shape_of(recv) {
-            .Var(d, j, _) -> self.bound_name(d, j) == self.decl(g).name && same_types(self.bound_args(d, j), args),
+            .Var(d, j, _) -> self.bound_name(d, j) == self.decl(g).name && self.bound_args(d, j) == args,
             _ -> self.implemented_at(recv, g, [recv].concat(args)),
         }
     }
@@ -3453,7 +3453,7 @@ impl Decls {
         let from = if self.is_static_of(m) { 0 } else { 1 }
         let n = wanted.params.length
         sig.params.length == n &&
-            same_types(sig.params.slice(from, n), wanted.params.slice(from, n)) &&
+            sig.params.slice(from, n) == wanted.params.slice(from, n) &&
             same_type(sig.ret, wanted.ret)
     }
 
@@ -3617,6 +3617,7 @@ fn declared_body(store: SyntaxArena, m: StmtId) -> ExprId? {
 /// compared by FILE AND SPAN rather than by identity, because a
 /// template's refusal carries the template's own place and two walks
 /// of it mint two `Loc` values saying the same thing.
+// LICENSED compiler.trait_family: a voice’s absent help and label read as empty, and its place by `placed`
 fn same_voice(a: Diag, b: Diag) -> bool {
     a.kind == b.kind &&
         a.message == b.message &&
@@ -3625,6 +3626,7 @@ fn same_voice(a: Diag, b: Diag) -> bool {
         same_place(a.primary.loc, b.primary.loc)
 }
 
+// LICENSED compiler.trait_family: two places agree by `placed`, which ignores what a place does not hold
 fn same_place(a: Loc?, b: Loc?) -> bool {
     if a == null || b == null { return a == null && b == null }
     placed(a!, b!)
@@ -3659,11 +3661,6 @@ export fn implements_kind(k: DeclKind) -> bool {
         .Record or .Enum or .CollectEnum or .Named or .Builtin -> true,
         .Fn or .Alias or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const or .Collect or .State -> false,
     }
-}
-
-/// Two type lists naming the same types, place by place.
-fn same_types(a: List<TypeId>, b: List<TypeId>) -> bool {
-    a.length == b.length && [j for j, t in a if !same_type(t, b[j])].is_empty()
 }
 
 /// Whether a declaration of this kind is an impl block.
