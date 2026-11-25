@@ -3801,7 +3801,18 @@ left is ceremony and one silent hole.
 - **A5 — an upper-case text verb in `@std/text`.**
   `Example: "db".upper() == "DB"`.
   Today: none; `@std/config` keeps a private ASCII `shouted`.
-  `Callsite:` the env source's variable names.
+  `Callsite:` the env source's variable names, and `wisp tree settings`'s
+  variant names (`tools/src/settings/projected.av`'s `titled`).
+- **A6 — an imported component's static call.**
+  `Example: use conf.{Outer}` then `let fs = Outer.fields()` or
+  `match Outer.load() { … }`.
+  Today: `` `Outer` takes no head value — name it at a statement`` (and
+  `expected BREAK` at a `match`): an imported component's name is a
+  block word, so `Outer.` opens an instance. The same call in the
+  declaring module checks clean (probed on C3's compiler, `62f2a454`).
+  `Callsite:` `tools/src/settings/declared.av`'s `projected` and `loaded`,
+  which exist only so the command can reach `Settings.fields()`,
+  `.variables()` and `.load()`.
 
 ### Interim record — the storyboard's asks
 
