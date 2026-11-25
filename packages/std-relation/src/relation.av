@@ -1171,10 +1171,10 @@ fn localized(t: Type) -> bool { content(t).any(marked(it, "local")) }
 
 /// The STORED row: the stable columns alone, what a record read back from
 /// disk can honestly hold. A `@local` column is this process's own, so a
-/// stored row has none to read. EXPORTED ALWAYS, like `key_record`'s own
-/// below: `Type` carries no flag saying whether `t` itself is exported, and
-/// a private relation makes this unreachable anyway, while a plugin's own
-/// exported relation needs `decoded`'s answer nameable outside its package.
+/// stored row has none to read. Exported exactly where `t` is, as
+/// `key_record`'s own below: a plugin's exported relation needs `decoded`'s
+/// answer nameable outside its package, and a private relation's stays its
+/// module's.
 fn stored_record(t: Type) -> List<Decls> {
     if !localized(t) { return [] }
     let fields = [quote { type _ = { ${f.name}: ${f.ty} } } for f in stable(t)]
@@ -1182,7 +1182,7 @@ fn stored_record(t: Type) -> List<Decls> {
         lacking_all(
             t,
             [f for f in content(t) if marked(f, "local")],
-            quote { export type ${t}Stored = { ..${fields} } },
+            if t.exported { quote { export type ${t}Stored = { ..${fields} } } } else { quote { type ${t}Stored = { ..${fields} } } },
         ),
     ]
 }
@@ -1200,12 +1200,14 @@ fn lacking_all(t: Type, local: List<Field>, row: Decls) -> Decls {
 }
 
 /// The key record: the `@key` fields as a value to hold, hash and look
-/// up by — exported always, `by_key`'s own argument nameable the same way.
+/// up by — exported where `t` is, `by_key`'s own argument nameable the same way.
 fn key_record(t: Type) -> List<Decls> {
     let keys = key_fields(t)
     if keys.is_empty() { return [] }
     let fields = [quote { type _ = { ${f.name}: ${f.ty} } } for f in keys]
-    [quote { export type ${t}Key = { ..${fields} } }]
+    [
+        if t.exported { quote { export type ${t}Key = { ..${fields} } } } else { quote { type ${t}Key = { ..${fields} } } },
+    ]
 }
 
 /// The key's parts concatenated left to right, one string built with no list.
