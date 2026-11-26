@@ -258,14 +258,14 @@ type StoredBody = { store: SyntaxArena, typed: TypedBody }
 /// item `at` of `file`: in the bodies it declares, then in the statements it runs where its file is
 /// an entry. A body that didn't parse refuses nothing.
 fn item_refusals(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemRefusals {
-    if !item_judged(engine, file, at) { return refusals_made(engine, file, at) }
+    if !item_judged(engine, file, at) { return ItemRefusals { rows: [] } }
     refusals_seen(item_view(engine, file, at))
 }
 
 /// What `item_refusals` answers through the item's `view`, made the first time it is asked.
 fn refusals_seen(view: ItemView) -> ItemRefusals {
     let held? = view.refusals.get() else {
-        let made = refusals_made(view.engine, view.file, view.at)
+        let made = refusals_made(view)
         view.refusals.set(made)
         return made
     }
@@ -273,11 +273,14 @@ fn refusals_seen(view: ItemView) -> ItemRefusals {
 }
 
 /// What `item_refusals` answers, made.
-fn refusals_made(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemRefusals {
+fn refusals_made(view: ItemView) -> ItemRefusals {
+    let engine = view.engine
+    let file = view.file
+    let at = view.at
     if !item_judged(engine, file, at) { return ItemRefusals { rows: [] } }
-    let item = read_item(engine, file, at)
+    let item = view.item
     if !item.store.refusals().is_empty() { return ItemRefusals { rows: [] } }
-    let bodies = [StoredBody { store: item.store, typed: b } for b in item_bodies(engine, file, at, item)]
+    let bodies = [StoredBody { store: item.store, typed: b } for b in bodies_seen(view)]
         .concat(
             [StoredBody {
                 store: b.item.store,
@@ -2866,10 +2869,7 @@ fn projection_refused(a: List<string>) -> Voice { seeks_unprojected(a[0]) }
 /// so they meet by their start).
 fn unknowable_walks(view: ItemView) -> List<Found> {
     let seated = flatten([unknowable_words(r) for r in refused_seen(view)])
-    seated
-        .concat(
-            [w for w in empty_walks(view.engine, view.file, view.at) if !seated.any(it.at?.lo == w.at?.lo)],
-        )
+    seated.concat([w for w in empty_walks(view) if !seated.any(it.at?.lo == w.at?.lo)])
 }
 
 fn unknowable_words(r: RefusedSeat) -> List<Found> {

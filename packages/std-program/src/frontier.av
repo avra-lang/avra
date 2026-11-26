@@ -13,6 +13,7 @@
 //! before a fork or a delta it can't read: repeat work, never a wrong answer. Every file is named
 //! by the hash of its octets and holds columns of numbers, so checking it lies within its file
 //! costs a few comparisons a column, and no answer is ever read through a pointer it holds.
+use settings.{program_settings}
 use @std.meta.{derive}
 use answer_record.{
     ContentHash,
@@ -1051,7 +1052,7 @@ fn change_of(state: Frontier?, held: List<HeldEntry>, stale: List<int>) -> Front
     let lost? = lost_from(s, change, cut) else { return null }
     let stale_now = marked(change.stale, extent)
     let unreached = [at for at in 0..extent if lost[at] && !stale_now[at] && change.stands_at(at)]
-    if whole_walk_checked() != null { whole_walk_held(change, stale_now, unreached) }
+    if program_settings().debug.frontier_walk_check != null { whole_walk_held(change, stale_now, unreached) }
     change with { stale: change.stale.concat(unreached) }
 }
 
@@ -1238,14 +1239,11 @@ fn whole_walk_held(change: FrontierChange, stale_now: List<bool>, unreached: Lis
 /// `message` appended to the file `AVRA_FRONTIER_WALK_CHECK` names, where it names one: a save that
 /// traps after its process answered says so where a gate can read it.
 fn walk_trip_kept(message: string) {
-    let to = whole_walk_checked() ?? ""
+    let to = program_settings().debug.frontier_walk_check ?? ""
     if to == "" || to == "1" { return }
     // LICENSED input.debug_flag: a trip is said where the flag says, never read by an answer
     let _ = append_bytes(to, "${message}\n".bytes()) catch ""
 }
-
-// LICENSED input.debug_flag: a debug flag is the process's own, not an input
-once fn whole_walk_checked() -> string? { env("AVRA_FRONTIER_WALK_CHECK") }
 
 /// At each place below `extent`, one more than where `places` holds it, zero where it doesn't.
 fn indexed_at(places: List<int>, extent: int) -> List<int> {

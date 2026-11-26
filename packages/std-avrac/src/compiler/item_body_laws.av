@@ -225,14 +225,14 @@ type Deferral = { stmt: StmtId, body: ExprId, errs: bool }
 /// Every breach in the written item `at` of `file`, in node order. An item that didn't parse breaks
 /// nothing.
 fn item_breaches(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemBreaches {
-    if !item_held(engine, file, at) { return breaches_made(engine, file, at) }
+    if !item_held(engine, file, at) { return ItemBreaches { rows: [] } }
     breaches_seen(item_view(engine, file, at))
 }
 
 /// What `item_breaches` answers through the item's `view`, made the first time it is asked.
 fn breaches_seen(view: ItemView) -> ItemBreaches {
     let held? = view.breaches.get() else {
-        let made = breaches_made(view.engine, view.file, view.at)
+        let made = breaches_made(view)
         view.breaches.set(made)
         return made
     }
@@ -240,9 +240,12 @@ fn breaches_seen(view: ItemView) -> ItemBreaches {
 }
 
 /// What `item_breaches` answers, made.
-fn breaches_made(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemBreaches {
+fn breaches_made(view: ItemView) -> ItemBreaches {
+    let engine = view.engine
+    let file = view.file
+    let at = view.at
     if !item_held(engine, file, at) { return ItemBreaches { rows: [] } }
-    let item = read_item(engine, file, at)
+    let item = view.item
     if !item.store.refusals().is_empty() { return ItemBreaches { rows: [] } }
     let store = item.store
     let deferrals = [d! for s in store.stmt_ids() for d in [deferral(store, s)] if d != null]

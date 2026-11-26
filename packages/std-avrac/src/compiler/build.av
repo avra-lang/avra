@@ -145,8 +145,13 @@ fn feature_tries(shrinking: List<string>) -> List<List<string>> {
 /// THE FUNCTIONS ARE NUMBERED BY USE, after the size passes: a call spells
 /// its callee's index in as many bytes as the index needs, and the runtime's
 /// rows — a push, a release, a slot read — are what a program calls most.
+/// THE DATA STANDS WHOLE: packing it cuts a segment at every run of zeros, each
+/// with a header of its own, and a module is carried compressed, where the zeros
+/// cost next to nothing and the headers do not. An optimizer with no word for
+/// skipping a pass packs.
 fn wasm_opt_tries(linked: string, shrunk: string) -> List<List<string>> {
-    feature_tries(["-Oz", "--reorder-functions", linked, "-o", shrunk])
+    let shrinking = ["-Oz", "--reorder-functions", linked, "-o", shrunk]
+    feature_tries(["--skip-pass=memory-packing"].concat(shrinking)).concat(feature_tries(shrinking))
 }
 
 /// THE FALLBACK FOR A HOST THAT CANNOT SUSPEND A STACK: the same module with

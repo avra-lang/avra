@@ -60,6 +60,7 @@
 #include <time.h>
 #include <unistd.h>
 #include "avra_box.h"
+#include "avra_settings.h"
 // THE SLABS (below, beside `fresh`) need a reserved address range, which a wasm module has no way to
 // ask for: there the small blocks stay malloc's. `-DAVRA_SLABS=0` builds a host runtime without them,
 // the control a measurement of them runs against.
@@ -702,7 +703,7 @@ static void acc_report(void) {
     intptr_t slide = image_slide();
 #ifdef AVRA_CENSUS
     if (g_sites_census) {
-        const char* top = getenv("AVRA_CENSUS_TOP");
+        const char* top = getenv(AVRA_SET_CENSUS_TOP);
         report_made("copy", g_copy_sites, top ? (int)avra_number(top, 10) : 12, slide);
         report_made("append", g_append_sites, 16, slide);
         report_made("push", g_push_sites, 16, slide);
@@ -713,19 +714,19 @@ static void acc_report(void) {
         report_made("insist", g_insist_sites, top ? (int)avra_number(top, 10) : 20, slide);
         report_made("retain", g_retain_sites, top ? (int)avra_number(top, 10) : 20, slide);
         report_labelled_sites("typed", g_type_at_sites, top ? (int)avra_number(top, 10) : 30, slide);
-        const char* rows_top = getenv("AVRA_CENSUS_ROWS_TOP");
+        const char* rows_top = getenv(AVRA_SET_CENSUS_ROWS_TOP);
         report_labelled_sites("rowcall", g_row_sites, rows_top ? (int)avra_number(rows_top, 10) : 30, slide);
         report_made("streq", g_streq_sites, top ? (int)avra_number(top, 10) : 30, slide);
         report_made("empty-open", g_empty_open_sites, top ? (int)avra_number(top, 10) : 30, slide);
         report_pairs("move", g_move_pairs, SITE_PAIRS, slide);
         report_pairs("reuse", g_reuse_pairs, SITE_PAIRS, slide);
     }
-    const char* types_top = getenv("AVRA_CENSUS_TYPES_TOP");
+    const char* types_top = getenv(AVRA_SET_CENSUS_TYPES_TOP);
     report_types(types_top ? (int)avra_number(types_top, 10) : 40);
     report_sizes();
     report_deaths(slide);
 #endif
-    const char* wanted = getenv("AVRA_MEM_SITES");
+    const char* wanted = getenv(AVRA_SET_MEM_SITES);
     int limit = wanted ? (int)avra_number(wanted, 10) : 24;
     for (int shown = 0; shown < limit; shown++) {
         Site* top = NULL;
@@ -744,9 +745,9 @@ static void acc_report(void) {
     // AVRA_MEM_SITE=<unslid hex> replays that one site's sample
     // whatever its count; without it, every site whose sample never
     // balanced
-    const char* asked = getenv("AVRA_MEM_SITE");
+    const char* asked = getenv(AVRA_SET_MEM_SITE);
     uintptr_t asked_at = asked ? (uintptr_t)avra_number(asked, 16) + (uintptr_t)slide : 0;
-    if (getenv("AVRA_RC_GUARD")) {
+    if (avra_set_rc_guard()) {
         int replayed = 0;
         for (int i = 0; i < SITES && replayed < 6; i++) {
             Site* st = &g_sites[i];
@@ -782,22 +783,22 @@ int64_t avra_pool_free_bytes(void);
 __attribute__((constructor))
 static void acc_settled(void) {
 #if AVRA_INSTRUMENTS
-    g_acc_on = getenv("AVRA_MEM_STATS") != NULL;
+    g_acc_on = avra_set_mem_stats();
 #endif
     g_acc_pid = acc_process();
     if (g_acc_on) atexit(acc_report);
-    const char* dump = getenv("AVRA_MEM_DUMP_AT");
+    const char* dump = getenv(AVRA_SET_MEM_DUMP_AT);
     if (g_acc_on && dump && *dump) g_dump_at = (int64_t)avra_number(dump, 10) << 20;
-    const char* wide = getenv("AVRA_MEM_WIDE");
+    const char* wide = getenv(AVRA_SET_MEM_WIDE);
     if (wide && *wide) g_wide_cells = (int64_t)avra_number(wide, 10);
 #if AVRA_MEASURES_MEMORY
-    const char* ceiling = getenv("AVRA_MEM_CEILING_MB");
+    const char* ceiling = getenv(AVRA_SET_MEM_CEILING_MB);
     if (ceiling && *ceiling) g_mem_ceiling = (int64_t)avra_number(ceiling, 10) << 20;
     int64_t first_look = avra_pool_free_bytes();
     g_mem_next = first_look < g_mem_ceiling ? first_look : g_mem_ceiling;
 #endif
-    CENSUS(g_sites_census = getenv("AVRA_CENSUS_SITES") != NULL);
-    CENSUS(g_deaths_on = getenv("AVRA_CENSUS_DEATHS") != NULL);
+    CENSUS(g_sites_census = avra_set_census_sites());
+    CENSUS(g_deaths_on = avra_set_census_deaths());
 }
 
 static inline int accounting(void) { return g_acc_on; }
@@ -1584,8 +1585,8 @@ int avra_rc_guard_on = 0;
 // Settling it here keeps that path a load, an add and a store.
 __attribute__((constructor))
 static void rc_guard_init(void) {
-    avra_rc_guard_on = getenv("AVRA_RC_GUARD") != NULL;
-    const char* budget = getenv("AVRA_RC_LOG_BUDGET");
+    avra_rc_guard_on = avra_set_rc_guard();
+    const char* budget = getenv(AVRA_SET_RC_LOG_BUDGET);
     if (budget) g_log_budget = (size_t)avra_number(budget, 10);
 }
 #endif
@@ -1902,7 +1903,7 @@ char avra_case_path[128] = {0};
 // Under AVRA_TRAP_TRACE, the stack a trap stood on, one frame a line, to stderr.
 static void trap_traced(void) {
 #ifndef __wasm__
-    if (!getenv("AVRA_TRAP_TRACE")) return;
+    if (!avra_set_trap_trace()) return;
     void* frames[64];
     backtrace_symbols_fd(frames, backtrace(frames, 64), 2);
 #endif
@@ -3017,7 +3018,7 @@ static int g_alias_log = 0;
 
 __attribute__((constructor))
 static void alias_log_init(void) {
-    g_alias_log = getenv("AVRA_ALIAS_LOG") != NULL;
+    g_alias_log = avra_set_alias_log();
 }
 #else
 enum { g_alias_log = 0 };
@@ -3363,7 +3364,7 @@ __attribute__((constructor(101)))
 static void hash_seeded(void) {
     uint64_t w[4];
 #if AVRA_INSTRUMENTS
-    const char* pinned = getenv("AVRA_HASH_SEED");
+    const char* pinned = getenv(AVRA_SET_HASH_SEED);
 #else
     const char* pinned = NULL;
 #endif
@@ -3557,7 +3558,7 @@ static void map_stats_report(void) {
 __attribute__((constructor))
 static void map_stats_settled(void) {
 #if AVRA_INSTRUMENTS
-    g_map_stats = getenv("AVRA_MAP_STATS") != NULL;
+    g_map_stats = avra_set_map_stats();
 #endif
     if (g_map_stats) atexit(map_stats_report);
 }
@@ -6097,18 +6098,29 @@ void avra_eputs(const char* s) {
     fflush(stderr);
 }
 
+static int g_debug_lines = 0;
+static int g_qtrace_lines = 0;
+
+// Settled at load: a malformed switch stops the program there, and a
+// line's row is a flag read.
+__attribute__((constructor))
+static void trace_lines_settled(void) {
+    g_debug_lines = avra_set_debug();
+    g_qtrace_lines = avra_set_qtrace();
+}
+
 // A DEBUG LINE, only under AVRA_DEBUG — the compiler's own instrument.
 // A no-op otherwise, so a probe can stand in any pass without breaking
 // the self-compile, whose environment has no such flag.
 void avra_debug(const char* s) {
-    if (s && getenv("AVRA_DEBUG")) fputs(s, stderr);
+    if (s && g_debug_lines) fputs(s, stderr);
 }
 
 // A QUERY-KERNEL TRACE LINE, only under AVRA_QTRACE — its own flag,
 // separate from AVRA_DEBUG, for a gen-N vs gen-N+1 differential
 // (CLAUDE.md, Working discipline). A no-op otherwise.
 void avra_qtrace(const char* s) {
-    if (s && getenv("AVRA_QTRACE")) fputs(s, stderr);
+    if (s && g_qtrace_lines) fputs(s, stderr);
 }
 
 /* `embed` is answered by the compiler, at compile time, under the

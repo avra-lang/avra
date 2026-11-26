@@ -28,14 +28,10 @@ fn arms_disagreeing(view: ItemView) -> List<Found> {
     let item = view.item
     if !item.store.refusals().is_empty() { return [] }
     let void_tails = [b! for s in item.stmts for b in void_fn_bodies(view.engine, view.file, item, s) if b != null]
-        .concat(void_method_bodies(view.engine, view.file, view.at, item))
+        .concat(void_method_bodies(view))
     let text = item_under(view.engine, view.file, view.at).text
     flatten([arm_refused(r, text) for r in refused_seen(view)])
-        .concat(
-            flatten(
-                [void_disagreeing(t, void_tails, text) for t in item_typed_nodes(view.engine, view.file, view.at, item)],
-            ),
-        )
+        .concat(flatten([void_disagreeing(t, void_tails, text) for t in typed_seen(view)]))
 }
 
 /// The arm the body's typing refused as `r`, against the anchor it names; none for any other refusal.
@@ -96,18 +92,13 @@ fn void_fn_bodies(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, 
     if sig.answer.spelled() == "void" { [parts.body] } else { [] }
 }
 
-/// The bodies of the methods and statics each impl the written item `at` of `file` writes answers
-/// `void` from; with `whens`, only those that end on a `when`.
-fn void_method_bodies(
-    engine: QueryEngine,
-    file: SourceFileAddress,
-    at: ItemId,
-    item: ReadItem,
-    whens: bool = false,
-) -> List<ExprId> {
-    [p!.body for a in impls_at(engine, file, at) for s in impl_fns(item, a) for p in [item.store.fn_parts(s)] if p != null &&
+/// The bodies of the methods and statics each impl the item `view` shows writes answers `void`
+/// from; with `whens`, only those that end on a `when`.
+fn void_method_bodies(view: ItemView, whens: bool = false) -> List<ExprId> {
+    let item = view.item
+    [p!.body for a in impls_seen(view) for s in impl_fns(item, a) for p in [item.store.fn_parts(s)] if p != null &&
         (!whens || ends_on_when(item.store, p!.body)) &&
-        answers_void(method_signature(engine, a, p!.name))]
+        answers_void(method_signature(view.engine, a, p!.name))]
 }
 
 /// Whether the body `body` of `store` ends on a `when`: read at its tail alone, so a fn that ends on
@@ -245,15 +236,11 @@ fn whens_disagreeing(view: ItemView) -> List<Found> {
     let refused = refused_in(view.engine, view.file, view.at)
     let apart = refused.any(it.seat is .WhenApart)
     let void_tails = [b! for s in item.stmts if ends_on_when(item.store, item.store.fn_parts(s)?.body) for b in void_fn_bodies(view.engine, view.file, item, s) if b != null]
-        .concat(void_method_bodies(view.engine, view.file, view.at, item, true))
+        .concat(void_method_bodies(view, true))
     if !apart && void_tails.is_empty() { return [] }
     let text = item_under(view.engine, view.file, view.at).text
     flatten([when_arm_refused(r, text) for r in refused])
-        .concat(
-            flatten(
-                [void_whens_disagreeing(t, void_tails, text) for t in item_typed_nodes(view.engine, view.file, view.at, item)],
-            ),
-        )
+        .concat(flatten([void_whens_disagreeing(t, void_tails, text) for t in typed_seen(view)]))
 }
 
 /// Each arm of a `when` a `void` fn, method or static ends on, among `void_tails` and in `t`, that

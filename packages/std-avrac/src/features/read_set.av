@@ -178,7 +178,7 @@ fn here(f: dyn ReadFacts, e: ExprId) -> List<StatePlace> { some_list(f.named_pla
 fn reads_of(f: dyn ReadFacts, root: ExprId) -> List<StatePlace> {
     let own = here(f, root)
     if f.tree().expr_is_closure(root) { return own }
-    flatten([reads_of(f, k) for k in f.tree().reached(root)]).concat(own)
+    flatten([reads_of(f, k) for k in f.tree().ran_with(root)]).concat(own)
 }
 
 /// The places the calls in the subtree reach: a callee this compile can
@@ -192,7 +192,7 @@ fn calls_of(f: dyn ReadFacts, root: ExprId) -> List<StatePlace> {
     if store.expr_is_closure(root) { return [] }
     let called = if store.expr_is_call(root) { f.callee_places(root) } else { [] }
     let method = if applies_method(store, root) { [StatePlace.Unknown] } else { [] }
-    called.concat(method).concat(flatten([calls_of(f, k) for k in store.reached(root)]))
+    called.concat(method).concat(flatten([calls_of(f, k) for k in store.ran_with(root)]))
 }
 
 /// Whether the expression APPLIES a method on a runtime value — the
@@ -270,7 +270,7 @@ fn structural_reads(
     let own = here(f, root).concat(if f.reads_receiver(root) { [StatePlace.Unknown] } else { [] })
     if store.expr_is_closure(root) { return own }
     let inner = skip.concat(sited_heads(store, root, answered))
-    flatten([structural_reads(f, k, inner, answered) for k in store.reached(root)]).concat(own)
+    flatten([structural_reads(f, k, inner, answered) for k in store.ran_with(root)]).concat(own)
 }
 
 /// The places the calls in the subtree reach that no reading answers for: a
@@ -288,7 +288,7 @@ fn structural_calls(
     let inner = skip.concat(sited_heads(store, root, answered))
     called
         .concat(method)
-        .concat(flatten([structural_calls(f, k, inner, answered) for k in store.reached(root)]))
+        .concat(flatten([structural_calls(f, k, inner, answered) for k in store.ran_with(root)]))
 }
 
 /// Every place the subtree reads at paint time that a reading does NOT

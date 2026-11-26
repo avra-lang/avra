@@ -36,14 +36,14 @@ type Owned = { key: string, name: string, generic: bool, stmt: StmtId }
 /// Every method the written item `at` of `file` declares whose name an earlier one of its type
 /// already took.
 fn item_methods_taken(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemTaken {
-    if !item_held(engine, file, at) { return methods_taken_made(engine, file, at) }
+    if !item_held(engine, file, at) { return ItemTaken { rows: [] } }
     methods_taken_seen(item_view(engine, file, at))
 }
 
 /// What `item_methods_taken` answers through the item's `view`, made the first time it is asked.
 fn methods_taken_seen(view: ItemView) -> ItemTaken {
     let held? = view.methods_taken.get() else {
-        let made = methods_taken_made(view.engine, view.file, view.at)
+        let made = methods_taken_made(view)
         view.methods_taken.set(made)
         return made
     }
@@ -51,9 +51,12 @@ fn methods_taken_seen(view: ItemView) -> ItemTaken {
 }
 
 /// What `item_methods_taken` answers, made.
-fn methods_taken_made(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemTaken {
+fn methods_taken_made(view: ItemView) -> ItemTaken {
+    let engine = view.engine
+    let file = view.file
+    let at = view.at
     if !item_held(engine, file, at) { return ItemTaken { rows: [] } }
-    let item = read_item(engine, file, at)
+    let item = view.item
     let blocks = [s for s in item.stmts if item.store.impl_parts(s) != null]
     if blocks.is_empty() { return ItemTaken { rows: [] } }
     let filed = item_written_impls(engine, file, at)

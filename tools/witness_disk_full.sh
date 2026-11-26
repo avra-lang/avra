@@ -1,4 +1,5 @@
 #!/bin/sh
+# tool-witness: owed by wrong-answers — an heir whose save runs out of disk leaves `saving.unfinished` saying only "did not finish", so the next build says neither the cause nor the free bytes
 # A BUILD THAT FILLS ITS DISK SAYS SO, AND WHERE. A package is built on a small filesystem with less
 # room each time, so the build runs out at its object, then at its link; then its store alone stands
 # on a small one, saved by the build itself and by its heir. Every one of them must end with words that
@@ -45,9 +46,10 @@ said "$w/out" 'this link writes' "the link"
 echo "witness_disk_full: a link that does not fit — named, with the disk's free bytes"
 umount "$w/disk"
 
-# the store: only its directory small, saved by the build (`AVRA_STORE_KEPT_HERE`) and by its heir
+# the store: only its directory small (8 KB: what a build of this package saves is ~32 KB, an heir ~9 KB), saved by
+# the build (`AVRA_STORE_KEPT_HERE`) and by its heir
 package "$w/store"
-mkdir -p "$w/store/.avra-cache/tapes" && mount -t tmpfs -o size=64k tmpfs "$w/store/.avra-cache/tapes" || fail "the small store did not mount"
+mkdir -p "$w/store/.avra-cache/tapes" && mount -t tmpfs -o size=8k tmpfs "$w/store/.avra-cache/tapes" || fail "the small store did not mount"
 AVRA_STORE_KEPT_HERE=1 AVRA_CACHE_DIR="$w/machine" "$avra" build "$w/store" >"$w/out" 2>&1 || fail "the build failed for a store it couldn't save"
 said "$w/out" "wasn't saved" "the store saved by the build"
 echo "witness_disk_full: a store the build cannot save — said, with the file and the disk's free bytes"
@@ -59,5 +61,9 @@ until [ -s "$w/store/.avra-cache/tapes/saving.unfinished" ] && ! grep -q 'did no
 env -u AVRA_STORE_KEPT_HERE AVRA_CACHE_DIR="$w/machine" "$avra" build "$w/store" >"$w/out" 2>&1
 said "$w/out" "save of .* failed: .*No space left" "the store saved by the heir"
 echo "witness_disk_full: a store the heir cannot save — said by the next build, with the cause and the disk's free bytes"
-umount "$w/store/.avra-cache/tapes"
+# the heir that saved last may still hold the small disk a moment: let it go, then the mount
+tries=0
+until umount "$w/store/.avra-cache/tapes" 2>/dev/null || [ $tries -ge 50 ]; do sleep 0.2; tries=$((tries + 1)); done
+[ $tries -lt 50 ] || fail "the small store's disk was still held 10 s after the last build — an heir outlived it"
 find "$w" -delete
+exit 0

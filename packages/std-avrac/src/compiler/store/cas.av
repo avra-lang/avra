@@ -9,6 +9,7 @@
 //! IT NEVER OUTGROWS ITS CEILING: a process that put a blob trims the store as it settles,
 //! the least recently read first, to `AVRA_CAS_MAX_MB` (two gigabytes by default). A read
 //! marks its blob's time, so the time a blob carries is when it was last of use.
+use core.settings.{avrac_settings}
 use @std.io.{
     env,
     touch,
@@ -41,8 +42,7 @@ once fn cas_prefix() -> string { from_codepoint(1) + "avra-cas:" }
 /// THE MACHINE'S CACHE: `AVRA_CACHE_DIR`, else `$HOME/.avra/cache` — where every worktree's
 /// shared rows and blobs stand.
 export fn machine_cache() -> string? {
-    // LICENSED input.debug_flag: where the shared store lives is the machine's, never an input of what is built
-    let moved? = env("AVRA_CACHE_DIR") else {
+    let moved? = avrac_settings().user.cache_dir else {
         // LICENSED input.debug_flag: where the shared store lives is the machine's, never an input of what is built
         let home? = env("HOME") else { return null }
         return joined_path(home, ".avra/cache")
@@ -217,8 +217,7 @@ export fn cas_collect(live: List<string>) -> CasReport {
 }
 
 fn cas_limit() -> int {
-    // LICENSED input.debug_flag: the shared store's own ceiling, never an input of what is built
-    let mb = parse_int(env("AVRA_CAS_MAX_MB") ?? "") ?? CAS_MB_KEPT
+    let mb = avrac_settings().user.cas_max_mb ?? CAS_MB_KEPT
     mb * 1048576
 }
 
@@ -243,9 +242,7 @@ export fn cas_fitted() {
 
 /// Whether a blob is past `AVRA_CAS_MAX_AGE_DAYS`, by the file's wall-clock time.
 fn past_age(b: Blob) -> bool {
-    // LICENSED input.debug_flag: the shared store's own age limit, never an input of what is built
-    let raw? = env("AVRA_CAS_MAX_AGE_DAYS") else { return false }
-    let days? = parse_int(raw) else { return false }
+    let days? = avrac_settings().user.cas_max_age_days else { return false }
     // LICENSED input.store_clock: the age limit reads the wall clock, never an input of what is built
     days > 0 && wall_secs() - b.at > days * 86400
 }

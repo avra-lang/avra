@@ -1,15 +1,21 @@
 # THE WASM KEEPERS' SHARED FLOOR, sourced once `wasm_who` names the voice and `here`, `tree` and `avra`
-# are set. A missing tool skips, spoken, with status 0; a skip never hides a failed build.
+# are set. A missing tool REFUSES, spoken: a keeper that ran nothing is no pass, and a skip never hides
+# a failed build.
 #
 #   say <words>        a line from the keeper, on stderr
-#   skip <words>       say them, ended "skipped", and leave with 0
-#   needs <tool>…      skip unless every tool is on PATH, naming the package that carries it
+#   skip <words>       say them and REFUSE, exit 1: a keeper that ran nothing is no pass. On a machine of
+#                      your own, WASM_SKIP=<why> stands it down, said, exit 0; CI never honours it
+#   needs <tool>…      skip (refuse) unless every tool is on PATH, naming the package that carries it
 #   needs_wasm_clang   skip unless clang targets wasm32
 #   needs_compiler     skip unless `avra` is a compiler
 #   wasm_ready         the archive and package objects, current (lib/wasm_ready.sh)
 . "$here/lib/wasm_ready.sh"
 say() { echo "$wasm_who: $*" >&2; }
-skip() { say "$* — skipped"; exit 0; }
+skip() {
+    if [ -n "${WASM_SKIP:-}" ] && [ -z "${CI:-}" ]; then say "$* — skipped (WASM_SKIP: $WASM_SKIP)"; exit 0; fi
+    say "$* — REFUSED: a keeper that ran nothing is no pass; give this machine what it lacks, or WASM_SKIP=<why> stands it down on a machine of your own (never on CI)"
+    exit 1
+}
 needs() {
     for wasm_tool in "$@"; do
         command -v "$wasm_tool" >/dev/null 2>&1 && continue

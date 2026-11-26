@@ -329,9 +329,16 @@ fn impls_seen(view: ItemView) -> List<ImplAt> {
 fn item_typed_nodes(engine: QueryEngine, file: SourceFileAddress, at: ItemId, item: ReadItem) -> List<
     TypedNodes,
 > {
-    let view = item_view(engine, file, at)
+    typed_held(item_view(engine, file, at), engine, item)
+}
+
+/// The nodes the item `view` shows holds, typed.
+fn typed_seen(view: ItemView) -> List<TypedNodes> { typed_held(view, view.engine, view.item) }
+
+/// The nodes `view`'s item, read as `item` in `engine`, holds, typed: held on the view once made.
+fn typed_held(view: ItemView, engine: QueryEngine, item: ReadItem) -> List<TypedNodes> {
     let made? = view.typed.get() else {
-        let typed = typed_nodes_read(engine, file, at, item)
+        let typed = typed_nodes_read(engine, view.file, view.at, item, impls_seen(view))
         view.typed.set(typed)
         return typed
     }
@@ -347,7 +354,15 @@ export fn item_stated_bodies(
     at: ItemId,
     item: ReadItem,
 ) -> List<StatedBody> {
-    let view = item_view(engine, file, at)
+    stated_held(item_view(engine, file, at), engine, item)
+}
+
+/// Every body the item `view` shows holds, typed, each beside the statement that declares it.
+fn stated_seen(view: ItemView) -> List<StatedBody> { stated_held(view, view.engine, view.item) }
+
+/// Every body `view`'s item, read as `item` in `engine`, holds, typed, each beside the statement that
+/// declares it: held on the view once taken.
+fn stated_held(view: ItemView, engine: QueryEngine, item: ReadItem) -> List<StatedBody> {
     let mine? = view.stated.get() else { return stated_taken(engine, view, item).bodies }
     mine.bodies
 }
@@ -355,7 +370,7 @@ export fn item_stated_bodies(
 /// The bodies of `view`'s item for its reader, held on it from here on: another reader's, its reads
 /// made again, else gathered.
 fn stated_taken(engine: QueryEngine, view: ItemView, item: ReadItem) -> StatedHeld {
-    let held = stated_elsewhere(engine, view) ?? stated_gathered(engine, view.file, view.at, item)
+    let held = stated_elsewhere(engine, view) ?? stated_gathered(engine, view, item)
     view.stated.set(held)
     held
 }
@@ -370,10 +385,10 @@ fn stated_elsewhere(engine: QueryEngine, view: ItemView) -> StatedHeld? {
     other
 }
 
-/// The bodies of the item `at` of `file`, gathered with the reads the gathering makes, which are the
+/// The bodies of the item `view` shows, gathered with the reads the gathering makes, which are the
 /// asker's already.
-fn stated_gathered(engine: QueryEngine, file: SourceFileAddress, at: ItemId, item: ReadItem) -> StatedHeld {
+fn stated_gathered(engine: QueryEngine, view: ItemView, item: ReadItem) -> StatedHeld {
     engine.reads_begun()
-    let bodies = stated_bodies_read(engine, file, at, item)
+    let bodies = stated_bodies_read(engine, view.file, item, impls_seen(view))
     StatedHeld { bodies: bodies, reads: engine.reads_gathered() }
 }

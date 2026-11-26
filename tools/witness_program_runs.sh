@@ -1,4 +1,5 @@
 #!/bin/sh
+# tool-witness: run by the gate's witness-b slice (tools/gate.sh), never twice
 # `tapes --ran` RUNS EVERY PROGRAM TEST THE SUITES RUN, AND OUTLIVES WHAT THEY DO. Over the packages
 # under tools/program-runs/, each copied cold:
 #   nested — a program test laid out as a package of its own (avra.toml, src/main.av and its

@@ -1,0 +1,32 @@
+// proves: a composition whose component judges its instances is placed as any
+// other, since its `check` runs where the program is compiled and never at
+// paint time: a write to its state patches the one text that reads it. Under
+// `AVRA_EXACT=check` every answer is compared with the full paint's.
+use @std.meta.{Diagnostic}
+use @std.ui.components.{column, text}
+use @std.ui.realize.dom.live.{live}
+
+state title: string = "a"
+state beside: int = 1
+
+component judged(label: string) {
+    state n: int = 0
+    text "${self.label}: ${self.n}"
+    fn check() -> List<Diagnostic> { [] }
+}
+
+fn view() -> column {
+    column {
+        judged title
+        text "beside ${beside}"
+    }
+}
+
+let page = live()
+let first = page.paint_view(view())
+title = "b"
+let after_prop = page.paint_view(view())
+beside = 2
+let after_beside = page.paint_view(view())
+println("${first.length > 0} ${after_prop.length > 0} ${after_beside.length > 0}")
+println(page.exact_counts())

@@ -1,6 +1,7 @@
 //! `tree/named.av` — A CONTROL ALWAYS HAS A NAME. A control's words are its accessible name, so
 //! one drawn with none is a control nobody can find by what it does: the paint that draws it says
 //! so (`nameless`), once a paint, under `avra dev`.
+use @std.meta.{Diagnostic, refuse_as}
 use tree.node.{Node, Prim}
 
 /// Whether a primitive is a control a reader finds by its words. A REGISTRY over `Prim`: every
@@ -18,7 +19,22 @@ export fn nameless(n: Node) -> List<string> {
     own.concat([nameless(c) for c in n.children].flatten())
 }
 
+/// What a control written with `label` owes its reader: nothing when the label has words. A
+/// control's `check`, so an empty label is refused where it is written.
+export fn control_named(control: string, label: string) -> List<Diagnostic> {
+    if label != "" { return [] }
+    [written_unnamed(control)]
+}
+
 // ── voices ──────────────────────────────────────────────────────
+
+/// A control written with an empty label.
+fn written_unnamed(control: string) -> Diagnostic {
+    refuse_as(
+        "control.named",
+        "a `${control}`'s label is its name, so it is never empty: write the words that say what it does",
+    )
+}
 
 /// A control drawn with no words.
 fn drawn_unnamed(control: string) -> string {

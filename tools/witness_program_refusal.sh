@@ -1,4 +1,5 @@
 #!/bin/sh
+# tool-witness: run by the gate's refusal-* slice (tools/gate.sh), never twice
 # THE PROGRAM LAYER REFUSES WHAT THE OLD PATH REFUSED, IN ITS WORDS, AND BUILDS WHAT IT BUILT. The old
 # path's last word on each case is frozen in the case: it was asked once, at cbc437f4, before its
 # deletion, and every expectation below is what it said then (a case it never judged holds the
@@ -159,6 +160,9 @@ for name in $names; do
     why="$cases_dir/$name/differs.why"
     judged "$name" 2>"$tmp/$name.why"
     judgement=$?
+    # A CASE'S COPY AND ITS MACHINE STORE GO THE MOMENT IT IS JUDGED: a store is 120 MB to 1 GB, so
+    # kept to the run's end they made a runner's disk grow with the count of cases
+    find "$tmp/$name" "$tmp/$name.machine" -delete 2>/dev/null || :
     if [ "$judgement" = 3 ]; then
         if [ -e "$why" ]; then
             echo "$name: holds now, yet differs.why says it differs — take the file away"

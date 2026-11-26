@@ -46,14 +46,14 @@ type ItemBroken = { rows: List<BrokenAt> }
 
 /// Every way an `@unbroken` fn the written item `at` of `file` declares lets another task run.
 fn item_broken(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemBroken {
-    if !item_held(engine, file, at) { return broken_made(engine, file, at) }
+    if !item_held(engine, file, at) { return ItemBroken { rows: [] } }
     broken_seen(item_view(engine, file, at))
 }
 
 /// What `item_broken` answers through the item's `view`, made the first time it is asked.
 fn broken_seen(view: ItemView) -> ItemBroken {
     let held? = view.broken.get() else {
-        let made = broken_made(view.engine, view.file, view.at)
+        let made = broken_made(view)
         view.broken.set(made)
         return made
     }
@@ -61,15 +61,18 @@ fn broken_seen(view: ItemView) -> ItemBroken {
 }
 
 /// What `item_broken` answers, made.
-fn broken_made(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemBroken {
+fn broken_made(view: ItemView) -> ItemBroken {
+    let engine = view.engine
+    let file = view.file
+    let at = view.at
     if !item_held(engine, file, at) { return ItemBroken { rows: [] } }
-    let item = read_item(engine, file, at)
+    let item = view.item
     if !item.store.refusals().is_empty() { return ItemBroken { rows: [] } }
     let fns = flatten(
         [fn_broken(engine, file, p!.name) for s in item.stmts for p in [item.store.fn_parts(s)] if p != null && marks_unbroken(engine, file, item.store, s)],
     )
     let methods = flatten(
-        [method_broken(engine, file, a, item.store, s) for a in impls_at(engine, file, at) if a.params.is_empty() for s in impl_fns(item, a) if marks_unbroken(engine, file, item.store, s)],
+        [method_broken(engine, file, a, item.store, s) for a in impls_seen(view) if a.params.is_empty() for s in impl_fns(item, a) if marks_unbroken(engine, file, item.store, s)],
     )
     ItemBroken { rows: fns.concat(methods) }
 }

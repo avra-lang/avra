@@ -1221,7 +1221,9 @@ ui-board:
 # A PAGE'S SERVER RUNS BESIDE IT UNDER `avra dev`: a page package naming
 # `[dev] server` is served with that package's program on one origin, and a
 # save to the server's source is served without a restart (tools/dev_server_check.sh).
-dev-server:
+# `avra dev` serves the page a wasm build makes, so the wasm runtime and package objects come first,
+# as every wasm keeper makes them (tools/lib/wasm_ready.sh)
+dev-server: wasm-runtime wasm-packages
 	@sh tools/bounded.sh 600 sh tools/dev_server_check.sh
 
 # THE BOARD IN A REAL BROWSER: the same module served over an HTTP origin and
@@ -1399,6 +1401,11 @@ pipeline-status:
 # together take half a minute, so a refusal stops on the PR instead of
 # failing a train and every PR riding it. Each is one of KEEPERS, which the
 # train runs whole.
+# THE KEEPERS, ONE A LINE: what the gate's keepers slices deal (tools/gate.sh), read from the groups
+# above, never a second list kept beside them
+keepers-listed:
+	@printf '%s\n' $(KEEPERS)
+
 KEEPERS_STATIC = host-events fingerprints vocab families-left layers libs-self-test speed-note hooks-released cited http-cites externs suites ui-browser-skip ci-invariants ci-verdict pr-watcher pipeline-doc workflows-yaml tail-status vendored-fixture
 .PHONY: compiler compiler-files store-witnesses cache-attacks-w keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b keepers-wasm keepers-static keepers-pr pipeline-doc tail-status pipeline-status ci-invariants ci-verdict pr-watcher
 keepers-static:

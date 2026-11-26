@@ -554,7 +554,7 @@ registry is the idiom engine's spec, written by dogfooding.
   linker, turns a call of the name into a call of the body
   (`hosted_within`).
   AND A SYMBOL IS THE WHOLE LINK'S, so three things are held where the
-  host fn stands (compiler/whole.av's `host_fn_owes`). WHO OPENS IT: a
+  host fn stands (compiler/item_hosts.av's `program_hosts_owed`). WHO OPENS IT: a
   dependency's host fn is the program's export only when the program's
   OWN sources import that package (lower.host_fn_unasked), and a build
   lists each as `host fn: <package> <name>`, fresh or kept. AND A
@@ -1943,8 +1943,8 @@ doctrine it expands.
   that agree hide the one that forks.
 - A `check` HIT ON `.avra-cache` EXAMINES NOTHING, AND A SECOND
   BINARY ON UNCHANGED SOURCE CAN SILENTLY HIT THE FIRST'S ENTRY.
-  `Workspace.checked`/`build_program` key their store by the
-  COMPILER'S OWN BYTES digest (`compiler_print`, compiler/build.av)
+  A check's and a build's kept answers are keyed by the
+  COMPILER'S OWN BYTES digest (`own_print`, cli's commands/disk_host.av)
   beside a `.avra-cache` directory, so building or checking with a
   SECOND binary over the SAME source can read the FIRST binary's
   kept warnings or kept binary outright — a differential build

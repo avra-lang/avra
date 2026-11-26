@@ -1,4 +1,5 @@
 #!/bin/sh
+# tool-witness: run by the gate's needs-* slice (tools/gate.sh), never twice
 # A LAW SKIPPED BY THE KINDS IT NEEDS FINDS NOTHING IT WOULD HAVE FOUND: `law_findings` asks a law of
 # an item only where the item holds a kind the law, each analysis it reads through, and each kind it
 # judges need (`needs`, `through`, `on`), so a kind declared wrong drops a finding without a word.

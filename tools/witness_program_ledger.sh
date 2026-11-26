@@ -1,4 +1,5 @@
 #!/bin/sh
+# tool-witness: run by the gate's witness-b slice (tools/gate.sh), never twice
 # ONLY THE JUDGED PROCESS SPEAKS ITS LEDGER. tools/program-ledger/ is a program whose forked child
 # leaves (`avra_cores_leave`) holding boxes it never freed, while the program frees all it made;
 # built on the program layer and run under AVRA_MEM_STATS=1, it says exactly one "mem: live" line,
