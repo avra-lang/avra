@@ -1,0 +1,19 @@
+//! proves: tasks that each pump a child of their own through one read and take after another, all
+//! at once, each take their own child's bytes whole — a read lands in the reading task's own slot
+use @std.process.{Tool, ProcessError, tool, cmd}
+
+/// What the child `k` said, as its length, and a million more if a neighbour's letter is in it.
+fn pumped(s: Tool, k: int) -> int {
+    match cmd(s, ["-c", "head -c 300000 /dev/zero | tr '\\\\0' ${k}"]).outcome() {
+        .Ok(o) -> o.out.stdout.length + if o.out.stdout.contains("${(k + 1) % 6}") { 1000000 } else { 0 },
+        .Err(_) -> -1,
+    }
+}
+
+fn run() -> Result<string, ProcessError> {
+    let s = tool("sh")?
+    let ts = [spawn pumped(s, k) for k in 0..6]
+    "${[t.await for t in ts].map("${it}").join(",")}"
+}
+
+run() catch e -> "failed"

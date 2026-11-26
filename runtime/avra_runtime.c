@@ -4793,11 +4793,12 @@ int64_t avra_own_pid(void) {
 // THE ONE DOOR THROUGH WHICH FOREIGN BYTES BECOME A VALUE. A package's
 // own C opens files and sockets and answers descriptors; what flows
 // through a descriptor becomes a Bytes here and nowhere else, because
-// only the runtime may mint a managed box. A read lands in ONE scratch
-// and answers a TOKEN — the scratch's generation — that the take must
-// present: a take with a stale token traps, so a read landing between
-// a read and its take (a deferred call is how that happens) is a loud
-// wreck and never a stranger's bytes. The count is the box's length;
+// only the runtime may mint a managed box. A read lands in the READING
+// TASK'S own slot and answers a TOKEN the take must present: tasks that
+// interleave between a read and its take each take their own bytes, and
+// a take of a token that is not the task's last read traps, so a read
+// landing between a read and its take in the same task (a deferred call
+// is how that happens) is a loud wreck and never a stranger's bytes. The count is the box's length;
 // 0 is EOF and needs no take. A write takes a box from an offset and
 // answers what the descriptor accepted; a short count is normal. Both
 // answer -EAGAIN when a nonblocking descriptor has nothing to give or
@@ -4809,7 +4810,6 @@ int64_t avra_own_pid(void) {
 
 enum { FD_SCRATCH = 1 << 20 };
 static char g_fd_buf[FD_SCRATCH];
-static int64_t g_fd_len = 0;
 static int64_t g_fd_gen = 0;
 
 // A take presents a token, and three values are not one: 0 is EOF,
@@ -4825,17 +4825,20 @@ static void trap_take(int64_t token) {
     else if (token < 0)
         avra_fmt(msg, sizeof msg, "a take of an error — `read` answered %lld, not a token", (long long)token);
     else
-        avra_fmt(msg, sizeof msg, "a take of read %lld, but read %lld has landed since", (long long)token, (long long)g_fd_gen);
+        avra_fmt(msg, sizeof msg, "a take of read %lld, but read %lld has landed since", (long long)token, (long long)avra_task_local->landed);
     avra_trap(msg);
     abort();
 }
 
-// Bytes landed in the scratch by whoever produced them: the token the
-// take must present. The runtime's own producers enter through here.
-static int64_t fd_landed(int64_t n) {
-    g_fd_len = n;
-    g_fd_gen++;
-    return g_fd_gen;
+// The `n` bytes at `from` landed in the running task's slot, minted
+// before anything else can run: the token the take must present. The
+// runtime's own producers enter through here.
+static int64_t fd_landed(const void* from, int64_t n) {
+    void* old = avra_task_local->slot[AVRA_SLOT_LANDED];
+    avra_task_local->slot[AVRA_SLOT_LANDED] = (void*)bytes_owned(from, (size_t)n);
+    avra_rc_release(old);
+    avra_task_local->landed = ++g_fd_gen;
+    return avra_task_local->landed;
 }
 
 // Up to `max` bytes (capped at 1 MiB) into the scratch: the token of
@@ -4857,7 +4860,7 @@ void (*avra_fd_drained_hook)(int64_t fd) = NULL;
 
 AvraTaskLocal avra_main_local;
 AvraTaskLocal* avra_task_local = &avra_main_local;
-_Static_assert(AVRA_SLOT_ASKER < AVRA_TASK_SLOTS && AVRA_SLOT_FLOW < AVRA_TASK_SLOTS, "a slot key outside the table");
+_Static_assert(AVRA_SLOT_HEARD < AVRA_SLOT_KEYS && AVRA_SLOT_KEYS <= AVRA_SLOT_LANDED && AVRA_SLOT_LANDED < AVRA_TASK_SLOTS, "a slot key outside the table");
 
 // THE RUNNING TASK'S UNWIND BIT: set where a cancel meets a cancel
 // point, and read after every call that may reach one. A switch saves
@@ -4896,14 +4899,14 @@ static void* slot_retained(void* v) {
 
 // An empty slot answers from a load and a test.
 void* avra_task_slot(int64_t key) {
-    if (__builtin_expect((uint64_t)key >= AVRA_TASK_SLOTS, 0)) slot_refused();
+    if (__builtin_expect((uint64_t)key >= AVRA_SLOT_KEYS, 0)) slot_refused();
     void* v = avra_task_local->slot[key];
     if (!v) return NULL;
     return slot_retained(v);
 }
 
 void avra_task_slot_set(int64_t key, void* v) {
-    if (__builtin_expect((uint64_t)key >= AVRA_TASK_SLOTS, 0)) slot_refused();
+    if (__builtin_expect((uint64_t)key >= AVRA_SLOT_KEYS, 0)) slot_refused();
     void* old = avra_task_local->slot[key];
     avra_rc_retain(v);
     avra_task_local->slot[key] = v;
@@ -5210,7 +5213,7 @@ int64_t avra_ctx_holds(void* heard) {
 
 int64_t avra_fd_read(int64_t fd, int64_t max) {
     if (__builtin_expect(max < 0, 0)) return -EINVAL;
-    if (max == 0) return fd_landed(0);
+    if (max == 0) return fd_landed(g_fd_buf, 0);
     size_t n = max > FD_SCRATCH ? FD_SCRATCH : (size_t)max;
     for (;;) {
         // A DESCRIPTOR MAY BLOCK: stdin, a pipe a program opened itself.
@@ -5219,7 +5222,7 @@ int64_t avra_fd_read(int64_t fd, int64_t max) {
         avra_clock_hold(-1);
         if (got > 0) {
             if ((size_t)got < n && avra_fd_drained_hook) avra_fd_drained_hook(fd);
-            return fd_landed(got);
+            return fd_landed(g_fd_buf, got);
         }
         if (got == 0) return 0;
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -5240,14 +5243,14 @@ int64_t avra_errno_invalid(void) { return EINVAL; }
 // The errno for a wait whose budget ran out — the platform's word.
 int64_t avra_errno_timed_out(void) { return ETIMEDOUT; }
 
-// The bytes a token names, as a fresh box, once: a second take of the
-// same token answers the empty box, and a take of anything that is
-// not the current token traps.
+// The bytes a token names, handed over once: a second take of the same
+// token answers the empty box, and a take of anything that is not the
+// task's last read traps.
 const char* avra_fd_taken(int64_t token) {
-    if (__builtin_expect(token <= 0 || token != g_fd_gen, 0)) trap_take(token);
-    const char* b = bytes_owned(g_fd_buf, (size_t)g_fd_len);
-    g_fd_len = 0;
-    return b;
+    if (__builtin_expect(token <= 0 || token != avra_task_local->landed, 0)) trap_take(token);
+    const char* b = avra_task_local->slot[AVRA_SLOT_LANDED];
+    avra_task_local->slot[AVRA_SLOT_LANDED] = NULL;
+    return b ? b : bytes_owned(g_fd_buf, 0);
 }
 
 // The box's bytes from `from` written as far as the descriptor takes
@@ -6264,9 +6267,9 @@ int64_t avra_io_list(const char* path) {
     // and answers a token whose take is the empty box, which is the
     // first case this had to answer and not the last.
     if (n > FD_SCRATCH) { avra_rc_release((void*)joined); return -E2BIG; }
-    memcpy(g_fd_buf, joined, n);
+    int64_t token = fd_landed(joined, (int64_t)n);
     avra_rc_release((void*)joined);
-    return fd_landed((int64_t)n);
+    return token;
 }
 
 // Every directory along the path made; one already standing is fine,

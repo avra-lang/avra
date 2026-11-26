@@ -25,10 +25,13 @@ extern void (*avra_fd_drained_hook)(int64_t fd);
 // WHAT A TASK CARRIES: a few managed values and its id. The running
 // task's stand behind one pointer; `main`'s are the core's own, so a
 // program that never spawns has them and links no scheduler.
-enum { AVRA_SLOT_ASKER = 0, AVRA_SLOT_FLOW = 1, AVRA_SLOT_CTX = 2, AVRA_SLOT_HEARD = 3, AVRA_TASK_SLOTS = 4 };
+// A program names the first AVRA_SLOT_KEYS; the LANDED slot is the runtime's own: the bytes the
+// task's last descriptor read landed, until its take.
+enum { AVRA_SLOT_ASKER = 0, AVRA_SLOT_FLOW = 1, AVRA_SLOT_CTX = 2, AVRA_SLOT_HEARD = 3, AVRA_SLOT_KEYS = 4, AVRA_SLOT_LANDED = 4, AVRA_TASK_SLOTS = 5 };
 // `clock_asks`: how often the task has read a frozen clock since it
-// last waited; `clock_holds`: the holds on the world it stands in.
-typedef struct { void* slot[AVRA_TASK_SLOTS]; int64_t id; int64_t clock_asks; int64_t clock_holds; } AvraTaskLocal;
+// last waited; `clock_holds`: the holds on the world it stands in;
+// `landed`: the token of the task's last read, 0 before its first.
+typedef struct { void* slot[AVRA_TASK_SLOTS]; int64_t id; int64_t clock_asks; int64_t clock_holds; int64_t landed; } AvraTaskLocal;
 extern AvraTaskLocal avra_main_local __attribute__((visibility("hidden")));
 extern AvraTaskLocal* avra_task_local __attribute__((visibility("hidden")));
 // THE RUNNING TASK'S UNWIND BIT: set where a cancel meets a cancel
