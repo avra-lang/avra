@@ -127,7 +127,7 @@ jobs:
     # a slice's wall budget is tools/gate.sh's own (900 s, an edit-f or edit-g part 1500 s, its verdict OVER, the slice named); the
     # runner's bound stands just past it, so the gate names the slice before the runner kills the job —
     # a job of several slices past the budget of all of them
-    timeout-minutes: ${{ startsWith(matrix.slice, 'jobs-') && 75 || (startsWith(matrix.slice, 'edit-f-') || startsWith(matrix.slice, 'edit-g-')) && 32 || 20 }}
+    timeout-minutes: ${{ startsWith(matrix.slice, 'jobs-') && 75 || (startsWith(matrix.slice, 'edit-f-') || startsWith(matrix.slice, 'edit-g-') || matrix.slice == 'keepers-heavy-1') && 32 || 20 }}
     strategy:
       fail-fast: false
       matrix:
@@ -148,6 +148,29 @@ jobs:
       - name: census compiler
         if: startsWith(matrix.slice, 'cost-')
         run: tar -xzf census/census-${{ needs.seed.outputs.sha8 }}.tar.gz
+      # THE BROWSER LEG'S MACHINE, for a job holding a keeper of KEEPERS_B or KEEPERS_WASM, as checks.yml's
+      # keepers-b job carries it: the browser's host libraries, the pinned Node, Playwright's WebKit (its
+      # cache is main's, which every branch reads) and gdb, which the defects keeper dumps a stall with
+      - name: browser leg wanted
+        id: browser
+        run: |
+          if sh tools/gate.sh jobs | awk -v j="${{ matrix.slice }}" '$1 == j' | grep -qE ' keepers-(b|wasm|tw)'; then echo "wanted=1" >> "$GITHUB_OUTPUT"; fi
+          v=$(sed -n 's/^playwright_version=//p' tools/ui-board/playwright.sh)
+          echo "playwright=$v" >> "$GITHUB_OUTPUT"
+      - if: steps.browser.outputs.wanted == '1'
+        name: browser libraries
+        timeout-minutes: 10
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends gdb $(grep -v '^#' .github/ci/packages-browser.txt | tr '\n' ' ')
+          sh .github/ci/install_node.sh
+      - if: steps.browser.outputs.wanted == '1'
+        uses: actions/cache/restore@v4
+        with:
+          path: build/playwright
+          key: playwright-${{ steps.browser.outputs.playwright }}-webkit-browsers
       # THE SNAPSHOT'S STD ANSWERS FOR cost-laid (tools/cost.sh `laid`), KEPT BESIDE THE BUILDER: the release
       # `gate-builder` carries the landed run's answers, which every gate can read (a cache cannot cross
       # gate/** branches). Laid down, they are judged by the writer's own key — the census compiler's
@@ -165,7 +188,7 @@ jobs:
       # down afresh before every slice after the first. Verdicts and a failing slice's words are kept in
       # gate-kept/, which no slice's tree holds.
       - name: ${{ matrix.slice }}
-        timeout-minutes: ${{ startsWith(matrix.slice, 'jobs-') && 72 || (startsWith(matrix.slice, 'edit-f-') || startsWith(matrix.slice, 'edit-g-')) && 28 || 16 }}
+        timeout-minutes: ${{ startsWith(matrix.slice, 'jobs-') && 72 || (startsWith(matrix.slice, 'edit-f-') || startsWith(matrix.slice, 'edit-g-') || matrix.slice == 'keepers-heavy-1') && 28 || 16 }}
         run: |
           members=$(sh tools/gate.sh jobs | awk -v j="${{ matrix.slice }}" '$1 == j { $1 = ""; print }')
           [ -n "$members" ] || { echo "gate: tools/gate.sh jobs names no job ${{ matrix.slice }}"; exit 1; }

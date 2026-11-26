@@ -28,19 +28,24 @@ packages=""
 base=""
 head=""
 keepers=1
+# a run that names a base, its files or its packages — even none — asks of those alone
+named=0
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --refs)
+            named=1
             [ "$#" -ge 3 ] || { echo "gate_changed: --refs needs <base> <head>" >&2; exit 2; }
             base=$2
             head=$3
             shift 3
             ;;
         --files)
+            named=1
             shift
             while [ "$#" -gt 0 ] && [ "${1#--}" = "$1" ]; do files="$files $1"; shift; done
             ;;
         --packages)
+            named=1
             shift
             while [ "$#" -gt 0 ] && [ "${1#--}" = "$1" ]; do packages="$packages $1"; shift; done
             ;;
@@ -65,8 +70,6 @@ trunk() {
 worked() {
     { git diff --name-only --diff-filter=d "$1" -- '*.av'; git ls-files --others --exclude-standard -- '*.av'; } | sort -u
 }
-named=0
-[ -z "$base$files$packages" ] || named=1
 if [ "$named" = 0 ]; then
     read -r line on <<EOF
 $(trunk)
