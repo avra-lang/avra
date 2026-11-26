@@ -1,5 +1,4 @@
 #!/bin/sh
-# tool-witness: owed by ui-lead — the oracle's cell program reads `Env {}.theme`, and std-ui's Env has only direction and locale
 # A box owes half a solver unit plus half the engine's quantum on every number, even one that
 # shares nothing. WebKit's cell-face seed 3 holds a tree (case 17) whose widths stand 0.009 px
 # apart: it agrees with the term and is refused without it. Skips where WebKit is absent.
