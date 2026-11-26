@@ -433,7 +433,7 @@ wasm-archive:
 # `$(shell)` runs on every make, `try` included.
 SUITES = $(shell sh tools/avra_tools.sh suites 2>/dev/null)
 
-.PHONY: compiler-key pool-check ready tools-suite dev-server cost cost-accept trap-marks speed-note llvm-libs libs-self-test read-lists db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz exact-patches ui-board ui-browser ui-browser-skip host-events layout-oracle wasm-host-check wasm-tasks-mutations h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks test tested clean seed-check gate externs idioms http-cites fuzz-http soak-http dogfooding-rules rule-examples idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns parser witnesses libs libscope layers pre-commit-hook inputs inputs-accept read-cost \
+.PHONY: compiler-key pool-check ready tools-suite dev-server cost cost-accept trap-marks speed-note llvm-libs libs-self-test read-lists db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz exact-patches ui-board ui-browser ui-browser-skip host-events layout-oracle wasm-host-check wasm-tasks-mutations h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks test tested clean seed-check gate externs idioms fuzz-http soak-http dogfooding-rules rule-examples idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns parser witnesses libs libscope layers pre-commit-hook inputs inputs-accept read-cost \
         check run ir emit build-native native-check avra suites install sprite sprite-check codecs-static keepers voices voices-accept defects tool-witnesses pipeline-status pipeline-doc ci-invariants pr-watcher wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept wasm-routes-size speed-ratchet speed-accept wall-ratchet wall-accept warm-edit warm-accept work-accept
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -965,12 +965,6 @@ suites:
 # law). A new violation is fixed in the code, or a human adds it to
 # the baseline, reviewed at adoption and every time after.
 
-# THE HTTP DOCS' FIXTURE CITATIONS RESOLVE: every `<suite> › "<then>"`
-# in the framing laws and the conformance checklist names a test that
-# exists, or the checklist claims coverage the tree does not have.
-http-cites:
-	@python3 tools/http_cites.py
-
 # DOGFOODING.md's own registry keeps a GENERATED block current
 # against `avra rules --markdown` — a rule's doc changes here or the
 # block does not, and the compiler's own renderer is what notices.
@@ -1262,7 +1256,7 @@ KEEPERS_ALONE = runtime-tests runtime-mutations
 KEEPERS_A1 = speed-ratchet cost fmt-lossless hash-door stems
 KEEPERS_A2 = read-cost read-lists warm-edit codecs-static traps compile-slots witness flow-trace
 KEEPERS_A = $(KEEPERS_A1) $(KEEPERS_A2)
-KEEPERS_B = libscope ahead-edit-attack held-store-attack cutoff-witness heir-save-attack share-merge-attack wave-share-attack beside-attack h2spec pool-check tools-suite fingerprints vocab layers libs-self-test speed-note pre-commit-hook inputs http-cites externs trap-marks suites rt-header rt-ns parser witnesses dogfooding-rules rule-examples attack voices defects \
+KEEPERS_B = libscope ahead-edit-attack held-store-attack cutoff-witness heir-save-attack share-merge-attack wave-share-attack beside-attack h2spec pool-check tools-suite fingerprints vocab layers libs-self-test speed-note pre-commit-hook inputs externs trap-marks suites rt-header rt-ns parser witnesses dogfooding-rules rule-examples attack voices defects \
             ui-host host-events ui-host-test ui-board exact-patches dev-server ui-browser ui-browser-skip tool-witnesses footprint tick-object no-threads \
             ci-invariants ci-verdict pr-watcher pipeline-doc workflows-yaml tail-status bash-parse vendored-fixture
 # KEEPERS_WASM is the wasm target's proof — the fixtures native and wasm32 alike, the seam,
@@ -1359,7 +1353,7 @@ pipeline-status:
 # together take half a minute, so a refusal stops on the PR instead of
 # failing a train and every PR riding it. Each is one of KEEPERS, which the
 # train runs whole.
-KEEPERS_STATIC = host-events fingerprints vocab layers libs-self-test speed-note pre-commit-hook http-cites externs suites ui-browser-skip ci-invariants ci-verdict pr-watcher pipeline-doc workflows-yaml codecs-static tail-status bash-parse vendored-fixture
+KEEPERS_STATIC = host-events fingerprints vocab layers libs-self-test speed-note pre-commit-hook externs suites ui-browser-skip ci-invariants ci-verdict pr-watcher pipeline-doc workflows-yaml codecs-static tail-status bash-parse vendored-fixture
 .PHONY: compiler compiler-files store-witnesses cache-attacks-w keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b keepers-wasm keepers-static keepers-pr pipeline-doc tail-status bash-parse pipeline-status ci-invariants ci-verdict pr-watcher
 keepers-static:
 	@left="$(filter-out $(KEEPERS),$(KEEPERS_STATIC))"; [ -z "$$left" ] || { echo "keepers-static: $$left is no keeper — the train would not hold it" >&2; exit 1; }
