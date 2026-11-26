@@ -108,6 +108,7 @@ needs|6|witness_program_needs over every package and refusal witness, dealt in t
 witness-b|5|the witnesses and attacks of witness_b_rows, dealt in turn
 cost-warm|7|make cost, COST_PART=warm: the cli's cold check, then the warm edits (COST_EDITS) dealt in turn, the noop in every part
 keepers-b|3|every keeper of KEEPERS_B no other slice runs, a row each, dealt in turn, the browser's libraries beside it
+keepers-tw|4|tool-witnesses, a share of its witnesses each (TOOL_WITNESS_SHARD), every witness its seconds
 keepers-alone|2|KEEPERS_ALONE, held to a clock and alone on its runner: runtime-tests, and runtime-mutations' part (MUTATION_SHARD)
 EOF
 }
@@ -731,6 +732,11 @@ keepers_run() {
         rows=$((rows + 1))
         t0=$(date +%s)
         if sh tools/bounded.sh "$ROW_SECS" env AVRA_NO_SUPERVISOR_TESTS=1 UI_BROWSER_ENGINES="firefox webkit webkit-iphone" $(keeper_env "$k") ${keeper_via:-} make -s -o avra "$k" >"$out/keeper-$k.log" 2>&1; then
+            # a share of an owed keeper that passes owes nothing here: its line is struck when every share passes
+            if [ -n "${keeper_share:-}" ]; then
+                echo "row keeper-$k OWED $(( $(date +%s) - t0 ))s (share $keeper_share passes; $owed owes the others)" >>"$out/rows"
+                continue
+            fi
             failed=$((failed + 1))
             failures="$failures keeper-$k"
             echo "row keeper-$k FAIL $(( $(date +%s) - t0 ))s (passes, and tools/gate/keepers.owed still owes it — strike its line)" >>"$out/rows"
@@ -768,15 +774,19 @@ part_of() {
         witness-b) rows_dealt witness_b_rows "$2" "$3" ;;
         cost-warm) slice_cost warm "$2/$3" ;;
         keepers-b)
-            names=$(keepers_of KEEPERS_B | dealt "$(($2 - 1))" "$3")
+            names=$(keepers_of KEEPERS_B | grep -vx tool-witnesses | dealt "$(($2 - 1))" "$3")
             [ -n "$names" ] || { judged "keepers-b-named" 1; return; }
             keepers_run $names
+            ;;
+        keepers-tw)
+            export TOOL_WITNESS_SHARD="$(($2 - 1))/$3"
+            keeper_share=$TOOL_WITNESS_SHARD keepers_run tool-witnesses
             ;;
         keepers-alone)
             names=$(keepers_of KEEPERS_ALONE)
             [ -n "$names" ] || { judged "keepers-alone-named" 1; return; }
             export MUTATION_SHARD="$(($2 - 1))/$3"
-            keeper_via="sh tools/memcap.sh 6000" keepers_run $names
+            keeper_share=$MUTATION_SHARD keeper_via="sh tools/memcap.sh 6000" keepers_run $names
             ;;
     esac
 }
