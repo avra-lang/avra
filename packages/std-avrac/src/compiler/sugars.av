@@ -1,4 +1,4 @@
-//! THE SPLICE: a template's runs parsed once, kept for the process by their text, and copied into a
+//! THE SPLICE: a template's runs parsed once, kept for the process by their language and text, and copied into a
 //! store with each hole filled at its seat, a hole holding a template copied in turn. A sugar's
 //! meaning (`means()`, a `Rewrite`) is copied beside the sugar, its holes nodes of the store it
 //! rewrites; a generator's declarations (`Directive.source`) are copied into a store of their own,
@@ -346,16 +346,17 @@ fn misplaced_run(seat: string) -> Filled {
     Filled.Unplaceable("a run holding another arena's nodes stands where ${seat} do")
 }
 
-/// The template's scratch parse, made once.
+/// The template's scratch parse, made once per language: a parse is that language's reading of the text.
 fn scratch(lang: Language, source: string) -> Scratch? {
-    let held: Scratch? = kept().get().get(source)
+    let key = "${lang.identity} ${source}"
+    let held: Scratch? = kept().get().get(key)
     if held != null { return held }
     let p = parse_program(lang, new_source_file("<means>", source), BlockWords {})
     if !p.voices.list.is_empty() { return null }
     let first? = p.stmts.first() else { return null }
     let q? = p.store.answer_of(first) else { return null }
     let made = Scratch { store: p.store, body: q }
-    kept().put(source, made)
+    kept().put(key, made)
     made
 }
 
