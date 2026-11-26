@@ -55,6 +55,7 @@ idioms-cli    the same on cli
 idioms     the same on every other package the diff from <base> touches
 fmt        fmt --check on every .av the diff from <base> changes (tools/fmt_changed.sh); <base> is the program landed last, never a batch's own base
 sound      AVRA_SOUND_CHECK=1 check packages/cli, the memory pass's proof run over the program, 0 defects; AVRA_VERIFY_LLVM=1 build packages/cli, every emitted fn verified
+cost-answers the snapshot's std answers, made once by the census compiler (COST_PART=answers) for every slice that lays them
 cost-cold-a make cost, COST_PART=cold-a: the census compiler (built here by this tree's of generation 2) over tools/cost.baseline's snapshot — build-cli; every count within 0.05% of its row
 cost-cold-b make cost, COST_PART=cold-b: check-program, and the cli's check over an empty store, the store's fill
 cost-laid  make cost, COST_PART=laid: the cli's cold check over the std answers the census compiler makes of the snapshot's std, laid into an empty store
@@ -63,8 +64,6 @@ cost-ledger-cold-b make cost, COST_PART=ledger-cold-b: the same of cold-b's runs
 cost-ledger-warm make cost, COST_PART=ledger-warm: the pass ledger of the cli's cold check and every warm edit, made again uncounted beside cost-warm; asks per moved item
 cost-matrix-check-bare make cost, COST_PART=matrix-check-bare: the warm-edit matrix — every kind of edit and its taking back, met by a warm check of the cli, no std answers laid; each pass's asks per cell a row, each wall said
 cost-matrix-check-laid make cost, COST_PART=matrix-check-laid: the same, the std answers laid beside the compiler
-cost-matrix-build-bare make cost, COST_PART=matrix-build-bare: the same, met by a warm build
-cost-matrix-build-laid make cost, COST_PART=matrix-build-laid: the same, met by a warm build, the std answers laid
 doors-a    test std-json std-task std-validate std-text std-sql std-queue std-time
 doors-b    test std-ui std-http; make ui-host-test and ui-host, std-ui's program tests built and run
 ui-browser the UI board: its wasm claims over the page glue (tools/ui_board.sh), then its claims in headless Firefox (tools/ui_board_browser.sh)
@@ -113,6 +112,8 @@ refusal|8|witness_program_refusal over its cases, dealt in turn
 needs|6|witness_program_needs over every package and refusal witness, dealt in turn
 witness-b|5|the witnesses and attacks of witness_b_rows, dealt in turn
 cost-warm|7|make cost, COST_PART=warm: the cli's cold check, then the warm edits (COST_EDITS) dealt in turn, the noop in every part
+cost-matrix-build-bare|2|make cost, COST_PART=matrix-build-bare: the warm-edit matrix met by a warm build, each part the cold build and a share of the edits (COST_EDITS) dealt in turn
+cost-matrix-build-laid|2|make cost, COST_PART=matrix-build-laid: the same, the std answers laid
 keepers-b|3|every keeper of KEEPERS_B no other slice runs, a row each, dealt in turn, the browser's libraries beside it
 keepers-tw|4|tool-witnesses, a share of its witnesses each (TOOL_WITNESS_SHARD), every witness its seconds
 keepers-alone|2|KEEPERS_ALONE, held to a clock and alone on its runner: runtime-tests, and runtime-mutations' part (MUTATION_SHARD)
@@ -782,6 +783,7 @@ part_of() {
         needs) row needs-witness sh tools/witness_program_needs.sh build/avra $(sh tools/witness_program_needs.sh --cases | dealt "$(($2 - 1))" "$3") ;;
         witness-b) rows_dealt witness_b_rows "$2" "$3" ;;
         cost-warm) slice_cost warm "$2/$3" ;;
+        cost-matrix-build-bare | cost-matrix-build-laid) slice_cost "${1#cost-}" "$2/$3" ;;
         keepers-b)
             names=$(keepers_of KEEPERS_B | grep -vx tool-witnesses | dealt "$(($2 - 1))" "$3")
             [ -n "$names" ] || { judged "keepers-b-named" 1; return; }
@@ -922,11 +924,16 @@ if compiler; then
             ;;
         cost-cold-a) slice_cost cold-a ;;
         cost-cold-b) slice_cost cold-b ;;
+        cost-answers)
+            census_stands || census_made || { judged census 1; return; }
+            row cost-answers env COST_PART=answers COST_COMPILER=build/avra.census sh tools/cost.sh
+            grep -E '^cost: the snapshot.s std answers [0-9]+ s$' "$out/cost-answers.log" | sed 's/^cost: /fact cost /' >>"$out/rows"
+            ;;
         cost-laid) slice_cost laid ;;
         cost-ledger-cold-a) slice_cost ledger-cold-a ;;
         cost-ledger-cold-b) slice_cost ledger-cold-b ;;
         cost-ledger-warm) slice_cost ledger-warm ;;
-        cost-matrix-*) slice_cost "${slice#cost-}" ;;
+        cost-matrix-check-bare | cost-matrix-check-laid) slice_cost "${slice#cost-}" ;;
         *) part_of "${slice%-*}" "${slice##*-}" "$(splits | awk -F'|' -v f="${slice%-*}" '$1 == f { print $2 }')" ;;
     esac
 fi
