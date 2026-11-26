@@ -1,6 +1,6 @@
 #!/bin/sh
 # A box owes half a solver unit plus half the engine's quantum on every number, even one that
-# shares nothing. WebKit's cell-face seed 3 holds a tree (case 17) whose widths stand 0.009 px
+# shares nothing. WebKit's cell-face seed 3 holds a tree whose widths stand 0.009 px
 # apart: it agrees with the term and is refused without it. Skips where WebKit is absent.
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
@@ -23,7 +23,7 @@ saw() {
     exit 1
 }
 with=$(run)
-printf '%s\n' "$with" | grep -q "25 of 25 trees agree" || saw "the term did not make the tree agree (wanted: 25 of 25 trees agree)" "$with"
+printf '%s\n' "$with" | grep -q "32 of 32 trees agree" || saw "the term did not make the tree agree (wanted: 32 of 32 trees agree)" "$with"
 without=$(run --without-own-term 1)
-printf '%s\n' "$without" | grep -q "24 of 25 trees agree" || saw "without the term the tree was not refused (wanted: 24 of 25 trees agree)" "$without"
-echo "layout-oracle own-term self-test: case 17 agrees with the term and is refused without it"
+printf '%s\n' "$without" | grep -q "31 of 32 trees agree" || saw "without the term the tree was not refused (wanted: 31 of 32 trees agree)" "$without"
+echo "layout-oracle own-term self-test: the one tree agrees with the term and is refused without it"
