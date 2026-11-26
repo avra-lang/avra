@@ -159,7 +159,7 @@ const families = [
     name: "worded",
     holds: "a node's words read in their own script's direction, whatever the layout around them, or in the one they state",
     check: `(f) => worded(f).map((e) => { const want = stated(e) ? e.getAttribute("dir") : strong(own(e)); const got = getComputedStyle(e).direction;
-      return want && got !== want ? "\"" + own(e).trim().slice(0, 24) + "\" reads " + got + ", its words are " + want : null; }).filter(Boolean)`,
+      return want && got !== want ? "\\"" + own(e).trim().slice(0, 24) + "\\" reads " + got + ", its words are " + want : null; }).filter(Boolean)`,
   },
   {
     name: "pictured",
