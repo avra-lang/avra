@@ -29,7 +29,7 @@ built() {
         fail "$1: the chunk holding b\$w was not remade: owed $(grep '^Q	owed	' $R/err | tr '\t' ' ' | tr '\n' ';')"
         return
     fi
-    say "$1: printed '$got'${3:+, the wrapper's chunk remade}"
+    say "$1: printed '$got'${3:+, the chunk of the wrapper remade}"
 }
 main '{ r.s.length }'
 built "cold, b borrows its seat" "5 hello" wrapper

@@ -151,6 +151,19 @@ jobs:
             avrac-
           full: ${{ steps.order.outputs.full }}
           rungs: ${{ steps.order.outputs.full == '1' }}
+      # THE TRUNKS, BESIDE THE SNAPSHOT: its checkout holds its own history alone, so a command that asks where
+      # the tree leaves its trunk (tools/gate_changed.sh) finds origin/program and origin/main, fifty deep, and
+      # the snapshot's own line as deep; a trunk that does not fetch is said, and the command runs without it
+      - name: trunk refs
+        timeout-minutes: 5
+        run: |
+          for t in program main; do
+            git fetch -q --depth=50 origin "+refs/heads/$t:refs/remotes/origin/$t" || echo "lane-run: origin/$t did not fetch — the command runs without it"
+          done
+          git fetch -q --deepen=30 origin "$(git rev-parse HEAD)" 2>/dev/null || git fetch -q --deepen=30 2>/dev/null || :
+          for t in program main; do
+            b=$(git merge-base HEAD "origin/$t" 2>/dev/null) && echo "lane-run: origin/$t stands, its merge-base $b" || echo "lane-run: origin/$t names no merge-base within this history"
+          done
       - name: libraries
         timeout-minutes: 15
         run: |

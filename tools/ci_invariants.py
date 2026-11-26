@@ -538,22 +538,27 @@ def check_warm_edit(make_text, bench=None, ratchet=None):
 
 
 def check_ci_image(workflows):
-    """{file: text} -> (refusals, words). The image ci-image.yml pushes is the
-    one every workflow runs in, and a workflow spells it once."""
+    """{file: text} -> (refusals, words). Every image a workflow runs is one
+    ci-image.yml pushes, a workflow spells each plainly once, and an image
+    chosen by an expression names pushed images only."""
     pushed = re.findall(r"^\s*tags:\s*(\S+)\s*$", workflows.get("ci-image.yml", ""), re.M)
-    if len(pushed) != 1:
-        return ["ci-image.yml pushes %d tag(s), not one" % len(pushed)], []
+    if not pushed:
+        return ["ci-image.yml pushes no tag"], []
     refusals, aliases = [], 0
     for name, text in sorted(workflows.items()):
         images = re.findall(r"^\s*image:\s*(\S+)\s*$", text, re.M)
-        refusals += ["%s runs `%s`, not the pushed `%s`" % (name, i, pushed[0]) for i in images if i != pushed[0]]
-        if len(images) > 1:
-            refusals.append("%s spells its image %d times — name it once and alias it (`container: *ci-image`)"
-                            % (name, len(images)))
+        chosen = [i for line in re.findall(r"^\s*image:\s*(\$\{\{.*\}\})\s*$", text, re.M)
+                  for i in re.findall(r"'([^']+)'", line)]
+        refusals += ["%s runs `%s`, which ci-image.yml does not push" % (name, i) for i in images + chosen if i not in pushed]
+        for i in sorted(set(images)):
+            if images.count(i) > 1:
+                refusals.append("%s spells `%s` %d times — name it once and alias it (`container: *ci-image`)"
+                                % (name, i, images.count(i)))
         aliases += len(re.findall(r"^\s*container:\s*\*", text, re.M))
     if refusals:
         return refusals, []
-    return [], ["ci-image: one image (%s), spelled once per workflow, %d alias(es)" % (pushed[0], aliases)]
+    return [], ["ci-image: %d pushed image(s) (%s), each spelled once per workflow, %d alias(es)"
+                % (len(pushed), ", ".join(pushed), aliases)]
 
 
 # Each shape the workflows share: what spelling it again looks like (a line, and the
@@ -992,6 +997,11 @@ rt-header:
     assert check_ci_image(dict(push, **{"a.yml": twice}))[0], "a second spelling must be refused"
     other = once.replace("ci:1", "ci:0")
     assert check_ci_image(dict(push, **{"a.yml": other}))[0], "an image the recipe does not push must be refused"
+    two = {"ci-image.yml": "          tags: ghcr.io/x/ci:1\n          tags: ghcr.io/x/ci:1-b\n"}
+    chose = once + "  c:\n    container:\n      image: ${{ x && 'ghcr.io/x/ci:1-b' || 'ghcr.io/x/ci:1' }}\n"
+    assert check_ci_image(dict(two, **{"a.yml": chose}))[0] == [], check_ci_image(dict(two, **{"a.yml": chose}))
+    stray = chose.replace("ci:1-b'", "ci:9'")
+    assert check_ci_image(dict(two, **{"a.yml": stray}))[0], "an expression naming an image the recipe does not push must be refused"
 
     # ── one-spelling: the home is used; a second spelling is refused, a comment is not one ──
     used = "      - uses: ./.github/actions/speed-note\n      # tools/speed_note.sh lives there\n"
