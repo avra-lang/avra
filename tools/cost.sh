@@ -221,31 +221,35 @@ plain() {
     echo "cost: $name $(($(date +%s) - started)) s"
 }
 
-# THE READS A CHECK STANDS ON AND THE PROOF AN EDIT COSTS, as keyed rows (`reads` and `proofs`, judged
-# by their kinds): the longest read list each query's answers stand on, from a cold `check
-# --read-lists` of the snapshot's cli, the std answers unlaid; and what one literal of the cli edited
-# and built warm over its cold build's store proves (`cutoff:`, AVRA_QUERY_TIMES), the answers it
-# proved and the reads it checked. THE ROWS HOLD PROVED AND READS, NEVER REACHED: an input that truly
-# moved is reached, and so is the one query that cuts on it — a directory the build wrote its binary
-# into, read again as the same sources — so reached may differ between two trees by that input and its
-# cut, while what the change costs to prove does not. THE COLD BUILD STARTS FROM A FRESH CHECKOUT'S
-# TREE, which holds no built cli: a binary an earlier build left beside the sources would otherwise
-# decide what the cold build lists there.
-cutoff_literal='println("avra cache log: no pack")'
+# THE READS A CHECK STANDS ON, as keyed rows of the `reads` kind: the longest read list each query's
+# answers stand on, from a cold `check --read-lists` of the snapshot's cli, the std answers unlaid.
 reads_rows() {
-    : > "$out/rows"
     bare
     unlaid
     plain read-lists - check packages/cli --read-lists
     awk '$1 == "read-list" && NF == 4 && $4 ~ /^[0-9]+$/ { print "reads:-:check-cli " $2 " " $4 }' "$out/read-lists.out" >> "$out/rows"
     grep -q '^reads:' "$out/rows" || { echo "cost: the cold check said no read list"; exit 1; }
+    echo "cost: reads, $(grep -c '^reads:' "$out/rows") read list(s)"
+}
+
+# THE PROOF AN EDIT COSTS, as keyed rows of the `proofs` kind: what one literal of the snapshot's cli
+# edited and built warm over its cold build's store proves (`cutoff:`, AVRA_QUERY_TIMES), the answers
+# it proved and the reads it checked. THE ROWS HOLD PROVED AND READS, NEVER REACHED: an input that truly
+# moved is reached, and so is the one query that cuts on it — a directory the build wrote its binary
+# into, read again as the same sources — so reached may differ between two trees by that input and its
+# cut, while what the change costs to prove does not. THE COLD BUILD STARTS FROM A FRESH CHECKOUT'S TREE,
+# which holds no built cli: a binary an earlier build left beside the sources would otherwise decide what
+# the cold build lists there.
+cutoff_literal='println("avra cache log: no pack")'
+proofs_rows() {
     bare
+    unlaid
     rm -f "$src/packages/cli/src/main"
     plain cutoff-cold - build packages/cli
     f="$src/$edited"
     [ "$(grep -cF "$cutoff_literal" "$f")" = 1 ] || { echo "cost: the literal edited is not one line of $edited"; exit 1; }
     cp "$f" "$out/edited.orig"
-    python3 -c "import sys; p,a,b=sys.argv[1:]; s=open(p).read(); open(p,'w').write(s.replace(a,b,1))" "$f" "$cutoff_literal" 'println("avra cache log: no packs")'
+    edit_in_place "$f" literal "$cutoff_literal" 'println("avra cache log: no packs")' || { echo "cost: the literal could not be edited"; exit 1; }
     plain cutoff-warm AVRA_QUERY_TIMES=1 build packages/cli
     cp "$out/edited.orig" "$f"
     said=$(grep '^cutoff: ' "$out/cutoff-warm.out" | tail -1)
@@ -253,7 +257,7 @@ reads_rows() {
     reads=$(echo "$said" | sed -n 's/.* proved, \([0-9]*\) reads checked$/\1/p')
     [ -n "$proved" ] && [ -n "$reads" ] || { echo "cost: the warm build said no cutoff line: '$said'"; exit 1; }
     printf 'proofs:-:cutoff proved %s\nproofs:-:cutoff reads %s\n' "$proved" "$reads" >> "$out/rows"
-    echo "cost: reads, $(grep -c '^reads:' "$out/rows") read list(s) and the cutoff's $proved proved, $reads reads"
+    echo "cost: proofs, the cutoff's $proved proved, $reads reads"
 }
 
 # THE PASS LEDGER IS MEASURED APART FROM THE COUNTS, which an instrument must not move: no counted run
@@ -513,8 +517,8 @@ matrix() {
 # measurement as the whole run's do, so a run that depends on another before it shows.
 part=${COST_PART:-all}
 for p in $part; do
-    case $p in all | answers | cheap | cold-a | cold-b | laid | warm | reads | ledger-cold | ledger-cold-a | ledger-cold-b | ledger-warm | matrix-check-bare | matrix-check-laid | matrix-build-bare | matrix-build-laid) ;;
-        *) echo "cost: COST_PART names all, answers, cheap, cold-a, cold-b, laid, warm, reads, ledger-cold, ledger-cold-a, ledger-cold-b, ledger-warm or a matrix-<check|build>-<laid|bare>, never $p"; exit 2 ;; esac
+    case $p in all | answers | cheap | cold-a | cold-b | laid | warm | reads | proofs | ledger-cold | ledger-cold-a | ledger-cold-b | ledger-warm | matrix-check-bare | matrix-check-laid | matrix-build-bare | matrix-build-laid) ;;
+        *) echo "cost: COST_PART names all, answers, cheap, cold-a, cold-b, laid, warm, reads, proofs, ledger-cold, ledger-cold-a, ledger-cold-b, ledger-warm or a matrix-<check|build>-<laid|bare>, never $p"; exit 2 ;; esac
 done
 if [ -n "${COST_EDITS:-}" ]; then printf '%s edits %s\n' "$part" "$COST_EDITS"; else printf '%s\n' "$part"; fi > "$out/part"
 : > "$out/workloads"
@@ -571,6 +575,12 @@ measure() {
 case " $part " in *" all "* | *" ledger-"* | *" matrix-"*) ;; *) false ;; esac &&
     printf '### The pass ledger — %s\n\nprogram `%s`, over the snapshot `%s`%s\n\n' "$part" \
         "$(git rev-parse --short=8 HEAD)" "$(printf '%.8s' "$snapshot")" "${COST_EDITS:+, edits $COST_EDITS}" > "$out/ledger.md"
+# A KEYED PART RUNS ALONE: a run holding `rows` is judged by its rows alone, so a census part beside
+# one would go unjudged
+for p in $part; do
+    case $p in reads | proofs) [ "$part" = "$p" ] || { echo "cost: COST_PART=$p is a keyed part and runs alone, never beside another ($part)"; exit 2; } ;; esac
+done
+case " $part " in *" reads "* | *" proofs "*) : > "$out/rows" ;; esac
 for p in $part; do
     case $p in
         ledger-*) measure ledgered "$p" ;;
@@ -579,6 +589,7 @@ for p in $part; do
         # workload, nothing counted
         answers) laid ;;
         reads) reads_rows ;;
+        proofs) proofs_rows ;;
         all)
             measure counted all
             measure ledgered all
