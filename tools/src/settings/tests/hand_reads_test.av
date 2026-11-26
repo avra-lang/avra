@@ -1,0 +1,28 @@
+use settings.{hand_reads}
+
+const licence: string = "// LICENSED compiler.setting_read_by_hand: a fixture\n"
+
+fn read_vars(text: string) -> string { [r.variable for r in hand_reads("x.c", text)].join(" ") }
+
+spec "settings — a C read that spells a setting by hand" {
+    given "a literal `AVRA_*` read" {
+        then "it is found, with its line" {
+            let rs = hand_reads("x.c", "int a;\nconst char* s = getenv(\"AVRA_X\");\n")
+            rs.length == 1 && rs[0].variable == "AVRA_X" && rs[0].line == 2
+        }
+        then "another variable is no setting" { read_vars("const char* h = getenv(\"HOME\");\n") == "" }
+        then "a generated name is the declaration's" { read_vars("const char* s = getenv(AVRA_SET_X);\n") == "" }
+    }
+    given "its site's licence" {
+        then "directly above, it holds" { read_vars(licence + "getenv(\"AVRA_X\");\n") == "" }
+        then "in a run of licences above, it holds" {
+            read_vars(licence + "// LICENSED traps.defect: another keeper's\ngetenv(\"AVRA_X\");\n") == ""
+        }
+        then "with no reason, it does not" {
+            read_vars("// LICENSED compiler.setting_read_by_hand:\ngetenv(\"AVRA_X\");\n") == "AVRA_X"
+        }
+        then "past a line that is no licence, it does not" {
+            read_vars(licence + "int a;\ngetenv(\"AVRA_X\");\n") == "AVRA_X"
+        }
+    }
+}
