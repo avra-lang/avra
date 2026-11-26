@@ -10,10 +10,8 @@ Everything here was read against the tree it describes — the Makefile,
 from an older note. Where an older document disagreed with the code, the
 code is kept and the older claim is called out in "Provenance".
 
-This doc is held by a keeper: `make pipeline-doc`
-(`tools/pipeline_doc.py`) refuses if it names a `make` target or a
-`tools/` path that does not exist. A command that is not in the tree is
-therefore either fixed here or recorded as a known gap, never left to rot.
+No keeper holds this doc's commands to the tree, so a `make` target or a
+`tools/` path named here is a claim about the day it was written.
 
 ---
 
