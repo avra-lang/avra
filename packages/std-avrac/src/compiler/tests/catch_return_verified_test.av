@@ -1,0 +1,63 @@
+//! A `catch` arm that returns, held to LLVM's verifier: the region the arm leaves is joined in the
+//! let's own layout, whatever the fn answers, so its phi takes one type.
+use @std.io.{make_dirs}
+use @std.time.{stamp}
+use @std.avrac.testing.{ir_of}
+use compiler.backend.{emit_ll}
+
+/// One directory per run, so no earlier run's module answers for this one.
+once fn emit_base() -> string { "/tmp/avra-catch-return-test/${stamp()}" }
+
+/// The fault and the fallible reads every case's fn catches.
+const READS: string = "enum Fault { Bad }\nenum Size { Small, Large, Unknown }\ntype Pair = { a: string, b: int }\nfn named(n: int) -> Result<string, Fault> { if n > 0 { .Ok(\"v\") } else { .Err(Fault.Bad) } }\nfn counted(n: int) -> Result<int, Fault> { if n > 0 { .Ok(n) } else { .Err(Fault.Bad) } }\nfn paired(n: int) -> Result<Pair, Fault> { if n > 0 { .Ok(Pair { a: \"p\", b: n }) } else { .Err(Fault.Bad) } }\n"
+
+/// A call of a fn answering a `Result`, read as the number it carries: a program's answer prints.
+const RESULT_READ: string = "match f(1) {\n    .Ok(v) -> v,\n    .Err(_) -> 0,\n}"
+
+/// A call of a fn answering a `Size`, read as a number.
+const SIZE_READ: string = "match f(1) {\n    .Small -> 1,\n    .Large -> 2,\n    .Unknown -> 3,\n}"
+
+/// Whether `body`, beside the reads and called once, emits LLVM that verifies, kept under `name`.
+fn verifies(name: string, body: string, call: string) -> bool {
+    let _ = make_dirs(emit_base())
+    emit_ll(ir_of(READS + body + "\n" + call), "${emit_base()}/${name}.ll", "") == null
+}
+
+/// A fn answering `answer` that catches a pointer and a word, each by returning `left`: whatever the
+/// answer is laid out as, one of the two lets is laid out otherwise.
+fn both_caught(answer: string, left: string, tail: string) -> string {
+    "fn f(n: int) -> ${answer} {\n    let x = named(n) catch { return ${left} }\n    let k = counted(n) catch { return ${left} }\n    ${tail}\n}"
+}
+
+spec "compiler/backend — a catch arm that returns" {
+    given "a let of a pointer and a let of a word, each caught by a return" {
+        then "a fn answering a truth verifies" { verifies("truth", both_caught("bool", "false", "x.length > k"), "f(1)") }
+        then "a fn answering a `Result` verifies" {
+            verifies(
+                "result",
+                both_caught("Result<int, Fault>", ".Err(Fault.Bad)", ".Ok(x.length + k)"),
+                RESULT_READ,
+            )
+        }
+        then "a fn answering an enum verifies" {
+            verifies(
+                "enum",
+                both_caught(
+                    "Size",
+                    "Size.Unknown",
+                    "if x.length > k { Size.Large } else { Size.Small }",
+                ),
+                SIZE_READ,
+            )
+        }
+    }
+    given "a let of a record caught by a return" {
+        then "a fn answering a `Result` verifies" {
+            verifies(
+                "record",
+                "fn f(n: int) -> Result<int, Fault> {\n    let x = paired(n) catch { return .Err(Fault.Bad) }\n    .Ok(x.b)\n}",
+                RESULT_READ,
+            )
+        }
+    }
+}

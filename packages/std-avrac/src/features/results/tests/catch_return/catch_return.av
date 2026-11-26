@@ -1,0 +1,49 @@
+// proves: a `catch` arm that returns leaves the fn, and the let it stands in is joined in the let's own
+// layout — whatever the fn answers: a truth, a `Result` or an enum, and the let a pointer, a word or a
+// record — so every target's verifier holds the region's phi to one type.
+enum Fault { Bad }
+
+enum Size { Small, Large, Unknown }
+
+type Pair = { a: string, b: int }
+
+fn named(n: int) -> Result<string, Fault> { if n > 0 { .Ok("v${n}") } else { .Err(Fault.Bad) } }
+
+fn counted(n: int) -> Result<int, Fault> { if n > 0 { .Ok(n) } else { .Err(Fault.Bad) } }
+
+fn paired(n: int) -> Result<Pair, Fault> { if n > 0 { .Ok(Pair { a: "p", b: n }) } else { .Err(Fault.Bad) } }
+
+fn has_name(n: int) -> bool {
+    let x = named(n) catch { return false }
+    x.length > 0
+}
+
+fn name_length(n: int) -> Result<int, Fault> {
+    let x = named(n) catch { return .Err(Fault.Bad) }
+    .Ok(x.length)
+}
+
+fn sized(n: int) -> Size {
+    let x = named(n) catch { return Size.Unknown }
+    if x.length > 2 { Size.Large } else { Size.Small }
+}
+
+fn doubled(n: int) -> bool {
+    let x = counted(n) catch { return false }
+    x * 2 > 2
+}
+
+fn pair_sum(n: int) -> Result<int, Fault> {
+    let x = paired(n) catch { return .Err(Fault.Bad) }
+    .Ok(x.b + x.a.length)
+}
+
+fn size_word(s: Size) -> string {
+    match s { .Small -> "small", .Large -> "large", .Unknown -> "unknown" }
+}
+
+fn result_word(r: Result<int, Fault>) -> string {
+    match r { .Ok(v) -> "ok ${v}", .Err(_) -> "err" }
+}
+
+"${has_name(3)} ${has_name(0)} ${result_word(name_length(12))} ${result_word(name_length(0))} ${size_word(sized(123))} ${size_word(sized(0))} ${doubled(2)} ${doubled(0)} ${result_word(pair_sum(4))} ${result_word(pair_sum(0))}"

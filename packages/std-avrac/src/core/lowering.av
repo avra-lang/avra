@@ -425,6 +425,9 @@ export type Lowering = {
     /// The labels of each loop open around what's being lowered, innermost last: a `for` is labelled by
     /// the names it binds.
     labels: Cell<List<List<string>>>,
+    /// The register the last block that left answered: a hollow no one reads, which a region it is an
+    /// arm of answers in the region's own layout.
+    left: Cell<int>,
     /// Whether the body is a task's, which answers its value in a one-cell list.
     tasked: bool = false,
     /// The task tests met, each lowered beside the instructions and placed once the program's reach
@@ -519,6 +522,7 @@ export fn lowering(
     let cleanups: Cell<int> = Cell.new(0)
     let loop_floors: Cell<List<int>> = Cell.new([])
     let labels: Cell<List<List<string>>> = Cell.new([])
+    let left: Cell<int> = Cell.new(-1)
     let tests: Cell<List<TaskTest>> = Cell.new([])
     let gathers: Cell<List<Gathering>> = Cell.new([])
     let withins: Cell<List<WithinMark>> = Cell.new([])
@@ -547,6 +551,7 @@ export fn lowering(
         cleanups: cleanups,
         loop_floors: loop_floors,
         labels: labels,
+        left: left,
         tests: tests,
         gathers: gathers,
         withins: withins,
@@ -1192,9 +1197,10 @@ impl Lowering {
     ) -> Reg {
         // LICENSED compiler.if_start_raw: this IS the verb
         self.emit(Ins.IfStart(cond))
+        let first = taken(self)
         // LICENSED compiler.arm_end_raw: this IS the verb
-        self.emit(Ins.ArmEnd(taken(self)))
-        let last = other(self)
+        self.emit(Ins.ArmEnd(self.arm_answer(first, l)))
+        let last = self.arm_answer(other(self), l)
         let dst = self.mint(l)
         // LICENSED compiler.region_end_raw: this IS the verb
         self.emit(Ins.RegionEnd(dst, last))
@@ -1206,10 +1212,11 @@ impl Lowering {
     mut fn switched(selector: Reg, cases: List<int>, l: Layout, arm: fn(mut Lowering, int) -> Reg) -> Reg {
         self.emit(Ins.SwitchStart(selector, cases))
         for j in 0..cases.length {
+            let answered = arm(self, j)
             // LICENSED compiler.arm_end_raw: this IS the verb
-            self.emit(Ins.ArmEnd(arm(self, j)))
+            self.emit(Ins.ArmEnd(self.arm_answer(answered, l)))
         }
-        let last = arm(self, cases.length)
+        let last = self.arm_answer(arm(self, cases.length), l)
         let dst = self.mint(l)
         // LICENSED compiler.region_end_raw: this IS the verb
         self.emit(Ins.RegionEnd(dst, last))
@@ -1464,6 +1471,18 @@ impl Lowering {
     // ── Hollows ─────────────────────────────────────────────────────
     // A value of a type that's never read but must be total: what an arm that left yields, and what
     // a block ending in a statement answers.
+
+    /// What a block that leaves answers: a hollow of the fn's answer, which the fn's own exit takes,
+    /// marked so a region it is an arm of answers one of its own layout.
+    mut fn left_hollow() -> Reg {
+        let r = self.hollow_of(self.answer)
+        self.left.set(r.index)
+        r
+    }
+
+    /// An arm's value as a region of layout `l` joins it: a hollow of `l` where the arm left, else the
+    /// value.
+    mut fn arm_answer(r: Reg, l: Layout) -> Reg { if r.index == self.left.get() { self.zero_of(l) } else { r } }
 
     /// A value of `ty` nobody reads: a nullable's absence, else its type's zero.
     mut fn hollow_of(ty: SignedType) -> Reg {
