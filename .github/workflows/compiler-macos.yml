@@ -1,7 +1,11 @@
-# THE MAC'S COMPILER, published beside the gate's builder as `gate-builder`'s compiler-macos.tar.gz: a tree
-# built on macOS arm64 — the seed's link, then generations 1 and 2 (`make compiler`) — packed as the gate's
-# pack is (the binary, its hot leaves, its stamp and every object build/ keeps at its top). `tools/work
-# compiler` lays it into the depot, where a Mac lane's pre-commit hook finds a stamped compiler.
+# THE MAC'S COMPILER, published beside the gate's builder as `gate-builder`'s compiler-macos.tar.gz, packed as
+# the gate's pack is (the binary, its hot leaves, its stamp and every object build/ keeps at its top).
+# `tools/work compiler` lays it into the depot, where a Mac lane's pre-commit hook finds a stamped compiler.
+#
+# THE COMMITTED SEED IS OLDER THAN PROGRAM'S SOURCE and cannot build it, so the Mac starts from the TREE'S OWN
+# SEED: a Linux job lays the tree's Linux compiler down (the release's pack where its source is the tree's,
+# else generations 1 and 2 built from it) and emits the cli (`avra emit`, the IR `make seed` commits, which
+# names no target); the Mac links it (`make recover`) and builds generations 1 and 2 from it, natively.
 #
 # EACH LANDING PUBLISHES ONE: a push to `program` (a landing, after its gate) builds the landed tree. A push
 # to `compiler-macos/**` or a dispatch builds the tree the release's compiler was built from (its stamp's
@@ -27,48 +31,100 @@ concurrency:
 
 permissions:
   contents: write
+  packages: read
 
 env:
   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  # the runner holds 7 GB and the cli's build outgrows it; macOS swaps, so the pool is sized past the RAM
-  AVRA_MEM_POOL_MB: "16000"
   RELEASE_STAMP: https://github.com/avra-lang/avra/releases/download/gate-builder/compiler.tar.gz
 
 jobs:
-  build:
-    runs-on: macos-latest
-    timeout-minutes: 120
+  seed:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/avra-lang/avra-ci:llvm22
+      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    timeout-minutes: 60
+    outputs:
+      commit: ${{ steps.tree.outputs.commit }}
+    env:
+      LLVM_PREFIX: /usr/lib/llvm-22
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 1 }
       # THE TREE: a landing's own, else the one the release's stamp names
       - name: the tree
+        id: tree
         env:
           REF: ${{ inputs.ref }}
         run: |
-          if [ "$GITHUB_REF" = refs/heads/program ]; then
-            want=$GITHUB_SHA
-            echo "compiler-macos: the landed tree"
-          else
-            curl -fsSL --retry 3 -o "$RUNNER_TEMP/gb.tar.gz" "$RELEASE_STAMP"
-            read -r hash at gen < <(tar -xzOf "$RUNNER_TEMP/gb.tar.gz" build/.avra-built-from)
-            echo "compiler-macos: the gate-builder release — compiler source $hash, at $at, generation $gen"
-            want=${REF:-$at}
-            [ "$want" != edited ] || { echo "::error::the release's stamp names no commit (edited)"; exit 1; }
-          fi
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/gb.tar.gz" "$RELEASE_STAMP"
+          tar -xzOf "$RUNNER_TEMP/gb.tar.gz" build/.avra-built-from > "$RUNNER_TEMP/stamp"
+          read -r hash at gen < "$RUNNER_TEMP/stamp"
+          echo "compiler-macos: the gate-builder release — compiler source $hash, at $at, generation $gen"
+          if [ "$GITHUB_REF" = refs/heads/program ]; then want=$GITHUB_SHA; else want=${REF:-$at}; fi
+          [ "$want" != edited ] || { echo "::error::the release's stamp names no commit (edited)"; exit 1; }
           git fetch -q --depth=1 origin "$want"
           git checkout -q --detach FETCH_HEAD
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "compiler-macos: the tree is $(git rev-parse HEAD)"
+      - name: the tree's Linux compiler
+        timeout-minutes: 50
+        run: |
+          if sh tools/gate.sh unpack "$RUNNER_TEMP/gb.tar.gz"; then
+            echo "compiler-macos: the release's compiler is this tree's"
+          else
+            tar -xzf "$RUNNER_TEMP/gb.tar.gz" build/avra
+            echo "compiler-macos: generations 1 and 2 of this tree from the release's compiler"
+            make -s avra && make -s avra
+          fi
+          cat build/.avra-built-from
+      - name: the tree's seed
+        timeout-minutes: 20
+        run: |
+          ./avra emit packages/cli > build/seed.ll
+          echo "compiler-macos: the tree's seed, $(wc -l < build/seed.ll | tr -d ' ') lines"
+          gzip -9 -n build/seed.ll
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tree-seed
+          path: build/seed.ll.gz
+          retention-days: 3
+          if-no-files-found: error
+
+  build:
+    needs: [seed]
+    runs-on: macos-latest
+    timeout-minutes: 120
+    env:
+      # the runner holds 7 GB and the cli's build outgrows it; macOS swaps, so the pool is sized past the RAM
+      AVRA_MEM_POOL_MB: "16000"
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 1 }
+      - name: the tree
+        run: |
+          git fetch -q --depth=1 origin "${{ needs.seed.outputs.commit }}"
+          git checkout -q --detach FETCH_HEAD
           echo "compiler-macos: building $(git rev-parse HEAD)"
+      - uses: actions/download-artifact@v4
+        with: { name: tree-seed, path: tree-seed }
       - name: toolchain
         run: |
           brew install llvm@22 zstd || brew install llvm zstd
           p=$(brew --prefix llvm@22 2>/dev/null || brew --prefix llvm)
           echo "LLVM_PREFIX=$p" >> "$GITHUB_ENV"
           "$p/bin/clang" --version | head -n 1
+      # the tree's seed linked here, then generations 1 and 2 built from it: a Mac binary of this source alone
       - name: generations 1 and 2
         timeout-minutes: 100
         run: |
-          make -s compiler
+          mkdir -p build
+          gzip -dc tree-seed/seed.ll.gz > build/seed.ll
+          touch build/seed.ll
+          make -s recover
+          make -s avra
+          make -s avra
           build/avra --version
           cat build/.avra-built-from
       - name: held to its tree
@@ -79,6 +135,7 @@ jobs:
           echo "compiler-macos: built from compiler source $hash at $at, generation $gen; the tree's is $tree"
           [ "$hash" = "$tree" ] || { echo "::error::the Mac's compiler says it was built from $hash, its tree's compiler source is $tree"; exit 1; }
           [ "$at" != edited ] || { echo "::error::the build says it was built from edited source"; exit 1; }
+          [ "$gen" = 2 ] || echo "::warning::the Mac's compiler is generation $gen of its source, not 2"
           echo "hash=$hash" >> "$GITHUB_OUTPUT"
       - name: pack
         run: |
