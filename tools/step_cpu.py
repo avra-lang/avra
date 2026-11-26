@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# tool-witness: --self-test
 """RUNS ONE CI STEP AND RECORDS WHAT IT COST: the largest process's peak RSS (said), and the step's
 user+sys CPU appended to speed.log as `speed cpu-<label>[-warm|-cold] <seconds>`.
 

@@ -86,15 +86,16 @@ added_after|fn octets_of(packs: List<PackListed>) -> int { packs.fold(0, (sum, p
 EOF
 }
 
-# this run's share of the edits: COST_EDITS=<k>/<n>, the k-th (from 1) of n dealt in turn, the noop —
-# the first, which edits nothing — in every share; every edit where it names none
-shared_edits() {
+# this run's share of a list of edits on stdin: COST_EDITS=<k>/<n>, the k-th (from 1) of n dealt in
+# turn, the noop — the first, which edits nothing — in every share; every edit where it names none
+shared() {
     case ${COST_EDITS:-} in
-        '') edits ;;
-        */*) edits | awk -v k="${COST_EDITS%/*}" -v n="${COST_EDITS#*/}" 'NR == 1 || (NR - 2) % n == k - 1' ;;
+        '') cat ;;
+        */*) awk -v k="${COST_EDITS%/*}" -v n="${COST_EDITS#*/}" 'NR == 1 || (NR - 2) % n == k - 1' ;;
         *) echo "cost: COST_EDITS is <k>/<n>, never $COST_EDITS" >&2; exit 2 ;;
     esac
 }
+shared_edits() { edits | shared; }
 
 mkdir -p "$out"
 find "$out" -mindepth 1 -delete
@@ -394,7 +395,7 @@ matrix() {
     sed -i "/^matrix-$verb-$lay-cold\$/d" "$out/workloads"
     printf '\n#### %s %s — %s cold, `%s packages/cli`\n\n| edit | warm | taken back |\n|---|---|---|\n' \
         "$verb" "$lay" "$(walled "$cell_ms")" "$verb" >> "$out/ledger.md"
-    matrix_edits | while IFS='|' read -r kind file text becomes; do
+    matrix_edits | shared | while IFS='|' read -r kind file text becomes; do
         name="matrix-$verb-$lay-$kind"
         cell_said=""
         case $kind in
@@ -422,8 +423,8 @@ matrix() {
 # measurement as the whole run's do, so a run that depends on another before it shows.
 part=${COST_PART:-all}
 for p in $part; do
-    case $p in all | cold-a | cold-b | laid | warm | ledger-cold | ledger-cold-a | ledger-cold-b | ledger-warm | matrix-check-bare | matrix-check-laid | matrix-build-bare | matrix-build-laid) ;;
-        *) echo "cost: COST_PART names all, cold-a, cold-b, laid, warm, ledger-cold, ledger-cold-a, ledger-cold-b, ledger-warm or a matrix-<check|build>-<laid|bare>, never $p"; exit 2 ;; esac
+    case $p in all | answers | cold-a | cold-b | laid | warm | ledger-cold | ledger-cold-a | ledger-cold-b | ledger-warm | matrix-check-bare | matrix-check-laid | matrix-build-bare | matrix-build-laid) ;;
+        *) echo "cost: COST_PART names all, answers, cold-a, cold-b, laid, warm, ledger-cold, ledger-cold-a, ledger-cold-b, ledger-warm or a matrix-<check|build>-<laid|bare>, never $p"; exit 2 ;; esac
 done
 if [ -n "${COST_EDITS:-}" ]; then printf '%s edits %s\n' "$part" "$COST_EDITS"; else printf '%s\n' "$part"; fi > "$out/part"
 : > "$out/workloads"
@@ -475,6 +476,9 @@ for p in $part; do
     case $p in
         ledger-*) measure ledgered "$p" ;;
         matrix-*) matrix "$p" ;;
+        # THE ANSWERS ALONE, made once and kept (COST_ANSWERS_KEPT) for every run that lays them: no
+        # workload, nothing counted
+        answers) laid ;;
         all)
             measure counted all
             measure ledgered all

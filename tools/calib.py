@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# tool-witness: --self-test
 """THE RUNNER'S OWN SPEED, measured: a fixed CPU workload, run three times, its least user+sys time
 appended to speed.log as `speed calib-ms-<cpu> <milliseconds>`. The speed note reads the growth of this
 row against main's as the runner's factor, so a step that grew only as much as the machine slowed gates

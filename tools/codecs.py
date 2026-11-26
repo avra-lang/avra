@@ -3,7 +3,7 @@
 
 compiler/codecs.av holds the registry — every wire's encode fn paired
 with its decode fn, checked field by field against synthetic samples
-(`make codecs` runs that suite). That registry only proves the pairs
+(std-avrac's suite runs it, compiler/tests/codecs_test.av). That registry only proves the pairs
 it NAMES agree; it says nothing about a pair nobody registered. This
 reader is the other half: it scans the tree for encoder/decoder-SHAPED
 fn pairs by name, and refuses any it finds that the registry does not
@@ -131,6 +131,10 @@ def label_pair(label):
 # registry does not exercise, named with why, read here rather than
 # left for the reader to wonder whether it was forgotten. ──
 ACKNOWLEDGED_GAPS = {
+    # NO PAIR, TWO NAMES: world.av's `kind_word` spells an `InputKind` for the input witness's table,
+    # and nothing reads it back; record.av's `kind_of_word` reads a record line's kind column into a
+    # `DeclKind`. The `_word` suffix rule pairs them by name alone.
+    ("kind_word", "kind_of_word"): "world.av: `kind_word` spells an InputKind no decoder reads; record.av's `kind_of_word` reads a DeclKind",
     # `Row.of_wire` is a WIRE-FIELD ACCESSOR on a record row, not an encoder: the
     # `_wire` suffix rule pairs it with `read_of_wire` by name alone. The real
     # pair is `read_wire`/`read_of_wire`, which IS registered.

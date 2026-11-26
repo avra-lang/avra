@@ -21,7 +21,12 @@ F=packages/cli/src/commands/cache.av
 before='println("avra cache log: no pack")'
 after='println("avra cache log: no packs")'
 cp "$F" "$R/orig.av"
-trap 'cp "$R/orig.av" "$F"' EXIT
+# THE CHECKOUT'S SHIPPED STD ANSWERS ARE SET ASIDE, as a gate's compiler never makes them: with them std
+# is read from packs, and the answers the frontier holds are another program's count.
+answers=build/answers
+[ ! -d "$answers.cutoff" ] || fail "$answers.cutoff stands from a run that did not finish — move it back first"
+[ ! -d "$answers" ] || mv "$answers" "$answers.cutoff"
+trap 'cp "$R/orig.av" "$F"; [ ! -d "$answers.cutoff" ] || mv "$answers.cutoff" "$answers"' EXIT
 
 # The cli built cold over a store of its own, then warm.
 for d in $(find packages -name .avra-cache -type d -prune); do find "$d" -mindepth 1 -delete; done

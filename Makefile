@@ -407,7 +407,7 @@ wasm-size:
 wasm-body:
 	sh tools/wasm-body.sh
 
-# THE SIZE RECEIPT: the footprint, printed and capped relative to the baseline.
+# THE SIZE RECEIPT: the wasm floor's ledger rows, exact within its toolchain; the board's told.
 wasm-size-guard:
 	sh tools/wasm-size-guard.sh
 
@@ -415,10 +415,11 @@ wasm-size-guard:
 wasm-routes-size:
 	sh tools/wasm-routes-size.sh
 
-# Re-accept the footprint deliberately (the guard prints the rise first).
+# Re-accept the wasm rows deliberately (the guards print the rise first).
 # not a keeper — re-accepts the wasm footprint deliberately
 wasm-size-accept:
 	sh tools/wasm-size-guard.sh --accept
+	sh tools/wasm-routes-size.sh --accept
 
 # THE ARCHIVE'S LAW: never carries a fiber or a core.
 wasm-archive:
@@ -432,8 +433,8 @@ wasm-archive:
 # `$(shell)` runs on every make, `try` included.
 SUITES = $(shell sh tools/avra_tools.sh suites 2>/dev/null)
 
-.PHONY: compiler-key pool-check ready tools-suite dev-server cost cost-accept trap-marks speed-note llvm-libs libs-self-test read-lists db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz exact-patches ui-board ui-browser ui-browser-skip host-events layout-oracle wasm-host-check wasm-tasks-mutations h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules rule-examples idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns parser witnesses libs libscope families-left layers hooks-released inputs inputs-accept whole-reads whole-reads-accept read-cost \
-        check run ir emit build-native native-check avra suites install sprite sprite-check codecs codecs-static keepers voices voices-accept defects tool-witnesses pipeline-status pipeline-doc ci-invariants pr-watcher wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept wasm-routes-size speed-ratchet speed-accept wall-ratchet wall-accept warm-edit warm-accept work-accept
+.PHONY: compiler-key pool-check ready tools-suite dev-server cost cost-accept trap-marks llvm-libs libs-self-test read-lists db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz exact-patches ui-board ui-browser ui-browser-skip host-events layout-oracle wasm-host-check wasm-tasks-mutations h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks test tested clean seed-check gate externs idioms fuzz-http soak-http dogfooding-rules rule-examples idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns parser witnesses libs libscope layers pre-commit-hook inputs inputs-accept read-cost \
+        check run ir emit build-native native-check avra suites install sprite sprite-check codecs-static keepers voices voices-accept defects tool-witnesses ci-invariants wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept wasm-routes-size speed-ratchet speed-accept wall-ratchet wall-accept warm-edit warm-accept work-accept
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
 # tree only.
@@ -963,17 +964,6 @@ suites:
 # and no path here can add a line (the file's own header states the
 # law). A new violation is fixed in the code, or a human adds it to
 # the baseline, reviewed at adoption and every time after.
-# THE NAMES THE DOCTRINE CITES RESOLVE — a third of the rot, and it
-# says which third: a count, a line number or an attribution stays
-# invisible to it.
-cited:
-	@python3 tools/cited.py
-
-# THE HTTP DOCS' FIXTURE CITATIONS RESOLVE: every `<suite> › "<then>"`
-# in the framing laws and the conformance checklist names a test that
-# exists, or the checklist claims coverage the tree does not have.
-http-cites:
-	@python3 tools/http_cites.py
 
 # DOGFOODING.md's own registry keeps a GENERATED block current
 # against `avra rules --markdown` — a rule's doc changes here or the
@@ -988,13 +978,6 @@ dogfooding-rules:
 rule-examples:
 	@./build/avra rules --check-examples
 
-# THE HAND-WRITTEN FAMILIES MAY ONLY FALL. Every `@family` marker is a
-# family not yet a `@query`; the count may only fall and the ceiling in
-# tools/families.ceiling is lowered as one converts. A family is keyed
-# by its NAME, so declaration order is free and no ordinal is durable.
-families-left:
-	@sh tools/avra_tools.sh families
-
 # NO ANSWER STANDS ON A LONG READ LIST: a cold check of the cli on the program layer, each query's
 # longest read list held under 3,000, and the queries still over it only shorten (tools/read_lists.py).
 read-lists:
@@ -1006,22 +989,14 @@ read-lists:
 layers:
 	@python3 tools/layers.py
 
-# A HOOK OF `Decls` THAT `let_go` DOES NOT RESET keeps its workspace alive.
 # THE LIBRARY ROSTER READS DEFINED SYMBOLS ONLY (tools/libs.py): an undefined reference is what
 # the image needs, never what it carries.
-# THE CPU BACKSTOP'S OWN FIXTURES: a number carries its cache state and is only compared with the same
-# state; a baseline keeps both states.
-speed-note:
-	@sh tools/speed_note.sh --self-test
-	@python3 tools/calib.py --self-test
-	@python3 tools/step_cpu.py --self-test
-
 libs-self-test:
 	@python3 tools/libs.py --self-test
 	@python3 tools/llvm_link.py --twin
 
-hooks-released:
-	@sh tools/avra_tools.sh hooks_released
+# THE PRE-COMMIT HOOK REFUSES WITHOUT A COMPILER: its fixtures (tools/hooks_pre_commit_check.sh).
+pre-commit-hook:
 	@sh tools/hooks_pre_commit_check.sh
 
 # EVERY READ OF THE WORLD IS AN INPUT THROUGH ONE DOOR: the world reads
@@ -1042,66 +1017,40 @@ clock-holds:
 inputs-accept:
 	@python3 tools/inputs.py --accept
 
-# EVERY WHOLE-PROGRAM READ IS A COUNTED SITE: a call that reads all of a relation's
-# rows is licensed cold at its site or listed in tools/whole_reads.baseline, which
-# only falls (tools/whole_reads.py). The run's own count is `check --counts`.
-whole-reads:
-	@python3 tools/whole_reads.py --self-test >/dev/null
-	@python3 tools/whole_reads.py
-
-whole-reads-accept:
-	@python3 tools/whole_reads.py --accept
-
 # A RECORDED READ HAS A BUDGET: retains, releases and list reads and writes
 # per read, counted on the census runtime, never over read_cost.budget.
 # Its bench links the tree's own package objects, so it names them.
 read-cost: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/db_measure/read_cost.sh
 
-# THE SPEED RATCHET, HARD: each phase of `packages/cli`'s own build and
-# check held against a ceiling in tools/speed.budget, refusing past it and
-# naming the phase with its before and after ms. The measurement is the
-# LEAST of warm one-edit rounds (tools/speed_measure.sh), run on the
-# machine the keeper stands on; on macOS it goes to the lane's Sprite
-# (`tools/work run`), since a loaded Mac supplies no number. The gate's
-# fixtures prove the gate before it judges. `speed-accept` lowers the
-# ceilings to what was measured and never raises one.
+# THE SPEED RATCHET, HARD: each phase of `packages/cli`'s own build and check, the LEAST of warm
+# one-edit rounds (tools/speed_measure.sh), held as the ledger's `speed:<host>:` rows
+# (tools/cost.baseline, `avra-tools cost`) within the kind's tolerance; on macOS it is measured on the
+# lane's Sprite (`tools/work run`), since a loaded Mac supplies no number. `speed-accept` lowers a row to
+# what was measured and never raises one.
 speed-ratchet:
-	@python3 tools/speed_ratchet.py --self-test >/dev/null
-	@python3 tools/speed_ratchet.py
+	@sh tools/speed_ratchet.sh
 speed-accept:
-	@python3 tools/speed_ratchet.py --self-test >/dev/null
-	@python3 tools/speed_ratchet.py --accept
+	@sh tools/speed_ratchet.sh accept
 
-# THE WALL-CLOCK RATCHET: a PR check's per-job and whole wall time, held in
-# the same tools/speed.budget the phase ratchet reads (ONE file, ONE reader),
-# measured by tools/ci_wall.sh from a run's own jobs and judged in the `test`
-# job of every PR run. A ceiling may only fall: this lowers it to a run's
-# measured times and never raises one. Point it at a run's metrics with
-# `make wall-accept WALL=<file>`, where the file is
+# THE WALL-CLOCK RATCHET: a run's job clocks, their sum and its makespan (tools/ci_wall.sh), as the
+# ledger's `wall:<host>:` rows. The gate's verdict tells its own (gate.yml); this judges or records a
+# run's metrics, `make wall-accept WALL=<file>` where the file is
 # `sh tools/ci_wall.sh --repo <o/r> --run <id> collect`.
 WALL ?= wall.metrics
 wall-ratchet:
-	@python3 tools/speed_ratchet.py --self-test >/dev/null
-	@python3 tools/speed_ratchet.py --wall --raw "$(WALL)"
+	@sh tools/ledger_rows.sh "$(WALL)" wall clock judge
 wall-accept:
-	@python3 tools/speed_ratchet.py --self-test >/dev/null
-	@python3 tools/speed_ratchet.py --wall --accept --raw "$(WALL)"
+	@sh tools/ledger_rows.sh "$(WALL)" wall clock accept
 
-# THE DB 07 WARM-EDIT GATE (avra-8sb5.57.176): an unchanged
-# `check packages/cli` and one body edit, wall, on a warm store. The
-# ticket's GOAL is 60 ms / 300 ms (goal 150), but today's path is far over
-# it, so the ENFORCED rows in tools/speed.budget are the MEASURED PRESENT —
-# the starting line — with WARM_RATIO's allowance for a shared runner's
-# variance. `--accept` may only LOWER a row toward the goal, never raise
-# it. tools/warm_edit_bench.sh measures it and judges it through
-# tools/speed_ratchet.py --warm, whose rows are the same tools/speed.budget
-# the phase ratchet reads — ONE file, ONE reader. A run that CANNOT judge
-# FAILS with a named reason (a skip is not a pass); only a hand-set
-# WARM_EDIT_SKIP — the workflow's `warm_skip` input — stands it down,
-# loudly. In CI the store rides down from prepare and SPEED_HOST is
-# `ci-warm`, so a runner's CPU never decides whether the gate is judged.
-# On macOS the measurement goes to the lane's Sprite, as speed-ratchet does.
+# THE DB 07 WARM-EDIT GATE (avra-8sb5.57.176): an unchanged `check packages/cli` and one body edit, wall,
+# on a warm store, and the work each did as the compiler counts it. The ticket's GOAL is 60 ms / 300 ms
+# (goal 150); the ENFORCED rows are the ledger's `warm:` rows, the MEASURED PRESENT, with the kind's
+# allowance for a shared runner's variance, and its `work:`/`share:` rows, exact. tools/warm_edit_bench.sh
+# measures and hands its stream to tools/ledger_rows.sh — ONE file, ONE reader. A run that CANNOT judge
+# FAILS with a named reason (a skip is not a pass); only a hand-set WARM_EDIT_SKIP — the workflow's
+# `warm_skip` input — stands it down, loudly. In CI the store rides down from prepare and SPEED_HOST is
+# `ci-warm`, and the clock is told, never judged. On macOS the measurement goes to the lane's Sprite.
 # THE EXACT-COUNT GATE: the census compiler of this tree, cold, over fixed workloads whose sources are
 # the commit tools/cost.baseline pins; every counter held to its row within 0.05% (tools/cost.sh,
 # `avra-tools cost`, tools/src/commands/cost.av). A row only falls, through `make cost-accept`; `COST_SNAPSHOT=<sha> make
@@ -1112,17 +1061,12 @@ cost-accept:
 	@COST_ACCEPTING=1 sh tools/cost.sh accept
 
 warm-edit:
-	@python3 tools/ratchet_rows.py --self-test >/dev/null
-	@python3 tools/speed_ratchet.py --self-test >/dev/null
-	@python3 tools/work_ratchet.py --self-test >/dev/null
 	@sh tools/warm_edit_bench.sh
 warm-accept:
-	@python3 tools/speed_ratchet.py --self-test >/dev/null
 	@WARM_EDIT_ACCEPT=1 sh tools/warm_edit_bench.sh
-# The work-count ceilings only fall: this lowers each to what the compiler counted
-# (and seeds a new counter), never raises one. Review the diff of tools/work.budget.
+# The work-count rows only fall: this lowers each to what the compiler counted (and seeds a new
+# counter), never raises one. Review the diff of tools/cost.baseline.
 work-accept:
-	@python3 tools/work_ratchet.py --self-test >/dev/null
 	@WORK_ACCEPT=1 sh tools/warm_edit_bench.sh
 
 idioms:
@@ -1247,15 +1191,16 @@ fingerprints:
 	@python3 tools/avsrc.py >/dev/null
 	@python3 tools/fingerprints.py
 
-# THE FOOTPRINT: a program that spawns nothing links no scheduler, and the
-# smallest programs' bytes stay under a relative cap (tools/footprint.py).
+# THE FOOTPRINT: a program that spawns nothing links no scheduler (tools/footprint.py), and the
+# smallest programs' bytes are ledger rows, exact within their toolchain (tools/footprint_bytes.sh).
 footprint: $(RUNTIME_LIB)
 	@python3 tools/footprint.py --self-test
 	@python3 tools/footprint.py
+	@sh tools/footprint_bytes.sh
 
-# Re-accept this platform's sizes deliberately.
+# Re-accept this toolchain's sizes deliberately.
 footprint-accept: $(RUNTIME_LIB)
-	@python3 tools/footprint.py --accept
+	@sh tools/footprint_bytes.sh accept
 
 # THE FLOW G1 GATE: the scheduler's transition rows (a gate round trip,
 # spawn+join, a cold parked spawn) against tools/flow_bench/gate.baseline,
@@ -1302,11 +1247,11 @@ KEEPERS_ALONE = runtime-tests runtime-mutations
 # KEEPERS_A is two halves, one CI runner each, balanced by measured seconds
 # (speed-ratchet is the longest keeper, alone it is half the set).
 KEEPERS_A1 = speed-ratchet cost fmt-lossless hash-door stems
-KEEPERS_A2 = read-cost read-lists warm-edit codecs traps compile-slots witness flow-trace
+KEEPERS_A2 = read-cost read-lists warm-edit codecs-static traps compile-slots witness flow-trace
 KEEPERS_A = $(KEEPERS_A1) $(KEEPERS_A2)
-KEEPERS_B = libscope ahead-edit-attack held-store-attack cutoff-witness heir-save-attack share-merge-attack wave-share-attack beside-attack h2spec pool-check tools-suite fingerprints vocab families-left layers libs-self-test speed-note hooks-released inputs whole-reads cited http-cites externs trap-marks suites rt-header rt-ns parser witnesses dogfooding-rules rule-examples attack voices defects \
+KEEPERS_B = libscope ahead-edit-attack held-store-attack cutoff-witness heir-save-attack share-merge-attack wave-share-attack beside-attack h2spec pool-check tools-suite fingerprints vocab layers libs-self-test pre-commit-hook inputs externs trap-marks suites rt-header rt-ns parser witnesses dogfooding-rules rule-examples attack voices defects \
             ui-host host-events ui-host-test ui-board exact-patches dev-server ui-browser ui-browser-skip tool-witnesses footprint tick-object no-threads \
-            ci-invariants ci-verdict pr-watcher pipeline-doc workflows-yaml tail-status bash-parse vendored-fixture
+            ci-invariants bash-parse vendored-fixture
 # KEEPERS_WASM is the wasm target's proof — the fixtures native and wasm32 alike, the seam,
 # the refusals, the hosted scheduler broken on purpose, the store across targets, the
 # archive's law and the size receipt — a CI
@@ -1334,37 +1279,15 @@ store-witnesses: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@fail=""; for w in $(STORE_WITNESSES); do MEMCAP=tools/memcap.sh sh $$w || fail="$$fail [$$w]"; done; \
 	 [ -z "$$fail" ] || { echo "store-witnesses: refused —$$fail"; exit 1; }
 
-# THE CI STRUCTURE RATCHET: the release path, the compiler-free keepers a
-# PR must reach and the watcher's fixtures are held before a green PR can
-# break them. It reads the workflow and this Makefile alone, so no compiler.
+# THE CI STRUCTURE RATCHET: the release path and the compiler-free keepers a
+# PR must reach are held before a green PR can break them. It reads the
+# workflow and this Makefile alone, so no compiler.
 ci-invariants:
 	@python3 tools/ci_invariants.py --self-test
 	@python3 tools/ci_invariants.py
 	@sh tools/profile.sh --self-test
 	@python3 tools/ci_dup_run.py --self-test
-	@sh tools/batch_test.sh
 	@python3 tools/pr_mode.py --self-test
-
-# THE AGGREGATE VERDICT'S FIXTURES: the `test` job's arithmetic is a script
-# (tools/ci_verdict.sh), and these prove it counts what it claims — a skipped
-# leg green, a failure named with its count, a job the gate owed but the run
-# never reported refused — before it judges a run.
-ci-verdict:
-	@sh tools/ci_verdict.sh --self-test
-
-# THE WATCHER'S DECISION IS A KEEPER: its fixtures run wherever the gate
-# runs, so a change to what the watcher may do refuses before it can land,
-# not one schedule pass later.
-pr-watcher:
-	@python3 tools/pr_watcher.py --self-test
-
-# THE PIPELINE DOCUMENT'S COMMANDS RESOLVE: every `make <target>` and
-# `tools/` path in docs/2026_10_11_THE_PIPELINE.md names something the
-# tree holds. A command the tree no longer carries is refused here
-# rather than read as current. A name kept as a HISTORICAL negative
-# example stands in tools/pipeline_doc.allow with its reason.
-pipeline-doc:
-	@python3 tools/pipeline_doc.py
 
 # The std-avrac fixtures vendor each std package whole: the files the manifest closure
 # names, no more and no fewer (tools/vendored_fixture.py).
@@ -1372,37 +1295,18 @@ vendored-fixture:
 	@python3 tools/vendored_fixture.py --self-test
 	@python3 tools/vendored_fixture.py
 
-# A BUILD'S STATUS NEVER DIES IN A PIPE: no build, run, make or node is
-# piped into `tail` outside `tools/capped.sh --last` (tools/tail_status.sh).
-tail-status:
-	@sh tools/tail_status.sh --self-test
-	@sh tools/tail_status.sh
-
 # EVERY SHELL SCRIPT PARSES UNDER BASH, macOS's 3.2 where it stands (tools/bash_parse.sh)
 bash-parse:
 	@sh tools/bash_parse.sh --self-test
 	@sh tools/bash_parse.sh
-
-# THE ONE-LINE BLOCKER: why nothing is landing, in a handful of lines.
-# Read-only and safe any time — `main`'s SHA and age; the last runs'
-# failures COUNTED BY JOB; each open PR's blocker in one word; whether the
-# local watchdog driver is loaded and has run recently; and a one-line
-# VERDICT naming the single most likely blocker. A signal it cannot read
-# prints `unknown` and is skipped, never given a plausible default. The
-# verdict is a pure function over a state, proved on synthetic fixtures
-# with no network (`--self-test`, held by `make tool-witnesses`);
-# `ARGS=--witness` prints each verdict firing.
-# not a keeper — a report: why nothing is landing, read-only
-pipeline-status:
-	@python3 tools/pipeline_status.py $(ARGS)
 
 # THE KEEPERS THAT NEED NO COMPILER, which a pull request's own check runs
 # before it builds anything: each reads the tree alone and all of them
 # together take half a minute, so a refusal stops on the PR instead of
 # failing a train and every PR riding it. Each is one of KEEPERS, which the
 # train runs whole.
-KEEPERS_STATIC = host-events fingerprints vocab families-left layers libs-self-test speed-note hooks-released cited http-cites externs suites ui-browser-skip ci-invariants ci-verdict pr-watcher pipeline-doc workflows-yaml tail-status bash-parse vendored-fixture
-.PHONY: compiler compiler-files store-witnesses cache-attacks-w keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b keepers-wasm keepers-static keepers-pr pipeline-doc tail-status bash-parse pipeline-status ci-invariants ci-verdict pr-watcher
+KEEPERS_STATIC = host-events fingerprints vocab layers libs-self-test pre-commit-hook externs suites ui-browser-skip ci-invariants codecs-static bash-parse vendored-fixture
+.PHONY: compiler compiler-files store-witnesses cache-attacks-w keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b keepers-wasm keepers-static keepers-pr bash-parse ci-invariants
 keepers-static:
 	@left="$(filter-out $(KEEPERS),$(KEEPERS_STATIC))"; [ -z "$$left" ] || { echo "keepers-static: $$left is no keeper — the train would not hold it" >&2; exit 1; }
 	@sh tools/keepers_loop.sh "$(MAKE) -s" $(KEEPERS_STATIC)
@@ -1420,20 +1324,12 @@ keepers-pr:
 	@left="$(filter-out $(KEEPERS),$(KEEPERS_PR))"; [ -z "$$left" ] || { echo "keepers-pr: $$left is no keeper — the train would not hold it" >&2; exit 1; }
 	@sh tools/keepers_loop.sh "$(MAKE) -s -o avra" $(KEEPERS_PR)
 
-# THE CODEC KEEPER: a record's wire ENCODER and its DECODER agree.
-# compiler/codecs.av's registry runs every pair over its exemplars,
-# decode(encode(x)) compared to x field by field; tools/codecs.py
-# refuses any encoder/decoder-shaped pair in the tree the registry
-# does not name.
-#
-# THE SCAN IS ITS OWN TARGET because it needs no compiler: a pull request
-# whose diff reaches the compiler's source runs `codecs-static` in seconds
-# (it is what names an unregistered pair — the refusal #537 failed a train
-# on), so the defect is heard on the PR, not one train later. The
-# registry's round trip needs a whole compiler and stays with the train.
-codecs: codecs-static $(COMPILER_OBJS) $(PACKAGE_OBJS)
-	@./build/avra test packages/std-avrac/src/compiler/tests/codecs_test.av
-
+# THE CODEC SCAN: every encoder/decoder-shaped pair in the tree is one
+# compiler/codecs.av's registry names (tools/codecs.py). It needs no
+# compiler, so a pull request reaching the compiler's source hears an
+# unregistered pair in seconds. The registry's round trip, decode(encode(x))
+# against x field by field, is std-avrac's own suite
+# (compiler/tests/codecs_test.av).
 codecs-static:
 	@python3 tools/codecs.py
 
@@ -1533,12 +1429,6 @@ voices-accept:
 externs:
 	@python3 tools/externs.py
 
-# THE WORKFLOW PARSE KEEPER: every workflow file reads as YAML. A file that does not parse
-# runs with no jobs, so the check it was meant to run examines nothing (tools/workflows_yaml.py).
-workflows-yaml:
-	@python3 tools/workflows_yaml.py --self-test >/dev/null
-	@python3 tools/workflows_yaml.py
-
 # THE TRAPS COLUMN'S KEEPER: a row marked `traps: false` reaches no trap the
 # language raises (tools/traps.py).
 trap-marks:
@@ -1621,7 +1511,7 @@ witness: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 # refuses in that case, which is honest and not a gate failure, so
 # its status is discarded here.
 # not a keeper — a lane's local union of keepers; CI runs each in its own job
-gate: llvm-libs seed-check stems vocab fingerprints ui-host ui-host-test ui-board ui-browser families-left layers hooks-released codecs rt-header rt-ns parser witnesses externs idioms cited dogfooding-rules fmt-lossless attack tested runtime-tests traps compile-slots witness tool-witnesses cache-attacks
+gate: llvm-libs seed-check stems vocab fingerprints ui-host ui-host-test ui-board ui-browser layers pre-commit-hook codecs-static rt-header rt-ns parser witnesses externs idioms dogfooding-rules fmt-lossless attack tested runtime-tests traps compile-slots witness tool-witnesses cache-attacks
 	@sh tools/gate_receipt.sh write || true
 
 tested: $(COMPILER_OBJS) $(PACKAGE_OBJS) libs

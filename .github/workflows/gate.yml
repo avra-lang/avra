@@ -1,7 +1,7 @@
 # THE GATE ON A RUNNER: every slice `tools/gate.sh list` names, run from ONE seeded compiler, on a
 # push to `gate/**`. The pushed branch is a one-commit mirror — the batch's tree over its parent, the
-# trunk's — so the workflow is the pushed commit's own and nothing touches main; the idioms slices
-# take that parent (HEAD~1) as the base their diff starts at.
+# trunk's — so the workflow is the pushed commit's own and nothing touches main; the idioms, fmt and
+# keepers-alone slices take that parent (HEAD~1) as the base their diff starts at.
 #
 #   seed    `sh tools/gate.sh seed`: HEAD's compiler of generation 2, packed with its objects
 #   census  `sh tools/gate.sh census`: the census compiler, built once by the seed's, beside the slices
@@ -22,6 +22,7 @@ concurrency:
 permissions:
   contents: read
   packages: read
+  actions: read
 
 env:
   LLVM_PREFIX: /usr/lib/llvm-22
@@ -41,6 +42,7 @@ jobs:
       jobs: ${{ steps.slices.outputs.jobs }}
       costs: ${{ steps.slices.outputs.costs }}
       browser: ${{ steps.slices.outputs.browser }}
+      lays: ${{ steps.slices.outputs.lays }}
       sha8: ${{ steps.slices.outputs.sha8 }}
     steps:
       - uses: actions/checkout@v4
@@ -82,7 +84,9 @@ jobs:
           # THE RUNNER JOBS, dealt by measured seconds (tools/gate.sh jobs); a cost slice is a job alone, run
           # after the census
           echo "jobs=$(sh tools/gate.sh jobs | awk '$1 !~ /^cost-/ { print $1 }' | json)" >> "$GITHUB_OUTPUT"
-          echo "costs=$(sh tools/gate.sh jobs | awk '$1 ~ /^cost-/ { print $1 }' | json)" >> "$GITHUB_OUTPUT"
+          # THE SLICES THAT LAY THE SNAPSHOT'S STD ANSWERS wait for the one slice that makes them (cost-answers)
+          echo "costs=$(sh tools/gate.sh jobs | awk '$1 ~ /^cost-/ && $1 != "cost-answers" && $1 !~ /laid/ { print $1 }' | json)" >> "$GITHUB_OUTPUT"
+          echo "lays=$(sh tools/gate.sh jobs | awk '$1 ~ /^cost-/ && $1 ~ /laid/ { print $1 }' | json)" >> "$GITHUB_OUTPUT"
           # THE JOBS THAT CARRY THE BROWSER LEG (a keeper of KEEPERS_B, KEEPERS_WASM or the tool witnesses), which
           # run on the browser leg's machine
           echo "browser=$(sh tools/gate.sh jobs | { grep -E ' keepers-(b|wasm|tw)' || :; } | awk '{ print $1 }' | json)" >> "$GITHUB_OUTPUT"
@@ -179,13 +183,13 @@ jobs:
         with:
           path: build/playwright
           key: playwright-${{ steps.browser.outputs.playwright }}-webkit-browsers
-      # THE SNAPSHOT'S STD ANSWERS FOR THE SLICES THAT LAY THEM (cost-laid, the laid matrix; tools/cost.sh
-      # `laid`), KEPT BESIDE THE BUILDER: the release
+      # THE SNAPSHOT'S STD ANSWERS, MADE ONCE A GATE (cost-answers; tools/cost.sh `laid`) from those KEPT
+      # BESIDE THE BUILDER: the release
       # `gate-builder` carries the landed run's answers, which every gate can read (a cache cannot cross
       # gate/** branches). Laid down, they are judged by the writer's own key — the census compiler's
       # bytes, the snapshot's std — and written again where it is not theirs.
       - name: cost answers
-        if: contains(fromJSON('["cost-laid","cost-matrix-check-laid","cost-matrix-build-laid"]'), matrix.slice)
+        if: matrix.slice == 'cost-answers'
         run: |
           if curl -fsSL --retry 3 -o cost-answers.tar.gz https://github.com/avra-lang/avra/releases/download/gate-builder/cost-answers.tar.gz \
               && tar -tzf cost-answers.tar.gz | awk '$0 !~ /^cost-answers(\/|$)/ { bad = 1 } END { exit bad }'; then
@@ -193,6 +197,14 @@ jobs:
           else
             echo "cost answers: the release holds none this gate can read — the slice writes them"
           fi
+      # A SLICE THAT LAYS THEM LAYS THIS GATE'S: the writer's key is every one of them theirs, so none is written again
+      - if: contains(matrix.slice, 'laid')
+        uses: actions/download-artifact@v4
+        with: { name: gate-cost-answers, path: answers }
+      - if: contains(matrix.slice, 'laid')
+        name: this gate's answers
+        run: |
+          mkdir -p build && tar -xzf answers/cost-answers.tar.gz -C build && echo "cost answers: this gate's, laid down"
       # EACH SLICE OF A JOB RUNS ALONE, IN A TREE OF ITS OWN: the tree as unpacked is kept aside, and laid
       # down afresh before every slice after the first. Verdicts and a failing slice's words are kept in
       # gate-kept/, which no slice's tree holds.
@@ -214,7 +226,7 @@ jobs:
               echo "gate: the tree laid down afresh for $s"
             fi
             first=0
-            case "$s" in idioms*|fmt) base=$(git rev-parse HEAD~1) ;; *) base="" ;; esac
+            case "$s" in idioms*|fmt|keepers-alone-*) base=$(git rev-parse HEAD~1) ;; *) base="" ;; esac
             one=0
             sh tools/gate.sh "$s" $base > gate.out 2>&1 || one=$?
             cat gate.out
@@ -231,6 +243,9 @@ jobs:
                 [ ! -f build/cost/snapshot ] || sh tools/avra_tools.sh cost rows build/cost > "gate-kept/verdict/$s.rows" || : ;;
             esac
             case "$s" in cost-ledger-* | cost-matrix-*) [ ! -f build/cost/ledger.md ] || cp build/cost/ledger.md "gate-kept/verdict/$s.md" ;; esac
+            # A KEYED KEEPER KEEPS ITS LEDGER ROWS, passing or not (build/ledger/<name>/rows: footprint, the wasm
+            # sizes), so a key the ledger holds no row of is seeded from a run's own numbers
+            for r in build/ledger/*/rows; do [ ! -f "$r" ] || cp "$r" "gate-kept/verdict/$s.$(basename "$(dirname "$r")").rows"; done
             if [ "$one" != 0 ]; then
               st=1
               [ ! -d "build/gate/$s" ] || cp -a "build/gate/$s" "gate-kept/failed/$s"
@@ -246,9 +261,9 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
       # THE ANSWERS THIS RUN STANDS ON, for a landing to publish beside the builder as cost-answers.tar.gz
-      - if: success() && matrix.slice == 'cost-laid'
+      - if: success() && matrix.slice == 'cost-answers'
         run: tar -czf cost-answers.tar.gz -C build cost-answers
-      - if: success() && matrix.slice == 'cost-laid'
+      - if: success() && matrix.slice == 'cost-answers'
         uses: actions/upload-artifact@v4
         with:
           name: gate-cost-answers
@@ -280,11 +295,34 @@ jobs:
         slice: ${{ fromJSON(needs.seed.outputs.costs) }}
     steps: *slice-steps
 
+  # THE SNAPSHOT'S STD ANSWERS, once: every slice that lays them starts from this one's
+  answers:
+    needs: [seed, census]
+    runs-on: ubuntu-latest
+    container: *gate-image
+    timeout-minutes: 20
+    strategy:
+      matrix:
+        slice: [cost-answers]
+    steps: *slice-steps
+
+  cost-laid:
+    needs: [seed, census, answers]
+    runs-on: ubuntu-latest
+    container: *gate-image
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        slice: ${{ fromJSON(needs.seed.outputs.lays) }}
+    steps: *slice-steps
+
   verdict:
-    needs: [seed, census, slice, cost]
+    needs: [seed, census, slice, cost, answers, cost-laid]
     if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    container: *gate-image
+    timeout-minutes: 10
     steps:
       - uses: actions/download-artifact@v4
         with: { pattern: gate-verdict-*, path: verdicts, merge-multiple: true }
@@ -292,6 +330,7 @@ jobs:
         run: |
           [ "${{ needs.seed.result }}" = success ] || { echo "gate: the seed did not build — ${{ needs.seed.result }}"; exit 1; }
           [ "${{ needs.census.result }}" = success ] || echo "gate: the census compiler did not build — ${{ needs.census.result }}; every cost slice fails"
+          [ "${{ needs.answers.result }}" = success ] || echo "gate: the snapshot's std answers were not made — ${{ needs.answers.result }}; every slice that lays them fails"
           printf '%-14s %-5s %s\n' slice verdict seconds
           failed=0
           for s in $(echo '${{ needs.seed.outputs.slices }}' | tr -d '[]",' ); do
@@ -303,3 +342,25 @@ jobs:
           done
           echo "gate: ${{ needs.seed.outputs.sha8 }} — $failed slice(s) failed"
           [ "$failed" = 0 ]
+      # THE GATE'S OWN WALL: every job's clock, their sum and the makespan the owner's target is about
+      # (tools/ci_wall.sh), told against the ledger's `wall:ci-gate:` rows — a shared runner's clock is a
+      # fact, never a verdict, so it warns and refuses nothing. The ledger's reader comes from the pack.
+      - if: always() && needs.seed.result == 'success'
+        uses: actions/checkout@v4
+        with: { fetch-depth: 2 }
+      - if: always() && needs.seed.result == 'success'
+        uses: actions/download-artifact@v4
+        with: { name: gate-pack, path: pack }
+      - if: always() && needs.seed.result == 'success'
+        name: wall
+        timeout-minutes: 4
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          sh tools/gate.sh unpack pack/compiler-${{ needs.seed.outputs.sha8 }}.tar.gz > /dev/null
+          if WALL_HOST=ci-gate sh tools/ci_wall.sh collect > wall.metrics; then
+            sh tools/ledger_rows.sh wall.metrics wall clock tell
+          else
+            echo "::notice title=gate wall::the run's job clocks could not be read — not told"
+          fi

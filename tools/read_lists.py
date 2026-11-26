@@ -82,14 +82,17 @@ def accepted(longest, ceil):
 
 
 def stats():
-    """`check --read-lists` over a cold store, the package's own store set aside meanwhile."""
-    store = os.path.join(ROOT, PACKAGE, ".avra-cache")
-    aside = store + ".read-lists"
-    moved = os.path.isdir(store)
-    if os.path.isdir(aside):
-        sys.exit(f"read_lists: {aside} stands from a run that did not finish — move it back first")
-    if moved:
-        os.rename(store, aside)
+    """`check --read-lists` over a cold store, with what would answer for it set aside meanwhile:
+    the package's own store, and the checkout's shipped std answers, which a gate's compiler never
+    makes — with them, std is read from packs and its queries never run, so the lists measured
+    are another program's."""
+    held = [os.path.join(ROOT, PACKAGE, ".avra-cache"), os.path.join(ROOT, "build", "answers")]
+    for path in held:
+        if os.path.isdir(path + ".read-lists"):
+            sys.exit(f"read_lists: {path}.read-lists stands from a run that did not finish — move it back first")
+    moved = [path for path in held if os.path.isdir(path)]
+    for path in moved:
+        os.rename(path, path + ".read-lists")
     try:
         run = subprocess.run(
             ["./avra", "check", PACKAGE, "--read-lists"],
@@ -99,10 +102,11 @@ def stats():
             env=dict(os.environ, AVRA_PROGRAM_NET="0", AVRA_STORE_KEPT_HERE="1"),
         )
     finally:
-        if os.path.isdir(store):
-            shutil.rmtree(store)
-        if moved:
-            os.rename(aside, store)
+        for path in held:
+            if os.path.isdir(path):
+                shutil.rmtree(path)
+        for path in moved:
+            os.rename(path + ".read-lists", path)
     return run.stdout + run.stderr
 
 

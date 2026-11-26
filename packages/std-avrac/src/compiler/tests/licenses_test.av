@@ -48,6 +48,20 @@ spec "compiler/licenses — a rule's own site license" {
             )
         }
     }
+    given "(f) a run of licence lines directly above, this rule's not the last" {
+        then "the finding for that id is silenced" {
+            licensed_line(
+                "    // LICENSED compiler.repeated_projection: a reason\n    // LICENSED input.debug_flag: another keeper's\n",
+                "compiler.repeated_projection",
+            )
+        }
+        then "a comment that is no licence ends the run" {
+            !licensed_line(
+                "    // LICENSED compiler.repeated_projection: a reason\n    // a remark\n",
+                "compiler.repeated_projection",
+            )
+        }
+    }
     given "(d) a correct license two lines up, not directly above" {
         then "it does not count" {
             !licensed_line(
@@ -113,13 +127,15 @@ spec "compiler/licenses — what a citation may name" {
 spec "compiler/licenses — a keeper family's ids" {
     then "an id of the right shape is cited" {
         !cites_nothing("input.clock", {"test.a": true}) &&
-            !cites_nothing("input.saved_read", {"test.a": true}) &&
-            !cites_nothing("whole.cold", {"test.a": true})
+            !cites_nothing("input.saved_read", {"test.a": true})
     }
     then "an id with the wrong shape is stale" {
         cites_nothing("input.Clock", {"test.a": true}) &&
             cites_nothing("input.", {"test.a": true}) &&
-            cites_nothing("input.a1", {"test.a": true}) &&
+            cites_nothing("input.a1", {"test.a": true})
+    }
+    then "a family no keeper holds is cited at its shape and stale past it" {
+        !cites_nothing("whole.cold", {"test.a": true}) &&
             cites_nothing("whole.colder", {"test.a": true}) &&
             cites_nothing("whole.", {"test.a": true})
     }

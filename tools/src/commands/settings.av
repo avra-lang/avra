@@ -2,15 +2,15 @@
 //! PROJECTIONS. `tools/src/settings/declared.av` declares every variable
 //! the compiler's Avra reads; `--write` lays each package's plain records
 //! and loader into its `settings.av`, and `Setting` into this package;
-//! `--check` regenerates them and refuses a stale one. With no flag, it
-//! prints each setting, its value and where the value came from. The
-//! runtime's C names (`AVRA_HASH_SEED`, `AVRA_MEM_*`, `AVRA_FIBER_*`) are
-//! not covered: they are read in C, and a header generated from this
-//! declaration names them later. Exit 0 fresh, 1 stale or refused.
+//! `--check` regenerates them and refuses a stale one, and refuses a C
+//! read that spells a setting by hand (`hand_reads.av`; the Avra side is
+//! the compiler's own rule, compiler.setting_read_by_hand). With no flag,
+//! it prints each setting, its value and where the value came from. Exit 0
+//! fresh, 1 stale or refused.
 use @std.cli.{CliResult, Runnable, command, flag}
 use @std.io.{read_text, write_text, make_dirs}
 use @std.path.{dir_of}
-use settings.{Projection, projected, loaded}
+use settings.{HandRead, Projection, projected, loaded, hand_reads_in_tree}
 
 type SettingsCmd = {}
 
@@ -30,9 +30,9 @@ impl Runnable for SettingsCmd {
 }
 
 export command tree_settings {
-    description: "The compiler's settings: --write lays each package's records from the one declaration, --check refuses a stale one, and alone it prints each setting's value and origin (the Avra readers; the runtime's C names come later)"
+    description: "The compiler's settings: --write lays every projection of the one declaration, --check refuses a stale one or a C read that spells a setting by hand, and alone it prints each setting's value and origin"
     flag write { description: "write every projection from the declaration" }
-    flag check { description: "refuse a projection the declaration no longer writes" }
+    flag check { description: "refuse a projection the declaration no longer writes, or a C read by hand" }
     run: SettingsCmd {}
 }
 
@@ -52,12 +52,16 @@ fn written(made: List<Projection>) -> int {
     0
 }
 
-/// Each projection held to its file: 0 when every one is fresh.
+/// Each projection held to its file, and the C held to its projection: 0 when both hold.
 export fn checked(made: List<Projection>) -> int {
     let stale = [p.file for p in made if (read_text(p.file) catch "") != p.text]
     for f in stale { println(stale_voice(f)) }
-    println("settings: ${made.length} projections read, ${stale.length} stale")
-    if stale.is_empty() { 0 } else { 1 }
+    let by_hand = hand_reads_in_tree()
+    for r in by_hand { println(by_hand_voice(r)) }
+    println(
+        "settings: ${made.length} projections read, ${stale.length} stale; ${by_hand.length} C read(s) by hand",
+    )
+    if stale.is_empty() && by_hand.is_empty() { 0 } else { 1 }
 }
 
 /// The settings this process holds, each with its origin.
@@ -76,6 +80,10 @@ fn shown() -> int {
 
 fn stale_voice(file: string) -> string {
     "settings: ${file} is not what the declaration writes — `wisp tree settings --write` lays it again"
+}
+
+fn by_hand_voice(r: HandRead) -> string {
+    "settings: ${r.file}:${r.line} reads `${r.variable}` by hand — read its `AVRA_SET_*` name from runtime/avra_settings.h, or license the site with `// LICENSED compiler.setting_read_by_hand: <why>` above it"
 }
 
 fn unwritten(file: string) -> string { "settings: ${file} could not be written" }

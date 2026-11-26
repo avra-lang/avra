@@ -2028,56 +2028,6 @@ impl Decls {
         self.bound_types.set_at(d.index, args)
     }
 
-    /// The hooks capture the workspace that holds this table — a
-    /// cycle counting never frees. A one-shot workspace disarms them
-    /// once every declaration it will ever ask about is signed; a
-    /// sig asked after that is held or, loudly, absent. `ensure_consumed`
-    /// stays armed, as `ensure_refs` already does: consumption is asked
-    /// at LOWERING, after a one-shot's own disarm, so zeroing this hook
-    /// here would make every seat read unconsumed forever. The query answers stand: an
-    /// answer asked after disarm is the one settled, never a run with its hooks gone, and
-    /// `let_go` closes them.
-    fn disarm() {
-        self.auditing.set(false)
-        self.ensure.set(no_ensure)
-        self.seat_ensure.set(no_ensure)
-        self.ensure_const.set(no_const_ensure)
-        self.ensure_entry.set(no_entry_ensure)
-        self.ensure_methods.set(no_ensure)
-        self.ensure_writes.set(no_answer)
-        self.ensure_cancels.set(no_answer)
-        self.ensure_marks.set(no_marks)
-        self.ensure_store.set(no_store)
-        self.ensure_file.set(no_store)
-        self.ensure_package.set(no_store)
-        self.ensure_failures.set(no_failures_ensure)
-        self.lifter.set(no_lifter)
-        self.namespace_of.set(no_namespace)
-        self.apart_of.set(none_apart)
-        self.composers_of.set(none_apart)
-    }
-
-    /// A TABLE NOTHING ASKS AGAIN, LET GO: every hook, the ones a one-shot
-    /// keeps armed among them, so it holds no closure back to its workspace —
-    /// and its relations closed, since a relation's rows stand in the process
-    /// under their Db until it closes. A read after this is refused with `voice`.
-    fn let_go(voice: string) {
-        self.disarm()
-        self.ensure_consumed.set(no_consumed)
-        self.ensure_refs.set(no_refs_ensure)
-        self.ensure_read.set(no_finding)
-        self.ref_rows_to.set(no_decl_refs)
-        self.ref_rows_from.set(no_file_refs)
-        self.ref_rows_incomplete.set(refs_unknown)
-        self.externs_index.set(no_externs)
-        self.types_index.set(no_modules)
-        self.rows_db.get().answers_forgotten()
-        self.embed_judge.set(embed_unjudged)
-        self.audit_hook.set(no_audit)
-        self.types.disarm_declare()
-        self.rows_db.get().close_saying(voice)
-    }
-
     /// The workspace arms the sig hook once.
     fn arm(ensure: fn(DeclId) -> void) {
         self.ensure.set(ensure)

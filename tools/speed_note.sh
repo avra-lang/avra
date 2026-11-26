@@ -1,4 +1,5 @@
 #!/bin/sh
+# tool-witness: --self-test
 # THE CPU BACKSTOP. Reads what the jobs already print and writes a table; wall seconds warn over
 # 25% (a shared runner's I/O stalls swing them), CPU seconds (`speed cpu-<step>`, user+sys from the
 # step's rusage) FAIL over 2x main's baseline AND 30 s more AND twice the run's own median growth (a

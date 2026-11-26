@@ -1,8 +1,11 @@
 #!/bin/sh
-# THE TRAP CONTRACT, kept. A trap is a VERDICT (exit 2) and its words
-# name the fault — laws no program test can hold, because a suite
-# runs every program in one process and a trap ends it. Each row builds
-# a program, runs it, and demands the exact words and the exact status.
+# THE TRAP CONTRACT, kept where a program test cannot hold it. A trap is a
+# VERDICT (exit 2) and its words name the fault; a `<name>.refuses` program
+# test holds one in both engines, on stderr alone (packages/std-avrac/src/
+# compiler/tests/traps). The rows here are the rest: one engine only, words
+# that span stdout and stderr, an environment the program runs under, or
+# words the two engines do not share. Each row builds a program, runs it, and
+# demands the exact words and the exact status.
 #
 # A ROW IS A PACKAGE, NEVER A BARE FILE. A bare file cannot `use` one
 # — F3015, "this file is not in a package" — so a bare-file harness
@@ -55,51 +58,15 @@ trapped() {
 # AN EVALUATED row (`avra run --eval`), which `trapped` cannot reach: it builds and runs a
 # BINARY, so a law belonging to `avra run` — the frame that hosts a
 # package's C inside the compiler's own process — has no row there at
-# all. A nested watchdog's own lines are not the program's words.
+# all. A nested watchdog's own lines are not the program's words, nor is
+# the compiler's word that it waits for the last build's heir to save.
 trapped_run() {
     rows=$((rows + 1))
     scaffold "$1" "$4" "$5"
     ./avra run --eval "$dir" > "$dir/run.out" 2>&1 && status=0 || status=$?
-    verdict "$1" "$2" "$3" "$(grep -v '^watch: ' "$dir/run.out")" "$status"
+    verdict "$1" "$2" "$3" "$(grep -v -e '^watch: ' -e "^avra: waiting for the last build's save$" "$dir/run.out")" "$status"
 }
 
-trapped past_end "avra: index 3 is out of bounds (length 3)" 2 '' 'let xs = [1, 2, 3]
-xs[3]
-'
-trapped negative "avra: index -1 is out of bounds (length 3)" 2 '' 'let xs = [1, 2, 3]
-mut i = 0
-i = i - 1
-xs[i]
-'
-trapped empty "avra: index 0 is out of bounds (length 0)" 2 '' 'let xs: List<int> = []
-xs[0]
-'
-# A SHIFT COUNT the compiler cannot read. A literal one is refused
-# where it is written (F2057); this is its twin — the count arrives at
-# run time, so one C body decides the edge and BOTH engines call it.
-# The words name the LAW, never the mechanism that would enforce it.
-trapped bytes_at "avra: index 3 is out of bounds (length 3)" 2 '' 'let b = [1, 2, 3].bytes()!
-b.at(3)
-'
-trapped bytes_slice "avra: slice 2..4 is out of bounds (length 3)" 2 '' 'let b = [1, 2, 3].bytes()!
-let s = b.slice(2, 4)
-s.length
-'
-trapped bytes_from "avra: index 4 is out of bounds (length 3)" 2 '' 'let b = [1, 2, 3].bytes()!
-b.index_of([2].bytes()!, 4)
-'
-trapped bytes_table "avra: a class table holds 256 bytes (length 3)" 2 '' 'let b = [1, 2, 3].bytes()!
-b.run(0, b)
-'
-trapped bytes_eq_at "avra: slice 1..4 is out of bounds (length 3)" 2 '' 'let b = [1, 2, 3].bytes()!
-b.eq_at(1, 4, b)
-'
-trapped take_at_eof "avra: a take at EOF — \`read\` answered 0, which names no bytes" 2 '' 'extern fn avra_fd_taken(token: int) -> Bytes
-avra_fd_taken(0).length
-'
-trapped take_of_error "avra: a take of an error — \`read\` answered -35, not a token" 2 '' 'extern fn avra_fd_taken(token: int) -> Bytes
-avra_fd_taken(-35).length
-'
 trapped stale_take "avra: a take of read 1, but read 2 has landed since" 2 '
 [dependencies]
 "@std/net"  = { path = "../../../packages/std-net" }
@@ -128,52 +95,6 @@ match run() {
     .Err(e) -> e.verb,
 }
 '
-# A STRING CROSSING TO C IS ONE STRING. Avra measures text by the
-# header and C reads to the first NUL, so a string holding one is TWO
-# VALUES at the seam — a name that was checked is not the name that is
-# used. Every mature runtime refuses rather than truncates; ours traps
-# with the OFFSET, and the same helper is called by the extern frame,
-# so the two engines cannot disagree about which strings may cross.
-#
-# THREE POSITIONS, because a scan that stops early passes one of them:
-# a NUL first, last and inside. "Last" is inside the LENGTH — a
-# five-byte string ending in NUL is four bytes to C and five to the
-# program, which is the same two values.
-trapped nul_crossing_first "avra: a string holding a NUL crossed to C as two strings — byte 0" 2 '' 'extern fn avra_str_from_codepoint(code: int) -> string
-extern fn avra_host_env(name: string) -> string
-let s = avra_str_from_codepoint(0) + "PATH"
-avra_host_env(s).length'
-
-trapped nul_crossing_inside "avra: a string holding a NUL crossed to C as two strings — byte 2" 2 '' 'extern fn avra_str_from_codepoint(code: int) -> string
-extern fn avra_host_env(name: string) -> string
-let s = "PA" + avra_str_from_codepoint(0) + "TH"
-avra_host_env(s).length'
-
-trapped nul_crossing_last "avra: a string holding a NUL crossed to C as two strings — byte 4" 2 '' 'extern fn avra_str_from_codepoint(code: int) -> string
-extern fn avra_host_env(name: string) -> string
-let s = "PATH" + avra_str_from_codepoint(0)
-avra_host_env(s).length'
-
-# THE FOURTH POSITION IS NOT WHERE THE NUL SITS — IT IS WHICH BOX
-# CARRIES IT. A row's seat kind is `Ptr`, which a string and a `Bytes`
-# both fill, so the same bytes spelled `Bytes` reach the same
-# `getenv`. The exemption a `Bytes` wears is EARNED BY THE CALLEE
-# KNOWING THE LENGTH — a blob and its `n` — and CORE's name-resolving
-# rows carry no length at all, so there the octets mean a PREFIX of
-# themselves exactly as text does. Three positions of the NUL were
-# attacked above and this axis was not, so `avra_host_env` read a
-# different variable and `avra_spawn_status` ran a different program,
-# each with the guard one spelling away.
-trapped nul_crossing_bytes "avra: a string holding a NUL crossed to C as two strings — byte 2" 2 '' 'extern fn avra_str_from_codepoint(code: int) -> string
-extern fn avra_host_env(name: Bytes) -> string
-let s = ("PA" + avra_str_from_codepoint(0) + "TH").bytes()
-avra_host_env(s).length'
-
-trapped nul_crossing_bytes_prog "avra: a string holding a NUL crossed to C as two strings — byte 13" 2 '' 'extern fn avra_str_from_codepoint(code: int) -> string
-extern fn avra_spawn_status(prog: Bytes, args: List<string>) -> int
-let prog = ("/usr/bin/true" + avra_str_from_codepoint(0) + "/evil").bytes()
-avra_spawn_status(prog, [])'
-
 # A PACKAGE'S BARE `const char*` SEAT, which is where the rule was
 # WRITTEN DOWN before it was enforced. @std/sqlite's adversarial suite
 # pinned the truncation for years — text comparing equal to its own
@@ -199,31 +120,6 @@ use @std.text.{from_codepoint}
 let holed = "ab" + from_codepoint(0) + "cd"
 sqlite3_stricmp(holed, "ab")
 '
-
-# A WORD INSIDE A LIST, which the per-SEAT check cannot see. The seam
-# checks a seat, and a `List<string>` seat is a pointer to a BOX — so
-# every word inside it crosses unexamined while the host RESOLVES each
-# one. `avra_spawn_status` and `avra_exec_self` are ROWS for that
-# reason (their C reads an `AvraArray`, which §2.1 makes core's), and
-# their C bodies check each word at the crossing itself.
-#
-# THE CHILD IS `/bin/echo` DELIBERATELY: `avra_exec_self` is the same
-# law and cannot be a row here, because a program that re-execs ITSELF
-# with a word the check no longer refuses would loop. A contract whose
-# regression is a fork bomb does not belong in a harness.
-trapped nul_in_a_spawned_word "avra: a string holding a NUL crossed to C as two strings — byte 1" 2 '' 'extern fn avra_str_from_codepoint(code: int) -> string
-extern fn avra_spawn_status(prog: string, args: List<string>) -> int
-avra_spawn_status("/bin/echo", ["a" + avra_str_from_codepoint(0) + "b"])'
-
-# AND THE EXEMPTION IS NOT A HOLE: an INERT row reads the bytes it was
-# handed and resolves nothing, so a NUL rides through it untouched —
-# the trap here is the BOUNDS one, reached only because the string
-# carried all five of its bytes past `join`, `length` and `char_code`.
-trapped nul_through_inert "avra: index 9 is out of bounds (length 5)" 2 '' 'extern fn avra_str_from_codepoint(code: int) -> string
-let s = "ab" + avra_str_from_codepoint(0) + "cd"
-let joined = ["x", s].join("|")
-let codes = [s.char_code(i) for i in 0..s.length]
-codes[9]'
 
 # A FOREIGN BODY'S WRECK IS THE PROGRAM'S VERDICT, NOT THE COMPILER'S.
 # Under `avra run` a package's C is called inside the COMPILER's own
@@ -252,29 +148,6 @@ trapped printed_before_a_trap_native 'before
 avra: index 5 is out of bounds (length 2)' 2 '' 'println("before")
 let xs = [1, 2]
 println("${xs[5]}")
-'
-
-trapped shift_wide "avra: a shift count must be between 0 and 63" 2 '' 'let a = 1
-mut n = 0
-n = n + 64
-a << n
-'
-trapped shift_negative "avra: a shift count must be between 0 and 63" 2 '' 'let a = 1
-mut n = 0
-n = n - 1
-a >> n
-'
-
-# A trap raised with a PACKAGE in use is still a verdict — the row
-# that proves this harness reaches past a bare file, so the capability
-# is exercised rather than merely available.
-trapped in_package "avra: index 5 is out of bounds (length 1)" 2 '
-[dependencies]
-"@std/text" = { path = "../../../packages/std-text" }
-' 'use @std.text.{from_codepoint}
-let a = from_codepoint(65)
-let xs = [a]
-xs[5]
 '
 
 # HAZARD 4: A PROCESS THAT DIES INSIDE A TRANSACTION. `avra_trap` exits
