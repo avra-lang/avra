@@ -78,8 +78,41 @@ jobs:
             echo "full=$full"
           } >> "$GITHUB_OUTPUT"
           echo "lane-run: $lane, bound ${minutes} min, compiler avrac-$key$([ "$full" = 1 ] || echo ' (builder)'): $(printf '%s' "$cmd" | head -n 1 | cut -c1-200)"
+      # A TREE BUILT ON PROGRAM IS BUILT FROM PROGRAM'S COMPILER, as gate.yml builds it: main's would climb
+      # program's rungs from a compiler that refuses program's own source. A tree is program's where its
+      # merge-base with program holds a commit main lacks; it then lays down the gate-builder release,
+      # which stands as its compiler where the compiler source is the release's, and builds generations 1
+      # and 2 from it where it is not. Any other tree takes its compiler as before.
+      - id: program
+        name: program's compiler
+        timeout-minutes: 56
+        env:
+          LLVM_PREFIX: /usr/lib/llvm-22
+        run: |
+          # GitHub's compare answers a merge-base and how far past main it stands; a question it can't answer
+          # is said, and the tree takes its compiler as before
+          asked() {
+            curl -fsS --retry 3 -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/compare/$1" | python3 -c "import json, sys; print(json.load(sys.stdin)$2)"
+          }
+          head=$(git rev-parse HEAD)
+          base=$(asked "program...$head" '["merge_base_commit"]["sha"]') || { echo "lane-run: GitHub did not answer this tree's merge-base with program — its compiler as before"; exit 0; }
+          ahead=$(asked "main...$base" '["ahead_by"]') || { echo "lane-run: GitHub did not answer how far $base stands past main — its compiler as before"; exit 0; }
+          if [ "$ahead" -gt 0 ] 2>/dev/null; then :; else echo "lane-run: a tree of main's (its merge-base with program, $base, is main's) — its compiler as before"; exit 0; fi
+          echo "lane-run: a tree of program's (merge-base $base, $ahead commit(s) past main) — program's compiler"
+          echo "program=1" >> "$GITHUB_OUTPUT"
+          curl -fsSL --retry 3 -o gate-builder.tar.gz https://github.com/avra-lang/avra/releases/download/gate-builder/compiler.tar.gz
+          if sh tools/gate.sh unpack gate-builder.tar.gz; then
+            echo "lane-run: the gate-builder release stands as this tree's compiler; nothing built"
+          else
+            tar -xzf gate-builder.tar.gz build/avra
+            echo "lane-run: this tree's compiler source is not the release's — generations 1 and 2 built from it"
+            sh tools/gate.sh seed
+          fi
+          build/avra --version
       # THE LANE'S OWN SAVE FIRST, then main's for this key, then the lane's newest, then main's newest.
       - id: compiler
+        if: steps.program.outputs.program != '1'
         uses: ./.github/actions/compiler
         timeout-minutes: 56
         with:

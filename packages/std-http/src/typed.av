@@ -14,7 +14,8 @@
 //! came back the reply.
 //!
 //! A RECORD THAT DOES NOT VALIDATE IS ONE 422, `application/problem+json`
-//! (RFC 9457), listing EVERY issue at its path — `problem`, the one
+//! (RFC 9457), listing EVERY issue at its path and, read from a request,
+//! the part it was found in (`"in": "body"` or `"query"`) — `problem`, the one
 //! encoder every door that judges a record answers with. A body that is
 //! not JSON, or not said to be, keeps `json()`'s 400 and 415: those are
 //! the request's framing, not the record's.
@@ -34,7 +35,7 @@
 //! A CAPTURE STAYS RAW in `params` (route.av); `captured` is the typed
 //! read of one, decoded once under the same law.
 use @std.http_message.message.{Header}
-use @std.json.{Json, field, to_text}
+use @std.json.{Field as JsonField, Json, field, to_text}
 use @std.text.{has_nul}
 use @std.url.{decoded}
 use @std.validate.{Coercion, Decode, Issue, Issues, Keyed, from_keyed}
@@ -51,7 +52,7 @@ impl Request {
             .Ok(v) -> v,
             .Err(issues) -> {
                 let _ = body_json(doc)?
-                fail problem(issues)
+                fail problem(issues, Origin.Body)
             },
         }
     }
@@ -63,7 +64,7 @@ impl Request {
         let posted = self.form_body()?
         match T.decode(from_keyed(posted.keyed()), Coercion.Lax) {
             .Ok(v) -> v,
-            .Err(issues) -> { fail problem(issues) },
+            .Err(issues) -> { fail problem(issues, Origin.Body) },
         }
     }
 
@@ -74,7 +75,7 @@ impl Request {
         let fields = keyed(self.query())?
         match Q.decode(from_keyed(fields), Coercion.Lax) {
             .Ok(q) -> q,
-            .Err(issues) -> { fail problem(issues) },
+            .Err(issues) -> { fail problem(issues, Origin.Query) },
         }
     }
 }
@@ -109,34 +110,47 @@ export fn created(j: Json, at: string) -> Response {
 /// THE ONE REFUSAL OF A RECORD: 422, `application/problem+json`, every
 /// issue at its path, the rule that refused and its words. What an issue
 /// received is never echoed: a refusal can be read by whoever is shown it.
-export fn problem(issues: Issues) -> Response {
+/// `part`, when the issues were read from a request, names where.
+export fn problem(issues: Issues, part: Origin? = null) -> Response {
     Response {
         status: 422,
         headers: [Header { name: "content-type", value: "application/problem+json" }],
-        body: to_text(problem_json(issues)).bytes(),
+        body: to_text(problem_json(issues, part)).bytes(),
     }
 }
 
-fn problem_json(issues: Issues) -> Json {
+fn problem_json(issues: Issues, part: Origin?) -> Json {
     Json
         .Obj(
             [
                 field("title", Json.Str(unvalidated())),
                 field("status", Json.Int(422)),
-                field("issues", Json.Arr([issue_json(i) for i in issues.all])),
+                field("issues", Json.Arr([issue_json(i, part) for i in issues.all])),
             ],
         )
 }
 
-fn issue_json(i: Issue) -> Json {
+/// The part of a request a record was read from.
+export enum Origin { Body, Query }
+
+fn issue_json(i: Issue, part: Origin?) -> Json {
     Json
         .Obj(
-            [
-                field("path", Json.Str(i.path.text())),
-                field("rule", Json.Str(i.rule)),
-                field("message", Json.Str(i.message)),
-            ],
+            in_field(part)
+                .concat(
+                    [
+                        field("path", Json.Str(i.path.text())),
+                        field("rule", Json.Str(i.rule)),
+                        field("message", Json.Str(i.message)),
+                    ],
+                ),
         )
+}
+
+/// `"in"` naming the part, when there is one.
+fn in_field(part: Origin?) -> List<JsonField> {
+    let p? = part else { return [] }
+    [field("in", Json.Str(origin_word(p)))]
 }
 
 // ── The query, decoded ──────────────────────────────────────────
@@ -164,6 +178,8 @@ fn plain_text(b: Bytes) -> string? {
 }
 
 // ── voices ──────────────────────────────────────────────────────
+
+fn origin_word(o: Origin) -> string { match o { .Body -> "body", .Query -> "query" } }
 
 fn unvalidated() -> string { "the request does not validate" }
 fn not_a_segment(raw: string) -> string { "the segment `${raw}` is not percent-encoded text" }

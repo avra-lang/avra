@@ -11,6 +11,8 @@
 #
 #   sh tools/gate.sh list               each slice, one a line, with what it holds
 #   sh tools/gate.sh jobs               the runner jobs: each job, then the slices it runs, dealt by seconds
+#   sh tools/gate.sh seconds <log…>     each suite row's measured seconds (`fact path <path> <n>`) kept in
+#                                       tools/gate/path.seconds, which the cli's shares are dealt by
 #   sh tools/gate.sh <slice> [arg]      one slice; the idioms slices take the base sha their diff starts at
 #   sh tools/gate.sh seed               build/gate/compiler-<sha8>.tar.gz: HEAD's compiler of generation 2,
 #                                       built here first where none of HEAD's stands, and every object a
@@ -92,7 +94,7 @@ avrac-c|2|test packages/std-avrac — src/features/[f-m]*, its dirs dealt in tur
 avrac-e|2|test packages/std-avrac — src/features/[s-z]*, its dirs dealt in turn
 edit-f|2|witness_program_edit's whole-mode cases (modes-whole), each alone over its own cold product, the frontier walk checked
 edit-g|2|witness_program_edit's layered-mode cases (modes-layered), each alone over its own cold product, the frontier walk checked
-cli|6|test packages/cli, its tests dealt in turn, failing names held to tools/gate/cli.names
+cli|7|test packages/cli, a row a test, dealt by their measured seconds (tools/gate/path.seconds), failing names held to tools/gate/cli.names
 program|6|the rows of program_rows — std-program, std-relation, rt-header, rt-ns and each runtime test (runtime/tests/*.c) — dealt in turn
 refusal|8|witness_program_refusal over its cases, dealt in turn
 needs|6|witness_program_needs over every package and refusal witness, dealt in turn
@@ -178,6 +180,15 @@ slice=$1
 shift
 if [ "$slice" = list ]; then slices; exit 0; fi
 if [ "$slice" = jobs ]; then jobs; exit 0; fi
+if [ "$slice" = seconds ]; then
+    [ $# -ge 1 ] || { echo "gate: seconds names the gate logs it reads" >&2; exit 2; }
+    kept="$root/tools/gate/path.seconds"
+    { grep '^#' "$kept"; { grep -v '^#' "$kept"; cat "$@" | sed -n 's/.*gate: fact path \([^ ]*\) \([0-9][0-9]*\)$/\1 \2/p'; } |
+        awk '{ w[$1] = $2 } END { for (p in w) print p, w[p] }' | LC_ALL=C sort; } > "$kept.new"
+    mv "$kept.new" "$kept"
+    echo "gate: $(grep -vc '^#' "$kept") path(s) in tools/gate/path.seconds"
+    exit 0
+fi
 if [ "$slice" = unpack ]; then unpacked "$@"; fi
 [ "$slice" = seed ] && slice=pack
 [ "$slice" = pack ] || [ "$slice" = census ] || slices | awk '{ print $1 }' | grep -qx "$slice" || { echo "gate: no slice \`$slice\` — \`sh tools/gate.sh list\` names them" >&2; exit 2; }
@@ -363,6 +374,29 @@ slice_avrac_f() {
 # list's parts share its weight in turn
 dealt() { awk -v k="$1" -v n="$2" '(NR - 1) % n == k'; }
 
+# the `$1`-th (from 0) of `$2` shares of the paths on stdin, dealt by their measured seconds
+# (tools/gate/path.seconds; a path it does not name weighs the median of those it does, or 60): heaviest
+# first, each into the lightest share so far, ties by path, so a tree deals one way
+dealt_by_seconds() {
+    awk -v k="$1" -v n="$2" '
+        NR == FNR { if ($0 !~ /^#/ && NF == 2) { secs[$1] = $2; known[++m] = $2 } next }
+        NF { p[++c] = $1 }
+        END {
+            for (i = 1; i <= m; i++) for (j = i + 1; j <= m; j++) if (known[j] < known[i]) { t = known[i]; known[i] = known[j]; known[j] = t }
+            dflt = m ? known[int((m + 1) / 2)] : 60
+            for (i = 1; i <= c; i++) w[i] = (p[i] in secs) ? secs[p[i]] : dflt
+            for (i = 1; i <= c; i++) for (j = i + 1; j <= c; j++)
+                if (w[j] > w[i] || (w[j] == w[i] && p[j] < p[i])) { t = w[i]; w[i] = w[j]; w[j] = t; t = p[i]; p[i] = p[j]; p[j] = t }
+            for (b = 0; b < n; b++) load[b] = 0
+            for (i = 1; i <= c; i++) {
+                best = 0
+                for (b = 1; b < n; b++) if (load[b] < load[best]) best = b
+                load[best] += w[i]
+                if (best == k) print p[i]
+            }
+        }' "$root/tools/gate/path.seconds" -
+}
+
 # `test` over `$2…` as the row `$1`, judged by the NAMES that fail: each must be one
 # tools/gate/<package>.names pins (a case a sandbox's environment fails — root writes any directory, no
 # terminal, no network), never a count. With no pin file, every failure fails the row.
@@ -384,6 +418,13 @@ tested() {
     listed "tools/gate/$pkg.traps" >"$out/$name.traps"
     comm -23 "$out/$name.trapped" "$out/$name.traps" >"$out/$name.untrapped"
     if [ -s "$out/$name.untrapped" ]; then judged "$name" "$(wc -l <"$out/$name.untrapped" | tr -d ' ')"; return; fi
+    # a scope that holds no proof, where the caller counts that as none here: refused by that voice alone
+    if [ "$ran" != 0 ] && [ -n "${EMPTY_SCOPE_PASSES:-}" ] && [ ! -s "$out/$name.failed" ] && [ ! -s "$out/$name.trapped" ] &&
+        grep -q 'names no test' "$out/$name.log" && ! grep -qE '^    (✓|✗)' "$out/$name.log"; then
+        : >"$out/$name.empty"
+        judged "$name" 0
+        return
+    fi
     # a run that fails no case and ends none must have exited clean; one that fails only pinned cases
     # or ends at a listed one stopped on them
     if [ ! -s "$out/$name.failed" ] && [ ! -s "$out/$name.trapped" ]; then judged "$name" "$ran"; return; fi
@@ -393,12 +434,32 @@ tested() {
 # the lines the pin file `$1` lists, sorted, each once; none where there is no such file
 listed() { if [ -f "$1" ]; then grep -v '^#' "$1" | sort -u; fi; }
 
+# one row of a suite share: `tested`, an empty scope counted as no proof here rather than a failure, and
+# the row's seconds said beside its path (`fact path <path> <n>`), which tools/gate/path.seconds keeps
+share_row() {
+    rows_held=$((rows_held + 1))
+    t0=$(date +%s)
+    EMPTY_SCOPE_PASSES=1
+    tested "$@"
+    EMPTY_SCOPE_PASSES=
+    [ ! -f "$out/$1.empty" ] || rows_empty=$((rows_empty + 1))
+    [ "$#" != 2 ] || echo "fact path $2 $(( $(date +%s) - t0 ))" >>"$out/rows"
+}
+
 # THE CLI'S SUITE: the one suite that runs the compiler as a child; every other test row holds what it
 # runs in-process.
 slice_cli() {
     cold cli
-    children_kept tested cli-suite "${@:-packages/cli}"
-    children_of_failed cli-suite
+    find "$out/children" -delete 2>/dev/null || :
+    rows_held=0
+    rows_empty=0
+    # a row each of the share's tests, its children kept apart (children/<row>/), each row its seconds
+    for p in "${@:-packages/cli}"; do
+        name="cli@$(echo "${p#packages/cli/src/}" | tr '/' '+')"
+        children_kept "$name" share_row "$name" "$p"
+        children_of_failed "$name"
+    done
+    [ "$rows_held" -gt "$rows_empty" ] || judged cli-held-no-proof 1
     ci_captured
     export AVRA_PROGRAM_NET=0
 }
@@ -435,19 +496,20 @@ ci_captured() {
     echo "captured: $n embed check(s)" >> "$cap/facts.txt"
 }
 
-# A SUITE WHOSE CASES RUN THE COMPILER AS A CHILD KEEPS WHAT EACH CHILD DID: `$@` with every child
-# `<tree>/avra` filed under $out/children/<case> by tools/gate/child_kept.sh — its arguments, its
+# A SUITE WHOSE CASES RUN THE COMPILER AS A CHILD KEEPS WHAT EACH CHILD DID: the row `$1` run as `$2…`, every child
+# `<tree>/avra` filed under $out/children/<row>/<case> by tools/gate/child_kept.sh — its arguments, its
 # streams and its exit — so a red row has the words its children said.
 children_kept() {
-    find "$out/children" -delete 2>/dev/null || :
-    export AVRA_BIN="$root/tools/gate/child_kept.sh" AVRA_CHILD_BIN="$root/build/avra" AVRA_CHILDREN="$out/children"
+    kept="$out/children/$1"
+    shift
+    export AVRA_BIN="$root/tools/gate/child_kept.sh" AVRA_CHILD_BIN="$root/build/avra" AVRA_CHILDREN="$kept"
     "$@"
     unset AVRA_BIN AVRA_CHILD_BIN AVRA_CHILDREN
 }
 
 # the children of the cases row `$1` failed, kept; every other case's dropped
 children_of_failed() {
-    for d in "$out"/children/*/; do
+    for d in "$out/children/$1"/*/; do
         [ -f "$d/case" ] || continue
         grep -qxF "$(sed 's/ @ .*//' "$d/case")" "$out/$1.failed" || find "$d" -delete
     done
@@ -632,7 +694,7 @@ part_of() {
         avrac-e) avrac $(features '[s-z]*' | dealt "$(($2 - 1))" "$3") ;;
         edit-f) edit_part "modes-whole-$2" ;;
         edit-g) edit_part "modes-layered-$2" ;;
-        cli) slice_cli $(find packages/cli/src/tests packages/cli/src/commands/tests -mindepth 1 -maxdepth 1 ! -name '.*' | sort | dealt "$(($2 - 1))" "$3") ;;
+        cli) slice_cli $(find packages/cli/src/tests packages/cli/src/commands/tests -mindepth 1 -maxdepth 1 ! -name '.*' | sort | dealt_by_seconds "$(($2 - 1))" "$3") ;;
         program)
             cold std-program std-relation
             rows_dealt program_rows "$2" "$3"

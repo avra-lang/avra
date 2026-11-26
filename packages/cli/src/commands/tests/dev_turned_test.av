@@ -1,0 +1,74 @@
+//! `avra dev`'s loop turned by hand: one page built, edited, broken and mended, each route
+//! asked as the server frames it. The helpers are dev_test.av's, a sibling in this module.
+spec "avra dev — the loop, turned by hand" {
+    given "a page nothing has built" {
+        then "the first turn builds it, and its id is the name it is served by, its content's" {
+            seen(
+                (s) -> s.first_built &&
+                    s.first_id.starts_with("app.") &&
+                    s.first_id.ends_with(".wasm") &&
+                    s.first_id.length == 41,
+            )
+        }
+        then "a turn with nothing moved builds nothing" { seen((s) -> !s.idle_built) }
+    }
+    given "a page that built" {
+        then "the page names the module it is about to load and carries the dev client" {
+            seen(
+                (s) -> s.page.contains("<meta name=\"avra-module\" content=\"${s.first_id}\">") &&
+                    s.page.contains("<script type=\"module\" src=\"./dev.js\"></script>"),
+            )
+        }
+        then "the page names every file it fetches, the module as the fetch that compiles it" {
+            seen(
+                (s) -> s.page.contains("data-avra-module=\"./${s.first_id}\"") &&
+                    s
+                        .page
+                        .contains(
+                            "<script>(globalThis.avraFetched ??= {})[new URL(\"./${s.first_id}\", document.baseURI).href] = fetch(\"./${s.first_id}\");</script>",
+                        ) &&
+                    ["bootstrap.js", "wire.gen.js", "windows.js", "wasi.js", "dev.js"]
+                        .all((f) -> s.page.contains("<link rel=\"modulepreload\" href=\"./${f}\">")),
+            )
+        }
+        then "the page is titled by its package and leaves no hole unfilled" {
+            seen((s) -> s.page.contains("<title>dev_loop_") && !s.page.contains("<!--"))
+        }
+        then "the module is served as wasm" {
+            seen((s) -> s.wasm_status == 200 && s.wasm_kind == "application/wasm" && s.wasm_magic)
+        }
+        then "the module, named by its content, is kept for ever" {
+            seen((s) -> s.wasm_kept == "public, max-age=31536000, immutable")
+        }
+        then "a client that reads brotli is sent the module coded, smaller, and told it varies" {
+            seen((s) -> s.wasm_coded == "br accept-encoding true")
+        }
+        then "a script is served as a script" { seen((s) -> s.script_kind.starts_with("text/javascript")) }
+    }
+    given "a source edited" {
+        then "the next turn builds, and the module's id moves" {
+            seen((s) -> s.edited_built && s.edited_id != "" && s.edited_id != s.first_id)
+        }
+    }
+    given "a source that no longer parses" {
+        then "the next turn builds and the standing says what the build said, naming the file" {
+            seen((s) -> s.broken_built && failure_of(s.broken).contains("src/main.av"))
+        }
+        then "the module's id stays the last good one" { seen((s) -> s.broken[0] == s.edited_id) }
+        then "the last good module is still what is served" { seen((s) -> s.broken_wasm_same) }
+    }
+    given "the source mended" {
+        then "the failure is gone and the good module stands" {
+            seen((s) -> s.mended_failure == "" && s.mended_id == s.edited_id)
+        }
+    }
+    given "the module's id" {
+        then "moves only when the module does: built, edited, broken, mended" {
+            seen(
+                (s) -> s.numbers[0] != s.numbers[1] &&
+                    s.numbers[1] == s.numbers[2] &&
+                    s.numbers[2] == s.numbers[3],
+            )
+        }
+    }
+}

@@ -102,10 +102,12 @@ fn ideas_posted(ct: string, body: string) -> string {
 spec "std/http — typed reads and answers" {
     given "the empty cases, written first" {
         then "an empty body is not JSON" { idea(json_posted("")) == "400 the body is not JSON: unexpected the end of the text at byte 0" }
-        then "an empty object names every required field" { idea(json_posted("{}")) == "422 {\"title\":\"the request does not validate\",\"status\":422,\"issues\":[{\"path\":\"title\",\"rule\":\"required\",\"message\":\"is required\"}]}" }
+        then "an empty object names every required field" { idea(json_posted("{}")) == "422 {\"title\":\"the request does not validate\",\"status\":422,\"issues\":[{\"in\":\"body\",\"path\":\"title\",\"rule\":\"required\",\"message\":\"is required\"}]}" }
         then "no query takes every default" { page("/p") == "50 - [] false" }
         then "an empty query takes every default" { page("/p?") == "50 - [] false" }
         then "no query refuses a required field" { search("/p").contains("\"path\":\"q\",\"rule\":\"required\"") }
+        then "a query's issue names its part" { search("/p").contains("{\"in\":\"query\",\"path\":\"q\"") }
+        then "a problem read from no request names no part" { !said(problem(refusal())).contains("\"in\"") }
         then "an empty value is text" { search("/p?q=") == "q=" }
         then "an empty capture is empty text" { capture("") == "ok " }
         then "no issues is still one problem" { said(problem(Issues { all: [] })) == "422 {\"title\":\"the request does not validate\",\"status\":422,\"issues\":[]}" }
@@ -118,7 +120,7 @@ spec "std/http — typed reads and answers" {
         then "octets that are not UTF-8" { idea(posted("application/json", [123, 255, 125].bytes()!)) == "400 the body is not UTF-8" }
         then "malformed JSON is json's 400, never a 422" { idea(json_posted("{\"title\":")) == "400 the body is not JSON: unexpected the end of the text at byte 9" }
         then "every issue at once" {
-            idea(json_posted("{\"title\":\"\",\"votes\":12}")) == "422 {\"title\":\"the request does not validate\",\"status\":422,\"issues\":[{\"path\":\"title\",\"rule\":\"length\",\"message\":\"must be between 1 and 20 characters\"},{\"path\":\"votes\",\"rule\":\"range\",\"message\":\"must be between 0 and 9\"}]}"
+            idea(json_posted("{\"title\":\"\",\"votes\":12}")) == "422 {\"title\":\"the request does not validate\",\"status\":422,\"issues\":[{\"in\":\"body\",\"path\":\"title\",\"rule\":\"length\",\"message\":\"must be between 1 and 20 characters\"},{\"in\":\"body\",\"path\":\"votes\",\"rule\":\"range\",\"message\":\"must be between 0 and 9\"}]}"
         }
         then "a field it does not name is an issue" {
             idea(json_posted("{\"title\":\"go\",\"tilte\":1}"))
