@@ -496,19 +496,20 @@ ci_captured() {
     echo "captured: $n embed check(s)" >> "$cap/facts.txt"
 }
 
-# A SUITE WHOSE CASES RUN THE COMPILER AS A CHILD KEEPS WHAT EACH CHILD DID: `$@` with every child
-# `<tree>/avra` filed under $out/children/<case> by tools/gate/child_kept.sh — its arguments, its
+# A SUITE WHOSE CASES RUN THE COMPILER AS A CHILD KEEPS WHAT EACH CHILD DID: the row `$1` run as `$2…`, every child
+# `<tree>/avra` filed under $out/children/<row>/<case> by tools/gate/child_kept.sh — its arguments, its
 # streams and its exit — so a red row has the words its children said.
 children_kept() {
-    find "$out/children" -delete 2>/dev/null || :
-    export AVRA_BIN="$root/tools/gate/child_kept.sh" AVRA_CHILD_BIN="$root/build/avra" AVRA_CHILDREN="$out/children"
+    kept="$out/children/$1"
+    shift
+    export AVRA_BIN="$root/tools/gate/child_kept.sh" AVRA_CHILD_BIN="$root/build/avra" AVRA_CHILDREN="$kept"
     "$@"
     unset AVRA_BIN AVRA_CHILD_BIN AVRA_CHILDREN
 }
 
 # the children of the cases row `$1` failed, kept; every other case's dropped
 children_of_failed() {
-    for d in "$out"/children/*/; do
+    for d in "$out/children/$1"/*/; do
         [ -f "$d/case" ] || continue
         grep -qxF "$(sed 's/ @ .*//' "$d/case")" "$out/$1.failed" || find "$d" -delete
     done
