@@ -271,7 +271,7 @@ export fn decoder(t: Type) -> Decls {
             static fn from_json(text: string, coercion: Coercion, limits: Limits) -> Result<${t}, Issues> {
                 decode_json(
                     text,
-                    (mut ${bind().d}: Decoding, ${bind().depth}: int, ${bind().required}: bool, secret: bool) -> ${name(t.name)}.read_json(${name(bind().d)}, ${name(bind().depth)}, ${name(bind().required)}, secret),
+                    (mut ${bind().d}: Decoding, ${bind().depth}: int, ${bind().required}: bool, secret: bool, ${path_binder()}: Path) -> ${name(t.name)}.read_json(${name(bind().d)}, ${name(bind().depth)}, ${name(bind().required)}, secret, ${name(path_binder())}),
                     (mut ${bind().d}: Decoding, s: Slot) -> ${name(t.name)}.decoded(${name(bind().d)}, s),
                     coercion,
                     limits,
@@ -290,7 +290,7 @@ export fn decoder(t: Type) -> Decls {
                 ${b.answer}
             }
 
-            static fn read_json(mut ${bind().d}: Decoding, ${bind().depth}: int, ${bind().required}: bool, secret: bool) -> ${t}? {
+            static fn read_json(mut ${bind().d}: Decoding, ${bind().depth}: int, ${bind().required}: bool, secret: bool, ${path_binder()}: Path) -> ${t}? {
                 let ${hidden} = secret
                 ${j.lines}
                 ${j.answer}
@@ -699,6 +699,7 @@ fn named_direct(t: Type) -> Body {
             quote { ${name(bind().depth)} },
             quote { ${name(bind().required)} },
             name(hidden),
+            name(path_binder()),
         ),
         json_ruling,
     )
@@ -725,7 +726,13 @@ fn record_direct(t: Type) -> Body {
 /// absence is settled, whether it is secret, and the rules judging it.
 fn plan(t: Type, f: Field) -> FieldPlan {
     FieldPlan {
-        read: reading(inner(f.kind), quote { ${name(bind().depth)} + 1 }, required_code(f), name(hidden)),
+        read: reading(
+            inner(f.kind),
+            quote { ${name(bind().depth)} + 1 },
+            required_code(f),
+            name(hidden),
+            quote { ${name(path_binder())}.field(${literal(f.name)}) },
+        ),
         absent: absent(f),
         secret: secret_code(f),
         early: [judging(a, json_ruling) for a in early(t, f)],
@@ -799,10 +806,13 @@ fn required_code(f: Field) -> Code { if optional(f) { quote { false } } else { q
 
 fn secret_code(f: Field) -> Code { if secret_field(f) { quote { true } } else { name(hidden) } }
 
-/// The direct reader for a shape, at `depth`.
-fn reading(k: Kind, depth: Code, required: Code, secret: Code) -> Code {
+/// The binder a direct reader's path stands in.
+fn path_binder() -> string { own("path") }
+
+/// The direct reader for a shape, at `depth`, its value standing at `path`.
+fn reading(k: Kind, depth: Code, required: Code, secret: Code, path: Code) -> Code {
     let flat = flat_of(k)
-    if flat != null { return flat_wrapped(flat!, reading(flat!.scalar, depth, required, secret)) }
+    if flat != null { return flat_wrapped(flat!, reading(flat!.scalar, depth, required, secret, path)) }
     match k {
         .Str -> quote { ${name(bind().d)}.json_text(${depth}, ${required}, ${secret}) },
         .Int -> quote { ${name(bind().d)}.json_int(${depth}, ${required}, ${secret}) },
@@ -810,14 +820,14 @@ fn reading(k: Kind, depth: Code, required: Code, secret: Code) -> Code {
         .Bool -> quote { ${name(bind().d)}.json_bool(${depth}, ${required}, ${secret}) },
         .List(elem) -> {
             let each? = json_element(elem) else { return unread_json(k, depth) }
-            quote { json_list(${name(bind().d)}, ${depth}, ${required}, ${secret}, ${each}) }
+            quote { json_list(${name(bind().d)}, ${depth}, ${required}, ${secret}, ${path}, ${each}) }
         },
         .Named(n, _) -> when {
             texted(n) -> form_read_json(n, depth, required, secret)
             json_typed(n) -> quote { json_read_protocol(${name(bind().d)}, ${depth}, ${required}, ${secret}, (raw: string?, at: string) -> ${name(n)}.decode_text(raw, at)) }
-            _ -> quote { ${name(n)}.read_json(${name(bind().d)}, ${depth}, ${required}, ${secret}) }
+            _ -> quote { ${name(n)}.read_json(${name(bind().d)}, ${depth}, ${required}, ${secret}, ${path}) }
         },
-        .Opt(k2) -> reading(k2, depth, required, secret),
+        .Opt(k2) -> reading(k2, depth, required, secret, path),
         .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) or .Bytes -> unread_json(k, depth),
     }
 }
@@ -890,7 +900,7 @@ fn form_json_element(n: string) -> Code {
     let depth = quote { ${name(bind().depth)} }
     let required = quote { ${name(bind().required)} }
     let read = form_read_json(n, depth, required, quote { secret })
-    quote { (mut ${bind().d}: Decoding, ${bind().depth}: int, ${bind().required}: bool, secret: bool) -> ${read} }
+    quote { (mut ${bind().d}: Decoding, ${bind().depth}: int, ${bind().required}: bool, secret: bool, ${path_binder()}: Path) -> ${read} }
 }
 
 /// A list element's direct reader, as a fn value — absent for an
@@ -902,8 +912,9 @@ fn json_element(k: Kind) -> Code? {
             quote { ${name(bind().depth)} },
             quote { ${name(bind().required)} },
             quote { secret },
+            name(path_binder()),
         )
-        return quote { (mut ${bind().d}: Decoding, ${bind().depth}: int, ${bind().required}: bool, secret: bool) -> ${read} }
+        return quote { (mut ${bind().d}: Decoding, ${bind().depth}: int, ${bind().required}: bool, secret: bool, ${path_binder()}: Path) -> ${read} }
     }
     match k {
         .Str -> quote { json_read_text },
@@ -913,15 +924,15 @@ fn json_element(k: Kind) -> Code? {
         .Named(n, _) -> when {
             texted(n) -> form_json_element(n)
             _ -> quote {
-                (mut ${bind().d}: Decoding, ${bind().depth}: int, ${bind().required}: bool, secret: bool) -> {
-                    let ${bind().got}: ${k.spelled()}? = ${name(n)}.read_json(${name(bind().d)}, ${name(bind().depth)}, ${name(bind().required)}, secret)
+                (mut ${bind().d}: Decoding, ${bind().depth}: int, ${bind().required}: bool, secret: bool, ${path_binder()}: Path) -> {
+                    let ${bind().got}: ${k.spelled()}? = ${name(n)}.read_json(${name(bind().d)}, ${name(bind().depth)}, ${name(bind().required)}, secret, ${name(path_binder())})
                     ${name(bind().got)}
                 }
             }
         },
         .List(elem) -> {
             let each? = json_element(elem) else { return null }
-            quote { (mut ${bind().d}: Decoding, ${bind().depth}: int, ${bind().required}: bool, secret: bool) -> json_list(${name(bind().d)}, ${name(bind().depth)}, ${name(bind().required)}, secret, ${each}) }
+            quote { (mut ${bind().d}: Decoding, ${bind().depth}: int, ${bind().required}: bool, secret: bool, ${path_binder()}: Path) -> json_list(${name(bind().d)}, ${name(bind().depth)}, ${name(bind().required)}, secret, ${name(path_binder())}, ${each}) }
         },
         .Ptr or .Void or .Cell(_) or .Map(_, _) or .Opt(_) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) or .Bytes -> null,
     }
