@@ -1,4 +1,5 @@
 #!/bin/sh
+# tool-witness: --self-test
 # THE AGGREGATE VERDICT: name the arithmetic, never a bare job name.
 #
 # `test` is the one required check; every other job is a shard or a step. This reads the run's
