@@ -24,7 +24,7 @@ check "$(midci '[{"number":9,"headRefName":"f","isDraft":false,"statusCheckRollu
 check "$(midci '[{"number":10,"headRefName":"g","isDraft":false,"statusCheckRollup":[]}]')" "" "land guard: a PR with no checks yet is not mid-CI"
 
 # THE FOLLOWER'S PACE: 30 s for two minutes, then 120 s; under 500 calls left this hour, 300 s throughout.
-pace_fn=$(sed -n '/^poll_pace() {/,/^}$/p' "$here/work")
+pace_fn=$(sed -n '/^gh_low() {/p;/^poll_pace() {/,/^}$/p' "$here/work")
 pace() { sh -c "$pace_fn; gh_left=$2; poll_pace $1"; }
 check "$(pace 0 '') $(pace 119 4000) $(pace 120 4000) $(pace 3000 4000)" "30 30 120 120" "work run: the follower polls every 30 s for two minutes, then every 120 s"
 check "$(pace 0 499) $(pace 3000 12) $(pace 0 500)" "300 300 30" "work run: under 500 API calls left this hour the follower polls every 300 s"

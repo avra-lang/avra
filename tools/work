@@ -843,16 +843,16 @@ gh_counted() {
     $gh_ "$@"
 }
 
-# THE FOLLOWER'S PACE, in seconds: AVRA_GH_POLL_S (30) for the first two minutes, then
-# AVRA_GH_POLL_SLOW_S (120); where the hour's API limit had under AVRA_GH_LOW (500) calls left at the
-# run's start, AVRA_GH_POLL_LOW_S (300) throughout. $1 the seconds followed so far.
+# THE FOLLOWER'S PACE, in seconds: 30 for the first two minutes, then 120; 300 throughout where the hour's
+# API limit had under 500 calls left at the run's start. $1 the seconds followed so far.
+gh_low() { [ -n "${gh_left:-}" ] && [ "$gh_left" -lt 500 ]; }
 poll_pace() {
-    if [ -n "${gh_left:-}" ] && [ "$gh_left" -lt "${AVRA_GH_LOW:-500}" ]; then
-        echo "${AVRA_GH_POLL_LOW_S:-300}"
+    if gh_low; then
+        echo 300
     elif [ "$1" -lt 120 ]; then
-        echo "${AVRA_GH_POLL_S:-30}"
+        echo 30
     else
-        echo "${AVRA_GH_POLL_SLOW_S:-120}"
+        echo 120
     fi
 }
 
@@ -860,7 +860,7 @@ poll_pace() {
 follow_github() {
     step=
     f0=$(date +%s)
-    if [ -n "${gh_left:-}" ] && [ "$gh_left" -lt "${AVRA_GH_LOW:-500}" ]; then
+    if gh_low; then
         echo "work: github — $gh_left API call(s) left this hour: following every $(poll_pace 0)s" >&2
     fi
     while :; do
