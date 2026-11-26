@@ -17,7 +17,10 @@
 //!
 //! A direct reader is a `JsonDecoder<T>`: the value at the cursor, at
 //! JSON nesting `depth`, `required` when null is an issue, `secret`
-//! when no issue may show what it received. A value it refuses is
+//! when no issue may show what it received, and the `Path` it stands at
+//! from the root, which a reader whose value names its place reads (a
+//! secret's handle is keyed by it); an issue's path is still filed by
+//! its containers. A value it refuses is
 //! read the tree's way — shown as a `Value` and handed to the tree
 //! reader — so a refusal says what the tree path says.
 use @std.json.{DecodeError, plain_end, int_end, int_of, value_at, MAX_DEPTH}
@@ -30,7 +33,7 @@ use validate.{Refusal}
 
 /// A direct reader: the typed value at the cursor, or null with the
 /// reason recorded.
-export alias JsonDecoder<T> = fn(mut Decoding, int, bool, bool) -> T?
+export alias JsonDecoder<T> = fn(mut Decoding, int, bool, bool, Path) -> T?
 
 /// JSON text read as a `T`: `direct` walks it, and where it steps
 /// aside `tree` reads the parsed value.
@@ -44,7 +47,7 @@ export fn decode_json<T>(
     if coercion is .Strict {
         // LICENSED let_stmt.unmutated_mut: `direct`'s `mut` seat writes through it
         mut d = Decoding { limits: limits, json: reader_of(text) }
-        let got = direct(d, 0, true, false)
+        let got = direct(d, 0, true, false, root())
         if d.json.finished() { return answered(d, got) }
     }
     decode(from_json(text)?, tree, coercion, limits)
@@ -208,6 +211,7 @@ export fn json_list<T>(
     depth: int,
     required: bool,
     secret: bool,
+    at: Path,
     each: JsonDecoder<T>,
 ) -> List<T>? {
     if !d.at_byte(91) {
@@ -230,7 +234,7 @@ export fn json_list<T>(
             return null
         }
         let mark = d.count()
-        let x = each(d, depth + 1, true, secret)
+        let x = each(d, depth + 1, true, secret, at.index(i))
         d.indexed(mark, i)
         if x != null { out.push(x!) }
         i = i + 1
@@ -312,18 +316,18 @@ export fn json_read_protocol<T>(
 }
 
 /// Each scalar reader as a direct reader, for a list of them.
-export fn json_read_text(mut d: Decoding, depth: int, required: bool, secret: bool) -> string? {
+export fn json_read_text(mut d: Decoding, depth: int, required: bool, secret: bool, _at: Path) -> string? {
     d.json_text(depth, required, secret)
 }
 
-export fn json_read_int(mut d: Decoding, depth: int, required: bool, secret: bool) -> int? {
+export fn json_read_int(mut d: Decoding, depth: int, required: bool, secret: bool, _at: Path) -> int? {
     d.json_int(depth, required, secret)
 }
 
-export fn json_read_float(mut d: Decoding, depth: int, required: bool, secret: bool) -> float? {
+export fn json_read_float(mut d: Decoding, depth: int, required: bool, secret: bool, _at: Path) -> float? {
     d.json_float(depth, required, secret)
 }
 
-export fn json_read_bool(mut d: Decoding, depth: int, required: bool, secret: bool) -> bool? {
+export fn json_read_bool(mut d: Decoding, depth: int, required: bool, secret: bool, _at: Path) -> bool? {
     d.json_bool(depth, required, secret)
 }
