@@ -406,10 +406,10 @@ impl Measure for Pixels {
     fn hidden(_n: Node) -> bool { false }
     fn holds(_n: Node) -> bool { true }
     fn min_own(n: Node) -> int { Cells {}.min_own(n) }
-    fn gap_x(z: Size) -> int { self.theme.space_of(z) }
-    fn gap_y(z: Size) -> int { self.theme.space_of(z) }
-    fn pad_x(z: Size) -> int { self.theme.space_of(z) }
-    fn pad_y(z: Size) -> int { self.theme.space_of(z) }
+    fn gap_x(z: Size) -> int { self.theme.space.at(z) }
+    fn gap_y(z: Size) -> int { self.theme.space.at(z) }
+    fn pad_x(z: Size) -> int { self.theme.space.at(z) }
+    fn pad_y(z: Size) -> int { self.theme.space.at(z) }
 }
 
 ${PROP ? `fn face_metrics() -> Table {
@@ -450,7 +450,7 @@ fn show(i: int, n: Node, slack: Map<string, int>) {
     println(render(n, Env {}).replace("\\n", " "))
     println("end \${i}")
 }
-${["None", "Xs", "S", "M", "L", "Xl"].map((z) => `println("space ${z} \${default_theme.space_of(.${z})}")`).join("\n")}
+${["None", "Xs", "S", "M", "L", "Xl"].map((z) => `println("space ${z} \${default_theme.space.at(.${z})}")`).join("\n")}
 ${defs}
 ${runs}
 `;
