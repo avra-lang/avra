@@ -134,9 +134,10 @@ const families = [
   },
   {
     name: "contained",
-    holds: "nothing a frame draws stands past the frame's edge, as wide as its dial holds it: no overflow, no box beyond it",
-    check: `(f) => { const edge = Math.min(f.getBoundingClientRect().right, f.closest("[data-sb-frame]").getBoundingClientRect().right) + 1; const start = Math.max(f.getBoundingClientRect().left, f.closest("[data-sb-frame]").getBoundingClientRect().left) - 1;
-      const out = [...f.querySelectorAll("*")].filter((e) => e.getBoundingClientRect().right > edge || e.getBoundingClientRect().left < start).map((e) => e.tagName.toLowerCase() + " " + Math.round(Math.max(e.getBoundingClientRect().right - edge, start - e.getBoundingClientRect().left) + 1) + " px past");
+    holds: "nothing a frame draws stands past the frame's end edge, the one its dial's direction lays words toward, as wide as its dial holds it: no overflow, no box beyond it",
+    check: `(f) => { const a = f.getBoundingClientRect(), b = f.closest("[data-sb-frame]").getBoundingClientRect(); const rtl = laidAs(f) === "rtl";
+      const past = (e) => { const r = e.getBoundingClientRect(); return rtl ? Math.max(a.left, b.left) - r.left : r.right - Math.min(a.right, b.right); };
+      const out = [...f.querySelectorAll("*")].filter((e) => past(e) > 1).map((e) => e.tagName.toLowerCase() + " " + Math.round(past(e)) + " px past");
       return (f.scrollWidth > f.clientWidth + 1 ? ["scrolls " + (f.scrollWidth - f.clientWidth) + " px"] : []).concat(out.slice(0, 2)); }`,
   },
   {
