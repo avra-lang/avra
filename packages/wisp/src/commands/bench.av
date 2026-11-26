@@ -114,7 +114,7 @@ fn toml_at(path: string) -> Result<TomlDoc, string> {
 }
 
 /// A file written, or why it could not be.
-fn written(path: string, text: string) -> Result<string, string> {
+fn written_file(path: string, text: string) -> Result<string, string> {
     match write_text(path, text) {
         .Ok(p) -> p,
         .Err(e) -> { fail "${path}: ${e.describe().message}" },
@@ -752,15 +752,15 @@ fn record(runs: List<Run>, machine: string, reg: Registry, benches: List<Bench>,
 > {
     let stored = stored_runs(results_path())?
     let _ = make_dirs(dir_of(results_path()))
-    written(results_path(), store_text(runs.fold(stored, filed)))?
-    let took = accepted(
+    written_file(results_path(), store_text(runs.fold(stored, filed)))?
+    let took = baseline_accepted(
         load_baseline(baseline_path())?,
         runs,
         machine,
         spec_gates(reg, benches),
         reg.margin,
     )
-    written(baseline_path(), baseline_text(took.doc))?
+    written_file(baseline_path(), baseline_text(took.doc))?
     write_report()?
     if !quiet {
         println(
@@ -775,7 +775,13 @@ fn gated_suite(runs: List<Run>, machine: string, reg: Registry, require: bool) -
     string,
 > {
     let doc = load_baseline(baseline_path())?
-    let floor = checked(runs.filter(!it.rows.is_empty()), machine, doc, reg.margin, require)
+    let floor = baseline_checked(
+        runs.filter(!it.rows.is_empty()),
+        machine,
+        doc,
+        reg.margin,
+        require,
+    )
     said_all(floor.said)
     let floor_end = gate_report(floor, reg.margin, require)
     said_all(floor_end.said)
