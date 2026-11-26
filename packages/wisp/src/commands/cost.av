@@ -467,9 +467,11 @@ fn fall_floor(ppm: int) -> int { if ppm == 0 { 0 } else { FALL_PPM } }
 /// `kind <name> keyed-by <what> over <tolerance> [least]`. The key is what makes a row deterministic,
 /// `-` for nothing; the tolerance is how far a row may rise, `<ppm>ppm` with a slack in the row's own
 /// unit (`<ppm>ppm+<n>`), or `none` for a row that is told and never judged; `least` folds a run's
-/// rounds to the least of them, where every other kind holds its rounds equal. A row of a kind is
+/// rounds to the least of them, where every other kind holds its rounds equal. `cap <n>` bounds a line
+/// with no row of its own: past the cap it refuses, at or under it it is told and seeded by no
+/// accept; a row that stands is judged by its tolerance alone. A row of a kind is
 /// `<kind>:<key>:<workload> <counter> <n>`; a row that names no kind is a `count`.
-export type Kind = { name: string, keyed_by: string, ppm: int?, slack: int, least: bool }
+export type Kind = { name: string, keyed_by: string, ppm: int?, slack: int, least: bool, cap: int? = null }
 
 type Tolerance = { ppm: int?, slack: int }
 
@@ -553,15 +555,30 @@ export fn targets_failed(
 
 fn kind_line(line: string) -> Kind? {
     let w = line.split(" ")
-    if w.length < 6 ||
-        w.length > 7 ||
-        w[0] != "kind" ||
-        w[2] != "keyed-by" ||
-        w[4] != "over" ||
-        !is_workload(w[1]) { return null }
-    if w.length == 7 && w[6] != "least" { return null }
+    if w.length < 6 || w[0] != "kind" || w[2] != "keyed-by" || w[4] != "over" || !is_workload(w[1]) { return null }
     let tol? = tolerance_of(w[5]) else { return null }
-    Kind { name: w[1], keyed_by: w[3], ppm: tol.ppm, slack: tol.slack, least: w.length == 7 }
+    let tail? = kind_tail(w.drop(6)) else { return null }
+    Kind {
+        name: w[1],
+        keyed_by: w[3],
+        ppm: tol.ppm,
+        slack: tol.slack,
+        least: tail.least,
+        cap: tail.cap,
+    }
+}
+
+/// What a kind line says after its tolerance: `least` and `cap <n>`, each at most once, the cap a
+/// positive whole number; absent where any word is another.
+type KindTail = { least: bool, cap: int? }
+
+fn kind_tail(words: List<string>) -> KindTail? {
+    if words.is_empty() { return KindTail { least: false, cap: null } }
+    let rest? = kind_tail(words.drop(if words[0] == "cap" { 2 } else { 1 })) else { return null }
+    if words[0] == "least" && !rest.least { return rest with { least: true } }
+    if words[0] != "cap" || words.length < 2 || rest.cap != null { return null }
+    let n? = whole_of(words[1]) else { return null }
+    if n > 0 { rest with { cap: n } } else { null }
 }
 
 fn tolerance_of(word: string) -> Tolerance? {
@@ -803,28 +820,56 @@ fn keyed_judged(run_dir: string, cause: string, tell: bool) -> int {
     let j = judge(now, base, kinds, record_told())
     let failed = j
         .failed
-        .concat(unrecorded(now, base))
+        .concat(unrecorded(now, base, kinds))
         .concat(targets_failed(now, targets_of(text), overs_of(text), text))
     for line in j.told.concat(j.fell) { println(line) }
     for line in failed { println(if tell { "::warning::${line}" } else { line }) }
     println(rows_counted(base.length, failed.length, j.fell.length))
     if tell { return 0 }
     if !accept { return if failed.is_empty() { 0 } else { 1 } }
-    if failed.length > j.failed.length + unrecorded(now, base).length {
+    if failed.length > j.failed.length + unrecorded(now, base, kinds).length {
         println(
             "cost: an accept never records a row above its target — name its owner and ticket on an `over` line",
         )
         return 1
     }
-    record_written({..others, ..base, ..now}, snapshot_of(text) ?? "", cause)
+    record_written({..others, ..keyed_accepted(now, base, kinds)}, snapshot_of(text) ?? "", cause)
     println(recorded_said(cause, groups.join(", ")))
     0
 }
 
-/// Each row a run measured with no row of its own in a key the ledger holds rows of: growth nothing
-/// recorded, which an accept seeds.
-export fn unrecorded(now: Map<string, int>, base: Map<string, int>) -> List<string> {
-    [unrecorded_said(k, now.get(k) ?? 0) for k in sorted_by([k for k, _n in now], text_before) if !base.has(k) && base.any(group_of(it.key) == group_of(k))]
+/// The rows a keyed accept records: what was measured, over what the key held; a capped kind's row
+/// at or under its cap is no debt, so none is kept.
+export fn keyed_accepted(now: Map<string, int>, base: Map<string, int>, kinds: Map<string, Kind>) -> Map<
+    string,
+    int,
+> {
+    {..base, ..now}.filter((e) -> !at_or_under_cap(e.key, e.value, kinds))
+}
+
+fn cap_of(key: string, kinds: Map<string, Kind>) -> int? { kinds.get(kind_name_of(key))?.cap }
+
+fn at_or_under_cap(key: string, n: int, kinds: Map<string, Kind>) -> bool {
+    let cap? = cap_of(key, kinds) else { return false }
+    n <= cap
+}
+
+/// Each row a run measured with no row of its own: past its kind's cap, refused whatever its key
+/// holds; of a kind with no cap, in a key the ledger holds rows of, growth nothing recorded, which an
+/// accept seeds.
+export fn unrecorded(now: Map<string, int>, base: Map<string, int>, kinds: Map<string, Kind>) -> List<
+    string,
+> {
+    [unrecorded_of(k, now.get(k) ?? 0, base, kinds) for k in sorted_by([k for k, _n in now], text_before) if !base.has(k)]
+        .flatten()
+}
+
+fn unrecorded_of(key: string, n: int, base: Map<string, int>, kinds: Map<string, Kind>) -> List<
+    string,
+> {
+    let cap = kinds.get(kind_name_of(key))?.cap
+    if cap != null { return if n > cap! { [capped_said(key, n, cap!)] } else { [] } }
+    if base.any(group_of(it.key) == group_of(key)) { [unrecorded_said(key, n)] } else { [] }
 }
 
 /// A keyed run's rows, its rounds folded: a `least` kind keeps the least, any other holds them equal.
@@ -1024,6 +1069,10 @@ fn moved_said(key: string, old: int, new: int) -> string { "cost: ${key}: ${old}
 
 fn rounds_apart_said(key: string, was: int, n: int) -> string {
     "cost: ${key}: one run measured ${was} and ${n}, and its kind holds its rounds equal"
+}
+
+fn capped_said(key: string, n: int, cap: int) -> string {
+    "cost: ${key}: measured ${n}, past its kind's cap of ${cap}, and the ledger holds no row of it"
 }
 
 fn unrecorded_said(key: string, n: int) -> string { "cost: ${key}: measured ${n}, and its key holds no row of it — an accept records it" }
