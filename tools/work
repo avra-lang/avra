@@ -105,6 +105,37 @@ deposit() {
     ls -t "$(depot)" | tail -n +$((keep + 1)) | while IFS= read -r old; do find "$(depot)/$old" -delete; done
 }
 
+# THE MAC'S PUBLISHED COMPILER: the `gate-builder` release's tree built on macOS arm64
+# (.github/workflows/compiler-macos.yml), laid into the depot under the compiler source its stamp names, so a
+# Mac lane — whose pre-commit hook wants a stamped compiler, and which can run no Linux release — starts
+# from it. Elsewhere, or with AVRA_MAC_COMPILER=0, nothing is fetched.
+mac_compiler_url=https://github.com/avra-lang/avra/releases/download/gate-builder/compiler-macos.tar.gz
+deposit_mac() {
+    case ${AVRA_MAC_COMPILER:-$(uname -s)-$(uname -m)} in Darwin-arm64 | 1) ;; *) return 0 ;; esac
+    url=${AVRA_MAC_COMPILER_URL:-$mac_compiler_url}
+    md=$(mktemp -d "${TMPDIR:-/tmp}/avra-mac.XXXXXX")
+    if ! curl -fsSL --retry 2 -m 300 -o "$md/pack.tar.gz" "$url" || ! gzip -t "$md/pack.tar.gz" 2>/dev/null ||
+        ! tar -xzf "$md/pack.tar.gz" -C "$md" build/avra build/.avra-built-from; then
+        echo "work: the Mac's published compiler did not download whole ($url) — the depot is as it was"
+        find "$md" -delete
+        return 0
+    fi
+    tar -xzf "$md/pack.tar.gz" -C "$md" build/libavra_runtime.a 2>/dev/null || :
+    read -r mhash mat _mgen < "$md/build/.avra-built-from" || mhash=
+    if [ -z "$mhash" ] || [ "$mat" = edited ]; then
+        echo "work: the Mac's published compiler says no clean source it was built from — not kept"
+    elif [ -x "$(depot)/$mhash/avra" ]; then
+        echo "work: the depot already holds the Mac's published compiler (source $(printf '%.12s' "$mhash"), at $(printf '%.8s' "$mat"))"
+    else
+        mkdir -p "$(depot)/$mhash"
+        for f in avra libavra_runtime.a .avra-built-from; do
+            [ ! -f "$md/build/$f" ] || cp -p "$md/build/$f" "$(depot)/$mhash/$f"
+        done
+        echo "work: the depot holds the Mac's published compiler — source $(printf '%.12s' "$mhash"), at $(printf '%.8s' "$mat")"
+    fi
+    find "$md" -delete
+}
+
 # A NEW WORKTREE STARTS FROM A COMPILER THAT CAN BUILD IT, OR FROM NONE.
 # Every worktree's binary says what it was built from; the one built from
 # THIS tree's compiler source is this tree's, and failing that the one
@@ -1355,7 +1386,7 @@ usage() {
         unbind) echo "usage: sh tools/work unbind   — end this lane's run and free its Sprite; the worktree stays" ;;
         bind) echo "usage: sh tools/work bind [<sprite>]   — give this worktree a Sprite, or move it to the one named" ;;
         main-compiler) echo "usage: sh tools/work main-compiler   — build main's compiler once per compiler source into the shared depot (idempotent, one build at a time, under the watchdog); \`work compiler\` then copies it into a lane" ;;
-        compiler) echo "usage: sh tools/work compiler [--get]   — copy the nearest stamped compiler into this worktree; --get goes on to the published one for this source, then \`make compiler\`" ;;
+        compiler) echo "usage: sh tools/work compiler [--get]   — copy the nearest stamped compiler into this worktree (on a Mac, the gate-builder release's macOS compiler is laid into the depot first); --get goes on to the published one for this source, then \`make compiler\`" ;;
         wait) echo "usage: sh tools/work wait <branch>   — wait until the branch's PR merges" ;;
         attach) echo "usage: sh tools/work attach   — follow this lane's run again, from its first line, and answer its status" ;;
         stop) echo "usage: sh tools/work stop   — end this lane's run on its Sprite" ;;
@@ -1383,7 +1414,7 @@ case "${1:-}" in
     compiler-hash) compiler_hash "${2:-$PWD}" ;;
     built-from) built_from "${2:-$PWD}" "${3:-}" ;;
     deposit) deposit "${2:-$PWD}" ;;
-    compiler) if [ "${2:-}" = --get ]; then get_compiler; else seed_local "$PWD"; fi ;;
+    compiler) deposit_mac >&2; if [ "${2:-}" = --get ]; then get_compiler; else seed_local "$PWD"; fi ;;
     main-compiler) main_compiler ;;
     seed-local) seed_local "$2" ;;
     libs-step) printf '%s\n' "$libs_step" ;;

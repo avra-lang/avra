@@ -319,6 +319,21 @@ echo lane > "$bb/lane"; bbg add -A; bbg commit -q -m lane
 echo k-new > "$scratch/published"
 check "$(PUBLISHED="$scratch/published" sh "$slw" builder-key "$bb")" "k-new exact" "work builder-key: a lane off a base branch takes the base's published compiler" "$scratch/out"
 
+# THE MAC'S PUBLISHED COMPILER is laid into the depot by `work compiler`, and a lane of its source takes it;
+# a pack that does not download leaves the depot as it was. `curl` is a stub handing over a pack made here.
+lane macme
+mkdir -p "$scratch/macpack/build" "$scratch/maccurl"
+printf 'mac compiler\n' > "$scratch/macpack/build/avra"; chmod +x "$scratch/macpack/build/avra"
+echo "$(sh "$slw" compiler-hash "$sl/macme") $(git -C "$sl/macme" rev-parse HEAD) 2" > "$scratch/macpack/build/.avra-built-from"
+tar -czf "$scratch/mac.tar.gz" -C "$scratch/macpack" build
+printf '#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = -o ] && { cp "$MAC_PACK" "$2"; exit 0; }; shift; done\nexit 22\n' > "$scratch/maccurl/curl"
+chmod +x "$scratch/maccurl/curl"
+(cd "$sl/macme" && MAC_PACK="$scratch/nothing" PATH="$scratch/maccurl:$PATH" AVRA_MAC_COMPILER=1 AVRA_COMPILER_DEPOT="$scratch/macdepot" sh "$slw" compiler) > "$scratch/out" 2>&1
+check "$(grep -c 'did not download whole' "$scratch/out") $(ls "$scratch/macdepot" 2>/dev/null | wc -l | tr -d ' ')" "1 0" "work compiler: a Mac pack that does not download is said, and the depot is as it was" "$scratch/out"
+(cd "$sl/macme" && MAC_PACK="$scratch/mac.tar.gz" PATH="$scratch/maccurl:$PATH" AVRA_MAC_COMPILER=1 AVRA_COMPILER_DEPOT="$scratch/macdepot" sh "$slw" compiler) > "$scratch/out" 2>&1
+check "$(grep -c 'the depot holds the Mac' "$scratch/out") $(cat "$sl/macme/build/avra" 2>/dev/null) $(grep -c "it is this tree's" "$scratch/out")" "1 mac compiler 1" "work compiler: on a Mac the published compiler is laid into the depot, and a lane of its source takes it" "$scratch/out"
+find "$sl/macme/build" -type f -delete
+
 # `compiler --get`: a held compiler for this source needs no build; none held and none published builds.
 lane getme
 mkdir -p "$sl/getme/build"; echo bin > "$sl/getme/build/avra"; chmod +x "$sl/getme/build/avra"
