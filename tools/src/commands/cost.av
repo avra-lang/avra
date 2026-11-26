@@ -37,8 +37,7 @@ const VERDICTS: string = "tools/cost.verdicts"
 /// candidate is work, never a regression: a new one is said, never failed on.
 const CANDIDATES: string = "tools/cost.candidates"
 const CANDIDATES_HEAD: string = "# THE ZERO-COST CANDIDATES THE LAST `make cost-accept` SAW: each `<technique> <fn>` that stood in its\n# technique's top sites (`avra census --candidates`, docs/ZERO_COST.md). `make cost` names every\n# candidate this file lacks; a candidate is a registry row or a ticket at discovery.\n"
-const HEAD: string = "# THE EXACT-COUNT BASELINE: what the census compiler does, cold, on each fixed workload of the pinned\n# snapshot (`make cost`, tools/cost.sh, `avra-tools cost`). Exact and machine-independent. A row\n# more than 0.05% over FAILS the gate; a row only falls, through `make cost-accept`; a new snapshot is\n# `COST_SNAPSHOT=<sha> make cost-accept`, which records the commit and every count.\n"
-const TOLERANCE_PPM: int = 500
+const HEAD: string = "# THE LEDGER: what the toolchain does and weighs, one row a line. A row's KIND says how it is judged,\n# and each kind is declared below by what keys it — what makes it deterministic — and how far it may\n# rise (`avra-tools cost`). A count names no kind: the census compiler, cold, on each fixed workload of\n# the pinned snapshot (`make cost`, tools/cost.sh), the same on every machine. A row only falls,\n# through an accept; a new snapshot is `COST_SNAPSHOT=<sha> make cost-accept`.\n"
 /// A fall this small is the build's own: a file it writes and reads back within the stamp window.
 const FALL_PPM: int = 50
 /// A WARM ROW HOLDS when two compilers that differ in nothing the work reads move it by no more than
@@ -340,6 +339,15 @@ export fn rows_of(text: string) -> Map<string, int> {
 }
 
 fn is_workload(w: string) -> bool {
+    let parts = w.split(":")
+    if parts.length == 3 { return is_plain(parts[0]) && is_key(parts[1]) && is_plain(parts[2]) }
+    parts.length == 1 && is_plain(w)
+}
+
+/// A key: what decides a keyed row, `[a-z0-9._-]+`.
+fn is_key(k: string) -> bool { !k.is_empty() && chars_all(k, "abcdefghijklmnopqrstuvwxyz0123456789._-") }
+
+fn is_plain(w: string) -> bool {
     !w.is_empty() &&
         "abcdefghijklmnopqrstuvwxyz".contains(w.substring(0, 1)) &&
         chars_all(w, "abcdefghijklmnopqrstuvwxyz0123456789_-")
@@ -347,8 +355,10 @@ fn is_workload(w: string) -> bool {
 
 fn is_counter(c: string) -> bool { !c.is_empty() && chars_all(c, "abcdefghijklmnopqrstuvwxyz_") }
 
-/// The baseline as tools/cost.baseline writes it: its head, its snapshot, every row sorted.
-export fn render(snapshot: string, rows: Map<string, int>) -> string { "${HEAD}snapshot ${snapshot}\n${row_lines(rows)}" }
+/// The ledger as tools/cost.baseline writes it: its head, its kinds, its snapshot, every row sorted.
+export fn render(snapshot: string, kinds: string, rows: Map<string, int>) -> string {
+    "${HEAD}${kinds}snapshot ${snapshot}\n${row_lines(rows)}"
+}
 
 /// `<workload> <counter> <n>` a line, sorted.
 fn row_lines(rows: Map<string, int>) -> string {
@@ -380,26 +390,111 @@ fn places(n: int, k: int) -> string {
 
 // THE JUDGEMENT
 
-/// What a judge says: each baseline row a run printed no count for or measured past the tolerance,
-/// and each row a run measured under.
-export type Judged = { failed: List<string>, fell: List<string> }
+/// What a judge says: each row a run printed no count for, measured past its kind's tolerance or whose
+/// kind no line declares; each row a run measured under; and each move of a row its kind tells.
+export type Judged = { failed: List<string>, fell: List<string>, told: List<string> }
 
-export fn judge(now: Map<string, int>, base: Map<string, int>) -> Judged {
+export fn judge(now: Map<string, int>, base: Map<string, int>, kinds: Map<string, Kind>) -> Judged {
     mut failed: List<string> = []
     mut fell: List<string> = []
+    mut told: List<string> = []
     for key in sorted_by([k for k, _n in base], text_before) {
         let old = base.get(key) ?? 0
+        let kind? = kinds.get(kind_name_of(key)) else {
+            failed.push(undeclared_said(key))
+            continue
+        }
+        // a row its kind only tells owes no count: the run may not have made what it weighs
+        if kind.ppm == null {
+            let moved = now.get(key)
+            if moved != null && moved != old { told.push(moved_said(key, old, moved!)) }
+            continue
+        }
         let new? = now.get(key) else {
             failed.push(no_count_said(key, old))
             continue
         }
-        if (new - old) * 1000000 > old * TOLERANCE_PPM {
-            failed.push(over_said(key, old, new))
-        } else if (old - new) * 1000000 > old * FALL_PPM {
+        let ppm = kind.ppm ?? 0
+        if (new - old) * 1000000 > old * ppm + kind.slack * 1000000 {
+            failed.push(over_said(key, old, new, kind))
+        } else if (old - new) * 1000000 > old * fall_floor(ppm) {
             fell.push(fell_said(key, old, new))
         }
     }
-    Judged { failed: failed, fell: fell }
+    Judged { failed: failed, fell: fell, told: told }
+}
+
+/// The least fall a judge names: an exact row's every fall, else past the build's own jitter.
+fn fall_floor(ppm: int) -> int { if ppm == 0 { 0 } else { FALL_PPM } }
+
+// THE KINDS
+
+/// HOW A ROW IS JUDGED IS ITS KIND'S, and the ledger declares each kind on a line of its own:
+/// `kind <name> keyed-by <what> over <tolerance> [least]`. The key is what makes a row deterministic,
+/// `-` for nothing; the tolerance is how far a row may rise, `<ppm>ppm` with a slack in the row's own
+/// unit (`<ppm>ppm+<n>`), or `none` for a row that is told and never judged; `least` folds a run's
+/// rounds to the least of them, where every other kind holds its rounds equal. A row of a kind is
+/// `<kind>:<key>:<workload> <counter> <n>`; a row that names no kind is a `count`.
+export type Kind = { name: string, keyed_by: string, ppm: int?, slack: int, least: bool }
+
+type Tolerance = { ppm: int?, slack: int }
+
+/// Every kind a ledger declares, by name.
+export fn kinds_of(text: string) -> Map<string, Kind> {
+    mut kinds: Map<string, Kind> = {}
+    for line in text.split("\n") {
+        let k? = kind_line(line.trim()) else { continue }
+        kinds.set(k.name, k)
+    }
+    kinds
+}
+
+/// The ledger's `kind` lines as it wrote them, each with its line break.
+fn kind_lines(text: string) -> string { [key_line(l.trim()) for l in text.split("\n") if kind_line(l.trim()) != null].join("") }
+
+fn kind_line(line: string) -> Kind? {
+    let w = line.split(" ")
+    if w.length < 6 ||
+        w.length > 7 ||
+        w[0] != "kind" ||
+        w[2] != "keyed-by" ||
+        w[4] != "over" ||
+        !is_workload(w[1]) { return null }
+    if w.length == 7 && w[6] != "least" { return null }
+    let tol? = tolerance_of(w[5]) else { return null }
+    Kind { name: w[1], keyed_by: w[3], ppm: tol.ppm, slack: tol.slack, least: w.length == 7 }
+}
+
+fn tolerance_of(word: string) -> Tolerance? {
+    if word == "none" { return Tolerance { ppm: null, slack: 0 } }
+    let parts = word.split("+")
+    if parts.length > 2 || !parts[0].ends_with("ppm") { return null }
+    let ppm? = whole_of(parts[0].substring(0, parts[0].length - 3)) else { return null }
+    if parts.length == 1 { return Tolerance { ppm: ppm, slack: 0 } }
+    let slack? = whole_of(parts[1]) else { return null }
+    Tolerance { ppm: ppm, slack: slack }
+}
+
+/// Digits read as a count, or null.
+fn whole_of(s: string) -> int? { if all_digits(s) { parse_int(s) } else { null } }
+
+/// A row key's kind: the workload's first part where it names one, else `count`.
+fn kind_name_of(key: string) -> string {
+    let w = workload_of(key)
+    if w.contains(":") { w.split(":")[0] } else { "count" }
+}
+
+/// A row key's group — its kind and key — which a keyed run judges whole.
+fn group_of(key: string) -> string {
+    let w = workload_of(key).split(":")
+    if w.length == 3 { "${w[0]}:${w[1]}" } else { "count" }
+}
+
+/// The groups a set of rows holds, each once.
+fn groups_of(rows: Map<string, int>) -> List<string> {
+    mut seen: Map<string, bool> = {}
+    for k, _n in rows { seen.set(group_of(k), true) }
+    sorted_by([g for g, _b in seen], text_before)
 }
 
 /// A LEDGER RUN COMPUTES ITS TWIN'S QUERIES: each `ledger-<w>` row of `queries_computed` equals its
@@ -483,6 +578,7 @@ fn key_line(key: string) -> string { "${key}\n" }
 fn rows_said(run_dir: string) -> int {
     let rendered = render(
         (read_text(joined_path(run_dir, "snapshot")) catch "").trim(),
+        "",
         measured(run_dir),
     )
     println(rendered.substring(0, rendered.length - 1))
@@ -491,10 +587,14 @@ fn rows_said(run_dir: string) -> int {
 
 /// A run judged, or accepted into the baseline: 0 held (or recorded), 1 refused.
 fn judged_run(run_dir: string, accept: bool) -> int {
+    if exists(joined_path(run_dir, "rows")) { return keyed_run(run_dir, accept) }
     let ran = (read_text(joined_path(run_dir, "snapshot")) catch "").trim()
     let text = read_text(BASELINE) catch ""
     let pinned = snapshot_of(text) ?? ""
-    let all_base = rows_of(text)
+    let kinds = kinds_of(text)
+    let ledger = rows_of(text)
+    let keyed = ledger.filter((e) -> kind_name_of(e.key) != "count")
+    let all_base = ledger.filter((e) -> kind_name_of(e.key) == "count")
     let now = measured(run_dir)
     if now.is_empty() {
         println("cost: the run printed no counts — refusing to judge")
@@ -527,12 +627,23 @@ fn judged_run(run_dir: string, accept: bool) -> int {
         for name in lost { println(verdict_lost_said(name)) }
         return 1
     }
-    if accept { return accept_recorded(run_dir, ran, pinned, now, base, others, part.part) }
+    if accept {
+        return accept_recorded(
+            run_dir,
+            ran,
+            pinned,
+            now,
+            base,
+            {..others, ..keyed},
+            text,
+            part.part,
+        )
+    }
     if ran != pinned {
         println(snapshot_apart_said(ran, pinned))
         return 1
     }
-    let j = judge(now, base)
+    let j = judge(now, base, kinds)
     for line in j.fell.concat(j.failed) { println(line) }
     println(rows_counted(base.length, j.failed.length, j.fell.length))
     candidates_said(run_dir, false)
@@ -548,11 +659,12 @@ fn accept_recorded(
     now: Map<string, int>,
     base: Map<string, int>,
     others: Map<string, int>,
+    text: string,
     part: string,
 ) -> int {
     let same = ran == pinned
     if same {
-        let failed = judge(now, base).failed
+        let failed = judge(now, base, kinds_of(text)).failed
         if !failed.is_empty() {
             println(failed.join("\n"))
             println("cost: an accept never raises a row over the same snapshot")
@@ -562,7 +674,7 @@ fn accept_recorded(
     mut rows: Map<string, int> = {}
     for k, n in others { rows.set(k, n) }
     for k, n in accepted(now.filter((e) -> recorded_row(e.key)), base, same) { rows.set(k, n) }
-    let _ = write_text(BASELINE, render(ran, rows))
+    let _ = write_text(BASELINE, render(ran, kind_lines(text), rows))
     let made = text_at(joined_path(run_dir, "verdicts"))
     if made != null {
         let _ = write_text(
@@ -575,6 +687,101 @@ fn accept_recorded(
     println("cost: tools/cost.baseline recorded (snapshot ${ran})")
     0
 }
+
+// THE KEYED RUN
+
+/// What a keyed run measured: each row folded over its rounds, and each row whose rounds a kind that
+/// takes no least of them measured apart, or whose kind no line declares.
+type Folded = { rows: Map<string, int>, apart: List<string> }
+
+/// A KEYED RUN writes `rows`: each `<kind>:<key>:<workload> <counter> <n>` line one round's measure.
+/// Its rows are judged within each kind and key it measured, every other row standing as it was; a
+/// key the ledger holds no row of is measured and told, never gated, and an accept seeds it.
+fn keyed_run(run_dir: string, accept: bool) -> int {
+    let text = read_text(BASELINE) catch ""
+    let kinds = kinds_of(text)
+    let folded = rounds_folded(read_text(joined_path(run_dir, "rows")) catch "", kinds)
+    if !folded.apart.is_empty() {
+        println(folded.apart.join("\n"))
+        return 1
+    }
+    let now = folded.rows
+    if now.is_empty() {
+        println("cost: the run measured no rows — refusing to judge")
+        return 1
+    }
+    let groups = groups_of(now)
+    let ledger = rows_of(text)
+    let base = ledger.filter((e) -> groups.contains(group_of(e.key)))
+    let others = ledger.filter((e) -> !groups.contains(group_of(e.key)))
+    for g in groups {
+        if !base.any(group_of(it.key) == g) { println(unkeyed_said(g, rows_in(now, g))) }
+    }
+    let j = judge(now, base, kinds)
+    for line in j.told.concat(j.fell).concat(j.failed) { println(line) }
+    println(rows_counted(base.length, j.failed.length, j.fell.length))
+    if !accept { return if j.failed.is_empty() { 0 } else { 1 } }
+    if !j.failed.is_empty() {
+        println("cost: an accept never raises a row within its key")
+        return 1
+    }
+    let _ = write_text(
+        BASELINE,
+        render(
+            snapshot_of(text) ?? "",
+            kind_lines(text),
+            {..others, ..keyed_accepted(now, base, kinds)},
+        ),
+    )
+    println("cost: tools/cost.baseline recorded (${groups.join(", ")})")
+    0
+}
+
+/// A keyed run's rows, its rounds folded: a `least` kind keeps the least, any other holds them equal.
+export fn rounds_folded(text: string, kinds: Map<string, Kind>) -> Folded {
+    mut rows: Map<string, int> = {}
+    mut apart: List<string> = []
+    for line in text.split("\n") {
+        let w = line.trim().split(" ")
+        if w.length != 3 || !is_workload(w[0]) || !is_counter(w[1]) || !all_digits(w[2]) { continue }
+        let key = "${w[0]} ${w[1]}"
+        let n = parse_int(w[2]) ?? 0
+        let kind? = kinds.get(kind_name_of(key)) else {
+            apart.push(undeclared_said(key))
+            continue
+        }
+        let was? = rows.get(key) else {
+            rows.set(key, n)
+            continue
+        }
+        if kind.least { rows.set(key, if n < was { n } else { was }) } else if n != was { apart.push(rounds_apart_said(key, was, n)) }
+    }
+    Folded { rows: rows, apart: apart }
+}
+
+/// The rows a keyed accept writes: each falls to what was measured and none rises, a new one seeded;
+/// a row its kind only tells is what was measured.
+export fn keyed_accepted(now: Map<string, int>, base: Map<string, int>, kinds: Map<string, Kind>) -> Map<
+    string,
+    int,
+> {
+    mut out: Map<string, int> = {}
+    for k, n in base { out.set(k, n) }
+    for k, n in now {
+        let held = base.get(k) ?? n
+        out.set(k, if is_told(kinds, k) || n < held { n } else { held })
+    }
+    out
+}
+
+/// Whether a row's kind tells it and never judges it.
+fn is_told(kinds: Map<string, Kind>, key: string) -> bool {
+    let k? = kinds.get(kind_name_of(key)) else { return false }
+    k.ppm == null
+}
+
+/// The rows of one group, as the ledger writes them.
+fn rows_in(rows: Map<string, int>, group: string) -> string { row_lines(rows.filter((e) -> group_of(e.key) == group)) }
 
 // THE EDITS
 
@@ -599,7 +806,7 @@ fn edited_apart(text: string, kind: string, olds: List<string>, news: List<strin
 > {
     if olds.length != news.length { return .Err("${olds.length} places and ${news.length} edits of them") }
     mut now = text
-    for i in 0..olds.length { now = edited_once(now, kind, olds[i], news[i])? }
+    for i, old in olds.enumerate() { now = edited_once(now, kind, old, news[i])? }
     .Ok(now)
 }
 
@@ -712,8 +919,42 @@ fn no_counts_said(w: string) -> string { "cost: ${w} printed no counts" }
 
 fn no_count_said(key: string, old: int) -> string { "cost: ${key}: the run printed no count (row ${old})" }
 
-fn over_said(key: string, old: int, new: int) -> string {
-    "cost: ${key}: ${old} -> ${new} (${percent(old, new)}, over the 0.05% tolerance)"
+fn over_said(key: string, old: int, new: int, kind: Kind) -> string {
+    "cost: ${key}: ${old} -> ${new} (${percent(old, new)}, over ${tolerance_said(kind)})"
+}
+
+/// A kind's tolerance in words: an exact row's, or the percent and the slack it allows.
+fn tolerance_said(kind: Kind) -> string {
+    let ppm = kind.ppm ?? 0
+    if ppm == 0 && kind.slack == 0 { return "its exact row" }
+    let slack = if kind.slack > 0 { " + ${kind.slack}" } else { "" }
+    "the ${percent_of_ppm(ppm)}%${slack} tolerance"
+}
+
+/// Parts per million as a percent, its trailing zeros dropped.
+fn percent_of_ppm(ppm: int) -> string {
+    let frac = "${ppm % 10000}"
+    let digits = "${repeat("0", 4 - frac.length)}${frac}"
+    let kept = trailing_zeros_dropped(digits)
+    if kept.is_empty() { "${ppm / 10000}" } else { "${ppm / 10000}.${kept}" }
+}
+
+fn trailing_zeros_dropped(s: string) -> string {
+    mut end = s.length
+    while end > 0 && s.substring(end - 1, end) == "0" { end = end - 1 }
+    s.substring(0, end)
+}
+
+fn undeclared_said(key: string) -> string { "cost: ${key}: no `kind ${kind_name_of(key)}` line in the ledger says how it is judged" }
+
+fn moved_said(key: string, old: int, new: int) -> string { "cost: ${key}: ${old} -> ${new} (${percent(old, new)}, told, never judged)" }
+
+fn rounds_apart_said(key: string, was: int, n: int) -> string {
+    "cost: ${key}: one run measured ${was} and ${n}, and its kind holds its rounds equal"
+}
+
+fn unkeyed_said(group: string, rows: string) -> string {
+    "cost: ${group}: the ledger holds no row of this key — measured and told, never gated:\n${rows.trim()}"
 }
 
 fn fell_said(key: string, old: int, new: int) -> string {

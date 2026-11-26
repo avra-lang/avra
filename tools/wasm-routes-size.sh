@@ -57,3 +57,19 @@ if [ "$served" -gt "$(( imported + reach_cap ))" ]; then
     exit 1
 fi
 say "importing a served model and reading its route data are within their caps"
+# THE ROWS, judged by the ledger's reader (`avra-tools cost`, tools/cost.baseline): each page's bytes,
+# exact within the wasm toolchain that built it. The caps above hold on every toolchain; a row holds
+# where the ledger has this key's.
+. "$here/lib/toolchain.sh"
+key=$(wasm_toolchain_key)
+rows=$tree/build/ledger/wasm-routes
+mkdir -p "$rows"
+find "$rows" -mindepth 1 -delete
+{
+    echo "bytes:$key:wasm-routes-plain bytes $plain"
+    echo "bytes:$key:wasm-routes-imported bytes $imported"
+    echo "bytes:$key:wasm-routes-served bytes $served"
+} > "$rows/rows"
+verb=judge
+[ "${1:-}" != --accept ] || verb=accept
+sh "$here/avra_tools.sh" cost "$verb" "$rows"

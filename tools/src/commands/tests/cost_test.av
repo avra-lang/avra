@@ -5,11 +5,15 @@ use commands.{
     counts_of,
     edited,
     judge,
+    keyed_accepted,
+    kinds_of,
+    Kind,
     new_candidates,
     percent,
     recorded,
     recorded_row,
     render,
+    rounds_folded,
     rows_of,
     same_work,
     snapshot_of,
@@ -37,6 +41,19 @@ fn one(key: string, n: int) -> Map<string, int> {
     m.set(key, n)
     m
 }
+
+/// The ledger's own kinds, as tools/cost.baseline declares them.
+fn ledger_kinds() -> string {
+    [
+        "kind count keyed-by - over 500ppm",
+        "kind bytes keyed-by toolchain over 0ppm",
+        "kind grows keyed-by toolchain over none",
+        "kind speed keyed-by host over 250000ppm+250 least",
+    ]
+        .join("\n")
+}
+
+fn counted() -> Map<string, Kind> { kinds_of(ledger_kinds()) }
 
 fn edit_said(r: Result<string, string>) -> string {
     match r { .Ok(t) -> "ok ${t}", .Err(why) -> "err ${why}" }
@@ -75,28 +92,28 @@ spec "cost — the census a run prints" {
 
 spec "cost — the judgement" {
     then "a noop's row of 0 fails at the first answer worked again" {
-        !judge(one("edit-noop worked", 1), one("edit-noop worked", 0)).failed.is_empty()
+        !judge(one("edit-noop worked", 1), one("edit-noop worked", 0), counted()).failed.is_empty()
     }
     then "a fall inside the build's own jitter is not named" {
-        let j = judge(one("w boxes", 999951), one("w boxes", 1000000))
+        let j = judge(one("w boxes", 999951), one("w boxes", 1000000), counted())
         j.failed.is_empty() && j.fell.is_empty()
     }
-    then "within the tolerance passes" { judge(one("w boxes", 100050), one("w boxes", 100000)).failed.is_empty() }
+    then "within the tolerance passes" { judge(one("w boxes", 100050), one("w boxes", 100000), counted()).failed.is_empty() }
     then "one box past the tolerance fails, naming both numbers" {
-        judge(one("w boxes", 100051), one("w boxes", 100000)).failed.join("|") == "cost: w boxes: 100000 -> 100051 (+0.051%, over the 0.05% tolerance)"
+        judge(one("w boxes", 100051), one("w boxes", 100000), counted()).failed.join("|") == "cost: w boxes: 100000 -> 100051 (+0.051%, over the 0.05% tolerance)"
     }
     then "a peak one MB over a row of a thousand fails" {
-        judge(one("w peak_mb", 1001), one("w peak_mb", 1000)).failed.join("|") == "cost: w peak_mb: 1000 -> 1001 (+0.100%, over the 0.05% tolerance)"
+        judge(one("w peak_mb", 1001), one("w peak_mb", 1000), counted()).failed.join("|") == "cost: w peak_mb: 1000 -> 1001 (+0.100%, over the 0.05% tolerance)"
     }
     then "a fall passes and is named" {
-        let j = judge(one("w boxes", 900), one("w boxes", 1000))
+        let j = judge(one("w boxes", 900), one("w boxes", 1000), counted())
         j.failed.is_empty() &&
             j.fell.length == 1 &&
             j.fell[0].contains("fell: 1000 -> 900 (-10.000%)")
     }
     then "a missing count fails" {
         let empty: Map<string, int> = {}
-        judge(empty, one("w boxes", 1000)).failed[0].contains("printed no count")
+        judge(empty, one("w boxes", 1000), counted()).failed[0].contains("printed no count")
     }
     then "a change from nothing is new" { percent(0, 5) == "new" }
 }
@@ -123,7 +140,7 @@ spec "cost — the baseline's text" {
         rows.set("edit-added_after worked", 42)
         rows.set("ledger-edit-added_after pass_tape_asks", 7)
         rows.set("w boxes", 1000)
-        let text = render(sha, rows)
+        let text = render(sha, "", rows)
         snapshot_of(text) == sha &&
             rows_of(text).length == 3 &&
             rows_of(text).get("edit-added_after worked") == 42
@@ -133,7 +150,7 @@ spec "cost — the baseline's text" {
         rows.set("b x", 2)
         rows.set("a-b x", 3)
         rows.set("a x", 1)
-        render("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", rows)
+        render("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "", rows)
             .ends_with("a x 1\na-b x 3\nb x 2\n")
     }
 }
@@ -205,5 +222,108 @@ spec "cost — a ledger run's work" {
     then "a counter that names no work is no twin's to match" {
         same_work(two("ledger-edit-body pass_tape_asks", 4, "edit-body pass_tape_asks", 5))
             .is_empty()
+    }
+}
+
+spec "cost — the kinds a ledger declares" {
+    then "each kind line reads its key, its tolerance and its fold" {
+        let k = counted()
+        k.length == 4 &&
+            k.get("count")?.keyed_by == "-" &&
+            k.get("speed")?.slack == 250 &&
+            k.get("speed")?.least == true &&
+            k.get("grows")?.ppm == null
+    }
+    then "a kind line with an unread tolerance declares nothing" { kinds_of("kind x keyed-by host over 5pct").is_empty() }
+    then "a byte past an exact row fails, saying the row is exact" {
+        judge(
+            one("bytes:linux-clang-22.1.2:hello stripped", 101),
+            one("bytes:linux-clang-22.1.2:hello stripped", 100),
+            counted(),
+        )
+            .failed
+            .join("|") == "cost: bytes:linux-clang-22.1.2:hello stripped: 100 -> 101 (+1.000%, over its exact row)"
+    }
+    then "an exact row's every fall is named" {
+        judge(
+            one("bytes:k:hello stripped", 99999),
+            one("bytes:k:hello stripped", 100000),
+            counted(),
+        )
+            .fell
+            .length == 1
+    }
+    then "a speed row rises within its percent and its slack" {
+        judge(one("speed:h:check analyze", 1500), one("speed:h:check analyze", 1000), counted())
+                .failed
+                .is_empty() &&
+            !judge(
+                one("speed:h:check analyze", 1501),
+                one("speed:h:check analyze", 1000),
+                counted(),
+            )
+                .failed
+                .is_empty()
+    }
+    then "a row its kind only tells moves and never fails" {
+        let j = judge(one("grows:k:board bytes", 900), one("grows:k:board bytes", 100), counted())
+        j.failed.is_empty() && j.told.length == 1
+    }
+    then "a row its kind only tells owes no count where the run made nothing to weigh" {
+        let empty: Map<string, int> = {}
+        judge(empty, one("grows:k:board bytes", 100), counted()).failed.is_empty()
+    }
+    then "a row whose kind no line declares fails" {
+        judge(one("weight:k:x n", 1), one("weight:k:x n", 1), counted()).failed[0]
+            .contains("no `kind weight` line")
+    }
+    then "a count's tolerance is the one its kind line declares" {
+        judge(
+            one("w boxes", 100051),
+            one("w boxes", 100000),
+            kinds_of("kind count keyed-by - over 1000ppm"),
+        )
+            .failed
+            .is_empty()
+    }
+}
+
+spec "cost — a keyed run's rounds" {
+    then "a least kind keeps the least of its rounds" {
+        rounds_folded(
+            "speed:h:check analyze 30\nspeed:h:check analyze 20\nspeed:h:check analyze 25\n",
+            counted(),
+        )
+            .rows
+            .get("speed:h:check analyze") == 20
+    }
+    then "an exact kind's rounds measured apart are refused" {
+        rounds_folded("bytes:k:hello stripped 10\nbytes:k:hello stripped 11\n", counted())
+            .apart
+            .join("|") == "cost: bytes:k:hello stripped: one run measured 10 and 11, and its kind holds its rounds equal"
+    }
+    then "a round of an undeclared kind is refused" { !rounds_folded("weight:k:x n 1\n", counted()).apart.is_empty() }
+    then "a keyed accept lowers, seeds, never raises, and records what a told row measured" {
+        mut now = one("bytes:k:a n", 9)
+        now.set("bytes:k:b n", 12)
+        now.set("bytes:k:new n", 5)
+        now.set("grows:k:board n", 700)
+        mut base = one("bytes:k:a n", 10)
+        base.set("bytes:k:b n", 11)
+        base.set("grows:k:board n", 500)
+        let got = keyed_accepted(now, base, counted())
+        got.get("bytes:k:a n") == 9 &&
+            got.get("bytes:k:b n") == 11 &&
+            got.get("bytes:k:new n") == 5 &&
+            got.get("grows:k:board n") == 700
+    }
+    then "a keyed row reads back from the ledger's text" {
+        let text = render(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "kind bytes keyed-by toolchain over 0ppm\n",
+            one("bytes:linux-x86_64-clang-22.1.2:hello stripped", 22848),
+        )
+        rows_of(text).get("bytes:linux-x86_64-clang-22.1.2:hello stripped") == 22848 &&
+            kinds_of(text).length == 1
     }
 }

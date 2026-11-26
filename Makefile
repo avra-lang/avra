@@ -407,7 +407,7 @@ wasm-size:
 wasm-body:
 	sh tools/wasm-body.sh
 
-# THE SIZE RECEIPT: the footprint, printed and capped relative to the baseline.
+# THE SIZE RECEIPT: the wasm floor's ledger rows, exact within its toolchain; the board's told.
 wasm-size-guard:
 	sh tools/wasm-size-guard.sh
 
@@ -415,10 +415,11 @@ wasm-size-guard:
 wasm-routes-size:
 	sh tools/wasm-routes-size.sh
 
-# Re-accept the footprint deliberately (the guard prints the rise first).
+# Re-accept the wasm rows deliberately (the guards print the rise first).
 # not a keeper — re-accepts the wasm footprint deliberately
 wasm-size-accept:
 	sh tools/wasm-size-guard.sh --accept
+	sh tools/wasm-routes-size.sh --accept
 
 # THE ARCHIVE'S LAW: never carries a fiber or a core.
 wasm-archive:
@@ -1247,15 +1248,16 @@ fingerprints:
 	@python3 tools/avsrc.py >/dev/null
 	@python3 tools/fingerprints.py
 
-# THE FOOTPRINT: a program that spawns nothing links no scheduler, and the
-# smallest programs' bytes stay under a relative cap (tools/footprint.py).
+# THE FOOTPRINT: a program that spawns nothing links no scheduler (tools/footprint.py), and the
+# smallest programs' bytes are ledger rows, exact within their toolchain (tools/footprint_bytes.sh).
 footprint: $(RUNTIME_LIB)
 	@python3 tools/footprint.py --self-test
 	@python3 tools/footprint.py
+	@sh tools/footprint_bytes.sh
 
-# Re-accept this platform's sizes deliberately.
+# Re-accept this toolchain's sizes deliberately.
 footprint-accept: $(RUNTIME_LIB)
-	@python3 tools/footprint.py --accept
+	@sh tools/footprint_bytes.sh accept
 
 # THE FLOW G1 GATE: the scheduler's transition rows (a gate round trip,
 # spawn+join, a cold parked spawn) against tools/flow_bench/gate.baseline,
