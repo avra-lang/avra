@@ -12,6 +12,8 @@
 #include "../avra_fiber.h"
 #include "../avra_runtime.h"
 
+int64_t avra_fd_read(int64_t fd, int64_t max);
+
 static int g_checks = 0;
 static int g_fails = 0;
 #define CHECK(cond, what) do { g_checks++; if (!(cond)) { g_fails++; fprintf(stderr, "case_test: FAILED %s (%s:%d)\n", what, __FILE__, __LINE__); } } while (0)
@@ -127,12 +129,25 @@ static int64_t leaks_tidily(void) {
 // the wait — so what stays live after the case is what abandoning left.
 static int64_t deadlocks_tidily(void) {
     void* gate = avra_gate_new();
-    avra_task_slot_set(AVRA_TASK_SLOTS - 1, gate);
+    avra_task_slot_set(AVRA_SLOT_KEYS - 1, gate);
     avra_rc_release(gate);
     avra_rc_release(spawn1(waits_on, gate));
     avra_wait_gate(gate, 0, 0);
     avra_wait_park();
     return 1;
+}
+
+// A DEADLOCK THAT LEAVES A LANDING UNTAKEN: the case's task reads bytes it never takes, then waits
+// on its own gate — the landing is the task's, freed with it.
+static int64_t deadlocks_holding_a_landing(void) {
+    int p[2];
+    if (pipe(p) != 0) return 1;
+    if (write(p[1], "four", 4) != 4) return 1;
+    int64_t token = avra_fd_read(p[0], 4);
+    close(p[0]);
+    close(p[1]);
+    if (token <= 0) return 1;
+    return deadlocks_tidily();
 }
 
 // ── the runner's side ───────────────────────────────────────────
@@ -323,6 +338,13 @@ static void a_deadlock_costs_nothing(void) {
     CHECK(avra_mem_live() == live, "and the gate, with both tasks, is freed");
 }
 
+static void a_deadlock_frees_its_landing(void) {
+    avra_case_run(passes);
+    int64_t live = avra_mem_live();
+    CHECK(avra_case_run(deadlocks_holding_a_landing) == 0, "a case that deadlocks holding a read it never took fails");
+    CHECK(avra_mem_live() == live, "and the bytes it landed are freed with its task");
+}
+
 static void wide_pages(void) {
     CHECK(avra_case_run(recurses) == 1, "a deep case passes");
     int64_t resident = avra_sched_wide_resident();
@@ -374,6 +396,7 @@ int main(void) {
     CHECK(says("the case ended holding the clock 1 time(s); let go"), "and says so");
     heard("abandoning gives back what it can", abandoning_costs_nothing);
     heard("a deadlock gives back its gate and its tasks", a_deadlock_costs_nothing);
+    heard("a deadlock gives back the bytes its task landed", a_deadlock_frees_its_landing);
     heard("the wide stack's pages", wide_pages);
     heard("a guest's tripwire stays quiet with nothing filed", guest_alone);
     heard("a case inside a case fails that case", nested);
