@@ -1919,7 +1919,7 @@ impl Checking {
     /// body checks in a fenced scope against the seat's answer, which is the lambda's answer and what
     /// a `return` inside it answers. Absent
     /// where it stands under a seat it can't see, which may widen it.
-    mut fn lambda_checked(params: List<Param>, body: ExprId, wanted: Expected) -> SignedType? {
+    mut fn lambda_checked(params: List<Param>, body: ExprId, wanted: Expected, block: bool = false) -> SignedType? {
         let expected = self.shaped(wanted)
         let one = seat_fn(expected, 1)
         let record = known(one?.seats?.first()?.ty)
@@ -1938,7 +1938,7 @@ impl Checking {
                 )
         }
         let before = self.refused.get().length
-        let read = self.lambda_answered(body, seat)
+        let read = self.lambda_answered(body, seat, !block || !params.is_empty())
         self.closed()
         if expected.unknowing() || read == null || types.any(it == null) { return null }
         let answer = self.answer_lifted(body, expected, before) ?? read
@@ -1989,16 +1989,17 @@ impl Checking {
     /// What a lambda's body `body` answers into the fn seat `seat`: checked against the seat's answer
     /// where it's known, else read as it is, an arms block's match widened as `tailed_answer` says.
     /// The seat's answer is what a `return`, `?` or `fail` inside answers, whatever the lambda's
-    /// parameters, and a `Result` whose failure is known is that answer while its value is still to
-    /// be inferred, the body's read then answered as its value; a seat whose answer isn't known has
-    /// none to give, so no fn encloses its body.
-    mut fn lambda_answered(body: ExprId, seat: SignedType?) -> SignedType? {
+    /// parameters, where it `promises` — a block of no seats promises none — and a `Result` whose
+    /// failure is known is that answer while its value is still to be inferred, the body's read then
+    /// answered as its value; a seat whose answer isn't known has none to give, so no fn encloses its
+    /// body.
+    mut fn lambda_answered(body: ExprId, seat: SignedType?, promises: bool = true) -> SignedType? {
         let wanted = known(seat?.answer)
         let heard = wanted ?? failing_answer(seat?.answer)
         let outer = self.answer
         let outer_fnless = self.fnless
-        self.answer = heard
-        self.fnless = outer_fnless || heard == null
+        self.answer = if promises { heard } else { null }
+        self.fnless = outer_fnless || !promises || heard == null
         let read = self
             .check(body, if wanted != null { Expected.Exactly(wanted!) } else { Expected.Free })
         self.answer = outer
