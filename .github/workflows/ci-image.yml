@@ -1,4 +1,6 @@
-# Builds the checks' machine image whenever main's recipe changes.
+# Builds the checks' machine image whenever main's recipe changes, then the browser leg's machine on top
+# of it (Dockerfile.browser: the same image with WebKit's host libraries installed when it is built). A
+# dispatch with `browser_only` builds the browser leg's machine alone, over the checks' image as it stands.
 name: ci-image
 
 on:
@@ -6,6 +8,11 @@ on:
     branches: [main]
     paths: [.github/ci/**]
   workflow_dispatch:
+    inputs:
+      browser_only:
+        description: build avra-ci:llvm22-browser alone, over avra-ci:llvm22 as it stands
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -13,6 +20,7 @@ permissions:
 
 jobs:
   image:
+    if: ${{ !inputs.browser_only }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -26,3 +34,22 @@ jobs:
           context: .github/ci
           push: true
           tags: ghcr.io/avra-lang/avra-ci:llvm22
+
+  browser:
+    needs: [image]
+    if: ${{ always() && (needs.image.result == 'success' || needs.image.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .github/ci
+          file: .github/ci/Dockerfile.browser
+          pull: true
+          push: true
+          tags: ghcr.io/avra-lang/avra-ci:llvm22-browser
