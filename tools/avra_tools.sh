@@ -10,6 +10,9 @@
 # compiler under `tools-<key>` (tools/tools_key.sh, tools/compiler_release.py).
 # Resolved in order:
 #   1. build/avra-tools/<key>/avra-tools, already here;
+#   1b. in a tree of program's, the avra-tools landing publishes beside the gate's builder for the key, else one
+#      built by this tree's own standing compiler, else a refusal saying why — never steps 2-4, whose
+#      compilers predate program's source;
 #   2. the published asset for the key, fetched — on Linux x86-64 only, the one platform CI
 #      publishes for; any other machine builds its own;
 #   3. built here by $AVRA_TOOLS_COMPILER, else by main's published compiler (Linux x86-64) or
@@ -28,7 +31,7 @@ if [ "${1:-}" = --path ]; then want_path=1; shift; else want_path=0; fi
 # and the reached packages' objects it links. A failed build says why, on stderr.
 build_tools() {
     cp "$1" build/avra-tools-compiler
-    make -s build/libavra_runtime.a $(sh tools/manifest_objects.sh --closure tools) >&2 || { echo "avra_tools: the runtime library or a std object did not build" >&2; return 1; }
+    make -s build/libavra_runtime.a build/libavra_runtime_uninstrumented.a $(sh tools/manifest_objects.sh --closure tools) >&2 || { echo "avra_tools: the runtime library or a std object did not build" >&2; return 1; }
     if out=$(AVRA_PROGRAM_MODE=release build/avra-tools-compiler build tools 2>&1); then
         cp "$(printf '%s\n' "$out" | tail -n 1)" "$bin" && chmod +x "$bin"
     else
@@ -52,6 +55,36 @@ main_compiler() {
 key=$(sh tools/tools_key.sh)
 dir=build/avra-tools/$key
 bin=$dir/avra-tools
+
+# A TREE OF PROGRAM'S (tools/work program-base) takes the avra-tools each landing publishes beside the gate's
+# builder (.github/workflows/tools-release.yml) where its key is this tree's, else builds it with this tree's
+# own compiler — never with main's or the newest published, which predate program's source and build a tool
+# that refuses it. Where neither gives one, it says so here and runs nothing older instead.
+if [ ! -x "$bin" ] && pb=$(sh tools/work program-base . 2>/dev/null); then
+    mkdir -p "$dir"
+    t=$(mktemp -d "${TMPDIR:-/tmp}/avra-tools.XXXXXX")
+    # the published binary is a Linux x86-64 ELF: another machine builds its own with its standing compiler
+    if [ "$(uname -s)-$(uname -m)" = Linux-x86_64 ] &&
+        curl -fsSL --retry 2 -m 120 -o "$t/tools.tar.gz" https://github.com/avra-lang/avra/releases/download/gate-builder/tools.tar.gz 2>/dev/null &&
+        tar -xzf "$t/tools.tar.gz" -C "$t" "build/avra-tools/$key/avra-tools" 2>/dev/null; then
+        cp "$t/build/avra-tools/$key/avra-tools" "$bin" && chmod +x "$bin"
+        echo "avra_tools: the avra-tools of key $(printf '%.12s' "$key") published beside the gate's builder" >&2
+    fi
+    find "$t" -delete
+    c=${AVRA_TOOLS_COMPILER:-}
+    if [ ! -x "$bin" ] && [ -z "$c" ] && [ -x build/avra ] &&
+        [ "$(cut -d' ' -f1 build/.avra-built-from 2>/dev/null)" = "$(sh tools/work built-from . | cut -d' ' -f1)" ]; then
+        c=build/avra
+    fi
+    if [ ! -x "$bin" ] && [ -n "$c" ] && [ -x "$c" ]; then
+        build_tools "$c" && echo "avra_tools: avra-tools of key $(printf '%.12s' "$key") built by $c" >&2 || :
+    fi
+    if [ ! -x "$bin" ]; then
+        if [ -n "$c" ]; then why="$c did not build it (above)"; else why="no compiler of this tree's source stands here to build it"; fi
+        echo "avra_tools: a tree of program's (merge-base $(printf '%.8s' "$pb")): no avra-tools of key $(printf '%.12s' "$key") beside the gate's builder, and $why — nothing older is run instead" >&2
+        exit 1
+    fi
+fi
 # THE PUBLISHED BINARIES ARE LINUX X86-64 ELFs: another machine cannot run them, so it builds its own.
 published=0
 [ "$(uname -s)-$(uname -m)" = Linux-x86_64 ] && published=1

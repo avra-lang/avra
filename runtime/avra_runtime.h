@@ -142,6 +142,20 @@ void avra_mem_forked(void);
 void avra_mem_settle(void);
 void avra_descriptors_forgotten(void);
 void avra_pool_forked(void);
+// THE MACHINE'S MEMORY POOL as the runtime asks it: the pool's member installs its table when a
+// build links it (`avra_pool_linked` names it), and a process with none answers to its own
+// ceiling alone.
+typedef struct {
+    int64_t (*allowed)(int64_t in_use);
+    int64_t (*let_go)(int64_t in_use);
+    int64_t (*spare_at)(void);
+    int64_t (*held)(void);
+    int64_t (*free_bytes)(void);
+    void (*forked)(void);
+    // The words of a refusal `allowed` answered (a negative code), one format over the MB in use.
+    const char* (*refused)(int64_t code);
+} AvraPool;
+void avra_pool_install(const AvraPool* pool);
 // What tasks abandoned while holding the world held, let go: only that
 // share, never the holds a live task stands in.
 void avra_clock_holds_let_go(int64_t n);

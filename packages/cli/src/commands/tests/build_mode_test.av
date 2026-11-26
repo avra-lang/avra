@@ -11,15 +11,19 @@ spec "commands/build — the dev build is the default, --release the optimised o
     given "`avra build`" {
         then "it builds at -O0" { host("", false)?.opt == "-O0" }
         then "LLVM shared, linked in layers" { host("", false)?.shared == true && host("", false)?.layered == true }
+        then "with the runtime's instruments" { host("", false)?.instruments == true }
     }
     given "`avra build --release`" {
         then "it builds at -O1" { host("", true)?.opt == "-O1" }
         then "one static binary" { host("", true)?.shared == false && host("", true)?.layered == false }
+        then "with no instrument" { host("", true)?.instruments == false }
     }
     given "AVRA_PROGRAM_MODE" {
         then "`release` spells the optimised build without the flag" { host("release", false)?.opt == "-O1" }
         then "`dev` spells the dev build over the flag" { host("dev", true)?.opt == "-O0" }
         then "a field overrides the default" { host("opt=-O2", false)?.opt == "-O2" }
+        then "`instruments=on` keeps them in a release build" { host("release,instruments=on", false)?.instruments == true }
+        then "`instruments=off` drops them from a dev build" { host("instruments=off", false)?.instruments == false }
         then "a word it doesn't know is refused" { host("fast", false) == null }
     }
     given "another target" {

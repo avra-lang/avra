@@ -676,7 +676,7 @@ fn binary_asked(
         compiler: compiler_identity(),
         head: target_link_head(t, stem),
         words: words,
-        linked: linked_digests(words.concat([t.runtime])),
+        linked: linked_digests(words, t.runtime),
         dir: joined_path(disk.root, "${BUILD_DIR}-${t.target}"),
         opt: mode.opt,
         layered: false,
@@ -745,6 +745,7 @@ const BUILD_DIR: string = ".avra-cache/tapes-build"
 /// that defines a host fn links whole whatever its mode: a host calls it by the bare symbol in the
 /// binary it loads, and a layered binary holds none of the program's code.
 fn native_asked(engine: QueryEngine, disk: Disk, bin: string, stem: string, mode: BuildMode) -> BinaryAsked {
+    let instruments = mode.instruments || manifest_at(disk.root).instruments
     let words = phased(
         engine,
         "link words",
@@ -752,21 +753,33 @@ fn native_asked(engine: QueryEngine, disk: Disk, bin: string, stem: string, mode
         () -> linked_words(engine, disk, mode.shared),
     )
         .concat(stack_words(mode.opt))
+        .concat(pool_words(instruments))
+    let runtime = native_runtime(instruments)
     let hosted = program_host_symbols(engine, disk.file_at(bin), "")
     BinaryAsked {
         entry: disk.file_at(bin),
         compiler: compiler_identity(),
         head: native_link_head(names_its_symbols(engine, disk), fast_linker(), hosted, stem),
         words: words,
-        linked: linked_digests(words),
+        linked: linked_digests(words, runtime),
         dir: joined_path(disk.root, BUILD_DIR),
         opt: mode.opt,
         layered: mode.layered && hosted.is_empty(),
         inlined: inlines_runtime(),
+        runtime: runtime,
         placed: relative_path(joined_path(disk.root, BUILD_DIR), dir_of(stem)),
         tools: tools_marked([link_compiler(), fast_linker()]),
     }
 }
+
+/// THE RUNTIME A NATIVE BINARY LINKS: the instrumented one — the ledger's report, the reference
+/// guard, the alias log, the census — where the build asks for instruments, else the one built with
+/// none, which a program pays nothing for.
+fn native_runtime(instruments: bool) -> string { if instruments { runtime_library() } else { uninstrumented_runtime_library() } }
+
+/// The words that link the machine's memory pool, pulled by its marker (runtime/avra_pool.c), into an
+/// instrumented build; none into another, which answers to its own ceiling alone.
+fn pool_words(instruments: bool) -> List<string> { if instruments { host_kept_words(["avra_pool_linked"]) } else { [] } }
 
 /// The words a native binary emitted at `opt` links with for its task stack: at `-O0`, whose frames
 /// keep every value in a slot of their own, the runtime's member holding the deeper stack such frames
@@ -889,8 +902,9 @@ type BinaryAsked = {
     /// Whether its objects carry the runtime's hot leaves inlined, as this process emits them
     /// (`inlines_runtime`), or keep them calls.
     inlined: bool,
-    /// The triple a non-host build is for, its runtime archive, the C compiler that links it, and the
-    /// optimizer it ships through; each empty for a native build.
+    /// The triple a non-host build is for, its runtime archive (a native build's too:
+    /// `native_runtime`), the C compiler that links it, and the optimizer it ships through; each but
+    /// the archive empty for a native build.
     target: string = "",
     runtime: string = "",
     linker: string = "",
@@ -909,19 +923,22 @@ type BinaryAsked = {
 /// LLVM as its one shared library where it stands; and the program as two shared objects — the
 /// world, and the overlay of what moved since the world was linked — under a small executable, so
 /// an edit relinks the overlay alone.
-export type BuildMode = { opt: string, shared: bool, layered: bool }
+export type BuildMode = { opt: string, shared: bool, layered: bool, instruments: bool = false }
 
-/// The mode a build makes its binary in by default: unoptimised, LLVM shared, linked in layers.
-fn dev_mode() -> BuildMode { BuildMode { opt: "-O0", shared: true, layered: true } }
+/// The mode a build makes its binary in by default: unoptimised, LLVM shared, linked in layers, with
+/// the runtime's instruments and the machine's memory pool, since diagnosis happens here.
+fn dev_mode() -> BuildMode { BuildMode { opt: "-O0", shared: true, layered: true, instruments: true } }
 
-/// The mode `--release` makes its binary in: `-O1`, one static binary.
+/// The mode `--release` makes its binary in: `-O1`, one static binary, with no instrument and no
+/// pool unless its package asks (`[build] instruments`).
 fn release_mode() -> BuildMode { BuildMode { opt: "-O1", shared: false, layered: false } }
 
 /// THE MODE A BUILD MAKES ITS BINARY IN: for the host, `dev` (`-O0`, shared and layered) unless
 /// `release` (`--release`: `-O1`, one static binary); for another `target`, the level both paths
 /// emit it at (`default_opt`) and one static binary. Then `AVRA_PROGRAM_MODE`, as `spelled`, overrides
 /// it: a comma list of a preset — `dev` or `release` — then fields: `opt=-O<n>`,
-/// `llvm=shared|static` and `link=layered|whole`. A word it doesn't know is refused.
+/// `llvm=shared|static`, `link=layered|whole` and `instruments=on|off`. A word it doesn't know is
+/// refused.
 export fn build_mode(spelled: string, target: string, release: bool) -> Result<BuildMode, string> {
     mut mode = when {
         target != "" -> BuildMode { opt: default_opt(target), shared: false, layered: false }
@@ -937,16 +954,18 @@ export fn build_mode(spelled: string, target: string, release: bool) -> Result<B
             "llvm=static" -> mode with { shared: false },
             "link=layered" -> mode with { layered: true },
             "link=whole" -> mode with { layered: false },
+            "instruments=on" -> mode with { instruments: true },
+            "instruments=off" -> mode with { instruments: false },
             _ -> { return .Err(unknown_mode_word(word)) },
         }
     }
     .Ok(mode)
 }
 
-/// The digest of each file a link reads besides the program's own objects: the runtime archive, then
-/// each object and archive `words` name, so a file rebuilt in place is another build.
-fn linked_digests(words: List<string>) -> List<string> {
-    [runtime_library()]
+/// The digest of each file a link reads besides the program's own objects: the runtime archive
+/// `runtime`, then each object and archive `words` name, so a file rebuilt in place is another build.
+fn linked_digests(words: List<string>, runtime: string) -> List<string> {
+    [runtime]
         .concat([w for w in words if w.ends_with(".o") || w.ends_with(".a")])
         .map((path) -> "${path} ${digest_of_binary(path) ?? "-"}")
 }
@@ -2510,7 +2529,7 @@ fn suite_key(engine: QueryEngine, disk: Disk, files: List<SourceFileAddress>, pa
         [compiler_identity(), if inlines_runtime() { "inlined" } else { "calls" }]
             .concat([spelled_file(f) for f in files])
             .concat(["${r}\n${text_at(r) ?? ""}" for r in reads])
-            .concat(linked_digests(packaged.words))
+            .concat(linked_digests(packaged.words, native_runtime(true)))
             .join("\n\n"),
     )
 }
@@ -2687,7 +2706,8 @@ fn unbuilt(l: Lowered, stem: string, packaged: Linking) -> string? {
         native_link_head(packaged.names_symbols, "", [], stem),
         [object],
         stem,
-        packaged.words,
+        packaged.words.concat(pool_words(true)),
+        native_runtime(true),
     )
 }
 
@@ -2748,6 +2768,7 @@ fn bucket_kept(
                 [o.obj for o in made],
                 staged,
                 asked.words,
+                asked.runtime,
                 standing_bin(asked.dir),
             )
         },
@@ -2975,15 +2996,17 @@ fn traps_baseline(dir: string) -> string? {
 fn trap_site(m: Missed) -> Finding { Finding { rule: "program.trap", file: m.symbol, text: m.why } }
 
 /// Why `objects` didn't link into the binary `stem` after the link's leading words `head`, its
-/// packages' own objects and flags `packaged` beside them, absent when they did.
+/// packages' own objects and flags `packaged` beside them and the runtime archive `runtime`, absent
+/// when they did.
 fn link_refused(
     head: List<string>,
     objects: List<string>,
     stem: string,
     packaged: List<string>,
+    runtime: string,
     before: string = "",
 ) -> string? {
-    let inputs = objects.concat(packaged).concat([runtime_library()])
+    let inputs = objects.concat(packaged).concat([runtime])
     clang_refused(head.concat(inputs).concat(["-lm", "-o", stem]), stem, link_bytes(inputs, before))
 }
 
@@ -3069,7 +3092,7 @@ fn layered_refused(asked: BinaryAsked, made: List<Made>, stem: string) -> string
             asked.head,
             [o.obj for o in world],
             world_lib,
-            words.whole(asked.words.concat([runtime_library()])),
+            words.whole(asked.words.concat([asked.runtime])),
             world_before,
         )
         if refused != null { return refused }
@@ -3462,7 +3485,7 @@ fn stand_ins(stood: List<Missed>) -> string { "avra: built on the program layer;
 
 /// A word `AVRA_PROGRAM_MODE` doesn't know.
 fn unknown_mode_word(word: string) -> string {
-    "AVRA_PROGRAM_MODE has no word `${word}` — it takes `release` or `dev`, then `opt=-O0|-O1|-O2|-O3|-Oz`, `llvm=shared|static` and `link=layered|whole`"
+    "AVRA_PROGRAM_MODE has no word `${word}` — it takes `release` or `dev`, then `opt=-O0|-O1|-O2|-O3|-Oz`, `llvm=shared|static`, `link=layered|whole` and `instruments=on|off`"
 }
 
 /// A link with too little disk to write its output.

@@ -17,6 +17,7 @@ use realize.html.delivery.{always_seat_of, web_event}
 use realize.html.tags.{HtmlTag, HtmlAttr, HtmlAttrName, carries, control_attrs, tag_of}
 use realize.html.css.{class_names, box_vars, drawn_box, CssVar, scopes_of}
 use tree.sites.{Reading}
+use env.{Direction}
 use @std.meta.{Structural, Opaque}
 use @std.assets.{Picture}
 use realize.diff.matcher.{Diffable}
@@ -216,13 +217,52 @@ fn class_attrs(n: Node, scopes: List<string>) -> List<HtmlAttr> {
     if names.is_empty() { [] } else { [HtmlAttr { name: .Class, value: names.join(" ") }] }
 }
 
-/// A node's own attributes: its identity, its classes, its box.
-fn node_attrs(n: Node, scopes: List<string>) -> List<HtmlAttr> {
+/// A node's own attributes: its identity, its classes, its box, and the direction it is laid out in
+/// where that moved from `laid`, the one the element above it is laid out in.
+fn node_attrs(n: Node, scopes: List<string>, laid: Direction) -> List<HtmlAttr> {
     let keyed: List<HtmlAttr> = match n.box.key {
         k? -> [HtmlAttr { name: .DataKey, value: k.spoken() }]
         null -> []
     }
-    keyed.concat(class_attrs(n, scopes))
+    keyed.concat(class_attrs(n, scopes)).concat(laid_out(n, laid))
+}
+
+/// An element's own attributes: its node's, where the element that holds the node's words wears
+/// their direction in place of the layout's.
+fn own_attrs(n: Node, scopes: List<string>, laid: Direction, worded: bool) -> List<HtmlAttr> {
+    if !worded { return node_attrs(n, scopes, laid) }
+    node_attrs(n, scopes, laying(n, laid)).concat([words_dir(n)])
+}
+
+// ── the writing direction ───────────────────────────────────────
+
+/// The direction `n` is laid out in, standing under an element laid out in `laid`.
+fn laying(n: Node, laid: Direction) -> Direction { n.theme?.writing ?? laid }
+
+/// The `dir` of a node whose layout direction moved from `laid`; none where it did not.
+fn laid_out(n: Node, laid: Direction) -> List<HtmlAttr> {
+    let here = laying(n, laid)
+    if here == laid { [] } else { [HtmlAttr { name: .Dir, value: direction_word(here) }] }
+}
+
+/// The `dir` of an element that holds a node's words: the direction its style states, else `auto`,
+/// so the words read in their own script's direction and stand isolated from what is beside them.
+fn words_dir(n: Node) -> HtmlAttr {
+    let stated? = n.box.style.writing else { return HtmlAttr { name: .Dir, value: "auto" } }
+    HtmlAttr { name: .Dir, value: direction_word(stated) }
+}
+
+/// The `dir` value a writing direction names.
+fn direction_word(d: Direction) -> string {
+    match d { .Ltr -> "ltr", .Rtl -> "rtl" }
+}
+
+/// Whether a control's own element holds text the reader types.
+fn types_words(p: Prim) -> bool {
+    match p {
+        .Field -> true,
+        .Checkbox or .Switch or .Slider or .Progress or .Text or .Heading or .Button or .Link or .Image or .Row or .Column or .Dialog or .Divider or .Icon or .Surface or .List or .Item or .Card or .Fieldset or .Alert or .Spinner or .Form or .Key -> false,
+    }
 }
 
 // ── the elements a node lowers to ───────────────────────────────
@@ -272,9 +312,10 @@ fn headings(n: Node) -> List<Element> {
     }
 }
 
-/// The title a node carries, drawn as `tag`.
+/// The title a node carries, drawn as `tag`: an element that is the node's words, so it reads in their
+/// direction.
 fn titled(n: Node, tag: HtmlTag) -> List<Element> {
-    [Element.Tag(Tagged { seat: title_part(j), tag: tag, kids: said(title) }) for j, title in [t for a in n.attrs for t in titles(a)]]
+    [Element.Tag(Tagged { seat: title_part(j), tag: tag, attrs: [words_dir(n)], kids: said(title) }) for j, title in [t for a in n.attrs for t in titles(a)]]
 }
 
 /// Whether a control's words are read before it. Every primitive
@@ -302,25 +343,34 @@ fn names_element(a: Attribute) -> bool {
 /// seat, its key and its classes — and the control inside it takes the
 /// node's attributes and hears its events. The control and its words
 /// stand in the order a reader expects of its kind.
-fn labelled(n: Node, at: Seat, kids: List<Element>, scopes: List<string>) -> Element {
+fn labelled(n: Node, at: Seat, kids: List<Element>, scopes: List<string>, laid: Direction) -> Element {
     let control = Element
         .Tag(
             Tagged {
                 seat: control_part,
                 tag: tag_of(n),
-                attrs: element_attrs(n),
+                attrs: element_attrs(n).concat(if types_words(n.prim) { [words_dir(n)] } else { [] }),
                 rests: rests_of(n.attrs),
                 hears: heard(n),
                 crowded: at.crowded,
             },
         )
-    let words = Element.Tag(Tagged { seat: words_part, tag: .Span, kids: said_of(n) })
+    let said = said_of(n)
+    let words = Element
+        .Tag(
+            Tagged {
+                seat: words_part,
+                tag: .Span,
+                attrs: if n.says_words() { [words_dir(n)] } else { [] },
+                kids: said,
+            },
+        )
     Element
         .Tag(
             Tagged {
                 seat: at.matched,
                 tag: .Label,
-                attrs: node_attrs(n, scopes),
+                attrs: node_attrs(n, scopes, laid),
                 vars: box_vars(drawn_box(n)),
                 sites: n.sites,
                 says: words_attrs(n.attrs),
@@ -347,13 +397,20 @@ fn heard(n: Node) -> List<Action> {
 }
 
 /// The node itself as one element holding `kids`.
-fn element(n: Node, at: Seat, kids: List<Element>, scopes: List<string>) -> Element {
+fn element(
+    n: Node,
+    at: Seat,
+    kids: List<Element>,
+    scopes: List<string>,
+    laid: Direction,
+    worded: bool,
+) -> Element {
     Element
         .Tag(
             Tagged {
                 seat: at.matched,
                 tag: tag_of(n),
-                attrs: element_attrs(n).concat(node_attrs(n, scopes)),
+                attrs: element_attrs(n).concat(own_attrs(n, scopes, laid, worded)),
                 vars: box_vars(drawn_box(n)),
                 rests: rests_of(n.attrs),
                 hears: heard(n),
@@ -371,8 +428,9 @@ fn element(n: Node, at: Seat, kids: List<Element>, scopes: List<string>) -> Elem
 /// for an element that holds nothing — that one and then its children,
 /// each standing under the node's seat so it is told from the node's own
 /// siblings.
-fn lower(n: Node, at: Seat, scopes: List<string>) -> List<Element> {
+fn lower(n: Node, at: Seat, scopes: List<string>, laid: Direction) -> List<Element> {
     let stands = stepped([c.box.stand() for c in n.children])
+    let here = laying(n, laid)
     match carries(tag_of(n)) {
         .Within -> [
             element(
@@ -380,12 +438,15 @@ fn lower(n: Node, at: Seat, scopes: List<string>) -> List<Element> {
                 at,
                 said_of(n)
                     .concat(headings(n))
-                    .concat(lower_each(n, stands, null, at.crowded, scopes)),
+                    .concat(lower_each(n, stands, null, at.crowded, scopes, here)),
                 scopes,
+                laid,
+                n.bears_words(),
             ),
         ],
-        .Never -> [element(n, at, [], scopes)].concat(lower_each(n, stands, at, at.crowded, scopes)),
-        .Beside -> [labelled(n, at, lower_each(n, stands, null, at.crowded, scopes), scopes)],
+        .Never -> [element(n, at, [], scopes, laid, false)]
+            .concat(lower_each(n, stands, at, at.crowded, scopes, laid)),
+        .Beside -> [labelled(n, at, lower_each(n, stands, null, at.crowded, scopes, here), scopes, laid)],
     }
 }
 
@@ -393,10 +454,20 @@ fn lower(n: Node, at: Seat, scopes: List<string>) -> List<Element> {
 /// children stand beside the node rather than inside it. A child is crowded
 /// when it, or what holds it, is told from a sibling by order alone. A key
 /// stands hidden and says its chord.
-fn lower_each(n: Node, stands: Stepped, seat: Seat?, above: bool, scopes: List<string>) -> List<
-    Element,
-> {
-    [e for i, c in n.children for e in lower(c, seat_of(seat, stands.steps[i], above || c.drawn_by_order || stands.shared[i]), scopes)]
+fn lower_each(
+    n: Node,
+    stands: Stepped,
+    seat: Seat?,
+    above: bool,
+    scopes: List<string>,
+    laid: Direction,
+) -> List<Element> {
+    [e for i, c in n.children for e in lower(
+        c,
+        seat_of(seat, stands.steps[i], above || c.drawn_by_order || stands.shared[i]),
+        scopes,
+        laid,
+    )]
 }
 
 /// The elements a tree lowers to, in page order, its scopes named as its own page names them.
@@ -404,4 +475,7 @@ export fn lowered(root: Node) -> List<Element> { lowered_on(root, scopes_of(root
 
 /// The elements a tree lowers to on a page whose scopes are `scopes` (`scopes_of`): what stands
 /// beside a page's tree names a scope as the page does.
-export fn lowered_on(root: Node, scopes: List<string>) -> List<Element> { lower(root, seat_of(null, root_step(root.box.key)), scopes) }
+/// The page's own direction is the one its document is laid out in before any node says another.
+export fn lowered_on(root: Node, scopes: List<string>) -> List<Element> {
+    lower(root, seat_of(null, root_step(root.box.key)), scopes, Direction.Ltr)
+}

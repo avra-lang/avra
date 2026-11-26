@@ -771,12 +771,32 @@ static void acc_report(void) {
 #if AVRA_MEASURES_MEMORY
 static int64_t g_mem_ceiling;
 static int64_t g_mem_next;
-int64_t avra_pool_allowed(int64_t in_use);
-int64_t avra_pool_let_go(int64_t in_use);
-int64_t avra_pool_spare_at(void);
-int64_t avra_pool_held(void);
-int64_t avra_pool_free_bytes(void);
+static const AvraPool* g_pool;
+
+// The pool's answers, or what a process with no pool installed answers: nothing to wait for and
+// nothing held.
+static int64_t pool_allowed(int64_t in_use) { return g_pool ? g_pool->allowed(in_use) : INT64_MAX; }
+static int64_t pool_let_go(int64_t in_use) { return g_pool ? g_pool->let_go(in_use) : INT64_MAX; }
+static int64_t pool_spare_at(void) { return g_pool ? g_pool->spare_at() : INT64_MIN; }
+static int64_t pool_held(void) { return g_pool ? g_pool->held() : 0; }
+static int64_t pool_free_bytes(void) { return g_pool ? g_pool->free_bytes() : INT64_MAX; }
 #endif
+
+void avra_pool_install(const AvraPool* pool) {
+#if AVRA_MEASURES_MEMORY
+    g_pool = pool;
+    int64_t first_look = pool_free_bytes();
+    if (first_look < g_mem_next) g_mem_next = first_look;
+#else
+    (void)pool;
+#endif
+}
+
+void avra_pool_forked(void) {
+#if AVRA_MEASURES_MEMORY
+    if (g_pool) g_pool->forked();
+#endif
+}
 
 // Settled at load, for the reason `rc_guard_init` gives: a lazy
 // getenv inside this carries into every allocation's fast path.
@@ -794,7 +814,7 @@ static void acc_settled(void) {
 #if AVRA_MEASURES_MEMORY
     const char* ceiling = getenv(AVRA_SET_MEM_CEILING_MB);
     if (ceiling && *ceiling) g_mem_ceiling = (int64_t)avra_number(ceiling, 10) << 20;
-    int64_t first_look = avra_pool_free_bytes();
+    int64_t first_look = pool_free_bytes();
     g_mem_next = first_look < g_mem_ceiling ? first_look : g_mem_ceiling;
 #endif
     CENSUS(g_sites_census = avra_set_census_sites());
@@ -900,7 +920,7 @@ static int64_t g_mem_low = INT64_MIN;
 static void mem_looks(int64_t live, int64_t used, int64_t allowed) {
     int64_t limit = allowed < g_mem_ceiling ? allowed : g_mem_ceiling;
     g_mem_next = live + (limit - used);
-    int64_t spare = avra_pool_spare_at();
+    int64_t spare = pool_spare_at();
     g_mem_low = spare == INT64_MIN ? INT64_MIN : live - (used - spare);
 }
 
@@ -914,19 +934,10 @@ static void mem_ceiling_measure(int64_t taking) {
                (long long)(g_mem_ceiling >> 20));
         avra_trap(msg); // LICENSED traps.process_limit: the memory ceiling is a limit of the process
     }
-    int64_t allowed = avra_pool_allowed(used);
+    int64_t allowed = pool_allowed(used);
     if (allowed < 0) {
         char msg[160];
-        if (allowed == -1) {
-            avra_fmt(msg, sizeof msg, "this run needs more than the machine's whole memory pool: %lld MB in use (AVRA_MEM_POOL_MB)",
-                   (long long)(used >> 20));
-        } else if (allowed == -2) {
-            avra_fmt(msg, sizeof msg, "other runs held the machine's memory pool past this run's wait: %lld MB in use (AVRA_MEM_POOL_WAIT_MS)",
-                   (long long)(used >> 20));
-        } else {
-            avra_fmt(msg, sizeof msg, "the machine's memory pool is held wholly by runs waiting for more, and this run holds the least of it: %lld MB in use",
-                   (long long)(used >> 20));
-        }
+        avra_fmt(msg, sizeof msg, g_pool->refused(allowed), (long long)(used >> 20));
         avra_trap(msg); // LICENSED traps.process_limit: the pool is a limit of the machine
     }
     mem_looks(g_live_bytes + taking, used, allowed);
@@ -949,9 +960,9 @@ void avra_mem_settle(void) {
 #if AVRA_MEASURES_MEMORY
     if (g_mem_ceiling <= 0) return;
     int64_t used = mem_in_use();
-    int64_t held = avra_pool_held();
-    int64_t allowed = avra_pool_let_go(used);
-    if (avra_pool_held() < held) mem_relieved();
+    int64_t held = pool_held();
+    int64_t allowed = pool_let_go(used);
+    if (pool_held() < held) mem_relieved();
     mem_looks(g_live_bytes, used, allowed);
 #endif
 }
@@ -1589,6 +1600,10 @@ static void rc_guard_init(void) {
     const char* budget = getenv(AVRA_SET_RC_LOG_BUDGET);
     if (budget) g_log_budget = (size_t)avra_number(budget, 10);
 }
+#else
+// The word a program's inlined leaves read (the compiler carries them built with instruments):
+// here it is always off.
+const int avra_rc_guard_off __asm__("avra_rc_guard_on") = 0;
 #endif
 static void* g_chain[64];
 static int g_chain_len = 0;
@@ -1753,12 +1768,12 @@ static char* sized_moved(char* p, size_t need) {
     }
     mem_ceiling_check((int64_t)(sizeof(Header) + room + 1));
     Header* moved = (Header*)realloc(h, sizeof(Header) + room + 1);
-    if (moved == NULL) avra_trap("out of memory growing a value in place");
+    if (moved == NULL) avra_trap(WORDS("out of memory growing a value in place"));
     return (char*)(moved + 1);
 }
 
 static char* sized_grown(char* p, size_t need) {
-    if (need >= UINT32_MAX) avra_trap("a value is longer than its header can carry");
+    if (need >= UINT32_MAX) avra_trap(WORDS("a value is longer than its header can carry"));
     Header* h = (Header*)p - 1;
     char* out = need <= sized_capacity(h) ? p : sized_moved(p, need);
     sized_resized((Header*)out - 1, need);
@@ -1983,7 +1998,7 @@ int64_t avra_streq(const char* a, const char* b) {
 // Division by -1 is negation, which WRAPS on the smallest int as `-`
 // does; C leaves that one quotient undefined, so it is spelled.
 int64_t avra_int_div(int64_t a, int64_t b) {
-    if (b == 0) { avra_trap("division by zero"); }
+    if (b == 0) { avra_trap(WORDS("division by zero")); }
     if (b == -1) { return (int64_t)((uint64_t)0 - (uint64_t)a); }
     return a / b;
 }
@@ -2015,7 +2030,7 @@ int64_t avra_int_shl_overflows(int64_t a, int64_t b) {
 }
 
 int64_t avra_int_mod(int64_t a, int64_t b) {
-    if (b == 0) { avra_trap("division by zero"); }
+    if (b == 0) { avra_trap(WORDS("division by zero")); }
     if (b == -1) { return 0; }
     return a % b;
 }
@@ -2236,7 +2251,7 @@ static void array_marks(AvraArray* a, int words) {
 // or absent cell in a list made for scalars.
 __attribute__((noinline, cold, noreturn))
 static void packed_marked(void) {
-    avra_trap("defect: an owned or absent cell written into a packed list"); // LICENSED traps.defect: a packed list is made only for a scalar element
+    avra_trap(WORDS("defect: an owned or absent cell written into a packed list")); // LICENSED traps.defect: a packed list is made only for a scalar element
 }
 
 static inline void mark_put(AvraArray* a, int64_t i, uint8_t mark) {
@@ -2297,7 +2312,7 @@ void* avra_array_new_words(void) { return array_made(0, AVRA_CALLER(), 1); }
 // written by one fill. A count below zero makes the empty list.
 void* avra_array_filled_words(int64_t n, int64_t w) {
     if (n < 0) n = 0;
-    if (n >= CELL_CEILING) avra_trap("a list grew past any possible size — a corrupted box"); // LICENSED traps.defect: no list holds more cells than this
+    if (n >= CELL_CEILING) avra_trap(WORDS("a list grew past any possible size — a corrupted box")); // LICENSED traps.defect: no list holds more cells than this
     AvraArray* a = array_made(n, AVRA_CALLER(), 1);
     if (w == 0) memset(a->data, 0, (size_t)n * sizeof(int64_t));
     else for (int64_t i = 0; i < n; i++) a->data[i] = w;
@@ -2526,7 +2541,7 @@ __attribute__((noinline))
 static void push_grown(AvraArray* a, int64_t v, uint8_t mark, void* pusher) {
     if (mark != 0 && avra_packed(a)) packed_marked();
     if (a->len == a->cap) {
-        if (a->cap >= CELL_CEILING || a->cap < 0) avra_trap("a list grew past any possible size — a corrupted box"); // LICENSED traps.defect: a corrupted box
+        if (a->cap >= CELL_CEILING || a->cap < 0) avra_trap(WORDS("a list grew past any possible size — a corrupted box")); // LICENSED traps.defect: a corrupted box
         array_grow(a, pusher);
     }
     a->data[a->len] = v;
@@ -2553,7 +2568,7 @@ void avra_push_moved_grown(void* arr, void* v) {
 void avra_array_reserve(void* arr, int64_t spare) {
     AvraArray* a = (AvraArray*)arr;
     while (a->cap - a->len < spare) {
-        if (a->cap >= CELL_CEILING || a->cap < 0) avra_trap("a list grew past any possible size — a corrupted box");
+        if (a->cap >= CELL_CEILING || a->cap < 0) avra_trap(WORDS("a list grew past any possible size — a corrupted box"));
         array_grow(a, __builtin_return_address(0));
     }
 }
@@ -2573,7 +2588,7 @@ void avra_array_reserve(void* arr, int64_t spare) {
 // scope releases both the subject and the answer, and a reference
 // that escapes through `!` must survive its subject's release.
 void* avra_insist(void* p) {
-    if (!p) { avra_trap("unwrapped an absent value"); }
+    if (!p) { avra_trap(WORDS("unwrapped an absent value")); }
     CENSUS(note_insist(__builtin_return_address(0)));
     avra_rc_retain(p);
     return p;
@@ -2583,13 +2598,13 @@ void* avra_insist(void* p) {
 // memory pass chooses it wherever the subject stands past every use of
 // the answer, and the owned twin below everywhere else.
 void* avra_unwrap(void* p) {
-    if (!p) { avra_trap("unwrapped an absent value"); }
+    if (!p) { avra_trap(WORDS("unwrapped an absent value")); }
     return p;
 }
 
 // `v!` whose answer outlives its subject: the same box, its own +1.
 void* avra_unwrap_owned(void* p) {
-    if (!p) { avra_trap("unwrapped an absent value"); }
+    if (!p) { avra_trap(WORDS("unwrapped an absent value")); }
     CENSUS(note_insist(__builtin_return_address(0)));
     avra_rc_retain(p);
     return p;
@@ -2649,7 +2664,7 @@ static void once_grow(void) {
     int cap = g_once_cap == 0 ? 256 : g_once_cap * 2;
     OnceSlot* slots = (OnceSlot*)realloc(g_once, (size_t)cap * sizeof(OnceSlot));
     int* ix = (int*)calloc((size_t)cap * 4, sizeof(int));
-    if (slots == NULL || ix == NULL) { avra_trap("out of memory growing the `once` cache"); } // LICENSED traps.process_limit: out of memory is a limit of the process
+    if (slots == NULL || ix == NULL) { avra_trap(WORDS("out of memory growing the `once` cache")); } // LICENSED traps.process_limit: out of memory is a limit of the process
     g_once = slots;
     g_once_cap = cap;
     free(g_once_ix);
@@ -2855,7 +2870,7 @@ void avra_once_slot_commit(void* key, void* value, void** slot) {
 
 // `v!` on a PAIR nullable — the flag guards, the value passes.
 int64_t avra_insist_scalar(int64_t present, int64_t value) {
-    if (!present) { avra_trap("unwrapped an absent value"); }
+    if (!present) { avra_trap(WORDS("unwrapped an absent value")); }
     return value;
 }
 
@@ -3080,7 +3095,7 @@ void* avra_cell_thawed(void* slot) {
 // A seat its caller must open was handed the binary's own data.
 __attribute__((noinline, cold, noreturn))
 void avra_seat_static(void) {
-    avra_trap("defect: a writing seat was handed the binary's own data, unopened"); // LICENSED traps.defect: a caller left a writing seat's box unopened
+    avra_trap(WORDS("defect: a writing seat was handed the binary's own data, unopened")); // LICENSED traps.defect: a caller left a writing seat's box unopened
     abort();
 }
 
@@ -3195,7 +3210,7 @@ void avra_slot_put_logged(void* arr, int64_t i, int64_t v) {
 // A write landed in the binary's own data.
 __attribute__((noinline, cold, noreturn))
 static void avra_wrote_static(void) {
-    avra_trap("defect: a write landed in the binary's own data — a box never opened for writing"); // LICENSED traps.defect: a writer skipped the open of a static box
+    avra_trap(WORDS("defect: a write landed in the binary's own data — a box never opened for writing")); // LICENSED traps.defect: a writer skipped the open of a static box
 }
 
 // A slot write into a box with a flag set: the binary's own data
@@ -3278,7 +3293,7 @@ void avra_slot_set_maybe_owned(void* arr, int64_t i, int64_t present, void* v) {
 // list traps as the pop would.
 int64_t avra_array_last_present(void* arr) {
     AvraArray* a = (AvraArray*)arr;
-    if (a->len == 0) avra_trap("pop on an empty list");
+    if (a->len == 0) avra_trap(WORDS("pop on an empty list"));
     return !(avra_mark_at(a, a->len - 1) & MARK_ABSENT);
 }
 
@@ -3484,7 +3499,7 @@ static void index_free(AvraMap* m) {
 // key placed past the tripwire by the fast hash files them all again,
 // keyed.
 static void map_index_rebuild(AvraMap* m, int64_t icap, int keyed) {
-    if (icap >= CELL_CEILING || icap <= 0) avra_trap("a map grew past any possible size — a corrupted box"); // LICENSED traps.defect: a corrupted box
+    if (icap >= CELL_CEILING || icap <= 0) avra_trap(WORDS("a map grew past any possible size — a corrupted box")); // LICENSED traps.defect: a corrupted box
     index_free(m);
     int64_t* words = (int64_t*)calloc((size_t)icap + 1, sizeof(int64_t));
     words[0] = (int64_t)((gen_minted() << 1) | (keyed ? 1 : 0));
@@ -3551,16 +3566,18 @@ static inline void map_indexed(AvraMap* m) {
 static int g_map_stats;
 static int64_t g_map_probes;
 
+#if AVRA_INSTRUMENTS
 static void map_stats_report(void) {
     avra_say("map: %lld probes\n", (long long)g_map_probes);
 }
+#endif
 
 __attribute__((constructor))
 static void map_stats_settled(void) {
 #if AVRA_INSTRUMENTS
     g_map_stats = avra_set_map_stats();
-#endif
     if (g_map_stats) atexit(map_stats_report);
+#endif
 }
 
 // Where a key's probe ended: its slot or -1, and for a miss the empty
@@ -3939,15 +3956,15 @@ const char* avra_strs_text(void* arr) {
 // not), so the answer is owned either way.
 int64_t avra_array_pop(void* arr) {
     AvraArray* a = (AvraArray*)arr;
-    if (a->len == 0) avra_trap("pop on an empty list");
+    if (a->len == 0) avra_trap(WORDS("pop on an empty list"));
     a->len--;
-    if (avra_mark_at(a, a->len) & MARK_OWNED) avra_trap("a managed slot popped as a scalar");
+    if (avra_mark_at(a, a->len) & MARK_OWNED) avra_trap(WORDS("a managed slot popped as a scalar"));
     return a->data[a->len];
 }
 
 void* avra_array_pop_owned(void* arr) {
     AvraArray* a = (AvraArray*)arr;
-    if (a->len == 0) avra_trap("pop on an empty list");
+    if (a->len == 0) avra_trap(WORDS("pop on an empty list"));
     a->len--;
     void* v = (void*)(uintptr_t)a->data[a->len];
     if (avra_mark_at(a, a->len) & MARK_OWNED) {
@@ -4059,12 +4076,12 @@ static struct { const void* box; int64_t k; } g_stride_seen[STRIDE_SEEN];
 __attribute__((noinline, cold))
 void avra_stride_checked(void* arr, int64_t k) {
     AvraArray* a = (AvraArray*)arr;
-    if (k < 1 || a->len % k != 0) avra_trap("defect: a strided list holds a part of an element"); // LICENSED traps.defect: every write of a strided list writes whole elements
+    if (k < 1 || a->len % k != 0) avra_trap(WORDS("defect: a strided list holds a part of an element")); // LICENSED traps.defect: every write of a strided list writes whole elements
     uint64_t h = ((uint64_t)(uintptr_t)arr >> 4) * 0x9E3779B97F4A7C15ull;
     for (int64_t n = 0; n < STRIDE_SEEN; n++) {
         int64_t at = (int64_t)((h + (uint64_t)n) & (STRIDE_SEEN - 1));
         if (g_stride_seen[at].box == arr) {
-            if (g_stride_seen[at].k != k) avra_trap("defect: a strided list read at two strides"); // LICENSED traps.defect: a site's stride is its element type's
+            if (g_stride_seen[at].k != k) avra_trap(WORDS("defect: a strided list read at two strides")); // LICENSED traps.defect: a site's stride is its element type's
             return;
         }
         if (g_stride_seen[at].box == NULL) {
@@ -4080,7 +4097,7 @@ void avra_stride_checked(void* arr, int64_t k) {
 int64_t avra_stride_last(void* arr, int64_t k) {
     AvraArray* a = (AvraArray*)arr;
     if (__builtin_expect(avra_rc_guard_on, 0)) avra_stride_checked(arr, k);
-    if (a->len < k) avra_trap("pop on an empty list");
+    if (a->len < k) avra_trap(WORDS("pop on an empty list"));
     return a->len - k;
 }
 
@@ -4265,7 +4282,7 @@ int64_t avra_float_ge(int64_t a, int64_t b) { return as_double(a) >= as_double(b
 static size_t bytes_len(const char* b) { return (size_t)((const Header*)b - 1)->len; }
 
 static char* bytes_box(size_t n) {
-    if (n >= UINT32_MAX) avra_trap("a Bytes value is longer than its header can carry");
+    if (n >= UINT32_MAX) avra_trap(WORDS("a Bytes value is longer than its header can carry"));
     char* b = sized_box(n, KIND_BYTES);
     b[n] = '\0';
     return b;
@@ -4296,9 +4313,9 @@ static const char* bytes_owned(const void* p, size_t n) {
    cannot tell a wrong length from a right one by looking, so the only
    lengths it refuses are the ones that cannot be true. */
 const char* avra_bytes_adopted(const void* p, int64_t n) {
-    if (n < 0) avra_trap("a foreign buffer is shorter than nothing");
+    if (n < 0) avra_trap(WORDS("a foreign buffer is shorter than nothing"));
     if (p == NULL) {
-        if (n > 0) avra_trap("a foreign buffer claims octets and no address");
+        if (n > 0) avra_trap(WORDS("a foreign buffer claims octets and no address"));
         return bytes_box(0);
     }
     return bytes_owned(p, (size_t)n);
@@ -4308,7 +4325,7 @@ const char* avra_bytes_adopted(const void* p, int64_t n) {
 // length zero, so appends fill the block in place until the room is
 // spent — `sized_moved` asks the block before it moves anything.
 const char* avra_bytes_with_room(int64_t n) {
-    if (n < 0) avra_trap("a buffer's room is less than nothing");
+    if (n < 0) avra_trap(WORDS("a buffer's room is less than nothing"));
     char* b = bytes_box((size_t)n);
     sized_resized((Header*)b - 1, 0);
     return b;
@@ -4340,7 +4357,7 @@ static char* cell_bytes_grown(void* cell, size_t m) {
 // `width` octets of `word`, the most significant first, appended to the
 // bytes `cell` holds. A word is one to eight octets.
 void avra_cell_bytes_word(void* cell, int64_t word, int64_t width) {
-    if (width < 1 || width > 8) avra_trap("a word appends one to eight octets");
+    if (width < 1 || width > 8) avra_trap(WORDS("a word appends one to eight octets"));
     size_t n = bytes_len((const char*)(uintptr_t)((AvraArray*)cell)->data[0]);
     char* out = cell_bytes_grown(cell, (size_t)width) + n;
     for (int64_t k = 0; k < width; k++) out[k] = (char)(((uint64_t)word >> (8 * (width - 1 - k))) & 255);
@@ -4684,7 +4701,7 @@ typedef struct {
 } AvraMmap;
 
 static AvraMmap* mmap_handle(void* h) {
-    if (h == NULL) avra_trap("a memory-mapped file's handle is null");
+    if (h == NULL) avra_trap(WORDS("a memory-mapped file's handle is null"));
     return (AvraMmap*)h;
 }
 
@@ -4693,7 +4710,7 @@ static AvraMmap* mmap_handle(void* h) {
 // door can map). Absent is the null pointer; nothing else answers it.
 void* avra_mmap_open(const char* path) {
     Header* ph = hdr((void*)path);
-    if (ph != NULL && strlen(path) != (size_t)ph->len) avra_trap("a mapped path holds an embedded NUL");
+    if (ph != NULL && strlen(path) != (size_t)ph->len) avra_trap(WORDS("a mapped path holds an embedded NUL"));
     int fd = open(path, O_RDONLY);
     if (fd < 0) return NULL;
     struct stat st;
@@ -4706,7 +4723,7 @@ void* avra_mmap_open(const char* path) {
     }
     close(fd);  // the mapping outlives the descriptor that made it
     AvraMmap* out = (AvraMmap*)malloc(sizeof(AvraMmap));
-    if (out == NULL) avra_trap("out of memory mapping a file");
+    if (out == NULL) avra_trap(WORDS("out of memory mapping a file"));
     out->base = base;
     out->len = (int64_t)st.st_size;
     return out;
@@ -4870,18 +4887,27 @@ uint8_t avra_unwinding = 0;
 
 int64_t avra_main_asker = 0;
 
+// The words a cancelled main says, as one format over the canceller `by`; the program's exit
+// prints them with stdio and allocates nothing.
+static const char* cancelled_format(int64_t by) {
+    if (by & AVRA_SCOPE_IDS) return "main was cancelled — awaiting a task cancelled by a `within` limit";
+    if (by == 0) return "main was cancelled — awaiting a task cancelled by main";
+    return "main was cancelled — awaiting a task cancelled by task %lld";
+}
+
 const char* avra_main_cancelled_words(int64_t by) {
     char words[96];
-    if (by & AVRA_SCOPE_IDS) avra_fmt(words, sizeof words, "main was cancelled — awaiting a task cancelled by a `within` limit");
-    else if (by == 0) avra_fmt(words, sizeof words, "main was cancelled — awaiting a task cancelled by main");
-    else avra_fmt(words, sizeof words, "main was cancelled — awaiting a task cancelled by task %lld", (long long)by);
+    avra_fmt(words, sizeof words, cancelled_format(by), (long long)by);
     return str_static(words);
 }
 
 __attribute__((noinline, cold))
 static int32_t main_cancelled(void) {
+    int64_t by = avra_main_asker - 1;
     fflush(stdout);
-    fprintf(stderr, "avra: %s\n", avra_main_cancelled_words(avra_main_asker - 1));
+    fputs("avra: ", stderr);
+    fprintf(stderr, cancelled_format(by), (long long)by);
+    fputc('\n', stderr);
     return 1;
 }
 
@@ -4890,7 +4916,7 @@ int32_t avra_main_ended(int32_t code) {
 }
 
 __attribute__((noinline, cold, noreturn))
-static void slot_refused(void) { avra_trap("a task has four slots, and this is none of them"); }
+static void slot_refused(void) { avra_trap(WORDS("a task has four slots, and this is none of them")); }
 
 __attribute__((noinline))
 static void* slot_retained(void* v) {
@@ -5375,7 +5401,7 @@ int64_t avra_fd_tty_raw(int64_t fd, int64_t mode) {
 void avra_fd_exit_writes(int64_t fd, const char* bytes) {
     size_t n = bytes_len(bytes);
     char* copy = n > 0 ? malloc(n) : NULL;
-    if (n > 0 && !copy) avra_trap("out of memory keeping the bytes a terminal is left with");
+    if (n > 0 && !copy) avra_trap(WORDS("out of memory keeping the bytes a terminal is left with"));
     if (n > 0) memcpy(copy, bytes, n);
     char* old = g_leave_bytes;
     g_leave_len = 0;
@@ -5478,7 +5504,7 @@ static void sw_room(SavedWriter* w, size_t more) {
     size_t cap = w->cap ? w->cap : 256;
     while (cap < w->len + more) cap *= 2;
     w->buf = realloc(w->buf, cap);
-    if (!w->buf) avra_trap("a saved answer's writer could not grow"); // LICENSED traps.process_limit: the allocator ran out of memory
+    if (!w->buf) avra_trap(WORDS("a saved answer's writer could not grow")); // LICENSED traps.process_limit: the allocator ran out of memory
     w->cap = cap;
 }
 
@@ -5514,7 +5540,7 @@ static void sw_label(SavedWriter* w, int width, int64_t variant, int64_t length)
 
 void* avra_sw_new(int64_t room) {
     SavedWriter* w = calloc(1, sizeof *w);
-    if (!w) avra_trap("a saved answer's writer could not be made"); // LICENSED traps.process_limit: the allocator ran out of memory
+    if (!w) avra_trap(WORDS("a saved answer's writer could not be made")); // LICENSED traps.process_limit: the allocator ran out of memory
     sw_room(w, room > 0 ? (size_t)room : 256);
     return w;
 }
@@ -5526,7 +5552,7 @@ void avra_sw_push(void* h, int64_t held, int64_t word) {
     if (w->height + 2 > w->slot_cap) {
         size_t cap = w->slot_cap ? w->slot_cap * 2 : 64;
         w->slots = realloc(w->slots, cap * sizeof *w->slots);
-        if (!w->slots) avra_trap("a saved answer's writer could not grow"); // LICENSED traps.process_limit: the allocator ran out of memory
+        if (!w->slots) avra_trap(WORDS("a saved answer's writer could not grow")); // LICENSED traps.process_limit: the allocator ran out of memory
         w->slot_cap = cap;
     }
     w->slots[w->height++] = held;
@@ -5969,14 +5995,14 @@ void avra_clock_hold(int64_t by) {
     avra_clock.held += (int32_t)by;
     avra_task_local->clock_holds += by;
     if (by < 0) avra_task_local->clock_asks = 0;
-    if (avra_clock.held < 0) avra_trap("the world was let go more often than it was held — a hold on the clock is a count");
+    if (avra_clock.held < 0) avra_trap(WORDS("the world was let go more often than it was held — a hold on the clock is a count"));
     clock_settled();
 }
 
 void avra_clock_holds_let_go(int64_t n) {
     if (n <= 0) return;
     avra_clock.held -= (int32_t)n;
-    if (avra_clock.held < 0) avra_trap("defect: abandoned tasks were charged more holds on the world than stand");
+    if (avra_clock.held < 0) avra_trap(WORDS("defect: abandoned tasks were charged more holds on the world than stand"));
     clock_settled();
 }
 
@@ -6002,7 +6028,7 @@ void avra_clock_run_begins(void) {
     if (g_clock_runs == g_clock_runs_cap) {
         g_clock_runs_cap = g_clock_runs_cap ? g_clock_runs_cap * 2 : 8;
         g_clock_outer = realloc(g_clock_outer, g_clock_runs_cap * sizeof(AvraClock));
-        if (!g_clock_outer) avra_trap("the runtime ran out of memory for a run's clock");
+        if (!g_clock_outer) avra_trap(WORDS("the runtime ran out of memory for a run's clock"));
     }
     g_clock_outer[g_clock_runs++] = avra_clock;
     avra_clock.held = 0;
@@ -6013,7 +6039,7 @@ void avra_clock_run_begins(void) {
 int64_t avra_clock_run_depth(void) { return (int64_t)g_clock_runs; }
 
 void avra_clock_run_ends(void) {
-    if (g_clock_runs == 0) avra_trap("defect: a run's clock ended that never began");
+    if (g_clock_runs == 0) avra_trap(WORDS("defect: a run's clock ended that never began"));
     avra_clock = g_clock_outer[--g_clock_runs];
     clock_run_turned();
 }
@@ -6131,7 +6157,7 @@ void avra_qtrace(const char* s) {
    outside a const. */
 const char* avra_embed(const char* path) {
     (void)path;
-    avra_trap("`embed` reads a file at compile time, into a const — this program reached it at run time");
+    avra_trap(WORDS("`embed` reads a file at compile time, into a const — this program reached it at run time"));
     return "";
 }
 
@@ -6139,7 +6165,7 @@ const char* avra_embed(const char* path) {
    by the compiler, at compile time, under the const's own directory. */
 const char* avra_embed_octets(const char* path) {
     (void)path;
-    avra_trap("`embed_octets` reads a file at compile time, into a const — this program reached it at run time");
+    avra_trap(WORDS("`embed_octets` reads a file at compile time, into a const — this program reached it at run time"));
     return "";
 }
 
@@ -6148,7 +6174,7 @@ const char* avra_embed_octets(const char* path) {
    outside a const. */
 const char* avra_embed_digest(const char* path) {
     (void)path;
-    avra_trap("`embed_digest` reads a file at compile time, into a const — this program reached it at run time");
+    avra_trap(WORDS("`embed_digest` reads a file at compile time, into a const — this program reached it at run time"));
     return "";
 }
 
@@ -6173,7 +6199,7 @@ void avra_box_changed(void* payload) {
     if (g_changes_len == g_changes_cap) {
         g_changes_cap = g_changes_cap ? g_changes_cap * 2 : 64;
         g_changes = (int64_t*)realloc(g_changes, g_changes_cap * sizeof(int64_t));
-        if (g_changes == NULL) avra_trap("out of memory logging a change"); // LICENSED traps.process_limit: out of memory is a limit of the process
+        if (g_changes == NULL) avra_trap(WORDS("out of memory logging a change")); // LICENSED traps.process_limit: out of memory is a limit of the process
     }
     g_changes[g_changes_len++] = (int64_t)(uintptr_t)payload;
 }
@@ -6239,7 +6265,7 @@ void* avra_changes_take(void) {
    never calls this body at all. */
 void* avra_type_named(const char* name) {
     (void)name;
-    avra_trap("`type_named` resolves a declaration at compile time — this program reached it at run time");
+    avra_trap(WORDS("`type_named` resolves a declaration at compile time — this program reached it at run time"));
     return NULL;
 }
 
@@ -6247,7 +6273,7 @@ void* avra_type_named(const char* name) {
    reached only by the interpreter's arm. */
 void* avra_fn_declared(const char* key) {
     (void)key;
-    avra_trap("`decl` reads a declaration at compile time — this program reached it at run time");
+    avra_trap(WORDS("`decl` reads a declaration at compile time — this program reached it at run time"));
     return NULL;
 }
 
@@ -6530,24 +6556,24 @@ static int g_cap_file = -1;
 #if defined(__wasm32__)
 
 // A wasm module has one process and no descriptor table to redirect.
-void avra_capture_begin(void) { avra_trap("capture is not available on wasm32"); }
-const char* avra_capture_end(void) { avra_trap("capture is not available on wasm32"); }
+void avra_capture_begin(void) { avra_trap(WORDS("capture is not available on wasm32")); }
+const char* avra_capture_end(void) { avra_trap(WORDS("capture is not available on wasm32")); }
 
 #else
 
 void avra_capture_begin(void) {
-    if (g_cap_file >= 0) avra_trap("capture: begun twice");
+    if (g_cap_file >= 0) avra_trap(WORDS("capture: begun twice"));
     fflush(stdout);
     char path[] = "/tmp/avra-capture-XXXXXX";
     g_cap_file = mkstemp(path);
-    if (g_cap_file < 0) avra_trap("capture: no temp file");
+    if (g_cap_file < 0) avra_trap(WORDS("capture: no temp file"));
     unlink(path);
     g_cap_saved = dup(1);
     dup2(g_cap_file, 1);
 }
 
 const char* avra_capture_end(void) {
-    if (g_cap_file < 0) avra_trap("capture: ended before it began");
+    if (g_cap_file < 0) avra_trap(WORDS("capture: ended before it began"));
     fflush(stdout);
     dup2(g_cap_saved, 1);
     close(g_cap_saved);

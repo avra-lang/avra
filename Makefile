@@ -131,14 +131,20 @@ TREE_STEM_LAW = $(if $(TREE_CLASH),$(error A STEM NAMES ITS OBJECT, \
 # runtime file joins the library without a line here.
 RUNTIME_OBJS = $(patsubst runtime/%.c,build/%.o,$(wildcard runtime/*.c)) build/avra_tick.o
 RUNTIME_LIB = build/libavra_runtime.a
+# THE RUNTIME A PROGRAM PAYS NOTHING FOR: the same members built with no instrument
+# (AVRA_INSTRUMENTS=0). A native build links it unless it asks for instruments — a dev
+# build does, and a package's `[build] instruments`, as the compiler's own does
+# (packages/cli/src/commands/tapes.av's `native_runtime`).
+UNINSTRUMENTED_OBJS = $(patsubst build/%.o,build/uninstrumented/%.o,$(RUNTIME_OBJS))
+UNINSTRUMENTED_LIB = build/libavra_runtime_uninstrumented.a
 
 COMPILER_PACKAGE_OBJS := $(shell sh tools/manifest_objects.sh --closure cli)
 COMPILER_ARCHIVES = $(filter %.a,$(COMPILER_PACKAGE_OBJS))
-COMPILER_OBJS = $(TREE_STEM_LAW)$(RUNTIME_OBJS) $(RUNTIME_LIB) $(COMPILER_PACKAGE_OBJS) \
+COMPILER_OBJS = $(TREE_STEM_LAW)$(RUNTIME_OBJS) $(RUNTIME_LIB) $(UNINSTRUMENTED_LIB) $(COMPILER_PACKAGE_OBJS) \
                 $(foreach a,$(COMPILER_ARCHIVES),$(MEMBERS_$(notdir $(a))))
 
 # A seed names an archive's rows itself, so its link takes them once: the members, not also their archive.
-SEED_LINK_OBJS = $(filter-out $(COMPILER_ARCHIVES),$(COMPILER_OBJS))
+SEED_LINK_OBJS = $(filter-out $(COMPILER_ARCHIVES) $(UNINSTRUMENTED_LIB),$(COMPILER_OBJS))
 
 # PACKAGE_OBJS is every object a package's `[link]` row names — what a
 # target that RUNS programs may need, since any package's suite or
@@ -274,6 +280,16 @@ build/llvm_wrapper.o: build/avra_hot.inc
 # The library is REBUILT WHOLE from its objects, never updated in
 # place: a member dropped from runtime/ must not linger in it.
 $(RUNTIME_LIB): $(RUNTIME_OBJS)
+	@rm -f $@
+	@ar rcs $@ $^
+
+build/uninstrumented/%.o: %.c build/%.sha
+	@mkdir -p build/uninstrumented
+	cc -c -O2 -fPIC -MMD -MP $(STACK_PROBES) $(SECTIONS) -Wall -Werror -DAVRA_INSTRUMENTS=0 $(CFLAGS_$*) -o $@ $<
+
+-include $(patsubst %.o,%.d,$(UNINSTRUMENTED_OBJS))
+
+$(UNINSTRUMENTED_LIB): $(UNINSTRUMENTED_OBJS)
 	@rm -f $@
 	@ar rcs $@ $^
 
@@ -634,6 +650,7 @@ install: avra
 	@mkdir -p $(PREFIX)/bin $(PREFIX)/lib/avra/std
 	@cp build/avra $(PREFIX)/bin/avra.next && mv -f $(PREFIX)/bin/avra.next $(PREFIX)/bin/avra
 	@cp $(RUNTIME_LIB) $(PREFIX)/lib/avra/libavra_runtime.a
+	@cp $(UNINSTRUMENTED_LIB) $(PREFIX)/lib/avra/libavra_runtime_uninstrumented.a
 	@for p in packages/std-*; do rm -rf $(PREFIX)/lib/avra/std/$$(basename $$p); cp -R $$p $(PREFIX)/lib/avra/std/; done
 	@rm -rf $(PREFIX)/lib/avra/dom && cp -R runtime/dom $(PREFIX)/lib/avra/dom
 	@sh tools/std_answers.sh $(PREFIX)/bin/avra $(PREFIX)/lib/avra/std $(PREFIX)/lib/avra/answers
@@ -1167,13 +1184,13 @@ fingerprints:
 
 # THE FOOTPRINT: a program that spawns nothing links no scheduler (tools/footprint.py), and the
 # smallest programs' bytes are ledger rows, exact within their toolchain (tools/footprint_bytes.sh).
-footprint: $(RUNTIME_LIB)
+footprint: $(RUNTIME_LIB) $(UNINSTRUMENTED_LIB)
 	@python3 tools/footprint.py --self-test
 	@python3 tools/footprint.py
 	@sh tools/footprint_bytes.sh
 
 # Re-accept this toolchain's sizes deliberately.
-footprint-accept: $(RUNTIME_LIB)
+footprint-accept: $(RUNTIME_LIB) $(UNINSTRUMENTED_LIB)
 	@sh tools/footprint_bytes.sh accept
 
 # THE FLOW G1 GATE: the scheduler's transition rows (a gate round trip,

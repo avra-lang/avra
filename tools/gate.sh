@@ -76,9 +76,6 @@ warnings-a witness_program_warnings — the cli built cold and again with no cha
 warnings-b witness_program_warnings — the cases under tools/program-warnings/, against their frozen warnings
 warnings-c witness_program_warnings — the cli edited, built warm on the program layer
 edit-a     witness_program_edit, WITNESS_ONLY="embed infer composed gathered check lawed derived", the frontier walk checked
-edit-b     witness_program_edit, WITNESS_ONLY=1, the frontier walk checked
-edit-c     witness_program_edit, WITNESS_ONLY=5, the frontier walk checked
-edit-d     witness_program_edit, WITNESS_ONLY=10, the frontier walk checked
 edit-e     witness_program_edit, WITNESS_ONLY=rename, the frontier walk checked
 keepers-a1 every keeper of KEEPERS_A1 no other slice runs, a row each
 keepers-a2 the same of KEEPERS_A2
@@ -104,6 +101,7 @@ splits() {
 avrac-b|3|test packages/std-avrac — src/features/[a-e]*, its dirs dealt in turn
 avrac-c|2|test packages/std-avrac — src/features/[f-m]*, its dirs dealt in turn
 avrac-e|2|test packages/std-avrac — src/features/[s-z]*, its dirs dealt in turn
+edit-n|13|witness_program_edit's numbered edits, each alone over its own cold product, the frontier walk checked; the witness's edit count held to the parts
 edit-f|2|witness_program_edit's whole-mode cases (modes-whole), each alone over its own cold product, the frontier walk checked
 edit-g|2|witness_program_edit's layered-mode cases (modes-layered), each alone over its own cold product, the frontier walk checked
 cli|7|test packages/cli, a row a test, dealt by their measured seconds (tools/gate/path.seconds), failing names held to tools/gate/cli.names
@@ -782,6 +780,14 @@ keepers_list() {
     keepers_run $names
 }
 
+# A KEEPER SLICE ENDS ON A PLANTED FAULT its keeper must refuse, naming it (tools/keeper_planted.sh):
+# a slice whose keepers examined nothing is no slice that passes. `$1` is the plant; a part that
+# names no keeper with a plant fails rather than passing unproved.
+planted_row() {
+    [ -n "$1" ] || { judged "$slice-planted" 1; return; }
+    row "planted-$1" sh tools/keeper_planted.sh "$1"
+}
+
 # the part `$2` of `$3` of the split family `$1`; a family `splits` doesn't name, or a part past its
 # count, fails rather than passing on no rows
 part_of() {
@@ -791,6 +797,12 @@ part_of() {
         avrac-b) avrac $(features '[a-e]*' | dealt "$(($2 - 1))" "$3") ;;
         avrac-c) avrac $(features '[f-m]*' | dealt "$(($2 - 1))" "$3") ;;
         avrac-e) avrac $(features '[s-z]*' | dealt "$(($2 - 1))" "$3") ;;
+        edit-n)
+            # every numbered edit a part: a witness that holds another count than the parts runs none
+            have=$(sed -n "/^edits='/,/'\$/p" tools/witness_program_edit.sh | wc -l | tr -d ' ')
+            [ "$have" = "$3" ] || { echo "fact edit-n: witness_program_edit holds $have numbered edits, the gate deals $3" >>"$out/rows"; judged edit-n-count 1; return; }
+            edit_part "$2"
+            ;;
         edit-f) edit_part "modes-whole-$2" ;;
         edit-g) edit_part "modes-layered-$2" ;;
         cli) slice_cli $(find packages/cli/src/tests packages/cli/src/commands/tests -mindepth 1 -maxdepth 1 ! -name '.*' | sort | dealt_by_seconds "$(($2 - 1))" "$3") ;;
@@ -807,13 +819,14 @@ part_of() {
             names=$(keepers_of KEEPERS_B | grep -vx tool-witnesses | dealt "$(($2 - 1))" "$3")
             [ -n "$names" ] || { judged "keepers-b-named" 1; return; }
             keepers_run $names
+            planted_row "$(sh tools/keeper_planted.sh --pick $names)"
             ;;
         keepers-tw)
             export TOOL_WITNESS_SHARD="$(($2 - 1))/$3"
-            # the witnesses this gate runs by rows of its own; the edit witness's numbered edits it runs three of
+            # the witnesses this gate runs by rows of its own (the edit witness's every part: edit-a, -e, -f, -g, -n)
             export TOOL_WITNESS_ELSEWHERE="witness_compiler_key.sh witness_program_differential.sh witness_program_doors.sh witness_program_fixes.sh witness_program_ledger.sh witness_program_needs.sh witness_program_refusal.sh witness_program_runs.sh witness_program_suites.sh witness_program_waits.sh witness_program_warnings.sh witness_program_edit.sh witness_place_kill.sh witness_machine_store.sh"
-            echo "fact witness_program_edit.sh: numbered edits 1, 5 and 10 run (edit-b, -c, -d); 2-4, 6-9 and 11-13 run on no gate" >>"$out/rows"
             keeper_share=$TOOL_WITNESS_SHARD keepers_run tool-witnesses
+            planted_row tool-witnesses
             ;;
         keepers-alone)
             names=$(keepers_of KEEPERS_ALONE)
@@ -828,6 +841,7 @@ part_of() {
             [ -n "$names" ] || return 0
             export MUTATION_SHARD="$(($2 - 1))/$3"
             keeper_share=$MUTATION_SHARD keeper_via="sh tools/memcap.sh 6000" keepers_run $names
+            planted_row runtime-tests
             ;;
     esac
 }
@@ -934,17 +948,15 @@ if compiler; then
         warnings-b) warnings_part cases ;;
         warnings-c) warnings_part edit ;;
         edit-a) edit_part "embed infer composed gathered check lawed derived" ;;
-        edit-b) edit_part 1 ;;
-        edit-c) edit_part 5 ;;
-        edit-d) edit_part 10 ;;
         edit-e) edit_part rename ;;
-        keepers-a1) keepers_list KEEPERS_A1 ;;
-        keepers-a2) keepers_list KEEPERS_A2 ;;
-        keepers-wasm) keepers_list KEEPERS_WASM ;;
-        keepers-heavy-1) [ -x build/avra-try ] || cp build/avra build/avra-try; row witness-place-kill env AVRA_NO_SUPERVISOR_TESTS=1 sh tools/witness_place_kill.sh ;;
-        keepers-heavy-2) [ -x build/avra-try ] || cp build/avra build/avra-try; row witness-machine-store env AVRA_NO_SUPERVISOR_TESTS=1 sh tools/witness_machine_store.sh ;;
+        keepers-a1) keepers_list KEEPERS_A1; planted_row fmt-lossless ;;
+        keepers-a2) keepers_list KEEPERS_A2; planted_row traps ;;
+        keepers-wasm) keepers_list KEEPERS_WASM; planted_row wasm-refuses ;;
+        keepers-heavy-1) [ -x build/avra-try ] || cp build/avra build/avra-try; row witness-place-kill env AVRA_NO_SUPERVISOR_TESTS=1 sh tools/witness_place_kill.sh; planted_row witness-place-kill ;;
+        keepers-heavy-2) [ -x build/avra-try ] || cp build/avra build/avra-try; row witness-machine-store env AVRA_NO_SUPERVISOR_TESTS=1 sh tools/witness_machine_store.sh; planted_row witness-machine-store ;;
         keepers-clock)
             keepers_run clock-holds
+            planted_row clock-holds
             # SPEED-RATCHET GATES NOTHING YET: the ledger holds no `speed:ci-warm:` row for the phases it
             # measures, so it would spend ~800 s measuring and compare none; said every gate until it has rows
             echo "fact keeper speed-ratchet not run: tools/cost.baseline holds no speed:ci-warm row for its phases" >>"$out/rows"

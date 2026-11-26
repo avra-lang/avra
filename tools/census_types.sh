@@ -31,7 +31,7 @@ trap restore EXIT INT TERM
 make --no-print-directory $flags build/libavra_runtime.a > /dev/null
 rm -rf "$stores"
 [ -d .avra-cache ] && mv .avra-cache "$stores"
-AVRA_CENSUS_TYPES=1 AVRA_INLINE_RUNTIME=0 AVRA_PROGRAM_MODE=release build/avra build "$src" > build/census-types-build.out 2>&1 || {
+AVRA_CENSUS_TYPES=1 AVRA_INLINE_RUNTIME=0 AVRA_PROGRAM_MODE=release,instruments=on build/avra build "$src" > build/census-types-build.out 2>&1 || {
     tail -20 build/census-types-build.out; echo "census-types: the program did not build"; exit 1; }
 rm -rf .avra-cache
 # the program's own output is not the census's; its counts arrive on stderr

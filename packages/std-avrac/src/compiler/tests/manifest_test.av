@@ -217,6 +217,18 @@ spec "compiler/manifest" {
         then "a `-`-leading token in include is refused — the `-I` is ours" {
             speaks(packaged("[link]\ninclude = [\"-Ivendor\"]\n"), "manifest.link_option")
         }
+        then "instruments reads true when written true, false when absent" {
+            read(packaged("[build]\ninstruments = true\n")).manifest.instruments &&
+                !read(packaged("[build]\ninstruments = false\n")).manifest.instruments &&
+                !read(packaged("[link]\nlibs = [\"m\"]\n")).manifest.instruments
+        }
+        then "instruments written as anything but a bool is refused and read false" {
+            let text = packaged("[build]\ninstruments = \"yes\"\n")
+            speaks(text, "manifest.build_flag") && !read(text).manifest.instruments
+        }
+        then "`[build]` takes no key but instruments" {
+            speaks(packaged("[build]\nlto = true\n"), "manifest.unknown_key")
+        }
         then "`flags` is no longer a [link] key" {
             speaks(packaged("[link]\nflags = [\"-lm\"]\n"), "manifest.unknown_key")
         }

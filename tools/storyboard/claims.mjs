@@ -78,7 +78,7 @@ async function ready(page) {
   // the module mounts after the load: a box pressed before it hears nothing
   await page.read(`new Promise((done) => { const look = () => document.querySelector("article, section h2, h2") ? done(1) : setTimeout(look, 50); look(); })`);
   await page.frame();
-  for (const dial of ["more", "large", "narrow"]) {
+  for (const dial of ["more", "large", "narrow", "rtl"]) {
     const ticked = await page.read(`(() => { const box = [...document.querySelectorAll("label")].find((l) => l.textContent.trim() === ${JSON.stringify(dial)})?.querySelector("input"); return box ? box.checked : null; })()`);
     if (ticked === false) await page.press(`[...document.querySelectorAll("label")].find((l) => l.textContent.trim() === ${JSON.stringify(dial)}).querySelector("input")`);
     await page.frame();
@@ -105,6 +105,11 @@ const LIB = `
   const named = (c) => (c.getAttribute("aria-label") ?? "").trim() || (c.closest("label")?.textContent ?? "").trim() || (c.textContent ?? "").trim() || (c.getAttribute("alt") ?? "").trim();
   const worded = (canvas) => [...canvas.querySelectorAll("*")].filter((e) => [...e.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim()) && e.getClientRects().length > 0);
   const frames = [...document.querySelectorAll("[data-sb]")];
+  const laidAs = (f) => f.dataset.sb.endsWith("/rtl") ? "rtl" : "ltr";
+  const RTL = /[\u0590-\u08ff\ufb1d-\ufdff\ufe70-\ufefc]/, LTR = /[A-Za-z\u00c0-\u024f\u0370-\u03ff\u0400-\u04ff\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]/;
+  const own = (e) => [...e.childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent).join("");
+  const strong = (t) => { for (const c of t) { if (RTL.test(c)) return "rtl"; if (LTR.test(c)) return "ltr"; } return null; };
+  const stated = (e) => e.getAttribute("dir") === "ltr" || e.getAttribute("dir") === "rtl";
 `;
 
 // WHAT IS INACTIVE, as data: words no contrast standard holds to a ratio — a disabled control's, and
@@ -129,8 +134,11 @@ const families = [
   },
   {
     name: "contained",
-    holds: "nothing a frame draws stands past the frame's edge, as wide as its dial holds it: no overflow, no box beyond it",
-    check: `(f) => { const edge = Math.min(f.getBoundingClientRect().right, f.closest("[data-sb-frame]").getBoundingClientRect().right) + 1; const out = [...f.querySelectorAll("*")].filter((e) => e.getBoundingClientRect().right > edge).map((e) => e.tagName.toLowerCase() + " " + Math.round(e.getBoundingClientRect().right - edge + 1) + " px past");
+    holds: "nothing a frame draws in its flow stands past the frame's end edge, the one its dial's direction lays words toward, as wide as its dial holds it: no overflow, no box beyond it; a layer stands over the page, not in the frame",
+    check: `(f) => { const a = f.getBoundingClientRect(), b = f.closest("[data-sb-frame]").getBoundingClientRect(); const rtl = laidAs(f) === "rtl";
+      const past = (e) => { const r = e.getBoundingClientRect(); return rtl ? Math.max(a.left, b.left) - r.left : r.right - Math.min(a.right, b.right); };
+      const layered = (e) => { for (let x = e; x && x !== f; x = x.parentElement) if (getComputedStyle(x).position === "fixed") return true; return false; };
+      const out = [...f.querySelectorAll("*")].filter((e) => e.getClientRects().length > 0 && !layered(e) && past(e) > 1).map((e) => e.tagName.toLowerCase() + " " + Math.round(past(e)) + " px past");
       return (f.scrollWidth > f.clientWidth + 1 ? ["scrolls " + (f.scrollWidth - f.clientWidth) + " px"] : []).concat(out.slice(0, 2)); }`,
   },
   {
@@ -138,6 +146,22 @@ const families = [
     holds: "a field's input never stands past the frame it is drawn in",
     check: `(f) => { const edge = Math.min(f.getBoundingClientRect().right, f.closest("[data-sb-frame]").getBoundingClientRect().right);
       return [...f.querySelectorAll("input")].filter((i) => i.getBoundingClientRect().right > edge + 1).map((i) => "input " + Math.round(i.getBoundingClientRect().right - edge) + " px past"); }`,
+  },
+  {
+    name: "laid",
+    holds: "a frame is laid out in its dial's direction, and a row's first item stands at its start: the right under rtl",
+    check: `(f) => { const want = laidAs(f); const fails = getComputedStyle(f).direction === want ? [] : ["laid out " + getComputedStyle(f).direction + ", its dial says " + want];
+      for (const r of f.querySelectorAll(".dir-row")) { if (getComputedStyle(r).direction !== want) continue;
+        const kids = [...r.children].filter((k) => k.getClientRects().length > 0); if (kids.length < 2) continue;
+        const [a, b] = kids.map((k) => k.getBoundingClientRect()); if (Math.abs(a.top - b.top) > 2) continue;
+        if (want === "rtl" ? a.left < b.left : a.left > b.left) fails.push("a row's first item stands at its end under " + want); }
+      return fails.slice(0, 2); }`,
+  },
+  {
+    name: "worded",
+    holds: "a node's words read in their own script's direction, whatever the layout around them, or in the one they state",
+    check: `(f) => worded(f).map((e) => { const want = stated(e) ? e.getAttribute("dir") : strong(own(e)); const got = getComputedStyle(e).direction;
+      return want && got !== want ? "\\"" + own(e).trim().slice(0, 24) + "\\" reads " + got + ", its words are " + want : null; }).filter(Boolean)`,
   },
   {
     name: "pictured",
@@ -235,6 +259,8 @@ const breaking = {
   legible: `(() => { const s = document.createElement("style"); s.textContent = "[data-sb] * { color: rgb(200,200,200) !important; background: rgb(255,255,255) !important }"; document.head.append(s); })()`,
   contained: `document.querySelectorAll("[data-sb]").forEach((f) => { const d = document.createElement("div"); d.style.width = "2000px"; d.style.height = "1px"; f.append(d); })`,
   "input-held": `(() => { const s = document.createElement("style"); s.textContent = "[data-sb] input { min-width: 2000px !important; max-width: none !important }"; document.head.append(s); })()`,
+  laid: `document.querySelectorAll("[dir=rtl]").forEach((e) => e.removeAttribute("dir"))`,
+  worded: `document.querySelectorAll("[data-sb] [dir=auto]").forEach((e) => e.removeAttribute("dir"))`,
   pictured: `document.querySelectorAll("[data-sb]").forEach((f) => { const i = document.createElement("img"); i.src = "/no-such-picture.png"; f.append(i); })`,
   tickable: `(() => { const s = document.createElement("style"); s.textContent = "[data-sb] input[type=checkbox] { width: 0 !important; min-width: 0 !important }"; document.head.append(s); })()`,
   reachable: `document.querySelectorAll("[data-sb] button, [data-sb] input").forEach((c) => c.setAttribute("tabindex", "-1"))`,

@@ -30,6 +30,7 @@
 use @std.program.token_columns.{TokenRoles, token_roles}
 use core.{flatten, some_list, row_for, PayloadRow, node_payload_rows, has_anchor, engine_parse}
 use @std.meta.{Field}
+use @std.relation.stable.{text_hash}
 use @std.grammar.{Grammar, Build, Seq, Diagnostic, Ready, ready, node_builder_name, defect}
 use grammar.{avra_known_terminals, avra_lexeme, token_classes_worn}
 use compiler.format.{rule_scale, worded_nodes}
@@ -106,6 +107,8 @@ use features.collects.{collects}
 /// keyword list.
 export type Language = {
     features: List<LanguageFeature>,
+    // which language this is: its features' names, in order, which is the language
+    identity: int,
     // every builder under its name — the parse dispatches a node's
     // build through one lookup, where it walked every feature's rows
     builders: Map<string, BuilderRow>,
@@ -154,6 +157,7 @@ export fn assemble(features: List<LanguageFeature>) -> Language {
     if !defects.is_empty() { return unassembled(features, defects) }
     Language {
         features: features,
+        identity: language_identity(features),
         builders: with_nodes(builder_index(features), rows, refusal_builders(features), g),
         syntax: rd,
         wordings: wordings.found,
@@ -277,11 +281,15 @@ fn rows_of(features: List<LanguageFeature>, codes: List<DiagCode>) -> LanguageRo
     }
 }
 
+/// A language's identity: its features' names, in order, since feature order is the language.
+fn language_identity(features: List<LanguageFeature>) -> int { text_hash(features.map(it.name).join(",")) }
+
 /// Assembly refused: the defects, projected, are the language's
 /// diagnostics.
 fn unassembled(features: List<LanguageFeature>, defects: List<Diagnostic>) -> Language {
     Language {
         features: features,
+        identity: language_identity(features),
         builders: {},
         syntax: null,
         wordings: {},

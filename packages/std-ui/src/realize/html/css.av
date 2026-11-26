@@ -11,7 +11,7 @@ use style.style.{Style, StateStyle, Interaction}
 use style.layout.{Axis, Align, Distribute, Wrap, Sizing, Edge, Layout, around}
 use style.theme.{Theme, Mode, Contrast, Dial, Shades, plain}
 use style.look.{Ground, Measure, Wear, worn}
-use tree.node.{Node, Prim, Attribute, own_axis, gap_between}
+use tree.node.{Node, Prim, Attribute, Stamp, own_axis, gap_between}
 use style.tokens.{Size, Tone, Ink, Font, Level, TypeSize, LineHeight, Tracking}
 use realize.html.tags.{HtmlTag}
 
@@ -382,7 +382,7 @@ export fn rules_of(n: Node) -> List<CssRule> {
 /// A stamped node also names its theme's scope, where `scopes` (`scopes_of` its page) holds it.
 export fn class_names(n: Node, scopes: List<string> = []) -> List<string> {
     let own = names_once([r.name for r in node_rules(n.prim, drawn_box(n))])
-    let stamp? = n.theme else { return own }
+    let stamp? = rethemed(n) else { return own }
     let scope? = theme_scope(stamp.theme, scopes) else { return own }
     own.concat([scope])
 }
@@ -809,7 +809,7 @@ export fn scoped_sheet(root: Node, page: Theme) -> string {
 /// building anything.
 fn stamped_under(n: Node) -> bool {
     for c in n.children {
-        if c.theme != null || stamped_under(c) { return true }
+        if rethemed(c) != null || stamped_under(c) { return true }
     }
     false
 }
@@ -817,9 +817,16 @@ fn stamped_under(n: Node) -> bool {
 /// The chains of themes the stamped nodes of `n` are drawn under, `above` being the stamps over it,
 /// in the order they stand, outer first.
 fn scope_chains(n: Node, above: List<Theme>) -> List<List<Theme>> {
-    let stamp? = n.theme else { return [scope_chains(c, above) for c in n.children].flatten() }
+    let stamp? = rethemed(n) else { return [scope_chains(c, above) for c in n.children].flatten() }
     let here = above.concat([stamp.theme])
     [here].concat([scope_chains(c, here) for c in n.children].flatten())
+}
+
+/// The stamp of a node drawn in another theme than the node above it; none for one whose stamp says
+/// only that the direction moved.
+fn rethemed(n: Node) -> Stamp? {
+    let stamp? = n.theme else { return null }
+    if stamp.rethemed { stamp } else { null }
 }
 
 /// A tree as a page draws it: the theme its root was drawn in (the target's own where it carries
