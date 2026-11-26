@@ -1,0 +1,121 @@
+// THE CODE HASHES ANSWERED BESIDE THE REFUSALS ARE THE ONES ANSWERED AFTER THEM. Once a program's
+// bodies are placed, one process answers its code hashes while the asking process answers its
+// refusals, and the asking process takes them. One package, built cold: beside; with nothing forked
+// (`AVRA_WORK_AHEAD_OFF`); with the process ended as soon as it is forked (`AVRA_BESIDE=killed`); and
+// with the asking process wanting nothing of it (`AVRA_BESIDE=unwanted`). Each binary is the first
+// one's and a build after each stands. Then the package refused: the build says what a build forking
+// nothing says, exits as it does, and leaves no process and none of the process's answers behind.
+use @std.io.{make_dirs, write_text, list_dir}
+use @std.process.{tool, cmd}
+use @std.time.{stamp}
+use @std.text.{parse_int}
+
+once fn run_base() -> string { "/tmp/avra-store-beside/${stamp()}" }
+
+/// The package `beside` in a directory of its own: an entry printing the sum of forty files, so
+/// every wave forks; `refused`, one file answers a string where it says an int.
+fn beside_pkg(dir: string, refused: bool) -> string {
+    let r = "${run_base()}/${dir}"
+    let _ = make_dirs("${r}/src")
+    let _ = write_text("${r}/.git", "")
+    let _ = write_text("${r}/avra.toml", "[package]\nname = \"beside\"\nversion = \"0.1.0\"\n")
+    for k in 0..40 { let _ = write_text("${r}/src/f${k}.av", "export fn f${k}() -> int { ${k} }\n") }
+    if refused { let _ = write_text("${r}/src/f7.av", "export fn f7() -> int { \"seven\" }\n") }
+    let uses = ["use f${k}.{f${k}}\n" for k in 0..40].join("")
+    let sum = ["f${k}()" for k in 0..40].join(" + ")
+    let _ = write_text("${r}/src/main.av", "${uses}\nprintln(\"\${${sum}}\")\n")
+    r
+}
+
+/// What one build under a setting made: its binary, what it prints, how many of its lines say a
+/// process answered beside, that a process did not finish, and that one was ended unwanted; and
+/// whether a build after it stood.
+type Beside = { binary: string, said: string, beside: int, short: int, ended: int, stood: bool }
+
+/// How many lines of `said` carry `words`.
+fn lines_with(said: string, words: string) -> int { [l for l in said.split("\n") if l.contains(words)].length }
+
+/// The package built cold under `vars`, its times said, then built again under `vars`.
+fn beside_built(dir: string, vars: Map<string, string>) -> Beside {
+    let r = beside_pkg(dir, false)
+    mut timed = vars
+    timed.set("AVRA_QUERY_TIMES", "1")
+    let first = layer_built(r, timed)
+    let again = layer_built(r, vars, ["--time"])
+    Beside {
+        binary: first.binary,
+        said: if first.status == 0 { printed_by(first.binary) ?? "" } else { "the build failed" },
+        beside: lines_with(first.said, "beside: 1 cores' answers taken"),
+        short: lines_with(first.said, "cores working ahead didn't finish"),
+        ended: lines_with(first.said, "beside: the process ended, nothing of it taken"),
+        stood: again.said.contains("cache hit"),
+    }
+}
+
+/// The refused package built cold under `vars`: its exit status and its words, its root spelled out.
+fn refused_built(dir: string, vars: Map<string, string>) -> LayerBuilt {
+    let r = beside_pkg(dir, true)
+    let b = layer_built(r, vars)
+    b with { said: b.said.replace(r, "<root>") }
+}
+
+/// A name of the form `<n>-<n>`, a forked process's answers.
+fn answers_named(name: string) -> bool {
+    let parts = name.split("-")
+    parts.length == 2 && parts.all((p) -> parse_int(p) != null)
+}
+
+/// The processes whose command line ends in a build of `r`.
+fn builds_of(r: string) -> int {
+    let t = match tool("pgrep") { .Ok(t) -> t, .Err(_) -> { return -1 } }
+    match (cmd(t, ["-f", "build ${r}\$"]) with { ok_exits: [0, 1] }).outcome() {
+        .Ok(o) -> [l for l in o.out.stdout.split("\n") if l != ""].length,
+        .Err(_) -> -1,
+    }
+}
+
+/// The forked processes' answers left in the store of `r`: entries named `<n>-<n>`.
+fn ahead_left(r: string) -> int {
+    [n for n in list_dir("${r}/.avra-cache/tapes-ahead") catch [] if answers_named(n)].length
+}
+
+spec "the code hashes answered beside the refusals" {
+    given "one package built cold" {
+        then "beside, it prints its sum, a process answers beside, and the build after stands" {
+            let b = beside_built("beside", {})
+            b.said == "780" && b.beside == 1 && b.stood
+        }
+        then "with nothing forked, the binary is the one built beside and no process answers beside" {
+            let base = beside_built("beside-alone", {})
+            let alone = beside_built("alone", {"AVRA_WORK_AHEAD_OFF": "1"})
+            same_bytes(alone.binary, base.binary) && alone.beside == 0
+        }
+        then "with the process ended as soon as it is forked, the binary is the same, the build says it did not finish, and stands" {
+            let base = beside_built("beside-killed", {})
+            let killed = beside_built("killed", {"AVRA_BESIDE": "killed"})
+            same_bytes(killed.binary, base.binary) && killed.short == 1 && killed.stood
+        }
+        then "with nothing wanted of the process, the binary is the same, its answers are not taken, it is ended, and the build after stands" {
+            let base = beside_built("beside-unwanted", {})
+            let unwanted = beside_built("unwanted", {"AVRA_BESIDE": "unwanted"})
+            same_bytes(unwanted.binary, base.binary) &&
+                unwanted.beside == 0 &&
+                unwanted.ended == 1 &&
+                unwanted.stood
+        }
+    }
+    given "the package refused" {
+        then "it does not build, and says what a build forking nothing says" {
+            let serial = refused_built("refused-serial", {"AVRA_WORK_AHEAD_OFF": "1"})
+            let forked = refused_built("refused-forked", {})
+            serial.status != 0 && forked.status == serial.status && forked.said == serial.said
+        }
+        then "a process is ended beside the refusals, and none of the build's processes or their answers is left" {
+            let r = "${run_base()}/refused-timed"
+            let timed = refused_built("refused-timed", {"AVRA_QUERY_TIMES": "1"})
+            lines_with(timed.said, "beside: the process ended, nothing of it taken") >= 1 &&
+                builds_of(r) == 0 &&
+                ahead_left(r) == 0
+        }
+    }
+}

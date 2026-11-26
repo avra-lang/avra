@@ -1,0 +1,109 @@
+// A TYPING NAMES THE NODES OF THE STORE IT CHECKED. An item read back is held in a store that its
+// bodies' elaborations grow with the sugar nodes they mint; let go, it is read back afresh without
+// them. A typing kept from the grown store holds entries past the fresh one's end, so a law that
+// walks a kept typing over the store it reads now runs past that store. One program, built cold
+// twice: as the process holds items, and with every item let go as soon as another is read
+// (`AVRA_HELD_BYTES=1`), which puts a fresh store under a typing kept from a grown one. Both builds
+// pass, with the same binary and the same words.
+//
+// A literal an elaboration mints is named by its turn among the literals alike before it in its
+// store, so a store a sibling's elaboration grew would count the sibling's: the second program's
+// impl has two methods whose instances each fill an equal list from `@says`, and the hash of the
+// code reaching both, which names that literal, is printed. Built as the process holds items and
+// with every item read afresh (`AVRA_HELD_ITEMS_OFF`), it prints the same.
+//
+// ITS FAILING CASE CANNOT BE BUILT, so its proof is this trace. A law reads a read-back item through
+// its typing, indexed by the item's nodes; the read that would serve a grown store's typing to a
+// fresh store is a walk past the fresh store's end. Every walk over a read-back item is bounded by
+// its `written` count (`exprs_by_kind(0, item.written, …)`, compiler/item_signatures.av), the store's
+// size when `item_whole` read the tape back, before any elaboration grew it; and `held_read` keys an
+// item by its file, place and text's print, so a held read and a fresh read of one key read back one
+// tape into the same `written` nodes. A typing kept under one read names only nodes every read of
+// that key holds. The day a walk reaches past `written`, the plant becomes buildable.
+use @std.io.{make_dirs, write_text, read_text}
+use @std.time.{stamp}
+
+once fn run_base() -> string { "/tmp/avra-store-held/${stamp()}" }
+
+/// The program `text` as the package `held-<kind>`, in a directory of its own under `dir`.
+fn held_pkg(dir: string, kind: string, text: string) -> string {
+    let r = "${run_base()}/${dir}"
+    let _ = make_dirs("${r}/src")
+    let _ = write_text("${r}/.git", "")
+    let _ = write_text(
+        "${r}/avra.toml",
+        "[package]\nname = \"held-${kind}\"\nversion = \"0.1.0\"\n",
+    )
+    let _ = write_text("${r}/src/main.av", text)
+    r
+}
+
+/// The soak driver, whose std reaches bodies with sugar beside siblings in one item.
+fn soak() -> string { read_text("${tree_root()}/packages/std-http-soak/src/main.av") catch "" }
+
+/// Two sibling methods filling equal literals, and the code hash that names them.
+fn turn() -> string {
+    [
+        "use @std.meta.{Diagnostic, code_hash}",
+        "",
+        "component told {",
+        "    run: fn(int) -> int",
+        "    says: List<string> = []",
+        "",
+        "    fn check() -> List<Diagnostic> { [] }",
+        "}",
+        "",
+        "type Box = { n: int }",
+        "",
+        "impl Box {",
+        "    fn a() -> int {",
+        "        @says(\"same\")",
+        "        told t { n -> n + 1 }",
+        "        t.run(self.n) + t.says.length",
+        "    }",
+        "",
+        "    fn b() -> int {",
+        "        @says(\"same\")",
+        "        told t { n -> n + 2 }",
+        "        t.run(self.n) + t.says.length",
+        "    }",
+        "}",
+        "",
+        "fn both() -> int { Box { n: 1 }.a() + Box { n: 1 }.b() }",
+        "",
+        "println(\"\${both()} \${code_hash(both) ?? \"unhashed\"}\")",
+        "",
+    ]
+        .join("\n")
+}
+
+/// The package `held-<kind>` of `text` built cold and whole in `dir` with `vars` set, its words
+/// spelled without its root.
+fn built_as(dir: string, kind: string, text: string, vars: Map<string, string>) -> LayerBuilt {
+    let r = held_pkg(dir, kind, text)
+    let b = layer_built(r, vars, ["--release"])
+    b with { said: b.said.replace(r, "<root>") }
+}
+
+spec "a typing names the nodes of the store it checked" {
+    given "the soak driver built cold, held and with every item let go" {
+        then "both builds pass, with the same binary and the same words" {
+            let held = built_as("soak-held", "soak", soak(), {})
+            let let_go = built_as("soak-let-go", "soak", soak(), {"AVRA_HELD_BYTES": "1"})
+            held.status == 0 &&
+                let_go.status == 0 &&
+                same_bytes(held.binary, let_go.binary) &&
+                held.said == let_go.said
+        }
+    }
+    given "two siblings' minted literals, held and read afresh" {
+        then "the code hash reaching both prints the same" {
+            let held = built_as("turn-held", "turn", turn(), {})
+            let fresh = built_as("turn-fresh", "turn", turn(), {"AVRA_HELD_ITEMS_OFF": "1"})
+            held.status == 0 &&
+                fresh.status == 0 &&
+                printed_by(held.binary) != null &&
+                printed_by(held.binary) == printed_by(fresh.binary)
+        }
+    }
+}

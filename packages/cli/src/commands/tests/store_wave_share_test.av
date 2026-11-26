@@ -1,0 +1,93 @@
+// WHAT A WAVE'S PROCESSES SHARE NEVER COSTS AN ANSWER. The processes of a wave keep what they learn
+// in one table as they learn it, and each claims there the question it is working out. One package
+// whose files all read one module, so every process needs what another is working out, built cold:
+// sharing; each working alone (`AVRA_WAVE_ALONE`); with the holder of a claim killed holding it
+// (`AVRA_SHARED_KILL_AT`); with the holder of a claim trapped holding it (`AVRA_SHARED_TRAP_AT`); and
+// across one, two and three processes. Each binary is the first one's, and a build after each stands
+// on the store it left. A killed or trapped holder has ended a process, or the case met no claim;
+// holders of several claims are ended in turn, since which process holds one and which waits for it
+// differs, and every build is bounded: a waiter goes on once the holder has ended, reaped or not.
+use @std.io.{make_dirs, write_text}
+use @std.time.{stamp}
+
+once fn run_base() -> string { "/tmp/avra-store-wave-share/${stamp()}" }
+
+/// The package `wave` in a directory of its own: forty files, each calling a fn of one shared
+/// module, and an entry summing them.
+fn wave_pkg(dir: string) -> string {
+    let r = "${run_base()}/${dir}"
+    let _ = make_dirs("${r}/src")
+    let _ = write_text("${r}/.git", "")
+    let _ = write_text("${r}/avra.toml", "[package]\nname = \"wave\"\nversion = \"0.1.0\"\n")
+    let _ = write_text("${r}/src/shared.av", "export fn base(n: int) -> int { n + 1 }\n")
+    for k in 0..40 {
+        let _ = write_text(
+            "${r}/src/f${k}.av",
+            "use shared.{base}\nexport fn f${k}() -> int { base(${k}) }\n",
+        )
+    }
+    let uses = ["use f${k}.{f${k}}\n" for k in 0..40].join("")
+    let sum = ["f${k}()" for k in 0..40].join(" + ")
+    let _ = write_text("${r}/src/main.av", "${uses}\nprintln(\"\${${sum}}\")\n")
+    r
+}
+
+/// What one build under a setting made: its binary, what it prints, whether a build after it stood,
+/// and how many of its processes did not finish.
+type Waved = { binary: string, said: string, stood: bool, ended: int }
+
+/// The package built cold under `vars`, then built again under them.
+fn waved(dir: string, vars: Map<string, string>) -> Waved {
+    let r = wave_pkg(dir)
+    let first = layer_built(r, vars)
+    let again = layer_built(r, vars, ["--time"])
+    Waved {
+        binary: first.binary,
+        said: if first.status == 0 { printed_by(first.binary) ?? "" } else { "the build failed" },
+        stood: again.said.contains("cache hit"),
+        ended: [l for l in first.said.split("\n") if l.contains("working ahead didn't finish")].length,
+    }
+}
+
+/// The shared build every other is held to.
+fn shared() -> Waved { waved("shared", {}) }
+
+/// Whether `w` is the shared build's binary, and its store stood.
+fn alike(w: Waved, base: Waved) -> bool { w.said == base.said && same_bytes(w.binary, base.binary) && w.stood }
+
+spec "what a wave's processes share" {
+    given "one package whose files all read one module, built cold" {
+        then "sharing, it prints its sum and the build after stands" {
+            let s = shared()
+            s.said == "820" && s.stood
+        }
+        then "each process working alone builds the shared binary" {
+            alike(waved("alone", {"AVRA_WAVE_ALONE": "1"}), shared())
+        }
+        then "the holder of a claim killed, for each of six claims, builds the shared binary, and a process ended" {
+            let base = shared()
+            [3, 5, 7, 9, 11, 13]
+                .all(
+                    (n) -> {
+                        let w = waved("killed-${n}", {"AVRA_SHARED_KILL_AT": "${n}"})
+                        alike(w, base) && w.ended >= 1
+                    },
+                )
+        }
+        then "the holder of a claim trapped, for each of three claims, builds the shared binary, and a process ended" {
+            let base = shared()
+            [4, 8, 12]
+                .all(
+                    (n) -> {
+                        let w = waved("trapped-${n}", {"AVRA_SHARED_TRAP_AT": "${n}"})
+                        alike(w, base) && w.ended >= 1
+                    },
+                )
+        }
+        then "across one, two and three processes it builds the shared binary" {
+            let base = shared()
+            [1, 2, 3]
+                .all((n) -> alike(waved("across-${n}", {"AVRA_WORK_AHEAD_CORES": "${n}"}), base))
+        }
+    }
+}

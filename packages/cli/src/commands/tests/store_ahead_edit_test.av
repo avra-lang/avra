@@ -1,0 +1,71 @@
+// AN EDIT BETWEEN A WAVE AND ITS MERGE IS CAUGHT. The asking process takes what its cores learned
+// without walking it only where every input a core read is the one it reads now. One package, built
+// cold; after the last wave forks and before it merges, the file the program prints from is edited
+// (`AVRA_AHEAD_EDIT`). The binary prints the edit. The same build with the cores' answers taken
+// unproven (`AVRA_AHEAD_UNPROVEN`) prints what the cores read, so the case exercises the proof, not a
+// path that never forks.
+use @std.io.{make_dirs, write_text}
+use @std.time.{stamp}
+use @std.text.{parse_int}
+
+once fn run_base() -> string { "/tmp/avra-store-ahead-edit/${stamp()}" }
+
+/// A package whose entry prints `word()` and the sum of forty files, so every wave forks.
+fn ahead_pkg(name: string) -> string {
+    let r = "${run_base()}/${name}"
+    let _ = make_dirs("${r}/src")
+    let _ = write_text("${r}/.git", "")
+    let _ = write_text(
+        "${r}/avra.toml",
+        "[package]\nname = \"ahead-${name}\"\nversion = \"0.1.0\"\n",
+    )
+    let _ = write_text("${r}/src/leaf.av", "export fn word() -> string { \"before\" }\n")
+    for k in 0..40 { let _ = write_text("${r}/src/f${k}.av", "export fn f${k}() -> int { ${k} }\n") }
+    let uses = ["use f${k}.{f${k}}\n" for k in 0..40].join("")
+    let sum = ["f${k}()" for k in 0..40].join(" + ")
+    let _ = write_text(
+        "${r}/src/main.av",
+        "use leaf.{word}\n${uses}\nprintln(\"\${word()} \${${sum}}\")\n",
+    )
+    r
+}
+
+/// How many waves a cold build of the package forks, said once.
+once fn waves_said() -> string {
+    let built = layer_built(ahead_pkg("count"), {"AVRA_QUERY_TIMES": "1"})
+    "${[l for l in built.said.split("\n") if takes_a_wave(l)].length}"
+}
+
+/// A line saying a wave's answers were taken: `ahead: <n> cores' answers taken`.
+fn takes_a_wave(line: string) -> bool {
+    line.starts_with("ahead: ") &&
+        line.contains(" taken") &&
+        "0123456789".contains(line.substring(7, 8))
+}
+
+fn waves() -> int { parse_int(waves_said()) ?? 0 }
+
+/// The first word the binary prints, the package built cold with its leaf edited after wave `wave`;
+/// `unproven` takes the cores' answers with no input proved.
+fn edited_word(name: string, wave: int, unproven: bool) -> string {
+    let r = ahead_pkg(name)
+    let edit = "${wave}:${r}/src/leaf.av=export fn word() -> string { \"after\" }\n"
+    let vars = if unproven { {"AVRA_AHEAD_EDIT": edit, "AVRA_AHEAD_UNPROVEN": "1"} } else { {"AVRA_AHEAD_EDIT": edit} }
+    let built = layer_built(r, vars)
+    if built.status != 0 { return "the build failed: ${built.said}" }
+    (printed_by(built.binary) ?? "").split(" ").first() ?? ""
+}
+
+spec "an edit between a wave and its merge" {
+    given "one package built cold, its leaf edited after the last wave forks" {
+        then "the package forks a wave, so the cores' answers are what is attacked" {
+            waves() >= 1
+        }
+        then "the binary prints the edit, which the proof caught" {
+            edited_word("proved", waves() - 1, false) == "after"
+        }
+        then "taken unproven, the binary prints what the cores read" {
+            edited_word("unproven", waves() - 1, true) == "before"
+        }
+    }
+}

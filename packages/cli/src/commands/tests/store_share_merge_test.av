@@ -1,0 +1,73 @@
+// A WAVE'S PACKS MERGED BY SHARES ARE THE PACKS MERGED HERE. The cores of a wave publish a pack each,
+// and as many processes merge them, each one share of the keys, while the asking process takes the
+// cores' answers. One package, built cold three ways: merged in the asking process
+// (`AVRA_MERGED_HERE`), merged by shares however small the store (`AVRA_MERGED_APART_FROM`), and by
+// shares with one share left unpublished (`AVRA_SHARE_UNMERGED`), which the asking process must then
+// merge itself. Each binary is the first one's, and a build after each stands on the store it left,
+// working out nothing. Merged by shares, a process says it published a share and another reads an
+// answer from one (`AVRA_QTRACE`'s store lines); merged here, none does.
+use @std.io.{make_dirs, write_text}
+use @std.time.{stamp}
+
+once fn run_base() -> string { "/tmp/avra-store-share-merge/${stamp()}" }
+
+/// The package `share` in a directory of its own: an entry printing the sum of forty files, so
+/// every wave forks.
+fn share_pkg(dir: string) -> string {
+    let r = "${run_base()}/${dir}"
+    let _ = make_dirs("${r}/src")
+    let _ = write_text("${r}/.git", "")
+    let _ = write_text("${r}/avra.toml", "[package]\nname = \"share\"\nversion = \"0.1.0\"\n")
+    for k in 0..40 { let _ = write_text("${r}/src/f${k}.av", "export fn f${k}() -> int { ${k} }\n") }
+    let uses = ["use f${k}.{f${k}}\n" for k in 0..40].join("")
+    let sum = ["f${k}()" for k in 0..40].join(" + ")
+    let _ = write_text("${r}/src/main.av", "${uses}\nprintln(\"\${${sum}}\")\n")
+    r
+}
+
+/// What one way of merging made: the binary, what it prints, the shares the build said it published,
+/// the answers it read from one, and whether a build after it stood on the store.
+type Merged = { binary: string, said: string, published: int, read: int, stood: bool }
+
+/// The package built cold under `vars`, then built again under them.
+fn merged(dir: string, vars: Map<string, string>) -> Merged {
+    let r = share_pkg(dir)
+    mut traced = vars
+    traced.set("AVRA_QTRACE", "1")
+    let first = layer_built(r, traced)
+    let again = layer_built(r, vars, ["--time"])
+    let lines = first.said.split("\n")
+    Merged {
+        binary: first.binary,
+        said: if first.status == 0 { printed_by(first.binary) ?? "" } else { "the build failed" },
+        published: [l for l in lines if l.starts_with("store: share ") && l.ends_with(" published")].length,
+        read: [l for l in lines if l.starts_with("store: an answer read from a share another process published: ")]
+            .length,
+        stood: again.said.contains("cache hit"),
+    }
+}
+
+spec "a wave's packs merged by shares" {
+    given "one package built cold, merged here, by shares, and with a share unpublished" {
+        then "merged here, it prints its sum, stands, and no process publishes a share" {
+            let here = merged("here", {"AVRA_MERGED_HERE": "1"})
+            here.said == "780" && here.stood && here.published == 0
+        }
+        then "merged by shares, the binary is the one merged here, it stands, and shares are published and read" {
+            let here = merged("here-again", {"AVRA_MERGED_HERE": "1"})
+            let shares = merged("shares", {"AVRA_MERGED_APART_FROM": "10"})
+            same_bytes(shares.binary, here.binary) &&
+                shares.stood &&
+                shares.published > 0 &&
+                shares.read > 0
+        }
+        then "with a share unpublished, the binary is still the one merged here, and it stands" {
+            let here = merged("here-short", {"AVRA_MERGED_HERE": "1"})
+            let short = merged(
+                "short",
+                {"AVRA_MERGED_APART_FROM": "10", "AVRA_SHARE_UNMERGED": "2"},
+            )
+            same_bytes(short.binary, here.binary) && short.stood
+        }
+    }
+}

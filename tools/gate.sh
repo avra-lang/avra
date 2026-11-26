@@ -659,10 +659,6 @@ row page-closure-witness sh tools/witness_page_closure.sh build/avra
 row board-native-witness sh tools/witness_board_native.sh build/avra
 row store-broken-edit-witness sh tools/witness_store_broken_edit.sh build/avra
 row waits-witness sh tools/witness_program_waits.sh build/avra
-row heir-save-attack env HEIR_ATTACK_AVRA="$root/build/avra" sh tools/heir_save_attack.sh
-row share-merge-attack env SHARE_ATTACK_AVRA="$root/build/avra" sh tools/share_merge_attack.sh
-row beside-attack env BESIDE_ATTACK_AVRA="$root/build/avra" sh tools/beside_attack.sh
-row wave-share-attack env WAVE_ATTACK_AVRA="$root/build/avra" sh tools/wave_share_attack.sh
 row flow-trace make -s -o avra flow-trace
 row compiler-key sh tools/witness_compiler_key.sh build/avra
 row docs-cache-attack sh tools/docs_cache_attack.sh
@@ -707,7 +703,7 @@ features() { find packages/std-avrac/src/features -mindepth 1 -maxdepth 1 -type 
 # checks.yml runs it (`make -s -o avra <name>`), in the slice of its own list. Those another slice
 # already runs, as the same target over the same tree, are its rows and are not run twice; speed-ratchet
 # is the one keeper no slice runs, which keepers-clock says every gate.
-KEEPERS_RUN_ELSEWHERE="speed-ratchet cost flow-trace rt-header rt-ns ui-host ui-host-test ui-board beside-attack heir-save-attack share-merge-attack wave-share-attack"
+KEEPERS_RUN_ELSEWHERE="speed-ratchet cost flow-trace rt-header rt-ns ui-host ui-host-test ui-board"
 # the keepers the Makefile's list `$1` names, those run elsewhere left out, one a line
 keepers_of() {
     make -s -pn 2>/dev/null | awk -v v="$1" '$1 == v && $2 == "=" { $1 = ""; $2 = ""; print; exit }' | tr ' ' '\n' | grep . |

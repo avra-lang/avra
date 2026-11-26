@@ -1,7 +1,7 @@
 // `avra check` AS A USER RUNS IT, ON THE PROGRAM LAYER: what the cli's check tests hold, now that
 // the old path's in-process `checked_at` is gone. The compiler runs as a child with the net off — the
 // check that stands once the old path goes — from `/`, so a path it says reads as its fixture's own.
-use @std.process.{tool, cmd, inherited}
+use @std.process.{tool, tool_at, cmd, inherited, Exit}
 
 /// What a check said that passed: its warnings, as stdout carries them, and whether the store
 /// answered it whole — every answer it read kept from a check before (`time: check · cache hit`).
@@ -52,4 +52,63 @@ fn rooted_said(out: string, path: string) -> string {
 fn fixture_root(path: string) -> string {
     let parts = path.split("/")
     if path.starts_with("/") && parts.length > 3 { "/${parts.get(1) ?? ""}/${parts.get(2) ?? ""}" } else { path }
+}
+
+/// What `avra build` of a package said and made: its exit status, its stderr, the binary it
+/// answered (`src/main` beside the entry), and the milliseconds the child took.
+type LayerBuilt = { status: int, said: string, binary: string, took_ms: int = 0 }
+
+/// `avra build <path>` on the program layer, the package's store its own (`<path>/.avra-cache`),
+/// with `args` after the path and `vars` set beside the inherited environment.
+fn layer_built(path: string, vars: Map<string, string> = {}, args: List<string> = []) -> LayerBuilt {
+    let t = match tool(avra_bin()) {
+        .Ok(t) -> t,
+        .Err(e) -> {
+            return LayerBuilt {
+                status: -1,
+                said: "no compiler: ${e.describe().message}",
+                binary: "",
+            }
+        },
+    }
+    mut env = inherited()
+        .with_var("AVRA_PROGRAM_NET", "0")
+        .with_var("AVRA_CACHE_DIR", "${path}/.avra-cache")
+    for name, value in vars { env = env.with_var(name, value) }
+    match (cmd(t, ["build", path].concat(args)) with { cwd: "/", env: env, timeout: hang_bound(), ok_exits: [0, 1, 2] })
+        .outcome() {
+        .Ok(o) -> LayerBuilt {
+            status: status_of_exit(o.exit),
+            said: o.out.stderr,
+            binary: "${path}/src/main",
+            took_ms: o.took_ms,
+        },
+        .Err(e) -> LayerBuilt {
+            status: -1,
+            said: "the build did not run: ${e.describe().message}",
+            binary: "",
+        },
+    }
+}
+
+/// What a built binary prints, its last newline gone; absent where it does not run clean.
+fn printed_by(binary: string) -> string? {
+    match (cmd(tool_at("main", binary), []) with { timeout: hang_bound() }).outcome() {
+        .Ok(o) -> if o.out.stdout.ends_with("\n") { o.out.stdout.substring(0, o.out.stdout.length - 1) } else { o.out.stdout },
+        .Err(_) -> null,
+    }
+}
+
+/// An exit as the number a shell reads.
+fn status_of_exit(e: Exit) -> int {
+    match e { .Clean -> 0, .Code(n) -> n, .Signal(s, _) -> 128 + s }
+}
+
+/// Whether two files hold the same bytes, as `cmp` reads them.
+fn same_bytes(a: string, b: string) -> bool {
+    let t = match tool("cmp") { .Ok(t) -> t, .Err(_) -> { return false } }
+    match (cmd(t, ["-s", a, b]) with { ok_exits: [0, 1] }).outcome() {
+        .Ok(o) -> status_of_exit(o.exit) == 0,
+        .Err(_) -> false,
+    }
 }
