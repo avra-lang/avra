@@ -4866,18 +4866,27 @@ uint8_t avra_unwinding = 0;
 
 int64_t avra_main_asker = 0;
 
+// The words a cancelled main says, as one format over the canceller `by`; the program's exit
+// prints them with stdio and allocates nothing.
+static const char* cancelled_format(int64_t by) {
+    if (by & AVRA_SCOPE_IDS) return "main was cancelled — awaiting a task cancelled by a `within` limit";
+    if (by == 0) return "main was cancelled — awaiting a task cancelled by main";
+    return "main was cancelled — awaiting a task cancelled by task %lld";
+}
+
 const char* avra_main_cancelled_words(int64_t by) {
     char words[96];
-    if (by & AVRA_SCOPE_IDS) avra_fmt(words, sizeof words, "main was cancelled — awaiting a task cancelled by a `within` limit");
-    else if (by == 0) avra_fmt(words, sizeof words, "main was cancelled — awaiting a task cancelled by main");
-    else avra_fmt(words, sizeof words, "main was cancelled — awaiting a task cancelled by task %lld", (long long)by);
+    avra_fmt(words, sizeof words, cancelled_format(by), (long long)by);
     return str_static(words);
 }
 
 __attribute__((noinline, cold))
 static int32_t main_cancelled(void) {
+    int64_t by = avra_main_asker - 1;
     fflush(stdout);
-    fprintf(stderr, "avra: %s\n", avra_main_cancelled_words(avra_main_asker - 1));
+    fputs("avra: ", stderr);
+    fprintf(stderr, cancelled_format(by), (long long)by);
+    fputc('\n', stderr);
     return 1;
 }
 
