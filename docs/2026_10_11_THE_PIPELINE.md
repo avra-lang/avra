@@ -467,10 +467,15 @@ whole job with nothing said.
 owes", shared by a lane and a PR's own check so they can never be two
 instruments:
 
+    sh tools/gate_changed.sh [--no-keepers]
     sh tools/gate_changed.sh --refs <base> <head> [--no-keepers]
     sh tools/gate_changed.sh --files <f…> --packages <p…> [--no-keepers]
 
-It runs the keepers (unless `--no-keepers`) — the wasm target's proof is
+Named nothing, it examines what the working tree changed since its trunk —
+its merge-base with program where that holds a commit main lacks, else with
+main — uncommitted and untracked `.av` included, and it says how many `.av`
+it examined against what; a run that examines none on a tree that changed
+some refuses. It runs the keepers (unless `--no-keepers`) — the wasm target's proof is
 among them, in `keepers-b` — then `fmt --check` on the changed `.av` and
 `check <pkg> --baseline tools/idioms.baseline` on each affected package. A
 lane runs it as
