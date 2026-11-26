@@ -1044,6 +1044,7 @@ inputs-accept:
 
 # EACH STORE BUG THE FUZZER EXISTS FOR IS FOUND WITH ITS FIX TAKEN BACK (tools/store_fuzz_regressions.sh):
 # a compiler built a regression, so it stands outside the gate's slices.
+# not a keeper — builds a compiler per regression; the store-fuzz slice runs the fuzzer itself
 store-fuzz-regressions:
 	@sh tools/store_fuzz_regressions.sh
 
