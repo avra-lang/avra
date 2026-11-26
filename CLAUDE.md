@@ -1751,49 +1751,26 @@ Runtime facts, ours to ratify:
 
 ## How work lands
 
-The single source for the landing path, Sprites, the watcher and the
-CI gates is `docs/2026_10_11_THE_PIPELINE.md`; the section below is the
-doctrine it expands.
+- WORK LANDS THROUGH A TRAIN, AND ONLY A TRAIN. Program is the trunk;
+  nothing pushes to it but the landing.
+  1. A lane works on `lane/<lane>/<what>`, rebased onto `origin/program`.
+  2. PRE-FLIGHT, in the lane's own container: the tests the change
+     touches, `make keepers-static`, every keeper over what it touches,
+     and `make try` (the compiler built twice) when it touches compiler
+     source. A keeper in `tools/gate/keepers.owed` that the change makes
+     pass has its line struck in the same branch. The lane then reports
+     `READY <branch> <sha>`.
+  3. THE TRAIN: the lead folds the ready branches into one commit over
+     program's head and pushes it to `gate/lane-train<N>`; `gate.yml`
+     runs every slice `tools/gate.sh list` names, from one seeded
+     compiler. Every keeper runs on every gate, and a red one is either
+     the train's or a line of `keepers.owed`, which names its owner.
+  4. A green train is pushed to program as that one commit (`land:
+     train<N> …`), and the landing makes its compiler the next gate's
+     builder.
 
-- ALL WORK MOVES THROUGH SEVEN COMMANDS, and nothing else touches main:
-
-      sh tools/work new <name>   # a worktree ../avra-<name> off main, and its Sprite
-      sh tools/work run <cmd>    # run it on a GitHub runner (--sprite: the lane's Sprite), its exit status
-      sh tools/work test         # what this branch touches, on this lane's Sprite
-      sh tools/work land         # push, PR, arm auto-merge — no Sprite involved
-      sh tools/work status       # PRs and their merge state; each lane and its Sprite
-      sh tools/work sprites      # every Sprite at a glance; `--fix [name]` repairs
-      sh tools/work unbind       # end this lane's run, free its Sprite, keep the worktree
-      sh tools/work done --remove-worktree   # remove this lane too: ONLY with the owner's say-so
-
-  Main lives on GitHub (avra-lang/avra): squash merges, linear history,
-  no direct pushes. It requires the `test` check AND that a branch be up
-  to date with it, and auto-merge lands a green, current PR by itself,
-  one at a time. A local main
-  only follows `origin/main` (the reference-transaction hook refuses any
-  other update; a deliberate repair sets `AVRA_MAIN_OVERRIDE="<reason>"`).
-- THE PR IS THE TRAIN, AND THERE IS NO MERGE QUEUE (dropped 2026-10-11:
-  its only real value was testing `main` plus every PR ahead, which
-  "require up to date" gives back for free one PR at a time, while the
-  queue cost trains that tested many PRs at once — one red suite killed
-  them all — HEADGREEN batching and a rebase treadmill). A PR's `test`
-  check IS the gate, on the PR's own tree (`.github/workflows/
-  checks.yml`): fmt on its changed `.av`, idioms and suites over the
-  packages it TOUCHES, the compiler-dependent keepers, the seed check and
-  the affected packages' suites; a PR that touches no `.av`, no package
-  and no compiler source builds nothing. Before it builds anything it
-  runs the keepers that need NO COMPILER (`make keepers-static`, half a
-  minute), so a refusal one of them speaks stops on the PR. Because the
-  branch must be up to date, the tree it tests already holds `main`, so a
-  cross-PR interaction (two individually-green PRs
-  colliding on a latent bug) is caught on the later PR's own run. THE
-  COMPILER IS CACHED BY
-  ITS OWN SOURCE (`tools/compiler_paths.sh`): a tree whose compiler is
-  main's takes main's binary; otherwise the newest cached binary builds
-  the tree twice (the generation law), and one too old to read it — new
-  syntax, a new refusal about its own source — fails that build and the
-  tree BOOTSTRAPS from the committed seed. Main's own push run caches
-  the compiler every run starts from.
+  `sh tools/work new|run|test|status|sprites|bind|unbind|done` keep the
+  lanes and their Sprites; none of them lands anything.
 - A LANE ITERATES WITH `make try`, NEVER `make avra`: it builds the
   compiler with the STANDING `build/avra` into `build/avra-try` and never
   replaces the builder, so its store stays warm (a leaf edit, ~4 s held
@@ -1849,10 +1826,10 @@ doctrine it expands.
   hold is asked under a name made to fit and ITS ANSWER IS READ. A run
   that stood still says for how long in its own output, and `work
   sprites` shows it beside how long the run has been quiet.
-- A BRANCH IS REBASED ONTO `origin/main` ONLY, never onto another
+- A BRANCH IS REBASED ONTO `origin/program` ONLY, never onto another
   unlanded branch: that lands the other branch's work unverified. A
-  branch built on a stale local main moves with `git rebase --onto
-  origin/main main <branch>`, which carries only its own commits.
+  branch built on a stale base moves with `git rebase --onto
+  origin/program <old-base> <branch>`, which carries only its own commits.
 - A PID IS CHECKED BEFORE IT IS KILLED. A recorded pid is reused once
   its process exits; read `ps -o command= -p <pid>` first.
 - A TOOL IS RUN FOR REAL ONCE BEFORE IT BECOMES A DEFAULT. Fixtures
@@ -1880,21 +1857,11 @@ doctrine it expands.
   `main` deadlocked the merge queue — main could not move because that
   lane's own PR was failing the train.)
 
-- GITHUB'S RUNNERS ARE THE ONLY GATE. `tools/gate_changed.sh` is the
-  gate's checks in one definition — the static keepers, `fmt --check`
-  on the changed `.av`, `check --baseline` on every affected package —
-  and checks.yml runs it on every PR, plus the compiler-dependent
-  keepers, the seed check and the affected packages' suites.
-  `tools/work land`
-  checks formatting alone, with the compiler the worktree already
-  holds, and asks no other machine; a lane that wants the whole gate
-  before pushing runs that script through `work run`.
-- A GREEN PR LANDS ITSELF, AND A STALE ONE IS REFRESHED. An armed PR
-  that falls behind `main` is updated by the watcher
-  (`tools/pr_watcher.py`, `gh pr update-branch`) so "up to date" is met
-  without a human; the watcher also arms a green PR, names a conflict
-  and cancels a closed PR's run. `work status` shows each PR's check,
-  its merge state and whether auto-merge is armed.
+- THE GATE IS THE TRAIN'S, AND THE PRE-FLIGHT IS THE LANE'S.
+  `tools/gate_changed.sh` is the changed-file checks in one definition —
+  the static keepers, `fmt --check` on the changed `.av`, `check
+  --baseline` on every affected package — and a lane runs it
+  (`--no-keepers` once its keepers ran) before it reports ready.
 - MEASURE, THEN CHANGE. `make census CMD="check <pkg>"` gives EXACT
   retain/release/list-write counts and, with the per-caller tables,
   who causes them; `AVRA_SAMPLE=<secs> sh tools/watch.sh 6000 ./avra

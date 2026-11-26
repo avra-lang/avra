@@ -1,6 +1,6 @@
 #!/bin/sh
 # WITNESS — `tools/fmt_changed.sh`, THE ONE changed-file fmt check the train
-# and `tools/work land`'s preflight both call. Hermetic: a scratch git repo,
+# and a lane's preflight both call. Hermetic: a scratch git repo,
 # a stub compiler and a stub `git` that records every call, so the proof is
 # about the WIRING — which files reach the compiler, which exit status comes
 # back, and that nothing ever fetches or watches `main` — never about a real

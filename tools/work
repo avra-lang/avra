@@ -4,16 +4,14 @@
 #   sh tools/work new <name>   a worktree ../avra-<name> off main, and its Sprite
 #   sh tools/work run <cmd>    run it on a GitHub runner (--sprite: this lane's Sprite), its exit status
 #   sh tools/work test         what this branch touches, on this lane's Sprite
-#   sh tools/work land         push, PR, arm auto-merge — no Sprite involved
-#   sh tools/work status       PRs and their merge state; each lane and its Sprite
+#   sh tools/work status       each lane and its Sprite
 #   sh tools/work sprites      every Sprite at a glance; `--fix [name]` repairs
 #   sh tools/work done --remove-worktree   REMOVE this lane (owner-approved only): end its run, free its Sprite
 #
 # Also: `unbind` ends this lane's run and frees its Sprite and keeps the worktree; `main-compiler` builds main's compiler once per source into the shared depot (every lane's
 # pre-commit hook wants one at the merge-base); `attach` follows this lane's run again and `stop` ends it; `bind
-# [sprite]` gives a worktree a Sprite, or moves it to the one named; `wait
-# <branch>` waits for a PR to merge; `run --for <minutes>` raises the
-# command's bound.
+# [sprite]` gives a worktree a Sprite, or moves it to the one named; `run
+# --for <minutes>` raises the command's bound.
 #
 # ONE SPRITE PER LANE, ONE RUN PER SPRITE. A worktree's Sprite is named in
 # its own git dir (`avra-sprite`); a Sprite belongs to one worktree until
@@ -39,13 +37,9 @@
 # again from the byte it stood at. A failure's last line begins with the
 # one of three that failed — SPRITE, CONNECTION or COMMAND.
 #
-# `test`, `run`, `land`, `wait`, `bind` and `done` run from inside the
-# worktree. Main is protected: it requires the `test` check AND that a
-# branch be up to date with it, and merges move one at a time through
-# auto-merge; nothing here writes main.
-#
-# A LANDING IS READ FROM THE PR'S STATE, NEVER FROM `main`. `wait` asks
-# `gh` for the PR, and never fetches or reads main.
+# `test`, `run`, `bind` and `done` run from inside the worktree. Nothing
+# here lands work: a lane's branch reaches program through a train on a
+# gate branch.
 set -eu
 
 tools=$(cd "$(dirname "$0")" && pwd)
@@ -1325,96 +1319,8 @@ done_() {
     echo "work: $wt removed"
 }
 
-# ── Landing: GitHub's runners are the only gate ───────────────────────
-
-# What a landing checks HERE is the changed files' formatting, with the
-# compiler this worktree already holds — nothing is built and no other
-# machine is asked. Everything else is the PR check and main's ruleset,
-# and auto-merge lands it.
-fmt_changed() {
-    changed=$(git diff --name-only --diff-filter=d origin/main HEAD -- '*.av' | tr '\n' ' ')
-    [ -n "$changed" ] || return 0
-    if [ ! -x build/avra ]; then
-        echo "work: no build/avra here — formatting unchecked locally; the PR's check reads it" >&2
-        return 0
-    fi
-    build/avra fmt --check $changed ||
-        die "fmt --check refused — \`build/avra fmt --write <files>\`, commit, land again (a build/avra older than the branch's own syntax refuses it too: rebuild it)"
-}
-
-# The non-draft PRs of OTHER branches whose `test` check is still running,
-# read from `gh pr list --json number,headRefName,isDraft,statusCheckRollup`
-# on stdin: landing now moves main under them, so each restarts. Answers their
-# numbers, space-separated, or nothing.
-midci_of() {
-    python3 -c '
-import json, sys
-mine = sys.argv[1]
-out = []
-for p in json.load(sys.stdin):
-    if p.get("isDraft") or p.get("headRefName") == mine:
-        continue
-    tests = [c for c in p.get("statusCheckRollup") or [] if c.get("name") == "test"]
-    if any((c.get("status") or "") != "COMPLETED" for c in tests):
-        out.append("#%d" % p["number"])
-print(" ".join(out))
-' "$1"
-}
-
-land() {
-    inside
-    branch=$(git branch --show-current)
-    [ "$branch" != main ] || die "land a branch, never main"
-    batch=
-    for a in "$@"; do [ "$a" != --batch ] || batch=1; done
-    if [ -z "$batch" ]; then
-        mid=$($gh_ pr list --state open --json number,headRefName,isDraft,statusCheckRollup | midci_of "$branch")
-        [ -z "$mid" ] || die "$mid is mid-CI on another branch: landing now moves main under it and restarts its checks. Wait for it to land, or run \`sh tools/work land --batch\` to land beside it"
-    fi
-    [ -z "$(git status --porcelain --untracked-files=no)" ] || die "commit or drop your changes first"
-    git fetch -q origin main
-    git rebase -q origin/main || die "rebase onto main conflicted; resolve, then run land again"
-    [ -n "$(git log --format=%h origin/main..HEAD)" ] || die "nothing to land"
-    fmt_changed
-    git push -q --force-with-lease -u origin "$branch"
-    if [ "$($gh_ pr list --head "$branch" --state open --json number --jq length)" = 0 ]; then
-        $gh_ pr create --base main --head "$branch" \
-            --title "$(git log --reverse --format=%s origin/main..HEAD | head -1)" \
-            --body "$(git log --reverse --format='- %s' origin/main..HEAD)"
-    fi
-    n=$($gh_ pr list --head "$branch" --state open --json number --jq '.[0].number')
-    # Landing is one verb: a draft is marked ready and a leading DO NOT MERGE
-    # is stripped from the title, so the PR itself says it may land.
-    if [ "$($gh_ pr view "$n" --json isDraft --jq .isDraft)" = true ]; then
-        $gh_ pr ready "$n"
-    fi
-    title=$($gh_ pr view "$n" --json title --jq .title)
-    clean=$(printf '%s\n' "$title" | sed -E 's/^[[:space:]]*[Dd][Oo][[:space:]]+[Nn][Oo][Tt][[:space:]]+[Mm][Ee][Rr][Gg][Ee][[:space:]]*(:|—|-)?[[:space:]]*//')
-    if [ -z "$clean" ]; then
-        die "#$n's title is only the hold phrase — name the change in the title, then land again"
-    fi
-    if [ "$clean" != "$title" ]; then
-        $gh_ api -X PATCH "repos/$($gh_ repo view --json nameWithOwner --jq .nameWithOwner)/pulls/$n" -f title="$clean" >/dev/null
-        echo "work: #$n title is \"$clean\" — the hold phrase is stripped"
-    fi
-    # GitHub may not have computed mergeability yet; arming is idempotent and
-    # the watcher sweeps, so a miss warns rather than fails a landing.
-    if $gh_ pr merge "$n" --auto --squash 2>/dev/null; then
-        echo "work: #$n armed for auto-merge (squash); it lands when its check is green and it is up to date"
-    else
-        echo "work: could not arm auto-merge on #$n yet — the watcher will arm it; see the PR" >&2
-    fi
-    $gh_ pr list --head "$branch" --state open --json url --jq '.[0].url'
-}
-
-# Every open PR with its checks, its merge state and whether auto-merge is
-# armed, then every lane with its Sprite.
+# Every lane with its Sprite.
 status() {
-    $gh_ pr list --state open --json number,headRefName,title,statusCheckRollup,autoMergeRequest,mergeStateStatus \
-        --jq '.[] | "\(.number)\t\(.headRefName)\t\(if .autoMergeRequest then "armed" else "unarmed" end)\t\(.mergeStateStatus // "?")\t\([.statusCheckRollup[]?.conclusion // "pending"] | unique | join(","))\t\(.title)"' |
-        while IFS="$(printf '\t')" read -r n branch armed mss checks title; do
-            echo "#$n  $branch  $armed  $mss  checks: ${checks:-none}  $title"
-        done
     held=$(lanes)
     [ -n "$held" ] || return 0
     echo
@@ -1423,35 +1329,6 @@ status() {
             echo "lane ${wt##*/} -> $s  SILENT — sh tools/work sprites --fix $s") &
     done
     wait
-}
-
-# Wait for a branch's PR to merge. THE ORACLE IS THE PR'S STATE, asked of
-# `gh`, never `main` — see the header. `MERGED` is the only success; a closed
-# PR is a failure; anything else is still waiting on its check or the merges
-# ahead of it. The deadline (`AVRA_WAIT_SECONDS`, default 120s — nothing
-# blocks for long) and the poll (`AVRA_WAIT_POLL`, default 15s) are the
-# caller's.
-wait_landed() {
-    [ "$#" -eq 1 ] || die "usage: work wait <branch>"
-    branch=$1
-    poll=${AVRA_WAIT_POLL:-15}
-    limit=${AVRA_WAIT_SECONDS:-120}
-    deadline=$(( $(date +%s) + limit ))
-    while :; do
-        state=$($gh_ pr view "$branch" --json state --jq .state 2>/dev/null || true)
-        case "$state" in
-            MERGED) echo "work: $branch merged"; return 0 ;;
-            CLOSED) echo "work: $branch's PR closed without merging" >&2; return 1 ;;
-            "")
-                echo "work: no PR for $branch yet — the PR is the oracle, never main" >&2
-                ;;
-            *)
-                echo "work: $branch is $state — waiting on its check and auto-merge" >&2
-                ;;
-        esac
-        [ "$(date +%s)" -ge "$deadline" ] && { echo "work: $branch did not land within ${limit}s" >&2; return 1; }
-        sleep "$poll"
-    done
 }
 
 # A VERB'S USAGE IS ONE LINE, and asking for it touches nothing: `-h`,
@@ -1463,18 +1340,15 @@ usage() {
         new) echo "usage: sh tools/work new <name>   — a worktree ../avra-<name> off main, and its Sprite" ;;
         run) echo "usage: sh tools/work run [--sprite] [--builder] [--for <minutes>] [--browser] <cmd…>   — run it on a GitHub runner over this worktree as it stands, uncommitted files included (.github/workflows/lane-run.yml), and answer its status; --sprite runs it on this lane's Sprite instead (--builder keeps the merge-base's published compiler as the standing one, never building this tree's, so an edit loop's store stays warm — \`make try\` asks for it itself; --browser first provisions the browser leg's libraries, .github/ci/packages-browser.txt), followed to its exit status through any dropped connection (bound: 15 minutes); Ctrl-C or \`work stop\` ends it, this client ending does not" ;;
         test) echo "usage: sh tools/work test   — what this branch touches, on this lane's Sprite" ;;
-        land) echo "usage: sh tools/work land [--batch]  — push, PR, ready, strip a DO NOT MERGE title, arm auto-merge; refuses while another PR is mid-CI unless --batch; no Sprite involved" ;;
-        status) echo "usage: sh tools/work status   — PRs and their merge state; each lane and its Sprite" ;;
+        status) echo "usage: sh tools/work status   — each lane and its Sprite" ;;
         sprites) echo "usage: sh tools/work sprites [--fix [<sprite>…]]   — every Sprite at a glance; --fix repairs" ;;
         done) echo "usage: sh tools/work done --remove-worktree   — REMOVE this lane's worktree (the owner must have approved), end its run, free its Sprite; without the flag it refuses" ;;
         unbind) echo "usage: sh tools/work unbind   — end this lane's run and free its Sprite; the worktree stays" ;;
         bind) echo "usage: sh tools/work bind [<sprite>]   — give this worktree a Sprite, or move it to the one named" ;;
         main-compiler) echo "usage: sh tools/work main-compiler   — build main's compiler once per compiler source into the shared depot (idempotent, one build at a time, under the watchdog); \`work compiler\` then copies it into a lane" ;;
         compiler) echo "usage: sh tools/work compiler [--get]   — copy the nearest stamped compiler into this worktree (on a Mac, the gate-builder release's macOS compiler is laid into the depot first); --get goes on to the published one for this source, then \`make compiler\`" ;;
-        wait) echo "usage: sh tools/work wait <branch>   — wait until the branch's PR merges" ;;
         attach) echo "usage: sh tools/work attach   — follow this lane's run again, from its first line, and answer its status" ;;
         stop) echo "usage: sh tools/work stop   — end this lane's run on its Sprite" ;;
-        batch) echo "usage: sh tools/work batch [--n N] [--attacks-ran N=EVIDENCE]… <pr>… | batch close <N>   — merge approved PR branches into one batch-N PR, armed; or close the members once it has merged" ;;
         *) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//' ;;
     esac
 }
@@ -1502,12 +1376,9 @@ case "${1:-}" in
     main-compiler) main_compiler ;;
     seed-local) seed_local "$2" ;;
     libs-step) printf '%s\n' "$libs_step" ;;
-    land) shift; land "$@" ;;
     status) status ;;
-    wait) shift; wait_landed "$@" ;;
     attach) attach ;;
     sync) sync_ ;;
     stop) stop_ ;;
-    batch) shift; sh "$(dirname "$0")/batch.sh" "$@" ;;
     *) echo "work: no verb \`$1\`" >&2; usage >&2; exit 64 ;;
 esac

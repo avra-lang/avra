@@ -16,9 +16,6 @@ lists and refuses by name:
                    `pull_request` event reaches, and every `*-static` target
                    is too — the pattern #543 and #551 added per keeper, so a
                    compiler-free keeper can never be silently PR-skipped.
-  watcher-fixtures `tools/pr_watcher.py --self-test` is run by a keeper, so
-                   a change to the watcher's decision refuses on the PR, not
-                   one schedule pass later.
   light-draft      a draft's run is the light gate: only the jobs in LIGHT_JOBS
                    run unconditionally; every other leg the `test` aggregate
                    owes names `needs.prepare.outputs.full` in its `if:`, and
@@ -61,8 +58,8 @@ lists and refuses by name:
 SCOPE, STATED PLAINLY: this holds the STRUCTURE, never a keeper's inputs.
 It cannot know that a diff touches a compiler-needing keeper's inputs, so
 it does not claim to; what it guarantees is that the compiler-free floor
-runs on every PR, and that the release path and the watcher's fixtures are
-wired wherever the workflow stands. A keeper added to the train alone is a
+runs on every PR, and that the release path is wired wherever the
+workflow stands. A keeper added to the train alone is a
 review question, not a silent skip.
 
 `--self-test` proves each rule against fixtures, no tree read.
@@ -353,20 +350,6 @@ def check_compiler_route(work_text, remote_text):
     return [], ["compiler-route: a published compiler is installed before a build; a merge-base miss falls back to the seed"]
 
 
-def check_hold_label(auto_merge_text):
-    """auto-merge.yml honours the `hold` label as it honours the DO NOT MERGE title: it reads the
-    labels fresh from the PR (not the event payload), runs again when a label is added, and a held
-    PR is disarmed. Answers (refusals, words)."""
-    bad = []
-    if not re.search(r"types:\s*\[[^\]]*\blabeled\b", auto_merge_text):
-        bad.append("auto-merge.yml does not run on `labeled`, so a label added after creation never disarms")
-    if "gh pr view" not in auto_merge_text or "labels" not in auto_merge_text or "' hold '" not in auto_merge_text:
-        bad.append("auto-merge.yml does not read the PR's `hold` label fresh")
-    if "--disable-auto" not in auto_merge_text:
-        bad.append("auto-merge.yml never disarms a held PR")
-    if "github.event.pull_request.labels" in auto_merge_text:
-        bad.append("auto-merge.yml judges labels from the event payload, which a later label misses")
-    return bad, ([] if bad else ["hold-label: auto-merge reads the label fresh, reruns on `labeled`, and disarms"])
 def check_ladder(workflow_text, make_text=None, others=None, action_text=None):
     """A run's rungs reach the compiler step, and the seed check speaks when they do: `prepare` reads the
     rungs, the compiler step builds them through tools/ladder.sh before HEAD, and `seed-check` says it
@@ -476,17 +459,6 @@ def check_keeper_coverage(make_text, workflow_text):
         return [], ["keeper-coverage: %d compiler-free keeper(s) reachable on a PR, %d `-static` target(s)"
                     % (len(static & pr_reached), len(static_targets & pr_targets))]
     return refusals, []
-
-
-def check_watcher_wired(make_text):
-    """`tools/pr_watcher.py --self-test` runs in a keeper. Answers
-    (refusals, words)."""
-    keepers = keeper_lists(make_text).get("KEEPERS", set())
-    for name, recipe in make_targets(make_text).items():
-        if name in keepers and "tools/pr_watcher.py --self-test" in recipe:
-            return [], ["watcher-fixtures: `make %s` runs the watcher's self-test" % name]
-    return ["no keeper runs `python3 tools/pr_watcher.py --self-test` — the watcher's "
-            "decision is guarded by nothing the gate holds"], []
 
 
 def check_warm_edit(make_text, bench=None, ratchet=None):
@@ -707,9 +679,7 @@ def run(make_text=None, workflow_text=None):
     refusals, words = [], []
     for check in (lambda: check_release_order(parse_jobs(workflow_text)),
                   lambda: check_keeper_coverage(make_text, workflow_text),
-                  lambda: check_watcher_wired(make_text),
                   lambda: check_light_draft(workflow_text),
-                  lambda: check_hold_label(open(os.path.join(ROOT, ".github", "workflows", "auto-merge.yml"), encoding="utf-8").read()),
                   lambda: check_ladder(workflow_text, make_text, workflow_texts()),
                   lambda: check_run_mode(workflow_text),
                   lambda: check_race_split(workflow_text),
@@ -848,13 +818,6 @@ rt-header:
     assert any("codecs-static" in x for x in check_keeper_coverage(static_target, cover)[0]), \
         check_keeper_coverage(static_target, cover)
 
-    # ── watcher wiring ──
-    wired = make + "pr-watcher:\n\t@python3 tools/pr_watcher.py --self-test\n"
-    wired = wired.replace("KEEPERS_B = fingerprints vocab rt-header",
-                          "KEEPERS_B = fingerprints vocab rt-header pr-watcher")
-    assert check_watcher_wired(wired)[0] == [], check_watcher_wired(wired)
-    assert check_watcher_wired(make)[0], "an unwired watcher must be refused"
-
     # ── warm-edit: absent is a spoken pass; a wired one is held, and the
     # fixture brings its own bench and ratchet so the rule never reads the
     # tree it is proving ──
@@ -901,11 +864,6 @@ rt-header:
     # light run is refused ──
     real = open(CHECKS, encoding="utf-8").read()
     assert check_light_draft(real)[0] == [], check_light_draft(real)
-    am = open(os.path.join(ROOT, ".github", "workflows", "auto-merge.yml"), encoding="utf-8").read()
-    assert check_hold_label(am)[0] == [], check_hold_label(am)
-    assert any("`labeled`" in x for x in check_hold_label(am.replace(", labeled]", "]"))[0])
-    assert any("never disarms" in x for x in check_hold_label(am.replace("--disable-auto", ""))[0])
-    assert any("payload" in x for x in check_hold_label(am + "\n# ${{ github.event.pull_request.labels }}")[0])
     assert check_ladder(real)[0] == [], check_ladder(real)
     action = compiler_action()
     assert any("RUNGS" in x for x in check_ladder(real, None, None, action.replace("make -s compiler RUNGS=", "make -s compiler X="))[0])
@@ -1031,7 +989,7 @@ rt-header:
     kept = dict(wf, **{"orders.yml": "jobs:\n  n:\n    steps:\n      - run: make -s loose\n"})
     assert check_keeper_reach(night, kept, texts.get)[0] == [], check_keeper_reach(night, kept, texts.get)
 
-    print("ci_invariants self-test: release-order, keeper-coverage, watcher-fixtures, "
+    print("ci_invariants self-test: release-order, keeper-coverage, "
           "light-draft, run-mode, race-split, compiler-route, path-gate, dup-run, ready-race, warm-edit, ci-image, one-spelling, keeper-reach held on fixtures")
     return 0
 

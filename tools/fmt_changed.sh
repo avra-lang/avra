@@ -1,7 +1,7 @@
 #!/bin/sh
 # THE CHANGED-FILE FMT CHECK — ONE definition, called by the gate's own fmt
-# step (.github/workflows/checks.yml) and by `tools/work land`'s local
-# preflight, so the two can never drift into two instruments.
+# step (.github/workflows/checks.yml) and by a lane's local preflight, so
+# the two can never drift into two instruments.
 #
 #   sh tools/fmt_changed.sh <base> <head>     # the caller has refs (the gate)
 #   sh tools/fmt_changed.sh --files <files…>  # the caller already diffed

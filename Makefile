@@ -434,7 +434,7 @@ wasm-archive:
 SUITES = $(shell sh tools/avra_tools.sh suites 2>/dev/null)
 
 .PHONY: compiler-key pool-check ready tools-suite dev-server cost cost-accept trap-marks llvm-libs libs-self-test read-lists db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz exact-patches ui-board ui-browser ui-browser-skip host-events layout-oracle wasm-host-check wasm-tasks-mutations h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks test tested clean seed-check gate externs idioms fuzz-http soak-http dogfooding-rules rule-examples idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns parser witnesses libs libscope layers pre-commit-hook inputs inputs-accept read-cost \
-        check run ir emit build-native native-check avra suites install sprite sprite-check codecs-static keepers voices voices-accept defects tool-witnesses pipeline-status ci-invariants pr-watcher wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept wasm-routes-size speed-ratchet speed-accept wall-ratchet wall-accept warm-edit warm-accept work-accept
+        check run ir emit build-native native-check avra suites install sprite sprite-check codecs-static keepers voices voices-accept defects tool-witnesses ci-invariants wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept wasm-routes-size speed-ratchet speed-accept wall-ratchet wall-accept warm-edit warm-accept work-accept
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
 # tree only.
@@ -1251,7 +1251,7 @@ KEEPERS_A2 = read-cost read-lists warm-edit codecs-static traps compile-slots wi
 KEEPERS_A = $(KEEPERS_A1) $(KEEPERS_A2)
 KEEPERS_B = libscope ahead-edit-attack held-store-attack cutoff-witness heir-save-attack share-merge-attack wave-share-attack beside-attack h2spec pool-check tools-suite fingerprints vocab layers libs-self-test pre-commit-hook inputs externs trap-marks suites rt-header rt-ns parser witnesses dogfooding-rules rule-examples attack voices defects \
             ui-host host-events ui-host-test ui-board exact-patches dev-server ui-browser ui-browser-skip tool-witnesses footprint tick-object no-threads \
-            ci-invariants pr-watcher bash-parse vendored-fixture
+            ci-invariants bash-parse vendored-fixture
 # KEEPERS_WASM is the wasm target's proof — the fixtures native and wasm32 alike, the seam,
 # the refusals, the hosted scheduler broken on purpose, the store across targets, the
 # archive's law and the size receipt — a CI
@@ -1279,22 +1279,15 @@ store-witnesses: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@fail=""; for w in $(STORE_WITNESSES); do MEMCAP=tools/memcap.sh sh $$w || fail="$$fail [$$w]"; done; \
 	 [ -z "$$fail" ] || { echo "store-witnesses: refused —$$fail"; exit 1; }
 
-# THE CI STRUCTURE RATCHET: the release path, the compiler-free keepers a
-# PR must reach and the watcher's fixtures are held before a green PR can
-# break them. It reads the workflow and this Makefile alone, so no compiler.
+# THE CI STRUCTURE RATCHET: the release path and the compiler-free keepers a
+# PR must reach are held before a green PR can break them. It reads the
+# workflow and this Makefile alone, so no compiler.
 ci-invariants:
 	@python3 tools/ci_invariants.py --self-test
 	@python3 tools/ci_invariants.py
 	@sh tools/profile.sh --self-test
 	@python3 tools/ci_dup_run.py --self-test
-	@sh tools/batch_test.sh
 	@python3 tools/pr_mode.py --self-test
-
-# THE WATCHER'S DECISION IS A KEEPER: its fixtures run wherever the gate
-# runs, so a change to what the watcher may do refuses before it can land,
-# not one schedule pass later.
-pr-watcher:
-	@python3 tools/pr_watcher.py --self-test
 
 # The std-avrac fixtures vendor each std package whole: the files the manifest closure
 # names, no more and no fewer (tools/vendored_fixture.py).
@@ -1307,26 +1300,13 @@ bash-parse:
 	@sh tools/bash_parse.sh --self-test
 	@sh tools/bash_parse.sh
 
-# THE ONE-LINE BLOCKER: why nothing is landing, in a handful of lines.
-# Read-only and safe any time — `main`'s SHA and age; the last runs'
-# failures COUNTED BY JOB; each open PR's blocker in one word; whether the
-# local watchdog driver is loaded and has run recently; and a one-line
-# VERDICT naming the single most likely blocker. A signal it cannot read
-# prints `unknown` and is skipped, never given a plausible default. The
-# verdict is a pure function over a state, proved on synthetic fixtures
-# with no network (`--self-test`, held by `make tool-witnesses`);
-# `ARGS=--witness` prints each verdict firing.
-# not a keeper — a report: why nothing is landing, read-only
-pipeline-status:
-	@python3 tools/pipeline_status.py $(ARGS)
-
 # THE KEEPERS THAT NEED NO COMPILER, which a pull request's own check runs
 # before it builds anything: each reads the tree alone and all of them
 # together take half a minute, so a refusal stops on the PR instead of
 # failing a train and every PR riding it. Each is one of KEEPERS, which the
 # train runs whole.
-KEEPERS_STATIC = host-events fingerprints vocab layers libs-self-test pre-commit-hook externs suites ui-browser-skip ci-invariants pr-watcher codecs-static bash-parse vendored-fixture
-.PHONY: compiler compiler-files store-witnesses cache-attacks-w keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b keepers-wasm keepers-static keepers-pr bash-parse pipeline-status ci-invariants pr-watcher
+KEEPERS_STATIC = host-events fingerprints vocab layers libs-self-test pre-commit-hook externs suites ui-browser-skip ci-invariants codecs-static bash-parse vendored-fixture
+.PHONY: compiler compiler-files store-witnesses cache-attacks-w keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b keepers-wasm keepers-static keepers-pr bash-parse ci-invariants
 keepers-static:
 	@left="$(filter-out $(KEEPERS),$(KEEPERS_STATIC))"; [ -z "$$left" ] || { echo "keepers-static: $$left is no keeper — the train would not hold it" >&2; exit 1; }
 	@sh tools/keepers_loop.sh "$(MAKE) -s" $(KEEPERS_STATIC)
