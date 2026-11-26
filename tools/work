@@ -783,7 +783,7 @@ run_github() {
     t0=$(date +%s)
     gh_calls=$(mktemp)
     gh_left=$(gh_counted api rate_limit -q .resources.core.remaining 2>/dev/null) || gh_left=
-    case $gh_left in "" | *[!0-9]*) gh_left= ;; esac
+    case $gh_left in ("" | *[!0-9]*) gh_left= ;; esac
     live=$(gh_counted run list --workflow "$wf" --branch "$ref" --json databaseId,status \
         -q '[.[] | select(.status != "completed")][0].databaseId // empty' 2>/dev/null) || live=
     [ -z "$live" ] || { echo "work: BUSY — run $live is live on $ref; \`gh run cancel $live\` ends it" >&2; exit 76; }
@@ -811,7 +811,7 @@ run_github() {
     trap - INT
     github_status "$id"
     git push -q origin ":refs/heads/$ref" 2>/dev/null || :
-    echo "work: github — $(wc -l < "$gh_calls" | tr -d " ") GitHub API call(s) this run${gh_left:+ ($gh_left left of the hour's limit at its start)}" >&2
+    echo "work: github — $(wc -l < "$gh_calls" | tr -d " ") GitHub API call(s) this run${gh_left:+ ($gh_left left of the hourly limit at its start)}" >&2
     rm -f "$gh_calls"
     case $st in
         0) echo "work: github — passed, $(gh_since)s ($url)" >&2 ;;
