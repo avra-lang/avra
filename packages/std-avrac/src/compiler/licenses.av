@@ -89,19 +89,23 @@ fn claimed_in(text: string) -> Cited? {
     Cited { id: id, reason: rest.substring(colon + 1, rest.length).trim() }
 }
 
-/// A rule's own SITE LICENSE (CLAUDE.md's exemption law): the line
-/// directly above `line` is its OWN `// LICENSED <id>: <reason>` —
-/// naming `id` exactly, a non-empty reason — read by `rule_pass.av`
-/// before a finding is even reported. Never a loose proximity guess
-/// (`licensed_just_above`'s 200-byte window, `avra fix`'s own door)
-/// and never a different rule's citation, or one whose colon closes
-/// on nothing.
+/// A rule's own SITE LICENSE (CLAUDE.md's exemption law): the run of
+/// `// LICENSED` lines directly above `line` holds its OWN `// LICENSED
+/// <id>: <reason>` — naming `id` exactly, a non-empty reason — read by
+/// `rule_pass.av` before a finding is even reported. One site may owe
+/// two keepers a licence, so the run counts; a line that is no licence
+/// ends it. Never a loose proximity guess (`licensed_just_above`'s
+/// 200-byte window, `avra fix`'s own door) and never a different rule's
+/// citation, or one whose colon closes on nothing.
 export fn site_licensed(store: SyntaxArena, source: SourceFile, line: int, id: string) -> bool {
-    line > 1 && store.remarks.get().any(licenses(it, source, line - 1, id))
+    line > 1 && run_licenses(store.remarks.get(), source, line - 1, id)
 }
 
-fn licenses(r: Remark, source: SourceFile, line: int, id: string) -> bool {
-    !r.same_line && source.linecol(r.at).line == line && cites(claimed(r), id)
+/// Whether the run of licence lines ending at `line` cites `id`.
+fn run_licenses(remarks: List<Remark>, source: SourceFile, line: int, id: string) -> bool {
+    let here = [claimed(r) for r in remarks if !r.same_line && source.linecol(r.at).line == line]
+    if here.any(cites(it, id)) { return true }
+    line > 1 && here.any(it != null) && run_licenses(remarks, source, line - 1, id)
 }
 
 fn cites(c: Cited?, id: string) -> bool {
