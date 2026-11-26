@@ -1,0 +1,606 @@
+//! THE REGRESSION SEAM: a fresh run's rows against `benchmarks/baseline.json`, refusing past a
+//! margin, and each Avra row against Go's on the SAME machine, refusing past its target. A row is
+//! ONE machine's, so nothing is compared across machines; a machine with no accepted row says so
+//! and does not gate (`--require` refuses instead).
+use @std.io.{read_text, is_file}
+use @std.json.{Json, Field, field, parse}
+
+const DEFAULT_MARGIN: float = 2.0
+
+/// The gate a spec gives a row: `exact` for a witness count, else its margin.
+type RowGate = { bench: string, row: string, exact: bool, margin: float? }
+
+type GateRefusal = { place: string, why: string }
+
+/// A gate's reading: the lines it printed judging, its refusals, how many rows it judged, its words.
+type Judged = { said: List<string>, refusals: List<GateRefusal>, gated: int, words: List<string> }
+
+/// A verdict's closing lines and the status they carry.
+type Ended = { said: List<string>, code: int }
+
+/// A gate that has judged nothing yet.
+fn unjudged() -> Judged { Judged { said: [], refusals: [], gated: 0, words: [] } }
+
+/// A judged line that refused: printed, and its refusal kept.
+fn refused_line(j: Judged, line: string, place: string, why: string) -> Judged {
+    j with { said: j.said.concat([line]), refusals: j.refusals.concat([GateRefusal { place: place, why: why }]) }
+}
+
+fn gate_key(machine: string, lang: string, bench: string, row: string) -> string {
+    "${machine}|${lang}|${bench}|${row}"
+}
+
+fn empty_baseline() -> Json { Json.Obj([field("schema", Json.Int(1)), field("rows", Json.Obj([]))]) }
+
+fn load_baseline(path: string) -> Result<Json, string> {
+    if !is_file(path) { return empty_baseline() }
+    match parse(text_of_file(path)?) {
+        .Ok(doc) -> doc,
+        .Err(e) -> { fail "${path}: ${e.describe().message}" },
+    }
+}
+
+fn baseline_text(doc: Json) -> string { dumped(doc, Layout.Indented(2)) + "\n" }
+
+fn base_row(doc: Json, key: string) -> Json? { doc.member("rows").get(key) }
+
+fn check_of(row: Json?) -> string { row?.member("check")?.text() ?? "" }
+
+/// An object with `key` set: in place when it is there, else appended.
+fn with_field(obj: Json, key: string, value: Json) -> Json {
+    let fields = obj.fields()
+    if !fields.any(it.key == key) { return Json.Obj(fields.concat([field(key, value)])) }
+    Json.Obj([if f.key == key { field(key, value) } else { f } for f in fields])
+}
+
+type Took = { doc: Json, wrote: int }
+
+/// Every fresh row this machine measured, accepted under the gate its spec gives it.
+fn accepted(doc: Json, measured: List<Run>, machine: string, gates: List<RowGate>, default: float) -> Took {
+    let fresh = [baseline_entry(r, m, machine, gates, default) for r in measured for m in r.rows]
+    let rows = fresh.fold(doc.member("rows"), (acc, f) -> with_field(acc, f.key, f.value))
+    Took { doc: with_field(doc, "rows", rows), wrote: fresh.length }
+}
+
+fn baseline_entry(r: Run, m: Measure, machine: string, gates: List<RowGate>, default: float) -> Field {
+    let g = gates.find(it.bench == r.benchmark && it.row == m.name)
+    field(
+        gate_key(machine, r.language, r.benchmark, m.name),
+        Json
+            .Obj(
+                [
+                    field("value", Json.Float(m.value)),
+                    field("unit", Json.Str(m.unit)),
+                    field("check", Json.Str(if g?.exact ?? false { "exact" } else { "ratio" })),
+                    field("margin", Json.Float(g?.margin ?? default)),
+                ],
+            ),
+    )
+}
+
+// ── the baseline gate ────────────────────────────────────────────
+
+/// Fresh rows against the baseline. A row with no baseline is a word, and a refusal only when
+/// `require`.
+fn checked(measured: List<Run>, machine: string, doc: Json, default: float, require: bool) -> Judged {
+    mut j = unjudged()
+    for r in measured {
+        for m in r.rows {
+            let place = gate_key(machine, r.language, r.benchmark, m.name)
+            let base? = base_row(doc, place) else {
+                j
+                    .words
+                    .push(
+                        "NO BASELINE ROW for ${r.language} ${r.benchmark} ${m.name} — `--record` accepts it",
+                    )
+                if require {
+                    j
+                        .refusals
+                        .push(GateRefusal { place: place, why: "NO BASELINE ROW — refused" })
+                }
+                continue
+            }
+            j.gated = j.gated + 1
+            j = judged_row(j, r, m, place, base, default)
+        }
+    }
+    j
+}
+
+fn judged_row(j: Judged, r: Run, m: Measure, place: string, base: Json, default: float) -> Judged {
+    let was = number_of(base.get("value")) ?? 0.0
+    let unit = base.member("unit").text() ?? ""
+    let head = "${r.language} ${r.benchmark} ${m.name}: ${general(m.value, 4)} ${m.unit} vs baseline ${general(was, 4)} ${unit}"
+    if check_of(base) == "exact" {
+        let ok = m.value == was
+        let line = "gate: ${pass_word(ok)}: ${head} (exact)"
+        if ok { return j with { said: j.said.concat([line]) } }
+        let why = "FAIL: ${general(m.value, 4)} != the exact baseline ${general(was, 4)}"
+        return refused_line(j, line, place, why)
+    }
+    if was == 0.0 {
+        return j with { refusals: j
+            .refusals
+            .concat(
+                [
+                    GateRefusal {
+                        place: place,
+                        why: "the baseline row is 0 — nothing to compare",
+                    },
+                ],
+            ) }
+    }
+    let margin = number_of(base.get("margin")) ?? default
+    let got = m.value / was
+    let verdict = pass_word(got <= margin)
+    let line = "gate: ${verdict}: ${head}, ${fixed(got, 2)}x (gate ${fixed(margin, 1)}x)"
+    if got <= margin { return j with { said: j.said.concat([line]) } }
+    let why = "${verdict}: ${fixed(got, 2)}x past the ${fixed(margin, 1)}x gate"
+    refused_line(j, line, place, why)
+}
+
+fn pass_word(ok: bool) -> string { if ok { "PASS" } else { "FAIL" } }
+
+fn gate_report(j: Judged, margin: float, require: bool) -> Ended {
+    let words = ["gate: ${w}" for w in j.words]
+    if !j.refusals.is_empty() {
+        let head = "gate: REFUSED — ${j.refusals.length} row(s) past ${fixed(margin, 1)}x or unmeasured:"
+        return Ended {
+            said: words.concat([head]).concat(["gate:   ${f.place}: ${f.why}" for f in j.refusals]),
+            code: 1,
+        }
+    }
+    if j.gated == 0 {
+        let line = "gate: NOT GATED — no accepted row on this machine, so nothing was compared"
+        return Ended { said: words.concat([line]), code: if require { 1 } else { 0 } }
+    }
+    Ended {
+        said: words
+            .concat(["gate: clean — ${j.gated} row(s) within ${fixed(margin, 1)}x of the baseline"]),
+        code: 0,
+    }
+}
+
+// ── against Go ───────────────────────────────────────────────────
+
+/// The target against Go: a row's own factor, or the table's default.
+fn target_for(reg: Registry, row: string) -> float {
+    reg.targets.find(it.row == row)?.factor ?? reg.target
+}
+
+/// Where Go's number came from: this run, or the recorded baseline.
+type GoRow = { value: float, unit: string, from: string }
+
+/// Each Avra row against Go's for the SAME machine — from THIS run when Go ran, else from the
+/// recorded baseline. A witness count carries no target; a row Go never measures is a SKIP, and
+/// one Go measures on another machine but not this one is a word, or a refusal when `require`.
+fn checked_against_go(measured: List<Run>, machine: string, reg: Registry, doc: Json, require: bool) -> Judged {
+    let go_ever = [go_measured(f.key) for f in doc.member("rows").fields() if go_measured(f.key) != ""]
+    mut j = unjudged()
+    for r in measured.filter(it.language == "avra" && !it.rows.is_empty()) {
+        for m in r.rows {
+            let place = gate_key(machine, "avra", r.benchmark, m.name)
+            let gbase = base_row(doc, gate_key(machine, "go", r.benchmark, m.name))
+            if check_of(base_row(doc, place)) == "exact" || check_of(gbase) == "exact" { continue }
+            let go? = go_row(measured, r.benchmark, m.name, gbase) else {
+                j = unmeasured_by_go(
+                    j,
+                    r.benchmark,
+                    m.name,
+                    place,
+                    go_ever.contains("${r.benchmark}|${m.name}"),
+                    require,
+                )
+                continue
+            }
+            if go.value == 0.0 {
+                j.words.push("GO ROW IS 0 for ${r.benchmark} ${m.name} — nothing to compare")
+                continue
+            }
+            j.gated = j.gated + 1
+            j = judged_against_go(j, r.benchmark, m, go, target_for(reg, m.name), place)
+        }
+    }
+    j
+}
+
+/// `bench|row` when a baseline key is Go's, else "".
+fn go_measured(key: string) -> string {
+    let parts = key.split("|")
+    if parts.length == 4 && parts[1] == "go" { "${parts[2]}|${parts[3]}" } else { "" }
+}
+
+fn go_row(measured: List<Run>, bench: string, row: string, gbase: Json?) -> GoRow? {
+    let fresh = measured
+        .filter(it.benchmark == bench && it.language == "go")
+        .flat_map(it.rows)
+        .filter(it.name == row)
+        .last()
+    if fresh != null { return GoRow { value: fresh!.value, unit: fresh!.unit, from: "same run" } }
+    let base? = gbase else { return null }
+    GoRow {
+        value: number_of(base.get("value")) ?? 0.0,
+        unit: base.member("unit").text() ?? "",
+        from: "baseline",
+    }
+}
+
+fn unmeasured_by_go(
+    j: Judged,
+    bench: string,
+    row: string,
+    place: string,
+    elsewhere: bool,
+    require: bool,
+) -> Judged {
+    if !elsewhere {
+        return j with { words: j.words.concat(["no Go twin measures ${bench} ${row} — a SKIP, not a target"]) }
+    }
+    let word = "NO GO ROW for avra ${bench} ${row} on this machine — `--record` go here to gate it"
+    let refusals = if require { j.refusals.concat([GateRefusal { place: place, why: "NO GO ROW — refused" }]) } else { j.refusals }
+    j with { words: j.words.concat([word]), refusals: refusals }
+}
+
+fn judged_against_go(j: Judged, bench: string, m: Measure, go: GoRow, target: float, place: string) -> Judged {
+    let ratio = m.value / go.value
+    let line = "go: ${pass_word(ratio <= target)}: avra ${bench} ${m.name}: ${general(m.value, 4)} ${m.unit} vs Go ${general(go.value, 4)} ${go.unit} (${go.from}), ${fixed(ratio, 2)}x (target ${fixed(target, 1)}x)"
+    if ratio <= target { return j with { said: j.said.concat([line]) } }
+    let why = "FAIL: ${fixed(ratio, 2)}x past the ${fixed(target, 1)}x target against Go"
+    refused_line(j, line, place, why)
+}
+
+fn go_report(j: Judged, require: bool) -> Ended {
+    let lines = ["go: ${w}" for w in j.words]
+        .concat(["go:   ${f.place}: ${f.why}" for f in j.refusals])
+    if !j.refusals.is_empty() {
+        return Ended {
+            said: lines
+                .concat(
+                    [
+                        "go: REFUSED — ${j.refusals.length} row(s) past the target against Go or unmeasured",
+                    ],
+                ),
+            code: 1,
+        }
+    }
+    if j.gated == 0 {
+        return Ended {
+            said: lines.concat(["go: NOT JUDGED — nothing to check against Go on this machine"]),
+            code: if require { 1 } else { 0 },
+        }
+    }
+    Ended {
+        said: lines.concat(["go: clean — ${j.gated} row(s) within their target against Go"]),
+        code: 0,
+    }
+}
+
+/// What the G1 table printed, and how many rows sit past their target.
+type Table = { said: List<string>, fails: int }
+
+/// Each Avra row beside Go's from the SAME run, with the ratio and the target verdict, then the
+/// ticket's rows with no Avra twin.
+fn g1_table(measured: List<Run>, reg: Registry, doc: Json) -> Table {
+    let head = [
+        "## G1 — Avra beside Go on THIS machine (target: 2x time, 3x parked bytes)",
+        "",
+        "| benchmark | row | Avra | Go | ratio | target | verdict |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    let avra = measured.filter(it.language == "avra")
+    let firsts = [r for i, r in avra if !avra.take(i).any(it.benchmark == r.benchmark)]
+    let cells = [g1_line(measured, reg, r, m)! for r in firsts for m in r.rows if check_of(base_row(doc, gate_key(r.machine, "avra", r.benchmark, m.name))) != "exact"]
+    let tail = if reg.missing.is_empty() {
+        []
+    } else {
+        ["", "| ticket row with no Avra twin | blocker |", "|---|---|"]
+            .concat(["| ${s.key} | ${s.text} |" for s in reg.missing])
+    }
+    Table {
+        said: head.concat([c.line for c in cells]).concat(tail),
+        fails: cells.filter(it.fails).length,
+    }
+}
+
+type G1Line = { line: string, fails: bool }
+
+fn g1_line(measured: List<Run>, reg: Registry, r: Run, m: Measure) -> G1Line? {
+    let avra = "| `${r.benchmark}` | `${m.name}` | ${general(m.value, 4)} ${m.unit}"
+    let g? = measured
+        .filter(it.benchmark == r.benchmark && it.language == "go")
+        .flat_map(it.rows)
+        .filter(it.name == m.name)
+        .last() else {
+        return G1Line { line: "${avra} | SKIPPED | — | — | no Go twin |", fails: false }
+    }
+    let target = target_for(reg, m.name)
+    let ratio = if g.value == 0.0 { 1.0 / 0.0 } else { m.value / g.value }
+    let ok = ratio <= target
+    G1Line {
+        line: "${avra} | ${general(g.value, 4)} ${g.unit} | ${fixed(ratio, 2)}x | ${fixed(target, 1)}x | ${pass_word(ok)} |",
+        fails: !ok,
+    }
+}
+
+// ── the rules on fixtures, no toolchain ──────────────────────────
+
+const FIXTURE_MACHINE: string = "linux-x86_64: test"
+
+fn fixture_run(bench: string, lang: string, rows: List<Measure>) -> Run {
+    Run {
+        benchmark: bench,
+        language: lang,
+        version: "",
+        machine: FIXTURE_MACHINE,
+        at: "2026-01-01T00:00:00+00:00",
+        rows: rows,
+        notes: "",
+    }
+}
+
+fn fixture_measure(name: string, unit: string, value: float, samples: int) -> Measure {
+    Measure { name: name, unit: unit, value: value, samples: samples }
+}
+
+fn fixture_base(
+    machine: string,
+    lang: string,
+    bench: string,
+    row: string,
+    value: float,
+    unit: string,
+    check: string,
+) -> Field {
+    let marks = if check.is_empty() { [] } else { [field("check", Json.Str(check))] }
+    field(
+        gate_key(machine, lang, bench, row),
+        Json
+            .Obj(
+                [field("value", Json.Float(value)), field("unit", Json.Str(unit))]
+                    .concat(marks)
+                    .concat([field("margin", Json.Float(2.0))]),
+            ),
+    )
+}
+
+fn fixture_doc(rows: List<Field>) -> Json { Json.Obj([field("schema", Json.Int(1)), field("rows", Json.Obj(rows))]) }
+
+/// A fixture's claim, and whether it held.
+type Held = { label: string, held: bool }
+
+/// A baseline-gate fixture: its runs, and whether it should refuse.
+type GateCase = { label: string, runs: List<Run>, refuses: bool, require: bool }
+
+/// The baseline gate's own rules on fixtures: each label that did not hold.
+export fn gate_fixture_failures() -> List<string> {
+    let doc = fixture_doc(
+        [
+            fixture_base(FIXTURE_MACHINE, "c", "tasks/spawn", "spawn_one", 100.0, "ns", ""),
+            drain_base(),
+        ],
+    )
+    let drain = fixture_run("tasks/drain", "c", [fixture_measure("drain_ns_per_op", "ns", 50.0, 5)])
+    let spawn_at = (v: float) -> fixture_run(
+        "tasks/spawn",
+        "c",
+        [fixture_measure("spawn_one", "ns", v, 5)],
+    )
+    let absent = [fixture_run("tasks/fanin", "c", [fixture_measure("fanin_n", "ns", 1.0, 1)])]
+    let cases = [
+        GateCase {
+            label: "identical rows pass",
+            runs: [spawn_at(100.0), drain],
+            refuses: false,
+            require: false,
+        },
+        GateCase {
+            label: "a row past the margin refuses",
+            runs: [spawn_at(250.0), drain],
+            refuses: true,
+            require: false,
+        },
+        GateCase {
+            label: "a row AT the margin passes (`>` the ratio, never `>=`)",
+            runs: [spawn_at(200.0)],
+            refuses: false,
+            require: false,
+        },
+        GateCase {
+            label: "a row with no baseline refuses when `--require`",
+            runs: absent,
+            refuses: true,
+            require: true,
+        },
+        GateCase {
+            label: "a row with no baseline is a word otherwise",
+            runs: absent,
+            refuses: false,
+            require: false,
+        },
+    ]
+    ["gate self-test: ${c.label}" for c in cases if checked(c.runs, FIXTURE_MACHINE, doc, DEFAULT_MARGIN, c.require).refusals.is_empty() == c.refuses]
+}
+
+fn drain_base() -> Field {
+    field(
+        gate_key(FIXTURE_MACHINE, "c", "tasks/drain", "drain_ns_per_op"),
+        Json
+            .Obj(
+                [
+                    field("value", Json.Float(50.0)),
+                    field("unit", Json.Str("ns")),
+                    field("margin", Json.Float(3.0)),
+                ],
+            ),
+    )
+}
+
+/// The Go fixture's baseline: Go rows here, an Avra row, a witness count, and a row Go measures
+/// only on ANOTHER machine.
+fn go_fixture_doc() -> Json {
+    fixture_doc(
+        [
+            fixture_base(
+                FIXTURE_MACHINE,
+                "go",
+                "tasks/pingpong",
+                "pingpong_ns",
+                300.0,
+                "ns",
+                "ratio",
+            ),
+            fixture_base(
+                FIXTURE_MACHINE,
+                "avra",
+                "tasks/pingpong",
+                "pingpong_ns",
+                700.0,
+                "ns",
+                "ratio",
+            ),
+            fixture_base(
+                FIXTURE_MACHINE,
+                "go",
+                "tasks/parked",
+                "parked_bytes",
+                1000.0,
+                "bytes",
+                "ratio",
+            ),
+            fixture_base(
+                FIXTURE_MACHINE,
+                "go",
+                "tasks/pingpong",
+                "pingpong_rounds",
+                100.0,
+                "ops",
+                "exact",
+            ),
+            fixture_base(
+                "other-machine",
+                "go",
+                "tasks/fanin",
+                "fanin_ns_per_op",
+                90.0,
+                "ns",
+                "ratio",
+            ),
+        ],
+    )
+}
+
+fn go_fixture_reg() -> Registry {
+    Registry {
+        languages: [],
+        margin: DEFAULT_MARGIN,
+        floor: "c",
+        target: 2.0,
+        targets: [Factor { row: "parked_bytes", factor: 3.0 }],
+        missing: [],
+    }
+}
+
+/// 900/300 is 3.00x past the 2.0x target and 3200/1000 is 3.20x past its own 3.0x: both refuse.
+fn go_fixture_runs() -> List<Run> {
+    [
+        fixture_run(
+            "tasks/pingpong",
+            "avra",
+            [
+                fixture_measure("pingpong_ns", "ns", 900.0, 5),
+                fixture_measure("pingpong_rounds", "ops", 100.0, 5),
+            ],
+        ),
+        fixture_run("tasks/parked", "avra", [fixture_measure("parked_bytes", "bytes", 3200.0, 5)]),
+    ]
+}
+
+/// How many rows the Go fixture refuses — the gate's failure, witnessed.
+export fn go_fixture_refused() -> int {
+    checked_against_go(
+        go_fixture_runs(),
+        FIXTURE_MACHINE,
+        go_fixture_reg(),
+        go_fixture_doc(),
+        false,
+    )
+        .refusals
+        .length
+}
+
+/// The Go gate's own rules on fixtures: each that did not hold.
+export fn go_fixture_failures() -> List<string> {
+    let doc = go_fixture_doc()
+    let reg = go_fixture_reg()
+    let at = (runs: List<Run>, require: bool) -> checked_against_go(
+        runs,
+        FIXTURE_MACHINE,
+        reg,
+        doc,
+        require,
+    )
+    let past = at(go_fixture_runs(), false)
+    let fresh_go = at(
+        go_fixture_runs()
+            .concat(
+                [
+                    fixture_run(
+                        "tasks/pingpong",
+                        "go",
+                        [fixture_measure("pingpong_ns", "ns", 500.0, 5)],
+                    ),
+                ],
+            ),
+        false,
+    )
+    let inside = at(
+        [fixture_run("tasks/pingpong", "avra", [fixture_measure("pingpong_ns", "ns", 600.0, 5)])],
+        false,
+    )
+    let elsewhere = [
+        fixture_run("tasks/fanin", "avra", [fixture_measure("fanin_ns_per_op", "ns", 1.0, 1)]),
+    ]
+    let here_not = at(elsewhere, false)
+    let no_twin = at(
+        [
+            fixture_run(
+                "tasks/drain",
+                "avra",
+                [fixture_measure("drain_unbounded_1k_ns_per_op", "ns", 60.0, 1)],
+            ),
+        ],
+        true,
+    )
+    let held = [
+        Held { label: "a row past its Go target did NOT refuse", held: !past.refusals.is_empty() },
+        Held {
+            label: "judged ${past.gated}, wanted 2 (the witness count is not judged)",
+            held: past.gated == 2,
+        },
+        Held {
+            label: "fresh Go did not win the comparison",
+            held: !fresh_go.refusals.any(it.place.contains("pingpong_ns")) && fresh_go.gated == 2,
+        },
+        Held {
+            label: "a row AT the target did not pass",
+            held: inside.refusals.is_empty() && inside.gated == 1,
+        },
+        Held {
+            label: "a row with no Go row here was not a word",
+            held: here_not.refusals.is_empty() && here_not.gated == 0 && !here_not.words.is_empty(),
+        },
+        Held {
+            label: "`--require` did not refuse a machine missing a Go row",
+            held: !at(elsewhere, true).refusals.is_empty(),
+        },
+        Held {
+            label: "a row with no Go twin anywhere was not a SKIP",
+            held: no_twin.refusals.is_empty() && !no_twin.words.is_empty(),
+        },
+        Held {
+            label: "the per-row Go target was not read",
+            held: target_for(reg, "parked_bytes") == 3.0 && target_for(reg, "pingpong_ns") == 2.0,
+        },
+    ]
+    ["gate self-test: ${h.label}" for h in held if !h.held]
+}

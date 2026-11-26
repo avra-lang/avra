@@ -1,14 +1,15 @@
 //! @std.toml — a minimal TOML reader: the subset an `avra.toml`
 //! speaks. Comments, `[a.b]` headers, and `key = value` lines whose
-//! values are strings, integers, booleans, string arrays, and
+//! values are strings, integers, floats, booleans, string arrays, and
 //! one-level inline tables. Reading never aborts: a bad line is one
 //! refusal, and the reader continues at the next line.
-use @std.text.{builder, parse_int}
+use @std.text.{builder, parse_int, parse_float}
 
 /// A TOML value: the subset a manifest uses.
 export enum TomlValue {
     Str(s: string)
     Int(v: int)
+    Float(x: float)
     Bool(b: bool)
     Strs(items: List<string>)
     Table(pairs: List<TomlPair>)
@@ -295,13 +296,37 @@ fn unescaped(e: int) -> string? {
 }
 
 /// An integer, `-` allowed in front; a `-` with no digits is a word.
-/// Past the ceiling on either side is a refusal, not a wrap.
+/// Past the ceiling on either side is a refusal, not a wrap. A fraction
+/// or an exponent after the digits makes it a float.
 fn scan_int(text: string, n: int, i: int) -> ValueScan {
     let start = if text.char_code(i) == 45 { i + 1 } else { i }
     let end = run_end(text, n, start, is_digit)
     if end == start { return scan_word(text, n, i) }
+    let stop = exponent_end(text, n, fraction_end(text, n, end))
+    if stop > end { return float_value(text, i, stop) }
     let v? = parse_int(text.substring(i, end)) else { return ValueScan.Refused(number_overflow(i)) }
     ValueScan.Value(TomlValue.Int(v), end)
+}
+
+/// The byte after `.digits` at `i`, or `i` when no fraction stands there.
+fn fraction_end(text: string, n: int, i: int) -> int {
+    if !at(text, n, i, 46) { return i }
+    let end = run_end(text, n, i + 1, is_digit)
+    if end == i + 1 { i } else { end }
+}
+
+/// The byte after `e`, a sign, and digits at `i`, or `i` when no exponent stands there.
+fn exponent_end(text: string, n: int, i: int) -> int {
+    if !at(text, n, i, 101) && !at(text, n, i, 69) { return i }
+    let signed = if at(text, n, i + 1, 43) || at(text, n, i + 1, 45) { i + 2 } else { i + 1 }
+    let end = run_end(text, n, signed, is_digit)
+    if end == signed { i } else { end }
+}
+
+/// A float over `[i, end)`; past the largest float is a refusal.
+fn float_value(text: string, i: int, end: int) -> ValueScan {
+    let x? = parse_float(text.substring(i, end)) else { return ValueScan.Refused(float_overflow(i)) }
+    ValueScan.Value(TomlValue.Float(x), end)
 }
 
 /// `true` or `false`; an empty run is no value at all, any other
@@ -482,12 +507,14 @@ fn missing_value(at: int) -> Refusal { refusal("expected a value after `=`", at)
 
 fn unknown_value(word: string, at: int) -> Refusal {
     refusal(
-        "unknown value form `${word}`: a value is a string, an integer, `true`/`false`, an array, or an inline table",
+        "unknown value form `${word}`: a value is a string, a number, `true`/`false`, an array, or an inline table",
         at,
     )
 }
 
 fn number_overflow(at: int) -> Refusal { refusal("this number does not fit an int", at) }
+
+fn float_overflow(at: int) -> Refusal { refusal("this number is past the largest float", at) }
 
 fn unterminated(at: int, what: string) -> Refusal { refusal("unterminated ${what}", at) }
 

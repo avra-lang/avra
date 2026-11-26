@@ -22,6 +22,7 @@
 # A row Go never measures is a SKIP, a row Go measures elsewhere but not
 # here is a word, and `--require` turns that word into a refusal. The
 # target factors are data in bench.toml's [gate.target].
+# The runner is the tools program's `bench` command (tools/src/commands/bench.av).
 set -eu
-here=$(cd "$(dirname "$0")" && pwd)
-exec python3 "$here/lib/harness.py" "$@"
+root=$(cd "$(dirname "$0")/.." && pwd)
+exec sh "$root/tools/avra_tools.sh" bench "$@"

@@ -1,0 +1,189 @@
+//! THE REPORT'S NUMBERS: a float spelled as `%.Nf`, `%.Ng`, `{:,.0f}` and `repr` spell it,
+//! rounded half-even on the float's exact value. The shortest decimal that reads back as the
+//! float carries the digits, so a spelling asking past its 17 significant digits reads zeros
+//! where the exact binary value has more.
+use @std.text.{parse_int, repeat}
+
+/// A finite non-negative float as exact decimal digits: the value is
+/// `digits × 10^last`, no leading or trailing zero; zero has no digits.
+type Decimal = { digits: string, last: int }
+
+/// The shortest decimal that reads back as `x` (`x` ≥ 0, finite).
+fn shortest(x: float) -> Decimal {
+    let t = "${x}"
+    let e = t.index_of("e")
+    let mant = if e < 0 { t } else { t.substring(0, e) }
+    let exp = if e < 0 { 0 } else { parse_int(t.substring(e + 1, t.length).replace("+", "")) ?? 0 }
+    let dot = mant.index_of(".")
+    let whole = if dot < 0 { mant } else { mant.substring(0, dot) }
+    let frac = if dot < 0 { "" } else { mant.substring(dot + 1, mant.length) }
+    decimal_of(whole + frac, exp - frac.length)
+}
+
+fn decimal_of(raw: string, last: int) -> Decimal {
+    let lead = (0..raw.length).find((i) -> raw.char_code(i) != 48) ?? raw.length
+    let body = raw.substring(lead, raw.length)
+    let keep = (0..body.length).find((i) -> body.char_code(body.length - 1 - i) != 48) ?? body
+        .length
+    Decimal { digits: body.substring(0, body.length - keep), last: last + keep }
+}
+
+/// `10^k` as a float, exact for `k` ≤ 22.
+fn ten_to(k: int) -> float {
+    (0..k).fold(1.0, (acc, _i) -> acc * 10.0)
+}
+
+/// Dekker's split: `hi + lo == a`, each half 26 bits.
+type Halves = { hi: float, lo: float }
+
+fn halves_of(a: float) -> Halves {
+    let c = 134217729.0 * a
+    let hi = c - (c - a)
+    Halves { hi: hi, lo: a - hi }
+}
+
+/// Which side of `d` the float `x` sits on, exactly: -1, 0 or 1. A decimal
+/// too wide to weigh exactly reads as a tie.
+fn side_of(x: float, d: Decimal) -> int {
+    if d.last >= 0 || d.digits.length > 15 || 0 - d.last > 22 { return 0 }
+    let m = (parse_int(d.digits) ?? 0).float()
+    let t = ten_to(0 - d.last)
+    let p = x * t
+    let a = halves_of(x)
+    let b = halves_of(t)
+    let err = a.hi * b.hi - p + a.hi * b.lo + a.lo * b.hi + a.lo * b.lo
+    let gap = p - m + err
+    when {
+        gap > 0.0 -> 1
+        gap < 0.0 -> -1
+        _ -> 0
+    }
+}
+
+/// `x` (≥ 0) rounded half-even to `q` places after the point, as the
+/// integer `x × 10^q`'s digits.
+fn rounded_digits(x: float, q: int) -> string {
+    let d = shortest(x)
+    let shift = d.last + q
+    if d.digits.is_empty() { return "0" }
+    if shift >= 0 { return d.digits + repeat("0", shift) }
+    let cut = 0 - shift
+    let n = d.digits.length
+    let kept = if cut >= n { "" } else { d.digits.substring(0, n - cut) }
+    let tail = if cut > n { repeat("0", cut - n) + d.digits } else { d.digits.substring(n - cut, n) }
+    let first = tail.char_code(0)
+    let up = when {
+        first > 53 -> true
+        first < 53 -> false
+        tail.length > 1 -> true
+        _ -> tie_up(side_of(x, d), kept)
+    }
+    let base = if kept.is_empty() { "0" } else { kept }
+    if up { incremented_digits(base) } else { base }
+}
+
+fn tie_up(s: int, kept: string) -> bool {
+    if s != 0 { return s > 0 }
+    let last = if kept.is_empty() { 48 } else { kept.char_code(kept.length - 1) }
+    last % 2 == 1
+}
+
+/// A digit string plus one.
+fn incremented_digits(ds: string) -> string {
+    let nines = (0..ds.length).find((i) -> ds.char_code(ds.length - 1 - i) != 57) ?? ds.length
+    let at = ds.length - nines
+    if at == 0 { return "1" + repeat("0", ds.length) }
+    let bumped = "0123456789".substring(ds.char_code(at - 1) - 47, ds.char_code(at - 1) - 46)
+    ds.substring(0, at - 1) + bumped + repeat("0", nines)
+}
+
+fn sign_of(x: float) -> string { if x < 0.0 { "-" } else { "" } }
+
+fn magnitude(x: float) -> float { if x < 0.0 { 0.0 - x } else { x } }
+
+/// The digits of `x × 10^q` read back with `q` places: `%.qf`'s body.
+fn with_point(ds: string, q: int) -> string {
+    if q == 0 { return ds }
+    let padded = repeat("0", q + 1 - ds.length) + ds
+    let point = padded.length - q
+    padded.substring(0, point) + "." + padded.substring(point, padded.length)
+}
+
+/// Infinity and NaN as every spelling writes them, or null for a finite float.
+fn unbounded(x: float) -> string? {
+    if x - x == 0.0 { return null }
+    if x != x { return "nan" }
+    if x > 0.0 { "inf" } else { "-inf" }
+}
+
+/// `%.qf`.
+export fn fixed(x: float, q: int) -> string {
+    unbounded(x) ?? sign_of(x) + with_point(rounded_digits(magnitude(x), q), q)
+}
+
+/// `{:,.0f}`: the whole number, thousands grouped by commas.
+export fn grouped(x: float) -> string {
+    let odd? = unbounded(x) else { return grouped_finite(x) }
+    odd
+}
+
+fn grouped_finite(x: float) -> string {
+    let ds = rounded_digits(magnitude(x), 0)
+    let head = ds.length % 3
+    let groups = [ds.substring(head + 3 * k, head + 3 * k + 3) for k in 0..(ds.length - head) / 3]
+    sign_of(x) + [ds.substring(0, head)].filter(!it.is_empty()).concat(groups).join(",")
+}
+
+/// `%.pg`: `p` significant digits, the exponent form outside [-4, p), no
+/// trailing zeros.
+export fn general(x: float, p: int) -> string {
+    let odd? = unbounded(x) else { return general_finite(x, p) }
+    odd
+}
+
+fn general_finite(x: float, p: int) -> string {
+    let m = magnitude(x)
+    let d = shortest(m)
+    if d.digits.is_empty() { return sign_of(x) + "0" }
+    let lead = d.digits.length - 1 + d.last
+    let r = rounded_digits(m, p - 1 - lead)
+    let e = if r.length > p { lead + 1 } else { lead }
+    let ds = r.substring(0, p)
+    if e >= -4 && e < p { return sign_of(x) + unpadded_digits(with_point(ds, p - 1 - e)) }
+    sign_of(x) + unpadded_digits(with_point(ds, p - 1)) + exponent_text(e)
+}
+
+fn unpadded_digits(t: string) -> string {
+    if !t.contains(".") { return t }
+    let keep = (0..t.length).find((i) -> t.char_code(t.length - 1 - i) != 48) ?? 0
+    let cut = t.substring(0, t.length - keep)
+    if cut.ends_with(".") { cut.substring(0, cut.length - 1) } else { cut }
+}
+
+fn exponent_text(e: int) -> string {
+    let mag = if e < 0 { 0 - e } else { e }
+    let ds = "${mag}"
+    "e" + if e < 0 { "-" } else { "+" } + if ds.length < 2 { "0" + ds } else { ds }
+}
+
+/// `repr(x)`: the shortest digits, the exponent form outside [-4, 16).
+export fn repr(x: float) -> string {
+    let odd? = unbounded(x) else { return repr_finite(x) }
+    odd
+}
+
+fn repr_finite(x: float) -> string {
+    let d = shortest(magnitude(x))
+    if d.digits.is_empty() { return sign_of(x) + "0.0" }
+    let e = d.digits.length - 1 + d.last
+    if e >= -4 && e < 16 {
+        let q = if d.last < 0 { 0 - d.last } else { 0 }
+        let body = with_point(d.digits + repeat("0", if d.last > 0 { d.last } else { 0 }), q)
+        return sign_of(x) + if q == 0 { body + ".0" } else { body }
+    }
+    let tail = d.digits.substring(1, d.digits.length)
+    sign_of(x) +
+        d.digits.substring(0, 1) +
+        if tail.is_empty() { "" } else { "." + tail } +
+        exponent_text(e)
+}

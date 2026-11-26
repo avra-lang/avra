@@ -9,9 +9,9 @@ deliberately **not** `@std`.
 ```
 benchmarks/
   bench.toml            the registry: families, languages, toolchain pins, the gate
-  run.sh                the one door (below)
+  run.sh                the one door (below): the tools program's `bench` command
+                        (tools/src/commands/bench*.av) — runner, reporter, gate, self-test
   README.md             this file
-  lib/                  the runner, the reporter, the gate, the self-test
   results/runs.jsonl    the stored rows, one JSON object per line (checked in)
   baseline.json         the accepted gate baseline (checked in)
   report/               GENERATED: results.md and index.html, never hand-edited
@@ -148,7 +148,7 @@ A machine with no accepted row prints the rows and does not gate;
 `--require` refuses instead. The `drain_scale` row carries its own 3.0x
 margin because a scaling ratio is noisier than a fixed cost.
 
-This is the idea `benchmarks/tasks/flow/gate.py` landed for the scheduler's
+This is the idea the flow gate (`bench flow-gate`) landed for the scheduler's
 transition rows, at the suite's scale. `benchmarks/tasks/flow/` is the OLDER
 harness and this suite is the ONE DOOR for the Avra-beside-Go question:
 `make flow-bench` runs `benchmarks/run.sh --g1`. What `benchmarks/tasks/flow/`

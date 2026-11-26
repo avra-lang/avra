@@ -1207,7 +1207,7 @@ footprint-accept: $(RUNTIME_LIB) $(UNINSTRUMENTED_LIB)
 # row a REFUSAL; a lane measuring a runtime saved elsewhere points
 # FLOW_RUNTIME at it.
 flow-gate:
-	@python3 benchmarks/tasks/flow/gate.py --self-test
+	@sh tools/avra_tools.sh bench flow-gate --self-test
 	@sh benchmarks/tasks/flow/run.sh --gate $(FLOW_GATE_ARGS)
 # Re-accept this machine's rows deliberately (FLOW_RUNTIME for another tree).
 flow-gate-accept:

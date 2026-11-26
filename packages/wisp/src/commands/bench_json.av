@@ -1,0 +1,136 @@
+//! THE SUITE'S STORED TEXT: JSON written as the suite's files hold it — keys sorted, every
+//! character past ASCII escaped, a float in its `repr` — and the orderings the rows are kept in.
+use @std.json.{Json, Field}
+use @std.text.{codepoints, repeat, text_before, from_codepoint}
+
+/// How a document is laid out: one line with its two separators, or indented rows.
+enum Layout {
+    Line(comma: string, colon: string)
+    Indented(step: int)
+}
+
+/// One line, no spaces: a store's row.
+const TIGHT: Layout = Layout.Line(",", ":")
+
+/// One line, a space after each separator: a printed row.
+const SPACED: Layout = Layout.Line(", ", ": ")
+
+/// The value as the layout writes it, every object's keys sorted.
+fn dumped(j: Json, layout: Layout) -> string {
+    dumped_at(j, layout, 0)
+}
+
+fn dumped_at(j: Json, layout: Layout, depth: int) -> string {
+    match j {
+        .Null -> "null",
+        .Bool(b) -> if b { "true" } else { "false" },
+        .Int(n) -> "${n}",
+        .Float(x) -> repr(x),
+        .Str(s) -> escaped_text(s),
+        .Arr(items) -> laid_out("[", "]", [dumped_at(x, layout, depth + 1) for x in items], layout, depth),
+        .Obj(fields) -> laid_out(
+            "{",
+            "}",
+            [keyed(f, layout, depth) for f in ordered_by(fields, key_before)],
+            layout,
+            depth,
+        ),
+    }
+}
+
+fn key_before(a: Field, b: Field) -> bool { text_before(a.key, b.key) }
+
+fn keyed(f: Field, layout: Layout, depth: int) -> string {
+    let colon = match layout { .Line(_, c) -> c, .Indented(_) -> ": " }
+    "${escaped_text(f.key)}${colon}${dumped_at(f.value, layout, depth + 1)}"
+}
+
+/// A bracketed run: on one line, or one row a line a level in; empty stays bare.
+fn laid_out(open: string, close: string, rows: List<string>, layout: Layout, depth: int) -> string {
+    if rows.is_empty() { return open + close }
+    match layout {
+        .Line(comma, _) -> open + rows.join(comma) + close,
+        .Indented(step) -> {
+            let inner = repeat(" ", step * (depth + 1))
+            "${open}\n${[inner + r for r in rows].join(",\n")}\n${repeat(" ", step * depth)}${close}"
+        },
+    }
+}
+
+/// A string quoted: the two that must be escaped and the named controls by letter, other
+/// controls and every code point past ASCII as `\uXXXX` — a pair past the basic plane.
+fn escaped_text(s: string) -> string {
+    "\"" + [escaped_code(c) for c in codepoints(s)].join("") + "\""
+}
+
+fn escaped_code(c: int) -> string {
+    when {
+        c == 34 -> "\\\""
+        c == 92 -> "\\\\"
+        c == 10 -> "\\n"
+        c == 13 -> "\\r"
+        c == 9 -> "\\t"
+        c == 8 -> "\\b"
+        c == 12 -> "\\f"
+        c < 32 || c > 126 && c < 65536 -> "\\u" + hex4(c)
+        c >= 65536 -> "\\u" +
+            hex4(55296 + (c - 65536) / 1024) +
+            "\\u" +
+            hex4(56320 + (c - 65536) % 1024)
+        _ -> from_codepoint(c)
+    }
+}
+
+fn hex4(c: int) -> string {
+    [hex_place(c / 4096), hex_place(c / 256), hex_place(c / 16), hex_place(c)].join("")
+}
+
+fn hex_place(c: int) -> string {
+    let d = c % 16
+    "0123456789abcdef".substring(d, d + 1)
+}
+
+/// A number field as a float, whichever way it was spelled.
+fn number_of(j: Json?) -> float? {
+    let v? = j else { return null }
+    match v { .Float(x) -> x, .Int(n) -> n.float(), rest -> null }
+}
+
+/// `xs` ordered by `before`, stable: equal items keep their order.
+fn ordered_by<T>(xs: List<T>, before: fn(T, T) -> bool) -> List<T> {
+    if xs.length < 2 { return xs }
+    let mid = xs.length / 2
+    merged_runs(
+        ordered_by(xs.slice(0, mid), before),
+        ordered_by(xs.slice(mid, xs.length), before),
+        before,
+    )
+}
+
+fn merged_runs<T>(a: List<T>, b: List<T>, before: fn(T, T) -> bool) -> List<T> {
+    mut out: List<T> = []
+    mut i = 0
+    mut j = 0
+    while i < a.length && j < b.length {
+        if before(b[j], a[i]) {
+            out.push(b[j])
+            j = j + 1
+        } else {
+            out.push(a[i])
+            i = i + 1
+        }
+    }
+    out.concat(a.slice(i, a.length)).concat(b.slice(j, b.length))
+}
+
+/// The middle value, the mean of the middle two for an even count.
+fn median_of(xs: List<float>) -> float {
+    let s = ordered_by(xs, (a, b) -> a < b)
+    let mid = s.length / 2
+    if s.length % 2 == 1 { s[mid] } else { (s[mid - 1] + s[mid]) / 2.0 }
+}
+
+/// The least value.
+fn least_of(xs: List<float>) -> float {
+    xs.fold(xs[0], (acc, x) -> if x < acc { x } else { acc })
+}

@@ -1,0 +1,900 @@
+//! `avra-tools bench` — THE BENCHMARK SUITE'S RUNNER, over `benchmarks/bench.toml`'s registry:
+//! run each benchmark's language twins, record their rows, project the report, gate a baseline.
+//!
+//!     bench [--lang L,…] [--bench F/N,…] [--record] [--report] [--gate] [--g1] [--require]
+//!           [--list] [--self-test] [--quiet]
+//!     bench flow-gate <raw> [--baseline B] [--ratio R] [--require] [--record] | --self-test
+//!     bench flow-table <raw> [--gates [--enforce]]
+//!     bench collections-table <raw>
+//!
+//! A language program prints one row per line, `<name>\t<value>\t<unit>\t<samples>`, and any
+//! `# …` line as a note; the runner wraps a language's rows into ONE JSON row of the fixed schema
+//! (`benchmarks/README.md`), so a language knows nothing of JSON, versions or machines. A run
+//! prints its rows; `--record` stores them in `benchmarks/results/runs.jsonl` (latest wins per
+//! benchmark, language and machine) and accepts them into `benchmarks/baseline.json`; `--gate`
+//! judges a fresh run against that baseline and each Avra row against Go's.
+use @std.cli.{CliResult, Runnable, command, flag, option, arg}
+use @std.io.{read_text, write_text, list_dir, is_dir, is_file, make_dirs, env, env_or}
+use @std.json.{Json, Field, field, parse}
+use @std.path.{joined_path, dir_of}
+use @std.process.{tool, cmd, Command, Env, EnvPair, Exit, ProcessError}
+use @std.text.{
+    parse_int,
+    parse_float,
+    ascii_lower,
+    codepoints,
+    from_codepoints,
+    pad_right,
+    text_before,
+}
+use @std.time.{secs, now}
+use @std.toml.{TomlDoc, TomlValue, parse_toml}
+
+/// Directories under `benchmarks/` that are not families.
+const NOT_FAMILIES: List<string> = ["results", "report", "build"]
+
+// ── the suite's vocabulary ───────────────────────────────────────
+
+/// One row a program printed: its name, unit, value and rounds.
+export type Measure = { name: string, unit: string, value: float, samples: int }
+
+/// One (benchmark, language, machine) run: the fixed schema.
+export type Run = {
+    benchmark: string,
+    language: string,
+    version: string,
+    machine: string,
+    at: string,
+    rows: List<Measure>,
+    notes: string,
+}
+
+/// A key and its value as text.
+type Said = { key: string, text: string }
+
+/// A row's own factor.
+type Factor = { row: string, factor: float }
+
+/// One registered language: how to tell it is here, its version, and how to build and run a twin.
+type Language = {
+    name: string,
+    title: string,
+    version: List<string>?,
+    present: List<string>?,
+    source: string,
+    build: List<string>,
+    run: List<string>,
+    cwd: string,
+}
+
+/// `bench.toml`: the languages in order and the gate's data.
+type Registry = {
+    languages: List<Language>,
+    margin: float,
+    floor: string,
+    target: float,
+    targets: List<Factor>,
+    missing: List<Said>,
+}
+
+/// A row a spec declares: its unit, its words, and whether it is a witness count.
+type RowSpec = { name: string, unit: string, about: string, exact: bool }
+
+/// A benchmark's `spec.toml`.
+type Spec = {
+    title: string?,
+    invariant: string,
+    row: string,
+    languages: List<string>,
+    workload: List<Said>,
+    analogues: List<Said>,
+    rows: List<RowSpec>,
+    margin: float?,
+    margins: List<Factor>,
+}
+
+/// A benchmark: `family/name`, its directory, its spec.
+type Bench = { key: string, dir: string, declared: Spec }
+
+/// The tree's root: where the tools program stands.
+fn tree_root() -> string { env_or("PWD", ".") }
+
+fn bench_root() -> string { joined_path(tree_root(), "benchmarks") }
+
+fn results_path() -> string { joined_path(bench_root(), "results/runs.jsonl") }
+
+fn baseline_path() -> string { joined_path(bench_root(), "baseline.json") }
+
+/// A TOML file read, or the first refusal its reader made.
+fn toml_at(path: string) -> Result<TomlDoc, string> {
+    let doc = parse_toml(text_of_file(path)?)
+    let bad? = doc.errors.first() else { return doc }
+    fail "${path}: ${bad.message}"
+}
+
+/// A file written, or why it could not be.
+fn written(path: string, text: string) -> Result<string, string> {
+    match write_text(path, text) {
+        .Ok(p) -> p,
+        .Err(e) -> { fail "${path}: ${e.describe().message}" },
+    }
+}
+
+/// A refusal spoken on stderr, its status 1; a status passed through.
+fn spoken(r: Result<int, string>) -> int {
+    match r {
+        .Ok(code) -> code,
+        .Err(why) -> {
+            eprintln("bench: ${why}")
+            1
+        },
+    }
+}
+
+/// A file's text, or why it could not be read.
+fn text_of_file(path: string) -> Result<string, string> {
+    match read_text(path) { .Ok(t) -> t, .Err(e) -> { fail "${path}: ${e.describe().message}" } }
+}
+
+fn text_at(doc: TomlDoc, section: string, key: string) -> string? {
+    let v? = doc.get(section, key) else { return null }
+    match v { .Str(s) -> s, rest -> null }
+}
+
+fn words_at(doc: TomlDoc, section: string, key: string) -> List<string>? {
+    let v? = doc.get(section, key) else { return null }
+    match v { .Strs(items) -> items, rest -> null }
+}
+
+fn number_at(doc: TomlDoc, section: string, key: string) -> float? {
+    let v? = doc.get(section, key) else { return null }
+    toml_number(v)
+}
+
+fn toml_number(v: TomlValue) -> float? {
+    match v { .Float(x) -> x, .Int(n) -> n.float(), rest -> null }
+}
+
+/// A TOML value as Python's `str` spells it.
+fn toml_said(v: TomlValue) -> string {
+    match v {
+        .Str(s) -> s,
+        .Int(n) -> "${n}",
+        .Float(x) -> repr(x),
+        .Bool(b) -> if b { "True" } else { "False" },
+        .Strs(items) -> "[${[quoted_said(s) for s in items].join(", ")}]",
+        .Table(pairs) -> "{${[quoted_said(p.key) + ": " + toml_quoted(p.value) for p in pairs].join(", ")}}",
+    }
+}
+
+fn toml_quoted(v: TomlValue) -> string {
+    match v { .Str(s) -> quoted_said(s), rest -> toml_said(v) }
+}
+
+fn quoted_said(s: string) -> string { "'${s}'" }
+
+fn saids(doc: TomlDoc, section: string) -> List<Said> {
+    [Said { key: e.key, text: toml_said(e.value) } for e in doc.entries_of(section)]
+}
+
+fn factors(doc: TomlDoc, section: string) -> List<Factor> {
+    [Factor { row: e.key, factor: f! } for e in doc.entries_of(section) for f in [toml_number(e.value)] if f != null]
+}
+
+/// The sections directly under `prefix.`, in first-appearance order.
+fn subsections(doc: TomlDoc, prefix: string) -> List<string> {
+    let lead = prefix + "."
+    [s.substring(lead.length, s.length) for s in doc.sections() if s.starts_with(lead) && !s.substring(lead.length, s.length).contains(".")]
+}
+
+fn language_of(doc: TomlDoc, name: string) -> Language {
+    let at = "languages.${name}"
+    Language {
+        name: name,
+        title: text_at(doc, at, "title") ?? name,
+        version: words_at(doc, at, "version"),
+        present: words_at(doc, at, "present"),
+        source: text_at(doc, at, "source") ?? "",
+        build: words_at(doc, at, "build") ?? [],
+        run: words_at(doc, at, "run") ?? [],
+        cwd: text_at(doc, at, "cwd") ?? "{dir}",
+    }
+}
+
+fn registry_at(path: string) -> Result<Registry, string> {
+    let doc = toml_at(path)?
+    Registry {
+        languages: [language_of(doc, n) for n in subsections(doc, "languages")],
+        margin: number_at(doc, "gate", "margin") ?? DEFAULT_MARGIN,
+        floor: text_at(doc, "gate", "floor") ?? "c",
+        target: number_at(doc, "gate.target", "default") ?? DEFAULT_MARGIN,
+        targets: factors(doc, "gate.target.rows"),
+        missing: saids(doc, "gate.missing"),
+    }
+}
+
+fn row_spec_of(doc: TomlDoc, name: string) -> RowSpec {
+    let at = "rows.${name}"
+    RowSpec {
+        name: name,
+        unit: text_at(doc, at, "unit") ?? "",
+        about: text_at(doc, at, "about") ?? "",
+        exact: text_at(doc, at, "check") == "exact",
+    }
+}
+
+fn spec_at(path: string) -> Result<Spec, string> {
+    let doc = toml_at(path)?
+    Spec {
+        title: text_at(doc, "benchmark", "title"),
+        invariant: text_at(doc, "benchmark", "invariant") ?? "",
+        row: text_at(doc, "benchmark", "row") ?? "",
+        languages: words_at(doc, "", "languages") ?? [],
+        workload: saids(doc, "workload"),
+        analogues: saids(doc, "analogues"),
+        rows: [row_spec_of(doc, n) for n in subsections(doc, "rows")],
+        margin: number_at(doc, "gate", "margin"),
+        margins: factors(doc, "gate.rows"),
+    }
+}
+
+fn names_sorted(dir: string) -> List<string> {
+    ordered_by(list_dir(dir) catch [], text_before)
+}
+
+fn is_family(name: string) -> bool {
+    !NOT_FAMILIES.contains(name) &&
+        !name.starts_with(".") &&
+        is_dir(joined_path(bench_root(), name))
+}
+
+/// Every `family/benchmark` holding a spec, in name order; `only` names the keys wanted, or
+/// none for all.
+fn benches_under(only: List<string>?) -> Result<List<Bench>, string> {
+    let root = bench_root()
+    let found = ["${fam}/${name}" for fam in names_sorted(root) if is_family(fam) for name in names_sorted(joined_path(root, fam)) if is_file(joined_path(root, "${fam}/${name}/spec.toml"))]
+    let wanted = [k for k in found if only == null || only!.contains(k)]
+    [bench_at(joined_path(root, k), k)? for k in wanted]
+}
+
+fn bench_at(dir: string, key: string) -> Result<Bench, string> {
+    Bench { key: key, dir: dir, declared: spec_at(joined_path(dir, "spec.toml"))? }
+}
+
+/// The languages a benchmark lists, or every registered one.
+fn listed_languages(reg: Registry, s: Spec) -> List<string> {
+    if s.languages.is_empty() { [l.name for l in reg.languages] } else { s.languages }
+}
+
+fn title_of(reg: Registry, lang: string) -> string {
+    reg.languages.find(it.name == lang)?.title ?? lang
+}
+
+// ── this machine ─────────────────────────────────────────────────
+
+/// What a program printed, trimmed, or "" when it would not run.
+fn printed_by(argv: List<string>) -> string {
+    match spawned(argv, null, [], 30) { .Done(r) -> r.out.trim(), rest -> "" }
+}
+
+/// A stable key for the machine: its platform AND the machine, so two are never compared.
+fn machine_id() -> string {
+    let system = printed_by(["uname", "-s"])
+    "${ascii_lower(system)}-${ascii_lower(printed_by(["uname", "-m"]))}: ${machine_desc(system)}"
+}
+
+fn machine_desc(system: string) -> string {
+    let n = printed_by(["getconf", "_NPROCESSORS_ONLN"])
+    let cores = if n.is_empty() { "?" } else { n }
+    match system {
+        "Linux" -> "${cpu_model()}, ${cores} cores, Linux ${printed_by(["uname", "-r"])}",
+        "Darwin" -> "${printed_by(["sysctl", "-n", "machdep.cpu.brand_string"])}, ${cores} cores, macOS ${printed_by(["sw_vers", "-productVersion"])}",
+        _ -> "${system}-${printed_by(["uname", "-r"])}, ${cores} cores",
+    }
+}
+
+fn cpu_model() -> string {
+    let line? = (read_text("/proc/cpuinfo") catch "").split("\n").find(it.starts_with("model name")) else {
+        return "unknown CPU"
+    }
+    line.substring(line.index_of(":") + 1, line.length).trim()
+}
+
+/// Now, as `2026-01-01T00:00:00+00:00`.
+fn stamped_now() -> string { now().iso().substring(0, 19) + "+00:00" }
+
+// ── one language run ─────────────────────────────────────────────
+
+/// A child that ran: its status (a signal is its negative), and what it said.
+type Ran = { code: int, out: string, err: string }
+
+/// A child's end: it ran, it outlived its bound, or it never started.
+enum Spawned {
+    Done(r: Ran)
+    TimedOut
+    Absent(why: string)
+}
+
+fn status_word(e: Exit) -> int {
+    match e { .Clean -> 0, .Code(n) -> n, .Signal(s, _) -> 0 - s }
+}
+
+/// `argv` run in `cwd` (the invoker's when none) over the invoker's environment and `extra`.
+fn spawned(argv: List<string>, cwd: string?, extra: List<EnvPair>, limit_s: int) -> Spawned {
+    let name? = argv.first() else { return Spawned.Absent("an empty command") }
+    let t = match tool(name) {
+        .Ok(found) -> found,
+        .Err(e) -> { return Spawned.Absent(e.describe().message) },
+    }
+    let c = cmd(t, argv.drop(1)) with { cwd: cwd, env: Env.Inherit(extra), timeout: secs(limit_s) }
+    match c.outcome() {
+        .Ok(o) -> Spawned.Done(Ran { code: status_word(o.exit), out: o.out.stdout, err: o.out.stderr }),
+        .Err(e) -> match e {
+            .TimedOut(_, _) -> Spawned.TimedOut,
+            rest -> Spawned.Absent(e.describe().message),
+        },
+    }
+}
+
+/// The places a language's words name.
+type Places = { dir: string, src: string, out: string }
+
+/// Every placeholder a word holds, so a path may compose one (`{dir}/src/main`).
+fn placed_word(w: string, p: Places) -> string {
+    w
+        .replace("{dir}", p.dir)
+        .replace("{src}", p.src)
+        .replace("{out}", p.out)
+        .replace("{avra}", joined_path(tree_root(), "build/avra"))
+        .replace("{root}", tree_root())
+}
+
+fn placed_words(ws: List<string>, p: Places) -> List<string> { [placed_word(w, p) for w in ws] }
+
+fn is_present(lang: Language, p: Places) -> bool {
+    let words? = lang.present else { return true }
+    match spawned(placed_words(words, p), null, [], 30) { .Done(r) -> r.code == 0, rest -> false }
+}
+
+fn version_of(lang: Language, p: Places) -> string {
+    let words? = lang.version else { return "unknown" }
+    match spawned(placed_words(words, p), null, [], 30) {
+        .Done(r) -> first_said(if r.out.trim().is_empty() { r.err } else { r.out }) ?? "unknown",
+        rest -> "unknown",
+    }
+}
+
+/// Lines as a reader splits them: a trailing `\r` dropped.
+fn lines_in(s: string) -> List<string> {
+    [if l.ends_with("\r") { l.substring(0, l.length - 1) } else { l } for l in s.split("\n")]
+}
+
+fn first_said(s: string) -> string? { lines_in(s.trim()).first()?.trim() }
+
+/// The last line of what a failed child said — its errors first — or "no words".
+fn last_said(r: Ran) -> string {
+    lines_in(if r.err.is_empty() { r.out } else { r.err }.trim()).last() ?? "no words"
+}
+
+/// A text with every trailing blank dropped.
+fn right_trimmed(s: string) -> string {
+    let keep = (0..s.length).find((i) -> !is_blank_code(s.char_code(s.length - 1 - i))) ?? s.length
+    s.substring(0, s.length - keep)
+}
+
+fn is_blank_code(c: int) -> bool { c == 32 || c == 9 || c == 10 || c == 13 || c == 11 || c == 12 }
+
+/// What a program printed under the row contract: its rows, and its `#` notes.
+type Printed = { rows: List<Measure>, notes: List<string> }
+
+/// The row contract: `name<TAB>value<TAB>unit<TAB>samples`. A `#` line is a note, an empty line is
+/// nothing, and anything else is refused, so a drifting program never silently loses a row.
+export fn parse_rows(text: string) -> Result<Printed, string> {
+    mut rows: List<Measure> = []
+    mut notes: List<string> = []
+    for raw in lines_in(text) {
+        let line = right_trimmed(raw)
+        if line.is_empty() { continue }
+        if line.starts_with("#") {
+            notes.push(left_hashless(line).trim())
+            continue
+        }
+        let parts = line.split("\t")
+        if parts.length != 4 { fail "a row is not `name<TAB>value<TAB>unit<TAB>samples`: ${quoted_said(line)}" }
+        let value? = parse_float(parts[1].trim()) else {
+            fail "row ${parts[0]}: could not convert string to float: ${quoted_said(parts[1])}"
+        }
+        let samples? = parse_int(parts[3].trim()) else {
+            fail "row ${parts[0]}: invalid literal for int() with base 10: ${quoted_said(parts[3])}"
+        }
+        rows = placed_measure(
+            rows,
+            Measure { name: parts[0], unit: parts[2], value: value, samples: samples },
+        )
+    }
+    Printed { rows: rows, notes: notes }
+}
+
+fn left_hashless(s: string) -> string {
+    let lead = (0..s.length).find((i) -> s.char_code(i) != 35) ?? s.length
+    s.substring(lead, s.length)
+}
+
+/// A measure written over its namesake in place, or appended.
+fn placed_measure(rows: List<Measure>, m: Measure) -> List<Measure> {
+    if !rows.any(it.name == m.name) { return rows.concat([m]) }
+    [if r.name == m.name { m } else { r } for r in rows]
+}
+
+/// A twin that cannot run here, with the reason; or one that ran and broke the contract.
+enum Outcome {
+    Measured(version: string, printed: Printed)
+    Skipped(why: string)
+    Failed(why: string)
+}
+
+/// How long a build or a run may take, in seconds.
+fn run_limit() -> int { parse_int(env("BENCH_TIMEOUT") ?? "300") ?? 300 }
+
+fn upper(s: string) -> string {
+    from_codepoints([if c >= 97 && c <= 122 { c - 32 } else { c } for c in codepoints(s)])
+}
+
+/// One language's twin for one benchmark, built and run.
+fn run_language(b: Bench, lang: Language) -> Outcome {
+    let d = joined_path(b.dir, lang.name)
+    if !is_dir(d) { return Outcome.Skipped("no ${lang.name}/ directory in ${b.key}") }
+    let out = joined_path(bench_root(), "build/${b.key.replace("/", "-")}-${lang.name}")
+    let _ = make_dirs(dir_of(out))
+    let p = Places {
+        dir: d,
+        src: if lang.source.is_empty() { "" } else { joined_path(d, lang.source) },
+        out: out,
+    }
+    if !is_present(lang, p) {
+        return Outcome
+            .Skipped("${lang.name} toolchain absent: ${placed_words(lang.present ?? [], p).join(" ")}")
+    }
+    let version = version_of(lang, p)
+    let cwd = placed_word(lang.cwd, p)
+    let extra = [EnvPair { name: "BENCH_${upper(w.key)}", value: w.text } for w in b.declared.workload]
+    if !lang.build.is_empty() {
+        let broke? = stage_broke(
+            lang.name,
+            "build",
+            spawned(placed_words(lang.build, p), cwd, extra, run_limit()),
+        ) else {
+            return ran_twin(lang, p, cwd, extra, version)
+        }
+        return Outcome.Failed(broke)
+    }
+    ran_twin(lang, p, cwd, extra, version)
+}
+
+fn ran_twin(lang: Language, p: Places, cwd: string, extra: List<EnvPair>, version: string) -> Outcome {
+    let done = spawned(placed_words(lang.run, p), cwd, extra, run_limit())
+    let broke? = stage_broke(lang.name, "run", done) else { return printed_rows(lang.name, done, version) }
+    Outcome.Failed(broke)
+}
+
+fn printed_rows(lang: string, done: Spawned, version: string) -> Outcome {
+    let out = match done { .Done(r) -> r.out, rest -> "" }
+    match parse_rows(out) {
+        .Err(why) -> Outcome.Failed(why),
+        .Ok(printed) -> if printed.rows.is_empty() {
+            Outcome.Failed("${lang} printed no rows")
+        } else {
+            Outcome.Measured(version, printed)
+        },
+    }
+}
+
+/// Why a build or run stage broke, or null when it exited 0.
+fn stage_broke(lang: string, stage: string, s: Spawned) -> string? {
+    match s {
+        .TimedOut -> "${lang} ${stage} timed out after ${run_limit()}s",
+        .Absent(why) -> "${lang} ${stage} could not start: ${why}",
+        .Done(r) -> if r.code == 0 { null } else { "${lang} ${stage} exited ${r.code}: ${last_said(r)}" },
+    }
+}
+
+/// The fixed schema: one row per (benchmark, language, machine).
+fn run_of(key: string, lang: string, version: string, machine: string, at: string, p: Printed) -> Run {
+    Run {
+        benchmark: key,
+        language: lang,
+        version: version,
+        machine: machine,
+        at: at,
+        rows: p.rows,
+        notes: p.notes.join("; "),
+    }
+}
+
+fn skipped_run(key: string, lang: string, machine: string, at: string, why: string) -> Run {
+    run_of(key, lang, "unknown", machine, at, Printed { rows: [], notes: ["SKIPPED: ${why}"] })
+}
+
+// ── rows as JSON ─────────────────────────────────────────────────
+
+fn measure_json(m: Measure) -> Field {
+    field(
+        m.name,
+        Json
+            .Obj(
+                [
+                    field("samples", Json.Int(m.samples)),
+                    field("unit", Json.Str(m.unit)),
+                    field("value", Json.Float(m.value)),
+                ],
+            ),
+    )
+}
+
+fn run_json(r: Run) -> Json {
+    Json
+        .Obj(
+            [
+                field("benchmark", Json.Str(r.benchmark)),
+                field("language", Json.Str(r.language)),
+                field("machine", Json.Str(r.machine)),
+                field("notes", Json.Str(r.notes)),
+                field("rows", Json.Obj([measure_json(m) for m in r.rows])),
+                field("version", Json.Str(r.version)),
+                field("when", Json.Str(r.at)),
+            ],
+        )
+}
+
+fn measure_of(f: Field) -> Measure {
+    Measure {
+        name: f.key,
+        unit: f.value.member("unit").text() ?? "",
+        value: number_of(f.value.get("value")) ?? 0.0,
+        samples: f.value.member("samples").int() ?? 0,
+    }
+}
+
+fn run_from(j: Json) -> Run {
+    Run {
+        benchmark: j.member("benchmark").text() ?? "",
+        language: j.member("language").text() ?? "",
+        version: j.member("version").text() ?? "",
+        machine: j.member("machine").text() ?? "",
+        at: j.member("when").text() ?? "",
+        rows: [measure_of(f) for f in j.member("rows").fields()],
+        notes: j.member("notes").text() ?? "",
+    }
+}
+
+/// Where a run is filed: its benchmark, language and machine, ordered as a tuple.
+fn filed_at(r: Run) -> string { [r.benchmark, r.language, r.machine].join(from_codepoints([1])) }
+
+fn run_before(a: Run, b: Run) -> bool { text_before(filed_at(a), filed_at(b)) }
+
+/// The stored runs, in file order.
+fn stored_runs(path: string) -> Result<List<Run>, string> {
+    if !is_file(path) { return [] }
+    mut runs: List<Run> = []
+    for line in (text_of_file(path)?).split("\n") {
+        if line.trim().is_empty() { continue }
+        match parse(line.trim()) {
+            .Ok(j) -> runs.push(run_from(j)),
+            .Err(e) -> { fail "${path}: ${e.describe().message}" },
+        }
+    }
+    runs
+}
+
+/// A run filed over the one already at its place, or appended.
+fn filed(runs: List<Run>, r: Run) -> List<Run> {
+    if !runs.any(filed_at(it) == filed_at(r)) { return runs.concat([r]) }
+    [if filed_at(x) == filed_at(r) { r } else { x } for x in runs]
+}
+
+/// The store as its file holds it: one row a line, sorted by where it is filed.
+fn store_text(runs: List<Run>) -> string {
+    [dumped(run_json(r), TIGHT) + "\n" for r in ordered_by(runs, run_before)].join("")
+}
+
+// ── the suite ────────────────────────────────────────────────────
+
+/// What a suite run measured, and the defects it found.
+type Swept = { runs: List<Run>, failures: List<string> }
+
+/// Every selected (benchmark, language): a skip is a row saying why, a failure a loud defect.
+fn run_suite(
+    reg: Registry,
+    benches: List<Bench>,
+    requested: List<string>?,
+    machine: string,
+    at: string,
+) -> Swept {
+    mut runs: List<Run> = []
+    mut failures: List<string> = []
+    for b in benches {
+        let listed = listed_languages(reg, b.declared)
+        for name in requested ?? listed {
+            let lang? = reg.languages.find(it.name == name) else {
+                failures.push("${b.key}: no language `${name}` in bench.toml")
+                continue
+            }
+            if !listed.contains(name) {
+                runs
+                    .push(skipped_run(b.key, name, machine, at, "not listed in this benchmark's spec"))
+                continue
+            }
+            match run_language(b, lang) {
+                .Measured(version, printed) -> runs.push(run_of(b.key, name, version, machine, at, printed)),
+                .Skipped(why) -> runs.push(skipped_run(b.key, name, machine, at, why)),
+                .Failed(why) -> failures.push("${b.key} ${name}: ${why}"),
+            }
+        }
+    }
+    Swept { runs: runs, failures: failures }
+}
+
+/// The gate each spec gives its rows: `exact` for a witness count, else a margin.
+fn spec_gates(reg: Registry, benches: List<Bench>) -> List<RowGate> {
+    [row_gate(reg, b, r) for b in benches for r in b.declared.rows]
+}
+
+fn row_gate(reg: Registry, b: Bench, r: RowSpec) -> RowGate {
+    let own = b.declared.margins.find(it.row == r.name)?.factor
+    RowGate {
+        bench: b.key,
+        row: r.name,
+        exact: r.exact,
+        margin: if r.exact { null } else { own ?? b.declared.margin ?? reg.margin },
+    }
+}
+
+fn csv(text: string) -> List<string>? {
+    if text.is_empty() { return null }
+    let parts = [p.trim() for p in text.split(",") if !p.trim().is_empty()]
+    if parts.is_empty() { null } else { parts }
+}
+
+/// Each word once, first appearance first.
+fn distinct_words(xs: List<string>) -> List<string> {
+    [x for i, x in xs if xs.index_of(x) == i]
+}
+
+/// Two word lists alike, word for word.
+fn same_words(a: List<string>, b: List<string>) -> bool {
+    a.length == b.length && (0..a.length).all(a[it] == b[it])
+}
+
+fn listing(reg: Registry, benches: List<Bench>) -> List<string> {
+    let rows = benches
+        .flat_map(
+            (b) -> [
+                "  ${pad_right(b.key, 24)} ${b.declared.title ?? ""}",
+                "    languages: ${listed_languages(reg, b.declared).join(", ")}",
+            ],
+        )
+    ["benchmarks:"]
+        .concat(rows)
+        .concat(["languages:"])
+        .concat(["  ${pad_right(l.name, 10)} ${l.title}" for l in reg.languages])
+}
+
+fn said_all(lines: List<string>) {
+    for l in lines { println(l) }
+}
+
+/// The suite, as `run.sh` drives it.
+fn suite(args: CliResult) -> int {
+    if args.has_flag("self_test") { return suite_self_test() }
+    let quiet = args.has_flag("quiet")
+    if args.has_flag("report") {
+        return spoken(reported(quiet))
+    }
+    match suite_loaded(args.option("bench")) {
+        .Err(why) -> {
+            eprintln("bench: ${why}")
+            1
+        },
+        .Ok(loaded) -> if args.has_flag("list") {
+            said_all(listing(loaded.reg, loaded.benches))
+            0
+        } else {
+            measured_suite(args, loaded.reg, loaded.benches)
+        },
+    }
+}
+
+type Loaded = { reg: Registry, benches: List<Bench> }
+
+fn reported(quiet: bool) -> Result<int, string> {
+    write_report()?
+    if !quiet { println("report: wrote benchmarks/report/results.md and index.html") }
+    0
+}
+
+fn suite_loaded(only: string) -> Result<Loaded, string> {
+    Loaded {
+        reg: registry_at(joined_path(bench_root(), "bench.toml"))?,
+        benches: benches_under(csv(only))?,
+    }
+}
+
+fn measured_suite(args: CliResult, reg: Registry, benches: List<Bench>) -> int {
+    let judged = args.has_flag("gate") || args.has_flag("g1")
+    let named = csv(args.option("lang"))
+    let requested = if named == null && judged { [reg.floor, "avra", "go"] } else { named }
+    let machine = machine_id()
+    let chosen = if requested == null { null } else { distinct_words(requested!) }
+    let swept = run_suite(reg, benches, chosen, machine, stamped_now())
+    if !args.has_flag("quiet") {
+        for r in swept.runs { println(dumped(run_json(r), SPACED)) }
+    }
+    for why in swept.failures { eprintln("bench: FAIL ${why}") }
+    let recorded = if args.has_flag("record") { spoken(record(swept.runs, machine, reg, benches, args.has_flag("quiet"))) } else { 0 }
+    if args.has_flag("g1") {
+        println("")
+        said_all(g1_table(swept.runs, reg, baseline_or_empty()).said)
+        println("")
+    }
+    let gated = if args.has_flag("gate") { spoken(gated_suite(swept.runs, machine, reg, args.has_flag("require"))) } else { 0 }
+    let code = if recorded != 0 { recorded } else { gated }
+    if code == 0 && !swept.failures.is_empty() { 1 } else { code }
+}
+
+fn baseline_or_empty() -> Json { load_baseline(baseline_path()) catch empty_baseline() }
+
+/// Store the runs, accept them into the baseline, and project the report again.
+fn record(runs: List<Run>, machine: string, reg: Registry, benches: List<Bench>, quiet: bool) -> Result<
+    int,
+    string,
+> {
+    let stored = stored_runs(results_path())?
+    let _ = make_dirs(dir_of(results_path()))
+    written(results_path(), store_text(runs.fold(stored, filed)))?
+    let took = accepted(
+        load_baseline(baseline_path())?,
+        runs,
+        machine,
+        spec_gates(reg, benches),
+        reg.margin,
+    )
+    written(baseline_path(), baseline_text(took.doc))?
+    write_report()?
+    if !quiet {
+        println(
+            "record: ${runs.length} row(s) stored, ${took.wrote} accepted into baseline.json, report regenerated",
+        )
+    }
+    0
+}
+
+fn gated_suite(runs: List<Run>, machine: string, reg: Registry, require: bool) -> Result<
+    int,
+    string,
+> {
+    let doc = load_baseline(baseline_path())?
+    let floor = checked(runs.filter(!it.rows.is_empty()), machine, doc, reg.margin, require)
+    said_all(floor.said)
+    let floor_end = gate_report(floor, reg.margin, require)
+    said_all(floor_end.said)
+    let go = checked_against_go(runs, machine, reg, doc, require)
+    said_all(go.said)
+    let go_end = go_report(go, require)
+    said_all(go_end.said)
+    if go_end.code != 0 { go_end.code } else { floor_end.code }
+}
+
+// ── the command ──────────────────────────────────────────────────
+
+type BenchCmd = {}
+
+impl Runnable for BenchCmd {
+    fn run(args: CliResult) -> int {
+        let words = args.args_of("words")
+        let mode? = words.first() else { return suite(args) }
+        let raw = if words.length > 1 { words[1] } else { "" }
+        match mode {
+            "flow-gate" -> flow_gate(args, raw),
+            "flow-table" -> flow_table(raw, args.has_flag("gates"), args.has_flag("enforce")),
+            "collections-table" -> collections_table(raw),
+            _ -> {
+                eprintln(
+                    "bench: `${mode}` is no table — flow-gate, flow-table or collections-table",
+                )
+                2
+            },
+        }
+    }
+}
+
+export command bench {
+    description: "The benchmark suite: run, record, report and gate its rows"
+    flag record { description: "store the rows, accept a baseline, project the report" }
+    flag report { description: "project benchmarks/report from the stored rows" }
+    flag gate { description: "the C floor against the baseline, each Avra row against Go" }
+    flag g1 { description: "each Avra row beside Go's, with the target verdict" }
+    flag require { description: "a machine with no row refuses instead of noting" }
+    flag list { description: "benchmarks and languages" }
+    flag self_test { description: "the gate's rules, the row contract, the report" }
+    flag quiet { description: "print no rows" }
+    flag gates { description: "flow-table: the G1 rows, Avra against Go" }
+    flag enforce { description: "flow-table --gates: a FAILed row fails the run" }
+    option lang { description: "the languages, comma-separated" }
+    option bench { description: "the benchmarks, family/name, comma-separated" }
+    option baseline { description: "flow-gate: the baseline file" }
+    option ratio { description: "flow-gate: the margin" }
+    arg words { description: "a table to read: flow-gate, flow-table or collections-table, then its raw file", variadic: true }
+    run: BenchCmd {}
+}
+
+// ── the suite's self-test ────────────────────────────────────────
+
+const SCHEMA_KEYS: List<string> = [
+    "benchmark",
+    "language",
+    "machine",
+    "notes",
+    "rows",
+    "version",
+    "when",
+]
+
+/// The row contract's own rules: each claim that did not hold.
+export fn contract_failures() -> List<string> {
+    let printed = parse_rows("spawn_one\t186.6\tns\t5\n# least of 5\n")
+    let rows = printed catch Printed { rows: [], notes: [] }
+    let run = run_json(
+        run_of("tasks/spawn", "c", "cc 1", FIXTURE_MACHINE, "2026-01-01T00:00:00+00:00", rows),
+    )
+    let skip = skipped_run(
+        "tasks/spawn",
+        "rust",
+        FIXTURE_MACHINE,
+        "2026-01-01T00:00:00+00:00",
+        "no rustc",
+    )
+    let well_formed = rows.rows.length == 1 &&
+        rows
+            .rows
+            .all(it.name == "spawn_one" && it.unit == "ns" && it.value == 186.6 && it.samples == 5)
+    let held = [
+        Held { label: "a well-formed row parses", held: well_formed },
+        Held { label: "a `#` line becomes a note", held: same_words(rows.notes, ["least of 5"]) },
+        Held {
+            label: "a row with no tabs is refused",
+            held: parse_rows("spawn_one 186.6 ns\n") is .Err,
+        },
+        Held {
+            label: "the row carries exactly the fixed schema keys",
+            held: same_words(run.keys(), SCHEMA_KEYS),
+        },
+        Held {
+            label: "a row cell carries unit, value, samples",
+            held: same_words(run.member("rows").member("spawn_one").keys(), ["samples", "unit", "value"]),
+        },
+        Held {
+            label: "a skip is a row that says so",
+            held: skip.notes.starts_with("SKIPPED:") && skip.rows.is_empty(),
+        },
+    ]
+    [h.label for h in held if !h.held]
+}
+
+fn suite_self_test() -> int {
+    let refused = go_fixture_refused()
+    let fixtures = contract_failures().concat(gate_fixture_failures()).concat(go_fixture_failures())
+    if refused > 0 && go_fixture_failures().is_empty() {
+        println("self-test: go gate REFUSED ${refused} row(s) past target, as designed")
+    }
+    let drift = report_drift() catch why -> ["the report could not be projected: ${why}"]
+    for name in drift { eprintln("report: ${name} DIFFERS from the committed report") }
+    let failed = if drift.is_empty() {
+        fixtures
+    } else {
+        fixtures.concat(["the committed report equals a fresh projection of the stored JSON"])
+    }
+    for f in failed { eprintln("self-test: FAIL — ${f}") }
+    if !failed.is_empty() { return 1 }
+    println("self-test: clean")
+    0
+}
