@@ -485,3 +485,24 @@ made under the old generator's shape was read under the new one.
 - Firefox 158: 570 frames, 21 failures, all under the 9 pins; every mutant caught; the row 78 s.
 - `avra fmt` loses `export` on an `export state` (it refuses, "a comment was lost"), so the shared
   places are private to `story.av`, which is where a template's static names resolve.
+
+### Slice 5 — the direction dial (ruling 4: layout by context, words by their script)
+
+| Part | Done |
+|---|---|
+| layout follows the context | `ctx writing: Direction` (`env.av`) lays a subtree out as `ctx theme` draws it: a node's `Stamp` carries both, each with its own frame entry, and the html writer says `dir` only where the layout direction moves from the element above. A stamp made because the direction alone moved names no theme scope (`rethemed`) |
+| words follow their own script | an element that is a node's words — a text, a heading, a button's or link's words, a control's words span, a card's title, a fieldset's legend, a field's input — wears `dir="auto"`: mixed scripts read in their own direction, isolated from their neighbours (UIKit's `.natural`). A container never does, since `auto` there would set its children's layout |
+| the escape hatch | `Style.writing: Direction?` states the words' direction where the first strong character misleads (`text/stated`: "iPhone ‏מחיר" read rtl) |
+| physical edges | none: the sheet already spoke logical start/end; `render_test` pins that it names no `left` or `right` |
+| the dial | `"rtl"` in `dials` (a `writing` column); its sheet is byte-identical to `light`'s, since a direction changes no sheet |
+| the claims (Firefox) | `laid`: a frame is laid out in its dial's direction, a row's first item at its start; `worded`: a node's words read in their first strong character's direction, or the one they state — the Arabic `scripts` labels in every ltr frame, every Latin label under `rtl`; `contained` holds the END edge its dial lays words toward and leaves out a layer and what draws nothing. Mutants: dropping `dir="rtl"` fails `laid` 115 times, dropping `auto` fails `worded` 130 times |
+| what it found | a card's title and a fieldset's legend read the layout's direction under `rtl` until they wore their words' `auto` |
+
+Firefox 158: 690 frames (115 per dial, six dials), 22 failures, all under the 9 pins; every mutant
+caught (11); 82 s. Snapshots: 124 (`text/stated` added), 33 stories, 119 cases.
+
+**The cost.** `dir="auto"` is ~11 bytes per words element: `web/tests/mount`'s first frame grew
+3802 → 3836 octets, a one-press frame 111 → 145. It lands on first paint, whose budget is owed.
+
+**Not yet:** the native target carries no writing direction (web and iOS agree on the words, not yet
+on the layout); `Layout.inset` reaches native facts and the html writer drops it.

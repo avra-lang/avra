@@ -134,10 +134,11 @@ const families = [
   },
   {
     name: "contained",
-    holds: "nothing a frame draws stands past the frame's end edge, the one its dial's direction lays words toward, as wide as its dial holds it: no overflow, no box beyond it",
+    holds: "nothing a frame draws in its flow stands past the frame's end edge, the one its dial's direction lays words toward, as wide as its dial holds it: no overflow, no box beyond it; a layer stands over the page, not in the frame",
     check: `(f) => { const a = f.getBoundingClientRect(), b = f.closest("[data-sb-frame]").getBoundingClientRect(); const rtl = laidAs(f) === "rtl";
       const past = (e) => { const r = e.getBoundingClientRect(); return rtl ? Math.max(a.left, b.left) - r.left : r.right - Math.min(a.right, b.right); };
-      const out = [...f.querySelectorAll("*")].filter((e) => past(e) > 1).map((e) => e.tagName.toLowerCase() + " " + Math.round(past(e)) + " px past");
+      const layered = (e) => { for (let x = e; x && x !== f; x = x.parentElement) if (getComputedStyle(x).position === "fixed") return true; return false; };
+      const out = [...f.querySelectorAll("*")].filter((e) => e.getClientRects().length > 0 && !layered(e) && past(e) > 1).map((e) => e.tagName.toLowerCase() + " " + Math.round(past(e)) + " px past");
       return (f.scrollWidth > f.clientWidth + 1 ? ["scrolls " + (f.scrollWidth - f.clientWidth) + " px"] : []).concat(out.slice(0, 2)); }`,
   },
   {
