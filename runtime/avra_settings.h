@@ -188,6 +188,16 @@ void avra_trap(const char* msg) __attribute__((noreturn));
 #define AVRA_SET_SHARED_KILL_AT "AVRA_SHARED_KILL_AT"
 // debug.runtime.shared_trap_at: a whole number, else unset
 #define AVRA_SET_SHARED_TRAP_AT "AVRA_SHARED_TRAP_AT"
+// debug.runtime.clock: text, else unset
+#define AVRA_SET_CLOCK "AVRA_CLOCK"
+// debug.runtime.clock_asks: a whole number, else unset
+#define AVRA_SET_CLOCK_ASKS "AVRA_CLOCK_ASKS"
+// debug.runtime.sched_runs: a whole number, else unset
+#define AVRA_SET_SCHED_RUNS "AVRA_SCHED_RUNS"
+// debug.runtime.sched_seed: a whole number, else unset
+#define AVRA_SET_SCHED_SEED "AVRA_SCHED_SEED"
+// debug.runtime.sched_path: text, else unset
+#define AVRA_SET_SCHED_PATH "AVRA_SCHED_PATH"
 // debug.runtime.compile_slot: text, else unset
 #define AVRA_SET_COMPILE_SLOT "AVRA_COMPILE_SLOT"
 
