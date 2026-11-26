@@ -63,14 +63,14 @@ fn binding_holes(view: ItemView) -> List<Found> {
 /// laws reading the one answer: each `match`'s subject typed as the body that holds it types it, and
 /// an item with no `match` typing nothing.
 fn registry_holes(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemHoles {
-    if !item_held(engine, file, at) { return holes_made(engine, file, at) }
+    if !item_held(engine, file, at) { return ItemHoles { holes: [] } }
     registry_holes_seen(item_view(engine, file, at))
 }
 
 /// What `registry_holes` answers through the item's `view`, made the first time it is asked.
 fn registry_holes_seen(view: ItemView) -> ItemHoles {
     let held? = view.holes.get() else {
-        let made = holes_made(view.engine, view.file, view.at)
+        let made = holes_made(view)
         view.holes.set(made)
         return made
     }
@@ -78,9 +78,12 @@ fn registry_holes_seen(view: ItemView) -> ItemHoles {
 }
 
 /// What `registry_holes` answers, made.
-fn holes_made(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemHoles {
+fn holes_made(view: ItemView) -> ItemHoles {
+    let engine = view.engine
+    let file = view.file
+    let at = view.at
     if !item_held(engine, file, at) { return ItemHoles { holes: [] } }
-    let item = read_item(engine, file, at)
+    let item = view.item
     let matches = [e for i in 0..item.store.exprs.count() for e in [ExprId { index: i }] if match_at(item.store, e) != null]
     if matches.is_empty() { return ItemHoles { holes: [] } }
     let typed = item_node_types(engine, file, at, item)
@@ -118,17 +121,23 @@ export fn item_bodies(engine: QueryEngine, file: SourceFileAddress, at: ItemId, 
     [b.typed for b in item_stated_bodies(engine, file, at, item)]
 }
 
+/// Every body the item `view` shows holds, typed.
+fn bodies_seen(view: ItemView) -> List<TypedBody> { [b.typed for b in stated_seen(view)] }
+
 /// A body an item holds, typed, beside the statement declaring the fn whose body it is.
 export type StatedBody = { stmt: StmtId, typed: TypedBody }
 
-/// Every body the written item `at` of `file` holds, as `item_bodies` types it, each beside the
-/// statement that declares it.
-fn stated_bodies_read(engine: QueryEngine, file: SourceFileAddress, at: ItemId, item: ReadItem) -> List<
-    StatedBody,
-> {
+/// Every body the written item `item` of `file` holds with its `impls`, as `item_bodies` types it,
+/// each beside the statement that declares it.
+fn stated_bodies_read(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    item: ReadItem,
+    impls: List<ImplAt>,
+) -> List<StatedBody> {
     let fns = [StatedBody { stmt: s, typed: b! } for s in item.stmts for p in [item.store.fn_parts(s)] if p != null for b in [written_typed(engine, file, p!.name)] if b != null]
     fns
-        .concat([b for a in impls_at(engine, file, at) for b in typed_impl_bodies(engine, a)])
+        .concat([b for a in impls for b in typed_impl_bodies(engine, a)])
         .concat(item_trait_bodies(engine, file, item))
 }
 

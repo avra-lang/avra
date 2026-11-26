@@ -34,14 +34,14 @@ fn after_holes(view: ItemView) -> List<Found> {
 /// Every arm of the written item `at` of `file`'s `match`es that comes right after an unguarded
 /// arm taking every value, in node order; a `match` over a name nothing answers judged no further.
 fn item_unreached(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemUnreached {
-    if !item_held(engine, file, at) { return unreached_made(engine, file, at) }
+    if !item_held(engine, file, at) { return ItemUnreached { arms: [] } }
     unreached_seen(item_view(engine, file, at))
 }
 
 /// What `item_unreached` answers through the item's `view`, made the first time it is asked.
 fn unreached_seen(view: ItemView) -> ItemUnreached {
     let held? = view.unreached.get() else {
-        let made = unreached_made(view.engine, view.file, view.at)
+        let made = unreached_made(view)
         view.unreached.set(made)
         return made
     }
@@ -49,9 +49,12 @@ fn unreached_seen(view: ItemView) -> ItemUnreached {
 }
 
 /// What `item_unreached` answers, made.
-fn unreached_made(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemUnreached {
+fn unreached_made(view: ItemView) -> ItemUnreached {
+    let engine = view.engine
+    let file = view.file
+    let at = view.at
     if !item_held(engine, file, at) { return ItemUnreached { arms: [] } }
-    let item = read_item(engine, file, at)
+    let item = view.item
     let refusals = item_refusals(engine, file, at)
     let unread = [u.at for u in refusals.unread]
     let written_only = template_nodes(item.store)

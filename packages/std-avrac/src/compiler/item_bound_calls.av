@@ -53,14 +53,14 @@ type ItemUngiven = { rows: List<UngivenAt> }
 /// method an impl lands, and asks nothing. A body that didn't parse asks
 /// nothing.
 fn item_ungiven(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemUngiven {
-    if !item_held(engine, file, at) { return ungiven_made(engine, file, at) }
+    if !item_held(engine, file, at) { return ItemUngiven { rows: [] } }
     ungiven_seen(item_view(engine, file, at))
 }
 
 /// What `item_ungiven` answers through the item's `view`, made the first time it is asked.
 fn ungiven_seen(view: ItemView) -> ItemUngiven {
     let held? = view.ungiven.get() else {
-        let made = ungiven_made(view.engine, view.file, view.at)
+        let made = ungiven_made(view)
         view.ungiven.set(made)
         return made
     }
@@ -68,9 +68,12 @@ fn ungiven_seen(view: ItemView) -> ItemUngiven {
 }
 
 /// What `item_ungiven` answers, made.
-fn ungiven_made(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemUngiven {
+fn ungiven_made(view: ItemView) -> ItemUngiven {
+    let engine = view.engine
+    let file = view.file
+    let at = view.at
     if !item_held(engine, file, at) { return ItemUngiven { rows: [] } }
-    let item = read_item(engine, file, at)
+    let item = view.item
     if !item.store.refusals().is_empty() { return ItemUngiven { rows: [] } }
     let text = item_under(engine, file, at).text
     ItemUngiven {

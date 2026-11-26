@@ -28,14 +28,14 @@ fn unwritten_methods(view: ItemView) -> List<Found> {
 /// Every method an inherent impl of the written item `at` of `file` marks `mut` whose receiver its
 /// body, and every method it reaches through it, is read never to write.
 fn item_unwritten(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemUnwritten {
-    if !item_held(engine, file, at) { return unwritten_made(engine, file, at) }
+    if !item_held(engine, file, at) { return ItemUnwritten { methods: [] } }
     unwritten_seen(item_view(engine, file, at))
 }
 
 /// What `item_unwritten` answers through the item's `view`, made the first time it is asked.
 fn unwritten_seen(view: ItemView) -> ItemUnwritten {
     let held? = view.unwritten.get() else {
-        let made = unwritten_made(view.engine, view.file, view.at)
+        let made = unwritten_made(view)
         view.unwritten.set(made)
         return made
     }
@@ -43,11 +43,14 @@ fn unwritten_seen(view: ItemView) -> ItemUnwritten {
 }
 
 /// What `item_unwritten` answers, made.
-fn unwritten_made(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemUnwritten {
+fn unwritten_made(view: ItemView) -> ItemUnwritten {
+    let engine = view.engine
+    let file = view.file
+    let at = view.at
     if !item_held(engine, file, at) { return ItemUnwritten { methods: [] } }
     let impls = item_impls(engine, file, at)
     if !impls.any(it.implements == null) { return ItemUnwritten { methods: [] } }
-    let item = read_item(engine, file, at)
+    let item = view.item
     ItemUnwritten {
         methods: flatten(
             [unwritten_in(

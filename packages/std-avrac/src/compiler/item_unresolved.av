@@ -84,8 +84,7 @@ fn unread_behind_found(
 fn values_unread(view: ItemView) -> List<Found> {
     let engine = view.engine
     let file = view.file
-    let at = view.at
-    let unread = [u for u in unread_in(view, ReadAs.Value) if !member_read_bare(engine, file, at, u.name)]
+    let unread = [u for u in unread_in(view, ReadAs.Value) if !member_read_bare(view, u.name)]
     if unread.is_empty() { return [] }
     let defined = top_level_defined(engine, file)
     [unread_behind_found(engine, file, u, defined) for u in unread if !defined.contains(u.name)]
@@ -98,9 +97,8 @@ fn top_level_reads(view: ItemView, declared: bool) -> List<Found> {
     let engine = view.engine
     let file = view.file
     let at = view.at
-    if (file_declares_at(engine, file, at).names.any(it.item == at) ||
-        !impls_at(engine, file, at).is_empty()) != declared { return [] }
-    let unread = [u for u in unread_in(view, ReadAs.Value) if !member_read_bare(engine, file, at, u.name)]
+    if (file_declares_at(engine, file, at).names.any(it.item == at) || !impls_seen(view).is_empty()) != declared { return [] }
+    let unread = [u for u in unread_in(view, ReadAs.Value) if !member_read_bare(view, u.name)]
     if unread.is_empty() { return [] }
     let defined = top_level_defined(engine, file)
     [unread_found(u, []) for u in unread if defined.contains(u.name)]
@@ -173,10 +171,7 @@ const DEFAULT_WORD: string = "default"
 
 /// Every member of a record the file declares, read bare in an impl the written item `at` holds.
 fn members_unread(view: ItemView) -> List<Found> {
-    let engine = view.engine
-    let file = view.file
-    let at = view.at
-    [unread_found(u, []) for u in unread_in(view, ReadAs.Value) if member_read_bare(engine, file, at, u.name)]
+    [unread_found(u, []) for u in unread_in(view, ReadAs.Value) if member_read_bare(view, u.name)]
 }
 
 /// Every call of a fn nothing declares, beside the values the file's names hold.
@@ -221,11 +216,11 @@ fn pronouns_unread(view: ItemView) -> List<Found> {
     [unread_found(u, []) for u in unread_in(view, ReadAs.Pronoun)]
 }
 
-/// Whether `name`, read bare in the written item `at` of `file`, is a member: the item is an impl,
-/// and a record the file declares has a field of that name.
-fn member_read_bare(engine: QueryEngine, file: SourceFileAddress, at: ItemId, name: string) -> bool {
-    if impls_at(engine, file, at).is_empty() { return false }
-    records_with_field(engine, file, name)
+/// Whether `name`, read bare in the item `view` shows, is a member: the item is an impl, and a
+/// record its file declares has a field of that name.
+fn member_read_bare(view: ItemView, name: string) -> bool {
+    if impls_seen(view).is_empty() { return false }
+    records_with_field(view.engine, view.file, name)
 }
 
 /// Whether a record `file` declares has a field `name`: one answer per name, which an edit that

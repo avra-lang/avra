@@ -23,14 +23,14 @@ type ItemUnmet = { rows: List<UnmetAt> }
 
 /// Every such call in the bodies the written item `at` of `file` declares.
 fn item_unmet(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemUnmet {
-    if !item_held(engine, file, at) { return unmet_made(engine, file, at) }
+    if !item_held(engine, file, at) { return ItemUnmet { rows: [] } }
     unmet_seen(item_view(engine, file, at))
 }
 
 /// What `item_unmet` answers through the item's `view`, made the first time it is asked.
 fn unmet_seen(view: ItemView) -> ItemUnmet {
     let held? = view.unmet.get() else {
-        let made = unmet_made(view.engine, view.file, view.at)
+        let made = unmet_made(view)
         view.unmet.set(made)
         return made
     }
@@ -38,9 +38,12 @@ fn unmet_seen(view: ItemView) -> ItemUnmet {
 }
 
 /// What `item_unmet` answers, made.
-fn unmet_made(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemUnmet {
+fn unmet_made(view: ItemView) -> ItemUnmet {
+    let engine = view.engine
+    let file = view.file
+    let at = view.at
     if !item_held(engine, file, at) { return ItemUnmet { rows: [] } }
-    let item = read_item(engine, file, at)
+    let item = view.item
     if !item.store.refusals().is_empty() { return ItemUnmet { rows: [] } }
     ItemUnmet {
         rows: flatten(

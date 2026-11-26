@@ -40,14 +40,14 @@ fn coalesces_unfired(view: ItemView) -> List<Found> {
 /// Every `??` in the written item `at` of `file` whose left side is never absent, in node order, in
 /// its fns' bodies and in the statements the file runs: a read a test proved present aside.
 fn item_coalesces(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemCoalesces {
-    if !item_held(engine, file, at) { return coalesces_made(engine, file, at) }
+    if !item_held(engine, file, at) { return ItemCoalesces { never: [] } }
     coalesces_seen(item_view(engine, file, at))
 }
 
 /// What `item_coalesces` answers through the item's `view`, made the first time it is asked.
 fn coalesces_seen(view: ItemView) -> ItemCoalesces {
     let held? = view.coalesces.get() else {
-        let made = coalesces_made(view.engine, view.file, view.at)
+        let made = coalesces_made(view)
         view.coalesces.set(made)
         return made
     }
@@ -55,9 +55,12 @@ fn coalesces_seen(view: ItemView) -> ItemCoalesces {
 }
 
 /// What `item_coalesces` answers, made.
-fn coalesces_made(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ItemCoalesces {
+fn coalesces_made(view: ItemView) -> ItemCoalesces {
+    let engine = view.engine
+    let file = view.file
+    let at = view.at
     if !item_held(engine, file, at) { return ItemCoalesces { never: [] } }
-    let item = read_item(engine, file, at)
+    let item = view.item
     let asks = [e for i in 0..item.store.expr_count() for e in [ExprId { index: i }] if item.store.coalesced(e).length == 2]
     if asks.is_empty() { return ItemCoalesces { never: [] } }
     let cx = copies_in(engine, file, at, item)

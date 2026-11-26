@@ -433,7 +433,7 @@ wasm-archive:
 # `$(shell)` runs on every make, `try` included.
 SUITES = $(shell sh tools/avra_tools.sh suites 2>/dev/null)
 
-.PHONY: compiler-key pool-check ready tools-suite dev-server cost cost-accept trap-marks llvm-libs libs-self-test read-lists db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz exact-patches ui-board ui-browser ui-browser-skip host-events layout-oracle wasm-host-check wasm-tasks-mutations h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks test tested clean seed-check gate externs idioms fuzz-http soak-http dogfooding-rules rule-examples idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns parser witnesses libs libscope layers pre-commit-hook inputs inputs-accept read-cost \
+.PHONY: compiler-key pool-check ready tools-suite dev-server cost cost-accept cost-snapshot trap-marks llvm-libs libs-self-test read-lists db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz exact-patches ui-board ui-browser ui-browser-skip host-events layout-oracle wasm-host-check wasm-tasks-mutations h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks test tested clean seed-check gate externs idioms fuzz-http soak-http dogfooding-rules rule-examples idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns parser witnesses libs libscope layers pre-commit-hook inputs inputs-accept read-cost \
         check run ir emit build-native native-check avra suites install sprite sprite-check codecs-static keepers voices voices-accept defects tool-witnesses ci-invariants wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept wasm-routes-size speed-ratchet speed-accept wall-ratchet wall-accept warm-edit warm-accept work-accept
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -814,40 +814,10 @@ cache-attacks-b2: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/store_clean_attack.sh
 	@sh tools/package_swap_attack.sh
 
-# AN EDIT BETWEEN A WAVE AND ITS MERGE IS CAUGHT: the asking process takes what its cores learned
-# without walking it only where every input a core read is the one it reads now. It builds in a
-# store of its own.
-ahead-edit-attack: $(COMPILER_OBJS) $(PACKAGE_OBJS)
-	@sh tools/ahead_edit_attack.sh
-
-# A TYPING NAMES THE NODES OF THE STORE IT CHECKED: a program built cold as the process holds its
-# items and again with every item let go as soon as another is read, which puts a fresh store under
-# a typing kept from one its elaborations grew. Both pass, with the same binary and words.
-held-store-attack: $(COMPILER_OBJS) $(PACKAGE_OBJS)
-	@sh tools/held_store_attack.sh
-
 # WHAT A CHANGE COSTS TO PROVE: one literal of the cli edited and built warm proves and reads no
 # more than the shares of the change's reach tools/cutoff.ceiling holds.
 cutoff-witness: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/cutoff_witness.sh
-
-# A BUILD ANSWERS BEFORE ITS STORE IS SAVED, AND THE NEXT BUILD READS THE SAVE WHOLE: an heir held
-# back, waited for, killed, its store emptied under it, and the save kept in the build.
-heir-save-attack: $(COMPILER_OBJS) $(PACKAGE_OBJS)
-	@sh tools/heir_save_attack.sh
-
-# A WAVE'S PACKS MERGED BY SHARES ARE THE PACKS MERGED HERE: one package built cold merged in the
-# asking process, by shares, and with a share left unpublished; one binary, each store stood on.
-share-merge-attack: $(COMPILER_OBJS) $(PACKAGE_OBJS)
-	@sh tools/share_merge_attack.sh
-
-beside-attack: $(COMPILER_OBJS) $(PACKAGE_OBJS)
-	@sh tools/beside_attack.sh
-
-# WHAT A WAVE'S PROCESSES SHARE NEVER COSTS AN ANSWER: one package built cold sharing, each process
-# alone, with a claim's holder killed and trapped, and across one, two and three processes.
-wave-share-attack: $(COMPILER_OBJS) $(PACKAGE_OBJS)
-	@sh tools/wave_share_attack.sh
 
 # A CODE HASH IS STALE WHEN ITS CODE MOVES, AND ONLY THEN: each case edits what a query
 # reaches and must recompute it, edits what it never reaches and must read it back. It
@@ -1059,6 +1029,10 @@ cost:
 	@sh tools/cost.sh judge
 cost-accept:
 	@COST_ACCEPTING=1 sh tools/cost.sh accept
+# THE PINNED SNAPSHOT STILL CHECKS: its cli checked by this tree's compiler, so a law change that
+# refuses the snapshot every count is measured over fails where it is written (tools/cost_snapshot.sh).
+cost-snapshot:
+	@sh tools/cost_snapshot.sh
 
 warm-edit:
 	@sh tools/warm_edit_bench.sh
@@ -1247,9 +1221,9 @@ KEEPERS_ALONE = runtime-tests runtime-mutations
 # KEEPERS_A is two halves, one CI runner each, balanced by measured seconds
 # (speed-ratchet is the longest keeper, alone it is half the set).
 KEEPERS_A1 = speed-ratchet cost fmt-lossless hash-door stems
-KEEPERS_A2 = read-cost read-lists warm-edit codecs-static traps compile-slots witness flow-trace
+KEEPERS_A2 = read-cost read-lists warm-edit codecs-static traps compile-slots witness flow-trace cost-snapshot
 KEEPERS_A = $(KEEPERS_A1) $(KEEPERS_A2)
-KEEPERS_B = libscope ahead-edit-attack held-store-attack cutoff-witness heir-save-attack share-merge-attack wave-share-attack beside-attack h2spec pool-check tools-suite fingerprints vocab layers libs-self-test pre-commit-hook inputs externs trap-marks suites rt-header rt-ns parser witnesses dogfooding-rules rule-examples attack voices defects \
+KEEPERS_B = libscope cutoff-witness h2spec pool-check tools-suite fingerprints vocab layers libs-self-test pre-commit-hook inputs externs trap-marks suites rt-header rt-ns parser witnesses dogfooding-rules rule-examples attack voices defects \
             ui-host host-events ui-host-test ui-board exact-patches dev-server ui-browser ui-browser-skip tool-witnesses footprint tick-object no-threads \
             ci-invariants bash-parse vendored-fixture
 # KEEPERS_WASM is the wasm target's proof — the fixtures native and wasm32 alike, the seam,

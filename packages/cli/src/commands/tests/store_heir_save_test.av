@@ -1,0 +1,183 @@
+// A BUILD ANSWERS BEFORE ITS STORE IS SAVED, AND THE NEXT BUILD READS THE SAVE WHOLE. A build leaves
+// its store to an heir, a process that outlives it. One package a case, its heir held back
+// (`AVRA_HEIR_LINGERS_MS`) so each case meets the save unfinished: a build started at once says it
+// waits for the heir, then stands on what it saved, working out nothing; an heir killed before it
+// saves costs the next build its work and never its answer, and that build says the save did not
+// finish, once; a store emptied under the heir is built again whole; an edit made while the heir
+// saves is the edit the next build builds; `AVRA_STORE_KEPT_HERE` saves before the build answers,
+// and leaves no heir.
+use @std.io.{make_dirs, write_text, list_dir, is_dir, remove}
+use @std.process.{tool, cmd}
+use @std.time.{stamp}
+
+once fn run_base() -> string { "/tmp/avra-store-heir-save/${stamp()}" }
+
+/// How long an heir is held back before it saves.
+const LINGER: string = "4000"
+
+/// A package whose entry prints `word()` and the sum of forty files, so a cold build forks.
+fn heir_pkg(name: string) -> string {
+    let r = "${run_base()}/${name}"
+    let _ = make_dirs("${r}/src")
+    let _ = write_text("${r}/.git", "")
+    let _ = write_text(
+        "${r}/avra.toml",
+        "[package]\nname = \"heir-${name}\"\nversion = \"0.1.0\"\n",
+    )
+    let _ = write_text("${r}/src/leaf.av", "export fn word() -> string { \"before\" }\n")
+    for k in 0..40 { let _ = write_text("${r}/src/f${k}.av", "export fn f${k}() -> int { ${k} }\n") }
+    let uses = ["use f${k}.{f${k}}\n" for k in 0..40].join("")
+    let sum = ["f${k}()" for k in 0..40].join(" + ")
+    let _ = write_text(
+        "${r}/src/main.av",
+        "use leaf.{word}\n${uses}\nprintln(\"\${word()} \${${sum}}\")\n",
+    )
+    r
+}
+
+/// The leaf of `r` rewritten to say `after`.
+fn edit_leaf(r: string) { let _ = write_text("${r}/src/leaf.av", "export fn word() -> string { \"after\" }\n") }
+
+/// The frontiers the store of `r` holds.
+fn frontiers(r: string) -> int {
+    [n for n in list_dir("${r}/.avra-cache/tapes") catch [] if n.starts_with("frontier-")].length
+}
+
+/// The processes whose command line ends in a build of `r`: the build's heirs, once it has answered.
+fn heirs(r: string) -> int {
+    let t = match tool("pgrep") { .Ok(t) -> t, .Err(_) -> { return -1 } }
+    match (cmd(t, ["-f", "build ${r}\$"]) with { ok_exits: [0, 1] }).outcome() {
+        .Ok(o) -> [l for l in o.out.stdout.split("\n") if l != ""].length,
+        .Err(_) -> -1,
+    }
+}
+
+/// The heirs of `r` killed outright.
+fn heirs_killed(r: string) {
+    let t = match tool("pkill") { .Ok(t) -> t, .Err(_) -> { return } }
+    let _ = (cmd(t, ["-9", "-f", "build ${r}\$"]) with { ok_exits: [0, 1] }).outcome()
+}
+
+/// Until no heir of `r` stands, at most a minute, in steps a real `sleep` takes.
+fn settled(r: string) {
+    let t = match tool("sleep") { .Ok(t) -> t, .Err(_) -> { return } }
+    for _i in 0..300 {
+        if heirs(r) == 0 { return }
+        let _ = cmd(t, ["0.2"]).outcome()
+    }
+}
+
+/// Everything under `dir`, entry by entry, `dir` kept.
+fn emptied(dir: string) {
+    for n in list_dir(dir) catch [] {
+        let at = "${dir}/${n}"
+        if is_dir(at) { emptied(at) }
+        let _ = remove(at)
+    }
+}
+
+/// The first word the binary of `r` prints.
+fn said(r: string) -> string { (printed_by("${r}/src/main") ?? "").split(" ").first() ?? "" }
+
+/// How many lines of a build's words carry `words`.
+fn lines_with(said: string, words: string) -> int { [l for l in said.split("\n") if l.contains(words)].length }
+
+fn held_back() -> Map<string, string> { {"AVRA_HEIR_LINGERS_MS": LINGER} }
+
+/// The build that answers with its store unsaved, and the build after it.
+fn waits_case() -> List<bool> {
+    let r = heir_pkg("waits")
+    let first = layer_built(r, held_back())
+    let unsaved = frontiers(r) == 0
+    let one_heir = heirs(r) == 1
+    let after = layer_built(r, {}, ["--time"])
+    let out = [
+        first.status == 0 && unsaved,
+        one_heir,
+        frontiers(r) >= 1 && lines_with(after.said, "cache hit") == 1,
+        lines_with(after.said, "waiting for the last build's save") == 1,
+        after.took_ms >= 1000,
+        said(r) == "before",
+    ]
+    settled(r)
+    out
+}
+
+/// An heir killed before it saves, and the two builds after it.
+fn killed_case() -> List<bool> {
+    let r = heir_pkg("killed")
+    let first = layer_built(r, held_back())
+    heirs_killed(r)
+    let again = layer_built(r)
+    let answered = again.status == 0 && said(r) == "before"
+    let said_once = lines_with(again.said, "did not finish") == 1
+    settled(r)
+    let third = layer_built(r)
+    settled(r)
+    [
+        first.status == 0 && answered,
+        said_once,
+        third.status == 0 && lines_with(third.said, "did not finish") == 0,
+        frontiers(r) >= 1,
+    ]
+}
+
+/// The store emptied under the heir, then an edit, then the build after the heir.
+fn emptied_case() -> List<bool> {
+    let r = heir_pkg("emptied")
+    let first = layer_built(r, held_back())
+    emptied("${r}/.avra-cache")
+    edit_leaf(r)
+    let again = layer_built(r)
+    let whole = again.status == 0 && said(r) == "after"
+    settled(r)
+    let third = layer_built(r)
+    settled(r)
+    [first.status == 0 && whole, third.status == 0 && said(r) == "after"]
+}
+
+/// An edit made while the heir saves, and the build after it.
+fn edited_case() -> bool {
+    let r = heir_pkg("edited")
+    let first = layer_built(r, held_back())
+    edit_leaf(r)
+    let again = layer_built(r)
+    let built = first.status == 0 && again.status == 0 && said(r) == "after"
+    settled(r)
+    built
+}
+
+/// Kept here: no heir, and a frontier when the build answers.
+fn here_case() -> bool {
+    let r = heir_pkg("here")
+    let built = layer_built(r, {"AVRA_STORE_KEPT_HERE": "1", "AVRA_HEIR_LINGERS_MS": LINGER})
+    built.status == 0 && heirs(r) == 0 && frontiers(r) >= 1
+}
+
+spec "a build answers before its store is saved" {
+    given "an heir held back, met by the build after it" {
+        then "the build answers with its store unsaved, one heir holding the save, and the build after waits, says so once, stands on what it saved and is right" {
+            waits_case().all(it)
+        }
+    }
+    given "an heir killed before it saves" {
+        then "the build after is right, says once that the save did not finish, never twice, and saves" {
+            killed_case().all(it)
+        }
+    }
+    given "the store emptied under the heir and the leaf edited" {
+        then "the build after builds the edit whole, and so does the one after the heir" {
+            emptied_case().all(it)
+        }
+    }
+    given "an edit made while the heir saves" {
+        then "the next build builds the edit" {
+            edited_case()
+        }
+    }
+    given "the store kept here" {
+        then "no heir outlives the build, and the frontier is saved when it answers" {
+            here_case()
+        }
+    }
+}
