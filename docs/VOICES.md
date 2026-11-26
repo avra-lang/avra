@@ -34,4 +34,4 @@ which only shrinks.
 
 | rules | documented | with a `@fixes` example |
 |---|---|---|
-| 84 | 84 | 19 |
+| 85 | 85 | 19 |
