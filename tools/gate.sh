@@ -437,6 +437,29 @@ tested() {
     grep '^avra: while running ' "$out/$name.log" | sed 's/ @ .*//; s/^avra: while running //' | sort -u >"$out/$name.trapped"
     listed "tools/gate/$pkg.traps" >"$out/$name.traps"
     comm -23 "$out/$name.trapped" "$out/$name.traps" >"$out/$name.untrapped"
+    # EVERY PRINTING PROGRAM THE ROW DOES NOT PROVE, said by its path under src/ — unmade, trapped in the
+    # making, or apart from its text: the suite exits 1 for each, and once a case fails by a pinned name
+    # that exit is passed over, so the row says them here
+    sed -n "s|^packages/$pkg/src/\([^ :]*\): .*|\1|p" "$out/$name.log" | sort -u >"$out/$name.programs"
+    sed -n "s|^packages/$pkg/src/\([^ :]*\): .* == expected\$|\1|p" "$out/$name.log" | sort -u >"$out/$name.proved"
+    comm -23 "$out/$name.programs" "$out/$name.proved" >"$out/$name.unproved"
+    sed "s|^|fact unproved $pkg |" "$out/$name.unproved" >>"$out/rows"
+    # THE PIN FILE HOLDS THEM: tools/gate/<package>.unproved names each program the package's suites may
+    # leave unproved, `<path> <owner> <why>` a line. One the row leaves unproved that the file does not
+    # name fails, and one it names that the row proves fails too, until its line is struck; a package with
+    # no pin file has its programs said and none judged, as a ledger key with no rows is told
+    pin="tools/gate/$pkg.unproved"
+    if [ -f "$pin" ]; then
+        awk '!/^#/ && NF { print $1 }' "$pin" | sort -u >"$out/$name.pinned"
+        comm -23 "$out/$name.unproved" "$out/$name.pinned" | sed 's/^/unpinned unproved program: /' >"$out/$name.unproved-words"
+        comm -12 "$out/$name.proved" "$out/$name.pinned" | sed "s|^|proved, and $pin still pins it — strike its line: |" >>"$out/$name.unproved-words"
+        # the suite's seconds are the row's below, never this judgement's
+        kept_took=$took
+        took=
+        judged "$name-unproved" "$(wc -l <"$out/$name.unproved-words" | tr -d ' ')"
+        took=$kept_took
+        sed 's/^/fact /' "$out/$name.unproved-words" >>"$out/rows"
+    fi
     if [ -s "$out/$name.untrapped" ]; then judged "$name" "$(wc -l <"$out/$name.untrapped" | tr -d ' ')"; return; fi
     # a scope that holds no proof, where the caller counts that as none here: refused by that voice alone
     if [ "$ran" != 0 ] && [ -n "${EMPTY_SCOPE_PASSES:-}" ] && [ ! -s "$out/$name.failed" ] && [ ! -s "$out/$name.trapped" ] &&
