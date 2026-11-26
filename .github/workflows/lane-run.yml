@@ -89,11 +89,16 @@ jobs:
         env:
           LLVM_PREFIX: /usr/lib/llvm-22
         run: |
+          # GitHub's compare answers a merge-base and how far past main it stands; a question it can't answer
+          # is said, and the tree takes its compiler as before
+          asked() {
+            curl -fsS --retry 3 -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/compare/$1" | python3 -c "import json, sys; print(json.load(sys.stdin)$2)"
+          }
           head=$(git rev-parse HEAD)
-          base=$(gh api "repos/${{ github.repository }}/compare/program...$head" --jq .merge_base_commit.sha 2>/dev/null) || base=
-          ahead=0
-          [ -z "$base" ] || ahead=$(gh api "repos/${{ github.repository }}/compare/main...$base" --jq .ahead_by 2>/dev/null) || ahead=0
-          if [ "${ahead:-0}" -gt 0 ] 2>/dev/null; then :; else echo "lane-run: a tree of main's (its merge-base with program, ${base:-none}, is main's) — its compiler as before"; exit 0; fi
+          base=$(asked "program...$head" '["merge_base_commit"]["sha"]') || { echo "lane-run: GitHub did not answer this tree's merge-base with program — its compiler as before"; exit 0; }
+          ahead=$(asked "main...$base" '["ahead_by"]') || { echo "lane-run: GitHub did not answer how far $base stands past main — its compiler as before"; exit 0; }
+          if [ "$ahead" -gt 0 ] 2>/dev/null; then :; else echo "lane-run: a tree of main's (its merge-base with program, $base, is main's) — its compiler as before"; exit 0; fi
           echo "lane-run: a tree of program's (merge-base $base, $ahead commit(s) past main) — program's compiler"
           echo "program=1" >> "$GITHUB_OUTPUT"
           curl -fsSL --retry 3 -o gate-builder.tar.gz https://github.com/avra-lang/avra/releases/download/gate-builder/compiler.tar.gz
