@@ -3,7 +3,7 @@
 # 25% (a shared runner's I/O stalls swing them), CPU seconds (`speed cpu-<step>`, user+sys from the
 # step's rusage) FAIL over 2x main's baseline AND 30 s more AND twice the run's own median growth (a
 # baseline that is missing says so, never passes silently), unless the PR body carries
-# `SPEED_ACCEPT: <reason>`. Counts are the primary ratchet (tools/cost_ratchet.py); this catches
+# `SPEED_ACCEPT: <reason>`. Counts are the primary ratchet (`avra-tools cost`); this catches
 # what they miss. THE RUN'S MEDIAN IS THE RUNNER'S CLOCK: one absolute floor cannot tell a step that
 # grew from a run that was slow, so every CPU row is judged against how far the run itself moved. Two modes:
 #   sh tools/speed_note.sh collect <log>...         name seconds lines on stdout
@@ -123,7 +123,7 @@ compare() {
     fi
     # A RUN THAT MEASURED ITS RUNNER AGAINST A BASELINE THAT NEVER DID has no yardstick: the fixed workload ran here, main's
     # baseline carries no such row (it predates the calibration), and too few CPU rows stand for a median. Its rows are said
-    # unjudged, loudly — a wall time from an unknown machine is not a verdict, and the counters (tools/cost_ratchet.py) decide.
+    # unjudged, loudly — a wall time from an unknown machine is not a verdict, and the counters (`avra-tools cost`) decide.
     unjudged=0
     if [ -n "$cal" ] && [ -z "$b1" ] && { [ "$n" -lt 3 ] || [ -z "$med" ]; }; then unjudged=1; fi
     runner=0

@@ -1,0 +1,179 @@
+use @std.validate.{FieldShape, FieldKind, Value, Entry}
+use @std.config.{Variable}
+use settings.{projections, projected, leaves_of, LANDINGS, NAMED_FILE, RUNTIME_FILE, Setting}
+
+/// One section holding one package holding `leaves`.
+fn shaped(package: string, leaves: List<FieldShape>) -> List<FieldShape> {
+    [
+        FieldShape {
+            name: "debug",
+            kind: FieldKind
+                .Record(
+                    [
+                        FieldShape {
+                            name: package,
+                            kind: FieldKind.Record(leaves),
+                            required: false,
+                            secret: false,
+                        },
+                    ],
+                ),
+            required: false,
+            secret: false,
+        },
+    ]
+}
+
+fn leaf(name: string, kind: FieldKind) -> FieldShape { FieldShape { name: name, kind: kind, required: false, secret: false } }
+
+/// The defaults of one section's one package.
+fn unset(package: string, values: List<Entry>) -> Value {
+    Value
+        .Map(
+            [
+                Entry {
+                    key: "debug",
+                    value: Value.Map([Entry { key: package, value: Value.Map(values) }]),
+                },
+            ],
+        )
+}
+
+fn one(name: string, v: Value) -> List<Entry> { [Entry { key: name, value: v }] }
+
+fn named(path: string, name: string) -> List<Variable> { [Variable { path: path, name: name }] }
+
+/// The refusals of a declaration of one leaf, joined; "" when it projects.
+fn refused(package: string, kind: FieldKind, v: Value, variables: List<Variable>) -> string {
+    match projections(shaped(package, [leaf("x", kind)]), unset(package, one("x", v)), variables) {
+        .Ok(_) -> "",
+        .Err(why) -> why.join(" | "),
+    }
+}
+
+/// The text a declaration of one leaf of `package` projects into `file`.
+fn laid_in(package: string, file: string, kind: FieldKind, v: Value) -> string {
+    match projections(
+        shaped(package, [leaf("x", kind)]),
+        unset(package, one("x", v)),
+        named("debug.${package}.x", "AVRA_X"),
+    ) { .Ok(ps) -> ps.find(it.file == file)?.text ?? "", .Err(_) -> "" }
+}
+
+/// The text a declaration of one leaf projects into `program`'s file.
+fn laid(kind: FieldKind, v: Value) -> string {
+    match projections(
+        shaped("program", [leaf("x", kind)]),
+        unset("program", one("x", v)),
+        named("debug.program.x", "AVRA_X"),
+    ) { .Ok(ps) -> ps.find(it.file == LANDINGS[0].file)?.text ?? "", .Err(_) -> "" }
+}
+
+spec "settings — the one declaration and its projections" {
+    given "the tree's declaration" {
+        then "it projects into each landing and the oracle's names, nothing refused" {
+            match projected() {
+                .Ok(ps) -> [p.file for p in ps].join(" ") == [d.file for d in LANDINGS].concat([NAMED_FILE, RUNTIME_FILE]).join(" "),
+                .Err(_) -> false,
+            }
+        }
+        then "a declared setting is data an oracle names, read through its variable" {
+            Setting.DebugProgramFoldOff.variable() == "AVRA_FOLD_OFF" &&
+                Setting.DebugProgramFoldOff.path() == "debug.program.fold_off" &&
+                Setting.DebugProgramFoldOff.switch() &&
+                !Setting.UserAvracCacheDir.switch()
+        }
+    }
+    given "a leaf's reader" {
+        then "a switch reads its default when unset" {
+            laid(FieldKind.Bool, Value.Bool(true)).contains("x: setting_switch(\"AVRA_X\", true)")
+        }
+        then "a nullable number is absent when unset" {
+            let text = laid(FieldKind.Int, Value.Null)
+            text.contains("x: int?,") && text.contains("x: setting_number(\"AVRA_X\")")
+        }
+        then "a number with a default falls back to it" {
+            laid(FieldKind.Int, Value.Int(7)).contains("x: setting_number(\"AVRA_X\") ?? 7")
+        }
+        then "text with a default falls back to it" {
+            laid(FieldKind.Text, Value.Text("a b"))
+                .contains("x: setting_said(\"AVRA_X\") ?? \"a b\"")
+        }
+        then "the one read of the environment carries its licence" {
+            laid(FieldKind.Bool, Value.Bool(false)).contains("// LICENSED input.debug_flag:")
+        }
+    }
+    given "the runtime's header" {
+        then "a leaf is named by its exact variable" {
+            laid_in("runtime", RUNTIME_FILE, FieldKind.Int, Value.Null)
+                .contains("// debug.runtime.x: a whole number, else unset\n#define AVRA_SET_X \"AVRA_X\"")
+        }
+        then "a switch's reader reads its declared default" {
+            laid_in("runtime", RUNTIME_FILE, FieldKind.Bool, Value.Bool(true))
+                .contains(
+                    "static inline int avra_set_x(void) { return avra_setting_switch(AVRA_SET_X, 1); }",
+                )
+        }
+        then "a number has no reader of its own" {
+            !laid_in("runtime", RUNTIME_FILE, FieldKind.Int, Value.Int(3)).contains("avra_set_x(")
+        }
+        then "a runtime leaf lands in no Avra file" {
+            !laid_in("runtime", LANDINGS[0].file, FieldKind.Bool, Value.Bool(false))
+                .contains("AVRA_X")
+        }
+        then "an Avra package's leaf is named in the header too" {
+            laid_in("program", RUNTIME_FILE, FieldKind.Bool, Value.Bool(false))
+                .contains("#define AVRA_SET_X \"AVRA_X\"")
+        }
+    }
+    given "a declaration that cannot be projected" {
+        then "a leaf naming no variable" {
+            refused("program", FieldKind.Bool, Value.Bool(false), [])
+                .contains("`debug.program.x` names no variable")
+        }
+        then "a switch with no value when unset" {
+            refused("program", FieldKind.Bool, Value.Null, named("debug.program.x", "AVRA_X"))
+                .contains("is a switch with no value when unset")
+        }
+        then "a text default that needs an escape" {
+            refused(
+                "program",
+                FieldKind.Text,
+                Value.Text("a\$b"),
+                named("debug.program.x", "AVRA_X"),
+            )
+                .contains("a default is plain text")
+        }
+        then "a type that is no switch, number or text" {
+            refused(
+                "program",
+                FieldKind.Float,
+                Value.Float(1.5),
+                named("debug.program.x", "AVRA_X"),
+            )
+                .contains("is neither a switch, a number nor text")
+        }
+        then "a package no landing names" {
+            refused(
+                "nowhere",
+                FieldKind.Bool,
+                Value.Bool(false),
+                named("debug.nowhere.x", "AVRA_X"),
+            )
+                .contains("`debug.nowhere` names no package")
+        }
+        then "every reason is said, not the first" {
+            refused("nowhere", FieldKind.Float, Value.Float(1.5), []).split(" | ").length == 3
+        }
+    }
+    given "the leaves" {
+        then "each is found at its dotted path with its variable" {
+            let ls = leaves_of(
+                shaped("cli", [leaf("a", FieldKind.Int)]),
+                unset("cli", one("a", Value.Int(2))),
+                named("debug.cli.a", "AVRA_A"),
+            )
+            ls.length == 1 && ls[0].path == "debug.cli.a" && ls[0].variable == "AVRA_A"
+        }
+    }
+}

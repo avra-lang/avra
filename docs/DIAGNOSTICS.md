@@ -2639,6 +2639,34 @@ error[manifest.link_name]: `shared` under `[link]` is one library's name
 help: write `shared = "LLVM"`
 ```
 
+## manifest.header_word
+
+a `[link]` header is a path from the package root, or a system header `<name.h>`
+
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[link]
+headers = ["<stdio.h"]
+
+// /w/src/main.av
+1
+
+```
+
+```
+error[manifest.header_word]: a header is a path from the package root or `<name.h>` — `<stdio.h` is neither
+  ╭─[/w/avra.toml:6:1]
+6 │ headers = ["<stdio.h"]
+  · ┬
+  · ╰── here
+──╯
+help: write `"vendor/x.h"`, or a system header as `"<x.h>"`
+```
+
 ## manifest.borrowed_raw
 
 `[link.raw]` is the program's own — a dependency names what it needs, never how to link it

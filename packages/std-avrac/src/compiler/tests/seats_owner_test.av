@@ -1,0 +1,33 @@
+//! A LOWERING TAKES ONLY ITS OWN BODY'S SEATS. A typed answer keeps no seats, so a lowering takes
+//! the ones the check made last in its process left. Two fns of one shape and one signature hold
+//! their statement and their body at the same places in their items, so only whose item it is tells
+//! their seats apart: a warm build that typed `x` and then `y` lowered `x` under `y`'s seats, and `x`
+//! became a body not lowered (`int` in a seat of `string`).
+use @std.avrac.compiler.backend.ir_text.{render_ir}
+use @std.avrac.testing.held.{empty_store, held_at}
+use @std.program.tests.support.store_in_memory.{StoreInMemory}
+
+const SHAPES: string = "type T = { n: int, s: string }\n\nfn mk(n: int) -> T { T { n: n, s: \"\" } }\n\nfn nm(s: string) -> T { T { n: 0, s: s } }\n\n"
+
+const BEFORE: string = "println(\"\${mk(1).n}\")\n"
+
+const AFTER: string = "fn x() -> T { mk(7) }\n\nfn y() -> T { nm(\"a\") }\n\nprintln(\"\${mk(1).n} \${x().n} \${y().s}\")\n"
+
+/// The program `body` writes beside the shapes, as IR, made by one process over `store`.
+fn made_over(body: string, store: StoreInMemory) -> string {
+    render_ir(
+        held_at({"/w/src/main.av": SHAPES + body}, "/w")
+            .judged_over("/w/src/main.av", store)
+            .lowered(),
+    )
+}
+
+spec "compiler/lower — a lowering takes only its own body's seats" {
+    given "a program, then the same program with two new fns of one shape and one signature, over its store" {
+        then "the second's IR is the IR it makes over an empty store" {
+            let store = empty_store()
+            let _ = made_over(BEFORE, store)
+            made_over(AFTER, store) == made_over(AFTER, empty_store())
+        }
+    }
+}

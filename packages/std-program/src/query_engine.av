@@ -3,6 +3,7 @@
 //! read, so no read can be forgotten. Asked again in a later process, an answer whose record still stands is reused
 //! without running anything, and a recomputed answer that comes out the same leaves its readers
 //! standing. Nothing here knows what the queries are about.
+use settings.{program_settings}
 use answer_parts.{AnswerParts, part_hash_seen, part_in_parts, part_in_saved_parts}
 use @std.io.{env, exists, stamp}
 use @std.path.{dir_of}
@@ -266,6 +267,11 @@ export type QueryEngine = {
     settled_answers: HashKeyedTable<SettledAnswer>,
     /// The questions being answered now, innermost last.
     open_questions: Cell<List<OpenQuestion>>,
+    /// How many of `open_questions` are open now: a question closing lowers it, and the slot above
+    /// is written again by the next one opened, so opening and closing copy no list.
+    open_depth: Cell<int>,
+    /// The innermost of the questions open now, which every read made is recorded for.
+    innermost: Cell<OpenQuestion?>,
     /// The reads being gathered now, innermost last.
     gathering: Cell<List<ReadsGathered>>,
     /// How many questions were open where each read left unrecorded began, innermost last: a read
@@ -363,6 +369,8 @@ export fn query_engine(
         settled_answers: settled_answers,
         adopted: Cell.new(false),
         open_questions: open_questions,
+        open_depth: Cell.new(0),
+        innermost: Cell.new(null),
         gathering: gathering,
         unrecorded_at: unrecorded_at,
         readers: Cell.new(0),
@@ -822,7 +830,7 @@ impl QueryEngine {
     /// Holds the input being answered by the stamp of the path it just read, where that path wore
     /// `before` when the read began and wears it still.
     fn read_under(path: string, before: int?) {
-        let asker? = self.open_questions.get().last() else { return }
+        let asker? = self.open_top() else { return }
         let held? = before else { return }
         // LICENSED input.stamp: a stamp decides whether an input is read again, never what it answers
         if stamp(path) != held { return }
@@ -1048,7 +1056,7 @@ impl QueryEngine {
 
     /// The input being answered read the path `path`: the package holding it joins what it read.
     fn input_read_at(path: string) {
-        let asker? = self.open_questions.get().last() else { return }
+        let asker? = self.open_top() else { return }
         self
             .read_sets
             .put(
@@ -1067,27 +1075,43 @@ impl QueryEngine {
         self.computed.push(definition.query_name)
         let compute = definition.compute
         let bytes = compute(self, asked.arguments)
-        self.open_questions.set(outer)
+        self.closed_to(outer)
         QueryRun { bytes: bytes, reads: reads }
     }
 
-    /// `asked` opened as the innermost question, its reads recorded in `reads`; answers the
-    /// questions open before it. A question asked while it's being answered is the caller's defect.
-    fn opened(asked: Question, reads: ReadTable) -> List<OpenQuestion> {
-        let outer = self.open_questions.get()
-        if outer.any(it.question.same_as(asked.known_as)) { defect(asked_while_being_answered(asked, outer)) }
-        self
-            .open_questions
-            .push(
-                OpenQuestion {
-                    question: asked.known_as,
-                    query_name: asked.query_name,
-                    arguments: asked.arguments,
-                    reads: reads,
-                    reader: self.next_reader(),
-                },
-            )
+    /// `asked` opened as the innermost question, its reads recorded in `reads`; answers how many
+    /// questions were open before it, which closing it sets back (`open_depth`). A question asked
+    /// while it's being answered is the caller's defect.
+    fn opened(asked: Question, reads: ReadTable) -> int {
+        let outer = self.open_depth.get()
+        if self.question_open(asked.known_as) { defect(asked_while_being_answered(asked, self.open_questions.get().take(outer))) }
+        let open = OpenQuestion {
+            question: asked.known_as,
+            query_name: asked.query_name,
+            arguments: asked.arguments,
+            reads: reads,
+            reader: self.next_reader(),
+        }
+        if outer < self.open_questions.get().length { self.open_questions.set_at(outer, open) } else { self.open_questions.push(open) }
+        self.open_depth.set(outer + 1)
+        self.innermost.set(open)
         outer
+    }
+
+    /// The innermost question open now; absent with none open.
+    fn open_top() -> OpenQuestion? { self.innermost.get() }
+
+    /// Whether the question known as `question` is open now, being answered.
+    fn question_open(question: ContentHash) -> bool {
+        let open = self.open_questions.get()
+        for i in 0..self.open_depth.get() { if open[i].question.same_as(question) { return true } }
+        false
+    }
+
+    /// The questions open now set back to the `depth` outermost, the innermost of them asking again.
+    fn closed_to(depth: int) {
+        self.open_depth.set(depth)
+        self.innermost.set(if depth == 0 { null } else { self.open_questions.get()[depth - 1] })
     }
 
     /// THE ANSWER FOLDED FORWARD from its last one in this binary's frontier: the step handed the
@@ -1096,7 +1120,7 @@ impl QueryEngine {
     /// question standing or no longer keeps its answer, a read can't be asked now, or the step
     /// answers none.
     fn folded_run(asked: Question) -> QueryRun? {
-        if folds_off() != null { return null }
+        if program_settings().debug.fold_off { return null }
         let step = match self.definition_of(asked).folding { .By(s) -> s, .Full -> { return null } }
         let open? = self.frontier_open() else { return null }
         let f = open.frontier
@@ -1120,7 +1144,7 @@ impl QueryEngine {
         }
         let bytes = step(self, asked.arguments, last, [m! for m in moved])
         self.times.get()?.closed()
-        self.open_questions.set(outer)
+        self.closed_to(outer)
         let folded? = bytes else { return null }
         self.folded.push(asked.query_name)
         QueryRun { bytes: folded, reads: reads }
@@ -1138,7 +1162,7 @@ impl QueryEngine {
     /// body's run stands for the fold's then.
     fn checked_fold(asked: Question, folded: QueryRun?) -> QueryRun? {
         let run? = folded else { return null }
-        if folds_checked() == null { return run }
+        if !program_settings().debug.fold_check { return run }
         let full = self.full_run(asked)
         if !content_hash(full.bytes).same_as(content_hash(run.bytes)) { defect(fold_differs(asked)) }
         let forgot = full.reads.values().find((r) -> run.reads.get(r.question) == null)
@@ -1200,7 +1224,7 @@ impl QueryEngine {
     fn record_read(read: RecordedRead) {
         if !self.recording() { return }
         self.gathered(read)
-        let asker? = self.open_questions.get().last() else { return self.asked_alone.put(read.question, true) }
+        let asker? = self.open_top() else { return self.asked_alone.put(read.question, true) }
         asker.reads.put(read)
     }
 
@@ -1210,12 +1234,12 @@ impl QueryEngine {
         if !self.recording() { return }
         let gathering = self.gathering.get()
         if !gathering.is_empty() {
-            let depth = self.open_questions.get().length
+            let depth = self.open_depth.get()
             for g in gathering {
                 if g.depth == depth { g.reads.whole(question, answer) }
             }
         }
-        let asker? = self.open_questions.get().last() else { return self.asked_alone.put(question, true) }
+        let asker? = self.open_top() else { return self.asked_alone.put(question, true) }
         asker.reads.whole(question, answer)
     }
 
@@ -1223,7 +1247,7 @@ impl QueryEngine {
     /// `recorded_again`: for an answer whose question's arguments say all those reads could tell it,
     /// as a face says all a declaration's reading back can. A question those reads ask records what
     /// it reads as ever.
-    fn unrecorded_begun() { self.unrecorded_at.set(self.unrecorded_at.get().concat([self.open_questions.get().length])) }
+    fn unrecorded_begun() { self.unrecorded_at.set(self.unrecorded_at.get().concat([self.open_depth.get()])) }
 
     /// Reads made by whoever is asking now are its reads again, as before the innermost
     /// `unrecorded_begun`.
@@ -1236,14 +1260,14 @@ impl QueryEngine {
     /// `recorded_again`, with just the questions open that were open there.
     fn recording() -> bool {
         let at? = self.unrecorded_at.get().last() else { return true }
-        at != self.open_questions.get().length
+        at != self.open_depth.get()
     }
 
     /// `read`, made with the questions open now, gathered by each gathering begun with just those open.
     fn gathered(read: RecordedRead) {
         let gathering = self.gathering.get()
         if gathering.is_empty() { return }
-        let depth = self.open_questions.get().length
+        let depth = self.open_depth.get()
         for g in gathering {
             if g.depth == depth { g.reads.put(read) }
         }
@@ -1257,7 +1281,7 @@ impl QueryEngine {
             .gathering
             .push(
                 ReadsGathered {
-                    depth: self.open_questions.get().length,
+                    depth: self.open_depth.get(),
                     reads: reads,
                     reader: self.next_reader(),
                 },
@@ -1274,10 +1298,9 @@ impl QueryEngine {
     /// open now, else the innermost question, else zero for none. Two reads under one serial reach
     /// the same tables.
     fn reader() -> int {
-        let open = self.open_questions.get()
         let inner = self.gathering.get().last()
-        if inner?.depth ?? -1 == open.length { return inner?.reader ?? 0 }
-        open.last()?.reader ?? 0
+        if inner?.depth ?? -1 == self.open_depth.get() { return inner?.reader ?? 0 }
+        self.open_top()?.reader ?? 0
     }
 
     /// The reads gathered since the innermost `reads_begun`, which ends there. Gathering none begun
@@ -1455,12 +1478,6 @@ fn fold_forgot(asked: Question, read: string) -> string {
     "`${asked.query_name}` folded forward without a read of `${read}` its body makes: a fold reads all its body reads"
 }
 
-// LICENSED input.debug_flag: a debug flag is the process's own, not an input
-once fn folds_off() -> string? { env("AVRA_FOLD_OFF") }
-
-// LICENSED input.debug_flag: a debug flag is the process's own, not an input
-once fn folds_checked() -> string? { env("AVRA_FOLD_CHECK") }
-
 fn two_queries_named(definition: QueryDefinition) -> string {
     "two queries are named `${definition.query_name}`, so their saved answers would collide"
 }
@@ -1505,7 +1522,7 @@ impl HeldQuestion {
         let found? = self.parts.get() else { return null }
         if !found.answer.same_as(answer) { return null }
         let part? = found.by_name.get_at(high, low) else { return null }
-        if held_questions_checked() != null && part.name != name { defect(part_folded_twice(name, part.name)) }
+        if program_settings().debug.held_questions_check && part.name != name { defect(part_folded_twice(name, part.name)) }
         part
     }
 
@@ -1529,7 +1546,7 @@ impl HeldQuestion {
 /// absent when it holds none, and always under `AVRA_HELD_QUESTIONS_CHECK`, so each ask makes its
 /// question again and `question_kept` compares the two.
 export fn question_at(held: HashKeyedTable<HeldQuestion>, high: int, low: int) -> HeldQuestion? {
-    if held_questions_checked() != null { return null }
+    if program_settings().debug.held_questions_check { return null }
     held.get_at(high, low)
 }
 
@@ -1550,15 +1567,9 @@ fn part_folded_twice(name: string, was: string) -> string { "the parts `${name}`
 
 fn key_folded_twice(query: string) -> string { "two questions of `${query}` fold to one key: a held question's key is folded from every argument, each after a tag of its kind" }
 
-// LICENSED input.debug_flag: a debug flag is the process's own, not an input
-once fn held_questions_checked() -> string? { env("AVRA_HELD_QUESTIONS_CHECK") }
-
 /// Whether a query's wrapper holds each question it asked by its arguments' values: on, unless
 /// `AVRA_HELD_QUESTIONS_OFF` is set, which writes and hashes the arguments at every ask.
-export fn questions_held() -> bool { held_questions_off() == null }
-
-// LICENSED input.debug_flag: a debug flag is the process's own, not an input
-once fn held_questions_off() -> string? { env("AVRA_HELD_QUESTIONS_OFF") }
+export fn questions_held() -> bool { !program_settings().debug.held_questions_off }
 
 /// A text argument as a question's key spells it: its kind, its length, then itself, so no two run
 /// together and none passes for another kind's key.
@@ -1635,10 +1646,7 @@ export type HeldAnswer<T> = { value: T }
 
 /// Whether each answer held as computed is checked to read back as it was saved:
 /// `AVRA_HELD_ROUNDTRIP`.
-export fn round_trips_checked() -> bool { round_trip_flag() != null }
-
-// LICENSED input.debug_flag: a debug flag is the process's own, not an input
-once fn round_trip_flag() -> string? { env("AVRA_HELD_ROUNDTRIP") }
+export fn round_trips_checked() -> bool { program_settings().debug.held_roundtrip }
 
 /// An answer of `query` that read back as something else than it was saved from.
 export fn round_trip_broken(query: string) { defect(round_trip_voice(query)) }
@@ -1656,9 +1664,6 @@ export type FreshAnswer<T> = { arguments: Bytes, value: T }
 
 /// Whether a query's wrapper holds what each answer reads back as: on, unless `AVRA_HELD_ANSWERS_OFF`
 /// is set, which reads every answer back at every ask — the same answers, decoded again.
-export fn answers_held() -> bool { held_answers_off() == null }
-
-// LICENSED input.debug_flag: a debug flag is the process's own, not an input
-once fn held_answers_off() -> string? { env("AVRA_HELD_ANSWERS_OFF") }
+export fn answers_held() -> bool { !program_settings().debug.held_answers_off }
 
 fn unread_key(keys: string) -> string { "a question's keys don't read back as a wrapper spells them: ${keys}" }

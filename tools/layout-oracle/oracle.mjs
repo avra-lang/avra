@@ -12,6 +12,7 @@
 // one pixel wide and one high (cellfont.mjs), so a character is a cell and the
 // browser's soft wrapping of the real <span> is comparable with the cell
 // measure.
+// The page sets its face over the realizer's own body rule, which writes the theme's text.
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -364,7 +365,7 @@ function program(cases, slacks = []) {
 use @std.ui.env.{Env}
 use @std.ui.style.layout.{Layout, Edge}
 use @std.ui.style.tokens.{Size}
-use @std.ui.style.theme.{Theme}
+use @std.ui.style.theme.{Theme, default_theme}
 use @std.ui.place.measure.{Measure, Extent, Cells, fine}
 use @std.ui.place.metrics.{Table, run_width_in}
 use @std.ui.place.lines.{lines_in}
@@ -406,17 +407,17 @@ impl Measure for Pixels {
     fn hidden(_n: Node) -> bool { false }
     fn holds(_n: Node) -> bool { true }
     fn min_own(n: Node) -> int { Cells {}.min_own(n) }
-    fn gap_x(z: Size) -> int { self.theme.space_of(z) }
-    fn gap_y(z: Size) -> int { self.theme.space_of(z) }
-    fn pad_x(z: Size) -> int { self.theme.space_of(z) }
-    fn pad_y(z: Size) -> int { self.theme.space_of(z) }
+    fn gap_x(z: Size) -> int { self.theme.space.at(z) }
+    fn gap_y(z: Size) -> int { self.theme.space.at(z) }
+    fn pad_x(z: Size) -> int { self.theme.space.at(z) }
+    fn pad_y(z: Size) -> int { self.theme.space.at(z) }
 }
 
 ${PROP ? `fn face_metrics() -> Table {
     Table { advances: { ${Object.entries(FACE.advances).map(([c, u]) => `"${c}": ${u}`).join(", ")} }, fallback: ${FACE.fallback}, up: ${LINE * 48}, down: ${LINE * 16} }
 }
 
-fn typeface() -> Text { Text { metrics: face_metrics(), theme: Env {}.theme, rest: Cells {}, quantum: ${Q} } }
+fn typeface() -> Text { Text { metrics: face_metrics(), theme: default_theme, rest: Cells {}, quantum: ${Q} } }
 
 fn count_lines(n: Node, avail: int) -> int {
     lines_in(n.words(), (avail * ${Q} + fine / 2) / fine, (s: string) -> run_width_in(face_metrics(), s, ${Q})).length
@@ -438,7 +439,7 @@ fn counts(c: Counting, n: Node, path: string) -> List<int> {
 fn show(i: int, n: Node, slack: Map<string, int>) {
     let seen: Cell<Map<string, int>> = Cell.new({})
     let at: Cell<string> = Cell.new("")
-    let c = Counting { inner: ${PROP ? "typeface()" : "Pixels { theme: Env {}.theme }"}, seen: seen, at: at, slack: slack }
+    let c = Counting { inner: ${PROP ? "typeface()" : "Pixels { theme: default_theme }"}, seen: seen, at: at, slack: slack }
     let fine_boxes = place_fine(n, c, ${WIDTH})
     println("case \${i}")
     for l in rows_of(whole(fine_boxes)) { println(l) }
@@ -450,7 +451,7 @@ fn show(i: int, n: Node, slack: Map<string, int>) {
     println(render(n, Env {}).replace("\\n", " "))
     println("end \${i}")
 }
-${["None", "Xs", "S", "M", "L", "Xl"].map((z) => `println("space ${z} \${Env {}.theme.space_of(.${z})}")`).join("\n")}
+${["None", "Xs", "S", "M", "L", "Xl"].map((z) => `println("space ${z} \${default_theme.space.at(.${z})}")`).join("\n")}
 ${defs}
 ${runs}
 `;
@@ -489,7 +490,7 @@ function solved(cases, work, slacks = []) {
 
 // ── the browser's side ───────────────────────────────────────────
 
-const PAGE = `<!doctype html><meta charset=utf-8><style>@font-face{font-family:cell;src:url(data:font/ttf;base64,${cellFontBase64(PROP ? FACE : {})})}body{margin:0;font:1px/${PROP ? LINE : 1}px cell${PROP ? ";font-kerning:none;font-variant-ligatures:none" : ""}}${args.css ?? ""}</style><body></body>`;
+const PAGE = `<!doctype html><meta charset=utf-8><style>@font-face{font-family:cell;src:url(data:font/ttf;base64,${cellFontBase64(PROP ? FACE : {})})}body{margin:0;font:1px/${PROP ? LINE : 1}px cell !important${PROP ? ";font-kerning:none;font-variant-ligatures:none" : ""}}${args.css ?? ""}</style><body></body>`;
 
 // The page the realizer wrote is laid in a host WIDTH wide. Each box is read
 // as the browser paints it: its edges, from the root's corner, snapped to the

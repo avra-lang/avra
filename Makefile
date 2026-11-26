@@ -1104,15 +1104,12 @@ wall-accept:
 # On macOS the measurement goes to the lane's Sprite, as speed-ratchet does.
 # THE EXACT-COUNT GATE: the census compiler of this tree, cold, over fixed workloads whose sources are
 # the commit tools/cost.baseline pins; every counter held to its row within 0.05% (tools/cost.sh,
-# tools/cost_ratchet.py). A row only falls, through `make cost-accept`; `COST_SNAPSHOT=<sha> make
+# `avra-tools cost`, tools/src/commands/cost.av). A row only falls, through `make cost-accept`; `COST_SNAPSHOT=<sha> make
 # cost-accept` moves the snapshot and records every count over it.
 cost:
-	@python3 tools/cost_ratchet.py --self-test >/dev/null
-	@sh tools/cost.sh
-	@python3 tools/cost_ratchet.py --judge build/cost
+	@sh tools/cost.sh judge
 cost-accept:
-	@COST_ACCEPTING=1 sh tools/cost.sh
-	@python3 tools/cost_ratchet.py --accept build/cost
+	@COST_ACCEPTING=1 sh tools/cost.sh accept
 
 warm-edit:
 	@python3 tools/ratchet_rows.py --self-test >/dev/null

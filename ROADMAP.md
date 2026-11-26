@@ -3246,6 +3246,18 @@ queries and moves 118: 482 call sites go through a box the lowering notes no typ
 lambdas are taken into boxes typed by the generic seat rather than the instantiated type. Noting the
 instantiated type at those sites brings an editor's rebuild down to the true dependents.
 
+### A noop check pays the item-grained reads a moved file needs (measured 2026-11-26)
+
+A `check packages/cli` where nothing moved costs 688,268 boxes and 1,690,916 list writes (the cost
+gate's `noop-check` row; program 42ed174d measures 689,807, run 45785720892). Most of that is
+`strays_in` and `const_gathering` read through each item of every file. Answering each as ONE answer
+of its file took the noop to 497,234 boxes (-28%), and broke the decl-grain law
+(compiler/tests/decl_grain_test.av): an add or a rename in another file then reworked
+`const_gathering`, `module_declares` and `program_refused` in a bystander, so the cut was reverted
+(51f05ad6). Wanted: a noop that stands over a file's whole-file answer while an edit in another file
+still meets only the items it reaches — the file answer as a cutoff over its item answers, never in
+place of them.
+
 ### A frontier holds which places a read named, never which part (measured 2026-11-24)
 
 A frontier keeps each answer's reads as places, so a warm open's walk from what an edit changed meets
@@ -3801,7 +3813,18 @@ left is ceremony and one silent hole.
 - **A5 — an upper-case text verb in `@std/text`.**
   `Example: "db".upper() == "DB"`.
   Today: none; `@std/config` keeps a private ASCII `shouted`.
-  `Callsite:` the env source's variable names.
+  `Callsite:` the env source's variable names, and `wisp tree settings`'s
+  variant names (`tools/src/settings/projected.av`'s `titled`).
+- **A6 — an imported component's static call.**
+  `Example: use conf.{Outer}` then `let fs = Outer.fields()` or
+  `match Outer.load() { … }`.
+  Today: `` `Outer` takes no head value — name it at a statement`` (and
+  `expected BREAK` at a `match`): an imported component's name is a
+  block word, so `Outer.` opens an instance. The same call in the
+  declaring module checks clean (probed on C3's compiler, `62f2a454`).
+  `Callsite:` `tools/src/settings/declared.av`'s `projected` and `loaded`,
+  which exist only so the command can reach `Settings.fields()`,
+  `.variables()` and `.load()`.
 
 ### Interim record — the storyboard's asks
 

@@ -1,0 +1,266 @@
+//! THE COMPILER'S SETTINGS, ONE DECLARATION: every variable the compiler's
+//! own Avra reads, typed, by the package that reads it. `user` is what a
+//! person sets; `debug` is what an oracle reading sets. A field's
+//! variable is its exact name; `null` is "unset". `wisp tree settings
+//! --write` projects each package's records into its `src/settings.av`,
+//! and `--check` holds them fresh. `runtime` is what the runtime's C reads:
+//! its projection is a header naming every declared variable, with a
+//! reader per switch.
+use @std.meta.{derive}
+use @std.validate.{Decode}
+use @std.config.{Configured, Loaded, Unloaded, env, variable}
+
+/// The query engine's settings a person sets.
+@derive(Decode)
+export component ProgramUser {
+    /// A query-kernel trace line on stderr per event.
+    @variable("AVRA_QTRACE") qtrace: bool = false
+}
+
+/// The query engine's switches.
+@derive(Decode)
+export component ProgramDebug {
+    /// Folds answered without the fold.
+    @variable("AVRA_FOLD_OFF") fold_off: bool = false
+    /// Each fold held to the answer worked out without it.
+    @variable("AVRA_FOLD_CHECK") fold_check: bool = false
+    /// Held questions never kept.
+    @variable("AVRA_HELD_QUESTIONS_OFF") held_questions_off: bool = false
+    /// Each held question held to the question asked again.
+    @variable("AVRA_HELD_QUESTIONS_CHECK") held_questions_check: bool = false
+    /// Held answers never kept.
+    @variable("AVRA_HELD_ANSWERS_OFF") held_answers_off: bool = false
+    /// Each held answer read back and compared.
+    @variable("AVRA_HELD_ROUNDTRIP") held_roundtrip: bool = false
+    /// The held values' bound in bytes.
+    @variable("AVRA_HELD_VALUES_BYTES") held_values_bytes: int? = null
+    /// The whole-walk check of a frontier, and where it writes.
+    @variable("AVRA_FRONTIER_WALK_CHECK") frontier_walk_check: string? = null
+    /// One wave at a time, nothing shared.
+    @variable("AVRA_WAVE_ALONE") wave_alone: bool = false
+    /// The fewest items worth merging apart.
+    @variable("AVRA_MERGED_APART_FROM") merged_apart_from: int? = null
+    /// Merged answers kept in this process.
+    @variable("AVRA_MERGED_HERE") merged_here: bool = false
+    /// The core whose shares stay unmerged.
+    @variable("AVRA_SHARE_UNMERGED") share_unmerged: string? = null
+    /// What a worker reads beside its own.
+    @variable("AVRA_BESIDE") beside: string = ""
+    /// An edit worked ahead, as its spelling.
+    @variable("AVRA_AHEAD_EDIT") ahead_edit: string? = null
+    /// Shared answers taken unproven.
+    @variable("AVRA_AHEAD_UNPROVEN") ahead_unproven: bool = false
+}
+
+/// The compiler's settings a person sets: where its stores stand and how
+/// much they keep.
+@derive(Decode)
+export component AvracUser {
+    /// The machine's cache, else `$HOME/.avra/cache`.
+    @variable("AVRA_CACHE_DIR") cache_dir: string? = null
+    /// The shared store's ceiling in megabytes.
+    @variable("AVRA_CAS_MAX_MB") cas_max_mb: int? = null
+    /// The shared store's age limit in days.
+    @variable("AVRA_CAS_MAX_AGE_DAYS") cas_max_age_days: int? = null
+    /// The machine store's prints' age limit in days.
+    @variable("AVRA_PRINTS_MAX_AGE_DAYS") prints_max_age_days: int? = null
+    /// The store's ceiling in megabytes.
+    @variable("AVRA_STORE_MAX_MB") store_max_mb: int? = null
+    /// The store's age limit in seconds.
+    @variable("AVRA_STORE_MAX_AGE_S") store_max_age_s: int? = null
+    /// The revisions the store keeps.
+    @variable("AVRA_STORE_REVISIONS") store_revisions: int? = null
+    /// The kept objects' ceiling in bytes.
+    @variable("AVRA_OBJ_MAX_BYTES") obj_max_bytes: int? = null
+    /// The kept binaries' ceiling in bytes.
+    @variable("AVRA_BIN_MAX_BYTES") bin_max_bytes: int? = null
+}
+
+/// The compiler's switches and test hooks.
+@derive(Decode)
+export component AvracDebug {
+    /// A core taken from its surface: `checked` or `off`.
+    @variable("AVRA_CORE_FROM_SURFACE") core_from_surface: string = ""
+    /// The evaluator's jumps checked.
+    @variable("AVRA_EVAL_JUMPS_CHECK") eval_jumps_check: bool = false
+    /// Every function held to LLVM's verifier.
+    @variable("AVRA_VERIFY_LLVM") verify_llvm: bool = false
+    /// The read-back items' bound in bytes.
+    @variable("AVRA_HELD_BYTES") held_bytes: int? = null
+    /// Read-back items never held.
+    @variable("AVRA_HELD_ITEMS_OFF") held_items_off: bool = false
+    /// The fn whose IR is printed.
+    @variable("AVRA_IR_OF") ir_of: string? = null
+    /// The seal threshold, in frames.
+    @variable("AVRA_STORE_SEAL_FRAMES") store_seal_frames: int? = null
+    /// How long the store lock is held, in milliseconds.
+    @variable("AVRA_STORE_HOLD_MS") store_hold_ms: int? = null
+    /// The frame a writer is killed at.
+    @variable("AVRA_STORE_KILL") store_kill: int? = null
+    /// The memory pass's own proof.
+    @variable("AVRA_SOUND_CHECK") sound_check: bool = false
+    /// Why the memory pass places each count, tallied.
+    @variable("AVRA_RC_REASONS") rc_reasons: bool = false
+    /// Each type memo held to working it out again.
+    @variable("AVRA_TYPE_MEMO_CHECK") type_memo_check: bool = false
+    /// The kernel's graph written out.
+    @variable("AVRA_DB_GRAPH") db_graph: bool = false
+    /// An unsuspected file stands without its parts derived.
+    @variable("AVRA_DB_FAST") db_fast: bool = false
+    /// The judgements verified: a comma list, `1` or `all`.
+    @variable("AVRA_DB_VERIFY") db_verify: string? = null
+    /// Every parse on the grammar engine.
+    @variable("AVRA_ENGINE_PARSE") engine_parse: bool = false
+    /// Each phase's queries timed.
+    @variable("AVRA_QUERY_TIMES") query_times: bool = false
+}
+
+/// The CLI's settings a person sets.
+@derive(Decode)
+export component CliUser {
+    /// A build's mode, carried in its question: `debug` or `release`.
+    @variable("AVRA_PROGRAM_MODE") program_mode: string = ""
+    /// Where a running process's tasks are asked, an absolute path.
+    @variable("AVRA_TASKS_DIR") tasks_dir: string = ""
+}
+
+/// The CLI's switches and test hooks.
+@derive(Decode)
+export component CliDebug {
+    /// A suite run again under the guard and the accounting.
+    @variable("AVRA_SOUNDNESS") soundness: bool = false
+    /// Where an install keeps its verdicts.
+    @variable("AVRA_VERDICT_DIR") verdict_dir: string? = null
+    /// Every suite run past a red one.
+    @variable("AVRA_SUITE_ALL") suite_all: bool = false
+    /// The machine's store shared across packages.
+    @variable("AVRA_MACHINE_STORE") machine_store: bool = true
+    /// Where the machine's store stands.
+    @variable("AVRA_MACHINE_STORE_DIR") machine_store_dir: string? = null
+    /// A build keeps its store before it answers.
+    @variable("AVRA_STORE_KEPT_HERE") store_kept_here: bool = false
+    /// Work ahead off: one process lowers.
+    @variable("AVRA_WORK_AHEAD_OFF") work_ahead_off: bool = false
+    /// The processes work ahead lowers across.
+    @variable("AVRA_WORK_AHEAD_CORES") work_ahead_cores: int? = null
+    /// A build killed between placing its binary and saving its store.
+    @variable("AVRA_KILL_AFTER_PLACE") kill_after_place: bool = false
+    /// The program test whose making traps.
+    @variable("AVRA_RAN_TRAP") ran_trap: string = ""
+    /// Each link's command line on stderr.
+    @variable("AVRA_LINK_TRACE") link_trace: bool = false
+    /// Every family's time on stderr.
+    @variable("AVRA_QUERY_FAMILIES") query_families: bool = false
+}
+
+/// The runtime's settings a person sets.
+@derive(Decode)
+export component RuntimeUser {
+    /// The map hash's seed, pinned; else a fresh one each run.
+    @variable("AVRA_HASH_SEED") hash_seed: int? = null
+    /// Each task's stack in bytes.
+    @variable("AVRA_FIBER_STACK") fiber_stack: int? = null
+    /// The stacks' guard pages: `all`, or how many stacks get one.
+    @variable("AVRA_FIBER_GUARDS") fiber_guards: string? = null
+    /// The scheduler's tick in microseconds.
+    @variable("AVRA_TICK_US") tick_us: int? = null
+    /// The most switches a due timer waits.
+    @variable("AVRA_TIMER_TURNS") timer_turns: int? = null
+    /// The machine's memory pool in megabytes; `0` is none.
+    @variable("AVRA_MEM_POOL_MB") mem_pool_mb: int? = null
+    /// How long a run waits for the pool, in milliseconds.
+    @variable("AVRA_MEM_POOL_WAIT_MS") mem_pool_wait_ms: int? = null
+    /// Where the pool's slots stand.
+    @variable("AVRA_MEM_POOL_DIR") mem_pool_dir: string? = null
+    /// A run's memory ceiling in megabytes.
+    @variable("AVRA_MEM_CEILING_MB") mem_ceiling_mb: int? = null
+    /// How many compiles the machine runs at once; `0` is no bound.
+    @variable("AVRA_MAX_COMPILES") max_compiles: int? = null
+    /// Where the machine's compile slots stand.
+    @variable("AVRA_SLOT_DIR") slot_dir: string? = null
+}
+
+/// The runtime's instruments and test hooks.
+@derive(Decode)
+export component RuntimeDebug {
+    /// The compiler's own debug lines on stderr.
+    @variable("AVRA_DEBUG") debug: bool = false
+    /// Every count checked, and a dead box kept to replay its life.
+    @variable("AVRA_RC_GUARD") rc_guard: bool = false
+    /// The guard's log bound in bytes.
+    @variable("AVRA_RC_LOG_BUDGET") rc_log_budget: int? = null
+    /// Live bytes by category, capacity and site, at exit.
+    @variable("AVRA_MEM_STATS") mem_stats: bool = false
+    /// How many allocation sites the accounting names.
+    @variable("AVRA_MEM_SITES") mem_sites: int? = null
+    /// The one site whose sample is replayed, unslid hex.
+    @variable("AVRA_MEM_SITE") mem_site: string? = null
+    /// The live megabytes the accounting dumps at.
+    @variable("AVRA_MEM_DUMP_AT") mem_dump_at: int? = null
+    /// The fewest cells a list counts as wide at.
+    @variable("AVRA_MEM_WIDE") mem_wide: int? = null
+    /// The census's own rows, by site.
+    @variable("AVRA_CENSUS_SITES") census_sites: bool = false
+    /// The census's deaths, by site.
+    @variable("AVRA_CENSUS_DEATHS") census_deaths: bool = false
+    /// How many sites a census table shows.
+    @variable("AVRA_CENSUS_TOP") census_top: int? = null
+    /// How many rows the census's row table shows.
+    @variable("AVRA_CENSUS_ROWS_TOP") census_rows_top: int? = null
+    /// How many types the census's type table shows.
+    @variable("AVRA_CENSUS_TYPES_TOP") census_types_top: int? = null
+    /// A trap's stack on stderr.
+    @variable("AVRA_TRAP_TRACE") trap_trace: bool = false
+    /// Each box a write cloned, on stderr.
+    @variable("AVRA_ALIAS_LOG") alias_log: bool = false
+    /// A run's map probes, at exit.
+    @variable("AVRA_MAP_STATS") map_stats: bool = false
+    /// The scheduler's trace: `1` for stderr, else a file.
+    @variable("AVRA_FLOW_TRACE") flow_trace: string? = null
+    /// The trace's bound in bytes.
+    @variable("AVRA_FLOW_TRACE_CAP") flow_trace_cap: int? = null
+    /// How long an heir is held back, in milliseconds.
+    @variable("AVRA_HEIR_LINGERS_MS") heir_lingers_ms: int? = null
+    /// The claim whose holder is killed.
+    @variable("AVRA_SHARED_KILL_AT") shared_kill_at: int? = null
+    /// The claim whose holder traps.
+    @variable("AVRA_SHARED_TRAP_AT") shared_trap_at: int? = null
+    /// Set by a compile holding a slot, so its children take none.
+    @variable("AVRA_COMPILE_SLOT") compile_slot: string? = null
+}
+
+/// The settings a person sets, by the package that reads them.
+@derive(Decode)
+export component User {
+    program: ProgramUser = ProgramUser {}
+    avrac: AvracUser = AvracUser {}
+    cli: CliUser = CliUser {}
+    runtime: RuntimeUser = RuntimeUser {}
+}
+
+/// The switches an oracle reading sets, by the package that reads them.
+@derive(Decode)
+export component Debug {
+    program: ProgramDebug = ProgramDebug {}
+    avrac: AvracDebug = AvracDebug {}
+    cli: CliDebug = CliDebug {}
+    runtime: RuntimeDebug = RuntimeDebug {}
+}
+
+/// Every setting the compiler reads, in its Avra and its C.
+@derive(Decode)
+export component Settings {
+    user: User = User {}
+    debug: Debug = Debug {}
+    env "AVRA"
+}
+
+/// Every projection of the declaration.
+export fn projected() -> Result<List<Projection>, List<string>> {
+    projections(Settings.fields(), Settings {}.value(), Settings.variables())
+}
+
+/// The settings this process holds.
+export fn loaded() -> Result<Loaded<Settings>, Unloaded> {
+    Settings.load()
+}

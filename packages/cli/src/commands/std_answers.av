@@ -12,33 +12,24 @@
 //! any dependency is.
 //! A CHECKOUT IS A TOOLCHAIN TOO: `make avra` makes its binary's answers over the checkout's own std
 //! with the same writer (`tools/std_answers.sh`), beside the binary in `build/answers`.
+use settings.{cli_settings}
 use @std.avrac.compiler.{
     ProgramFile,
     avra_fact_definitions,
     dependent_worked,
     program_files,
     spelled_file,
+    verdict_package,
 }
 use @std.avrac.core.{digest_of}
-use @std.io.{
-    IoError,
-    append_bytes,
-    drafted,
-    env,
-    exists,
-    link,
-    make_dirs,
-    read_bytes,
-    read_text,
-    remove,
-}
+use @std.io.{IoError, append_bytes, drafted, env, exists, link, make_dirs, read_bytes, remove}
 use @std.path.{joined_path}
 use @std.program.address.{SourceFileAddress, source_file}
 use @std.program.disk_store.{packs_answering}
 use @std.program.layered_store.{program_store_at}
 use @std.program.query_engine.{QueryEngine, query_engine}
 use @std.program.saved_query.{definitions_of}
-use @std.program.source_facts.{source_text}
+use @std.program.source_facts.{source_text, toolchain_verdict}
 
 /// What names a binary's mark in the machine's store: its std answers were laid in.
 const MARK: string = "std-answers-"
@@ -150,42 +141,38 @@ fn verdict_at(dir: string, print: string) -> string { joined_path(dir, "verdict-
 
 /// The std files of the program on `disk` the toolchain's verdict vouches for, each as `spelled_file`
 /// names it: every file it names, where all of them stand on the toolchain's std, unpinned, with the
-/// text it judged, and the program reads no other file of their packages; else none.
+/// text it judged, and the program reads no other file of their packages; else none. Each package's
+/// lines are judged as one answer (`verdict_package`), so a run where no std file moved takes them as
+/// they stand.
 fn vouched_files(engine: QueryEngine, disk: Disk) -> List<string> {
     let shipped? = shipped_answers() else { return [] }
     let print? = own_print() else { return [] }
-    let verdict = read_text(verdict_at(shipped, print)) catch ""
-    let lines = [line for line in verdict.split("\n") if !line.is_empty()]
-    let judged = [vouched_line(engine, disk, line) for line in lines]
-    if judged.is_empty() || judged.any(it == null) { return [] }
-    mut named: Map<string, bool> = {}
-    mut packages: Map<string, bool> = {}
-    for f in judged {
-        named.set("${f!.package_name}\t${f!.path_in_package}", true)
-        packages.set(f!.package_name, true)
+    let at = verdict_at(shipped, print)
+    let lines = [line for line in toolchain_verdict(engine, at).split("\n") if !line.is_empty()]
+    // the verdict is written a package at a time, so a line's package is read where its prefix changes
+    mut seen: Map<string, bool> = {}
+    mut prefix = "\t"
+    for line in lines {
+        if line.starts_with(prefix) { continue }
+        let package = line.split("\t")[0]
+        seen.set(package, true)
+        prefix = "${package}\t"
     }
+    let packages = seen.keys()
+    if packages.is_empty() || packages.any((p) -> !p.starts_with("@std/") || disk.deps.has(p)) { return [] }
+    if !packages.all((p) -> verdict_package(engine, at, p)) { return [] }
+    let files = [source_file(parts[0], parts[1]) for l in lines for parts in [l.split("\t")]]
+    mut named: Map<string, bool> = {}
+    for f in files { named.set("${f.package_name}\t${f.path_in_package}", true) }
     let unjudged = program_files(engine, disk.name)
-        .any(
-            (f) -> packages.has(f.package_name) &&
-                !named.has("${f.package_name}\t${f.path_in_package}"),
-        )
-    if unjudged { [] } else { [spelled_file(f!) for f in judged] }
-}
-
-/// The file a verdict's line names, where it stands on the toolchain's std as the verdict judged it.
-fn vouched_line(engine: QueryEngine, disk: Disk, line: string) -> SourceFileAddress? {
-    let parts = line.split("\t")
-    if parts.length != 3 || !parts[0].starts_with("@std/") || disk.deps.has(parts[0]) { return null }
-    let file = source_file(parts[0], parts[1])
-    let text? = source_text(engine, file) else { return null }
-    if digest_of(text) == parts[2] { file } else { null }
+        .any((f) -> seen.has(f.package_name) && !named.has("${f.package_name}\t${f.path_in_package}"))
+    if unjudged { [] } else { [spelled_file(f) for f in files] }
 }
 
 /// THE INSTALL'S VERDICT, written where `AVRA_VERDICT_DIR` asks: each of `own`, the files of a std
 /// package its check found nothing refusing in, by its digest.
 fn verdict_kept(engine: QueryEngine, own: List<ProgramFile>) {
-    // LICENSED input.debug_flag: where an install keeps its verdict is the install's, never an input of what is found
-    let dir? = env("AVRA_VERDICT_DIR") else { return }
+    let dir? = cli_settings().debug.verdict_dir else { return }
     let print? = own_print() else { return }
     let lines = [line! for h in own for line in [verdict_line(engine, h.file)] if line != null]
     let _ = append_bytes(verdict_at(dir, print), lines.join("").bytes())

@@ -1,0 +1,209 @@
+use commands.{
+    accepted,
+    candidates_of,
+    census_counters,
+    counts_of,
+    edited,
+    judge,
+    new_candidates,
+    percent,
+    recorded,
+    recorded_row,
+    render,
+    rows_of,
+    same_work,
+    snapshot_of,
+    unprinted,
+    warm_counters,
+}
+
+fn census_run() -> string {
+    [
+        "rc: 100 retains, 90 releases, 10 reclaims",
+        "rc: 5 empty lists made, 1 grown",
+        "rc: 1000 list reads, 200 list writes",
+        "alloc: 50 boxes, 7 list buffers",
+        "rc: 3 copies, 4 string compares",
+        "rc: 2 opens of an empty literal",
+        "mem: peak 12 MB in all",
+        "mem:   list boxes    peak      9 MB, now      0 MB",
+        "mem: noise",
+    ]
+        .join("\n")
+}
+
+fn one(key: string, n: int) -> Map<string, int> {
+    mut m: Map<string, int> = {}
+    m.set(key, n)
+    m
+}
+
+fn edit_said(r: Result<string, string>) -> string {
+    match r { .Ok(t) -> "ok ${t}", .Err(why) -> "err ${why}" }
+}
+
+spec "cost — the census a run prints" {
+    then "every census line reads into its counters, and nothing else does" {
+        let got = counts_of(census_run())
+        got.get("retains") == 100 &&
+            got.get("reclaims") == 10 &&
+            got.get("empty_grown") == 1 &&
+            got.get("list_writes") == 200 &&
+            got.get("list_buffers") == 7 &&
+            got.get("string_compares") == 4 &&
+            got.get("empty_opens") == 2 &&
+            got.get("peak_mb") == 12 &&
+            got.length == census_counters().length
+    }
+    then "a check's counts line gives its queries, and nothing else of it" {
+        let got = counts_of("counts: files_loaded=3 queries_computed=41 store_rows_written=41")
+        got.length == 1 && got.get("queries_computed") == 41
+    }
+    then "a warm run's worked line and a decoded line are counted" {
+        counts_of("worked: 69 answers here; item_under 14").get("worked") == 69 &&
+            counts_of("decoded: 12 answers read back").get("decoded") == 12
+    }
+    then "a ledger's pass row of six fields is its five rows" {
+        let got = counts_of("pass-row\ttape\t12\t3000\t0\t5\t2500")
+        got.length == 5 &&
+            got.get("pass_tape_asks") == 12 &&
+            got.get("pass_tape_per_unit") == 3000 &&
+            got.get("pass_tape_rechecks_per_moved") == 2500
+    }
+    then "a row of the old four fields binds nothing" { counts_of("pass-row\ttape\t12\t3000\t0").is_empty() }
+}
+
+spec "cost — the judgement" {
+    then "a noop's row of 0 fails at the first answer worked again" {
+        !judge(one("edit-noop worked", 1), one("edit-noop worked", 0)).failed.is_empty()
+    }
+    then "a fall inside the build's own jitter is not named" {
+        let j = judge(one("w boxes", 999951), one("w boxes", 1000000))
+        j.failed.is_empty() && j.fell.is_empty()
+    }
+    then "within the tolerance passes" { judge(one("w boxes", 100050), one("w boxes", 100000)).failed.is_empty() }
+    then "one box past the tolerance fails, naming both numbers" {
+        judge(one("w boxes", 100051), one("w boxes", 100000)).failed.join("|") == "cost: w boxes: 100000 -> 100051 (+0.051%, over the 0.05% tolerance)"
+    }
+    then "a peak one MB over a row of a thousand fails" {
+        judge(one("w peak_mb", 1001), one("w peak_mb", 1000)).failed.join("|") == "cost: w peak_mb: 1000 -> 1001 (+0.100%, over the 0.05% tolerance)"
+    }
+    then "a fall passes and is named" {
+        let j = judge(one("w boxes", 900), one("w boxes", 1000))
+        j.failed.is_empty() &&
+            j.fell.length == 1 &&
+            j.fell[0].contains("fell: 1000 -> 900 (-10.000%)")
+    }
+    then "a missing count fails" {
+        let empty: Map<string, int> = {}
+        judge(empty, one("w boxes", 1000)).failed[0].contains("printed no count")
+    }
+    then "a change from nothing is new" { percent(0, 5) == "new" }
+}
+
+spec "cost — the accept" {
+    then "over the same snapshot a row never rises" { accepted(one("w boxes", 1004), one("w boxes", 1000), true).get("w boxes") == 1000 }
+    then "over the same snapshot a row falls to what was measured" {
+        accepted(one("w boxes", 900), one("w boxes", 1000), true).get("w boxes") == 900
+    }
+    then "a ledger run's pass rows are recorded, and never the work its twin's rows hold" {
+        recorded_row("ledger-x pass_tape_asks") &&
+            !recorded_row("ledger-x queries_computed") &&
+            recorded_row("x queries_computed")
+    }
+    then "over another snapshot every row is what was measured" {
+        accepted(one("w boxes", 1200), one("w boxes", 1000), false).get("w boxes") == 1200
+    }
+}
+
+spec "cost — the baseline's text" {
+    then "rows read back as they were written, an edit's kind with an underscore among them" {
+        let sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        mut rows: Map<string, int> = {}
+        rows.set("edit-added_after worked", 42)
+        rows.set("ledger-edit-added_after pass_tape_asks", 7)
+        rows.set("w boxes", 1000)
+        let text = render(sha, rows)
+        snapshot_of(text) == sha &&
+            rows_of(text).length == 3 &&
+            rows_of(text).get("edit-added_after worked") == 42
+    }
+    then "rows are written sorted by workload, then counter" {
+        mut rows: Map<string, int> = {}
+        rows.set("b x", 2)
+        rows.set("a-b x", 3)
+        rows.set("a x", 1)
+        render("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", rows)
+            .ends_with("a x 1\na-b x 3\nb x 2\n")
+    }
+}
+
+spec "cost — what a run owes" {
+    then "an edit owes the answers it worked out again and the work its census counted" {
+        mut whole = one("edit-body worked", 3)
+        for c in warm_counters() { whole.set("edit-body ${c}", 1) }
+        unprinted(whole).is_empty() &&
+            unprinted(one("edit-body worked", 3)).length == warm_counters().length
+    }
+    then "a cold workload owes every census counter" {
+        unprinted(one("check-cli queries_computed", 3))[0] == "cost: check-cli printed no retains"
+    }
+    then "a matrix cell owes no census counter" { unprinted(one("matrix-check-laid-body pass_tape_asks", 4)).is_empty() }
+    then "a ledger's run owes no census counter" { unprinted(one("ledger-edit-body pass_tape_asks", 4)).is_empty() }
+}
+
+spec "cost — the edits" {
+    then "an edit that stands once is made, a line break spelled" {
+        edit_said(edited("a\nb\n", "body", "b", "c\\nd")) == "ok a\nc\nd\n"
+    }
+    then "an edit that stands twice is refused" { edit_said(edited("a a\n", "body", "a", "y")) == "err `a` stands 2 times, not once" }
+    then "an edit that stands nowhere is refused" { edit_said(edited("a a\n", "body", "x", "y")) == "err `x` stands 0 times, not once" }
+    then "a rename reaches every whole word and no part of one" {
+        edit_said(edited("f(x) f fg\n", "rename", "f", "g")) == "ok g(x) g fg\n"
+    }
+    then "several places are edited in turn, each standing once" {
+        edit_said(edited("a b\n", "deleted", "a&&&b", "x&&&y")) == "ok x y\n"
+    }
+    then "several places and fewer edits of them are refused" {
+        edit_said(edited("a b\n", "deleted", "a&&&b", "x")) == "err 2 places and 1 edits of them"
+    }
+    then "a rename of a word that stands nowhere is refused" { edit_said(edited("fg\n", "rename", "f", "g")) == "err no `f` to rename" }
+}
+
+spec "cost — the candidates" {
+    then "a candidate is keyed by its technique and fn; one the record lacks is said by its line" {
+        let found = candidates_of(
+            "candidate: reuse-in-place 40 f packages/x.av:3\ncandidate: strided-list 9 g packages/y.av",
+        )
+        found.length == 2 &&
+            recorded("# head\nreuse-in-place f\n").join("|") == "reuse-in-place f" &&
+            new_candidates(found, ["reuse-in-place f"]).join("|") == "cost: new candidate: strided-list 9 g packages/y.av"
+    }
+}
+
+fn two(a: string, n: int, b: string, m: int) -> Map<string, int> {
+    mut rows = one(a, n)
+    rows.set(b, m)
+    rows
+}
+
+spec "cost — a ledger run's work" {
+    then "a ledger run that did its twin's work passes" {
+        same_work(two("ledger-check-cli queries_computed", 7, "check-cli queries_computed", 7))
+            .is_empty()
+    }
+    then "a ledger run that did other work than its twin fails, naming both" {
+        same_work(
+            two("ledger-check-program queries_computed", 9, "check-program queries_computed", 8),
+        )
+            .join("|") == "cost: ledger-check-program queries_computed 9, its counted run's 8: the run's work depends on what ran before it or on state outside the tree"
+    }
+    then "a twin this run did not measure judges nothing" { same_work(one("ledger-build-cli queries_computed", 9)).is_empty() }
+    then "an edit's answers worked out again are no twin's to match" {
+        same_work(two("ledger-edit-body worked", 14, "edit-body worked", 9)).is_empty()
+    }
+    then "a counter that names no work is no twin's to match" {
+        same_work(two("ledger-edit-body pass_tape_asks", 4, "edit-body pass_tape_asks", 5))
+            .is_empty()
+    }
+}

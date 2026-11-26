@@ -88,6 +88,7 @@ jobs:
         timeout-minutes: 56
         env:
           LLVM_PREFIX: /usr/lib/llvm-22
+          FULL: ${{ steps.order.outputs.full }}
         run: |
           # GitHub's compare answers a merge-base and how far past main it stands; a question it can't answer
           # is said, and the tree takes its compiler as before
@@ -101,13 +102,38 @@ jobs:
           if [ "$ahead" -gt 0 ] 2>/dev/null; then :; else echo "lane-run: a tree of main's (its merge-base with program, $base, is main's) — its compiler as before"; exit 0; fi
           echo "lane-run: a tree of program's (merge-base $base, $ahead commit(s) past main) — program's compiler"
           echo "program=1" >> "$GITHUB_OUTPUT"
-          curl -fsSL --retry 3 -o gate-builder.tar.gz https://github.com/avra-lang/avra/releases/download/gate-builder/compiler.tar.gz
-          if sh tools/gate.sh unpack gate-builder.tar.gz; then
+          # EVERY FAILURE HERE IS SAID HERE, the step that failed named, and the run ends 70 before the command
+          refused() { echo "::error::lane-run: $1"; exit 70; }
+          curl -fsSL --retry 3 -o gate-builder.tar.gz https://github.com/avra-lang/avra/releases/download/gate-builder/compiler.tar.gz \
+            || refused "the gate-builder release did not download — this tree of program's has no compiler"
+          gzip -t gate-builder.tar.gz || refused "the gate-builder release did not download whole"
+          have=$(tar -xzOf gate-builder.tar.gz build/.avra-built-from | cut -d' ' -f1)
+          if [ "$FULL" = 0 ]; then
+            # THE BUILDER of a tree of program's is its merge-base's own compiler: the release's where it was
+            # built from that source, else that source's generations 1 and 2 built from it; never this tree's
+            git cat-file -e "$base^{commit}" 2>/dev/null || git fetch -q --depth=1 origin "$base" || refused "the merge-base $base did not fetch"
+            mb="$RUNNER_TEMP/merge-base"
+            git worktree add -q --detach "$mb" "$base" || refused "the merge-base $base did not check out"
+            want=$(sh tools/work compiler-hash "$mb")
+            mkdir -p build
+            if [ "$have" = "$want" ]; then
+              tar -xzf gate-builder.tar.gz build/avra build/.avra-built-from
+              echo "lane-run: the gate-builder release is the merge-base's compiler — it stands as the builder"
+            else
+              echo "lane-run: the gate-builder release was built from compiler source $have, the merge-base's is $want — its generations 1 and 2 built from it, as the builder"
+              tar -xzf gate-builder.tar.gz -C "$mb" build/avra build/.avra-built-from
+              for g in 1 2; do
+                (cd "$mb" && make -s avra) > "$RUNNER_TEMP/merge-base-gen$g.log" 2>&1 || { tail -n 60 "$RUNNER_TEMP/merge-base-gen$g.log"; refused "generation $g of the merge-base's compiler source did not build from the gate-builder release"; }
+              done
+              cp -p "$mb/build/avra" build/avra
+              cp -p "$mb/build/.avra-built-from" build/.avra-built-from
+            fi
+          elif sh tools/gate.sh unpack gate-builder.tar.gz; then
             echo "lane-run: the gate-builder release stands as this tree's compiler; nothing built"
           else
+            echo "lane-run: the gate-builder release was built from compiler source $have, this tree's is another — generations 1 and 2 built from it"
             tar -xzf gate-builder.tar.gz build/avra
-            echo "lane-run: this tree's compiler source is not the release's — generations 1 and 2 built from it"
-            sh tools/gate.sh seed
+            sh tools/gate.sh seed || { find build/gate/pack -type f -exec sh -c 'echo "== $1"; tail -n 60 "$1"' _ {} \; ; refused "this tree's compiler source did not build from the gate-builder release (generations 1 and 2, tools/gate.sh seed)"; }
           fi
           build/avra --version
       # THE LANE'S OWN SAVE FIRST, then main's for this key, then the lane's newest, then main's newest.

@@ -23,6 +23,12 @@ check "$(midci '[{"number":5,"headRefName":"a","isDraft":false,"statusCheckRollu
 check "$(midci '[{"number":9,"headRefName":"f","isDraft":false,"statusCheckRollup":[{"name":"gate","status":"IN_PROGRESS"},{"name":"test","status":"QUEUED"}]}]')" "#9" "land guard: a queued test check counts as mid-CI"
 check "$(midci '[{"number":10,"headRefName":"g","isDraft":false,"statusCheckRollup":[]}]')" "" "land guard: a PR with no checks yet is not mid-CI"
 
+# THE FOLLOWER'S PACE: 30 s for two minutes, then 120 s; under 500 calls left this hour, 300 s throughout.
+pace_fn=$(sed -n '/^gh_low() {/p;/^poll_pace() {/,/^}$/p' "$here/work")
+pace() { sh -c "$pace_fn; gh_left=$2; poll_pace $1"; }
+check "$(pace 0 '') $(pace 119 4000) $(pace 120 4000) $(pace 3000 4000)" "30 30 120 120" "work run: the follower polls every 30 s for two minutes, then every 120 s"
+check "$(pace 0 499) $(pace 3000 12) $(pace 0 500)" "300 300 30" "work run: under 500 API calls left this hour the follower polls every 300 s"
+
 # The scratch repository: origin, a main checkout carrying the tools
 # under test, and room beside it for lanes.
 git init -q --bare "$scratch/origin.git"
@@ -318,6 +324,45 @@ bbg update-ref refs/remotes/origin/hd-gate HEAD
 echo lane > "$bb/lane"; bbg add -A; bbg commit -q -m lane
 echo k-new > "$scratch/published"
 check "$(PUBLISHED="$scratch/published" sh "$slw" builder-key "$bb")" "k-new exact" "work builder-key: a lane off a base branch takes the base's published compiler" "$scratch/out"
+# A TREE OF PROGRAM'S stands on the gate-builder release, never on an `avrac-*` key, however near one is published.
+pp=$scratch/pp
+git init -q -b main "$pp"
+mkdir -p "$pp/tools"
+cp "$bk/tools/compiler_release.py" "$pp/tools/"
+ppg() { git -C "$pp" -c user.name=t -c user.email=t@t "$@"; }
+echo old > "$pp/keyfile"; ppg add -A; ppg commit -q -m m
+ppg update-ref refs/remotes/origin/main HEAD
+ppg update-ref refs/remotes/origin/program HEAD
+echo k-old > "$scratch/published"
+check "$(PUBLISHED="$scratch/published" sh "$slw" builder-key "$pp")" "k-old exact" "work builder-key: a tree of main's takes main's key though origin/program stands on it" "$scratch/out"
+echo new > "$pp/keyfile"; ppg commit -q -am program
+ppg update-ref refs/remotes/origin/program HEAD
+echo lane > "$pp/lane"; ppg add -A; ppg commit -q -m lane
+check "$(PUBLISHED="$scratch/published" sh "$slw" builder-key "$pp")" "gate-builder program" "work builder-key: a lane off program takes the gate-builder release, never main's published ancestor" "$scratch/out"
+pg=$(sed -n '/^program_base() {/,/^}$/p' "$here/work")
+check "$(sh -c "$pg; program_base '$pp'")" "$(git -C "$pp" rev-parse HEAD~1)" "work program_base: a lane off program answers its merge-base with program" "$scratch/out"
+ppg update-ref -d refs/remotes/origin/program
+check "$(PUBLISHED="$scratch/published" sh "$slw" builder-key "$pp")" "k-old exact" "work builder-key: with no program ref the tree is main's" "$scratch/out"
+# A PROGRAM TREE'S RUN WHOSE RELEASE DOES NOT ANSWER says so before anything starts: 74, nothing pushed.
+ppg update-ref refs/remotes/origin/program HEAD~1
+ps=$(sed -n '/^program_said() {/,/^}$/p;/^gate_builder_answers() {/,/^}$/p' "$here/work")
+st=0; AVRA_GATE_BUILDER_ASKED=1 sh -c "gate_builder_url=u; $ps; program_said abcdef0123" 2>"$scratch/said" || st=$?
+check "$st $(grep -c 'did not answer. Nothing was started' "$scratch/said")" "1 1" "work run: a tree of program's whose release does not answer is refused at once, saying why" "$scratch/out"
+
+# THE MAC'S PUBLISHED COMPILER is laid into the depot by `work compiler`, and a lane of its source takes it;
+# a pack that does not download leaves the depot as it was. `curl` is a stub handing over a pack made here.
+lane macme
+mkdir -p "$scratch/macpack/build" "$scratch/maccurl"
+printf 'mac compiler\n' > "$scratch/macpack/build/avra"; chmod +x "$scratch/macpack/build/avra"
+echo "$(sh "$slw" compiler-hash "$sl/macme") $(git -C "$sl/macme" rev-parse HEAD) 2" > "$scratch/macpack/build/.avra-built-from"
+tar -czf "$scratch/mac.tar.gz" -C "$scratch/macpack" build
+printf '#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = -o ] && { cp "$MAC_PACK" "$2"; exit 0; }; shift; done\nexit 22\n' > "$scratch/maccurl/curl"
+chmod +x "$scratch/maccurl/curl"
+(cd "$sl/macme" && MAC_PACK="$scratch/nothing" PATH="$scratch/maccurl:$PATH" AVRA_MAC_COMPILER=1 AVRA_COMPILER_DEPOT="$scratch/macdepot" sh "$slw" compiler) > "$scratch/out" 2>&1
+check "$(grep -c 'did not download whole' "$scratch/out") $(ls "$scratch/macdepot" 2>/dev/null | wc -l | tr -d ' ')" "1 0" "work compiler: a Mac pack that does not download is said, and the depot is as it was" "$scratch/out"
+(cd "$sl/macme" && MAC_PACK="$scratch/mac.tar.gz" PATH="$scratch/maccurl:$PATH" AVRA_MAC_COMPILER=1 AVRA_COMPILER_DEPOT="$scratch/macdepot" sh "$slw" compiler) > "$scratch/out" 2>&1
+check "$(grep -c 'the depot holds the Mac' "$scratch/out") $(cat "$sl/macme/build/avra" 2>/dev/null) $(grep -c "it is this tree's" "$scratch/out")" "1 mac compiler 1" "work compiler: on a Mac the published compiler is laid into the depot, and a lane of its source takes it" "$scratch/out"
+find "$sl/macme/build" -type f -delete
 
 # `compiler --get`: a held compiler for this source needs no build; none held and none published builds.
 lane getme

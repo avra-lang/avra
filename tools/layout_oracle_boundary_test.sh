@@ -1,5 +1,4 @@
 #!/bin/sh
-# tool-witness: owed by ui-lead — the oracle's cell program reads `Env {}.theme`, and std-ui's Env has only direction and locale
 # A line whose run stands within the combined quantum of its room breaks either way in two correct
 # engines. WebKit's prop-face seed 2 holds a tree (case 64) whose text fits its 60px box in WebKit by a
 # hair the solver counts over: it agrees with the boundary term and is refused without it. Skips,

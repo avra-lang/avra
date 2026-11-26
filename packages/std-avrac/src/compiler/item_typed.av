@@ -171,6 +171,7 @@ fn typed_under(engine: QueryEngine, file: SourceFileAddress, signed: SignedBody)
                     stmt: signed.stmt.index,
                     body: signed.body.index,
                     under: signed_under(signed),
+                    owner: seats_owner(signed),
                     seats: cx.seats.get(),
                 },
             ],
@@ -182,13 +183,17 @@ fn typed_under(engine: QueryEngine, file: SourceFileAddress, signed: SignedBody)
 /// typed last in this process, and what it was typed under. A typed answer keeps no seats — they
 /// would double it — so a lowering that asks for a body's typing and finds it made here takes
 /// them from where the check left them, and one that finds the answer kept checks again.
-type SeatsLeft = { file: string, stmt: int, body: int, under: string, seats: Map<string, SignedType> }
+type SeatsLeft = { file: string, stmt: int, body: int, under: string, owner: string, seats: Map<string, SignedType> }
 
 /// The seats of the surface check made last in this process, until they're taken.
 once fn seats_left() -> Cell<List<SeatsLeft>> {
     let left: Cell<List<SeatsLeft>> = Cell.new([])
     left
 }
+
+/// Whose body a check's seats are: its item's own id and the fn its statement declares, which the
+/// places of its statement and its body, alike in every item of one shape, don't tell apart.
+fn seats_owner(signed: SignedBody) -> string { "${signed.item.at?.of ?? -1} ${signed.item.store.fn_parts(signed.stmt)?.name ?? ""}" }
 
 /// What a body's check stands under beside its nodes, as one text: its signature, its receiver, and
 /// whether a want, a seat or a const of its own steers it.
@@ -204,7 +209,8 @@ fn seats_taken(file: SourceFileAddress, signed: SignedBody) -> Map<string, Signe
     if left.file != spelled_file(file) ||
         left.stmt != signed.stmt.index ||
         left.body != signed.body.index ||
-        left.under != signed_under(signed) { return null }
+        left.under != signed_under(signed) ||
+        left.owner != seats_owner(signed) { return null }
     left.seats
 }
 

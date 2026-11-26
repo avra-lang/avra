@@ -1,0 +1,29 @@
+// proves: a lambda in a generic seat answering a `Result` whose failure is known promises that
+// `Result`: a `fail` inside raises to its caller, a `?` passes the failure on, and a plain tail is
+// the value, inferred
+fn run<T>(f: fn(int) -> Result<T, string>, n: int) -> string {
+    match f(n) { .Ok(_) -> "ok", .Err(e) -> e }
+}
+
+fn kept<T>(f: fn(int) -> Result<T, string>, n: int) -> Result<T, string> { f(n) }
+
+fn checked(n: int) -> Result<int, string> {
+    if n < 0 { fail "negative" }
+    n
+}
+
+fn said(r: Result<int, string>) -> string {
+    match r { .Ok(v) -> "ok ${v}", .Err(e) -> e }
+}
+
+fn capped(n: int) -> string {
+    run(
+        (n: int) -> {
+            if n > 1 { fail "too big" }
+            n
+        },
+        n,
+    )
+}
+
+"${capped(3)} ${capped(0)} ${said(kept((m) -> checked(m)? + 1, 4))} ${said(kept((m) -> checked(m)? + 1, -4))}"

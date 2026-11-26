@@ -31,6 +31,7 @@
 #include <unistd.h>
 
 #include "avra_box.h"
+#include "avra_settings.h"
 #include "avra_door.h"
 #if defined(__APPLE__)
 #include <mach-o/dyld.h>
@@ -450,13 +451,13 @@ SETTLED_AT_LOAD
 static void trace_settle(void) {
     avra_clock_turned_hook = clock_turned;
     avra_clock_spun_hook = case_spun;
-    const char* env = getenv("AVRA_FLOW_TRACE");
+    const char* env = getenv(AVRA_SET_FLOW_TRACE);
     if (!env || !*env) return;
     if (strcmp(env, "1") != 0) {
         g_trace_fd = open(env, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
         if (g_trace_fd < 0) g_trace_fd = 2;
     }
-    const char* cap = getenv("AVRA_FLOW_TRACE_CAP");
+    const char* cap = getenv(AVRA_SET_FLOW_TRACE_CAP);
     g_trace_left = cap ? (int64_t)avra_number(cap, 0) : (int64_t)256 << 20;
     g_flow_trace = 1;
 }
@@ -481,10 +482,10 @@ static int64_t whole_above_zero(const char* name, const char* value) {
 // whichever is sooner.
 SETTLED_AT_LOAD
 static void tick_settle(void) {
-    const char* us = getenv("AVRA_TICK_US");
-    if (us && *us) avra_tick_us = whole_above_zero("AVRA_TICK_US", us);
-    const char* turns = getenv("AVRA_TIMER_TURNS");
-    if (turns && *turns) g_timer_turns = whole_above_zero("AVRA_TIMER_TURNS", turns);
+    const char* us = getenv(AVRA_SET_TICK_US);
+    if (us && *us) avra_tick_us = whole_above_zero(AVRA_SET_TICK_US, us);
+    const char* turns = getenv(AVRA_SET_TIMER_TURNS);
+    if (turns && *turns) g_timer_turns = whole_above_zero(AVRA_SET_TIMER_TURNS, turns);
 }
 
 #define TRACING __builtin_expect(g_flow_trace, 0)
@@ -1574,7 +1575,7 @@ static void stack_give(Stack s) { free(s.base); }
 static void pool_trim(void) { overs_trimmed(); }
 #else
 static void guards_settle(void) {
-    const char* env = getenv("AVRA_FIBER_GUARDS");
+    const char* env = getenv(AVRA_SET_FIBER_GUARDS);
     // A VALUE ASKS FOR PAGES BY NAME, so it is given them whatever the
     // kernel has: `all` is a page under every stack and the ceiling that
     // comes with it, and a count is how the policy past K is run and
@@ -1614,7 +1615,7 @@ static void stacks_settle(void) {
     if (g_page) return;
     g_page = (size_t)sysconf(_SC_PAGESIZE);
     size_t want = (size_t)avra_task_stack_bytes;
-    const char* env = getenv("AVRA_FIBER_STACK");
+    const char* env = getenv(AVRA_SET_FIBER_STACK);
     if (env) {
         long long v = atoll(env);
         if (v > 0) want = (size_t)v;
@@ -4240,7 +4241,7 @@ void avra_tasks_listed(FILE* out) {
 static void tasks_door_named(void) {
     if (!g_door_open) return;
     DoorNames* next = &g_doors[!g_door_at];
-    const char* chosen = getenv("AVRA_TASKS_DIR");
+    const char* chosen = getenv(AVRA_SET_TASKS_DIR);
     if (chosen && *chosen) {
         // a relative directory means two places to the asker and to us: none
         snprintf(next->dir, sizeof next->dir, "%s", chosen[0] == '/' ? chosen : "");

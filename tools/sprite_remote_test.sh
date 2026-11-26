@@ -197,6 +197,45 @@ settled route 20
 check "$(res route)|$(grep -c '^route-ran$' "$AVRA_SPRITE_HOME/avra-runs/route/out")|$(grep -c 'built once' "$AVRA_SPRITE_HOME/avra-runs/route/out")|$(cat "$route_tree/compiled" 2>/dev/null)|$(left route)" \
       "status 0|1|1|gens=1|0" "a merge-base compiler builds the tree once, through make compiler" "$AVRA_SPRITE_HOME/avra-runs/route/out"
 
+# ══ A TREE OF PROGRAM'S STANDS ON THE GATE-BUILDER RELEASE: where the release's stamp is the tree's
+# compiler source it stands and nothing builds; where it is another, generations 1 and 2 build from it;
+# where they do not build, the run says so and ends 70 before the command. `curl` is a stub handing
+# over a pack made here.
+gb_pack() {
+    rm -rf "$scratch/gb-pack" && mkdir -p "$scratch/gb-pack/build"
+    printf 'release compiler\n' > "$scratch/gb-pack/build/avra" && chmod +x "$scratch/gb-pack/build/avra"
+    echo "$1 releaseat 2" > "$scratch/gb-pack/build/.avra-built-from"
+    tar -czf "$scratch/gb.tar.gz" -C "$scratch/gb-pack" build
+}
+mkdir -p "$scratch/gbcurl"
+printf '#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = -o ] && { cp "$GB_PACK" "$2"; exit 0; }; shift; done\nexit 22\n' > "$scratch/gbcurl/curl"
+chmod +x "$scratch/gbcurl/curl"
+gb_tree() {
+    rm -rf "$scratch/gb-$1" && mkdir -p "$scratch/gb-$1"
+    printf 'avra:\n\t@%s\n\t@echo gen >> made\ncompiler-files:\n\t@echo build/avra\n' "$2" > "$scratch/gb-$1/Makefile"
+}
+gb_pack gbhash
+gb_tree stand true
+GB_PACK=$scratch/gb.tar.gz PATH="$scratch/gbcurl:$PATH" remote start gbstand "fixture 0 0" 60 gbstand "$scratch/gb-stand" 'gbhash@gatebuilder' echo gb-ran > "$scratch/start"
+settled gbstand 20
+check "$(res gbstand)|$(grep -c '^gb-ran$' "$AVRA_SPRITE_HOME/avra-runs/gbstand/out")|$(cat "$scratch/gb-stand/made" 2>/dev/null)|$(cat "$scratch/gb-stand/build/avra")|$(cat "$AVRA_SPRITE_HOME/avra-compilers/gbhash/avra" 2>/dev/null)" \
+      "status 0|1||release compiler|release compiler" "a tree of program's whose source is the gate-builder release's stands on it, builds nothing, and keeps it" "$AVRA_SPRITE_HOME/avra-runs/gbstand/out"
+gb_pack otherhash
+gb_tree build true
+GB_PACK=$scratch/gb.tar.gz PATH="$scratch/gbcurl:$PATH" remote start gbbuild "fixture 0 0" 60 gbbuild "$scratch/gb-build" 'treehash@gatebuilder' echo gb-ran > "$scratch/start"
+settled gbbuild 20
+check "$(res gbbuild)|$(grep -c '^gb-ran$' "$AVRA_SPRITE_HOME/avra-runs/gbbuild/out")|$(tr '\n' ' ' < "$scratch/gb-build/made" 2>/dev/null)|$(grep -c 'generations 1 and 2 built from it' "$AVRA_SPRITE_HOME/avra-runs/gbbuild/out")" \
+      "status 0|1|gen gen |1" "a tree of program's whose source is another builds generations 1 and 2 from the gate-builder release" "$AVRA_SPRITE_HOME/avra-runs/gbbuild/out"
+gb_tree fail false
+GB_PACK=$scratch/gb.tar.gz PATH="$scratch/gbcurl:$PATH" remote start gbfail "fixture 0 0" 60 gbfail "$scratch/gb-fail" 'failhash@gatebuilder' echo gb-ran > "$scratch/start"
+settled gbfail 20
+check "$(res gbfail)|$(grep -c '^gb-ran$' "$AVRA_SPRITE_HOME/avra-runs/gbfail/out")|$(grep -c 'generation 1 of this compiler source did not build from the gate-builder release' "$AVRA_SPRITE_HOME/avra-runs/gbfail/out")" \
+      "status 70|0|1" "a tree of program's that does not build from the gate-builder release is refused at once, 70, its command never run" "$AVRA_SPRITE_HOME/avra-runs/gbfail/out"
+GB_PACK=$scratch/nothing PATH="$scratch/gbcurl:$PATH" remote start gbgone "fixture 0 0" 60 gbgone "$scratch/gb-fail" 'gonehash@gatebuilder' echo gb-ran > "$scratch/start"
+settled gbgone 20
+check "$(res gbgone)|$(grep -c '^gb-ran$' "$AVRA_SPRITE_HOME/avra-runs/gbgone/out")|$(grep -c 'the gate-builder release did not download whole' "$AVRA_SPRITE_HOME/avra-runs/gbgone/out")" \
+      "status 70|0|1" "a tree of program's whose release does not download is refused at once, 70, saying so" "$AVRA_SPRITE_HOME/avra-runs/gbgone/out"
+
 # ══ A BRANCH WITH RUNGS IS BUILT BY THE LADDER, as CI builds it: make compiler gets RUNGS and
 # LADDER_BASE, and tools/ladder.sh is pointed at the repository shipped beside the tree.
 ladder_tree="$scratch/ladder-tree"

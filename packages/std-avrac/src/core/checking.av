@@ -986,6 +986,20 @@ export fn all_known(types: List<SignedType?>?, arity: int) -> List<SignedType>? 
 /// from what the lambda turns out to be.
 fn known(part: SignedType?) -> SignedType? { if part == null || part!.inferred() { null } else { part } }
 
+/// `answer` where it is a `Result` whose failure is known and whose value is still to be inferred.
+fn failing_answer(answer: SignedType?) -> SignedType? {
+    let a? = answer else { return null }
+    if a.resulted() && !a.args[1].inferred() { a } else { null }
+}
+
+/// `read`, a body's answer, as the value of `heard` where `heard` is a `Result` and `read` is none.
+fn ok_lifted(read: SignedType?, heard: SignedType?) -> SignedType? {
+    let r? = read else { return null }
+    let h? = heard else { return r }
+    if !h.resulted() || r.resulted() { return r }
+    owned_type("Result") with { args: [r, h.args[1]] }
+}
+
 /// The fn type a lambda's seat wants, when it wants one of `arity` seats: a nullable fn's seat wants
 /// the fn, which a lambda is, present.
 fn seat_fn(expected: Expected, arity: int) -> SignedType? {
@@ -1182,7 +1196,8 @@ impl Checking {
     /// The fn `v`, of type `read`, refused by the generic fn seat `seat` it fills still open where
     /// what it answers as it stands (a lambda's body, any other fn its answer) doesn't fill the seat:
     /// a fn's answer is what it answers, never widened into a nullable a seat's answer spells, so a
-    /// seat answering `R?` takes no fn answering `int`. A seat its call already filled checked a
+    /// seat answering `R?` takes no fn answering `int`; a body answering a plain value into a seat
+    /// answering a `Result` answers it as that `Result`'s value, as its tail is. A seat its call already filled checked a
     /// lambda's body against what it answers there.
     mut fn unanswered(
         v: ExprId,
@@ -1195,7 +1210,7 @@ impl Checking {
         if !seat.generic() { return }
         let body = self.store.closure_parts(v)?.body
         let own? = (if body != null { self.type_of(body!) } else { read.answer }) else { return }
-        let answered = read with { answer: own }
+        let answered = read with { answer: ok_lifted(own, seat.answer) ?? own }
         mut probe = found
         let wants_absence = seat.answer?.nulls ?? 0 > own.nulls && !own.bottom() && !own.absence()
         if own.inferred() || !wants_absence && seat.unifies(answered, probe) { return }
@@ -1904,7 +1919,7 @@ impl Checking {
     /// body checks in a fenced scope against the seat's answer, which is the lambda's answer and what
     /// a `return` inside it answers. Absent
     /// where it stands under a seat it can't see, which may widen it.
-    mut fn lambda_checked(params: List<Param>, body: ExprId, wanted: Expected) -> SignedType? {
+    mut fn lambda_checked(params: List<Param>, body: ExprId, wanted: Expected, block: bool = false) -> SignedType? {
         let expected = self.shaped(wanted)
         let one = seat_fn(expected, 1)
         let record = known(one?.seats?.first()?.ty)
@@ -1923,7 +1938,7 @@ impl Checking {
                 )
         }
         let before = self.refused.get().length
-        let read = self.lambda_answered(body, seat, !params.is_empty())
+        let read = self.lambda_answered(body, seat, !block || !params.is_empty())
         self.closed()
         if expected.unknowing() || read == null || types.any(it == null) { return null }
         let answer = self.answer_lifted(body, expected, before) ?? read
@@ -1973,20 +1988,27 @@ impl Checking {
 
     /// What a lambda's body `body` answers into the fn seat `seat`: checked against the seat's answer
     /// where it's known, else read as it is, an arms block's match widened as `tailed_answer` says.
-    /// The seat's answer is what a `return`, `?` or `fail` inside answers, where the lambda
-    /// `promises`; a lambda taking no seat hears none, and one whose seat's answer isn't known has
-    /// none to give, so no fn encloses its body.
+    /// The seat's answer is what a `return`, `?` or `fail` inside answers, whatever the lambda's
+    /// parameters, where it `promises` — a block of no seats promises none — and a `Result` whose
+    /// failure is known is that answer while its value is still to be inferred, the body's read then
+    /// answered as its value; a seat whose answer isn't known has none to give, so no fn encloses its
+    /// body.
     mut fn lambda_answered(body: ExprId, seat: SignedType?, promises: bool = true) -> SignedType? {
         let wanted = known(seat?.answer)
+        let heard = wanted ?? failing_answer(seat?.answer)
         let outer = self.answer
         let outer_fnless = self.fnless
-        self.answer = if promises { wanted } else { null }
-        self.fnless = outer_fnless || !promises || wanted == null
+        self.answer = if promises { heard } else { null }
+        self.fnless = outer_fnless || !promises || heard == null
         let read = self
             .check(body, if wanted != null { Expected.Exactly(wanted!) } else { Expected.Free })
         self.answer = outer
         self.fnless = outer_fnless
-        wanted ?? self.tailed_answer(body, read, seat?.answer)
+        if wanted != null { return wanted }
+        let own = self.tailed_answer(body, read, seat?.answer)
+        let lifted = ok_lifted(own, heard)
+        if lifted != null && !(own?.resulted() ?? true) { self.seat_kept(body, Expected.Exactly(lifted!)) }
+        lifted
     }
 
     /// A lambda taking the fields of `record`, the one seat of the fn seat `seat`, by name: each

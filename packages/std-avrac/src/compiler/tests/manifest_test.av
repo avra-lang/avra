@@ -189,6 +189,34 @@ spec "compiler/manifest" {
             let text = packaged("[link]\ndynamic_symbols = \"yes\"\n")
             speaks(text, "manifest.link_flag") && !read(text).manifest.dynamic_symbols
         }
+        then "headers and include read as words, a system header kept as written" {
+            let m = read(
+                packaged(
+                    "[link]\nheaders = [\"vendor/x.h\", \"<math.h>\"]\ninclude = [\"vendor\"]\n",
+                ),
+            )
+            m.voices.is_empty() &&
+                m.manifest.headers.join(",") == "vendor/x.h,<math.h>" &&
+                m.manifest.include.join(",") == "vendor"
+        }
+        then "no headers row reads as no headers" {
+            let m = read(packaged("[link]\nlibs = [\"m\"]\n")).manifest
+            m.headers.is_empty() && m.include.is_empty()
+        }
+        then "an unclosed `<` header is refused" {
+            speaks(packaged("[link]\nheaders = [\"<stdio.h\"]\n"), "manifest.header_word")
+        }
+        then "an empty `<>` header is refused" { speaks(packaged("[link]\nheaders = [\"<>\"]\n"), "manifest.header_word") }
+        then "a `>` inside a header path is refused" {
+            speaks(packaged("[link]\nheaders = [\"a>b.h\"]\n"), "manifest.header_word")
+        }
+        then "an empty header path is refused" { speaks(packaged("[link]\nheaders = [\"\"]\n"), "manifest.header_word") }
+        then "a `-`-leading token in headers is refused as an option" {
+            speaks(packaged("[link]\nheaders = [\"-include\"]\n"), "manifest.link_option")
+        }
+        then "a `-`-leading token in include is refused — the `-I` is ours" {
+            speaks(packaged("[link]\ninclude = [\"-Ivendor\"]\n"), "manifest.link_option")
+        }
         then "`flags` is no longer a [link] key" {
             speaks(packaged("[link]\nflags = [\"-lm\"]\n"), "manifest.unknown_key")
         }

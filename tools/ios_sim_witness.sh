@@ -58,11 +58,11 @@ let t = spawn { down(0) }
 println("runaway ${t.await}")
 EOF
     cat > "$work/foundation.av" <<'EOF'
-extern fn CFStringCreateWithCString(alloc: ptr?, text: string, encoding: int) -> ptr
+extern fn avra_apple_cfstring(text: string) -> ptr
 extern fn NSLog(format: ptr)
 extern fn CFAbsoluteTimeGetCurrent() -> float
 
-NSLog(CFStringCreateWithCString(null, "foundation reached", 134217984))
+NSLog(avra_apple_cfstring("foundation reached"))
 println("foundation clock ${CFAbsoluteTimeGetCurrent() > 0.0}")
 EOF
 }

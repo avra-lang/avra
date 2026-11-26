@@ -21,14 +21,14 @@ which only shrinks.
 | flow | 16 | 12 | 12 | 0 |
 | annotation | 18 | 13 | 13 | 1 |
 | source | 4 | 4 | 4 | 0 |
-| manifest | 32 | 29 | 29 | 0 |
+| manifest | 33 | 30 | 30 | 0 |
 | collect | 13 | 13 | 13 | 0 |
 | collect_enum | 7 | 7 | 7 | 0 |
 | ctx | 5 | 0 | 0 | 0 |
 | const | 6 | 6 | 6 | 0 |
 | shape | 1 | 0 | 0 | 0 |
 | loop | 2 | 2 | 2 | 0 |
-| **all** | 302 | 267 | 266 | 11 |
+| **all** | 303 | 268 | 267 | 11 |
 
 ## Rules
 

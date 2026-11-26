@@ -10,6 +10,7 @@
 //! count at all. The caller owns the call's result. Systems ownership
 //! lands here later as a strategy, touching neither lowering nor the
 //! backend.
+use core.settings.{avrac_settings}
 use core.{
     Ins,
     Layout,
@@ -95,8 +96,7 @@ export fn memory(l: Lowered) -> Lowered {
 /// Whether this process runs the memory pass's own proof — it adds
 /// findings to a check, so a check is kept under it.
 export fn sound_checked() -> bool {
-    // LICENSED input.debug_flag: a debug flag is the process's own, not an input
-    env("AVRA_SOUND_CHECK") == "1"
+    avrac_settings().debug.sound_check
 }
 
 /// One body's memory instructions: its params are registers 0..`seats`, and
@@ -1707,13 +1707,7 @@ fn disowns(mut open_scopes: Stack<Scope>, r: Reg) {
 once fn rc_reasons() -> Cell<Map<string, int>> { map_cell() }
 
 /// Whether this process tallies why the pass places each count.
-once fn rc_reasons_flag() -> string? {
-    // LICENSED input.debug_flag: a debug flag is the process's own, not an input
-    env("AVRA_RC_REASONS")
-}
-
-/// Whether this process tallies why the pass places each count.
-fn tallying() -> bool { rc_reasons_flag() != null }
+fn tallying() -> bool { avrac_settings().debug.rc_reasons }
 
 /// The reason a yielded register its scope does not own takes a count.
 const YIELD_NOT_OWNED = "a yield its scope does not own"
@@ -1801,7 +1795,7 @@ fn runs_joined(placed: List<Ins>) -> List<Ins> {
 
 /// The tally of why the pass placed each count, most first; absent unless `AVRA_RC_REASONS` is set.
 export fn rc_reasons_said() -> string? {
-    if rc_reasons_flag() == null { return null }
+    if !tallying() { return null }
     let tally = rc_reasons().get()
     let reasons = sorted_by(
         tally.keys(),

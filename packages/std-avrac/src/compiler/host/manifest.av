@@ -41,7 +41,7 @@ export type ToolRow = { name: string, from: Provenance, var: string?, default: s
 /// instructions and `memory` in MiB of the compiler's heap, resolved
 /// to the measured defaults where the manifest writes none.
 @codec
-export type Manifest = { name: string, version: string, bin: string?, lib: string?, deps: List<Dependency>, deps_at: Span?, excludes: List<string>, objects: List<string>, wasm_objects: List<string>, search: List<string>, libs: List<string>, shared: string = "", dynamic_symbols: bool = false, raw: List<string>, tools: List<ToolRow> = [], budgets: Budgets, dev_server: string? = null }
+export type Manifest = { name: string, version: string, bin: string?, lib: string?, deps: List<Dependency>, deps_at: Span?, excludes: List<string>, objects: List<string>, wasm_objects: List<string>, search: List<string>, libs: List<string>, headers: List<string> = [], include: List<string> = [], shared: string = "", dynamic_symbols: bool = false, raw: List<string>, tools: List<ToolRow> = [], budgets: Budgets, dev_server: string? = null }
 
 /// A reader over one document: the source for positions, the
 /// document, and what it has said so far.
@@ -119,6 +119,8 @@ export fn manifest_read(src: SourceFile) -> ManifestRead {
         wasm_objects: r.linked("wasm_objects"),
         search: r.linked("search"),
         libs: r.linked("libs"),
+        headers: r.headers(),
+        include: r.linked("include"),
         shared: r.link_name("shared"),
         dynamic_symbols: r.link_flag("dynamic_symbols"),
         raw: r.words_of("link.raw", "flags"),
@@ -146,6 +148,13 @@ fn lawful_name(name: string) -> bool {
 export fn library_stem(named: string) -> string {
     let stripped = if named.starts_with("@") { named.substring(1, named.length) } else { named }
     stripped.replace("/", "-")
+}
+
+/// A `[link]` header word: a non-empty path, or `<name>` with a name
+/// inside the brackets; a bracket anywhere else is neither.
+fn lawful_header(w: string) -> bool {
+    if w.starts_with("<") { return w.length > 2 && w.ends_with(">") && !w.substring(1, w.length - 1).contains("<") }
+    !w.is_empty() && !w.contains("<") && !w.contains(">")
 }
 
 /// `MAJOR.MINOR.PATCH`, an optional `-` suffix after.
@@ -203,7 +212,16 @@ fn known_key(section: string, key: string) -> bool {
     }
     if section == "bin" || section == "lib" { return key == "path" || key == "name" }
     if section == "link" {
-        return ["objects", "wasm_objects", "search", "libs", "shared", "dynamic_symbols"]
+        return [
+            "objects",
+            "wasm_objects",
+            "search",
+            "libs",
+            "headers",
+            "include",
+            "shared",
+            "dynamic_symbols",
+        ]
             .contains(key)
     }
     if section == "link.raw" { return key == "flags" }
@@ -228,16 +246,21 @@ fn link_shape(key: string) -> string {
         "objects" -> "object files, by path from the package root",
         "wasm_objects" -> "object files a wasm target links, by the same paths",
         "search" -> "directories",
-        rest -> "library names",
+        "headers" -> "C headers, by path from the package root or as `<name.h>`",
+        "include" -> "header directories, by path from the package root",
+        "libs" -> "library names",
+        rest -> "words",
     }
 }
 
 fn link_help(key: string) -> string {
     match key {
-        "objects" -> "write the path alone",
+        "objects" or "headers" -> "write the path alone",
         "wasm_objects" -> "write the path alone, as `objects`",
         "search" -> "write the directory alone — the `-L` is ours to add",
-        rest -> "write the name alone — `m`, not `-lm`",
+        "include" -> "write the directory alone — the `-I` is ours to add",
+        "libs" -> "write the name alone — `m`, not `-lm`",
+        rest -> "write the word alone",
     }
 }
 
@@ -567,6 +590,16 @@ impl Reader {
         words
     }
 
+    /// The `[link]` headers: each a path from the package root, or a
+    /// system header spelled as C spells it, `<name.h>`.
+    fn headers() -> List<string> {
+        let words = self.linked("headers")
+        for w in words {
+            if !lawful_header(w) { self.speak(self.header_word(w)) }
+        }
+        words
+    }
+
     /// A `[link]` flag: `true` or `false`, absent read as `false`; any
     /// other value is refused and read as `false`.
     fn link_flag(key: string) -> bool {
@@ -644,6 +677,16 @@ impl Reader {
             "`${key}` takes ${link_shape(key)}, and `${word}` spells a linker option",
             "here",
             "${link_help(key)} — `[link.raw]` carries an option, and only in the program's own manifest",
+        )
+    }
+
+    fn header_word(word: string) -> Diag {
+        refusal(
+            "manifest.header_word",
+            self.entry_at(self.doc.entry("link", "headers")!),
+            "a header is a path from the package root or `<name.h>` — `${word}` is neither",
+            "here",
+            "write `\"vendor/x.h\"`, or a system header as `\"<x.h>\"`",
         )
     }
 

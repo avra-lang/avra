@@ -61,6 +61,10 @@ cost-laid  make cost, COST_PART=laid: the cli's cold check over the std answers 
 cost-ledger-cold-a make cost, COST_PART=ledger-cold-a: the pass ledger of cold-a's run, made again uncounted beside it; each pass's asks and asks per unit within 0.05% of its row
 cost-ledger-cold-b make cost, COST_PART=ledger-cold-b: the same of cold-b's runs
 cost-ledger-warm make cost, COST_PART=ledger-warm: the pass ledger of the cli's cold check and every warm edit, made again uncounted beside cost-warm; asks per moved item
+cost-matrix-check-bare make cost, COST_PART=matrix-check-bare: the warm-edit matrix — every kind of edit and its taking back, met by a warm check of the cli, no std answers laid; each pass's asks per cell a row, each wall said
+cost-matrix-check-laid make cost, COST_PART=matrix-check-laid: the same, the std answers laid beside the compiler
+cost-matrix-build-bare make cost, COST_PART=matrix-build-bare: the same, met by a warm build
+cost-matrix-build-laid make cost, COST_PART=matrix-build-laid: the same, met by a warm build, the std answers laid
 doors-a    test std-json std-task std-validate std-text std-sql std-queue std-time
 doors-b    test std-ui std-http; make ui-host-test and ui-host, std-ui's program tests built and run
 ui-browser the UI board: its wasm claims over the page glue (tools/ui_board.sh), then its claims in headless Firefox (tools/ui_board_browser.sh)
@@ -918,6 +922,7 @@ if compiler; then
         cost-ledger-cold-a) slice_cost ledger-cold-a ;;
         cost-ledger-cold-b) slice_cost ledger-cold-b ;;
         cost-ledger-warm) slice_cost ledger-warm ;;
+        cost-matrix-*) slice_cost "${slice#cost-}" ;;
         *) part_of "${slice%-*}" "${slice##*-}" "$(splits | awk -F'|' -v f="${slice%-*}" '$1 == f { print $2 }')" ;;
     esac
 fi

@@ -1,0 +1,750 @@
+//! `avra-tools cost` — THE EXACT-COUNT GATE: what the compiler DOES on fixed workloads, counted by
+//! the census runtime, judged against tools/cost.baseline.
+//!
+//!     cost judge <dir>       judge a `tools/cost.sh` run against tools/cost.baseline
+//!     cost accept <dir>      record a run: rows fall to what it measured; a run over another
+//!                            snapshot records that snapshot and every row as measured; a part's
+//!                            run, over the pinned snapshot, records its own rows alone
+//!     cost rows <dir>        a run's rows, as tools/cost.baseline writes them
+//!     cost edit <file> <kind> <text> <becomes>
+//!                            make one edit of tools/cost.sh's set: the text, which stands in the
+//!                            file once, becomes what follows (`\n` a line break); a `rename`
+//!                            renames the word through the file
+//!     cost same <a> <b>      two warm runs of compilers that differ in nothing the work reads
+//!
+//! `tools/cost.sh` runs the census compiler of the tree cold over workloads whose sources are ONE
+//! pinned commit (the baseline's `snapshot` row), so a count moves only when the compiler's work
+//! does; and warm after each of a fixed set of edits, where the count is the queries worked out
+//! again (an `edit-<kind>` row), so a change that trades warm work for cold is seen. Counts are exact
+//! and machine-independent: the runtime counts operations, never time.
+//!
+//! A COUNTER OVER ITS ROW BY MORE THAN THE TOLERANCE FAILS, naming the workload, the counter and both
+//! numbers. A counter under its row stays until `make cost-accept` lowers it; an accept never raises
+//! a row over the same snapshot. Moving the snapshot is an accept with `COST_SNAPSHOT=<sha>`, which
+//! records the new commit and every count it measured. A run that printed no count for a row FAILS.
+use @std.cli.{CliResult, Runnable, command, arg}
+use @std.io.{read_text, write_text, list_dir, exists}
+use @std.path.{joined_path}
+use @std.text.{parse_int, text_before, repeat}
+use @std.program.sorted.{sorted_by}
+
+const BASELINE: string = "tools/cost.baseline"
+/// THE STD PACKAGES THE SNAPSHOT'S ANSWERS SHIP A VERDICT FOR, as the baseline's run found them: a
+/// run whose list lacks one fails, naming it, since a package that loses its verdict is one today's
+/// compiler refuses over the snapshot, and the laid row then measures laws the user's never asks.
+const VERDICTS: string = "tools/cost.verdicts"
+/// THE CANDIDATES THE LAST ACCEPT SAW (`avra census --candidates`), so a run can name the new ones. A
+/// candidate is work, never a regression: a new one is said, never failed on.
+const CANDIDATES: string = "tools/cost.candidates"
+const CANDIDATES_HEAD: string = "# THE ZERO-COST CANDIDATES THE LAST `make cost-accept` SAW: each `<technique> <fn>` that stood in its\n# technique's top sites (`avra census --candidates`, docs/ZERO_COST.md). `make cost` names every\n# candidate this file lacks; a candidate is a registry row or a ticket at discovery.\n"
+const HEAD: string = "# THE EXACT-COUNT BASELINE: what the census compiler does, cold, on each fixed workload of the pinned\n# snapshot (`make cost`, tools/cost.sh, `avra-tools cost`). Exact and machine-independent. A row\n# more than 0.05% over FAILS the gate; a row only falls, through `make cost-accept`; a new snapshot is\n# `COST_SNAPSHOT=<sha> make cost-accept`, which records the commit and every count.\n"
+const TOLERANCE_PPM: int = 500
+/// A fall this small is the build's own: a file it writes and reads back within the stamp window.
+const FALL_PPM: int = 50
+/// A WARM ROW HOLDS when two compilers that differ in nothing the work reads move it by no more than
+/// a tenth of the tolerance: text of another length hashes to other buckets, a few hundred
+/// operations in tens of millions; an answer ordered by hash moves it by far more, and fails.
+const STABLE_PPM: int = 50
+
+/// One census line the runtime prints at exit: its words around the numbers, and the counter each
+/// number is, in order.
+type Printed = { parts: List<string>, names: List<string> }
+
+/// The census lines, in the order the runtime prints them.
+fn printed() -> List<Printed> {
+    [
+        Printed {
+            parts: ["rc: ", " retains, ", " releases, ", " reclaims"],
+            names: ["retains", "releases", "reclaims"],
+        },
+        Printed {
+            parts: ["rc: ", " empty lists made, ", " grown"],
+            names: ["empty_lists", "empty_grown"],
+        },
+        Printed {
+            parts: ["rc: ", " list reads, ", " list writes"],
+            names: ["list_reads", "list_writes"],
+        },
+        Printed {
+            parts: ["alloc: ", " boxes, ", " list buffers"],
+            names: ["boxes", "list_buffers"],
+        },
+        Printed {
+            parts: ["rc: ", " copies, ", " string compares"],
+            names: ["copies", "string_compares"],
+        },
+        Printed { parts: ["rc: ", " opens of an empty literal"], names: ["empty_opens"] },
+        // the runtime's accounted high-water mark: what the run held at once, in its own boxes
+        Printed { parts: ["mem: peak ", " MB in all"], names: ["peak_mb"] },
+    ]
+}
+
+/// Every counter a cold workload's census prints, in order.
+export fn census_counters() -> List<string> { flatten_texts([p.names for p in printed()]) }
+
+/// THE WORK A WARM EDIT DOES, not only the answers it works out again: each edit's run keeps its
+/// whole census (`edit-<kind>.census`), and these of its counters are its rows beside `worked`.
+export fn warm_counters() -> List<string> { ["boxes", "retains", "releases", "list_writes", "peak_mb", "decoded"] }
+
+type CostCmd = {}
+
+impl Runnable for CostCmd {
+    fn run(args: CliResult) -> int {
+        let rest = args.args_of("rest")
+        match args.arg("verb") {
+            "judge" or "accept" -> if rest.length == 1 { judged_run(rest[0], args.arg("verb") == "accept") } else { usage() },
+            "rows" -> if rest.length == 1 { rows_said(rest[0]) } else { usage() },
+            "edit" -> if rest.length == 4 { edit_made(rest[0], rest[1], rest[2], rest[3]) } else { usage() },
+            "same" -> if rest.length == 2 { same_warm(rest[0], rest[1]) } else { usage() },
+            _ -> usage(),
+        }
+    }
+}
+
+export command cost {
+    description: "The exact-count gate: judge, accept or read a tools/cost.sh run; make one of its edits; hold two warm runs alike"
+    arg verb {
+        description: "`judge`, `accept`, `rows`, `edit` or `same`"
+        required: true
+    }
+    arg rest {
+        description: "the run's directory; for `edit`, the file, the kind, the text and what it becomes; for `same`, two run directories"
+        variadic: true
+    }
+    run: CostCmd {}
+}
+
+// THE CENSUS READ
+
+/// The census lines of one run, as `<workload> <counter>`-free counter → count.
+export fn counts_of(text: string) -> Map<string, int> {
+    let lines = text.split("\n")
+    mut got: Map<string, int> = {}
+    for p in printed() {
+        let found? = first_numbers(lines, p.parts) else { continue }
+        for i, name in p.names { got.set(name, found[i]) }
+    }
+    let queries = first_count(lines, (l) -> queries_in(l))
+    if queries != null { got.set("queries_computed", queries!) }
+    let worked = first_count(lines, (l) -> leading_count(l, "worked: ", " answers here"))
+    if worked != null { got.set("worked", worked!) }
+    let decoded = first_count(lines, (l) -> leading_count(l, "decoded: ", " answers read back"))
+    if decoded != null { got.set("decoded", decoded!) }
+    for line in lines {
+        let row? = pass_row(line) else { continue }
+        let name = "pass_${row.pass.replace("-", "_")}"
+        got.set("${name}_asks", row.asks)
+        got.set("${name}_per_unit", row.per_unit)
+        got.set("${name}_per_moved", row.per_moved)
+        got.set("${name}_rechecks", row.rechecks)
+        got.set("${name}_rechecks_per_moved", row.rechecks_per_moved)
+    }
+    got
+}
+
+/// The numbers of the first line that is exactly `parts` around whole numbers.
+fn first_numbers(lines: List<string>, parts: List<string>) -> List<int>? {
+    for line in lines {
+        let got? = numbers_in(line, parts) else { continue }
+        return got
+    }
+    null
+}
+
+/// The count `read` finds on the first line it finds one on.
+fn first_count(lines: List<string>, read: fn(string) -> int?) -> int? {
+    for line in lines {
+        let got? = read(line) else { continue }
+        return got
+    }
+    null
+}
+
+/// The text of the file at `path`; null where it cannot be read.
+fn text_at(path: string) -> string? {
+    match read_text(path) { .Ok(t) -> t, .Err(_) -> null }
+}
+
+/// Whether every character of `s` is one of `alphabet`'s.
+fn chars_all(s: string, alphabet: string) -> bool {
+    for i in 0..s.length {
+        if !alphabet.contains(s.substring(i, i + 1)) { return false }
+    }
+    true
+}
+
+/// The numbers a line holds between `parts`, when it is exactly those words around whole numbers.
+fn numbers_in(line: string, parts: List<string>) -> List<int>? {
+    if !line.starts_with(parts[0]) { return null }
+    mut at = parts[0].length
+    mut out: List<int> = []
+    for i, part in parts {
+        if i == 0 { continue }
+        let end = digits_end(line, at)
+        if end == at { return null }
+        out.push(parse_int(line.substring(at, end)) ?? 0)
+        if !line.substring(end, line.length).starts_with(part) { return null }
+        at = end + part.length
+    }
+    if at != line.length { return null }
+    out
+}
+
+/// Where the run of digits starting at `from` ends.
+fn digits_end(line: string, from: int) -> int {
+    mut end = from
+    while end < line.length && is_digit(line.substring(end, end + 1)) { end = end + 1 }
+    end
+}
+
+fn is_digit(c: string) -> bool { c.length == 1 && "0123456789".contains(c) }
+
+/// A word character, as a regular expression's `\w` reads one.
+fn is_word(c: string) -> bool { c.length == 1 && "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_".contains(c) }
+
+/// The queries a cold check worked out, from the counts line `check --counts` prints.
+fn queries_in(line: string) -> int? {
+    if !line.starts_with("counts: ") { return null }
+    let key = "queries_computed="
+    mut from = 0
+    while true {
+        let at = line.substring(from, line.length).index_of(key)
+        if at < 0 { return null }
+        let start = from + at
+        if start == 0 || !is_word(line.substring(start - 1, start)) {
+            let end = digits_end(line, start + key.length)
+            if end > start + key.length { return parse_int(line.substring(start + key.length, end)) }
+        }
+        from = start + 1
+    }
+    null
+}
+
+/// The count a line opens with, between `head` and `tail`.
+fn leading_count(line: string, head: string, tail: string) -> int? {
+    if !line.starts_with(head) { return null }
+    let end = digits_end(line, head.length)
+    if end == head.length || !line.substring(end, line.length).starts_with(tail) { return null }
+    parse_int(line.substring(head.length, end))
+}
+
+/// THE PASS LEDGER's deterministic columns (`--passes --passes-rows`, std-program/src/pass_ledger.av):
+/// each pass's asks, its asks per unit and per item an edit moved, in thousandths, then its re-checks
+/// and re-checks per item moved. Six fields: a field added here is added to ledger_rows and its test.
+type PassRow = { pass: string, asks: int, per_unit: int, per_moved: int, rechecks: int, rechecks_per_moved: int }
+
+fn pass_row(line: string) -> PassRow? {
+    let f = line.split("\t")
+    if f.length != 7 ||
+        f[0] != "pass-row" ||
+        f[1].is_empty() ||
+        !chars_all(f[1], "abcdefghijklmnopqrstuvwxyz-") { return null }
+    let n = [parse_int(x) for x in f.drop(2) if all_digits(x)]
+    if n.length != 5 { return null }
+    PassRow {
+        pass: f[1],
+        asks: n[0]!,
+        per_unit: n[1]!,
+        per_moved: n[2]!,
+        rechecks: n[3]!,
+        rechecks_per_moved: n[4]!,
+    }
+}
+
+fn all_digits(s: string) -> bool { !s.is_empty() && chars_all(s, "0123456789") }
+
+// THE RUN AND THE BASELINE
+
+/// Every workload a run kept (`<name>.out`, and each edit's `edit-<kind>.census`) → `<workload>
+/// <counter>` → count.
+export fn measured(run_dir: string) -> Map<string, int> {
+    mut rows: Map<string, int> = {}
+    for f in sorted_by(list_dir(run_dir) catch [], text_before) {
+        if f.ends_with(".out") {
+            let name = f.substring(0, f.length - 4)
+            for c, n in counts_of(read_text(joined_path(run_dir, f)) catch "") { rows.set("${name} ${c}", n) }
+        } else if f.starts_with("edit-") && f.ends_with(".census") {
+            let name = f.substring(0, f.length - 7)
+            for c, n in counts_of(read_text(joined_path(run_dir, f)) catch "") {
+                if warm_counters().contains(c) || c.starts_with("pass_") { rows.set("${name} ${c}", n) }
+            }
+        }
+    }
+    rows
+}
+
+/// A row key's workload.
+fn workload_of(key: string) -> string { key.split(" ")[0] }
+
+/// A row key's counter.
+fn counter_of(key: string) -> string { key.split(" ")[1] }
+
+/// The workloads a set of rows holds, each once.
+fn workloads_of(rows: Map<string, int>) -> List<string> {
+    mut seen: Map<string, bool> = {}
+    for k, _n in rows { seen.set(workload_of(k), true) }
+    [w for w, _b in seen]
+}
+
+/// The part a run measured and the workloads it measured: every row of those, and only those, is
+/// judged; a run that names none is the whole run of an older tools/cost.sh.
+type Part = { part: string, workloads: List<string> }
+
+fn run_part(run_dir: string, base: Map<string, int>) -> Part {
+    let part? = text_at(joined_path(run_dir, "part")) else { return whole_run(run_dir, base) }
+    let names? = text_at(joined_path(run_dir, "workloads")) else { return whole_run(run_dir, base) }
+    Part {
+        part: part.trim(),
+        workloads: [l.trim() for l in names.split("\n") if !l.trim().is_empty()],
+    }
+}
+
+/// The whole run of an older tools/cost.sh: every workload it measured or the baseline names.
+fn whole_run(run_dir: string, base: Map<string, int>) -> Part {
+    Part { part: "all", workloads: workloads_of(measured(run_dir)).concat(workloads_of(base)) }
+}
+
+/// Each counter a run owed and printed no count for: every census counter of a cold workload, and
+/// the answers an edit's warm run worked out again; a ledger's run (`ledger-<workload>`) and a cell
+/// of the warm-edit matrix (`matrix-…`) are counted by no census, and owe only the pass rows printed.
+export fn unprinted(now: Map<string, int>) -> List<string> {
+    [unprinted_said(w, c) for w in sorted_by(workloads_of(now), text_before) for c in owed_of(w) if now.get("${w} ${c}") == null]
+}
+
+fn owed_of(workload: string) -> List<string> {
+    if workload.starts_with("ledger-") || workload.starts_with("matrix-") { return [] }
+    if workload.starts_with("edit-") { ["worked"].concat(warm_counters()) } else { census_counters() }
+}
+
+/// The snapshot a baseline or run names, by its `snapshot <sha>` line.
+export fn snapshot_of(text: string) -> string? {
+    text.split("\n").map(snapshot_line(it)).find(it != null) ?? null
+}
+
+fn snapshot_line(line: string) -> string? {
+    if !line.starts_with("snapshot ") { return null }
+    let sha = line.substring(9, line.length)
+    if sha.length == 40 && chars_all(sha, "0123456789abcdef") { sha } else { null }
+}
+
+/// A baseline's rows: each `<workload> <counter> <n>` line, the workload `[a-z][a-z0-9_-]*`, the
+/// counter `[a-z_]+`; any other line is read past.
+export fn rows_of(text: string) -> Map<string, int> {
+    mut rows: Map<string, int> = {}
+    for line in text.split("\n") {
+        let w = line.trim().split(" ")
+        if w.length != 3 || !is_workload(w[0]) || !is_counter(w[1]) || !all_digits(w[2]) { continue }
+        rows.set("${w[0]} ${w[1]}", parse_int(w[2]) ?? 0)
+    }
+    rows
+}
+
+fn is_workload(w: string) -> bool {
+    !w.is_empty() &&
+        "abcdefghijklmnopqrstuvwxyz".contains(w.substring(0, 1)) &&
+        chars_all(w, "abcdefghijklmnopqrstuvwxyz0123456789_-")
+}
+
+fn is_counter(c: string) -> bool { !c.is_empty() && chars_all(c, "abcdefghijklmnopqrstuvwxyz_") }
+
+/// The baseline as tools/cost.baseline writes it: its head, its snapshot, every row sorted.
+export fn render(snapshot: string, rows: Map<string, int>) -> string { "${HEAD}snapshot ${snapshot}\n${row_lines(rows)}" }
+
+/// `<workload> <counter> <n>` a line, sorted.
+fn row_lines(rows: Map<string, int>) -> string {
+    [row_line(k, rows.get(k) ?? 0) for k in sorted_by([k for k, _n in rows], text_before)].join("")
+}
+
+fn row_line(key: string, n: int) -> string { "${key} ${n}\n" }
+
+/// A change as a signed percent to three places, or `new` from nothing.
+export fn percent(old: int, new: int) -> string {
+    if old == 0 { return "new" }
+    let milli = rounded((new - old) * 100000, old)
+    "${if milli < 0 { "-" } else { "+" }}${places(abs_of(milli), 3)}%"
+}
+
+/// `n / d`, rounded half away from zero.
+fn rounded(n: int, d: int) -> int {
+    if (n < 0) != (d < 0) { 0 - (abs_of(n) * 2 + abs_of(d)) / (abs_of(d) * 2) } else { (abs_of(n) * 2 + abs_of(d)) / (abs_of(d) * 2) }
+}
+
+fn abs_of(n: int) -> int { if n < 0 { 0 - n } else { n } }
+
+/// `n` thousandths (or tenths, `k` places) as a decimal.
+fn places(n: int, k: int) -> string {
+    let scale = if k == 3 { 1000 } else { 10 }
+    let frac = "${n % scale}"
+    "${n / scale}.${repeat("0", k - frac.length)}${frac}"
+}
+
+// THE JUDGEMENT
+
+/// What a judge says: each baseline row a run printed no count for or measured past the tolerance,
+/// and each row a run measured under.
+export type Judged = { failed: List<string>, fell: List<string> }
+
+export fn judge(now: Map<string, int>, base: Map<string, int>) -> Judged {
+    mut failed: List<string> = []
+    mut fell: List<string> = []
+    for key in sorted_by([k for k, _n in base], text_before) {
+        let old = base.get(key) ?? 0
+        let new? = now.get(key) else {
+            failed.push(no_count_said(key, old))
+            continue
+        }
+        if (new - old) * 1000000 > old * TOLERANCE_PPM {
+            failed.push(over_said(key, old, new))
+        } else if (old - new) * 1000000 > old * FALL_PPM {
+            fell.push(fell_said(key, old, new))
+        }
+    }
+    Judged { failed: failed, fell: fell }
+}
+
+/// A LEDGER RUN COMPUTES ITS TWIN'S QUERIES: each `ledger-<w>` row of `queries_computed` equals its
+/// counted twin's IN THIS RUN. A twin this run did not measure judges nothing — a baseline's row is
+/// another run's. `worked` is no such witness: an edit's answers worked out again depend on which edits
+/// ran before it in its share.
+export fn same_work(now: Map<string, int>) -> List<string> {
+    [work_apart_said(k, now.get(k) ?? 0, now.get(twin_of(k)) ?? 0) for k in sorted_by([k for k, _n in now], text_before) if names_work(k) && now.has(twin_of(k)) && now.get(twin_of(k)) != now.get(k)]
+}
+
+/// Whether a row is a ledger run's count of the queries its twin also computed.
+fn names_work(key: string) -> bool { workload_of(key).starts_with("ledger-") && counter_of(key) == "queries_computed" }
+
+/// A ledger row's counted twin: the same counter of the workload the ledger ran.
+fn twin_of(key: string) -> string { key.substring("ledger-".length, key.length) }
+
+/// The rows an accept writes: over the same snapshot each row falls to what was measured and none
+/// rises, a new one seeded; over another, every row is what was measured.
+export fn accepted(now: Map<string, int>, base: Map<string, int>, same_snapshot: bool) -> Map<
+    string,
+    int,
+> {
+    if !same_snapshot { return now }
+    mut out: Map<string, int> = {}
+    for k, n in base { out.set(k, n) }
+    for k, n in now { out.set(k, if base.get(k) ?? n < n { base.get(k) ?? n } else { n }) }
+    out
+}
+
+/// The packages the baseline's verdicts name that this run's don't, where the run made answers.
+fn verdicts_lost(run_dir: string) -> List<string> {
+    let made? = text_at(joined_path(run_dir, "verdicts")) else { return [] }
+    let recorded_list? = text_at(VERDICTS) else { return [] }
+    let now = made.split("\n").map(it.trim()).filter(!it.is_empty())
+    sorted_by(
+        [v for v in recorded_list.split("\n") if !v.is_empty() && !v.starts_with("#") && !now.contains(v)],
+        text_before,
+    )
+}
+
+/// `candidate: <technique> <count> <fn> <where>` lines → `<technique> <fn>` → the line after its word.
+export fn candidates_of(text: string) -> Map<string, string> {
+    mut found: Map<string, string> = {}
+    for line in text.split("\n") {
+        let w = line.split(" ")
+        if w.length >= 4 && w[0] == "candidate:" { found.set("${w[1]} ${w[3]}", line.substring(11, line.length)) }
+    }
+    found
+}
+
+/// The record's `<technique> <fn>` lines → their keys.
+export fn recorded(text: string) -> List<string> {
+    ["${l.split(" ")[0]} ${l.split(" ")[1]}" for l in text.split("\n") if !l.is_empty() && !l.starts_with("#") && l.split(" ").length >= 2]
+}
+
+export fn new_candidates(found: Map<string, string>, known: List<string>) -> List<string> {
+    [new_candidate_said(found.get(k) ?? "") for k in sorted_by([k for k, _l in found], text_before) if !known.contains(k)]
+}
+
+/// The run's new candidates said; under an accept, the record rewritten to what it saw.
+fn candidates_said(run_dir: string, accept: bool) {
+    let text? = text_at(joined_path(run_dir, "candidates.txt")) else { return }
+    let found = candidates_of(text)
+    let known = recorded(read_text(CANDIDATES) catch "")
+    for line in new_candidates(found, known) { println(line) }
+    println(candidates_counted(found.length, [k for k, _l in found if !known.contains(k)].length))
+    if accept {
+        let _ = write_text(
+            CANDIDATES,
+            "${CANDIDATES_HEAD}${key_lines(sorted_by([k for k, _l in found], text_before))}",
+        )
+    }
+}
+
+fn key_lines(keys: List<string>) -> string { [key_line(k) for k in keys].join("") }
+
+fn key_line(key: string) -> string { "${key}\n" }
+
+/// A run's rows, as tools/cost.baseline writes them, over the snapshot it measured: what a gate's
+/// verdict carries, so a row is read off the run that measured it.
+fn rows_said(run_dir: string) -> int {
+    let rendered = render(
+        (read_text(joined_path(run_dir, "snapshot")) catch "").trim(),
+        measured(run_dir),
+    )
+    println(rendered.substring(0, rendered.length - 1))
+    0
+}
+
+/// A run judged, or accepted into the baseline: 0 held (or recorded), 1 refused.
+fn judged_run(run_dir: string, accept: bool) -> int {
+    let ran = (read_text(joined_path(run_dir, "snapshot")) catch "").trim()
+    let text = read_text(BASELINE) catch ""
+    let pinned = snapshot_of(text) ?? ""
+    let all_base = rows_of(text)
+    let now = measured(run_dir)
+    if now.is_empty() {
+        println("cost: the run printed no counts — refusing to judge")
+        return 1
+    }
+    let part = run_part(run_dir, all_base)
+    // A PART IS ACCEPTED OVER THE PINNED SNAPSHOT ALONE: its workloads' rows are recorded and every
+    // other row stands as it was; a new snapshot records every row, so only the whole run moves it
+    if accept && part.part != "all" && ran != pinned {
+        println(part_accept_refused(part.part))
+        return 1
+    }
+    let others = all_base.filter((e) -> !part.workloads.contains(workload_of(e.key)))
+    let base = all_base.filter((e) -> part.workloads.contains(workload_of(e.key)))
+    let missing = unprinted(now)
+        .concat(
+            [no_counts_said(w) for w in sorted_by(part.workloads, text_before) if !now.any(workload_of(it.key) == w)],
+        )
+    if !missing.is_empty() {
+        println(missing.join("\n"))
+        return 1
+    }
+    let astray = same_work(now)
+    if !astray.is_empty() {
+        println(astray.join("\n"))
+        return 1
+    }
+    let lost = verdicts_lost(run_dir)
+    if !lost.is_empty() && !(accept && ran != pinned) {
+        for name in lost { println(verdict_lost_said(name)) }
+        return 1
+    }
+    if accept { return accept_recorded(run_dir, ran, pinned, now, base, others, part.part) }
+    if ran != pinned {
+        println(snapshot_apart_said(ran, pinned))
+        return 1
+    }
+    let j = judge(now, base)
+    for line in j.fell.concat(j.failed) { println(line) }
+    println(rows_counted(base.length, j.failed.length, j.fell.length))
+    candidates_said(run_dir, false)
+    if j.failed.is_empty() { 0 } else { 1 }
+}
+
+/// An accept: over the same snapshot a rise refuses it; else the baseline, the verdicts and (for a
+/// whole run) the candidates recorded.
+fn accept_recorded(
+    run_dir: string,
+    ran: string,
+    pinned: string,
+    now: Map<string, int>,
+    base: Map<string, int>,
+    others: Map<string, int>,
+    part: string,
+) -> int {
+    let same = ran == pinned
+    if same {
+        let failed = judge(now, base).failed
+        if !failed.is_empty() {
+            println(failed.join("\n"))
+            println("cost: an accept never raises a row over the same snapshot")
+            return 1
+        }
+    }
+    mut rows: Map<string, int> = {}
+    for k, n in others { rows.set(k, n) }
+    for k, n in accepted(now.filter((e) -> recorded_row(e.key)), base, same) { rows.set(k, n) }
+    let _ = write_text(BASELINE, render(ran, rows))
+    let made = text_at(joined_path(run_dir, "verdicts"))
+    if made != null {
+        let _ = write_text(
+            VERDICTS,
+            "# the std packages the snapshot's answers ship a verdict for (avra-tools cost)\n${made!}",
+        )
+    }
+    // a part's run classifies only its own sites, and a ledger's none: the record is the whole run's
+    candidates_said(run_dir, part == "all")
+    println("cost: tools/cost.baseline recorded (snapshot ${ran})")
+    0
+}
+
+// THE EDITS
+
+/// Whether an accept records a row: a ledger run's pass rows, never the work its twin's rows hold.
+export fn recorded_row(key: string) -> bool { !workload_of(key).starts_with("ledger-") || counter_of(key).starts_with("pass_") }
+
+/// An edit of several places, each `old` beside its `new` in turn.
+const EDITS_APART: string = "&&&"
+
+/// `text` with one edit made: `old`, which stands in it once, becomes `new` (`\n` a line break); a
+/// `rename` renames the word `old` wherever it stands; several olds and news apart by EDITS_APART are
+/// made in turn. Err names why the edit does not stand.
+export fn edited(text: string, kind: string, old: string, new: string) -> Result<string, string> {
+    if old.contains(EDITS_APART) { return edited_apart(text, kind, old.split(EDITS_APART), new.split(EDITS_APART)) }
+    edited_once(text, kind, old, new)
+}
+
+/// `text` with each of `olds` made its `news` beside it, in turn.
+fn edited_apart(text: string, kind: string, olds: List<string>, news: List<string>) -> Result<
+    string,
+    string,
+> {
+    if olds.length != news.length { return .Err("${olds.length} places and ${news.length} edits of them") }
+    mut now = text
+    for i in 0..olds.length { now = edited_once(now, kind, olds[i], news[i])? }
+    .Ok(now)
+}
+
+fn edited_once(text: string, kind: string, old: string, new: string) -> Result<string, string> {
+    let becomes = new.replace("\\n", "\n")
+    if kind == "rename" {
+        let at = word_places(text, old)
+        if at.is_empty() { return .Err("no `${old}` to rename") }
+        return .Ok(spliced(text, at, old.length, becomes))
+    }
+    let times = text.split(old).length - 1
+    if times != 1 { return .Err("`${old}` stands ${times} times, not once") }
+    .Ok(text.replace(old, becomes))
+}
+
+/// `text` with the `width` characters at each of `at` (ascending) made `becomes`.
+fn spliced(text: string, at: List<int>, width: int, becomes: string) -> string {
+    mut out = ""
+    mut last = 0
+    for i in at {
+        out = "${out}${text.substring(last, i)}${becomes}"
+        last = i + width
+    }
+    "${out}${text.substring(last, text.length)}"
+}
+
+/// Where the word `w` stands whole in `text`, each start.
+fn word_places(text: string, w: string) -> List<int> {
+    mut out: List<int> = []
+    mut from = 0
+    while from <= text.length - w.length {
+        let at = text.substring(from, text.length).index_of(w)
+        if at < 0 { break }
+        let i = from + at
+        let before = i == 0 || !is_word(text.substring(i - 1, i))
+        let after = i + w.length >= text.length ||
+            !is_word(text.substring(i + w.length, i + w.length + 1))
+        if before && after { out.push(i) }
+        from = i + w.length
+    }
+    out
+}
+
+fn edit_made(path: string, kind: string, old: string, new: string) -> int {
+    match edited(read_text(path) catch "", kind, old, new) {
+        .Err(why) -> {
+            println(edit_refused(kind, path, why))
+            1
+        },
+        .Ok(text) -> {
+            let _ = write_text(path, text)
+            0
+        },
+    }
+}
+
+// TWO WARM RUNS ALIKE
+
+/// Two warm runs of compilers that differ in nothing the work reads (tools/cost_stable.sh): every
+/// edit's row within STABLE_PPM of the other, the answers worked out again exactly; each row that
+/// moved said, by how much. 0 when every row holds.
+fn same_warm(a_dir: string, b_dir: string) -> int {
+    let a = measured(a_dir).filter(it.key.starts_with("edit-"))
+    let b = measured(b_dir).filter(it.key.starts_with("edit-"))
+    mut keys: Map<string, bool> = {}
+    for k, _n in a { keys.set(k, true) }
+    for k, _n in b { keys.set(k, true) }
+    let all = sorted_by([k for k, _x in keys], text_before)
+    mut moved = 0
+    mut unheld = 0
+    for k in all {
+        let old = a.get(k)
+        let new = b.get(k)
+        if old == new { continue }
+        moved = moved + 1
+        let tenths = moved_tenths(old, new)
+        let held = tenths >= 0 && counter_of(k) != "worked" && tenths <= STABLE_PPM * 10
+        println(warm_moved_said(k, old, new, tenths, held))
+        if !held { unheld = unheld + 1 }
+    }
+    println(warm_counted(all.length, moved, unheld))
+    if unheld > 0 || a.is_empty() { 1 } else { 0 }
+}
+
+/// How far a warm row moved, in tenths of a part per million; -1 where either run lacks it or it was 0.
+fn moved_tenths(old: int?, new: int?) -> int {
+    let was? = old else { return -1 }
+    let now? = new else { return -1 }
+    if was == 0 { -1 } else { rounded(abs_of(now - was) * 10000000, was) }
+}
+
+fn usage() -> int {
+    eprintln(
+        "avra-tools cost: `judge <dir>`, `accept <dir>`, `rows <dir>`, `edit <file> <kind> <text> <becomes>` or `same <a> <b>`",
+    )
+    2
+}
+
+fn flatten_texts(xss: List<List<string>>) -> List<string> { xss.fold([], (acc, xs) -> acc.concat(xs)) }
+
+// VOICES
+
+fn unprinted_said(w: string, c: string) -> string { "cost: ${w} printed no ${c}" }
+
+fn work_apart_said(key: string, n: int, counted: int) -> string {
+    "cost: ${key} ${n}, its counted run's ${counted}: the run's work depends on what ran before it or on state outside the tree"
+}
+
+fn no_counts_said(w: string) -> string { "cost: ${w} printed no counts" }
+
+fn no_count_said(key: string, old: int) -> string { "cost: ${key}: the run printed no count (row ${old})" }
+
+fn over_said(key: string, old: int, new: int) -> string {
+    "cost: ${key}: ${old} -> ${new} (${percent(old, new)}, over the 0.05% tolerance)"
+}
+
+fn fell_said(key: string, old: int, new: int) -> string {
+    "cost: ${key} fell: ${old} -> ${new} (${percent(old, new)}) — `make cost-accept` records it"
+}
+
+fn new_candidate_said(line: string) -> string { "cost: new candidate: ${line}" }
+
+fn candidates_counted(found: int, new: int) -> string { "cost: ${found} candidates, ${new} new" }
+
+fn rows_counted(rows: int, over: int, fell: int) -> string { "cost: ${rows} rows, ${over} over, ${fell} fell" }
+
+fn part_accept_refused(part: string) -> string {
+    "cost: an accept over another snapshot records every row, and this run measured the ${part} part alone"
+}
+
+fn verdict_lost_said(name: string) -> string {
+    "cost: the snapshot's ${name} ships no verdict, as it did when the baseline was recorded: today's compiler refuses it over the snapshot — move the snapshot"
+}
+
+fn snapshot_apart_said(ran: string, pinned: string) -> string { "cost: the run measured snapshot ${ran}, the baseline pins ${pinned}" }
+
+fn edit_refused(kind: string, path: string, why: string) -> string { "cost: the ${kind} edit of ${path}: ${why}" }
+
+fn warm_moved_said(key: string, old: int?, new: int?, tenths: int, held: bool) -> string {
+    let was = if old != null { "${old!}" } else { "-" }
+    let now = if new != null { "${new!}" } else { "-" }
+    let by = if tenths >= 0 { "${places(tenths, 1)} ppm" } else { "absent" }
+    "cost: ${key}: ${was} -> ${now} (${by})${if held { "" } else { " — NOT HELD" }}"
+}
+
+fn warm_counted(rows: int, moved: int, unheld: int) -> string {
+    "cost: ${rows} warm rows, ${moved} moved, ${unheld} past ${STABLE_PPM} ppm or an answer moved"
+}

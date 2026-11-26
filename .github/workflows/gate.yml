@@ -159,24 +159,24 @@ jobs:
           echo "playwright=$v" >> "$GITHUB_OUTPUT"
       - if: steps.browser.outputs.wanted == '1'
         name: browser libraries
-        timeout-minutes: 10
+        timeout-minutes: 15
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
-          apt-get update -qq
-          apt-get install -y -qq --no-install-recommends gdb $(grep -v '^#' .github/ci/packages-browser.txt | tr '\n' ' ')
+          sh .github/ci/install_browser_libs.sh gdb
           sh .github/ci/install_node.sh
       - if: steps.browser.outputs.wanted == '1'
         uses: actions/cache/restore@v4
         with:
           path: build/playwright
           key: playwright-${{ steps.browser.outputs.playwright }}-webkit-browsers
-      # THE SNAPSHOT'S STD ANSWERS FOR cost-laid (tools/cost.sh `laid`), KEPT BESIDE THE BUILDER: the release
+      # THE SNAPSHOT'S STD ANSWERS FOR THE SLICES THAT LAY THEM (cost-laid, the laid matrix; tools/cost.sh
+      # `laid`), KEPT BESIDE THE BUILDER: the release
       # `gate-builder` carries the landed run's answers, which every gate can read (a cache cannot cross
       # gate/** branches). Laid down, they are judged by the writer's own key — the census compiler's
       # bytes, the snapshot's std — and written again where it is not theirs.
       - name: cost answers
-        if: matrix.slice == 'cost-laid'
+        if: contains(fromJSON('["cost-laid","cost-matrix-check-laid","cost-matrix-build-laid"]'), matrix.slice)
         run: |
           if curl -fsSL --retry 3 -o cost-answers.tar.gz https://github.com/avra-lang/avra/releases/download/gate-builder/cost-answers.tar.gz \
               && tar -tzf cost-answers.tar.gz | awk '$0 !~ /^cost-answers(\/|$)/ { bad = 1 } END { exit bad }'; then
@@ -219,9 +219,9 @@ jobs:
             # tools/cost.baseline writes them, so an accept cites a run's own numbers
             case "$s" in cost-*)
                 cat build/gate/"$s"/cost-*.log 2> /dev/null | grep '^cost: ' > "gate-kept/verdict/$s.cost" || :
-                [ ! -f build/cost/snapshot ] || python3 tools/cost_ratchet.py --rows build/cost > "gate-kept/verdict/$s.rows" || : ;;
+                [ ! -f build/cost/snapshot ] || sh tools/avra_tools.sh cost rows build/cost > "gate-kept/verdict/$s.rows" || : ;;
             esac
-            case "$s" in cost-ledger-*) [ ! -f build/cost/ledger.md ] || cp build/cost/ledger.md "gate-kept/verdict/$s.md" ;; esac
+            case "$s" in cost-ledger-* | cost-matrix-*) [ ! -f build/cost/ledger.md ] || cp build/cost/ledger.md "gate-kept/verdict/$s.md" ;; esac
             if [ "$one" != 0 ]; then
               st=1
               [ ! -d "build/gate/$s" ] || cp -a "build/gate/$s" "gate-kept/failed/$s"
