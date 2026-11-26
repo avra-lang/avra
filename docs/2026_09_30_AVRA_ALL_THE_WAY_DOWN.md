@@ -72,8 +72,8 @@ A port replaces a C function only when all four hold:
    by generated and shrunk cases (Bend doc §3, rung 2), with the C row
    kept as the oracle until the swap lands.
 2. **`eval == native`** on every program test that reaches it.
-3. **No regression** in `make census` counts or in `tools/bench/request`
-   and `tools/bench/public.sh` on a quiet Sprite.
+3. **No regression** in `make census` counts or in `benchmarks/http/request`
+   and `benchmarks/http/public.sh` on a quiet Sprite.
 4. **Sizes held** by `make sizes`, since dead-code linking
    (`avra-8sb5.34.44`) now makes every byte visible.
 

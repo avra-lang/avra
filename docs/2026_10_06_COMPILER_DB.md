@@ -597,7 +597,7 @@ words and status).
 
 ## 7. Speed: what is measured, the targets, the gates
 
-All of M1–M3 are measured (`origin/db-measure` @ `064cd27`, `tools/db_measure/RESULTS.md`).
+All of M1–M3 are measured (`origin/db-measure` @ `064cd27`, `benchmarks/db/RESULTS.md`).
 M1 and M2 in full: A20, A21.
 
 ### 7.1 Two points, one Sprite, one harness (`check packages/cli`)
@@ -675,7 +675,7 @@ cannot move it. Until then every one-edit cli check pays the discarded attempt.
 
 **DB 00d, re-measured with a run-token trace** (`db07d-keys`, main `695c3fb2`, the same
 `linux-x86-64-amd-epyc` Sprite, warm store; instrument
-`tools/db_measure/why_trace.sh`, plus two temporary `qtrace` lines in `read_token` and
+`benchmarks/db/why_trace.sh`, plus two temporary `qtrace` lines in `read_token` and
 `unruled`, not landed). One body edit of `packages/cli/src/commands/shared.av`:
 
 - `Q parse` 359 over 146 files; `held 492/498`, `attempt 0`, `discarded 1`, `load 6616ms`.
@@ -739,7 +739,7 @@ Each lands alone and leaves main green. "Ladder" is what the seed and generation
 
 | PR | ticket | what lands | "when this lands, the owner can run …" | ladder | closes |
 |---|---|---|---|---|---|
-| **DB 00** secure, measure, fence | `.57.169` | the harness (`tools/db_measure/`, branch `db-measure`) landed; `keepers-green`: three keepers on every PR. Then three small PRs M3 asks for: **00a** why 22 unchanged files are parsed (`.57.191`); **00b** the load profile and, if it allows, the early fix (`.57.193`); **00c** `--time` prints a discarded attempt's cost (`.57.189`). Bugs filed: `.57.190` (std-http), `.57.192` (994 method tables) | `make keepers` green and required · `sh tools/db_measure/warm_edit.sh` · the table of why each unchanged file was read | none | `.57.165`; half of `.57.163` |
+| **DB 00** secure, measure, fence | `.57.169` | the harness (`benchmarks/db/`, branch `db-measure`) landed; `keepers-green`: three keepers on every PR. Then three small PRs M3 asks for: **00a** why 22 unchanged files are parsed (`.57.191`); **00b** the load profile and, if it allows, the early fix (`.57.193`); **00c** `--time` prints a discarded attempt's cost (`.57.189`). Bugs filed: `.57.190` (std-http), `.57.192` (994 method tables) | `make keepers` green and required · `sh benchmarks/db/warm_edit.sh` · the table of why each unchanged file was read | none | `.57.165`; half of `.57.163` |
 | **DB 01** one engine, as a–e | `.57.170` | §5.1: (a) the kernel moves into `@std/relation`; the layering rule restated and pinned by a keeper; (b) `@query`/`@input` are kernel cells on every Db, the second memo and the hooks deleted; (c) packed deps; (d) the read-cost census; (e) families register by name, refusals speak, `make families-left` starts at 32, `tools/families.py`'s order contract retired | a std-relation program test: three pure queries each run **once** after an unrelated write (nine times today) · the M1 graph shows the compiler's `@query` cells holding their own edges (2 today) · `Kernel.newly_read` < 60 MB (375) | `seed-check` must pass; build twice before trusting a peak | `.57.167` |
 | **DB 02** `avra explain` | `.57.171` | A14.4 over the in-memory graph: `--stats` and "what did this read". `--why` re-derives in process, as `avra cache why` does today, until DB 05–06 give it the store | `build/avra explain --stats packages/cli` · `explain <file>` prints its reads | none | — |
 | **DB 03** names, the id codec, as a–c | `.57.172` | §6.3, A13: (a) the name scheme and `Decl`'s key — waits on `file` leaving `@local` (`decl_rows.av:26`, owner: ERRORS); (b) the codec grows payload enums and recursive records; (c) one codec per family answer, ~20, each its own small PR | `make codecs` · a declaration inserted above changes no other declaration's bytes | none expected | — |
@@ -954,7 +954,7 @@ each already answered by a read, each its own branch of the record's judgment;
 
 ### A4.3 The receipt harness, and what the comment case costs TODAY (2026-10-21)
 
-`tools/db_measure/generated_types.sh` is DB 09's receipt: 1,000 generated named types and one
+`benchmarks/db/generated_types.sh` is DB 09's receipt: 1,000 generated named types and one
 const that builds them all. It ASSERTS before it times — the cold value (`500500`), that a
 leading comment keeps it, and that a literal the const READS moves it — so a run that timed
 only would pass while the cache answered anything.
@@ -1167,7 +1167,7 @@ two-package repro is written out in ticket `.57.182`.
 | the same at file grain (what main saves) | 4,184 answers; 2.67 M reads; median 5, p95 5,090 | M2 | MEASURED |
 | digest (`core/digest.av`, native) | 362 MB/s; 0.63 µs at 72 B, 1.35 µs at 288 B, 8.3 µs at 2.3 KB | M2, `digest_bench.sh` | MEASURED |
 | M5: content hash over every package source (1,674 files, 11.7 MB), best of 5 | Sprite (EPYC, SHA-NI unused): portable SHA-256 216 MB/s, today's digest 195 MB/s · Mac: 208 and 365 MB/s. BLAKE3: owed in DB 05c | `db-store` lane, `hash_bench` | MEASURED |
-| M4 baseline: today's store after a cold `check cli` (main, Sprite) | 9,216 files, 58.8 MB, half of them `.deps` edges: rows 1,170 / 25.4 MB (median 0 B, p95 37 KB, max 4.05 MB) · unit 5,232 / 33.3 MB (median 29 B, p95 27.7 KB) · warn 2,814 / 0.14 MB | `tools/db_measure/store_baseline.sh` | MEASURED |
+| M4 baseline: today's store after a cold `check cli` (main, Sprite) | 9,216 files, 58.8 MB, half of them `.deps` edges: rows 1,170 / 25.4 MB (median 0 B, p95 37 KB, max 4.05 MB) · unit 5,232 / 33.3 MB (median 29 B, p95 27.7 KB) · warn 2,814 / 0.14 MB | `benchmarks/db/store_baseline.sh` | MEASURED |
 | M6 baseline: cache syscalls, `check cli` (strace) | cold 63.1 s wall, 85,647 calls (stat 32,121 · mkdir 18,446 · open 10,008 · rename 9,220 · write 4,274 · read 1,568) · no-op 0.61 s, 696 calls (stat 619 · open 19 · read 27) | same | MEASURED |
 | today's store after a cold `check cli` | 8,964 files, 58 MB (unit 5,010 / 30.8 MB · rows 1,172 / 26.7 MB · warn 2,752 / 0.13 MB) | M2 | MEASURED |
 | `perf/witness-folded` reproduced in kind, std-avrac today | `Analysis`: 867 files, 37,258 direct deps, 43 a file, median 23 | M2 | MEASURED |
@@ -1471,7 +1471,7 @@ codecs, `still_valid`, `current_listing_digest`, `current_file_digest`. On the D
 
 ## A20. M2 in detail (a simulation; nothing was persisted)
 
-Source: `tools/db_measure/graph.py` replaying the M1 graph of a cold `check packages/cli`,
+Source: `benchmarks/db/graph.py` replaying the M1 graph of a cold `check packages/cli`,
 `origin/db-measure` @ `6b12cf8`. "Second reading" = name buckets counted as durable inputs.
 
 | family (second reading) | saved answers | reads per answer |
@@ -1506,5 +1506,5 @@ Source: `tools/db_measure/graph.py` replaying the M1 graph of a cold `check pack
 
 | # | question | result | what it changes |
 |---|---|---|---|
-| M1 | How big is the kernel's graph on a cold `check cli`? | **MEASURED** (`AVRA_DB_GRAPH=1`, branch `db-measure`, `tools/db_measure/graph.py`): **70,015 cells, 5,314,590 direct edges**. 37.2 M recorded read *calls* — 7 per kept edge; 17.8 M on `Named`, 14.5 M on `Items`. In memory 74 B an edge (375 MB) and ~1,050 B a cell (70 MB) of a 1,867 MB peak; as plain text the graph is 45.7 MB. 54,947 cells are keyed by file, module, declaration or unit; 15,068 by a process-local ask number. The three std-relation families hold 2 edges between them | save every cell's digest and reads (≈ 46 MB before packing). The 15,068 ask-number cells need names at DB 03. The cost to cut is the 37 M calls, on `Named` and `Items` — DB 01 c–d |
+| M1 | How big is the kernel's graph on a cold `check cli`? | **MEASURED** (`AVRA_DB_GRAPH=1`, branch `db-measure`, `benchmarks/db/graph.py`): **70,015 cells, 5,314,590 direct edges**. 37.2 M recorded read *calls* — 7 per kept edge; 17.8 M on `Named`, 14.5 M on `Items`. In memory 74 B an edge (375 MB) and ~1,050 B a cell (70 MB) of a 1,867 MB peak; as plain text the graph is 45.7 MB. 54,947 cells are keyed by file, module, declaration or unit; 15,068 by a process-local ask number. The three std-relation families hold 2 edges between them | save every cell's digest and reads (≈ 46 MB before packing). The 15,068 ask-number cells need names at DB 03. The cost to cut is the 37 M calls, on `Named` and `Items` — DB 01 c–d |
 | M2 | Under L4: how many saved answers, how many reads each? | **MEASURED** (a simulation over the M1 graph, `graph.py`; nothing persisted): **54,947 of 70,015 cells are saved answers.** Direct durable reads per answer: total 1,091,224, median 2, p95 19 as keys are typed today; total 3,359,012, median 3, p95 510, max 41,435 once name buckets count as durable. File grain (what main saves today): 4,184 answers, 2.67 M reads, median 5, p95 5,090. Digest 362 MB/s: 55 k answers ≈ 0.05–0.5 s, under 1 % of a 63 s cold check | **Always-save at declaration grain is ~55 k records with short lists. It is blocked by names, not by size** (§7.4) |

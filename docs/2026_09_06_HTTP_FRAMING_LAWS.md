@@ -578,7 +578,7 @@ pulled piece by piece from a `Response.stream` — only while its stream's windo
 and nothing is owed on it, so an answer holds one piece at most; a piece past the declared
 length, an end short of it and a producer's failure reset the stream after what it sent.
 Measured: a gigabyte down and a gigabyte up over one h2c connection in 3 MB
-(`tools/bench/h2_gigabyte`, AVRA_MEM_STATS). Sending, an answer's DATA is cut to the lesser of the connection window, the
+(`benchmarks/http/h2_gigabyte`, AVRA_MEM_STATS). Sending, an answer's DATA is cut to the lesser of the connection window, the
 stream window and the peer's MAX_FRAME_SIZE; what does not fit is owed on the stream and
 sent when a WINDOW_UPDATE — or a SETTINGS that grows INITIAL_WINDOW_SIZE — opens it. A
 SETTINGS may drive a window below zero; nothing is sent until it is positive again. An
@@ -702,7 +702,7 @@ is READ as its handler asks (`body.av`). The laws, each a fixture:
 | A body that broke is answered by its own law (413, 400, 408), never by the handler; a peer gone mid-body is answered nothing | `body_test`, `http_stream_laws` |
 | A body kept past its handler reads what it had and ends — never another message's socket | `body_test` |
 | An expired event cursor is told (`cursor-expired`) before the live stream, never silently skipped | `sse_test`, `http_sse` |
-| Every WebSocket protocol law is a close code, sent and answered alike | `ws_test`, `http_ws`, Autobahn (`tools/bench/autobahn`) |
+| Every WebSocket protocol law is a close code, sent and answered alike | `ws_test`, `http_ws`, Autobahn (`benchmarks/http/autobahn`) |
 | A socket ended — by the close handshake or a broken law — answers `Closed` to every later call and touches its descriptor no more; the server closes it when the session returns | `ws_test` |
 | A client opening's target and authority are words of the request line: one holding a line end is refused before a byte is sent | `ws_test` |
 | A gathered body is bounded from its first piece on — one chunk past `Limits.body` is 413 | `body_test` |

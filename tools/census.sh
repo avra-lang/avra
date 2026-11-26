@@ -13,7 +13,7 @@
 #
 # CENSUS_EDIT MEASURES A WARM EDIT: the command runs once cold to fill the store,
 # then CENSUS_EDIT edits the tree, and only the run after it is counted.
-#   CENSUS_EDIT='sh tools/db_measure/edit_literal.sh' sh tools/census.sh check packages/cli
+#   CENSUS_EDIT='sh benchmarks/db/edit_literal.sh' sh tools/census.sh check packages/cli
 #
 # A CENSUS THAT PRINTS NO COUNTS FAILS. A check that examined nothing
 # is not a check that passed: no `rc:` line means the binary carried no

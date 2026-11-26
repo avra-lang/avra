@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """THE REGRESSION SEAM: a fresh run's rows against an accepted baseline,
-refusing past a margin — the idea `tools/flow_bench/gate.py` landed for
+refusing past a margin — the idea `benchmarks/tasks/flow/gate.py` landed for
 the scheduler's transition rows, at the suite's scale.
 
 `run.sh --record` accepts this machine's rows into `benchmarks/baseline.json`;

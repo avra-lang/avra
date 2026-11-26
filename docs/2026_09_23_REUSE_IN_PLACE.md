@@ -138,7 +138,7 @@ are load noise, and a comparison is only ever interleaved):
 
 | | before | after |
 |---|---|---|
-| tools/bench/request | 5.40 µs | 5.15 µs (−5%) |
+| benchmarks/http/request | 5.40 µs | 5.15 µs (−5%) |
 | wrk pipelined16 c=200 | 146k req/s, 6.85 µs CPU | 158k req/s, 6.35 µs CPU |
 | wrk keep-alive c=50 | 44.3k req/s | 46.1k req/s |
 | C floor, pipelined16 | 1.13M req/s, 0.88 µs CPU | — |
@@ -286,7 +286,7 @@ tracing):
 
 | | campaign start | after R1 | after R6 |
 |---|---|---|---|
-| tools/bench/request | 5.40 µs | 5.15 µs | **3.28 µs** |
+| benchmarks/http/request | 5.40 µs | 5.15 µs | **3.28 µs** |
 | wrk pipelined16 c=200 | 146k req/s, 6.85 µs CPU | 158k, 6.35 µs | **205k, 4.86 µs** |
 | wrk keep-alive c=50 | 44.3k req/s | 46.1k | **50.4k** |
 | list/record boxes per request | 40 | 39 | **14** |
@@ -429,7 +429,7 @@ sites in the binary: release 342 -> 36, array_get 492 -> 25, retain
 
 | | campaign start | now |
 |---|---|---|
-| tools/bench/request | 5.40 µs | 1.95 µs |
+| benchmarks/http/request | 5.40 µs | 1.95 µs |
 | wrk pipelined16 c=200 | 146k req/s, 6.85 µs CPU | 274k req/s, 3.65 µs CPU |
 | wrk keep-alive c=50 | 44.3k req/s | 56.3k req/s |
 | C floor (no parsing), pipelined | 1.14M req/s, 0.88 µs CPU | — |
@@ -630,7 +630,7 @@ instructions; the compiler binary +3.4% (8.29 -> 8.57 MB).
 
 | | start | §15 | now | C floor |
 |---|---|---|---|---|
-| tools/bench/request | 5.40 µs | 1.95 µs | 1.70 µs | — |
+| benchmarks/http/request | 5.40 µs | 1.95 µs | 1.70 µs | — |
 | wrk pipelined16 c=200 | 146k req/s, 6.85 µs CPU | 274k, 3.65 µs | 330k, 3.05 µs | 1.14M, 0.88 µs |
 | wrk keep-alive c=50 | 44.3k | 56.3k | 56.6k (17.8 µs CPU) | 72.7k |
 
@@ -767,7 +767,7 @@ cycles and wall numbers show moving instead. Recorded rather than
 argued away: this is a real, small, one-time cost, not measurement
 noise, and it buys a materially smaller, not-slower-in-cycles binary.
 
-**Request bench** (`tools/bench/request`, built with each compiler,
+**Request bench** (`benchmarks/http/request`, built with each compiler,
 run interleaved 4× each, instructions retired — the stable figure; the
 program's own printed ns/request is noisier on a loaded Mac desktop):
 
@@ -868,7 +868,7 @@ own suite (468 unit tests, 4 programs, every named `Refusal` already
 pinned by `frame_test.av`) passed unchanged — the restructuring
 touched no LAW, only the fold's shape.
 
-**Numbers** (tools/bench/request, Mac, 5,000,000 requests,
+**Numbers** (benchmarks/http/request, Mac, 5,000,000 requests,
 `/usr/bin/time -l`, interleaved, several rounds averaged):
 
 | | before | after |
@@ -1013,7 +1013,7 @@ change; filed as avra-8sb5.47. The attack was rewritten as a `match`
 meant to test — `hollow_of`'s fallback merging beside a present AND
 an absent companion — and passes clean.
 
-**Numbers** (tools/bench/request, Mac, 5,000,000 requests,
+**Numbers** (benchmarks/http/request, Mac, 5,000,000 requests,
 `/usr/bin/time -l`, interleaved, 4 rounds averaged, against the exact
 pre-slice source and compiler — old `frame.av` built by the saved
 pre-change binary, new `frame.av` built by the post-slice one):
@@ -1042,7 +1042,7 @@ without boxing.
 `sized_capacity`'s cheap check (a size class read from the LENGTH)
 stays exactly as it was — the ticket's own candidate, reading the
 block's real size on every append, was measured and refused: it cost
-`tools/bench/request` ~3.6% instructions/request for a bug that only
+`benchmarks/http/request` ~3.6% instructions/request for a bug that only
 truncation triggers, all of it `malloc_size`/`malloc_usable_size`
 calls on appends that never needed one. `box_free`'s free-list filing
 was measured the same way (misfiles a big block truncated small into
@@ -1141,7 +1141,7 @@ iterations, `/usr/bin/time -l`, `AVRA_CENSUS` for the box counts):
 | instructions/iteration | 1,086 | 790 (−27.3%) |
 | `Bytes` boxes, whole run | 9,999,999 | 1 (steady state, one box) |
 
-`tools/bench/request` (Mac, 5,000,000 requests, `/usr/bin/time -l`,
+`benchmarks/http/request` (Mac, 5,000,000 requests, `/usr/bin/time -l`,
 interleaved, several rounds averaged; the runtime fix alone measures
 NEUTRAL here — a debug counter confirmed `sized_moved` is called
 ZERO times in this bench's whole run, since nothing in the request
@@ -1638,7 +1638,7 @@ before every `check` round:
 
 | | before (main 94619dd) | after |
 |---|---|---|
-| tools/bench/request, 5,000,000 requests | 54.63B instr (avg) | 53.95B instr (avg) — −1.2% |
+| benchmarks/http/request, 5,000,000 requests | 54.63B instr (avg) | 53.95B instr (avg) — −1.2% |
 | `check packages/cli` | 173.8B instr (avg) | 166.6B instr (avg) — −4.1% |
 
 Consistent in every round both ways (request: 54.51/54.73/54.64 →

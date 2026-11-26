@@ -2789,7 +2789,7 @@ The cut that came first is the nested lifting (one declaration lifted ~28 times 
 ## THE C LEVEL (opened 2026-09-23) — @std/http per request at a hand-written C server's cost
 
 Epic avra-8sb5.34; design and numbers: docs/2026_09_23_REUSE_IN_PLACE.md.
-On the Linux Sprite the kernel floor (tools/bench/floor — no parsing) is
+On the Linux Sprite the kernel floor (benchmarks/http/floor — no parsing) is
 0.88 µs CPU per request pipelined; a C server doing @std/http's work is
 ~1.0 µs (estimate); Avra is ~6 µs. The gap is PER-REQUEST cost: tasks,
 fibers and cores raise throughput and never lower it.
@@ -2951,7 +2951,7 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
   moment a SECOND feature owns a `Pat` variant), and the per-pattern
   slot `bind_test`/`test_regs_of` (lane C) let the test find the spans
   and the binds cut them, so AN UNTAKEN FORMAT ARM MINTS NOTHING.
-  MEASURED (tools/bench/frame_scan, subject hoisted, three runs): a
+  MEASURED (benchmarks/http/frame_scan, subject hoisted, three runs): a
   request line over TEXT by hand 62 ns, by format 97 ns (1.58x); over
   OCTETS — where the framer works and nothing is converted — by hand
   74 ns, by format 90 ns, 1.24x. The difference between the two ratios
@@ -3018,7 +3018,7 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
         constant is a vocabulary event under the eight-consumer
         protocol; the strings lane does not grow the IR. WANTING SITE:
         `features/formats/lower.av`'s per-piece conversion.
-        THE CENSUS ANSWER (2026-09-07, `tools/bench/frame_head` under
+        THE CENSUS ANSWER (2026-09-07, `benchmarks/http/frame_head` under
         `-DAVRA_CENSUS`): a framed head pays 52 `once` reads = 104
         retain/release ops (`avra_once_get` is the program's largest
         retain site, 104M over 2M heads) and 988 pointer compares

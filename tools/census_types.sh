@@ -4,7 +4,7 @@
 # built against a census runtime (-DAVRA_CENSUS), each owning row's
 # answer counted by its type (AVRA_CENSUS_TYPES=1), the hot leaves kept
 # as calls (AVRA_INLINE_RUNTIME=0), then run once.
-#   sh tools/census_types.sh tools/bench/request/src/main.av [args...]
+#   sh tools/census_types.sh benchmarks/http/request/src/main.av [args...]
 #
 # A FLAGGED BUILD NEVER FILLS THE SHIPPING STORE. The tree's stores
 # stand aside for the build and come back on every exit, with the
