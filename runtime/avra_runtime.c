@@ -1916,8 +1916,8 @@ void avra_trap(const char* msg) {
         fputs("avra: while running ", stderr);
         fputs(g_case, stderr);
         if (avra_case_schedule >= 0) {
-            if (avra_case_path[0]) fprintf(stderr, " under path %s — " "AVRA_SCHED_PATH" "=%s replays it", avra_case_path, avra_case_path);
-            else fprintf(stderr, " under schedule %lld — AVRA_SCHED_SEED=%lld replays it", (long long)avra_case_schedule, (long long)avra_case_schedule);
+            if (avra_case_path[0]) fprintf(stderr, " under path %s — " AVRA_SET_SCHED_PATH "=%s replays it", avra_case_path, avra_case_path);
+            else fprintf(stderr, " under schedule %lld — " AVRA_SET_SCHED_SEED "=%lld replays it", (long long)avra_case_schedule, (long long)avra_case_schedule);
         }
         fputc('\n', stderr);
     }
@@ -5876,7 +5876,7 @@ static int64_t clock_real(void) {
 // SETTING, `AVRA_CLOCK_ASKS`, read once when a clock first freezes; 0
 // never traps. It is a watchdog, not a law: a task that reads the clock
 // that often while working, and never waits, is told the same.
-#define CLOCK_ASKS_SETTING "AVRA_CLOCK_ASKS"
+#define CLOCK_ASKS_SETTING AVRA_SET_CLOCK_ASKS
 enum { CLOCK_ASKS_UNSET = -1, CLOCK_ASKS_DEFAULT = 1 << 24 };
 static int64_t g_clock_asks_most = CLOCK_ASKS_UNSET;
 
