@@ -40,7 +40,10 @@ KEYWORDS = {"if", "while", "for", "switch", "return", "sizeof", "defined", "__bu
 # compiler's builtins, the runtime's own macros, the two C function-pointer
 # params (`text`, `source`) that only ever name C fns, and the core's hooks the
 # scheduler names (`avra_unwind_running`, `avra_shield_entered`, `avra_shield_left`),
-# which only ever name its own bookkeeping. `proc_pidinfo` is macOS libproc's read
+# which only ever name its own bookkeeping. `WORDS` is the runtime's macro that places a message in a
+# section of its own, and answers the literal. The memory pool's table (`AvraPool`: `allowed`,
+# `let_go`, `spare_at`, `held`, `free_bytes`, `forked`, `refused`) only ever names
+# runtime/avra_pool.c's own C fns, which answer codes and raise nothing. `proc_pidinfo` is macOS libproc's read
 # of a process's record: it runs no Avra code and holds no lock of ours. A callee
 # not here and not defined in the runtime is a call out, which may trap.
 SAFE = set("""
@@ -57,6 +60,7 @@ write
 AVRA_CALLER CENSUS CPU_COUNT IS_IMMORTAL KIND_IMMORTAL KIND_SHAPE MB S_ISDIR S_ISLNK S_ISREG
 WEXITSTATUS WIFEXITED WIFSIGNALED WTERMSIG volatile
 text source avra_unwind_running avra_shield_entered avra_shield_left
+WORDS allowed let_go spare_at held free_bytes forked refused
 """.split())
 
 
