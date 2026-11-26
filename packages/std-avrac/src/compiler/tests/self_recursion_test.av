@@ -1,0 +1,52 @@
+// A fn that calls itself on every path is warned: each way out of its body is reached only after
+// calling it again. A call a branch, a loop, a lambda or a short-circuit guards is a way out.
+use @std.avrac.testing.{judged}
+
+const KIND: string = "flow.self_recursion"
+
+/// What `flow.self_recursion` says of `source`, each warning in order.
+fn warned(source: string) -> string {
+    [d.message for d in judged(source).diagnostics if d.kind == KIND].join(" | ")
+}
+
+fn said(name: string) -> string { "`${name}` calls itself on every path, so it never answers" }
+
+spec "compiler — a fn that calls itself on every path" {
+    given "a body whose every path calls it" {
+        then "a bare call is warned, in its words" { warned("fn f(n: int) -> int { f(n + 1) }\nf(1)") == said("f") }
+        then "a call inside arithmetic is warned" {
+            warned("fn spun() -> int {\n    let x = 1\n    spun() + x\n}\nspun()") == said("spun")
+        }
+        then "a branch whose every arm calls it is warned" {
+            warned(
+                "fn both(n: int) -> int { if n > 0 { both(n - 1) } else { both(n + 1) } }\nboth(1)",
+            ) == said("both")
+        }
+        then "a call it returns is warned" { warned("fn r(n: int) -> int { return r(n) }\nr(1)") == said("r") }
+        then "it is a warning, never a refusal" {
+            judged("fn f(n: int) -> int { f(n + 1) }\nf(1)")
+                .diagnostics
+                .all(it.kind != KIND || it.severity is .Warning)
+        }
+    }
+    given "a body with a way out before the call" {
+        then "a return under a condition" {
+            warned("fn c(n: int) -> int {\n    if n == 0 { return 0 }\n    c(n - 1)\n}\nc(3)") == ""
+        }
+        then "a call under one arm of a branch" {
+            warned("fn g(n: int) -> int { if n > 0 { g(n - 1) } else { 0 } }\ng(3)") == ""
+        }
+        then "a call on the right of `&&`" { warned("fn l(n: int) -> bool { n > 0 && l(n - 1) }\nl(3)") == "" }
+        then "a call inside a lambda" {
+            warned("fn i(n: int) -> int {\n    let f = (k: int) -> i(k)\n    f(n)\n}\n1") == ""
+        }
+        then "a `?` before the call" {
+            warned(
+                "fn ok(n: int) -> Result<int, string> { n }\nfn t(n: int) -> Result<int, string> {\n    let v = ok(n)?\n    t(v)\n}\n1",
+            ) == ""
+        }
+        then "a seat of the fn's name is another fn" {
+            warned("fn s(s: fn(int) -> int, n: int) -> int { s(n) }\n1") == ""
+        }
+    }
+}

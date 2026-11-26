@@ -6175,6 +6175,25 @@ error[flow.callback_pointer]: seat `cb` of `avra_probe_cb` is a callback under a
 help: a callback under a cancel answers zero — answer a word, or read nothing on the C side when it does
 ```
 
+## flow.self_recursion
+
+a fn that calls itself on every path never answers
+
+```avra
+fn f(n: int) -> int { f(n + 1) }
+f(1)
+```
+
+```
+warning[flow.self_recursion]: `f` calls itself on every path, so it never answers
+  ╭─[<source>:1:1]
+1 │ fn f(n: int) -> int { f(n + 1) }
+  · ┬
+  · ╰── every path through this fn calls it again
+──╯
+help: give it a path that answers without calling `f` — a case that returns first
+```
+
 ## type.host_fn
 
 a host fn defines the symbol its name spells — its seats and its answer are words and pointers a host hands over, plain

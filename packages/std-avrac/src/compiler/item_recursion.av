@@ -1,0 +1,99 @@
+//! A FN THAT CALLS ITSELF ON EVERY PATH never answers: before it can return, fail or fall off its
+//! end, each path through its body has called it again. Read off the body's control as data, so a
+//! call under a branch, a loop, a lambda or the right side of `&&`, `||` or `??` is no such call,
+//! and a `?` before the call is a way out.
+use core.{At, Control, ExprId, SyntaxArena}
+use compiler.laws.{Found, law}
+use diagnostics.{Voice}
+
+/// How every path through a part of a body meets a call of the fn: it calls first, it may leave
+/// first, or it falls through having done neither.
+enum Met {
+    Calls
+    Left
+    Falls
+}
+
+/// Every top-level fn of the item `view` that calls itself on every path.
+fn self_recursions(view: ItemView) -> List<Found> {
+    let store = view.item.store
+    [Found { at: store.stmt_span(s), args: [f!.name] } for s in view.item.stmts for f in [store.fn_parts(s)] if f != null && recurs(view, store, f!.name, f!.params.map(it.name.text()), f!.body)]
+}
+
+/// Whether the body `body` of the fn `name`, whose seats are named `seats`, calls the fn on every
+/// path: the name read where it stands is this item's fn, and no seat or binding shadows it.
+fn recurs(view: ItemView, store: SyntaxArena, name: string, seats: List<string>, body: ExprId) -> bool {
+    if seats.contains(name) || store.stmt_ids().any((s) -> store.let_name(s) == name) { return false }
+    let own? = resolved(view.engine, view.file, Space.Value, name).named() else { return false }
+    if own.kind != ItemKind.Fn || own.item != view.at { return false }
+    met(store, At.Expr(body), name) is .Calls
+}
+
+/// How every path through `at` meets a call of `name`: its children first, then the node itself.
+fn met(store: SyntaxArena, at: At, name: string) -> Met {
+    match at {
+        .Expr(e) -> {
+            let inner = flowed(store, store.expr_control(e), name)
+            if !(inner is .Falls) { return inner }
+            if store.call_parts(e)?.callee?.spells(name) ?? false { return Met.Calls }
+            if store.propagates(e) { Met.Left } else { Met.Falls }
+        },
+        .Stmt(s) -> flowed(store, store.stmt_control(s), name),
+        .Pat(_) or .Field(_, _) or .Param(_, _) -> Met.Falls,
+    }
+}
+
+/// How every path through one node's children meets a call of `name`.
+fn flowed(store: SyntaxArena, c: Control, name: string) -> Met {
+    match c {
+        .Seq(steps) -> stepped(store, steps, name),
+        .Branch(head, arms) -> branched(stepped(store, head, name), [stepped(store, a, name) for a in arms]),
+        .Returns(v) -> left_by(store, v, name),
+        .Fails(v) -> left_by(store, v, name),
+        .Apart -> Met.Falls,
+    }
+}
+
+/// Steps run in order: the first that calls or may leave decides.
+fn stepped(store: SyntaxArena, steps: List<At>, name: string) -> Met {
+    for at in steps {
+        let m = met(store, at, name)
+        if !(m is .Falls) { return m }
+    }
+    Met.Falls
+}
+
+/// A head, then one of `arms`: every arm must call for the branch to.
+fn branched(head: Met, arms: List<Met>) -> Met {
+    if !(head is .Falls) { return head }
+    if arms.all(it is .Calls) { return Met.Calls }
+    if arms.any(it is .Left) { Met.Left } else { Met.Falls }
+}
+
+/// Control leaving with `v`: a call in what it leaves with still runs first.
+fn left_by(store: SyntaxArena, v: ExprId?, name: string) -> Met {
+    let value? = v else { return Met.Left }
+    if met(store, At.Expr(value), name) is .Calls { Met.Calls } else { Met.Left }
+}
+
+/// a fn that calls itself on every path
+export law self_recursion_law {
+    kind: "flow.self_recursion"
+    reads_view: self_recursions
+    voice: recursion_words
+    warns: true
+    witness: "fn f(n: int) -> int { f(n + 1) }\n"
+}
+
+fn recursion_words(a: List<string>) -> Voice { calls_itself_always(a[0]) }
+
+// ── The voices ──
+
+/// The fn `name`, which calls itself before every way out of its body.
+export fn calls_itself_always(name: string) -> Voice {
+    Voice {
+        message: "`${name}` calls itself on every path, so it never answers",
+        label: "every path through this fn calls it again",
+        help: "give it a path that answers without calling `${name}` — a case that returns first",
+    }
+}
