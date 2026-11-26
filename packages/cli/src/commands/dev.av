@@ -20,7 +20,7 @@
 //! another.
 use @std.http_message.message.{Method}
 use @std.cli.{CliResult, Runnable, command, option, flag, arg}
-use @std.avrac.compiler.{Toolchain}
+use @std.avrac.compiler.{BuildHost, TargetRow, Toolchain, every_host, host_word, named_target}
 use @std.http.http.{Request, Unrouted, Response, text}
 use @std.http.route.{Route, Reach, mounted, fixed}
 use @std.http.server.{server}
@@ -53,9 +53,23 @@ enum Pointed {
     Library
     /// A package whose program mounts no page.
     Program
+    /// An app none of whose targets stands beside a page: the words of those it ships as.
+    Unpaged(words: string)
     /// No directory at all.
     File
 }
+
+/// Whether the target `row` stands beside a host `dev` can watch.
+fn paged(row: TargetRow) -> bool { watches(row.host) }
+
+/// Whether `dev` can watch a build standing beside the host `h`: a page's, which it serves and
+/// builds again; a process and an app run where `avra run` puts them.
+fn watches(h: BuildHost) -> bool {
+    match h { .Page -> true, .Process or .Ios -> false }
+}
+
+/// The hosts `dev` can watch, spelled for a refusal.
+fn watched_hosts() -> string { ["`${host_word(h)}`" for h in every_host() if watches(h)].join(", ") }
 
 /// The module a program mounts a page through.
 const web_module: string = "@std.ui.web"
@@ -64,6 +78,10 @@ const web_module: string = "@std.ui.web"
 /// imports the module a page is mounted through. Asked of the `use`
 /// lines the program layer reads, never of a file's name.
 fn mounts_a_page(root: string) -> bool { imports_module(root, web_module) }
+
+/// What a package whose manifest lists no targets is: a page where its own sources import the
+/// module a page is mounted through, else a program.
+fn imported_page(path: string) -> Pointed { if mounts_a_page(path) { .Page } else { .Program } }
 
 /// What `path` is. A package is a directory with a manifest; what it holds
 /// is the program layer's to say.
@@ -76,7 +94,10 @@ export fn pointed(path: string) -> Pointed {
     }
     if !there { return .Files }
     if entry_written(path) == null { return .Library }
-    if mounts_a_page(path) { .Page } else { .Program }
+    let app? = manifest_at(path).app else { return imported_page(path) }
+    if app.targets.is_empty() { return imported_page(path) }
+    let rows = [row! for w in app.targets for row in [named_target(w.word)] if row != null]
+    if rows.any(paged(it)) { .Page } else { .Unpaged(["`${r.name}`" for r in rows].join(", ")) }
 }
 
 impl Runnable for DevCmd {
@@ -90,30 +111,39 @@ impl Runnable for DevCmd {
         }
         match pointed(path) {
             .Files -> hosted(args, path, directory("/", fresh_files(path)), () -> false, untended),
-            .Page -> match page_at(
+            .Page -> page_served(
+                args,
                 path,
                 if args.option("target") == "" { "wasm" } else { args.option("target") },
-            ) {
-                .Ok(p) -> hosted(
-                    args,
-                    path,
-                    p.routes(),
-                    () -> p.turn(),
-                    if args.has_flag("no_watch") {
-                        (stop: Task<bool>) -> p.ended_by(stop)
-                    } else {
-                        (stop: Task<bool>) -> {
-                            p.tended(looked_every(args), stop)
-                            p.backend?.stopped()
-                        }
-                    },
-                ),
-                .Err(code) -> code,
-            },
+                !args.has_flag("no_watch"),
+            ),
             .Library -> unequipped(serves_no_library(path)),
             .Program -> unequipped(serves_no_program(path)),
+            .Unpaged(words) -> unequipped(serves_no_page_host(path, words)),
             .File -> unequipped(serves_no_file(path)),
         }
+    }
+}
+
+/// The page of the package at `path`, built for `target` and served until the command is stopped,
+/// its server beside it: built again as its sources change where `watch`, and otherwise once.
+export fn page_served(args: CliResult, path: string, target: string, watch: bool) -> int {
+    match page_at(path, target) {
+        .Ok(p) -> hosted(
+            args,
+            path,
+            p.routes(),
+            () -> p.turn(),
+            if watch {
+                (stop: Task<bool>) -> {
+                    p.tended(looked_every(args), stop)
+                    p.backend?.stopped()
+                }
+            } else {
+                (stop: Task<bool>) -> p.ended_by(stop)
+            },
+        ),
+        .Err(code) -> code,
     }
 }
 
@@ -766,6 +796,10 @@ fn serves_no_file(path: string) -> string { "`dev` serves a directory or a packa
 
 fn serves_no_library(path: string) -> string {
     "${path} is a library: it has no program to serve — a page is a package whose `[bin]` entry mounts a view (`use @std.ui.web.{mount}`)"
+}
+
+fn serves_no_page_host(path: string, words: string) -> string {
+    "${path} ships as ${if words == "" { "no target" } else { words }}, and `dev` watches a page — the hosts it can watch are ${watched_hosts()}"
 }
 
 fn serves_no_program(path: string) -> string {

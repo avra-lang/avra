@@ -403,6 +403,26 @@ export fn program_built(
     program_built_at(root, bin, timed, tools, release)
 }
 
+/// The program of the package at `root` built for its target `word`, placed under the package's
+/// `build/<word>/` so no two targets' builds stand at one path: its binary's path, or the exit its
+/// refusal spoke.
+export fn target_built(
+    root: string,
+    word: string,
+    timed: bool = false,
+    tools: Toolchain? = null,
+    release: bool = false,
+) -> Result<string, int> {
+    let bin? = entry_written(root) else {
+        eprintln("avra: ${root} declares no entry point")
+        return .Err(1)
+    }
+    let disk? = disk_at(root, "") else { return .Err(std_unfound()) }
+    let stem = joined_path(root, "build/${word}/${stem_of(bin)}")
+    let _ = make_dirs(dir_of(stem))
+    disk_built(disk, bin, stem, timed, tools, release)
+}
+
 /// `avra build` of the source file at `path` on the program layer: the program it runs, built as its
 /// package's — the package it belongs to by the old path's own rule (`file_home`), or, belonging to
 /// none, a package of that one file — and linked beside it.

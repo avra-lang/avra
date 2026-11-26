@@ -1,0 +1,121 @@
+// The targets an app ships as: one row a word, its triple and its host; and what a manifest's
+// targets owe it beyond its text, each refusal in its own words.
+use @std.avrac.diagnostics.{new_source_file, render}
+
+use compiler.{BuildHost, TARGETS, hosts_of, judged_read, object_dirs, named_target, target_triple}
+use compiler.host.{ManifestRead}
+
+fn read(text: string) -> ManifestRead { judged_read(new_source_file("avra.toml", text)) }
+
+/// An app named `app` with a `[bin]`, carrying these lines after it.
+fn app(rest: string) -> string {
+    "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[bin]\npath = \"src/main.av\"\n${rest}"
+}
+
+/// The kinds `text` speaks, in order.
+fn kinds(text: string) -> string { [v.kind for v in read(text).voices].join(",") }
+
+/// The first voice of `text`, rendered.
+fn shown(text: string) -> string { render(read(text).voices[0], new_source_file("avra.toml", text)) }
+
+spec "compiler/targets" {
+    given "the table" {
+        then "each word names one row" {
+            TARGETS.all((r) -> TARGETS.filter(it.name == r.name).length == 1)
+        }
+        then "a word names its host" {
+            named_target("terminal")?.host == BuildHost.Process &&
+                named_target("web")?.host == BuildHost.Page &&
+                named_target("ios")?.host == BuildHost.Ios &&
+                named_target("watch") == null
+        }
+        then "a raw triple stands beside its platform's host" {
+            hosts_of("").first() == BuildHost.Process &&
+                hosts_of("wasm32-wasip1").first() == BuildHost.Page &&
+                hosts_of("arm64-apple-ios-simulator").first() == BuildHost.Ios
+        }
+        then "a target's triple settles on its manifest's `min`, else its OS's oldest" {
+            let ios = named_target("ios")!
+            let pinned = read(app("\n[app]\ntargets = [\"ios\"]\n\n[target.ios]\nmin = \"17.2\"\n"))
+            let unpinned = read(app("\n[app]\ntargets = [\"ios\"]\n"))
+            target_triple(ios, pinned.manifest) == "arm64-apple-ios17.2-simulator" &&
+                target_triple(ios, unpinned.manifest) == "arm64-apple-ios17.0-simulator" &&
+                target_triple(named_target("web")!, unpinned.manifest) == "wasm"
+        }
+        then "every object directory is a platform's, and the host's own is none of them" {
+            object_dirs().join(",") == "wasm32,iphoneos,iphonesimulator"
+        }
+    }
+    given "the laws" {
+        then "an app shipping as known targets says nothing" {
+            kinds(
+                app(
+                    "\n[app]\ntargets = [\"web\", \"terminal\", \"ios\"]\n\n[target.ios]\nmin = \"18.0\"\n",
+                ),
+            ) == ""
+        }
+        then "a word no row names is refused" {
+            kinds(app("\n[app]\ntargets = [\"terminal\", \"watch\"]\n")) == "manifest.unknown_target"
+        }
+        then "a `[target.<name>]` no row names is refused, and is never also unshipped" {
+            kinds(app("\n[app]\ntargets = [\"terminal\"]\n\n[target.watch]\n")) == "manifest.unknown_target"
+        }
+        then "a `[target.<name>]` for a target the app does not ship warns" {
+            kinds(app("\n[app]\ntargets = [\"terminal\"]\n\n[target.ios]\nmin = \"17.0\"\n")) == "manifest.unshipped_target"
+        }
+        then "a `min` below the OS's oldest, or no release at all, is refused" {
+            kinds(app("\n[app]\ntargets = [\"ios\"]\n\n[target.ios]\nmin = \"16.4\"\n")) == "manifest.bad_target_min" &&
+                kinds(app("\n[app]\ntargets = [\"ios\"]\n\n[target.ios]\nmin = \"17\"\n")) == "manifest.bad_target_min" &&
+                kinds(app("\n[app]\ntargets = [\"ios\"]\n\n[target.ios]\nmin = \"17.x\"\n")) == "manifest.bad_target_min"
+        }
+        then "a later release, two parts or three, is lawful" {
+            kinds(app("\n[app]\ntargets = [\"ios\"]\n\n[target.ios]\nmin = \"17.4.1\"\n")) == "" &&
+                kinds(app("\n[app]\ntargets = [\"ios\"]\n\n[target.ios]\nmin = \"18.0\"\n")) == ""
+        }
+        then "a `[link.objects_for]` key that is a platform's object directory says nothing" {
+            kinds(
+                app(
+                    "\n[link]\nobjects = [\"../build/x.o\"]\n\n[link.objects_for]\nwasm32 = []\niphonesimulator = []\n",
+                ),
+            ) == ""
+        }
+        then "a `[link.objects_for]` key no platform has is refused" {
+            kinds(app("\n[link.objects_for]\niphonesimulater = []\n")) == "manifest.unknown_object_dir"
+        }
+    }
+    given "rendered" {
+        then "an unknown target names every target there is" {
+            shown(app("\n[app]\ntargets = [\"watch\"]\n"))
+                .starts_with(
+                    "error[manifest.unknown_target]: `watch` is no target this compiler builds — the targets are `terminal`, `web`, `ios`\n  ╭─[avra.toml:9:1]",
+                )
+        }
+        then "an unshipped target renders at its header" {
+            shown(app("\n[app]\ntargets = [\"terminal\"]\n\n[target.ios]\nmin = \"17.0\"\n"))
+                .starts_with(
+                    "warning[manifest.unshipped_target]: `[target.ios]` is for a target `[app] targets` does not list, so no build reads it\n   ╭─[avra.toml:11:1]",
+                )
+        }
+        then "a bad `min` names the oldest release" {
+            let text = app("\n[app]\ntargets = [\"ios\"]\n\n[target.ios]\nmin = \"16.4\"\n")
+            let said = shown(text)
+            said
+                    .starts_with(
+                        "error[manifest.bad_target_min]: `[target.ios] min` is a release, `17.0` or later — `16.4` is not\n   ╭─[avra.toml:12:1]",
+                    ) &&
+                said.contains("write the oldest release the app runs on — `min = \"17.0\"`")
+        }
+        then "a target's word as an object directory names the platform's" {
+            let said = shown(app("\n[link.objects_for]\nweb = []\n"))
+            said
+                    .starts_with(
+                        "error[manifest.unknown_object_dir]: `web` is no platform's object directory — the directories are `wasm32`, `iphoneos`, `iphonesimulator`\n  ╭─[avra.toml:9:1]",
+                    ) &&
+                said.contains("`web` is a target — objects are keyed by platform: `wasm32`")
+        }
+        then "an object directory no target names says how sets are keyed" {
+            shown(app("\n[link.objects_for]\niphonesimulater = []\n"))
+                .contains("key the set by the platform's object directory, as the build names it")
+        }
+    }
+}

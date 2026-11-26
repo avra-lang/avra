@@ -152,13 +152,17 @@ int64_t avra_proc_executable(const char* path) {
 
 /* A child's cwd bound through a file action: POSIX-2024's name where
    the SDK has it (macOS 26), the `_np` spelling before (Darwin 10.15,
-   glibc 2.29); elsewhere a cwd is refused as unsupported. */
+   glibc 2.29); elsewhere — iOS among them — a cwd is refused as
+   unsupported. */
 #if defined(__APPLE__)
 #include <Availability.h>
+#include <TargetConditionals.h>
+#if TARGET_OS_OSX
 #if defined(__MAC_OS_X_VERSION_MAX_ALLOWED) && __MAC_OS_X_VERSION_MAX_ALLOWED >= 260000
 #define AVRA_ADDCHDIR posix_spawn_file_actions_addchdir
 #else
 #define AVRA_ADDCHDIR posix_spawn_file_actions_addchdir_np
+#endif
 #endif
 #elif defined(__GLIBC__)
 #if __GLIBC_PREREQ(2, 29)

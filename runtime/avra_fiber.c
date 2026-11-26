@@ -743,7 +743,7 @@ static int64_t g_polls = 0;
 // re-run.
 enum { PATH_OFF, PATH_ENUM, PATH_REPLAY };
 #define PATH_MAX 64
-#define SCHED_PATH_SETTING "AVRA_SCHED_PATH"
+#define SCHED_PATH_SETTING AVRA_SET_SCHED_PATH
 static int g_path_mode = PATH_OFF;
 static uint64_t g_path[PATH_MAX];
 static int64_t g_path_len = 0;
@@ -3602,8 +3602,8 @@ static int64_t case_holds_cleared(void) {
 static int of_the_case(const Fiber* f) { return f != g_current && !f->virtual && (uint64_t)id_of(f) > g_case_first && f->state != FIBER_DONE; }
 
 // The two settings a schedule is named by.
-#define SCHED_RUNS_SETTING "AVRA_SCHED_RUNS"
-#define SCHED_SEED_SETTING "AVRA_SCHED_SEED"
+#define SCHED_RUNS_SETTING AVRA_SET_SCHED_RUNS
+#define SCHED_SEED_SETTING AVRA_SET_SCHED_SEED
 
 // Every task of the case still alive, named oldest first — as a
 // deadlock's, or as outliving the case — and then abandoned. How many.
@@ -3765,7 +3765,7 @@ static int64_t whole_setting(const char* name, int64_t least, int64_t fallback) 
 // A CASE RUNS ON THE VIRTUAL CLOCK unless `AVRA_CLOCK=real` says the
 // wall's: a sleep in it takes no time, and a wait on the world still
 // takes the world's (`make clock-holds`).
-#define CLOCK_SETTING "AVRA_CLOCK"
+#define CLOCK_SETTING AVRA_SET_CLOCK
 static int g_case_clock_virtual = 1;
 static int g_any_failed = 0;
 

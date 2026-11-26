@@ -7,22 +7,32 @@ use @std.meta.{derive}
 use @std.program.saved_derive.{Saved}
 
 /// Every host a build can have. Each arm is spelled wherever a host is
-/// matched, so a new one breaks every reader.
+/// matched, so a new one breaks every reader. A host is what loads a
+/// build and calls into it, never what it links against: a device and a
+/// simulator are two platforms and one host.
 export enum BuildHost {
+    /// A web page, which loads a wasm module.
     Page
+    /// A native binary's own process.
+    Process
+    /// An iOS app, its run loop the caller.
+    Ios
 }
 
 /// The hosts, in the order a listing names them.
-export fn every_host() -> List<BuildHost> { [BuildHost.Page] }
+export fn every_host() -> List<BuildHost> { [BuildHost.Page, BuildHost.Process, BuildHost.Ios] }
 
 /// The word `@std/meta`'s `Host` spells the host with.
 export fn host_word(h: BuildHost) -> string {
-    match h { .Page -> "Page" }
+    match h { .Page -> "Page", .Process -> "Process", .Ios -> "Ios" }
 }
 
-/// The hosts a build for `target` stands beside: a wasm module is a page's, and a binary has none.
-export fn hosts_of(target: string) -> List<BuildHost> {
-    match platform_of(target) { .Wasm -> [BuildHost.Page], .Native or .Apple(_) -> [] }
+/// The host a build for the triple `target` stands beside: its platform's.
+export fn hosts_of(target: string) -> List<BuildHost> { [platform_host(platform_of(target))] }
+
+/// The host a binary for the platform `p` stands beside where no target word names one.
+export fn platform_host(p: Platform) -> BuildHost {
+    match p { .Native -> BuildHost.Process, .Wasm -> BuildHost.Page, .Apple(_) -> BuildHost.Ios }
 }
 
 /// The host an `@host(…)` argument names, as `Host.Page` is written.

@@ -318,10 +318,10 @@ build/wasm32/%.o: runtime/%.c build/%.sha
 	@mkdir -p build/wasm32
 	$(WASM_CC) --target=$(WASM_TARGET) $(if $(WASI_SYSROOT),--sysroot=$(WASI_SYSROOT)) $(WASM_EMULATED) -DAVRA_INSTRUMENTS=$(WASM_INSTRUMENTS) -Iruntime -MMD -MP -ffunction-sections -fdata-sections -Oz -Wno-deprecated $(WASM_SJLJ_$(notdir $<)) -c -o $@ $<
 
-# A PACKAGE'S C FOR WASM, from the paths its manifest's `wasm_objects` names.
-# A package opts in by naming its wasm objects; one that names none is refused
-# by the build, never compiled here.
-WASM_PACKAGE_OBJS := $(shell sh tools/manifest_objects.sh --wasm)
+# A PACKAGE'S C FOR WASM, the objects its manifest carries on `wasm32`. A
+# package whose `[link.objects_for]` gives wasm32 none is refused by the build,
+# never compiled here.
+WASM_PACKAGE_OBJS := $(shell sh tools/manifest_objects.sh --platform wasm32)
 
 build/wasm32/%.o: %.c build/%.sha
 	@mkdir -p build/wasm32
@@ -359,7 +359,7 @@ APPLE_RUNTIME_LIB := build/$(APPLE_SDK)/libavra_runtime.a
 
 build/$(APPLE_SDK)/%.o: %.c build/%.sha
 	@mkdir -p build/$(APPLE_SDK)
-	clang -target $(APPLE_TRIPLE_$(APPLE_SDK)) -isysroot $(APPLE_SDKROOT) -c -O2 -MMD -MP $(SECTIONS) -Wall -Werror -Iruntime $(CFLAGS_$*) -o $@ $<
+	clang -target $(APPLE_TRIPLE_$(APPLE_SDK)) -isysroot $(APPLE_SDKROOT) -c -O2 -MMD -MP $(SECTIONS) $(if $(findstring /vendor/,$<),,-Wall -Werror) -Iruntime $(CFLAGS_$*) -o $@ $<
 
 -include $(patsubst %.o,%.d,$(APPLE_RUNTIME_OBJS))
 
@@ -368,6 +368,12 @@ $(APPLE_RUNTIME_LIB): $(APPLE_RUNTIME_OBJS)
 	@ar rcs $@ $^
 
 apple-runtime: $(APPLE_RUNTIME_LIB)
+
+# A PACKAGE'S C FOR AN APPLE SDK, the objects its manifest carries on that
+# SDK's directory, by the same rule as the runtime's members.
+APPLE_PACKAGE_OBJS := $(shell sh tools/manifest_objects.sh --platform $(APPLE_SDK))
+
+apple-packages: $(filter %.o,$(APPLE_PACKAGE_OBJS))
 
 # THE WASM PROOF: build the fixtures native and for wasm32 and require
 # identical stdout. Skips, spoken, where the wasm toolchain or node is absent.

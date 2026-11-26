@@ -1,6 +1,15 @@
 use @std.validate.{FieldShape, FieldKind, Value, Entry}
 use @std.config.{Variable}
-use settings.{projections, projected, leaves_of, LANDINGS, NAMED_FILE, RUNTIME_FILE, Setting}
+use settings.{
+    projections,
+    projected,
+    leaves_of,
+    every_setting,
+    LANDINGS,
+    NAMED_FILE,
+    RUNTIME_FILE,
+    Setting,
+}
 
 /// One section holding one package holding `leaves`.
 fn shaped(package: string, leaves: List<FieldShape>) -> List<FieldShape> {
@@ -82,6 +91,15 @@ spec "settings — the one declaration and its projections" {
                 Setting.DebugProgramFoldOff.path() == "debug.program.fold_off" &&
                 Setting.DebugProgramFoldOff.switch() &&
                 !Setting.UserAvracCacheDir.switch()
+        }
+        then "a debug setting says so, and a person's does not" {
+            Setting.DebugProgramFoldOff.debug() && !Setting.UserAvracCacheDir.debug()
+        }
+        then "the list holds the declared settings, the debug ones and the others" {
+            let every = every_setting()
+            every.length > 90 &&
+                every.any(it.path() == "debug.runtime.sched_seed") &&
+                every.filter(it.debug()).length < every.length
         }
     }
     given "a leaf's reader" {

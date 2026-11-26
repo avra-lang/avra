@@ -20,7 +20,8 @@ static int read_as(const char* value, int unset) {
     return avra_setting_switch(NAME, unset);
 }
 
-// The child's exit status and the first line it wrote to stderr.
+// The child's exit status and what it wrote to stderr, read to its end: a
+// reader that stops early leaves the child's next write a SIGPIPE.
 static int trapped(const char* value, char* said, size_t room) {
     int pipe_fds[2];
     if (pipe(pipe_fds) != 0) return -1;
@@ -28,12 +29,15 @@ static int trapped(const char* value, char* said, size_t room) {
     if (pid == 0) {
         dup2(pipe_fds[1], 2);
         close(pipe_fds[0]);
+        close(pipe_fds[1]);
+        alarm(10);
         read_as(value, 0);
         _exit(0);
     }
     close(pipe_fds[1]);
-    ssize_t n = read(pipe_fds[0], said, room - 1);
-    said[n > 0 ? n : 0] = 0;
+    size_t got = 0;
+    for (ssize_t n; got < room - 1 && (n = read(pipe_fds[0], said + got, room - 1 - got)) > 0;) got += (size_t)n;
+    said[got] = 0;
     close(pipe_fds[0]);
     int status = 0;
     waitpid(pid, &status, 0);

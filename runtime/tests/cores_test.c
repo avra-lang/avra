@@ -426,6 +426,7 @@ static int trace_keeps_its_file(void) {
     int64_t g = avra_cores_group(1);
     int64_t core = avra_cores_fork(g, report[1]);
     if (core == 0) {
+        // LICENSED compiler.setting_read_by_hand: a runtime test reading back the variable it set for its child
         char c = holds_file(getenv("AVRA_FLOW_TRACE")) ? 'y' : 'n';
         (void)!write(report[1], &c, 1);
         avra_cores_leave(g, core, 0, 0);
