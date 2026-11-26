@@ -781,7 +781,10 @@ run_github() {
     ref=run/$lane
     wf=lane-run.yml
     t0=$(date +%s)
-    live=$($gh_ run list --workflow "$wf" --branch "$ref" --json databaseId,status \
+    gh_calls=$(mktemp)
+    gh_left=$(gh_counted api rate_limit -q .resources.core.remaining 2>/dev/null) || gh_left=
+    case $gh_left in "" | *[!0-9]*) gh_left= ;; esac
+    live=$(gh_counted run list --workflow "$wf" --branch "$ref" --json databaseId,status \
         -q '[.[] | select(.status != "completed")][0].databaseId // empty' 2>/dev/null) || live=
     [ -z "$live" ] || { echo "work: BUSY — run $live is live on $ref; \`gh run cancel $live\` ends it" >&2; exit 76; }
     bk=
@@ -794,20 +797,22 @@ run_github() {
     git push -q -f origin "$snap:refs/heads/$ref" 2>/dev/null || { echo "work: CONNECTION — could not push $ref" >&2; exit 74; }
     echo "work: github — $ref at $(printf '%s' "$snap" | cut -c1-12), bound $minutes min: $(printf '%s' "$cmd" | head -n 1 | cut -c1-100)" >&2
     id=
-    for _ in $(seq 1 30); do
-        id=$($gh_ run list --workflow "$wf" --branch "$ref" --json databaseId,headSha \
+    for _ in $(seq 1 18); do
+        id=$(gh_counted run list --workflow "$wf" --branch "$ref" --json databaseId,headSha \
             -q ".[] | select(.headSha == \"$snap\") | .databaseId" 2>/dev/null | head -n 1) || id=
         [ -z "$id" ] || break
-        sleep 3
+        sleep 5
     done
     [ -n "$id" ] || { git push -q origin ":refs/heads/$ref" 2>/dev/null || :; echo "work: CONNECTION — no run started for $ref within 90s" >&2; exit 74; }
-    url=$($gh_ run view "$id" --json url -q .url 2>/dev/null || :)
+    url=$(gh_counted run view "$id" --json url -q .url 2>/dev/null || :)
     echo "work: github — run $id $url" >&2
     trap '$gh_ run cancel "$id" >/dev/null 2>&1 || :; echo "work: COMMAND — stopped (run $id cancelled), $(gh_since)s" >&2; exit 130' INT
     follow_github "$id" $(( (minutes + 60) * 60 )) || exit $?
     trap - INT
     github_status "$id"
     git push -q origin ":refs/heads/$ref" 2>/dev/null || :
+    echo "work: github — $(wc -l < "$gh_calls" | tr -d " ") GitHub API call(s) this run${gh_left:+ ($gh_left left of the hour's limit at its start)}" >&2
+    rm -f "$gh_calls"
     case $st in
         0) echo "work: github — passed, $(gh_since)s ($url)" >&2 ;;
         70) echo "work: COMMAND — this tree's compiler or libraries did not build, $(gh_since)s ($url)" >&2 ;;
@@ -831,17 +836,42 @@ snapshot() {
     return "$s"
 }
 
-# follow_github <run> <bound s>: says each step as it starts, until the run completes.
+# gh_counted <gh args…>: one `gh` call, counted in $gh_calls (a line a call), since every lane on a
+# machine shares one hourly API limit.
+gh_counted() {
+    [ -z "${gh_calls:-}" ] || echo . >> "$gh_calls"
+    $gh_ "$@"
+}
+
+# THE FOLLOWER'S PACE, in seconds: AVRA_GH_POLL_S (30) for the first two minutes, then
+# AVRA_GH_POLL_SLOW_S (120); where the hour's API limit had under AVRA_GH_LOW (500) calls left at the
+# run's start, AVRA_GH_POLL_LOW_S (300) throughout. $1 the seconds followed so far.
+poll_pace() {
+    if [ -n "${gh_left:-}" ] && [ "$gh_left" -lt "${AVRA_GH_LOW:-500}" ]; then
+        echo "${AVRA_GH_POLL_LOW_S:-300}"
+    elif [ "$1" -lt 120 ]; then
+        echo "${AVRA_GH_POLL_S:-30}"
+    else
+        echo "${AVRA_GH_POLL_SLOW_S:-120}"
+    fi
+}
+
+# follow_github <run> <bound s>: says each step as it starts, until the run completes, at poll_pace.
 follow_github() {
     step=
+    f0=$(date +%s)
+    if [ -n "${gh_left:-}" ] && [ "$gh_left" -lt "${AVRA_GH_LOW:-500}" ]; then
+        echo "work: github — $gh_left API call(s) left this hour: following every $(poll_pace 0)s" >&2
+    fi
     while :; do
         [ "$(gh_since)" -lt "$2" ] || { echo "work: CONNECTION — run $1 did not finish within $(($2 / 60)) min of following" >&2; return 74; }
-        view=$($gh_ run view "$1" --json status,jobs \
-            -q '.status + " " + ([.jobs[0].steps[]? | select(.status == "in_progress") | .name][0] // "")' 2>/dev/null) || { sleep 10; continue; }
+        pace=$(poll_pace $(($(date +%s) - f0)))
+        view=$(gh_counted run view "$1" --json status,jobs \
+            -q '.status + " " + ([.jobs[0].steps[]? | select(.status == "in_progress") | .name][0] // "")' 2>/dev/null) || { sleep "$pace"; continue; }
         [ "${view%% *}" != completed ] || return 0
         now=${view#* }
         [ -z "$now" ] || [ "$now" = "$step" ] || { step=$now; echo "work: github — $(gh_since)s: $step" >&2; }
-        sleep 10
+        sleep "$pace"
     done
 }
 
@@ -849,11 +879,11 @@ follow_github() {
 # reached the command prints its failed step's tail on stderr and sets 70, or 143 when nothing
 # failed (cancelled).
 github_status() {
-    log=$($gh_ run view "$1" --log 2>/dev/null) || log=
+    log=$(gh_counted run view "$1" --log 2>/dev/null) || log=
     printf '%s\n' "$log" | awk -F '\t' '$2 == "command" { sub(/^[^ ]* /, "", $3); if (said && $3 !~ /^##\[/) print $3; if ($3 ~ /^##\[endgroup\]/) said = 1 }' | grep -v '^lane-run: status ' || :
     st=$(printf '%s\n' "$log" | sed -n 's/.*lane-run: status \([0-9][0-9]*\).*/\1/p' | tail -n 1)
     if [ -z "$st" ]; then
-        failed=$($gh_ run view "$1" --json jobs -q '[.jobs[0].steps[]? | select(.conclusion == "failure") | .name][0] // ""' 2>/dev/null || :)
+        failed=$(gh_counted run view "$1" --json jobs -q '[.jobs[0].steps[]? | select(.conclusion == "failure") | .name][0] // ""' 2>/dev/null || :)
         printf '%s\n' "$log" | awk -F '\t' -v s="$failed" '$2 == s { sub(/^[^ ]* /, "", $3); print $3 }' | tail -n 40 >&2
         if [ -n "$failed" ]; then st=70; else st=143; fi
     fi
