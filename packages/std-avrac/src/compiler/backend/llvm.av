@@ -453,7 +453,7 @@ fn emit_mode(l: Lowered, ix: EmitIndex, path: string, which: Owned, form: Writte
     let lc = avra_llvm_context_create()
     let dev = form is .Object && match form { .Object(opt, _) -> opt == 0, rest -> false }
     if dev { avra_llvm_context_unnamed(lc) }
-    let verified = !dev || llvm_verified()
+    let verified = !dev || !llvm_unverified()
     let m = avra_llvm_module_create("avra", lc)
     // the target IS part of the module, not of the code generator that runs
     // later: it decides pointer width, the data layout and, for wasm, the
@@ -777,8 +777,8 @@ fn run_ended(m: ptr, b: ptr, code: ptr) -> ptr {
 }
 
 /// One body into one function: params seed the value table, every
-/// instruction emits, the verifier gates where `verified` — every build
-/// but a level-0 object, and that one too under `AVRA_VERIFY_LLVM`.
+/// instruction emits, the verifier gates where `verified` — every object,
+/// a level-0 one too unless `AVRA_VERIFY_LLVM=0`.
 fn emit_body(
     lc: ptr,
     m: ptr,
@@ -1031,9 +1031,10 @@ const lazy_in_eager: string = "a lazy op reached the eager path"
 /// The integer-only operations, met by a double.
 const int_only_on_floats: string = "an integer-only op reached float operands"
 
-/// `AVRA_VERIFY_LLVM`: every function of a level-0 object held to LLVM's verifier too, as every
-/// other build's is — what the gate's soundness slice sets, so a malformed function is caught.
-fn llvm_verified() -> bool { llvm_verify_asked() == "1" }
+/// `AVRA_VERIFY_LLVM=0`: a level-0 object's functions emitted unverified. Every object is held to
+/// LLVM's verifier by default, so a malformed function is caught where it is made, a suite's and a
+/// program test's included, and a kept object a later build reuses was verified when it was made.
+fn llvm_unverified() -> bool { llvm_verify_asked() == "0" }
 
 once fn llvm_verify_asked() -> string {
     // LICENSED input.debug_flag: a check of the compiler's own output, which no answer reads
