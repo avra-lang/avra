@@ -79,6 +79,7 @@ use tree.identity.{Stand, Step, stand_of, stepped}
 use tree.standing.{Standing, Kept, standing, kept, stood}
 use style.box.{Box}
 use style.theme.{theme}
+use env.{writing}
 use compose.{gathered}
 
 /// A component that projects to a neutral `Node`. A COMPONENT WITH A
@@ -128,10 +129,10 @@ export trait View {
                                 fn stand() -> Stand { stand_of(self.key, self.site) }
 
                                 fn describe(at: Standing) -> List<Node> {
-                                    let was = at.entry.get()
+                                    let was = at.marks()
                                     let drawn = drawn_in(at)
                                     let made = [${node}]
-                                    at.entry.set(was)
+                                    at.restored(was)
                                     made
                                 }
                             }
@@ -159,10 +160,10 @@ export trait View {
                     quote {
                         impl ${t} {
                             fn ${drawn}(at: Standing) -> Node {
-                                let was = at.entry.get()
+                                let was = at.marks()
                                 let drawn = drawn_in(at)
                                 let made = ${node}
-                                at.entry.set(was)
+                                at.restored(was)
                                 made
                             }
                         }
@@ -222,16 +223,29 @@ fn refused_view(t: Type) -> Directive {
     )
 }
 
-/// The theme the node standing at `at` is drawn in, where it is another than the one the node drawn
-/// above it was: one compare of the frame's entry for `ctx theme`, the theme read only where it
-/// moved. The walk's cell holds the entry from now, so what the node draws under it compares with
-/// it; the node's describe gives the cell back once its own subtree is drawn.
+/// The contexts the node standing at `at` is drawn under, where either is another than the one the
+/// node drawn above it was: one compare of the frame's entry for `ctx theme` and one for `ctx
+/// writing`, each read only where one moved. The walk's cells hold the entries from now, so what the
+/// node draws under it compares with them; the node's describe gives the cells back once its own
+/// subtree is drawn.
 export fn drawn_in(at: Standing) -> Stamp? {
     let entry = ctx_entry(ctx.theme)
-    if entry == at.entry.get() { return null }
+    let written = ctx_entry(ctx.writing)
+    let rethemed = entry != at.entry.get()
+    if !rethemed && written == at.written.get() { return null }
     at.entry.set(entry)
-    Stamp { theme: ctx.theme, entry: entry }
+    at.written.set(written)
+    Stamp {
+        theme: ctx.theme,
+        entry: entry,
+        writing: ctx.writing,
+        written: written,
+        rethemed: rethemed,
+    }
 }
+
+/// Whether two stamps name one pair of sets; two absences are one.
+fn same_stamp(a: Stamp?, b: Stamp?) -> bool { a?.entry == b?.entry && a?.written == b?.written }
 
 /// A view's tree standing ALONE: no paint came before it and none
 /// follows, so every instance in it is new.
@@ -246,7 +260,7 @@ export fn rooted(drawn: List<Node>) -> Node {
     // The column stands where its first node was drawn; a node beside it drawn under the same set
     // carries nothing of its own.
     let stamp = drawn.first()?.theme
-    let under = [if n.theme?.entry == stamp?.entry { n with { theme: null } } else { n } for n in drawn]
+    let under = [if same_stamp(n.theme, stamp) { n with { theme: null } } else { n } for n in drawn]
     Node { prim: Prim.Column, attrs: [], box: Box {}, children: under, theme: stamp }
 }
 

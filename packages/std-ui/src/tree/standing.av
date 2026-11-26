@@ -58,7 +58,13 @@ export type Standing = {
     /// walk shares: a node drawn under another carries its theme, and gives the cell back as it found
     /// it once what stands under it is drawn. A root's is none of them, so a root always does.
     entry: Cell<int>,
+    /// The frame entry of `ctx writing` the nearest node drawn above was drawn under, kept as `entry`
+    /// is.
+    written: Cell<int>,
 }
+
+/// The context entries a walk stands under, given back once a node's subtree is drawn.
+export type Marks = { entry: int, written: int }
 
 /// The rows of a windowed list a paint builds: `from` up to, not including, `to`.
 export type Window = { from: int, to: int }
@@ -70,7 +76,14 @@ export const first_window: int = 40
 /// The root of a walk: a standing nothing has stood at.
 export fn standing() -> Standing {
     let nothing: List<string> = []
-    stands_in(Cell.new(nothing), Cell.new(0), Cell.new(false), Cell.new(0), Cell.new(0 - 1))
+    stands_in(
+        Cell.new(nothing),
+        Cell.new(0),
+        Cell.new(false),
+        Cell.new(0),
+        Cell.new(0 - 1),
+        Cell.new(0 - 1),
+    )
 }
 
 /// A standing nothing has stood at, in the walk that says into `said`.
@@ -80,6 +93,7 @@ fn stands_in(
     geometry: Cell<bool>,
     limit: Cell<int>,
     entry: Cell<int>,
+    written: Cell<int>,
 ) -> Standing {
     let none: Hold? = null
     let unplaced: StepRows? = null
@@ -107,6 +121,7 @@ fn stands_in(
         reveal: Cell.new(nowhere),
         honored: Cell.new(0),
         entry: entry,
+        written: written,
     }
 }
 
@@ -116,9 +131,19 @@ impl Standing {
     fn begun() {
         self.said.set([])
         self.counted.set(0)
-        // A paint's root is drawn under no node, so it always carries the theme it is drawn in.
+        // A paint's root is drawn under no node, so it always carries the contexts it is drawn under.
         self.entry.set(0 - 1)
+        self.written.set(0 - 1)
         self.opened()
+    }
+
+    /// The context entries the walk stands under now.
+    fn marks() -> Marks { Marks { entry: self.entry.get(), written: self.written.get() } }
+
+    /// The walk stands under `m` again.
+    fn restored(m: Marks) {
+        self.entry.set(m.entry)
+        self.written.set(m.written)
     }
 
     /// What the walk said this paint.
@@ -158,7 +183,16 @@ impl Standing {
         let found = [stood.find(s) for s in steps]
         let now = [Under {
             step: s,
-            standing: if found[j] == null { stands_in(self.said, self.counted, self.geometry, self.limit, self.entry) } else { was[found[j]!].standing },
+            standing: if found[j] == null {
+                stands_in(
+                    self.said,
+                    self.counted,
+                    self.geometry,
+                    self.limit,
+                    self.entry,
+                    self.written,
+                )
+            } else { was[found[j]!].standing },
         } for j, s in steps]
         let above = if drawn { null } else { self.step.get() }
         for j, u in now {

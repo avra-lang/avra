@@ -6,6 +6,7 @@
 use tree.sites.{Reading}
 use style.box.{Box}
 use style.theme.{Theme}
+use env.{Direction}
 use style.tokens.{Size}
 use style.layout.{Axis}
 use @std.meta.{derive}
@@ -224,13 +225,16 @@ export type Node = {
     events: List<Action> = [],
     sites: List<Reading> = [],
     drawn_by_order: bool = false,
-    /// The theme the node was drawn in, where it was drawn under another set of `ctx theme` than the
-    /// node above it: the root always carries it, and a realizer carries the nearest down its walk.
+    /// The contexts the node was drawn under, where it was drawn under another set of `ctx theme` or
+    /// `ctx writing` than the node above it: the root always carries them, and a realizer carries the
+    /// nearest down its walk.
     theme: Stamp? = null,
 }
 
-/// A theme a node was drawn in, and the frame entry it was read from: two stamps of one set are one.
-export type Stamp = { theme: Theme, entry: int }
+/// The theme and the writing direction a node was drawn under, each with the frame entry it was read
+/// from: two stamps of one pair of sets are one. `rethemed` says the theme is another than the one
+/// the node above was drawn in, which a stamp made because the direction alone moved is not.
+export type Stamp = { theme: Theme, entry: int, writing: Direction, written: int, rethemed: bool }
 
 /// The theme the first node of `n` wearing `words` is drawn in, as a realizer's walk carries it: the
 /// nearest stamp above it, `carried` where none is; none where no node wears them.
@@ -249,6 +253,13 @@ export fn drawn_theme(n: Node, words: string, carried: Theme) -> Theme? {
 impl Node {
     /// This node's words: its `Text`, else its `Label`.
     fn words() -> string { content_of(self.attrs) }
+
+    /// Whether this node says words: it carries content, empty or not, or a reading that says it.
+    fn says_words() -> bool { self.attrs.any(is_words) || !self.sites.is_empty() }
+
+    /// Whether this node's element is its words: it says words and holds no node of its own, whose
+    /// layout its words' direction would set.
+    fn bears_words() -> bool { self.says_words() && self.children.is_empty() }
 
     /// This node's heading level, defaulting to one.
     fn level() -> int { level_of(self.attrs) }
