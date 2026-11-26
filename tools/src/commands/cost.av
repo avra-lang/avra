@@ -5,6 +5,8 @@
 //!     cost accept <dir>      record a run: rows fall to what it measured; a run over another
 //!                            snapshot records that snapshot and every row as measured; a part's
 //!                            run, over the pinned snapshot, records its own rows alone
+//!     cost tell <dir>        judge a keyed run and say each refusal as a warning, refusing nothing:
+//!                            a clock on a shared runner is a fact, never a verdict
 //!     cost rows <dir>        a run's rows, as tools/cost.baseline writes them
 //!     cost edit <file> <kind> <text> <becomes>
 //!                            make one edit of tools/cost.sh's set: the text, which stands in the
@@ -92,6 +94,7 @@ impl Runnable for CostCmd {
         let rest = args.args_of("rest")
         match args.arg("verb") {
             "judge" or "accept" -> if rest.length == 1 { judged_run(rest[0], args.arg("verb") == "accept") } else { usage() },
+            "tell" -> if rest.length == 1 { told_run(rest[0]) } else { usage() },
             "rows" -> if rest.length == 1 { rows_said(rest[0]) } else { usage() },
             "edit" -> if rest.length == 4 { edit_made(rest[0], rest[1], rest[2], rest[3]) } else { usage() },
             "same" -> if rest.length == 2 { same_warm(rest[0], rest[1]) } else { usage() },
@@ -103,7 +106,7 @@ impl Runnable for CostCmd {
 export command cost {
     description: "The exact-count gate: judge, accept or read a tools/cost.sh run; make one of its edits; hold two warm runs alike"
     arg verb {
-        description: "`judge`, `accept`, `rows`, `edit` or `same`"
+        description: "`judge`, `accept`, `tell`, `rows`, `edit` or `same`"
         required: true
     }
     arg rest {
@@ -697,7 +700,18 @@ type Folded = { rows: Map<string, int>, apart: List<string> }
 /// A KEYED RUN writes `rows`: each `<kind>:<key>:<workload> <counter> <n>` line one round's measure.
 /// Its rows are judged within each kind and key it measured, every other row standing as it was; a
 /// key the ledger holds no row of is measured and told, never gated, and an accept seeds it.
-fn keyed_run(run_dir: string, accept: bool) -> int {
+fn keyed_run(run_dir: string, accept: bool) -> int { keyed_judged(run_dir, accept, false) }
+
+/// A keyed run told: judged as `judge` judges it, each refusal a warning, the answer 0.
+fn told_run(run_dir: string) -> int {
+    if !exists(joined_path(run_dir, "rows")) {
+        println("cost: `tell` judges a keyed run, and ${run_dir} holds no rows")
+        return 1
+    }
+    keyed_judged(run_dir, false, true)
+}
+
+fn keyed_judged(run_dir: string, accept: bool, tell: bool) -> int {
     let text = read_text(BASELINE) catch ""
     let kinds = kinds_of(text)
     let folded = rounds_folded(read_text(joined_path(run_dir, "rows")) catch "", kinds)
@@ -718,9 +732,12 @@ fn keyed_run(run_dir: string, accept: bool) -> int {
         if !base.any(group_of(it.key) == g) { println(unkeyed_said(g, rows_in(now, g))) }
     }
     let j = judge(now, base, kinds)
-    for line in j.told.concat(j.fell).concat(j.failed) { println(line) }
-    println(rows_counted(base.length, j.failed.length, j.fell.length))
-    if !accept { return if j.failed.is_empty() { 0 } else { 1 } }
+    let failed = j.failed.concat(unrecorded(now, base))
+    for line in j.told.concat(j.fell) { println(line) }
+    for line in failed { println(if tell { "::warning::${line}" } else { line }) }
+    println(rows_counted(base.length, failed.length, j.fell.length))
+    if tell { return 0 }
+    if !accept { return if failed.is_empty() { 0 } else { 1 } }
     if !j.failed.is_empty() {
         println("cost: an accept never raises a row within its key")
         return 1
@@ -735,6 +752,12 @@ fn keyed_run(run_dir: string, accept: bool) -> int {
     )
     println("cost: tools/cost.baseline recorded (${groups.join(", ")})")
     0
+}
+
+/// Each row a run measured with no row of its own in a key the ledger holds rows of: growth nothing
+/// recorded, which an accept seeds.
+export fn unrecorded(now: Map<string, int>, base: Map<string, int>) -> List<string> {
+    [unrecorded_said(k, now.get(k) ?? 0) for k in sorted_by([k for k, _n in now], text_before) if !base.has(k) && base.any(group_of(it.key) == group_of(k))]
 }
 
 /// A keyed run's rows, its rounds folded: a `least` kind keeps the least, any other holds them equal.
@@ -953,12 +976,14 @@ fn rounds_apart_said(key: string, was: int, n: int) -> string {
     "cost: ${key}: one run measured ${was} and ${n}, and its kind holds its rounds equal"
 }
 
+fn unrecorded_said(key: string, n: int) -> string { "cost: ${key}: measured ${n}, and its key holds no row of it — an accept records it" }
+
 fn unkeyed_said(group: string, rows: string) -> string {
     "cost: ${group}: the ledger holds no row of this key — measured and told, never gated:\n${rows.trim()}"
 }
 
 fn fell_said(key: string, old: int, new: int) -> string {
-    "cost: ${key} fell: ${old} -> ${new} (${percent(old, new)}) — `make cost-accept` records it"
+    "cost: ${key} fell: ${old} -> ${new} (${percent(old, new)}) — its accept records it"
 }
 
 fn new_candidate_said(line: string) -> string { "cost: new candidate: ${line}" }

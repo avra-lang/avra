@@ -498,7 +498,7 @@ def check_warm_edit(make_text, bench=None, ratchet=None):
     if bench is None:
         bench = os.path.join(ROOT, "tools", "warm_edit_bench.sh")
     if ratchet is None:
-        ratchet = os.path.join(ROOT, "tools", "speed_ratchet.py")
+        ratchet = os.path.join(ROOT, "tools", "ledger_rows.sh")
     targets = make_targets(make_text)
     if "warm-edit" not in targets:
         return [], ["warm-edit: no `warm-edit` target — the DB 07 gate is not wired here; nothing to guard"]
@@ -506,8 +506,6 @@ def check_warm_edit(make_text, bench=None, ratchet=None):
     refusals = []
     if "warm-edit" not in keepers:
         refusals.append("`warm-edit` is a Makefile target but not one of KEEPERS — the train would not hold it")
-    if "speed_ratchet.py --self-test" not in targets["warm-edit"]:
-        refusals.append("`make warm-edit` does not run `tools/speed_ratchet.py --self-test` before it measures")
     if not os.path.isfile(bench):
         refusals.append("`warm-edit` is wired but tools/warm_edit_bench.sh does not exist")
     else:
@@ -524,15 +522,15 @@ def check_warm_edit(make_text, bench=None, ratchet=None):
                 refusals.append("tools/warm_edit_bench.sh has no %s — a run that cannot "
                                 "judge could stand green" % why)
     if not os.path.isfile(ratchet):
-        refusals.append("`warm-edit` is wired but tools/speed_ratchet.py does not exist")
+        refusals.append("`warm-edit` is wired but tools/ledger_rows.sh does not exist")
     else:
         text = open(ratchet, encoding="utf-8").read()
-        if "--warm" not in text:
-            refusals.append("tools/speed_ratchet.py does not judge `--warm`")
-        elif "skip warm-edit" not in text and "skip cold-store" not in text:
-            refusals.append("tools/speed_ratchet.py does not refuse the warm-edit skip marker")
+        if "warm:" not in text:
+            refusals.append("tools/ledger_rows.sh does not read a warm row")
+        elif "^skip " not in text or "WARM_EDIT_SKIP" not in text:
+            refusals.append("tools/ledger_rows.sh does not refuse the warm-edit skip marker")
     if not refusals:
-        return [], ["warm-edit: `make warm-edit` is a keeper, self-tested, and a run that cannot judge "
+        return [], ["warm-edit: `make warm-edit` is a keeper, and a run that cannot judge "
                     "FAILS (only WARM_EDIT_SKIP stands it down)"]
     return refusals, []
 
@@ -864,15 +862,15 @@ rt-header:
     import tempfile
     with tempfile.TemporaryDirectory() as d:
         good_bench = os.path.join(d, "bench.sh")
-        good_ratchet = os.path.join(d, "ratchet.py")
+        good_ratchet = os.path.join(d, "ledger_rows.sh")
         # the shape the law wants: the marker, the one opt-out, a FAILURE
         open(good_bench, "w").write(
             '[ -d .avra-cache ] || { echo "this is a FAILURE"; echo "skip warm-edit"; '
             '[ -z "${WARM_EDIT_SKIP:-}" ] || exit 0; exit 1; }\n')
-        open(good_ratchet, "w").write('print("--warm skip warm-edit WARM_EDIT_SKIP")\n')
+        open(good_ratchet, "w").write("grep -E '^skip ' x; echo warm: $WARM_EDIT_SKIP\n")
         good = (make.replace("KEEPERS_B = fingerprints vocab rt-header",
                              "KEEPERS_B = fingerprints vocab rt-header warm-edit")
-                + "warm-edit:\n\t@python3 tools/speed_ratchet.py --self-test\n\t@sh tools/warm_edit_bench.sh\n")
+                + "warm-edit:\n\t@sh tools/warm_edit_bench.sh\n")
         assert check_warm_edit(good, good_bench, good_ratchet)[0] == [], \
             check_warm_edit(good, good_bench, good_ratchet)
         # the target exists but is not a keeper: refused
@@ -894,8 +892,8 @@ rt-header:
         assert any("does not exist" in x for x in
                    check_warm_edit(good, os.path.join(d, "nope.sh"), good_ratchet)[0]), \
             check_warm_edit(good, os.path.join(d, "nope.sh"), good_ratchet)
-        # a ratchet that does not judge --warm is refused
-        assert any("--warm" in x for x in check_warm_edit(good, good_bench, good_bench)[0]), \
+        # a reader that reads no warm row is refused
+        assert any("warm row" in x for x in check_warm_edit(good, good_bench, good_bench)[0]), \
             check_warm_edit(good, good_bench, good_bench)
 
     # ── light draft: the real workflow passes; a heavy leg the aggregate owes

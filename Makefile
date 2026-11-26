@@ -1059,50 +1059,34 @@ whole-reads-accept:
 read-cost: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/db_measure/read_cost.sh
 
-# THE SPEED RATCHET, HARD: each phase of `packages/cli`'s own build and
-# check held against a ceiling in tools/speed.budget, refusing past it and
-# naming the phase with its before and after ms. The measurement is the
-# LEAST of warm one-edit rounds (tools/speed_measure.sh), run on the
-# machine the keeper stands on; on macOS it goes to the lane's Sprite
-# (`tools/work run`), since a loaded Mac supplies no number. The gate's
-# fixtures prove the gate before it judges. `speed-accept` lowers the
-# ceilings to what was measured and never raises one.
+# THE SPEED RATCHET, HARD: each phase of `packages/cli`'s own build and check, the LEAST of warm
+# one-edit rounds (tools/speed_measure.sh), held as the ledger's `speed:<host>:` rows
+# (tools/cost.baseline, `avra-tools cost`) within the kind's tolerance; on macOS it is measured on the
+# lane's Sprite (`tools/work run`), since a loaded Mac supplies no number. `speed-accept` lowers a row to
+# what was measured and never raises one.
 speed-ratchet:
-	@python3 tools/speed_ratchet.py --self-test >/dev/null
-	@python3 tools/speed_ratchet.py
+	@sh tools/speed_ratchet.sh
 speed-accept:
-	@python3 tools/speed_ratchet.py --self-test >/dev/null
-	@python3 tools/speed_ratchet.py --accept
+	@sh tools/speed_ratchet.sh accept
 
-# THE WALL-CLOCK RATCHET: a PR check's per-job and whole wall time, held in
-# the same tools/speed.budget the phase ratchet reads (ONE file, ONE reader),
-# measured by tools/ci_wall.sh from a run's own jobs and judged in the `test`
-# job of every PR run. A ceiling may only fall: this lowers it to a run's
-# measured times and never raises one. Point it at a run's metrics with
-# `make wall-accept WALL=<file>`, where the file is
+# THE WALL-CLOCK RATCHET: a run's job clocks, their sum and its makespan (tools/ci_wall.sh), as the
+# ledger's `wall:<host>:` rows. The gate's verdict tells its own (gate.yml); this judges or records a
+# run's metrics, `make wall-accept WALL=<file>` where the file is
 # `sh tools/ci_wall.sh --repo <o/r> --run <id> collect`.
 WALL ?= wall.metrics
 wall-ratchet:
-	@python3 tools/speed_ratchet.py --self-test >/dev/null
-	@python3 tools/speed_ratchet.py --wall --raw "$(WALL)"
+	@sh tools/ledger_rows.sh "$(WALL)" wall clock judge
 wall-accept:
-	@python3 tools/speed_ratchet.py --self-test >/dev/null
-	@python3 tools/speed_ratchet.py --wall --accept --raw "$(WALL)"
+	@sh tools/ledger_rows.sh "$(WALL)" wall clock accept
 
-# THE DB 07 WARM-EDIT GATE (avra-8sb5.57.176): an unchanged
-# `check packages/cli` and one body edit, wall, on a warm store. The
-# ticket's GOAL is 60 ms / 300 ms (goal 150), but today's path is far over
-# it, so the ENFORCED rows in tools/speed.budget are the MEASURED PRESENT —
-# the starting line — with WARM_RATIO's allowance for a shared runner's
-# variance. `--accept` may only LOWER a row toward the goal, never raise
-# it. tools/warm_edit_bench.sh measures it and judges it through
-# tools/speed_ratchet.py --warm, whose rows are the same tools/speed.budget
-# the phase ratchet reads — ONE file, ONE reader. A run that CANNOT judge
-# FAILS with a named reason (a skip is not a pass); only a hand-set
-# WARM_EDIT_SKIP — the workflow's `warm_skip` input — stands it down,
-# loudly. In CI the store rides down from prepare and SPEED_HOST is
-# `ci-warm`, so a runner's CPU never decides whether the gate is judged.
-# On macOS the measurement goes to the lane's Sprite, as speed-ratchet does.
+# THE DB 07 WARM-EDIT GATE (avra-8sb5.57.176): an unchanged `check packages/cli` and one body edit, wall,
+# on a warm store, and the work each did as the compiler counts it. The ticket's GOAL is 60 ms / 300 ms
+# (goal 150); the ENFORCED rows are the ledger's `warm:` rows, the MEASURED PRESENT, with the kind's
+# allowance for a shared runner's variance, and its `work:`/`share:` rows, exact. tools/warm_edit_bench.sh
+# measures and hands its stream to tools/ledger_rows.sh — ONE file, ONE reader. A run that CANNOT judge
+# FAILS with a named reason (a skip is not a pass); only a hand-set WARM_EDIT_SKIP — the workflow's
+# `warm_skip` input — stands it down, loudly. In CI the store rides down from prepare and SPEED_HOST is
+# `ci-warm`, and the clock is told, never judged. On macOS the measurement goes to the lane's Sprite.
 # THE EXACT-COUNT GATE: the census compiler of this tree, cold, over fixed workloads whose sources are
 # the commit tools/cost.baseline pins; every counter held to its row within 0.05% (tools/cost.sh,
 # `avra-tools cost`, tools/src/commands/cost.av). A row only falls, through `make cost-accept`; `COST_SNAPSHOT=<sha> make
@@ -1113,17 +1097,12 @@ cost-accept:
 	@COST_ACCEPTING=1 sh tools/cost.sh accept
 
 warm-edit:
-	@python3 tools/ratchet_rows.py --self-test >/dev/null
-	@python3 tools/speed_ratchet.py --self-test >/dev/null
-	@python3 tools/work_ratchet.py --self-test >/dev/null
 	@sh tools/warm_edit_bench.sh
 warm-accept:
-	@python3 tools/speed_ratchet.py --self-test >/dev/null
 	@WARM_EDIT_ACCEPT=1 sh tools/warm_edit_bench.sh
-# The work-count ceilings only fall: this lowers each to what the compiler counted
-# (and seeds a new counter), never raises one. Review the diff of tools/work.budget.
+# The work-count rows only fall: this lowers each to what the compiler counted (and seeds a new
+# counter), never raises one. Review the diff of tools/cost.baseline.
 work-accept:
-	@python3 tools/work_ratchet.py --self-test >/dev/null
 	@WORK_ACCEPT=1 sh tools/warm_edit_bench.sh
 
 idioms:

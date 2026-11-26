@@ -22,6 +22,7 @@ concurrency:
 permissions:
   contents: read
   packages: read
+  actions: read
 
 env:
   LLVM_PREFIX: /usr/lib/llvm-22
@@ -287,7 +288,8 @@ jobs:
     needs: [seed, census, slice, cost]
     if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    container: *gate-image
+    timeout-minutes: 10
     steps:
       - uses: actions/download-artifact@v4
         with: { pattern: gate-verdict-*, path: verdicts, merge-multiple: true }
@@ -306,3 +308,25 @@ jobs:
           done
           echo "gate: ${{ needs.seed.outputs.sha8 }} — $failed slice(s) failed"
           [ "$failed" = 0 ]
+      # THE GATE'S OWN WALL: every job's clock, their sum and the makespan the owner's target is about
+      # (tools/ci_wall.sh), told against the ledger's `wall:ci-gate:` rows — a shared runner's clock is a
+      # fact, never a verdict, so it warns and refuses nothing. The ledger's reader comes from the pack.
+      - if: always() && needs.seed.result == 'success'
+        uses: actions/checkout@v4
+        with: { fetch-depth: 2 }
+      - if: always() && needs.seed.result == 'success'
+        uses: actions/download-artifact@v4
+        with: { name: gate-pack, path: pack }
+      - if: always() && needs.seed.result == 'success'
+        name: wall
+        timeout-minutes: 4
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          sh tools/gate.sh unpack pack/compiler-${{ needs.seed.outputs.sha8 }}.tar.gz > /dev/null
+          if WALL_HOST=ci-gate sh tools/ci_wall.sh collect > wall.metrics; then
+            sh tools/ledger_rows.sh wall.metrics wall clock tell
+          else
+            echo "::notice title=gate wall::the run's job clocks could not be read — not told"
+          fi

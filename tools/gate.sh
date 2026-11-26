@@ -129,6 +129,8 @@ compiler_stands() {
 # stamp, and every object, archive, library, content stamp and dependency list build/ keeps at its top
 packed() {
     for f in build/avra build/avra_hot.bc build/avra_hot.inc build/.avra-built-from; do [ ! -f "$f" ] || echo "$f"; done
+    # the tree's instruments, built once by this compiler: every keeper and the verdict's ledger read them
+    find build/avra-tools -maxdepth 2 -type f -name avra-tools 2>/dev/null | sort
     find build -maxdepth 1 -type f \( -name '*.o' -o -name '*.a' -o -name '*.so' -o -name '*.sha' -o -name '*.d' \) | sort
 }
 
@@ -156,6 +158,7 @@ unpacked() {
     printf '%s\n' "$list" | while IFS= read -r f; do
         [ -f "$stage/$f" ] || continue
         touch -r build/gate/.unpacked "$stage/$f"
+        mkdir -p "$(dirname "$f")"
         mv -f "$stage/$f" "$f"
     done
     find "$stage" -delete
@@ -869,6 +872,7 @@ if compiler; then
             fi
             # the package libraries as this tree's sources make them: nothing rebuilt where none moved
             row compiler-libs env AVRA_PROGRAM_NET=0 make -o avra libs
+            row avra-tools sh tools/avra_tools.sh --path
             tarball="build/gate/compiler-$sha8.tar.gz"
             packed >"$out/files"
             row pack tar -czf "$tarball" -T "$out/files" && echo "pack: $tarball, $(wc -l <"$out/files" | tr -d ' ') files, $(du -k "$tarball" | cut -f1) KB" >>"$out/rows"
@@ -912,9 +916,9 @@ if compiler; then
         keepers-heavy-2) [ -x build/avra-try ] || cp build/avra build/avra-try; row witness-machine-store env AVRA_NO_SUPERVISOR_TESTS=1 sh tools/witness_machine_store.sh ;;
         keepers-clock)
             keepers_run clock-holds
-            # SPEED-RATCHET GATES NOTHING YET: tools/speed.budget holds no ci-warm row for the phases it
+            # SPEED-RATCHET GATES NOTHING YET: the ledger holds no `speed:ci-warm:` row for the phases it
             # measures, so it would spend ~800 s measuring and compare none; said every gate until it has rows
-            echo "fact keeper speed-ratchet not run: tools/speed.budget holds no ci-warm row for its phases" >>"$out/rows"
+            echo "fact keeper speed-ratchet not run: tools/cost.baseline holds no speed:ci-warm row for its phases" >>"$out/rows"
             ;;
         cost-cold-a) slice_cost cold-a ;;
         cost-cold-b) slice_cost cold-b ;;
