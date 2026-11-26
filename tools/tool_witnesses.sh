@@ -65,9 +65,11 @@ run() {
     [ "$of" -ge 1 ] && [ "$k" -lt "$of" ] || { echo "tool-witnesses: TOOL_WITNESS_SHARD $shard names no share"; return 2; }
     fail="" n=0 i=0
     for w in $(list | awk '$3 == "here" { print $1 ":" $2 }'); do
+        name=${w%%:*} mode=${w#*:}
+        # TOOL_WITNESS_ELSEWHERE names the witnesses a caller runs by rows of its own, never twice
+        case " ${TOOL_WITNESS_ELSEWHERE:-} " in *" $name "*) echo "tool-witnesses: $name — run by the caller's own rows"; continue ;; esac
         i=$((i + 1))
         [ $(((i - 1) % of)) = "$k" ] || continue
-        name=${w%%:*} mode=${w#*:}
         n=$((n + 1))
         case "$name" in *.py) cmd=python3 ;; *) cmd=sh ;; esac
         t0=$(date +%s)
@@ -84,7 +86,7 @@ run() {
 
 self_test() {
     # the fixtures prove the whole list, whatever share the caller asked for
-    unset TOOL_WITNESS_SHARD
+    unset TOOL_WITNESS_SHARD TOOL_WITNESS_ELSEWHERE
     t=$(mktemp -d) || exit 1
     trap 'find "$t" -delete' EXIT
     mkdir -p "$t/tools"
@@ -110,8 +112,9 @@ self_test() {
     WITNESS_ROOT=$t TOOL_WITNESS_SHARD=0/3 sh "$0" run > /dev/null 2>&1 || { fails=$((fails + 1)); echo "tool_witnesses: FAIL — share 0/3 ran the failing witness, not a.sh alone"; }
     WITNESS_ROOT=$t TOOL_WITNESS_SHARD=2/3 sh "$0" run > /dev/null 2>&1 && { fails=$((fails + 1)); echo "tool_witnesses: FAIL — share 2/3 did not run the failing witness"; }
     WITNESS_ROOT=$t TOOL_WITNESS_SHARD=3/3 sh "$0" run > /dev/null 2>&1 && { fails=$((fails + 1)); echo "tool_witnesses: FAIL — a share past its count ran"; }
+    WITNESS_ROOT=$t TOOL_WITNESS_ELSEWHERE=witness_b.sh sh "$0" run > /dev/null 2>&1 || { fails=$((fails + 1)); echo "tool_witnesses: FAIL — a witness run elsewhere ran here"; }
     [ "$fails" = 0 ] || exit 1
-    echo "tool_witnesses: self-test passed — 6 fixtures (the list's three sources and its owners, an undeclared self-test refused, a declared tree run, an owed witness named and not run, a failing witness refused, a share runs every n-th witness and none past its count)"
+    echo "tool_witnesses: self-test passed — 7 fixtures (the list's three sources and its owners, an undeclared self-test refused, a declared tree run, an owed witness named and not run, a failing witness refused, a share runs every n-th witness and none past its count, a witness run elsewhere is not run here)"
 }
 
 case "$1" in

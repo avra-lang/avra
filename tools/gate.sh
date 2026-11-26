@@ -780,6 +780,9 @@ part_of() {
             ;;
         keepers-tw)
             export TOOL_WITNESS_SHARD="$(($2 - 1))/$3"
+            # the witnesses this gate runs by rows of its own; the edit witness's numbered edits it runs three of
+            export TOOL_WITNESS_ELSEWHERE="witness_compiler_key.sh witness_program_differential.sh witness_program_doors.sh witness_program_fixes.sh witness_program_ledger.sh witness_program_needs.sh witness_program_refusal.sh witness_program_runs.sh witness_program_suites.sh witness_program_waits.sh witness_program_warnings.sh witness_program_edit.sh"
+            echo "fact witness_program_edit.sh: numbered edits 1, 5 and 10 run (edit-b, -c, -d); 2-4, 6-9 and 11-13 run on no gate" >>"$out/rows"
             keeper_share=$TOOL_WITNESS_SHARD keepers_run tool-witnesses
             ;;
         keepers-alone)
