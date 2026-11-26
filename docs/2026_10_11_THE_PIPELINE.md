@@ -421,7 +421,6 @@ by nobody.
 | `make layers` | layering is one-way: `core -> grammar -> features -> compiler`, and `@std/relation` never names the compiler |
 | `make inputs` | every read of the world is an input through one door; a new site is refused and the baseline only falls |
 | `make clock-holds` | every blocking C call holds the world (a virtual clock flows across, or it says why it waits on no time) |
-| `make cited` | the names the live doctrine cites (`CLAUDE.md`, `DOGFOODING.md`) resolve |
 | `make http-cites` | every `<suite> › "<then>"` in the HTTP framing laws names a test that exists |
 | `make externs` | Avra's 64-bit `int` and C's 32-bit `int` — a C body answering narrow and a negative reading large |
 | `make suites` | the test roster derives with no cycle and no missing package |

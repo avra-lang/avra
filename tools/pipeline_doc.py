@@ -15,7 +15,7 @@ has moved, so every command it names is held here:
 
 A name that is deliberately recorded as ABSENT — an old design's script,
 kept in the text so nobody repeats it — stands in `tools/pipeline_doc.allow`
-with its reason, the way `tools/cited.allow` holds a historical path.
+with its reason.
 
     python3 tools/pipeline_doc.py            # refuses, naming each miss
     python3 tools/pipeline_doc.py --self-test # the rules on fixtures

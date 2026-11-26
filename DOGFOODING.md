@@ -98,14 +98,6 @@ now, one kind per pattern that narrows; a rule sits in every one of
 those buckets, and only a SINGLE pattern that cannot narrow AT ALL
 still falls back to any node.
 
-A CITATION IS RATCHETED TOO, by a different keeper: `make cited`
-refuses a name or a path this file or CLAUDE.md cites that the
-tree cannot answer, and a bare `file.av:NNN`, which the next edit
-of that file moves. It reaches a THIRD of doctrine rot — an audit
-of 99 laws found 17 stale decorations, 5 of them names a grep
-finds and 12 counts, line numbers and attributions no tool can
-see. Licences live in `tools/cited.allow`, each with its reason.
-
 Ratcheted: `avra rules --json` answers every native rule the
 compiler carries, by its `<module>.<rule>` id — `avra rules
 --markdown` prints this section's own bullet shape, one line per
