@@ -6098,18 +6098,29 @@ void avra_eputs(const char* s) {
     fflush(stderr);
 }
 
+static int g_debug_lines = 0;
+static int g_qtrace_lines = 0;
+
+// Settled at load: a malformed switch stops the program there, and a
+// line's row is a flag read.
+__attribute__((constructor))
+static void trace_lines_settled(void) {
+    g_debug_lines = avra_set_debug();
+    g_qtrace_lines = avra_set_qtrace();
+}
+
 // A DEBUG LINE, only under AVRA_DEBUG — the compiler's own instrument.
 // A no-op otherwise, so a probe can stand in any pass without breaking
 // the self-compile, whose environment has no such flag.
 void avra_debug(const char* s) {
-    if (s && avra_set_debug()) fputs(s, stderr);
+    if (s && g_debug_lines) fputs(s, stderr);
 }
 
 // A QUERY-KERNEL TRACE LINE, only under AVRA_QTRACE — its own flag,
 // separate from AVRA_DEBUG, for a gen-N vs gen-N+1 differential
 // (CLAUDE.md, Working discipline). A no-op otherwise.
 void avra_qtrace(const char* s) {
-    if (s && avra_set_qtrace()) fputs(s, stderr);
+    if (s && g_qtrace_lines) fputs(s, stderr);
 }
 
 /* `embed` is answered by the compiler, at compile time, under the
