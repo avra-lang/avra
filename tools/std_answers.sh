@@ -131,7 +131,7 @@ while [ -n "$(printf '%s' "$left" | tr -d ' ')" ]; do
     # shellcheck disable=SC2086
     folded $now || { echo "std_answers: a wave's answers were not folded" >&2; exit 1; }
     for p in $now; do made="$made $(basename "$p")"; done
-    rest=$(for p in $left; do case " $now " in *" $p "*) ;; *) printf '%s ' "$p" ;; esac; done)
+    rest=$(for p in $left; do case " $now " in (*" $p "*) ;; (*) printf '%s ' "$p" ;; esac; done)
     [ "$rest" != "$left" ] || { echo "std_answers: a wave made nothing of $left" >&2; exit 1; }
     left=$rest
 done
