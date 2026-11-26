@@ -5,11 +5,11 @@ use compiler.targets.{TargetRow, platform_of}
 use core.{distinct}
 
 /// A file a bundle holds: its path inside the bundle, and how it is made.
-export type BundleFile = { path: string, made: Made }
+export type BundleFile = { path: string, made: FileMade }
 
 /// How a bundle's file is made: copied from a path, a PNG cut from one to `px` pixels square, or
 /// written with its text.
-export enum Made {
+export enum FileMade {
     Copied(from: string)
     Cut(from: string, px: int)
     Written(text: string)
@@ -45,15 +45,15 @@ fn apple_app(m: Manifest, row: TargetRow, binary: string, exe: string, dir: stri
     let id? = m.app?.id else { return .Err(Unbundled.NoId) }
     let name = m.app?.name ?? exe
     let icon = m.app?.icon
-    let icons = if icon == null { [] } else { [BundleFile { path: c.file, made: Made.Cut(icon!, c.px) } for c in ICON_CUTS] }
+    let icons = if icon == null { [] } else { [BundleFile { path: c.file, made: FileMade.Cut(icon!, c.px) } for c in ICON_CUTS] }
     let plist = BundleFile {
         path: "Info.plist",
-        made: Made.Written(plist_text(info_of(m, row, id, name, exe, icon != null))),
+        made: FileMade.Written(plist_text(info_of(m, row, id, name, exe, icon != null))),
     }
     .Ok(
         Bundle {
             dir: "${dir}/${name}.app",
-            files: [BundleFile { path: exe, made: Made.Copied(binary) }, plist].concat(icons),
+            files: [BundleFile { path: exe, made: FileMade.Copied(binary) }, plist].concat(icons),
             signed: true,
         },
     )
