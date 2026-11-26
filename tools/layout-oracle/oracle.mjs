@@ -12,6 +12,7 @@
 // one pixel wide and one high (cellfont.mjs), so a character is a cell and the
 // browser's soft wrapping of the real <span> is comparable with the cell
 // measure.
+// The page sets its face over the realizer's own body rule, which writes the theme's text.
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -489,7 +490,7 @@ function solved(cases, work, slacks = []) {
 
 // ── the browser's side ───────────────────────────────────────────
 
-const PAGE = `<!doctype html><meta charset=utf-8><style>@font-face{font-family:cell;src:url(data:font/ttf;base64,${cellFontBase64(PROP ? FACE : {})})}body{margin:0;font:1px/${PROP ? LINE : 1}px cell${PROP ? ";font-kerning:none;font-variant-ligatures:none" : ""}}${args.css ?? ""}</style><body></body>`;
+const PAGE = `<!doctype html><meta charset=utf-8><style>@font-face{font-family:cell;src:url(data:font/ttf;base64,${cellFontBase64(PROP ? FACE : {})})}body{margin:0;font:1px/${PROP ? LINE : 1}px cell !important${PROP ? ";font-kerning:none;font-variant-ligatures:none" : ""}}${args.css ?? ""}</style><body></body>`;
 
 // The page the realizer wrote is laid in a host WIDTH wide. Each box is read
 // as the browser paints it: its edges, from the root's corner, snapped to the
