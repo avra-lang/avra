@@ -12,7 +12,7 @@
 # nobody runs.
 #
 #   sh tools/tool_witnesses.sh list         each witness and who runs it
-#   sh tools/tool_witnesses.sh run          run the ones that are this keeper's
+#   sh tools/tool_witnesses.sh run          run the ones that are this keeper's (TOOL_WITNESS_SHARD=<k>/<n>: a share)
 #   sh tools/tool_witnesses.sh --self-test
 # A root other than the tree is `WITNESS_ROOT=<dir>`.
 
@@ -58,19 +58,28 @@ run() {
     list | awk '$3 == "owed" { $2 = ""; $3 = "owed"; print }' | while read -r name rest; do
         echo "tool-witnesses: OWED tools/$name — $rest"
     done
-    fail="" n=0
+    # TOOL_WITNESS_SHARD=<k>/<n> runs the k-th (from 0) of n shares, every n-th witness in list order
+    shard=${TOOL_WITNESS_SHARD:-0/1}
+    k=${shard%/*} of=${shard#*/}
+    case "$k$of" in '' | *[!0-9]*) echo "tool-witnesses: TOOL_WITNESS_SHARD is <k>/<n>, never $shard"; return 2 ;; esac
+    [ "$of" -ge 1 ] && [ "$k" -lt "$of" ] || { echo "tool-witnesses: TOOL_WITNESS_SHARD $shard names no share"; return 2; }
+    fail="" n=0 i=0
     for w in $(list | awk '$3 == "here" { print $1 ":" $2 }'); do
+        i=$((i + 1))
+        [ $(((i - 1) % of)) = "$k" ] || continue
         name=${w%%:*} mode=${w#*:}
         n=$((n + 1))
         case "$name" in *.py) cmd=python3 ;; *) cmd=sh ;; esac
+        t0=$(date +%s)
         if [ "$mode" = bare ]; then
             $cmd "$root/tools/$name" || fail="$fail [$name]"
         else
             $cmd "$root/tools/$name" --self-test || fail="$fail [$name]"
         fi
+        echo "tool-witnesses: $name $(( $(date +%s) - t0 ))s"
     done
     [ -z "$fail" ] || { echo "tool-witnesses: refused —$fail"; return 1; }
-    echo "tool-witnesses: $n witness(es) run here, each proved on its fixtures"
+    echo "tool-witnesses: $n witness(es) run here (share $shard), each proved on its fixtures"
 }
 
 self_test() {
