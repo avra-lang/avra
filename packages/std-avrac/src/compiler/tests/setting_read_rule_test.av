@@ -1,0 +1,40 @@
+//! compiler.setting_read_by_hand: a literal `AVRA_*` read through `env` or `env_or` outside the
+//! settings projections is a finding; a projection's own file, another variable and a licensed
+//! site are not.
+use @std.avrac.testing.held.{held_at}
+
+const readers: string = "fn env(name: string) -> string? { null }\nfn env_or(name: string, d: string) -> string { d }\n"
+
+/// Whether the rule fires on `body`, written at `path` under a package at /w.
+fn fires_at(path: string, body: string) -> bool {
+    mut files: Map<string, string> = {}
+    files.set(path, readers + body + "0\n")
+    let ws = held_at(files, "/w")
+    ws.judged_at(path).findings().any(it.rule == "compiler.setting_read_by_hand")
+}
+
+fn fires(body: string) -> bool { fires_at("/w/src/main.av", body) }
+
+spec "compiler.setting_read_by_hand — a setting read by its spelling" {
+    given "an `AVRA_*` variable read by name" {
+        then "`env` is refused" { fires("let a = env(\"AVRA_X\")\n") }
+        then "`env_or` is refused" { fires("let a = env_or(\"AVRA_X\", \"d\")\n") }
+    }
+    given "a read the rule leaves alone" {
+        then "a variable that is no setting" { !fires("let a = env(\"HOME\")\n") }
+        then "a name held in a binding" { !fires("let n = \"AVRA_X\"\nlet a = env(n)\n") }
+        then "the projection the declaration writes" {
+            !fires_at("/w/src/settings/settings.av", "let a = env(\"AVRA_X\")\n")
+        }
+    }
+    given "a site carrying its licence" {
+        then "the licence directly above silences it" {
+            !fires(
+                "// LICENSED compiler.setting_read_by_hand: a fixture\nlet a = env(\"AVRA_X\")\n",
+            )
+        }
+        then "a licence for another rule does not" {
+            fires("// LICENSED compiler.repeated_projection: a reason\nlet a = env(\"AVRA_X\")\n")
+        }
+    }
+}
