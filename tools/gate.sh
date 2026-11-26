@@ -32,6 +32,9 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root" || exit 1
 unset AVRA_PROGRAM AVRA_PROGRAM_MODE
 export AVRA_SUITE_ALL=1
+# the tools package is built by HEAD's compiler, the one this gate seeds: avra_tools would otherwise
+# take main's published compiler on a Linux runner, a stranger to this tree's laws
+export AVRA_TOOLS_COMPILER="${AVRA_TOOLS_COMPILER:-$root/build/avra}"
 
 # the bound of one row, and of a compiler build
 ROW_SECS=${GATE_ROW_SECS:-2400}
@@ -74,6 +77,10 @@ edit-b     witness_program_edit, WITNESS_ONLY=1, the frontier walk checked
 edit-c     witness_program_edit, WITNESS_ONLY=5, the frontier walk checked
 edit-d     witness_program_edit, WITNESS_ONLY=10, the frontier walk checked
 edit-e     witness_program_edit, WITNESS_ONLY=rename, the frontier walk checked
+keepers-a1 every keeper of KEEPERS_A1 no other slice runs, a row each
+keepers-a2 the same of KEEPERS_A2
+keepers-wasm the same of KEEPERS_WASM, the browser's libraries beside it
+keepers-clock clock-holds, the keeper that reads a stopwatch, alone on its runner
 EOF
     splits | while IFS='|' read -r family parts what; do
         n=1
@@ -100,6 +107,8 @@ refusal|8|witness_program_refusal over its cases, dealt in turn
 needs|6|witness_program_needs over every package and refusal witness, dealt in turn
 witness-b|5|the witnesses and attacks of witness_b_rows, dealt in turn
 cost-warm|7|make cost, COST_PART=warm: the cli's cold check, then the warm edits (COST_EDITS) dealt in turn, the noop in every part
+keepers-b|3|every keeper of KEEPERS_B no other slice runs, a row each, dealt in turn, the browser's libraries beside it
+keepers-alone|2|KEEPERS_ALONE, held to a clock and alone on its runner: runtime-tests, and runtime-mutations' part (MUTATION_SHARD)
 EOF
 }
 
@@ -166,7 +175,7 @@ jobs() {
             bins = 0
             for (i = 1; i <= n; i++) {
                 placed = 0
-                alone = (w[i] >= budget || name[i] ~ /^cost-/)
+                alone = (w[i] >= budget || name[i] ~ /^cost-/ || name[i] ~ /^keepers-(alone|clock)/)
                 if (!alone) for (b = 1; b <= bins; b++) if (open[b] && load[b] + w[i] <= budget) { load[b] += w[i]; held[b] = held[b] " " name[i]; count[b]++; placed = 1; break }
                 if (!placed) { bins++; load[bins] = w[i]; held[bins] = name[i]; count[bins] = 1; open[bins] = !alone }
             }
@@ -683,6 +692,61 @@ rows_dealt() {
 # std-avrac's feature dirs whose names match `$1`, sorted
 features() { find packages/std-avrac/src/features -mindepth 1 -maxdepth 1 -type d -name "$1" | sort; }
 
+# THE KEEPERS ON THE GATE: every keeper the Makefile's KEEPERS names, each a row `keeper-<name>` run as
+# checks.yml runs it (`make -s -o avra <name>`), in the slice of its own list. Those another slice
+# already runs, as the same target over the same tree, are its rows and are not run twice; speed-ratchet
+# is the one keeper no slice runs, which keepers-clock says every gate.
+KEEPERS_RUN_ELSEWHERE="speed-ratchet cost flow-trace rt-header rt-ns ui-host ui-host-test ui-board beside-attack heir-save-attack share-merge-attack wave-share-attack"
+# the keepers the Makefile's list `$1` names, those run elsewhere left out, one a line
+keepers_of() {
+    make -s -pn 2>/dev/null | awk -v v="$1" '$1 == v && $2 == "=" { $1 = ""; $2 = ""; print; exit }' | tr ' ' '\n' | grep . |
+        grep -vxF "$(printf '%s\n' $KEEPERS_RUN_ELSEWHERE)"
+}
+# what a keeper's checks.yml job sets beside it, one `NAME=value` a word: speed-ratchet's budgets are
+# keyed to the one stable host name, and its warm store stands at .avra-cache (speed_measure warms it)
+keeper_env() {
+    case $1 in
+        speed-ratchet) mkdir -p .avra-cache && echo SPEED_HOST=ci-warm ;;
+    esac
+}
+# what a keeper wants built before it: dev-server serves a page, so the wasm runtime and packages
+# stand first; the tools' witnesses build with build/avra-try, the generation after the builder, which
+# the seed's generation-2 compiler already is
+keeper_wants() {
+    case $1 in
+        dev-server) make -s -o avra wasm-runtime wasm-packages >"$out/keeper-$1.wants.log" 2>&1 ;;
+        tool-witnesses) [ -x build/avra-try ] || cp build/avra build/avra-try ;;
+    esac
+}
+# each keeper named, a row, under the words `keeper_via` names before its make; an owed one (tools/gate/keepers.owed) is judged by its line, not its run
+keepers_run() {
+    for k in "$@"; do
+        keeper_wants "$k" || { judged "keeper-$k-wants" 1; continue; }
+        owed=$(awk -v k="$k" '$1 == k { print $2; exit }' "$root/tools/gate/keepers.owed")
+        if [ -z "$owed" ]; then
+            row "keeper-$k" env AVRA_NO_SUPERVISOR_TESTS=1 UI_BROWSER_ENGINES="firefox webkit webkit-iphone" $(keeper_env "$k") ${keeper_via:-} make -s -o avra "$k"
+            continue
+        fi
+        # OWED: run as any keeper, its words kept; red is the owner's debt, green means strike the line
+        rows=$((rows + 1))
+        t0=$(date +%s)
+        if sh tools/bounded.sh "$ROW_SECS" env AVRA_NO_SUPERVISOR_TESTS=1 UI_BROWSER_ENGINES="firefox webkit webkit-iphone" $(keeper_env "$k") ${keeper_via:-} make -s -o avra "$k" >"$out/keeper-$k.log" 2>&1; then
+            failed=$((failed + 1))
+            failures="$failures keeper-$k"
+            echo "row keeper-$k FAIL $(( $(date +%s) - t0 ))s (passes, and tools/gate/keepers.owed still owes it — strike its line)" >>"$out/rows"
+        else
+            echo "row keeper-$k OWED $(( $(date +%s) - t0 ))s ($owed: $(awk -v k="$k" '$1 == k { $1 = ""; $2 = ""; sub(/^  /, ""); print; exit }' "$root/tools/gate/keepers.owed"))" >>"$out/rows"
+        fi
+    done
+}
+# a keeper list that names nothing fails: a Makefile edit that renamed the list keeps nothing silently
+keepers_list() {
+    judged keepers-owed-lines "$(awk '!/^#/ && NF > 0 && NF < 3' "$root/tools/gate/keepers.owed" | wc -l | tr -d ' ')"
+    names=$(keepers_of "$1")
+    [ -n "$names" ] || { judged "keepers-$1-named" 1; return; }
+    keepers_run $names
+}
+
 # the part `$2` of `$3` of the split family `$1`; a family `splits` doesn't name, or a part past its
 # count, fails rather than passing on no rows
 part_of() {
@@ -703,6 +767,17 @@ part_of() {
         needs) row needs-witness sh tools/witness_program_needs.sh build/avra $(sh tools/witness_program_needs.sh --cases | dealt "$(($2 - 1))" "$3") ;;
         witness-b) rows_dealt witness_b_rows "$2" "$3" ;;
         cost-warm) slice_cost warm "$2/$3" ;;
+        keepers-b)
+            names=$(keepers_of KEEPERS_B | dealt "$(($2 - 1))" "$3")
+            [ -n "$names" ] || { judged "keepers-b-named" 1; return; }
+            keepers_run $names
+            ;;
+        keepers-alone)
+            names=$(keepers_of KEEPERS_ALONE)
+            [ -n "$names" ] || { judged "keepers-alone-named" 1; return; }
+            export MUTATION_SHARD="$(($2 - 1))/$3"
+            keeper_via="sh tools/memcap.sh 6000" keepers_run $names
+            ;;
     esac
 }
 
@@ -811,6 +886,15 @@ if compiler; then
         edit-c) edit_part 5 ;;
         edit-d) edit_part 10 ;;
         edit-e) edit_part rename ;;
+        keepers-a1) keepers_list KEEPERS_A1 ;;
+        keepers-a2) keepers_list KEEPERS_A2 ;;
+        keepers-wasm) keepers_list KEEPERS_WASM ;;
+        keepers-clock)
+            keepers_run clock-holds
+            # SPEED-RATCHET GATES NOTHING YET: tools/speed.budget holds no ci-warm row for the phases it
+            # measures, so it would spend ~800 s measuring and compare none; said every gate until it has rows
+            echo "fact keeper speed-ratchet not run: tools/speed.budget holds no ci-warm row for its phases" >>"$out/rows"
+            ;;
         cost-cold-a) slice_cost cold-a ;;
         cost-cold-b) slice_cost cold-b ;;
         cost-laid) slice_cost laid ;;
