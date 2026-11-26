@@ -362,7 +362,43 @@ base_point() {
     done
     [ -n "$best" ] && echo "$best"
 }
+# A TREE OF PROGRAM'S, as lane-run.yml decides it: its merge-base with origin/program holds a commit
+# origin/main lacks. Answers that merge-base; a tree of main's, or one with no program ref, answers nothing.
+program_base() {
+    (
+        cd "$1"
+        git rev-parse -q --verify origin/program >/dev/null && git rev-parse -q --verify origin/main >/dev/null || exit 1
+        pb=$(git merge-base HEAD origin/program 2>/dev/null) || exit 1
+        ! git merge-base --is-ancestor "$pb" origin/main || exit 1
+        echo "$pb"
+    )
+}
+# THE COMPILER A TREE OF PROGRAM'S STANDS ON is the `gate-builder` release, the landed program head's (gate.yml's
+# builder) — never an `avrac-*` release, which main's pushes publish and which cannot read program's source.
+gate_builder_url=https://github.com/avra-lang/avra/releases/download/gate-builder/compiler.tar.gz
+# Whether the release is there to be fetched, asked before anything starts: a run that cannot have it says so now.
+gate_builder_answers() {
+    [ -n "${AVRA_GATE_BUILDER_ASKED:-}" ] && return "$AVRA_GATE_BUILDER_ASKED"
+    curl -fsIL --retry 2 -m 30 -o /dev/null "$gate_builder_url" 2>/dev/null
+}
+# program_said <merge-base> [builder]: says which compiler a program tree's run stands on, or, where the
+# release does not answer, that the run cannot start — answering 1 then, before anything is pushed or synced.
+program_said() {
+    if ! gate_builder_answers; then
+        echo "work: CONNECTION — a tree of program's (merge-base $(printf '%.8s' "$1")) stands on the gate-builder release, and $gate_builder_url did not answer. Nothing was started" >&2
+        return 1
+    fi
+    if [ -n "${2:-}" ]; then
+        echo "work: a tree of program's (merge-base $(printf '%.8s' "$1")) — its builder is the gate-builder release's compiler, or the merge-base's own source built from it (generations 1 and 2) where the release's source is another" >&2
+    else
+        echo "work: a tree of program's (merge-base $(printf '%.8s' "$1")) — its compiler is the gate-builder release's, or this tree's built from it (generations 1 and 2) where the release's source is another" >&2
+    fi
+}
 builder_key() {
+    if program_base "$1" >/dev/null; then
+        echo "gate-builder program"
+        return 0
+    fi
     (
         cd "$1"
         mb=$(base_point) || exit 0
@@ -785,7 +821,10 @@ run_github() {
         -q '[.[] | select(.status != "completed")][0].databaseId // empty' 2>/dev/null) || live=
     [ -z "$live" ] || { echo "work: BUSY — run $live is live on $ref; \`gh run cancel $live\` ends it" >&2; exit 76; }
     bk=
-    if [ -n "$builder" ]; then
+    if pb=$(program_base "$tree"); then
+        program_said "$pb" "$builder" || exit 74
+        [ -z "$builder" ] || bk="gate-builder program"
+    elif [ -n "$builder" ]; then
         bk=$(builder_key "$tree")
         [ -n "$bk" ] || echo "work: no compiler is published for the merge-base or its recent ancestors — the run builds the tree's own" >&2
     fi
@@ -887,6 +926,8 @@ run() {
     sprite=$(bound)
     [ -n "$sprite" ] || die "this worktree holds no Sprite — \`sh tools/work bind\`"
     tree=$(git rev-parse --show-toplevel)
+    pb=
+    if pb=$(program_base "$tree"); then program_said "$pb" "$builder" || exit 74; fi
     slug=$(basename "$tree")
     gitdir=$(git rev-parse --absolute-git-dir)
     lockfile=$gitdir/avra-run
@@ -938,7 +979,19 @@ run() {
     wire=$hash
     [ "${AVRA_PROBE_BUILD:-}" != one ] || wire="one:$hash"
     route=$(compiler_route "$tree")
-    if [ -n "$builder" ]; then
+    if [ -n "$pb" ] && [ -n "$builder" ]; then
+        # THE MERGE-BASE'S OWN SOURCE, kept on the Sprite by the merge-base's commit: the release's compiler
+        # where it was built from that source, else generations 1 and 2 of it built from the release, once.
+        route="gatebuilder-mb:$pb"
+        mbroot=${AVRA_SPRITE_HOME:-/home/sprite}/avra-mb
+        if ! sx "$sprite" 20 test -x "$mbroot/gb-$pb/build/avra" 2>/dev/null; then
+            git -C "$tree" archive --format=tar "$pb" | gzip -1 |
+                timeout -k 2 300 "$sprite_cli" -s "$sprite" exec --no-port-forward -- sh -c "mkdir -p '$mbroot' && cat > '$mbroot/gb-$pb.tgz'" ||
+                die "could not hand the merge-base's source to $sprite"
+        fi
+    elif [ -n "$pb" ]; then
+        route=gatebuilder
+    elif [ -n "$builder" ]; then
         bk=$(builder_key "$tree")
         case $bk in
             "") echo "work: no compiler is published for the merge-base or its recent ancestors — the run takes the tree's own route" >&2 ;;
@@ -958,7 +1011,7 @@ run() {
         esac
     fi
     ladder=
-    case $route in builder*) ;; *)
+    case $route in builder* | gatebuilder*) ;; *)
         plan=$(ladder_plan "$tree")
         if [ -n "$plan" ]; then
             route=build

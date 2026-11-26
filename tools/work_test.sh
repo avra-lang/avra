@@ -318,6 +318,30 @@ bbg update-ref refs/remotes/origin/hd-gate HEAD
 echo lane > "$bb/lane"; bbg add -A; bbg commit -q -m lane
 echo k-new > "$scratch/published"
 check "$(PUBLISHED="$scratch/published" sh "$slw" builder-key "$bb")" "k-new exact" "work builder-key: a lane off a base branch takes the base's published compiler" "$scratch/out"
+# A TREE OF PROGRAM'S stands on the gate-builder release, never on an `avrac-*` key, however near one is published.
+pp=$scratch/pp
+git init -q -b main "$pp"
+mkdir -p "$pp/tools"
+cp "$bk/tools/compiler_release.py" "$pp/tools/"
+ppg() { git -C "$pp" -c user.name=t -c user.email=t@t "$@"; }
+echo old > "$pp/keyfile"; ppg add -A; ppg commit -q -m m
+ppg update-ref refs/remotes/origin/main HEAD
+ppg update-ref refs/remotes/origin/program HEAD
+echo k-old > "$scratch/published"
+check "$(PUBLISHED="$scratch/published" sh "$slw" builder-key "$pp")" "k-old exact" "work builder-key: a tree of main's takes main's key though origin/program stands on it" "$scratch/out"
+echo new > "$pp/keyfile"; ppg commit -q -am program
+ppg update-ref refs/remotes/origin/program HEAD
+echo lane > "$pp/lane"; ppg add -A; ppg commit -q -m lane
+check "$(PUBLISHED="$scratch/published" sh "$slw" builder-key "$pp")" "gate-builder program" "work builder-key: a lane off program takes the gate-builder release, never main's published ancestor" "$scratch/out"
+pg=$(sed -n '/^program_base() {/,/^}$/p' "$here/work")
+check "$(sh -c "$pg; program_base '$pp'")" "$(git -C "$pp" rev-parse HEAD~1)" "work program_base: a lane off program answers its merge-base with program" "$scratch/out"
+ppg update-ref -d refs/remotes/origin/program
+check "$(PUBLISHED="$scratch/published" sh "$slw" builder-key "$pp")" "k-old exact" "work builder-key: with no program ref the tree is main's" "$scratch/out"
+# A PROGRAM TREE'S RUN WHOSE RELEASE DOES NOT ANSWER says so before anything starts: 74, nothing pushed.
+ppg update-ref refs/remotes/origin/program HEAD~1
+ps=$(sed -n '/^program_said() {/,/^}$/p;/^gate_builder_answers() {/,/^}$/p' "$here/work")
+st=0; AVRA_GATE_BUILDER_ASKED=1 sh -c "gate_builder_url=u; $ps; program_said abcdef0123" 2>"$scratch/said" || st=$?
+check "$st $(grep -c 'did not answer. Nothing was started' "$scratch/said")" "1 1" "work run: a tree of program's whose release does not answer is refused at once, saying why" "$scratch/out"
 
 # `compiler --get`: a held compiler for this source needs no build; none held and none published builds.
 lane getme

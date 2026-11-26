@@ -418,6 +418,39 @@ install_published() {
     python3 tools/compiler_release.py install --key "$1" >&2
 }
 
+# gate_built <tree> <its compiler hash>: the `gate-builder` release laid into the tree as its build/avra —
+# the compiler a tree of program's stands on (tools/work's program_base) — and, where the release was built
+# from another compiler source, generations 1 and 2 of the tree built from it. Each failure is said here,
+# the step that failed named, and answers 1; nothing falls back to a seed.
+gate_builder_url=https://github.com/avra-lang/avra/releases/download/gate-builder/compiler.tar.gz
+gate_built() {
+    gt=$1 want=$2
+    mkdir -p "$gt/build"
+    pack=$gt/build/.gate-builder.tar.gz
+    if ! curl -fsSL --retry 3 -m 300 -o "$pack" "$gate_builder_url" || ! gzip -t "$pack" 2>/dev/null; then
+        echo "sprite-run: the gate-builder release did not download whole ($gate_builder_url)" >&2
+        return 1
+    fi
+    tar -xzf "$pack" -C "$gt" build/avra build/.avra-built-from || { echo "sprite-run: the gate-builder release holds no build/avra and its stamp" >&2; return 1; }
+    tar -xzf "$pack" -C "$gt" build/avra_hot.bc build/avra_hot.inc 2>/dev/null || :
+    rm -f "$pack"
+    have=$(cut -d' ' -f1 "$gt/build/.avra-built-from")
+    if [ "$have" = "$want" ]; then
+        echo "sprite-run: the gate-builder release was built from this compiler source ($(printf '%.12s' "$want")) — it stands" >&2
+        return 0
+    fi
+    echo "sprite-run: the gate-builder release was built from compiler source $(printf '%.12s' "$have"), this is $(printf '%.12s' "$want") — generations 1 and 2 built from it" >&2
+    for g in 1 2; do
+        s0=$(date +%s)
+        if ! (cd "$gt" && AVRA_CAP_MB="$(build_cap)" make -s avra) >> "$probe_log" 2>&1; then
+            echo "sprite-run: generation $g of this compiler source did not build from the gate-builder release — see $probe_log:" >&2
+            grep -aE 'error|Error|Killed|refus' "$probe_log" | tail -n 20 >&2
+            return 1
+        fi
+        echo "sprite-run: generation $g from the gate-builder release — $(($(date +%s) - s0))s" >&2
+    done
+}
+
 supervise() {
     id=$1 build_s=$2 cmd_s=$3 remote=$4 chash=$5
     shift 5
@@ -518,6 +551,30 @@ supervise() {
                 : > build/.avra-compiler-hash
                 compiler="builder, merge-base $mbk (built once from $anc, shared)"
             fi
+        elif [ "${route%%:*}" = gatebuilder-mb ]; then
+            # A TREE OF PROGRAM'S BUILDER is its merge-base's own compiler, made once from the gate-builder
+            # release and kept by the merge-base's commit; the lane's tree is never built for the run.
+            pb=${route#gatebuilder-mb:}
+            mbt=$home/avra-mb/gb-$pb
+            if [ ! -x "$mbt/build/avra" ]; then
+                s0=$(date +%s)
+                part=$mbt.part
+                rm -rf "$part"
+                mkdir -p "$part" && tar -xzf "$home/avra-mb/gb-$pb.tgz" -C "$part" \
+                    || { echo "sprite-run: the merge-base's source ($pb) was not handed here whole" >&2; exit 70; }
+                gate_built "$part" "$(sh "$part/tools/work" compiler-hash "$part")" \
+                    || { echo "sprite-run: no builder for this tree of program's: the merge-base's compiler (at $(printf '%.8s' "$pb")) did not come from the gate-builder release" >&2; exit 70; }
+                rm -rf "$mbt"
+                mv "$part" "$mbt"
+                echo "sprite-run: merge-base builder at $(printf '%.8s' "$pb") made once from the gate-builder release ($(($(date +%s) - s0))s)" >&2
+            fi
+            if [ -x build/avra ] && cmp -s "$mbt/build/avra" build/avra; then
+                compiler="builder, warm (program's merge-base $(printf '%.8s' "$pb"), from the gate-builder release)"
+            else
+                cp -p "$mbt/build/avra" build/avra
+                : > build/.avra-compiler-hash
+                compiler="builder, program's merge-base $(printf '%.8s' "$pb") (from the gate-builder release, shared)"
+            fi
         elif [ -x build/avra ] && [ "$(cat build/.avra-compiler-hash 2>/dev/null)" = "$chash" ]; then
             compiler=warm
         elif [ "${route%%:*}" = published ] && install_published "${route#published:}"; then
@@ -546,6 +603,20 @@ supervise() {
             touch "$compilers/$chash"
             printf '%s' "$chash" > build/.avra-compiler-hash
             compiler=restored
+        elif [ "$route" = gatebuilder ]; then
+            # A TREE OF PROGRAM'S stands on the gate-builder release, never on main's published compilers or
+            # the seed: what does not build from it is said now, before the command, and the run ends 70.
+            s0=$(date +%s)
+            gate_built "$remote" "$chash" || { echo "sprite-run: this tree of program's has no compiler — the gate-builder release did not give one" >&2; exit 70; }
+            rm -rf "${compilers:?}/$chash.part"
+            mkdir -p "$compilers/$chash.part"
+            for f in $(compiler_objs); do
+                [ ! -e "$f" ] || cp -p "$f" "$compilers/$chash.part/$(basename "$f")"
+            done
+            rm -rf "${compilers:?}/$chash"
+            mv "$compilers/$chash.part" "$compilers/$chash"
+            printf '%s' "$chash" > build/.avra-compiler-hash
+            compiler="gate-builder release ($(($(date +%s) - s0))s)"
         else
             echo "sprite-run: building this tree's compiler; $(avail_mb) MB of memory available" >&2
             advance_and_cache
