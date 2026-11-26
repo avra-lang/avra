@@ -314,6 +314,27 @@ printf 'k-old\nk-new\n' > "$scratch/published"
 check "$(PUBLISHED="$scratch/published" sh "$slw" builder-key "$bk")" "k-new exact" "work builder-key: the merge-base's own key, published, is exact (a commit with no compiler change shares it)" "$scratch/out"
 : > "$scratch/published"
 check "$(PUBLISHED="$scratch/published" sh "$slw" builder-key "$bk")" "" "work builder-key: nothing published answers nothing" "$scratch/out"
+# WISP'S KEY IS WHAT A BUILD READS: a clean package is keyed by git's index, so its key is the published one;
+# an edit git does not hold, or a new file, moves the key and says so, so no binary of the older source is served.
+tk=$scratch/tk
+git init -q -b main "$tk"
+mkdir -p "$tk/packages/wisp/src"
+cp "$here/../wisp" "$tk/wisp"
+echo '[package]' > "$tk/packages/wisp/avra.toml"; echo 'fn a() {}' > "$tk/packages/wisp/src/a.av"
+git -C "$tk" add -A; git -C "$tk" -c user.name=t -c user.email=t@t commit -q -m wisp
+tkey() { sh "$tk/wisp" --key 2> "$scratch/tk.err"; }
+clean=$(tkey)
+echo 'fn b() {}' >> "$tk/packages/wisp/src/a.av"
+edited=$(tkey)
+check "$([ "$edited" != "$clean" ] && echo moved) $(grep -c 'keyed by the bytes the tree holds' "$scratch/tk.err")" "moved 1" "wisp --key: an edit git's index does not hold moves the key, and says so" "$scratch/tk.err"
+git -C "$tk" checkout -q -- packages/wisp/src/a.av
+check "$(tkey)" "$clean" "wisp --key: the edit undone, the key is the clean one again"
+echo 'fn c() {}' > "$tk/packages/wisp/src/c.av"
+check "$([ "$(tkey)" != "$clean" ] && echo moved)" "moved" "wisp --key: a new file git does not track moves the key"
+rm "$tk/packages/wisp/src/c.av"
+mkdir -p "$tk/packages/wisp/src/tests"; echo 'fn t() {}' > "$tk/packages/wisp/src/tests/t.av"
+check "$(tkey)" "$clean" "wisp --key: a file under tests/, which no build reads, moves nothing"
+
 # A LANE OFF A BASE BRANCH stands on the base's compiler, though main's own key is another.
 bb=$scratch/bb
 git init -q -b main "$bb"

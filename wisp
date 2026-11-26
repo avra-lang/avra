@@ -3,7 +3,8 @@
 #
 #   ./wisp <command> [args…]               stdin and the status pass through
 #   ./wisp --path                          where the binary stands, built if need be
-#   ./wisp --key                           the package's key: a hash of its manifest and src/, tests aside
+#   ./wisp --key                           the package's key: a hash of its manifest and src/, tests aside, as
+#                                          the tree holds them (git's where the tree is the index)
 #   ./wisp --compiler <avra> <command> …   build with that compiler when no binary stands for the key
 #
 # A KEEPER IS NEVER JUDGED BY THE COMPILER UNDER TEST. The binary is main's:
@@ -26,11 +27,25 @@ here=$(cd "$(dirname "$0")" && pwd)
 cd "$here"
 package=packages/wisp
 
+# THE KEY IS WHAT A BUILD READS. Where the working tree is git's index, it is what git holds, so a clean tree's
+# key is the one published for its commit. Where it is not — a file edited or deleted and not staged, or a new
+# one git does not track — the index no longer says what a build reads, so the key is the bytes the tree
+# holds, said on stderr: no published or cached binary was built from them, and wisp is built again rather
+# than served from an older source.
 key() {
     if git rev-parse --git-dir >/dev/null 2>&1; then
-        files=$(git ls-files -s -- "$package/avra.toml" "$package/src" ":(exclude,glob)$package/**/tests/**")
+        set -- "$package/avra.toml" "$package/src" ":(exclude,glob)$package/**/tests/**"
+        files=$(git ls-files -s -- "$@")
         [ -n "$files" ] || { echo "wisp: git lists no $package here" >&2; exit 1; }
-        printf '%s\n' "$files" | git hash-object --stdin
+        moved=$(git diff --name-only -- "$@"; git ls-files -o --exclude-standard -- "$@")
+        if [ -z "$moved" ]; then
+            printf '%s\n' "$files" | git hash-object --stdin
+            return 0
+        fi
+        echo "wisp: $package holds $(printf '%s\n' "$moved" | grep -c .) file(s) git's index does not — keyed by the bytes the tree holds" >&2
+        git ls-files -co --exclude-standard -- "$@" | LC_ALL=C sort -u | while IFS= read -r f; do
+            [ ! -f "$f" ] || printf '%s %s\n' "$(git hash-object -- "$f")" "$f"
+        done | { echo "the working tree"; cat; } | git hash-object --stdin
     else
         files=$(find "$package/avra.toml" "$package/src" -type f -not -path '*/tests/*' | sort)
         [ -n "$files" ] || { echo "wisp: no $package here" >&2; exit 1; }
