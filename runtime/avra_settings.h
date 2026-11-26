@@ -92,7 +92,7 @@ void avra_trap(const char* msg) __attribute__((noreturn));
 #define AVRA_SET_CORE_FROM_SURFACE "AVRA_CORE_FROM_SURFACE"
 // debug.avrac.eval_jumps_check: a switch, off when unset
 #define AVRA_SET_EVAL_JUMPS_CHECK "AVRA_EVAL_JUMPS_CHECK"
-// debug.avrac.verify_llvm: a switch, off when unset
+// debug.avrac.verify_llvm: a switch, on when unset
 #define AVRA_SET_VERIFY_LLVM "AVRA_VERIFY_LLVM"
 // debug.avrac.held_bytes: a whole number, else unset
 #define AVRA_SET_HELD_BYTES "AVRA_HELD_BYTES"
@@ -233,7 +233,7 @@ static inline int avra_set_wave_alone(void) { return avra_setting_switch(AVRA_SE
 static inline int avra_set_merged_here(void) { return avra_setting_switch(AVRA_SET_MERGED_HERE, 0); }
 static inline int avra_set_ahead_unproven(void) { return avra_setting_switch(AVRA_SET_AHEAD_UNPROVEN, 0); }
 static inline int avra_set_eval_jumps_check(void) { return avra_setting_switch(AVRA_SET_EVAL_JUMPS_CHECK, 0); }
-static inline int avra_set_verify_llvm(void) { return avra_setting_switch(AVRA_SET_VERIFY_LLVM, 0); }
+static inline int avra_set_verify_llvm(void) { return avra_setting_switch(AVRA_SET_VERIFY_LLVM, 1); }
 static inline int avra_set_held_items_off(void) { return avra_setting_switch(AVRA_SET_HELD_ITEMS_OFF, 0); }
 static inline int avra_set_sound_check(void) { return avra_setting_switch(AVRA_SET_SOUND_CHECK, 0); }
 static inline int avra_set_rc_reasons(void) { return avra_setting_switch(AVRA_SET_RC_REASONS, 0); }
