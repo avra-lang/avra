@@ -122,6 +122,16 @@ void avra_trap(const char* msg) __attribute__((noreturn));
 #define AVRA_SET_ENGINE_PARSE "AVRA_ENGINE_PARSE"
 // debug.avrac.query_times: a switch, off when unset
 #define AVRA_SET_QUERY_TIMES "AVRA_QUERY_TIMES"
+// debug.avrac.dep_audit: text, `` when unset
+#define AVRA_SET_DEP_AUDIT "AVRA_DEP_AUDIT"
+// debug.avrac.cas_phase: text, `` when unset
+#define AVRA_SET_CAS_PHASE "AVRA_CAS_PHASE"
+// debug.avrac.cas_dir: text, `` when unset
+#define AVRA_SET_CAS_DIR "AVRA_CAS_DIR"
+// debug.avrac.reads_phase: text, `` when unset
+#define AVRA_SET_READS_PHASE "AVRA_READS_PHASE"
+// debug.avrac.reads_dir: text, `` when unset
+#define AVRA_SET_READS_DIR "AVRA_READS_DIR"
 // debug.cli.soundness: a switch, off when unset
 #define AVRA_SET_SOUNDNESS "AVRA_SOUNDNESS"
 // debug.cli.verdict_dir: text, else unset
