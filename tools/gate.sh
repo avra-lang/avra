@@ -56,6 +56,7 @@ idioms     the same on every other package the diff from <base> touches
 store-fuzz the store fuzzer's model self-test, then seeds 1-8 of 12 edits each over build/avra: warm == cold byte for byte, the store clean (`cache check`), the walk held, a fresh copy over the same machine store as the tree, nothing worked where nothing moved
 fmt        fmt --check on every .av the diff from <base> changes (tools/fmt_changed.sh); <base> is the program landed last, never a batch's own base
 sound      AVRA_SOUND_CHECK=1 check packages/cli, the memory pass's proof run over the program, 0 defects; AVRA_VERIFY_LLVM=1 build packages/cli, every emitted fn verified
+cost-reads make cost, COST_PART=reads: the longest read list each query of the cli's cold check stands on, and the proofs one literal edited costs, as keyed rows (reads, proofs)
 cost-answers the snapshot's std answers, made once by the census compiler (COST_PART=answers) for every slice that lays them
 cost-cold-a make cost, COST_PART=cold-a: the census compiler (built here by this tree's of generation 2) over the record under cost/'s snapshot — build-cli; every count within 0.05% of its row
 cost-cold-b make cost, COST_PART=cold-b: check-program, and the cli's check over an empty store, the store's fill
@@ -1154,6 +1155,7 @@ if compiler; then
             echo "fact keeper speed-ratchet not run: the record under cost/ holds no speed:ci-warm row for its phases" >>"$out/rows"
             ;;
         cost-cold-a) slice_cost cold-a ;;
+        cost-reads) slice_cost reads ;;
         cost-cold-b) slice_cost cold-b ;;
         cost-answers)
             census_stands || census_made || { judged census 1; return; }

@@ -203,6 +203,59 @@ counted() {
     echo "cost: $name $(($(date +%s) - started)) s"
 }
 
+# One run of the census compiler in the snapshot as `counted` runs one, its census off: what it said
+# on stderr to <name>.out, what it printed to <name>.stdout. `$1` is the name, `$2` the words the run
+# adds to its environment (NAME=value, or `-` for none), the rest the command.
+plain() {
+    name=$1; adds=$2; shift 2
+    [ "$adds" != - ] || adds=
+    sleep 3
+    started=$(date +%s)
+    mkdir -p "$cache/home"
+    # shellcheck disable=SC2086
+    (cd "$src" && unset AVRA_MACHINE_STORE_DIR && \
+        env HOME="$cache/home" AVRA_MACHINE_STORE=0 AVRA_WORK_AHEAD_OFF=1 AVRA_PROGRAM_NET=0 AVRA_CACHE_DIR="$cache" AVRA_STORE_KEPT_HERE=1 $adds \
+        sh "$root/tools/memcap.sh" "${COST_CAP_MB:-8000}" taskset -c 0 build/avra "$@" \
+        > "$root/$out/$name.stdout" 2> "$root/$out/$name.out") || {
+        tail -20 "$out/$name.out"; echo "cost: $name failed ($*)"; exit 1; }
+    echo "cost: $name $(($(date +%s) - started)) s"
+}
+
+# THE READS A CHECK STANDS ON AND THE PROOF AN EDIT COSTS, as keyed rows (`reads` and `proofs`, judged
+# by their kinds): the longest read list each query's answers stand on, from a cold `check
+# --read-lists` of the snapshot's cli, the std answers unlaid; and what one literal of the cli edited
+# and built warm over its cold build's store proves (`cutoff:`, AVRA_QUERY_TIMES), the answers it
+# proved and the reads it checked. THE ROWS HOLD PROVED AND READS, NEVER REACHED: an input that truly
+# moved is reached, and so is the one query that cuts on it — a directory the build wrote its binary
+# into, read again as the same sources — so reached may differ between two trees by that input and its
+# cut, while what the change costs to prove does not. THE COLD BUILD STARTS FROM A FRESH CHECKOUT'S
+# TREE, which holds no built cli: a binary an earlier build left beside the sources would otherwise
+# decide what the cold build lists there.
+cutoff_literal='println("avra cache log: no pack")'
+reads_rows() {
+    : > "$out/rows"
+    bare
+    unlaid
+    plain read-lists - check packages/cli --read-lists
+    awk '$1 == "read-list" && NF == 4 && $4 ~ /^[0-9]+$/ { print "reads:-:check-cli " $2 " " $4 }' "$out/read-lists.out" >> "$out/rows"
+    grep -q '^reads:' "$out/rows" || { echo "cost: the cold check said no read list"; exit 1; }
+    bare
+    rm -f "$src/packages/cli/src/main"
+    plain cutoff-cold - build packages/cli
+    f="$src/$edited"
+    [ "$(grep -cF "$cutoff_literal" "$f")" = 1 ] || { echo "cost: the literal edited is not one line of $edited"; exit 1; }
+    cp "$f" "$out/edited.orig"
+    python3 -c "import sys; p,a,b=sys.argv[1:]; s=open(p).read(); open(p,'w').write(s.replace(a,b,1))" "$f" "$cutoff_literal" 'println("avra cache log: no packs")'
+    plain cutoff-warm AVRA_QUERY_TIMES=1 build packages/cli
+    cp "$out/edited.orig" "$f"
+    said=$(grep '^cutoff: ' "$out/cutoff-warm.out" | tail -1)
+    proved=$(echo "$said" | sed -n 's/.* reached, \([0-9]*\) proved, .*/\1/p')
+    reads=$(echo "$said" | sed -n 's/.* proved, \([0-9]*\) reads checked$/\1/p')
+    [ -n "$proved" ] && [ -n "$reads" ] || { echo "cost: the warm build said no cutoff line: '$said'"; exit 1; }
+    printf 'proofs:-:cutoff proved %s\nproofs:-:cutoff reads %s\n' "$proved" "$reads" >> "$out/rows"
+    echo "cost: reads, $(grep -c '^reads:' "$out/rows") read list(s) and the cutoff's $proved proved, $reads reads"
+}
+
 # THE PASS LEDGER IS MEASURED APART FROM THE COUNTS, which an instrument must not move: no counted run
 # keeps a ledger, and the ledger's parts (`ledger-cold`, the cold runs of `cold-a` and `cold-b` — or
 # `ledger-cold-a` and `ledger-cold-b`, each one's alone;
@@ -460,8 +513,8 @@ matrix() {
 # measurement as the whole run's do, so a run that depends on another before it shows.
 part=${COST_PART:-all}
 for p in $part; do
-    case $p in all | answers | cheap | cold-a | cold-b | laid | warm | ledger-cold | ledger-cold-a | ledger-cold-b | ledger-warm | matrix-check-bare | matrix-check-laid | matrix-build-bare | matrix-build-laid) ;;
-        *) echo "cost: COST_PART names all, answers, cheap, cold-a, cold-b, laid, warm, ledger-cold, ledger-cold-a, ledger-cold-b, ledger-warm or a matrix-<check|build>-<laid|bare>, never $p"; exit 2 ;; esac
+    case $p in all | answers | cheap | cold-a | cold-b | laid | warm | reads | ledger-cold | ledger-cold-a | ledger-cold-b | ledger-warm | matrix-check-bare | matrix-check-laid | matrix-build-bare | matrix-build-laid) ;;
+        *) echo "cost: COST_PART names all, answers, cheap, cold-a, cold-b, laid, warm, reads, ledger-cold, ledger-cold-a, ledger-cold-b, ledger-warm or a matrix-<check|build>-<laid|bare>, never $p"; exit 2 ;; esac
 done
 if [ -n "${COST_EDITS:-}" ]; then printf '%s edits %s\n' "$part" "$COST_EDITS"; else printf '%s\n' "$part"; fi > "$out/part"
 : > "$out/workloads"
@@ -525,6 +578,7 @@ for p in $part; do
         # THE ANSWERS ALONE, made once and kept (COST_ANSWERS_KEPT) for every run that lays them: no
         # workload, nothing counted
         answers) laid ;;
+        reads) reads_rows ;;
         all)
             measure counted all
             measure ledgered all
