@@ -575,3 +575,21 @@ let one_when = when { _ -> 1 }
         }
     }
 }
+
+spec "compiler/format — a float literal prints as the lexer reads one" {
+    given "a float the shortest spelling would write with an exponent" {
+        then "a tiny one prints every digit after the point" {
+            projected("let a = 0.00000015\n") == "let a = 0.00000015"
+        }
+        then "a huge one prints every digit before the point" {
+            projected("let b = 123456789012345678901234.0\n") == "let b = 123456789012345690000000.0"
+        }
+        then "a negative tiny one keeps its sign" { projected("let c = -0.0000025\n") == "let c = -0.0000025" }
+        then "each reads back as the same literal" {
+            stable("let a = 0.00000015\nlet b = 123456789012345678901234.0\nlet c = -0.0000025\n")
+        }
+    }
+    given "a float the shortest spelling writes in place" {
+        then "it prints as it did" { projected("let d = 1.5\nlet e = 100.25\n") == "let d = 1.5\nlet e = 100.25" }
+    }
+}

@@ -55,7 +55,7 @@ use core.{
 use features.{Wording, Piece, RuleTier}
 use compiler.{avra}
 use @std.grammar.{node_builder_name}
-use @std.text.{Text, builder}
+use @std.text.{Text, builder, parse_int, repeat}
 extern fn avra_float_text_bits(bits: int) -> string
 
 /// The one column every width decision measures against — industry
@@ -1384,7 +1384,7 @@ impl SourceText {
             // unary precedence on the page: `(-3).field` must keep
             // its group or it reads back as `-(3.field)`.
             .IntLit(value) -> numeric("${value}", parent),
-            .FloatLit(bits) -> numeric(avra_float_text_bits(bits), parent),
+            .FloatLit(bits) -> numeric(positional(avra_float_text_bits(bits)), parent),
             .StrLit(value) -> grouped(self.str_lit_text(id, value), atom_tier, parent),
             .BytesLit(spelled) -> grouped("b\"${spelled}\"", atom_tier, parent),
             .GrammarLit(source) -> grouped("grammar {${source}}", atom_tier, parent),
@@ -2668,6 +2668,27 @@ fn instance_tier(block: ExprId?) -> int {
 
 fn grouped(text: string, own: int, parent: int) -> string {
     if own < parent { "(${text})" } else { text }
+}
+
+/// A float's shortest digits as the lexer reads a literal: every digit in place around one point,
+/// never an exponent, so `1.5e-7` is `0.00000015` and `1.2e+23` is `120000000000000000000000.0`.
+export fn positional(text: string) -> string {
+    let at = text.index_of("e")
+    if at < 0 { return text }
+    let mantissa = text.substring(0, at)
+    let shift? = parse_int(text.substring(at + 1, text.length).replace("+", "")) else { return text }
+    let negative = mantissa.starts_with("-")
+    let unsigned = if negative { mantissa.substring(1, mantissa.length) } else { mantissa }
+    let dot = unsigned.index_of(".")
+    let digits = unsigned.replace(".", "")
+    let whole = if dot < 0 { digits.length } else { dot }
+    let point = whole + shift
+    let placed = when {
+        point <= 0 -> "0.${repeat("0", 0 - point)}${digits}"
+        point >= digits.length -> "${digits}${repeat("0", point - digits.length)}.0"
+        _ -> "${digits.substring(0, point)}.${digits.substring(point, digits.length)}"
+    }
+    if negative { "-${placed}" } else { placed }
 }
 
 fn numeric(text: string, parent: int) -> string {
