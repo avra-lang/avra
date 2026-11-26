@@ -14,7 +14,7 @@
 #     round is never a store hit, the wall read from the clock.
 #   - the CEILINGS are the ledger's `warm:` and `work:` rows
 #     (`tools/cost.baseline`): this script measures and hands its raw stream
-#     to tools/ledger_rows.sh, and `avra-tools cost`, the ONE reader of that
+#     to tools/ledger_rows.sh, and `wisp cost`, the ONE reader of that
 #     file, REFUSES past a row and names each by how much. On CI the clock is
 #     told, never judged (a shared runner's wall is a fact); the work is judged
 #     everywhere.

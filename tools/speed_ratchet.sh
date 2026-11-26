@@ -1,7 +1,7 @@
 #!/bin/sh
 # THE HARD PER-PHASE SPEED RATCHET: each phase of `packages/cli`'s own build and check, the least of
 # SPEED_ROUNDS warm one-edit rounds (tools/speed_measure.sh), held as `speed:<host>:` rows of the ledger
-# (tools/cost.baseline, judged by `avra-tools cost` through tools/ledger_rows.sh). It measures on the
+# (tools/cost.baseline, judged by `wisp cost` through tools/ledger_rows.sh). It measures on the
 # machine the keeper stands on; on macOS on the lane's Sprite (`tools/work run`), since a loaded Mac
 # supplies no number — SPEED_LOCAL=1 measures here. A host the ledger holds no row of is measured and
 # told, never gated; an accept seeds it, and lowers a row, never raises one.

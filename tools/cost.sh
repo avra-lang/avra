@@ -2,7 +2,7 @@
 # THE EXACT-COUNT GATE'S MEASUREMENT: the census compiler of this tree, run over FIXED workloads whose
 # sources are one pinned commit (the `snapshot` row of tools/cost.baseline): cold, each run's census
 # kept as build/cost/<workload>.out; and warm after each edit of a fixed set, the answers it worked out
-# again kept as build/cost/edit-<kind>.out. `avra-tools cost` judges them.
+# again kept as build/cost/edit-<kind>.out. `wisp cost` judges them.
 #   sh tools/cost.sh [judge|accept]       the baseline's snapshot, then (named) its verdict or its accept
 #   COST_SNAPSHOT=<sha> sh tools/cost.sh  another snapshot (what `make cost-accept` records)
 #   COST_COMPILER=<file> sh tools/cost.sh a census compiler already built from this tree
@@ -172,7 +172,7 @@ counted() {
 # `ledger-warm`, the cli's cold check and the warm edits) make the same runs again, each its own slice
 # beside the counted ones, over the same snapshot by the same census compiler, uncounted, with
 # `--passes --passes-rows`. ledgered <name> <command…>: one such run, its `pass-row` lines the rows of
-# the workload <name> (`avra-tools cost`), its table the step's summary.
+# the workload <name> (`wisp cost`), its table the step's summary.
 ledgered() {
     ran=$1; sub=$2; shift 2
     machine=0
@@ -186,7 +186,7 @@ ledgered() {
         taskset -c 0 build/avra "$sub" --passes --passes-rows "$@" > /dev/null 2> "$root/$out/$ran.ledger") || {
         tail -20 "$out/$ran.ledger"; echo "cost: $ran's ledger run failed"; exit 1; }
     # its pass rows, and the work it did — the queries it computed, the answers an edit worked out again
-    # — which its counted twin did too, to the one (`avra-tools cost`, `same_work`)
+    # — which its counted twin did too, to the one (`wisp cost`, `same_work`)
     grep -E '^(pass-row|counts: |worked: )' "$out/$ran.ledger" > "$out/$ran.out" || :
     grep -q '^pass-row' "$out/$ran.out" || { echo "cost: $ran's ledger run printed no pass rows"; exit 1; }
     # the settle and each edit undone are no rows, and no table of the ledger
@@ -240,13 +240,13 @@ noop_check() {
     counted noop-check check --counts packages/cli
 }
 
-# edit_in_place <file> <kind> <text> <becomes>: one edit (`avra-tools cost edit`), made on a copy and written back
+# edit_in_place <file> <kind> <text> <becomes>: one edit (`wisp cost edit`), made on a copy and written back
 # INTO the file, never over it. A file's stamp carries its inode, so an edit published by a rename is a
 # different event to the store than one written in place, and its taking back (`cp -p` of the original)
 # would not return the original stamp: what a warm run asks would depend on how the edit was written.
 edit_in_place() {
     cp -p "$1" "$out/edit.next"
-    sh "$root/tools/avra_tools.sh" cost edit "$out/edit.next" "$2" "$3" "$4" || return 1
+    sh "$root/wisp" cost edit "$out/edit.next" "$2" "$3" "$4" || return 1
     cat "$out/edit.next" > "$1"
     rm -f "${out:?}/edit.next"
 }
@@ -419,7 +419,7 @@ matrix() {
 }
 
 # the parts this run measures, in the order named, and every workload they measure — what
-# `avra-tools cost` judges. Several parts in one run (`COST_PART="laid ledger-cold"`) meet in one
+# `wisp cost` judges. Several parts in one run (`COST_PART="laid ledger-cold"`) meet in one
 # measurement as the whole run's do, so a run that depends on another before it shows.
 part=${COST_PART:-all}
 for p in $part; do
@@ -496,5 +496,5 @@ else
 fi
 for made in "$place" "$out/edited.orig"; do [ ! -e "$made" ] || find "$made" -delete; done
 # THE VERDICT, where one is asked (`make cost` judges, `make cost-accept` records): the run judged by
-# `avra-tools cost`, so the measurement and the verdict change together and the Makefile never does
-[ -z "$verdict" ] || sh "$root/tools/avra_tools.sh" cost "$verdict" "$out"
+# `wisp cost`, so the measurement and the verdict change together and the Makefile never does
+[ -z "$verdict" ] || sh "$root/wisp" cost "$verdict" "$out"

@@ -1,4 +1,4 @@
-//! `avra-tools cost` — THE EXACT-COUNT GATE: what the compiler DOES on fixed workloads, counted by
+//! `wisp cost` — THE EXACT-COUNT GATE: what the compiler DOES on fixed workloads, counted by
 //! the census runtime, judged against tools/cost.baseline.
 //!
 //!     cost judge <dir>       judge a `tools/cost.sh` run against tools/cost.baseline
@@ -39,7 +39,7 @@ const VERDICTS: string = "tools/cost.verdicts"
 /// candidate is work, never a regression: a new one is said, never failed on.
 const CANDIDATES: string = "tools/cost.candidates"
 const CANDIDATES_HEAD: string = "# THE ZERO-COST CANDIDATES THE LAST `make cost-accept` SAW: each `<technique> <fn>` that stood in its\n# technique's top sites (`avra census --candidates`, docs/ZERO_COST.md). `make cost` names every\n# candidate this file lacks; a candidate is a registry row or a ticket at discovery.\n"
-const HEAD: string = "# THE LEDGER: what the toolchain does and weighs, one row a line. A row's KIND says how it is judged,\n# and each kind is declared below by what keys it — what makes it deterministic — and how far it may\n# rise (`avra-tools cost`). A count names no kind: the census compiler, cold, on each fixed workload of\n# the pinned snapshot (`make cost`, tools/cost.sh), the same on every machine. A row only falls,\n# through an accept; a new snapshot is `COST_SNAPSHOT=<sha> make cost-accept`.\n"
+const HEAD: string = "# THE LEDGER: what the toolchain does and weighs, one row a line. A row's KIND says how it is judged,\n# and each kind is declared below by what keys it — what makes it deterministic — and how far it may\n# rise (`wisp cost`). A count names no kind: the census compiler, cold, on each fixed workload of\n# the pinned snapshot (`make cost`, tools/cost.sh), the same on every machine. A row only falls,\n# through an accept; a new snapshot is `COST_SNAPSHOT=<sha> make cost-accept`.\n"
 /// A fall this small is the build's own: a file it writes and reads back within the stamp window.
 const FALL_PPM: int = 50
 /// A WARM ROW HOLDS when two compilers that differ in nothing the work reads move it by no more than
@@ -403,7 +403,7 @@ export fn judge(now: Map<string, int>, base: Map<string, int>, kinds: Map<string
     mut told: List<string> = []
     for key in sorted_by([k for k, _n in base], text_before) {
         let old = base.get(key) ?? 0
-        let kind? = kinds.get(kind_name_of(key)) else {
+        let kind? = kinds.get(if unsettled(key) == null { kind_name_of(key) } else { "told" }) else {
             failed.push(undeclared_said(key))
             continue
         }
@@ -425,6 +425,15 @@ export fn judge(now: Map<string, int>, base: Map<string, int>, kinds: Map<string
         }
     }
     Judged { failed: failed, fell: fell, told: told }
+}
+
+/// A row whose count moves between compiler builds with no change to what it weighs: judged as
+/// `told`, by nothing, and said every run with the ticket that owes it a cause. Null for every other.
+fn unsettled(key: string) -> string? {
+    match key {
+        "matrix-build-bare-back-signature pass_lower_asks" or "matrix-build-laid-back-signature pass_lower_asks" -> ".112.22",
+        rest -> null,
+    }
 }
 
 /// The least fall a judge names: an exact row's every fall, else past the build's own jitter.
@@ -647,6 +656,7 @@ fn judged_run(run_dir: string, accept: bool) -> int {
         return 1
     }
     let j = judge(now, base, kinds)
+    for line in [unsettled_said(k, n, unsettled(k)!) for k, n in now if unsettled(k) != null] { println(line) }
     for line in j.fell.concat(j.failed) { println(line) }
     println(rows_counted(base.length, j.failed.length, j.fell.length))
     candidates_said(run_dir, false)
@@ -682,7 +692,7 @@ fn accept_recorded(
     if made != null {
         let _ = write_text(
             VERDICTS,
-            "# the std packages the snapshot's answers ship a verdict for (avra-tools cost)\n${made!}",
+            "# the std packages the snapshot's answers ship a verdict for (wisp cost)\n${made!}",
         )
     }
     // a part's run classifies only its own sites, and a ledger's none: the record is the whole run's
@@ -923,7 +933,7 @@ fn moved_tenths(old: int?, new: int?) -> int {
 
 fn usage() -> int {
     eprintln(
-        "avra-tools cost: `judge <dir>`, `accept <dir>`, `rows <dir>`, `edit <file> <kind> <text> <becomes>` or `same <a> <b>`",
+        "wisp cost: `judge <dir>`, `accept <dir>`, `rows <dir>`, `edit <file> <kind> <text> <becomes>` or `same <a> <b>`",
     )
     2
 }
@@ -989,6 +999,10 @@ fn fell_said(key: string, old: int, new: int) -> string {
 fn new_candidate_said(line: string) -> string { "cost: new candidate: ${line}" }
 
 fn candidates_counted(found: int, new: int) -> string { "cost: ${found} candidates, ${new} new" }
+
+fn unsettled_said(key: string, n: int, ticket: string) -> string {
+    "cost: ${key} ${n} — told, judged by nothing: it moves between compiler builds with no change to what it weighs (${ticket})"
+}
 
 fn rows_counted(rows: int, over: int, fell: int) -> string { "cost: ${rows} rows, ${over} over, ${fell} fell" }
 

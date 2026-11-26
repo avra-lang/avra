@@ -1,7 +1,7 @@
-# THE TREE'S INSTRUMENTS, PUBLISHED BESIDE THE BUILDER: the `avra-tools` binary the gate's seed builds into
+# THE TREE'S INSTRUMENTS, PUBLISHED BESIDE THE BUILDER: the `wisp` binary the gate's seed builds into
 # its pack (tools/gate.sh `packed`), cut out of the `gate-builder` release's compiler.tar.gz and uploaded
-# beside it as tools.tar.gz, which holds `build/avra-tools/<key>/avra-tools` (tools/tools_key.sh). A tree of
-# program's takes it there (tools/avra_tools.sh) instead of building it with a compiler that predates it.
+# beside it as wisp.tar.gz, which holds `build/wisp/<key>/wisp` (./wisp --key). A tree of
+# program's takes it there (./wisp) instead of building it with a compiler that predates it.
 #
 # EACH LANDING PUBLISHES ONE: a push to `program` waits, bounded, for the release's pack to hold the landed
 # tree's key — the landing's upload may come after this run starts. A push to `tools-release/**` or a
@@ -31,26 +31,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 1 }
-      - name: the release's avra-tools
+      - name: the release's wisp
         run: |
-          if [ "$GITHUB_REF" = refs/heads/program ]; then want=$(sh tools/tools_key.sh); else want=; fi
+          if [ "$GITHUB_REF" = refs/heads/program ]; then want=$(./wisp --key); else want=; fi
           for i in $(seq 1 16); do
             rm -rf pack && mkdir pack
             if curl -fsSL --retry 3 -o pack.tar.gz "$RELEASE_PACK" && gzip -t pack.tar.gz; then
-              have=$(tar -tzf pack.tar.gz | sed -n 's|^build/avra-tools/\([0-9a-f]*\)/avra-tools$|\1|p' | head -n 1)
+              have=$(tar -tzf pack.tar.gz | sed -n 's|^build/wisp/\([0-9a-f]*\)/wisp$|\1|p' | head -n 1)
             else
               have=
             fi
             if [ -n "$have" ] && { [ -z "$want" ] || [ "$have" = "$want" ]; }; then break; fi
-            [ "$i" = 16 ] && { echo "::error::the gate-builder pack holds avra-tools of key ${have:-none}, the landed tree's is $want — not published"; exit 1; }
-            echo "tools-release: the release's pack holds avra-tools of key ${have:-none}, waiting for ${want}"
+            [ "$i" = 16 ] && { echo "::error::the gate-builder pack holds wisp of key ${have:-none}, the landed tree's is $want — not published"; exit 1; }
+            echo "tools-release: the release's pack holds wisp of key ${have:-none}, waiting for ${want}"
             sleep 60
           done
-          tar -xzf pack.tar.gz -C pack "build/avra-tools/$have/avra-tools"
-          tar -czf tools.tar.gz -C pack "build/avra-tools/$have/avra-tools"
-          echo "tools-release: avra-tools of key $have, $(du -k tools.tar.gz | cut -f1) KB"
+          tar -xzf pack.tar.gz -C pack "build/wisp/$have/wisp"
+          tar -czf wisp.tar.gz -C pack "build/wisp/$have/wisp"
+          echo "tools-release: wisp of key $have, $(du -k wisp.tar.gz | cut -f1) KB"
           echo "KEY=$have" >> "$GITHUB_ENV"
       - name: publish
         run: |
-          gh release upload gate-builder tools.tar.gz --clobber --repo "$GITHUB_REPOSITORY"
-          echo "tools-release: https://github.com/$GITHUB_REPOSITORY/releases/download/gate-builder/tools.tar.gz (key $KEY)"
+          gh release upload gate-builder wisp.tar.gz --clobber --repo "$GITHUB_REPOSITORY"
+          echo "tools-release: https://github.com/$GITHUB_REPOSITORY/releases/download/gate-builder/wisp.tar.gz (key $KEY)"

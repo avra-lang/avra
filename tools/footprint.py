@@ -15,7 +15,7 @@ binaries, and prints what the smallest programs weigh.
   unoptimised binary asks for, which a scheduler reads once linked. Any OTHER scheduler-named global outside the
   scheduler members is refused, so a moved fn or a new object asks here.
   THE SIZE is the ledger's: tools/footprint_bytes.sh measures the stripped
-  file and its code, keyed by the toolchain, and `avra-tools cost` judges.
+  file and its code, keyed by the toolchain, and `wisp cost` judges.
 
   python3 tools/footprint.py              # the gate
   python3 tools/footprint.py --self-test  # the rules on fixtures, no compiler

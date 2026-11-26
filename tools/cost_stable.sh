@@ -2,7 +2,7 @@
 # THE WARM ROWS HOLD ACROSS A COMPILER THAT DIFFERS IN NOTHING THEY READ: two census compilers of this
 # tree, the second with one help string of the compiler changed — another binary, another code hash,
 # every question it asks hashed anew — each run over the warm part of tools/cost.sh, and
-# `avra-tools cost same` holds every edit's answers worked out again equal in both, and the work
+# `wisp cost same` holds every edit's answers worked out again equal in both, and the work
 # its census counted within a tenth of the gate's tolerance. A row that moves past that is ordered by
 # hash, not by work: no row the gate may hold to yet.
 #   sh tools/cost_stable.sh        (CENSUS_BUILDER as tools/census_compiler.sh takes it)
@@ -28,4 +28,4 @@ for c in a b; do
     mkdir -p "$out/$c"
     find build/cost -maxdepth 1 \( -name 'edit-*.out' -o -name 'edit-*.census' \) -exec cp {} "$out/$c/" \;
 done
-sh tools/avra_tools.sh cost same "$out/a" "$out/b"
+./wisp cost same "$out/a" "$out/b"

@@ -1,5 +1,5 @@
 #!/bin/sh
-# A MEASUREMENT'S STREAM AS LEDGER ROWS, judged by `avra-tools cost` against tools/cost.baseline. The
+# A MEASUREMENT'S STREAM AS LEDGER ROWS, judged by `wisp cost` against tools/cost.baseline. The
 # stream is the lines tools/speed_measure.sh, tools/warm_edit_bench.sh and tools/ci_wall.sh print:
 #   host <host>                       the machine that measured; it keys every clock row
 #   build|check <phase> <ms>          a phase of the cli's build or check   speed:<host>:<cmd> <phase>
@@ -54,4 +54,4 @@ else
 fi
 [ -s "$out/rows" ] || { echo "ledger_rows: REFUSED — $name's stream holds no $family row (did the measurement run?)" >&2; exit 1; }
 echo "ledger_rows: $name, $(wc -l < "$out/rows" | tr -d ' ') $family row(s) measured on $host"
-exec sh "$here/avra_tools.sh" cost "$verb" "$out"
+exec sh "$here/../wisp" cost "$verb" "$out"

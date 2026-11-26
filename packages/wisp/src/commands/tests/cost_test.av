@@ -56,6 +56,9 @@ fn ledger_kinds() -> string {
 
 fn counted() -> Map<string, Kind> { kinds_of(ledger_kinds()) }
 
+/// The kinds with `told` among them, as the ledger declares it.
+fn told_too() -> Map<string, Kind> { kinds_of("${ledger_kinds()}\nkind told keyed-by - over none") }
+
 fn edit_said(r: Result<string, string>) -> string {
     match r { .Ok(t) -> "ok ${t}", .Err(why) -> "err ${why}" }
 }
@@ -98,6 +101,32 @@ spec "cost — the judgement" {
     then "a fall inside the build's own jitter is not named" {
         let j = judge(one("w boxes", 999951), one("w boxes", 1000000), counted())
         j.failed.is_empty() && j.fell.is_empty()
+    }
+    then "an unsettled row moved either way fails nothing and falls nothing" {
+        let up = judge(
+            one("matrix-build-bare-back-signature pass_lower_asks", 7),
+            one("matrix-build-bare-back-signature pass_lower_asks", 6),
+            told_too(),
+        )
+        let down = judge(
+            one("matrix-build-laid-back-signature pass_lower_asks", 6),
+            one("matrix-build-laid-back-signature pass_lower_asks", 7),
+            told_too(),
+        )
+        up.failed.is_empty() &&
+            up.fell.is_empty() &&
+            down.failed.is_empty() &&
+            down.fell.is_empty() &&
+            up.told.length == 1
+    }
+    then "a sibling of an unsettled row is judged exactly" {
+        !judge(
+            one("matrix-build-bare-signature pass_lower_asks", 23),
+            one("matrix-build-bare-signature pass_lower_asks", 22),
+            told_too(),
+        )
+            .failed
+            .is_empty()
     }
     then "within the tolerance passes" { judge(one("w boxes", 100050), one("w boxes", 100000), counted()).failed.is_empty() }
     then "one box past the tolerance fails, naming both numbers" {

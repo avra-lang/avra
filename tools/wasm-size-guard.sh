@@ -68,7 +68,7 @@ else
     say "base=$base floor=${fb}B/${fg}g board=absent (tools/ui-board is not here, or did not build)"
 fi
 
-# THE ROWS, judged by the ledger's reader (`avra-tools cost`, tools/cost.baseline), keyed by the wasm
+# THE ROWS, judged by the ledger's reader (`wisp cost`, tools/cost.baseline), keyed by the wasm
 # toolchain: the floor's bytes and globals exact within their key, the board's told and never judged.
 . "$here/lib/toolchain.sh"
 key=$(wasm_toolchain_key)
@@ -87,4 +87,4 @@ find "$rows" -mindepth 1 -delete
 } > "$rows/rows"
 verb=judge
 [ "${1:-}" != --accept ] || verb=accept
-exec sh "$here/avra_tools.sh" cost "$verb" "$rows"
+exec sh "$here/../wisp" cost "$verb" "$rows"

@@ -32,9 +32,9 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root" || exit 1
 unset AVRA_PROGRAM AVRA_PROGRAM_MODE
 export AVRA_SUITE_ALL=1
-# the tools package is built by HEAD's compiler, the one this gate seeds: avra_tools would otherwise
+# wisp is built once, by HEAD's compiler, the one this gate seeds: ./wisp would otherwise
 # take main's published compiler on a Linux runner, a stranger to this tree's laws
-export AVRA_TOOLS_COMPILER="${AVRA_TOOLS_COMPILER:-$root/build/avra}"
+./wisp --compiler "$root/build/avra" --path >/dev/null || :
 
 # the bound of one row, and of a compiler build
 ROW_SECS=${GATE_ROW_SECS:-2400}
@@ -129,7 +129,7 @@ compiler_stands() {
 packed() {
     for f in build/avra build/avra_hot.bc build/avra_hot.inc build/.avra-built-from; do [ ! -f "$f" ] || echo "$f"; done
     # the tree's instruments, built once by this compiler: every keeper and the verdict's ledger read them
-    find build/avra-tools -maxdepth 2 -type f -name avra-tools 2>/dev/null | sort
+    find build/wisp -maxdepth 2 -type f -name wisp 2>/dev/null | sort
     find build -maxdepth 1 -type f \( -name '*.o' -o -name '*.a' -o -name '*.so' -o -name '*.sha' -o -name '*.d' \) | sort
 }
 
@@ -915,7 +915,7 @@ if compiler; then
             fi
             # the package libraries as this tree's sources make them: nothing rebuilt where none moved
             row compiler-libs env AVRA_PROGRAM_NET=0 make -o avra libs
-            row avra-tools sh tools/avra_tools.sh --path
+            row wisp ./wisp --path
             tarball="build/gate/compiler-$sha8.tar.gz"
             packed >"$out/files"
             row pack tar -czf "$tarball" -T "$out/files" && echo "pack: $tarball, $(wc -l <"$out/files" | tr -d ' ') files, $(du -k "$tarball" | cut -f1) KB" >>"$out/rows"

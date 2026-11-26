@@ -1777,6 +1777,9 @@ Runtime facts, ours to ratify:
   464/466) and `./avra-try <cmd>` probes the change. `make avra` is for
   a change the compiler must READ to build itself — codegen, the front
   end, a refusal about its own source — and before landing.
+- THE TREE'S INSTRUMENTS ARE ONE PROGRAM, `./wisp <command>`
+  (packages/wisp); `./wisp --compiler <avra> <command>` names the compiler
+  that builds it.
 - A PRE-COMMIT HOOK refuses staged `.av` that is not canonical; the fix
   it prints is `build/avra fmt --write <files>`. Never `--no-verify`.
 - HEAVY RUNS GO ON SPRITES, ONE SPRITE A LANE: `sh tools/work run <cmd>`

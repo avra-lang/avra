@@ -6,7 +6,7 @@
 # competing process can only raise.
 #
 # Prints one `<command> <phase> <ms>` per phase per round on stdout; the
-# ledger (tools/ledger_rows.sh, `avra-tools cost`) folds the rounds to the least and judges
+# ledger (tools/ledger_rows.sh, `wisp cost`) folds the rounds to the least and judges
 # them. Every word of its own goes to stderr, so the stream stays raw.
 #
 # The store is warmed first: a cold first round is the whole program's

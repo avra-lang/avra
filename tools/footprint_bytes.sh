@@ -1,7 +1,7 @@
 #!/bin/sh
 # WHAT THE SMALLEST PROGRAMS WEIGH, as ledger rows: tools/footprint's `hello` and `data`, built as they
 # ship (`--release`), each its stripped file and its code, keyed by the toolchain that decides them
-# (tools/lib/toolchain.sh) and judged by `avra-tools cost` against tools/cost.baseline. STRIPPED, because
+# (tools/lib/toolchain.sh) and judged by `wisp cost` against tools/cost.baseline. STRIPPED, because
 # a symbol spells the path its program was built at. A row is exact within its key; a toolchain the
 # ledger holds no row of is measured and told, never gated.
 #   sh tools/footprint_bytes.sh           measure and judge
@@ -41,4 +41,4 @@ for name in hello data; do
     echo "bytes:$key:footprint-$name code $code" >> "$out/rows"
 done
 cat "$out/rows"
-exec sh "$here/avra_tools.sh" cost "$verb" "$out"
+exec sh "$here/../wisp" cost "$verb" "$out"
