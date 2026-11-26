@@ -1,5 +1,5 @@
 #!/bin/sh
-# tool-witness: owed by store-probe — no keeper runs it with the three compilers it wants
+# tool-witness: owed by lane-replay-wrong-answers — no keeper runs it with the three compilers it wants
 # THREE BINARIES SHARING A STORE EACH BUILD WHAT THEY BUILD COLD. Three compilers whose queries
 # differ build the cli on the program layer over one store: each once cold, its product kept; then
 # each in turn edits a literal, builds, takes the edit back and builds again, and that last product
