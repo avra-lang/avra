@@ -72,7 +72,7 @@ WORLD = {
         "write_text": W, "write_bytes": W, "append_bytes": W, "synced": W,
         "Draft": T, "drafted": W, "drafts_leaving": E, "drafts_left": E, "abandoned_drafts": "read",
         "this_process": "pid",
-        "opened_for_append": W, "truncate_to": W, "make_dirs": W, "remove": W, "touch": W,
+        "opened_for_append": W, "truncate_to": W, "make_dirs": W, "remove": W, "touch": W, "link": W,
         "println": E, "eprintln": E,
         "one_path": P, "refused": P, "enoent": P, "eacces": P, "enotdir": P,
         "IoError": T, "Entry": T, "Opened": T, "AppendFile": T, "Watch": T, "OwnDir": T,
@@ -107,7 +107,10 @@ WORLD = {
         "Request": T, "Unrouted": T, "Response": T, "Pulled": T, "Header": T, "Route": T,
         "Event": T, "Next": T, "Source": T, "Resume": T, "Method": T, "Files": T, "Body": T,
         "Payload": T, "Redirects": T, "Reach": T, "Stream": T, "Chunker": T, "Decoded": T,
+        "Hosted": T, "asset_answer": P,
     },
+    "http_compress": {"precoded": P},
+    "ui": {"fetched_tags": P},
 }
 
 # A spawn is a METHOD on a command a file built, so a file that imports
@@ -120,10 +123,12 @@ SPAWNS = re.compile(r"\.(run(?=\(\))|outcome|start)\(")
 # An INERT package reads nothing: the rows it may declare, and the one
 # name of it that does read. Held to the package's own source.
 INERT = {
-    "meta": {"rows": {"avra_embed", "avra_embed_octets", "avra_type_named"}, "world": {"embed": "read"}},
+    "meta": {"rows": {"avra_embed", "avra_embed_octets", "avra_type_named", "avra_fn_declared"}, "world": {"embed": "read"}},
     "relation": {"rows": {"avra_trap", "avra_qtrace", "avra_cores_group", "avra_cores_fork",
                           "avra_cores_end_fd", "avra_cores_heard", "avra_cores_leave",
-                          "avra_cores_result", "avra_fiber_park_fd"}, "world": {}},
+                          "avra_cores_result", "avra_fiber_park_fd", "avra_ctx_listen", "avra_ctx_listened",
+                          "avra_ctx_holds", "avra_ctx_heard_drop", "avra_ctx_reheard"}, "world": {}},
+    "assets": {"rows": set(), "world": {}},
     "text": {
         "rows": {"avra_str_from_codepoint", "avra_str_parsed_float", "avra_str_parsed_int",
                  "avra_str_parses_float", "avra_str_parses_int", "avra_bytes_with_room",

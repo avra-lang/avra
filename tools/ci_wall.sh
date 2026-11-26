@@ -10,20 +10,22 @@
 #   sh tools/ci_wall.sh --api <base> --repo <o/r> --run <id> collect
 #   sh tools/ci_wall.sh --self-test             # the arithmetic, over fixed jobs
 #
-# The stream is the one `tools/speed_ratchet.py --wall` reads:
+# The stream is the one tools/ledger_rows.sh reads into `wall:` rows (WALL_HOST names the host, else
+# ci-wall):
 #
 #   host ci-wall
 #   wall prepare <ms>
 #   wall gate <ms>
 #   wall total <ms>
+#   wall makespan <ms>
 #
-# `total` is the SUM of the jobs' own clocks — the check's work, which no queue between jobs can
-# inflate; a run's makespan also carries the runner's queue, and a crowded runner is not a
-# regression the tree caused. A job the event skipped has no clock and is left out; the ratchet
-# judges what was measured. Plain shell, curl and jq: the `test` job reads it with nothing built.
+# `total` is the SUM of the jobs' own clocks — the run's work, which no queue between jobs can
+# inflate; `makespan` is the first start to the last end, the wall a run is waited for, and carries
+# the runner's queue too. A job the event skipped has no clock and is left out; the ledger judges
+# what was measured. Plain shell, curl and jq.
 set -u
 
-HOST=ci-wall
+HOST=${WALL_HOST:-ci-wall}
 
 # lines <jobs json> <now, epoch seconds>: the metrics stream. A job with no start was not run; a
 # skipped job carries a clock that did not (end <= start); a running job takes `now` as its end.
@@ -33,10 +35,12 @@ lines() {
         [ .jobs[] | { name, start: (.started_at | secs), end: (.completed_at | secs) }
           | select(.start != null)
           | select(.end == null or .end > .start)
-          | { name, ms: (((.end // $now) - .start) * 1000) } ] as $rows
+          | { name, start, end: (.end // $now) } ] as $runs
+        | [ $runs[] | { name, ms: ((.end - .start) * 1000) } ] as $rows
         | "host \($host)",
           ($rows[] | "wall \(.name) \(.ms)"),
-          (if ($rows | length) > 0 then "wall total \($rows | map(.ms) | add)" else empty end)'
+          (if ($rows | length) > 0 then "wall total \($rows | map(.ms) | add)" else empty end),
+          (if ($runs | length) > 0 then "wall makespan \((($runs | map(.end) | max) - ($runs | map(.start) | min)) * 1000)" else empty end)'
 }
 
 if [ "${1:-}" = --self-test ]; then
@@ -52,7 +56,8 @@ if [ "${1:-}" = --self-test ]; then
 wall prepare 60000
 wall gate 90000
 wall running 10000
-wall total 160000"
+wall total 160000
+wall makespan 175000"
     [ "$got" = "$want" ] || { echo "ci_wall: SELF-TEST FAILED — read:" >&2; echo "$got" >&2; exit 1; }
     [ "$(lines '{"jobs":[]}' "$now")" = "host ci-wall" ] || { echo "ci_wall: SELF-TEST FAILED — no jobs wrote a total" >&2; exit 1; }
     echo "ci_wall: self-test clean"

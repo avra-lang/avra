@@ -1,8 +1,7 @@
 //! `// LICENSED <id>` citations (CLAUDE.md's exemption law), a colon
 //! and a reason after the id — the dotted id right after that word
-//! must still name a rule `avra rules` lists, or be an `input.<why>`
-//! or a `whole.<why>`: the input keeper's and the whole-read keeper's
-//! own (tools/inputs.py, tools/whole_reads.py), which hold it at its
+//! must still name a rule `avra rules` lists, or be an `input.<why>`:
+//! the input keeper's own (tools/inputs.py), which holds it at its
 //! site. `Workspace.checked()` finds stale ones per file and keeps
 //! them in the program's verdict (verdict.av) — never `here()`-relative: a kept line is read back by
 //! a check that may run from a different directory than the one
@@ -23,10 +22,7 @@ export type LicenceFamily = { prefix: string, shape: string, keeper: string }
 /// The keepers' families — the one definition: `avra licences` projects
 /// it, and the keepers read their patterns from that answer.
 export fn families() -> List<LicenceFamily> {
-    [
-        LicenceFamily { prefix: "input.", shape: "snake", keeper: "tools/inputs.py" },
-        LicenceFamily { prefix: "whole.", shape: "cold", keeper: "tools/whole_reads.py" },
-    ]
+    [LicenceFamily { prefix: "input.", shape: "snake", keeper: "tools/inputs.py" }]
 }
 
 fn snake(word: string) -> bool {
@@ -89,19 +85,23 @@ fn claimed_in(text: string) -> Cited? {
     Cited { id: id, reason: rest.substring(colon + 1, rest.length).trim() }
 }
 
-/// A rule's own SITE LICENSE (CLAUDE.md's exemption law): the line
-/// directly above `line` is its OWN `// LICENSED <id>: <reason>` —
-/// naming `id` exactly, a non-empty reason — read by `rule_pass.av`
-/// before a finding is even reported. Never a loose proximity guess
-/// (`licensed_just_above`'s 200-byte window, `avra fix`'s own door)
-/// and never a different rule's citation, or one whose colon closes
-/// on nothing.
+/// A rule's own SITE LICENSE (CLAUDE.md's exemption law): the run of
+/// `// LICENSED` lines directly above `line` holds its OWN `// LICENSED
+/// <id>: <reason>` — naming `id` exactly, a non-empty reason — read by
+/// `rule_pass.av` before a finding is even reported. One site may owe
+/// two keepers a licence, so the run counts; a line that is no licence
+/// ends it. Never a loose proximity guess (`licensed_just_above`'s
+/// 200-byte window, `avra fix`'s own door) and never a different rule's
+/// citation, or one whose colon closes on nothing.
 export fn site_licensed(store: SyntaxArena, source: SourceFile, line: int, id: string) -> bool {
-    line > 1 && store.remarks.get().any(licenses(it, source, line - 1, id))
+    line > 1 && run_licenses(store.remarks.get(), source, line - 1, id)
 }
 
-fn licenses(r: Remark, source: SourceFile, line: int, id: string) -> bool {
-    !r.same_line && source.linecol(r.at).line == line && cites(claimed(r), id)
+/// Whether the run of licence lines ending at `line` cites `id`.
+fn run_licenses(remarks: List<Remark>, source: SourceFile, line: int, id: string) -> bool {
+    let here = [claimed(r) for r in remarks if !r.same_line && source.linecol(r.at).line == line]
+    if here.any(cites(it, id)) { return true }
+    line > 1 && here.any(it != null) && run_licenses(remarks, source, line - 1, id)
 }
 
 fn cites(c: Cited?, id: string) -> bool {

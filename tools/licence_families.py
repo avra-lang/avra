@@ -35,7 +35,7 @@ def id_pattern(prefix):
 # One licensed line and one near miss per family, and the ids of both kinds.
 CASES = [
     ("input.clock", True), ("input.saved_read", True), ("input.Clock", False), ("input.", False), ("input.a1", False),
-    ("inputs.x", False), ("whole.cold", True), ("whole.colder", False), ("whole.", False), ("nonsense.x", False),
+    ("inputs.x", False), ("whole.cold", False), ("nonsense.x", False),
 ]
 
 

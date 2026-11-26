@@ -12,10 +12,12 @@
 #   - the MECHANISM is `tools/db_measure/warm_edit.sh`'s: a `check --time`,
 #     ONE string literal in ONE body moved to fresh text per round so a
 #     round is never a store hit, the wall read from the clock.
-#   - the CEILINGS are `tools/speed_ratchet.py`'s budget
-#     (`tools/speed.budget`): this script measures and hands its raw stream
-#     to `speed_ratchet.py --warm --raw`, the ONE reader of that file, which
-#     REFUSES past a ceiling and names each by how much.
+#   - the CEILINGS are the ledger's `warm:` and `work:` rows
+#     (`tools/cost.baseline`): this script measures and hands its raw stream
+#     to tools/ledger_rows.sh, and `avra-tools cost`, the ONE reader of that
+#     file, REFUSES past a row and names each by how much. On CI the clock is
+#     told, never judged (a shared runner's wall is a fact); the work is judged
+#     everywhere.
 #
 # stdout is the raw measurement the judge reads (`host <key>`,
 # `warm unchanged <ms>`, `warm edit <ms>`); every word of its own goes to
@@ -177,7 +179,7 @@ echo "warm_edit_bench: net_wall edit ${1:-0} ms with the net on (not judged; the
 
 # THE WORK, COUNTED: what the unchanged check and one more fresh edit DID, as the
 # compiler counts it (`check --counts`, compiler/work.av) — exact on every machine,
-# so tools/work_ratchet.py holds it with no slack. One round each, the edit never
+# so the ledger holds it as `work:` rows with no slack. One round each, the edit never
 # a store hit.
 counted() { # <scenario>: `counts <scenario> <counter> <n>` rows from one check, its whole-read attribution to stderr
     out=$("$avra" check --counts "$target" 2>&1 >/dev/null)
@@ -198,9 +200,14 @@ cat "$raw"
 # `WARM_EDIT_ACCEPT` lowers this host's warm ceilings to what was measured
 # (never raises one); a human sets it when a real run landed under them.
 [ -z "${WARM_EDIT_ACCEPT:-}" ] || echo "warm_edit_bench: --accept — the warm ceilings may only fall" >&2
-python3 tools/speed_ratchet.py --warm ${WARM_EDIT_ACCEPT:+--accept} --raw "$raw"
+clock=judge
+[ -z "${WARM_EDIT_ACCEPT:-}" ] || clock=accept
+[ "${GITHUB_ACTIONS:-}" != true ] || [ -n "${WARM_EDIT_ACCEPT:-}" ] || clock=tell
+sh tools/ledger_rows.sh "$raw" warm-clock clock "$clock"
 st=$?
 # `WORK_ACCEPT` lowers the work-count ceilings to what was counted (never raises one).
-python3 tools/work_ratchet.py ${WORK_ACCEPT:+--accept} --raw "$raw" >&2 || st=1
+work=judge
+[ -z "${WORK_ACCEPT:-}" ] || work=accept
+sh tools/ledger_rows.sh "$raw" warm-work work "$work" >&2 || st=1
 rm -f "$raw"
 exit $st

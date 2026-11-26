@@ -48,6 +48,7 @@ static void ready(void) {
 static char g_root[128];
 static char g_dir[200];
 static const char* door_dir(void) {
+    // LICENSED compiler.setting_read_by_hand: a runtime test reading back the variable it set for its child
     const char* set = getenv("AVRA_TASKS_DIR");
     snprintf(g_dir, sizeof g_dir, "%s/", set ? set : "");
     return g_dir;
@@ -239,6 +240,7 @@ static int rechosen_scene(int fd) {
         avra_fiber_park_fd(fd, 0, -1);
         ssize_t got = read(fd, &b, 1);
         if (got <= 0) return 0;
+        // LICENSED compiler.setting_read_by_hand: a runtime test's own hand-off between its phases
         setenv("AVRA_TASKS_DIR", getenv("AVRA_TASKS_DIR_NEXT"), 1);
     }
 }

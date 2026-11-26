@@ -497,8 +497,8 @@ jobs:
           AVRA_NO_SUPERVISOR_TESTS: "1"
           # THE WARM-EDIT GATE'S HOST IS ONE STABLE NAME: `SPEED_HOST` keys
           # the bench's numbers to `ci-warm`, never to whatever CPU the
-          # runner happens to have, so `tools/speed.budget`'s `ci-warm warm …`
-          # rows judge every run the same. `warm_skip` is the ONE hand-set way
+          # runner happens to have, so the ledger's `warm:ci-warm:` rows
+          # judge every run the same. `warm_skip` is the ONE hand-set way
           # to stand the gate down; unset, a run that cannot judge FAILS.
           SPEED_HOST: ci-warm
           WARM_EDIT_SKIP: ${{ inputs.warm_skip }}
@@ -1017,19 +1017,3 @@ jobs:
         run: |
           echo '${{ toJSON(needs) }}' > needs.json
           sh tools/ci_verdict.sh --needs needs.json --workflow .github/workflows/checks.yml --job test
-      # THE WALL-CLOCK BUDGET: this PR check's per-job and whole wall time,
-      # ratcheted in tools/speed.budget. It reads the run's own jobs as GitHub
-      # reports them, so the queue and the hand-downs count; a ceiling may only
-      # fall (`make speed-accept`), and a host with no row is said out loud and
-      # not gated rather than passed in silence.
-      - if: always() && github.event_name == 'pull_request' && needs.prepare.outputs.full != '0'
-        name: wall budget
-        timeout-minutes: 4
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          if sh tools/ci_wall.sh collect > wall.metrics 2>/dev/null; then
-            python3 tools/speed_ratchet.py --wall --raw wall.metrics
-          else
-            echo "::notice title=wall budget::the run's wall time could not be read from the jobs API — not gated"
-          fi

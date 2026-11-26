@@ -74,19 +74,17 @@ WARM_EDIT_SKIP=1 SPEED_LOCAL=1 sh "$tmp/tools/warm_edit_bench.sh" \
 grep -q "SKIPPED BY REQUEST" "$tmp/skip.err" \
     || { echo "witness_warm_edit: the skip did not say so loudly" >&2; cat "$tmp/skip.err" >&2; exit 1; }
 
-# 3. the ratchet refuses a skip stream it was handed, and the opt-out stands it.
+# 3. the ledger's adapter refuses a skip stream it was handed, and the opt-out stands it.
 printf 'host ci-warm\nskip warm-edit\n' > "$tmp/skip.metrics"
-if python3 "$root/tools/speed_ratchet.py" --warm --raw "$tmp/skip.metrics" >"$tmp/ratchet.out" 2>&1; then
-    echo "witness_warm_edit: the ratchet PASSED a skipped measurement" >&2
+if sh "$root/tools/ledger_rows.sh" "$tmp/skip.metrics" warm-clock clock judge >"$tmp/ratchet.out" 2>&1; then
+    echo "witness_warm_edit: the ledger PASSED a skipped measurement" >&2
     cat "$tmp/ratchet.out" >&2
     exit 1
 fi
 grep -q "REFUSED" "$tmp/ratchet.out" \
-    || { echo "witness_warm_edit: the ratchet did not name the skip" >&2; cat "$tmp/ratchet.out" >&2; exit 1; }
-WARM_EDIT_SKIP=1 python3 "$root/tools/speed_ratchet.py" --warm --raw "$tmp/skip.metrics" \
+    || { echo "witness_warm_edit: the ledger did not name the skip" >&2; cat "$tmp/ratchet.out" >&2; exit 1; }
+WARM_EDIT_SKIP=1 sh "$root/tools/ledger_rows.sh" "$tmp/skip.metrics" warm-clock clock judge \
     >"$tmp/ratchet-skip.out" 2>&1 \
-    || { echo "witness_warm_edit: WARM_EDIT_SKIP did not stand the ratchet down" >&2; cat "$tmp/ratchet-skip.out" >&2; exit 1; }
+    || { echo "witness_warm_edit: WARM_EDIT_SKIP did not stand the ledger down" >&2; cat "$tmp/ratchet-skip.out" >&2; exit 1; }
 
-# 4. the rules themselves, on fixtures.
-python3 "$root/tools/speed_ratchet.py" --self-test >/dev/null
 echo "witness_warm_edit: clean — a skip FAILS, and only WARM_EDIT_SKIP stands it down"

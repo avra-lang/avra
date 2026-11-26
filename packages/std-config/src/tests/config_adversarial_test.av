@@ -419,3 +419,31 @@ spec "std/config adversarial" {
         }
     }
 }
+
+@derive(Decode)
+type VaultDb = { password: Secret<string> }
+
+@derive(Decode)
+type Vault = { db: VaultDb, keys: List<Secret<string>> }
+
+const vault_text: string = "{\"db\": {\"password\": \"p-text\"}, \"keys\": [\"k0\", \"k1\"]}"
+
+/// The handles a vault read from `vault_text` holds, as they show.
+fn vault_shown(v: Vault) -> string { [v.db.password.shown()].concat([k.shown() for k in v.keys]).join(" ") }
+
+spec "std/config — a secret read straight from JSON" {
+    given "a vault whose secrets stand in a nested record and a list" {
+        then "each handle is keyed by the path it was read at" {
+            match Vault.from_json(vault_text) {
+                .Ok(v) -> vault_shown(v) == "<secret db.password v1> <secret keys[0] v1> <secret keys[1] v1>",
+                .Err(_) -> false,
+            }
+        }
+        then "and holds the text it was read from" {
+            match Vault.from_json(vault_text) {
+                .Ok(v) -> v.db.password.matches("p-text") && v.keys[1].matches("k1"),
+                .Err(_) -> false,
+            }
+        }
+    }
+}

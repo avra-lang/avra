@@ -1,0 +1,55 @@
+//! THE C READS NO DECLARATION HOLDS. In the tree's Avra, compiler.setting_read_by_hand refuses
+//! a setting read by its spelling; C is no Avra, so `--check` reads the C itself. A literal
+//! `getenv("AVRA_…")` outside the header the declaration writes is refused unless the run of
+//! `// LICENSED` lines directly above it cites that rule, with its reason.
+use @std.io.{read_text, list_dir, is_dir}
+
+/// A C read of a variable by its spelling: where, and which.
+export type HandRead = { file: string, line: int, variable: string }
+
+/// The C sources `--check` reads: the runtime's, its tests', and each package's own.
+export fn c_sources() -> List<string> {
+    let packages = [p for p in listed("packages") if is_dir("packages/${p}/src/c")]
+    [f for d in ["runtime", "runtime/tests"].concat(["packages/${p}/src/c" for p in packages]) for f in c_files(d)]
+}
+
+/// Every unlicensed read in the C sources.
+export fn hand_reads_in_tree() -> List<HandRead> {
+    [r for f in c_sources() for r in hand_reads(f, read_text(f) catch "")]
+}
+
+/// Each unlicensed literal `AVRA_*` read in one C source's text.
+export fn hand_reads(file: string, text: string) -> List<HandRead> {
+    let lines = text.split("\n")
+    [read for i, l in lines for read in reads_on(file, i, l) if !licensed_above(lines, i)]
+}
+
+fn reads_on(file: string, i: int, line: string) -> List<HandRead> {
+    let opener = "getenv(\"AVRA_"
+    let at = line.index_of(opener)
+    if at < 0 { return [] }
+    let rest = line.substring(at + opener.length - "AVRA_".length, line.length)
+    let end = rest.index_of("\"")
+    if end < 0 { return [] }
+    [HandRead { file: file, line: i + 1, variable: rest.substring(0, end) }]
+}
+
+/// Whether the run of `// LICENSED` lines directly above line `i` cites the rule, with a reason.
+fn licensed_above(lines: List<string>, i: int) -> bool {
+    if i == 0 { return false }
+    let above = lines[i - 1].trim()
+    if !above.starts_with("// LICENSED") { return false }
+    cites_rule(above) || licensed_above(lines, i - 1)
+}
+
+fn cites_rule(line: string) -> bool {
+    let id = "compiler.setting_read_by_hand:"
+    let at = line.index_of(id)
+    at >= 0 && line.substring(at + id.length, line.length).trim() != ""
+}
+
+fn c_files(dir: string) -> List<string> {
+    ["${dir}/${n}" for n in listed(dir) if (n.ends_with(".c") || n.ends_with(".h")) && "${dir}/${n}" != "runtime/avra_settings.h"]
+}
+
+fn listed(dir: string) -> List<string> { list_dir(dir) catch [] }

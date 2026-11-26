@@ -15,14 +15,6 @@ trap 'exit 130' INT TERM
 
 . "$here/lib/checks.sh"
 
-# The land guard's decision, proved on fixtures: the non-draft PRs of OTHER
-# branches whose test check is still running.
-midci_fn=$(sed -n '/^midci_of() {/,/^}$/p' "$here/work")
-midci() { printf '%s' "$1" | sh -c "$midci_fn; midci_of mine"; }
-check "$(midci '[{"number":5,"headRefName":"a","isDraft":false,"statusCheckRollup":[{"name":"test","status":"IN_PROGRESS"}]},{"number":6,"headRefName":"mine","isDraft":false,"statusCheckRollup":[{"name":"test","status":"IN_PROGRESS"}]},{"number":7,"headRefName":"d","isDraft":true,"statusCheckRollup":[{"name":"test","status":"IN_PROGRESS"}]},{"number":8,"headRefName":"e","isDraft":false,"statusCheckRollup":[{"name":"test","status":"COMPLETED"}]}]')" "#5" "land guard: names the other non-draft PR mid-CI, not its own branch, a draft, or a finished one"
-check "$(midci '[{"number":9,"headRefName":"f","isDraft":false,"statusCheckRollup":[{"name":"gate","status":"IN_PROGRESS"},{"name":"test","status":"QUEUED"}]}]')" "#9" "land guard: a queued test check counts as mid-CI"
-check "$(midci '[{"number":10,"headRefName":"g","isDraft":false,"statusCheckRollup":[]}]')" "" "land guard: a PR with no checks yet is not mid-CI"
-
 # THE FOLLOWER'S PACE: 30 s for two minutes, then 120 s; under 500 calls left this hour, 300 s throughout.
 pace_fn=$(sed -n '/^gh_low() {/p;/^poll_pace() {/,/^}$/p' "$here/work")
 pace() { sh -c "$pace_fn; gh_left=$2; poll_pace $1"; }
@@ -389,7 +381,7 @@ export SPRITE_LOG="$scratch/sprite.log"
 : > "$SPRITE_LOG"; : > "$GH_LOG"
 before=$(git -C "$main" worktree list | wc -l)
 cd "$scratch/avra-after" || exit 1
-for v in new run test land status sprites done bind wait attach stop; do
+for v in new run test status sprites done bind attach stop; do
     for h in -h --help help; do
         sh "$work" "$v" "$h" > "$scratch/out" 2> "$scratch/err"
         st=$?
@@ -400,7 +392,7 @@ done
 [ -d "$scratch/avra-after" ] && lane=stands || lane=gone
 check "$(cat "$scratch/helpfail" 2>/dev/null | head -n 3 | tr '\n' ' ')|$(cat "$SPRITE_LOG" "$GH_LOG" | wc -l | tr -d ' ')|$lane|$(($(git -C "$main" worktree list | wc -l) - before))" "|0|stands|0" "work <verb> -h/--help/help: one usage line, exit 0, and no Sprite, no GitHub, no worktree is touched" "$scratch/helpfail"
 for h in "" -h --help help; do sh "$work" $h > "$scratch/out.$total.$h" 2>&1 || echo "bare '$h' failed" >> "$scratch/helpfail"; done
-check "$(cat "$scratch/helpfail" 2>/dev/null | wc -l | tr -d ' ') $(grep -c 'sh tools/work' "$scratch/out.$total.")" "0 7" "work, bare or asked for help: the seven verbs, exit 0" "$scratch/helpfail"
+check "$(cat "$scratch/helpfail" 2>/dev/null | wc -l | tr -d ' ') $(grep -c 'sh tools/work' "$scratch/out.$total.")" "0 6" "work, bare or asked for help: the six verbs, exit 0" "$scratch/helpfail"
 sh "$work" run --sprite --verbose true > "$scratch/out" 2>&1
 check "$? $(grep -c 'has no flag .--verbose' "$scratch/out") $(grep -c '^usage: sh tools/work run' "$scratch/out") $(cat "$SPRITE_LOG" | wc -l | tr -d ' ')" "64 1 1 0" "work run: a flag it does not know is refused with the usage and 64, and nothing runs" "$scratch/out"
 sh "$work" run --sprite --for soon true > "$scratch/out" 2>&1
@@ -518,13 +510,6 @@ cd "$main" || exit 1
 [ -e "$scratch/avra-after" ] && stands=stands || stands=absent
 check "$st $stands $(grep -c 'Mine-2 stopped' "$scratch/out") $(grep -c '^stop Mine-2' "$scratch/fake/calls")" "0 absent 1 1" "work done: the lane's live run is stopped before its Sprite is freed" "$scratch/out"
 cd "$main" || exit 1
-
-# ══ THE PR STATE: status shows the check, the merge state and whether
-# auto-merge is armed, and reaches no queue mutation ═══════════════════
-cd "$main" || exit 1
-: > "$GH_LOG"
-sh "$work" status > "$scratch/out" 2>&1
-check "$(grep -c '#7  lane-a  armed  CLEAN' "$scratch/out") $(grep -c 'queue\|enqueue\|mergeQueue' "$GH_LOG")" "1 0" "work status: a PR shows its armed/CLEAN state and no queue mutation is reached" "$scratch/out"
 
 # ══ THE SYNC, THE SPRITE BEING A DIRECTORY HERE: this machine's own rsync
 # carries the tree, and the Sprite's half answers from $scratch/sync-home.
