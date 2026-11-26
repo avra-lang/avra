@@ -75,11 +75,8 @@ export fn lowered_kept(root: Node, kept: Lowering) -> List<Native> {
 
 fn lower_from(n: Node, at: Step, ordered: bool, was: Map<string, LoweredAt>, now: Lowering) -> Native {
     let key = "${avra_box_key(n)}"
-    let hit = was.get(key)
-    if hit != null && hit!.ordered == ordered && same_step(hit!.el.seat, at) {
-        now.put(key, hit!)
-        return hit!.el
-    }
+    let back = reused(was, key, ordered, at, now)
+    if back != null { return back! }
     let stands = stepped([c.box.stand() for c in n.children])
     let el = Native {
         seat: at,
@@ -92,6 +89,15 @@ fn lower_from(n: Node, at: Step, ordered: bool, was: Map<string, LoweredAt>, now
     }
     now.put(key, LoweredAt { node: n, ordered: ordered, el: el })
     el
+}
+
+/// The element the last paint lowered the node keyed `key` to, kept again, when it was
+/// lowered at the same step and order.
+fn reused(was: Map<string, LoweredAt>, key: string, ordered: bool, at: Step, now: Lowering) -> Native? {
+    let hit? = was.get(key) else { return null }
+    if hit.ordered != ordered || !same_step(hit.el.seat, at) { return null }
+    now.put(key, hit)
+    hit.el
 }
 
 /// `n` standing at `at`, and its children each at its own step. A node is
