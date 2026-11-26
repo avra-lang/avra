@@ -2,7 +2,7 @@
 //! its facts, what it hears and its children, standing at the node's own
 //! step. A native host composes its own control from the prim and its facts,
 //! so a title, a label or a control's words are facts, never children.
-use tree.identity.{NodeId, Step, root as root_step, stepped, unplaced}
+use tree.identity.{NodeId, Step, root as root_step, same_step, stepped, unplaced}
 use tree.node.{Node, Prim, Action}
 use realize.diff.matcher.{Diffable}
 use realize.diff.hearing.{Bound, Hears}
@@ -19,6 +19,7 @@ export type Native = {
     hears: List<Action> = [],
     kids: List<Native> = [],
     ordered: bool = false,
+    from: int = 0,
 }
 
 impl Diffable for Native {
@@ -45,6 +46,58 @@ impl Hears for Native {
 export fn lowered(root: Node) -> List<Native> {
     let drawn = lower(root, root_step(root.box.key), false)
     [drawn with { facts: drawn.facts.concat(theme_facts(root.theme?.theme ?? plain())) }]
+}
+
+/// A node's address: its identity while something holds it.
+extern fn avra_box_key(cell: Node) -> int
+
+/// What a paint lowered a node to, the node held so its address stays its own.
+export type LoweredAt = { node: Node, ordered: bool, el: Native }
+
+/// The lowering a page keeps between paints: each node's element, by the node's identity.
+export alias Lowering = Cell<Map<string, LoweredAt>>
+
+/// A lowering nothing was kept in.
+export fn no_lowering() -> Lowering {
+    let none: Map<string, LoweredAt> = {}
+    Cell.new(none)
+}
+
+/// `lowered`, reusing the element the last paint lowered a node to while the node is the
+/// same node at the same step: a node is a value, so the same node lowers alike.
+export fn lowered_kept(root: Node, kept: Lowering) -> List<Native> {
+    let was = kept.get()
+    let now = no_lowering()
+    let drawn = lower_from(root, root_step(root.box.key), false, was, now)
+    kept.set(now.get())
+    [drawn with { facts: drawn.facts.concat(theme_facts(root.theme?.theme ?? plain())) }]
+}
+
+fn lower_from(n: Node, at: Step, ordered: bool, was: Map<string, LoweredAt>, now: Lowering) -> Native {
+    let key = "${avra_box_key(n)}"
+    let back = reused(was, key, ordered, at, now)
+    if back != null { return back! }
+    let stands = stepped([c.box.stand() for c in n.children])
+    let el = Native {
+        seat: at,
+        prim: n.prim,
+        facts: node_facts(n),
+        hears: n.events,
+        kids: [lower_from(c, stands.steps[j], ordered || c.drawn_by_order || stands.shared[j], was, now) for j, c in n.children],
+        ordered: ordered,
+        from: avra_box_key(n),
+    }
+    now.put(key, LoweredAt { node: n, ordered: ordered, el: el })
+    el
+}
+
+/// The element the last paint lowered the node keyed `key` to, kept again, when it was
+/// lowered at the same step and order.
+fn reused(was: Map<string, LoweredAt>, key: string, ordered: bool, at: Step, now: Lowering) -> Native? {
+    let hit? = was.get(key) else { return null }
+    if hit.ordered != ordered || !same_step(hit.el.seat, at) { return null }
+    now.put(key, hit)
+    hit.el
 }
 
 /// `n` standing at `at`, and its children each at its own step. A node is

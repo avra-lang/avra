@@ -8,7 +8,7 @@ use tree.seats.{Seat}
 use style.style.{Interaction}
 use realize.diff.matcher.{Draws, Drawn, Stands, siblings}
 use realize.native.element.{Native}
-use realize.native.fact.{Fact, What, about, agree}
+use realize.native.fact.{Fact, What, about, agree, moves_box}
 
 /// One change to a native host's elements. `Place` puts an element under its
 /// parent — the root when absent — right after a sibling, or first.
@@ -20,6 +20,19 @@ export enum NativePatch {
     Remove(id: NodeId)
     Listen(id: NodeId, seat: Seat)
     Unlisten(id: NodeId, seat: Seat)
+}
+
+/// Whether `patches` can move a box: anything but a fact that only changes how a
+/// box looks or what it says to a reader.
+export fn moves_boxes(patches: List<NativePatch>) -> bool { patches.any(moves) }
+
+fn moves(p: NativePatch) -> bool {
+    match p {
+        .SetFact(_, f) -> moves_box(f.what),
+        .DropFact(_, what, _) -> moves_box(what),
+        .Create(_, _) or .Place(_, _, _) or .Remove(_) -> true,
+        .Listen(_, _) or .Unlisten(_, _) -> false,
+    }
 }
 
 /// The patches between two native trees, the elements as they now stand
@@ -49,6 +62,7 @@ impl NativeDiffer {
     /// A kept element: the facts that changed or left, the hearing that
     /// changed, its children matched under it.
     fn kept(was: Native, now: Native, next: int) -> Drawn<Native> {
+        if now.from != 0 && now.from == was.from { return Drawn { element: was, next: next } }
         self.say(facts(was.id, was.facts, now.facts))
         self.say(hearing(was.id, was.hears, now.hears))
         let laid = siblings(self, was.id, was.kids, now.kids, next)

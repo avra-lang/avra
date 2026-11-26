@@ -79,9 +79,9 @@ impl View for Rows {
         let drawn = [self.row(at, indices[j], v.describe(stands[j])) for j, v in built]
         let gaps = [indices[j] - if j == 0 { -1 } else { indices[j - 1] } - 1 for j in 0..indices.length]
         let last = indices.last() ?? -1
-        [skipped(at, indices[j], gaps[j]).concat(drawn[j]) for j in 0..indices.length]
+        [skipped(at, gap_key(j, indices[j]), gaps[j]).concat(drawn[j]) for j in 0..indices.length]
             .flatten()
-            .concat(skipped(at, self.count, self.count - last - 1))
+            .concat(skipped(at, "tail", self.count - last - 1))
     }
 }
 
@@ -134,13 +134,18 @@ impl Rows {
 
 /// The room `rows` unbuilt rows would take before the row at `next`, where
 /// the target keeps room for them: nothing where none is unbuilt.
-fn skipped(at: Standing, next: int, rows: int) -> List<Node> {
+/// The key of the gap before the `j`th built row, the row at `next`: the gap
+/// before the first is the list's head wherever the window stands, so a window
+/// that moves keeps it; a gap between two built rows is named by the row after it.
+fn gap_key(j: int, next: int) -> string { if j == 0 { "head" } else { "${next}" } }
+
+fn skipped(at: Standing, key: string, rows: int) -> List<Node> {
     if rows <= 0 || !at.spaces() { return [] }
     [
         Node {
             prim: Prim.Item,
             attrs: [Attribute.Skipped(at.route.get(), rows, at.extent_of())],
-            box: Box { key: text_key("~skipped-${next}") },
+            box: Box { key: text_key("~skipped-${key}") },
             children: [],
         },
     ]
