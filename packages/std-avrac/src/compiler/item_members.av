@@ -485,7 +485,8 @@ fn miss_at(engine: QueryEngine, t: TypedNodes, e: ExprId, scope: MissScope) -> L
                     t.store.expr_span(e),
                     t.reader,
                 ),
-            ),
+            )
+            .concat(parameter_prop_miss((t.type_at)(subject.index), name.of, t.store.expr_span(e))),
         .MethodCall(subject, name, args) -> method_miss(
             engine,
             (t.type_at)(subject.index),
@@ -1367,6 +1368,14 @@ fn own_prop_miss(engine: QueryEngine, subject: SignedType?, name: string, at: Sp
     let candidates = [r.name for r in avra().rows.properties if r.takes(shape)]
         .concat([r.name for r in avra().rows.methods if r.takes(shape)])
     [MissPlaced { at: at, miss: Miss.OwnProp(s.spelled(), name, candidates) }]
+}
+
+/// A property `name` read on a value of a type parameter: a bound gives a type parameter methods,
+/// never a property, so no instance can answer it.
+fn parameter_prop_miss(subject: SignedType?, name: string, at: Span?) -> List<MissPlaced> {
+    let s? = subject else { return [] }
+    if !(s.head is .Parameter) || s.nullable() { return [] }
+    [MissPlaced { at: at, miss: Miss.OwnProp(s.spelled(), name, []) }]
 }
 
 /// The shape a value of `s`, a type the language owns, has, as the language's rows take it: its
