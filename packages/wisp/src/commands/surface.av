@@ -168,6 +168,8 @@ fn row_workload(path: string, workload: string, kind: CostKind) -> string? {
         "footprint" -> "bytes:${key}:${workload}",
         "grows" -> "grows:${key}:${workload}",
         "gate" -> "gate:${key}:${workload}",
+        "proofs" -> "proofs:-:${workload}",
+        "reads" -> "reads:-:${workload}",
         "work" -> "${work_kind(kind)}:-:${workload}",
         _ -> null,
     }
@@ -258,6 +260,8 @@ fn keyed(kind: string, key: string, workload: string) -> CostPlaced? {
         "work" -> CostPlaced { path: "work/warm.cost", workload: workload, kind: CostKind.Count },
         "grows" -> CostPlaced { path: "grows/${key}.cost", workload: workload, kind: CostKind.Count },
         "gate" -> CostPlaced { path: "gate/${key}.cost", workload: workload, kind: CostKind.Clock },
+        "proofs" -> CostPlaced { path: "proofs/${workload}.cost", workload: workload, kind: CostKind.Count },
+        "reads" -> CostPlaced { path: "reads/${workload}.cost", workload: workload, kind: CostKind.Count },
         _ -> null,
     }
 }
@@ -377,7 +381,7 @@ export const SNAPSHOT_FILE: string = "cost/SNAPSHOT"
 
 /// How each kind of row is judged: a count exactly, a told row by nothing, a share within two in a
 /// million of its program, a clock within its band of what was accepted.
-const RECORD_KINDS: string = "kind bytes keyed-by toolchain over 0ppm\nkind gate keyed-by host over none\nkind count keyed-by - over 0ppm\nkind grows keyed-by toolchain over none\nkind share keyed-by - over 0ppm+2000\nkind speed keyed-by host over 250000ppm+250 least\nkind told keyed-by - over none\nkind wall keyed-by host over 0ppm\nkind warm keyed-by host over 300000ppm+250 least\nkind work keyed-by - over 0ppm\n"
+const RECORD_KINDS: string = "kind bytes keyed-by toolchain over 0ppm\nkind gate keyed-by host over none\nkind count keyed-by - over 0ppm\nkind grows keyed-by toolchain over none\nkind proofs keyed-by - over 0ppm\nkind reads keyed-by - over 0ppm cap 3000\nkind share keyed-by - over 0ppm+2000\nkind speed keyed-by host over 250000ppm+250 least\nkind told keyed-by - over none\nkind wall keyed-by host over 0ppm\nkind warm keyed-by host over 300000ppm+250 least\nkind work keyed-by - over 0ppm\n"
 
 /// The record as the ledger `wisp cost` judges: its kinds, every clock's target and over line, the
 /// pinned snapshot and every row.
@@ -492,7 +496,7 @@ export fn same_rows(a: Map<string, int>, b: Map<string, int>) -> bool { a.length
 
 // VOICES
 
-fn unknown_family_said(path: string) -> string { "cost: cost/${path} stands under no family the record holds — census, ledger, matrix, speed, warm, wall, footprint, grows, gate or work" }
+fn unknown_family_said(path: string) -> string { "cost: cost/${path} stands under no family the record holds — census, ledger, matrix, speed, warm, wall, footprint, grows, gate, proofs, reads or work" }
 
 fn unread_said(path: string, line: string) -> string { "cost: cost/${path} holds `${line}`, which reads as no measure — `<count|told|share|clock> <counter> <value>`" }
 

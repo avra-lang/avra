@@ -449,7 +449,7 @@ wasm-archive:
 # `$(shell)` runs on every make, `try` included.
 SUITES = $(shell ./wisp suites 2>/dev/null)
 
-.PHONY: ui-board-native compiler-key pool-check ready dev-server cost cost-accept cost-snapshot trap-marks llvm-libs libs-self-test read-lists db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz exact-patches ui-board ui-browser ui-browser-skip host-events layout-oracle wasm-host-check wasm-tasks-mutations h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks test tested clean seed-check gate externs idioms fuzz-http soak-http dogfooding-rules rule-examples idioms-accept bench bench-collections bench-build fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns parser witnesses libs libscope layers pre-commit-hook inputs inputs-accept store-fuzz-regressions read-cost \
+.PHONY: ui-board-native compiler-key pool-check ready dev-server cost cost-accept cost-snapshot trap-marks llvm-libs libs-self-test db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz exact-patches ui-board ui-browser ui-browser-skip host-events layout-oracle wasm-host-check wasm-tasks-mutations h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks test tested clean seed-check gate externs idioms fuzz-http soak-http dogfooding-rules rule-examples idioms-accept bench bench-collections bench-build fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns parser witnesses libs libscope layers pre-commit-hook inputs inputs-accept store-fuzz-regressions read-cost \
         check run ir emit build-native native-check avra suites install sprite sprite-check codecs-static keepers voices voices-accept defects tool-witnesses ci-invariants wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept wasm-routes-size speed-ratchet speed-accept wall-ratchet wall-accept warm-edit warm-accept work-accept
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -842,11 +842,6 @@ cache-attacks-b2: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/store_clean_attack.sh
 	@sh tools/package_swap_attack.sh
 
-# WHAT A CHANGE COSTS TO PROVE: one literal of the cli edited and built warm proves and reads no
-# more than the shares of the change's reach tools/cutoff.ceiling holds.
-cutoff-witness: $(COMPILER_OBJS) $(PACKAGE_OBJS)
-	@sh tools/cutoff_witness.sh
-
 # A CODE HASH IS STALE WHEN ITS CODE MOVES, AND ONLY THEN: each case edits what a query
 # reaches and must recompute it, edits what it never reaches and must read it back. It
 # CLEARS the store it builds through, as the attacks above do.
@@ -975,12 +970,6 @@ dogfooding-rules:
 # coverage (compiler/rule_examples.av's `example_gaps`).
 rule-examples:
 	@./build/avra rules --check-examples
-
-# NO ANSWER STANDS ON A LONG READ LIST: a cold check of the cli on the program layer, each query's
-# longest read list held under 3,000, and the queries still over it only shorten (tools/read_lists.py).
-read-lists:
-	@python3 tools/read_lists.py --self-test
-	@python3 tools/read_lists.py
 
 # THE LAYERING IS ONE-WAY: no `use` names a layer above its own, and
 # `@std/relation` — the engine below them all — never names the compiler.
