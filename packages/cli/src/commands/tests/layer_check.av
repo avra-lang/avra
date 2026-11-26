@@ -59,7 +59,7 @@ fn fixture_root(path: string) -> string {
 type LayerBuilt = { status: int, said: string, binary: string, took_ms: int = 0 }
 
 /// `avra build <path>` on the program layer, the package's store its own (`<path>/.avra-cache`),
-/// with `args` after the path and `vars` set beside the inherited environment.
+/// with `args` after the path, the store switches off, then `vars` set beside the inherited environment.
 fn layer_built(path: string, vars: Map<string, string> = {}, args: List<string> = []) -> LayerBuilt {
     let t = match tool(avra_bin()) {
         .Ok(t) -> t,
@@ -74,6 +74,7 @@ fn layer_built(path: string, vars: Map<string, string> = {}, args: List<string> 
     mut env = inherited()
         .with_var("AVRA_PROGRAM_NET", "0")
         .with_var("AVRA_CACHE_DIR", "${path}/.avra-cache")
+    for name in store_switches() { env = env.with_var(name, "0") }
     for name, value in vars { env = env.with_var(name, value) }
     match (cmd(t, ["build", path].concat(args)) with { cwd: "/", env: env, timeout: hang_bound(), ok_exits: [0, 1, 2] })
         .outcome() {
@@ -111,4 +112,16 @@ fn same_bytes(a: string, b: string) -> bool {
         .Ok(o) -> status_of_exit(o.exit) == 0,
         .Err(_) -> false,
     }
+}
+
+/// The store's switches a case turns on by naming them, each off for a child unless it does, so the
+/// suite's own environment never sets one (the gate's slices keep their store here).
+fn store_switches() -> List<string> {
+    [
+        "AVRA_STORE_KEPT_HERE",
+        "AVRA_WORK_AHEAD_OFF",
+        "AVRA_MERGED_HERE",
+        "AVRA_AHEAD_UNPROVEN",
+        "AVRA_WAVE_ALONE",
+    ]
 }
