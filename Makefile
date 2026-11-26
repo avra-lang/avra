@@ -1306,7 +1306,7 @@ KEEPERS_A2 = read-cost read-lists warm-edit codecs traps compile-slots witness f
 KEEPERS_A = $(KEEPERS_A1) $(KEEPERS_A2)
 KEEPERS_B = libscope ahead-edit-attack held-store-attack cutoff-witness heir-save-attack share-merge-attack wave-share-attack beside-attack h2spec pool-check tools-suite fingerprints vocab families-left layers libs-self-test speed-note hooks-released inputs whole-reads cited http-cites externs trap-marks suites rt-header rt-ns parser witnesses dogfooding-rules rule-examples attack voices defects \
             ui-host host-events ui-host-test ui-board exact-patches dev-server ui-browser ui-browser-skip tool-witnesses footprint tick-object no-threads \
-            ci-invariants ci-verdict pr-watcher pipeline-doc workflows-yaml tail-status vendored-fixture
+            ci-invariants ci-verdict pr-watcher pipeline-doc workflows-yaml tail-status bash-parse vendored-fixture
 # KEEPERS_WASM is the wasm target's proof — the fixtures native and wasm32 alike, the seam,
 # the refusals, the hosted scheduler broken on purpose, the store across targets, the
 # archive's law and the size receipt — a CI
@@ -1378,6 +1378,11 @@ tail-status:
 	@sh tools/tail_status.sh --self-test
 	@sh tools/tail_status.sh
 
+# EVERY SHELL SCRIPT PARSES UNDER BASH, macOS's 3.2 where it stands (tools/bash_parse.sh)
+bash-parse:
+	@sh tools/bash_parse.sh --self-test
+	@sh tools/bash_parse.sh
+
 # THE ONE-LINE BLOCKER: why nothing is landing, in a handful of lines.
 # Read-only and safe any time — `main`'s SHA and age; the last runs'
 # failures COUNTED BY JOB; each open PR's blocker in one word; whether the
@@ -1396,8 +1401,8 @@ pipeline-status:
 # together take half a minute, so a refusal stops on the PR instead of
 # failing a train and every PR riding it. Each is one of KEEPERS, which the
 # train runs whole.
-KEEPERS_STATIC = host-events fingerprints vocab families-left layers libs-self-test speed-note hooks-released cited http-cites externs suites ui-browser-skip ci-invariants ci-verdict pr-watcher pipeline-doc workflows-yaml tail-status vendored-fixture
-.PHONY: compiler compiler-files store-witnesses cache-attacks-w keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b keepers-wasm keepers-static keepers-pr pipeline-doc tail-status pipeline-status ci-invariants ci-verdict pr-watcher
+KEEPERS_STATIC = host-events fingerprints vocab families-left layers libs-self-test speed-note hooks-released cited http-cites externs suites ui-browser-skip ci-invariants ci-verdict pr-watcher pipeline-doc workflows-yaml tail-status bash-parse vendored-fixture
+.PHONY: compiler compiler-files store-witnesses cache-attacks-w keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b keepers-wasm keepers-static keepers-pr pipeline-doc tail-status bash-parse pipeline-status ci-invariants ci-verdict pr-watcher
 keepers-static:
 	@left="$(filter-out $(KEEPERS),$(KEEPERS_STATIC))"; [ -z "$$left" ] || { echo "keepers-static: $$left is no keeper — the train would not hold it" >&2; exit 1; }
 	@sh tools/keepers_loop.sh "$(MAKE) -s" $(KEEPERS_STATIC)
