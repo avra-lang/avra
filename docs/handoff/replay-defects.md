@@ -62,3 +62,14 @@ named-head-goldens. Rebasing lane/replay-defects/combined-79bf-b onto f842bf34 d
 already upstream. Nothing pending in this lane.
 Finding passed to the lead: train25's red at decl_grain_test.av:110,117 came from train25's
 law_findings.av (`const_gathering`, a per-file query), not from this lane.
+
+## Landed by 2026-11-26 (program f43cefa0)
+- .114.12 spread-extend (evaluator's extend retains its slots) — train31.
+- .131 lambda-fail (no-param lambdas promise their seat; generic `Result` seats of known failure;
+  trailing blocks unchanged) — train41.
+- .139 fd-scratch (a read lands in the reading task's slot; the evaluator files landings per task;
+  case_test parks at `AVRA_SLOT_KEYS - 1`; `avra_io_list` says `traps: true`) — train41.
+Nothing pending. Pre-flight for runtime changes includes `make runtime-tests`.
+Seen red on program 42ed174d and not owed when last checked: host-events, families-left,
+hooks-released (the tools package does not build: `type.host_seat` on `avra_fn_declared` and
+`avra_cell_bytes_run`).
