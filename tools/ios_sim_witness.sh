@@ -58,8 +58,8 @@ let t = spawn { down(0) }
 println("runaway ${t.await}")
 EOF
     cat > "$work/foundation.av" <<'EOF'
-extern fn CFStringCreateWithCString(alloc: ptr?, text: string, encoding: int) -> ptr
-extern fn NSLog(format: ptr)
+extern fn CFStringCreateWithCString(alloc: ptr?, text: string, encoding: u32) -> i64
+extern fn NSLog(format: i64)
 extern fn CFAbsoluteTimeGetCurrent() -> float
 
 NSLog(CFStringCreateWithCString(null, "foundation reached", 134217984))
