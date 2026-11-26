@@ -1,0 +1,92 @@
+# THE MAC'S COMPILER, published beside the gate's builder: the tree the `gate-builder` release's compiler was
+# built from (its stamp's commit, build/.avra-built-from), built on macOS arm64 — the seed's link, then
+# generations 1 and 2 (`make compiler`) — held to that release's stamp, compiler source for compiler source,
+# and uploaded to the same release as compiler-macos.tar.gz, packed as the gate's pack is (the binary, its
+# hot leaves, its stamp and every object build/ keeps at its top). `tools/work compiler` lays it into the
+# depot, where a Mac lane's pre-commit hook finds a stamped compiler.
+#
+# A push to `mac-compiler/**` or a dispatch runs it; `ref` names another commit to build than the stamp's.
+name: compiler-macos
+
+on:
+  push:
+    branches: ["mac-compiler/**"]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: the commit to build (default — the gate-builder release's stamp)
+        required: false
+
+concurrency:
+  group: compiler-macos
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 1 }
+      # THE TREE: the release's stamp names the commit and the compiler source it was built from
+      - name: the release's tree
+        id: tree
+        env:
+          REF: ${{ inputs.ref }}
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/gb.tar.gz" https://github.com/avra-lang/avra/releases/download/gate-builder/compiler.tar.gz
+          read -r hash at gen < <(tar -xzOf "$RUNNER_TEMP/gb.tar.gz" build/.avra-built-from)
+          echo "compiler-macos: the gate-builder release — compiler source $hash, at $at, generation $gen"
+          want=${REF:-$at}
+          [ "$want" != edited ] || { echo "::error::the release's stamp names no commit (edited)"; exit 1; }
+          git fetch -q --depth=1 origin "$want"
+          git checkout -q --detach FETCH_HEAD
+          echo "compiler-macos: building $(git rev-parse HEAD)"
+          echo "hash=$hash" >> "$GITHUB_OUTPUT"
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+      - name: toolchain
+        run: |
+          brew install llvm@22 zstd || brew install llvm zstd
+          p=$(brew --prefix llvm@22 2>/dev/null || brew --prefix llvm)
+          echo "LLVM_PREFIX=$p" >> "$GITHUB_ENV"
+          "$p/bin/clang" --version | head -n 1
+      - name: generations 1 and 2
+        timeout-minutes: 100
+        run: |
+          make -s compiler
+          build/avra --version
+          cat build/.avra-built-from
+      # PROVENANCE: the binary says what it was built from, and that is the release's compiler source
+      - name: held to the release
+        run: |
+          read -r hash at gen < build/.avra-built-from
+          echo "compiler-macos: built from compiler source $hash at $at, generation $gen"
+          if [ -z "${{ steps.tree.outputs.ref }}" ] && [ "$hash" != "${{ steps.tree.outputs.hash }}" ]; then
+            echo "::error::the Mac's compiler was built from $hash, the gate-builder release's from ${{ steps.tree.outputs.hash }}"
+            exit 1
+          fi
+          [ "$at" != edited ] || { echo "::error::the build says it was built from edited source"; exit 1; }
+      - name: pack
+        run: |
+          { for f in build/avra build/avra_hot.bc build/avra_hot.inc build/.avra-built-from; do [ ! -f "$f" ] || echo "$f"; done
+            find build -maxdepth 1 -type f \( -name '*.o' -o -name '*.a' -o -name '*.so' -o -name '*.sha' -o -name '*.d' \) | sort; } > "$RUNNER_TEMP/packed"
+          COPYFILE_DISABLE=1 tar -czf compiler-macos.tar.gz -T "$RUNNER_TEMP/packed"
+          gzip -t compiler-macos.tar.gz
+          echo "compiler-macos: $(wc -l < "$RUNNER_TEMP/packed" | tr -d ' ') file(s), $(du -k compiler-macos.tar.gz | cut -f1) KB"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: compiler-macos
+          path: compiler-macos.tar.gz
+          retention-days: 7
+      # ONLY THE RELEASE'S OWN TREE IS PUBLISHED beside it; a build of another ref stays an artifact
+      - name: publish
+        if: steps.tree.outputs.ref == ''
+        run: |
+          gh release upload gate-builder compiler-macos.tar.gz --clobber --repo "$GITHUB_REPOSITORY"
+          echo "compiler-macos: https://github.com/$GITHUB_REPOSITORY/releases/download/gate-builder/compiler-macos.tar.gz"
