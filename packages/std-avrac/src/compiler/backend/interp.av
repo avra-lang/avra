@@ -132,6 +132,9 @@ impl Spares {
 /// A declaration a run named, and the value it crossed as.
 type NamedVal = { name: string, val: Val }
 
+/// A task's last descriptor read: the token the read answered and the bytes it landed.
+type Landing = { token: int, bytes: Bytes }
+
 type Machine = {
     l: Lowered,
     // the runtime's rows by name, built once per machine — the
@@ -155,6 +158,9 @@ type Machine = {
     // the unwinds in progress, innermost last: a trap a guard caught, whose frames'
     // cleanup regions run before the guarded call answers
     unwinding: List<Unwinding> = [],
+    // each task's last descriptor read, by the task: its token and the bytes it landed, taken from
+    // the runtime at the read so no other task's read lands between them
+    landings: Map<string, Landing> = {},
     entering: Val?,
     resume: Place?,
     caught: string,
@@ -1995,8 +2001,8 @@ impl Machine {
             .BytesGathered -> self.bytes_gathered_val(vals[0]),
             .BytesAdopted -> self.adopted_val(vals),
             // LICENSED input.evaluator_effect: the interpreted program's own effect, never an input of what is built
-            .FdRead -> Val.I(avra_fd_read(self.whole(vals[0]), self.whole(vals[1]))),
-            .FdTaken -> Val.Y(avra_fd_taken(self.whole(vals[0]))),
+            .FdRead -> self.read_landed(avra_fd_read(self.whole(vals[0]), self.whole(vals[1]))),
+            .FdTaken -> self.landing_taken(self.whole(vals[0])),
             .FdWrite -> Val.I(avra_fd_write(self.whole(vals[0]), self.octets(vals[1]), self.whole(vals[2]))),
             .ErrnoText -> Val.S(avra_errno_text(self.whole(vals[0]))),
             // LICENSED input.evaluator_effect: the interpreted program's own effect, never an input of what is built
@@ -3004,7 +3010,29 @@ impl Machine {
     fn io_list_val(vals: List<Val>) -> Val {
         let path? = self.named_act(vals[0]) else { return Val.I(0) }
         // LICENSED input.evaluator_effect: the interpreted program's own effect, never an input of what is built
-        Val.I(avra_io_list(path))
+        self.read_landed(avra_io_list(path))
+    }
+
+    /// The task a landing is filed under: the program's own run before any task is filed, and after.
+    fn lander() -> string { "${if self.running < 0 { 0 } else { self.running }}" }
+
+    /// A read's `token`, its bytes taken from the runtime at once and filed under the running task.
+    mut fn read_landed(token: int) -> Val {
+        if token > 0 { self.landings.set(self.lander(), Landing { token: token, bytes: avra_fd_taken(token) }) }
+        Val.I(token)
+    }
+
+    /// The bytes the running task's last read landed, handed over once; any other token is refused in
+    /// the runtime's words.
+    mut fn landing_taken(token: int) -> Val {
+        let own? = self.landings.get(self.lander()) else { return Val.Y(avra_fd_taken(token)) }
+        if token <= 0 { return Val.Y(avra_fd_taken(token)) }
+        if token != own.token {
+            self.trapped(take_superseded(token, own.token))
+            return Val.I(0)
+        }
+        self.landings.set(self.lander(), own with { bytes: "".bytes() })
+        Val.Y(own.bytes)
     }
 
     fn eputs_row(vals: List<Val>) -> Val {
@@ -3103,3 +3131,6 @@ fn library_without(package: string) -> string {
 fn plan_parted(body: string, pc: int, kept: int, scanned: int) -> string {
     "the evaluator's plan lands the transfer at ${body}:${pc} on ${kept}, the scan on ${scanned}"
 }
+
+/// A take of `token` where the task's last read is `last`, in the runtime's words.
+fn take_superseded(token: int, last: int) -> string { "a take of read ${token}, but read ${last} has landed since" }
