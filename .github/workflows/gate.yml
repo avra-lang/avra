@@ -40,6 +40,7 @@ jobs:
       slices: ${{ steps.slices.outputs.list }}
       jobs: ${{ steps.slices.outputs.jobs }}
       costs: ${{ steps.slices.outputs.costs }}
+      browser: ${{ steps.slices.outputs.browser }}
       sha8: ${{ steps.slices.outputs.sha8 }}
     steps:
       - uses: actions/checkout@v4
@@ -82,6 +83,9 @@ jobs:
           # after the census
           echo "jobs=$(sh tools/gate.sh jobs | awk '$1 !~ /^cost-/ { print $1 }' | json)" >> "$GITHUB_OUTPUT"
           echo "costs=$(sh tools/gate.sh jobs | awk '$1 ~ /^cost-/ { print $1 }' | json)" >> "$GITHUB_OUTPUT"
+          # THE JOBS THAT CARRY THE BROWSER LEG (a keeper of KEEPERS_B, KEEPERS_WASM or the tool witnesses), which
+          # run on the browser leg's machine
+          echo "browser=$(sh tools/gate.sh jobs | { grep -E ' keepers-(b|wasm|tw)' || :; } | awk '{ print $1 }' | json)" >> "$GITHUB_OUTPUT"
           sh tools/gate.sh jobs | sed 's/^/gate: job /'
           echo "sha8=$(git rev-parse --short=8 HEAD)" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
@@ -123,7 +127,12 @@ jobs:
   slice:
     needs: [seed]
     runs-on: ubuntu-latest
-    container: *gate-image
+    # A JOB THAT CARRIES THE BROWSER LEG RUNS ON avra-ci:llvm22-browser, WebKit's host libraries installed when
+    # the image was built (.github/ci/Dockerfile.browser); a mirror mid-update cannot fail it
+    container:
+      image: ${{ contains(fromJSON(needs.seed.outputs.browser), matrix.slice) && 'ghcr.io/avra-lang/avra-ci:llvm22-browser' || 'ghcr.io/avra-lang/avra-ci:llvm22' }}
+      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+      options: --cap-add=SYS_PTRACE
     # a slice's wall budget is tools/gate.sh's own (900 s, an edit-f or edit-g part 1500 s, its verdict OVER, the slice named); the
     # runner's bound stands just past it, so the gate names the slice before the runner kills the job —
     # a job of several slices past the budget of all of them

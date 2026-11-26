@@ -525,7 +525,12 @@ jobs:
     needs: [prepare]
     if: needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'
     runs-on: ubuntu-latest
-    container: *ci-image
+    # THE BROWSER LEG'S MACHINE: the checks' image with WebKit's host libraries and gdb installed when it was
+    # built (.github/ci/Dockerfile.browser), so no step here fetches from a mirror
+    container: &ci-browser-image
+      image: ghcr.io/avra-lang/avra-ci:llvm22-browser
+      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+      options: --cap-add=SYS_PTRACE
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -540,7 +545,7 @@ jobs:
         continue-on-error: true
         env:
           DEBIAN_FRONTEND: noninteractive
-        run: apt-get update -qq && apt-get install -y -qq --no-install-recommends gdb
+        run: command -v gdb >/dev/null || { apt-get update -qq && apt-get install -y -qq --no-install-recommends gdb; }
       - if: matrix.list == 'b'
         name: gdb attaches
         continue-on-error: true
@@ -918,7 +923,7 @@ jobs:
     needs: [prepare]
     if: needs.prepare.outputs.layout_oracle == '1' && needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'
     runs-on: ubuntu-latest
-    container: *ci-image
+    container: *ci-browser-image
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
