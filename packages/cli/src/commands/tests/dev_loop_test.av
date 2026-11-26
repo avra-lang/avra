@@ -1,0 +1,28 @@
+//! `avra dev`'s loop as the command runs it: a save built on the host's word and on the clock.
+//! The helpers are dev_test.av's, a sibling in this module.
+spec "avra dev — the loop, as the command runs it" {
+    given "a page served with no `--interval`" {
+        then "a save is built, on the host's word" {
+            !equipped() ||
+                match followed([]) {
+                    .Ok(said) -> said.contains("dev: built module 2") && !said.contains("will not watch"),
+                    .Err(_) -> false,
+                }
+        }
+    }
+    given "a page served with `--interval`" {
+        then "a save is built, on the clock" {
+            !equipped() ||
+                match followed(["--interval", "50"]) {
+                    .Ok(said) -> said.contains("dev: built module 2"),
+                    .Err(_) -> false,
+                }
+        }
+    }
+    given "the command's help" {
+        then "`--interval` is said to be instead of watching, and has no default" {
+            let l = avra_left(["dev", "--help"])
+            l.said.contains("instead of watching them") && !l.said.contains("(default: 250)")
+        }
+    }
+}
