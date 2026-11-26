@@ -1,0 +1,202 @@
+//! THE BUNDLE — what a target ships as, beside its binary: a list of files, each derived from the
+//! manifest and the build. Pure: the caller writes the files, and signs where the host asks it to.
+use compiler.host.{Manifest}
+use compiler.targets.{TargetRow, platform_of}
+use core.{distinct}
+
+/// A file a bundle holds: its path inside the bundle, and how it is made.
+export type BundleFile = { path: string, made: Made }
+
+/// How a bundle's file is made: copied from a path, a PNG cut from one to `px` pixels square, or
+/// written with its text.
+export enum Made {
+    Copied(from: string)
+    Cut(from: string, px: int)
+    Written(text: string)
+}
+
+/// A bundle: the directory it is written as, its files, and whether the host runs only a signed one.
+export type Bundle = { dir: string, files: List<BundleFile>, signed: bool }
+
+/// What a bundle for an app cannot be made without, in its own words.
+export enum Unbundled {
+    NoId
+}
+
+/// The bundle the target `row` of the app `m` ships as, where its host takes one: `binary` is the
+/// build's, `exe` the name it runs as, and `dir` the target's build directory. Absent where the host
+/// runs the binary as it is.
+export fn bundle_of(m: Manifest, row: TargetRow, binary: string, exe: string, dir: string) -> Result<
+    Bundle?,
+    Unbundled,
+> {
+    match row.host {
+        .Process -> .Ok(null),
+        .Page -> .Ok(null),
+        .Ios -> apple_app(m, row, binary, exe, dir),
+    }
+}
+
+/// An Apple app: `<Name>.app`, its executable, its `Info.plist`, and its icon where the app names one.
+fn apple_app(m: Manifest, row: TargetRow, binary: string, exe: string, dir: string) -> Result<
+    Bundle?,
+    Unbundled,
+> {
+    let id? = m.app?.id else { return .Err(Unbundled.NoId) }
+    let name = m.app?.name ?? exe
+    let icon = m.app?.icon
+    let icons = if icon == null { [] } else { [BundleFile { path: c.file, made: Made.Cut(icon!, c.px) } for c in ICON_CUTS] }
+    let plist = BundleFile {
+        path: "Info.plist",
+        made: Made.Written(plist_text(info_of(m, row, id, name, exe, icon != null))),
+    }
+    .Ok(
+        Bundle {
+            dir: "${dir}/${name}.app",
+            files: [BundleFile { path: exe, made: Made.Copied(binary) }, plist].concat(icons),
+            signed: true,
+        },
+    )
+}
+
+/// An icon a device family reads: the stem the plist names, its file, and its size in pixels.
+type IconCut = { stem: string, file: string, px: int, ipad: bool }
+
+/// The icons an iPhone and an iPad read, each cut from `[app] icon`.
+const ICON_CUTS: List<IconCut> = table<IconCut> {
+    stem               | file                           | px  | ipad
+    "AppIcon60x60"     | "AppIcon60x60@2x.png"          | 120 | false
+    "AppIcon60x60"     | "AppIcon60x60@3x.png"          | 180 | false
+    "AppIcon76x76"     | "AppIcon76x76@2x~ipad.png"     | 152 | true
+    "AppIcon83.5x83.5" | "AppIcon83.5x83.5@2x~ipad.png" | 167 | true
+}
+
+/// The icon stems a device family reads: every iPhone stem, and for an iPad its own too.
+fn icon_stems(ipad: bool) -> List<string> {
+    distinct([c.stem for c in ICON_CUTS if !c.ipad || ipad])
+}
+
+/// The plist's icon dictionary for one device family.
+fn icons_key(key: string, ipad: bool) -> PlistKey {
+    PlistKey {
+        key: key,
+        value: Plist
+            .Dict(
+                [
+                    PlistKey {
+                        key: "CFBundlePrimaryIcon",
+                        value: Plist
+                            .Dict(
+                                [
+                                    PlistKey {
+                                        key: "CFBundleIconFiles",
+                                        value: Plist.Strs(icon_stems(ipad)),
+                                    },
+                                ],
+                            ),
+                    },
+                ],
+            ),
+    }
+}
+
+/// The `Info.plist` an Apple app of the manifest `m` carries for the target `row`.
+fn info_of(m: Manifest, row: TargetRow, id: string, name: string, exe: string, iconed: bool) -> List<
+    PlistKey,
+> {
+    let version = release_of(m.version)
+    let base = [
+        PlistKey { key: "CFBundleDevelopmentRegion", value: Plist.Str("en") },
+        PlistKey { key: "CFBundleDisplayName", value: Plist.Str(name) },
+        PlistKey { key: "CFBundleExecutable", value: Plist.Str(exe) },
+        PlistKey { key: "CFBundleIdentifier", value: Plist.Str(id) },
+        PlistKey { key: "CFBundleInfoDictionaryVersion", value: Plist.Str("6.0") },
+        PlistKey { key: "CFBundleName", value: Plist.Str(name) },
+        PlistKey { key: "CFBundlePackageType", value: Plist.Str("APPL") },
+        PlistKey { key: "CFBundleShortVersionString", value: Plist.Str(version) },
+        PlistKey {
+            key: "CFBundleSupportedPlatforms",
+            value: Plist.Strs([apple_platform(row.triple)]),
+        },
+        PlistKey { key: "CFBundleVersion", value: Plist.Str(version) },
+        PlistKey { key: "LSRequiresIPhoneOS", value: Plist.Bool(true) },
+        PlistKey { key: "MinimumOSVersion", value: Plist.Str(min_of(row.triple)) },
+        PlistKey { key: "UIDeviceFamily", value: Plist.Ints([1, 2]) },
+        PlistKey { key: "UILaunchScreen", value: Plist.Dict([]) },
+    ]
+    if !iconed { return base }
+    base.concat([icons_key("CFBundleIcons", false), icons_key("CFBundleIcons~ipad", true)])
+}
+
+/// The platform word an Apple triple's SDK is listed under in `CFBundleSupportedPlatforms`.
+fn apple_platform(triple: string) -> string {
+    match platform_of(triple) {
+        .Apple(sdk) -> if sdk.ends_with("simulator") { "iPhoneSimulator" } else { "iPhoneOS" },
+        .Native or .Wasm -> "",
+    }
+}
+
+/// The release a settled Apple triple names (`arm64-apple-ios17.0-simulator` names `17.0`).
+fn min_of(triple: string) -> string {
+    let os = triple.split("-").drop(2).first() ?? ""
+    os.substring(3, os.length)
+}
+
+/// A package version as a store reads one: `MAJOR.MINOR.PATCH`, its `-` suffix dropped.
+fn release_of(version: string) -> string {
+    let cut = version.index_of("-")
+    if cut < 0 { version } else { version.substring(0, cut) }
+}
+
+/// A property list's value.
+export enum Plist {
+    Str(s: string)
+    Strs(items: List<string>)
+    Ints(items: List<int>)
+    Bool(b: bool)
+    Dict(keys: List<PlistKey>)
+}
+
+/// One key of a property list's dictionary.
+export type PlistKey = { key: string, value: Plist }
+
+/// A property list whose root is the dictionary `keys`, as XML.
+export fn plist_text(keys: List<PlistKey>) -> string {
+    [
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+        "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">",
+        "<plist version=\"1.0\">",
+        dict_text(keys, ""),
+        "</plist>",
+        "",
+    ]
+        .join("\n")
+}
+
+/// A dictionary at `indent`.
+fn dict_text(keys: List<PlistKey>, indent: string) -> string {
+    if keys.is_empty() { return "${indent}<dict/>" }
+    let inner = "${indent}\t"
+    let rows = ["${inner}<key>${xml_text(k.key)}</key>\n${value_text(k.value, inner)}" for k in keys]
+    "${indent}<dict>\n${rows.join("\n")}\n${indent}</dict>"
+}
+
+/// A value at `indent`.
+fn value_text(v: Plist, indent: string) -> string {
+    match v {
+        .Str(s) -> "${indent}<string>${xml_text(s)}</string>",
+        .Strs(items) -> array_text(["${indent}\t<string>${xml_text(s)}</string>" for s in items], indent),
+        .Ints(items) -> array_text(["${indent}\t<integer>${n}</integer>" for n in items], indent),
+        .Bool(b) -> if b { "${indent}<true/>" } else { "${indent}<false/>" },
+        .Dict(keys) -> dict_text(keys, indent),
+    }
+}
+
+/// An array of the rendered `rows` at `indent`.
+fn array_text(rows: List<string>, indent: string) -> string {
+    if rows.is_empty() { return "${indent}<array/>" }
+    "${indent}<array>\n${rows.join("\n")}\n${indent}</array>"
+}
+
+/// Text as XML character data: `&`, `<` and `>` escaped.
+fn xml_text(s: string) -> string { s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;") }

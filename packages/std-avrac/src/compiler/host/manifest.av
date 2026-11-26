@@ -4,7 +4,7 @@
 //! text; what needs the disk — a dependency's directory, the name it
 //! calls itself, the cycle — is the workspace's to judge, in this
 //! file's words.
-use core.{span_of, joined, is_package_key, is_name_word, is_digit, all_codes, Span}
+use core.{span_of, joined, is_package_key, is_name_word, is_name_cont, is_digit, all_codes, Span}
 use @std.toml.{TomlDoc, TomlValue, TomlEntry, parse_toml, toml_text, toml_field}
 use features.{Budgets, budgets_of}
 use diagnostics.{SourceFile, Diag, refusal, warning, loc_at}
@@ -50,10 +50,11 @@ export type PlatformObjects = { dir: string, objects: List<string>, at: Loc? = n
 @codec
 export type TargetWord = { word: string, at: Loc? }
 
-/// `[app]`: what the app ships as — the targets `avra build` builds, in the author's order — and
-/// where its header stands. The server beside it is `Manifest.server`.
+/// `[app]`: what the app ships as — the targets `avra build` builds, in the author's order — its one
+/// identity (`id`, reverse-DNS), the name it is shown by, its icon (a PNG, by path from the package
+/// root), and where its header stands. The server beside it is `Manifest.server`.
 @codec
-export type AppRow = { targets: List<TargetWord>, at: Loc? }
+export type AppRow = { targets: List<TargetWord>, at: Loc?, id: string? = null, name: string? = null, icon: string? = null, icon_at: Loc? = null }
 
 /// `[target.<name>]`: what one target needs beyond what is derived — `min`, the oldest release a
 /// target's OS runs it on, where its row takes one.
@@ -179,6 +180,18 @@ fn lawful_header(w: string) -> bool {
     !w.is_empty() && !w.contains("<") && !w.contains(">")
 }
 
+/// A reverse-DNS identity: two or more dot-separated words, each letters, digits and `-`.
+fn lawful_app_id(id: string) -> bool {
+    let words = id.split(".")
+    words.length >= 2 && words.all(id_word(it))
+}
+
+/// A word of a reverse-DNS identity: non-empty, letters, digits and `-`.
+fn id_word(w: string) -> bool { !w.is_empty() && all_codes(w, id_code) }
+
+/// A character a reverse-DNS word may hold.
+fn id_code(c: int) -> bool { is_name_cont(c) && c != 95 || c == 45 }
+
 /// `MAJOR.MINOR.PATCH`, an optional `-` suffix after.
 fn is_semver(v: string) -> bool {
     let cut = v.index_of("-")
@@ -270,9 +283,9 @@ const KEYS: List<KeyRow> = table<KeyRow> {
     "dev"            | "server"          | Lands.Now        | null                                                        | null
     "app"            | "targets"         | Lands.Now        | null                                                        | null
     "app"            | "server"          | Lands.Now        | null                                                        | null
-    "app"            | "id"              | Lands.WithBundle | null                                                        | null
-    "app"            | "name"            | Lands.WithBundle | null                                                        | null
-    "app"            | "icon"            | Lands.WithBundle | null                                                        | null
+    "app"            | "id"              | Lands.Now        | null                                                        | null
+    "app"            | "name"            | Lands.Now        | null                                                        | null
+    "app"            | "icon"            | Lands.Now        | null                                                        | null
     "target.ios"     | "min"             | Lands.Now        | null                                                        | null
     "target.web"     | "base"            | Lands.WithBundle | null                                                        | null
     "profile."       | "opt_level"       | Lands.Now        | null                                                        | null
@@ -563,10 +576,32 @@ impl Reader {
         if !self.doc.has_section("app") { return null }
         let row = self.doc.entry("app", "targets")
         let at = if row == null { null } else { self.entry_at(row!) }
+        let id = self.app_text("id", lawful_app_id, (e, v) -> self.bad_app_id(e, v))
+        let icon = self.app_text("icon", (v) -> v.ends_with(".png"), (e, v) -> self.bad_icon(e, v))
+        let icon_entry = self.doc.entry("app", "icon")
         AppRow {
             targets: [TargetWord { word: w, at: at } for w in self.words_of("app", "targets")],
             at: self.header_at("app"),
+            id: id,
+            name: self.app_word("name"),
+            icon: icon,
+            icon_at: if icon_entry == null { null } else { self.entry_at(icon_entry!) },
         }
+    }
+
+    /// `[app] key`'s text, as written; absent where it is not written as text.
+    fn app_word(key: string) -> string? {
+        let v? = self.doc.get("app", key) else { return null }
+        toml_text(v)
+    }
+
+    /// `[app] key`'s text where `lawful` holds of it; where it does not, `refused` speaks and it is absent.
+    fn app_text(key: string, lawful: fn(string) -> bool, refused: fn(TomlEntry, string) -> Diag) -> string? {
+        let e? = self.doc.entry("app", key) else { return null }
+        let v = toml_text(e.value) ?? ""
+        if lawful(v) { return v }
+        self.speak(refused(e, v))
+        null
     }
 
     /// `[target.<name>]`: each target's deltas, as written.
@@ -825,6 +860,26 @@ impl Reader {
             "an app runs a program, and this manifest declares no `[bin]`",
             "this app",
             "add `[bin]` with `path` — the entry is `[bin] path`, never an `[app]` key",
+        )
+    }
+
+    fn bad_app_id(e: TomlEntry, written: string) -> Diag {
+        refusal(
+            "manifest.bad_app_id",
+            self.entry_at(e),
+            "`[app] id` is reverse-DNS — two or more dot-separated words of letters, digits and `-` — and `${written}` is not",
+            "here",
+            "name the app by a domain you hold, reversed — `id = \"dev.example.board\"`",
+        )
+    }
+
+    fn bad_icon(e: TomlEntry, written: string) -> Diag {
+        refusal(
+            "manifest.bad_icon",
+            self.entry_at(e),
+            "`[app] icon` is a PNG, by path from the package root — `${written}` is not one",
+            "here",
+            "write the PNG's path — `icon = \"assets/icon.png\"`",
         )
     }
 

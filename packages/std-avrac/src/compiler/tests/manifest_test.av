@@ -74,19 +74,40 @@ spec "compiler/manifest" {
         then "an app with no `[bin]` is refused alone" {
             speaks(packaged("\n[app]\ntargets = [\"terminal\"]\n"), "manifest.app_without_bin")
         }
-        then "the bundle's keys are unknown keys until the bundle slice, and say so" {
+        then "`[app] id`, `name` and `icon` are read as written" {
             let m = read(
-                binned(
-                    "\n[app]\nid = \"dev.avra.x\"\nname = \"X\"\nicon = \"i.png\"\n\n[target.web]\nbase = \"/\"\n",
-                ),
+                binned("\n[app]\nid = \"dev.avra.x\"\nname = \"X\"\nicon = \"assets/i.png\"\n"),
             )
-            m.voices.length == 4 &&
-                m
-                    .voices
-                    .all(
-                        (v) -> v.kind == "manifest.unknown_key" &&
-                            (v.help ?? "").contains("the bundle slice brings"),
-                    )
+            m.voices.length == 0 &&
+                m.manifest.app?.id == "dev.avra.x" &&
+                m.manifest.app?.name == "X" &&
+                m.manifest.app?.icon == "assets/i.png"
+        }
+        then "an id that is not reverse-DNS is refused, and read as absent" {
+            let bare = read(binned("\n[app]\nid = \"board\"\n"))
+            let spaced = read(binned("\n[app]\nid = \"dev.my app\"\n"))
+            let emptied = read(binned("\n[app]\nid = \"dev..x\"\n"))
+            [bare, spaced, emptied]
+                .all(
+                    (m) -> m.voices.length == 1 &&
+                        m.voices[0].kind == "manifest.bad_app_id" &&
+                        m.manifest.app?.id == null,
+                )
+        }
+        then "an id's words take letters, digits and `-`" {
+            read(binned("\n[app]\nid = \"dev.avra-lang.Board2\"\n")).voices.length == 0
+        }
+        then "an icon that is not a PNG is refused, and read as absent" {
+            let m = read(binned("\n[app]\nicon = \"assets/icon.svg\"\n"))
+            m.voices.length == 1 &&
+                m.voices[0].kind == "manifest.bad_icon" &&
+                m.manifest.app?.icon == null
+        }
+        then "`[target.web] base` is an unknown key until the web bundle, and says so" {
+            let m = read(binned("\n[app]\ntargets = [\"web\"]\n\n[target.web]\nbase = \"/\"\n"))
+            m.voices.length == 1 &&
+                m.voices[0].kind == "manifest.unknown_key" &&
+                (m.voices[0].help ?? "").contains("the bundle slice brings")
         }
         then "a key no target section takes is an unknown key" {
             speaks(binned("\n[target.ios]\nmax = \"18.0\"\n"), "manifest.unknown_key")
@@ -109,14 +130,21 @@ spec "compiler/manifest" {
                     "error[manifest.app_without_bin]: an app runs a program, and this manifest declares no `[bin]`\n  ╭─[avra.toml:5:1]",
                 )
         }
-        then "a bundle key renders as unknown, naming the slice that brings it" {
-            let text = binned("\n[app]\nid = \"dev.avra.x\"\n")
+        then "a bad id renders at its line, naming the form" {
+            let text = binned("\n[app]\nid = \"board\"\n")
             let shown = render(read(text).voices[0], new_source_file("avra.toml", text))
             shown
                     .starts_with(
-                        "warning[manifest.unknown_key]: `id` is not a key of `[app]` yet\n  ╭─[avra.toml:9:1]",
+                        "error[manifest.bad_app_id]: `[app] id` is reverse-DNS — two or more dot-separated words of letters, digits and `-` — and `board` is not\n  ╭─[avra.toml:9:1]",
                     ) &&
-                shown.contains("the bundle slice brings `id` — until it lands, nothing reads it")
+                shown.contains("`id = \"dev.example.board\"`")
+        }
+        then "a bad icon renders at its line" {
+            let text = binned("\n[app]\nicon = \"i.svg\"\n")
+            render(read(text).voices[0], new_source_file("avra.toml", text))
+                .starts_with(
+                    "error[manifest.bad_icon]: `[app] icon` is a PNG, by path from the package root — `i.svg` is not one\n  ╭─[avra.toml:9:1]",
+                )
         }
     }
     given "[process.tools]" {

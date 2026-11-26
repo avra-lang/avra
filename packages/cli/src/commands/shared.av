@@ -15,15 +15,32 @@ use @std.avrac.compiler.{
     TargetRow,
     named_target,
     target_triple,
+    Bundle,
+    BundleFile,
+    Made,
+    Unbundled,
+    bundle_of,
 }
 use @std.avrac.core.{joined, distinct, some_list}
-use @std.path.{dir_of, under_dir, joined_path, is_absolute, normalized}
+use @std.path.{dir_of, under_dir, joined_path, is_absolute, normalized, stem_of}
 use @std.process.{Tool, tool_at, cmd, Command, Exit, Streams, inherited, ProcessError, exit}
 use @std.time.{now_ns}
 use @std.program.worked_ahead.{Apart, answered_apart}
-use @std.io.{env, exists, make_dirs, compile_slot, Entry, append_bytes}
+use @std.io.{
+    env,
+    exists,
+    make_dirs,
+    compile_slot,
+    Entry,
+    append_bytes,
+    link,
+    remove,
+    read_bytes,
+    write_bytes,
+    write_text,
+}
 use @std.avrac.compiler.backend.{links_with_ld64}
-use @std.avrac.compiler.host.{Stamp, Host}
+use @std.avrac.compiler.host.{Stamp, Host, Manifest}
 use @std.avrac.diagnostics.{Diag, error_at, render, new_source_file}
 
 // THE TRUE EXTERNS: no std package owns "re-exec this image", "where does this image stand" or
@@ -504,7 +521,72 @@ export fn built_binary(args: CliResult) -> Result<string, int> {
     let path? = slotted_path(args) else { return .Err(2) }
     let spelled = args.option("target")
     let row? = named_target(spelled) else { return built_as(args, path, spelled, null) }
-    built_as(args, path, target_triple(row, manifest_at(package_root(path) ?? path)), row.name)
+    let root = package_root(path) ?? path
+    shipped(args, path, root, row, manifest_at(root))
+}
+
+/// The program at `path`, of the package at `root` whose manifest is `m`, built as the target `row`:
+/// the bundle it ships as where its host takes one, else its binary.
+fn shipped(args: CliResult, path: string, root: string, row: TargetRow, m: Manifest) -> Result<
+    string,
+    int,
+> {
+    let binary = built_as(args, path, target_triple(row, m), row.name)?
+    let made = match bundle_of(m, row, binary, stem_of(binary), dir_of(binary)) {
+        .Ok(b) -> b,
+        .Err(why) -> { return .Err(unequipped(unbundled_words(why, row.name))) },
+    }
+    let bundle? = made else { return .Ok(binary) }
+    let icon = m.app?.icon
+    if icon != null && !exists(joined_path(root, icon!)) { return .Err(unequipped(no_icon(icon!))) }
+    bundle_written(bundle, root)
+}
+
+/// The bundle `b` written whole, its files' sources read from the package at `root`, and signed where
+/// its host runs only a signed one: its directory, or the exit code its refusal spoke.
+fn bundle_written(b: Bundle, root: string) -> Result<string, int> {
+    if make_dirs(b.dir) is .Err { return .Err(unequipped(unwritable_bundle(b.dir))) }
+    for f in b.files {
+        if !bundle_file_written(f, joined_path(b.dir, f.path), root) { return .Err(unequipped(unwritable_bundle(joined_path(b.dir, f.path)))) }
+    }
+    if b.signed && !ad_hoc_signed(b.dir) { return .Err(unequipped(unsigned_bundle(b.dir))) }
+    .Ok(b.dir)
+}
+
+/// The bundle's file `f` written at `at`: a copied binary is a second name for the build's, so it
+/// keeps its mode; any other copy is its bytes.
+fn bundle_file_written(f: BundleFile, at: string, root: string) -> bool {
+    let _ = remove(at)
+    match f.made {
+        .Copied(from) -> {
+            let source = if is_absolute(from) { from } else { joined_path(root, from) }
+            if link(source, at) is .Ok { return true }
+            match read_bytes(source) {
+                .Ok(bytes) -> write_bytes(at, bytes) is .Ok,
+                .Err(_) -> false,
+            }
+        },
+        .Cut(from, px) -> icon_cut(joined_path(root, from), at, px),
+        .Written(text) -> write_text(at, text) is .Ok,
+    }
+}
+
+/// The PNG at `from` cut to `px` pixels square at `at`, by the platform's own image tool.
+fn icon_cut(from: string, at: string, px: int) -> bool {
+    let look = host_lookup()
+    let sips? = (look.tool)("sips") else { return false }
+    match cmd(ran(sips), ["-z", "${px}", "${px}", "-s", "format", "png", from, "--out", at])
+        .outcome() { .Ok(_) -> true, .Err(_) -> false }
+}
+
+/// The bundle at `dir` signed ad hoc, as a simulator runs one.
+fn ad_hoc_signed(dir: string) -> bool {
+    let look = host_lookup()
+    let codesign? = (look.tool)("codesign") else { return false }
+    match cmd(ran(codesign), ["--force", "--sign", "-", dir]).outcome() {
+        .Ok(_) -> true,
+        .Err(_) -> false,
+    }
 }
 
 /// The program at `path` built for the triple `triple` — under its package's `build/<word>/` where
@@ -551,7 +633,7 @@ fn cached_build(args: CliResult) -> int {
     let targets = if args.option("target") == "" { app_targets(path) } else { [] }
     if targets.is_empty() { return said_built(built_binary(args)) }
     let m = manifest_at(path)
-    let built = [said_built(built_as(args, path, target_triple(row, m), row.name)) for row in targets]
+    let built = [said_built(shipped(args, path, path, row, m)) for row in targets]
     let server = if m.server == null { 0 } else { said_built(server_built(args, path, m.server!)) }
     built.concat([server]).find(it != 0) ?? 0
 }
@@ -612,6 +694,24 @@ fn no_apple_sdk(sdk: string) -> string {
 
 fn no_apple_runtime(at: string, sdk: string) -> string {
     "no ${sdk} runtime archive at ${at} — `make apple-runtime APPLE_SDK=${sdk}` builds it"
+}
+
+fn unbundled_words(why: Unbundled, word: string) -> string {
+    match why {
+        .NoId -> "an `${word}` app is known by its `[app] id`, and this manifest names none — add `id = \"dev.example.app\"` under `[app]`",
+    }
+}
+
+fn no_icon(icon: string) -> string {
+    "`[app] icon` names `${icon}`, and no file stands there — the path is from the package root"
+}
+
+fn unwritable_bundle(at: string) -> string {
+    "the bundle could not be written at ${at}"
+}
+
+fn unsigned_bundle(dir: string) -> string {
+    "the bundle at ${dir} could not be signed — `codesign` signs it, and this machine has none that answered"
 }
 
 fn no_wasm_opt() -> string {

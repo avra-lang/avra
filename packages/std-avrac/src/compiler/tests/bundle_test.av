@@ -1,0 +1,142 @@
+// A target's bundle: the files an app ships as beside its binary, each derived from the manifest.
+use @std.avrac.diagnostics.{new_source_file}
+
+use compiler.{
+    Bundle,
+    Made,
+    Unbundled,
+    bundle_of,
+    judged_read,
+    named_target,
+    target_triple,
+    PlistKey,
+    Plist,
+    plist_text,
+}
+use compiler.host.{Manifest}
+
+/// The manifest of an app with a `[bin]`, carrying these `[app]` lines.
+fn app(lines: string) -> Manifest {
+    judged_read(
+        new_source_file(
+            "avra.toml",
+            "[package]\nname = \"board\"\nversion = \"1.2.3-beta\"\n\n[bin]\npath = \"src/main.av\"\n\n[app]\ntargets = [\"ios\", \"terminal\"]\n${lines}",
+        ),
+    )
+        .manifest
+}
+
+/// The bundle the `word` target of `m` ships as, its binary built at `build/<word>/board.<sdk>`.
+fn bundled(m: Manifest, word: string) -> Result<Bundle?, Unbundled> {
+    let row = named_target(word)!
+    let shaped = row with { triple: target_triple(row, m) }
+    bundle_of(m, shaped, "build/${word}/board.iphonesimulator", "board", "build/${word}")
+}
+
+/// The text of the file `path` a bundle writes; absent where it copies or holds none.
+fn written(b: Bundle, path: string) -> string? {
+    let f? = b.files.find(it.path == path) else { return null }
+    match f.made { .Written(text) -> text, .Copied(_) or .Cut(_, _) -> null }
+}
+
+/// The source of the file `path` a bundle copies; absent where it writes or holds none.
+fn copied(b: Bundle, path: string) -> string? {
+    let f? = b.files.find(it.path == path) else { return null }
+    match f.made { .Copied(from) -> from, .Cut(_, _) or .Written(_) -> null }
+}
+
+/// A cut file as `<path> <px>`; "" for any other.
+fn cut_of(f: BundleFile) -> string {
+    match f.made { .Cut(_, px) -> "${f.path} ${px}", .Copied(_) or .Written(_) -> "" }
+}
+
+/// The ios bundle of `m`, where it makes one.
+fn ios(m: Manifest) -> Bundle? {
+    match bundled(m, "ios") { .Ok(b) -> b, .Err(_) -> null }
+}
+
+spec "compiler/bundle" {
+    given "an ios app" {
+        then "it is `<name>.app` in the target's build directory, signed" {
+            let b = ios(app("id = \"dev.avra.board\"\nname = \"Board\"\n"))!
+            b.dir == "build/ios/Board.app" && b.signed
+        }
+        then "an app with no name is named for its executable" {
+            ios(app("id = \"dev.avra.board\"\n"))!.dir == "build/ios/board.app"
+        }
+        then "its executable is the build's binary, and its plist is written" {
+            let b = ios(app("id = \"dev.avra.board\"\n"))!
+            [f.path for f in b.files].join(",") == "board,Info.plist" &&
+                copied(b, "board") == "build/ios/board.iphonesimulator"
+        }
+        then "the plist names the app's identity, version and release" {
+            let p = written(ios(app("id = \"dev.avra.board\"\nname = \"Board\"\n"))!, "Info.plist")!
+            p.contains("<key>CFBundleIdentifier</key>\n\t<string>dev.avra.board</string>") &&
+                p.contains("<key>CFBundleExecutable</key>\n\t<string>board</string>") &&
+                p.contains("<key>CFBundleDisplayName</key>\n\t<string>Board</string>") &&
+                p.contains("<key>CFBundleShortVersionString</key>\n\t<string>1.2.3</string>") &&
+                p.contains("<key>MinimumOSVersion</key>\n\t<string>17.0</string>") &&
+                p
+                    .contains(
+                        "<key>CFBundleSupportedPlatforms</key>\n\t<array>\n\t\t<string>iPhoneSimulator</string>\n\t</array>",
+                    )
+        }
+        then "the release is the manifest's `min`" {
+            let m = judged_read(
+                new_source_file(
+                    "avra.toml",
+                    "[package]\nname = \"b\"\nversion = \"0.1.0\"\n\n[bin]\n\n[app]\nid = \"dev.b\"\ntargets = [\"ios\"]\n\n[target.ios]\nmin = \"18.2\"\n",
+                ),
+            )
+                .manifest
+            written(ios(m)!, "Info.plist")!
+                .contains("<key>MinimumOSVersion</key>\n\t<string>18.2</string>")
+        }
+        then "an icon is cut to every size an iPhone and an iPad read" {
+            let b = ios(app("id = \"dev.avra.board\"\nicon = \"assets/icon.png\"\n"))!
+            [cut_of(f) for f in b.files if cut_of(f) != ""].join(",") == "AppIcon60x60@2x.png 120,AppIcon60x60@3x.png 180,AppIcon76x76@2x~ipad.png 152,AppIcon83.5x83.5@2x~ipad.png 167"
+        }
+        then "the plist names the iPhone's icon, and the iPad's beside it" {
+            let p = written(
+                ios(app("id = \"dev.avra.board\"\nicon = \"assets/icon.png\"\n"))!,
+                "Info.plist",
+            )!
+            p.contains("<key>CFBundleIcons</key>") &&
+                p.contains("<key>CFBundleIcons~ipad</key>") &&
+                p
+                    .contains(
+                        "\t\t\t\t<string>AppIcon60x60</string>\n\t\t\t\t<string>AppIcon76x76</string>\n\t\t\t\t<string>AppIcon83.5x83.5</string>",
+                    )
+        }
+        then "an app with no icon names none" {
+            !written(ios(app("id = \"dev.avra.board\"\n"))!, "Info.plist")!
+                .contains("CFBundleIcons")
+        }
+        then "an app with no id makes no bundle, and says why" {
+            match bundled(app(""), "ios") { .Err(why) -> why == Unbundled.NoId, .Ok(_) -> false }
+        }
+    }
+    given "a host that runs the binary as it is" {
+        then "a terminal target has no bundle" {
+            match bundled(app("id = \"dev.avra.board\"\n"), "terminal") {
+                .Ok(b) -> b == null,
+                .Err(_) -> false,
+            }
+        }
+    }
+    given "a property list" {
+        then "its text is escaped, and an empty dictionary and array are closed" {
+            plist_text(
+                [
+                    PlistKey { key: "A&B", value: Plist.Str("<x>") },
+                    PlistKey { key: "D", value: Plist.Dict([]) },
+                    PlistKey { key: "L", value: Plist.Strs([]) },
+                    PlistKey { key: "T", value: Plist.Bool(true) },
+                ],
+            )
+                .contains(
+                    "<dict>\n\t<key>A&amp;B</key>\n\t<string>&lt;x&gt;</string>\n\t<key>D</key>\n\t<dict/>\n\t<key>L</key>\n\t<array/>\n\t<key>T</key>\n\t<true/>\n</dict>",
+                )
+        }
+    }
+}
