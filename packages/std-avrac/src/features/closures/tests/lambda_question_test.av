@@ -42,6 +42,18 @@ spec "features/closures — `?` in a lambda" {
             ) == "21"
         }
     }
+    given "a generic seat whose answer is a `Result` failing with a known type" {
+        then "a `fail` in the lambda raises to its caller, and the value is inferred" {
+            shown(
+                "fn run<T>(f: fn(int) -> Result<T, string>) -> string {\n    match f(3) {\n        .Ok(_) -> \"ok\"\n        .Err(e) -> e\n    }\n}\nrun((n: int) -> {\n    if n > 1 { fail \"too big\" }\n    n\n})",
+            ) == "too big"
+        }
+        then "a `?` in the lambda passes the failure to its caller" {
+            shown(
+                "${OK}fn run<T>(f: fn(int) -> Result<T, string>, n: int) -> Result<T, string> { f(n) }\nmatch run((m) -> ok(m)? + 1, 4) {\n    .Ok(v) -> \"ok \${v}\"\n    .Err(e) -> e\n}",
+            ) == "ok 5"
+        }
+    }
     given "a seat that says nothing" {
         then "the lambda still promises none" {
             refused_with("${OK}let g = (m: int) -> ok(m)?\n1", "a lambda promises none")
