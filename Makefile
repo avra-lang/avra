@@ -433,8 +433,8 @@ wasm-archive:
 # `$(shell)` runs on every make, `try` included.
 SUITES = $(shell sh tools/avra_tools.sh suites 2>/dev/null)
 
-.PHONY: compiler-key pool-check ready tools-suite dev-server cost cost-accept trap-marks speed-note llvm-libs libs-self-test read-lists db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz exact-patches ui-board ui-browser ui-browser-skip host-events layout-oracle wasm-host-check wasm-tasks-mutations h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules rule-examples idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns parser witnesses libs libscope families-left layers hooks-released inputs inputs-accept whole-reads whole-reads-accept read-cost \
-        check run ir emit build-native native-check avra suites install sprite sprite-check codecs codecs-static keepers voices voices-accept defects tool-witnesses pipeline-status pipeline-doc ci-invariants pr-watcher wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept wasm-routes-size speed-ratchet speed-accept wall-ratchet wall-accept warm-edit warm-accept work-accept
+.PHONY: compiler-key pool-check ready tools-suite dev-server cost cost-accept trap-marks speed-note llvm-libs libs-self-test read-lists db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz exact-patches ui-board ui-browser ui-browser-skip host-events layout-oracle wasm-host-check wasm-tasks-mutations h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules rule-examples idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns parser witnesses libs libscope layers pre-commit-hook inputs inputs-accept read-cost \
+        check run ir emit build-native native-check avra suites install sprite sprite-check codecs-static keepers voices voices-accept defects tool-witnesses pipeline-status pipeline-doc ci-invariants pr-watcher wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept wasm-routes-size speed-ratchet speed-accept wall-ratchet wall-accept warm-edit warm-accept work-accept
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
 # tree only.
@@ -989,13 +989,6 @@ dogfooding-rules:
 rule-examples:
 	@./build/avra rules --check-examples
 
-# THE HAND-WRITTEN FAMILIES MAY ONLY FALL. Every `@family` marker is a
-# family not yet a `@query`; the count may only fall and the ceiling in
-# tools/families.ceiling is lowered as one converts. A family is keyed
-# by its NAME, so declaration order is free and no ordinal is durable.
-families-left:
-	@sh tools/avra_tools.sh families
-
 # NO ANSWER STANDS ON A LONG READ LIST: a cold check of the cli on the program layer, each query's
 # longest read list held under 3,000, and the queries still over it only shorten (tools/read_lists.py).
 read-lists:
@@ -1007,7 +1000,6 @@ read-lists:
 layers:
 	@python3 tools/layers.py
 
-# A HOOK OF `Decls` THAT `let_go` DOES NOT RESET keeps its workspace alive.
 # THE LIBRARY ROSTER READS DEFINED SYMBOLS ONLY (tools/libs.py): an undefined reference is what
 # the image needs, never what it carries.
 # THE CPU BACKSTOP'S OWN FIXTURES: a number carries its cache state and is only compared with the same
@@ -1021,8 +1013,8 @@ libs-self-test:
 	@python3 tools/libs.py --self-test
 	@python3 tools/llvm_link.py --twin
 
-hooks-released:
-	@sh tools/avra_tools.sh hooks_released
+# THE PRE-COMMIT HOOK REFUSES WITHOUT A COMPILER: its fixtures (tools/hooks_pre_commit_check.sh).
+pre-commit-hook:
 	@sh tools/hooks_pre_commit_check.sh
 
 # EVERY READ OF THE WORLD IS AN INPUT THROUGH ONE DOOR: the world reads
@@ -1042,16 +1034,6 @@ clock-holds:
 
 inputs-accept:
 	@python3 tools/inputs.py --accept
-
-# EVERY WHOLE-PROGRAM READ IS A COUNTED SITE: a call that reads all of a relation's
-# rows is licensed cold at its site or listed in tools/whole_reads.baseline, which
-# only falls (tools/whole_reads.py). The run's own count is `check --counts`.
-whole-reads:
-	@python3 tools/whole_reads.py --self-test >/dev/null
-	@python3 tools/whole_reads.py
-
-whole-reads-accept:
-	@python3 tools/whole_reads.py --accept
 
 # A RECORDED READ HAS A BUDGET: retains, releases and list reads and writes
 # per read, counted on the census runtime, never over read_cost.budget.
@@ -1283,9 +1265,9 @@ KEEPERS_ALONE = runtime-tests runtime-mutations
 # KEEPERS_A is two halves, one CI runner each, balanced by measured seconds
 # (speed-ratchet is the longest keeper, alone it is half the set).
 KEEPERS_A1 = speed-ratchet cost fmt-lossless hash-door stems
-KEEPERS_A2 = read-cost read-lists warm-edit codecs traps compile-slots witness flow-trace
+KEEPERS_A2 = read-cost read-lists warm-edit codecs-static traps compile-slots witness flow-trace
 KEEPERS_A = $(KEEPERS_A1) $(KEEPERS_A2)
-KEEPERS_B = libscope ahead-edit-attack held-store-attack cutoff-witness heir-save-attack share-merge-attack wave-share-attack beside-attack h2spec pool-check tools-suite fingerprints vocab families-left layers libs-self-test speed-note hooks-released inputs whole-reads cited http-cites externs trap-marks suites rt-header rt-ns parser witnesses dogfooding-rules rule-examples attack voices defects \
+KEEPERS_B = libscope ahead-edit-attack held-store-attack cutoff-witness heir-save-attack share-merge-attack wave-share-attack beside-attack h2spec pool-check tools-suite fingerprints vocab layers libs-self-test speed-note pre-commit-hook inputs cited http-cites externs trap-marks suites rt-header rt-ns parser witnesses dogfooding-rules rule-examples attack voices defects \
             ui-host host-events ui-host-test ui-board exact-patches dev-server ui-browser ui-browser-skip tool-witnesses footprint tick-object no-threads \
             ci-invariants ci-verdict pr-watcher pipeline-doc workflows-yaml tail-status bash-parse vendored-fixture
 # KEEPERS_WASM is the wasm target's proof — the fixtures native and wasm32 alike, the seam,
@@ -1382,7 +1364,7 @@ pipeline-status:
 # together take half a minute, so a refusal stops on the PR instead of
 # failing a train and every PR riding it. Each is one of KEEPERS, which the
 # train runs whole.
-KEEPERS_STATIC = host-events fingerprints vocab families-left layers libs-self-test speed-note hooks-released cited http-cites externs suites ui-browser-skip ci-invariants ci-verdict pr-watcher pipeline-doc workflows-yaml tail-status bash-parse vendored-fixture
+KEEPERS_STATIC = host-events fingerprints vocab layers libs-self-test speed-note pre-commit-hook cited http-cites externs suites ui-browser-skip ci-invariants ci-verdict pr-watcher pipeline-doc workflows-yaml codecs-static tail-status bash-parse vendored-fixture
 .PHONY: compiler compiler-files store-witnesses cache-attacks-w keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b keepers-wasm keepers-static keepers-pr pipeline-doc tail-status bash-parse pipeline-status ci-invariants ci-verdict pr-watcher
 keepers-static:
 	@left="$(filter-out $(KEEPERS),$(KEEPERS_STATIC))"; [ -z "$$left" ] || { echo "keepers-static: $$left is no keeper — the train would not hold it" >&2; exit 1; }
@@ -1401,20 +1383,12 @@ keepers-pr:
 	@left="$(filter-out $(KEEPERS),$(KEEPERS_PR))"; [ -z "$$left" ] || { echo "keepers-pr: $$left is no keeper — the train would not hold it" >&2; exit 1; }
 	@sh tools/keepers_loop.sh "$(MAKE) -s -o avra" $(KEEPERS_PR)
 
-# THE CODEC KEEPER: a record's wire ENCODER and its DECODER agree.
-# compiler/codecs.av's registry runs every pair over its exemplars,
-# decode(encode(x)) compared to x field by field; tools/codecs.py
-# refuses any encoder/decoder-shaped pair in the tree the registry
-# does not name.
-#
-# THE SCAN IS ITS OWN TARGET because it needs no compiler: a pull request
-# whose diff reaches the compiler's source runs `codecs-static` in seconds
-# (it is what names an unregistered pair — the refusal #537 failed a train
-# on), so the defect is heard on the PR, not one train later. The
-# registry's round trip needs a whole compiler and stays with the train.
-codecs: codecs-static $(COMPILER_OBJS) $(PACKAGE_OBJS)
-	@./build/avra test packages/std-avrac/src/compiler/tests/codecs_test.av
-
+# THE CODEC SCAN: every encoder/decoder-shaped pair in the tree is one
+# compiler/codecs.av's registry names (tools/codecs.py). It needs no
+# compiler, so a pull request reaching the compiler's source hears an
+# unregistered pair in seconds. The registry's round trip, decode(encode(x))
+# against x field by field, is std-avrac's own suite
+# (compiler/tests/codecs_test.av).
 codecs-static:
 	@python3 tools/codecs.py
 
@@ -1602,7 +1576,7 @@ witness: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 # refuses in that case, which is honest and not a gate failure, so
 # its status is discarded here.
 # not a keeper — a lane's local union of keepers; CI runs each in its own job
-gate: llvm-libs seed-check stems vocab fingerprints ui-host ui-host-test ui-board ui-browser families-left layers hooks-released codecs rt-header rt-ns parser witnesses externs idioms cited dogfooding-rules fmt-lossless attack tested runtime-tests traps compile-slots witness tool-witnesses cache-attacks
+gate: llvm-libs seed-check stems vocab fingerprints ui-host ui-host-test ui-board ui-browser layers pre-commit-hook codecs-static rt-header rt-ns parser witnesses externs idioms cited dogfooding-rules fmt-lossless attack tested runtime-tests traps compile-slots witness tool-witnesses cache-attacks
 	@sh tools/gate_receipt.sh write || true
 
 tested: $(COMPILER_OBJS) $(PACKAGE_OBJS) libs

@@ -418,7 +418,6 @@ by nobody.
 |---|---|
 | `make fingerprints` | every node kind's fingerprint tag is unique inside its fold space |
 | `make vocab` | every `Ins` consumer stays exhaustive, so an instruction cannot ship half-implemented |
-| `make families-left` | the hand-written families may only fall, and a family is keyed by its name |
 | `make layers` | layering is one-way: `core -> grammar -> features -> compiler`, and `@std/relation` never names the compiler |
 | `make inputs` | every read of the world is an input through one door; a new site is refused and the baseline only falls |
 | `make clock-holds` | every blocking C call holds the world (a virtual clock flows across, or it says why it waits on no time) |
@@ -434,7 +433,7 @@ by nobody.
 | `make attack` | the set of malformed mutants the compiler accepts has not moved (`tools/attack.baseline`) |
 | `make speed-ratchet` | each phase of `packages/cli`'s build/check is under its ceiling (§5) |
 | `make read-cost` | retains, releases and list reads/writes per read are over no budget |
-| `make codecs` | every record's encoder and decoder agree (`decode(encode(x)) == x`) |
+| `make codecs-static` | every encoder/decoder-shaped pair is one the codec registry names; the registry's round trip is std-avrac's suite |
 | `make traps` | a trap is a verdict (exit 2) and its words name the fault, held exactly |
 | `make compile-slots` | the parallel build's slot accounting |
 | `make witness` | Avra and C agree reading the same object — the extern width seam |

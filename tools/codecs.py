@@ -3,7 +3,7 @@
 
 compiler/codecs.av holds the registry — every wire's encode fn paired
 with its decode fn, checked field by field against synthetic samples
-(`make codecs` runs that suite). That registry only proves the pairs
+(std-avrac's suite runs it, compiler/tests/codecs_test.av). That registry only proves the pairs
 it NAMES agree; it says nothing about a pair nobody registered. This
 reader is the other half: it scans the tree for encoder/decoder-SHAPED
 fn pairs by name, and refuses any it finds that the registry does not
