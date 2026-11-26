@@ -22,6 +22,7 @@ use @std.ui.tree.outline.{outline}
 use @std.ui.tree.story.{Case, Story, Told, heard_all}
 use @std.ui.tree.view.{View, tree_of}
 use @std.ui.tree.viewed.{ViewRow, Viewed}
+use @std.ui.env.{Direction, writing}
 
 /// A view, what its stories say of it, the cases they draw, and the names of the cases that draw
 /// exactly what the base does.
@@ -125,20 +126,21 @@ fn pin_words(p: Pin) -> string {
 // ── The dials and the snapshots ─────────────────────────────────
 
 /// One setting of the dials a case is drawn under: the scheme, the contrast and the text size (a
-/// percent of the theme's own) the reader's system turns, and the width of the frame — one that
-/// grows to the room the page gives it (`Fill`), never past it, or one held narrow, where an
-/// overflow is real. A dial varies one from the first
-/// row, as a case varies one member from its base.
-export type Dialed = { name: string, mode: Mode, contrast: Contrast, text_size: int, width: Sizing }
+/// percent of the theme's own) the reader's system turns, the width of the frame — one that grows
+/// to the room the page gives it (`Fill`), never past it, or one held narrow, where an overflow is
+/// real — and the direction the frame is laid out in. A dial varies one from the first row, as a
+/// case varies one member from its base.
+export type Dialed = { name: string, mode: Mode, contrast: Contrast, text_size: int, width: Sizing, writing: Direction }
 
 /// The dials every case is drawn under.
 export const dials = table<Dialed> {
-    name     | mode       | contrast          | text_size | width
-    "light"  | Mode.Light | Contrast.Standard | 100       | Sizing.Fill
-    "dark"   | Mode.Dark  | Contrast.Standard | 100       | Sizing.Fill
-    "more"   | Mode.Light | Contrast.More     | 100       | Sizing.Fill
-    "large"  | Mode.Light | Contrast.Standard | 200       | Sizing.Fill
-    "narrow" | Mode.Light | Contrast.Standard | 100       | Sizing.Fixed(320)
+    name     | mode       | contrast          | text_size | width             | writing
+    "light"  | Mode.Light | Contrast.Standard | 100       | Sizing.Fill       | Direction.Ltr
+    "dark"   | Mode.Dark  | Contrast.Standard | 100       | Sizing.Fill       | Direction.Ltr
+    "more"   | Mode.Light | Contrast.More     | 100       | Sizing.Fill       | Direction.Ltr
+    "large"  | Mode.Light | Contrast.Standard | 200       | Sizing.Fill       | Direction.Ltr
+    "narrow" | Mode.Light | Contrast.Standard | 100       | Sizing.Fixed(320) | Direction.Ltr
+    "rtl"    | Mode.Light | Contrast.Standard | 100       | Sizing.Fill       | Direction.Rtl
 }
 
 /// The dials the page shows until the reader chooses others.
@@ -346,6 +348,7 @@ component frame(dial: Dialed) {
 component dialed_frame(dial: Dialed) {
     shows: dyn View
     ctx theme = dialed(ctx.theme, self.dial)
+    ctx writing = self.dial.writing
     surface {
         style: Style { fill: .Neutral, radius: .M }
         layout: Layout { pad: around(.Xs) }
