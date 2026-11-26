@@ -8,7 +8,22 @@ use settings.{
     LANDINGS,
     NAMED_FILE,
     RUNTIME_FILE,
+    Projection,
     Setting,
+}
+
+/// The text written to `file`, empty where no projection writes it.
+fn written_to(ps: List<Projection>, file: string) -> string { ps.find(it.file == file)?.text ?? "" }
+
+/// Whether a declared switch is read where it lands as every switch is: its package's
+/// projection through `setting_switch`, the runtime's header through `avra_setting_switch`.
+fn read_as_switch(s: Setting, ps: List<Projection>) -> bool {
+    let package = s.path().split(".")[1]
+    let landing? = LANDINGS.find(it.key == package) else {
+        let stem = s.variable().substring("AVRA_".length, s.variable().length)
+        return written_to(ps, RUNTIME_FILE).contains("avra_setting_switch(AVRA_SET_${stem}, ")
+    }
+    written_to(ps, landing.file).contains("setting_switch(\"${s.variable()}\", ")
 }
 
 /// One section holding one package holding `leaves`.
@@ -80,6 +95,13 @@ fn laid(kind: FieldKind, v: Value) -> string {
 
 spec "settings — the one declaration and its projections" {
     given "the tree's declaration" {
+        then "every switch is read as a switch, so `=0` is off wherever it is read" {
+            match projected() {
+                .Ok(ps) -> every_setting().filter(it.switch()).all(read_as_switch(it, ps)) &&
+                    read_as_switch(Setting.DebugAvracHeldItemsOff, ps),
+                .Err(_) -> false,
+            }
+        }
         then "it projects into each landing and the oracle's names, nothing refused" {
             match projected() {
                 .Ok(ps) -> [p.file for p in ps].join(" ") == [d.file for d in LANDINGS].concat([NAMED_FILE, RUNTIME_FILE]).join(" "),
