@@ -252,7 +252,7 @@ use @std.process.{
 }
 use @std.time.{now_ns, secs}
 use @std.program.defect.{defect}
-use @std.program.address.{SourceFileAddress}
+use @std.program.address.{SourceFileAddress, source_file}
 use @std.program.layered_store.{
     LayeredStore,
     MachineLayer,
@@ -1395,7 +1395,7 @@ impl Disk {
     fn meta_is_toolchains() -> bool { normalized(self.package_root(META)) == normalized(joined_path(self.std, META_STEM)) }
 
     /// The named package's file at `path`, as the program addresses it.
-    fn file_at(path: string) -> SourceFileAddress { SourceFileAddress { package_name: self.name, path_in_package: path } }
+    fn file_at(path: string) -> SourceFileAddress { source_file(self.name, path) }
 
     /// A file on disk as the program spells it: its package, then its path.
     fn spelled(path: string) -> string {
@@ -3394,10 +3394,7 @@ fn address_of(disk: Disk, path: string) -> SourceFileAddress? {
     let rest = spelled.substring(STD.length, spelled.length)
     let cut = rest.index_of("/")
     if cut < 0 { return null }
-    SourceFileAddress {
-        package_name: STD + rest.substring(0, cut),
-        path_in_package: rest.substring(cut + 1, rest.length),
-    }
+    source_file(STD + rest.substring(0, cut), rest.substring(cut + 1, rest.length))
 }
 
 /// Every body the package's program reaches from its `[bin]` entry, walked past each one not lowered

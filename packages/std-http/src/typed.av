@@ -22,10 +22,14 @@
 //! THE QUERY IS DECODED ONCE, AFTER THE SPLIT, NAMES AND VALUES ALIKE —
 //! an escaped `&` or `=` never moves where a field begins (query.av) —
 //! and read under `Coercion.Lax` through `from_keyed`: absent takes the
-//! field's default, a bare key reads `true`, an empty value is text, and
-//! a scalar sent twice is refused, never a side picked. A key the record
+//! field's default, a bare key reads `true`, an empty value is text for a
+//! text field and absence for every other, and a scalar sent twice is
+//! refused, never a side picked. A key the record
 //! does not name is passed by. An escape that decodes to no text, or to a
 //! NUL, is a 400: it is no field's value to judge.
+//!
+//! A FORM IS READ AS A QUERY IS (`form_as`): its fields keyed as sent,
+//! either encoding, under the same `Coercion.Lax` and the same 422.
 //!
 //! A CAPTURE STAYS RAW in `params` (route.av); `captured` is the typed
 //! read of one, decoded once under the same law.
@@ -49,6 +53,17 @@ impl Request {
                 let _ = body_json(doc)?
                 fail problem(issues)
             },
+        }
+    }
+
+    /// THE FORM AS A `T`, or the response refusing it: the form's own
+    /// refusal (`form_body`), or a 422 naming every issue for fields that are
+    /// not a `T` — read as a query's fields are, by `T`'s own rules.
+    fn form_as<T: Decode>() -> Result<T, Response> {
+        let posted = self.form_body()?
+        match T.decode(from_keyed(posted.keyed()), Coercion.Lax) {
+            .Ok(v) -> v,
+            .Err(issues) -> { fail problem(issues) },
         }
     }
 

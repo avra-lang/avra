@@ -18,7 +18,13 @@
 //!
 //! Every model's FIRST field is `id: int = 0` — the primary key SQLite
 //! mints, held in the type itself so a found row and an inserted one
-//! are the same shape. `@unique` marks a column's own constraint, and
+//! are the same shape. A model that holds no link also declares its
+//! DRAFT, `UserDraft`: what a create is handed — every field but the key
+//! and the columns the store sets, defaults and field rules kept, read
+//! from a body by the same rules — and a draft's `insert(db)` answers
+//! the row the database holds, under the key it named.
+//!
+//! `@unique` marks a column's own constraint, and
 //! `@unique(board) title` a key over several: no two rows hold the same
 //! `title` within one `board`. The key's columns are the fields the mark
 //! names, in written order, then the field it stands on; a row holding
@@ -52,6 +58,7 @@ use @std.meta.{
     name,
     literal,
     type_named,
+    type_exported,
     stored_scalar,
     flat,
     flat_field,
@@ -81,6 +88,7 @@ export trait Model {
         let read = stripped(t, claimed(t))
         [beside(t, generated(t)), beside(t, checks(read)), beside(t, decodes(read))]
             .concat([declares(filter_name(t, f), t.at, filter_enum(t, f)) for f in filtered_fields(t)])
+            .concat(drafts(t, read))
     }
 
     /// The marks this derive reads: `@unique` makes a column unique, and
@@ -364,8 +372,82 @@ fn checks(t: Type) -> Decls {
 /// the parent is fetched after, which the body alone cannot do, so it
 /// derives no decoder until the key-carrying projection exists.
 fn decodes(t: Type) -> Decls {
-    if !shape_ok(t) || t.fields.any(link_target(it) != null || is_many(it)) { return quote { impl ${t} { } } }
+    if !decoded(t) { return quote { impl ${t} { } } }
     decoder(t)
+}
+
+/// Whether the model is read from a body: a shape the model law takes, holding no link.
+fn decoded(t: Type) -> bool { shape_ok(t) && !t.fields.any(link_target(it) != null || is_many(it)) }
+
+// ── The draft: what a create is handed. ──
+
+/// The record a create takes: `Todo`'s is `TodoDraft`, exported exactly when its model is.
+export fn draft_name(t: Type) -> string { "${t.name}Draft" }
+
+/// The fields a create is handed: every column but the key and the ones the store sets.
+fn drafted_fields(t: Type) -> List<Field> { [f for f in written_fields(t) if !is_mark(f, "soft_delete")] }
+
+/// The draft as the validate derive reads it: the drafted fields, each with its own rules. The
+/// model's own rules judge the whole row, so they run where the draft becomes one, at its insert.
+fn draft_of(read: Type) -> Type { read with { name: draft_name(read), fields: drafted_fields(read), annotations: [] } }
+
+/// The model's draft, declared beside it: none for a model no body is read as.
+fn drafts(t: Type, read: Type) -> List<Directive> {
+    if !decoded(t) { return [] }
+    [declares(draft_name(t), t.at, drafted(t, read))]
+}
+
+/// The draft declared, read by the model's field rules, and stored as a row of the model.
+fn drafted(t: Type, read: Type) -> Decls {
+    let d = draft_of(read)
+    quote {
+        ${draft_type(d, type_exported(t.module, t.name) != null)}
+        ${decoder(d)}
+        impl ${draft_name(t)} {
+            /// The draft stored as a new row within `scope` (none: unheld), by the model's own
+            /// rules: the row the database holds, its key the one it named.
+            fn insert(db: Db, scope: Where? = null) -> Result<${t}, ModelError> {
+                let row = ${draft_row(t)}
+                row.in_scope(scope).insert(db)
+            }
+        }
+    }
+}
+
+fn draft_type(d: Type, exported: bool) -> Decls {
+    let fields = [draft_field(f) for f in d.fields]
+    if exported { return quote { export type ${d.name} = { ..${fields} } } }
+    quote { type ${d.name} = { ..${fields} } }
+}
+
+/// One drafted field as the draft declares it, its default kept.
+fn draft_field(f: Field) -> Decls {
+    if f.default == null { return quote { type _ = { ${f.name}: ${f.ty} } } }
+    quote { type _ = { ${f.name}: ${f.ty} = ${f.default!} } }
+}
+
+/// The row a draft becomes: its own fields, and the store's own left to the insert.
+fn draft_row(t: Type) -> Code {
+    let inits = [assigned_init(f) for f in t.fields if assigned(f)]
+        .concat([drafted_init(f) for f in drafted_fields(t)])
+    quote { ${t} { ..${inits} } }
+}
+
+fn drafted_init(f: Field) -> Code { quote { Init { ${f.name}: self.${f.name} } } }
+
+/// A field the store sets: the key, and an `@auto` stamp or a `@soft_delete` mark that declares
+/// no default. The insert binds none of them from the row and answers what it stored.
+fn assigned(f: Field) -> bool { f.name == "id" || !f.defaulted && (is_mark(f, "auto") || is_mark(f, "soft_delete")) }
+
+/// What an assigned field holds until the insert answers the stored row: nothing it reads.
+fn assigned_init(f: Field) -> Code { quote { Init { ${f.name}: ${unstored(f.kind)} } } }
+
+fn unstored(k: Kind) -> Code {
+    match k {
+        .Opt(_) -> quote { null },
+        .Named(n, _) -> flat_made(n, quote { 0 }),
+        rest -> quote { 0 },
+    }
 }
 
 fn generated(t: Type) -> Decls {

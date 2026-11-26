@@ -1,0 +1,103 @@
+//! A model's draft is what a create is handed: the model without its key
+//! and the columns the store sets, its defaults kept and its fields' rules
+//! its own. Storing one answers the row the database holds, named by the
+//! key the database chose; a body that names a key is no draft.
+use @std.db.{model}
+use @std.db.error.{ModelError, modeled}
+use @std.sqlite.{Db}
+use @std.sqlite.error.{SqlError}
+use @std.validate.{Issue, Issues, issue, length, range}
+
+@model
+type Keyonly = { id: int = 0 }
+
+/// Private here; `model_draft_apart_test.av` holds another `Note`, and each reads its own draft.
+@model
+type Note = { id: int = 0, title: string }
+
+/// A row ranked 0 is filed under a tag.
+fn filed(j: Jot) -> Result<Jot, Issue> {
+    if j.rank == 0 && j.tag == null { fail issue("tag", "a row ranked 0 is filed under a tag") }
+    j
+}
+
+@model
+@filed
+type Jot = {
+    id: int = 0,
+    @length(min: 1) text: string,
+    tag: string? = null,
+    @range(0, 9) rank: int = 3,
+    @auto created: int,
+    @soft_delete removed_at: int? = null,
+}
+
+fn seeded() -> Result<Db, SqlError> {
+    let db = Db.memory()?
+    Keyonly.create_table(db)?
+    Note.create_table(db)?
+    Jot.create_table(db)?
+    db
+}
+
+/// Every issue as `path rule`.
+fn said(issues: Issues) -> string { [i.path.text() + " " + i.rule for i in issues.all].join(", ") }
+
+fn read(body: string) -> string {
+    match JotDraft.from_json(body) {
+        .Ok(d) -> "${d.text} ${d.tag ?? "-"} ${d.rank}",
+        .Err(e) -> said(e),
+    }
+}
+
+fn keys_only() -> Result<string, ModelError> {
+    let db = modeled(seeded())?
+    let a = KeyonlyDraft {}.insert(db)?
+    let b = KeyonlyDraft {}.insert(db)?
+    "${a.id} ${b.id}"
+}
+
+fn titled() -> Result<string, ModelError> {
+    let db = modeled(seeded())?
+    let n = NoteDraft { title: "mine" }.insert(db)?
+    n.title
+}
+
+fn stored() -> Result<string, ModelError> {
+    let db = modeled(seeded())?
+    let n = JotDraft { text: "hi" }.insert(db)?
+    let found = modeled(Jot.find(db, n.id))?
+    "${n.id} ${n.rank} ${n.created > 0} ${n.removed_at == null} ${found?.text ?? "none"}"
+}
+
+fn refused_at_insert(d: JotDraft) -> Result<string, ModelError> {
+    let db = modeled(seeded())?
+    match d.insert(db) { .Ok(_) -> "landed", .Err(e) -> said(e.issues()) }
+}
+
+spec "std/db a model's draft" {
+    given "a model that holds nothing but its key" {
+        then "its draft is empty, and each one stored is a new key" { (keys_only() catch _ -> "") == "1 2" }
+        then "an empty body is its draft" { KeyonlyDraft.from_json("{}") is .Ok }
+        then "a private model's draft is this file's own" { (titled() catch _ -> "") == "mine" }
+    }
+    given "a model with rules, defaults and columns the store sets" {
+        then "a draft takes the fields it leaves out as their defaults" { read("{\"text\":\"a\"}") == "a - 3" }
+        then "a draft reads by the fields' own rules" { read("{\"text\":\"\",\"rank\":12}") == "text length, rank range" }
+        then "a body naming the key is no draft" { read("{\"id\":7,\"text\":\"a\"}") == "id unknown" }
+        then "a body naming a column the store sets is no draft" {
+            read("{\"text\":\"a\",\"created\":5}") == "created unknown" &&
+                read("{\"text\":\"a\",\"removed_at\":5}") == "removed_at unknown"
+        }
+        then "stored, it answers the row the database holds, its key and stamp the database's" {
+            (stored() catch _ -> "") == "1 3 true true hi"
+        }
+        then "the insert holds the draft to the same rules" {
+            (refused_at_insert(JotDraft { text: "", rank: 12 }) catch _ -> "") == "text length, rank range"
+        }
+        then "the model's own rules judge the row the draft becomes" {
+            read("{\"text\":\"a\",\"rank\":0}") == "a - 0" &&
+                (refused_at_insert(JotDraft { text: "a", rank: 0 }) catch _ -> "") == "tag filed"
+        }
+    }
+}

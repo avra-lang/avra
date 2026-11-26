@@ -300,17 +300,32 @@ cli_built() {
 
 slice_build() {
     row try make try
-    row avra-a env AVRA_STD_ANSWERS=0 make avra && cp build/avra "$out/avra-a"
-    # THE NEXT GATE'S GENERATION 1 STARTS WARM: this gate's compiler of generation 2 is what landing makes
-    # the next gate's builder, and the cli's stores it has just filled building the cli are the ones that
-    # builder reads first (a store answers only the compiler whose print it holds); the landing keeps them
-    # beside the builder as builder-store.tar.gz
+    # THE FIXED POINT IS ONE GENERATION'S PRODUCT BUILT AGAIN BY ITSELF: the pack's compiler is this
+    # tree's generation 2 and `make try` builds generation 3 with it, as `make avra` does. Where they
+    # are one binary the fixed point stands and no generation is built again; where they differ, the
+    # tree builds generations 3 and 4 as `make avra` makes them, and they must be one.
+    if cmp -s build/avra build/avra-try; then
+        echo "fact gen3-is-gen2 yes" >>"$out/rows"
+        judged fixed-point 0
+        builder_stores
+    else
+        echo "fact gen3-is-gen2 no $(differs_at build/avra build/avra-try)" >>"$out/rows"
+        row avra-a env AVRA_STD_ANSWERS=0 make avra && cp build/avra "$out/avra-a"
+        builder_stores
+        cold cli
+        row avra-b env AVRA_STD_ANSWERS=0 make avra && { cmp -s build/avra "$out/avra-a"; judged fixed-point $?; }
+    fi
+    cli_built
+}
+
+# THE NEXT GATE'S GENERATION 1 STARTS WARM: this gate's compiler of generation 2 is what landing makes
+# the next gate's builder, and the cli's stores it has just filled building the cli are the ones that
+# builder reads first (a store answers only the compiler whose print it holds); the landing keeps them
+# beside the builder as builder-store.tar.gz
+builder_stores() {
     { find packages/cli -name .avra-cache -type d -prune; echo "${AVRA_CACHE_DIR#"$root"/}"; } > "$out/stores"
     row builder-store tar -czf build/gate/builder-store.tar.gz -T "$out/stores" &&
         echo "fact builder-store $(du -k build/gate/builder-store.tar.gz | cut -f1) KB" >>"$out/rows"
-    cold cli
-    row avra-b env AVRA_STD_ANSWERS=0 make avra && { cmp -s build/avra "$out/avra-a"; judged fixed-point $?; }
-    cli_built
 }
 
 # the std-avrac suite over `$@`, its paths under the package: one row for every path of std-avrac's

@@ -2,7 +2,9 @@
 //! its declaration so no field can be forgotten. Each field takes one slot of one record, read
 //! through `value_shapes`, the one reading every writer shares. Anything with bytes has a form; a
 //! field with none, like a fn or a pointer, and an id, which names a node in one run only, are
-//! refused by name.
+//! refused by name. A field marked `@derived(door)` is the exception: it is never written, never
+//! folded and never part of the saved shape, and a read rebuilds the whole value through `door`
+//! over the written fields, in the order they're declared.
 use @std.meta.{
     Arms,
     Code,
@@ -39,7 +41,7 @@ use answer_record.{ContentHash, content_hash}
 use defect.{defect}
 use held_values.{HeldValues, held_values}
 use interned.{KeyLane}
-use value_shapes.{FieldRole, Reading, ValueShape, Wrapper, tag_made, tag_number}
+use value_shapes.{FieldRole, Reading, ShapedVariant, ValueShape, Wrapper, tag_made, tag_number}
 
 /// What generated code calls the writer it's handed. Saved fields are spliced into templates
 /// written elsewhere, so it's bound and read through a hole.
@@ -74,7 +76,59 @@ export fn saved_shape(kind: Kind) -> ValueShape? {
 }
 
 /// A saved answer is written from the declarations as the build sees them, every field of them.
-fn saved_reading() -> Reading { Reading { declared: type_named, role: (_f: Field) -> FieldRole.Written } }
+fn saved_reading() -> Reading { Reading { declared: type_named, role: saved_role } }
+
+/// What a saved value does with a field: writes it, or carries a derived one it never writes.
+fn saved_role(f: Field) -> FieldRole { if is_derived(f) { FieldRole.Carried } else { FieldRole.Written } }
+
+/// What a saved value of `t` is made of, its derived fields left out: the shape its saved format
+/// is, so a derived field added or taken away moves no format.
+export fn saved_variants(t: MetaType) -> List<ShapedVariant> { saved_reading().variants_of(t) }
+
+/// The mark on a field a saved value never writes, rebuilt on read: `@derived(door)`, `door`
+/// taking the written fields in the order they're declared and answering the whole value.
+export const DERIVED_MARK: string = "derived"
+
+/// Whether `f` is derived: carried in the value, never in its bytes.
+fn is_derived(f: Field) -> bool { f.marks.any(it.name == DERIVED_MARK) }
+
+/// The fields a record writes, in order: every field but the derived ones.
+fn written_fields(t: MetaType, derived: bool) -> List<Field> { if derived { t.fields.filter(!is_derived(it)) } else { t.fields } }
+
+/// Whether any field of `t`, a variant's among them, is derived: asked first, so a type with none
+/// pays no list for the asking.
+fn any_derived(t: MetaType) -> bool { t.fields.any(is_derived(it)) || t.variants.any((v) -> v.fields.any(is_derived(it))) }
+
+/// The door a record with derived fields is rebuilt through; none where no field is derived.
+fn rebuilt_through(t: MetaType) -> string? { t.fields.find(is_derived(it))?.marks?.find(it.name == DERIVED_MARK)?.args?.first() }
+
+/// Why `t`'s derived fields can't be derived: a variant's field marked, a mark naming no door,
+/// or two naming different ones.
+fn derived_problems(t: MetaType) -> List<Diagnostic> {
+    let in_variants = [f for v in t.variants for f in v.fields if is_derived(f)]
+    let marks = [m for f in t.fields for m in f.marks if m.name == DERIVED_MARK]
+    let doors = [m.args.first() ?? "" for m in marks]
+    if !in_variants.is_empty() {
+        return [
+            refuse(
+                "`${t.name}.${in_variants[0].name}` is a variant's field, and only a record's field can be `@derived`",
+            ),
+        ]
+    }
+    if doors.any(it.is_empty()) {
+        return [
+            refuse("a `@derived` field of `${t.name}` names no door to rebuild `${t.name}` through"),
+        ]
+    }
+    if doors.any(it != doors[0]) {
+        return [
+            refuse(
+                "`${t.name}`'s `@derived` fields name different doors, and one value is rebuilt through one",
+            ),
+        ]
+    }
+    []
+}
 
 /// Whether a value holds an id anywhere.
 fn holds_an_id(shape: ValueShape) -> bool {
@@ -87,20 +141,25 @@ fn holds_an_id(shape: ValueShape) -> bool {
 export trait Saved {
     /// Generates the type's save and load methods, or says which field can't be saved.
     static fn derive(t: MetaType) -> Declared {
-        let problems = [no_bytes(t.name, f) for f in every_field(t) if saved_shape(f.kind) == null]
+        let unsaved = [no_bytes(t.name, f) for f in every_field(t) if !is_derived(f) && saved_shape(f.kind) == null]
+        let derived = any_derived(t)
+        let problems = if derived { derived_problems(t).concat(unsaved) } else { unsaved }
         if !problems.is_empty() { return nothing_made(problems) }
         if !held_once(t) {
             return Declared {
-                made: [beside(t, quote { impl ${t} { ${saved_methods(t, false)} } })],
+                made: [beside(t, quote { impl ${t} { ${saved_methods(t, false, derived)} } })],
             }
         }
         Declared {
             made: [
-                beside(t, quote { impl ${t} { ${saved_methods(t, true)} } }),
+                beside(t, quote { impl ${t} { ${saved_methods(t, true, derived)} } }),
                 declares(held_decodes_door(t), t.at, held_decodes(t)),
             ],
         }
     }
+
+    /// The field marks `Saved` reads: `@derived`.
+    static fn marks(_t: MetaType) -> List<string> { [DERIVED_MARK] }
 }
 
 /// Every field of a record, and of each variant of an enum.
@@ -112,8 +171,15 @@ fn every_field(t: MetaType) -> List<Field> {
 fn shape_of_field(f: Field) -> ValueShape { saved_shape(f.kind)! }
 
 /// Whether what a value of `t` reads back as is held for the process by its bytes' hash: a value
-/// holding no cell, which never changes once read, so the same bytes are the same value.
-fn held_once(t: MetaType) -> bool { !every_field(t).any(cell_in(shape_of_field(it))) }
+/// holding no cell, which never changes once read, so the same bytes are the same value. A derived
+/// field is looked at too, though it's never written: a cell it holds is a cell the value holds,
+/// and one whose type has no shape to look into might hold one.
+fn held_once(t: MetaType) -> bool { !every_field(t).any(may_hold_a_cell(it)) }
+
+fn may_hold_a_cell(f: Field) -> bool {
+    let shape? = saved_shape(f.kind) else { return true }
+    cell_in(shape)
+}
 
 /// Whether a shape holds a cell anywhere in it.
 fn cell_in(shape: ValueShape) -> bool {
@@ -136,7 +202,9 @@ fn held_decodes(t: MetaType) -> Decls {
 /// `held`, a value read from bytes is held by their hash for the process (`held_values`), so the same
 /// bytes read again decode nothing; `from_saved_held` takes the hash where the reader has it (a
 /// part's, `KeptPart.hash`), so the bytes aren't hashed again.
-fn saved_methods(t: MetaType, held: bool) -> Decls {
+fn saved_methods(t: MetaType, held: bool, derived: bool) -> Decls {
+    let written = written_fields(t, derived)
+    let door = if derived { rebuilt_through(t) } else { null }
     let read = if held {
         quote {
             static fn from_saved_bytes(bytes: Bytes) -> ${t} { ${name(t.name)}.from_saved_held(bytes, content_hash(bytes)) }
@@ -168,17 +236,17 @@ fn saved_methods(t: MetaType, held: bool) -> Decls {
 
         ${read}
 
-        fn written_into(${WRITER_NAME}: SavedLayoutWriter) -> int { ${written_body(t)} }
+        fn written_into(${WRITER_NAME}: SavedLayoutWriter) -> int { ${written_body(t, written)} }
 
         fn folded_into(${FOLD_LANE}: KeyLane, key_fold: int) -> int {
             mut ${FOLDED} = key_fold
-            ${folded_body(t)}
+            ${folded_body(t, written)}
             ${name(FOLDED)}
         }
 
-        static fn read_from(${SOURCE_NAME}: SavedSource, record: SavedRecord) -> ${t} { ${read_body(t)} }
+        static fn read_from(${SOURCE_NAME}: SavedSource, record: SavedRecord) -> ${t} { ${read_body(t, written, door)} }
 
-        ${[field_door(f, slot) for slot, f in t.fields]}
+        ${[field_door(f, slot) for slot, f in written]}
     }
 }
 
@@ -222,11 +290,11 @@ export fn word_folded(word: Code) -> Stmts { quote { ${name(FOLDED)} = ${name(FO
 
 /// Folding into a key: a record folds its field count, then each field; an enum its variant's number,
 /// then each of its fields.
-fn folded_body(t: MetaType) -> Stmts {
+fn folded_body(t: MetaType, written: List<Field>) -> Stmts {
     if t.variants.is_empty() {
-        let fields = [slot_folded(shape_of_field(f), quote { self.${f.name} }) for f in t.fields]
+        let fields = [slot_folded(shape_of_field(f), quote { self.${f.name} }) for f in written]
         return quote {
-            ${word_folded(slot_number(t.fields.length))}
+            ${word_folded(slot_number(written.length))}
             ${fields}
         }
     }
@@ -248,12 +316,12 @@ fn folded_variant(v: MetaVariant, at: int) -> Arms {
 }
 
 /// Saving: a record writes one slot per field; an enum picks its variant, then does the same.
-fn written_body(t: MetaType) -> Stmts {
+fn written_body(t: MetaType, written: List<Field>) -> Stmts {
     if !t.variants.is_empty() {
         let arms: List<Arms> = [written_variant(v, at) for at, v in t.variants]
         return quote { match self { ${arms} } }
     }
-    written_record(0, [slot_written(shape_of_field(f), quote { self.${f.name} }) for f in t.fields])
+    written_record(0, [slot_written(shape_of_field(f), quote { self.${f.name} }) for f in written])
 }
 
 /// One match arm saving one enum variant, its number recording which variant it was.
@@ -545,10 +613,14 @@ export fn slot_folded(shape: ValueShape, value: Code) -> Stmts { (saved_form(sha
 export fn slot_read(shape: ValueShape, node: Code, slot: Code) -> Code { (saved_form(shape).read)(node, slot) }
 
 /// Loading: a record reads each field from its slot; an enum matches on its variant number.
-fn read_body(t: MetaType) -> Code {
+fn read_body(t: MetaType, written: List<Field>, door: string?) -> Code {
     if t.variants.is_empty() {
-        let fields = [field_read(f, at) for at, f in t.fields]
-        return quote { ${t} { ..${fields} } }
+        let through? = door else {
+            let fields = [field_read(f, at) for at, f in written]
+            return quote { ${t} { ..${fields} } }
+        }
+        let reads = [slot_read(shape_of_field(f), quote { record }, slot_number(at)) for at, f in written]
+        return quote { ${through}(..${reads}) }
     }
     let arms: List<Arms> = [read_variant(t, v, at) for at, v in t.variants]
     quote { match record.variant_within(${t.variants.length}) { ${arms} } }
