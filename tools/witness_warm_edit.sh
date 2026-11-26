@@ -1,4 +1,5 @@
 #!/bin/sh
+# tool-witness: owed by lane-parity-values — warm_edit_bench's edit target moved out of packages/cli/src/commands/shared.av
 # THE WARM-EDIT KEEPER'S SKIP LAW, proved: a run that cannot judge FAILS
 # with a named reason, and only a hand-set WARM_EDIT_SKIP — the workflow's
 # `warm_skip` input — may stand it down, loudly. No compiler is needed: the
