@@ -429,6 +429,12 @@ tested() {
     grep '^avra: while running ' "$out/$name.log" | sed 's/ @ .*//; s/^avra: while running //' | sort -u >"$out/$name.trapped"
     listed "tools/gate/$pkg.traps" >"$out/$name.traps"
     comm -23 "$out/$name.trapped" "$out/$name.traps" >"$out/$name.untrapped"
+    # EVERY PRINTING PROGRAM THE ROW DOES NOT PROVE, said by its path under src/ — unmade, trapped in the
+    # making, or apart from its text: the suite exits 1 for each, and once a case fails by a pinned name
+    # that exit is passed over, so the row says them here
+    sed -n "s|^packages/$pkg/src/\([^ :]*\): .*|\1|p" "$out/$name.log" | sort -u >"$out/$name.programs"
+    sed -n "s|^packages/$pkg/src/\([^ :]*\): .* == expected\$|\1|p" "$out/$name.log" | sort -u >"$out/$name.proved"
+    comm -23 "$out/$name.programs" "$out/$name.proved" | sed "s|^|fact unproved $pkg |" >>"$out/rows"
     if [ -s "$out/$name.untrapped" ]; then judged "$name" "$(wc -l <"$out/$name.untrapped" | tr -d ' ')"; return; fi
     # a scope that holds no proof, where the caller counts that as none here: refused by that voice alone
     if [ "$ran" != 0 ] && [ -n "${EMPTY_SCOPE_PASSES:-}" ] && [ ! -s "$out/$name.failed" ] && [ ! -s "$out/$name.trapped" ] &&
