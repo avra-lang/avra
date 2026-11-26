@@ -14,6 +14,8 @@ use commands.{
     rounds_folded,
     keyed_accepted,
     unrecorded,
+    under_cap,
+    past_cap,
     rows_of,
     same_work,
     snapshot_of,
@@ -483,5 +485,26 @@ spec "cost — the targets" {
         let kinds = kinds_of(targeted(""))
         !judge(edit_at(2000), edit_at(1000), kinds).failed.is_empty() &&
             judge(edit_at(1300), edit_at(1000), kinds).failed.is_empty()
+    }
+}
+
+spec "cost — what a cap says" {
+    then "a line under the cap with no row is told, saying so" {
+        under_cap(one("reads:-:check-cli fresh", 120), {}, capped()).join("|") == "cost: reads:-:check-cli fresh: measured 120, under its kind's cap of 3000 — told, no row"
+    }
+    then "a row that falls to its cap or under it says its accept strikes the row" {
+        judge(one("reads:-:check-cli q", 2800), one("reads:-:check-cli q", 4000), capped())
+            .fell
+            .join("|") == "cost: reads:-:check-cli q fell: 4000 -> 2800 (-30.000%) — at or under its cap of 3000 — its accept strikes the row"
+    }
+    then "an accept refuses a new line past the cap, naming the cap, and passes one that has a row" {
+        past_cap(one("reads:-:check-cli fresh", 3001), {}, capped()).join("|") == "cost: reads:-:check-cli fresh: measured 3001, past its kind's cap of 3000, and the ledger holds no row of it" &&
+            past_cap(
+                one("reads:-:check-cli held", 5000),
+                one("reads:-:check-cli held", 5000),
+                capped(),
+            )
+                .is_empty() &&
+            past_cap(one("proofs:-:cutoff proved", 9999), {}, capped()).is_empty()
     }
 }

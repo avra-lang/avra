@@ -428,7 +428,10 @@ export fn judge(
         if (new - old) * 1000000 > old * ppm + kind.slack * 1000000 {
             failed.push(over_said(key, old, new, kind))
         } else if (old - new) * 1000000 > old * fall_floor(ppm) {
-            fell.push(fell_said(key, old, new))
+            fell
+                .push(
+                    if kind.cap != null && new <= kind.cap! { paid_said(key, old, new, kind.cap!) } else { fell_said(key, old, new) },
+                )
         }
     }
     Judged { failed: failed, fell: fell, told: told }
@@ -822,7 +825,7 @@ fn keyed_judged(run_dir: string, cause: string, tell: bool) -> int {
         .failed
         .concat(unrecorded(now, base, kinds))
         .concat(targets_failed(now, targets_of(text), overs_of(text), text))
-    for line in j.told.concat(j.fell) { println(line) }
+    for line in j.told.concat(under_cap(now, base, kinds)).concat(j.fell) { println(line) }
     for line in failed { println(if tell { "::warning::${line}" } else { line }) }
     println(rows_counted(base.length, failed.length, j.fell.length))
     if tell { return 0 }
@@ -831,6 +834,14 @@ fn keyed_judged(run_dir: string, cause: string, tell: bool) -> int {
         println(
             "cost: an accept never records a row above its target — name its owner and ticket on an `over` line",
         )
+        return 1
+    }
+    let past = past_cap(now, base, kinds)
+    if !past.is_empty() {
+        println(
+            "cost: an accept records no line past its kind's cap — the cap bounds debt, and none is new:",
+        )
+        for line in past { println(line) }
         return 1
     }
     record_written({..others, ..keyed_accepted(now, base, kinds)}, snapshot_of(text) ?? "", cause)
@@ -847,6 +858,7 @@ export fn keyed_accepted(now: Map<string, int>, base: Map<string, int>, kinds: M
     {..base, ..now}.filter((e) -> !at_or_under_cap(e.key, e.value, kinds))
 }
 
+/// The cap of the kind a row's key names; absent where it has none.
 fn cap_of(key: string, kinds: Map<string, Kind>) -> int? { kinds.get(kind_name_of(key))?.cap }
 
 fn at_or_under_cap(key: string, n: int, kinds: Map<string, Kind>) -> bool {
@@ -862,6 +874,21 @@ export fn unrecorded(now: Map<string, int>, base: Map<string, int>, kinds: Map<s
 > {
     [unrecorded_of(k, now.get(k) ?? 0, base, kinds) for k in sorted_by([k for k, _n in now], text_before) if !base.has(k)]
         .flatten()
+}
+
+/// Each line a run measured with no row of its own past its kind's cap: what an accept refuses, since
+/// the cap bounds debt and an accept records none that is new.
+export fn past_cap(now: Map<string, int>, base: Map<string, int>, kinds: Map<string, Kind>) -> List<
+    string,
+> {
+    [capped_said(k, n, cap_of(k, kinds) ?? 0) for k, n in now if !base.has(k) && cap_of(k, kinds) != null && !at_or_under_cap(k, n, kinds)]
+}
+
+/// Each line a run measured with no row of its own at or under its kind's cap: told, and given no row.
+export fn under_cap(now: Map<string, int>, base: Map<string, int>, kinds: Map<string, Kind>) -> List<
+    string,
+> {
+    [under_cap_said(k, now.get(k) ?? 0, cap_of(k, kinds) ?? 0) for k in sorted_by([k for k, _n in now], text_before) if !base.has(k) && at_or_under_cap(k, now.get(k) ?? 0, kinds)]
 }
 
 fn unrecorded_of(key: string, n: int, base: Map<string, int>, kinds: Map<string, Kind>) -> List<
@@ -1069,6 +1096,12 @@ fn moved_said(key: string, old: int, new: int) -> string { "cost: ${key}: ${old}
 
 fn rounds_apart_said(key: string, was: int, n: int) -> string {
     "cost: ${key}: one run measured ${was} and ${n}, and its kind holds its rounds equal"
+}
+
+fn under_cap_said(key: string, n: int, cap: int) -> string { "cost: ${key}: measured ${n}, under its kind's cap of ${cap} — told, no row" }
+
+fn paid_said(key: string, old: int, new: int, cap: int) -> string {
+    "cost: ${key} fell: ${old} -> ${new} (${percent(old, new)}) — at or under its cap of ${cap} — its accept strikes the row"
 }
 
 fn capped_said(key: string, n: int, cap: int) -> string {
