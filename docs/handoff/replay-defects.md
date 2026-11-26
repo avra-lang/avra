@@ -54,3 +54,11 @@ Verified on 574c2840: `make compiler RUNGS=8246ba6a` green (rung 572 s, then HEA
 std-program saved_*/source_facts 75/75, std-avrac item_tapes/settle_named + type_content_key 23/23 +
 program proved, cli objects_salt 4/4; combined `make try` green, 7/7 program-refusal cases hold,
 voices no new gap, VOICES.md unchanged. Not re-censused; not run: full suites, idioms, cost.
+
+## Landed 2026-11-26
+program f842bf34 (train27) carries the whole stack: the `Type.exported` rung (79bf7fd7), .114.9, .114.8,
+file-key ×4, component-setting (with its two idiom sites paid), zero-enum-name, two-composers,
+named-head-goldens. Rebasing lane/replay-defects/combined-79bf-b onto f842bf34 drops every commit as
+already upstream. Nothing pending in this lane.
+Finding passed to the lead: train25's red at decl_grain_test.av:110,117 came from train25's
+law_findings.av (`const_gathering`, a per-file query), not from this lane.
