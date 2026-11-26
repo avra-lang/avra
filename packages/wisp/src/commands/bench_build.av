@@ -1,0 +1,112 @@
+//! `bench --build`: EVERY BENCH PACKAGE BUILDS, so none rots between runs. A package under
+//! `benchmarks/` whose manifest declares a `[bin]`, or which holds the default entry
+//! `src/main.av`, is a program and is built; any other is a library its programs import, and is
+//! named as skipped. Nothing is run. One compiler builds them all: `$AVRA_TOOLS_COMPILER`, else
+//! `build/avra`.
+use @std.io.{read_text, list_dir, is_dir, is_file, env}
+use @std.path.{joined_path}
+use @std.text.{text_before}
+
+/// What a bench package is: a program to build, or a library its programs import.
+enum BenchPackage {
+    Program(dir: string)
+    Library(dir: string)
+}
+
+/// A package's kind from its manifest's text and whether it holds `src/main.av`.
+export fn package_kind(dir: string, manifest: string, has_main: bool) -> BenchPackage {
+    let declares_bin = manifest.split("\n").any(it.trim() == "[bin]")
+    if declares_bin || has_main { BenchPackage.Program(dir) } else { BenchPackage.Library(dir) }
+}
+
+/// Directories a walk for packages never enters.
+fn walked_past(name: string) -> bool { name.starts_with(".") || name == "build" || name == "src" }
+
+/// Every package under `dir`, in name order; a package's own tree is not walked for more.
+fn packages_under(dir: string) -> List<BenchPackage> {
+    let manifest = joined_path(dir, "avra.toml")
+    if is_file(manifest) {
+        return [
+            package_kind(
+                dir,
+                read_text(manifest) catch "",
+                is_file(joined_path(dir, "src/main.av")),
+            ),
+        ]
+    }
+    let names = ordered_by(list_dir(dir) catch [], text_before)
+    names
+        .filter(!walked_past(it) && is_dir(joined_path(dir, it)))
+        .flat_map((n) -> packages_under(joined_path(dir, n)))
+}
+
+/// One package's line, and whether it failed.
+type Built = { line: string, failed: bool, skipped: bool }
+
+fn built_package(compiler: string, p: BenchPackage, root: string) -> Built {
+    match p {
+        .Library(dir) -> Built {
+            line: "bench-build: skip ${shown_dir(dir, root)} — a library: no [bin] and no src/main.av",
+            failed: false,
+            skipped: true,
+        },
+        .Program(dir) -> match spawned([compiler, "build", dir], null, [], 600) {
+            .Done(r) -> if r.code == 0 {
+                Built {
+                    line: "bench-build: ok   ${shown_dir(dir, root)}",
+                    failed: false,
+                    skipped: false,
+                }
+            } else {
+                Built {
+                    line: "bench-build: FAIL ${shown_dir(dir, root)}: ${last_said(r)}",
+                    failed: true,
+                    skipped: false,
+                }
+            },
+            .TimedOut -> Built {
+                line: "bench-build: FAIL ${shown_dir(dir, root)}: timed out after 600s",
+                failed: true,
+                skipped: false,
+            },
+            .Absent(why) -> Built {
+                line: "bench-build: FAIL ${shown_dir(dir, root)}: ${why}",
+                failed: true,
+                skipped: false,
+            },
+        },
+    }
+}
+
+fn shown_dir(dir: string, root: string) -> string {
+    if dir.starts_with(root + "/") { dir.substring(root.length + 1, dir.length) } else { dir }
+}
+
+/// The verdict line: how many were built, failed and skipped.
+export fn build_tally(built: int, failed: int, skipped: int) -> string {
+    "bench-build: ${built} built, ${failed} failed, ${skipped} skipped (libraries)"
+}
+
+fn build_benches() -> int {
+    let root = tree_root()
+    let compiler = env("AVRA_TOOLS_COMPILER") ?? joined_path(root, "build/avra")
+    if !is_file(compiler) {
+        eprintln("bench-build: no compiler at ${compiler} — the benches examined nothing")
+        return 1
+    }
+    let found = packages_under(bench_root())
+    if found.is_empty() {
+        eprintln("bench-build: no package under benchmarks/ — the benches examined nothing")
+        return 1
+    }
+    mut results: List<Built> = []
+    for p in found {
+        let b = built_package(compiler, p, root)
+        println(b.line)
+        results.push(b)
+    }
+    let failed = results.filter(it.failed).length
+    let skipped = results.filter(it.skipped).length
+    println(build_tally(results.length - failed - skipped, failed, skipped))
+    if failed > 0 { 1 } else { 0 }
+}

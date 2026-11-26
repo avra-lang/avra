@@ -11,7 +11,8 @@ use @std.http_message.message.{Method}
 use @std.http.frame.{framed, limits}
 use @std.http.http.{Request, Unrouted, Response, text}
 use @std.http.body.{Body}
-use @std.http.query.{Query, Asked, decoded}
+use @std.http.query.{Query, Asked}
+use @std.url.{decoded}
 use @std.http.route.{Route, Table, routed, compiled, dispatch}
 use @std.time.{now_ns}
 use @std.http.body.{Body}
@@ -33,8 +34,7 @@ fn padded(target: string, n: int) -> Bytes {
 fn asked(raw: Bytes) -> Request<Unrouted> {
     match framed(raw, 0, 0, limits()) {
         .Complete(head) -> Request { raw: raw, head: head, body: Body.Empty, peer: "b", params: Unrouted {} },
-        .Partial -> asked(raw),
-        .Refused(_) -> asked(raw),
+        .Partial or .Refused(_) -> asked(raw),
     }
 }
 
@@ -87,7 +87,7 @@ fn askings(q: Query, runs: int) -> int {
 }
 
 fn named(a: Asked) -> int {
-    match a { .Value(v) -> v.length, .Absent -> 0 - 1, .Bare -> 0 - 1, .Repeated(k) -> 0 - 1 }
+    match a { .Value(v) -> v.length, .Absent or .Bare or .Repeated(_) -> 0 - 1 }
 }
 
 /// Nanoseconds for ONE scalar ask over an already-built query.

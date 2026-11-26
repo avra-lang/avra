@@ -35,8 +35,8 @@ for v in $variants; do
     objdump -d --no-show-raw-insn "$out/$v" | awk '/<leaf>:$/ { on=1; next } on && /^$/ { exit } on && /^ / { print }' | cut -c1-90
 done
 echo "== probe-stack today: functions in a compiled Avra program, and those that probe"
-bin=$root/benchmarks/tasks/flow/avra/spawn/src/main
-[ -x "$bin" ] || "$root/build/avra" build "$root/benchmarks/tasks/flow/avra/spawn" > /dev/null 2>&1
+bin=$root/benchmarks/tasks/spawn/avra/src/main
+[ -x "$bin" ] || "$root/build/avra" build "$root/benchmarks/tasks/spawn/avra" > /dev/null 2>&1
 if [ -x "$bin" ]; then
     echo "  functions $(objdump -d "$bin" | grep -c '>:$'); with a frame of a page or more (a probe) $(objdump -d --no-show-raw-insn "$bin" | grep -cE 'sub +\$0x[0-9a-f]{4,},%rsp')"
 else

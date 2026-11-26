@@ -1,11 +1,13 @@
 //! SPAWN COST in Avra: a lightweight task per unit of work, joined with
 //! `.await`, once one at a time and once every task alive at once. Prints
-//! `spawn_fiber`/`spawn_fiber_alive` ns per task and `spawn_sum`.
+//! `spawn_fiber`/`spawn_fiber_alive` ns per task and `spawn_sum`; then
+//! `spawn_alive_cold`, the first all-at-once round alone, and
+//! `spawn_one_within`, one at a time under a `within`.
 //! The analogue is a user-space task (`spawn`), the scheduler's unit —
 //! the same category a goroutine is, never an OS thread.
 use @std.io.{env_or}
 use @std.text.{parse_int}
-use @std.time.{now_ns}
+use @std.time.{now_ns, secs}
 
 /// The benchmark's environment value, or its default.
 fn env_int(name: string, fallback: int) -> int {
@@ -15,11 +17,14 @@ fn env_int(name: string, fallback: int) -> int {
 /// The work every twin's task does.
 fn square(n: int) -> int { n * n }
 
-/// The best round's nanoseconds and the joined sum.
-type Spent = { best: int, sum: int }
+/// The first round's nanoseconds, the best round's, and the joined sum.
+type Spent = { first: int, best: int, sum: int }
+
+fn spent_of(first: int, best: int, sum: int) -> Spent { Spent { first: first, best: best, sum: sum } }
 
 /// Create and join one task at a time, n times.
 fn one_at_a_time(n: int, rounds: int) -> Spent {
+    mut first = 0
     mut best = 0
     mut total = 0
     mut r = 0
@@ -33,15 +38,17 @@ fn one_at_a_time(n: int, rounds: int) -> Spent {
             i = i + 1
         }
         let spent = now_ns() - t0
+        if r == 0 { first = spent }
         if r == 0 || spent < best { best = spent }
         total = s
         r = r + 1
     }
-    Spent { best: best, sum: total }
+    spent_of(first, best, total)
 }
 
 /// Create n tasks alive at once, then join every one.
 fn all_at_once(n: int, rounds: int) -> Spent {
+    mut first = 0
     mut best = 0
     mut total = 0
     mut r = 0
@@ -56,11 +63,12 @@ fn all_at_once(n: int, rounds: int) -> Spent {
         mut s = 0
         for h in handles { s = s + h.await }
         let spent = now_ns() - t0
+        if r == 0 { first = spent }
         if r == 0 || spent < best { best = spent }
         total = s
         r = r + 1
     }
-    Spent { best: best, sum: total }
+    spent_of(first, best, total)
 }
 
 let n = env_int("BENCH_N", 10000)
@@ -70,3 +78,6 @@ let all = all_at_once(n, rounds)
 println("spawn_fiber\t${one.best / n}\tns\t${rounds}")
 println("spawn_fiber_alive\t${all.best / n}\tns\t${rounds}")
 println("spawn_sum\t${one.sum}\tops\t${rounds}")
+println("spawn_alive_cold\t${all.first.float() / n.float()}\tns\t1")
+let bounded = within secs(5) { one_at_a_time(n, rounds).best } catch _ -> 0
+println("spawn_one_within\t${bounded.float() / n.float()}\tns\t${rounds}")

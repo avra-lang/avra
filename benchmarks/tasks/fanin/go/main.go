@@ -1,6 +1,7 @@
 // FAN-IN in Go: n_producers goroutines push values into one buffered
 // channel while this goroutine drains it until the senders close it.
-// Prints the per-value cost and the received/dropped counts.
+// Prints the per-value cost and the received/dropped counts, then the
+// per-value cost over BENCH_SWEEP items at 1, 8, 64 and 1024 producers.
 package main
 
 import (
@@ -58,4 +59,16 @@ func main() {
 	fmt.Printf("fanin_ns_per_op\t%.4f\tns\t%d\n", best/float64(total), rounds)
 	fmt.Printf("fanin_received\t%d\tops\t%d\n", got, rounds)
 	fmt.Printf("fanin_dropped\t%d\tops\t%d\n", int64(total)-got, rounds)
+	items := envInt("BENCH_SWEEP", 1048576)
+	for _, p := range []int{1, 8, 64, 1024} {
+		each := items / p
+		least := 0.0
+		for r := 0; r < rounds; r++ {
+			d, _, _ := faninOnce(p, each, cap)
+			if r == 0 || d < least {
+				least = d
+			}
+		}
+		fmt.Printf("fanin_p%d_ns_per_op\t%.4f\tns\t%d\n", p, least/float64(each*p), rounds)
+	}
 }

@@ -449,7 +449,7 @@ wasm-archive:
 # `$(shell)` runs on every make, `try` included.
 SUITES = $(shell ./wisp suites 2>/dev/null)
 
-.PHONY: compiler-key pool-check ready dev-server cost cost-accept cost-snapshot trap-marks llvm-libs libs-self-test read-lists db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz exact-patches ui-board ui-browser ui-browser-skip host-events layout-oracle wasm-host-check wasm-tasks-mutations h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks test tested clean seed-check gate externs idioms fuzz-http soak-http dogfooding-rules rule-examples idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns parser witnesses libs libscope layers pre-commit-hook inputs inputs-accept read-cost \
+.PHONY: compiler-key pool-check ready dev-server cost cost-accept cost-snapshot trap-marks llvm-libs libs-self-test read-lists db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz exact-patches ui-board ui-browser ui-browser-skip host-events layout-oracle wasm-host-check wasm-tasks-mutations h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks test tested clean seed-check gate externs idioms fuzz-http soak-http dogfooding-rules rule-examples idioms-accept bench bench-collections bench-build fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns parser witnesses libs libscope layers pre-commit-hook inputs inputs-accept read-cost \
         check run ir emit build-native native-check avra suites install sprite sprite-check codecs-static keepers voices voices-accept defects tool-witnesses ci-invariants wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept wasm-routes-size speed-ratchet speed-accept wall-ratchet wall-accept warm-edit warm-accept work-accept
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -1471,6 +1471,11 @@ bench: $(COMPILER_OBJS)
 # its Rust twin, median of 5 (benchmarks/collections/collections/run.sh).
 bench-collections: build/libavra_runtime.a
 	@sh benchmarks/collections/collections/run.sh
+
+# EVERY BENCH PACKAGE BUILDS: each program under benchmarks/ built with one compiler, none run,
+# so a bench cannot rot between the runs that read it (tools/src/commands/bench_build.av).
+bench-build: build/libavra_runtime.a $(PACKAGE_OBJS)
+	@sh tools/avra_tools.sh bench --build
 
 # THE BENCHMARK SUITE, ONE DOOR: `benchmarks/run.sh` measures every
 # registered language's twin on this machine and `--g1` prints each Avra

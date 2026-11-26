@@ -54,7 +54,7 @@ _Rows:_ `drain_1k_ns_per_op` (ns) — nanoseconds per item draining 1000 items t
 
 **Row.** wall-clock nanoseconds per value received
 
-**Workload.** `producers=8`, `per=6250`, `cap=64`, `rounds=5`
+**Workload.** `producers=8`, `per=6250`, `cap=64`, `sweep=1048576`, `rounds=5`
 
 **Analogues.** **C (the floor)** — OS threads (one producer per pthread), one bounded channel; **Rust** — OS threads (one producer per std::thread), one bounded sync_channel; **Python (threads, GIL-bound)** — OS threads (one producer per threading.Thread), one bounded queue; **Go** — goroutines (one producer each), one buffered channel; **Avra** — user-space tasks (one channel each), a single `select` over 8 sources
 
@@ -63,8 +63,12 @@ _Rows:_ `drain_1k_ns_per_op` (ns) — nanoseconds per item draining 1000 items t
 | `fanin_ns_per_op` (ns) | 936.9 ns (5) | 446.5 ns (5) | 64.2 ns (5) | 3.87 µs (5) | 475.0 ns (5) |
 | `fanin_received` (ops) | 50,000 ops (5) | 50,000 ops (5) | 50,000 ops (5) | 50,000 ops (5) | 50,000 ops (5) |
 | `fanin_dropped` (ops) | 0 ops (5) | 0 ops (5) | 0 ops (5) | 0 ops (5) | 0 ops (5) |
+| `fanin_p1_ns_per_op` (ns) | — | — | — | — | — |
+| `fanin_p8_ns_per_op` (ns) | — | — | — | — | — |
+| `fanin_p64_ns_per_op` (ns) | — | — | — | — | — |
+| `fanin_p1024_ns_per_op` (ns) | — | — | — | — | — |
 
-_Rows:_ `fanin_ns_per_op` (ns) — nanoseconds per value, from the first send to the last receive; `fanin_received` (ops) — values the consumer received — must equal n_producers*per; `fanin_dropped` (ops) — sent minus received — must be 0.
+_Rows:_ `fanin_ns_per_op` (ns) — nanoseconds per value, from the first send to the last receive; `fanin_received` (ops) — values the consumer received — must equal n_producers*per; `fanin_dropped` (ops) — sent minus received — must be 0; `fanin_p1_ns_per_op` (ns) — nanoseconds per value over BENCH_SWEEP values at 1 producer (Go); `fanin_p8_ns_per_op` (ns) — the same at 8 producers (Go); `fanin_p64_ns_per_op` (ns) — the same at 64 producers (Go); `fanin_p1024_ns_per_op` (ns) — the same at 1024 producers (Go).
 
 ### `tasks/parked` — Memory per parked task
 
@@ -79,9 +83,10 @@ _Rows:_ `fanin_ns_per_op` (ns) — nanoseconds per value, from the first send to
 | row (unit) | C (the floor) | Rust | Go | Avra |
 |---|---|---|---|---|
 | `parked_bytes` (bytes) | 8.3 kB (1) | 10.0 kB (1) | 2.6 kB (1) | 5.1 kB (1) |
+| `parked_pte_bytes` (bytes) | — | — | — | — |
 | `parked_n` (ops) | 10,000 ops (1) | 10,000 ops (1) | 10,000 ops (1) | 10,000 ops (1) |
 
-_Rows:_ `parked_bytes` (bytes) — resident bytes per parked task, the process's growth over the parked run; `parked_n` (ops) — tasks parked — a witness the whole set was alive.
+_Rows:_ `parked_bytes` (bytes) — resident bytes per parked task, the process's growth over the parked run; `parked_pte_bytes` (bytes) — page-table bytes per parked task, from VmPTE; 0 where the host has no /proc; `parked_n` (ops) — tasks parked — a witness the whole set was alive.
 
 ### `tasks/pingpong` — Ping-pong latency
 
@@ -97,8 +102,11 @@ _Rows:_ `parked_bytes` (bytes) — resident bytes per parked task, the process's
 |---|---|---|---|---|---|
 | `pingpong_ns` (ns) | 16.58 µs (5) | 17.32 µs (5) | 314.5 ns (5) | 22.74 µs (5) | 772.0 ns (5) |
 | `pingpong_rounds` (ops) | 100,000 ops (5) | 100,000 ops (5) | 100,000 ops (5) | 100,000 ops (5) | 100,000 ops (5) |
+| `pingpong_buffered_ns` (ns) | — | — | — | — | — |
+| `pingpong_bell_ns` (ns) | — | — | — | — | — |
+| `pingpong_bell_within_ns` (ns) | — | — | — | — | — |
 
-_Rows:_ `pingpong_ns` (ns) — nanoseconds per round trip, the least of `rounds` rallies; `pingpong_rounds` (ops) — the round trips run — a witness the rally was not cut short.
+_Rows:_ `pingpong_ns` (ns) — nanoseconds per round trip, the least of `rounds` rallies; `pingpong_rounds` (ops) — the round trips run — a witness the rally was not cut short; `pingpong_buffered_ns` (ns) — nanoseconds per round trip over one-slot channels, where a twin has them (Go); `pingpong_bell_ns` (ns) — nanoseconds per round trip over two bells, each task parked on its own until the other rings it (Avra); `pingpong_bell_within_ns` (ns) — the bell round trip with a five-second `within` around each wait — what a deadline costs a wait (Avra).
 
 ### `tasks/spawn` — Spawn cost
 
@@ -117,7 +125,11 @@ _Rows:_ `pingpong_ns` (ns) — nanoseconds per round trip, the least of `rounds`
 | `spawn_fiber` (ns) | 1.69 µs (5) | — | 489.8 ns (5) | — | 276.0 ns (5) |
 | `spawn_fiber_alive` (ns) | 5.11 µs (5) | — | 449.3 ns (5) | — | 272.0 ns (5) |
 | `spawn_sum` (ops) | 333,283,335,000 ops (5) | 333,283,335,000 ops (5) | 333,283,335,000 ops (5) | 333,283,335,000 ops (5) | 333,283,335,000 ops (5) |
+| `spawn_alive_cold` (ns) | — | — | — | — | — |
+| `spawn_one_within` (ns) | — | — | — | — | — |
+| `spawn_alive_chan_cold` (ns) | — | — | — | — | — |
+| `spawn_alive_chan_warm` (ns) | — | — | — | — | — |
 
-_Rows:_ `spawn_thread` (ns) — create and join one OS thread at a time, n times (pthread / std::thread / threading.Thread); `spawn_thread_alive` (ns) — create n OS threads alive at once, then join every one; `spawn_fiber` (ns) — create and join one user-space task at a time, n times (ucontext / goroutine / Avra task); `spawn_fiber_alive` (ns) — create n user-space tasks alive at once, then join every one; `spawn_sum` (ops) — the sum of the joined answers — a witness every task ran and was joined once.
+_Rows:_ `spawn_thread` (ns) — create and join one OS thread at a time, n times (pthread / std::thread / threading.Thread); `spawn_thread_alive` (ns) — create n OS threads alive at once, then join every one; `spawn_fiber` (ns) — create and join one user-space task at a time, n times (ucontext / goroutine / Avra task); `spawn_fiber_alive` (ns) — create n user-space tasks alive at once, then join every one; `spawn_sum` (ops) — the sum of the joined answers — a witness every task ran and was joined once; `spawn_alive_cold` (ns) — the first all-at-once round alone: n user-space tasks alive while nothing is warm; `spawn_one_within` (ns) — one user-space task at a time under a `within` — what a deadline costs a spawn and join (Avra); `spawn_alive_chan_cold` (ns) — n goroutines alive at once, each joined through a channel of its own, first round (Go); `spawn_alive_chan_warm` (ns) — the same channel-per-task join, the least of `rounds` (Go).
 
 _Projected from 25 stored row(s)._

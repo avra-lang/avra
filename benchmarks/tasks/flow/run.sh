@@ -25,6 +25,8 @@ set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../../.." && pwd)
 out=$root/build/flow-bench
+# The suite's twins this bench also runs: benchmarks/tasks/<name>/{avra,go}.
+tasks=$root/benchmarks/tasks
 rounds=${ROUNDS:-5}
 # The runtime the rows are measured against: this tree's, or one saved
 # elsewhere (FLOW_RUNTIME), so a before/after reads the same instrument.
@@ -157,12 +159,20 @@ if [ -z "$go" ]; then
     go=$out/toolchain/go/bin/go
 fi
 (cd "$here/go" && GOFLAGS=-buildvcs=false "$go" build -o "$out/go/" ./...)
+# The suite's twins: one program per row set, under benchmarks/tasks/<name>/.
+twins="spawn pingpong parked"
+for t in $twins fanin; do
+    (cd "$tasks/$t/go" && GOFLAGS=-buildvcs=false "$go" build -o "$out/go/$t" main.go)
+done
 
 # A tree with no compiler still measures the runtime's rows and Go.
-programs="switch spawn spawnparked pingpong gate scope latency parked"
-[ "${FLOW_AVRA:-1}" = 1 ] && [ -x "$root/build/avra" ] || { echo "flow-bench: no compiler asked for or found — the compiled Avra rows are not run" >&2; programs=""; }
+programs="switch spawnparked gate scope latency"
+[ "${FLOW_AVRA:-1}" = 1 ] && [ -x "$root/build/avra" ] || { echo "flow-bench: no compiler asked for or found — the compiled Avra rows are not run" >&2; programs=""; twins=""; }
 for p in $programs; do
     "$root/build/avra" build "$here/avra/$p" > /dev/null 2> "$out/$p.build" || { cat "$out/$p.build"; exit 1; }
+done
+for t in $twins; do
+    "$root/build/avra" build "$tasks/$t/avra" > /dev/null 2> "$out/$t.build" || { cat "$out/$t.build"; exit 1; }
 done
 rest=$(runtime_built)
 probes=""
@@ -182,13 +192,31 @@ ran() {
     fi
 }
 
+# A suite twin's run under engine `$1`: its `name<TAB>value<TAB>unit<TAB>samples` rows as raw
+# lines, the value per unit carried as thousandths; counts are witnesses, not rows here.
+rowed() {
+    engine=$1
+    shift
+    if "$@" > "$out/one" 2> "$out/err"; then
+        awk -F '\t' -v e="$engine" -v s="${FLOW_SUFFIX:-}" 'NF == 4 && $3 != "ops" && $1 !~ /^#/ {
+            k = $1; if (k == "parked_bytes") k = "parked_rss"; if (k == "parked_pte_bytes") k = "parked_pte"
+            printf "%s %s%s %.0f 1000\n", e, k, s, $2 * 1000 }' "$out/one" >> "$out/raw"
+    else
+        echo "$engine $FLOW_ROW exit $?: $(tail -1 "$out/err" | cut -c1-120)" >> "$out/raw"
+    fi
+}
+
 r=1
 while [ "$r" -le "$rounds" ]; do
     FLOW_SUFFIX=""
     for p in $programs; do
-        [ "$p" = parked ] && continue
         FLOW_ROW=$p
         ran avra "$here/avra/$p/src/main"
+    done
+    for t in $twins; do
+        [ "$t" = parked ] && continue
+        FLOW_ROW=$t
+        rowed avra "$tasks/$t/avra/src/main"
     done
     FLOW_ROW=spawn_bench
     ran c "$out/spawn_bench_today" c
@@ -196,13 +224,15 @@ while [ "$r" -le "$rounds" ]; do
     ran c "$out/spawn_bench_today" c gate
     ran c "$out/spawn_bench_today" c within
     ran c "$out/latency_bench" c
-    FLOW_ROW=spawn_chan
-    ran go1 env GOMAXPROCS=1 FLOW_CHAN=1 "$out/go/spawn"
-    ran goN env FLOW_CHAN=1 "$out/go/spawn"
-    for g in switch spawn spawnparked pingpong deadline fanin selectn canceltree; do
+    for g in switch spawnparked deadline selectn canceltree; do
         FLOW_ROW=$g
         ran go1 env GOMAXPROCS=1 "$out/go/$g"
         ran goN "$out/go/$g"
+    done
+    for g in spawn pingpong fanin; do
+        FLOW_ROW=$g
+        rowed go1 env GOMAXPROCS=1 "$out/go/$g"
+        rowed goN "$out/go/$g"
     done
     r=$((r + 1))
 done
@@ -211,7 +241,7 @@ done
 # with room to spare: 8 KiB a task is asked for, more than either engine
 # takes, since a machine out of memory answers nobody.
 sizes="1000 30000 100000 500000 1000000"
-[ -r /proc/self/status ] && [ -n "$programs" ] || { echo "flow-bench: the parked rows need /proc and the compiler — not run" >&2; sizes=""; }
+[ -r /proc/self/status ] && [ -n "$twins" ] || { echo "flow-bench: the parked rows need /proc and the compiler — not run" >&2; sizes=""; }
 for n in $sizes; do
     hold=$((2000 + n / 20))
     FLOW_ROW=parked_$n
@@ -221,9 +251,9 @@ for n in $sizes; do
         for e in avra go1 goN; do echo "$e parked_$n not run: $((free_kb / 1024)) MiB available, $((n * 8 / 1024)) MiB asked for" >> "$out/raw"; done
         continue
     fi
-    ran avra env FLOW_N=$n FLOW_HOLD_MS=$hold "$here/avra/parked/src/main"
-    ran go1 env FLOW_N=$n GOMAXPROCS=1 "$out/go/parked"
-    ran goN env FLOW_N=$n "$out/go/parked"
+    rowed avra env BENCH_N=$n BENCH_HOLD_MS=$hold "$tasks/parked/avra/src/main"
+    rowed go1 env BENCH_N=$n GOMAXPROCS=1 "$out/go/parked"
+    rowed goN env BENCH_N=$n "$out/go/parked"
 done
 
 # Where the host has no /proc, a parked task's bytes are read from outside:
@@ -241,8 +271,8 @@ if [ ! -r /proc/self/status ]; then
         none=$(held_rss "$out/spawn_bench_today" c hold 0 3000)
         some=$(held_rss "$out/spawn_bench_today" c hold $n 3000)
         echo "c parked_rss_$n $(((some - none) * 1024)) $n" >> "$out/raw"
-        none=$(held_rss env FLOW_N=0 FLOW_HOLD_MS=3000 GOMAXPROCS=1 "$out/go/parked")
-        some=$(held_rss env FLOW_N=$n FLOW_HOLD_MS=3000 GOMAXPROCS=1 "$out/go/parked")
+        none=$(held_rss env BENCH_N=0 BENCH_HOLD_MS=3000 GOMAXPROCS=1 "$out/go/parked")
+        some=$(held_rss env BENCH_N=$n BENCH_HOLD_MS=3000 GOMAXPROCS=1 "$out/go/parked")
         echo "go1 parked_rss_$n $(((some - none) * 1024)) $n" >> "$out/raw"
     done
 fi

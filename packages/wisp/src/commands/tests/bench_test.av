@@ -20,6 +20,9 @@ use commands.{
     gate_flow_table,
     collection_faults,
     Timed,
+    package_kind,
+    BenchPackage,
+    build_tally,
 }
 
 spec "bench — the suite's rules on fixtures" {
@@ -97,14 +100,14 @@ spec "bench — JSON as the suite's files hold it" {
 /// Two rounds of one row, Go's once, and a run that left words.
 fn flow_fixture() -> List<FlowLine> {
     flow_table_rows(
-        "avra spawn_one 300 1\navra spawn_one 100 1\ngo1 spawn_one 50 1\ngoN spawn_one exit 1: gone\n",
+        "avra spawn_fiber 300 1\navra spawn_fiber 100 1\ngo1 spawn_fiber 50 1\ngoN spawn_fiber exit 1: gone\n",
     )
 }
 
 spec "bench — the flow table" {
     given "two rounds of one row, and a row that left words" {
         then "a row reads least (median), words stand as written" {
-            full_flow_table(flow_fixture())[2] == "| spawn_one | 100 ns (200 ns) | 50.0 ns | exit 1: gone | — |"
+            full_flow_table(flow_fixture())[2] == "| spawn_fiber | 100 ns (200 ns) | 50.0 ns | exit 1: gone | — |"
         }
         then "the G1 view passes a row AT 2x Go's best" {
             let t = gate_flow_table(flow_fixture())
@@ -126,4 +129,14 @@ spec "bench — the collection table's faults" {
         collection_faults([Timed { engine: "avra", row: "C99", sum: "1", ns: 1.0 }])
             .contains("row C99 is not in the table")
     }
+}
+
+spec "bench --build — which packages are programs" {
+    then "a manifest declaring a [bin] is a program" {
+        package_kind("d", "[package]\nname = \"x\"\n\n[bin]\npath = \"src/run.av\"\n", false) is .Program
+    }
+    then "a package holding src/main.av is a program" { package_kind("d", "[package]\n", true) is .Program }
+    then "a package with neither is a library, skipped" { package_kind("d", "[package]\n[dependencies]\n", false) is .Library }
+    then "a `[bin]` inside another word is no bin" { package_kind("d", "# not [bin] here\n", false) is .Library }
+    then "the tally names each count" { build_tally(3, 1, 2) == "bench-build: 3 built, 1 failed, 2 skipped (libraries)" }
 }

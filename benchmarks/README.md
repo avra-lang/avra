@@ -34,6 +34,7 @@ sh benchmarks/run.sh --gate --require      a machine with no row, C or Go, refus
 sh benchmarks/run.sh --g1                  each Avra row printed beside Go's, with the target verdict
 sh benchmarks/run.sh --list                benchmarks and languages
 sh benchmarks/run.sh --self-test           the gate's rules, the row contract, the report
+sh benchmarks/run.sh --build               every bench package built, none run (`make bench-build`, a gate keeper)
 ```
 
 A plain run prints one JSON row per `(benchmark, language)` to stdout.

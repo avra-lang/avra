@@ -31,12 +31,16 @@
 <h3><code>tasks/fanin</code> — Fan-in over N producers</h3>
 <p><b>Invariant.</b> each of n_producers tasks sends n_per values to one consumer; every value sent arrives exactly once, none is dropped or duplicated, so the received count is n_producers*n_per</p>
 <p><b>Row.</b> wall-clock nanoseconds per value received</p>
-<p><b>Workload.</b> <code>producers=8</code>, <code>per=6250</code>, <code>cap=64</code>, <code>rounds=5</code></p>
+<p><b>Workload.</b> <code>producers=8</code>, <code>per=6250</code>, <code>cap=64</code>, <code>sweep=1048576</code>, <code>rounds=5</code></p>
 <p><b>Analogues.</b> <b>C (the floor)</b> — OS threads (one producer per pthread), one bounded channel; <b>Rust</b> — OS threads (one producer per std::thread), one bounded sync_channel; <b>Python (threads, GIL-bound)</b> — OS threads (one producer per threading.Thread), one bounded queue; <b>Go</b> — goroutines (one producer each), one buffered channel; <b>Avra</b> — user-space tasks (one channel each), a single `select` over 8 sources</p>
 <table><tr><th>row (unit)</th><th>C (the floor)</th><th>Rust</th><th>Go</th><th>Python (threads, GIL-bound)</th><th>Avra</th></tr>
 <tr><td><code>fanin_ns_per_op</code> (ns)</td><td>936.9 ns (5)</td><td>446.5 ns (5)</td><td>64.2 ns (5)</td><td>3.87 µs (5)</td><td>475.0 ns (5)</td></tr>
 <tr><td><code>fanin_received</code> (ops)</td><td>50,000 ops (5)</td><td>50,000 ops (5)</td><td>50,000 ops (5)</td><td>50,000 ops (5)</td><td>50,000 ops (5)</td></tr>
 <tr><td><code>fanin_dropped</code> (ops)</td><td>0 ops (5)</td><td>0 ops (5)</td><td>0 ops (5)</td><td>0 ops (5)</td><td>0 ops (5)</td></tr>
+<tr><td><code>fanin_p1_ns_per_op</code> (ns)</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+<tr><td><code>fanin_p8_ns_per_op</code> (ns)</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+<tr><td><code>fanin_p64_ns_per_op</code> (ns)</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+<tr><td><code>fanin_p1024_ns_per_op</code> (ns)</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
 </table>
 <h3><code>tasks/parked</code> — Memory per parked task</h3>
 <p><b>Invariant.</b> n tasks are spawned and blocked on a channel, then released; every one runs and its answer is joined, so the sum is 0+1+...+(n-1)</p>
@@ -45,6 +49,7 @@
 <p><b>Analogues.</b> <b>C (the floor)</b> — OS threads blocked on one condition variable; <b>Rust</b> — OS threads blocked on a rendezvous sync_channel; <b>Go</b> — goroutines blocked on one channel; <b>Avra</b> — user-space tasks blocked on a rendezvous channel</p>
 <table><tr><th>row (unit)</th><th>C (the floor)</th><th>Rust</th><th>Go</th><th>Avra</th></tr>
 <tr><td><code>parked_bytes</code> (bytes)</td><td>8.3 kB (1)</td><td>10.0 kB (1)</td><td>2.6 kB (1)</td><td>5.1 kB (1)</td></tr>
+<tr><td><code>parked_pte_bytes</code> (bytes)</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
 <tr><td><code>parked_n</code> (ops)</td><td>10,000 ops (1)</td><td>10,000 ops (1)</td><td>10,000 ops (1)</td><td>10,000 ops (1)</td></tr>
 </table>
 <h3><code>tasks/pingpong</code> — Ping-pong latency</h3>
@@ -55,6 +60,9 @@
 <table><tr><th>row (unit)</th><th>C (the floor)</th><th>Rust</th><th>Go</th><th>Python (threads, GIL-bound)</th><th>Avra</th></tr>
 <tr><td><code>pingpong_ns</code> (ns)</td><td>16.58 µs (5)</td><td>17.32 µs (5)</td><td>314.5 ns (5)</td><td>22.74 µs (5)</td><td>772.0 ns (5)</td></tr>
 <tr><td><code>pingpong_rounds</code> (ops)</td><td>100,000 ops (5)</td><td>100,000 ops (5)</td><td>100,000 ops (5)</td><td>100,000 ops (5)</td><td>100,000 ops (5)</td></tr>
+<tr><td><code>pingpong_buffered_ns</code> (ns)</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+<tr><td><code>pingpong_bell_ns</code> (ns)</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+<tr><td><code>pingpong_bell_within_ns</code> (ns)</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
 </table>
 <h3><code>tasks/spawn</code> — Spawn cost</h3>
 <p><b>Invariant.</b> every spawned task runs to completion and its answer is joined exactly once, so the sum of answers equals 0^2+1^2+...+(n-1)^2</p>
@@ -67,5 +75,9 @@
 <tr><td><code>spawn_fiber</code> (ns)</td><td>1.69 µs (5)</td><td>—</td><td>489.8 ns (5)</td><td>—</td><td>276.0 ns (5)</td></tr>
 <tr><td><code>spawn_fiber_alive</code> (ns)</td><td>5.11 µs (5)</td><td>—</td><td>449.3 ns (5)</td><td>—</td><td>272.0 ns (5)</td></tr>
 <tr><td><code>spawn_sum</code> (ops)</td><td>333,283,335,000 ops (5)</td><td>333,283,335,000 ops (5)</td><td>333,283,335,000 ops (5)</td><td>333,283,335,000 ops (5)</td><td>333,283,335,000 ops (5)</td></tr>
+<tr><td><code>spawn_alive_cold</code> (ns)</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+<tr><td><code>spawn_one_within</code> (ns)</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+<tr><td><code>spawn_alive_chan_cold</code> (ns)</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+<tr><td><code>spawn_alive_chan_warm</code> (ns)</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
 </table>
 </body></html>

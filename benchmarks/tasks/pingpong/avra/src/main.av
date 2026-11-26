@@ -1,9 +1,12 @@
 //! PING-PONG in Avra: two tasks alternate over a pair of rendezvous
 //! channels — `open_channel<int>(0)`, capacity zero, so both legs of a
-//! trip park. Prints `pingpong_ns` per round trip and `pingpong_rounds`.
+//! trip park. Prints `pingpong_ns` per round trip and `pingpong_rounds`;
+//! then the same rally over a pair of bells, bare (`pingpong_bell_ns`) and
+//! with a five-second `within` around each wait (`pingpong_bell_within_ns`).
 use @std.io.{env_or}
+use @std.net.{Bell, bell}
 use @std.text.{parse_int}
-use @std.time.{now_ns}
+use @std.time.{now_ns, secs}
 use @std.task.{Channel, open_channel}
 
 /// The benchmark's environment value, or its default.
@@ -39,14 +42,58 @@ fn rally(n: int) -> int {
     spent
 }
 
+fn held() -> Bell {
+    match bell() { .Ok(b) -> b, .Err(_) -> Bell {} }
+}
+
+/// Answers every ring of `mine` with one of `theirs`, `n` times.
+fn bell_ponger(mine: Bell, theirs: Bell, n: int) -> int {
+    for i in 0..n {
+        let _ = mine.waited_since(i, null)
+        theirs.ring()
+    }
+    n
+}
+
+/// `n` round trips over two bells; each wait under a deadline when `bounded`.
+fn bell_rally(n: int, bounded: bool) -> int {
+    let ping = held()
+    let pong = held()
+    let other = spawn bell_ponger(ping, pong, n)
+    let t0 = now_ns()
+    for i in 0..n {
+        ping.ring()
+        if bounded {
+            let _ = within secs(5) { pong.waited_since(i, null) }
+        } else {
+            let _ = pong.waited_since(i, null)
+        }
+    }
+    let spent = now_ns() - t0
+    let _ = other.await
+    ping.close()
+    pong.close()
+    spent
+}
+
+/// The least of `rounds` runs of `run`.
+fn least_of(rounds: int, run: fn() -> int) -> int {
+    (1..rounds)
+        .fold(
+            run(),
+            (best, _r) -> {
+                let s = run()
+                if s < best { s } else { best }
+            },
+        )
+}
+
 let n = env_int("BENCH_N", 100000)
 let rounds = env_int("BENCH_ROUNDS", 5)
-mut best = 0
-mut r = 0
-while r < rounds {
-    let s = rally(n)
-    if r == 0 || s < best { best = s }
-    r = r + 1
-}
-println("pingpong_ns\t${best / n}\tns\t${rounds}")
+let per = (spent: int) -> spent.float() / n.float()
+println("pingpong_ns\t${least_of(rounds, () -> rally(n)) / n}\tns\t${rounds}")
 println("pingpong_rounds\t${n}\tops\t${rounds}")
+println("pingpong_bell_ns\t${per(least_of(rounds, () -> bell_rally(n, false)))}\tns\t${rounds}")
+println(
+    "pingpong_bell_within_ns\t${per(least_of(rounds, () -> bell_rally(n, true)))}\tns\t${rounds}",
+)
