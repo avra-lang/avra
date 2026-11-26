@@ -1923,7 +1923,7 @@ impl Checking {
                 )
         }
         let before = self.refused.get().length
-        let read = self.lambda_answered(body, seat, !params.is_empty())
+        let read = self.lambda_answered(body, seat)
         self.closed()
         if expected.unknowing() || read == null || types.any(it == null) { return null }
         let answer = self.answer_lifted(body, expected, before) ?? read
@@ -1973,15 +1973,14 @@ impl Checking {
 
     /// What a lambda's body `body` answers into the fn seat `seat`: checked against the seat's answer
     /// where it's known, else read as it is, an arms block's match widened as `tailed_answer` says.
-    /// The seat's answer is what a `return`, `?` or `fail` inside answers, where the lambda
-    /// `promises`; a lambda taking no seat hears none, and one whose seat's answer isn't known has
-    /// none to give, so no fn encloses its body.
-    mut fn lambda_answered(body: ExprId, seat: SignedType?, promises: bool = true) -> SignedType? {
+    /// The seat's answer is what a `return`, `?` or `fail` inside answers, whatever the lambda's
+    /// parameters; a seat whose answer isn't known has none to give, so no fn encloses its body.
+    mut fn lambda_answered(body: ExprId, seat: SignedType?) -> SignedType? {
         let wanted = known(seat?.answer)
         let outer = self.answer
         let outer_fnless = self.fnless
-        self.answer = if promises { wanted } else { null }
-        self.fnless = outer_fnless || !promises || wanted == null
+        self.answer = wanted
+        self.fnless = outer_fnless || wanted == null
         let read = self
             .check(body, if wanted != null { Expected.Exactly(wanted!) } else { Expected.Free })
         self.answer = outer

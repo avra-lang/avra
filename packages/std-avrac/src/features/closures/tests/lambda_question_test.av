@@ -25,6 +25,23 @@ spec "features/closures — `?` in a lambda" {
             )
         }
     }
+    given "a lambda of no parameters in a seat that says the answer" {
+        then "a `?` in an argument's lambda passes the failure to the caller" {
+            shown(
+                "${OK}fn run(f: fn() -> Result<int, string>) -> Result<int, string> { f() }\nfn go(n: int) -> Result<int, string> { run(() -> ok(n)? + 1) }\nmatch go(4) {\n    .Ok(v) -> \"ok \${v}\"\n    .Err(e) -> e\n}",
+            ) == "ok 5"
+        }
+        then "a `?` in a field's lambda passes the failure to the caller" {
+            shown(
+                "fn ok(n: int) -> Result<int, string> {\n    if n < 0 { fail \"neg\" }\n    n\n}\ntype Source = { run: fn() -> Result<int, string> }\nfn source(n: int) -> Source {\n    Source {\n        run: () -> {\n            let v = ok(n)?\n            v + 1\n        },\n    }\n}\nmatch source(-1).run() {\n    .Ok(v) -> \"ok \${v}\"\n    .Err(e) -> e\n}",
+            ) == "neg"
+        }
+        then "a `return` answers the lambda" {
+            shown(
+                "fn run(f: fn() -> int) -> int { f() }\nfn go(x: bool) -> int {\n    run(() -> {\n        if x { return 1 }\n        2\n    })\n}\ngo(true) + go(false) * 10",
+            ) == "21"
+        }
+    }
     given "a seat that says nothing" {
         then "the lambda still promises none" {
             refused_with("${OK}let g = (m: int) -> ok(m)?\n1", "a lambda promises none")
