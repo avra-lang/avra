@@ -27,6 +27,18 @@
 // log, a pinned hash seed — are switched on by the environment, at
 // load. A runtime built AVRA_INSTRUMENTS=0 has no switch to read: each
 // is the constant 0, so the bodies behind it are in nothing it links.
+// A RUNTIME'S WORDS LIVE APART: a message in a section of its own, so a link keeps the words of
+// the paths a program reaches and drops the rest. An ELF compiler merges a file's literals into one
+// section, which a program carries whole once it says any of them; Mach-O's linker already strips
+// each literal it does not reach.
+#if defined(__ELF__)
+#define AVRA_WORDS_NAMED(n) ".rodata.avra_words." #n
+#define AVRA_WORDS_SECTION(n) AVRA_WORDS_NAMED(n)
+#define WORDS(s) (__extension__({ static const char words_[] __attribute__((section(AVRA_WORDS_SECTION(__COUNTER__)))) = s; words_; }))
+#else
+#define WORDS(s) (s)
+#endif
+
 #ifndef AVRA_INSTRUMENTS
 #define AVRA_INSTRUMENTS 1
 #endif

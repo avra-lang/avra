@@ -34,6 +34,7 @@
 #include "avra_door.h"
 #include "avra_settings.h"
 #include "avra_platform.h"
+#include "avra_runtime.h"
 
 #if AVRA_MEASURES_MEMORY && !defined(__wasm32__)
 
@@ -69,7 +70,7 @@ static int64_t machine_bytes(void) {
 // A forked child holds none of its parent's slots: its memory is its own, and the parent's copy
 // of each descriptor keeps the parent's lock. The child asks this itself, first, while the
 // numbers are still the slots'.
-void avra_pool_forked(void) {
+static void pool_forked(void) {
     for (int i = 0; i < g_held_count; i++) close(g_held[i]);
     g_held_count = 0;
 }
@@ -263,18 +264,27 @@ int64_t avra_pool_held(void) { return g_held_count; }
 // What a process may use before it first asks the pool.
 int64_t avra_pool_free_bytes(void) { return FREE_BYTES; }
 
-#else
+static const char* pool_refused(int64_t code) {
+    if (code == -1) return "this run needs more than the machine's whole memory pool: %lld MB in use (AVRA_MEM_POOL_MB)";
+    if (code == -2) return "other runs held the machine's memory pool past this run's wait: %lld MB in use (AVRA_MEM_POOL_WAIT_MS)";
+    return "the machine's memory pool is held wholly by runs waiting for more, and this run holds the least of it: %lld MB in use";
+}
 
-void avra_pool_forked(void) {}
+static const AvraPool pool = {
+    .allowed = avra_pool_allowed,
+    .let_go = avra_pool_let_go,
+    .spare_at = avra_pool_spare_at,
+    .held = avra_pool_held,
+    .free_bytes = avra_pool_free_bytes,
+    .forked = pool_forked,
+    .refused = pool_refused,
+};
 
-int64_t avra_pool_allowed(int64_t in_use) { (void)in_use; return INT64_MAX; }
-
-int64_t avra_pool_let_go(int64_t in_use) { (void)in_use; return INT64_MAX; }
-
-int64_t avra_pool_spare_at(void) { return INT64_MIN; }
-
-int64_t avra_pool_held(void) { return 0; }
-
-int64_t avra_pool_free_bytes(void) { return INT64_MAX; }
+__attribute__((constructor))
+static void pool_installed(void) { avra_pool_install(&pool); }
 
 #endif
+
+// What a build names (`-u avra_pool_linked`) to link the pool: nothing in the runtime reaches this
+// member, so a build that does not name it carries no pool.
+const int avra_pool_linked = 1;

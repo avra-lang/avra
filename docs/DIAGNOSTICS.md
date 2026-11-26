@@ -2617,6 +2617,34 @@ error[manifest.link_flag]: `dynamic_symbols` under `[link]` is `true` or `false`
 help: write `dynamic_symbols = true`
 ```
 
+## manifest.build_flag
+
+a `[build]` flag is `true` or `false`
+
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[build]
+instruments = "yes"
+
+// /w/src/main.av
+1
+
+```
+
+```
+error[manifest.build_flag]: `instruments` under `[build]` is `true` or `false`
+  ╭─[/w/avra.toml:6:1]
+6 │ instruments = "yes"
+  · ┬
+  · ╰── here
+──╯
+help: write `instruments = true`
+```
+
 ## manifest.link_name
 
 a `[link]` name row is one library's name, a word
