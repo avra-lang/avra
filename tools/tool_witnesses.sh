@@ -83,6 +83,8 @@ run() {
 }
 
 self_test() {
+    # the fixtures prove the whole list, whatever share the caller asked for
+    unset TOOL_WITNESS_SHARD
     t=$(mktemp -d) || exit 1
     trap 'find "$t" -delete' EXIT
     mkdir -p "$t/tools"
@@ -104,8 +106,12 @@ self_test() {
     case "$out" in *"OWED tools/witness_g.sh — owed by lane — its subject moved"*) ;; *) fails=$((fails + 1)); echo "tool_witnesses: FAIL — an owed witness went unnamed: $out" ;; esac
     printf 'exit 1\n' > "$t/tools/witness_b.sh"
     WITNESS_ROOT=$t sh "$0" run > /dev/null 2>&1 && { fails=$((fails + 1)); echo "tool_witnesses: FAIL — a failing witness ran clean"; }
+    # the witnesses run here are a.sh, e.sh and witness_b.sh, in list order: a share runs every n-th
+    WITNESS_ROOT=$t TOOL_WITNESS_SHARD=0/3 sh "$0" run > /dev/null 2>&1 || { fails=$((fails + 1)); echo "tool_witnesses: FAIL — share 0/3 ran the failing witness, not a.sh alone"; }
+    WITNESS_ROOT=$t TOOL_WITNESS_SHARD=2/3 sh "$0" run > /dev/null 2>&1 && { fails=$((fails + 1)); echo "tool_witnesses: FAIL — share 2/3 did not run the failing witness"; }
+    WITNESS_ROOT=$t TOOL_WITNESS_SHARD=3/3 sh "$0" run > /dev/null 2>&1 && { fails=$((fails + 1)); echo "tool_witnesses: FAIL — a share past its count ran"; }
     [ "$fails" = 0 ] || exit 1
-    echo "tool_witnesses: self-test passed — 5 fixtures (the list's three sources and its owners, an undeclared self-test refused, a declared tree run, an owed witness named and not run, a failing witness refused)"
+    echo "tool_witnesses: self-test passed — 6 fixtures (the list's three sources and its owners, an undeclared self-test refused, a declared tree run, an owed witness named and not run, a failing witness refused, a share runs every n-th witness and none past its count)"
 }
 
 case "$1" in
