@@ -2572,7 +2572,8 @@ impl Machine {
         self.shared_array(self.arrays[a!].concat(self.arrays[b!]))
     }
 
-    /// `src`'s slots appended to `dst`, which the caller sized for them.
+    /// `src`'s slots appended to `dst`, which the caller sized for them; `dst` takes its own
+    /// reference to each, as the C body's append does.
     fn array_extend_val(vals: List<Val>) -> Val {
         let d: int? = array_id(vals[0])
         let s: int? = array_id(vals[1])
@@ -2581,7 +2582,8 @@ impl Machine {
     }
 
     mut fn extended(d: int, s: int) -> Val {
-        if self.freed(d) { return self.read_freed() }
+        if self.freed(d) || self.freed(s) { return self.read_freed() }
+        for v in self.arrays[s] { self.retains(v) }
         self.arrays[d] = self.arrays[d].concat(self.arrays[s])
         Val.I(0)
     }
