@@ -79,7 +79,9 @@ woken() {
 # A PROCESS IS ITS PID AND ITS BIRTH: a pid alone is reused once its
 # process exits, and a lease read by pid alone is then held by a stranger.
 born() { LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' '_'; }
-# owner_live <pid> <born>
+# owner_live <pid> <born>: that process, still running. An exited one its parent has not reaped is a zombie,
+# which keeps its pid and its birth until it is, so it is no owner (`stat` begins with Z).
 owner_live() {
-    [ -n "${1:-}" ] && [ -n "${2:-}" ] && [ "$(born "$1")" = "$2" ]
+    [ -n "${1:-}" ] && [ -n "${2:-}" ] && [ "$(born "$1")" = "$2" ] &&
+        case $(LC_ALL=C ps -o stat= -p "$1" 2>/dev/null) in (Z*) false ;; (*) true ;; esac
 }

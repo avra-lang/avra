@@ -21,6 +21,18 @@ pace() { sh -c "$pace_fn; gh_left=$2; poll_pace $1"; }
 check "$(pace 0 '') $(pace 119 4000) $(pace 120 4000) $(pace 3000 4000)" "30 30 120 120" "work run: the follower polls every 30 s for two minutes, then every 120 s"
 check "$(pace 0 499) $(pace 3000 12) $(pace 0 500)" "300 300 30" "work run: under 500 API calls left this hour the follower polls every 300 s"
 
+# A ZOMBIE IS NO OWNER: an exited process its parent has not reaped keeps its pid and its birth, so a lease
+# read by both alone stays held by the dead (the parent here execs away without ever reaping its child).
+live_fn=$(sed -n '/^born() {/p;/^owner_live() {/,/^}$/p' "$here/sprite-lib.sh")
+sh -c 'sleep 0 & echo $! > "$1"; exec sleep 4' _ "$scratch/zombie" &
+sleep 1
+z=$(cat "$scratch/zombie")
+sleep 30 &
+live=$!
+owned() { sh -c "$live_fn; owner_live $1 \"\$(born $1)\" && echo live || echo gone"; }
+check "$(LC_ALL=C ps -o stat= -p "$z" | cut -c1) $(owned "$z") $(owned "$live")" "Z gone live" "owner_live: a zombie keeps its pid and its birth and is no owner; a running process is"
+kill "$live" 2>/dev/null
+
 # The scratch repository: origin, a main checkout carrying the tools
 # under test, and room beside it for lanes.
 git init -q --bare "$scratch/origin.git"
@@ -666,8 +678,10 @@ STUB
     timeout 60 sh "$work" run --sprite true > "$scratch/out2" 2> "$scratch/busy"
     busy=$?
     timeout 90 sh "$work" attach > "$scratch/out" 2> "$scratch/err"
-    check "$?|$([ "$going" -gt 0 ] && echo going)|$busy $(grep -c '^work: BUSY — .* is live on L with nobody here following it' "$scratch/busy")|$(grep '^line' "$scratch/out" | tr '\n' ' ')|$(quiet 10)" "9|going|76 1|$want|0" \
-        "end to end: with its follower killed outright the run goes on, a second run is BUSY, and attach has every line and the status" "$scratch/err"
+    at=$?
+    { echo "-- the second run said:"; cat "$scratch/busy"; echo "-- attach said:"; cat "$scratch/err"; } > "$scratch/killed"
+    check "$at|$([ "$going" -gt 0 ] && echo going)|$busy $(grep -c '^work: BUSY — .* is live on L with nobody here following it' "$scratch/busy")|$(grep '^line' "$scratch/out" | tr '\n' ' ')|$(quiet 10)" "9|going|76 1|$want|0" \
+        "end to end: with its follower killed outright the run goes on, a second run is BUSY, and attach has every line and the status" "$scratch/killed"
 
     timeout 90 sh "$work" run --sprite 'setsid sleep 4260 & sleep 4261' > "$scratch/out" 2> "$scratch/err" &
     job=$!
