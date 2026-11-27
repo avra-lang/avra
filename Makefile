@@ -434,8 +434,8 @@ wasm-routes-size:
 # Re-accept the wasm rows deliberately (the guards print the rise first).
 # not a keeper — re-accepts the wasm footprint deliberately
 wasm-size-accept:
-	sh tools/wasm-size-guard.sh --accept
-	sh tools/wasm-routes-size.sh --accept
+	sh tools/wasm-size-guard.sh --accept "$(CAUSE)"
+	sh tools/wasm-routes-size.sh --accept "$(CAUSE)"
 
 # THE ARCHIVE'S LAW: never carries a fiber or a core.
 wasm-archive:
@@ -1023,13 +1023,13 @@ read-cost: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 
 # THE SPEED RATCHET, HARD: each phase of `packages/cli`'s own build and check, the LEAST of warm
 # one-edit rounds (tools/speed_measure.sh), held as the ledger's `speed:<host>:` rows
-# (tools/cost.baseline, `wisp cost`) within the kind's tolerance; on macOS it is measured on the
+# (cost/speed/, `wisp cost`) within the kind's tolerance; on macOS it is measured on the
 # lane's Sprite (`tools/work run`), since a loaded Mac supplies no number. `speed-accept` lowers a row to
 # what was measured and never raises one.
 speed-ratchet:
 	@sh tools/speed_ratchet.sh
 speed-accept:
-	@sh tools/speed_ratchet.sh accept
+	@sh tools/speed_ratchet.sh accept "$(CAUSE)"
 
 # THE WALL-CLOCK RATCHET: a run's job clocks, their sum and its makespan (tools/ci_wall.sh), as the
 # ledger's `wall:<host>:` rows. The gate's verdict tells its own (gate.yml); this judges or records a
@@ -1039,7 +1039,7 @@ WALL ?= wall.metrics
 wall-ratchet:
 	@sh tools/ledger_rows.sh "$(WALL)" wall clock judge
 wall-accept:
-	@sh tools/ledger_rows.sh "$(WALL)" wall clock accept
+	@sh tools/ledger_rows.sh "$(WALL)" wall clock accept "$(CAUSE)"
 
 # THE DB 07 WARM-EDIT GATE (avra-8sb5.57.176): an unchanged `check packages/cli` and one body edit, wall,
 # on a warm store, and the work each did as the compiler counts it. The ticket's GOAL is 60 ms / 300 ms
@@ -1050,13 +1050,14 @@ wall-accept:
 # `warm_skip` input — stands it down, loudly. In CI the store rides down from prepare and SPEED_HOST is
 # `ci-warm`, and the clock is told, never judged. On macOS the measurement goes to the lane's Sprite.
 # THE EXACT-COUNT GATE: the census compiler of this tree, cold, over fixed workloads whose sources are
-# the commit tools/cost.baseline pins; every counter held to its row within 0.05% (tools/cost.sh,
-# `wisp cost`, packages/wisp/src/commands/cost.av). A row only falls, through `make cost-accept`; `COST_SNAPSHOT=<sha> make
-# cost-accept` moves the snapshot and records every count over it.
+# the commit cost/SNAPSHOT pins; every count held to its record under cost/ EXACTLY (tools/cost.sh,
+# `wisp cost`, packages/wisp/src/commands/cost.av). Any move fails until `make cost-accept CAUSE="<what
+# moved the rows, and why>"` records it, the cause on each file it moved: the record's diff is the
+# review. `COST_SNAPSHOT=<sha> make cost-accept CAUSE=...` moves the snapshot and records every count.
 cost:
 	@sh tools/cost.sh judge
 cost-accept:
-	@COST_ACCEPTING=1 sh tools/cost.sh accept
+	@COST_ACCEPTING=1 sh tools/cost.sh accept --cause "$(CAUSE)"
 # THE PINNED SNAPSHOT STILL CHECKS: its cli checked by this tree's compiler, so a law change that
 # refuses the snapshot every count is measured over fails where it is written (tools/cost_snapshot.sh).
 cost-snapshot:
@@ -1065,11 +1066,10 @@ cost-snapshot:
 warm-edit:
 	@sh tools/warm_edit_bench.sh
 warm-accept:
-	@WARM_EDIT_ACCEPT=1 sh tools/warm_edit_bench.sh
-# The work-count rows only fall: this lowers each to what the compiler counted (and seeds a new
-# counter), never raises one. Review the diff of tools/cost.baseline.
+	@WARM_EDIT_ACCEPT="$(CAUSE)" sh tools/warm_edit_bench.sh
+# The work counts recorded as counted, `CAUSE` on each file of cost/ they moved; the diff is the review.
 work-accept:
-	@WORK_ACCEPT=1 sh tools/warm_edit_bench.sh
+	@WORK_ACCEPT="$(CAUSE)" sh tools/warm_edit_bench.sh
 
 idioms:
 	@STATUS=0; CHECKED=0; \
@@ -1206,7 +1206,7 @@ footprint: $(RUNTIME_LIB) $(UNINSTRUMENTED_LIB)
 
 # Re-accept this toolchain's sizes deliberately.
 footprint-accept: $(RUNTIME_LIB) $(UNINSTRUMENTED_LIB)
-	@sh tools/footprint_bytes.sh accept
+	@sh tools/footprint_bytes.sh accept "$(CAUSE)"
 
 # THE FLOW G1 GATE: the scheduler's transition rows (a gate round trip,
 # spawn+join, a cold parked spawn) against benchmarks/tasks/flow/gate.baseline,

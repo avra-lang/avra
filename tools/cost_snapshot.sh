@@ -1,5 +1,5 @@
 #!/bin/sh
-# THE PINNED SNAPSHOT STILL CHECKS. tools/cost.baseline's `snapshot` is the fixed input every count is
+# THE PINNED SNAPSHOT STILL CHECKS. cost/SNAPSHOT is the fixed input every count is
 # measured over (tools/cost.sh), so a law change that refuses something in it passes every check of
 # the tree it was written in and then fails every cost slice of the train that carries it. This checks
 # the snapshot's packages/cli with this tree's compiler, as the cost workloads do — the snapshot laid
@@ -9,8 +9,8 @@
 set -eu
 . "$(dirname "$0")/lib/tree.sh"
 cd "$tree"
-snapshot=$(awk '$1 == "snapshot" { print $2 }' "$here/cost.baseline")
-[ -n "$snapshot" ] || { echo "cost-snapshot: tools/cost.baseline pins no snapshot" >&2; exit 1; }
+snapshot=$(cat "$tree/cost/SNAPSHOT" 2> /dev/null)
+[ -n "$snapshot" ] || { echo "cost-snapshot: cost/SNAPSHOT pins no snapshot" >&2; exit 1; }
 [ -x "$avra" ] || { echo "cost-snapshot: no compiler at $avra — build it first" >&2; exit 1; }
 git cat-file -e "$snapshot^{commit}" 2> /dev/null || git fetch -q --depth=1 origin "$snapshot" 2> /dev/null || :
 git cat-file -e "$snapshot^{commit}" 2> /dev/null || { echo "cost-snapshot: the snapshot $snapshot is not in this clone and did not fetch" >&2; exit 1; }

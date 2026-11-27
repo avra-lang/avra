@@ -1,6 +1,19 @@
 // The record under `cost/` holds exactly the rows the ledger held: migrated, written, read back and
 // projected, every row and its value come home, and a clock keeps its band, target and over line.
-use commands.{CostFile, cost_file, cost_view, file_text, migrated, rows_of, surface_rows}
+use commands.{
+    CostFile,
+    cost_file,
+    cost_view,
+    file_text,
+    kinds_of,
+    migrated,
+    record_accepted,
+    record_ledger,
+    rows_of,
+    surface_rows,
+    targets_of,
+    told_rows,
+}
 
 fn ledger() -> string {
     [
@@ -88,5 +101,69 @@ spec "cost surface — the view" {
     }
     then "a family names only its own files" {
         !cost_view(read_back(), "warm").contains("check-cli")
+    }
+}
+
+/// The record with check-cli's `queries_computed` told under `.112.27`.
+fn with_told() -> List<CostFile> {
+    let told = file_text(file_at("census/check-cli.cost")!)
+        .replace("count queries_computed 145145", "told queries_computed 145145 .112.27")
+    read_back()
+        .filter((f) -> f.path != "census/check-cli.cost")
+        .concat([cost_file("census/check-cli.cost", told)])
+}
+
+fn accepted_at(path: string, files: List<CostFile>) -> CostFile? { files.find(it.path == path) }
+
+fn header_of(path: string, files: List<CostFile>) -> List<string> { accepted_at(path, files)?.header ?? [] }
+
+spec "cost surface — the record as the ledger" {
+    then "the ledger it makes holds exactly its rows" {
+        let ledger = record_ledger(read_back(), "abc")
+        let rows = rows_of(ledger)
+        let back = surface_rows(read_back())
+        rows.length == back.length &&
+            back.all((e) -> rows.get(e.key) == e.value) &&
+            ledger.contains("snapshot abc\n")
+    }
+    then "a count is judged exactly" {
+        kinds_of(record_ledger(read_back(), "abc")).get("count")?.ppm == 0
+    }
+    then "a clock's target and over line are the ledger's" {
+        let ledger = record_ledger(read_back(), "abc")
+        targets_of(ledger).length == 2 &&
+            ledger.contains("over warm:ci-warm:warm edit avra-lane-r2-warm .112.26\n")
+    }
+    then "a told count is the record's, its ticket beside it" {
+        told_rows(with_told()).get("check-cli queries_computed") == ".112.27"
+    }
+}
+
+spec "cost surface — the accept" {
+    then "a rise and a fall are both recorded, each its measured value" {
+        let rows: Map<string, int> = {"check-cli boxes": 154152600, "edit-body boxes": 25637000}
+        let got = surface_rows(record_accepted(read_back(), rows, "a cause"))
+        got.get("check-cli boxes") == 154152600 && got.get("edit-body boxes") == 25637000
+    }
+    then "a file a value moved in names the cause; one nothing moved in keeps its line" {
+        let rows: Map<string, int> = {"check-cli boxes": 154152600}
+        let got = record_accepted(read_back(), rows, "the read set is kept")
+        header_of("census/check-cli.cost", got).contains("# accepted: the read set is kept") &&
+            !header_of("census/edits.cost", got).any(it.starts_with("# accepted:"))
+    }
+    then "a row the record never held joins the file its workload names" {
+        let rows: Map<string, int> = {
+            "check-cli fresh_counter": 3,
+            "matrix-check-bare-renamed pass_tape_asks": 9,
+        }
+        let got = record_accepted(read_back(), rows, "two new rows")
+        let back = surface_rows(got)
+        back.get("check-cli fresh_counter") == 3 &&
+            back.get("matrix-check-bare-renamed pass_tape_asks") == 9 &&
+            (accepted_at("matrix/check-bare.cost", got)?.sections ?? []).length == 3
+    }
+    then "a told count stays told, its ticket kept, when its value moves" {
+        let rows: Map<string, int> = {"check-cli queries_computed": 145200}
+        told_rows(record_accepted(with_told(), rows, "moved")).get("check-cli queries_computed") == ".112.27"
     }
 }
