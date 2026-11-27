@@ -111,15 +111,34 @@ spec "compiler/workspace — a use reads the declaration, never its file" {
             grain_kept(
                 grain_base(),
                 grain_grown("export fn three() -> int {\n    3\n}\n"),
-                ["file_erring", "module_declares", "package_generated_impls", "file_contexts"],
+                [
+                    "file_erring",
+                    "module_declares",
+                    "package_generated_impls",
+                    "file_contexts",
+                    "const_gathering",
+                ],
             )
         }
         then "`two`, which the caller never names, renamed keeps them, as a declaration added does" {
             grain_kept(
                 grain_base(),
                 grain_renamed("two", "deux"),
-                ["file_erring", "module_declares", "file_contexts"],
+                ["file_erring", "module_declares", "file_contexts", "const_gathering"],
             )
+        }
+    }
+    given "a sibling of the library's file, which declares no const, given one more declaration" {
+        then "`const_gathering` is worked out once, for the sibling alone" {
+            reworked(
+                grain_caller(),
+                grain_base(),
+                grain_base(),
+                "export fn s() -> int {\n    1\n}\n",
+                "export fn s() -> int {\n    1\n}\nexport fn t() -> int {\n    2\n}\n",
+            )
+                .filter(it == "const_gathering")
+                .length == 1
         }
     }
     given "the other file's declarations added or renamed where the caller reads" {
