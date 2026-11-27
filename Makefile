@@ -1262,7 +1262,6 @@ ci-invariants:
 	@./wisp ci_invariants
 	@sh tools/profile.sh --self-test
 	@python3 tools/ci_dup_run.py --self-test
-	@python3 tools/pr_mode.py --self-test
 
 # The std-avrac fixtures vendor each std package whole: the files the manifest closure
 # names, no more and no fewer (tools/vendored_fixture.py).

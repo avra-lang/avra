@@ -1,4 +1,4 @@
-use commands.{pr_mode_of}
+use commands.{pr_mode_of, label_event}
 
 spec "pr_mode — a PR's run mode" {
     then "a draft without the label is light" { pr_mode_of("{\"draft\": true, \"labels\": []}") == "light" }
@@ -9,4 +9,19 @@ spec "pr_mode — a PR's run mode" {
     then "a blank answer is full" { pr_mode_of("   \n") == "full" }
     then "an unreadable answer is full" { pr_mode_of("not json") == "full" }
     then "an answer that is no object is full" { pr_mode_of("[1]") == "full" }
+}
+
+spec "pr_mode — what an event owes" {
+    then "an event that is no label event is plain" {
+        label_event("opened", "") == "plain" &&
+            label_event("synchronize", "") == "plain" &&
+            label_event("ready_for_review", "") == "plain"
+    }
+    then "full-ci added dedupes" { label_event("labeled", "full-ci") == "dedupe" }
+    then "full-ci removed is plain" { label_event("unlabeled", "full-ci") == "plain" }
+    then "any other label is ignored, added or removed" {
+        label_event("labeled", "bug") == "ignore" &&
+            label_event("unlabeled", "bug") == "ignore" &&
+            label_event("labeled", "") == "ignore"
+    }
 }

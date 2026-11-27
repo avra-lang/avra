@@ -328,7 +328,7 @@ A running list: each entry is gone from the tree, named with the train that remo
 | pool/ | Makefile, avra.toml, main.av +10 | internal | merge: keepers |  |
 | pool_check.sh | Makefile | internal | merge: keepers |  |
 | pr_body.sh | checks.yml, speed_note.sh | internal | merge: gate |  |
-| pr_mode.py | checks.yml, Makefile | internal | merge: gate |  |
+| pr_mode.py | checks.yml, Makefile | internal | merge: gate | PORTED — `wisp pr_mode` |
 | print_mix_attack.sh | Makefile | internal | merge: oracle |  |
 | profile.sh | Makefile | internal | merge: census |  |
 | program-doors.expected/ | witness_program_doors.sh | internal | merge: oracle |  |
