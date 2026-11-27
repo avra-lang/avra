@@ -446,16 +446,20 @@ export fn told_rows(files: List<CostFile>) -> Map<string, string> {
 }
 
 /// The record with `rows` laid into it: each measure the rows hold takes its value, a row the record
-/// holds no measure of joins the file its workload names, and each file a value moved in names
-/// `cause` on its `# accepted:` line. A measure's kind and what it carries stand as they were.
-export fn record_accepted(files: List<CostFile>, rows: Map<string, int>, cause: string) -> List<
-    CostFile,
-> {
+/// holds no measure of joins the file its workload names, a `struck` row leaves its file and a section
+/// it empties goes with it, and each file a value moved in names `cause` on its `# accepted:` line. A
+/// measure's kind and what it carries stand as they were.
+export fn record_accepted(
+    files: List<CostFile>,
+    rows: Map<string, int>,
+    cause: string,
+    struck: List<string> = [],
+) -> List<CostFile> {
     let held = surface_rows(files)
     let fresh = [k for k in sorted_by([k for k, _n in rows], text_before) if !held.has(k)]
     let grown = [g for g in migrated("", rows.filter((e) -> fresh.contains(e.key)), [], [])]
     let paths = distinct_counters([f.path for f in files].concat([g.path for g in grown]))
-    [accepted_file(p, files.find(it.path == p), grown.find(it.path == p), rows, cause) for p in paths]
+    [accepted_file(p, files.find(it.path == p), grown.find(it.path == p), rows, cause, struck) for p in paths]
 }
 
 fn accepted_file(
@@ -464,12 +468,14 @@ fn accepted_file(
     grown: CostFile?,
     rows: Map<string, int>,
     cause: string,
+    struck: List<string>,
 ) -> CostFile {
     let before = was ?? CostFile { path: path, header: [], sections: [] }
-    let laid = [section(
+    let kept = [section(
         s.workload,
-        [m with { value: rows.get(row_key(path, s.workload, m) ?? "") ?? m.value } for m in s.measures],
+        [m with { value: rows.get(row_key(path, s.workload, m) ?? "") ?? m.value } for m in s.measures if !struck.contains(row_key(path, s.workload, m) ?? "")],
     ) for s in before.sections]
+    let laid = [s for s in kept if !s.measures.is_empty()]
     let joined_in = merged(laid, grown?.sections ?? [])
     let moved = grown != null ||
         !same_rows(
