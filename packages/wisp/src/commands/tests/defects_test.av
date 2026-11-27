@@ -1,0 +1,171 @@
+use @std.io.{make_dirs, write_text, env_or}
+use @std.json.{parse, Json}
+use @std.process.{cmd, tool_at}
+use @std.text.{codepoints, from_codepoints}
+use @std.time.{stamp}
+use commands.{
+    DefectRig,
+    Probe,
+    ProbeTiming,
+    pieces,
+    cases,
+    mutants,
+    tokens,
+    seeded,
+    below,
+    verdict,
+    runnable,
+    survey,
+    slowest,
+    timeout_words,
+    stalled,
+    newest_artifact,
+}
+
+once fn scratch() -> string { "${env_or("TMPDIR", "/tmp")}/wisp-defects-${stamp()}" }
+
+/// A fake compiler at `name` under the scratch dir: a shell script whose body is `body`.
+fn fake(name: string, body: string) -> string {
+    let path = "${scratch()}/${name}"
+    let _ = make_dirs(scratch())
+    let _ = write_text(path, "#!/bin/sh\n${body}\n")
+    let _ = cmd(tool_at("chmod", "/bin/chmod"), ["+x", path]).outcome()
+    path
+}
+
+fn probe(name: string, text: string) -> Probe {
+    Probe { name: name, verbs: ["check"], body: text, mutant: false, manifest: false }
+}
+
+fn rig_of(avra: string) -> DefectRig {
+    DefectRig { avra: avra, timeout: 2, who: "defects self-test (a fixture's expected refusal)" }
+}
+
+fn draws(seed: int, ns: List<int>) -> string {
+    mut t = seeded(seed)
+    mut out: List<string> = []
+    for n in ns {
+        let d = below(t, n)
+        out.push("${d.value}")
+        t = d.rng
+    }
+    out.join(" ")
+}
+
+fn token_texts(text: string) -> string {
+    let cs = codepoints(text)
+    tokens(cs).map((t) -> from_codepoints(cs.drop(t.lo).take(t.hi - t.lo))).join("|")
+}
+
+spec "defects — the corpus, its mutants and the draws" {
+    then "pieces keep every empty piece" { pieces("a\n\nb\n", "\n").join(",") == "a,,b," && pieces("", "\n").length == 1 }
+    then "a case reads its flags and drops its trailing blanks" {
+        match cases("# c\n### one\n@check\n@mutate\nx\n\n### two\ny\n") {
+            .Ok(cs) -> cs
+                .filter(!it.name.contains("~"))
+                .map("${it.name}:${it.verbs.join("+")}:${it.body}")
+                .join("|") == "one:check:x\n|two:check+run:y\n",
+            .Err(_) -> false,
+        }
+    }
+    then "text before the first case is refused, named" {
+        match cases("stray\n### one\nx\n") { .Err(line) -> line == "stray", .Ok(_) -> false }
+    }
+    then "the mutations are new and ordered as defects.py made them" {
+        mutants("m", "a(b)\nc d\n").map(it.name).join(" ") == "m~head1 m~drop0 m~drop2 m~close0 m~swap1_0"
+    }
+    then "tokens read strings, words past ASCII and lone marks" {
+        token_texts("let x = \"a\\\"b\" + f(12)é_z — \"open") == "let|x|=|\"a\\\"b\"|+|f|(|12|)|é_z|—|\"|open"
+    }
+    then "a seed draws what Python's random.Random draws" {
+        draws(0, [6, 100, 3, 954, 7, 1, 2, 1000]) == "3 97 1 41 2 0 1 940" &&
+            draws(7, [6, 10, 1000]) == "2 2 404"
+    }
+    then "a program importing only pure std packages is run" {
+        runnable("use @std.json.{a}\n") && !runnable("use @std.text.{a}\n  use @std.io.{b}\n")
+    }
+}
+
+spec "defects — what refuses" {
+    then "a trap's exit refuses" { verdict(2, "", false) == "exit 2" }
+    then "a defect voice refuses, the leftmost named" { verdict(1, "x out of bounds then language.defect", false) == "voice 'out of bounds'" }
+    then "a compile slot's queue notice is no voice" { verdict(0, "avra: waiting for a compile slot — out of bounds", false) == null }
+    then "a mutant's run counts the compiler's voices alone" {
+        verdict(2, "out of bounds", true) == null &&
+            verdict(0, "survived typing", true) == "voice 'survived typing'"
+    }
+    then "a refusal is no defect" { verdict(1, "error[type.mismatch]: wants int", false) == null }
+}
+
+spec "defects — the pool" {
+    then "a timeout that finishes alone stands down, loudly, with its dump" {
+        let count = "${scratch()}/count"
+        let first_slow = fake(
+            "once",
+            "n=\$(cat \"${count}\" 2>/dev/null || echo 0); echo \$((n+1)) > \"${count}\"; [ \"\$n\" = 0 ] && sleep 4; exit 0",
+        )
+        let s = survey(rig_of(first_slow), [probe("probe", "1\n")], 1, [], [])
+        s.bad.is_empty() &&
+            s.notes.length == 1 &&
+            s.notes[0].contains("POOL STALL probe (check)") &&
+            s.notes[0].contains("finished in") &&
+            s.notes[0].contains("load:")
+    }
+    then "a program that hangs twice refuses with both durations" {
+        let s = survey(rig_of(fake("hangs", "sleep 4")), [probe("probe", "1\n")], 1, [], [])
+        s.bad.map(it.name).join(",") == "probe" &&
+            s.bad[0].why.contains("timed out twice") &&
+            s.notes.is_empty()
+    }
+    then "a program that finishes is neither retried nor refused" {
+        let s = survey(rig_of(fake("quick", "exit 0")), [probe("probe", "1\n")], 1, [], [])
+        s.bad.is_empty() && s.notes.is_empty()
+    }
+    then "a voice still refuses" {
+        let s = survey(
+            rig_of(fake("voiced", "echo 'language.defect: a row survived typing'; exit 0")),
+            [probe("probe", "1\n")],
+            1,
+            [],
+            [],
+        )
+        s.bad.all(it.name == "probe" && it.why.contains("voice")) &&
+            !s.bad.is_empty() &&
+            s.notes.is_empty()
+    }
+    then "a look at a live process names its load and its files" {
+        let dump = stalled(1)
+        dump[0].starts_with("load: ") && dump.length > 2
+    }
+}
+
+spec "defects — the timings" {
+    then "the slowest come first, then by name" {
+        slowest(
+            [
+                ProbeTiming { name: "b", took: 400 },
+                ProbeTiming { name: "a", took: 400 },
+                ProbeTiming { name: "c", took: 1000 },
+            ],
+            5,
+        )
+            .join("|") == "defects: slowest 1. c 1.0s|defects: slowest 2. a 0.4s|defects: slowest 3. b 0.4s"
+    }
+    then "a timeout names its last green seconds, or says they are not known" {
+        let rig = rig_of("avra")
+        timeout_words(rig, "hang", [ProbeTiming { name: "hang", took: 400 }]) == "timed out after 2s (last green run: 0.4s)" &&
+            timeout_words(rig, "hang", []) == "timed out after 2s (last green run: not known)"
+    }
+    then "the newest live timings artifact is picked, by id" {
+        let pick = (text: string) -> match parse(text) catch Json.Null {
+            .Arr(items) -> newest_artifact(items),
+            rest -> null,
+        }
+        pick("[]") == null &&
+            pick("[{\"id\": 1, \"name\": \"avra-store\"}]") == null &&
+            pick("[{\"id\": 4, \"name\": \"defects-timings\", \"expired\": true}]") == null &&
+            pick(
+                "[{\"id\": 4, \"name\": \"defects-timings\"}, {\"id\": 9, \"name\": \"defects-timings\"}, {\"id\": 12, \"name\": \"other\"}]",
+            ) == 9
+    }
+}

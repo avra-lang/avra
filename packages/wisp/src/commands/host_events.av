@@ -12,7 +12,7 @@ use @std.hash.{blake3_hex}
 use @std.io.{read_bytes, read_text, write_text}
 use @std.json.{Json, parse}
 use @std.process.{tool, cmd}
-use @std.text.{codepoints, from_codepoint}
+use @std.text.{codepoints, from_codepoint, text_before}
 
 const PIN: string = "b5dd81b5400206d36f17ae1929e4096cc89ca28e"
 const DIGEST: string = "c226e9384a6a1b34d356f1709449f2182156aea06cac578804e657e4a1d6bf07"
@@ -80,24 +80,12 @@ fn entries_of(text: string) -> List<Json> {
 }
 
 /// Code-point order, as the platform spells the types.
-fn before(a: string, b: string) -> bool {
-    let x = codepoints(a)
-    let y = codepoints(b)
-    let at = (0..shorter(x, y)).find(x[it] != y[it])
-    match at {
-        i? -> x[i] < y[i]
-        null -> x.length < y.length
-    }
-}
-
-fn shorter(x: List<int>, y: List<int>) -> int { if x.length < y.length { x.length } else { y.length } }
-
 export fn sorted_texts(xs: List<string>) -> List<string> {
     let pivot? = xs.first() else { return [] }
     let rest = xs.drop(1)
-    sorted_texts([x for x in rest if before(x, pivot)])
+    sorted_texts([x for x in rest if text_before(x, pivot)])
         .concat([pivot])
-        .concat(sorted_texts([x for x in rest if !before(x, pivot)]))
+        .concat(sorted_texts([x for x in rest if !text_before(x, pivot)]))
 }
 
 /// One row per event type, in code-point order of the type: the first interface seen and every
