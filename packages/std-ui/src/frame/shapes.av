@@ -1,0 +1,187 @@
+//! `frame/shapes.av` — A SHAPE HELD TO ANOTHER: what a reader knows of a
+//! vocabulary against what a stream says it was written in. The rule is the
+//! meta boundary's. A shape that only GREW — a variant added, a field
+//! appended — is read: the reader takes the slots it knows, in order, and
+//! steps over the rest by their kinds. A shape that MOVED — a variant's word
+//! changed, a known slot renamed, reordered or given another kind — is
+//! refused by name, and so is a stream that lacks a slot its reader needs.
+//! The same rule holds each dialect's checked-in shapes (`frame/standing.av`)
+//! to the code.
+use @std.text.{parse_int}
+use frame.rows.{FieldKind, FrameField, FrameRow, FrameType, field_word, row_line}
+use frame.kinds.{FrameReader, FrameFault, nth}
+
+/// Each type's rows as lines: `Type word code name:kind[:of] …`.
+export fn type_lines(types: List<FrameType>) -> List<string> {
+    [t.name + " " + row_line(r) for t in types for r in t.rows]
+}
+
+/// The types `lines` spell, in the order each first stands. A line no
+/// row spells is none of them.
+export fn types_of_lines(lines: List<string>) -> List<FrameType> {
+    let rows = [row for l in lines for row in line_row(l)]
+    let names = [r.type_name for j, r in rows if !rows.slice(0, j).any(it.type_name == r.type_name)]
+    [FrameType {
+        name: n,
+        choice: rows.any(it.type_name == n && it.row.code != 0),
+        rows: [r.row for r in rows if r.type_name == n],
+    } for n in names]
+}
+
+type Lined = { type_name: string, row: FrameRow }
+
+fn line_row(line: string) -> List<Lined> {
+    let parts = line.split(" ")
+    if parts.length < 3 { return [] }
+    let code? = parse_int(parts[2]) else { return [] }
+    let fields = [f for p in parts.slice(3, parts.length) for f in field_of_word(p)]
+    if fields.length != parts.length - 3 { return [] }
+    [Lined { type_name: parts[0], row: FrameRow { word: parts[1], code: code, fields: fields } }]
+}
+
+fn field_of_word(word: string) -> List<FrameField> {
+    let bits = word.split(":")
+    if bits.length < 2 { return [] }
+    let kind? = FieldKind.coded().find(it.word == bits[1]) else { return [] }
+    let k? = FieldKind.coded_as(kind.code) else { return [] }
+    [FrameField { name: bits[0], kind: k, of: if bits.length > 2 { bits[2] } else { "" } }]
+}
+
+/// How a stream's shapes stand against a reader's: each slot that moved,
+/// each one the reader needs and the stream lacks, and whether the stream
+/// grew past what the reader knows.
+export type Held = { moved: List<string>, lacking: List<string>, grown: bool }
+
+impl Held {
+    /// Whether the reader can read the stream.
+    fn reads() -> bool { self.moved.is_empty() && self.lacking.is_empty() }
+
+    /// Why it cannot, each reason a line.
+    fn why() -> string { self.moved.concat(self.lacking).join("; ") }
+}
+
+/// `taped`, a stream's shapes, held to `own`, its reader's.
+export fn held_to(own: List<FrameType>, taped: List<FrameType>) -> Held {
+    let per = [type_held(t, taped.find(it.name == t.name)) for t in own]
+    let grew_types = taped.any((t) -> !own.any(it.name == t.name))
+    Held {
+        moved: [m for h in per for m in h.moved],
+        lacking: [l for h in per for l in h.lacking],
+        grown: grew_types || per.any(it.grown),
+    }
+}
+
+fn type_held(t: FrameType, taped: FrameType?) -> Held {
+    let other? = taped else { return Held { moved: [], lacking: [type_gone(t.name)], grown: false } }
+    let per = [row_held(t.name, r, other.rows.find(it.code == r.code)) for r in t.rows]
+    Held {
+        moved: [m for h in per for m in h.moved],
+        lacking: [l for h in per for l in h.lacking],
+        grown: other.rows.length > t.rows.length || per.any(it.grown),
+    }
+}
+
+fn row_held(owner: string, r: FrameRow, taped: FrameRow?) -> Held {
+    let other? = taped else { return Held { moved: [], lacking: [row_gone(owner, r)], grown: false } }
+    if other.word != r.word { return Held { moved: [renamed(owner, r, other)], lacking: [], grown: false } }
+    let known = [j for j in 0..r.fields.length if j < other.fields.length]
+    Held {
+        moved: [slot_moved(owner, r.word, j, r.fields[j], other.fields[j]) for j in known if !same_field(r.fields[j], other.fields[j])],
+        lacking: [slot_gone(owner, r.word, j, r.fields[j]) for j in 0..r.fields.length if j >= other.fields.length],
+        grown: other.fields.length > r.fields.length,
+    }
+}
+
+fn same_field(a: FrameField, b: FrameField) -> bool { a.name == b.name && a.kind == b.kind && a.of == b.of }
+
+// ── stepping over what a reader does not know ───────────────────
+
+/// The value of the type named `of`, stepped over by the kinds `taped` says
+/// it is carried in; one told here is kept as told, for a later reader.
+export fn skipped(r: FrameReader, of: string, taped: List<FrameType>) -> Result<bool, FrameFault> {
+    let t? = taped.find(it.name == of) else { fail r.fault(unshaped(of)) }
+    let row? = chosen_row(r, t)? else { fail r.fault(unshaped(of)) }
+    for f in row.fields { let _ = skipped_field(r, f, taped)? }
+    true
+}
+
+/// The row the value at `r` is carried in: its variant's, read by its code, or a
+/// record's one.
+fn chosen_row(r: FrameReader, t: FrameType) -> Result<FrameRow?, FrameFault> {
+    if !t.choice { return t.rows.first() }
+    let code = r.byte()?
+    t.rows.find(it.code == code)
+}
+
+/// One field stepped over by its kind. Every kind spelled.
+export fn skipped_field(r: FrameReader, f: FrameField, taped: List<FrameType>) -> Result<
+    bool,
+    FrameFault,
+> {
+    match f.kind {
+        .Word or .WordOrNone or .Number -> { let _ = r.word()? },
+        .Flag -> { let _ = r.flag()? },
+        .Fraction -> { let _ = r.fraction()? },
+        .Text or .Octets -> { let _ = r.octets()? },
+        .Texts -> { let _ = r.texts()? },
+        .Nested -> { let _ = skipped(r, f.of, taped)? },
+        .NestedOrNone -> {
+            if r.present()? { let _ = skipped(r, f.of, taped)? }
+        },
+        .Told -> {
+            let ref = r.word()?
+            if ref == 0 {
+                let place = r.word()?
+                let from = r.at.get()
+                let _ = skipped(r, f.of, taped)?
+                r.kept_told(place, from)
+            }
+        },
+    }
+    true
+}
+
+/// The record at `r`, of the choice `top`, as a reader that knows `own`
+/// reads a stream written in `taped`: one of a variant the reader knows is
+/// read by `read`, its trailing fields stepped over; one it does not know
+/// is stepped over whole, and answers nothing.
+export fn grown_record<T>(
+    r: FrameReader,
+    top: string,
+    own: List<FrameType>,
+    taped: List<FrameType>,
+    read: fn(FrameReader) -> Result<T, FrameFault>,
+) -> Result<T?, FrameFault> {
+    let at = r.at.get()
+    let code? = nth(r.bytes, at) else { fail r.fault(unshaped(top)) }
+    let theirs? = taped.find(it.name == top)?.rows?.find(it.code == code) else { fail r.fault(unshaped(top)) }
+    let mine? = own.find(it.name == top)?.rows?.find(it.code == code) else {
+        let _ = skipped(r, top, taped)?
+        return null
+    }
+    let value = read(r)?
+    for f in theirs.fields.slice(mine.fields.length, theirs.fields.length) { let _ = skipped_field(r, f, taped)? }
+    value
+}
+
+// ── voices ──
+
+fn type_gone(name: string) -> string { "a reader of `${name}` reads a stream that carries it, and this one carries none" }
+
+fn row_gone(owner: string, r: FrameRow) -> string {
+    "a reader of `${owner}.${r.word}` reads a stream that numbers it ${r.code}, and this one numbers nothing so"
+}
+
+fn renamed(owner: string, r: FrameRow, other: FrameRow) -> string {
+    "`${owner}` code ${r.code} is `${r.word}` to this reader and `${other.word}` to the stream: a moved shape takes a new dialect"
+}
+
+fn slot_moved(owner: string, word: string, at: int, mine: FrameField, theirs: FrameField) -> string {
+    "`${owner}.${word}` slot ${at} is `${field_word(mine)}` to this reader and `${field_word(theirs)}` to the stream: a moved shape takes a new dialect"
+}
+
+fn slot_gone(owner: string, word: string, at: int, mine: FrameField) -> string {
+    "`${owner}.${word}` slot ${at} is `${field_word(mine)}` to this reader, and the stream carries no slot ${at}"
+}
+
+fn unshaped(of: string) -> string { "a stream steps over a value by the shape it says it carries, and it says no shape of `${of}` that fits" }

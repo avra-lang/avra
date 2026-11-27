@@ -83,6 +83,7 @@ enum Carried {
     Word(w: Worded)
     WordOrNone(w: Worded)
     Nested(of: string)
+    NestedOrNone(of: string)
     Told(of: string)
 }
 
@@ -111,12 +112,17 @@ fn carried(f: Field) -> Carried? {
         .List(.Str) -> if told { null } else { Carried.Texts },
         .Bytes -> if told { null } else { Carried.Octets },
         .Named(n, _) -> named_carried(n, told),
-        .Opt(.Named(n, _)) -> {
-            let w? = worded(n) else { return null }
-            if told { null } else { Carried.WordOrNone(w) }
-        },
+        .Opt(.Named(n, _)) -> if told { null } else { opt_carried(n) },
         rest -> null,
     }
+}
+
+/// A field that may be absent: a word, zero for none; or a framed value, behind
+/// a word saying whether it stands.
+fn opt_carried(n: string) -> Carried? {
+    if derived(n, "Frame") { return Carried.NestedOrNone(n) }
+    let w? = worded(n) else { return null }
+    Carried.WordOrNone(w)
 }
 
 fn named_carried(n: string, told: bool) -> Carried? {
@@ -157,7 +163,20 @@ fn written(c: Carried, v: Code, at: int) -> Stmts {
         .Word(n) -> quote { w.word(${word_of(n, v)}) },
         .WordOrNone(n) -> quote { w.word_or_none(${word_or_none_of(n, v)}) },
         .Nested(_) -> quote { ${v}.framed(w) },
+        .NestedOrNone(_) -> maybe_written(v, "some_${at}"),
         .Told(_) -> told_written(v, "told_${at}"),
+    }
+}
+
+fn maybe_written(v: Code, some: string) -> Stmts {
+    quote {
+        match ${v} {
+            ${some}? -> {
+                w.word(1)
+                ${name(some)}.framed(w)
+            }
+            null -> w.word(0)
+        }
     }
 }
 
@@ -252,6 +271,7 @@ fn read(c: Carried, into: string, at: int) -> Stmts {
             }
         },
         .Nested(n) -> quote { let ${into} = ${name(n)}.unframed(r)? },
+        .NestedOrNone(n) -> quote { let ${into} = if r.present()? { ${name(n)}.unframed(r)? } else { null } },
         .Told(n) -> told_read(n, into, at),
     }
 }
@@ -311,6 +331,7 @@ fn kind_word(c: Carried) -> Code {
         .Word(_) -> quote { FieldKind.Word },
         .WordOrNone(_) -> quote { FieldKind.WordOrNone },
         .Nested(_) -> quote { FieldKind.Nested },
+        .NestedOrNone(_) -> quote { FieldKind.NestedOrNone },
         .Told(_) -> quote { FieldKind.Told },
     }
 }
@@ -319,7 +340,7 @@ fn kind_word(c: Carried) -> Code {
 fn of_name(c: Carried) -> string {
     match c {
         .Word(w) or .WordOrNone(w) -> worded_name(w),
-        .Nested(n) or .Told(n) -> n,
+        .Nested(n) or .NestedOrNone(n) or .Told(n) -> n,
         .Number or .Flag or .Fraction or .Text or .Texts or .Octets -> "",
     }
 }
@@ -359,7 +380,10 @@ fn carried_types(fields: List<Field>) -> List<string> {
 }
 
 fn nested_name(c: Carried) -> List<string> {
-    match c { .Nested(n) or .Told(n) -> [n], rest -> [] }
+    match c {
+        .Nested(n) or .NestedOrNone(n) or .Told(n) -> [n],
+        .Number or .Flag or .Fraction or .Text or .Texts or .Octets or .Word(_) or .WordOrNone(_) -> [],
+    }
 }
 
 fn types_of(t: Type, choice: bool, carried: List<string>) -> Code {

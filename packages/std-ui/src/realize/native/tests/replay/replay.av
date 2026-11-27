@@ -1,0 +1,48 @@
+// proves: a session on a native page, kept on a tape and played again on a
+// page of its own, paints the same frames byte for byte — each press heard
+// in turn, every repaint after it — in both engines.
+use @std.ui.components.{column, checkbox}
+use @std.ui.frame.dialect.{Dialect}
+use @std.ui.frame.tape.{painted, read_tape}
+use @std.ui.realize.native.patch.{NativePatch}
+use @std.ui.realize.native.replay.{recording, replayed}
+use @std.ui.tests.parts.{counter}
+use @std.ui.tree.node.{Handler, Said}
+use @std.ui.tree.view.{View}
+
+state ticked: bool = false
+
+fn said_by(h: Handler) -> Said? {
+    match h {
+        .Nothing(_) -> null,
+        .Flag(_) -> Said.Flag(true),
+        .Text(_) -> Said.Text("x"),
+        .Number(_) -> Said.Number(1),
+    }
+}
+
+fn spelled(frames: List<Bytes>) -> string {
+    [[f.at(i) for i in 0..f.length].map("${it}").join(",") for f in frames].join("|")
+}
+
+fn session() -> dyn View {
+    column {
+        counter "a"
+        counter "b"
+        checkbox "Done" { on change { ticked = !ticked } }
+    }
+}
+
+let r = recording(session)
+let ears = r.page.bound.get()
+for _round in 0..3 {
+    for b in ears { let _ = r.heard(b.id, b.action.seat, said_by(b.action.handler)) }
+}
+let tape = r.kept()
+let kept = match read_tape(tape, Dialect.Neutral1, NativePatch.frame_types()) {
+    .Ok(t) -> painted(t),
+    .Err(_) -> [],
+}
+let again = match replayed(tape, session) { .Ok(fs) -> fs, .Err(_) -> [] }
+let changed = [f for j, f in kept if j > 0 && f.length > 1].length
+"${ears.length} ears, ${kept.length} frames kept, ${changed} of them changing the page, replayed alike: ${kept.length > 1 && spelled(again) == spelled(kept)}"

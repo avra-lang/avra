@@ -36,6 +36,8 @@ export function reader(bytes, told) {
     octets: () => { const n = word(); if (at + n > bytes.length) fault("octets run past it"); const o = bytes.slice(at, at + n); at += n; return o; },
     text: () => { const n = word(); if (at + n > bytes.length) fault("a text runs past it"); const s = decoder.decode(bytes.subarray(at, at + n)); at += n; return s; },
     texts: () => Array.from({ length: word() }, () => r.text()),
+    // A value that may be absent: 0 for none, 1 then the value.
+    maybe: (read) => { const p = word(); if (p === 0) return null; if (p !== 1) fault(`a presence word is ${p}`); return read(r); },
     told: (read) => {
       const ref = word();
       if (ref !== 0) { if (!(ref - 1 in told)) fault(`nothing was told at ${ref - 1}`); return told[ref - 1]; }

@@ -1,0 +1,95 @@
+//! `frame/tape.av` — A TAPE: a stream kept past the wall it crossed, for dev
+//! tools, record and replay and a storyboard's snapshot. The `tape1`
+//! dialect, then its head — what it is, the dialect of the frames it holds,
+//! and the shape of every type it carries (`frame/shapes.av`) — then one
+//! entry a frame painted or an echo heard, in the order they happened. A
+//! frame is its bytes with their count, so two paints are never read as one.
+//!
+//! A reader takes a tape whose shapes it knows, or that only grew past them:
+//! an entry or a record of a variant it does not know is stepped over by the
+//! kinds the head says, and a field appended to one it knows is stepped over
+//! the same way. A tape whose shapes moved is refused, by the slot that moved.
+use @std.meta.{derive}
+use frame.derive.{Frame}
+use frame.kinds.{
+    FrameFault,
+    FrameReader,
+    FrameWriter,
+    heard_nothing,
+    reader,
+    told_nothing,
+    writer,
+}
+use frame.dialect.{Dialect, opened, read_dialect}
+use frame.rows.{FrameType}
+use frame.shapes.{grown_record, held_to, type_lines, types_of_lines}
+use tree.identity.{NodeId}
+use tree.seats.{Seat}
+use tree.node.{Said}
+
+/// What a tape is, the dialect its frames are written in, and its shapes as lines.
+@derive(Frame)
+export type TapeHead = { magic: string, frames: Dialect, shapes: List<string> }
+
+/// One thing a tape kept: a frame a page was painted with, or an echo a host
+/// sent — the element that spoke, its seat and what it said.
+@derive(Frame)
+export enum Entry {
+    @code(1) Painted(frame: Bytes)
+    @code(2) Echoed(id: NodeId, seat: Seat, said: Said?)
+}
+
+/// What a tape says it is, before anything else.
+export const tape_magic = "avra tape"
+
+/// A tape read: the dialect its frames are in, the shapes it was written
+/// in, and what it kept.
+export type Tape = { frames: Dialect, shapes: List<FrameType>, entries: List<Entry> }
+
+/// A tape begun for frames in `frames`, carrying `types`.
+export fn tape_begun(frames: Dialect, types: List<FrameType>) -> FrameWriter {
+    let w = writer(told_nothing())
+    opened(w, Dialect.Tape1)
+    TapeHead {
+        magic: tape_magic,
+        frames: frames,
+        shapes: type_lines(types.concat(Entry.frame_types())),
+    }
+        .framed(w)
+    w
+}
+
+/// A tape read by one who reads frames in `frames` and knows `own`.
+export fn read_tape(tape: Bytes, frames: Dialect, own: List<FrameType>) -> Result<Tape, FrameFault> {
+    let r = reader(tape, heard_nothing())
+    let _ = read_dialect(r, Dialect.Tape1)?
+    let head = TapeHead.unframed(r)?
+    if head.magic != tape_magic { fail r.fault(not_a_tape(head.magic)) }
+    if head.frames != frames { fail r.fault(frames_other(head.frames, frames)) }
+    let taped = types_of_lines(head.shapes)
+    let mine = own.concat(Entry.frame_types())
+    let held = held_to(mine, taped)
+    if !held.reads() { fail r.fault(held.why()) }
+    mut entries: List<Entry> = []
+    // LICENSED loops.push_loop: each entry starts where the one before it ended
+    while !r.ended() {
+        let e = grown_record(r, "Entry", mine, taped, (x: FrameReader) -> Entry.unframed(x))?
+        if e != null { entries.push(e!) }
+    }
+    Tape { frames: frames, shapes: taped, entries: entries }
+}
+
+/// The frames a tape kept, in order.
+export fn painted(t: Tape) -> List<Bytes> { [f for e in t.entries for f in painted_frame(e)] }
+
+fn painted_frame(e: Entry) -> List<Bytes> {
+    match e { .Painted(f) -> [f], .Echoed(_, _, _) -> [] }
+}
+
+// ── voices ──
+
+fn not_a_tape(said: string) -> string { "a tape says `${tape_magic}` first, and this one says `${said}`" }
+
+fn frames_other(seen: Dialect, wants: Dialect) -> string {
+    "this tape's frames are `${seen.name()}`, and this reader reads `${wants.name()}`"
+}

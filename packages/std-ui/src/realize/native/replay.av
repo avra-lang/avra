@@ -1,0 +1,72 @@
+//! `realize/native/replay.av` — A NATIVE PAGE KEPT ON A TAPE, AND PLAYED
+//! AGAIN. A recording paints a view on a native page and keeps each frame it
+//! painted and each echo it heard, in order (`frame/tape.av`). A replay
+//! paints the same view on a page of its own, hears the tape's echoes in
+//! the same order, and answers the frames it painted — which, for a program
+//! that answers only what it is told, are the tape's frames, byte for byte.
+use frame.kinds.{FrameFault, FrameWriter}
+use frame.dialect.{Dialect}
+use frame.tape.{Entry, Tape, tape_begun, read_tape}
+use realize.native.frame.{neutral_frame}
+use realize.native.live.{NativeLive, native_live}
+use realize.native.patch.{NativePatch}
+use tree.identity.{NodeId}
+use tree.node.{Said}
+use tree.seats.{Seat}
+use tree.view.{View}
+
+/// A native page under way, and the tape it is kept on.
+export type Recording = { page: NativeLive, view: dyn View, tape: FrameWriter }
+
+/// The view `made` painted on a native page of its own, the first frame kept.
+export fn recording(made: fn() -> dyn View) -> Recording {
+    let r = Recording {
+        page: native_live(),
+        view: made(),
+        tape: tape_begun(Dialect.Neutral1, NativePatch.frame_types()),
+    }
+    r.painted()
+    r
+}
+
+impl Recording {
+    /// The page painted again, the frame kept.
+    fn painted() {
+        Entry
+            .Painted(neutral_frame(self.page.patches(self.page.drawn(self.view))))
+            .framed(self.tape)
+    }
+
+    /// The host's echo heard and kept, and the page painted after it: false
+    /// when nothing answered.
+    fn heard(id: NodeId, seat: Seat, said: Said?) -> bool {
+        Entry.Echoed(id, seat, said).framed(self.tape)
+        let answered = self.page.fire(id, seat, said)
+        self.painted()
+        answered
+    }
+
+    /// The tape so far.
+    fn kept() -> Bytes { self.tape.take() }
+}
+
+/// The frames the view `made` paints on a page of its own, hearing `tape`'s
+/// echoes in order — a paint first, and one after each echo. The view is made
+/// anew, so the state it holds starts where the recording's did.
+export fn replayed(tape: Bytes, made: fn() -> dyn View) -> Result<List<Bytes>, FrameFault> {
+    let t = read_tape(tape, Dialect.Neutral1, NativePatch.frame_types())?
+    let page = native_live()
+    let view = made()
+    let first = neutral_frame(page.patches(page.drawn(view)))
+    [first].concat([f for e in t.entries for f in played(page, view, e)])
+}
+
+fn played(page: NativeLive, view: dyn View, e: Entry) -> List<Bytes> {
+    match e {
+        .Painted(_) -> [],
+        .Echoed(id, seat, said) -> {
+            let _ = page.fire(id, seat, said)
+            [neutral_frame(page.patches(page.drawn(view)))]
+        },
+    }
+}

@@ -1,0 +1,175 @@
+//! A tape: its head, then each frame and echo it kept, in order. The empty
+//! tape first; then the pairs a tape could mistake — two paints for one, an
+//! echo heard before a paint for one after; then a stream that grew past its
+//! reader, read by the slots the reader knows.
+use @std.meta.{derive}
+use @std.ui.frame.derive.{Frame}
+use @std.ui.frame.dialect.{Dialect}
+use @std.ui.frame.kinds.{FrameReader, reader, writer, told_nothing, heard_nothing}
+use @std.ui.frame.rows.{FieldKind, FrameField, FrameRow, FrameType}
+use @std.ui.frame.shapes.{grown_record}
+use @std.ui.frame.tape.{Entry, Tape, painted, read_tape, tape_begun}
+use @std.ui.tree.identity.{NodeId}
+use @std.ui.tree.node.{Said}
+
+@derive(Frame)
+enum Note {
+    @code(1) Spoke(words: string)
+    @code(2) Count(n: int)
+}
+
+fn entry_line(e: Entry) -> string {
+    match e {
+        .Painted(f) -> "painted ${[f.at(i) for i in 0..f.length].map("${it}").join(",")}",
+        .Echoed(id, seat, said) -> "echoed ${id.n} ${seat.number()} ${said_line(said)}",
+    }
+}
+
+fn said_line(s: Said?) -> string {
+    match s {
+        said? -> match said {
+            .Text(t) -> "text '${t}'",
+            .Flag(on) -> "flag ${on}",
+            .Number(n) -> "number ${n}",
+        }
+        null -> "nothing"
+    }
+}
+
+fn frame_of(xs: List<int>) -> Bytes { xs.bytes()! }
+
+/// A tape keeping `entries`, as its bytes.
+fn taped(entries: List<Entry>) -> Bytes {
+    let w = tape_begun(Dialect.Neutral1, Note.frame_types())
+    for e in entries { e.framed(w) }
+    w.take()
+}
+
+fn spelled(b: Bytes) -> string { [b.at(i) for i in 0..b.length].map("${it}").join(",") }
+
+/// What a reader of Note's shapes reads back from `entries`, a line each.
+fn read_back(tape: Bytes) -> string {
+    match read_tape(tape, Dialect.Neutral1, Note.frame_types()) {
+        .Ok(t) -> t.entries.map(entry_line(it)).join("; "),
+        .Err(f) -> "refused: ${f.says}",
+    }
+}
+
+const one = [17, 1]
+
+const two = [17, 2]
+
+/// Note's shapes as a newer writer has them: `spoke` grown a trailing flag,
+/// and a variant the reader has never seen.
+fn newer() -> List<FrameType> {
+    [
+        FrameType {
+            name: "Note",
+            choice: true,
+            rows: [
+                FrameRow {
+                    word: "spoke",
+                    code: 1,
+                    fields: [
+                        FrameField { name: "words", kind: FieldKind.Text },
+                        FrameField { name: "loud", kind: FieldKind.Flag },
+                    ],
+                },
+                FrameRow {
+                    word: "count",
+                    code: 2,
+                    fields: [FrameField { name: "n", kind: FieldKind.Number }],
+                },
+                FrameRow {
+                    word: "gone",
+                    code: 3,
+                    fields: [FrameField { name: "at", kind: FieldKind.Word }],
+                },
+            ],
+        },
+    ]
+}
+
+fn note_line(n: Note?) -> string {
+    match n {
+        note? -> match note { .Spoke(w) -> "spoke ${w}", .Count(c) -> "count ${c}" }
+        null -> "stepped over"
+    }
+}
+
+spec "std/ui frame — tapes" {
+    given "a tape that kept nothing" {
+        then "is its head alone, and reads back as no entries" { read_back(taped([])) == "" }
+        then "opens with its own dialect" { taped([]).at(0) == Dialect.Tape1.code() }
+    }
+    given "what a tape kept" {
+        then "reads back in order, every field" {
+            read_back(
+                taped(
+                    [
+                        Entry.Painted(frame_of(one)),
+                        Entry.Echoed(NodeId { n: 4 }, 2, Said.Text("hé")),
+                        Entry.Echoed(NodeId { n: 5 }, 0, null),
+                    ],
+                ),
+            ) == "painted 17,1; echoed 4 2 text 'hé'; echoed 5 0 nothing"
+        }
+    }
+    given "pairs a tape could mistake" {
+        then "two paints and one paint of both" {
+            spelled(taped([Entry.Painted(frame_of(one)), Entry.Painted(frame_of(two))])) != spelled(taped([Entry.Painted(frame_of(one.concat(two)))]))
+        }
+        then "and they read back as two frames and as one" {
+            let apart = read_tape(
+                taped([Entry.Painted(frame_of(one)), Entry.Painted(frame_of(two))]),
+                Dialect.Neutral1,
+                Note.frame_types(),
+            )
+            let joined = read_tape(
+                taped([Entry.Painted(frame_of(one.concat(two)))]),
+                Dialect.Neutral1,
+                Note.frame_types(),
+            )
+            match apart { .Ok(a) -> painted(a).length == 2, .Err(_) -> false } &&
+                match joined { .Ok(j) -> painted(j).length == 1, .Err(_) -> false }
+        }
+        then "an echo heard between two paints and one heard after both" {
+            let echo = Entry.Echoed(NodeId { n: 1 }, 0, null)
+            spelled(taped([Entry.Painted(frame_of(one)), echo, Entry.Painted(frame_of(one))])) != spelled(taped([Entry.Painted(frame_of(one)), Entry.Painted(frame_of(one)), echo]))
+        }
+        then "nothing said and something said" {
+            spelled(taped([Entry.Echoed(NodeId { n: 1 }, 0, null)])) != spelled(taped([Entry.Echoed(NodeId { n: 1 }, 0, Said.Text(""))]))
+        }
+    }
+    given "a tape another reader's" {
+        then "of other frames is refused, by both names" {
+            match read_tape(taped([]), Dialect.Dom16, Note.frame_types()) {
+                .Ok(_) -> false,
+                .Err(f) -> f.says == "this tape's frames are `neutral1`, and this reader reads `dom16`",
+            }
+        }
+        then "and a frame that is no tape is refused by its dialect" { read_back(frame_of(one)) == "refused: this frame is `neutral1`, and this reader reads `tape1`" }
+    }
+    given "a stream that grew past its reader" {
+        then "is read by the slots the reader knows, the rest stepped over" {
+            let w = writer(told_nothing())
+            w.byte(1)
+            w.text("hi")
+            w.flag(true)
+            w.byte(3)
+            w.word(7)
+            w.byte(2)
+            w.number(-5)
+            let r = reader(w.take(), heard_nothing())
+            let read = [grown_record(
+                r,
+                "Note",
+                Note.frame_types(),
+                newer(),
+                (x: FrameReader) -> Note.unframed(x),
+            ) for _j in 0..3]
+            read.map((x) -> match x { .Ok(n) -> note_line(n), .Err(f) -> f.says }).join("; ") == "spoke hi; stepped over; count -5" &&
+                r.ended()
+        }
+    }
+}
