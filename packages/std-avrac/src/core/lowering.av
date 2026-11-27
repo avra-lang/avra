@@ -975,12 +975,23 @@ impl Lowering {
     fn layout_of(r: Reg) -> Layout { self.layouts.get()[r.index] }
 
     /// The row a map answers `row` by under the key `k`, read off the key's own layout.
-    fn map_row(row: string, k: Reg) -> RtSig { keyed_row(row, self.layout_of(k).map_keys()) }
+    mut fn map_row(row: string, k: Reg) -> RtSig { self.keyed_by(row, self.layout_of(k)) }
 
     /// The row that makes a map of `ty`, keyed as its key's layout says: text where `ty` names none.
     mut fn made_map_row(row: string, ty: SignedType) -> RtSig {
         let key? = ty.map_key() ?? self.named_over(ty)?.map_key() else { return rt_sig_of(row)! }
-        keyed_row(row, self.laid_out(key).map_keys())
+        self.keyed_by(row, self.laid_out(key))
+    }
+
+    /// The row a map of keys laid out as `key` answers `row` by. Typing refuses a key no map files,
+    /// so one reaching here is the compiler's defect, noted.
+    mut fn keyed_by(row: string, key: Layout) -> RtSig {
+        let keys? = key.map_keys() else {
+            self
+                .missed("a map keyed by a `${key.spelled()}` value, which no map files, past typing")
+            return rt_sig_of(row)!
+        }
+        keyed_row(row, keys)
     }
 
     // ── Constants ───────────────────────────────────────────────────
