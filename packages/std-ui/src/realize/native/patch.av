@@ -8,6 +8,7 @@ use tree.seats.{Seat}
 use style.style.{Interaction}
 use realize.diff.matcher.{Draws, Drawn, Stands, siblings}
 use realize.native.element.{Native}
+use realize.diff.hearing.{Bound}
 use realize.native.fact.{Fact, What, about, agree, moves_box}
 
 /// One change to a native host's elements. `Place` puts an element under its
@@ -56,7 +57,10 @@ impl NativeDiffer {
         self.say([NativePatch.SetFact(id, f) for f in e.facts])
         self.say([NativePatch.Listen(id, a.seat) for a in e.hears])
         let laid = siblings(self, id, [], e.kids, next + 1)
-        Drawn { element: e with { id: id, kids: laid.page }, next: laid.next }
+        Drawn {
+            element: e with { id: id, kids: laid.page, heard: heard_under(id, e, laid.page) },
+            next: laid.next,
+        }
     }
 
     /// A kept element: the facts that changed or left, the hearing that
@@ -66,7 +70,10 @@ impl NativeDiffer {
         self.say(facts(was.id, was.facts, now.facts))
         self.say(hearing(was.id, was.hears, now.hears))
         let laid = siblings(self, was.id, was.kids, now.kids, next)
-        Drawn { element: now with { id: was.id, kids: laid.page }, next: laid.next }
+        Drawn {
+            element: now with { id: was.id, kids: laid.page, heard: heard_under(was.id, now, laid.page) },
+            next: laid.next,
+        }
     }
 }
 
@@ -78,6 +85,12 @@ impl Draws<Native> for NativeDiffer {
     fn drawn(p: Stands<Native>, next: int) -> Drawn<Native> {
         match p { .Made(e) -> self.made(e, next), .Kept(_, was, now) -> self.kept(was, now, next) }
     }
+}
+
+/// What element `id`, standing as `e`, and the elements it holds hear, in order.
+fn heard_under(id: NodeId, e: Native, kids: List<Native>) -> List<Bound> {
+    [Bound { id: id, action: a, ordered: e.ordered } for a in e.hears]
+        .concat([b for k in kids for b in k.heard])
 }
 
 /// A fact is set when it arrives or changes, and dropped when it goes.

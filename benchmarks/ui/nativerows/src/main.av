@@ -1,61 +1,61 @@
 //! probe: what a native repaint costs a reused row. A list of 1000 keyed rows
 //! is painted, one row is changed, and the page is painted again: every other
 //! row is the same node at the same step, so its cost is the reuse's alone.
-//! `NATIVEROWS_TURNS` sets how many repaints are timed (0 for a census).
+//! `TURNS` repaints are timed.
 use @std.time.{now_ns}
-use @std.io.{env}
 use @std.ui.realize.native.live.{native_live}
 use @std.ui.tree.identity.{text_key}
 use @std.ui.tree.node.{Action, Attribute, Handler, Node, Prim}
 use @std.ui.tree.seats.{seat_named}
 use @std.ui.style.box.{Box}
+use @std.ui.components.switch.{switch}
 
 fn flipped(_on: bool) {}
 
 /// One row: its title and a switch that hears a change.
 fn row(i: int, title: string) -> Node {
-    let switch = Node {
+    let toggle = Node {
         prim: Prim.Switch,
         attrs: [Attribute.Label(title), Attribute.Checked(false)],
         box: Box {},
         children: [],
-        events: [Action { seat: seat_named("checkbox", "change"), handler: Handler.Flag(flipped) }],
+        events: [Action { seat: seat_named("switch", "change"), handler: Handler.Flag(flipped) }],
     }
     let text = Node { prim: Prim.Text, attrs: [Attribute.Text(title)], box: Box {}, children: [] }
     Node {
         prim: Prim.Item,
         attrs: [],
         box: Box { key: text_key("r${i}") },
-        children: [text, switch],
+        children: [text, toggle],
     }
 }
 
 fn board(rows: List<Node>) -> Node { Node { prim: Prim.List, attrs: [], box: Box {}, children: rows } }
 
-let count = 1000
-let changed = count / 2
-let turns = env("NATIVEROWS_TURNS")?.parse_int() ?? 200
-let rows: Cell<List<Node>> = Cell.new([row(i, "row ${i}") for i in 0..count])
+const COUNT: int = 1000
+const CHANGED: int = COUNT / 2
+const TURNS: int = 200
+let rows: Cell<List<Node>> = Cell.new([row(i, "row ${i}") for i in 0..COUNT])
 let page = native_live()
 let first = page.patches(board(rows.get())).length
 println("first paint: ${first} patches")
 
 /// The changed row's title on turn `t`.
-fn title(t: int) -> string { "row ${changed} turn ${t}" }
+fn title(t: int) -> string { "row ${CHANGED} turn ${t}" }
 
-rows.set_at(changed, row(changed, title(0)))
-let once = page.patches(board(rows.get())).length
-println("one row changed: ${once} patches")
+rows.set_at(CHANGED, row(CHANGED, title(0)))
+let repainted = page.patches(board(rows.get())).length
+println("one row changed: ${repainted} patches")
 
 let t0 = now_ns()
 mut said = 0
 // LICENSED loops.push_loop: a timed loop counts, it does not build a list
-for t in 1..turns + 1 {
-    rows.set_at(changed, row(changed, title(t)))
+for t in 1..TURNS + 1 {
+    rows.set_at(CHANGED, row(CHANGED, title(t)))
     said = said + page.patches(board(rows.get())).length
 }
 let t1 = now_ns()
-if turns > 0 { println(
-        "repaint: ${(t1 - t0) / turns} ns/paint, ${(t1 - t0) / turns / count} ns/row (${said} patches)",
-    ) }
+println(
+    "repaint: ${(t1 - t0) / TURNS} ns/paint, ${(t1 - t0) / TURNS / COUNT} ns/row (${said} patches)",
+)
 "done"
