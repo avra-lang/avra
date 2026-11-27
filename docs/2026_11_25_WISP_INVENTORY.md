@@ -131,7 +131,7 @@ A running list: each entry is gone from the tree, named with the train that remo
 | keepers-pr | recipe | internal | merge: keepers --set <name> | a set is a row of the keeper registry |
 | keepers-static | recipe | internal | merge: keepers --set <name> | a set is a row of the keeper registry |
 | keepers-wasm | recipe | internal | merge: keepers --set <name> | a set is a row of the keeper registry |
-| layers | KEEPERS_B; KEEPERS_STATIC; recipe | internal | merge: keepers |  |
+| layers | KEEPERS_B; KEEPERS_STATIC; recipe | internal | merge: keepers | DELETED — rules `compiler.layer_climbs`, `compiler.by_id_writer` |
 | layout-oracle | recipe | internal | merge: oracle | an agreement or refusal case |
 | libs | recipe | internal | keep: Make | a file in build/; wisp asks Make for files, never the reverse |
 | libs-self-test | KEEPERS_B; KEEPERS_STATIC; recipe | internal | merge: fixtures |  |
@@ -299,7 +299,7 @@ A running list: each entry is gone from the tree, named with the train that remo
 | keeper_planted.sh | gate.sh | internal | merge: keepers | new since d7cd84d9 |
 | keepers_loop.sh | Makefile | internal | merge: gate |  |
 | layer_sites_attack.sh | gate.sh | internal | merge: oracle |  |
-| layers.py | Makefile | internal | merge: tree |  |
+| layers.py | Makefile | internal | merge: tree | PORTED — rules `compiler.layer_climbs`, `compiler.by_id_writer` |
 | layout-oracle/ | checks.yml, Makefile, solve.av +7 | internal | merge: oracle |  |
 | layout_oracle.sh | checks.yml, orders.yml, Makefile +2 | internal | merge: oracle |  |
 | layout_oracle_absent_test.sh | checks.yml, Makefile | internal | merge: oracle |  |

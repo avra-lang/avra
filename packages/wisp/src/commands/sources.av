@@ -1,0 +1,23 @@
+//! The `.av` sources a keeper reads: one walk over the tree and one order, so two keepers never
+//! read different trees.
+use @std.io.{list_dir, is_dir}
+
+/// A root with each `*` segment standing for every directory there.
+fn rooted(root: string) -> List<string> {
+    let star = root.index_of("/*/")
+    if star < 0 { return [root] }
+    let dir = root.substring(0, star)
+    let rest = root.substring(star + 3, root.length)
+    flatten_texts(
+        [rooted("${dir}/${n}/${rest}") for n in sorted_distinct(list_dir(dir) catch []) if !n.starts_with(".") && is_dir("${dir}/${n}")],
+    )
+}
+
+/// Every `.av` file under each of `roots`, in path order — a module's `tests/` left out unless
+/// `tests` asks for them.
+export fn av_files(roots: List<string>, tests: bool) -> List<string> {
+    let found = flatten_texts(flatten_texts(roots.map(rooted(it))).map(files_under(it)))
+    sorted_distinct(
+        [f for f in found if f.ends_with(".av") && (tests || !"/${f}".contains("/tests/"))],
+    )
+}

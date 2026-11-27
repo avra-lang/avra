@@ -927,13 +927,6 @@ const HEADER: string = "# WORLD READS OUTSIDE THE INPUT DOOR, one TAB-separated 
 
 // ── the tree ─────────────────────────────────────────────────────────
 
-/// Every `.av` file under `root`, tests left out, in path order.
-fn av_files(root: string) -> List<string> {
-    sorted_distinct(
-        [f for f in files_under(root) if f.ends_with(".av") && !"/${f}".contains("/tests/")],
-    )
-}
-
 fn sources_of(files: List<string>) -> List<Source> { files.map(Source { path: it, text: read_text(it) catch "" }) }
 
 /// Every site in the scope, a module's rows read by all of its files.
@@ -966,7 +959,7 @@ fn package_faults(t: Tables, used: List<string>) -> List<string> {
     )
 }
 
-fn package_sources(pkg: string) -> List<Source> { sources_of(av_files("packages/std-${pkg}/src")) }
+fn package_sources(pkg: string) -> List<Source> { sources_of(av_files(["packages/std-${pkg}/src"], false)) }
 
 /// The families the compiler holds (`avra licences --json`).
 fn families_of(avra: string) -> Result<List<Family>, string> {
@@ -1031,7 +1024,7 @@ fn table_lines(sites: List<Site>) -> List<string> {
 export type InputsRun = { out: List<string>, err: List<string>, exit: int }
 
 export fn run_inputs(t: Tables, accept: bool) -> InputsRun {
-    let files = flatten_texts(SCOPE.map(av_files(it)))
+    let files = av_files(SCOPE, false)
     let texts = sources_of(files)
     let used = joined([], flatten_texts(texts.map(packages_used(it.text))))
     let faults = flatten_texts(texts.map(unclassified(t, it.path, it.text)))

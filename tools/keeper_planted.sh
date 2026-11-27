@@ -11,7 +11,7 @@
 #   sh tools/keeper_planted.sh --pick <k>…    the first of the keepers `k` that has a plant, else nothing
 set -u
 root=$(cd "$(dirname "$0")/.." && pwd)
-PLANTS="fmt-lossless traps clock-holds wasm-refuses tool-witnesses runtime-tests witness-place-kill witness-machine-store inputs externs layers bash-parse dogfooding-rules rt-header pkgs-witness"
+PLANTS="fmt-lossless traps clock-holds wasm-refuses tool-witnesses runtime-tests witness-place-kill witness-machine-store inputs externs bash-parse dogfooding-rules rt-header pkgs-witness"
 case ${1:-} in
     --list) printf '%s\n' $PLANTS; exit 0 ;;
     --pick)
@@ -77,10 +77,6 @@ case $plant in
     externs)
         printf 'extern fn avra_planted_width(n: int) -> int\n' >packages/cli/src/commands/planted_extern.av
         word='avra_planted_width'
-        ;;
-    layers)
-        printf 'use compiler.{analyze}\n' >packages/std-avrac/src/core/planted_layer.av
-        word='planted_layer.av'
         ;;
     bash-parse)
         printf '#!/bin/sh\nif then fi\n' >tools/planted_parse.sh

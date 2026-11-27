@@ -1927,3 +1927,124 @@ fn setting_read_by_hand_found(n: Syntax) -> Fix {
             ),
         )
 }
+
+/// THE LAYERING IS ONE-WAY: `core -> grammar -> features -> compiler` under
+/// packages/std-avrac/src, so a file names its own layer and the ones below it, never one above.
+/// Below them all stands `@std/relation`: nothing under packages/std-relation/src names the
+/// compiler (its tests may read `@std.avrac.core`), and its `engine/` names `@std/meta` and
+/// itself alone — never a sibling module of its own package, which stands above it. The
+/// compiler's own `tests/` drive the layers above them and are not judged. A BARE-HOLE ROOT
+/// over a `use` statement (`use_parts`), judged by its file's path.
+///
+/// NO REWRITE: the name a file reaches for lives in the layer above, and moving it is a design.
+@keeps("use core.{x}\n")
+@says("the name a `use` climbs to lives in a layer above, and moving it down is a design")
+export fact_rule layer_climbs { quote { ${u} } if layer_refusals(u).length > 0 -> layer_found(u) }
+
+/// The compiler's layers, lowest first.
+const layer_order: List<string> = ["core", "grammar", "features", "compiler"]
+
+/// What a `use` names: `@std.a` or `@std.a.b`, else its whole local path.
+fn use_target(u: Code) -> string? {
+    let parts? = match u.at {
+        .Stmt(s) -> u.of.view.store.use_parts(s),
+        .Expr(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> null,
+    } else { return null }
+    let path = parts.path
+    if path.first() == "@std" { path.take(3).join(".") } else { path.join(".") }
+}
+
+/// The compiler layer a `use` target names, or null.
+fn layer_named(target: string) -> string? {
+    let parts = target.split(".")
+    if target.starts_with("@std.") {
+        return if parts.length > 2 && parts[1] == "avrac" && layer_order.contains(parts[2]) { parts[2] } else { null }
+    }
+    if layer_order.contains(parts[0]) { parts[0] } else { null }
+}
+
+/// The path segment after `root` in `file`, or null when `file` is not under it.
+fn segment_after(file: string, root: string) -> string? {
+    let at = file.index_of(root)
+    if at < 0 { return null }
+    file.substring(at + root.length, file.length).split("/").first()
+}
+
+/// Every way a `use` breaks the layering, as words.
+fn layer_refusals(u: Code) -> List<string> {
+    let target? = use_target(u) else { return [] }
+    let file = u.of.view.source.file
+    let own = segment_after(file, "std-avrac/src/")
+    if own != null && !file.contains("/tests/") && layer_order.contains(own!) {
+        let named = layer_named(target)
+        return if named != null && layer_order.index_of(named!) > layer_order.index_of(own!) { ["`${own!}` names `${named!}` — `use ${target}`"] } else { [] }
+    }
+    if segment_after(file, "std-relation/src/") == null { return [] }
+    let tests = file.contains("/tests/")
+    let engine = file.contains("/src/engine/") && !tests
+    let compiler = target.starts_with("@std.avrac") && !(tests && target == "@std.avrac.core")
+    let other_std = engine &&
+        target.starts_with("@std.") &&
+        !["meta", "relation"].contains(target.split(".")[1])
+    let own_package = engine &&
+        (target == "@std.relation" || !(target.starts_with("@std.") || target.starts_with("engine"))) &&
+        !target.starts_with("@std.relation.engine")
+    [
+        if compiler { "`@std/relation` names the compiler — `use ${target}`" } else { "" },
+        if other_std { "the engine names `${target}` — it reads `@std/meta` alone" } else { "" },
+        if own_package { "the engine names `${target}`, its own package above it — it reads `@std/meta` and itself alone" } else { "" },
+    ]
+        .filter(it != "")
+}
+
+fn layer_found(u: Code) -> Fix {
+    Fix
+        .Say(
+            said(
+                u.loc(),
+                layer_refusals(u).join("; "),
+                "this `use`",
+                "name only this layer and the ones below it",
+            ),
+        )
+}
+
+/// ROWS FILED BY ID HAVE ONE WRITER: `@std/relation` hands an owner's rows over as a value
+/// (`Rel.replaced`); the three verbs under it — `owner_named`, `put_owned`, `kept_of` — are the
+/// declaration table's alone (features/decls.av and features/decls_mint.av) until its rows are a
+/// value too. A call of one anywhere else outside packages/std-relation is refused, in every
+/// package. A BARE-HOLE ROOT over a method call, judged by its name and its file's path.
+///
+/// NO REWRITE: handing rows over as a value reshapes the owner, not the call.
+@keeps("self.kept(buckets, k, b)")
+@keeps("Fact.replaced(db, \"o\", rows)")
+@says("handing rows over with `Rel.replaced` reshapes the owner, not this call")
+export fact_rule by_id_writer { quote { ${c} } if files_by_id(c) -> by_id_found(c) }
+
+/// The by-id writer's verbs, and the files licensed to call them.
+const by_id_verbs: List<string> = ["owner_named", "put_owned", "kept_of"]
+
+const by_id_writers: List<string> = [
+    "std-avrac/src/features/decls.av",
+    "std-avrac/src/features/decls_mint.av",
+]
+
+fn files_by_id(c: Code) -> bool {
+    let name? = c.method_name() else { return false }
+    let file = c.of.view.source.file
+    by_id_verbs.contains(name) &&
+        !file.contains("std-relation/") &&
+        !by_id_writers.any((w) -> file.ends_with(w))
+}
+
+fn by_id_found(c: Code) -> Fix {
+    Fix
+        .Say(
+            said(
+                c.loc(),
+                "`.${c.method_name() ?? "?"}(` files rows by id — the declaration table's alone; hand rows over with `Rel.replaced`",
+                "this call",
+                "hand the owner's rows over as a value with `Rel.replaced`",
+            ),
+        )
+}
