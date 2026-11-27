@@ -1,0 +1,524 @@
+use @std.io.{exists, make_dirs, read_text, write_text, env_or}
+use @std.time.{stamp}
+use commands.{
+    Holding,
+    check_release_order,
+    check_keeper_coverage,
+    check_warm_edit,
+    check_light_draft,
+    check_ladder,
+    check_run_mode,
+    check_path_gate,
+    check_dup_run,
+    check_ready_race,
+    check_compiler_route,
+    check_one_spelling,
+    check_ci_image,
+    check_keeper_reach,
+    tree_verdicts,
+    parse_jobs,
+}
+
+/// The tree this suite stands in: the nearest directory up holding the CI's workflow.
+once fn root() -> string {
+    [".", "..", "../..", "../../..", "../../../.."]
+        .find(exists("${it}/.github/workflows/checks.yml")) ?? "."
+}
+
+fn tree(path: string) -> string { read_text("${root()}/${path}") catch "" }
+
+fn checks() -> string { tree(".github/workflows/checks.yml") }
+
+fn action() -> string { tree(".github/actions/compiler/action.yml") }
+
+once fn scratch() -> string {
+    let dir = "${env_or("TMPDIR", "/tmp")}/wisp-ci-invariants/${stamp()}"
+    let _ = make_dirs(dir)
+    dir
+}
+
+/// A file under the scratch directory holding `text`, answering its path.
+fn file(name: string, text: string) -> string {
+    let path = "${scratch()}/${name}"
+    let _ = write_text(path, text)
+    path
+}
+
+fn clean(v: Holding) -> bool { v.refusals.length == 0 && v.words.length > 0 }
+
+fn refuses(v: Holding, word: string) -> bool { v.refusals.any(it.contains(word)) }
+
+/// The first occurrence of `old` in `s` replaced by `new`.
+fn once_replaced(s: string, old: string, new: string) -> string {
+    let k = s.index_of(old)
+    if k < 0 { s } else { "${s.substring(0, k)}${new}${s.substring(k + old.length, s.length)}" }
+}
+
+/// The last occurrence of `old` in `s` replaced by `new`.
+fn last_replaced(s: string, old: string, new: string) -> string {
+    let parts = s.split(old)
+    if parts.length < 2 { s } else { "${parts.take(parts.length - 1).join(old)}${new}${parts.last()!}" }
+}
+
+/// A minimal workflow with one prepare job: the fetch, then the build.
+fn prepare(fetch_if: string, build_if: string) -> string {
+    [
+        "name: checks",
+        "on: [pull_request]",
+        "jobs:",
+        "  prepare:",
+        "    outputs:",
+        "      build: x",
+        "    steps:",
+        "      - uses: actions/checkout@v4",
+        "      - if: ${fetch_if}",
+        "        id: release",
+        "        name: compiler from release",
+        "        run: python3 tools/compiler_release.py fetch key build/avra",
+        "      - if: ${build_if}",
+        "        name: compiler",
+        "        run: make -s avra",
+        "",
+    ]
+        .join("\n")
+}
+
+fn make() -> string {
+    [
+        "KEEPERS_ALONE = runtime-tests",
+        "KEEPERS_A = heavy",
+        "KEEPERS_B = fingerprints vocab rt-header",
+        "KEEPERS = clock-holds \$(KEEPERS_ALONE) \$(KEEPERS_A) \$(KEEPERS_B)",
+        "KEEPERS_STATIC = fingerprints vocab",
+        "KEEPERS_PR = rt-header",
+        "heavy:\n\t@true",
+        "fingerprints:\n\t@true",
+        "vocab:\n\t@true",
+        "clock-holds:\n\t@true",
+        "runtime-tests:\n\t@true",
+        "rt-header:\n\t@true",
+        "",
+    ]
+        .join("\n")
+}
+
+fn cover() -> string {
+    "jobs:\n  prepare:\n    steps:\n      - run: make -s keepers-static\n  train:\n    if: github.event_name == 'merge_group'\n    steps:\n      - run: make -s keepers-a\n"
+}
+
+fn uncovered() -> string {
+    "jobs:\n  prepare:\n    steps:\n      - run: echo hi\n  train:\n    if: github.event_name == 'merge_group'\n    steps:\n      - run: make -s keepers-a\n"
+}
+
+fn warm_make() -> string {
+    "${once_replaced(make(), "KEEPERS_B = fingerprints vocab rt-header", "KEEPERS_B = fingerprints vocab rt-header warm-edit")}warm-edit:\n\t@sh tools/warm_edit_bench.sh\n"
+}
+
+fn good_bench() -> string {
+    file(
+        "bench.sh",
+        "[ -d .avra-cache ] || { echo \"this is a FAILURE\"; echo \"skip warm-edit\"; [ -z \"\${WARM_EDIT_SKIP:-}\" ] || exit 0; exit 1; }\n",
+    )
+}
+
+fn good_ratchet() -> string { file("ledger_rows.sh", "grep -E '^skip ' x; echo warm: \$WARM_EDIT_SKIP\n") }
+
+fn reach_make() -> string {
+    [
+        "KEEPERS_B = kb",
+        "kb: dep\n\t@sh tools/kb.sh\n\t@\$(MAKE) -s inner",
+        "inner:\n\t@sh tools/inner.sh",
+        "dep:\n\t@sh tools/dep.sh",
+        "shard-x:\n\t@sh tools/sx.sh",
+        "viascript:\n\t@sh tools/vs.sh",
+        "# not a keeper — prints a report\nbench:\n\t@sh tools/bench.sh",
+        "alias:\n\t@sh tools/dep.sh",
+        "loose:\n\t@sh tools/loose.sh",
+        "",
+    ]
+        .join("\n")
+}
+
+fn reach_flows() -> Map<string, string> {
+    mut m: Map<string, string> = {}
+    m
+        .set(
+            "c.yml",
+            "jobs:\n  j:\n    strategy:\n      matrix:\n        shard: ['x']\n    steps:\n      - run: make -s shard-\${{ matrix.shard }}\n      - run: sh tools/runner.sh\n",
+        )
+    m
+}
+
+fn runner(name: string) -> string? { if name == "runner.sh" { "make -s viascript\n" } else { null } }
+
+fn reach(mk: string, flows: Map<string, string>) -> Holding { check_keeper_reach(mk, flows, runner) }
+
+fn one_file(name: string, text: string) -> Map<string, string> {
+    mut m: Map<string, string> = {}
+    m.set(name, text)
+    m
+}
+
+fn with_file(m: Map<string, string>, name: string, text: string) -> Map<string, string> {
+    mut out: Map<string, string> = {}
+    for k, v in m { out.set(k, v) }
+    out.set(name, text)
+    out
+}
+
+fn spelled(text: string) -> Holding { check_one_spelling(one_file("a.yml", text)) }
+
+fn pushed_one() -> Map<string, string> { one_file("ci-image.yml", "          tags: ghcr.io/x/ci:1\n") }
+
+fn pushed_two() -> Map<string, string> {
+    one_file("ci-image.yml", "          tags: ghcr.io/x/ci:1\n          tags: ghcr.io/x/ci:1-b\n")
+}
+
+fn image_once() -> string { "    container: &ci-image\n      image: ghcr.io/x/ci:1\n  b:\n    container: *ci-image\n" }
+
+fn image_chosen() -> string {
+    "${image_once()}  c:\n    container:\n      image: \${{ x && 'ghcr.io/x/ci:1-b' || 'ghcr.io/x/ci:1' }}\n"
+}
+
+spec "ci_invariants — release-order" {
+    then "a fetch, then a build conditional on its miss, holds" {
+        let good = prepare(
+            "steps.plan.outputs.build == '1'",
+            "steps.plan.outputs.build == '1' && steps.cache.outputs.cache-hit != 'true' && steps.release.outputs.hit != 'true'",
+        )
+        clean(check_release_order(parse_jobs(good), ""))
+    }
+    then "a build without the release-miss condition is refused" {
+        let bad = prepare("steps.plan.outputs.build == '1'", "steps.plan.outputs.build == '1'")
+        refuses(check_release_order(parse_jobs(bad), ""), "MISSED")
+    }
+    then "a build before the fetch is refused" {
+        let order = "jobs:\n  prepare:\n    steps:\n      - if: x\n        name: compiler\n        run: make -s avra\n      - if: y\n        id: release\n        run: python3 tools/compiler_release.py fetch key build/avra\n"
+        refuses(check_release_order(parse_jobs(order), ""), "BEFORE")
+    }
+    then "no fetch at all is refused" {
+        let nofetch = "jobs:\n  prepare:\n    steps:\n      - name: compiler\n        run: make -s avra\n"
+        refuses(check_release_order(parse_jobs(nofetch), ""), "release asset")
+    }
+    then "a prepare that calls the compiler action is held to the action's steps" {
+        let jobs = parse_jobs(checks())
+        clean(check_release_order(jobs, action())) &&
+            refuses(
+                check_release_order(
+                    jobs,
+                    action().replace("compiler_release.py fetch", "compiler_release.py skip"),
+                ),
+                "release asset",
+            )
+    }
+}
+
+spec "ci_invariants — keeper-coverage" {
+    then "every compiler-free keeper run by a PR job holds" { clean(check_keeper_coverage(make(), cover())) }
+    then "a compiler-free keeper no PR job runs is refused, and named" {
+        refuses(check_keeper_coverage(make(), uncovered()), "fingerprints, vocab")
+    }
+    then "a keeper named in KEEPERS_STATIC but not in KEEPERS is refused" {
+        let misdeclared = "${once_replaced(make(), "KEEPERS_STATIC = fingerprints vocab", "KEEPERS_STATIC = fingerprints vocab ghost")}ghost:\n\t@true\n"
+        refuses(check_keeper_coverage(misdeclared, cover()), "ghost")
+    }
+    then "a `-static` target no PR job runs is refused" {
+        refuses(
+            check_keeper_coverage("${make()}codecs-static:\n\t@python3 tools/codecs.py\n", cover()),
+            "codecs-static",
+        )
+    }
+}
+
+spec "ci_invariants — warm-edit" {
+    then "no warm-edit target is a spoken pass" { clean(check_warm_edit(make(), "/nowhere", "/nowhere")) }
+    then "a keeper whose bench fails a run that cannot judge holds" {
+        clean(check_warm_edit(warm_make(), good_bench(), good_ratchet()))
+    }
+    then "a target that is not a keeper is refused" {
+        refuses(
+            check_warm_edit(
+                "${make()}warm-edit:\n\t@sh tools/warm_edit_bench.sh\n",
+                good_bench(),
+                good_ratchet(),
+            ),
+            "KEEPERS",
+        )
+    }
+    then "a bench with no skip marker is refused" {
+        refuses(
+            check_warm_edit(warm_make(), file("silent.sh", "echo measured\n"), good_ratchet()),
+            "skip warm-edit",
+        )
+    }
+    then "a bench that names the marker and still exits 0 is refused" {
+        refuses(
+            check_warm_edit(
+                warm_make(),
+                file("green.sh", "echo \"skip warm-edit\"; exit 0\n"),
+                good_ratchet(),
+            ),
+            "FAILURE",
+        )
+    }
+    then "a missing bench is refused" {
+        refuses(
+            check_warm_edit(warm_make(), "${scratch()}/nope.sh", good_ratchet()),
+            "does not exist",
+        )
+    }
+    then "a ratchet that reads no warm row is refused" {
+        refuses(check_warm_edit(warm_make(), good_bench(), good_bench()), "warm row")
+    }
+}
+
+spec "ci_invariants — light-draft and ladder" {
+    then "the tree's workflow holds both" {
+        clean(check_light_draft(checks(), action())) &&
+            clean(check_ladder(checks(), null, {}, action()))
+    }
+    then "a compiler step handed no rungs is refused" {
+        refuses(
+            check_ladder(
+                checks(),
+                null,
+                {},
+                action().replace("make -s compiler RUNGS=", "make -s compiler X="),
+            ),
+            "RUNGS",
+        )
+    }
+    then "a `make compiler` that does not climb tools/ladder.sh is refused" {
+        refuses(
+            check_ladder(
+                checks(),
+                tree("Makefile").replace("tools/ladder.sh", "tools/other.sh"),
+                {},
+                action(),
+            ),
+            "ladder.sh",
+        )
+    }
+    then "another workflow building the compiler with no rungs is refused at its line" {
+        refuses(
+            check_ladder(
+                checks(),
+                null,
+                one_file("o.yml", "        run: make -s compiler\n"),
+                action(),
+            ),
+            "o.yml:1",
+        )
+    }
+    then "a seed check that does not speak is refused" {
+        refuses(
+            check_ladder(checks().replace("SKIPPED, SPOKEN", "skipped"), null, {}, action()),
+            "seed-check",
+        )
+    }
+    then "an action that reads no rungs is refused" {
+        refuses(
+            check_ladder(checks(), null, {}, action().replace("tools/rungs.sh", "tools/none.sh")),
+            "rungs",
+        )
+    }
+    then "a prepare that does not call the compiler action is refused" {
+        refuses(
+            check_ladder(
+                checks().replace("uses: ./.github/actions/compiler", "uses: ./elsewhere"),
+                null,
+                {},
+                action(),
+            ),
+            ".github/actions/compiler",
+        )
+    }
+    then "a heavy leg with no full gate is refused by name" {
+        let ungated = checks()
+            .replace(
+                "    if: needs.prepare.outputs.cache == '1' && needs.prepare.outputs.full == '1'",
+                "    if: needs.prepare.outputs.cache == '1'",
+            )
+        ungated != checks() && refuses(check_light_draft(ungated, action()), "cache-attacks")
+    }
+    then "a `test` that never refuses a light run is refused" {
+        refuses(
+            check_light_draft(
+                checks().replace("if: needs.prepare.outputs.full == '0'", "if: false"),
+                action(),
+            ),
+            "does not refuse",
+        )
+    }
+    then "a light run that builds a compiler the published one could serve is refused" {
+        let built = action()
+            .replace(" && (inputs.full == '1' || steps.release.outputs.source == 'none')", "")
+        let unhanded = checks().replace("full: \${{ steps.plan.outputs.full }}", "full: '1'")
+        built != action() &&
+            refuses(check_light_draft(checks(), built), "builds a compiler") &&
+            unhanded != checks() &&
+            refuses(check_light_draft(unhanded, action()), "builds a compiler")
+    }
+}
+
+spec "ci_invariants — run-mode, path-gate, dup-run, ready-race" {
+    then "the tree's workflow holds each" {
+        clean(check_run_mode(checks())) &&
+            clean(check_path_gate(checks())) &&
+            clean(check_dup_run(checks())) &&
+            clean(check_ready_race())
+    }
+    then "a mode read from the payload is refused" {
+        let payload = checks()
+            .replace("./wisp pr_mode)\" = light ] && full=0", "true)\" = true ] && full=0")
+        payload != checks() && refuses(check_run_mode(payload), "wisp pr_mode")
+    }
+    then "a gate that runs on an unpublished compiler's light run is refused" {
+        let ungated = checks()
+            .replace(
+                " && !(needs.prepare.outputs.full == '0' && needs.prepare.outputs.compiler_source == 'latest')",
+                "",
+            )
+        ungated != checks() && refuses(check_run_mode(ungated), "`gate`")
+    }
+    then "a path-gated job off the path gate is refused by name" {
+        let rk = checks()
+            .replace(
+                "    if: needs.prepare.outputs.runtime_keep == '1' && needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'",
+                "    if: needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'",
+            )
+        let lo = checks()
+            .replace(
+                "    if: needs.prepare.outputs.layout_oracle == '1' && needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'",
+                "    if: needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'",
+            )
+        rk != checks() &&
+            refuses(check_path_gate(rk), "runtime-keep") &&
+            lo != checks() &&
+            refuses(check_path_gate(lo), "layout-oracle")
+    }
+    then "a labeled run that does not mirror is refused" {
+        let unmirrored = once_replaced(
+            checks(),
+            "needs.prepare.outputs.mirror != ''",
+            "needs.prepare.outputs.mirror == ''",
+        )
+        unmirrored != checks() && refuses(check_dup_run(unmirrored), "mirror")
+    }
+}
+
+spec "ci_invariants — compiler-route" {
+    then "the tree's prep holds" { clean(check_compiler_route(tree("tools/work"), tree("tools/sprite-remote.sh"))) }
+    then "a wire with no route is refused" {
+        let work = tree("tools/work")
+        let no_wire = once_replaced(work, "wire=\"\$wire@\$route", "wire=\"\$wire")
+        no_wire != work &&
+            refuses(check_compiler_route(no_wire, tree("tools/sprite-remote.sh")), "wire")
+    }
+    then "a prep with no published route is refused" {
+        let remote = tree("tools/sprite-remote.sh")
+        let gone = once_replaced(
+            remote,
+            "\"\${route%%:*}\" = published",
+            "\"\${route%%:*}\" = never",
+        )
+        gone != remote && refuses(check_compiler_route(tree("tools/work"), gone), "published")
+    }
+    then "a merge-base compiler with no seed behind it is refused" {
+        let remote = tree("tools/sprite-remote.sh")
+        let no_seed = last_replaced(remote, "make -s compiler GENS=1", "make -s avra")
+        no_seed != remote && refuses(check_compiler_route(tree("tools/work"), no_seed), "seed")
+    }
+}
+
+spec "ci_invariants — one-spelling" {
+    then "the hand-down's composite holds" {
+        clean(
+            spelled(
+                "    steps:\n      - uses: ./.github/actions/handed-down\n      - uses: actions/upload-artifact@v4\n        with:\n          name: avra-build\n",
+            ),
+        )
+    }
+    then "a by-hand download is refused" {
+        spelled("      - uses: actions/download-artifact@v4\n        with: { name: avra-build }\n")
+            .refusals
+            .length > 0
+    }
+    then "a by-hand untar is refused" {
+        spelled("        run: tar -xzf avra-build.tar.gz && chmod +x build/avra\n").refusals.length > 0
+    }
+    then "a by-hand pack is refused" {
+        spelled("          tar -cf - build | gzip -1 > avra-build.tar.gz\n").refusals.length > 0
+    }
+    then "the speed note's home holds, and a comment is no spelling" {
+        clean(
+            spelled(
+                "      - uses: ./.github/actions/speed-note\n      # tools/speed_note.sh lives there\n",
+            ),
+        )
+    }
+    then "a second spelling is refused at its line" {
+        spelled("        run: sh tools/speed_note.sh collect speed.log\n").refusals.join("|") == "a.yml:1 spells what `./.github/actions/speed-note` holds — use it"
+    }
+}
+
+spec "ci_invariants — ci-image" {
+    then "one pushed tag, spelled once and aliased, holds" { clean(check_ci_image(with_file(pushed_one(), "a.yml", image_once()))) }
+    then "a second spelling is refused" {
+        let twice = image_once()
+            .replace("container: *ci-image", "container:\n      image: ghcr.io/x/ci:1")
+        refuses(
+            check_ci_image(with_file(pushed_one(), "a.yml", twice)),
+            "spells `ghcr.io/x/ci:1` 2 times",
+        )
+    }
+    then "an image the recipe does not push is refused" {
+        refuses(
+            check_ci_image(with_file(pushed_one(), "a.yml", image_once().replace("ci:1", "ci:0"))),
+            "does not push",
+        )
+    }
+    then "an expression choosing pushed images holds" { clean(check_ci_image(with_file(pushed_two(), "a.yml", image_chosen()))) }
+    then "an expression naming an image the recipe does not push is refused" {
+        refuses(
+            check_ci_image(
+                with_file(pushed_two(), "a.yml", image_chosen().replace("ci:1-b'", "ci:9'")),
+            ),
+            "ghcr.io/x/ci:9",
+        )
+    }
+}
+
+spec "ci_invariants — keeper-reach" {
+    then "a keeper reached through a list, a matrix, a script or a prerequisite holds, and the loose one is refused alone" {
+        let bad = reach(reach_make(), reach_flows()).refusals
+        bad.length == 1 && bad[0].contains("`make loose`")
+    }
+    then "an owed declaration stands a target down" {
+        clean(
+            reach(
+                reach_make()
+                    .replace("loose:", "# keeper owed by lane — its fixture moved\nloose:"),
+                reach_flows(),
+            ),
+        )
+    }
+    then "a declaration with no words is none" {
+        reach(reach_make().replace("loose:", "# not a keeper\nloose:"), reach_flows())
+            .refusals
+            .length > 0
+    }
+    then "a nightly claim orders.yml does not keep is refused, and one it keeps holds" {
+        let night = reach_make().replace("loose:", "# keeper: nightly (orders) — long\nloose:")
+        let kept = with_file(
+            reach_flows(),
+            "orders.yml",
+            "jobs:\n  n:\n    steps:\n      - run: make -s loose\n",
+        )
+        refuses(reach(night, reach_flows()), "says it runs nightly") && clean(reach(night, kept))
+    }
+}
+
+spec "ci_invariants — the tree" {
+    then "every invariant holds on the tree" { tree_verdicts(root()).all(clean(it)) }
+}

@@ -1258,15 +1258,14 @@ store-witnesses: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 
 # THE CI STRUCTURE RATCHET: the release path and the compiler-free keepers a
 # PR must reach are held before a green PR can break them. It reads the
-# workflow and this Makefile alone, so no compiler.
+# workflow and this Makefile alone (`wisp ci_invariants`), so no compiler.
 # THE PKGS FAMILY REACHES WHAT IMPORTS A CHANGE: a std-http change selects std-queue_store's suite
 # (tools/witness_gate_pkgs.sh, over `gate.sh pkgs-suites`).
 pkgs-witness:
 	@sh tools/witness_gate_pkgs.sh
 
 ci-invariants:
-	@python3 tools/ci_invariants.py --self-test
-	@python3 tools/ci_invariants.py
+	@./wisp ci_invariants
 	@sh tools/profile.sh --self-test
 	@python3 tools/ci_dup_run.py --self-test
 	@python3 tools/pr_mode.py --self-test
