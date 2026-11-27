@@ -1,0 +1,121 @@
+use store_fuzz.{
+    Model,
+    ModelFile,
+    ModelFn,
+    FnSeat,
+    Part,
+    Atom,
+    Op,
+    Edit,
+    Step,
+    initial,
+    applied,
+    every_edit,
+    replayed,
+    drawn,
+    said,
+    parsed,
+    all_fns,
+    fn_at,
+    where_of,
+    callees,
+    reaches,
+    may_call,
+    source_of,
+    board_start,
+    board_applied,
+    board_text,
+}
+
+/// Every law a step's model breaks, said: a call no file holds, lib reading app, a fn that comes
+/// round to itself, a root no file holds.
+fn faults(seed: int, s: Step) -> List<string> {
+    let m = s.model
+    let names = [fn_at(m, at).name for at in all_fns(m)]
+    let calls = [Call { at: at.file, from: fn_at(m, at).name, to: c } for at in all_fns(m) for c in callees(fn_at(m, at))]
+    let unheld = ["seed ${seed}: ${c.from} calls ${c.to}, which no file holds" for c in calls if !names.contains(c.to)]
+    let upward = ["seed ${seed}: lib's ${c.from} reads app's ${c.to}" for c in calls if names.contains(c.to) && !may_call(m.files[c.at], m.files[where_of(m, c.to)!.file])]
+    let round = ["seed ${seed}: ${c.from} goes round" for c in calls if reaches(m, c.to, c.from)]
+    let roots = ["seed ${seed}: the root ${r} no file holds" for r in m.roots if !names.contains(r)]
+    unheld.concat(upward).concat(round).concat(roots)
+}
+
+/// One call a model makes: the caller's file, the caller and the callee.
+type Call = { at: int, from: string, to: string }
+
+/// Every fault any of 39 seeds' 30 ops makes, in any model it passes through.
+fn every_fault() -> List<string> {
+    [f for seed in 1..40 for s in replayed(initial(seed), drawn(seed, 30, every_edit(), weights()), applied) for f in faults(seed, s)]
+}
+
+fn weights() -> List<int> { [5, 3, 3, 2, 3, 4, 2, 2, 2, 1] }
+
+/// The model of two files, a lib method `T_1.f_1` and app's main calling it as its root.
+fn two_files() -> Model {
+    Model {
+        files: [
+            ModelFile { package: "lib", module: "util", fns: [store_fuzz_fn("f_1", "T_1")] },
+            ModelFile { package: "app", module: "main", fns: [] },
+        ],
+        roots: ["f_1"],
+        serial: 1,
+        broken: "",
+        owners: [],
+    }
+}
+
+fn store_fuzz_fn(name: string, owner: string) -> ModelFn {
+    ModelFn {
+        name: name,
+        seats: [FnSeat { name: "x", default: null }],
+        body: [Part { atom: Atom.Seat("x"), times: 2 }],
+        owner: owner,
+    }
+}
+
+spec "store fuzz — the model holds its own laws" {
+    then "every model 39 seeds of 30 ops make is a program whose calls resolve, upward and round" { every_fault().is_empty() }
+    then "a sequence with its first op dropped still replays, a step for each op" {
+        let ops = drawn(5, 12, every_edit(), weights())
+        replayed(initial(5), ops.drop(1), applied).length >= 11
+    }
+    then "a said sequence parses back to its seed and ops" {
+        let ops = drawn(9, 8, every_edit(), weights())
+        let back = parsed(said(9, ops))!
+        back.seed == 9 && back.ops == ops
+    }
+    then "a line naming no seed parses to nothing" { parsed("ops=body:1") == null }
+    then "a broken edit is a detour: the step after it is the tree it left" {
+        let steps = replayed(initial(3), [Op { edit: Edit.Broken, seed: 4 }], applied)
+        steps.length == 2 &&
+            steps[0].model.broken != "" &&
+            steps[1].word == "fixed" &&
+            steps[1].model == initial(3)
+    }
+}
+
+spec "store fuzz — the source a model is" {
+    then "a method is declared in its type's impl, its seats and body as the model says" {
+        source_of(two_files(), 0) == "export type T_1 = {}\n\nimpl T_1 {\n    fn f_1(x: int) -> int { x * 2 }\n}\n\n"
+    }
+    then "main imports a lib method's type across the package seam and prints its root" {
+        let text = source_of(two_files(), 1)
+        text.starts_with("use @f.lib.util.{T_1}\n") &&
+            text.contains("let root_0 = T_1 {}.f_1(") &&
+            text.contains("println(\"\$" + "{root_0}\")")
+    }
+    then "a broken file ends half typed" { source_of(two_files() with { broken: "lib/util" }, 0).ends_with("fn broken( {\n") }
+}
+
+spec "store fuzz — the board as a model" {
+    then "an added fn is appended to the board's text" {
+        let m = board_applied(board_start(1), Op { edit: Edit.Add, seed: 2 }).model
+        board_text(m, "a\n").starts_with("a\n\nfn added_1() -> int { ")
+    }
+    then "a delete takes the one fn away" {
+        let m = board_applied(board_start(1), Op { edit: Edit.Add, seed: 2 }).model
+        board_text(board_applied(m, Op { edit: Edit.Delete, seed: 3 }).model, "a\n") == "a\n"
+    }
+    then "a broken board ends half typed" { board_text(board_applied(board_start(1), Op { edit: Edit.Broken, seed: 1 }).model, "a\n") == "a\n\nfn half_typed( {\n" }
+    then "a body edit leaves the board unmoved" { !board_applied(board_start(1), Op { edit: Edit.Body, seed: 1 }).moved }
+}
