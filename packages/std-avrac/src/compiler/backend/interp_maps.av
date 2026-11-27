@@ -11,11 +11,14 @@ use @std.relation.engine.{list_cell, map_cell}
 type MapVal = { log: int, len: int }
 
 /// One write log. An entry is a key and the value written under it —
-/// or a removal, which is not `live`. `prev` is the same key's entry
+/// or a removal, which is not `live`. A key is filed by its text (`keys`)
+/// and kept as the value the program wrote (`held`): a word key's text is
+/// its number, and a map's keys are one class for its whole life. `prev` is the same key's entry
 /// before this one (-1 for none), `count` the live keys once this
 /// entry stands, and `latest` each key's last entry in the whole log.
 type MapLog = {
     keys: Cell<List<string>>,
+    held: Cell<List<Val>>,
     vals: Cell<List<Val>>,
     live: Cell<List<bool>>,
     prev: Cell<List<int>>,
@@ -26,6 +29,7 @@ type MapLog = {
 fn new_map_log() -> MapLog {
     MapLog {
         keys: list_cell<string>(),
+        held: list_cell<Val>(),
         vals: list_cell<Val>(),
         live: list_cell<bool>(),
         prev: list_cell<int>(),
@@ -58,7 +62,7 @@ impl MapLog {
     }
 
     /// One more entry. The caller stands at the log's end.
-    fn append(key: string, v: Val, live: bool) {
+    fn append(key: string, held: Val, v: Val, live: bool) {
         let at = self.length()
         let before = self.latest.get().get(key) ?? -1
         let was = before >= 0 && self.live.get()[before]
@@ -69,6 +73,7 @@ impl MapLog {
         }
         self.count.push(self.count_at(at) + step)
         self.keys.push(key)
+        self.held.push(held)
         self.vals.push(v)
         self.live.push(live)
         self.prev.push(before)
@@ -97,7 +102,7 @@ impl Machine {
     /// A map of these keys and values, in order, as a fresh log.
     fn fresh_map(keys: List<string>, vals: List<Val>) -> Val {
         let log = new_map_log()
-        for j, k in keys { log.append(k, vals[j], true) }
+        for j, k in keys { log.append(k, Val.S(k), vals[j], true) }
         self.viewed(self.logged(log), keys.length)
     }
 
@@ -147,6 +152,13 @@ impl Machine {
         [keys[p] for p in self.logs[m.log].opened(m.len)]
     }
 
+    /// The keys a map holds as the program wrote them, in insertion order.
+    fn map_held(id: int) -> List<Val> {
+        let m = self.maps[id]
+        let held = self.logs[m.log].held.get()
+        [held[p] for p in self.logs[m.log].opened(m.len)]
+    }
+
     /// The values a map holds, each as stored, in its key's order.
     fn map_vals(id: int) -> List<Val> {
         let m = self.maps[id]
@@ -174,9 +186,9 @@ impl Machine {
 
     /// One entry written through the view: in place when the view
     /// stands at its log's end, into the view's own log otherwise.
-    fn map_append(id: int, key: string, v: Val, live: bool) {
+    fn map_append(id: int, key: string, held: Val, v: Val, live: bool) {
         let m = self.map_at_end(id)
-        self.logs[m.log].append(key, v, live)
+        self.logs[m.log].append(key, held, v, live)
         self.maps.set(id, MapVal { log: m.log, len: m.len + 1 })
     }
 
@@ -187,7 +199,8 @@ impl Machine {
         if self.logs[m.log].length() == m.len { return m }
         let log = new_map_log()
         let vals = self.map_vals(id)
-        for j, k in self.map_keys(id) { log.append(k, vals[j], true) }
+        let held = self.map_held(id)
+        for j, k in self.map_keys(id) { log.append(k, held[j], vals[j], true) }
         for v in vals { self.retains(v) }
         let own = MapVal { log: self.logged(log), len: log.length() }
         self.log_views.set(own.log, 1)

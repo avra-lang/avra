@@ -2,29 +2,20 @@
 //! then each pair written into it; one that spreads, the map first, then each entry in written order:
 //! a pair written, a spread each of its map's entries in that map's order, a key already there keeping
 //! its place and taking the new value.
-use core.{
-    ExprId,
-    Lowering,
-    Lowers,
-    MapEntry,
-    Reg,
-    SignedType,
-    map_keys,
-    map_spreads,
-    map_values,
-    rt_sig_of,
-}
+use core.{ExprId, Lowering, Lowers, MapEntry, Reg, SignedType, map_keys, map_spreads, map_values}
 use core.expr.{MapLit}
 
 impl Lowers for MapLit {
     fn lowered(mut cx: Lowering, e: ExprId) -> Reg {
         if !map_spreads(self.entries).is_empty() { return spread_lowered(cx, e, self.entries) }
+        let ty? = cx.seen_at(e) else { return cx.untyped(e) }
         let keys = [cx.lower(k) for k in map_keys(self.entries)]
         let values = [cx.lower(v) for v in map_values(self.entries)]
         let dst = if keys.is_empty() {
-            cx.call_row(cx.layout_at(e), rt_sig_of("avra_map_new")!, [])
+            cx.call_row(cx.layout_at(e), cx.made_map_row("avra_map_new", ty), [])
         } else {
-            cx.call_row(cx.layout_at(e), rt_sig_of("avra_map_sized")!, [cx.const_int(keys.length)])
+            cx
+                .call_row(cx.layout_at(e), cx.made_map_row("avra_map_sized", ty), [cx.const_int(keys.length)])
         }
         for at, k in keys { cx.map_written(dst, k, values[at]) }
         dst
@@ -35,7 +26,7 @@ impl Lowers for MapLit {
 fn spread_lowered(mut cx: Lowering, e: ExprId, entries: List<MapEntry>) -> Reg {
     let ty? = cx.seen_at(e) else { return cx.untyped(e) }
     let value? = ty.mapped() else { return cx.untyped(e) }
-    let dst = cx.call_row(cx.laid_out(ty), rt_sig_of("avra_map_new")!, [])
+    let dst = cx.call_row(cx.laid_out(ty), cx.made_map_row("avra_map_new", ty), [])
     for entry in entries {
         match entry {
             .Pair(key, v) -> cx.map_written(dst, cx.lower(key), cx.lower(v)),

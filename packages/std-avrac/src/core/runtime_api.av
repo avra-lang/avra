@@ -5,7 +5,7 @@
 //! HOSTS every row by its host column. The twins: runtime/
 //! avra_runtime.c natively, the host arm in the interpreter — a new
 //! runtime fn is a row plus both bodies, nothing else.
-use core.{RtKind, RtSig, RtHost, Reach, Takes, TypeRegistry, TypeId, TypeRef, joined, Box}
+use core.{RtKind, RtSig, RtHost, Reach, Takes, TypeRegistry, TypeId, TypeRef, joined, Box, MapKeys}
 
 export once fn rt_sigs() -> List<RtSig> {
     let sigs: List<RtSig> = [
@@ -415,9 +415,29 @@ export once fn rt_sigs() -> List<RtSig> {
             host: RtHost.MapNew,
             inert: true,
         },
+        RtSig {
+            name: "avra_map_w_new",
+            ret: RtKind.Ptr,
+            params: [],
+            answer: Box.Map,
+            owns_result: true,
+            has_owned_twin: false,
+            host: RtHost.MapNew,
+            inert: true,
+        },
         // A map a literal of `n` pairs fills: its arrays and its table made for them at once.
         RtSig {
             name: "avra_map_sized",
+            ret: RtKind.Ptr,
+            params: [RtKind.I64],
+            answer: Box.Map,
+            owns_result: true,
+            has_owned_twin: false,
+            host: RtHost.MapNew,
+            inert: true,
+        },
+        RtSig {
+            name: "avra_map_w_sized",
             ret: RtKind.Ptr,
             params: [RtKind.I64],
             answer: Box.Map,
@@ -447,6 +467,16 @@ export once fn rt_sigs() -> List<RtSig> {
             boxes: [Box.Map, Box.Text],
         },
         RtSig {
+            name: "avra_map_w_has",
+            ret: RtKind.I64,
+            params: [RtKind.Ptr, RtKind.I64],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.MapHas,
+            inert: true,
+            boxes: [Box.Map, Box.Any],
+        },
+        RtSig {
             name: "avra_map_get",
             ret: RtKind.I64,
             params: [RtKind.Ptr, RtKind.Ptr],
@@ -456,6 +486,17 @@ export once fn rt_sigs() -> List<RtSig> {
             lends: true,
             inert: true,
             boxes: [Box.Map, Box.Text],
+        },
+        RtSig {
+            name: "avra_map_w_get",
+            ret: RtKind.I64,
+            params: [RtKind.Ptr, RtKind.I64],
+            owns_result: false,
+            has_owned_twin: true,
+            host: RtHost.MapGet,
+            lends: true,
+            inert: true,
+            boxes: [Box.Map, Box.Any],
         },
         RtSig {
             name: "avra_map_get_owned",
@@ -469,6 +510,17 @@ export once fn rt_sigs() -> List<RtSig> {
             boxes: [Box.Map, Box.Text],
         },
         RtSig {
+            name: "avra_map_w_get_owned",
+            stood: true,
+            ret: RtKind.Ptr,
+            params: [RtKind.Ptr, RtKind.I64],
+            owns_result: true,
+            has_owned_twin: false,
+            host: RtHost.MapGet,
+            inert: true,
+            boxes: [Box.Map, Box.Any],
+        },
+        RtSig {
             name: "avra_map_set",
             traps: true,
             ret: RtKind.Void,
@@ -479,6 +531,18 @@ export once fn rt_sigs() -> List<RtSig> {
             host: RtHost.MapSet,
             inert: true,
             boxes: [Box.Map, Box.Text],
+        },
+        RtSig {
+            name: "avra_map_w_set",
+            traps: true,
+            ret: RtKind.Void,
+            params: [RtKind.Ptr, RtKind.I64, RtKind.I64],
+            writes: [true, false, false],
+            owns_result: false,
+            has_owned_twin: true,
+            host: RtHost.MapSet,
+            inert: true,
+            boxes: [Box.Map, Box.Any],
         },
         RtSig {
             name: "avra_map_set_owned",
@@ -495,6 +559,20 @@ export once fn rt_sigs() -> List<RtSig> {
             boxes: [Box.Map, Box.Text],
         },
         RtSig {
+            name: "avra_map_w_set_owned",
+            traps: true,
+            takes: Takes.Always(2),
+            ret: RtKind.Void,
+            params: [RtKind.Ptr, RtKind.I64, RtKind.Ptr],
+            writes: [true, false, false],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.MapSet,
+            keeps: [false, false, true],
+            inert: true,
+            boxes: [Box.Map, Box.Any],
+        },
+        RtSig {
             name: "avra_map_set_maybe",
             traps: true,
             ret: RtKind.Void,
@@ -505,6 +583,18 @@ export once fn rt_sigs() -> List<RtSig> {
             host: RtHost.MapSetMaybe,
             inert: true,
             boxes: [Box.Map, Box.Text],
+        },
+        RtSig {
+            name: "avra_map_w_set_maybe",
+            traps: true,
+            ret: RtKind.Void,
+            params: [RtKind.Ptr, RtKind.I64, RtKind.I64, RtKind.I64],
+            writes: [true, false, false, false],
+            owns_result: false,
+            has_owned_twin: true,
+            host: RtHost.MapSetMaybe,
+            inert: true,
+            boxes: [Box.Map, Box.Any],
         },
         RtSig {
             name: "avra_map_set_maybe_owned",
@@ -519,6 +609,20 @@ export once fn rt_sigs() -> List<RtSig> {
             keeps: [false, false, false, true],
             inert: true,
             boxes: [Box.Map, Box.Text],
+        },
+        RtSig {
+            name: "avra_map_w_set_maybe_owned",
+            traps: true,
+            takes: Takes.Present(3, 2),
+            ret: RtKind.Void,
+            params: [RtKind.Ptr, RtKind.I64, RtKind.I64, RtKind.Ptr],
+            writes: [true, false, false, false],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.MapSetMaybe,
+            keeps: [false, false, false, true],
+            inert: true,
+            boxes: [Box.Map, Box.Any],
         },
         // The set family under a token — `avra_map_slot`'s word for the
         // same key, so the write walks no index.
@@ -535,6 +639,18 @@ export once fn rt_sigs() -> List<RtSig> {
             boxes: [Box.Map, Box.Text],
         },
         RtSig {
+            name: "avra_map_w_set_at",
+            traps: true,
+            ret: RtKind.Void,
+            params: [RtKind.Ptr, RtKind.I64, RtKind.I64, RtKind.I64],
+            writes: [true, false, false, false],
+            owns_result: false,
+            has_owned_twin: true,
+            host: RtHost.MapSetAt,
+            inert: true,
+            boxes: [Box.Map, Box.Any],
+        },
+        RtSig {
             name: "avra_map_set_at_owned",
             traps: true,
             takes: Takes.Always(3),
@@ -549,6 +665,20 @@ export once fn rt_sigs() -> List<RtSig> {
             boxes: [Box.Map, Box.Text],
         },
         RtSig {
+            name: "avra_map_w_set_at_owned",
+            traps: true,
+            takes: Takes.Always(3),
+            ret: RtKind.Void,
+            params: [RtKind.Ptr, RtKind.I64, RtKind.I64, RtKind.Ptr],
+            writes: [true, false, false, false],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.MapSetAt,
+            keeps: [false, false, false, true],
+            inert: true,
+            boxes: [Box.Map, Box.Any],
+        },
+        RtSig {
             name: "avra_map_set_at_maybe",
             traps: true,
             ret: RtKind.Void,
@@ -559,6 +689,18 @@ export once fn rt_sigs() -> List<RtSig> {
             host: RtHost.MapSetAtMaybe,
             inert: true,
             boxes: [Box.Map, Box.Text],
+        },
+        RtSig {
+            name: "avra_map_w_set_at_maybe",
+            traps: true,
+            ret: RtKind.Void,
+            params: [RtKind.Ptr, RtKind.I64, RtKind.I64, RtKind.I64, RtKind.I64],
+            writes: [true, false, false, false, false],
+            owns_result: false,
+            has_owned_twin: true,
+            host: RtHost.MapSetAtMaybe,
+            inert: true,
+            boxes: [Box.Map, Box.Any],
         },
         RtSig {
             name: "avra_map_set_at_maybe_owned",
@@ -575,6 +717,20 @@ export once fn rt_sigs() -> List<RtSig> {
             boxes: [Box.Map, Box.Text],
         },
         RtSig {
+            name: "avra_map_w_set_at_maybe_owned",
+            traps: true,
+            takes: Takes.Present(4, 3),
+            ret: RtKind.Void,
+            params: [RtKind.Ptr, RtKind.I64, RtKind.I64, RtKind.I64, RtKind.Ptr],
+            writes: [true, false, false, false, false],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.MapSetAtMaybe,
+            keeps: [false, false, false, false, true],
+            inert: true,
+            boxes: [Box.Map, Box.Any],
+        },
+        RtSig {
             name: "avra_map_value_present",
             ret: RtKind.I64,
             params: [RtKind.Ptr, RtKind.Ptr],
@@ -583,6 +739,16 @@ export once fn rt_sigs() -> List<RtSig> {
             host: RtHost.MapValuePresent,
             inert: true,
             boxes: [Box.Map, Box.Text],
+        },
+        RtSig {
+            name: "avra_map_w_value_present",
+            ret: RtKind.I64,
+            params: [RtKind.Ptr, RtKind.I64],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.MapValuePresent,
+            inert: true,
+            boxes: [Box.Map, Box.Any],
         },
         // A KEY'S ONE PROBE: the slot it names, or -1 — then the value
         // and its presence read that slot, so `get` hashes once.
@@ -595,6 +761,16 @@ export once fn rt_sigs() -> List<RtSig> {
             host: RtHost.MapSlot,
             inert: true,
             boxes: [Box.Map, Box.Text],
+        },
+        RtSig {
+            name: "avra_map_w_slot",
+            ret: RtKind.I64,
+            params: [RtKind.Ptr, RtKind.I64],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.MapSlot,
+            inert: true,
+            boxes: [Box.Map, Box.Any],
         },
         RtSig {
             name: "avra_map_value_at",
@@ -693,6 +869,17 @@ export once fn rt_sigs() -> List<RtSig> {
             inert: true,
             boxes: [Box.Map, Box.Text],
         },
+        RtSig {
+            name: "avra_map_w_remove",
+            ret: RtKind.Void,
+            params: [RtKind.Ptr, RtKind.I64],
+            writes: [true, false],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.MapRemove,
+            inert: true,
+            boxes: [Box.Map, Box.Any],
+        },
         // The remove a hit's read already found: the read's word handed
         // over, believed only where its slot holds this very key, so the
         // key is not probed or compared twice.
@@ -706,6 +893,17 @@ export once fn rt_sigs() -> List<RtSig> {
             host: RtHost.MapRemove,
             inert: true,
             boxes: [Box.Map, Box.Text],
+        },
+        RtSig {
+            name: "avra_map_w_remove_at",
+            ret: RtKind.Void,
+            params: [RtKind.Ptr, RtKind.I64, RtKind.I64],
+            writes: [true, false, false],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.MapRemove,
+            inert: true,
+            boxes: [Box.Map, Box.Any],
         },
         RtSig {
             name: "avra_slot_unique",
@@ -3616,6 +3814,33 @@ export fn inout_row(name: string, ret: RtKind, params: List<RtKind>, cells: List
 /// index, so an ask is a lookup and never a rebuild.
 export fn rt_sig_of(name: string) -> RtSig? {
     rt_index().get(name)
+}
+
+/// The row a map keyed as `keys` answers `row` by: the text row itself, or its word-keyed twin — a
+/// row that reads no key and makes no map being its own.
+export fn keyed_row(row: string, keys: MapKeys) -> RtSig {
+    match keys { .Text -> rt_sig_of(row)!, .Words -> rt_sig_of(WORD_KEYED.get(row) ?? row)! }
+}
+
+/// Each map row that reads a key or makes a map, and its twin for a map keyed by words.
+const WORD_KEYED: Map<string, string> = {
+    "avra_map_new": "avra_map_w_new",
+    "avra_map_sized": "avra_map_w_sized",
+    "avra_map_has": "avra_map_w_has",
+    "avra_map_get": "avra_map_w_get",
+    "avra_map_get_owned": "avra_map_w_get_owned",
+    "avra_map_slot": "avra_map_w_slot",
+    "avra_map_set": "avra_map_w_set",
+    "avra_map_set_owned": "avra_map_w_set_owned",
+    "avra_map_set_maybe": "avra_map_w_set_maybe",
+    "avra_map_set_maybe_owned": "avra_map_w_set_maybe_owned",
+    "avra_map_value_present": "avra_map_w_value_present",
+    "avra_map_remove": "avra_map_w_remove",
+    "avra_map_remove_at": "avra_map_w_remove_at",
+    "avra_map_set_at": "avra_map_w_set_at",
+    "avra_map_set_at_maybe": "avra_map_w_set_at_maybe",
+    "avra_map_set_at_owned": "avra_map_w_set_at_owned",
+    "avra_map_set_at_maybe_owned": "avra_map_w_set_at_maybe_owned",
 }
 
 /// The registry keyed by name — ONCE per process: the rows are the

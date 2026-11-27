@@ -1705,7 +1705,7 @@ Syntax the grammar lacks:
 - Instantiation is a statement: as a fn's tail it answers `void` — bind, then return the name; a component block is `key: value` ("declares no `List` field, so its block holds settings only") — not pinned.
 - A shell `${VAR}` in a string is Avra's interpolation ("`HOME` is not defined", or silently the binding's value); write `$VAR`.
 - `_` is a parameter name nowhere ("`_` is a keyword"); an unread seat is `_q`, and `let _ = f()` is the binding spelling.
-- A map's keys are strings only ("a map's keys are strings, not `int`").
+- A map's keys are text or a word — an int, a bool, an enum whose variants carry nothing — and nothing else yet: `Map<float, int>` is "a map's keys are text or a word … not `float`".
 - `xs ++ ys` is "expected BREAK"; `xs.concat(ys)` or `[..xs, ..ys]`.
 - `List` has `all`, not `every`.
 - A spread's refusals are laws, not pending sugar (`..` is one spelling in a record literal, list, map, variadic seat, call's named seats and pattern): a record spreads only under its type's name (`{ ..a, x: 3 }` is a map: "`..` in a map spreads a map, found `P`"); a record pattern's `..` discards, so `P { x, ..rest }` is "expected `}` to close the `match`"; a list spreads only into its own element type; `f(..xs)` into fixed seats is "`..` spreads into a seat that takes the rest of the arguments"; `is` over a list or record pattern binds only under `if` (`type.is_bind`) and a refutable destructuring `let` needs its `else` (`type.let_pattern`).

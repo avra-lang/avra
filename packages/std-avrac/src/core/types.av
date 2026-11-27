@@ -23,6 +23,12 @@ export fn same_type(a: TypeId, b: TypeId) -> bool {
     a.index == b.index
 }
 
+/// The keys a map files, and so the runtime rows it is read and written by.
+export enum MapKeys {
+    Text
+    Words
+}
+
 /// A type's shape. Interned once; identity is the id — composites
 /// carry their children as interned ids, so equality stays an int
 /// comparison at every depth.
@@ -689,6 +695,21 @@ impl TypeRegistry {
         match self.shape_of(id) { .Enum(_, _) -> self.is_flat(id), rest -> false }
     }
 
+    /// Whether a map files `key`s: a key `map_keys_of` names a class for, or a type parameter, which
+    /// its instantiations answer for.
+    fn files_keys(key: TypeId) -> bool { self.abstract_yet(key) || self.map_keys_of(key) != null }
+
+    /// How a map of `key`s files them — by their text, or as machine words
+    /// (an int, a bool, a word enum), seen through a name since a name is
+    /// its shape at runtime; absent for a key no map takes.
+    fn map_keys_of(key: TypeId) -> MapKeys? {
+        match self.seen_shape(key) {
+            .Str -> MapKeys.Text,
+            .Int or .Bool -> MapKeys.Words,
+            rest -> if self.is_word_enum(self.seen_through(key)) { MapKeys.Words } else { null },
+        }
+    }
+
     /// A WORD ENUM's tag register, whichever type names it: the enum
     /// itself, or its NULLABLE once insisted or unwrapped — `insisted`
     /// and `carried_of` answer the SAME register the nullable held, so
@@ -868,6 +889,11 @@ impl TypeRegistry {
 
     /// A map's value type, or absent when the id is not one —
     /// `element`'s twin for a keyed aggregate.
+    /// A map's key type, or absent for anything else — `{}` included, which keys nothing yet.
+    fn map_key(id: TypeId) -> TypeId? {
+        match self.shape_of(self.seen_through(id)) { .Map(k, _) -> k, _ -> null }
+    }
+
     fn map_value(id: TypeId) -> TypeId? {
         match self.shape_of(self.seen_through(id)) { .Map(_, v) -> v, _ -> null }
     }
