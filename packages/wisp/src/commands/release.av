@@ -1,0 +1,220 @@
+//! `wisp release publish <key> <file> [--asset-name <name>]` — THE COMPILER, PUBLISHED WHERE EVERY REF CAN
+//! REACH IT. A release asset is not ref-scoped, so a run that missed its cache fetches the exact binary
+//! main published under the key instead of rebuilding it. The key is the binary's own source digest, so
+//! one key is one binary: a key that already answers is left as is, and a second publish is a no-op.
+//!
+//! Only the publish is here: every READ of a release runs before a compiler stands to build wisp, so
+//! `./wisp release fetch|latest|install|key-of|probe|route` are the shim's own shell.
+//!
+//! The releases API takes the run's token (`GH_TOKEN`, `GITHUB_TOKEN`); `--repo` names the repository and
+//! `--api` another API. `--dry-run` asks the API what stands and prints what it would write, writing
+//! nothing. Exit 0 published or already there, 1 refused, 2 usage.
+use @std.cli.{CliResult, Runnable, arg, command, flag, option}
+use @std.io.{read_bytes, env}
+use @std.json.{Json, field, parse, to_text}
+use @std.process.{cmd, inherited, tool}
+use @std.time.{secs}
+
+const BODY: string = "The Avra compiler named by `tools/compiler_paths.sh --key`. Immutable: one key is one source digest, so the asset is never replaced."
+
+/// One request to the releases API: its method, its URL, what it accepts, and its body — JSON, or a file's bytes.
+export type Ask = { method: string, url: string, accept: string = "application/vnd.github+json", json: string? = null, file: string? = null }
+
+/// The API's answer: its HTTP status (0 when nothing answered) and its body.
+export type Heard = { status: int, body: string }
+
+/// Where a publish's requests go: the API itself, or a seam a test or a dry run answers.
+export alias Api = fn(Ask) -> Heard
+
+type ReleaseCmd = {}
+
+impl Runnable for ReleaseCmd {
+    fn run(args: CliResult) -> int {
+        if args.arg("verb") != "publish" {
+            eprintln(not_here(args.arg("verb")))
+            return 2
+        }
+        let repo = or_else(args.option("repo"), env("GITHUB_REPOSITORY") ?? "avra-lang/avra")
+        let base = or_else(args.option("api"), "https://api.github.com/repos/${repo}")
+        let size = match read_bytes(args.arg("file")) {
+            .Ok(b) -> b.length,
+            .Err(_) -> {
+                eprintln(no_file(args.arg("file")))
+                return 1
+            },
+        }
+        let api = if args.has_flag("dry_run") { dry(curled) } else { curled }
+        let asset_name = or_else(args.option("asset_name"), "avra")
+        match publish(api, base, args.arg("key"), asset_name, args.arg("file"), size) {
+            .Ok(said) -> {
+                println(said)
+                0
+            },
+            .Err(why) -> {
+                eprintln("compiler-release: ${args.arg("key")}: ${why}")
+                1
+            },
+        }
+    }
+}
+
+export command release {
+    description: "Publish a compiler or wisp as a release asset_name under its key, once"
+    arg verb {
+        description: "publish (the reads are the shim's: ./wisp release fetch|latest|install|key-of|probe|route)"
+        required: true
+    }
+    arg key {
+        description: "the release's tag"
+        required: true
+    }
+    arg file {
+        description: "the binary to publish"
+        required: true
+    }
+    option asset_name { description: "the asset_name's name (default avra)" }
+    option repo { description: "owner/repo (default \$GITHUB_REPOSITORY, else avra-lang/avra)" }
+    option api { description: "the API's base URL" }
+    flag dry_run { description: "ask what stands, print what would be written, write nothing" }
+    run: ReleaseCmd {}
+}
+
+fn or_else(text_in: string, fallback: string) -> string { if text_in == "" { fallback } else { text_in } }
+
+/// The key's release created with its asset_name, once: the words to say, or why it could not be.
+export fn publish(api: Api, base: string, key: string, asset_name: string, file: string, size: int) -> Result<
+    string,
+    string,
+> {
+    let found = standing(api, base, key)?
+    let release = if found != null { found! } else { created(api, base, key)? }
+    if carries(release, asset_name) { return .Ok(already(key)) }
+    let upload = "${(release.member("upload_url").text() ?? "").split("{").first() ?? ""}?name=${asset_name}"
+    let up = api(
+        Ask { method: "POST", url: upload, accept: "application/vnd.github+json", file: file },
+    )
+    if up.status < 200 || up.status >= 300 { return .Err(answered("the upload", up)) }
+    .Ok("compiler-release: ${key}: published ${size} bytes")
+}
+
+/// The release a key names, or null when the tag does not exist.
+fn standing(api: Api, base: string, key: string) -> Result<Json?, string> {
+    let h = api(Ask { method: "GET", url: "${base}/releases/tags/${key}" })
+    if h.status == 404 { return .Ok(null) }
+    if h.status < 200 || h.status >= 300 { return .Err(answered("the release", h)) }
+    .Ok(parse(h.body) catch Json.Null)
+}
+
+/// A new release for the key; one created meanwhile by another run (422) is read back instead.
+fn created(api: Api, base: string, key: string) -> Result<Json, string> {
+    let wanted = Json
+        .Obj(
+            [
+                field("tag_name", Json.Str(key)),
+                field("name", Json.Str(key)),
+                field("body", Json.Str(BODY)),
+                field("draft", Json.Bool(false)),
+                field("prerelease", Json.Bool(false)),
+            ],
+        )
+    let h = api(Ask { method: "POST", url: "${base}/releases", json: to_text(wanted) })
+    if h.status == 422 {
+        let r? = standing(api, base, key)? else { return .Err(not_created(h)) }
+        return .Ok(r)
+    }
+    if h.status < 200 || h.status >= 300 { return .Err(not_created(h)) }
+    .Ok(parse(h.body) catch Json.Null)
+}
+
+export fn carries(release: Json, asset_name: string) -> bool {
+    release.member("assets").items().any(it.member("name").text() == asset_name)
+}
+
+/// The API reached with curl, the run's token when it has one.
+fn curled(a: Ask) -> Heard {
+    let curl? = match tool("curl") { .Ok(t) -> t, .Err(_) -> null } else { return Heard { status: 0, body: "no curl" } }
+    let token = env("GH_TOKEN") ?? env("GITHUB_TOKEN") ?? ""
+    let auth = if token == "" { [] } else { ["-H", "Authorization: Bearer ${token}"] }
+    let body = sent(a)
+    let args = [
+        "-sS",
+        "-L",
+        "-m",
+        "600",
+        "-X",
+        a.method,
+        "-w",
+        "\n%{http_code}",
+        "-H",
+        "Accept: ${a.accept}",
+        "-H",
+        "X-GitHub-Api-Version: 2022-11-28",
+        "-H",
+        "User-Agent: avra-compiler-release",
+    ]
+        .concat(auth)
+        .concat(body)
+        .concat([a.url])
+    match (cmd(curl, args) with { env: inherited(), timeout: secs(900), hidden_vars: ["GH_TOKEN", "GITHUB_TOKEN"] })
+        .outcome() { .Ok(o) -> heard_of(o.out.stdout), .Err(_) -> Heard { status: 0, body: "" } }
+}
+
+/// The body flags a request carries: its JSON, or a file's bytes, or none.
+fn sent(a: Ask) -> List<string> {
+    if a.json != null { return ["-H", "Content-Type: application/json", "--data-binary", a.json!] }
+    let f? = a.file else { return [] }
+    ["-H", "Content-Type: application/octet-stream", "--data-binary", "@${f}"]
+}
+
+/// curl's body and the status line `-w` appended.
+export fn heard_of(out: string) -> Heard {
+    let lines = out.split("\n")
+    if lines.length < 2 { return Heard { status: parse_status(out), body: "" } }
+    Heard {
+        status: parse_status(lines.last() ?? ""),
+        body: lines.take(lines.length - 1).join("\n"),
+    }
+}
+
+fn parse_status(s: string) -> int {
+    match parse(s.trim()) catch Json.Null { .Int(n) -> n, rest -> 0 }
+}
+
+/// A dry run: reads go to the API, every write is printed and answered as the API would answer it.
+export fn dry(real: Api) -> Api {
+    (a) -> if a.method == "GET" { real(a) } else { planned(a) }
+}
+
+fn planned(a: Ask) -> Heard {
+    println(
+        "compiler-release: would ${a.method} ${a.url}${if a.json != null { " " + a.json! } else { "" }}",
+    )
+    if a.json != null {
+        Heard {
+            status: 201,
+            body: "{\"assets\": [], \"upload_url\": \"https://uploads.github.com/dry-run/assets{?name,label}\"}",
+        }
+    } else {
+        Heard { status: 201, body: "{}" }
+    }
+}
+
+// ── voices ──
+
+fn already(key: string) -> string {
+    "compiler-release: ${key}: already published — left as is"
+}
+
+fn answered(what: string, h: Heard) -> string {
+    if h.status == 0 { "${what}: the release API did not answer" } else { "${what}: the release API answered HTTP ${h.status}" }
+}
+
+fn not_created(h: Heard) -> string { answered("creating the release", h) }
+
+fn not_here(verb: string) -> string {
+    "wisp release: `${verb}` is the shim's — ./wisp release fetch|latest|install|key-of|probe|route; the binary publishes"
+}
+
+fn no_file(path: string) -> string {
+    "compiler-release: ${path} is not a file"
+}

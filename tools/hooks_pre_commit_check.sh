@@ -80,9 +80,8 @@ d=$(helped work 'cd "$(dirname "$0")/.." && printf "hash111 %s\n" "$(git rev-par
 hook_in "$d"
 { [ "$status" = 0 ] && printf '%s' "$err" | grep -q "replaced it" && printf '%s' "$err" | grep -q "formatting with"; } ||
     fail "a stale compiler with a depot door gave $status: $err"
-d=$(helped compiler_release.py 'import sys
-sys.exit(0) if sys.argv[1] == "install" else print("key123")
-')
+d=$(stamped_repo old)
+printf '%s\n' '[ "$2" = install ] || echo key123' > "$d/wisp"
 mkdir -p "$d/fakebin"
 printf '#!/bin/sh\necho Linux\n' > "$d/fakebin/uname"
 chmod 755 "$d/fakebin/uname"

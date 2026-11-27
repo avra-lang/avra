@@ -414,8 +414,8 @@ start() {
 # would answer about a different program.
 # Installs the compiler published for a key, from the tree's own fetch tool.
 install_published() {
-    [ -f tools/compiler_release.py ] || return 1
-    python3 tools/compiler_release.py install --key "$1" >&2
+    [ -f wisp ] || return 1
+    sh wisp release install --key "$1" >&2
 }
 
 # gate_built <tree> <its compiler hash>: the `gate-builder` release laid into the tree as its build/avra —
@@ -540,7 +540,7 @@ supervise() {
             if [ ! -x "$mbt/build/avra" ]; then
                 s0=$(date +%s)
                 mkdir -p "$mbt" && tar -xzf "$home/avra-mb/$mbk.tgz" -C "$mbt" \
-                    && (python3 "$remote/tools/compiler_release.py" install --key "$anc" --into "$mbt/build" >&2 && cd "$mbt" && AVRA_CAP_MB="$(build_cap)" make -s compiler GENS=1) >> "$probe_log" 2>&1 \
+                    && (sh "$remote/wisp" release install --key "$anc" --into "$mbt/build" >&2 && cd "$mbt" && AVRA_CAP_MB="$(build_cap)" make -s compiler GENS=1) >> "$probe_log" 2>&1 \
                     || { echo "sprite-run: the merge-base's source (key $mbk) did not build from the published ancestor $anc — see $probe_log" >&2; exit 70; }
                 echo "sprite-run: merge-base builder $mbk built once from $anc ($(($(date +%s) - s0))s)" >&2
             fi

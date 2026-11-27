@@ -1,0 +1,88 @@
+use @std.io.{make_dirs, write_text, read_text, append_bytes, is_file, env_or}
+use @std.time.{stamp}
+use commands.{Api, Ask, Heard, publish, carries, heard_of, dry}
+use @std.json.{parse, Json}
+
+once fn root() -> string { "${env_or("TMPDIR", "/tmp")}/wisp-release-${stamp()}" }
+
+/// A fake releases API over files under `dir`: `tag` is the release that stands (null for none), `race`
+/// makes a create answer 422 as though another run made the release, with its asset, first; `status`
+/// answers every request when it is not 0. Every request is logged to `dir/log`, a line each.
+fn fake(dir: string, tag: string?, status: int, race: bool) -> Api {
+    let _ = make_dirs(dir)
+    if tag != null { let _ = write_text("${dir}/release", tag!) }
+    (a) -> answered_by(dir, a, status, race)
+}
+
+fn answered_by(dir: string, a: Ask, status: int, race: bool) -> Heard {
+    let _ = append_bytes("${dir}/log", "${a.method} ${a.url}\n".bytes())
+    if status != 0 { return Heard { status: status, body: "" } }
+    if a.method == "GET" {
+        if !is_file("${dir}/release") { return Heard { status: 404, body: "{\"message\": \"Not Found\"}" } }
+        return Heard { status: 200, body: read_text("${dir}/release") catch "" }
+    }
+    if a.url.ends_with("/releases") {
+        if race {
+            let _ = write_text("${dir}/release", WITH_ASSET)
+            return Heard { status: 422, body: "{\"message\": \"Validation Failed\"}" }
+        }
+        let _ = write_text("${dir}/release", BARE)
+        return Heard { status: 201, body: BARE }
+    }
+    Heard { status: 201, body: "{\"name\": \"avra\"}" }
+}
+
+const BARE: string = "{\"tag_name\": \"avrac-aa\", \"assets\": [], \"upload_url\": \"https://up/r/1/assets{?name,label}\"}"
+const WITH_ASSET: string = "{\"tag_name\": \"avrac-aa\", \"assets\": [{\"name\": \"avra\", \"url\": \"https://a/1\"}], \"upload_url\": \"https://up/r/1/assets{?name,label}\"}"
+
+fn log_of(dir: string) -> string { read_text("${dir}/log") catch "" }
+
+fn published(api: Api) -> string {
+    match publish(api, "https://api/repos/o/r", "avrac-aa", "avra", "/dev/null", 10) {
+        .Ok(said) -> said,
+        .Err(why) -> "ERR ${why}",
+    }
+}
+
+spec "release — a key's compiler, published once" {
+    then "a key with no release is created, then its asset uploaded" {
+        let d = "${root()}/fresh"
+        published(fake(d, null, 0, false)) == "compiler-release: avrac-aa: published 10 bytes" &&
+            log_of(d) == "GET https://api/repos/o/r/releases/tags/avrac-aa\nPOST https://api/repos/o/r/releases\nPOST https://up/r/1/assets?name=avra\n"
+    }
+    then "a key that already answers is left as is, asked once" {
+        let d = "${root()}/there"
+        published(fake(d, WITH_ASSET, 0, false)) == "compiler-release: avrac-aa: already published — left as is" &&
+            log_of(d) == "GET https://api/repos/o/r/releases/tags/avrac-aa\n"
+    }
+    then "a release with no asset takes the upload alone" {
+        let d = "${root()}/bare"
+        published(fake(d, BARE, 0, false)).contains("published 10 bytes") &&
+            log_of(d) == "GET https://api/repos/o/r/releases/tags/avrac-aa\nPOST https://up/r/1/assets?name=avra\n"
+    }
+    then "a release another run created meanwhile is read back, and its asset stands" {
+        let d = "${root()}/race"
+        published(fake(d, null, 0, true)) == "compiler-release: avrac-aa: already published — left as is" &&
+            log_of(d) == "GET https://api/repos/o/r/releases/tags/avrac-aa\nPOST https://api/repos/o/r/releases\nGET https://api/repos/o/r/releases/tags/avrac-aa\n"
+    }
+    then "an API that answers an error refuses, naming the status" {
+        published(fake("${root()}/down", null, 500, false)) == "ERR the release: the release API answered HTTP 500"
+    }
+    then "a dry run reads, and every write is printed, never sent" {
+        let d = "${root()}/dry"
+        published(dry(fake(d, null, 0, false))).contains("published 10 bytes") &&
+            log_of(d) == "GET https://api/repos/o/r/releases/tags/avrac-aa\n"
+    }
+}
+
+spec "release — reading the API's answer" {
+    then "curl's body and its status split at the last line" {
+        let h = heard_of("{\"a\": 1}\n\n201")
+        h.status == 201 && h.body == "{\"a\": 1}\n"
+    }
+    then "a status alone has an empty body" { heard_of("404").status == 404 }
+    then "an asset is carried by its name" {
+        let r = parse(WITH_ASSET) catch Json.Null
+        carries(r, "avra") && !carries(r, "wisp")
+    }
+}

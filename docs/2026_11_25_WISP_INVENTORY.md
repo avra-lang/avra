@@ -47,6 +47,7 @@ A running list: each entry is gone from the tree, named with the train that remo
 - **train46 (7214a623): the store attacks became cli specs:** `make ahead-edit-attack`, `make held-store-attack`, `make heir-save-attack`, `make share-merge-attack`, `make beside-attack`, `make wave-share-attack`, `tools/ahead_edit_attack.sh`, `tools/beside_attack.sh`, `tools/heir_save_attack.sh`, `tools/held_store_attack.sh`, `tools/share_merge_attack.sh`, `tools/wave_share_attack.sh`.
 - **train48 (d29c9ed2): moved to packages/wisp, ./wisp:** `make tools-suite`, `tools/avra.toml`, `tools/avra_tools.sh`, `tools/src/`, `tools/tools_key.sh`.
 - **wisp defects (ported):** `tools/defects.py`, `tools/defects_previous.py`, `AVRA_DEFECT_STALL`, `AVRA_DEFECT_TIMEOUT`, `AVRA_DEFECT_WARM`, `AVRA_DEFECT_WARM_CLOCK`, `AVRA_DEFECT_WORKERS` (now flags).
+- **wisp release (ported):** `tools/compiler_release.py` — publish is the binary's, the reads are the shim's.
 - **Earlier (S1 corrections, d7cd84d9):** `make check/run/ir/emit/build-native` still stand, owed by S1's "dead" half, which was split out of the rename.
 
 ## Findings now
@@ -235,7 +236,6 @@ A running list: each entry is gone from the tree, named with the train that remo
 | codecs.py | checks.yml, Makefile, codecs.av +1 | internal | merge: keepers |  |
 | compile_slots.sh | Makefile | internal | merge: oracle |  |
 | compiler_paths.sh | action.yml, checks.yml, lane-run.yml +6 | internal | merge: gate |  |
-| compiler_release.py | action.yml, checks.yml, ci_invariants.py +8 | internal | merge: gate |  |
 | corpus_ir.sh | none | internal | merge: census | NO CALLER |
 | cost.baseline | gate.yml, Makefile, cost.av +10 | internal | merge: cost |  |
 | cost.candidates | cost.av | internal | merge: cost |  |
@@ -439,7 +439,7 @@ A running list: each entry is gone from the tree, named with the train that remo
 | witness_body_consts.sh | none | internal | merge: oracle | run by tool_witnesses (derived) |
 | witness_callee_edit.sh | none | internal | merge: oracle | run by tool_witnesses (derived) |
 | witness_compiler_key.sh | Makefile, gate.sh | internal | merge: oracle | run by tool_witnesses (derived) |
-| witness_compiler_release.sh | compiler_release.py | internal | merge: oracle | run by tool_witnesses (derived) |
+| witness_compiler_release.sh | wisp | internal | merge: oracle | the shim's release reads, against local files; run by tool_witnesses (derived) |
 | witness_disk_full.sh | none | internal | merge: oracle | run by tool_witnesses (derived) |
 | witness_fmt_changed.sh | none | internal | merge: oracle | run by tool_witnesses (derived) |
 | witness_frameless_writes.sh | none | internal | merge: oracle | run by tool_witnesses (derived) |
@@ -655,7 +655,7 @@ A running list: each entry is gone from the tree, named with the train that remo
 | AVRA_REATTACH_S | work, work_test.sh | internal | merge: wisp flag | read by tools alone |
 | AVRA_RECLAIM_FREE_GB | reclaim.sh, reclaim_test.sh | internal | merge: wisp flag | read by tools alone |
 | AVRA_RECLAIM_SCRIPT | reclaim_test.sh | internal | merge: wisp flag | read by tools alone |
-| AVRA_RELEASE_API | compiler_release.py | internal | merge: wisp flag | read by tools alone |
+| AVRA_RELEASE_API | wisp (shim) | internal | merge: wisp flag | the shim's reads; `wisp release publish --api` |
 | AVRA_REMOTE_SCRIPT | sprite-lib.sh, sprite-remote.sh, sprite_remote_test.sh +2 | internal | merge: wisp flag | read by tools alone |
 | AVRA_RT |  | not config | — | a C macro, enum or guard |
 | AVRA_RT_F64 | avra_rt.h, runtime_header.av, runtime_header_test.av | not config | — | a C macro, enum or guard |
