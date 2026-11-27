@@ -929,20 +929,20 @@ build-native: $(COMPILER_OBJS)
 
 # THE PACKAGE LIBRARIES the evaluator opens, one per package that
 # owns native code and is not already inside `build/avra`.
-# `tools/libs.py` is the ONE definition of what each is made of —
-# `tools/stems.sh` consumes that answer rather than re-deriving it;
-# the manifests it reads beside it are the DECLARATION the answer is
-# held to. The roster needs the compiler built first and says so.
+# `avra explain --libs` says what each is made of and `wisp libs` builds
+# them (packages/wisp/src/commands/libs.av) — `tools/stems.sh` consumes
+# that answer rather than re-deriving it; the manifests it reads beside it
+# are the DECLARATION the answer is held to. The roster needs the compiler built first and says so.
 # THE LIBRARY SCOPE, KEPT — a package's library is reached by its
 # dependents and by nobody else (`tools/libscope.sh`).
 libscope: avra libs
 	@sh tools/libscope.sh
 
 libs: avra $(PACKAGE_OBJS)
-	@for n in `python3 tools/libs.py --names`; do \
-	  python3 tools/libs.py --build $$n || exit 1; \
+	@for n in `./wisp libs --names`; do \
+	  ./wisp libs build $$n || exit 1; \
 	done
-	@echo "libs: `python3 tools/libs.py --names | wc -w | tr -d ' '` package librar(y|ies) built"
+	@echo "libs: `./wisp libs --names | wc -w | tr -d ' '` package librar(y|ies) built"
 
 # The suites, derived and counted: a cycle or a dependency that is no
 # package refuses here, before a silent empty list runs nothing.
@@ -985,10 +985,8 @@ read-lists:
 layers:
 	@python3 tools/layers.py
 
-# THE LIBRARY ROSTER READS DEFINED SYMBOLS ONLY (tools/libs.py): an undefined reference is what
-# the image needs, never what it carries.
+# THE LLVM LINK'S TWIN (tools/llvm_link.py); the library roster's own cases are wisp's suite.
 libs-self-test:
-	@python3 tools/libs.py --self-test
 	@python3 tools/llvm_link.py --twin
 
 # THE PRE-COMMIT HOOK REFUSES WITHOUT A COMPILER: its fixtures (tools/hooks_pre_commit_check.sh).

@@ -1,0 +1,293 @@
+//! `wisp libs` — THE PACKAGE LIBRARIES the evaluator opens: one per package that owns native code and
+//! is not already inside `build/avra`, built and accounted for.
+//!
+//!     wisp libs --names | --outputs | --data | --undefined
+//!     wisp libs build <name>
+//!
+//! WHAT A LIBRARY IS MADE OF IS THE MANIFEST'S, so it is the compiler's to say: each row is read from
+//! `avra explain --libs <pkg>` (its name, objects and `-L`/`-l` words), never parsed a second time here.
+//! WHICH PACKAGES GET ONE IS THE IMAGE'S: a package the compiler already carries gets none, since a
+//! library of it would be a second copy of state meant to be single (`once` answers, `ffi.o`'s staging
+//! area), and what `build/avra` carries is read from it with `nm`. A package split across the image is
+//! refused, never folded either way. A package whose objects are not built yet is no row: make's
+//! prerequisites decide when.
+//!
+//! THE RUNTIME IS LEFT UNDEFINED ON PURPOSE, bound to the host at load. Mach-O permits that only symbol by
+//! symbol, so a build there names each `avra_*` the objects leave open that the host exports (`-U`) and
+//! every other open symbol is the linker's refusal; ELF permits all of them, and tools/stems.sh, reading
+//! `--undefined`, is the keeper there. An archive is linked whole, and the link is an argv, never a shell
+//! line. Exit 0 done, 1 refused, 2 usage.
+use @std.cli.{CliResult, Runnable, arg, command, flag}
+use @std.io.{exists, env, list_dir}
+use @std.process.{cmd, inherited, tool, tool_at}
+
+/// One package's library: its stem, where it is written, the objects in it (tree-relative) and the words
+/// it links, and the package it is of.
+export type Library = { name: string, output: string, objects: List<string>, words: List<string>, package: string }
+
+/// What `avra explain --libs` said of one package: its name, and its library when it links objects.
+export type Explained = { package: string, library: string?, objects: List<string>, words: List<string> }
+
+/// How a library is linked on this machine: its suffix and the flags that make one.
+export type Platform = { darwin: bool, suffix: string, mode: List<string> }
+
+type LibsCmd = {}
+
+impl Runnable for LibsCmd {
+    fn run(args: CliResult) -> int {
+        let verb = args.arg("verb")
+        if verb == "build" {
+            let name = args.arg("name")
+            if name == "" {
+                eprintln(usage())
+                return 2
+            }
+            return match roster() { .Ok(rows) -> built(rows, name), .Err(why) -> refused(why) }
+        }
+        if verb != "" {
+            eprintln(usage())
+            return 2
+        }
+        let rows = match roster() { .Ok(rows) -> rows, .Err(why) -> { return refused(why) } }
+        let lines = when {
+            args.has_flag("names") -> [rows.map(it.name).join(" ")]
+            args.has_flag("outputs") -> [rows.map(it.output).join(" ")]
+            args.has_flag("data") -> rows.map(data_line(it))
+            args.has_flag("undefined") -> ["${r.name}\t${undefined(r.output).join(" ")}" for r in rows if exists(r.output)]
+            _ -> null
+        }
+        let said? = lines else {
+            eprintln(usage())
+            return 2
+        }
+        for l in said { println(l) }
+        0
+    }
+}
+
+export command libs {
+    description: "The package libraries the evaluator opens: their roster, their open symbols, and their build"
+    arg verb { description: "build, to link one library; none for a roster form" }
+    arg name { description: "the library to build, by its stem (std-sqlite)" }
+    flag names { description: "every library's stem, on one line" }
+    flag outputs { description: "every library's path, on one line" }
+    flag data { description: "a row a library: name, output, objects, words, package — tab-separated" }
+    flag undefined { description: "a row a built library: its name and every symbol it leaves for the host" }
+    run: LibsCmd {}
+}
+
+fn refused(why: string) -> int {
+    eprintln("libs: ${why}")
+    1
+}
+
+/// A row as `--data` prints it: name, output, objects, words, package, tab-separated.
+export fn data_line(r: Library) -> string {
+    [r.name, r.output, r.objects.join(" "), r.words.join(" "), r.package].join("\t")
+}
+
+// ── the roster ──
+
+/// Every library to build: each package's `explain --libs` answer, those with no objects, unbuilt
+/// objects or a place in the image left out, and a split or a stem two packages share refused.
+fn roster() -> Result<List<Library>, string> {
+    let host = host_symbols()?
+    let p = platform()
+    mut rows: List<Library> = []
+    for dir in package_dirs() {
+        let e = explained(dir)?
+        let lib? = e.library else { continue }
+        if e.objects.any(!exists(it)) { continue }
+        let seen = in_the_image(e.objects, host)
+        if seen == "carried" { continue }
+        if seen == "split" { return .Err(split_package(e.package)) }
+        let stem = stem_of(lib)
+        let clash? = rows.find(it.name == stem) else {
+            rows
+                .push(
+                    Library {
+                        name: stem,
+                        output: "${lib}${p.suffix}",
+                        objects: e.objects,
+                        words: e.words,
+                        package: e.package,
+                    },
+                )
+            continue
+        }
+        return .Err(stem_clash(e.package, clash.package, stem))
+    }
+    .Ok(rows)
+}
+
+/// A library path's stem: `build/libstd-sqlite` is `std-sqlite`.
+export fn stem_of(library: string) -> string {
+    let base = library.split("/").last() ?? library
+    if base.starts_with("lib") { base.substring(3, base.length) } else { base }
+}
+
+/// Every package directory under packages/, in byte order.
+fn package_dirs() -> List<string> {
+    ["packages/${n}" for n in sorted_texts(list_dir("packages") catch []) if exists("packages/${n}/avra.toml")]
+}
+
+/// What the compiler says a package's library is made of: `build/avra`, the image the roster is held
+/// to, asked directly — a manifest read, no package-scale run.
+fn explained(dir: string) -> Result<Explained, string> {
+    match (cmd(tool_at("avra", "build/avra"), ["explain", "--libs", dir]) with { env: inherited() })
+        .outcome() {
+        .Ok(o) -> if o.exit is .Clean { .Ok(explained_from(o.out.stdout, tree_root())) } else { .Err(not_explained(dir, o.out.stderr)) },
+        .Err(_) -> .Err(not_explained(dir, "it did not start")),
+    }
+}
+
+/// An `explain --libs` answer read: each object made relative to the tree it stands in.
+export fn explained_from(text: string, root: string) -> Explained {
+    let lines = text.split("\n")
+    let said = (word: string) -> [l.substring(word.length + 1, l.length) for l in lines if l.starts_with("${word} ")]
+    Explained {
+        package: said("package").first() ?? "",
+        library: said("library").first(),
+        objects: said("object").map(relative_to(it, root)),
+        words: said("word"),
+    }
+}
+
+fn relative_to(path: string, root: string) -> string {
+    if path.starts_with("${root}/") { path.substring(root.length + 1, path.length) } else { path }
+}
+
+// ── the image ──
+
+/// What `build/avra` defines. An absent compiler is a refusal and never an empty set, which would give
+/// every package a library, the ones the host carries among them.
+fn host_symbols() -> Result<List<string>, string> {
+    if !exists("build/avra") { return .Err(no_compiler()) }
+    .Ok(defined_names(nm(["build/avra"])))
+}
+
+/// The symbols `nm` lists as DEFINED: an address, a type and a name. An undefined reference (`U crc32`)
+/// is what the image NEEDS, never what it CARRIES.
+export fn defined_names(nm_text: string) -> List<string> {
+    [unprefixed(parts.last()!) for l in nm_text.split("\n") for parts in [words_of(l)] if parts.length >= 3 && parts[parts.length - 2] != "U" && parts[parts.length - 2] != "u"]
+}
+
+/// The global symbols an object DEFINES — what a library of it would add.
+export fn global_defined(nm_text: string) -> List<string> {
+    [unprefixed(parts.last()!) for l in nm_text.split("\n") for parts in [words_of(l)] if parts.length >= 3 && ["T", "D", "S", "B"].contains(parts[parts.length - 2])]
+}
+
+/// Whether the image carries these objects: `carried`, `absent`, or `split` when some are and some not.
+export fn in_the_image_by(defines: List<List<string>>, host: List<string>) -> string {
+    let hits = defines.map(it.any((s) -> host.contains(s)))
+    when {
+        hits.all(it) -> "carried"
+        !hits.any(it) -> "absent"
+        _ -> "split"
+    }
+}
+
+fn in_the_image(objects: List<string>, host: List<string>) -> string {
+    in_the_image_by(objects.map(global_defined(nm(["-g", it]))), host)
+}
+
+/// The symbols an object or a library (each archive member) leaves open.
+fn undefined(path: string) -> List<string> {
+    sorted_texts(
+        distinct_names(
+            [unprefixed(words_of(l).last() ?? "") for l in nm(["-u", path]).split("\n") if l.trim() != "" && !l.ends_with(":")],
+        ),
+    )
+}
+
+fn distinct_names(xs: List<string>) -> List<string> {
+    [xs[i] for i in 0..xs.length if xs.index_of(xs[i]) == i]
+}
+
+fn nm(args: List<string>) -> string {
+    let t? = match tool("nm") { .Ok(x) -> x, .Err(_) -> null } else { return "" }
+    match (cmd(t, args) with { env: inherited() }).outcome() {
+        .Ok(o) -> o.out.stdout,
+        .Err(_) -> "",
+    }
+}
+
+fn words_of(line: string) -> List<string> { line.trim().split(" ").filter(it != "") }
+
+fn unprefixed(s: string) -> string { if s.starts_with("_") { s.substring(1, s.length) } else { s } }
+
+// ── the build ──
+
+fn platform() -> Platform {
+    if uname() == "Darwin" {
+        Platform { darwin: true, suffix: ".dylib", mode: ["-dynamiclib"] }
+    } else {
+        Platform { darwin: false, suffix: ".so", mode: ["-shared", "-fPIC"] }
+    }
+}
+
+fn uname() -> string {
+    let t? = match tool("uname") { .Ok(x) -> x, .Err(_) -> null } else { return "" }
+    match cmd(t, ["-s"]).outcome() { .Ok(o) -> o.out.stdout.trim(), .Err(_) -> "" }
+}
+
+/// The linker's argv for one library on a platform, the host's open runtime band given as `band`.
+export fn link_argv(r: Library, p: Platform, band: List<string>) -> List<string> {
+    ["cc"]
+        .concat(p.mode)
+        .concat(if p.darwin { band.map("-Wl,-U,_${it}") } else { [] })
+        .concat(["-o", r.output])
+        .concat(concat_lists(r.objects.map(linked_whole(it, p))))
+        .concat(r.words)
+}
+
+/// An archive linked whole: a library has no references of its own to pull members by.
+export fn linked_whole(obj: string, p: Platform) -> List<string> {
+    if !obj.ends_with(".a") { return [obj] }
+    if p.darwin { ["-Wl,-force_load,${obj}"] } else { ["-Wl,--whole-archive", obj, "-Wl,--no-whole-archive"] }
+}
+
+fn concat_lists(xss: List<List<string>>) -> List<string> { xss.fold([], (acc, xs) -> acc.concat(xs)) }
+
+fn built(rows: List<Library>, name: string) -> int {
+    let r? = rows.find(it.name == name) else { return refused(no_library(name)) }
+    let missing = r.objects.filter(!exists(it))
+    if !missing.is_empty() { return refused(unbuilt(r.package, missing)) }
+    let p = platform()
+    let host = host_symbols() catch []
+    let band = if p.darwin {
+        sorted_texts(
+            distinct_names(
+                [s for o in r.objects for s in undefined(o) if s.starts_with("avra_") && host.contains(s)],
+            ),
+        )
+    } else {
+        []
+    }
+    let argv = link_argv(r, p, band)
+    let cc? = match tool("cc") { .Ok(x) -> x, .Err(_) -> null } else { return refused("no cc on this machine") }
+    match (cmd(cc, argv.drop(1)) with { env: inherited(), streams: .Inherited }).outcome() {
+        .Ok(o) -> if o.exit is .Clean { 0 } else { 1 },
+        .Err(_) -> 1,
+    }
+}
+
+// ── voices ──
+
+fn usage() -> string { "usage: wisp libs --names | --outputs | --data | --undefined | build <name>" }
+
+fn no_compiler() -> string { "build/avra is not built, and the roster is derived from what it carries — build the compiler first" }
+
+fn split_package(pkg: string) -> string {
+    "${pkg} is half inside `build/avra` and half outside — a library of it would hold one half and resolve the other by lookup order"
+}
+
+fn stem_clash(a: string, b: string, stem: string) -> string {
+    "${a} and ${b} both derive `${stem}` — one library path for two packages, and the second build would overwrite the first"
+}
+
+fn not_explained(dir: string, said: string) -> string { "`avra explain --libs ${dir}` answered nothing: ${said.trim()}" }
+
+fn no_library(name: string) -> string { "no linking package derives `${name}`" }
+
+fn unbuilt(pkg: string, missing: List<string>) -> string { "${pkg} names objects that are not built: ${missing.join(" ")}" }
