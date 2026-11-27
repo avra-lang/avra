@@ -55,12 +55,17 @@ export fn document(css: string, nonce: string?, ops: List<HtmlOp>) -> string {
 
 /// What a document's head says: its title, its language and the way its
 /// text runs.
-export type Head = { title: string, locale: string, direction: Direction }
+/// A page's head: its title, the environment's words, and whether it `covers` the device's whole
+/// screen, which a page does when a box keeps clear of the device's edges with an inset.
+export type Head = { title: string, locale: string, direction: Direction, covers: bool = false }
+
+/// What the viewport says of the screen's edges: reach under them where the page keeps clear itself.
+fn fit(head: Head) -> string { if head.covers { ", viewport-fit=cover" } else { "" } }
 
 /// A complete document: every value the head carries is escaped for the
 /// context it lands in.
 export fn page_source(head: Head, css: string, nonce: string?, ops: List<HtmlOp>) -> string {
-    "<!doctype html><html lang=\"${entities(head.locale)}\" dir=\"${head.direction.word()}\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>${entities(head.title)}</title>${style_open(nonce)}${css_safe(css)}</style></head><body>${source(ops)}</body></html>"
+    "<!doctype html><html lang=\"${entities(head.locale)}\" dir=\"${head.direction.word()}\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1${fit(head)}\"><title>${entities(head.title)}</title>${style_open(nonce)}${css_safe(css)}</style></head><body>${source(ops)}</body></html>"
 }
 
 /// What a module needs to take a page over: the print the server folded,
@@ -72,7 +77,7 @@ export type Takeover = { print: int, module: string, host: string, state: string
 /// writes to, the tree inside the mount the print is stamped on, and the
 /// host's start script (`start.js`), which runs the module over it.
 export fn takeover_source(head: Head, css: string, ops: List<HtmlOp>, t: Takeover) -> string {
-    "<!doctype html><html lang=\"${entities(head.locale)}\" dir=\"${head.direction.word()}\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">${fetched_tags(t.fetched)}<title>${entities(head.title)}</title><style id=\"avra-style\">${css_safe(css)}</style></head><body><div id=\"app\" data-avra-print=\"${t.print}\" data-avra-module=\"${entities(t.module)}\" data-avra-host=\"${entities(t.host)}\">${source(ops)}</div>${state_tag(t.state)}<script type=\"module\" src=\"${entities(t.host)}/start.js\"></script></body></html>"
+    "<!doctype html><html lang=\"${entities(head.locale)}\" dir=\"${head.direction.word()}\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1${fit(head)}\">${fetched_tags(t.fetched)}<title>${entities(head.title)}</title><style id=\"avra-style\">${css_safe(css)}</style></head><body><div id=\"app\" data-avra-print=\"${t.print}\" data-avra-module=\"${entities(t.module)}\" data-avra-host=\"${entities(t.host)}\">${source(ops)}</div>${state_tag(t.state)}<script type=\"module\" src=\"${entities(t.host)}/start.js\"></script></body></html>"
 }
 
 /// The tags that ask for every file a page fetches while its document is
