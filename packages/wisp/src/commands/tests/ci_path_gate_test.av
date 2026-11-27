@@ -1,4 +1,4 @@
-use commands.{owed, owes}
+use commands.{KEEPERS, owed, owes}
 
 spec "ci_path_gate — which jobs a change owes" {
     given "the runtime-keep job" {
@@ -89,6 +89,26 @@ spec "ci_path_gate — which jobs a change owes" {
             owed("cost-snapshot", "push", [], []) &&
                 owed("runtime-keep", "pull_request", ["runtime/a.c"], []) &&
                 !owed("runtime-keep", "pull_request", ["packages/cli/a.av"], ["packages/cli"])
+        }
+    }
+    given "the generated runtime header and row namespace" {
+        then "a change to the runtime's rows alone owes both" {
+            let rows = ["packages/std-avrac/src/core/runtime_api.av"]
+            let compiler = ["Makefile", "packages/std-avrac", "runtime"]
+            owed("rt-header", "pull_request", rows, compiler) &&
+                owed("rt-ns", "pull_request", rows, compiler)
+        }
+        then "a change no compiler source holds owes neither" {
+            let compiler = ["Makefile", "packages/std-avrac", "runtime"]
+            !owed("rt-header", "pull_request", ["docs/x.md"], compiler) &&
+                !owed("rt-ns", "pull_request", ["docs/x.md"], compiler)
+        }
+        then "both are keepers a preflight narrows to the change, wherever the gate runs them" {
+            ["rt-header", "rt-ns"]
+                .all(
+                    (k) -> KEEPERS.any(it.name == k && !it.free) &&
+                        !owed(k, "pull_request", ["preflight/an-unread-path"], []),
+                )
         }
     }
 }
