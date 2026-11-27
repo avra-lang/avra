@@ -28,6 +28,7 @@ use @std.io.{
     read_text,
     remove,
     stamp,
+    this_process,
     truncate_to,
     write_text,
 }
@@ -796,7 +797,7 @@ export fn save_held(directory: string) -> AppendFile? {
 /// fails because the disk filled says why where a new file wouldn't fit.
 export fn save_left(directory: string) {
     let record = "${directory}/${UNFINISHED_FILE}"
-    let room = "${directory}/${ROOM_FILE}"
+    let room = room_of(directory)
     // LICENSED input.store_io: the store's own files, never an input of what is answered
     if exists(room) && is_ok(link(room, record)) { let _ = remove(room) }
     said_in_place(record, padded_to_room("${save_unfinished(directory)}\n"))
@@ -805,20 +806,22 @@ export fn save_left(directory: string) {
 /// The room a failed save's record takes before the build writes: more than any cause it says.
 const UNFINISHED_ROOM: int = 4096
 
-/// The file that holds the room an unfinished save's record takes, until a save is left to an heir.
-const ROOM_FILE: string = "saving.room"
+/// The file that holds the room an unfinished save's record takes in the store at `directory`,
+/// until a save is left to an heir: this process's own, named as a draft, so no reader takes it for
+/// the store's and the next store opened removes it once its process is gone.
+fn room_of(directory: string) -> string { "${directory}/saving.${this_process()}-room.draft" }
 
 /// The room a save's record is said in, taken in the store at `directory` where it isn't yet. A
 /// process left to save takes none: its record already stands in the room its build took.
 fn room_taken(directory: string) {
-    let room = "${directory}/${ROOM_FILE}"
+    let room = room_of(directory)
     // LICENSED input.store_io: the store's own files, never an input of what is answered
     if !saving_apart().get() && !exists(room) { let _ = write_text(room, padded_to_room("")) catch "" }
 }
 
 /// The room a save's record is said in given back to the disk of the store at `directory`: its save
 /// has ended here, and no record will be said in it.
-fn room_given_back(directory: string) { let _ = remove("${directory}/${ROOM_FILE}") }
+fn room_given_back(directory: string) { let _ = remove(room_of(directory)) }
 
 /// `said` and as many spaces after it as fill `UNFINISHED_ROOM`.
 fn padded_to_room(said: string) -> string { said + [" " for _i in 0..max_of(UNFINISHED_ROOM - said.length, 0)].join("") }
