@@ -26,13 +26,14 @@ use @std.program.worked_ahead.{
 use @std.io.{env}
 
 /// Where work ahead is kept and how it's done: the store's directory, the queries every process
-/// answers, how many processes, whether each says where its time went, and the program whose
-/// frontier its engines read.
+/// answers, how many processes, whether each says where its time went, whether its engines count
+/// what they work out from their first ask, and the program whose frontier its engines read.
 type AheadAt = {
     directory: string,
     definitions: List<QueryDefinition>,
     process_count: int,
     timed: bool,
+    counted: bool,
     program: string,
 }
 
@@ -47,7 +48,8 @@ enum DeclaredBody {
 /// fewer than two or where the last build's frontier saw at most `FEW_MOVED` inputs move; with
 /// `timed`, each process and each phase says where its time went. A file `vouched` names, read off the
 /// first engine, stands on the verdict that vouches for it: no law is asked of it. Every engine
-/// reads and keeps `program`'s frontier, and `work` says what the last wave works of each file.
+/// reads and keeps `program`'s frontier, counting what it works out from its first ask where
+/// `counted`, and `work` says what the last wave works of each file.
 export fn program_worked(
     directory: string,
     package: string,
@@ -57,12 +59,14 @@ export fn program_worked(
     vouched: fn(QueryEngine) -> List<string>,
     program: string = "",
     work: FileWork = FileWork.Built,
+    counted: bool = false,
 ) -> Worked {
     let at = AheadAt {
         directory: directory,
         definitions: definitions,
         process_count: process_count,
         timed: timed,
+        counted: counted,
         program: program,
     }
     wave_gathers(GATHERED)
@@ -207,6 +211,7 @@ fn ahead<T>(
             ask: ask,
             process_count: at.process_count,
             timed: at.timed,
+            counted: at.counted,
         },
         at.program,
     )
