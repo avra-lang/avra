@@ -521,8 +521,16 @@ fn fn_slots(engine: QueryEngine) -> int {
 }
 
 /// A declaration a generator runs over: the name its file declares it as, the item declaring it, the
-/// generator, each argument the site hands it past this one, and, for a method, the impl writing it.
-export type GeneratorSite = { name: string, item: ItemId, generator: GeneratorAt, handed: List<HandedArg> = [], method: MethodSite? = null }
+/// generator, each argument the site hands it past this one, for a method, the impl writing it, and
+/// whether it is a component's body the generator's trait composes, which no annotation names.
+export type GeneratorSite = {
+    name: string,
+    item: ItemId,
+    generator: GeneratorAt,
+    handed: List<HandedArg> = [],
+    method: MethodSite? = null,
+    composed: bool = false,
+}
 
 /// A method an annotation stands on: the impl writing it, and whether it's a static.
 @derive(Saved)
@@ -629,7 +637,7 @@ fn composed_sites(
     if d.kind != ItemKind.Component || store.component_body(s) == null { return [] }
     let t? = composer(engine, d.file) else { return [] }
     if annotated.any((a) -> derives_trait(a, t)) { return [] }
-    [derive_site(d.name, d.item, t)]
+    [derive_site(d.name, d.item, t) with { composed: true }]
 }
 
 /// THE trait that composes a component `file` declares: the one `composers` finds; absent where none
