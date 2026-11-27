@@ -46,6 +46,7 @@ A running list: each entry is gone from the tree, named with the train that remo
 - **train44 (f6ec64b8): keepers pruned, the PR flow retired:** `make cited`, `make http-cites`, `make families-left`, `make speed-note`, `make hooks-released`, `make whole-reads`, `make whole-reads-accept`, `make ci-verdict`, `make pr-watcher`, `make pipeline-doc`, `make tail-status`, `make pipeline-status`, `make codecs`, `make workflows-yaml`, `tools/batch.sh`, `tools/batch_test.sh`, `tools/cited.allow`, `tools/cited.py`, `tools/families.ceiling`, `tools/footprint.baseline`, `tools/http_cites.py`, `tools/pipeline_doc.allow`, `tools/pipeline_doc.py`, `tools/pipeline_status.py`, `tools/pr_watcher.py`, `tools/ratchet_rows.py`, `tools/speed.budget`, `tools/speed_ratchet.py`, `tools/tail_status.sh`, `tools/wasm-size.baseline`, `tools/whole_reads.baseline`, `tools/whole_reads.py`, `tools/witness_work_wait.sh`, `tools/work.budget`, `tools/work_ratchet.py`, `tools/workflows_yaml.py`, `AVRA_QUEUE_TOKEN`, `AVRA_WAIT_POLL`, `AVRA_WAIT_SECONDS`, `AVRA_WATCHER_STATE`.
 - **train46 (7214a623): the store attacks became cli specs:** `make ahead-edit-attack`, `make held-store-attack`, `make heir-save-attack`, `make share-merge-attack`, `make beside-attack`, `make wave-share-attack`, `tools/ahead_edit_attack.sh`, `tools/beside_attack.sh`, `tools/heir_save_attack.sh`, `tools/held_store_attack.sh`, `tools/share_merge_attack.sh`, `tools/wave_share_attack.sh`.
 - **train48 (d29c9ed2): moved to packages/wisp, ./wisp:** `make tools-suite`, `tools/avra.toml`, `tools/avra_tools.sh`, `tools/src/`, `tools/tools_key.sh`.
+- **wisp defects (ported):** `tools/defects.py`, `tools/defects_previous.py`, `AVRA_DEFECT_STALL`, `AVRA_DEFECT_TIMEOUT`, `AVRA_DEFECT_WARM`, `AVRA_DEFECT_WARM_CLOCK`, `AVRA_DEFECT_WORKERS` (now flags).
 - **Earlier (S1 corrections, d7cd84d9):** `make check/run/ir/emit/build-native` still stand, owed by S1's "dead" half, which was split out of the rename.
 
 ## Findings now
@@ -89,7 +90,7 @@ A running list: each entry is gone from the tree, named with the train that remo
 | cost-snapshot | KEEPERS_A2; recipe | internal | merge: keepers | new since d7cd84d9 |
 | cutoff-witness | KEEPERS_B | internal | merge: oracle | an agreement or refusal case |
 | db-corpus | recipe | internal | merge: oracle | an agreement or refusal case |
-| defects | KEEPERS_B | internal | merge: keepers |  |
+| defects | keepers registry (b) | internal | merge: keepers | runs `wisp defects` |
 | dev-server | recipe | internal | merge: keepers |  |
 | dogfooding-rules | KEEPERS_B; KEEPERS_PR; recipe | internal | merge: idioms |  |
 | edit-loop | recipe | internal | merge: cost warm-edit | no caller |
@@ -249,9 +250,7 @@ A running list: each entry is gone from the tree, named with the train that remo
 | db06_step6_rebuild.sh | store_attacks.sh | internal | merge: oracle | cited by store_attacks.sh |
 | db_corpus.sh | Makefile | internal | merge: oracle |  |
 | db_measure/ | Makefile, census.sh, warm_edit_bench.sh | internal | merge: census |  |
-| defects.py | Makefile, corpus.txt | internal | merge: keepers |  |
-| defects/ | checks.yml, Makefile, defects.py +2 | internal | merge: keepers |  |
-| defects_previous.py | checks.yml, Makefile | internal | merge: keepers |  |
+| defects/ | Makefile, defects.av | internal | keep: wisp defects | the corpus `wisp defects` reads |
 | dep_audit.sh | audit_switch_test.av, bypass.av | internal | merge: tree |  |
 | dep_audit.tsv | dep_audit.sh | internal | merge: tree |  |
 | dep_tests_listing_attack.sh | Makefile | internal | merge: oracle |  |
@@ -530,11 +529,6 @@ A running list: each entry is gone from the tree, named with the train that remo
 | AVRA_DB_GRAPH | ab.sh, avra_settings.h, declared.av +4 | internal | merge: settings.debug | a switch the compiler reads; an oracle reading sets it |
 | AVRA_DB_VERIFY | avra_settings.h, debug.av, declared.av +3 | internal | merge: settings.debug | a switch the compiler reads; an oracle reading sets it |
 | AVRA_DEBUG | avra_runtime.c, avra_settings.h, debug.av +4 | user | keep: typed setting | runtime: constructor-read, named by the generated header |
-| AVRA_DEFECT_STALL | defects.py | internal | merge: wisp flag | read by tools alone |
-| AVRA_DEFECT_TIMEOUT | defects.py | internal | merge: wisp flag | read by tools alone |
-| AVRA_DEFECT_WARM | defects.py | internal | merge: wisp flag | read by tools alone |
-| AVRA_DEFECT_WARM_CLOCK | defects.py | internal | merge: wisp flag | read by tools alone |
-| AVRA_DEFECT_WORKERS | defects.py | internal | merge: wisp flag | read by tools alone |
 | AVRA_DEPOT_KEEP | work, work_test.sh | internal | merge: wisp flag | read by tools alone |
 | AVRA_DEP_AUDIT | avra_settings.h, bypass.av, declared.av +4 | internal | merge: settings.debug | a switch the compiler reads; an oracle reading sets it |
 | AVRA_DISK_FLOOR_MB | watch.sh | internal | merge: wisp flag | read by tools alone |
@@ -755,7 +749,7 @@ A running list: each entry is gone from the tree, named with the train that remo
 | AVRA_VERIFY_LLVM | avra_settings.h, declared.av, gate.sh +3 | internal | merge: settings.debug | a switch the compiler reads; an oracle reading sets it |
 | AVRA_WAKE_S | work, work_test.sh | internal | merge: wisp flag | read by tools alone |
 | AVRA_WALL_API | ci_wall.sh | internal | merge: wisp flag | read by tools alone |
-| AVRA_WATCH_HELD | attack.sh, avra, defects.py +10 | internal | merge: shim flag | the shim and the compiler agree by argv, not ambient env |
+| AVRA_WATCH_HELD | attack.sh, avra, defects.av +10 | internal | merge: shim flag | the shim and the compiler agree by argv, not ambient env |
 | AVRA_WATCH_TRACE | watch.sh | internal | merge: wisp flag | read by tools alone |
 | AVRA_WAVE_ALONE | avra_settings.h, declared.av, layer_check.av +3 | internal | merge: settings.debug | a switch the compiler reads; an oracle reading sets it |
 | AVRA_WITNESS_LOG | witness_warm_edit.sh | internal | merge: wisp flag | read by tools alone |

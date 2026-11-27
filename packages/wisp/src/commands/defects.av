@@ -1,0 +1,1139 @@
+//! `wisp defects` — THE DEFECT-VOICE KEEPER. Runs `avra check` over every malformed and edge
+//! program in tools/defects/corpus.txt, and over deterministic mutations of its `@mutate` bases,
+//! and FAILS when any run answers with the compiler blaming itself (`language.defect`, "survived
+//! typing") or with a trap (exit past 1). A user's mistake is always a refusal; a defect voice or a
+//! trap on a user's program is the compiler's.
+//!
+//! Each case is the entry of a one-file package in a scratch directory (a lone file reads no std
+//! and no prelude, and a file inside this tree is silent), so a refusal actually prints.
+//!
+//! `--generate N` adds N mutants of the tree's own program tests (token deleted, swapped,
+//! duplicated, renamed, re-valued, or the program cut at a statement boundary), chosen by `--seed`:
+//! the same seed is the same set, the one Python's `random.Random(seed)` drew. A mutant's `run` is
+//! judged by voices alone — its own runtime trap or loop is the program's — and happens only where
+//! every std package it imports is a pure one.
+//!
+//! `--timings FILE` writes one `name<TAB>seconds` line per program, and the log ends with the five
+//! slowest. `--previous FILE` is the last green run's timings, so a timeout names what it normally
+//! costs; `--fetch-previous <owner/repo> --out FILE` fetches them from the last green `checks` run on
+//! main (best effort, `GH_TOKEN`). Exit 0 clean, 1 a defect, 2 usage.
+use @std.cli.{CliResult, Runnable, command, flag, option}
+use @std.io.{read_text, write_text, make_dirs, list_dir, is_dir, remove, env, env_or}
+use @std.json.{Json, parse}
+use @std.process.{Exit, ProcessError, Ready, Tool, cmd, inherited, tool, tool_at}
+use @std.text.{parse_int, codepoints, from_codepoints, text_before}
+use @std.time.{ms, secs, now_ms, stamp}
+
+const CORPUS: string = "tools/defects/corpus.txt"
+/// A mutant is linked one in this many: a link costs seconds, and check has lowered it already.
+const BUILD_EVERY: int = 4
+const MANIFEST: string = "[package]\nname = \"probe\"\nversion = \"0.1.0\"\n\n[bin]\npath = \"src/main.av\"\n"
+/// The voices that are the compiler's own, wherever they appear; a mutant's run counts the first two.
+const BAD: List<string> = [
+    "language.defect",
+    "survived typing",
+    "out of bounds",
+    "Segmentation",
+    "internal error",
+    "panicked",
+]
+const VOICES: List<string> = ["language.defect", "survived typing"]
+/// The std packages a program may import and still be run: none touches anything outside it.
+const PURE: List<string> = [
+    "text",
+    "json",
+    "errors",
+    "meta",
+    "path",
+    "prelude",
+    "testing",
+    "numbers",
+]
+/// The compile limiter's own queue notice, which is no voice of the compiler.
+const WAITING: string = "avra: waiting for a compile slot"
+const ARTIFACT: string = "defects-timings"
+const MEMBER: string = "defects-timings.tsv"
+
+/// One program to examine: its verbs, its text, whether it is a generated mutant (its run judged by
+/// voices alone) and whether its text is the package's manifest.
+export type Probe = { name: string, verbs: List<string>, body: string, mutant: bool, manifest: bool }
+
+/// How a survey runs: the compiler, its clocks in seconds, the workers, whose words a refusal
+/// speaks in, and what it says as it goes.
+export type DefectRig = {
+    avra: string,
+    timeout: int = 60,
+    stall: int = 10,
+    workers: int = 4,
+    warm_clock: int = 300,
+    who: string = "defects",
+    progress: int = 0,
+    show: bool = false,
+}
+
+/// One run's ending: its status (124 past the clock), its words, its milliseconds.
+type ProbeRun = { code: int, out: string, took: int, dump: List<string>? = null }
+
+type ProbeRefusal = { verb: string, why: string, out: string }
+
+/// A program's refusals, and the verb that ran out the clock with its milliseconds, if one did.
+type ProbeExamined = { refused: List<ProbeRefusal>, hung: ProbeHung?, dump: List<string>? }
+
+type ProbeHung = { verb: string, took: int }
+
+export type ProbeBad = { name: string, why: string }
+
+type ProbeRetry = { k: int, work: Probe, hung: ProbeHung, dump: List<string>? }
+
+/// What one worker found: its refusals, the programs to run again alone, every program's milliseconds.
+type ProbeWorked = { bad: List<ProbeBad>, retry: List<ProbeRetry>, taken: List<ProbeTiming>, warmed: int? }
+
+export type ProbeTiming = { name: string, took: int }
+
+/// What a survey found: the refusals, the loud notes of pool stalls that finished alone, and every
+/// program's milliseconds.
+export type ProbeSurvey = { bad: List<ProbeBad>, notes: List<string>, taken: List<ProbeTiming> }
+
+type DefectsCmd = {}
+
+impl Runnable for DefectsCmd {
+    fn run(args: CliResult) -> int {
+        let repo = args.option("fetch_previous")
+        if repo != "" { return fetched_previous(repo, args.option("out")) }
+        let corpus = read_text(or_default(args.option("corpus"), CORPUS)) catch ""
+        let parsed = cases(corpus)
+        let all = match parsed {
+            .Err(line) -> {
+                eprintln(before_first_case(line))
+                return 1
+            },
+            .Ok(cs) -> cs,
+        }
+        let rig = DefectRig {
+            avra: or_default(args.option("avra"), "${env("PWD") ?? "."}/avra"),
+            timeout: number(args.option("timeout"), 60),
+            stall: number(args.option("stall"), 10),
+            workers: number(args.option("workers"), 4),
+            warm_clock: number(args.option("warm_clock"), 300),
+            progress: number(args.option("progress"), 0),
+            show: args.has_flag("show"),
+        }
+        let only = args.option("only")
+        let work = worklist(all, number(args.option("generate"), 0), number(args.option("seed"), 0))
+            .filter(only == "" || it.name.starts_with(only))
+        let dump = args.option("dump")
+        if dump != "" {
+            let text = [w.body for w in work if w.name == dump].join("")
+            println(if text.ends_with("\n") { text.substring(0, text.length - 1) } else { text })
+            return 0
+        }
+        if args.has_flag("list") {
+            for w in work { println(w.name) }
+            return 0
+        }
+        if work.is_empty() {
+            println("defects: examined nothing")
+            return 1
+        }
+        let previous = timings_read(args.option("previous"))
+        judged(
+            rig,
+            work,
+            previous,
+            args.option("timings"),
+            if args.has_flag("warm") { warm_programs() } else { [] },
+        )
+    }
+}
+
+export command defects {
+    description: "Run the defect corpus and its mutants; a defect voice or a trap on a user's program refuses"
+    option avra { description: "the compiler to judge (default: the tree's ./avra)" }
+    option corpus { description: "the corpus file (default: tools/defects/corpus.txt)" }
+    option only { description: "only the programs whose name starts so" }
+    option generate { description: "N mutants of the tree's program tests" }
+    option seed { description: "the seed the mutants are drawn by" }
+    option dump { description: "print one program's text and stop" }
+    option progress { description: "say where it is every K programs" }
+    option timings { description: "write one name<TAB>seconds line per program" }
+    option previous { description: "the last green run's timings" }
+    option timeout { description: "seconds a run may take (default 60)" }
+    option stall { description: "seconds before a run still going is looked at (default 10)" }
+    option workers { description: "programs examined at once (default 4)" }
+    option warm_clock { description: "seconds a warm-up check may take (default 300)" }
+    option fetch_previous { description: "fetch the last green run's timings from this owner/repo, then stop" }
+    option out { description: "where --fetch-previous writes" }
+    flag list { description: "print every program's name and stop" }
+    flag show { description: "print every run's output" }
+    flag warm { description: "check one program per std package in each worker's store first" }
+    run: DefectsCmd {}
+}
+
+/// `text` cut at every `sep`, empty pieces kept: `"a\n"` is `["a", ""]`.
+export fn pieces(text: string, sep: string) -> List<string> {
+    if text == "" { return [""] }
+    text.split(sep).concat(if text.ends_with(sep) { [""] } else { [] })
+}
+
+/// `text` with its leading white space gone.
+fn trimmed_start(text: string) -> string {
+    let cs = codepoints(text)
+    from_codepoints(cs.drop(cs.take_while(space_char).length))
+}
+
+fn concat_all<T>(xss: List<List<T>>) -> List<T> {
+    xss.fold([], (acc, xs) -> acc.concat(xs))
+}
+
+fn or_default(text_in: string, fallback: string) -> string { if text_in == "" { fallback } else { text_in } }
+
+fn number(text_in: string, fallback: int) -> int { parse_int(text_in) ?? fallback }
+
+// ── the corpus ──
+
+/// Each `### name` case in file order, its `@` flags read off the lines after the name; the line
+/// that stands before the first case when one does.
+export fn cases(text: string) -> Result<List<Probe>, string> {
+    let lines = pieces(text, "\n")
+    let heads = [i for i in 0..lines.length if lines[i].starts_with("### ")]
+    let stray = lines
+        .take(heads.first() ?? lines.length)
+        .find(!it.starts_with("#") && it.trim() != "")
+    if stray != null { return .Err(stray!) }
+    .Ok(
+        concat_all(
+            [finished(
+                lines[heads[k]].substring(4, lines[heads[k]].length).trim(),
+                lines.take(heads.get(k + 1) ?? lines.length).drop(heads[k] + 1),
+            ) for k in 0..heads.length],
+        ),
+    )
+}
+
+/// A case and, under `@mutate`, every mutation of it.
+fn finished(name: string, lines: List<string>) -> List<Probe> {
+    let flags = lines.take_while(it == "@mutate" || it == "@check" || it == "@manifest")
+    let rest = trailing_blanks_dropped(lines.drop(flags.length))
+    let body = if rest.is_empty() { "" } else { rest.join("\n") + "\n" }
+    let verbs = if flags.contains("@check") { ["check"] } else { ["check", "run"] }
+    let manifest = flags.contains("@manifest")
+    let base = Probe { name: name, verbs: verbs, body: body, mutant: false, manifest: manifest }
+    if !flags.contains("@mutate") { return [base] }
+    [base].concat([base with { name: m.name, body: m.body } for m in mutants(name, body)])
+}
+
+fn trailing_blanks_dropped(lines: List<string>) -> List<string> {
+    let keep = [i for i in 0..lines.length if lines[i] != ""].last() ?? -1
+    lines.take(keep + 1)
+}
+
+export type ProbeMutant = { name: string, body: string }
+
+/// Deterministic mutations: each line prefix, each line deleted, each closing bracket dropped,
+/// each adjacent word pair swapped — every one new, in that order.
+export fn mutants(name: string, text: string) -> List<ProbeMutant> {
+    let lines = pieces(text, "\n")
+    let heads = [ProbeMutant { name: "${name}~head${i}", body: lines.take(i).join("\n") + "\n" } for i in 1..lines.length]
+    let drops = [ProbeMutant {
+        name: "${name}~drop${i}",
+        body: lines.take(i).concat(lines.drop(i + 1)).join("\n"),
+    } for i in 0..lines.length]
+    let closers = [i for i in 0..text.length if is_closer(text.char_code(i))]
+    let closes = [ProbeMutant {
+        name: "${name}~close${k}",
+        body: text.substring(0, closers[k]) + text.substring(closers[k] + 1, text.length),
+    } for k in 0..closers.length]
+    let swaps = concat_all([swapped_words(name, lines, i) for i in 0..lines.length])
+    distinct_from(text, heads.concat(drops).concat(closes).concat(swaps))
+}
+
+fn is_closer(c: int) -> bool { c == 41 || c == 125 || c == 93 }
+
+fn swapped_words(name: string, lines: List<string>, i: int) -> List<ProbeMutant> {
+    let words = pieces(lines[i], " ")
+    [ProbeMutant {
+        name: "${name}~swap${i}_${j}",
+        body: lines.take(i).concat([swap_at(words, j).join(" ")]).concat(lines.drop(i + 1)).join("\n"),
+    } for j in 0..words.length - 1 if words[j] != "" && words[j + 1] != ""]
+}
+
+fn swap_at(words: List<string>, j: int) -> List<string> {
+    words.take(j).concat([words[j + 1], words[j]]).concat(words.drop(j + 2))
+}
+
+/// The mutants whose text is neither the original nor an earlier mutant's.
+fn distinct_from(text: string, ms: List<ProbeMutant>) -> List<ProbeMutant> {
+    mut seen: Map<string, bool> = {text: true}
+    mut out: List<ProbeMutant> = []
+    for m in ms {
+        if !seen.has(m.body) {
+            seen.set(m.body, true)
+            out.push(m)
+        }
+    }
+    out
+}
+
+/// The corpus's work, then `n` generated mutants of the program tests drawn by `seed`.
+fn worklist(all: List<Probe>, n: int, seed: int) -> List<Probe> {
+    all
+        .concat(
+            [Probe {
+                name: g.name,
+                verbs: if runnable(g.body) { ["check", "run"] } else { ["check"] },
+                body: g.body,
+                mutant: true,
+                manifest: false,
+            } for g in program_mutants(n, seed)],
+        )
+}
+
+/// Whether evaluating a program touches nothing outside itself: every std package it imports is pure.
+export fn runnable(text: string) -> bool {
+    std_imports(text).all((p) -> PURE.contains(p))
+}
+
+/// The std packages a program's `use @std.x` lines name.
+fn std_imports(text: string) -> List<string> {
+    [word_after(trimmed_start(l), "use") for l in pieces(text, "\n") if trimmed_start(l).starts_with("use") && word_after(trimmed_start(l), "use") != ""]
+}
+
+/// The package word in `use @std.<word>`, or "" when the line is no std import.
+fn word_after(line: string, kw: string) -> string {
+    let rest = line.substring(kw.length, line.length)
+    if rest == "" || !space_char(rest.char_code(0)) { return "" }
+    let at = trimmed_start(rest)
+    if !at.starts_with("@std.") { return "" }
+    from_codepoints(codepoints(at.substring(5, at.length)).take_while(word_char))
+}
+
+// ── generated mutants ──
+
+const M32: int = 4294967295
+
+/// Python's `random.Random(seed)`: MT19937 seeded by `init_by_array`, so a seed draws here what it
+/// draws there.
+export type Twister = { mt: List<int>, at: int }
+
+export type Drawn = { value: int, rng: Twister }
+
+fn mul32(a: int, b: int) -> int { a.wrapping_mul(b) & M32 }
+
+fn mixed(prev: int) -> int { prev ^ (prev >> 30) }
+
+export fn seeded(seed: int) -> Twister {
+    mut mt = [0 for k in 0..624]
+    mt[0] = 19650218
+    for i in 1..624 { mt[i] = mul32(1812433253, mixed(mt[i - 1])) + i & M32 }
+    let key = words32(seed)
+    mut i = 1
+    mut j = 0
+    for k in 0..if key.length > 624 { key.length } else { 624 } {
+        mt[i] = (mt[i] ^ mul32(mixed(mt[i - 1]), 1664525)) + key[j] + j & M32
+        i = i + 1
+        j = j + 1
+        if i >= 624 {
+            mt[0] = mt[623]
+            i = 1
+        }
+        if j >= key.length { j = 0 }
+    }
+    for k in 0..623 {
+        mt[i] = (mt[i] ^ mul32(mixed(mt[i - 1]), 1566083941)) - i & M32
+        i = i + 1
+        if i >= 624 {
+            mt[0] = mt[623]
+            i = 1
+        }
+    }
+    mt[0] = 2147483648
+    Twister { mt: mt, at: 624 }
+}
+
+/// A seed's magnitude as 32-bit words, least first; zero is one word.
+fn words32(seed: int) -> List<int> {
+    let n = if seed < 0 { 0 - seed } else { seed }
+    if n <= M32 { [n] } else { [n & M32, n >> 32] }
+}
+
+fn twisted(old: List<int>) -> List<int> {
+    mut mt = old
+    for k in 0..624 {
+        let y = (mt[k] & 2147483648) | (mt[(k + 1) % 624] & 2147483647)
+        mt[k] = mt[(k + 397) % 624] ^ (y >> 1) ^ if y & 1 == 1 { 2567483615 } else { 0 }
+    }
+    mt
+}
+
+fn next32(t: Twister) -> Drawn {
+    let r = if t.at >= 624 { Twister { mt: twisted(t.mt), at: 0 } } else { t }
+    mut y = r.mt[r.at]
+    y = y ^ (y >> 11)
+    y = y ^ ((y << 7) & 2636928640)
+    y = y ^ ((y << 15) & 4022730752)
+    y = y ^ (y >> 18)
+    Drawn { value: y & M32, rng: r with { at: r.at + 1 } }
+}
+
+fn bit_length(n: int) -> int { if n == 0 { 0 } else { 1 + bit_length(n >> 1) } }
+
+/// `randbelow(n)`: as many bits as n has, drawn until one is under n.
+export fn below(t: Twister, n: int) -> Drawn {
+    let d = next32(t)
+    let r = d.value >> 32 - bit_length(n)
+    if r < n { d with { value: r } } else { below(d.rng, n) }
+}
+
+/// A token of a program as code points: its kind decides how a mutation may touch it.
+export type ProbeToken = { lo: int, hi: int }
+
+/// The tokens of `cs`: a string literal, a run of word characters, or one other non-space character.
+export fn tokens(cs: List<int>) -> List<ProbeToken> {
+    mut out: List<ProbeToken> = []
+    mut i = 0
+    while i < cs.length {
+        let end = token_end(cs, i)
+        if end > i { out.push(ProbeToken { lo: i, hi: end }) }
+        i = if end > i { end } else { i + 1 }
+    }
+    out
+}
+
+/// Where the token starting at `i` ends; `i` itself when white space stands there.
+fn token_end(cs: List<int>, i: int) -> int {
+    let c = cs[i]
+    if c == 34 && string_end(cs, i) >= 0 { return string_end(cs, i) }
+    if word_char(c) { return i + cs.drop(i).take_while(word_char).length }
+    if space_char(c) { i } else { i + 1 }
+}
+
+/// Where a string literal opened at `i` ends (past its quote), or -1 when it does not close on its line.
+fn string_end(cs: List<int>, i: int) -> int {
+    mut j = i + 1
+    while j < cs.length {
+        let c = cs[j]
+        if c == 34 { return j + 1 }
+        if c == 10 { return -1 }
+        if c == 92 {
+            if j + 1 >= cs.length || cs[j + 1] == 10 { return -1 }
+            j = j + 2
+        } else {
+            j = j + 1
+        }
+    }
+    -1
+}
+
+/// A word character as Python's `\w` reads one: ASCII letters, digits and `_`, and the letters past ASCII.
+export fn word_char(c: int) -> bool {
+    c >= 48 && c <= 57 ||
+        c >= 65 && c <= 90 ||
+        c >= 97 && c <= 122 ||
+        c == 95 ||
+        letter_past_ascii(c)
+}
+
+fn letter_past_ascii(c: int) -> bool {
+    c == 170 ||
+        c == 181 ||
+        c == 186 ||
+        c >= 192 && c <= 591 && c != 215 && c != 247 ||
+        c >= 880 && c <= 1327 ||
+        c >= 12352 && c <= 12543 ||
+        c >= 19968 && c <= 40959 ||
+        c >= 44032 && c <= 55215
+}
+
+/// White space as Python's `\s` reads it.
+export fn space_char(c: int) -> bool {
+    c == 32 ||
+        c >= 9 && c <= 13 ||
+        c >= 28 && c <= 31 ||
+        c == 133 ||
+        c == 160 ||
+        c == 5760 ||
+        c >= 8192 && c <= 8202 ||
+        c == 8232 ||
+        c == 8233 ||
+        c == 8239 ||
+        c == 8287 ||
+        c == 12288
+}
+
+fn is_name(cs: List<int>) -> bool {
+    !cs.is_empty() &&
+        (cs[0] == 95 || cs[0] >= 65 && cs[0] <= 90 || cs[0] >= 97 && cs[0] <= 122) &&
+        cs.all(word_char)
+}
+
+fn is_digits(cs: List<int>) -> bool { !cs.is_empty() && cs.all(it >= 48 && it <= 57) }
+
+const OPS: List<string> = ["delete", "swap", "dup", "cut", "name", "lit"]
+const LITS: List<string> = ["null", "true", "[]", "{}", "\"x\"", "0", "-1", "99999999999"]
+
+/// One mutant of a program, or none, and the generator after its draws.
+type ProbeMade = { mutant: ProbeMutant?, rng: Twister }
+
+/// One mutant of `cs`: an operator and a position drawn from the generator, as defects.py drew them.
+export fn token_mutant(cs: List<int>, t: Twister, tag: string) -> ProbeMade {
+    let toks = tokens(cs)
+    if toks.is_empty() { return none_made(t) }
+    let op = below(t, OPS.length)
+    let at = below(op.rng, toks.length)
+    let i = at.value
+    let tok = toks[i]
+    let word = cs.drop(tok.lo).take(tok.hi - tok.lo)
+    match OPS[op.value] {
+        "cut" -> cut(cs, at.rng, tag),
+        "name" -> renamed(cs, toks, tok, word, at.rng, "${tag}~name${i}"),
+        "lit" -> revalued(cs, tok, word, at.rng, "${tag}~lit${i}"),
+        "delete" -> ProbeMade {
+            mutant: ProbeMutant { name: "${tag}~del${i}", body: spliced(cs, tok.lo, tok.hi, []) },
+            rng: at.rng,
+        },
+        "dup" -> ProbeMade {
+            mutant: ProbeMutant {
+                name: "${tag}~dup${i}",
+                body: spliced(cs, tok.hi, tok.hi, [32].concat(word)),
+            },
+            rng: at.rng,
+        },
+        rest -> swapped(cs, toks, i, at.rng, tag),
+    }
+}
+
+fn none_made(t: Twister) -> ProbeMade { ProbeMade { mutant: null, rng: t } }
+
+fn spliced(cs: List<int>, lo: int, hi: int, mid: List<int>) -> string {
+    from_codepoints(cs.take(lo).concat(mid).concat(cs.drop(hi)))
+}
+
+fn cut(cs: List<int>, t: Twister, tag: string) -> ProbeMade {
+    let stops = [i + 1 for i in 0..cs.length - 1 if cs[i] == 10 && !space_char(cs[i + 1])]
+    if stops.is_empty() { return none_made(t) }
+    let d = below(t, stops.length)
+    ProbeMade {
+        mutant: ProbeMutant {
+            name: "${tag}~cut${stops.length}",
+            body: from_codepoints(cs.take(stops[d.value])) + "\n",
+        },
+        rng: d.rng,
+    }
+}
+
+fn renamed(
+    cs: List<int>,
+    toks: List<ProbeToken>,
+    tok: ProbeToken,
+    word: List<int>,
+    t: Twister,
+    name: string,
+) -> ProbeMade {
+    let words = sorted_texts(
+        distinct_texts([from_codepoints(cs.drop(k.lo).take(k.hi - k.lo)) for k in toks])
+            .filter((w) -> is_name(codepoints(w))),
+    )
+    if !is_name(word) { return none_made(t) }
+    let d = below(t, words.length)
+    ProbeMade {
+        mutant: ProbeMutant { name: name, body: spliced(cs, tok.lo, tok.hi, codepoints(words[d.value])) },
+        rng: d.rng,
+    }
+}
+
+fn revalued(cs: List<int>, tok: ProbeToken, word: List<int>, t: Twister, name: string) -> ProbeMade {
+    if !(is_digits(word) || word[0] == 34) { return none_made(t) }
+    let d = below(t, LITS.length)
+    ProbeMade {
+        mutant: ProbeMutant { name: name, body: spliced(cs, tok.lo, tok.hi, codepoints(LITS[d.value])) },
+        rng: d.rng,
+    }
+}
+
+fn swapped(cs: List<int>, toks: List<ProbeToken>, i: int, t: Twister, tag: string) -> ProbeMade {
+    if i + 1 >= toks.length { return none_made(t) }
+    let a = toks[i]
+    let b = toks[i + 1]
+    let body = cs
+        .take(a.lo)
+        .concat(cs.drop(b.lo).take(b.hi - b.lo))
+        .concat(cs.drop(a.hi).take(b.lo - a.hi))
+        .concat(cs.drop(a.lo).take(a.hi - a.lo))
+        .concat(cs.drop(b.hi))
+    ProbeMade {
+        mutant: ProbeMutant { name: "${tag}~swap${i}", body: from_codepoints(body) },
+        rng: t,
+    }
+}
+
+fn distinct_texts(xs: List<string>) -> List<string> {
+    mut seen: Map<string, bool> = {}
+    mut out: List<string> = []
+    for x in xs {
+        if !seen.has(x) {
+            seen.set(x, true)
+            out.push(x)
+        }
+    }
+    out
+}
+
+/// `n` mutants of the program tests, deterministic in `seed`.
+export fn program_mutants(n: int, seed: int) -> List<ProbeMutant> {
+    if n <= 0 { return [] }
+    let files = program_tests()
+    if files.is_empty() { return [] }
+    mut t = seeded(seed)
+    mut texts: Map<string, List<int>> = {}
+    mut out: List<ProbeMutant> = []
+    while out.length < n {
+        let f = below(t, files.length)
+        t = f.rng
+        let path = files[f.value]
+        if !texts.has(path) { texts.set(path, codepoints(read_text(path) catch "")) }
+        let cs = texts.get(path)!
+        let made = token_mutant(cs, t, "gen:${relative(path)}")
+        t = made.rng
+        let m? = made.mutant else { continue }
+        if m.body != from_codepoints(cs) { out.push(ProbeMutant { name: "${m.name}#${out.length}", body: m.body }) }
+    }
+    out
+}
+
+fn relative(path: string) -> string {
+    let root = "${env("PWD") ?? "."}/"
+    if path.starts_with(root) { path.substring(root.length, path.length) } else { path }
+}
+
+/// The tree's single-file program tests (`<dir>/tests/<name>/<name>.av`) in path order, those that
+/// import the compiler itself left out: a check of one reads it for minutes.
+export fn program_tests() -> List<string> {
+    let root = "${env("PWD") ?? "."}/packages"
+    sorted_texts(
+        [f for f in walked(root) if is_program_test(f) && !(read_text(f) catch "").contains("@std.avrac")],
+    )
+}
+
+fn is_program_test(path: string) -> bool {
+    let parts = pieces(path, "/")
+    let n = parts.length
+    n >= 3 && parts[n - 1] == "${parts[n - 2]}.av" && parts[n - 3] == "tests"
+}
+
+/// Every file under `dir`, hidden entries left out, as a glob's `**` walks.
+fn walked(dir: string) -> List<string> {
+    let names = list_dir(dir) catch []
+    concat_all(
+        [if is_dir("${dir}/${n}") { walked("${dir}/${n}") } else { ["${dir}/${n}"] } for n in names if !n.starts_with(".")],
+    )
+}
+
+/// One program per std package the program tests import, of their own `use` lines, so each
+/// package's modules are all read before the pool.
+export type ProbeWarm = { package: string, text: string }
+
+fn warm_programs() -> List<ProbeWarm> {
+    mut by: Map<string, List<string>> = {}
+    for f in program_tests() {
+        for l in pieces(read_text(f) catch "", "\n") {
+            if l.starts_with("use @std.") && !l.contains(".tests.") {
+                let p = word_after(l, "use")
+                if p != "" { by.set(p, distinct_texts((by.get(p) ?? []).concat([l]))) }
+            }
+        }
+    }
+    [ProbeWarm { package: p, text: sorted_texts(by.get(p)!).join("\n") + "\n1\n" } for p in sorted_texts(by.keys())]
+}
+
+// ── running a program ──
+
+/// A run's words with the limiter's queue notices blanked.
+fn unqueued(out: string) -> string {
+    pieces(out, "\n").map(if it.starts_with(WAITING) { "" } else { it }).join("\n")
+}
+
+/// The first of `voices` that `out` says, leftmost and then in list order; null when none.
+fn first_voice(out: string, voices: List<string>) -> string? {
+    let hits = [v for v in voices if out.index_of(v) >= 0]
+    let first? = hits.first() else { return null }
+    hits.fold(first, (best, v) -> if out.index_of(v) < out.index_of(best) { v } else { best })
+}
+
+/// The reason a run is refused, or null. A lenient run is a mutant's own: only the compiler's voices count.
+export fn verdict(code: int, out: string, lenient: bool) -> string? {
+    if lenient {
+        let v? = first_voice(out, VOICES) else { return null }
+        return "voice '${v}'"
+    }
+    if code > 1 { return "exit ${code}" }
+    let v? = first_voice(unqueued(out), BAD) else { return null }
+    "voice '${v}'"
+}
+
+/// One run of `avra <verb> <package>`. Past `stall` seconds it is looked at once while it lives;
+/// past `timeout` it is killed with all it started, and answers 124.
+fn timed(rig: DefectRig, verb: string, package: string, name: string) -> ProbeRun {
+    let began = now_ms()
+    match watched(rig, verb, package, name) {
+        .Ok(r) -> r,
+        .Err(_) -> ProbeRun { code: 127, out: "${rig.avra}: did not start", took: now_ms() - began },
+    }
+}
+
+fn watched(rig: DefectRig, verb: string, package: string, name: string) -> Result<
+    ProbeRun,
+    ProcessError,
+> {
+    let began = now_ms()
+    let c = cmd(tool_at(rig.avra, rig.avra), [verb, package]) with { env: inherited().with_var("AVRA_WATCH_HELD", "1").with_var("AVRA_MAX_COMPILES", "0"), stop_grace: ms(200), drain_grace: ms(500) }
+    mut child = c.start(Ready.Started, secs(5))?
+    let stall_at = began + 1000 * if rig.stall < rig.timeout { rig.stall } else { rig.timeout }
+    mut gone = child.pump(0)
+    while !gone && now_ms() < stall_at { gone = child.pump(100) }
+    let dump: List<string>? = if !gone && rig.stall < rig.timeout { stalled(child.pid()) } else { null }
+    if dump != null {
+        println(stalled_words(name, verb, rig.stall, dump!))
+        let end = began + 1000 * rig.timeout
+        while !gone && now_ms() < end { gone = child.pump(100) }
+    }
+    if !gone {
+        let at_kill = stalled(child.pid())
+        let _ = child.stop()
+        return ProbeRun {
+            code: 124,
+            out: "timed out after ${rig.timeout}s",
+            took: now_ms() - began,
+            dump: at_kill,
+        }
+    }
+    let o = child.wait(null)?
+    ProbeRun {
+        code: code_of(o.exit),
+        out: o.out.stdout + o.out.stderr,
+        took: now_ms() - began,
+        dump: dump,
+    }
+}
+
+/// An exit as Python's return code reads it: a signal is its negative number.
+fn code_of(e: Exit) -> int {
+    match e { .Clean -> 0, .Code(n) -> n, .Signal(sig, _) -> 0 - sig }
+}
+
+/// A program on PATH, or null.
+fn found(name: string) -> Tool? {
+    match tool(name) { .Ok(t) -> t, .Err(_) -> null }
+}
+
+/// The first `limit` lines a diagnostic tool answers, or why it could not run.
+fn said_by(argv: List<string>, limit: int) -> List<string> {
+    let t? = found(argv[0]) else { return ["(${argv[0]}: not found)"] }
+    match (cmd(t, argv.drop(1)) with { env: inherited(), timeout: secs(30) }).outcome() {
+        .Ok(o) -> pieces((o.out.stdout + o.out.stderr).trim(), "\n").take(limit),
+        .Err(_) -> ["(${argv[0]}: did not answer)"],
+    }
+}
+
+/// What a run past its stall is doing: the machine's load, the process group, what each waits on,
+/// its open files and its stack (gdb where there is one, `sample` on macOS).
+export fn stalled(pid: int) -> List<string> {
+    let load = read_text("/proc/loadavg") catch said_by(["uptime"], 1).first() ?? ""
+    let head = ["load: ${load.trim()}"]
+        .concat(said_by(["ps", "-o", "pid,ppid,stat,etime,time,command", "-g", "${pid}"], 12))
+    if is_dir("/proc/${pid}") {
+        let waits = ["${w}: ${(read_text("/proc/${pid}/${w}") catch "(unreadable)").trim()}" for w in ["wchan", "stack"]]
+        let fds = said_by(["ls", "-l", "/proc/${pid}/fd"], 30).map("fd: ${it}")
+        let stack = if found("gdb") != null {
+            said_by(["gdb", "-p", "${pid}", "-batch", "-ex", "thread apply all bt 25"], 80)
+        } else {
+            ["(no gdb on this machine)"]
+        }
+        return head.concat(waits).concat(fds).concat(stack)
+    }
+    head
+        .concat(said_by(["lsof", "-p", "${pid}"], 30).map("fd: ${it}"))
+        .concat(said_by(["sample", "${pid}", "2", "-file", "/dev/stdout"], 60))
+}
+
+/// Every verb over one program in worker dir `d`. A run past the clock abandons the program; one
+/// that runs ALONE keeps the refusals it earned before the verb that hung.
+fn examine(rig: DefectRig, d: string, k: int, w: Probe, alone: bool) -> ProbeExamined {
+    let _ = make_dirs("${d}/src")
+    let _ = write_text("${d}/avra.toml", if w.manifest { w.body } else { MANIFEST })
+    let _ = write_text("${d}/src/main.av", if w.manifest { "1\n" } else { w.body })
+    mut refused: List<ProbeRefusal> = []
+    mut clean = false
+    mut dumps: List<List<string>> = []
+    for verb in w.verbs.concat(["build"]) {
+        if verb == "build" && !(clean && (!w.mutant || k % BUILD_EVERY == 0)) { continue }
+        let r = timed(rig, verb, d, w.name)
+        if r.dump != null { dumps.push(r.dump!) }
+        if r.code == 124 {
+            return ProbeExamined {
+                refused: if alone { refused } else { [] },
+                hung: ProbeHung { verb: verb, took: r.took },
+                dump: dumps.last(),
+            }
+        }
+        clean = clean || verb == "check" && r.code == 0
+        if rig.progress > 0 && r.took > 10000 { println("defects: slow ${w.name} (${verb}) ${r.took / 1000}s") }
+        if rig.show { println("== ${w.name} (${verb}) exit ${r.code}\n${r.out.trim()}") }
+        let why? = verdict(r.code, r.out, w.mutant && verb == "run") else { continue }
+        refused.push(ProbeRefusal { verb: verb, why: why, out: r.out })
+    }
+    ProbeExamined { refused: refused, hung: null, dump: dumps.last() }
+}
+
+/// Each program's milliseconds, summed over its verbs — which examine reports through the runs it made.
+fn took_by(rig: DefectRig, d: string, k: int, w: Probe, alone: bool) -> ProbeTaken {
+    let began = now_ms()
+    let e = examine(rig, d, k, w, alone)
+    ProbeTaken { examined: e, took: now_ms() - began }
+}
+
+type ProbeTaken = { examined: ProbeExamined, took: int }
+
+fn refused_words(who: string, name: string, r: ProbeRefusal) -> string {
+    "${who}: ${name} (${r.verb}) — ${r.why}\n    ${pieces(r.out.trim(), "\n").take(6).join("\n    ")}"
+}
+
+// ── the pool ──
+
+/// One worker: its share of the work (every `jobs`-th program from `first`), in its own directory,
+/// warmed first when asked.
+fn worker(
+    rig: DefectRig,
+    d: string,
+    first: int,
+    jobs: int,
+    work: List<Probe>,
+    warmup: List<ProbeWarm>,
+) -> ProbeWorked {
+    let warmed = if warmup.is_empty() { null } else { warm(rig, d, warmup) }
+    mut bad: List<ProbeBad> = []
+    mut retry: List<ProbeRetry> = []
+    mut taken: List<ProbeTiming> = []
+    for k, w in work.enumerate() {
+        if k % jobs != first { continue }
+        if rig.progress > 0 && k % rig.progress == 0 { println("defects: ${k}/${work.length}") }
+        let t = took_by(rig, d, k, w, false)
+        taken.push(ProbeTiming { name: w.name, took: t.took })
+        let h? = t.examined.hung else {
+            for r in t.examined.refused {
+                println(refused_words(rig.who, w.name, r))
+                bad.push(ProbeBad { name: w.name, why: r.why })
+            }
+            continue
+        }
+        retry.push(ProbeRetry { k: k, work: w, hung: h, dump: t.examined.dump })
+    }
+    ProbeWorked { bad: bad, retry: retry, taken: taken, warmed: warmed }
+}
+
+/// Every program examined by `jobs` workers at once. A program that timed out beside the others is
+/// run again ALONE after they finish: a timeout there is the verdict, named with both durations,
+/// and one that finishes stands the first down — said loudly, never silent.
+export fn survey(
+    rig: DefectRig,
+    work: List<Probe>,
+    jobs: int,
+    previous: List<ProbeTiming>,
+    warmup: List<ProbeWarm>,
+) -> ProbeSurvey {
+    let root = "${env_or("TMPDIR", "/tmp")}/avra-defects-${stamp()}"
+    let ts = [spawn worker(rig, "${root}/${w}", w, jobs, work, warmup) for w in 0..jobs]
+    let done = [t.await for t in ts]
+    let warmed = [w.warmed! for w in done if w.warmed != null]
+    if !warmed.is_empty() {
+        println(
+            "defects: warmed ${warmed.length} worker store(s) over ${warmup.length} std package(s) before the pool: ${(warmed.fold(0, (a, b) -> if b > a { b } else { a }) + 500) / 1000}s each at most, outside every program's clock",
+        )
+    }
+    mut bad = concat_all([w.bad for w in done])
+    mut taken = concat_all([w.taken for w in done])
+    mut notes: List<string> = []
+    let retries = by_index(concat_all([w.retry for w in done]))
+    if !warmup.is_empty() && !retries.is_empty() { let _ = warm(rig, "${root}/alone", warmup) }
+    for r in retries {
+        let t = took_by(rig, "${root}/alone", r.k, r.work, true)
+        taken.push(ProbeTiming { name: r.work.name, took: t.took })
+        for f in t.examined.refused {
+            println(refused_words(rig.who, r.work.name, f))
+            bad.push(ProbeBad { name: r.work.name, why: f.why })
+        }
+        let h? = t.examined.hung else {
+            notes
+                .push(
+                    stall_words(
+                        r.work.name,
+                        r.hung.verb,
+                        r.hung.took,
+                        jobs,
+                        t.took,
+                        t.examined.dump ?? r.dump ?? ["(no dump was taken)"],
+                    ),
+                )
+            continue
+        }
+        let why = "${timeout_words(rig, r.work.name, previous)} — timed out twice: ${(r.hung.took + 500) / 1000}s beside ${jobs} workers, ${(h.took + 500) / 1000}s alone"
+        println(
+            refused_words(rig.who, r.work.name, ProbeRefusal { verb: h.verb, why: why, out: "" }),
+        )
+        bad.push(ProbeBad { name: r.work.name, why: why })
+    }
+    cleared(root)
+    ProbeSurvey { bad: bad, notes: notes, taken: summed(taken) }
+}
+
+fn by_index(rs: List<ProbeRetry>) -> List<ProbeRetry> {
+    let first? = rs.first() else { return [] }
+    let rest = rs.drop(1)
+    by_index(rest.filter(it.k < first.k))
+        .concat([first])
+        .concat(by_index(rest.filter(it.k >= first.k)))
+}
+
+/// One timing per program, its runs' milliseconds summed.
+fn summed(ts: List<ProbeTiming>) -> List<ProbeTiming> {
+    mut by: Map<string, int> = {}
+    for t in ts { by.set(t.name, (by.get(t.name) ?? 0) + t.took) }
+    [ProbeTiming { name: n, took: by.get(n)! } for n in by.keys()]
+}
+
+/// Check each warm program once in worker dir `d`, whose store then holds every std dependency the
+/// pool will meet. Best effort, outside every program's clock. Milliseconds.
+fn warm(rig: DefectRig, d: string, programs: List<ProbeWarm>) -> int {
+    let began = now_ms()
+    let _ = make_dirs("${d}/src")
+    let _ = write_text("${d}/avra.toml", MANIFEST)
+    for p in programs {
+        let _ = write_text("${d}/src/main.av", p.text)
+        let _ = (cmd(tool_at(rig.avra, rig.avra), ["check", d]) with { env: inherited().with_var("AVRA_WATCH_HELD", "1").with_var("AVRA_MAX_COMPILES", "0"), timeout: secs(rig.warm_clock) })
+            .outcome()
+    }
+    now_ms() - began
+}
+
+/// A directory and all beneath it, gone; best effort.
+fn cleared(dir: string) {
+    for n in list_dir(dir) catch [] {
+        let p = "${dir}/${n}"
+        if is_dir(p) { cleared(p) } else { let _ = remove(p) }
+    }
+    let _ = remove(dir)
+}
+
+// ── the report ──
+
+fn judged(
+    rig: DefectRig,
+    work: List<Probe>,
+    previous: List<ProbeTiming>,
+    timings: string,
+    warmup: List<ProbeWarm>,
+) -> int {
+    let began = now_ms()
+    let jobs = when {
+        rig.workers < 1 -> 1
+        rig.workers < work.length -> rig.workers
+        _ -> work.length
+    }
+    let s = survey(rig, work, jobs, previous, warmup)
+    for n in s.notes { println(n) }
+    println("defects: ${s.notes.length} pool stall(s)")
+    if !s.taken.is_empty() {
+        println(slowest(s.taken, 5).join("\n"))
+        let peak = s.taken.fold(0, (a, t) -> if t.took > a { t.took } else { a })
+        let was = previous.fold(0, (a, t) -> if t.took > a { t.took } else { a })
+        println(
+            "defects: peak program ${tenths(peak)}s now${if previous.is_empty() { "" } else { ", ${tenths(was)}s on the last green run" }}",
+        )
+    }
+    if timings != "" {
+        let rows = by_name(s.taken).map("${it.name}\t${hundredths(it.took)}\n").join("")
+        let _ = write_text(timings, rows)
+        println("defects: ${s.taken.length} program timing(s) in ${timings}")
+    }
+    println("defects: ${jobs} worker(s), ${(now_ms() - began + 500) / 1000}s")
+    let named = distinct_texts(s.bad.map(it.name))
+    println(
+        "defects: ${work.length} program(s) examined, ${named.length} answered with a defect voice or a trap",
+    )
+    if s.bad.is_empty() { 0 } else { 1 }
+}
+
+fn by_name(ts: List<ProbeTiming>) -> List<ProbeTiming> {
+    let first? = ts.first() else { return [] }
+    let rest = ts.drop(1)
+    by_name(rest.filter(text_before(it.name, first.name)))
+        .concat([first])
+        .concat(by_name(rest.filter(!text_before(it.name, first.name))))
+}
+
+/// Slowest first, then by name.
+fn by_time(ts: List<ProbeTiming>) -> List<ProbeTiming> {
+    let first? = ts.first() else { return [] }
+    let rest = ts.drop(1)
+    by_time(rest.filter(sooner(it, first)))
+        .concat([first])
+        .concat(by_time(rest.filter(!sooner(it, first))))
+}
+
+fn sooner(a: ProbeTiming, b: ProbeTiming) -> bool { a.took > b.took || a.took == b.took && text_before(a.name, b.name) }
+
+/// The `n` slowest programs as report lines, slowest first.
+export fn slowest(ts: List<ProbeTiming>, n: int) -> List<string> {
+    let top = by_time(ts).take(n)
+    ["defects: slowest ${i + 1}. ${top[i].name} ${tenths(top[i].took)}s" for i in 0..top.length]
+}
+
+fn tenths(ms_: int) -> string { "${(ms_ + 50) / 1000}.${(ms_ + 50) / 100 % 10}" }
+
+fn hundredths(ms_: int) -> string {
+    let c = (ms_ + 5) / 10
+    "${c / 100}.${if c % 100 < 10 { "0" } else { "" }}${c % 100}"
+}
+
+/// The words of a program that ran out the clock, against its last green seconds when known.
+export fn timeout_words(rig: DefectRig, name: string, previous: List<ProbeTiming>) -> string {
+    "timed out after ${rig.timeout}s (last green run: ${last_green(previous, name)})"
+}
+
+fn last_green(previous: List<ProbeTiming>, name: string) -> string {
+    let t? = previous.find(it.name == name) else { return "not known" }
+    "${tenths(t.took)}s"
+}
+
+fn stalled_words(name: string, verb: string, stall: int, dump: List<string>) -> string {
+    "defects: STALLED ${name} (${verb}) past ${stall}s:\n    ${dump.join("\n    ")}"
+}
+
+/// The loud note for a program that timed out in the pool and finished alone. It passes the job
+/// (the alone run proved the program right) and is counted, never silent.
+fn stall_words(name: string, verb: string, first: int, jobs: int, alone: int, dump: List<string>) -> string {
+    "defects: POOL STALL ${name} (${verb}): timed out after ${(first + 500) / 1000}s beside ${jobs} workers, finished in ${tenths(alone)}s alone — the program is correct; the compile stalled in the pool\n    ${dump.join("\n    ")}"
+}
+
+fn before_first_case(line: string) -> string { "defects: text before the first case: '${line}'" }
+
+/// The timings a file holds, `name<TAB>seconds` a line; none when there is no file.
+export fn timings_read(path: string) -> List<ProbeTiming> {
+    if path == "" { return [] }
+    [ProbeTiming { name: cols[0], took: millis(cols[1]) } for l in pieces(read_text(path) catch "", "\n") if l.contains("\t") for cols in [pieces(l, "\t")]]
+}
+
+/// `12.34` as milliseconds.
+fn millis(s: string) -> int {
+    let parts = pieces(s.trim(), ".")
+    let whole = parse_int(parts[0]) ?? 0
+    let frac = if parts.length > 1 { (parts[1] + "000").substring(0, 3) } else { "000" }
+    whole * 1000 + (parse_int(frac) ?? 0)
+}
+
+// ── the last green run's timings ──
+
+/// The newest unexpired artifact of the timings' name, by id; null when there is none.
+export fn newest_artifact(artifacts: List<Json>) -> int? {
+    let live = [id_of(a) for a in artifacts if text_at(a, "name") == ARTIFACT && !flag_at(a, "expired")]
+    let first? = live.first() else { return null }
+    live.fold(first, (best, id) -> if id > best { id } else { best })
+}
+
+fn member_at(v: Json, key: string) -> Json {
+    match v { .Obj(fields) -> fields.find(it.key == key)?.value ?? Json.Null, rest -> Json.Null }
+}
+
+fn text_at(v: Json, key: string) -> string {
+    match member_at(v, key) { .Str(s) -> s, rest -> "" }
+}
+
+fn flag_at(v: Json, key: string) -> bool {
+    match member_at(v, key) { .Bool(b) -> b, rest -> false }
+}
+
+fn id_of(v: Json) -> int {
+    match member_at(v, "id") { .Int(n) -> n, rest -> 0 }
+}
+
+fn items_at(v: Json, key: string) -> List<Json> {
+    match member_at(v, key) { .Arr(items) -> items, rest -> [] }
+}
+
+fn written_to(out: string?) -> List<string> {
+    let o? = out else { return [] }
+    ["-o", o]
+}
+
+/// The API's answer at `url` (or, with `out`, written there), or null.
+fn asked(token: string, url: string, out: string?) -> string? {
+    let curl? = found("curl") else { return null }
+    let args = [
+        "-fsSL",
+        "-m",
+        "30",
+        "-H",
+        "Authorization: Bearer ${token}",
+        "-H",
+        "Accept: application/vnd.github+json",
+    ]
+        .concat(written_to(out))
+        .concat([url])
+    match (cmd(curl, args) with { env: inherited(), timeout: secs(60) }).outcome() {
+        .Ok(o) -> if o.exit is .Clean { o.out.stdout } else { null },
+        .Err(_) -> null,
+    }
+}
+
+/// The last green `checks` run on main's timings, into `out`. Best effort: with no token, no run or
+/// no artifact it writes nothing and says so, and a timeout then says its seconds are not known.
+fn fetched_previous(repo: string, out: string) -> int {
+    let token = env_or("GH_TOKEN", "")
+    if token == "" {
+        println("defects: no token — no earlier timings")
+        return 0
+    }
+    let base = "https://api.github.com/repos/${repo}"
+    let runs = items_at(
+        parse(
+            asked(
+                token,
+                "${base}/actions/workflows/checks.yml/runs?branch=main&status=success&per_page=1",
+                null,
+            ) ?? "",
+        ) catch Json.Null,
+        "workflow_runs",
+    )
+    let run? = runs.first() else {
+        println("defects: no green run of checks on main")
+        return 0
+    }
+    let artifacts = items_at(
+        parse(asked(token, "${base}/actions/runs/${id_of(run)}/artifacts", null) ?? "") catch Json
+            .Null,
+        "artifacts",
+    )
+    let newest? = newest_artifact(artifacts) else {
+        println("defects: run ${id_of(run)} left no ${ARTIFACT}")
+        return 0
+    }
+    let zip = "${out}.zip"
+    if asked(token, "${base}/actions/artifacts/${newest}/zip", zip) == null {
+        println("defects: no earlier timings (the artifact did not download)")
+        return 0
+    }
+    let unzip? = found("unzip") else {
+        println("defects: no earlier timings (no unzip)")
+        return 0
+    }
+    match (cmd(unzip, ["-p", zip, MEMBER]) with { env: inherited() }).outcome() {
+        .Ok(o) -> if o.exit is .Clean {
+            let _ = write_text(out, o.out.stdout)
+            println("defects: timings of run ${id_of(run)} in ${out}")
+        } else {
+            println("defects: no earlier timings (${MEMBER} is not in the artifact)")
+        },
+        .Err(_) -> println("defects: no earlier timings (unzip did not run)"),
+    }
+    let _ = remove(zip)
+    0
+}
