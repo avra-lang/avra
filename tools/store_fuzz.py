@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# tool-witness: --self-test
 """THE STORE, FUZZED BY A MODEL: random edit sequences over a fixture, each step built warm over
 the stores the step before left, and held to five invariants:
 
