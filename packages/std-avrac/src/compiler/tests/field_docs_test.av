@@ -1,0 +1,34 @@
+//! A field's doc: the run of `///` remarks directly above it, read from the remarks between the
+//! field before it and its own start. A blank line, a plain comment or a trailing comment ends
+//! the run, as each ends a declaration's.
+use core.{Remark, Trivia}
+use compiler.{doc_between}
+
+fn said(text: string, at: int) -> Remark { Remark { trivia: Trivia.Comment(text), at: at } }
+
+fn blank(at: int) -> Remark { Remark { trivia: Trivia.Blank, at: at } }
+
+spec "compiler/item_meta — a field's doc" {
+    given "`///` lines directly above the field" {
+        then "they are its doc, each line's text after `/// `" {
+            doc_between([said("/// The bound,", 10), said("///in seconds.", 20)], 0, 30) == "The bound,\nin seconds."
+        }
+    }
+    given "a run broken before the field" {
+        then "a blank line ends it" { doc_between([said("/// a", 10), blank(20)], 0, 30) == null }
+        then "a plain comment ends it" { doc_between([said("/// a", 10), said("// a note", 20)], 0, 30) == null }
+        then "only what follows the break is the doc" {
+            doc_between([said("/// a", 10), blank(15), said("/// b", 20)], 0, 30) == "b"
+        }
+        then "a trailing comment on the field before ends it" {
+            doc_between(
+                [Remark { trivia: Trivia.Comment("/// x"), at: 10, same_line: true }],
+                0,
+                30,
+            ) == null
+        }
+    }
+    given "a remark outside the field's stretch" {
+        then "one before the floor is the field before's" { doc_between([said("/// a", 5)], 8, 30) == null }
+    }
+}

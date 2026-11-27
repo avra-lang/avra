@@ -3828,15 +3828,6 @@ left is ceremony and one silent hole.
   `Route:` a generic fn bounded by the trait, called with the type in type position —
   `options_of<LadderFlags>()`, `settings_of<LadderFlags>()` (`@std.config.cli`) — resolves
   across packages, so a command names a component declared anywhere with no wrapper.
-- **A7 — a field's `///` reaches no derive.**
-  `Example:` `@derive(Decode) type T = { /// The bound, in seconds.\n secs: int = 9 }`, then
-  `T.fields()[0].doc`.
-  Today: `""`. `field_meta` (compiler/item_meta.av) never sets `MetaField.doc`, so every
-  derive reads a field's doc as null; underneath, a doc group attaches only to a STATEMENT
-  (compiler/program.av `attach_docs`, `statement_after`), and a field is a `Param`.
-  `Callsite:` `@std.config.cli`'s `options_of`, whose help would say each option's `///`
-  (`FieldShape.doc` and `Leaf.doc` carry it, empty until this lands); std-ui's story derive
-  (tree/story.av, `doc: f.doc ?? ""`), which has read "" for every field since it was written.
 
 ### Interim record — the storyboard's asks
 
