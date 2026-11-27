@@ -89,8 +89,9 @@ spec "features/closures/trailing — the red team" {
                 "the body reads `it`, so the block takes one seat — this slot is `fn() -> int`, which hands it none",
             )
         }
-        then "an annotated seat does not parse — the slot types a block's seats" {
-            refusals(under("apply(1) { x: int -> x }")) == 2
+        then "an annotated seat does not parse — a parse refusal stands alone" {
+            let attack = under("apply(1) { x: int -> x }")
+            refusals(attack) == 1 && refused_with(attack, "expected BREAK")
         }
         then "a second `else` is refused" {
             refused_with(under("pick(true) { 1 } else { 2 } else { 3 }"), "expected BREAK")
@@ -189,10 +190,9 @@ spec "features/closures/trailing — the red team" {
         then "a seat named twice is refused" {
             refused_with(under("both(1, 2) { x, x -> x }"), "`x` names two of this lambda's seats")
         }
-        then "`self` is not a seat name" {
-            refusals(
-                "type C = { n: int }\nimpl C {\n    fn go(f: fn(int) -> int) -> int { f(self.n) }\n    fn use_self() -> int { self.go { self -> self } }\n}\nC { n: 3 }.use_self()",
-            ) == 2
+        then "`self` is not a seat name — a resolve refusal stands alone" {
+            let attack = "type C = { n: int }\nimpl C {\n    fn go(f: fn(int) -> int) -> int { f(self.n) }\n    fn use_self() -> int { self.go { self -> self } }\n}\nC { n: 3 }.use_self()"
+            refusals(attack) == 1 && refused_with(attack, "`self` is a keyword")
         }
         then "nested blocks each claim their own `it`" {
             shown(under("[[1], [2, 3]].map { it.map { it * 2 }.length }[1]")) == "2"
