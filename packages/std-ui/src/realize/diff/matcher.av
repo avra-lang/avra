@@ -15,6 +15,8 @@ export trait Diffable {
     /// Whether `now` is this element drawn again: the same kind, so it keeps
     /// this one's number and only its differences are said.
     fn keeps(now: Self) -> bool
+    /// Whether `now` is this element drawn again unchanged, so it stands on the page as it was.
+    fn unchanged(now: Self) -> bool
 }
 
 /// How an element of the new run stands against the old one: new to the
@@ -57,15 +59,26 @@ export fn siblings<E: Diffable, D: Draws<E>>(
     }
     let stays = still(was)
     mut page: List<E> = []
-    mut free = next
+    let free: Cell<int> = Cell.new(next)
     // LICENSED loops.push_loop: each element takes the numbers the ones before it left
     for j, p in pairs {
-        let drawn = d.drawn(p, free)
-        if !stays[j] { d.placed(drawn.element.id(), parent, page.last()?.id()) }
-        page.push(drawn.element)
-        free = drawn.next
+        let e = unchanged(p) ?? drawn_from(d, p, free)
+        if !stays[j] { d.placed(e.id(), parent, page.last()?.id()) }
+        page.push(e)
     }
-    Run { page: page, next: free }
+    Run { page: page, next: free.get() }
+}
+
+/// The old element a pair keeps as it stood, when it is drawn again unchanged.
+fn unchanged<E: Diffable>(p: Stands<E>) -> E? {
+    match p { .Made(_) -> null, .Kept(_, was, now) -> if was.unchanged(now) { was } else { null } }
+}
+
+/// `p` drawn, numbered from what `free` holds, which then holds the next number to give.
+fn drawn_from<E, D: Draws<E>>(d: D, p: Stands<E>, free: Cell<int>) -> E {
+    let drawn = d.drawn(p, free.get())
+    free.set(drawn.next)
+    drawn.element
 }
 
 /// Where in the old run an element stood — nowhere for a new one.
