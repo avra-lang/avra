@@ -178,7 +178,7 @@ export fn pieces(text: string, sep: string) -> List<string> {
 /// `text` with its leading white space gone.
 fn trimmed_start(text: string) -> string {
     let cs = codepoints(text)
-    from_codepoints(cs.drop(cs.take_while(space_char).length))
+    from_codepoints(cs.drop(cs.take_while(unicode_space_char).length))
 }
 
 fn concat_all<T>(xss: List<List<T>>) -> List<T> {
@@ -301,10 +301,10 @@ fn std_imports(text: string) -> List<string> {
 /// The package word in `use @std.<word>`, or "" when the line is no std import.
 fn word_after(line: string, kw: string) -> string {
     let rest = line.substring(kw.length, line.length)
-    if rest == "" || !space_char(rest.char_code(0)) { return "" }
+    if rest == "" || !unicode_space_char(rest.char_code(0)) { return "" }
     let at = trimmed_start(rest)
     if !at.starts_with("@std.") { return "" }
-    from_codepoints(codepoints(at.substring(5, at.length)).take_while(word_char))
+    from_codepoints(codepoints(at.substring(5, at.length)).take_while(unicode_word_char))
 }
 
 // ── generated mutants ──
@@ -403,8 +403,8 @@ export fn tokens(cs: List<int>) -> List<ProbeToken> {
 fn token_end(cs: List<int>, i: int) -> int {
     let c = cs[i]
     if c == 34 && string_end(cs, i) >= 0 { return string_end(cs, i) }
-    if word_char(c) { return i + cs.drop(i).take_while(word_char).length }
-    if space_char(c) { i } else { i + 1 }
+    if unicode_word_char(c) { return i + cs.drop(i).take_while(unicode_word_char).length }
+    if unicode_space_char(c) { i } else { i + 1 }
 }
 
 /// Where a string literal opened at `i` ends (past its quote), or -1 when it does not close on its line.
@@ -425,7 +425,7 @@ fn string_end(cs: List<int>, i: int) -> int {
 }
 
 /// A word character as Python's `\w` reads one: ASCII letters, digits and `_`, and the letters past ASCII.
-export fn word_char(c: int) -> bool {
+export fn unicode_word_char(c: int) -> bool {
     c >= 48 && c <= 57 ||
         c >= 65 && c <= 90 ||
         c >= 97 && c <= 122 ||
@@ -445,7 +445,7 @@ fn letter_past_ascii(c: int) -> bool {
 }
 
 /// White space as Python's `\s` reads it.
-export fn space_char(c: int) -> bool {
+export fn unicode_space_char(c: int) -> bool {
     c == 32 ||
         c >= 9 && c <= 13 ||
         c >= 28 && c <= 31 ||
@@ -463,7 +463,7 @@ export fn space_char(c: int) -> bool {
 fn is_name(cs: List<int>) -> bool {
     !cs.is_empty() &&
         (cs[0] == 95 || cs[0] >= 65 && cs[0] <= 90 || cs[0] >= 97 && cs[0] <= 122) &&
-        cs.all(word_char)
+        cs.all(unicode_word_char)
 }
 
 fn is_digits(cs: List<int>) -> bool { !cs.is_empty() && cs.all(it >= 48 && it <= 57) }
@@ -509,7 +509,7 @@ fn spliced(cs: List<int>, lo: int, hi: int, mid: List<int>) -> string {
 }
 
 fn cut(cs: List<int>, t: Twister, tag: string) -> ProbeMade {
-    let stops = [i + 1 for i in 0..cs.length - 1 if cs[i] == 10 && !space_char(cs[i + 1])]
+    let stops = [i + 1 for i in 0..cs.length - 1 if cs[i] == 10 && !unicode_space_char(cs[i + 1])]
     if stops.is_empty() { return none_made(t) }
     let d = below(t, stops.length)
     ProbeMade {
@@ -708,7 +708,7 @@ fn watched(rig: DefectRig, verb: string, package: string, name: string) -> Resul
     }
     let o = child.wait(null)?
     ProbeRun {
-        code: code_of(o.exit),
+        code: exit_code_of(o.exit),
         out: o.out.stdout + o.out.stderr,
         took: now_ms() - began,
         dump: dump,
@@ -716,7 +716,7 @@ fn watched(rig: DefectRig, verb: string, package: string, name: string) -> Resul
 }
 
 /// An exit as Python's return code reads it: a signal is its negative number.
-fn code_of(e: Exit) -> int {
+fn exit_code_of(e: Exit) -> int {
     match e { .Clean -> 0, .Code(n) -> n, .Signal(sig, _) -> 0 - sig }
 }
 
