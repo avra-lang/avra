@@ -7,11 +7,12 @@
 //! never a second derivation that could disagree.
 use core.{At, StmtId, DeclId, SyntaxArena, flatten, some_list}
 use features.{Code, Fix, Analysed, RuleFile, Syntax, SyntaxFile, analysed_file, syntax_of}
-use diagnostics.{Diag, loc_at, warning}
+use diagnostics.{Diag, loc_at, refusal, warning}
 use @std.errors.{Suggestion, Edit, Confidence, Loc}
 use compiler.backend.{trimmed}
 use compiler.work.{work_rule_node, work_rule_run, work_rule_ns}
 use @std.time.{now_ns}
+use @std.meta.{contained}
 
 /// One rule's hit at one node, before any Diag is built.
 export type Candidate = { at: At, owner: RuleEntry, fix: Fix }
@@ -42,12 +43,21 @@ export type PlacedDiag = { lo: int, hi: int, diag: Diag }
 /// What every fact rule the program layer runs finds under these statements of `file`, each beside
 /// the node it fired at.
 export fn placed_fact_findings(file: RuleFile, stmts: List<StmtId>) -> List<PlacedDiag> {
+    placed_fact_findings_of(file, stmts, rule_index())
+}
+
+/// What the fact rules of `index` find under these statements of `file`, each beside the node it
+/// fired at.
+export fn placed_fact_findings_of(file: RuleFile, stmts: List<StmtId>, index: RootIndex<RuleEntry>) -> List<
+    PlacedDiag,
+> {
     let syntax = SyntaxFile { view: file.view }
-    let found = candidates_by(
+    let found = candidates_over(
         syntax,
         stmts,
         (r: RuleEntry, at: At) -> fact_fix(r, held_code(file, at)),
         reads_facts,
+        index,
     )
     flatten([fact_placed(file, syntax, c) for c in found])
 }
@@ -150,11 +160,77 @@ fn candidates_by(
     run: fn(RuleEntry, At) -> Fix?,
     which: fn(RuleEntry) -> bool,
 ) -> List<Candidate> {
-    let index = rule_index()
+    candidates_over(file, stmts, run, which, rule_index())
+}
+
+/// Every hit of `index`'s rules under these statements. A RULE'S TRAP IS THAT RULE'S OWN FINDING,
+/// never the check's end: the walk runs under one catch point, and a walk that trapped is walked
+/// again rule by rule, each under its own, so the rule that trapped is named at the node it trapped
+/// on and every other rule's findings still stand. A rule that traps once is not run again in this
+/// walk.
+export fn candidates_over(
+    file: SyntaxFile,
+    stmts: List<StmtId>,
+    run: fn(RuleEntry, At) -> Fix?,
+    which: fn(RuleEntry) -> bool,
+    index: RootIndex<RuleEntry>,
+) -> List<Candidate> {
     stale_rules_spoken(file.view.store)
-    flatten(
-        [node_candidates(file, index, at, run, which) for s in stmts for at in file.view.store.places_under(At.Stmt(s), .Post, (at) -> quote_pattern(file.view.store, at))],
+    let places = flatten(
+        [file.view.store.places_under(At.Stmt(s), .Post, (at) -> quote_pattern(file.view.store, at)) for s in stmts],
     )
+    match contained(() -> flatten([node_candidates(file, index, at, run, which) for at in places])) {
+        .Ok(found) -> found,
+        .Err(_words) -> places
+            .fold(
+                Contained { found: [], failed: [] },
+                (acc, at) -> node_contained(file, index, at, run, which, acc),
+            )
+            .found,
+    }
+}
+
+/// A walk run rule by rule: what it found, and the rules that trapped.
+type Contained = { found: List<Candidate>, failed: List<string> }
+
+fn node_contained(
+    file: SyntaxFile,
+    index: RootIndex<RuleEntry>,
+    at: At,
+    run: fn(RuleEntry, At) -> Fix?,
+    which: fn(RuleEntry) -> bool,
+    so_far: Contained,
+) -> Contained {
+    let store = file.view.store
+    [r for r in index.at_node(store.shallow_at(at), store.kind_at(at)) if which(r)]
+        .fold(so_far, (acc, r) -> rule_contained(file, at, r, run, acc))
+}
+
+fn rule_contained(
+    file: SyntaxFile,
+    at: At,
+    r: RuleEntry,
+    run: fn(RuleEntry, At) -> Fix?,
+    acc: Contained,
+) -> Contained {
+    if acc.failed.contains(rule_id(r)) { return acc }
+    match contained(() -> one_candidate(file, at, r, run)) {
+        .Ok(found) -> acc with { found: acc.found.concat(found) },
+        .Err(words) -> Contained {
+            found: acc
+                .found
+                .concat(
+                    [
+                        Candidate {
+                            at: at,
+                            owner: r,
+                            fix: Fix.Say(rule_trapped(syntax_at(file, at).loc(), r, words)),
+                        },
+                    ],
+                ),
+            failed: acc.failed.concat([rule_id(r)]),
+        },
+    }
 }
 
 /// Whether `at` is a `Pat.Quote` — the PATTERN position, where a
@@ -328,3 +404,14 @@ fn applied_by(r: RuleEntry) -> string {
 
 /// The node at `at` of `file`, as a rule reads it.
 fn syntax_at(file: SyntaxFile, at: At) -> Syntax { Syntax { of: file, at: at } }
+
+/// A rule that trapped, said at the node it trapped on: the rule is the defect, never the code.
+fn rule_trapped(at: Loc?, r: RuleEntry, words: string) -> Diag {
+    refusal(
+        "",
+        at,
+        "the rule `${rule_id(r)}` trapped here: ${words}",
+        "the rule ran here",
+        "the rule is the defect, not this code — its guard or its body asked for what this node does not hold",
+    )
+}

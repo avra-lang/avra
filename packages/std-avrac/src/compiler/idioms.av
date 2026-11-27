@@ -1974,12 +1974,13 @@ fn segment_after(file: string, root: string) -> string? {
 fn layer_refusals(u: Code) -> List<string> {
     let target? = use_target(u) else { return [] }
     let file = u.of.view.source.file
-    let own = segment_after(file, "std-avrac/src/")
+    let pkg = u.package()
+    let own = if pkg == "@std.avrac" { segment_after(file, "/src/") } else { null }
     if own != null && !file.contains("/tests/") && layer_order.contains(own!) {
         let named = layer_named(target)
         return if named != null && layer_order.index_of(named!) > layer_order.index_of(own!) { ["`${own!}` names `${named!}` — `use ${target}`"] } else { [] }
     }
-    if segment_after(file, "std-relation/src/") == null { return [] }
+    if pkg != "@std.relation" { return [] }
     let tests = file.contains("/tests/")
     let engine = file.contains("/src/engine/") && !tests
     let compiler = target.starts_with("@std.avrac") && !(tests && target == "@std.avrac.core")
@@ -2032,9 +2033,10 @@ const by_id_writers: List<string> = [
 fn files_by_id(c: Code) -> bool {
     let name? = c.method_name() else { return false }
     let file = c.of.view.source.file
+    let pkg = c.package()
     by_id_verbs.contains(name) &&
-        !file.contains("std-relation/") &&
-        !by_id_writers.any((w) -> file.ends_with(w))
+        pkg != "@std.relation" &&
+        !(pkg == "@std.avrac" && by_id_writers.any((w) -> file.ends_with(w)))
 }
 
 fn by_id_found(c: Code) -> Fix {

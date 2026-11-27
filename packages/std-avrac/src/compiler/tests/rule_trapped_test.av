@@ -1,0 +1,45 @@
+// A rule that traps is that rule's own finding: its words said at the node it trapped on, as an
+// error, and every other rule's findings in the walk still stand.
+use @std.avrac.compiler.{RuleEntry, RuleRun, any_root, placed_fact_findings_of, rules_indexed}
+use @std.avrac.features.{Code, Fix, said}
+use @std.avrac.diagnostics.{Severity}
+use @std.avrac.testing.{judged}
+
+/// A rule whose body reads past the end of a list at every node.
+fn traps(c: Code) -> Fix? {
+    let none: List<int> = []
+    if none[c.text().length] == 0 { null } else { null }
+}
+
+/// A rule that fires on the literal `41`.
+fn fires(c: Code) -> Fix? {
+    if c.text() == "41" { Fix.Say(said(c.loc(), "forty-one stands here", "here", "write another number")) } else { null }
+}
+
+fn entry(name: string, run: fn(Code) -> Fix?) -> RuleEntry {
+    RuleEntry {
+        name: name,
+        module: "t",
+        run: RuleRun.Facts(run),
+        root: [any_root],
+        kinds: [],
+        doc: "",
+        fixes: [],
+        keeps: ["x"],
+        law: [],
+    }
+}
+
+fn messages(severity_error: bool) -> List<string> {
+    let index = rules_indexed([entry("traps", traps), entry("fires", fires)])
+    let items = judged("let a = 41\na + 1\n").rule_items("/alone/src/main.av")
+    [p.diag.message for i in items for p in placed_fact_findings_of(i.file, i.stmts, index) if (p.diag.severity is .Error) == severity_error]
+}
+
+spec "compiler/rule_pass (a rule that traps)" {
+    then "the trap is the trapping rule's own error, said once a walk" {
+        let errors = messages(true)
+        errors.length > 0 && errors.all(it.starts_with("the rule `t.traps` trapped here: "))
+    }
+    then "the other rule's finding still stands" { messages(false).any(it == "forty-one stands here") }
+}
