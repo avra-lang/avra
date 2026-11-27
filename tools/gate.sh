@@ -664,8 +664,8 @@ fmt_on() {
 # replays it. Each store bug it exists for is found by it with its fix taken back
 # (`make store-fuzz-regressions`, a compiler built a bug, too long for a slice).
 slice_store_fuzz() {
-    row store-fuzz-model python3 tools/store_fuzz.py --self-test
-    row store-fuzz python3 tools/store_fuzz.py --compiler build/avra --seeds 1-8 --steps 12
+    row store-fuzz-model build/avra test packages/wisp/src/store_fuzz/tests/model_test.av
+    row store-fuzz ./wisp store_fuzz --compiler build/avra --seeds 1-8 --steps 12
 }
 
 slice_sound() {

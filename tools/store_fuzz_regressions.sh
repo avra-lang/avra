@@ -23,12 +23,12 @@ cd "$root"
 # unrecorded read's is the board's, a dev loop's half-typed declaration, as its own witness has it)
 seeds_of() {
     case $1 in
-        1) echo "7-8 3 board" ;;
-        2) echo "1-16 12 packages" ;;
-        3) echo "1-8 15 packages" ;;
-        4) echo "1-4 10 packages" ;;
-        5) echo "1-6 10 packages" ;;
-        6) echo "7-12 15 packages" ;;
+        1) echo "1-12 4 board" ;;
+        2) echo "1-24 12 packages" ;;
+        3) echo "1-16 15 packages" ;;
+        4) echo "1-16 10 packages" ;;
+        5) echo "1-16 10 packages" ;;
+        6) echo "1-24 15 packages" ;;
     esac
 }
 only=${*:-1 2 3 4 5 6}
@@ -50,7 +50,7 @@ for n in $only; do
         git worktree remove --force "$work"; exit 2
     fi
     set -- $(seeds_of "$n")
-    python3 tools/store_fuzz.py --compiler "$work/build/avra" --fixture "$3" --seeds "$1" --steps "$2" >"$work/fuzz.log" 2>&1
+    ./wisp --compiler "$root/build/avra" store_fuzz --compiler "$work/build/avra" --fixture "$3" --seeds "$1" --steps "$2" --no-shrink >"$work/fuzz.log" 2>&1
     said=$?
     if [ "$said" = 2 ]; then
         echo "store_fuzz_regressions: $patch — the harness failed, which finds nothing:" >&2
@@ -61,7 +61,7 @@ for n in $only; do
         missed="$missed $n"
     else
         echo "store_fuzz_regressions: $patch — found:"
-        grep "FAILS\|replay with" "$work/fuzz.log" | head -4 | sed 's/^/    /'
+        grep "FAILS\|replay with" "$work/fuzz.log" | sed 's/^/    /'
     fi
     git worktree remove --force "$work"
 done

@@ -34,6 +34,15 @@ int64_t avra_io_kind(const char* path) {
     return 3;
 }
 
+/* What stands at `path` itself, never what a link there names: 3 for a link. */
+int64_t avra_io_link_kind(const char* path) {
+    struct stat st;
+    if (lstat(path, &st) != 0) return errno == ENOENT ? 0 : -errno;
+    if (S_ISREG(st.st_mode)) return 1;
+    if (S_ISDIR(st.st_mode)) return 2;
+    return 3;
+}
+
 /* A file's or a directory's STAMP: its kind, its size, its two times and
    its inode folded to one positive number — what says "these are the
    bytes, or the names, you read before" without reading them. A write to
@@ -185,6 +194,13 @@ int64_t avra_io_mkdir(const char* path) {
 /* A file, or an empty directory, gone. */
 int64_t avra_io_remove(const char* path) {
     return remove(path) == 0 ? 0 : -errno;
+}
+
+/* The file or directory at `from` under the name `to`, in one rename: a
+   name standing at `to` is replaced where rename(2) replaces it; a `to` on
+   another volume (EXDEV) refuses. */
+int64_t avra_io_rename(const char* from, const char* to) {
+    return rename(from, to) == 0 ? 0 : -errno;
 }
 
 /* The file at `from` known by a second name, `to`: one file, two names,

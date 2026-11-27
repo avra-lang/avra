@@ -1,0 +1,689 @@
+//! THE MODEL THE STORE FUZZER EDITS: a program of int fns over two packages, `app` (its main
+//! prints what its root fns answer) and `lib`, which app depends on, a third of the fns methods of
+//! a type. A fn's body is data — parts summed, each an atom times a factor — so an edit is a map
+//! over it, never a rewrite of text: a body, a rename (every caller and import with it), a fn added,
+//! one deleted (its calls with it), a signature (a seat added, defaulted or filled by every caller),
+//! a method's defaulted seat (given, then renamed), a broken edit, a revert, a file moved between
+//! the packages, a save beside the sources. The source a model is, is its projection.
+//!
+//! AN EDIT IS AN ABSTRACT OP — its kind and a seed of its own — resolved against the model as it
+//! stands, so a sequence shrunk by dropping ops still replays: an op whose target is gone is a
+//! no-op. A BROKEN EDIT IS A DETOUR: a half-typed declaration, then the tree exactly as it stood
+//! before it, so what the broken build kept is asked again under the good tree's keys.
+
+use @std.program.sorted.{sorted_by}
+use @std.text.{parse_int, text_before}
+
+/// A seeded draw, the same for every run of one seed: Park–Miller, inside a 64-bit int.
+export type Draw = { state: Cell<int> }
+
+/// The draw a seed starts.
+export fn draw_of(seed: int) -> Draw { Draw { state: Cell.new(seed % (MODULUS - 1) + 1) } }
+
+/// The draw's modulus, a prime.
+const MODULUS: int = 2147483647
+
+impl Draw {
+    /// The next number, in `[1, MODULUS)`.
+    fn next() -> int {
+        let n = self.state.get() * 48271 % MODULUS
+        self.state.set(n)
+        n
+    }
+
+    /// A number in `[0, n)`.
+    fn below(n: int) -> int { self.next() % n }
+
+    /// A number in `[lo, hi]`.
+    fn between(lo: int, hi: int) -> int { lo + self.below(hi - lo + 1) }
+
+    /// Whether a draw falls in `percent` of a hundred.
+    fn chance(percent: int) -> bool { self.below(100) < percent }
+}
+
+/// One thing a sum adds.
+export enum Atom {
+    Lit(n: int)
+    Seat(name: string)
+    Call(callee: string, args: List<int>)
+}
+
+/// An atom times a factor; a factor of one is the atom alone.
+export type Part = { atom: Atom, times: int }
+
+/// A fn's seat: its name and its default, absent for one every call fills.
+export type FnSeat = { name: string, default: int? }
+
+/// A fn of the model: its name, its seats, its body summed, and the type it's a method of — ""
+/// for a free fn.
+export type ModelFn = { name: string, seats: List<FnSeat>, body: List<Part>, owner: string }
+
+/// A file of the model: its package and module, and its fns in order.
+export type ModelFile = { package: string, module: string, fns: List<ModelFn> }
+
+/// The model: its files, main's roots by name, the serial names are minted from, the file a
+/// half-typed declaration stands at the end of ("" for none), and each file's method type.
+export type Model = { files: List<ModelFile>, roots: List<string>, serial: int, broken: string, owners: List<FileOwner> }
+
+/// The type the methods of the file keyed `key` are of.
+export type FileOwner = { key: string, owner: string }
+
+/// Where a fn stands in a model: its file's place and its own.
+export type FnAt = { file: int, place: int }
+
+/// A file's key: `package/module`.
+export fn file_key(f: ModelFile) -> string { "${f.package}/${f.module}" }
+
+/// A part that is one atom.
+fn alone(atom: Atom) -> Part { Part { atom: atom, times: 1 } }
+
+/// The kinds of edit, in the order a draw weighs them.
+export enum Edit {
+    Body
+    Rename
+    Add
+    Delete
+    Signature
+    Seat
+    Broken
+    Revert
+    Move
+    Beside
+}
+
+/// An edit's word, as a said sequence spells it.
+export fn edit_word(e: Edit) -> string {
+    match e {
+        .Body -> "body",
+        .Rename -> "rename",
+        .Add -> "add",
+        .Delete -> "delete",
+        .Signature -> "signature",
+        .Seat -> "seat",
+        .Broken -> "broken",
+        .Revert -> "revert",
+        .Move -> "move",
+        .Beside -> "beside",
+    }
+}
+
+/// Every kind of edit.
+export fn every_edit() -> List<Edit> {
+    [
+        Edit.Body,
+        Edit.Rename,
+        Edit.Add,
+        Edit.Delete,
+        Edit.Signature,
+        Edit.Seat,
+        Edit.Broken,
+        Edit.Revert,
+        Edit.Move,
+        Edit.Beside,
+    ]
+}
+
+/// The edit a word names; absent for one no edit spells.
+export fn edit_named(word: string) -> Edit? { every_edit().find(edit_word(it) == word) }
+
+/// An edit's place among the kinds, what its own draw is mixed with.
+fn edit_index(e: Edit) -> int { every_edit().index_of(e) }
+
+/// One op of a sequence: its kind and its own seed.
+export type Op = { edit: Edit, seed: int }
+
+/// The model a seed starts from: two fns in each of four files, each a third likely a method, most
+/// calling one made before them that its package may read; main's last three made its roots.
+export fn initial(seed: int) -> Model {
+    let d = draw_of(seed)
+    let order = [["lib", "util"], ["lib", "shapes"], ["app", "more"], ["app", "main"]]
+    mut m = Model {
+        files: [ModelFile { package: k[0], module: k[1], fns: [] } for k in [["lib", "shapes"], ["lib", "util"], ["app", "main"], ["app", "more"], ["lib", "lib"]]],
+        roots: [],
+        serial: 0,
+        broken: "",
+        owners: [],
+    }
+    mut made: List<FnAt> = []
+    for key in order {
+        let at = m.files.index_of(m.files.find(it.package == key[0] && it.module == key[1])!)
+        for _i in 0..2 {
+            let name = minted(m, "f")
+            m = m with { serial: m.serial + 1 }
+            mut body = [alone(Atom.Seat("x")), alone(Atom.Lit(d.between(1, 9)))]
+            let choices = made.filter((c) -> may_call(m.files[at], m.files[c.file]))
+            if !choices.is_empty() && d.chance(70) {
+                let g = choices[d.below(choices.length)]
+                body = [call_of(fn_at(m, g), d), alone(Atom.Seat("x"))]
+            }
+            let owner = if d.chance(35) { owner_of(m, at) } else { "" }
+            m = with_owner(m, at)
+            m = with_fn_added(m, at, plain_fn(name, body, owner))
+            made.push(FnAt { file: at, place: m.files[at].fns.length - 1 })
+        }
+    }
+    m with { roots: [fn_at(m, f).name for f in made.drop(made.length - 3)] }
+}
+
+/// The name the model's serial mints next, under `stem`.
+fn minted(m: Model, stem: string) -> string { "${stem}_${m.serial + 1}" }
+
+/// A fn of one seat `x`, its body and its type, "" for a free fn.
+fn plain_fn(name: string, body: List<Part>, owner: string) -> ModelFn { ModelFn { name: name, seats: [FnSeat { name: "x", default: null }], body: body, owner: owner } }
+
+/// The type the methods of the file at `at` are of, once it's asked.
+fn owner_of(m: Model, at: int) -> string { m.owners.find(it.key == file_key(m.files[at]))?.owner ?? "T_${m.serial + 1}" }
+
+/// The model with the file at `at`'s method type minted, where it isn't yet.
+fn with_owner(m: Model, at: int) -> Model {
+    let key = file_key(m.files[at])
+    if m.owners.any(it.key == key) { return m }
+    m with { owners: m.owners.concat([FileOwner { key: key, owner: "T_${m.serial + 1}" }]), serial: m.serial + 1 }
+}
+
+/// The fn at `at`.
+export fn fn_at(m: Model, at: FnAt) -> ModelFn { m.files[at.file].fns[at.place] }
+
+/// Every fn of the model, where it stands.
+export fn all_fns(m: Model) -> List<FnAt> { [FnAt { file: i, place: j } for i, f in m.files for j, _g in f.fns] }
+
+/// Where the fn named `name` stands; absent where no file holds it.
+export fn where_of(m: Model, name: string) -> FnAt? { all_fns(m).find(fn_at(m, it).name == name) }
+
+/// The names `f`'s body calls, once each.
+export fn callees(f: ModelFn) -> List<string> {
+    let called = [c! for p in f.body for c in [called_name(p.atom)] if c != null]
+    [c for i, c in called if called.index_of(c) == i]
+}
+
+/// The fn an atom calls; absent for one that calls none.
+fn called_name(a: Atom) -> string? {
+    match a { .Call(c, _) -> c, .Lit(_) or .Seat(_) -> null }
+}
+
+/// `xs` with the element at `at` replaced by `x`.
+fn replaced<T>(xs: List<T>, at: int, x: T) -> List<T> { [if i == at { x } else { y } for i, y in xs] }
+
+/// Whether `a` calls `b`, itself or through what it calls.
+export fn reaches(m: Model, a: string, b: string) -> bool {
+    let seen: Cell<Map<string, bool>> = Cell.new({})
+    mut todo = [a]
+    while !todo.is_empty() {
+        let n = todo.pop()
+        if n == b { return true }
+        if seen.get().has(n) { continue }
+        seen.put(n, true)
+        let at? = where_of(m, n) else { continue }
+        todo = todo.concat(callees(fn_at(m, at)))
+    }
+    false
+}
+
+/// Whether a fn of `caller` may call one of `callee`: lib never reads app.
+export fn may_call(caller: ModelFile, callee: ModelFile) -> bool { !(caller.package == "lib" && callee.package == "app") }
+
+/// A call of `f`: each seat filled, a defaulted one half the time.
+fn call_of(f: ModelFn, d: Draw) -> Part {
+    alone(
+        Atom.Call(f.name, [d.between(1, 9) for s in f.seats if s.default == null || d.chance(50)]),
+    )
+}
+
+/// The model with `f` appended to the file at `at`.
+fn with_fn_added(m: Model, at: int, f: ModelFn) -> Model { m with { files: replaced(m.files, at, m.files[at] with { fns: m.files[at].fns.concat([f]) }) } }
+
+/// The model with the fn at `at` replaced by `f`.
+fn with_fn(m: Model, at: FnAt, f: ModelFn) -> Model {
+    m with { files: replaced(
+        m.files,
+        at.file,
+        m.files[at.file] with { fns: replaced(m.files[at.file].fns, at.place, f) },
+    ) }
+}
+
+/// The model with every body mapped by `f`.
+fn bodies_mapped(m: Model, f: fn(Part) -> Part) -> Model { m with { files: [file with { fns: [g with { body: [f(p) for p in g.body] } for g in file.fns] } for file in m.files] } }
+
+/// What an op makes of a model, and whether it moved any source.
+export type Applied = { model: Model, moved: bool }
+
+/// The model `op` makes of `m`; an op that can't apply is a no-op. A broken edit is taken back by
+/// the step after it.
+export fn applied(m0: Model, op: Op) -> Applied {
+    let d = draw_of(op.seed * 7919 + edit_index(op.edit))
+    let m = m0 with { broken: "" }
+    let fns = all_fns(m)
+    match op.edit {
+        .Body -> if fns.is_empty() { unmoved(m) } else { body_edited(m, fns, d) },
+        .Rename -> if fns.is_empty() { unmoved(m) } else { renamed_fn(m, fns[d.below(fns.length)]) },
+        .Add -> fn_added(m, d),
+        .Delete -> if fns.length > 3 { fn_deleted(m, fns[d.below(fns.length)], d) } else { unmoved(m) },
+        .Signature -> if fns.is_empty() { unmoved(m) } else { signature_grown(m, fns[d.below(fns.length)], d) },
+        .Seat -> seat_edited(m, d),
+        .Broken -> Applied {
+            model: m with { broken: file_key(sorted_files(m)[d.below(m.files.length)]) },
+            moved: true,
+        },
+        .Move -> file_moved(m, d),
+        .Revert or .Beside -> unmoved(m),
+    }
+}
+
+/// `m`, unchanged.
+fn unmoved(m: Model) -> Applied { Applied { model: m, moved: false } }
+
+/// `m`'s files by key.
+fn sorted_files(m: Model) -> List<ModelFile> { sorted_by(m.files, (a, b) -> text_before(file_key(a), file_key(b))) }
+
+/// A fn's body made anew: a call of one it may reach without coming round, half the time, else a
+/// sum over its first seat.
+fn body_edited(m: Model, fns: List<FnAt>, d: Draw) -> Applied {
+    let at = fns[d.below(fns.length)]
+    let f = fn_at(m, at)
+    let x = f.seats[0].name
+    let targets = fns
+        .filter(
+            (g) -> fn_at(m, g).name != f.name &&
+                may_call(m.files[at.file], m.files[g.file]) &&
+                !reaches(m, fn_at(m, g).name, f.name),
+        )
+    let body = if !targets.is_empty() && d.chance(50) { [call_of(fn_at(m, targets[d.below(targets.length)]), d), alone(Atom.Seat(x))] } else { [Part { atom: Atom.Seat(x), times: d.between(2, 9) }, alone(Atom.Lit(d.between(0, 9)))] }
+    Applied { model: with_fn(m, at, f with { body: body }), moved: true }
+}
+
+/// The fn at `at` renamed, every call and root of it with it.
+fn renamed_fn(m: Model, at: FnAt) -> Applied {
+    let old = fn_at(m, at).name
+    let new = minted(m, "f")
+    let named = m with { serial: m.serial + 1 }
+    let called = bodies_mapped(named, (p) -> p with { atom: call_renamed(p.atom, old, new) })
+    let moved = with_fn(called, at, fn_at(called, at) with { name: new })
+    Applied {
+        model: moved with { roots: [if r == old { new } else { r } for r in moved.roots] },
+        moved: true,
+    }
+}
+
+/// `a`, a call of `old` renamed `new`.
+fn call_renamed(a: Atom, old: string, new: string) -> Atom {
+    match a {
+        .Call(c, args) -> if c == old { Atom.Call(new, args) } else { a },
+        .Lit(_) or .Seat(_) -> a,
+    }
+}
+
+/// A fn added to a file, half the time one of main's roots where its file is app's.
+fn fn_added(m: Model, d: Draw) -> Applied {
+    let keys = sorted_files(m)
+    let file = keys[d.below(keys.length)]
+    let at = m.files.index_of(file)
+    let name = minted(m, "f")
+    let named = m with { serial: m.serial + 1 }
+    let lit = d.between(1, 9)
+    let method = d.chance(35)
+    let owner = if method { owner_of(named, at) } else { "" }
+    let made = with_fn_added(
+        if method { with_owner(named, at) } else { named },
+        at,
+        plain_fn(name, [alone(Atom.Seat("x")), alone(Atom.Lit(lit))], owner),
+    )
+    let rooted = d.chance(50) && file.package == "app"
+    Applied {
+        model: if rooted { made with { roots: made.roots.concat([name]) } } else { made },
+        moved: true,
+    }
+}
+
+/// The fn at `at` deleted, each call of it a number now.
+fn fn_deleted(m: Model, at: FnAt, d: Draw) -> Applied {
+    let gone = fn_at(m, at).name
+    let lit = d.between(1, 9)
+    let called = bodies_mapped(m, (p) -> call_dropped(p, gone, lit))
+    let left = called with { files: replaced(
+        called.files,
+        at.file,
+        called.files[at.file] with { fns: [f for j, f in called.files[at.file].fns if j != at.place] },
+    ) }
+    let roots = [r for r in left.roots if r != gone]
+    Applied {
+        model: left with { roots: if roots.is_empty() { [fn_at(left, all_fns(left)[0]).name] } else { roots } },
+        moved: true,
+    }
+}
+
+/// `p`, a call of `gone` the number `lit`.
+fn call_dropped(p: Part, gone: string, lit: int) -> Part {
+    match p.atom {
+        .Call(c, _) -> if c == gone { p with { atom: Atom.Lit(lit) } } else { p },
+        .Lit(_) or .Seat(_) -> p,
+    }
+}
+
+/// A seat added to the fn at `at`, read by its body: defaulted half the time, else filled by every
+/// call of it.
+fn signature_grown(m: Model, at: FnAt, d: Draw) -> Applied {
+    let f = fn_at(m, at)
+    let seat = "s${f.seats.length}"
+    let defaulted = d.chance(50)
+    let grown = with_fn(
+        m,
+        at,
+        f with { seats: f.seats.concat([FnSeat { name: seat, default: if defaulted { 0 } else { null } }]), body: f.body.concat([alone(Atom.Seat(seat))]) },
+    )
+    if defaulted { return Applied { model: grown, moved: true } }
+    let filled = d.between(1, 9)
+    Applied { model: bodies_mapped(grown, (p) -> call_filled(p, f.name, filled)), moved: true }
+}
+
+/// `p`, a call of `name` given one more argument.
+fn call_filled(p: Part, name: string, arg: int) -> Part {
+    match p.atom {
+        .Call(c, args) -> if c == name { p with { atom: Atom.Call(c, args.concat([arg])) } } else { p },
+        .Lit(_) or .Seat(_) -> p,
+    }
+}
+
+/// A METHOD'S DEFAULTED SEAT, the shape a lowered seat default is asked again in: renamed where a
+/// method has one, the body reading it with it, else given to a method, so draws of this kind walk
+/// a seat added, then renamed and renamed again.
+fn seat_edited(m: Model, d: Draw) -> Applied {
+    let methods = all_fns(m).filter((at) -> fn_at(m, at).owner != "")
+    let defaulted = methods.filter((at) -> fn_at(m, at).seats.drop(1).any(it.default != null))
+    if !defaulted.is_empty() {
+        let at = defaulted[d.below(defaulted.length)]
+        let f = fn_at(m, at)
+        let places = [i for i, s in f.seats if i > 0 && s.default != null]
+        let i = places[d.below(places.length)]
+        let old = f.seats[i].name
+        let new = minted(m, "s")
+        let seats = replaced(f.seats, i, f.seats[i] with { name: new })
+        let body = [p with { atom: seat_renamed(p.atom, old, new) } for p in f.body]
+        return Applied {
+            model: with_fn(m with { serial: m.serial + 1 }, at, f with { seats: seats, body: body }),
+            moved: true,
+        }
+    }
+    if methods.is_empty() { return unmoved(m) }
+    let at = methods[d.below(methods.length)]
+    let f = fn_at(m, at)
+    let seat = minted(m, "s")
+    let seated = f with { seats: f.seats.concat([FnSeat { name: seat, default: d.between(0, 9) }]), body: f.body.concat([alone(Atom.Seat(seat))]) }
+    Applied { model: with_fn(m with { serial: m.serial + 1 }, at, seated), moved: true }
+}
+
+/// `a`, a read of the seat `old` one of `new`.
+fn seat_renamed(a: Atom, old: string, new: string) -> Atom {
+    match a { .Seat(s) -> if s == old { Atom.Seat(new) } else { a }, .Lit(_) or .Call(_, _) -> a }
+}
+
+/// A file moved between the packages: to lib where every call it makes lands in lib or in itself,
+/// back to app where no other lib file calls it.
+fn file_moved(m: Model, d: Draw) -> Applied {
+    let files = sorted_files(m)
+    let to_lib = files
+        .filter(
+            (f) -> f.package == "app" &&
+                f.module != "main" &&
+                calls_of(m, f).all(it.package == "lib") &&
+                !m.files.any(it.package == "lib" && it.module == f.module),
+        )
+    let to_app = files
+        .filter(
+            (f) -> f.package == "lib" &&
+                f.module != "lib" &&
+                !m.files.any(it.package == "app" && it.module == f.module) &&
+                !m
+                    .files
+                    .any(
+                        (o) -> o.package == "lib" &&
+                            o.module != f.module &&
+                            calls_of(m, o).any((k) -> file_key(k) == file_key(f)),
+                    ),
+        )
+    let choices = to_lib.concat(to_app)
+    if choices.is_empty() { return unmoved(m) }
+    let src = choices[d.below(choices.length)]
+    let at = m.files.index_of(src)
+    Applied {
+        model: m with { files: replaced(
+            m.files,
+            at,
+            src with { package: if src.package == "app" { "lib" } else { "app" } },
+        ) },
+        moved: true,
+    }
+}
+
+/// The files the fns of `f` call into, `f` itself aside.
+fn calls_of(m: Model, f: ModelFile) -> List<ModelFile> {
+    mut out: List<ModelFile> = []
+    for g in f.fns {
+        for c in callees(g) {
+            let at? = where_of(m, c) else { continue }
+            let k = m.files[at.file]
+            if file_key(k) != file_key(f) && !out.any((o) -> file_key(o) == file_key(k)) { out.push(k) }
+        }
+    }
+    out
+}
+
+/// One step a sequence makes: its model, whether a source moved, its edit's word, and which op it
+/// is.
+export type Step = { model: Model, moved: bool, word: string, index: int }
+
+/// The models a sequence makes, one per step; a revert resolves against the models before it, and a
+/// broken edit is a detour: the half-typed declaration, then the tree exactly as it stood before.
+export fn replayed(start: Model, ops: List<Op>, apply: fn(Model, Op) -> Applied) -> List<Step> {
+    mut m = start
+    mut out: List<Step> = []
+    mut history = [m]
+    for index, op in ops {
+        match op.edit {
+            .Revert -> {
+                if history.length > 1 {
+                    let back = draw_of(op.seed).between(1, min_of(4, history.length - 1))
+                    m = history[history.length - 1 - back] with { broken: "" }
+                    history.push(m)
+                    out.push(Step { model: m, moved: true, word: "revert", index: index })
+                } else {
+                    history.push(m)
+                    out.push(Step { model: m, moved: false, word: "revert", index: index })
+                }
+            },
+            .Broken -> {
+                let before = m
+                let a = apply(m, op)
+                history.push(a.model)
+                out.push(Step { model: a.model, moved: a.moved, word: "broken", index: index })
+                m = before
+                history.push(m)
+                out.push(Step { model: m, moved: true, word: "fixed", index: index })
+            },
+            rest -> {
+                let a = apply(m, op)
+                m = a.model
+                history.push(m)
+                out.push(Step { model: m, moved: a.moved, word: edit_word(op.edit), index: index })
+            },
+        }
+    }
+    out
+}
+
+fn min_of(a: int, b: int) -> int { if a < b { a } else { b } }
+
+/// A draw of `steps` ops for `seed`, each kind as often as its weight says.
+export fn drawn(seed: int, steps: int, kinds: List<Edit>, weights: List<int>) -> List<Op> {
+    let d = draw_of(seed)
+    let bag = [e for i, e in kinds for _j in 0..weights[i]]
+    [Op { edit: bag[d.below(bag.length)], seed: d.between(1, 1000000) } for _i in 0..steps]
+}
+
+/// A sequence as one line that replays it.
+export fn said(seed: int, ops: List<Op>) -> string { "seed=${seed} ops=${[edit_word(o.edit) + ":" + "${o.seed}" for o in ops].join(",")}" }
+
+/// The seed and sequence a said line names; absent for a line that names none.
+export fn parsed(line: string) -> SaidRun? {
+    let words = line.split(" ")
+    let seed_word? = words.find(it.starts_with("seed=")) else { return null }
+    let seed? = parse_int(seed_word.substring(5, seed_word.length)) else { return null }
+    let ops_word = words.find(it.starts_with("ops=")) ?? "ops="
+    let parts = ops_word.substring(4, ops_word.length).split(",").filter(!it.is_empty())
+    let ops = [o! for p in parts for o in [op_of(p)] if o != null]
+    if ops.length != parts.length { return null }
+    SaidRun { seed: seed, ops: ops }
+}
+
+/// A said run: its seed and its ops.
+export type SaidRun = { seed: int, ops: List<Op> }
+
+/// The op `kind:seed` spells; absent for one it doesn't.
+fn op_of(word: string) -> Op? {
+    let halves = word.split(":")
+    if halves.length != 2 { return null }
+    let edit? = edit_named(halves[0]) else { return null }
+    let seed? = parse_int(halves[1]) else { return null }
+    Op { edit: edit, seed: seed }
+}
+
+// ── the program a model is ──────────────────────────────────────
+
+/// The source of the file at `at`: its imports, its free fns, each method type and its impl, main's
+/// roots printed where it is main, and a half-typed declaration at its end where it is broken.
+export fn source_of(m: Model, at: int) -> string {
+    let file = m.files[at]
+    let key = file_key(file)
+    let main = key == "app/main"
+    let wanted = [c for f in file.fns for c in callees(f)].concat(if main { m.roots } else { [] })
+    let taken = [imported(m, g!) for c in wanted for g in [where_of(m, c)] if g != null && g!.file != at]
+    let keys = once_each(sorted_by([file_key(m.files[t.file]) for t in taken], text_before))
+    let uses = [use_line(
+        file,
+        k,
+        once_each(sorted_by([t.name for t in taken if file_key(m.files[t.file]) == k], text_before)),
+    ) for k in keys]
+    let free = [declared(m, f, "", "export fn") + "\n" for f in file.fns if f.owner == ""]
+    let owners = once_each(sorted_by([f.owner for f in file.fns if f.owner != ""], text_before))
+    let impls = [impl_of(m, file, o) for o in owners]
+    let heads = if uses.is_empty() { [] } else { uses.concat([""]) }
+    let tail = if main { printed_roots(m) } else { [] }
+    let broken = if m.broken == key { ["fn broken( {"] } else { [] }
+    heads.concat(free).concat(impls).concat(tail).concat(broken).join("\n") + "\n"
+}
+
+/// What a file takes to call the fn at `at`: the fn itself, or the type it's a method of.
+type Taken = { file: int, name: string }
+
+fn imported(m: Model, at: FnAt) -> Taken {
+    let f = fn_at(m, at)
+    Taken { file: at.file, name: if f.owner == "" { f.name } else { f.owner } }
+}
+
+/// `xs` with each repeat after the first dropped.
+fn once_each(xs: List<string>) -> List<string> { [x for i, x in xs if xs.index_of(x) == i] }
+
+/// The line importing `names` from the file keyed `key` into `file`: across the package seam by
+/// the dependency's name.
+fn use_line(file: ModelFile, key: string, names: List<string>) -> string {
+    let halves = key.split("/")
+    let path = if halves[0] == "lib" && file.package == "app" { "@f.lib.${halves[1]}" } else { halves[1] }
+    "use ${path}.{${names.join(", ")}}"
+}
+
+/// A fn declared, `word` its keyword run.
+fn declared(m: Model, f: ModelFn, indent: string, word: string) -> string {
+    let seats = [s.name + ": int" + if s.default != null { " = ${s.default!}" } else { "" } for s in f.seats]
+        .join(", ")
+    "${indent}${word} ${f.name}(${seats}) -> int { ${body_text(m, f.body)} }"
+}
+
+/// A method type and its impl, each followed by a blank line.
+fn impl_of(m: Model, file: ModelFile, owner: string) -> string {
+    let methods = [declared(m, f, "    ", "fn") for f in file.fns if f.owner == owner]
+    "export type ${owner} = {}\n\nimpl ${owner} {\n${methods.join("\n")}\n}\n"
+}
+
+/// A body: its parts summed.
+fn body_text(m: Model, body: List<Part>) -> string { [part_text(m, p) for p in body].join(" + ") }
+
+fn part_text(m: Model, p: Part) -> string {
+    let atom = atom_text(m, p.atom)
+    if p.times == 1 { atom } else { "${atom} * ${p.times}" }
+}
+
+fn atom_text(m: Model, a: Atom) -> string {
+    match a { .Lit(n) -> "${n}", .Seat(s) -> s, .Call(c, args) -> called_text(m, c, args) }
+}
+
+/// A call of `c`, through a value of its type where it's a method.
+fn called_text(m: Model, c: string, args: List<int>) -> string {
+    let call = "${c}(${["${a}" for a in args].join(", ")})"
+    let at? = where_of(m, c) else { return call }
+    let owner = fn_at(m, at).owner
+    if owner == "" { call } else { "${owner} {}.${call}" }
+}
+
+/// Main's roots each bound and printed on one line, the roots no file holds left out.
+fn printed_roots(m: Model) -> List<string> {
+    let held = [r for r in m.roots if where_of(m, r) != null]
+    let lets = ["let root_${i} = ${part_text(m, call_of(fn_at(m, where_of(m, r)!), draw_of(r.length)))}" for i, r in held]
+    let holes = [HOLE + "{root_${i}}" for i, _r in held]
+    lets.concat(["println(\"${holes.join(" ")}\")"])
+}
+
+/// What opens an interpolation hole in the program written.
+const HOLE: string = "\$"
+
+// ── the board ───────────────────────────────────────────────────
+
+/// THE UI BOARD AS A MODEL, as a dev loop edits it: the fns appended to the board's file, each
+/// answering a number, and whether a declaration stands half typed at its end.
+export fn board_start(_seed: int) -> Model {
+    Model {
+        files: [ModelFile { package: "board", module: "board", fns: [] }],
+        roots: [],
+        serial: 0,
+        broken: "",
+        owners: [],
+    }
+}
+
+/// The board `op` makes of `m`: a fn appended, one taken away, or a declaration half typed.
+export fn board_applied(m0: Model, op: Op) -> Applied {
+    let d = draw_of(op.seed * 7919 + edit_index(op.edit))
+    let m = m0 with { broken: "" }
+    let fns = m.files[0].fns
+    match op.edit {
+        .Add -> Applied {
+            model: with_fn_added(
+                m with { serial: m.serial + 1 },
+                0,
+                ModelFn {
+                    name: minted(m, "added"),
+                    seats: [],
+                    body: [alone(Atom.Lit(d.between(1, 99)))],
+                    owner: "",
+                },
+            ),
+            moved: true,
+        },
+        .Delete -> if fns.is_empty() { unmoved(m) } else { board_less(m, d.below(fns.length)) },
+        .Broken -> Applied { model: m with { broken: "board/board" }, moved: true },
+        .Body or .Rename or .Signature or .Seat or .Move or .Revert or .Beside -> unmoved(m),
+    }
+}
+
+/// The board with its fn at `at` taken away.
+fn board_less(m: Model, at: int) -> Applied {
+    Applied {
+        model: m with { files: [m.files[0] with { fns: [f for j, f in m.files[0].fns if j != at] }] },
+        moved: true,
+    }
+}
+
+/// The board's file as the model says: its text as it came, then each fn appended, then a
+/// half-typed declaration where it's broken.
+export fn board_text(m: Model, original: string) -> string {
+    let added = ["\n${declared(m, f, "", "fn")}\n" for f in m.files[0].fns].join("")
+    original + added + if m.broken != "" { "\nfn half_typed( {\n" } else { "" }
+}
