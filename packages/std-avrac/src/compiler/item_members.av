@@ -7,6 +7,7 @@
 //! apart from the file's own nodes, so it has none here.
 use core.{
     NodeKind,
+    NAMED_FIELD,
     OwnType,
     Expr,
     declared_head,
@@ -71,6 +72,7 @@ use features.{
 use features.lists.{list_spreads_absent}
 use features.maps.{map_spreads_absent}
 use features.structs.{
+    shape_read_refused,
     carried_into,
     field_overwritten,
     carried_otherwise,
@@ -245,6 +247,8 @@ enum Miss {
     ChainedAbsent(name: string)
     /// A field the record lacks on purpose, for the reason `why`, beside the fields it declares.
     Lacked(record: string, name: string, why: string, fields: List<string>)
+    /// A `.of` read on the named type `found`, which stands over no shape it reads.
+    Shapeless(found: string)
 }
 
 impl Miss {
@@ -1354,9 +1358,18 @@ fn field_miss(engine: QueryEngine, subject: SignedType?, name: string, at: Span?
     MissPlaced,
 > {
     let s? = declared_value(subject) else { return [] }
-    let fields? = fields_of_record(engine, s) else { return [] }
+    let fields? = fields_of_record(engine, s) else { return shape_read_miss(engine, s, name, at) }
     if fields.contains(name) || property_type(engine, s, name) != null || home_unread(engine, s) { return [] }
     [MissPlaced { at: at, miss: field_missed(engine, s, name, fields) }]
+}
+
+/// A `.of` read on the named type `s` that stands over no shape it reads: one whose names loop back
+/// to itself, refused at its declaration.
+fn shape_read_miss(engine: QueryEngine, s: SignedType, name: string, at: Span?) -> List<MissPlaced> {
+    if name != NAMED_FIELD || named_next_over(engine, s) != null { return [] }
+    let home? = declared_at(s) else { return [] }
+    if !file_declares_named(engine, home.file, home.name).names.any(it.kind == ItemKind.Named) { return [] }
+    [MissPlaced { at: at, miss: Miss.Shapeless(s.spelled()) }]
 }
 
 /// What a read of `name` on the record `s`, declaring `fields`, misses: a field it lacks on purpose,
@@ -2362,6 +2375,20 @@ export law field_lacked {
 }
 
 fn lacked_words(a: List<string>) -> Voice { lacked_read(a[0], a[1], a[2], a.drop(3)) }
+
+fn shapeless_missed(view: ItemView) -> List<Found> {
+    misses_seen_in(view, (m: Miss) -> match m { .Shapeless(found) -> [found], rest -> [] })
+}
+
+/// `.of` reads the shape a named type stands over
+export law shape_read_unnamed {
+    kind: "type.named"
+    reads_view: shapeless_missed
+    voice: shapeless_words
+    witness: "type X = X\n\nfn g(x: X) -> int { x.of }\n"
+}
+
+fn shapeless_words(a: List<string>) -> Voice { shape_read_refused(a[0]) }
 
 /// a method call names a method the declared type has
 export law method_unknown {
