@@ -268,6 +268,8 @@ type OpenFrontier = {
 /// What this process has learned so far. An identity: every holder asks through the one engine.
 export type QueryEngine = {
     store: dyn AnswerStore,
+    /// Whether the store shares any package, asked once: its places stand while it does.
+    sharing: bool,
     definitions: Cell<Map<string, QueryDefinition>>,
     /// The answer to each question settled in this process.
     settled_answers: HashKeyedTable<SettledAnswer>,
@@ -375,6 +377,7 @@ export fn query_engine(
     let reads_checked: Cell<int> = Cell.new(0)
     let engine = QueryEngine {
         store: store,
+        sharing: store.shares_any(),
         definitions: Cell.new(by_name),
         settled_answers: settled_answers,
         adopted: Cell.new(false),
@@ -1001,7 +1004,7 @@ impl QueryEngine {
         if !kept { self.keep_or_hold(asked, answer, bytes, is_shared) }
         let record = run
             .reads
-            .record_of(answer, if self.store.shares_any() { self.sets.print_of(read) } else { SET_UNWORKED })
+            .record_of(answer, if self.sharing { self.sets.print_of(read) } else { SET_UNWORKED })
         if !self.store.records_of(asked.known_as).any(it.same_as(record)) { self.record_kept(asked, record, is_shared) }
         self.learned(asked, answer, reads)
     }
@@ -1023,7 +1026,7 @@ impl QueryEngine {
     /// The set of packages every question `reads`' words name read; none asked where the store shares
     /// no package, since then no set decides where anything is kept.
     fn set_of_reads(reads: List<int>) -> int {
-        if !self.store.shares_any() { return NO_NAMES }
+        if !self.sharing { return NO_NAMES }
         hashes_in(reads).fold(NO_NAMES, (set, q) -> self.sets.union(set, self.read_set_of(q)))
     }
 
@@ -1063,7 +1066,7 @@ impl QueryEngine {
     /// Keeps the sets this process named beside those the store kept, where it met one the store
     /// didn't hold and the store shares a package.
     fn name_sets_kept_now() {
-        if !self.store.shares_any() { return }
+        if !self.sharing { return }
         let kept = self.store.name_sets_kept()
         let before = name_sets()
         for names in kept { let _ = before.of(names) }
