@@ -12,7 +12,7 @@
 //! `remove(write_text(p, t)?)`. That answer is a `Result`, so reading
 //! it parenthesises the propagation: `(write_text(p, t)?).length`.
 use @std.errors.{Error, ErrorInfo, info}
-use @std.text.{nul_at, parse_int}
+use @std.text.{nul_at, parse_int, repeat}
 
 // THIS PACKAGE'S OWN C (src/c/std_io.c) — every one answers an int: a
 // status, a descriptor, a handle, a kind, or a negative errno. No text
@@ -466,7 +466,7 @@ export type Draft = { handle: int, fd: int, path: string, process: int }
 
 export fn drafted(near: string) -> Result<Draft, IoError> {
     let process = avra_io_pid()
-    let path = "${one_path(near)?}.${process}-${avra_io_serial()}${DRAFT_SUFFIX}"
+    let path = draft_name(one_path(near)?, process, avra_io_serial())
     let handle = done(path, avra_io_draft(path))?
     Draft { handle: handle, fd: done(path, avra_io_temp_fd(handle))?, path: path, process: process }
 }
@@ -512,6 +512,23 @@ fn drafting(name: string) -> bool {
 
 /// What a draft's name ends in.
 const DRAFT_SUFFIX: string = ".draft"
+
+/// THE NAME OF A DRAFT beside `near`, the one every scratch name is spelled by: the process that
+/// holds it and a serial of its own, each at a fixed width, so the name's length is the same for
+/// every process and `abandoned_drafts` still reads the process back out of it.
+export fn draft_name(near: string, process: int, serial: int) -> string { "${near}.${fixed_width(process, PROCESS_DIGITS)}-${fixed_width(serial, SERIAL_DIGITS)}${DRAFT_SUFFIX}" }
+
+/// The digits a process id is written in: as many as the widest id.
+const PROCESS_DIGITS: int = 10
+
+/// The digits a draft's serial is written in.
+const SERIAL_DIGITS: int = 10
+
+/// `n` in at least `width` digits, zeros first.
+fn fixed_width(n: int, width: int) -> string {
+    let digits = "${n}"
+    repeat("0", width - digits.length) + digits
+}
 
 /// The file cut back to exactly `len` bytes — what a caller trims a
 /// TORN TAIL to (bytes an earlier crash left past the last frame it
