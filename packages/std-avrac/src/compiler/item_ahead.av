@@ -26,8 +26,15 @@ use @std.program.worked_ahead.{
 use @std.io.{env}
 
 /// Where work ahead is kept and how it's done: the store's directory, the queries every process
-/// answers, how many processes, and whether each says where its time went.
-type AheadAt = { directory: string, definitions: List<QueryDefinition>, process_count: int, timed: bool }
+/// answers, how many processes, whether each says where its time went, and the program whose
+/// frontier its engines read.
+type AheadAt = {
+    directory: string,
+    definitions: List<QueryDefinition>,
+    process_count: int,
+    timed: bool,
+    program: string,
+}
 
 /// A body as the walk asks for it: a fn by its file and name, or a method by its impl.
 enum DeclaredBody {
@@ -39,7 +46,8 @@ enum DeclaredBody {
 /// `definitions` to make it with, worked ahead across `process_count` processes, or by none with
 /// fewer than two or where the last build's frontier saw at most `FEW_MOVED` inputs move; with
 /// `timed`, each process and each phase says where its time went. A file `vouched` names, read off the
-/// first engine, stands on the verdict that vouches for it: no law is asked of it.
+/// first engine, stands on the verdict that vouches for it: no law is asked of it. Every engine
+/// reads and keeps `program`'s frontier, and `work` says what the last wave works of each file.
 export fn program_worked(
     directory: string,
     package: string,
@@ -47,12 +55,15 @@ export fn program_worked(
     process_count: int,
     timed: bool,
     vouched: fn(QueryEngine) -> List<string>,
+    program: string = "",
+    work: FileWork = FileWork.Built,
 ) -> Worked {
     let at = AheadAt {
         directory: directory,
         definitions: definitions,
         process_count: process_count,
         timed: timed,
+        program: program,
     }
     wave_gathers(GATHERED)
     let alone = ahead(at, (_engine: QueryEngine) -> [], file_words_is_known, file_parsed)
@@ -80,8 +91,8 @@ export fn program_worked(
     let lowered = ahead(
         at,
         (_engine: QueryEngine) -> parsed.program,
-        (e, f) -> file_worked_is_known(e, f, stands.contains(spelled_file(f))),
-        (e, f) -> file_worked(e, f, stands.contains(spelled_file(f))),
+        (e, f) -> file_work_is_known(e, f, work, stands.contains(spelled_file(f))),
+        (e, f) -> file_work_done(e, f, work, stands.contains(spelled_file(f))),
     )
     clock.closed()
     if at.timed { eprintln(phases_said(clock, filed)) }
@@ -197,6 +208,7 @@ fn ahead<T>(
             process_count: at.process_count,
             timed: at.timed,
         },
+        at.program,
     )
 }
 
@@ -300,6 +312,42 @@ fn bodies_known(engine: QueryEngine, file: SourceFileAddress) -> bool { declared
 
 /// Every body `file` declares lowered: how many lowered.
 fn bodies_lowered(engine: QueryEngine, file: SourceFileAddress) -> int { declared_bodies(engine, file).filter((b) -> body_lowered(engine, b)).length }
+
+/// What a program's last wave works of each of its files: what a build of it reads, or what a check
+/// of `package` reads, which is what its laws find and, in that package's own files, what they warn
+/// of and what its rules find.
+export enum FileWork {
+    Built
+    Checked(package: string)
+}
+
+/// Whether what `work` asks of `file` is kept, its laws standing where `vouched`.
+fn file_work_is_known(engine: QueryEngine, file: SourceFileAddress, work: FileWork, vouched: bool) -> bool {
+    match work {
+        .Built -> file_worked_is_known(engine, file, vouched),
+        .Checked(package) -> (vouched || file_erring_is_known(engine, file)) &&
+            (file.package_name != package || file_rule_rows_is_known(engine, package, file)),
+    }
+}
+
+/// What `work` asks of `file`, its laws standing where `vouched`: how many bodies it lowered, or
+/// how many findings it holds.
+fn file_work_done(engine: QueryEngine, file: SourceFileAddress, work: FileWork, vouched: bool) -> int {
+    match work {
+        .Built -> file_worked(engine, file, vouched),
+        .Checked(package) -> file_checked(engine, file, package, vouched),
+    }
+}
+
+/// What a check of `package` reads of `file`, its laws standing where `vouched`: how many findings
+/// fail a build, then, in the package's own files, how many warn and how many rule rows stand.
+fn file_checked(engine: QueryEngine, file: SourceFileAddress, package: string, vouched: bool) -> int {
+    let erring = if vouched { 0 } else { file_erring(engine, file).errors }
+    if file.package_name != package { return erring }
+    erring +
+        file_warned(engine, file).findings.length +
+        file_rule_rows(engine, package, file).rows.length
+}
 
 /// Whether anything is kept about the lowering of every body `file` declares and, unless a verdict
 /// vouches for it, about what its laws find, asking only what its declarations are.

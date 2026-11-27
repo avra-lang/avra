@@ -40,10 +40,21 @@ fn route(e: Address) -> Route { fixed(Method.Get, e.path, (_q: Request<Unrouted>
 /// A screen in the site's chrome.
 fn screen(title: string, body: dyn View) -> Document { Document { title: title, body: shell(body) } }
 
-/// A route nobody declared answers a page, not an empty 404.
+/// A refusal the routes answer bare is a page: a target nobody declared, and a method
+/// its address does not take, which keeps the methods it names.
 export layer not_found { q, next ->
     let r = next(q)
-    if r.status == 404 { (screen("Not found", missing()) with { status: 404 }).response() } else { r }
+    match r.status {
+        404 -> dressed(r, screen("Not found", missing())),
+        405 -> dressed(r, screen("Not allowed", refused())),
+        _ -> r,
+    }
+}
+
+/// `page` answered with the refusal's status and its headers beside the page's own.
+fn dressed(r: Response, page: Document) -> Response {
+    let shown = (page with { status: r.status }).response()
+    shown with { headers: shown.headers.concat(r.headers) }
 }
 
 // ── Screens ─────────────────────────────────────────────────────
@@ -85,6 +96,14 @@ export fn missing() -> dyn View {
     column {
         heading "Not found"
         text "No screen answers this address."
+    }
+}
+
+/// The page a method the address does not take answers.
+export fn refused() -> dyn View {
+    column {
+        heading "Not allowed"
+        text "This address answers a page to read, not this request."
     }
 }
 

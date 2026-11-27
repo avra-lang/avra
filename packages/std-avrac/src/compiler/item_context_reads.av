@@ -619,7 +619,7 @@ fn required_words(a: List<string>) -> Voice { context_required(a[0], a[1], a[2],
 fn cached_untold(view: ItemView) -> List<Found> {
     let item = view.item
     let store = item.store
-    let cached = [s for s in item.stmts if store.annotations_of(s).any(it.name == CACHED_MARK)]
+    let cached = [s for s in item.stmts if cache_marked(view, s)]
     if cached.is_empty() { return [] }
     let declared = entry_contexts(view.engine, view.file)
     if declared.is_empty() { return [] }
@@ -659,8 +659,19 @@ fn untold_in(
     found
 }
 
-/// The annotation that keeps a fn's answers.
+/// Whether the statement `s` of the item `view` shows wears the annotation that keeps a fn's answers.
+fn cache_marked(view: ItemView, s: StmtId) -> bool {
+    view
+        .item
+        .store
+        .annotations_of(s)
+        .any((a) -> binds_fn(view.engine, view.file, a.name, CACHE_PACKAGE, CACHED_MARK))
+}
+
+/// The fn that keeps a fn's answers, and the package that declares it.
 const CACHED_MARK: string = "query"
+
+const CACHE_PACKAGE: string = "@std/relation"
 
 /// a cached fn reads only a context that compares by value
 export law context_cached_by_value {
