@@ -5,7 +5,7 @@
 //! decided by its type alone (`frame/kinds.av`):
 //!
 //!   int → number · bool → flag · float → fraction · string → text ·
-//!   List<string> → texts · Bytes → octets · a `@derive(Codes)` enum → its code as a word ·
+//!   List<string> → texts · Bytes → octets · List<T> of a framed type or a word → their count, then each · a `@derive(Codes)` enum → its code as a word ·
 //!   a `@derive(Words)` enum → its place as a word · a record or named type
 //!   over one int → that int as a word · `T?` over any word → a word, zero
 //!   for none · a `@derive(Frame)` type → nested, written by its own frame
@@ -38,8 +38,8 @@ use @std.meta.{
 }
 use @std.text.{parse_int}
 use tree.codes.{snake}
-use frame.kinds.{FrameWriter, FrameReader, FrameFault, known, nth}
-use frame.rows.{FieldKind, FrameField, FrameRow, FrameType, distinct_types}
+use frame.kinds.{FrameWriter, FrameReader, FrameFault, frame_known, frame_nth}
+use frame.rows.{FrameKind, FrameField, FrameRow, FrameType, distinct_types}
 
 /// A type a frame carries.
 export trait Frame {
@@ -262,8 +262,8 @@ fn record_writes(t: Type, dropping: bool) -> List<Stmts> {
 /// The value a word read now names.
 fn read_word(w: Worded) -> Code {
     match w {
-        .Coded(n) -> quote { known(${name(n)}.coded_as(r.word()?), r, ${literal(n)})? },
-        .Placed(n) -> quote { known(nth(${name(n)}.every(), r.word()?), r, ${literal(n)})? },
+        .Coded(n) -> quote { frame_known(${name(n)}.coded_as(r.word()?), r, ${literal(n)})? },
+        .Placed(n) -> quote { frame_known(frame_nth(${name(n)}.every(), r.word()?), r, ${literal(n)})? },
         .Flat(n) -> flat_made(n, quote { r.word()? }),
     }
 }
@@ -271,8 +271,8 @@ fn read_word(w: Worded) -> Code {
 /// The value a word read as `got` names.
 fn named_word(w: Worded, got: Code) -> Code {
     match w {
-        .Coded(n) -> quote { known(${name(n)}.coded_as(${got}), r, ${literal(n)})? },
-        .Placed(n) -> quote { known(nth(${name(n)}.every(), ${got}), r, ${literal(n)})? },
+        .Coded(n) -> quote { frame_known(${name(n)}.coded_as(${got}), r, ${literal(n)})? },
+        .Placed(n) -> quote { frame_known(frame_nth(${name(n)}.every(), ${got}), r, ${literal(n)})? },
         .Flat(n) -> flat_made(n, got),
     }
 }
@@ -350,19 +350,19 @@ fn record_made(t: Type) -> Code {
 
 fn kind_word(c: Carried) -> Code {
     match c {
-        .Number -> quote { FieldKind.Number },
-        .Flag -> quote { FieldKind.Flag },
-        .Fraction -> quote { FieldKind.Fraction },
-        .Text -> quote { FieldKind.Text },
-        .Texts -> quote { FieldKind.Texts },
-        .Octets -> quote { FieldKind.Octets },
-        .Word(_) -> quote { FieldKind.Word },
-        .WordOrNone(_) -> quote { FieldKind.WordOrNone },
-        .Nested(_) -> quote { FieldKind.Nested },
-        .NestedOrNone(_) -> quote { FieldKind.NestedOrNone },
-        .Many(_) -> quote { FieldKind.Many },
-        .Words(_) -> quote { FieldKind.Words },
-        .Told(_) -> quote { FieldKind.Told },
+        .Number -> quote { FrameKind.Number },
+        .Flag -> quote { FrameKind.Flag },
+        .Fraction -> quote { FrameKind.Fraction },
+        .Text -> quote { FrameKind.Text },
+        .Texts -> quote { FrameKind.Texts },
+        .Octets -> quote { FrameKind.Octets },
+        .Word(_) -> quote { FrameKind.Word },
+        .WordOrNone(_) -> quote { FrameKind.WordOrNone },
+        .Nested(_) -> quote { FrameKind.Nested },
+        .NestedOrNone(_) -> quote { FrameKind.NestedOrNone },
+        .Many(_) -> quote { FrameKind.Many },
+        .Words(_) -> quote { FrameKind.Words },
+        .Told(_) -> quote { FrameKind.Told },
     }
 }
 
@@ -577,7 +577,7 @@ fn unframed_field(f: Field) -> Diagnostic {
         "frame-field-kind",
         f.at,
         "a frame carries a field by a kind it spells, and `${f.name}: ${f.ty}` is none of them",
-        "an int, bool, float, string, `List<string>`, a `Codes` or `Words` enum, a type over one int, a `T?` of a word, or a `@derive(Frame)` type; `@told` marks a framed type",
+        "an int, bool, float, string, `Bytes`, a `Codes` or `Words` enum, a type over one int, a `@derive(Frame)` type, a `T?` or `List<T>` of any of those but the scalars, or `List<string>`; `@told` marks a framed type",
     )
 }
 

@@ -8,8 +8,8 @@
 //! The same rule holds each dialect's checked-in shapes (`frame/standing.av`)
 //! to the code.
 use @std.text.{parse_int}
-use frame.rows.{FieldKind, FrameField, FrameRow, FrameType, field_word, row_line}
-use frame.kinds.{FrameReader, FrameFault, nth}
+use frame.rows.{FrameKind, FrameField, FrameRow, FrameType, field_word, row_line}
+use frame.kinds.{FrameReader, FrameFault, frame_nth}
 
 /// Each type's rows as lines: `Type word code name:kind[:of] …`.
 export fn type_lines(types: List<FrameType>) -> List<string> {
@@ -42,8 +42,8 @@ fn line_row(line: string) -> List<Lined> {
 fn field_of_word(word: string) -> List<FrameField> {
     let bits = word.split(":")
     if bits.length < 2 { return [] }
-    let kind? = FieldKind.coded().find(it.word == bits[1]) else { return [] }
-    let k? = FieldKind.coded_as(kind.code) else { return [] }
+    let kind? = FrameKind.coded().find(it.word == bits[1]) else { return [] }
+    let k? = FrameKind.coded_as(kind.code) else { return [] }
     [FrameField { name: bits[0], kind: k, of: if bits.length > 2 { bits[2] } else { "" } }]
 }
 
@@ -159,7 +159,7 @@ export fn grown_record<T>(
     read: fn(FrameReader) -> Result<T, FrameFault>,
 ) -> Result<T?, FrameFault> {
     let at = r.at.get()
-    let code? = nth(r.bytes, at) else { fail r.fault(unshaped(top)) }
+    let code? = frame_nth(r.bytes, at) else { fail r.fault(unshaped(top)) }
     let theirs? = taped.find(it.name == top)?.rows?.find(it.code == code) else { fail r.fault(unshaped(top)) }
     let mine? = own.find(it.name == top)?.rows?.find(it.code == code) else {
         let _ = skipped(r, top, taped)?
