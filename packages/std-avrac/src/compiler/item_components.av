@@ -1,17 +1,33 @@
 //! WHERE A COMPONENT'S SHAPE BREAKS ITS CONTRACT WITH THE COMPILER: its `check` answering other than
 //! `@std/meta`'s `List<Diagnostic>`, or taking a seat; a head spelled `Format` that names another type
 //! than `@std/meta`'s pattern. Read off the component's signature and its `check`'s.
-use core.{ComponentParts, ExprId, SignedType, StmtId, SyntaxArena, default_mark, flatten, some_list}
+use core.{
+    At,
+    expand_of,
+    ComponentParts,
+    ExprId,
+    SignedType,
+    StmtId,
+    SyntaxArena,
+    default_mark,
+    flatten,
+    some_list,
+}
 use compiler.laws.{Found, law}
 use diagnostics.{Voice}
 use features.components.{
     check_unshaped,
+    expand_uncoded,
+    read_twice,
+    template_body,
+    template_reads_twice,
     default_unmade,
     format_foreign,
     formats_of,
     seeds_ring,
     slot_shadows,
 }
+use features.fns.{component_call}
 use features.{row_unkeyed}
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryEngine}
@@ -264,3 +280,74 @@ export law repeated_row_keyed {
 }
 
 fn row_words(a: List<string>) -> Voice { row_unkeyed(a[0]) }
+
+/// Every call the written item `view` shows whose callee is a component's word, where it stands:
+/// a parenthesis after the word is read as a call, never as the instance's head.
+fn components_called(view: ItemView) -> List<Found> {
+    let store = view.item.store
+    [Found { at: store.expr_span(e), args: [c!.callee.text()] } for top in view.item.stmts for e in exprs_under(store, At.Stmt(top)) for c in [store.call_parts(e)] if c != null && names_component(view.engine, view.file, c!.callee.text())]
+}
+
+/// Whether `word`, read where `file` reads it, names a component and no value.
+fn names_component(engine: QueryEngine, file: SourceFileAddress, word: string) -> bool {
+    resolved(engine, file, Space.Value, word).named() == null &&
+        resolved(engine, file, Space.Type, word).named()?.kind == ItemKind.Component
+}
+
+/// a component's word is never called
+export law component_never_called {
+    kind: "type.lambda"
+    reads_view: components_called
+    voice: called_words
+    witness: "component nest(n: int) {\n    extra: int = 0\n}\n\nfn f() -> int {\n    let a = nest (1)\n    1\n}\n"
+}
+
+fn called_words(a: List<string>) -> Voice { component_call(a[0]) }
+
+/// The fn a template writes that answers the code an instance becomes.
+const EXPAND: string = "expand"
+
+/// Every component of the written item `view` shows whose `expand` answers no code: where the
+/// `expand` stands, and what it answers.
+fn expands_uncoded(view: ItemView) -> List<Found> {
+    let item = view.item
+    if !item.store.refusals().is_empty() { return [] }
+    [f! for a in impls_seen(view) for c in [impl_component_at(item, a)] if c != null for f in [expand_found(view.engine, item.store, a, c!.fns)] if f != null]
+}
+
+/// The `expand` among a component's `fns`, refused where it answers neither `Code` nor `Decls`.
+fn expand_found(engine: QueryEngine, store: SyntaxArena, a: ImplAt, fns: List<StmtId>) -> Found? {
+    let m? = fns.find((f: StmtId) -> store.fn_parts(f)?.name == EXPAND) else { return null }
+    let sig? = method_signature(engine, a, EXPAND) else { return null }
+    let answer = sig.answer
+    if meta_named(answer, "Code") || meta_named(answer, "Decls") { return null }
+    if answer.inferred() || answer.generic() || answer.head is .Unnamed { return null }
+    Found { at: store.stmt_span(m), args: [answer.spelled()] }
+}
+
+/// an `expand` answers the code an instance becomes
+export law expand_answers_code {
+    kind: "type.component_expand"
+    reads_view: expands_uncoded
+    voice: uncoded_words
+    witness: "use @std.meta.{Code}\n\ncomponent made(h: Code) {\n    body: Code\n    fn expand() -> int { 1 }\n}\n"
+}
+
+fn uncoded_words(a: List<string>) -> Voice { expand_uncoded(a[0]) }
+
+/// Every template the written item `view` shows declares that reads one of its code fields twice:
+/// where its `expand` stands, the component, and the field.
+fn templates_reading_twice(view: ItemView) -> List<Found> {
+    let store = view.item.store
+    [Found { at: store.stmt_span(s), args: [c!.name, twice!] } for s in view.item.stmts for c in [store.component_parts(s)] if c != null for x in [expand_of(store, c!)] if x != null for b in [template_body(store, x!)] if b != null for twice in [read_twice(store, b!, formats_of(c!))] if twice != null]
+}
+
+/// a template reads each code field once
+export law template_reads_once {
+    kind: "type.component_twice"
+    reads_view: templates_reading_twice
+    voice: twice_words
+    witness: "use @std.meta.{Code}\n\ncomponent made(h: Code) {\n    body: Code\n    fn expand() -> Code { quote { \${self.body} + \${self.body} } }\n}\n"
+}
+
+fn twice_words(a: List<string>) -> Voice { template_reads_twice(a[0], a[1]) }
