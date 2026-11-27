@@ -6,8 +6,19 @@
 //! rewrite `check` shows is the exact one `fix` proves or refuses,
 //! never a second derivation that could disagree.
 use core.{At, StmtId, DeclId, SyntaxArena, flatten, some_list}
-use features.{Code, Fix, Analysed, RuleFile, Syntax, SyntaxFile, analysed_file, syntax_of}
-use diagnostics.{Diag, loc_at, refusal, warning}
+use features.{
+    Code,
+    Fix,
+    Analysed,
+    BlockWords,
+    RuleFile,
+    Syntax,
+    SyntaxFile,
+    SyntaxView,
+    analysed_file,
+    syntax_of,
+}
+use diagnostics.{Diag, loc_at, new_source_file, refusal, warning}
 use @std.errors.{Suggestion, Edit, Confidence, Loc}
 use compiler.backend.{trimmed}
 use compiler.work.{work_rule_node, work_rule_run, work_rule_ns}
@@ -116,7 +127,8 @@ export fn placed_syntax_findings(
     stmts: List<StmtId>,
     which: fn(RuleEntry) -> bool,
 ) -> List<PlacedDiag> {
-    flatten([placed_diags(file, c) for c in syntax_candidates(file, stmts, which)])
+    let found = syntax_candidates(file, stmts, which)
+    flatten([placed_diags(file, c) for c in found]).concat(grouped_findings(file, found))
 }
 
 /// Every rule, for a walk that tries them all.
@@ -312,7 +324,9 @@ export fn code_at(a: Analysed, at: At) -> Code {
 export fn rule_findings(a: Analysed, stmts: List<StmtId>) -> List<Diag> {
     // LICENSED input.timing: a phase timing is reported, never an input of what is found
     let began = now_ns()
-    let found = flatten([candidate_diags(a, c) for c in rule_candidates(a, stmts)])
+    let candidates = rule_candidates(a, stmts)
+    let found = flatten([candidate_diags(a, c) for c in candidates])
+        .concat(grouped_findings(syntax_of(a), candidates).map(it.diag))
     // LICENSED input.timing: a phase timing is reported, never an input of what is found
     work_rule_ns(now_ns() - began)
     found
@@ -323,13 +337,16 @@ fn candidate_diags(a: Analysed, c: Candidate) -> List<Diag> {
         .Say(voice) -> [voice with { kind: rule_id(c.owner) }],
         .Rewrite(_) -> rewrite_diags(syntax_of(a), c.at, c.owner, c.fix),
         .Delete(what) -> delete_diags(a, c.at, c.owner, what),
+        .Keyed(_, _, _) -> [],
     }
 }
 
 /// What every rule that reads syntax alone finds under these statements of `file`, as `check`
 /// says it; a delete names declarations, which syntax alone never holds.
 export fn syntax_findings(file: SyntaxFile, stmts: List<StmtId>) -> List<Diag> {
-    flatten([syntax_diags(file, c) for c in syntax_candidates(file, stmts, every_rule)])
+    let found = syntax_candidates(file, stmts, every_rule)
+    flatten([syntax_diags(file, c) for c in found])
+        .concat(grouped_findings(file, found).map(it.diag))
 }
 
 fn syntax_diags(file: SyntaxFile, c: Candidate) -> List<Diag> {
@@ -337,6 +354,7 @@ fn syntax_diags(file: SyntaxFile, c: Candidate) -> List<Diag> {
         .Say(voice) -> [voice with { kind: rule_id(c.owner) }],
         .Rewrite(_) -> rewrite_diags(file, c.at, c.owner, c.fix),
         .Delete(_) -> deleted_diags(file, c.at, c.owner),
+        .Keyed(_, _, _) -> [],
     }
 }
 
@@ -414,4 +432,104 @@ fn rule_trapped(at: Loc?, r: RuleEntry, words: string) -> Diag {
         "the rule ran here",
         "the rule is the defect, not this code — its guard or its body asked for what this node does not hold",
     )
+}
+
+// ── GROUPS: a claim is judged beside the claims its rule makes on the same key in the file ──
+
+/// One claim a candidate makes: its rule, its key, where it stands, its place among the claims its
+/// node makes, whether it counts once in its group, and the finding it words.
+type Claim = { owner: RuleEntry, key: string, at: At, lo: int, hi: int, nth: int, shared: bool, voice: fn(Syntax) -> Diag }
+
+fn claims_of(file: SyntaxFile, c: Candidate) -> List<Claim> {
+    let loc? = syntax_at(file, c.at).loc() else { return [] }
+    match c.fix {
+        .Keyed(keys, shared, voice) -> [Claim {
+            owner: c.owner,
+            key: k,
+            at: c.at,
+            lo: loc.lo,
+            hi: loc.hi,
+            nth: i,
+            shared: shared,
+            voice: voice,
+        } for i, k in keys],
+        .Rewrite(_) or .Delete(_) or .Say(_) -> [],
+    }
+}
+
+fn same_group(a: Claim, b: Claim) -> bool { rule_id(a.owner) == rule_id(b.owner) && a.key == b.key }
+
+/// Whether `a` stands before `b` in the file.
+fn stands_before(a: Claim, b: Claim) -> bool { a.lo < b.lo || a.lo == b.lo && a.nth < b.nth }
+
+/// The claims that count: every unshared one, and the first shared one of each group.
+fn counted(claims: List<Claim>) -> List<Claim> {
+    [c for c in claims if !c.shared || !claims.any((o) -> o.shared && same_group(o, c) && stands_before(o, c))]
+}
+
+/// THE GROUPS' FINDINGS: of the claims a file-scoped rule makes on one key, the first stands and
+/// each later one is the finding its voice words, handed the first. A keyed claim from a rule that
+/// judges one node is that rule's defect, said where it claimed.
+export fn grouped_findings(file: SyntaxFile, found: List<Candidate>) -> List<PlacedDiag> {
+    let claims = counted(flatten([claims_of(file, c) for c in found]))
+    [grouped_finding(file, c, claims) for c in claims if !judges_the_file(c.owner.scope) || claims.any((o) -> same_group(o, c) && stands_before(o, c))]
+}
+
+fn grouped_finding(file: SyntaxFile, c: Claim, claims: List<Claim>) -> PlacedDiag {
+    let diag = if judges_the_file(c.owner.scope) {
+        let first = claims
+            .filter((o) -> same_group(o, c))
+            .fold(c, (a, o) -> if stands_before(o, a) { o } else { a })
+        c.voice(syntax_at(file, first.at)) with { kind: rule_id(c.owner) }
+    } else {
+        refusal(
+            rule_id(c.owner),
+            syntax_at(file, c.at).loc(),
+            keyed_alone(c.owner),
+            "this claim",
+            "mark the rule `@scope(RuleScope.File)`",
+        )
+    }
+    PlacedDiag { lo: c.lo, hi: c.hi, diag: diag }
+}
+
+/// A keyed claim's refusal where its rule judges one node.
+fn keyed_alone(r: RuleEntry) -> string {
+    "the rule `${rule_id(r)}` claims a key and judges one node — a key is judged beside the file's other claims on it"
+}
+
+/// A claim as `avra rules --groups` lists it: its key, the line it stands on, and whether it stands
+/// first on its key.
+export type ClaimRow = { key: string, line: int, first: bool }
+
+/// The file `path` holding `text`, parsed alone, as a syntax rule reads it.
+fn parsed_alone(path: string, text: string) -> ParsedAlone {
+    let parsed = parse_program(avra(), new_source_file(path, text), BlockWords {})
+    ParsedAlone {
+        file: SyntaxFile { view: SyntaxView { store: parsed.store, source: parsed.source } },
+        stmts: parsed.stmts,
+    }
+}
+
+type ParsedAlone = { file: SyntaxFile, stmts: List<StmtId> }
+
+/// Every claim the rule `id` makes in the file `path` holding `text`, in the order they stand.
+export fn claims_in(id: string, path: string, text: string) -> List<ClaimRow> {
+    let p = parsed_alone(path, text)
+    let claims = counted(
+        flatten(
+            [claims_of(p.file, c) for c in syntax_candidates(p.file, p.stmts, (r) -> rule_id(r) == id)],
+        ),
+    )
+    [ClaimRow {
+        key: c.key,
+        line: p.file.view.source.linecol(c.lo).line,
+        first: !claims.any((o) -> same_group(o, c) && stands_before(o, c)),
+    } for c in claims]
+}
+
+/// What the syntax rule `id` finds in the file `path` holding `text`, judged whole.
+export fn said_in(id: string, path: string, text: string) -> List<Diag> {
+    let p = parsed_alone(path, text)
+    syntax_findings(p.file, p.stmts).filter(it.kind == id)
 }

@@ -18,11 +18,14 @@ use features.{
     DeclaredType,
     FnHead,
     RuleType,
+    RuleScope,
     fact_rule,
     rule,
     said,
 }
 use @std.meta.{name}
+use diagnostics.{Diag}
+use @std.errors.{Frame}
 
 /// A refusal assembled from `pointed`/`error_at` by hand — the one
 /// shape is `refusal(kind, at, message, label, help)`.
@@ -1973,8 +1976,12 @@ fn segment_after(file: string, root: string) -> string? {
 /// Every way a `use` breaks the layering, as words.
 fn layer_refusals(u: Code) -> List<string> {
     let target? = use_target(u) else { return [] }
-    let file = u.of.view.source.file
-    let pkg = u.package().replace("/", ".")
+    layer_words(u.of.view.source.file, u.package(), target)
+}
+
+/// Every way a `use` of `target`, in the file `file` of the package `package`, breaks the layering.
+fn layer_words(file: string, package: string, target: string) -> List<string> {
+    let pkg = package.replace("/", ".")
     let own = if pkg == "@std.avrac" { segment_after(file, "/src/") } else { null }
     if own != null && !file.contains("/tests/") && layer_order.contains(own!) {
         let named = layer_named(target)
@@ -2126,6 +2133,90 @@ fn blocking_extern_found(x: Code) -> Fix {
                 "`${unheld_extern(x) ?? "?"}` blocks the thread on the world, and an extern calls it with no C of ours to hold the clock",
                 "this extern",
                 "say on the line above why it needs no hold, or where its hold is taken: `// the clock: <a reason of three words>`",
+            ),
+        )
+}
+
+/// A FINGERPRINT TAG NAMES A NODE KIND: inside one fold space — a file — no two kinds may wear one
+/// number, or their fingerprints are equal by construction and every consumer reads two things as
+/// one. A tag is claimed by `fp(<n>, …)`, by both branches of a tag an `if` picks, by
+/// `restamp(_, <n>)`, and by a call of the SHARED fold `fp_list`, which mixes tag 105 into its
+/// caller's space — once, however often it is called, and never in the file that defines it. The
+/// compiler's files and the engine's are the spaces; their tests are none.
+///
+/// A GROUP OVER THE FILE (`@scope(RuleScope.File)`): the first claim on a number stands and each
+/// later one is refused, naming it; `avra rules --groups compiler.fp_tag_once <file>` lists every
+/// claim, so the next free tag is read off them.
+///
+/// NO REWRITE: which kind keeps the number, and what the other takes, is the author's choice.
+@keeps("fp(1, [a])\nfp(2, [b])")
+@says("which kind keeps the number, and what the other takes, is the author's choice")
+export rule fp_tag_once {
+    quote { fp(${tag}, ${parts}) } if in_fold_space(tag) && !fp_tags(tag).is_empty() -> Fix.Keyed(fp_tags(tag), false, (first) -> tag_repeated(tag, first)),
+    quote { ${r}.restamp(${s}, ${tag}) } if in_fold_space(tag) && tag.int_lit_value() != null -> Fix.Keyed(["${tag.int_lit_value()!}"], false, (first) -> tag_repeated(tag, first)),
+    quote { restamp(${s}, ${tag}) } if in_fold_space(tag) && tag.int_lit_value() != null -> Fix.Keyed(["${tag.int_lit_value()!}"], false, (first) -> tag_repeated(tag, first)),
+    quote { fp_list(${xs}) } if in_fold_space(xs) && !xs.file_declares_fn("fp_list") -> Fix.Keyed(["105"], true, (first) -> tag_repeated(xs, first)),
+}
+
+/// Whether a node stands where a fingerprint is folded: the compiler's files and the engine's, their
+/// tests aside.
+fn in_fold_space(s: Syntax) -> bool {
+    let f = s.of.view.source.file
+    (f.contains("avrac/src/") || f.contains("relation/src/engine/")) && !f.contains("/tests/")
+}
+
+/// The tags a tag argument claims: its literal, or every literal the branches of an `if` answer.
+fn fp_tags(tag: Syntax) -> List<string> {
+    let v = tag.int_lit_value()
+    if v != null { return ["${v!}"] }
+    let branches? = tag.if_branches() else { return [] }
+    flatten(branches.map(int_leaves(it)))
+}
+
+/// Every integer literal at or under a node.
+fn int_leaves(s: Syntax) -> List<string> {
+    let v = s.int_lit_value()
+    if v != null { return ["${v!}"] }
+    flatten(s.kids().map(int_leaves(it)))
+}
+
+fn tag_repeated(at: Syntax, first: Syntax) -> Diag {
+    said(
+        at.loc(),
+        "this fingerprint tag is already claimed in this file — two node kinds wearing one number fingerprint alike",
+        "claimed again here",
+        "take a number no claim in this file holds — `avra rules --groups compiler.fp_tag_once <file>` lists them",
+    ) with { secondary: [Frame { label: "first claimed here", loc: first.loc() }] }
+}
+
+/// A PARTS LIST IS FIXED ARITY. A flat concatenation of two sequences has a boundary that MOVES:
+/// `f<A>(B)` and `f<A, B?>()` spliced to one list and wore one fingerprint. Every variable-length run
+/// folds through `fp_list` first, so a `.concat` or a `flatten` standing in an `fp(…)` call's own
+/// parts — a nested `fp`/`fp_list` fold aside — is a run that never became one value.
+///
+/// NO REWRITE: which run folds where is the author's to place.
+@keeps("fp(1, [a, fp_list(bs.concat(cs))])")
+@keeps("fp_str(name).concat(x)")
+@says("which run folds through `fp_list`, and where, is the author's to place")
+export rule fp_run_spliced {
+    quote { fp(${tag}, ${parts}) } if in_fold_space(parts) && splices_run(parts) -> fp_run_found(parts),
+}
+
+/// Whether a node, its nested folds aside, holds a `.concat(…)` or a `flatten(…)`.
+fn splices_run(s: Syntax) -> bool {
+    let callee = s.callee_name()
+    if callee == "fp" || callee == "fp_list" { return false }
+    s.method_name() == "concat" || callee == "flatten" || s.kids().any(splices_run(it))
+}
+
+fn fp_run_found(parts: Syntax) -> Fix {
+    Fix
+        .Say(
+            said(
+                parts.loc(),
+                "a run spliced into a fingerprint's parts list — its boundary moves, so two payloads can wear one fingerprint",
+                "this parts list",
+                "fold each variable-length run through `fp_list` first, so the parts list keeps a fixed arity",
             ),
         )
 }

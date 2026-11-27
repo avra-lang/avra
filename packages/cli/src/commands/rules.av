@@ -12,6 +12,7 @@ use @std.avrac.compiler.{
     example_gaps,
     example_gap_lines,
     example_count,
+    claims_in,
 }
 use @std.json.{Json, field, to_text}
 
@@ -22,6 +23,8 @@ impl Runnable for RulesCmd {
         let doc = args.option("check-markdown")
         if doc != "" { return markdown_said(doc, rule_entries()) }
         if args.has_flag("check_examples") { return examples_said(rule_entries()) }
+        let grouped = args.option("groups")
+        if grouped != "" { return groups_said(grouped, args.option("file")) }
         println(
             when {
                 args.has_flag("json") -> to_text(Json.Arr([rule_json(r) for r in rule_entries()]))
@@ -140,6 +143,22 @@ fn markdown_said(path: string, entries: List<RuleEntry>) -> int {
     }
 }
 
+/// `rules --groups <rule> --file <path>`: every claim the rule makes in the file, by key, the first
+/// on each marked — so the next free key is read off them.
+fn groups_said(id: string, path: string) -> int {
+    if !rule_entries().any(rule_id(it) == id) {
+        eprintln(no_such_rule(id))
+        return 1
+    }
+    // LICENSED compiler.host_asked_directly: a command's read of the file it was given, at this instant — no query frame is open
+    let text? = disk_host().spared_text(rooted(path)).as_text() else {
+        eprintln(unreadable(path))
+        return 1
+    }
+    for c in claims_in(id, path, text) { println("${c.key}\t${path}:${c.line}${if c.first { "" } else { "\tagain" }}") }
+    0
+}
+
 /// `rules --check-examples`: every rule example's walk must cover the
 /// whole source — a leading `type` or `impl` is setup, and a walk that
 /// stops at the first statement leaves the fn under test unexamined.
@@ -160,6 +179,14 @@ export command rules {
         name: "check-markdown"
         description: "hold a doc's generated registry block to the table's own rendering; refuse the first line that differs"
     }
+    option {
+        name: "groups"
+        description: "every claim the file-scoped rule of this id makes in `--file`, by key, a repeat marked `again`"
+    }
+    option {
+        name: "file"
+        description: "the file `--groups` reads"
+    }
     run: RulesCmd {}
 }
 
@@ -179,6 +206,8 @@ fn examples_examined(count: int, gaps: int) -> string {
 fn block_matches(path: string, n: int, total: int) -> string {
     "${path}: the generated block matches the rule table — ${n} documented rule(s) rendered and compared, of ${total}"
 }
+
+fn no_such_rule(id: string) -> string { "rules: no rule `${id}` — `avra rules` lists them" }
 
 fn unreadable(path: string) -> string {
     "${path}: cannot be read — no generated block to compare"

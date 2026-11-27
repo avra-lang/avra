@@ -50,6 +50,14 @@ use @std.meta.{Diagnostic, refuse}
 /// (`/w/src/main.av`) of a package those files (path -> text) complete,
 /// under a lawful manifest — `@fixes("use util.{f}\n1\n", null,
 /// {"/w/src/util/util.av": "export fn f() -> int { 1 }\n"})`.
+/// What a rule judges at once, named by `@scope(…)` on it: one node (the default), or every claim
+/// its arms make across a file (`Fix.Keyed`), the first on each key standing and each later one
+/// its finding.
+export enum RuleScope {
+    Node
+    File
+}
+
 export type Fixes = { before: string, after: string? = null, files: Map<string, string> = {} }
 
 export component rule {
@@ -59,8 +67,14 @@ export component rule {
     keeps: List<string> = []
     law: List<string> = []
     says: List<string> = []
+    scope: List<RuleScope> = []
 
-    fn check() -> List<Diagnostic> { rule_judged(self.fixes, self.keeps, self.law, self.says) }
+    fn check() -> List<Diagnostic> { rule_judged(self.fixes, self.keeps, self.law, self.says).concat(scope_judged(self.scope)) }
+}
+
+/// A rule names its scope at most once (`@scope(RuleScope.File)`).
+fn scope_judged(scope: List<RuleScope>) -> List<Diagnostic> {
+    if scope.length > 1 { [refuse("a rule takes at most one `@scope` — it judges one node or one file")] } else { [] }
 }
 
 /// What a rule's own declaration must hold to prove itself: an example, at most one `@law`, at most

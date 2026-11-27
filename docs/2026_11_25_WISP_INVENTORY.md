@@ -100,7 +100,7 @@ A running list: each entry is gone from the tree, named with the train that remo
 | emit | none | internal | delete | a wrapper over `./avra <cmd> $(FILE)`; nothing calls it |
 | exact-patches | recipe | internal | merge: oracle | an agreement or refusal case |
 | externs | KEEPERS_B; KEEPERS_STATIC; recipe | internal | merge: keepers |  |
-| fingerprints | KEEPERS_B; KEEPERS_STATIC; recipe | internal | merge: keepers |  |
+| fingerprints | KEEPERS_B; KEEPERS_STATIC; recipe | internal | merge: keepers | DELETED — rules `compiler.fp_tag_once`, `compiler.fp_run_spliced` |
 | flow-bench | recipe | internal | merge: census | a report, never a verdict |
 | flow-g1 | recipe | internal | merge: census | a report, never a verdict |
 | flow-gate | recipe | internal | merge: cost | a ratchet; `-accept` is its `--accept` |
@@ -264,7 +264,7 @@ A running list: each entry is gone from the tree, named with the train that remo
 | externs.py | Makefile, llvm_emit.av, CENSUS.md | internal | merge: keepers |  |
 | failed_tail_test.sh | none | internal | merge: fixtures |  |
 | file_module_attack.sh | Makefile | internal | merge: oracle |  |
-| fingerprints.py | Makefile | internal | merge: keepers |  |
+| fingerprints.py | Makefile | internal | merge: keepers | PORTED — rules `compiler.fp_tag_once`, `compiler.fp_run_spliced` |
 | flow_bench/ | Makefile | internal | merge: census |  |
 | flow_trace/ | Makefile, traced_answer.av, traced_generic.av +5 | internal | merge: oracle |  |
 | flow_trace_engines.sh | Makefile, traced_answer.av, traced_generic.av +3 | internal | merge: oracle |  |

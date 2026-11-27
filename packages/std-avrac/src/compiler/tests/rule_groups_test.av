@@ -1,0 +1,55 @@
+// A file-scoped rule judges every claim it makes on one key together: the first stands and each
+// later one is its finding. The fingerprint tags are the first such rule.
+use @std.avrac.compiler.{claims_in, said_in}
+
+/// Each claim the tag rule makes in a compiler file, as `key:line`, a repeat marked `!`.
+fn tags(text: string) -> string { tags_at("packages/std-avrac/src/core/x.av", text) }
+
+fn tags_at(path: string, text: string) -> string {
+    claims_in("compiler.fp_tag_once", path, text)
+        .map("${it.key}:${it.line}${if it.first { "" } else { "!" }}")
+        .join(" ")
+}
+
+fn spliced(text: string) -> int { said_in("compiler.fp_run_spliced", "packages/std-avrac/src/core/x.av", text).length }
+
+spec "compiler/rule_pass (groups)" {
+    then "a tag claimed twice in a file is refused at its second claim" {
+        tags(
+                "fn a() -> int { fp(50, []) }\nfn b() -> int { fp(50, [1]) }\nfn c() -> int { fp(51, []) }\n",
+            ) == "50:1 50:2! 51:3" &&
+            said_in(
+                "compiler.fp_tag_once",
+                "packages/std-avrac/src/core/x.av",
+                "fn a() -> int { fp(50, []) }\nfn b() -> int { fp(50, [1]) }\n",
+            )
+                .length == 1
+    }
+    then "both branches of a picked tag claim, and a variable tag claims nothing" {
+        tags(
+            "fn a(h: int?) -> int { fp(if h == null { 55 } else { 61 }, [1]) }\nfn b(t: int) -> int { fp(t, [1]) }\n",
+        ) == "55:1 61:1"
+    }
+    then "a restamp claims its tag" { tags("fn a() -> int { fp(61, []) }\nfn b(s: S) { s.restamp(t, 61) }\n") == "61:1 61:2!" }
+    then "the shared fold claims 105 once a file, and never where it is defined" {
+        tags("fn a() -> int { fp_list([1]) + fp_list([2]) }\nfn b() -> int { fp(105, []) }\n") == "105:1 105:2!" &&
+            tags("fn fp_list(p: List<int>) -> int { fp(105, p) }\nfn a() -> int { fp_list([1]) }\n") == "105:1"
+    }
+    then "a test is no fold space" {
+        tags_at(
+            "packages/std-avrac/src/core/tests/x_test.av",
+            "fn a() -> int { fp(50, []) + fp(50, []) }\n",
+        ) == ""
+    }
+    then "a run spliced into a parts list is refused, and a folded one is not" {
+        spliced("fn a(bs: List<int>) -> int { fp(1, [a].concat(bs)) }\n") == 1 &&
+            spliced("fn a(bs: List<int>) -> int { fp(1, flatten([[a], bs])) }\n") == 1 &&
+            spliced(
+                "fn a(bs: List<int>, cs: List<int>) -> int { fp(1, [a, fp_list(bs.concat(cs))]) }\n",
+            ) == 0 &&
+            spliced("fn a() -> int { fp(1, [a, b]) }\n") == 0 &&
+            spliced(
+                "fn a(bs: List<int>) -> int {\n    fp(\n        1,\n        [a]\n            .concat(bs),\n    )\n}\n",
+            ) == 1
+    }
+}

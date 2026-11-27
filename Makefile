@@ -1177,12 +1177,6 @@ layout-oracle:
 	@sh tools/layout_oracle_own_term_test.sh
 	@sh tools/layout_oracle_boundary_test.sh
 
-# A fingerprint tag NAMES a node kind: inside one fold space no two
-# kinds may wear one number, or they fingerprint alike by construction.
-fingerprints:
-	@python3 tools/avsrc.py >/dev/null
-	@python3 tools/fingerprints.py
-
 # THE FOOTPRINT: a program that spawns nothing links no scheduler (tools/footprint.py), and the
 # smallest programs' bytes are ledger rows, exact within their toolchain (tools/footprint_bytes.sh).
 footprint: $(RUNTIME_LIB) $(UNINSTRUMENTED_LIB)
@@ -1278,6 +1272,7 @@ bash-parse:
 # against x field by field, is std-avrac's own suite
 # (compiler/tests/codecs_test.av).
 codecs-static:
+	@python3 tools/avsrc.py >/dev/null
 	@python3 tools/codecs.py
 
 # THE ROWS' CLAIM ON THE C. `runtime/avra_rt.h` is generated from
@@ -1437,7 +1432,7 @@ witness: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 # refuses in that case, which is honest and not a gate failure, so
 # its status is discarded here.
 # not a keeper — a lane's local union of keepers; CI runs each in its own job
-gate: llvm-libs seed-check stems vocab fingerprints ui-host ui-host-test ui-board ui-board-native ui-browser pre-commit-hook codecs-static rt-header rt-ns parser witnesses externs idioms dogfooding-rules fmt-lossless attack tested runtime-tests traps compile-slots witness tool-witnesses cache-attacks
+gate: llvm-libs seed-check stems vocab ui-host ui-host-test ui-board ui-board-native ui-browser pre-commit-hook codecs-static rt-header rt-ns parser witnesses externs idioms dogfooding-rules fmt-lossless attack tested runtime-tests traps compile-slots witness tool-witnesses cache-attacks
 	@sh tools/gate_receipt.sh write || true
 
 tested: $(COMPILER_OBJS) $(PACKAGE_OBJS) libs

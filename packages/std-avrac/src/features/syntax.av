@@ -195,6 +195,48 @@ impl Syntax {
         }
     }
 
+    /// This integer literal's own value — null for every other seat.
+    fn int_lit_value() -> int? {
+        match self.at {
+            .Expr(id) -> self.of.view.store.expr(id).int_of(),
+            .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> null,
+        }
+    }
+
+    /// A plain call's own callee name (`f(x)` answers `"f"`) — null for every other seat, a method
+    /// call included.
+    fn callee_name() -> string? {
+        match self.at {
+            .Expr(id) -> self.of.view.store.callee_name(id),
+            .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> null,
+        }
+    }
+
+    /// An `if`'s two branches, then-branch first — null for every other seat.
+    fn if_branches() -> List<Syntax>? {
+        match self.at {
+            .Expr(id) -> match self.of.view.store.expr(id) {
+                .If(_, t, e) -> [self.coded(t)].concat(if e == null { [] } else { [self.coded(e!)] }),
+                _ -> null,
+            },
+            .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> null,
+        }
+    }
+
+    /// Whether this file declares a fn named `name` at any depth.
+    fn file_declares_fn(name: string) -> bool {
+        self.file_read()
+        let store = self.of.view.store
+        store
+            .stmt_ids()
+            .any(
+                (s) -> match store.stmt(s) {
+                    .FnDecl(n, _, _, _, _) -> n.text() == name,
+                    _ -> false,
+                },
+            )
+    }
+
     /// Whether this node is a struct literal — false for every other
     /// seat, `.Field` included: a rule guards `lit.is_struct_lit()`
     /// before reading `lit.kids()` as its fields.
@@ -205,8 +247,8 @@ impl Syntax {
         }
     }
 
-    /// This node's own structural fingerprint — the identity `make
-    /// fingerprints` gates the tree on; null for a seat fingerprinting
+    /// This node's own structural fingerprint — the identity `compiler.fp_tag_once`
+    /// holds the tree to; null for a seat fingerprinting
     /// does not cover.
     fn fp() -> int? {
         match self.at {

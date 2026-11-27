@@ -1,0 +1,32 @@
+// The one-way layering, judged on fixture paths: a compiler file names its own layer and the ones
+// below it; @std/relation names no compiler, and its engine reads @std/meta and itself alone.
+use compiler.{layer_words}
+
+fn avrac(file: string, target: string) -> List<string> { layer_words("@std/avrac/src/${file}", "@std.avrac", target) }
+
+fn relation(file: string, target: string) -> List<string> { layer_words("@std/relation/src/${file}", "@std.relation", target) }
+
+spec "compiler/idioms (layer_climbs on fixture paths)" {
+    then "a core file naming the compiler climbs, and says so" {
+        avrac("core/types.av", "compiler").join("") == "`core` names `compiler` — `use compiler`" &&
+            avrac("features/x.av", "@std.avrac.compiler").length == 1
+    }
+    then "a layer naming its own or one below does not climb" {
+        avrac("features/x.av", "core").length == 0 &&
+            avrac("compiler/x.av", "features").length == 0 &&
+            avrac("core/tests/x_test.av", "compiler").length == 0
+    }
+    then "@std/relation names no compiler, its tests' core aside" {
+        relation("rows.av", "@std.avrac.core").length == 1 &&
+            relation("tests/x/x.av", "@std.avrac.core").length == 0
+    }
+    then "the engine reads @std/meta and itself alone" {
+        relation("engine/k.av", "@std.io").length == 1 &&
+            relation("engine/k.av", "@std.meta").length == 0 &&
+            relation("engine/k.av", "engine").length == 0 &&
+            relation("engine/k.av", "@std.relation.engine").length == 0 &&
+            relation("engine/k.av", "db").length == 1 &&
+            relation("engine/k.av", "@std.relation").length == 1
+    }
+    then "another package is not judged" { layer_words("@x/y/src/core/a.av", "@x.y", "compiler").length == 0 }
+}

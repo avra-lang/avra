@@ -13,7 +13,7 @@
 //! `idioms.av`'s rules, and the COMPILER's own (compiler/idioms.av,
 //! shapes no single feature owns) are imported here.
 use core.{distinct_ints, flatten, sorted_by, SyntaxArena}
-use features.{Code, Fix, Fixes, Syntax, fact_rule, rule}
+use features.{Code, Fix, Fixes, RuleScope, Syntax, fact_rule, rule}
 use @std.text.{text_before}
 use compiler.{
     refusal_assembled,
@@ -90,7 +90,7 @@ export const any_root: int = -1
 /// `string?` a rule either carries or does not; and whether it reads
 /// past the item its node stands in (`RULES_READING_THE_FILE`), decided
 /// once a rule.
-export type RuleEntry = { name: string, module: string, run: RuleRun, root: List<int>, kinds: List<int>, doc: string, fixes: List<Fixes>, keeps: List<string>, law: List<string>, says: List<string> = [], reads_file: bool = false }
+export type RuleEntry = { name: string, module: string, run: RuleRun, root: List<int>, kinds: List<int>, doc: string, fixes: List<Fixes>, keeps: List<string>, law: List<string>, says: List<string> = [], reads_file: bool = false, scope: RuleScope = RuleScope.Node }
 
 /// THE RULES THAT READ PAST THEIR ITEM — other items of the node's file — by name. Every other rule
 /// reads the item its node stands in alone, and what it finds is kept per item, so an edit walks only
@@ -152,7 +152,7 @@ export once fn rule_entries() -> List<RuleEntry> {
 }
 
 /// A rule over a node's syntax alone, as its declaration gathers.
-type SyntaxRuleEntry = { name: string, module: string, run: fn(Syntax) -> Fix?, root: List<int>, kinds: List<int>, doc: string, fixes: List<Fixes>, keeps: List<string>, law: List<string>, says: List<string> }
+type SyntaxRuleEntry = { name: string, module: string, run: fn(Syntax) -> Fix?, root: List<int>, kinds: List<int>, doc: string, fixes: List<Fixes>, keeps: List<string>, law: List<string>, says: List<string>, scope: List<RuleScope> }
 
 /// A rule over the code with what the compiler knows of it, as its declaration gathers.
 type FactRuleEntry = { name: string, module: string, run: fn(Code) -> Fix?, root: List<int>, kinds: List<int>, doc: string, fixes: List<Fixes>, keeps: List<string>, law: List<string>, says: List<string> }
@@ -170,9 +170,16 @@ impl SyntaxRuleEntry {
             keeps: self.keeps,
             law: self.law,
             says: self.says,
-            reads_file: RULES_READING_THE_FILE.contains(self.name),
+            reads_file: RULES_READING_THE_FILE.contains(self.name) ||
+                judges_the_file(self.scope.first() ?? RuleScope.Node),
+            scope: self.scope.first() ?? RuleScope.Node,
         }
     }
+}
+
+/// Whether a rule of `scope` is walked over its whole file.
+export fn judges_the_file(scope: RuleScope) -> bool {
+    match scope { .Node -> false, .File -> true }
 }
 
 impl FactRuleEntry {
@@ -193,7 +200,7 @@ impl FactRuleEntry {
     }
 }
 
-collect syntax_rules: List<SyntaxRuleEntry> = rule in closure as SyntaxRuleEntry { name: it.name, module: it.module, run: it.run, root: it.root_kind, kinds: it.node_kinds, doc: it.doc, fixes: it.fixes, keeps: it.keeps, law: it.law, says: it.says } by it.module, it.name
+collect syntax_rules: List<SyntaxRuleEntry> = rule in closure as SyntaxRuleEntry { name: it.name, module: it.module, run: it.run, root: it.root_kind, kinds: it.node_kinds, doc: it.doc, fixes: it.fixes, keeps: it.keeps, law: it.law, says: it.says, scope: it.scope } by it.module, it.name
 
 collect fact_rules: List<FactRuleEntry> = fact_rule in closure as FactRuleEntry { name: it.name, module: it.module, run: it.run, root: it.root_kind, kinds: it.node_kinds, doc: it.doc, fixes: it.fixes, keeps: it.keeps, law: it.law, says: it.says } by it.module, it.name
 
