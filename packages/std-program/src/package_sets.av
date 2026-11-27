@@ -45,7 +45,7 @@ export const NO_NAMES: int = 0
 
 /// One set of package names a store keeps, sorted.
 @derive(Saved)
-export type KeptNameSet = { names: List<string> }
+export type KeptNameSet = { print: int, names: List<string> }
 
 /// Every set of package names a store's records may name by print.
 @derive(Saved)
@@ -60,8 +60,10 @@ export const EMPTY_SET_PRINT: int = 1
 /// The print a set of `names` is kept under across processes: the same for the same members in any
 /// order, `EMPTY_SET_PRINT` for none, and for any other set a word carrying its second bit, so it is
 /// never `SET_UNWORKED` and never the empty set's.
-export fn set_print(names: List<string>) -> int {
-    let sorted = distinct_sorted(names)
+export fn set_print(names: List<string>) -> int { sorted_print(distinct_sorted(names)) }
+
+/// The print of `sorted`, its names in text order and each once.
+fn sorted_print(sorted: List<string>) -> int {
     if sorted.is_empty() { return EMPTY_SET_PRINT }
     content_hash(spelled_set(sorted).bytes()).high_word | 2
 }
@@ -86,11 +88,24 @@ impl NameSets {
     fn print_of(id: int) -> int {
         let known = self.prints.get()[id]
         if known != SET_UNWORKED { return known }
-        let print = set_print(self.members_of(id))
+        let print = sorted_print(self.members_of(id))
         self.prints.set_at(id, print)
         self.printed.put("${print}", id)
         print
     }
+
+    /// The id of the set `kept` names, its print taken as kept, never worked out again.
+    fn of_kept(kept: KeptNameSet) -> int {
+        let id = self.of_sorted(kept.names)
+        if self.prints.get()[id] == SET_UNWORKED {
+            self.prints.set_at(id, kept.print)
+            self.printed.put("${kept.print}", id)
+        }
+        id
+    }
+
+    /// Every set this table holds but the empty one, each with its print.
+    fn kept_sets() -> List<KeptNameSet> { [KeptNameSet { print: self.print_of(id), names: self.members_of(id) } for id in 1..self.members.get().length] }
 
     /// The id of the set kept under `print`, where this table holds it: every set it holds printed
     /// first.
@@ -100,9 +115,6 @@ impl NameSets {
         self.printed_through.set(held)
         self.printed.get().get("${print}")
     }
-
-    /// Every set this table holds but the empty one, each sorted.
-    fn all_sets() -> List<List<string>> { self.members.get().drop(1) }
 
     /// The id of the set holding every member of `a` and of `b`.
     fn union(a: int, b: int) -> int {

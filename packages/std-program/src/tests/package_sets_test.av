@@ -1,5 +1,5 @@
 // The empty set first, then sets made in different orders, with repeats, and their unions.
-use package_sets.{EMPTY_SET_PRINT, NO_NAMES, SET_UNWORKED, name_sets, set_print}
+use package_sets.{EMPTY_SET_PRINT, KeptNameSet, NO_NAMES, SET_UNWORKED, name_sets, set_print}
 
 spec "package_sets — a set's print, kept across processes" {
     given "the empty set" {
@@ -30,6 +30,25 @@ spec "package_sets — a set's print, kept across processes" {
             first.print_of(a) == second.print_of(b) &&
                 second.printed_as(first.print_of(a)) == b &&
                 a != b
+        }
+    }
+}
+
+spec "package_sets — a kept set read back" {
+    given "a set a store kept with its print" {
+        then "the table answers that print for it, never working it out again" {
+            let sets = name_sets()
+            let id = sets.of_kept(KeptNameSet { print: 6, names: ["@std/x", "proj"] })
+            sets.print_of(id) == 6 && sets.printed_as(6) == id && sets.of(["proj", "@std/x"]) == id
+        }
+        then "every set the table holds is kept with its print, the empty one aside" {
+            let sets = name_sets()
+            let a = sets.of(["a"])
+            let kept = sets.kept_sets()
+            kept.length == 1 &&
+                kept[0].print == set_print(["a"]) &&
+                kept[0].names.join(",") == "a" &&
+                a != NO_NAMES
         }
     }
 }
