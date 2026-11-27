@@ -1,0 +1,102 @@
+// A header's declarations as clang's JSON dump gives them, read into
+// canonical types. Each dump beside this file is
+// `clang -fsyntax-only -Xclang -ast-dump=json -x c <name>.h`, run in
+// `c_headers/`.
+use @std.meta.{embed}
+use @std.text.{repeat}
+
+use compiler.host.{CDecl, CType, DataModel, c_decls, lp64}
+
+// LICENSED input.compile_embed: the test's own fixture, read when the test is built
+const SHAPES: string = embed("c_headers/shapes.json")
+
+// LICENSED input.compile_embed: the test's own fixture, read when the test is built
+const LIBC: string = embed("c_headers/libc.json")
+
+// LICENSED input.compile_embed: the test's own fixture, read when the test is built
+const EMPTY: string = embed("c_headers/empty.json")
+
+/// A canonical type, spelled for comparison.
+fn shown(t: CType) -> string {
+    match t {
+        .Void -> "void",
+        .Int(bits, signed) -> if signed { "i${bits}" } else { "u${bits}" },
+        .Float(bits) -> "f${bits}",
+        .Pointer(target, depth, constant) -> "${if constant { "const " } else { "" }}${target}${repeat("*", depth)}",
+        .Record(s) -> "{${s}}",
+        .Unread(s) -> "?${s}",
+    }
+}
+
+/// A declaration as `answer (seat, seat[, ...])`.
+fn signature(d: CDecl) -> string {
+    let seats = [shown(s) for s in d.seats].join(", ")
+    "${shown(d.answer)} (${seats}${if d.variadic { ", ..." } else { "" }})"
+}
+
+/// The signature `name` has in `dump` under `model`, or why there is none.
+fn declared_as(dump: string, name: string, model: DataModel) -> string {
+    match c_decls(dump, model) {
+        .Ok(ds) -> {
+            let d? = ds.find(it.name == name) else { return "no ${name}" }
+            signature(d)
+        },
+        .Err(why) -> "refused: ${why}",
+    }
+}
+
+fn shape(name: string) -> string { declared_as(SHAPES, name, lp64()) }
+
+spec "compiler/c_decls" {
+    given "an integer's width and sign are the canonical type's" {
+        then "int is signed 32" { shape("f_int") == "i32 (i32)" }
+        then "unsigned is unsigned 32" { shape("f_unsigned") == "u32 (u32)" }
+        then "long is the model's: 64 under LP64" { shape("f_long") == "i64 (i64)" }
+        then "long is the model's: 32 under a 32-bit long" {
+            declared_as(SHAPES, "f_long", DataModel { long_bits: 32, char_signed: true }) == "i32 (i32)"
+        }
+        then "a typedef answer and seat read through to long long and unsigned int" { shape("f_typedef") == "i64 (u32)" }
+        then "signed char, unsigned short, unsigned char and _Bool keep their widths" {
+            shape("f_narrow") == "i8 (u16, u8, u8)"
+        }
+        then "int64_t, uint8_t, int32_t, size_t and uintptr_t read through the system headers" {
+            declared_as(LIBC, "g_wide", lp64()) == "i64 (u8, i32, u64, u64)"
+        }
+    }
+    given "a float rides its own width" {
+        then "double is 64" { shape("f_double") == "f64 (f64)" }
+        then "float is 32" { shape("f_float") == "f32 (f32)" }
+        then "long double is unread" { shape("f_long_double") == "?long double ()" }
+    }
+    given "a pointer names its target, its depth and the target's const" {
+        then "char* answers over a const char* seat" { shape("f_text") == "char* (const char*)" }
+        then "void* is a pointer to void" { shape("f_void_ptr") == "void* (void*)" }
+        then "a pointer to a typedef of a struct is two deep to the struct" {
+            shape("f_ptr_ptr") == "struct opaque** (struct opaque**)"
+        }
+        then "a pointer to a pointer typedef adds the depths" { shape("f_ptr_typedef") == "char* (char**)" }
+        then "a const pointer to char is no pointer to const char" { shape("f_const_ptr") == "char* (u32)" }
+    }
+    given "what no width names" {
+        then "a struct and a union by value are records" {
+            shape("f_by_value") == "{struct pair} ({struct pair})" &&
+                shape("f_union") == "{union bits} ()"
+        }
+        then "a void answer with no seats is void ()" { shape("f_void") == "void ()" }
+        then "a variadic keeps its fixed seats and says so" { shape("f_variadic") == "i32 (const char*, ...)" }
+        then "an enum and a function pointer seat are unread" { shape("f_enum") == "?enum mode (?int (*)(int))" }
+        then "a function answering a function pointer is unread whole" {
+            shape("f_fn_ptr") == "?int (*(void))(int) ()"
+        }
+    }
+    given "the dump itself" {
+        then "a header declaring nothing reads as no declarations, not as a refusal" {
+            match c_decls(EMPTY, lp64()) { .Ok(ds) -> ds.is_empty(), .Err(_) -> false }
+        }
+        then "a declaration clang made implicitly is not the header's" { declared_as(SHAPES, "__builtin_va_list", lp64()) == "no __builtin_va_list" }
+        then "text that is not JSON is refused" { declared_as("not json", "f", lp64()) == "refused: clang's dump is not JSON" }
+        then "JSON that is no translation unit is refused" {
+            declared_as("{\"kind\": \"FunctionDecl\"}", "f", lp64()) == "refused: clang's dump holds no translation unit"
+        }
+    }
+}
