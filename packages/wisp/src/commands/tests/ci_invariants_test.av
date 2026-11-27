@@ -377,7 +377,7 @@ spec "ci_invariants — run-mode, path-gate, dup-run, ready-race" {
     then "a gate that runs on an unpublished compiler's light run is refused" {
         let ungated = checks()
             .replace(
-                " && !(needs.prepare.outputs.full == '0' && needs.prepare.outputs.compiler_source == 'latest')",
+                " && !(needs.prepare.outputs.full == '0' && needs.prepare.outputs.compiler_source == 'trunk')",
                 "",
             )
         ungated != checks() && refuses(check_run_mode(ungated), "`gate`")
@@ -549,6 +549,13 @@ spec "ci_invariants — wisp-route" {
     }
     then "a job reaching wisp through make without the action is refused by name" {
         refuses(route("${maker()}  k:\n    steps:\n      - run: make -s probe\n"), "`k` runs wisp")
+    }
+    then "a job asking `--paths` of a wisp verb builds no wisp of its own" {
+        clean(
+            route(
+                "${maker()}  k:\n    steps:\n      - uses: ./.github/actions/wisp\n      - run: build/avra test \$(./wisp shards --paths p)\n",
+            ),
+        )
     }
     then "a job that builds its own is refused, and so is a workflow with no maker" {
         refuses(

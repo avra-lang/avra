@@ -443,8 +443,8 @@ jobs:
           save: ${{ job.status == 'success' && steps.plan.outputs.main == '1' }}
   # THE COMPILER MAIN BUILT AND PROVED, PUBLISHED WHERE A PR CAN READ IT. Only a
   # run on `main` reaches this job, and only once that run's `test` verdict is
-  # green: every PR falls back to the newest published compiler, so a compiler
-  # main has not proved is never served. The key is the compiler's own source
+  # green: a PR whose key is unpublished starts from the trunk's compiler, so a
+  # compiler main has not proved is never served. The key is the compiler's own source
   # digest, so the artifact is immutable: one key, one binary, and `publish`
   # never overwrites one.
   publish-compiler:
@@ -701,7 +701,7 @@ jobs:
     needs: [prepare]
     # A LIGHT RUN WHOSE TREE'S COMPILER IS NOT PUBLISHED OWES NO GATE: the gate's fmt and
     # idioms would run an older compiler over this tree's source. Skipped, not passed.
-    if: (needs.prepare.outputs.changed != '' || needs.prepare.outputs.packages != '') && !(needs.prepare.outputs.full == '0' && needs.prepare.outputs.compiler_source == 'latest')
+    if: (needs.prepare.outputs.changed != '' || needs.prepare.outputs.packages != '') && !(needs.prepare.outputs.full == '0' && needs.prepare.outputs.compiler_source == 'trunk')
     runs-on: ubuntu-latest
     container: *ci-image
     timeout-minutes: 30
@@ -1006,7 +1006,7 @@ jobs:
       # A DRAFT'S RUN IS NOT THE GATE: its heavy legs were never owed, so a
       # verdict over them would pass on skips. It says so and refuses, as the
       # `only` run does; readying the PR (or the `full-ci` label) runs the gate.
-      - if: needs.prepare.outputs.full == '0' && needs.prepare.outputs.compiler_source == 'latest'
+      - if: needs.prepare.outputs.full == '0' && needs.prepare.outputs.compiler_source == 'trunk'
         name: light gate compiler
         run: |
           echo "light gate: compiler steps skipped — the tree's compiler is not the published one; ready or label full-ci for a verdict"

@@ -36,7 +36,7 @@ outputs:
     description: "'true' when the restored or fetched compiler is this tree's own"
     value: ${{ steps.restored.outputs.hit == 'true' || steps.release.outputs.hit == 'true' }}
   source:
-    description: where the build started from (exact, latest, none), empty on a cache hit
+    description: where the build started from (exact, trunk, none), empty on a cache hit
     value: ${{ steps.release.outputs.source }}
   rungs:
     description: this run's rung commits
@@ -116,10 +116,10 @@ runs:
     # so the miss is a `::warning::` carrying the fetch's own reason (an
     # unpublished key, an unreachable API) or that the smoke run failed.
     #
-    # A MISS FALLS BACK TO MAIN'S NEWEST COMPILER, never straight to the
-    # seed. Only a push to main publishes, so a train's or a PR's own key can
-    # never have a release; main's binary beside main's `.avra-cache` is where
-    # the incremental build starts, and the committed seed is a full cold
+    # A MISS FALLS BACK TO THE TRUNK'S COMPILER (the gate-builder release), never straight to
+    # the seed, and never to whatever compiler was published last. Only a push to main
+    # publishes, so a train's or a PR's own key can never have a release; the trunk's binary is
+    # where the incremental build starts, and the committed seed is a full cold
     # bootstrap. A hit on the tree's OWN key needs no build at all. Both
     # paths are smoke-run before they are trusted, so a binary built for
     # another image falls through.
@@ -138,10 +138,11 @@ runs:
           echo "source=exact" >> "$GITHUB_OUTPUT"
           echo "speed compiler 0" >> speed.log
           echo "compiler-release: HIT — the tree's own key ${tree}; no build owed"
-        elif sh wisp release latest build/avra && build/avra --version >/dev/null 2>&1; then
+        elif curl -fsSL --retry 3 -o build/trunk-compiler.tar.gz https://github.com/avra-lang/avra/releases/download/gate-builder/compiler.tar.gz &&
+          tar xzf build/trunk-compiler.tar.gz build/avra && build/avra --version >/dev/null 2>&1; then
           echo "hit=false" >> "$GITHUB_OUTPUT"
-          echo "source=latest" >> "$GITHUB_OUTPUT"
-          echo "::warning::compiler release for ${tree} missed (${reason}); starting the build from the newest published compiler"
+          echo "source=trunk" >> "$GITHUB_OUTPUT"
+          echo "::warning::compiler release for ${tree} missed (${reason}); starting the build from the trunk's compiler (the gate-builder release)"
         else
           echo "hit=false" >> "$GITHUB_OUTPUT"
           echo "source=none" >> "$GITHUB_OUTPUT"
