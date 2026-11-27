@@ -1067,12 +1067,18 @@ impl QueryEngine {
     /// The set of packages every question `reads`' words name read.
     fn set_of_reads(reads: List<int>) -> int { hashes_in(reads).fold(NO_NAMES, (set, q) -> self.sets.union(set, self.read_set_of(q))) }
 
-    /// The set of packages the question known as `question` read: as settled here, else as its kept
-    /// record of the answer the frontier stands on says, else as the frontier stands, read by read; a
-    /// question this process can't tell read a package nobody shares.
+    /// The set of packages the question known as `question` read: as settled here, else as the kept
+    /// record of an answer held here unread says, else as its kept record of the answer the frontier
+    /// stands on says, else as the frontier stands, read by read; a question this process can't tell
+    /// read a package nobody shares.
     fn read_set_of(question: ContentHash) -> int {
         let known = self.read_sets.get(question)
         if known != null { return known! }
+        let held = self.held_read_set(question)
+        if held != null {
+            self.read_sets.put(question, held!)
+            return held!
+        }
         let open? = self.frontier_open() else { return self.unplaced() }
         let at? = open.frontier.place_of(question) else { return self.unplaced() }
         let found = self.kept_read_set(open.frontier, at) ?? self.walked_read_set(open.frontier, at)
@@ -1084,8 +1090,24 @@ impl QueryEngine {
     /// set is its stamp's, and where no kept record holds that answer.
     fn kept_read_set(f: Frontier, at: int) -> int? {
         if f.input_at(at) { return null }
-        let answer = f.answer_at(at)
-        let record? = self.store.records_of(f.question_at(at)).find(it.answer.same_as(answer)) else { return null }
+        self.record_read_set(f.question_at(at), f.answer_at(at))
+    }
+
+    /// The set the kept record of the answer held settled here for `question` carries, where this
+    /// process learned it without reading it — lent from the build's table, or handed over from
+    /// another engine; absent where none is held so, for an input, and where no kept record holds it.
+    fn held_read_set(question: ContentHash) -> int? {
+        let held? = self.settled_held(question) else { return null }
+        match held {
+            .Learned(entry) -> if entry.input { null } else { self.record_read_set(question, entry.answer) },
+            .Standing(_, _, _, _) -> null,
+        }
+    }
+
+    /// The set of packages the kept record of `answer` to `question` names; absent where no kept
+    /// record holds that answer.
+    fn record_read_set(question: ContentHash, answer: ContentHash) -> int? {
+        let record? = self.store.records_of(question).find(it.answer.same_as(answer)) else { return null }
         self.sets.of(record.packages.texts())
     }
 
