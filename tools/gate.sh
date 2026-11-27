@@ -288,6 +288,9 @@ if [ "$slice" = seconds ]; then
     exit 0
 fi
 if [ "$slice" = unpack ]; then unpacked "$@"; fi
+# the seed keeps the rungs it climbs where `--ladder-cache <dir>` says, and takes up what is kept there
+ladder_cache=
+if [ "$slice" = seed ] && [ "${1:-}" = --ladder-cache ]; then ladder_cache=$(cd "${2:?gate: --ladder-cache names a directory}" && pwd); shift 2; fi
 [ "$slice" = seed ] && slice=pack
 [ "$slice" = pack ] || [ "$slice" = census ] || slices | awk '{ print $1 }' | grep -qx "$slice" || { echo "gate: no slice \`$slice\` — \`sh tools/gate.sh list\` names them" >&2; exit 2; }
 
@@ -396,7 +399,7 @@ compiler() {
         # before (`make compiler`, tools/ladder.sh), as a pull request's check builds it, and HEAD's
         # generation 1 by the last
         echo "fact rungs $(echo $rungs | wc -w) over $(printf '%.8s' "$rung_base"): $rungs" >>"$out/rows"
-        row compiler-ladder env AVRA_STD_ANSWERS=0 make -s compiler RUNGS="$rungs" LADDER_BASE="$rung_base" LADDER_BOUND=1800 GENS=1 || return 1
+        row compiler-ladder env AVRA_STD_ANSWERS=0 make -s compiler RUNGS="$rungs" LADDER_BASE="$rung_base" LADDER_BOUND=1800 LADDER_CACHE="$ladder_cache" GENS=1 || return 1
     else
         row compiler-gen1 env AVRA_STD_ANSWERS=0 make avra || return 1
     fi
