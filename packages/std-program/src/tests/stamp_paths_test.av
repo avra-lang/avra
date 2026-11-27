@@ -1,0 +1,86 @@
+// A stamp's path is named and read once per directory: each answer is the one its whole path gives.
+use @std.path.{normalized}
+use disk_store.{disk_store_at, named_by_dir, named_from, normalized_by_dir}
+use layered_store.{PackagePlace, own_store}
+
+/// Paths whose last segment, directory or root each take a road of their own.
+fn hostile_paths() -> List<string> {
+    [
+        "/a/b/c.av",
+        "/c.av",
+        "c.av",
+        "a/../../c.av",
+        "../x/./y.av",
+        "/a/b/..",
+        "/a/b/.",
+        "/a/b/",
+        "/a//b/c.av",
+        "/a/b/../c.av",
+        "/a/../c.av",
+        "a/../c.av",
+        "./c.av",
+        "/",
+        "",
+    ]
+}
+
+/// Whether every path in `paths` normalizes alike through one directory table and alone.
+fn read_alike(dir: string, paths: List<string>) -> bool {
+    let dirs: Cell<Map<string, string>> = Cell.new({})
+    let joined = [if dir.is_empty() || p.starts_with("/") { p } else { "${dir}/${p}" } for p in paths]
+    joined.concat(joined).all((p) -> normalized_by_dir(p, dirs) == normalized(p))
+}
+
+/// Whether every path in `paths` is named from `dir` alike through one directory table and alone.
+fn named_alike(dir: string, paths: List<string>) -> bool {
+    let dirs: Cell<Map<string, string>> = Cell.new({})
+    paths.concat(paths).all((p) -> named_by_dir(dir, p, dirs) == named_from(dir, p))
+}
+
+spec "stamp paths — a directory named once names each of its files as the whole path would" {
+    given "paths read from a store's directory" {
+        then "each normalizes as it does alone, from an absolute store and a relative one" {
+            read_alike("/s/t/.cache", hostile_paths()) &&
+                read_alike("s/../t", hostile_paths()) &&
+                read_alike("", hostile_paths())
+        }
+    }
+    given "paths named from a store's directory, some in a directory that holds the store" {
+        then "each is named as it is alone" {
+            let store = "/w/p/.cache/tapes"
+            let paths = hostile_paths()
+                .concat(
+                    [
+                        "/w/p/.cache/tapes/x.av",
+                        "/w/p/.cache",
+                        "/w/p/.cache/y.av",
+                        "/w/q/z.av",
+                        "/w/p",
+                    ],
+                )
+            named_alike(store, paths) &&
+                named_alike("rel/dir", paths.concat(["rel/dir/f.av", "rel/f.av", "rel"]))
+        }
+    }
+    given "a store over packages whose roots nest" {
+        then "a path answers the nearest root above it, a root itself its own, and a path under none none" {
+            let store = own_store(
+                disk_store_at("/tmp/avra-stamp-paths"),
+                [
+                    PackagePlace { name: "outer", root: "/w", shared: false },
+                    PackagePlace { name: "inner", root: "/w/in", shared: false },
+                ],
+            )
+            let asked = [
+                "/w/a.av",
+                "/w/in/b.av",
+                "/w/in",
+                "/w/in/deep/c.av",
+                "/w/a.av",
+                "/elsewhere/d.av",
+                "/w/in/b.av",
+            ]
+            [store.package_at(p) ?? "none" for p in asked].join(",") == "outer,inner,inner,inner,outer,none,inner"
+        }
+    }
+}

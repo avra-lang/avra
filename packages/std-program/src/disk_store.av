@@ -30,7 +30,7 @@ use @std.io.{
     write_text,
 }
 use @std.meta.{derive}
-use @std.path.{is_absolute, joined_path, normalized, relative_path}
+use @std.path.{dir_of, file_name, is_absolute, joined_path, normalized, relative_path, segments}
 use @std.text.{parse_int, text_before}
 use answer_record.{
     AnswerRecord,
@@ -1177,25 +1177,62 @@ impl AnswerStore for DiskStore {
 
     /// The stamps kept here, each path read where it lies from this store.
     fn input_stamps() -> List<InputStamp> {
-        [s with { path: normalized(joined_path(self.directory, s.path)) } for s in stamps_read("${self.directory}/${STAMPS_FILE}")]
+        let dirs: Cell<Map<string, string>> = Cell.new({})
+        [s with { path: normalized_by_dir(joined_path(self.directory, s.path), dirs) } for s in stamps_read("${self.directory}/${STAMPS_FILE}")]
     }
 
     /// Writes `stamps` at once, whole or not at all, each path named from this store, so the store
     /// names no checkout: a stamp only ever spares a read whose answer the frontier still holds.
     fn keep_input_stamps(stamps: List<InputStamp>) {
         let _ = make_dirs(self.directory) catch ""
+        let dirs: Cell<Map<string, string>> = Cell.new({})
         stamps_written(
             "${self.directory}/${STAMPS_FILE}",
-            [s with { path: named_from(self.directory, s.path) } for s in stamps],
+            [s with { path: named_by_dir(self.directory, s.path, dirs) } for s in stamps],
         )
     }
 }
 
 /// `path` named from the directory `dir` where the two are spelled from one root, else as it stands.
-fn named_from(dir: string, path: string) -> string {
+export fn named_from(dir: string, path: string) -> string {
     if is_absolute(path) != is_absolute(dir) { return path }
     relative_path(dir, path)
 }
+
+/// `path` normalized, its directory normalized once per `dirs`: a plain last segment follows its
+/// directory's normal form unchanged.
+export fn normalized_by_dir(path: string, dirs: Cell<Map<string, string>>) -> string {
+    let dir = dir_of(path)
+    let name = file_name(path)
+    if dir.is_empty() || !plain_segment(name) { return normalized(path) }
+    let known = dirs.get().get(dir)
+    let at = known ?? normalized(dir)
+    if known == null { dirs.put(dir, at) }
+    under_normal(at, name)
+}
+
+/// `name` under the normal directory `at`.
+fn under_normal(at: string, name: string) -> string {
+    if at.is_empty() { return name }
+    if at == "/" { return "/${name}" }
+    "${at}/${name}"
+}
+
+/// `path` named from `dir` as `named_from` names it, its directory named once per `dirs`; a directory
+/// that holds `dir` names its file whole, since the file may be one `dir` lies under.
+export fn named_by_dir(dir: string, path: string, dirs: Cell<Map<string, string>>) -> string {
+    let parent = dir_of(path)
+    let name = file_name(path)
+    if parent.is_empty() || !plain_segment(name) || is_absolute(path) != is_absolute(dir) { return named_from(dir, path) }
+    let known = dirs.get().get(parent)
+    let from = known ?? named_from(dir, parent)
+    if known == null { dirs.put(parent, from) }
+    if segments(from).all(it == "..") { return named_from(dir, path) }
+    "${from}/${name}"
+}
+
+/// Whether `name` is a segment a path keeps as it stands: neither empty, `.` nor `..`.
+fn plain_segment(name: string) -> bool { name != "" && name != "." && name != ".." }
 
 /// The file a store keeps its inputs' stamps in.
 const STAMPS_FILE: string = "inputs.stamps"

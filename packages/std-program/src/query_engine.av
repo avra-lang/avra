@@ -323,6 +323,8 @@ export type QueryEngine = {
     sets: NameSets,
     /// Whether each set's every package is one the store shares, by the set's id.
     sets_shared: HashKeyedTable<bool>,
+    /// The set holding only each package, by the package's name, once it was asked.
+    package_set: Cell<Map<string, int>>,
     /// Which engine of this process it is: no two engines a process makes share one. What a table
     /// a caller keeps per engine, outside it, is keyed by.
     serial: int,
@@ -394,6 +396,7 @@ export fn query_engine(
         reads_checked: reads_checked,
         sets: name_sets(),
         sets_shared: hash_keyed_table(),
+        package_set: Cell.new({}),
         serial: next_serial(),
         program: program,
     }
@@ -1051,7 +1054,14 @@ impl QueryEngine {
     }
 
     /// The set holding the package whose sources hold `path`.
-    fn set_at_path(path: string) -> int { self.sets.of([self.store.package_at(path) ?? UNPLACED]) }
+    fn set_at_path(path: string) -> int {
+        let name = self.store.package_at(path) ?? UNPLACED
+        let known = self.package_set.get().get(name)
+        if known != null { return known! }
+        let id = self.sets.of([name])
+        self.package_set.put(name, id)
+        id
+    }
 
     /// The set holding only the package no store knows.
     fn unplaced() -> int { self.sets.of([UNPLACED]) }
