@@ -54,7 +54,8 @@ use frontier.{
     frontier_written,
 }
 use hash_keyed_table.{HashKeyedTable, hash_keyed_table}
-use input_stamps.{InputStamp, stamps_read, stamps_written}
+use input_stamps.{InputStamp, sealed_body, sealed_written, stamps_read, stamps_written}
+use package_sets.{KeptNameSet, KeptNameSets}
 use pack_collection.{
     Live,
     QuestionRecords,
@@ -1188,6 +1189,21 @@ impl AnswerStore for DiskStore {
             [s with { path: named_from(self.directory, s.path) } for s in stamps],
         )
     }
+
+    /// The sets of package names kept here, none where the file isn't whole.
+    fn name_sets_kept() -> List<List<string>> {
+        let sealed? = sealed_body("${self.directory}/${NAME_SETS_FILE}") else { return [] }
+        [s.names for s in KeptNameSets.from_saved_bytes(sealed.body).sets]
+    }
+
+    /// Writes `sets` at once, whole or not at all.
+    fn keep_name_sets(sets: List<List<string>>) {
+        let _ = make_dirs(self.directory) catch ""
+        sealed_written(
+            "${self.directory}/${NAME_SETS_FILE}",
+            KeptNameSets { sets: [KeptNameSet { names: n } for n in sets] }.saved_bytes(),
+        )
+    }
 }
 
 /// `path` named from the directory `dir` where the two are spelled from one root, else as it stands.
@@ -1198,6 +1214,9 @@ fn named_from(dir: string, path: string) -> string {
 
 /// The file a store keeps its inputs' stamps in.
 const STAMPS_FILE: string = "inputs.stamps"
+
+/// Where a store keeps the sets of package names its records name by print.
+const NAME_SETS_FILE: string = "names.sets"
 
 impl DiskStore {
     /// Every question this process put in this store's draft.

@@ -13,6 +13,7 @@ use answer_record.{
     question,
     words_of,
 }
+use package_sets.{SET_UNWORKED, set_print}
 use saved_layout.{saved_bytes_in_memory}
 
 /// The record `bytes` saves, read where it lies.
@@ -24,7 +25,7 @@ fn kept_at(bytes: Bytes) -> KeptRecord {
 fn hash_of(text: string) -> ContentHash { content_hash(text.bytes()) }
 
 fn record_reading(reads: List<RecordedRead>) -> AnswerRecord {
-    answer_record(hash_of("an int"), reads, [])
+    answer_record(hash_of("an int"), reads, SET_UNWORKED)
 }
 
 spec "answer_record — what's remembered about an answer" {
@@ -109,8 +110,8 @@ spec "answer_record — what's remembered about an answer" {
                 whole_answer: hash_of("b"),
                 part: null,
             }
-            let std = answer_record(hash_of("an int"), [read], ["@std/x"])
-            let own = answer_record(hash_of("an int"), [read], ["proj"])
+            let std = answer_record(hash_of("an int"), [read], set_print(["@std/x"]))
+            let own = answer_record(hash_of("an int"), [read], set_print(["proj"]))
             !std.kept().same_as(own) && std.kept().same_as(std)
         }
     }
@@ -135,15 +136,19 @@ spec "answer_record — what's remembered about an answer" {
                 !part_a.read_key().same_as(part_b.read_key())
         }
     }
-    given "a record's packages read where they lie" {
-        then "a record that read no package reads back none" {
-            kept_at(record_reading([]).saved_bytes()).packages.texts().is_empty()
+    given "a record's read set read where it lies" {
+        then "a set nobody worked out reads back as nobody worked it out" {
+            kept_at(record_reading([]).saved_bytes()).read_set == SET_UNWORKED
         }
-        then "each package it read reads back, in order" {
+        then "a set that read no package reads back as that, apart from one nobody worked out" {
+            let kept = kept_at(answer_record(hash_of("an int"), [], set_print([])).saved_bytes())
+            kept.read_set == set_print([]) && kept.read_set != SET_UNWORKED
+        }
+        then "a set of packages reads back as its print" {
             let kept = kept_at(
-                answer_record(hash_of("an int"), [], ["@std/x", "proj"]).saved_bytes(),
+                answer_record(hash_of("an int"), [], set_print(["@std/x", "proj"])).saved_bytes(),
             )
-            kept.packages.texts().join(",") == "@std/x,proj"
+            kept.read_set == set_print(["proj", "@std/x"])
         }
     }
     given "a record saved and read back" {

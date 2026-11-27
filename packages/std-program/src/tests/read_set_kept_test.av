@@ -1,8 +1,12 @@
 // What an answer read is said by its kept record: a later process that reads an answer the frontier
-// stands on takes that answer's read set from the record, never by walking the frontier beneath it.
+// stands on takes that answer's read set from the record's print, never by walking the frontier
+// beneath it, and one whose store shares no package works no set out at all.
+use @std.time.{stamp}
 use tests.support.store_in_memory.{StoreInMemory, store_in_memory}
 use answer_record.{question}
-use query_engine.{QueryDefinition, QueryEngine, query_engine}
+use disk_store.{disk_store_at}
+use layered_store.{LayeredStore, PackagePlace, layered_store}
+use query_engine.{AnswerStore, QueryDefinition, QueryEngine, query_engine, read_stamped}
 
 /// What `query_name` answers about `argument`, as text.
 fn chained_text(engine: QueryEngine, query_name: string, argument: string) -> string {
@@ -19,14 +23,15 @@ fn chained(query_name: string, reads: string, step: fn(string) -> string) -> Que
     }
 }
 
-/// `source` reads the world; `length` says its length, `doubled` that said twice, `tripled` that marked.
+/// `source` reads the world at `/std/k`; `length` says its length, `doubled` that said twice,
+/// `tripled` that marked.
 fn chain(world: Cell<string>) -> List<QueryDefinition> {
     [
         QueryDefinition {
             query_name: "source",
             code_hash: "code",
             is_input: true,
-            compute: (_e, _a) -> world.get().bytes(),
+            compute: (e, _a) -> read_stamped(e, "/std/k", () -> world.get()).bytes(),
         },
         chained("length", "source", (t) -> "${t.length}"),
         chained("doubled", "length", (t) -> t + t),
@@ -34,8 +39,21 @@ fn chain(world: Cell<string>) -> List<QueryDefinition> {
     ]
 }
 
+/// A directory no case used before.
+fn unused_directory(label: string) -> string { "/tmp/avra-read-set-kept/${stamp()}-${label}" }
+
+/// A project's store at `own` over the shared store at `shared`, serving the std package at `/std`.
+fn sharing_store(own: string, shared: string) -> LayeredStore {
+    layered_store(
+        disk_store_at(own),
+        disk_store_at(shared),
+        [PackagePlace { name: "@std/x", root: "/std", shared: true }],
+        "test",
+    )
+}
+
 /// A process over `store` asking `query_name` while the world says `text`, its frontier kept.
-fn process_asking(store: StoreInMemory, text: string, query_name: string) -> QueryEngine {
+fn process_over(store: dyn AnswerStore, text: string, query_name: string) -> QueryEngine {
     let engine = query_engine(store, chain(Cell.new(text)))
     let _ = chained_text(engine, query_name, "w")
     engine.frontier_kept()
@@ -43,14 +61,27 @@ fn process_asking(store: StoreInMemory, text: string, query_name: string) -> Que
 }
 
 spec "read sets — an answer's kept record says what it read" {
-    given "a later process reading an answer the frontier stands on" {
+    given "a later process over a sharing store reading an answer the frontier stands on" {
         then "it works out only its own question, and walks no read set" {
-            let store = store_in_memory()
-            let _ = process_asking(store, "four", "doubled")
-            let later = process_asking(store, "four", "tripled")
+            let own = unused_directory("own")
+            let shared = unused_directory("shared")
+            let first = sharing_store(own, shared)
+            let _ = process_over(first, "four", "doubled")
+            let _ = first.saved()
+            let second = sharing_store(own, shared)
+            let later = process_over(second, "four", "tripled")
+            let _ = second.saved()
             chained_text(later, "tripled", "w") == "44!" &&
                 later.worked_count() == 1 &&
                 later.read_sets_walked_count() == 0
+        }
+    }
+    given "a later process over a store that shares no package" {
+        then "it works no read set out, so walks none" {
+            let store: StoreInMemory = store_in_memory()
+            let _ = process_over(store, "four", "doubled")
+            let later = process_over(store, "four", "tripled")
+            chained_text(later, "tripled", "w") == "44!" && later.read_sets_walked_count() == 0
         }
     }
 }
