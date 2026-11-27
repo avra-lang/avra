@@ -13,6 +13,9 @@
 # to the seed, which cannot read a rung either. The whole ladder is capped at AVRA_LADDER_S (900 s),
 # each rung at what is left. A ladder that FAILS removes its own scratch; one that builds leaves it for
 # its caller, who copies the product and then asks `--clean`, so no ladder outlives its use.
+# A rung's tree links its own runtime, so a climb holds only while that runtime defines every symbol the
+# compiler before it calls: a slice that removes a runtime symbol owes a seed refresh (CLAUDE.md, the
+# receipt for such a slice is `make bootstrap`), and no ladder climbs across it.
 #
 # A RUNG IS REPLAYED ON THE TREE UNDER BUILD, NEVER ON ITS OWN. With AVRA_LADDER_BASE set (the base the
 # tree is judged against: origin/main for a pull request, the commit before for main's own push), the
