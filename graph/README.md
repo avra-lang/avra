@@ -254,7 +254,7 @@ The smoke test uses private temporary files and stops its local server.
 The unrelated library consumer has only shelf/specimen models, a cycle,
 and an eight-field record. Expected output: `2 true 2 2 true`.
 Interpreter execution of SQLite programs additionally needs the package's
-shared library (`python3 tools/libs.py --build std-sqlite` after building
+shared library (`./wisp libs build std-sqlite` after building
 its native objects). Native builds link those objects directly.
 
 ## Next slices

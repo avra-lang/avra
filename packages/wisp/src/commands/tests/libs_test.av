@@ -1,0 +1,73 @@
+use commands.{
+    Library,
+    Platform,
+    data_line,
+    defined_names,
+    explained_from,
+    global_defined,
+    in_the_image_by,
+    link_argv,
+    linked_whole,
+    stem_of,
+}
+
+const DARWIN: Platform = Platform { darwin: true, suffix: ".dylib", mode: ["-dynamiclib"] }
+const LINUX: Platform = Platform { darwin: false, suffix: ".so", mode: ["-shared", "-fPIC"] }
+
+fn sqlite() -> Library {
+    Library {
+        name: "std-sqlite",
+        output: "build/libstd-sqlite.dylib",
+        objects: ["build/std_sqlite.a", "build/std_sqlite_sentinel.o"],
+        words: ["-lm", "-lpthread"],
+        package: "@std/sqlite",
+    }
+}
+
+spec "libs — what the image carries" {
+    then "defined names only: an undefined reference is what the image needs" {
+        let nm = "0000000000001000 T _avra_cz_decode\n                 U _crc32\n0000000000002000 t _local\n                 w _weak_ref\n0000000000003000 W _strong_weak\n"
+        defined_names(nm).join(",") == "avra_cz_decode,local,strong_weak"
+    }
+    then "an object's globals are its text, data, common and bss" {
+        global_defined("0 T _a\n0 D _b\n0 S _c\n0 B _d\n0 t _e\n  U _f\n").join(",") == "a,b,c,d"
+    }
+    then "objects all inside are carried, none absent, some split" {
+        in_the_image_by([["x"], ["y"]], ["x", "y"]) == "carried" &&
+            in_the_image_by([["p"], ["q"]], ["x"]) == "absent" &&
+            in_the_image_by([["x"], ["q"]], ["x"]) == "split"
+    }
+}
+
+spec "libs — the compiler's answer read" {
+    then "a linking package's answer is its rows, objects made relative to the tree" {
+        let e = explained_from(
+            "package @std/sqlite\nlibrary build/libstd-sqlite\nobject /t/build/std_sqlite.a\nword -L/opt/x\nword -lm\n",
+            "/t",
+        )
+        e.package == "@std/sqlite" &&
+            e.library == "build/libstd-sqlite" &&
+            e.objects.join(" ") == "build/std_sqlite.a" &&
+            e.words.join(" ") == "-L/opt/x -lm"
+    }
+    then "a package that links nothing has no library" {
+        explained_from("package @std/text\n", "/t").library == null
+    }
+    then "a library's stem is its path's, `lib` dropped" { stem_of("build/libstd-sqlite") == "std-sqlite" }
+    then "a data row is name, output, objects, words, package" {
+        data_line(sqlite()) == "std-sqlite\tbuild/libstd-sqlite.dylib\tbuild/std_sqlite.a build/std_sqlite_sentinel.o\t-lm -lpthread\t@std/sqlite"
+    }
+}
+
+spec "libs — the link" {
+    then "an archive is linked whole, by each platform's spelling" {
+        linked_whole("build/std_sqlite.a", DARWIN).join(" ") == "-Wl,-force_load,build/std_sqlite.a" &&
+            linked_whole("build/std_sqlite.a", LINUX).join(" ") == "-Wl,--whole-archive build/std_sqlite.a -Wl,--no-whole-archive" &&
+            linked_whole("build/x.o", DARWIN).join(" ") == "build/x.o"
+    }
+    then "darwin names each open runtime symbol, ELF none" {
+        link_argv(sqlite(), DARWIN, ["avra_trap"]).join(" ") == "cc -dynamiclib -Wl,-U,_avra_trap -o build/libstd-sqlite.dylib -Wl,-force_load,build/std_sqlite.a build/std_sqlite_sentinel.o -lm -lpthread" &&
+            link_argv(sqlite() with { output: "build/libstd-sqlite.so" }, LINUX, ["avra_trap"])
+                .join(" ") == "cc -shared -fPIC -o build/libstd-sqlite.so -Wl,--whole-archive build/std_sqlite.a -Wl,--no-whole-archive build/std_sqlite_sentinel.o -lm -lpthread"
+    }
+}

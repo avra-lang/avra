@@ -48,6 +48,7 @@ A running list: each entry is gone from the tree, named with the train that remo
 - **train48 (d29c9ed2): moved to packages/wisp, ./wisp:** `make tools-suite`, `tools/avra.toml`, `tools/avra_tools.sh`, `tools/src/`, `tools/tools_key.sh`.
 - **wisp defects (ported):** `tools/defects.py`, `tools/defects_previous.py`, `AVRA_DEFECT_STALL`, `AVRA_DEFECT_TIMEOUT`, `AVRA_DEFECT_WARM`, `AVRA_DEFECT_WARM_CLOCK`, `AVRA_DEFECT_WORKERS` (now flags).
 - **wisp release (ported):** `tools/compiler_release.py` — publish is the binary's, the reads are the shim's.
+- **wisp libs (ported):** `tools/libs.py` — the manifest half is `avra explain --libs`, the build `wisp libs`.
 - **Earlier (S1 corrections, d7cd84d9):** `make check/run/ir/emit/build-native` still stand, owed by S1's "dead" half, which was split out of the rename.
 
 ## Findings now
@@ -307,7 +308,6 @@ A running list: each entry is gone from the tree, named with the train that remo
 | layout_oracle_own_term_test.sh | checks.yml, Makefile | internal | merge: oracle |  |
 | ledger_rows.sh | gate.yml, Makefile, ci_invariants.py +5 | internal | merge: keepers | new since d7cd84d9 |
 | lib/ | Makefile, manifest.av, avra.toml +214 | internal | merge: (dies with its callers) | shell helpers shared by scripts |
-| libs.py | Makefile, manifest.av, avra.toml +3 | internal | merge: tree |  |
 | libscope.sh | Makefile | internal | merge: tree |  |
 | licence_families.py | none | internal | merge: keepers | PORTED — into `wisp inputs` |
 | link_cache_attack.sh | Makefile | internal | merge: oracle |  |
@@ -373,7 +373,7 @@ A running list: each entry is gone from the tree, named with the train that remo
 | std_answers.sh | Makefile, std_answers.av, census.sh +3 | internal | merge: seed std-answers |  |
 | std_answers_attack.sh | gate.sh | internal | merge: oracle |  |
 | std_answers_checkout_witness.sh | gate.sh | internal | merge: oracle |  |
-| stems.sh | Makefile, libs.py | internal | merge: tree |  |
+| stems.sh | Makefile | internal | merge: tree | reads `wisp libs --data/--undefined` |
 | step_cpu.py | checks.yml | internal | merge: gate |  |
 | steps_test.sh | none | internal | merge: fixtures |  |
 | store_attacks.sh | Makefile | internal | merge: oracle |  |
@@ -625,7 +625,7 @@ A running list: each entry is gone from the tree, named with the train that remo
 | AVRA_NULL_PAGE | avra_hot.h, link.av, wasm_data_base_test.av | not config | — | a C macro, enum or guard |
 | AVRA_OBJ_MAX_BYTES | avra_settings.h, declared.av, named.av +4 | user | keep: typed setting | compiler: one @std/config record |
 | AVRA_OBSERVED | avra_box.h, avra_runtime.c | not config | — | a C macro, enum or guard |
-| AVRA_ONCE_MAX | libs.py | internal | merge: wisp flag | read by tools alone |
+| AVRA_ONCE_MAX | runtime | internal | merge: wisp flag | read by tools alone |
 | AVRA_P | inherit_env.av | not config | — | a test fixture's name |
 | AVRA_PAGE |  | not config | — | a C macro, enum or guard; new since d7cd84d9 |
 | AVRA_PAGE_FETCHED | dev.av, document.av | internal | merge: wisp flag | new since d7cd84d9 |

@@ -185,7 +185,7 @@ done
 # second copy would duplicate state the language promises is single
 # (`g_once` above all: a `once fn` reachable from two copies settles
 # TWICE, and since those answers are immortal, neither ever dies).
-# Mach-O permits that only symbol by symbol (`-U`, tools/libs.py), so
+# Mach-O permits that only symbol by symbol (`-U`, `wisp libs build`), so
 # a TYPO there fails the link; ELF permits every open symbol, where
 # `avra_traap` links clean and fails at first call. So the amnesty is
 # bounded, in THREE bands:
@@ -201,7 +201,7 @@ done
 #             see. That is a defect the keeper names rather than a
 #             band it tolerates.
 #
-# THE ROSTER IS CONSUMED, NOT RE-DERIVED: `tools/libs.py --undefined`
+# THE ROSTER IS CONSUMED, NOT RE-DERIVED: `wisp libs --undefined`
 # answers what each built library left open. Parsing the manifests a
 # second time here is how `keeps` and `inert` both went wrong.
 if [ -x build/avra ]; then
@@ -266,7 +266,7 @@ if bad:
 # TOOL's answer is held to it — the keeper does not re-derive the
 # answer, which is what `keeps` and `inert` were.
 #
-# WITNESSED FAILING: `tools/libs.py` read `link.flags`, a key the
+# WITNESSED FAILING: the library build once read `link.flags`, a key the
 # manifest law has no place for (`[link]` takes `objects`/`search`/
 # `libs`, `[link.raw]` takes `flags`), so its expansion was
 # unreachable and every library was linked with an EMPTY word list.
@@ -335,7 +335,7 @@ if bad:
 
 def declared_link():
     """Each package's `[link]` table, keyed by its MANIFEST NAME — the
-    same key `tools/libs.py` prints, so no stem rule is spelled a
+    same key `wisp libs` prints, so no stem rule is spelled a
     third time here."""
     out = {}
     for path in sorted(glob.glob("packages/*/avra.toml")):
@@ -370,11 +370,11 @@ def unbound(path):
 
 
 host = syms(["nm", "build/avra"])
-rows = subprocess.run(["python3", "tools/libs.py", "--undefined"],
+rows = subprocess.run(["./wisp", "libs", "--undefined"],
                       capture_output=True, text=True).stdout
 # what each OTHER library defines, so a cross-package reference is nameable
 data = [line.split("\t") for line in
-        subprocess.run(["python3", "tools/libs.py", "--data"],
+        subprocess.run(["./wisp", "libs", "--data"],
                        capture_output=True, text=True).stdout.splitlines()]
 defined = {row[0]: syms(["nm", "-g", "--defined-only", row[1]])
            for row in data if os.path.exists(row[1])}
