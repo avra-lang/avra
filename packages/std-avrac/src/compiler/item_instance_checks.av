@@ -40,7 +40,9 @@ fn item_instances_checked(engine: QueryEngine, file: SourceFileAddress, at: Item
     if !every_node(item.store).any((e) -> item.store.instance_word(e) != null) { return ItemChecked { rows: [] } }
     let fns = [b! for s in item.stmts for p in [item.store.fn_parts(s)] if p != null for b in [signed_body(engine, file, p!.name)] if b != null]
     let methods = [m!.signed for a in impls_at(engine, file, at) for s in impl_fns_at(item, a) if item.store.fn_parts(s) != null for m in [signed_method(engine, a, item.store.fn_parts(s)!.name, item.store.is_static(s))] if m != null]
-    let bodies = fns.concat(methods).concat(default_bodies(engine, file, at, item))
+    let bodies = fns
+        .concat(methods)
+        .concat(default_bodies(engine, file, at, item, impls_at(engine, file, at)))
     let entry = if runs_in(engine, file, at) { entry_read(engine, file) } else { null }
     let ran = [judged_in(engine, file, s!, at) for s in [if entry == null { null } else { entry_signed(entry!) }] if s != null]
     let judged = [judged_in(engine, file, b, ItemId(-1)) for b in bodies].concat(ran)

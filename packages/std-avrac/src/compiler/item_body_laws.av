@@ -206,12 +206,13 @@ fn item_typing(
     file: SourceFileAddress,
     at: ItemId,
     item: ReadItem,
+    impls: List<ImplAt>,
     defaults: bool,
 ) -> ItemTyping {
     let entry = entry_types(engine, file)
-    let held = if defaults { defaults_typed(engine, file, at, item) } else { [] }
+    let held = if defaults { defaults_typed(engine, file, at, item, impls) } else { [] }
     ItemTyping {
-        bodies: fn_bodies(engine, file, at, item).concat(held),
+        bodies: fn_bodies(engine, file, item, impls).concat(held),
         entry: entry,
         base: entry.bases.find(it.at == at)?.base,
     }
@@ -246,6 +247,7 @@ fn breaches_made(view: ItemView) -> ItemBreaches {
     if !item_held(engine, file, at) { return ItemBreaches { rows: [] } }
     let item = view.item
     if !item.store.refusals().is_empty() { return ItemBreaches { rows: [] } }
+    let impls = impls_seen(view)
     let store = item.store
     let deferrals = [d! for s in store.stmt_ids() for d in [deferral(store, s)] if d != null]
     let fails = [s for s in store.stmt_ids() if fails_here(store, s)]
@@ -259,7 +261,7 @@ fn breaches_made(view: ItemView) -> ItemBreaches {
         typed.is_empty() &&
         writes.is_empty() &&
         owners.is_empty() &&
-        lambdas.is_empty() { untyped } else { item_typing(engine, file, at, item, !deferrals.is_empty() || !fails.is_empty()) }
+        lambdas.is_empty() { untyped } else { item_typing(engine, file, at, item, impls, !deferrals.is_empty() || !fails.is_empty()) }
     ItemBreaches {
         rows: written_breaches(store)
             .concat([b for e in typed for b in some_list(typed_breach(engine, store, typing, e))])
@@ -271,7 +273,7 @@ fn breaches_made(view: ItemView) -> ItemBreaches {
             .concat([b for s in writes for b in some_list(write_breach(store, typing, s))])
             .concat([b for s in owners for b in some_list(unowned_breach(engine, store, typing, s))])
             .concat([b for l in lambdas for b in lambda_breaches(engine, store, typing, l)])
-            .concat(escape_breaches(engine, file, at, item))
+            .concat(escape_breaches(engine, file, at, item, impls))
             .concat(slot_breaches(engine, file, at, item)),
     }
 }
@@ -700,7 +702,7 @@ fn deferral(store: SyntaxArena, s: StmtId) -> Deferral? {
 }
 
 /// Each fn's and method's body the written item `at` of `file` holds in its own store, typed.
-fn fn_bodies(engine: QueryEngine, file: SourceFileAddress, at: ItemId, item: ReadItem) -> List<
+fn fn_bodies(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, impls: List<ImplAt>) -> List<
     FnBody,
 > {
     let fns = [FnBody { root: p!.body, promise: sig!.answer, typed: typed! } for s in item.stmts for p in [item.store.fn_parts(s)] if p != null for sig in [fn_signature(engine, file, p!.name)] if sig != null for typed in [written_typed(engine, file, p!.name)] if typed != null]
@@ -708,21 +710,25 @@ fn fn_bodies(engine: QueryEngine, file: SourceFileAddress, at: ItemId, item: Rea
         root: m!.signed.body,
         promise: m!.signed.signature.answer,
         typed: method_body_typed(engine, a, name, statics),
-    } for a in impls_at(engine, file, at) for s in impl_fns(item, a) for name in [item.store.fn_parts(s)!.name] for statics in [item.store.is_static(s)] for m in [signed_method(engine, a, name, statics)] if m != null]
+    } for a in impls for s in impl_fns(item, a) for name in [item.store.fn_parts(s)!.name] for statics in [item.store.is_static(s)] for m in [signed_method(engine, a, name, statics)] if m != null]
     fns.concat(methods)
 }
 
 /// Each body the written item `at` of `file` holds beside its fns' and methods', typed: a seat's or a
 /// field's default, a const's value, a state's start — none of which a fn encloses — and a body a
 /// trait's member writes, which its member's promise holds.
-fn defaults_typed(engine: QueryEngine, file: SourceFileAddress, at: ItemId, item: ReadItem) -> List<
-    FnBody,
-> {
+fn defaults_typed(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    at: ItemId,
+    item: ReadItem,
+    impls: List<ImplAt>,
+) -> List<FnBody> {
     [FnBody {
         root: b.body,
         promise: if b.seat == null { b.signature.answer } else { null },
         typed: kept_body(body_checked(engine, file, b, false)),
-    } for b in default_bodies(engine, file, at, item)]
+    } for b in default_bodies(engine, file, at, item, impls)]
         .concat(
             [FnBody { root: b.body, promise: b.signature.answer, typed: t.bodies[j] } for s in item.stmts for p in [item.store.trait_parts(s)] if p != null for t in [typed_trait_bodies(engine, file, p!.name)] for j, b in trait_bodies(engine, TraitAt { file: file, name: p!.name })],
         )
@@ -1026,9 +1032,13 @@ fn entry_types(engine: QueryEngine, file: SourceFileAddress) -> EntryTypes {
 
 /// Each task a signature the written item `at` of `file` declares lets reach past its block: a fn's
 /// or a method's answer, a field of a record no `@owns` marks, a variant's payload.
-fn escape_breaches(engine: QueryEngine, file: SourceFileAddress, at: ItemId, item: ReadItem) -> List<
-    BreachAt,
-> {
+fn escape_breaches(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    at: ItemId,
+    item: ReadItem,
+    impls: List<ImplAt>,
+) -> List<BreachAt> {
     let fns = [escaped(
         engine,
         item.store.stmt_span(s),
@@ -1040,7 +1050,7 @@ fn escape_breaches(engine: QueryEngine, file: SourceFileAddress, at: ItemId, ite
         item.store.stmt_span(s),
         answer_label(name, m!.signed.signature.answer.spelled()),
         m!.signed.signature.answer,
-    ) for a in impls_at(engine, file, at) for s in impl_fns(item, a) for name in [item.store.fn_parts(s)!.name] for m in [signed_method(engine, a, name, item.store.is_static(s))] if m != null]
+    ) for a in impls for s in impl_fns(item, a) for name in [item.store.fn_parts(s)!.name] for m in [signed_method(engine, a, name, item.store.is_static(s))] if m != null]
     let names = [d for d in file_declares_at(engine, file, at).names if d.item == at]
     let fields = [escaped(engine, record_place(item, d.name), field_label(f.name, f.ty!.spelled()), f.ty!) for d in names if d.kind == ItemKind.Record && !wears_mark(engine, d, OWNS_MARK) for f in record_signature(engine, file, d.name)?.fields ?? [] if f.ty != null]
     let payloads = [escaped(engine, enum_place(item, d.name), carried_label(v.name, p.name, p.ty!.spelled()), p.ty!) for d in names if d.kind == ItemKind.Enum for v in enum_signature(engine, file, d.name)?.variants ?? [] for p in v.payloads if p.ty != null]

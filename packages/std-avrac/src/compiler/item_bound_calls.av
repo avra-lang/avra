@@ -77,19 +77,24 @@ fn ungiven_made(view: ItemView) -> ItemUngiven {
     if !item.store.refusals().is_empty() { return ItemUngiven { rows: [] } }
     let text = item_under(engine, file, at).text
     ItemUngiven {
-        rows: flatten([body_ungiven(engine, text, b) for b in item_signed_bodies(engine, file, at, item)]),
+        rows: flatten(
+            [body_ungiven(engine, text, b) for b in item_signed_bodies(engine, file, item, impls_seen(view))],
+        ),
     }
 }
 
 /// Each body the written item `at` of `file` declares, signed and typed as its query keeps it: each
 /// fn's, then each method's and static's an impl there writes.
-fn item_signed_bodies(engine: QueryEngine, file: SourceFileAddress, at: ItemId, item: ReadItem) -> List<
-    CheckedBody,
-> {
+fn item_signed_bodies(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    item: ReadItem,
+    impls: List<ImplAt>,
+) -> List<CheckedBody> {
     let fns = [CheckedBody { signed: b!, typed: typed_fn(engine, file, p!.name)! } for s in item.stmts for p in [item.store.fn_parts(s)] if p != null for b in [signed_body(engine, file, p!.name)] if b != null]
     fns
         .concat(
-            [CheckedBody { signed: m!.signed, typed: method_body_typed(engine, a, name, statics) } for a in impls_at(engine, file, at) for s in impl_fns(item, a) for name in [item.store.fn_parts(s)!.name] for statics in [item.store.is_static(s)] for m in [signed_method(engine, a, name, statics)] if m != null],
+            [CheckedBody { signed: m!.signed, typed: method_body_typed(engine, a, name, statics) } for a in impls for s in impl_fns(item, a) for name in [item.store.fn_parts(s)!.name] for statics in [item.store.is_static(s)] for m in [signed_method(engine, a, name, statics)] if m != null],
         )
 }
 
