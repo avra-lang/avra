@@ -5,13 +5,23 @@
 //! says who reads it too. `--stats` counts the answers per query, `--why`
 //! says why the last build was worked out again, `--sites @name` says
 //! what each call of a fn's body was resolved to, and `--cost @name` where
-//! a representation technique declined in it, and why. Every form but `--sites`
+//! a representation technique declined in it, and why; `--libs` says what a
+//! package's own library is made of. Every form but `--sites`
 //! reads the store and keeps nothing, so a second asking answers what the
 //! first did. This file is wiring and text alone.
 use @std.cli.{CliResult, Runnable, command, arg, flag}
-use @std.avrac.compiler.{ItemKind, avra_fact_definitions, cost_remarks, file_declares, lowered_fn}
+use @std.avrac.compiler.{
+    ItemKind,
+    LinkWorld,
+    avra_fact_definitions,
+    cost_remarks,
+    file_declares,
+    link_filled,
+    lowered_fn,
+    manifest_library,
+}
 use @std.avrac.core.{CalledFn, CostRemark, distinct, flatten, hex_word}
-use @std.io.{read_text}
+use @std.io.{read_text, env}
 use @std.path.{is_absolute, joined_path, normalized, relative_path}
 use @std.program.answer_record.{ContentHash, KeptRecord, Question, content_hash}
 use @std.program.disk_store.{DiskStore, disk_store_at, pack_questions, packs_listed}
@@ -24,7 +34,7 @@ type ExplainCmd = {}
 
 /// What `avra explain` was asked: about what, in which form, and the
 /// directory a relative target is read from.
-type Asked = { target: string, from: string, stats: bool = false, why: bool = false, sites: bool = false, cost: bool = false }
+type Asked = { target: string, from: string, stats: bool = false, why: bool = false, sites: bool = false, cost: bool = false, libs: bool = false }
 
 /// What an answer or a refusal prints, line by line.
 alias Lines = Result<List<string>, List<string>>
@@ -52,6 +62,7 @@ impl Runnable for ExplainCmd {
                     why: args.has_flag("why"),
                     sites: args.has_flag("sites"),
                     cost: args.has_flag("cost"),
+                    libs: args.has_flag("libs"),
                 },
             ),
         )
@@ -79,10 +90,12 @@ fn explain_answer(a: Asked) -> Lines {
     if a.stats && a.why { return .Err([stats_or_why()]) }
     if a.sites && (a.stats || a.why) { return .Err([sites_alone()]) }
     if a.cost && (a.stats || a.why || a.sites) { return .Err([cost_alone()]) }
+    if a.libs && (a.stats || a.why || a.sites || a.cost) { return .Err([libs_alone()]) }
     let subject = match placed(a.target, aim.subject) {
         .Ok(subject) -> subject,
         .Err(why) -> { return .Err([why]) },
     }
+    if a.libs { return if subject is .Package { libs_answer(aim.root) } else { .Err([libs_wants_package(a.target)]) } }
     if a.why { return why_answer(aim.root) }
     if a.sites { return sites_answer(a, aim.root, subject) }
     if a.cost { return cost_answer(a, aim.root, subject) }
@@ -437,11 +450,34 @@ export command explain {
     flag stats { description: "count the package's kept answers and their reads, a row a query" }
     flag why { description: "why the last build of the package was worked out again: the way from the input that moved to the build" }
     flag sites { description: "for a fn `@name`, what each call of its body was resolved to: a declared fn, a method, a generic instance, an extern row; hosted, gathering" }
+    flag libs { description: "what the package's own shared library is made of: its name, its path, the objects in it and the words it links — none for a package that links no objects" }
     flag cost { description: "for a fn `@name`, each site of its body where a representation technique declined, and why, grouped by reason and counted" }
     run: ExplainCmd {}
 }
 
+// ── `--libs`: what a package's own library is made of ──
+
+/// The package's library, a fact a line: `package <name>`, then, where it links objects, `library
+/// <path>` (under the tree's build/, no platform suffix), an `object <path>` each, and a `word <-L/-l…>`
+/// each — the directories it searches, then the libraries it needs, holes filled from the environment.
+/// A package's raw words are its program's own, never its library's.
+fn libs_answer(root: string) -> Lines {
+    let m = manifest_at(root)
+    let lib? = manifest_library(m, []) else { return .Ok(["package ${m.name}"]) }
+    let world = LinkWorld { env: (n: string) -> env(n), there: (path: string) -> exists_at(path) }
+    .Ok(
+        ["package ${m.name}", "library ${lib.library}"]
+            .concat(["object ${normalized(joined_path(root, o))}" for o in link_filled(m.objects, world)])
+            .concat(["word -L${d}" for d in link_filled(m.search, world) if d != ""])
+            .concat(["word -l${l}" for l in link_filled(m.libs, world) if l != ""]),
+    )
+}
+
 // ── voices ──
+
+fn libs_alone() -> string { "avra: `explain --libs` is a form of its own — it goes with none of `--stats`, `--why`, `--sites` or `--cost`" }
+
+fn libs_wants_package(target: string) -> string { "avra: `explain --libs` reads a package's manifest — `${target}` is no package's directory" }
 
 fn needs_target() -> string { "avra: `explain` needs a file, `@name` or `query(subject)` — or `--stats` or `--why` for the whole package" }
 
