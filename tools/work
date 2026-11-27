@@ -229,7 +229,7 @@ get_compiler() {
         echo "work: compiler: this tree's, from the depot or a worktree"
         return 0
     fi
-    if [ -f tools/compiler_release.py ] && python3 tools/compiler_release.py install >&2; then
+    if [ -f wisp ] && sh wisp release install >&2; then
         echo "work: compiler: the published one for this tree's source"
         return 0
     fi
@@ -318,7 +318,7 @@ compiler_paths() {
 # (`published:<key>`), the merge-base's published compiler built once here
 # (`mergebase:<key>`), or a build (`build`). A tree with no fetch tool builds.
 compiler_route() {
-    [ -f "$1/tools/compiler_release.py" ] || { echo build; return; }
+    [ -f "$1/wisp" ] || { echo build; return; }
     (
         cd "$1"
         dirty=0
@@ -326,8 +326,8 @@ compiler_route() {
         hk=$(sh tools/compiler_paths.sh --key 2>/dev/null) || hk=
         mb=$(git merge-base HEAD origin/main 2>/dev/null) || mb=
         mk=
-        [ -z "$mb" ] || mk=$(python3 tools/compiler_release.py key-of "$mb" 2>/dev/null) || mk=
-        python3 tools/compiler_release.py route "$dirty" "$hk" "$mk" 2>/dev/null || echo build
+        [ -z "$mb" ] || mk=$(sh wisp release key-of "$mb" 2>/dev/null) || mk=
+        sh wisp release route "$dirty" "$hk" "$mk" 2>/dev/null || echo build
     )
 }
 # THE RUNGS OF A BRANCH, shipped to the Sprite so its compiler step is CI's: `<base>:<rung>,<rung>…` for a
@@ -432,12 +432,12 @@ builder_key() {
         seen=
         first=1
         for c in $(git rev-list --first-parent -n "${AVRA_BUILDER_BACK:-40}" "$mb"); do
-            k=$(python3 tools/compiler_release.py key-of "$c" 2>/dev/null) || k=
+            k=$(sh wisp release key-of "$c" 2>/dev/null) || k=
             case " $seen " in
                 *" $k "*) ;;
                 *)
                     seen="$seen $k"
-                    if [ -n "$k" ] && python3 tools/compiler_release.py probe "$k" 2>/dev/null; then
+                    if [ -n "$k" ] && sh wisp release probe "$k" 2>/dev/null; then
                         if [ -n "$first" ]; then echo "$k exact"; else echo "$k ancestor $n"; fi
                         exit 0
                     fi
@@ -1054,7 +1054,7 @@ run() {
             *" exact") route="builder:${bk%% *}"; echo "work: builder: the compiler published for the merge-base's key" >&2 ;;
             *)
                 mb=$(cd "$tree" && base_point)
-                mbk=$(cd "$tree" && python3 tools/compiler_release.py key-of "$mb")
+                mbk=$(cd "$tree" && sh wisp release key-of "$mb")
                 route="builderold:${bk%% *}:$mbk"
                 echo "work: builder: the merge-base's key is unpublished; the nearest published one is ${bk##* } commit(s) back — the Sprite builds the MERGE-BASE's source once from it, shared by every lane on that base" >&2
                 mbroot=${AVRA_SPRITE_HOME:-/home/sprite}/avra-mb

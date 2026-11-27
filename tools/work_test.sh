@@ -296,12 +296,11 @@ check "$(ls "$dp2" | tr '\n' ' ')" "hashC " "work deposit: only the newest AVRA_
 bk=$scratch/bk
 git init -q -b main "$bk"
 mkdir -p "$bk/tools"
-cat > "$bk/tools/compiler_release.py" <<'STUB'
-import os, subprocess, sys
-if sys.argv[1] == "key-of":
-    print("k-" + subprocess.check_output(["git", "show", sys.argv[2] + ":keyfile"], text=True).strip())
-elif sys.argv[1] == "probe":
-    sys.exit(0 if sys.argv[2] in open(os.environ["PUBLISHED"]).read().split() else 1)
+cat > "$bk/wisp" <<'STUB'
+case $2 in
+    (key-of) echo "k-$(git show "$3:keyfile")" ;;
+    (probe) tr ' ' '\n' < "$PUBLISHED" | grep -qx -- "$3" ;;
+esac
 STUB
 bkg() { git -C "$bk" -c user.name=t -c user.email=t@t "$@"; }
 echo old > "$bk/keyfile"; bkg add -A; bkg commit -q -m a
@@ -339,7 +338,7 @@ check "$(tkey)" "$clean" "wisp --key: a file under tests/, which no build reads,
 bb=$scratch/bb
 git init -q -b main "$bb"
 mkdir -p "$bb/tools" "$bb/.github/workflows"
-cp "$bk/tools/compiler_release.py" "$bb/tools/"
+cp "$bk/wisp" "$bb/"
 bbg() { git -C "$bb" -c user.name=t -c user.email=t@t "$@"; }
 echo old > "$bb/keyfile"; bbg add -A; bbg commit -q -m m
 bbg update-ref refs/remotes/origin/main HEAD
@@ -353,7 +352,7 @@ check "$(PUBLISHED="$scratch/published" sh "$slw" builder-key "$bb")" "k-new exa
 pp=$scratch/pp
 git init -q -b main "$pp"
 mkdir -p "$pp/tools"
-cp "$bk/tools/compiler_release.py" "$pp/tools/"
+cp "$bk/wisp" "$pp/"
 ppg() { git -C "$pp" -c user.name=t -c user.email=t@t "$@"; }
 echo old > "$pp/keyfile"; ppg add -A; ppg commit -q -m m
 ppg update-ref refs/remotes/origin/main HEAD

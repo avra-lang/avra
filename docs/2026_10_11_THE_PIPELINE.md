@@ -133,7 +133,7 @@ before anything else. The compiler is **keyed by its own source**
 
 1. **Cache** (`.avra-cache` rides with the binary) — a hit is 0 s of
    build.
-2. **Release asset** — `python3 tools/compiler_release.py fetch`, a
+2. **Release asset** — `./wisp release fetch`, a
    binary `main` published under its own source digest. This exists
    because a GitHub cache is **scope-bound**: a run restores from its
    own branch and `main`, never a sibling's. A release asset crosses
