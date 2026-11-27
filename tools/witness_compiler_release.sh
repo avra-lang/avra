@@ -22,15 +22,17 @@ printf '[{"tag_name":"avrac-aa","created_at":"2026-01-01T00:00:00Z","assets":[{"
 {"tag_name":"avrac-dd","created_at":"2026-01-03T00:00:00Z","draft":true,"assets":[{"name":"avra","url":"file://%s/a.bin"}]}]' \
     "$d" "$d" "$d" "$d" > "$d/api/releases?per_page=100"
 
-out=$(w sh wisp release fetch avrac-zz "$d/got" 2>&1) && rc=0 || rc=$?
+out=$(w sh wisp release fetch zz "$d/got" 2>&1) && rc=0 || rc=$?
 check "a key with no release is absent" "$rc $out" "1 compiler-release: avrac-zz: no release"
 check "no file is left behind" "$(ls "$d" | grep -c '^got' || :)" 0
-w sh wisp release fetch avrac-aa "$d/got" >/dev/null
+out=$(w sh wisp release fetch avrac-aa "$d/got" 2>&1) && rc=0 || rc=$?
+check "a tag where the key belongs is refused, saying so" "$rc $out" '2 wisp release: `avrac-aa` is a tag — pass the key; the tag is formed from it and the asset'
+w sh wisp release fetch aa "$d/got" >/dev/null
 check "fetch returns the bytes" "$(cat "$d/got")" compiler-A
 check "the file is executable" "$([ -x "$d/got" ] && echo yes)" yes
-out=$(w sh wisp release fetch avrac-cc "$d/none" 2>&1) && rc=0 || rc=$?
+out=$(w sh wisp release fetch cc "$d/none" 2>&1) && rc=0 || rc=$?
 check "a release without the asset says so" "$rc $out" "1 compiler-release: avrac-cc: release has no avra asset"
-out=$(w sh wisp release fetch avrac-aa "$d/none" --asset wisp 2>&1) && rc=0 || rc=$?
+out=$(w sh wisp release fetch aa "$d/none" --asset wisp 2>&1) && rc=0 || rc=$?
 check "an asset is asked by its name" "$rc" 1
 w sh wisp release latest "$d/latest" >/dev/null
 check "latest is the newest undrafted release, the API's first of a tie" "$(cat "$d/latest")" compiler-B
