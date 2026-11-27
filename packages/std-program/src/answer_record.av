@@ -301,24 +301,34 @@ impl KeptRecord {
         whole: fn(ContentHash, ContentHash) -> bool,
         part: fn(ContentHash, ContentHash, ContentHash, ContentHash) -> bool,
     ) -> bool {
-        let wholes = self.whole_reads
-        let parts = self.part_reads
-        (0..wholes.length() / WHOLE_READ_WORDS)
-                .all(
-                    (i) -> whole(
-                        wholes.hash_at(i * WHOLE_READ_WORDS),
-                        wholes.hash_at(i * WHOLE_READ_WORDS + 2),
-                    ),
-                ) &&
-            (0..parts.length() / PART_READ_WORDS)
-                .all(
-                    (i) -> part(
-                        parts.hash_at(i * PART_READ_WORDS),
-                        parts.hash_at(i * PART_READ_WORDS + 2),
-                        parts.hash_at(i * PART_READ_WORDS + 4),
-                        parts.hash_at(i * PART_READ_WORDS + 6),
-                    ),
-                )
+        (0..self.whole_read_count()).all((i) -> self.whole_read_holds(i, whole)) &&
+            (0..self.part_read_count()).all((i) -> self.part_read_holds(i, part))
+    }
+
+    fn whole_read_count() -> int { self.whole_reads.length() / WHOLE_READ_WORDS }
+
+    fn part_read_count() -> int { self.part_reads.length() / PART_READ_WORDS }
+
+    /// The question whole read `i` asked.
+    fn whole_read_question(i: int) -> ContentHash { self.whole_reads.hash_at(i * WHOLE_READ_WORDS) }
+
+    /// The question part read `i` asked.
+    fn part_read_question(i: int) -> ContentHash { self.part_reads.hash_at(i * PART_READ_WORDS) }
+
+    /// Whether whole read `i` holds: `whole` asked of its question and the answer it saw.
+    fn whole_read_holds(i: int, whole: fn(ContentHash, ContentHash) -> bool) -> bool {
+        whole(self.whole_read_question(i), self.whole_reads.hash_at(i * WHOLE_READ_WORDS + 2))
+    }
+
+    /// Whether part read `i` holds: `part` asked of its question, the answer it saw, the part's name
+    /// and the part's hash.
+    fn part_read_holds(i: int, part: fn(ContentHash, ContentHash, ContentHash, ContentHash) -> bool) -> bool {
+        part(
+            self.part_read_question(i),
+            self.part_reads.hash_at(i * PART_READ_WORDS + 2),
+            self.part_reads.hash_at(i * PART_READ_WORDS + 4),
+            self.part_reads.hash_at(i * PART_READ_WORDS + 6),
+        )
     }
 
     /// The question of every read, whole reads first.
