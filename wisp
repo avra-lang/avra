@@ -21,9 +21,8 @@
 #   2. the published asset for the key, fetched — on Linux x86-64 only, the one platform CI
 #      publishes for; any other machine builds its own;
 #   3. built here by `--compiler`, and by nothing else: a miss with no compiler given refuses, naming
-#      the key, never builds with whatever compiler is newest;
-#   4. the Python tool of the same name (tools/<command with _>.py), while no
-#      binary answers — said on stderr, so a fallback is never silent.
+#      the key, never builds with whatever compiler is newest.
+# A wisp that is not here, published or built refuses; nothing else answers in its place.
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 cd "$here"
@@ -331,8 +330,5 @@ if [ ! -x "$bin" ] && [ -n "$compiler" ] && [ -x "$compiler" ]; then
 fi
 if [ "$want_path" = 1 ]; then [ -x "$bin" ] && echo "$bin" || exit 1; exit 0; fi
 if [ -x "$bin" ]; then exec "$bin" "$@"; fi
-cmd=$(printf '%s' "${1:?wisp: a command}" | tr - _)
-shift
-[ -f "tools/$cmd.py" ] || { echo "wisp: no binary for key $k, and no Python $cmd to answer — the reasons are above" >&2; exit 1; }
-echo "wisp: no binary for key $k — the Python $cmd answers" >&2
-exec python3 "tools/$cmd.py" "$@"
+echo "wisp: no wisp of key $(printf '%.12s' "$k") to run \`${1:-}\` — the reasons are above; nothing else answers in its place" >&2
+exit 1
