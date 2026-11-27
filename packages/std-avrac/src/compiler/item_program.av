@@ -3201,6 +3201,7 @@ enum BodyAsked {
         method: string,
         name: string,
         statics: bool,
+        reader: string,
     )
     Default(of: SourceFileAddress, owner: string, name: string, written_as: string?)
     TraitStatic(of: SourceFileAddress, owner: string, name: string)
@@ -3227,7 +3228,8 @@ fn body_asked(engine: QueryEngine, c: CalledFn) -> BodyAsked {
         .Seat -> if c.seat_of == null {
             BodyAsked.SeatDefault(c.file, c.owner!, c.name)
         } else {
-            BodyAsked.MethodSeatDefault(c.of!, c.owner!, c.seat_of!, c.name, c.statics)
+            BodyAsked
+                .MethodSeatDefault(c.of!, c.owner!, c.seat_of!, c.name, c.statics, c.file.package_name)
         },
         .Not -> when {
             c.gathered_for != null -> BodyAsked.Gathered(c.file, c.name, c.gathered_for!)
@@ -3257,7 +3259,7 @@ fn asked_body(engine: QueryEngine, asked: BodyAsked) -> LoweredFn? {
         .Settled(file, name, under, settled) -> lowered_settled(engine, file, name, under, settled),
         .FieldDefault(file, owner, name, under) -> lowered_field_default(engine, file, owner, name, under),
         .SeatDefault(file, owner, name) -> lowered_seat_default(engine, file, owner, name),
-        .MethodSeatDefault(of, owner, method, name, statics) -> lowered_method_seat_default(engine, of, owner, method, name, statics),
+        .MethodSeatDefault(of, owner, method, name, statics, reader) -> lowered_method_seat_default(engine, of, owner, method, name, statics, reader),
         .Default(of, owner, name, written_as) -> lowered_default(engine, of, owner, name, written_as),
         .TraitStatic(of, owner, name) -> lowered_trait_static(engine, of, owner, name),
         .Method(at, name, statics, under) -> lowered_method_under(engine, at, name, statics, under, []),
@@ -3297,7 +3299,7 @@ fn asked_question(engine: QueryEngine, asked: BodyAsked) -> Question? {
         .Settled(file, name, under, settled) -> lowered_settled_question(engine, file, name, under, settled),
         .FieldDefault(file, owner, name, under) -> lowered_field_default_question(engine, file, owner, name, under),
         .SeatDefault(file, owner, name) -> lowered_seat_default_question(engine, file, owner, name),
-        .MethodSeatDefault(of, owner, method, name, statics) -> lowered_method_seat_default_question(engine, of, owner, method, name, statics),
+        .MethodSeatDefault(of, owner, method, name, statics, reader) -> lowered_method_seat_default_question(engine, of, owner, method, name, statics, reader),
         .Default(of, owner, name, written_as) -> lowered_default_question(engine, of, owner, name, written_as),
         .TraitStatic(of, owner, name) -> lowered_trait_static_question(engine, of, owner, name),
         .Method(at, name, statics, under) -> lowered_method_under_question(engine, at, name, statics, under, []),
