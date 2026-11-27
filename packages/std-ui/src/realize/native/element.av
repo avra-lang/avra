@@ -2,7 +2,7 @@
 //! its facts, what it hears and its children, standing at the node's own
 //! step. A native host composes its own control from the prim and its facts,
 //! so a title, a label or a control's words are facts, never children.
-use tree.identity.{NodeId, Step, root as root_step, same_step, stepped, unplaced}
+use tree.identity.{NodeId, Step, StepTable, root as root_step, same_step, stepped, unplaced}
 use tree.node.{Node, Prim, Action}
 use realize.diff.matcher.{Diffable}
 use realize.diff.hearing.{Bound, Hears}
@@ -57,56 +57,75 @@ export fn lowered(root: Node) -> List<Native> {
     [drawn with { facts: drawn.facts.concat(theme_facts(root.theme?.theme ?? plain())) }]
 }
 
-/// A node's address: its identity while something holds it.
+/// A node's address: its identity while something holds it, 0 for a value no header stands before.
 extern fn avra_box_key(cell: Node) -> int
 
-/// What a paint lowered a node to, the node held so its address stays its own.
-export type LoweredAt = { node: Node, ordered: bool, el: Native }
+/// What a paint lowered a root to, the root held so every address under it stays its own.
+export type LoweredAt = { node: Node, el: Native }
 
-/// The lowering a page keeps between paints: each node's element, by the node's identity.
-export alias Lowering = Cell<Map<string, LoweredAt>>
+/// The lowering a page keeps between paints: the root it last lowered, and its element.
+export alias Lowering = Cell<List<LoweredAt>>
 
 /// A lowering nothing was kept in.
 export fn no_lowering() -> Lowering {
-    let none: Map<string, LoweredAt> = {}
+    let none: List<LoweredAt> = []
     Cell.new(none)
 }
 
 /// `lowered`, reusing the element the last paint lowered a node to while the node is the
 /// same node at the same step: a node is a value, so the same node lowers alike.
 export fn lowered_kept(root: Node, kept: Lowering) -> List<Native> {
-    let was = kept.get()
-    let now = no_lowering()
-    let drawn = lower_from(root, root_step(root.box.key), false, was, now)
-    kept.set(now.get())
+    let at = root_step(root.box.key)
+    let was = kept.get().first()?.el
+    let drawn = lower_from(
+        root,
+        at,
+        false,
+        if was != null && same_step(was!.seat, at) { was } else { null },
+    )
+    kept.set([LoweredAt { node: root, el: drawn }])
     [drawn with { facts: drawn.facts.concat(theme_facts(root.theme?.theme ?? plain())) }]
 }
 
-fn lower_from(n: Node, at: Step, ordered: bool, was: Map<string, LoweredAt>, now: Lowering) -> Native {
-    let key = "${avra_box_key(n)}"
-    let back = reused(was, key, ordered, at, now)
-    if back != null { return back! }
+/// `n` lowered at `at`, against `was`, the element last lowered at that step: kept whole when it
+/// is the same node, lowered in the same order.
+fn lower_from(n: Node, at: Step, ordered: bool, was: Native?) -> Native {
+    let from = avra_box_key(n)
+    if was != null && from != 0 && was!.from == from && was!.ordered == ordered { return was! }
     let stands = stepped([c.box.stand() for c in n.children])
-    let el = Native {
+    let olds = PriorKids.of(was?.kids ?? [], stands.steps)
+    Native {
         seat: at,
         prim: n.prim,
         facts: node_facts(n),
         hears: n.events,
-        kids: [lower_from(c, stands.steps[j], ordered || c.drawn_by_order || stands.shared[j], was, now) for j, c in n.children],
+        kids: [lower_from(c, stands.steps[j], ordered || c.drawn_by_order || stands.shared[j], olds.at(j)) for j, c in n.children],
         ordered: ordered,
-        from: avra_box_key(n),
+        from: from,
     }
-    now.put(key, LoweredAt { node: n, ordered: ordered, el: el })
-    el
 }
 
-/// The element the last paint lowered the node keyed `key` to, kept again, when it was
-/// lowered at the same step and order.
-fn reused(was: Map<string, LoweredAt>, key: string, ordered: bool, at: Step, now: Lowering) -> Native? {
-    let hit? = was.get(key) else { return null }
-    if hit.ordered != ordered || !same_step(hit.el.seat, at) { return null }
-    now.put(key, hit)
-    hit.el
+/// The children a node was last lowered to, found by the steps its children stand at now: by
+/// place while the two runs stand step for step alike, else through a table of the old steps.
+type PriorKids = { kids: List<Native>, steps: List<Step>, found: StepTable? }
+
+impl PriorKids {
+    static fn of(kids: List<Native>, steps: List<Step>) -> PriorKids {
+        if kids.is_empty() || aligned(kids, steps) { return PriorKids { kids: kids, steps: steps, found: null } }
+        PriorKids { kids: kids, steps: steps, found: StepTable.of([k.seat for k in kids]) }
+    }
+
+    /// The element last lowered at the step the child at `j` stands at, if any.
+    fn at(j: int) -> Native? {
+        let by_step? = self.found else { return if j < self.kids.length { self.kids[j] } else { null } }
+        let old? = by_step.find(self.steps[j]) else { return null }
+        self.kids[old]
+    }
+}
+
+/// Whether old children stand step for step where new ones do.
+fn aligned(kids: List<Native>, steps: List<Step>) -> bool {
+    kids.length == steps.length && (0..steps.length).all(same_step(kids[it].seat, steps[it]))
 }
 
 /// `n` standing at `at`, and its children each at its own step. A node is

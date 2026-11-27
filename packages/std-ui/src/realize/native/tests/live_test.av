@@ -48,6 +48,16 @@ fn second(first: Node, next: Node) -> string {
     [kind(p) for p in page.patches(next)].join(" | ")
 }
 
+/// What the second paint of the same rows, held between paints, says when it lays them out as
+/// `order` and puts `swapped` in for the row at 1.
+fn held_rows(order: List<int>, swapped: Node?) -> string {
+    let rows = [row(t) for t in ["a", "b", "c"]]
+    let page = native_live()
+    let _ = page.patches(holding(.List, rows))
+    let laid = [if j == 1 && swapped != null { swapped! } else { rows[j] } for j in order]
+    [kind(p) for p in page.patches(holding(.List, laid))].join(" | ")
+}
+
 /// The number the page gave the first element that hears something.
 fn first_hearer(root: Node) -> NodeId? {
     let page = native_live()
@@ -80,6 +90,11 @@ spec "std/ui native — the page between paints" {
         then "the same tree says nothing" { second(counter(2), counter(2)) == "" }
         then "a reorder of keyed rows is places only" { second(board(["a", "b", "c"]), board(["c", "a", "b"])) == "place" }
         then "a removed row is one remove" { second(board(["a", "b"]), board(["b"])) == "remove" }
+        then "the same rows again say nothing" { held_rows([0, 1, 2], null) == "" }
+        then "the same rows reordered are places only" { held_rows([2, 0, 1], null) == "place" }
+        then "a row put in among the same rows says its own change" {
+            held_rows([0, 1, 2], keyed(holding(.Item, [switch_node("b", true)]), "b")) == "set | unlisten"
+        }
     }
     given "a seat the page listens to" {
         then "a press runs its handler" { press_runs() }
