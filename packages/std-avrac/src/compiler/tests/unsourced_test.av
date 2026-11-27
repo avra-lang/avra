@@ -1,0 +1,48 @@
+// A program's binary is no source: a package's listing leaves out the binary its `[bin]` is built at,
+// and a `[bin]` renamed moves the listing, through the store a later process reads.
+use compiler.{avra_fact_definitions, avra_source_world}
+use @std.program.address.{DirectoryAddress}
+use @std.program.disk_store.{disk_store_at}
+use @std.program.query_engine.{query_engine}
+use @std.program.source_facts.{listed, use_source_world}
+use compiler.tests.support.{files, list_held, read_held, store_dir}
+
+/// The manifest of the held package, its program the source at `entry`.
+fn manifest(entry: string) -> string { "[package]\nname = \"@test/p\"\nversion = \"0.0.1\"\n\n[bin]\npath = \"${entry}\"\n" }
+
+/// One process over the store at `dir`: the held package's `src` as it lists, its names joined, then
+/// what it learned published.
+fn source_listed(dir: string) -> string {
+    use_source_world(avra_source_world(read_held, list_held, "avra-test"))
+    let store = disk_store_at(dir)
+    let names = listed(
+        query_engine(store, avra_fact_definitions()),
+        DirectoryAddress { package_name: "@test/p", path_in_package: "src" },
+    ) ?? []
+    let _ = store.saved()
+    names.join(" ")
+}
+
+/// The held package: its manifest naming `entry`, and the files `held` by their path in it.
+fn package_held(entry: string, held: Map<string, string>) { files().set({"avra.toml": manifest(entry), ..held}) }
+
+spec "a program's binary is no source" {
+    given "a package whose program has been built" {
+        then "its directory lists the program and not the binary" {
+            package_held("src/main.av", {"src/main.av": "println(\"hi\")\n", "src/main": "binary"})
+            source_listed(store_dir("built")) == "main.av"
+        }
+    }
+    given "its `[bin]` renamed, read by a later process over the same store" {
+        then "the old program's binary is listed again and the new one's is not" {
+            let dir = store_dir("renamed")
+            package_held("src/main.av", {"src/main.av": "println(\"hi\")\n", "src/main": "binary"})
+            let _ = source_listed(dir)
+            package_held(
+                "src/app.av",
+                {"src/app.av": "println(\"hi\")\n", "src/app": "binary", "src/main": "binary"},
+            )
+            source_listed(dir) == "app.av main"
+        }
+    }
+}

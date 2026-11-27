@@ -41,6 +41,9 @@ export type SourceWorld = {
     /// Where a file and a directory lie on the host, so a read of one is held by its stamp; absent
     /// for a world that isn't on a host's disk, every read of which is hashed.
     places: WorldPlaces? = null,
+    /// The names in a directory that are no source, as the language says it — what a build writes
+    /// beside the sources it reads — asked with the engine so every read it makes is recorded.
+    unsourced: fn(QueryEngine, DirectoryAddress) -> List<string> = nothing_unsourced,
 }
 
 /// Where a world's files and directories lie on the host.
@@ -99,6 +102,9 @@ export enum FileOctets { Read(octets: Bytes), Missing, Linked, Refused(why: stri
 /// A world that reads no file's octets.
 fn unread_octets(_file: SourceFileAddress) -> FileOctets { FileOctets.Missing }
 
+/// A world whose every listed name is a source.
+fn nothing_unsourced(_engine: QueryEngine, _dir: DirectoryAddress) -> List<string> { [] }
+
 /// THE TOOLCHAIN'S VERDICT ON ITS STD: the text of the file at `at`, beside the compiler that judged
 /// its std, empty where there is none. An input like a source's, held by the file's stamp, so a run
 /// where it didn't move reads nothing of it, and an answer that reads it carries no line of it.
@@ -107,10 +113,21 @@ export fn toolchain_verdict(engine: QueryEngine, at: string) -> string {
     read_stamped(engine, at, () -> read_text(at) catch "")
 }
 
+/// The sources in a directory, absent when there's none: its listing, less the names the language
+/// says are no source there. A NAME A BUILD WRITES IS NO SOURCE, so a listing a build moves by
+/// writing its own output is cut off here and nothing that reads the directory is asked again.
+@query("tape")
+export fn listed(engine: QueryEngine, dir: DirectoryAddress) -> List<string>? {
+    let names? = listing(engine, dir) else { return null }
+    let unsourced = (current_world().unsourced)(engine, dir)
+    if unsourced.is_empty() { return names }
+    [n for n in names if !unsourced.contains(n)]
+}
+
 /// The names in a directory, absent when there's none, in one order whatever order the host
 /// lists them in.
 @input("tape")
-export fn listed(engine: QueryEngine, dir: DirectoryAddress) -> List<string>? {
+export fn listing(engine: QueryEngine, dir: DirectoryAddress) -> List<string>? {
     let world = current_world()
     let places? = world.places else { return names_in(world, dir) }
     read_stamped(engine, (places.directory)(dir), () -> names_in(world, dir))
