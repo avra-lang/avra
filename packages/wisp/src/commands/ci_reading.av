@@ -1,0 +1,481 @@
+//! The readers `wisp ci_invariants` holds the tree's CI to: the Makefile's variables, targets and
+//! rules, a workflow's jobs and steps, and the few line shapes the invariants name. Each reads
+//! only the lines its invariant needs; none is a YAML or Make parser.
+
+// ── characters and text ──────────────────────────────────────────────
+
+/// `[A-Za-z0-9_]`.
+fn word_char(c: int) -> bool {
+    c >= 48 && c <= 57 || c >= 65 && c <= 90 || c >= 97 && c <= 122 || c == 95
+}
+
+fn name_start(c: int) -> bool { word_char(c) && !(c >= 48 && c <= 57) }
+
+fn space_char(c: int) -> bool { c == 32 || c >= 9 && c <= 13 }
+
+/// `[A-Za-z0-9_.-]`.
+fn target_char(c: int) -> bool { word_char(c) || c == 46 || c == 45 }
+
+/// The first index at or after `at` whose character fails `keep`.
+fn run_end(s: string, at: int, keep: fn(int) -> bool) -> int {
+    mut i = at
+    while i < s.length && keep(s.char_code(i)) { i = i + 1 }
+    i
+}
+
+fn rest_from(s: string, at: int) -> string { s.substring(at, s.length) }
+
+fn left_trimmed(s: string) -> string { rest_from(s, run_end(s, 0, space_char)) }
+
+fn right_trimmed(s: string) -> string {
+    mut n = s.length
+    while n > 0 && space_char(s.char_code(n - 1)) { n = n - 1 }
+    s.substring(0, n)
+}
+
+/// Where `needle` next stands at or after `at`, or -1.
+fn index_from(s: string, needle: string, at: int) -> int {
+    if at > s.length { return -1 }
+    let k = rest_from(s, at).index_of(needle)
+    if k < 0 { -1 } else { k + at }
+}
+
+fn bounded(s: string, k: int, n: int) -> bool {
+    (k == 0 || !word_char(s.char_code(k - 1))) &&
+        (k + n >= s.length || !word_char(s.char_code(k + n)))
+}
+
+/// Where `w` next stands at or after `at` as a whole word (`\bw\b`), or -1.
+fn word_from(s: string, w: string, at: int) -> int {
+    mut k = index_from(s, w, at)
+    while k >= 0 && !bounded(s, k, w.length) { k = index_from(s, w, k + 1) }
+    k
+}
+
+/// A text's lines, as `splitlines` reads them.
+fn lines_of(text: string) -> List<string> { text.split("\n") }
+
+/// Whitespace-separated words.
+fn words(s: string) -> List<string> {
+    [w for w in s.replace("\t", " ").replace("\r", " ").split(" ") if w != ""]
+}
+
+/// A line's code: what stands before its first `#`.
+fn code_of(line: string) -> string {
+    let k = line.index_of("#")
+    if k < 0 { line } else { line.substring(0, k) }
+}
+
+fn commented(line: string) -> bool { left_trimmed(line).starts_with("#") }
+
+/// The texts between single quotes (`'([^']+)'`).
+fn quoted_texts(s: string) -> List<string> {
+    mut out: List<string> = []
+    mut i = s.index_of("'")
+    while i >= 0 {
+        let j = index_from(s, "'", i + 1)
+        if j < 0 { return out }
+        if j == i + 1 {
+            i = j
+        } else {
+            out.push(s.substring(i + 1, j))
+            i = index_from(s, "'", j + 1)
+        }
+    }
+    out
+}
+
+/// `xs` with what `ys` adds, each once.
+fn joined(xs: List<string>, ys: List<string>) -> List<string> {
+    ys.fold(xs, (acc, y) -> if acc.contains(y) { acc } else { acc.concat([y]) })
+}
+
+fn without(xs: List<string>, ys: List<string>) -> List<string> { [x for x in xs if !ys.contains(x)] }
+
+fn missing_from(xs: List<string>, ys: List<string>) -> List<string> { sorted_distinct(without(xs, ys)) }
+
+// ── the Makefile ─────────────────────────────────────────────────────
+
+type Assign = { name: string, value: string }
+
+/// A `NAME = …` line (`:=`, `+=`, `?=` alike), or null.
+fn assignment(line: string) -> Assign? {
+    if line.length == 0 || !name_start(line.char_code(0)) { return null }
+    let end = run_end(line, 1, word_char)
+    let after = run_end(line, end, space_char)
+    let op = if after < line.length && ":+?".contains(line.substring(after, after + 1)) { after + 1 } else { after }
+    if op >= line.length || line.char_code(op) != 61 { return null }
+    Assign {
+        name: line.substring(0, end),
+        value: rest_from(line, run_end(line, op + 1, space_char)),
+    }
+}
+
+/// `NAME = …` with backslash continuations -> {NAME: raw}.
+fn make_vars(text: string) -> Map<string, string> {
+    let ls = lines_of(text)
+    mut vals: Map<string, string> = {}
+    mut i = 0
+    while i < ls.length {
+        let a = assignment(ls[i])
+        if a != null {
+            mut rest = a!.value
+            while right_trimmed(rest).ends_with("\\") && i + 1 < ls.length {
+                let kept = right_trimmed(rest)
+                rest = "${kept.substring(0, kept.length - 1)} ${ls[i + 1]}"
+                i = i + 1
+            }
+            vals.set(a!.name, rest)
+        }
+        i = i + 1
+    }
+    vals
+}
+
+/// `raw` with each `$(NAME)` expanded; a name already being expanded is nothing.
+fn expanded(vals: Map<string, string>, raw: string, seen: List<string>) -> string {
+    mut out = ""
+    mut i = 0
+    while i < raw.length {
+        let k = index_from(raw, "\$(", i)
+        if k < 0 {
+            out = out + rest_from(raw, i)
+            i = raw.length
+        } else {
+            let end = if k + 2 < raw.length && name_start(raw.char_code(k + 2)) { run_end(raw, k + 3, word_char) } else { -1 }
+            if end > 0 && end < raw.length && raw.char_code(end) == 41 {
+                let name = raw.substring(k + 2, end)
+                let value = if seen.contains(name) { "" } else { expanded(vals, vals.get(name) ?? "", seen.concat([name])) }
+                out = out + raw.substring(i, k) + value
+                i = end + 1
+            } else {
+                out = out + raw.substring(i, k + 2)
+                i = k + 2
+            }
+        }
+    }
+    out
+}
+
+/// The `KEEPERS*` variables (the keeper registry's sets), `$(…)` references expanded.
+fn keeper_lists(text: string) -> Map<string, List<string>> {
+    let vals = make_vars(text)
+    mut out: Map<string, List<string>> = {}
+    for name, raw in vals {
+        if name.starts_with("KEEPERS") { out.set(name, joined([], words(expanded(vals, raw, [name])))) }
+    }
+    out
+}
+
+fn listed(lists: Map<string, List<string>>, name: string) -> List<string> { lists.get(name) ?? [] }
+
+/// The target a `name:` line opens (`^[A-Za-z0-9_.-]+\s*:(?!=)`), or null.
+fn target_named(line: string) -> string? {
+    let end = run_end(line, 0, target_char)
+    if end == 0 { return null }
+    let colon = run_end(line, end, space_char)
+    if colon >= line.length || line.char_code(colon) != 58 { return null }
+    if colon + 1 < line.length && line.char_code(colon + 1) == 61 { return null }
+    line.substring(0, end)
+}
+
+/// {target: recipe text} — a target line, then its tab-indented recipe.
+fn make_targets(text: string) -> Map<string, string> {
+    let ls = lines_of(text)
+    mut targets: Map<string, string> = {}
+    for h, line in ls {
+        let t = target_named(line)
+        if t != null {
+            let tail = ls.drop(h + 1)
+            let stop = tail.index_of(tail.find(ends_recipe(it)) ?? "\n")
+            let recipe = tail
+                .take(if stop < 0 { tail.length } else { stop })
+                .filter(it.starts_with("\t"))
+                .map("${it}\n")
+                .join("")
+            targets.set(t!, "${targets.get(t!) ?? ""}${recipe}")
+        }
+    }
+    targets
+}
+
+/// A line that ends the recipe above it: neither blank nor indented.
+fn ends_recipe(line: string) -> bool { line.length > 0 && !space_char(line.char_code(0)) }
+
+/// A rule: its prerequisites, its recipe, and the declaration above it.
+export type Rule = { pre: List<string>, recipe: string, decl: string? }
+
+fn rule_char(c: int) -> bool { target_char(c) || c == 37 || c == 47 || c == 36 || c == 40 || c == 41 }
+
+fn rule_inner(c: int) -> bool { rule_char(c) || c == 32 }
+
+type RuleLine = { names: string, pre: string }
+
+/// A rule's line (`names: prerequisites`), or null.
+fn rule_line(line: string) -> RuleLine? {
+    if line.starts_with("\t") || line.starts_with(".PHONY") { return null }
+    if line.length == 0 || !rule_char(line.char_code(0)) { return null }
+    let colon = run_end(line, 1, rule_inner)
+    if colon >= line.length || line.char_code(colon) != 58 { return null }
+    if colon + 1 < line.length && line.char_code(colon + 1) == 61 { return null }
+    RuleLine { names: line.substring(0, colon), pre: rest_from(line, colon + 1) }
+}
+
+/// What follows `word` at the start of `line`, or null.
+fn declared(line: string, word: string) -> string? {
+    if !line.starts_with(word) { return null }
+    rest_from(line, word.length)
+}
+
+/// What follows `keeper owed by <owner>`, or null.
+fn owed_tail(s: string) -> string? {
+    let owed? = declared(s, "keeper owed by ") else { return null }
+    let end = run_end(owed, 0, not_space)
+    if end == 0 { null } else { rest_from(owed, end) }
+}
+
+/// What follows `\s+—\s+\S`, or false.
+fn worded(tail: string) -> bool {
+    let a = run_end(tail, 0, space_char)
+    if a == 0 || !rest_from(tail, a).starts_with("—") { return false }
+    let b = run_end(tail, a + "—".length, space_char)
+    b > a + "—".length && b < tail.length
+}
+
+fn not_space(c: int) -> bool { !space_char(c) }
+
+/// A `# not a keeper — …`, `# keeper owed by <owner> — …` or `# keeper: nightly (orders) — …` line.
+fn keeper_declaration(line: string) -> bool {
+    if !line.starts_with("#") { return false }
+    let s = left_trimmed(rest_from(line, 1))
+    let tail = declared(s, "not a keeper") ?? owed_tail(s) ?? declared(
+        s,
+        "keeper: nightly (orders)",
+    )
+    tail != null && worded(tail!)
+}
+
+/// {target: rule}, variables expanded; a declaration is the line directly above the rule.
+fn make_rules(text: string) -> Map<string, Rule> {
+    let vals = make_vars(text)
+    mut rules: Map<string, Rule> = {}
+    mut cur: List<string> = []
+    mut prev = ""
+    for line in lines_of(text) {
+        let r = rule_line(line)
+        if r != null {
+            cur = words(expanded(vals, r!.names, []))
+            let pre = words(expanded(vals, code_of(r!.pre), []))
+            let decl = if keeper_declaration(prev) { prev } else { null }
+            for n in cur {
+                let old = rules.get(n) ?? Rule { pre: [], recipe: "", decl: null }
+                rules
+                    .set(
+                        n,
+                        Rule {
+                            pre: old.pre.concat(pre),
+                            recipe: old.recipe,
+                            decl: old.decl ?? decl,
+                        },
+                    )
+            }
+        } else if cur.length > 0 && line.starts_with("\t") {
+            for n in cur {
+                let old = rules.get(n)!
+                rules.set(n, old with { recipe: "${old.recipe}${line}\n" })
+            }
+        } else if line.length > 0 && !space_char(line.char_code(0)) {
+            cur = []
+        }
+        prev = line
+    }
+    rules
+}
+
+/// A `make` command's targets: flags and assignments skipped.
+fn make_tokens(seg: string) -> List<string> {
+    [t for t in words(seg) if !t.starts_with("-") && run_end(t, 0, target_char) == t.length]
+}
+
+fn delimiter(c: int) -> bool { c == 59 || c == 38 || c == 124 }
+
+fn not_delimiter(c: int) -> bool { !delimiter(c) }
+
+/// Every `make` target a job's run steps name. Only a line's first `make` counts; a comment line is
+/// no step.
+fn invoked_targets(block: string) -> List<string> {
+    mut found: List<string> = []
+    for line in lines_of(block) {
+        let k = if commented(line) { -1 } else { word_from(line, "make", 0) }
+        if k >= 0 {
+            let rest = rest_from(line, k + 4)
+            found = joined(found, make_tokens(rest.substring(0, run_end(rest, 0, not_delimiter))))
+        }
+    }
+    found
+}
+
+/// Every target a line asks `make`/`$(MAKE)` for.
+fn made_on(v: string) -> List<string> {
+    mut out: List<string> = []
+    mut pos = 0
+    while pos < v.length {
+        let a = word_from(v, "make", pos)
+        let b = index_from(v, "\$(MAKE)", pos)
+        let k = if a < 0 || b >= 0 && b < a { b } else { a }
+        if k < 0 { return out }
+        let start = k + if k == b { 7 } else { 4 }
+        let end = run_end(v, start, not_delimiter)
+        out = joined(out, make_tokens(v.substring(start, end)))
+        pos = if end == start { end + 1 } else { end }
+    }
+    out
+}
+
+/// Where `${{ matrix.<name> }}` next stands at or after `at`: its start and end, or null.
+type Span = { lo: int, hi: int }
+
+fn matrix_at(s: string, name: string, at: int) -> Span? {
+    mut k = index_from(s, "\${{", at)
+    while k >= 0 {
+        let a = run_end(s, k + 3, space_char)
+        let word = "matrix.${name}"
+        if rest_from(s, a).starts_with(word) {
+            let b = run_end(s, a + word.length, space_char)
+            if rest_from(s, b).starts_with("}}") { return Span { lo: k, hi: b + 2 } }
+        }
+        k = index_from(s, "\${{", k + 1)
+    }
+    null
+}
+
+fn matrix_filled(s: string, name: string, value: string) -> string {
+    let at? = matrix_at(s, name, 0) else { return s }
+    "${s.substring(0, at.lo)}${value}${matrix_filled(rest_from(s, at.hi), name, value)}"
+}
+
+/// Every target a shell text asks `make`/`$(MAKE)` for; a `${{ matrix.x }}` stands for each of the
+/// job's values.
+fn made_targets(text: string, matrix: Map<string, List<string>>) -> List<string> {
+    mut out: List<string> = []
+    for line in lines_of(text) {
+        if !commented(line) {
+            mut variants = [line]
+            for name, values in matrix {
+                if variants.any(matrix_at(it, name, 0) != null) {
+                    variants = flatten_texts(
+                        [[matrix_filled(x, name, v) for v in values] for x in variants],
+                    )
+                }
+            }
+            for v in variants { out = joined(out, made_on(v)) }
+        }
+    }
+    out
+}
+
+/// The longest prefix of `run` that ends `.sh` or `.py` behind at least one character.
+fn tool_name(run: string) -> string? {
+    mut n = run.length
+    while n >= 4 {
+        let p = run.substring(0, n)
+        if p.ends_with(".sh") || p.ends_with(".py") { return p }
+        n = n - 1
+    }
+    null
+}
+
+/// The `tools/` scripts a text runs (`\btools/<name>.sh|py`).
+fn run_tools(text: string) -> List<string> {
+    mut out: List<string> = []
+    mut k = index_from(text, "tools/", 0)
+    while k >= 0 {
+        if k == 0 || !word_char(text.char_code(k - 1)) {
+            let name = tool_name(text.substring(k + 6, run_end(text, k + 6, target_char)))
+            if name != null { out.push(name!) }
+        }
+        k = index_from(text, "tools/", k + 1)
+    }
+    joined([], out)
+}
+
+// ── the workflow ─────────────────────────────────────────────────────
+
+fn job_char(c: int) -> bool { word_char(c) || c == 45 }
+
+/// The job a `  name:` line opens, or null.
+fn job_named(line: string) -> string? {
+    if !line.starts_with("  ") { return null }
+    let end = run_end(line, 2, job_char)
+    if end == 2 || end >= line.length || line.char_code(end) != 58 { return null }
+    if run_end(line, end + 1, space_char) != line.length { return null }
+    line.substring(2, end)
+}
+
+/// The `jobs:` mapping -> {job: block text}, by the 2-space job names.
+fn parse_jobs(text: string) -> Map<string, string> {
+    let ls = lines_of(text)
+    let start = ls
+        .index_of(ls.find(it.starts_with("jobs:") && run_end(it, 5, space_char) == it.length) ?? "\n")
+    if start < 0 { return {} }
+    let body = ls.drop(start + 1)
+    let heads = [i for i, l in body if job_named(l) != null]
+    mut out: Map<string, string> = {}
+    for n, h in heads {
+        let end = if n + 1 < heads.length { heads[n + 1] } else { body.length }
+        out.set(job_named(body[h])!, body.drop(h + 1).take(end - h - 1).join("\n"))
+    }
+    out
+}
+
+fn job(jobs: Map<string, string>, name: string) -> string { jobs.get(name) ?? "" }
+
+/// The value of the first line that begins `head` with something after it, left-trimmed.
+fn first_after(block: string, head: string) -> string? {
+    let line? = lines_of(block).find(it.starts_with(head) && it.length > head.length) else { return null }
+    left_trimmed(rest_from(line, head.length))
+}
+
+/// A job's own `if:` (`^    if:\s*(.+)$`).
+fn job_if(block: string) -> string? { first_after(block, "    if:") }
+
+/// A job's `steps:` list items (6-space `- `), split and kept whole.
+fn parse_steps(block: string) -> List<string> {
+    if !block.contains("\n      - ") { return [] }
+    block.split("\n      - ").drop(1)
+}
+
+/// A step's own `if:`, read from its first line (a run block's `if`s live deeper and are not the
+/// step's).
+fn step_if(item: string) -> string? {
+    let first = lines_of(item).first() ?? ""
+    if !first.starts_with("if:") || first.length == 3 { return null }
+    left_trimmed(rest_from(first, 3))
+}
+
+/// The value of a `key: value` line, `key` led by any indent.
+fn keyed_value(line: string, key: string) -> string? {
+    let s = left_trimmed(line)
+    if !s.starts_with(key) { return null }
+    left_trimmed(right_trimmed(rest_from(s, key.length)))
+}
+
+/// A value with no space in it (`\S+`), or null.
+fn single(v: string?) -> string? {
+    let s? = v else { return null }
+    if s == "" || run_end(s, 0, not_space) != s.length { null } else { s }
+}
+
+/// A job's matrix: each `name: ['a', 'b']` line under it.
+fn matrix_of(block: string) -> Map<string, List<string>> {
+    mut out: Map<string, List<string>> = {}
+    for line in lines_of(block) {
+        let s = left_trimmed(line)
+        let end = run_end(s, 0, word_char)
+        let rest = right_trimmed(rest_from(s, end))
+        if s.length < line.length && end > 0 && rest.starts_with(": [") && rest.ends_with("]") {
+            out.set(s.substring(0, end), quoted_texts(rest.substring(3, rest.length - 1)))
+        }
+    }
+    out
+}

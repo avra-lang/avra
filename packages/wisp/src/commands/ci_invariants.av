@@ -1,0 +1,787 @@
+//! `wisp ci_invariants` — THE CI STRUCTURE RATCHET: the invariants a green pull request could
+//! otherwise break SILENTLY, held before it can merge. A PR that removes the release fetch, reorders
+//! it after the build, or drops a compiler-free keeper from the PR path is green on its own diff and
+//! fails a train later, on someone else's change. Each check reads the SHAPE of
+//! `.github/workflows/checks.yml`, the compiler action and the Makefile's keeper lists (with
+//! `wisp keepers --sets` as its `KEEPERS*` variables), and refuses by name:
+//!
+//!   release-order    the compiler comes from the release asset BEFORE it is built, and the build
+//!                    runs only where the fetch MISSED.
+//!   keeper-coverage  every `KEEPERS_STATIC` member and every `*-static` target is run by a job the
+//!                    `pull_request` event reaches.
+//!   light-draft      a draft's run is the light gate: every leg `test` owes beyond LIGHT_JOBS names
+//!                    `needs.prepare.outputs.full` in its `if:`, and `test` refuses a light run.
+//!   ladder           a run's rungs reach the compiler step, and the seed check says it skipped.
+//!   run-mode         a PR's run mode is read from the API at run time (`wisp pr_mode`); a light run
+//!                    whose compiler is not the published one skips the gate and says so.
+//!   race-split       a `labeled` run never shares its concurrency group with the other runs.
+//!   compiler-route   a Sprite run's prep installs a published compiler before it builds one, and a
+//!                    merge-base compiler too old to read the tree falls back to the seed.
+//!   path-gate        `runtime-keep` and `layout-oracle` run on a PR only when `wisp ci_path_gate`
+//!                    says a path they read changed.
+//!   dup-run          a `labeled` run mirrors the full run on its head, never a second gate.
+//!   ready-race       a readied PR's run is full whichever event started it.
+//!   warm-edit        where `warm-edit` is a target it is a keeper, and a run that cannot judge FAILS.
+//!   keeper-reach     every target whose recipe runs a tools/ script is reached from a KEEPERS_*
+//!                    list or a workflow, or says what it is above its rule.
+//!   ci-image         every job container is an image ci-image.yml pushes, spelled once per workflow.
+//!   one-spelling     a shape the workflows share has ONE home, and no workflow spells it again.
+//!
+//! It holds the STRUCTURE, never a keeper's inputs. Exit 0 clean, 1 refused.
+use @std.cli.{CliResult, Runnable, command}
+use @std.io.{read_text, list_dir, is_file}
+
+/// A check's answer: its refusals, or the words it holds by.
+export type Holding = { refusals: List<string>, words: List<string> }
+
+fn held(refusals: List<string>, word: string) -> Holding {
+    if refusals.length > 0 { Holding { refusals: refusals, words: [] } } else { Holding { refusals: [], words: [word] } }
+}
+
+fn refusing(refusal: string) -> Holding { Holding { refusals: [refusal], words: [] } }
+
+const ALL_EVENTS: List<string> = ["pull_request", "merge_group", "push", "workflow_dispatch"]
+
+/// The legs a draft's light run still owes: the compiler, the compiler-free keepers, the
+/// changed-file gate and the codecs scan.
+const LIGHT_JOBS: List<string> = ["prepare", "keepers-static", "gate", "codecs", "test"]
+
+/// Whether `prepare` takes its compiler from the action, handing it the plan's full flag.
+export fn prepare_calls_compiler(prepare: string) -> bool {
+    prepare.contains("uses: ./.github/actions/compiler") &&
+        prepare.contains("full: \${{ steps.plan.outputs.full }}")
+}
+
+/// The events a job's `if:` permits. No `if`, or one naming no `github.event_name`, is every event.
+fn job_events(block: string) -> List<string> {
+    let cond? = job_if(block) else { return ALL_EVENTS }
+    if !cond.contains("github.event_name") { return ALL_EVENTS }
+    let named = [e for e in ALL_EVENTS if cond.contains("github.event_name == '${e}'")]
+    if cond.contains("github.event_name != 'push'") {
+        joined(named, ["pull_request", "merge_group", "workflow_dispatch"])
+    } else {
+        named
+    }
+}
+
+// ── release-order ────────────────────────────────────────────────────
+
+fn builds_compiler(step: string) -> bool {
+    step.contains("make -s avra") ||
+        step.contains("make -s bootstrap") ||
+        step.contains("make -s compiler")
+}
+
+/// The prepare job fetches the release compiler BEFORE building, and builds only where the fetch
+/// missed — in its own steps, or in the compiler action it calls.
+export fn check_release_order(jobs: Map<string, string>, action: string) -> Holding {
+    let own = job(jobs, "prepare")
+    let prepare = if prepare_calls_compiler(own) { lines_of(action).map("  ${it}").join("\n") } else { own }
+    let steps = parse_steps(prepare)
+    let fetch = steps.index_of(steps.find(it.contains("compiler_release.py fetch")) ?? "\n")
+    let build = steps.index_of(steps.find(builds_compiler(it)) ?? "\n")
+    if fetch < 0 { return refusing(no_fetch()) }
+    if build < 0 { return refusing(no_build()) }
+    if fetch > build { return refusing(built_first(build, fetch)) }
+    if !(step_if(steps[build]) ?? "").contains("steps.release.outputs.hit") { return refusing(build_unconditional()) }
+    held([], "release-order: fetch before build, build conditional on the fetch miss")
+}
+
+// ── path-gate ────────────────────────────────────────────────────────
+
+type Gated = { job: string, output: string }
+
+const GATED: List<Gated> = [
+    Gated { job: "runtime-keep", output: "runtime_keep" },
+    Gated { job: "layout-oracle", output: "layout_oracle" },
+]
+
+fn gate_refusals(jobs: Map<string, string>, g: Gated) -> List<string> {
+    let cond = job_if(job(jobs, g.job)) ?? ""
+    let ungated = if cond.contains("needs.prepare.outputs.${g.output} == '1'") { [] } else { [not_path_gated(g)] }
+    let unasked = if job(jobs, "prepare").contains("wisp ci_path_gate ${g.job}") { [] } else { [path_gate_unasked(g.job)] }
+    ungated.concat(unasked)
+}
+
+/// Each path-gated job is conditioned on prepare's path-gate output, and that output is the path
+/// gate's own decision.
+export fn check_path_gate(workflow: string) -> Holding {
+    let jobs = parse_jobs(workflow)
+    held(
+        flatten_texts([gate_refusals(jobs, g) for g in GATED]),
+        "path-gate: ${GATED.map(it.job).join(", ")} run on the path gate's decision",
+    )
+}
+
+// ── race-split ───────────────────────────────────────────────────────
+
+/// The `group:` under a `concurrency:` line, or null.
+fn concurrency_group(workflow: string) -> string? {
+    let ls = lines_of(workflow)
+    for i, line in ls {
+        if line.starts_with("concurrency:") && left_trimmed(line.substring(12, line.length)) == "" {
+            let next = left_trimmed(ls.drop(i + 1).find(left_trimmed(it) != "") ?? "")
+            if next.starts_with("group: ") && next.length > 7 { return next.substring(7, next.length) }
+        }
+    }
+    null
+}
+
+/// The concurrency group separates `labeled` runs from the others, and the run mode is read at run
+/// time.
+export fn check_race_split(workflow: string) -> Holding {
+    let group = concurrency_group(workflow)
+    let grouped = when {
+        group == null -> [no_concurrency()]
+        !group!.contains("github.event.action == 'labeled'") -> [labeled_shared()]
+        _ -> []
+    }
+    let moded = if workflow.contains("wisp pr_mode") { [] } else { [mode_unread()] }
+    held(grouped.concat(moded), "race-split: a labeled run has its own concurrency group")
+}
+
+// ── dup-run ──────────────────────────────────────────────────────────
+
+/// One refusal per needle `text` lacks.
+fn lacking(text: string, rows: List<Need>) -> List<string> { [r.said for r in rows if !text.contains(r.needle)] }
+
+type Need = { needle: string, said: string }
+
+/// The labeled run asks tools/ci_dup_run.py for the verdict and mirrors it, and `test`'s light and
+/// verdict steps stand down for a mirror.
+export fn check_dup_run(workflow: string) -> Holding {
+    let jobs = parse_jobs(workflow)
+    let prepare = lacking(
+        job(jobs, "prepare"),
+        [
+            Need {
+                needle: "tools/ci_dup_run.py",
+                said: "`prepare` does not ask tools/ci_dup_run.py whether a labeled run owes the gate",
+            },
+            Need {
+                needle: "mirror: \${{ steps.plan.outputs.mirror }}",
+                said: "`prepare` does not expose the mirror verdict",
+            },
+        ],
+    )
+    let test = lacking(
+        job(jobs, "test"),
+        [
+            Need {
+                needle: "needs.prepare.outputs.mirror != ''",
+                said: "`test` does not mirror another run's verdict",
+            },
+            Need {
+                needle: "needs.prepare.outputs.full == '0' && needs.prepare.outputs.mirror == ''",
+                said: "`test` names a light draft beside a mirrored verdict",
+            },
+        ],
+    )
+    held(prepare.concat(test), "dup-run: a labeled run mirrors the full run on its head")
+}
+
+// ── ready-race ───────────────────────────────────────────────────────
+
+/// A PR readied while its update runs: its mode is the PR's state at run time, so the ready run and
+/// the synchronize run both read full.
+export fn check_ready_race() -> Holding {
+    let ready = if pr_mode_of("{\"draft\": false, \"labels\": []}") == "full" { [] } else { [ready_light()] }
+    let draft = if pr_mode_of("{\"draft\": true, \"labels\": []}") == "light" { [] } else { [draft_full()] }
+    held(ready.concat(draft), "ready-race: a readied PR's run is full whichever event started it")
+}
+
+// ── run-mode ─────────────────────────────────────────────────────────
+
+/// The run mode is decided by `wisp pr_mode` on the PR's API answer, never by the event payload, and
+/// a light gate on an unpublished compiler is skipped.
+export fn check_run_mode(workflow: string) -> Holding {
+    let jobs = parse_jobs(workflow)
+    let plan = job(jobs, "prepare")
+    let unread = if plan.contains("wisp pr_mode") { [] } else { ["`prepare` does not read the PR's mode through wisp pr_mode"] }
+    let payload = if plan.contains("github.event.pull_request.draft") { ["`prepare` decides the run mode from the event payload's draft flag"] } else { [] }
+    let source = if plan.contains("compiler_source: \${{ steps.compiler.outputs.source }}") { [] } else { ["`prepare` does not expose the compiler's source"] }
+    let gate = lacking(
+        job(jobs, "gate"),
+        [
+            Need {
+                needle: "needs.prepare.outputs.compiler_source == 'latest'",
+                said: "`gate` runs on a light run whose compiler is not the published one",
+            },
+        ],
+    )
+    let test = lacking(
+        job(jobs, "test"),
+        [
+            Need {
+                needle: "light gate: compiler steps skipped",
+                said: "`test` does not say why a light gate's compiler steps were skipped",
+            },
+        ],
+    )
+    held(
+        flatten_texts([unread, payload, source, gate, test]),
+        "run-mode: the PR's mode is read from the API; the light gate skips an unpublished compiler",
+    )
+}
+
+// ── compiler-route ───────────────────────────────────────────────────
+
+fn min_int(a: int, b: int) -> int { if a < b { a } else { b } }
+
+fn max_int(a: int, b: int) -> int { if a > b { a } else { b } }
+
+/// The run's compiler route rides the wire, the Sprite's prep takes a published compiler before it
+/// builds one, and a merge-base compiler too old to read the tree falls back to the seed.
+export fn check_compiler_route(work: string, remote: string) -> Holding {
+    let wire = if work.contains("wire=\"\$wire@\$route") && work.contains("compiler_route") { [] } else { [route_off_wire()] }
+    let published = remote.index_of("\"\${route%%:*}\" = published")
+    let merged = remote.index_of("\"\${route%%:*}\" = mergebase")
+    let build = remote.index_of("building this tree's compiler")
+    let seed = index_from(remote, "make -s compiler GENS=1", max_int(merged, 0))
+    let prep = when {
+        min_int(published, merged) < 0 -> [no_published_route()]
+        build < 0 || build < max_int(published, merged) -> [builds_before_published()]
+        _ -> []
+    }
+    let seeded = if merged >= 0 && (seed < merged || build >= 0 && seed > build) { [merge_base_unseeded()] } else { [] }
+    held(
+        flatten_texts([wire, prep, seeded]),
+        "compiler-route: a published compiler is installed before a build; a merge-base miss falls back to the seed",
+    )
+}
+
+// ── ladder ───────────────────────────────────────────────────────────
+
+/// The compiler step's text: from its `name: compiler`/`id: compiler` head to the next step.
+fn compiler_step(action: string) -> string? {
+    let head = "name: compiler\n      id: compiler\n"
+    let at = action.index_of(head)
+    if at < 0 { return null }
+    let end = index_from(action, "\n    - ", at + head.length)
+    action.substring(at, if end < 0 { action.length } else { end })
+}
+
+/// The lines between a job's `    outputs:` line and its `    steps:` line, or null.
+fn outputs_of(block: string) -> string? {
+    let ls = lines_of(block)
+    let at = ls.index_of("    outputs:")
+    if at < 0 { return null }
+    let after = ls.drop(at + 1)
+    let end = after.index_of(after.find(it.starts_with("    steps:")) ?? "\n")
+    if end < 0 { return null }
+    after.take(end).map("${it}\n").join("")
+}
+
+/// A workflow's lines that build the compiler with no rungs, as `file:line`.
+fn rungless(name: string, text: string) -> List<string> {
+    [rungless_build(name, n + 1) for n, line in lines_of(text) if word_from(code_of(line), "make -s compiler", 0) >= 0 && !code_of(line).contains("RUNGS=")]
+}
+
+/// A run's rungs reach the compiler step, and the seed check speaks when they do.
+export fn check_ladder(workflow: string, make: string?, others: Map<string, string>, action: string) -> Holding {
+    let jobs = parse_jobs(workflow)
+    let prepare = job(jobs, "prepare")
+    let called = if prepare_calls_compiler(prepare) { [] } else { ["`prepare` does not take its compiler from .github/actions/compiler"] }
+    let read = if action.contains("steps.rungs.outputs.list") && action.contains("tools/rungs.sh") { [] } else { ["the compiler action does not read the run's rungs (tools/rungs.sh)"] }
+    let handed = if (compiler_step(action) ?? "").contains("make -s compiler RUNGS=") { [] } else { ["the compiler step does not hand the run's rungs to `make compiler RUNGS=…`"] }
+    let laddered = if make == null ||
+        (make_targets(make!).get("compiler") ?? "").contains("tools/ladder.sh") { [] } else { ["`make compiler` does not build RUNGS through tools/ladder.sh"] }
+    let others_rungless = flatten_texts(
+        [rungless(n, others.get(n) ?? "") for n in sorted_distinct(others.keys())],
+    )
+    let seed = job(jobs, "seed-check")
+    let spoken = if seed.contains("needs.prepare.outputs.rungs") && seed.contains("SKIPPED, SPOKEN") { [] } else { ["`seed-check` does not speak when the run carries rungs"] }
+    let exposed = if (outputs_of(prepare) ?? "").contains("rungs:") { [] } else { ["`prepare` does not expose `rungs` as an output"] }
+    held(
+        flatten_texts([called, read, handed, laddered, others_rungless, spoken, exposed]),
+        "ladder: rungs are read, built through tools/ladder.sh before HEAD, and the seed check says it skipped",
+    )
+}
+
+// ── light-draft ──────────────────────────────────────────────────────
+
+/// The legs a `    needs: [a, b]` line names.
+fn owed_legs(block: string) -> List<string>? {
+    let v? = first_after(block, "    needs:") else { return null }
+    if !v.starts_with("[") || !v.contains("]") { return null }
+    v.substring(1, v.index_of("]")).split(",").map(it.trim())
+}
+
+/// The `if:` of the action's `name: compiler` step (`    - if: …` directly above it).
+fn compiler_if(action: string) -> string? {
+    let ls = lines_of(action)
+    let at? = (0..ls.length)
+        .find(
+            it + 1 < ls.length &&
+                ls[it].starts_with("    - if: ") &&
+                ls[it].length > 10 &&
+                ls[it + 1] == "      name: compiler",
+        ) else { return null }
+    ls[at].substring(10, ls[at].length)
+}
+
+fn full_gated(jobs: Map<string, string>, leg: string) -> bool {
+    (job_if(job(jobs, leg)) ?? "").contains("needs.prepare.outputs.full")
+}
+
+/// Every heavy leg `test` owes is gated on the full flag, `prepare`'s compiler builds only on a full
+/// run, and `test` refuses a light run.
+export fn check_light_draft(workflow: string, action: string) -> Holding {
+    let jobs = parse_jobs(workflow)
+    let owed? = owed_legs(job(jobs, "test")) else { return refusing("the `test` aggregate names no `needs:` list") }
+    let prepare = job(jobs, "prepare")
+    let exposed = if prepare.contains("outputs.full") || prepare.contains("full:") { [] } else { ["`prepare` does not expose the `full` output a light draft is judged by"] }
+    let heavy = [leg for leg in owed if !LIGHT_JOBS.contains(leg)]
+    let ungated = [ungated_leg(leg) for leg in heavy if !full_gated(jobs, leg)]
+    let light_built = if prepare_calls_compiler(prepare) &&
+        (compiler_if(action) ?? "").contains("inputs.full == '1'") { [] } else { ["`prepare` builds a compiler on a light run the published one could serve"] }
+    let refused = if job(jobs, "test").contains("needs.prepare.outputs.full == '0'") { [] } else { ["`test` does not refuse a light draft's run"] }
+    held(
+        flatten_texts([exposed, ungated, light_built, refused]),
+        "light-draft: ${heavy.length} heavy leg(s) gated on the full flag",
+    )
+}
+
+// ── keeper-coverage ──────────────────────────────────────────────────
+
+/// Every KEEPERS_STATIC member is run by a pull_request job, and every `*-static` target is too.
+export fn check_keeper_coverage(make: string, workflow: string) -> Holding {
+    let lists = keeper_lists(make)
+    let keepers = listed(lists, "KEEPERS")
+    let frees = listed(lists, "KEEPERS_STATIC")
+    let targets = make_targets(make)
+    let undeclared = [not_in_keepers(name, missing_from(listed(lists, name), keepers)) for name in ["KEEPERS_STATIC", "KEEPERS_PR"] if missing_from(listed(lists, name), keepers).length > 0]
+    let untargeted = [no_target(k) for k in sorted_distinct(frees) if !targets.has(k)]
+    let groups: Map<string, List<string>> = {
+        "keepers": keepers,
+        "keepers-a": listed(lists, "KEEPERS_A"),
+        "keepers-b": listed(lists, "KEEPERS_B"),
+        "keepers-alone": listed(lists, "KEEPERS_ALONE"),
+        "keepers-static": frees,
+        "keepers-pr": listed(lists, "KEEPERS_PR"),
+    }
+    let pr_jobs = [b for _k, b in parse_jobs(workflow) if job_events(b).contains("pull_request")]
+    let pr_targets = joined([], flatten_texts(pr_jobs.map(invoked_targets(it))))
+    let pr_reached = joined(
+        [],
+        flatten_texts(
+            pr_targets.map((t) -> groups.get(t) ?? if keepers.contains(t) { [t] } else { [] }),
+        ),
+    )
+    let skipped = missing_from(frees, pr_reached)
+    let unrun = if skipped.length > 0 { [pr_skipped(skipped)] } else { [] }
+    let static_targets = [t for t in targets.keys() if t.ends_with("-static")]
+    let unrun_static = [static_unrun(t) for t in missing_from(static_targets, pr_targets)]
+    let reached = [k for k in frees if pr_reached.contains(k)].length
+    let ran = [t for t in static_targets if pr_targets.contains(t)].length
+    held(
+        flatten_texts([undeclared, untargeted, unrun, unrun_static]),
+        "keeper-coverage: ${reached} compiler-free keeper(s) reachable on a PR, ${ran} `-static` target(s)",
+    )
+}
+
+// ── warm-edit ────────────────────────────────────────────────────────
+
+fn bench_refusals(text: string) -> List<string> {
+    [bench_silent(n.said) for n in [
+        Need {
+            needle: "skip warm-edit",
+            said: "the skip marker the ratchet reads (no `skip warm-edit`)",
+        },
+        Need { needle: "WARM_EDIT_SKIP", said: "the one hand-set opt-out (`WARM_EDIT_SKIP`)" },
+        Need { needle: "FAILURE", said: "a named FAILURE for a run that cannot judge" },
+    ] if !text.contains(n.needle)]
+}
+
+fn ratchet_refusals(text: string) -> List<string> {
+    if !text.contains("warm:") { return ["tools/ledger_rows.sh does not read a warm row"] }
+    if !text.contains("^skip ") || !text.contains("WARM_EDIT_SKIP") { return ["tools/ledger_rows.sh does not refuse the warm-edit skip marker"] }
+    []
+}
+
+/// WHERE the warm-edit gate exists: its target is a keeper, its measurement is judged, and a run
+/// that CANNOT judge FAILS — the only opt-out is the hand-set `WARM_EDIT_SKIP`. Absent, this says so
+/// and passes. `bench` and `ratchet` are the scripts' paths.
+export fn check_warm_edit(make: string, bench: string, ratchet: string) -> Holding {
+    if !make_targets(make).has("warm-edit") {
+        return held(
+            [],
+            "warm-edit: no `warm-edit` target — the DB 07 gate is not wired here; nothing to guard",
+        )
+    }
+    let kept = if listed(keeper_lists(make), "KEEPERS").contains("warm-edit") { [] } else { ["`warm-edit` is a Makefile target but not one of KEEPERS — the train would not hold it"] }
+    let benched = if is_file(bench) { bench_refusals(read_text(bench) catch "") } else { ["`warm-edit` is wired but tools/warm_edit_bench.sh does not exist"] }
+    let ratcheted = if is_file(ratchet) { ratchet_refusals(read_text(ratchet) catch "") } else { ["`warm-edit` is wired but tools/ledger_rows.sh does not exist"] }
+    held(
+        flatten_texts([kept, benched, ratcheted]),
+        "warm-edit: `make warm-edit` is a keeper, and a run that cannot judge FAILS (only WARM_EDIT_SKIP stands it down)",
+    )
+}
+
+// ── ci-image ─────────────────────────────────────────────────────────
+
+fn values_keyed(text: string, key: string) -> List<string?> { lines_of(text).map(keyed_value(it, key)) }
+
+/// The images an `image: ${{ … }}` line chooses among.
+fn chosen_images(text: string) -> List<string> {
+    flatten_texts(
+        [quoted_texts(v!) for v in values_keyed(text, "image:") if v != null && v!.starts_with("\${{") && v!.ends_with("}}")],
+    )
+}
+
+fn plain_values(text: string, key: string) -> List<string> {
+    [v! for v in values_keyed(text, key).map(single(it)) if v != null]
+}
+
+fn image_refusals(name: string, text: string, pushed: List<string>) -> List<string> {
+    let images = plain_values(text, "image:")
+    let strays = [unpushed(name, i) for i in images.concat(chosen_images(text)) if !pushed.contains(i)]
+    let twice = [spelled_twice(name, i, images.filter(it == i).length) for i in sorted_distinct(images) if images.filter(it == i).length > 1]
+    strays.concat(twice)
+}
+
+fn aliases_in(text: string) -> int {
+    values_keyed(text, "container:").filter(it != null && it!.starts_with("*")).length
+}
+
+/// {file: text} -> every image a workflow runs is one ci-image.yml pushes, each spelled plainly once
+/// per workflow, and an image chosen by an expression names pushed images only.
+export fn check_ci_image(workflows: Map<string, string>) -> Holding {
+    let pushed = plain_values(workflows.get("ci-image.yml") ?? "", "tags:")
+    if pushed.length == 0 { return refusing("ci-image.yml pushes no tag") }
+    let names = sorted_distinct(workflows.keys())
+    let refusals = flatten_texts([image_refusals(n, workflows.get(n) ?? "", pushed) for n in names])
+    let aliases = names.fold(0, (acc, n) -> acc + aliases_in(workflows.get(n) ?? ""))
+    held(
+        refusals,
+        "ci-image: ${pushed.length} pushed image(s) (${pushed.join(", ")}), each spelled once per workflow, ${aliases} alias(es)",
+    )
+}
+
+// ── one-spelling ─────────────────────────────────────────────────────
+
+/// Each shape the workflows share, by its one home.
+export enum Spelling {
+    HandedDown
+    HandDown
+    SpeedNote
+    AvraTwice
+}
+
+const SPELLINGS: List<Spelling> = [
+    Spelling.HandedDown,
+    Spelling.HandDown,
+    Spelling.SpeedNote,
+    Spelling.AvraTwice,
+]
+
+fn home(s: Spelling) -> string {
+    match s {
+        .HandedDown -> "./.github/actions/handed-down",
+        .HandDown -> "tools/hand_down.sh",
+        .SpeedNote -> "./.github/actions/speed-note",
+        .AvraTwice -> "make compiler",
+    }
+}
+
+/// The `uses:` a line's step must name for the spelling to count, or null for any step.
+fn step_uses(s: Spelling) -> string? {
+    match s { .HandedDown -> "download-artifact", .HandDown or .SpeedNote or .AvraTwice -> null }
+}
+
+fn lower_char(c: int) -> bool { c >= 97 && c <= 122 }
+
+/// `name:\s*avra-build\b`.
+fn names_avra_build(code: string) -> bool {
+    mut k = code.index_of("name:")
+    while k >= 0 {
+        let v = left_trimmed(code.substring(k + 5, code.length))
+        if v.starts_with("avra-build") && (v.length == 10 || !word_char(v.char_code(10))) { return true }
+        k = index_from(code, "name:", k + 1)
+    }
+    false
+}
+
+/// `\btar\s+-?[a-z]*[xc][a-z]*f?\b.*avra-build`.
+fn tars_avra_build(code: string) -> bool {
+    mut k = word_from(code, "tar", 0)
+    while k >= 0 {
+        let gap = run_end(code, k + 3, (c) -> c == 32 || c >= 9 && c <= 13)
+        let dash = if gap < code.length && code.char_code(gap) == 45 { gap + 1 } else { gap }
+        let end = run_end(code, dash, lower_char)
+        let flags = code.substring(dash, end)
+        let bounded = end >= code.length || !word_char(code.char_code(end))
+        if gap > k + 3 &&
+            (flags.contains("x") || flags.contains("c")) &&
+            bounded &&
+            index_from(code, "avra-build", end) >= 0 { return true }
+        k = word_from(code, "tar", k + 1)
+    }
+    false
+}
+
+/// `\bmake -s avra\b.*&&.*\bmake -s avra\b`.
+fn builds_avra_twice(code: string) -> bool {
+    let first = word_from(code, "make -s avra", 0)
+    if first < 0 { return false }
+    let and = index_from(code, "&&", first + 12)
+    and >= 0 && word_from(code, "make -s avra", and + 2) >= 0
+}
+
+fn spells(s: Spelling, code: string) -> bool {
+    match s {
+        .HandedDown -> names_avra_build(code),
+        .HandDown -> tars_avra_build(code),
+        .SpeedNote -> word_from(code, "tools/speed_note.sh", 0) >= 0,
+        .AvraTwice -> builds_avra_twice(code),
+    }
+}
+
+fn respelled(name: string, text: string, rules: List<Spelling>) -> List<string> {
+    mut out: List<string> = []
+    mut step = ""
+    for n, line in lines_of(text) {
+        let code = code_of(line)
+        if left_trimmed(code).starts_with("- ") { step = code }
+        for s in rules {
+            if spells(s, code) && (step_uses(s) == null || step.contains(step_uses(s)!)) { out.push(respelled_at(name, n + 1, home(s))) }
+        }
+    }
+    out
+}
+
+/// {file: text} -> no workflow re-spells a shape whose home is a composite action or a tool.
+export fn check_one_spelling(workflows: Map<string, string>) -> Holding {
+    held(
+        flatten_texts(
+            [respelled(n, workflows.get(n) ?? "", SPELLINGS) for n in sorted_distinct(workflows.keys())],
+        ),
+        "one-spelling: ${SPELLINGS.length} shared shape(s), each spelled once, at its home",
+    )
+}
+
+// ── keeper-reach ─────────────────────────────────────────────────────
+
+fn rule_of(rules: Map<string, Rule>, name: string) -> Rule { rules.get(name) ?? Rule { pre: [], recipe: "", decl: null } }
+
+fn uncommented(block: string) -> string { lines_of(block).filter(!left_trimmed(it).starts_with("#")).join("\n") }
+
+/// What CI runs: the targets its jobs make, the ones orders.yml makes, and the tools it runs.
+type Ran = { made: List<string>, nightly: List<string>, tools: List<string> }
+
+fn ran_by(workflows: Map<string, string>) -> Ran {
+    mut made: List<string> = []
+    mut nightly: List<string> = []
+    mut tools: List<string> = []
+    for name, text in workflows {
+        for _k, block in parse_jobs(text) {
+            let code = uncommented(block)
+            let these = made_targets(code, matrix_of(block))
+            made = joined(made, these)
+            if name == "orders.yml" { nightly = joined(nightly, these) }
+            tools = joined(tools, run_tools(code))
+        }
+    }
+    Ran { made: made, nightly: nightly, tools: tools }
+}
+
+fn shaped(name: string, r: Rule) -> bool {
+    run_tools(r.recipe).length > 0 &&
+        !name.contains("%") &&
+        !name.contains("/") &&
+        !name.contains("\$")
+}
+
+/// The tools a frontier reaches through the tools each runs, those that exist.
+fn tool_closure(front: List<string>, got: List<string>, tool_text: fn(string) -> string?) -> List<
+    string,
+> {
+    let fresh = [n for n in joined([], front) if !got.contains(n) && tool_text(n) != null]
+    if fresh.length == 0 { return got }
+    tool_closure(
+        flatten_texts(fresh.map(run_tools(tool_text(it) ?? ""))),
+        got.concat(fresh),
+        tool_text,
+    )
+}
+
+/// The targets a frontier reaches through prerequisites and the `make` calls of recipes.
+fn target_closure(front: List<string>, got: List<string>, rules: Map<string, Rule>) -> List<string> {
+    let fresh = [t for t in joined([], front) if !got.contains(t)]
+    if fresh.length == 0 { return got }
+    let next = flatten_texts(
+        fresh.map((t) -> rule_of(rules, t).pre.concat(made_targets(rule_of(rules, t).recipe, {}))),
+    )
+    target_closure(next, got.concat(fresh), rules)
+}
+
+/// Every keeper-shaped target runs somewhere CI reaches, or declares itself. `tool_text` answers a
+/// tools/ script's text, null when absent.
+export fn check_keeper_reach(
+    make: string,
+    workflows: Map<string, string>,
+    tool_text: fn(string) -> string?,
+) -> Holding {
+    let rules = make_rules(make)
+    let ci = ran_by(workflows)
+    let tools = tool_closure(ci.tools, [], tool_text)
+    let made = flatten_texts(tools.map(made_targets(tool_text(it) ?? "", {})))
+    let lists = flatten_texts([s for _k, s in keeper_lists(make)])
+    let reached = target_closure(flatten_texts([ci.made, lists, made]), [], rules)
+    let ran = joined(tools, flatten_texts(reached.map(run_tools(rule_of(rules, it).recipe))))
+    let names = sorted_distinct([n for n, r in rules if shaped(n, r)])
+    let loose = [n for n in names if !reached.contains(n) &&
+        rule_of(rules, n).decl == null &&
+        missing_from(run_tools(rule_of(rules, n).recipe), ran).length > 0]
+    let false_nightly = [n for n in names if (rule_of(rules, n).decl ?? "").contains("nightly (orders)") && !ci.nightly.contains(n)]
+    if false_nightly.length > 0 { return Holding { refusals: false_nightly.map(nightly_unkept(it)), words: [] } }
+    if loose.length > 0 { return Holding { refusals: loose.map(unreached(it)), words: [] } }
+    let owed = [n for n in names if (rule_of(rules, n).decl ?? "").contains("owed")]
+    let owing = if owed.length > 0 { "; owed: ${owed.join(", ")}" } else { "" }
+    held(
+        [],
+        "keeper-reach: ${names.length} tool-running target(s), each reached by CI or declared${owing}",
+    )
+}
+
+// ── the tree ─────────────────────────────────────────────────────────
+
+/// The workflows under `root`, by file name.
+export fn workflow_texts(root: string) -> Map<string, string> {
+    let dir = "${root}/.github/workflows"
+    mut out: Map<string, string> = {}
+    for f in list_dir(dir) catch [] {
+        if f.ends_with(".yml") { out.set(f, read_text("${dir}/${f}") catch "") }
+    }
+    out
+}
+
+/// The Makefile under `root`, with the keeper registry's sets as the `KEEPERS*` variables.
+export fn tree_make_text(root: string) -> string { "${read_text("${root}/Makefile") catch ""}\n${sets_text()}\n" }
+
+fn tree_file(root: string, path: string) -> string { read_text("${root}/${path}") catch "" }
+
+/// Every check over the tree at `root`, in order.
+export fn tree_verdicts(root: string) -> List<Holding> {
+    let make = tree_make_text(root)
+    let workflow = tree_file(root, ".github/workflows/checks.yml")
+    let action = tree_file(root, ".github/actions/compiler/action.yml")
+    let workflows = workflow_texts(root)
+    [
+        check_release_order(parse_jobs(workflow), action),
+        check_keeper_coverage(make, workflow),
+        check_light_draft(workflow, action),
+        check_ladder(workflow, make, workflows, action),
+        check_run_mode(workflow),
+        check_race_split(workflow),
+        check_compiler_route(
+            tree_file(root, "tools/work"),
+            tree_file(root, "tools/sprite-remote.sh"),
+        ),
+        check_path_gate(workflow),
+        check_dup_run(workflow),
+        check_ready_race(),
+        check_warm_edit(make, "${root}/tools/warm_edit_bench.sh", "${root}/tools/ledger_rows.sh"),
+        check_keeper_reach(
+            make,
+            workflows,
+            (name) -> if is_file("${root}/tools/${name}") { read_text("${root}/tools/${name}") catch "" } else { null },
+        ),
+        check_ci_image(workflows),
+        check_one_spelling(workflows),
+    ]
+}
+
+/// The report's lines, and whether every invariant holds.
+export fn report(verdicts: List<Holding>) -> List<string> {
+    let words = flatten_texts(verdicts.map(it.words)).map("ci-invariants: ${it}")
+    let refusals = flatten_texts(verdicts.map(it.refusals))
+    if refusals.length > 0 {
+        words
+            .concat(["ci-invariants: REFUSED — ${refusals.length} structural invariant(s) broken:"])
+            .concat(refusals.map("ci-invariants:   ${it}"))
+    } else {
+        words.concat(["ci-invariants: clean — ${words.length} invariant(s) hold"])
+    }
+}
+
+type CiInvariantsCmd = {}
+
+impl Runnable for CiInvariantsCmd {
+    fn run(_args: CliResult) -> int {
+        let verdicts = tree_verdicts(".")
+        println(report(verdicts).join("\n"))
+        if verdicts.any(it.refusals.length > 0) { 1 } else { 0 }
+    }
+}
+
+export command ci_invariants {
+    description: "Hold the CI's structure: the release path, the PR's keepers, the light gate, the one spellings"
+    run: CiInvariantsCmd {}
+}
+
+// ── voices ───────────────────────────────────────────────────────────
+
+fn no_fetch() -> string { "no `prepare` step fetches the compiler from the release asset" }
+
+fn no_build() -> string { "no `prepare` step builds the compiler" }
+
+fn built_first(build: int, fetch: int) -> string { "the compiler is built (step ${build}) BEFORE the release fetch (step ${fetch})" }
+
+fn build_unconditional() -> string { "the compiler-build step is not conditional on the release fetch having MISSED" }
+
+fn not_path_gated(g: Gated) -> string { "`${g.job}` is not gated on `needs.prepare.outputs.${g.output}`" }
+
+fn path_gate_unasked(j: string) -> string { "`prepare` does not ask `wisp ci_path_gate` whether ${j} is owed" }
+
+fn no_concurrency() -> string { "the workflow names no concurrency group" }
+
+fn labeled_shared() -> string { "the concurrency group does not split `labeled` runs: a label and an open cancel each other" }
+
+fn mode_unread() -> string { "the run mode is not read at run time" }
+
+fn ready_light() -> string { "a readied PR is not read as full, so a run queued before the ready event would stay light" }
+
+fn draft_full() -> string { "a draft without the label is not read as light" }
+
+fn route_off_wire() -> string { "`tools/work run` does not put the compiler route on the wire" }
+
+fn no_published_route() -> string { "the Sprite's prep does not install a published compiler for a route" }
+
+fn builds_before_published() -> string { "the Sprite's prep builds before it tries the published compiler" }
+
+fn merge_base_unseeded() -> string {
+    "a merge-base compiler is not built through `make compiler`, whose seed fallback is the one that reads a tree it cannot"
+}
+
+fn rungless_build(name: string, n: int) -> string { "${name}:${n} builds the compiler with no RUNGS — a laddered tree fails there" }
+
+fn ungated_leg(leg: string) -> string { "`${leg}` is owed by `test` but is not gated on `needs.prepare.outputs.full`" }
+
+fn not_in_keepers(name: string, missing: List<string>) -> string {
+    "${name} names ${missing.join(", ")}, which is not in KEEPERS — the train would not hold it"
+}
+
+fn no_target(k: string) -> string { "KEEPERS_STATIC names `${k}`, which is no Makefile target" }
+
+fn pr_skipped(skipped: List<string>) -> string {
+    "no pull_request job runs ${skipped.join(", ")} — a compiler-free keeper is silently PR-skipped"
+}
+
+fn static_unrun(t: string) -> string { "`make ${t}` is a compiler-free half no pull_request job runs" }
+
+fn bench_silent(why: string) -> string { "tools/warm_edit_bench.sh has no ${why} — a run that cannot judge could stand green" }
+
+fn unpushed(name: string, image: string) -> string { "${name} runs `${image}`, which ci-image.yml does not push" }
+
+fn spelled_twice(name: string, image: string, n: int) -> string {
+    "${name} spells `${image}` ${n} times — name it once and alias it (`container: *ci-image`)"
+}
+
+fn respelled_at(name: string, n: int, home: string) -> string { "${name}:${n} spells what `${home}` holds — use it" }
+
+fn nightly_unkept(n: string) -> string { "`make ${n}` says it runs nightly, and orders.yml runs no `make ${n}`" }
+
+fn unreached(n: string) -> string {
+    "`make ${n}` runs a tool and nothing CI runs reaches it — wire it into a KEEPERS_* list or a job, or declare it above its rule (`# not a keeper — <what>` / `# keeper owed by <owner> — <reason>`)"
+}
