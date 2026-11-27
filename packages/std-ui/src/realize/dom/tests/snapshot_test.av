@@ -4,7 +4,11 @@ use @std.ui.components.{button, column, text}
 use @std.ui.realize.dom.live.{live}
 use @std.ui.realize.dom.patch.{Patch, diff}
 use @std.ui.style.theme.{default_theme}
-use @std.ui.realize.dom.snapshot.{Page, said, taken}
+use @std.ui.realize.dom.snapshot.{Kept, Page, said, taken}
+use @std.ui.frame.dialect.{Dialect, opened}
+use @std.ui.frame.kinds.{writer, told_nothing}
+use @std.ui.realize.html.tags.{HtmlAttr, HtmlAttrName, HtmlTag}
+use @std.ui.tree.identity.{NodeId}
 use @std.ui.realize.html.element.{Element, lowered}
 use @std.ui.tree.node.{Node}
 use @std.ui.tree.view.{tree_of}
@@ -23,21 +27,62 @@ fn standing(n: int) -> Page {
     Page { elements: made.page, next: made.next, sheet: ".a{b:c}" }
 }
 
-/// A page said, read, and said again.
-fn again(p: Page) -> Bytes {
-    let read? = taken(said(p)) else { return "".bytes() }
-    said(read)
+/// A page as a line, every element's every field it says spelled — apart
+/// from the frame, so a field the frame loses is a line that differs.
+fn page_line(p: Page) -> string { "${p.next} ${p.sheet} [${p.elements.map(element_line(it)).join(", ")}]" }
+
+fn element_line(e: Element) -> string {
+    match e {
+        .Text(run) -> "run ${run.id.n} ${run.seat.spelled()}/${run.seat.shown()} '${run.content}'",
+        .Tag(el) -> "${el.tag.word()} ${el.id.n} ${el.seat.spelled()}/${el.seat.shown()} ${el.attrs.map("${it.name.word()}=${it.value}").join(" ")} rests ${el.rests.map(it.word()).join(" ")} [${el.kids.map(element_line(it)).join(", ")}]",
+    }
 }
 
-fn spelled(b: Bytes) -> string { ["${b.at(j)}" for j in 0..b.length].join(",") }
+/// The page `p` is read back as, a line.
+fn read_back(p: Page) -> string {
+    let read? = taken(said(p)) else { return "refused" }
+    page_line(read)
+}
 
 fn ids(run: List<Element>) -> string { ["${e.id().n}" for e in run].join(",") }
 
 fn cut(bytes: Bytes, to: int) -> Bytes { bytes.slice(0, to) }
 
+/// A snapshot whose one element is written without its field at `slot`.
+fn dropped(k: Kept, slot: int) -> Bytes {
+    let w = writer(told_nothing())
+    opened(w, Dialect.Snapshot1)
+    w.number(0)
+    w.text("")
+    w.word(1)
+    k.framed_dropping(w, slot)
+    w.take()
+}
+
+/// One element of each kind a snapshot says.
+fn each_kept() -> List<Kept> {
+    [
+        Kept.Run(NodeId { n: 3 }, "a", "b", "hi"),
+        Kept
+            .Tag(
+                NodeId { n: 4 },
+                "c",
+                "d",
+                HtmlTag.Div,
+                [HtmlAttr { name: HtmlAttrName.Class, value: "x" }],
+                [HtmlAttrName.Value],
+                [],
+            ),
+    ]
+}
+
+fn arity(k: Kept) -> int {
+    match k { .Run(_, _, _, _) -> 4, .Tag(_, _, _, _, _, _, _) -> 7 }
+}
+
 spec "std/ui dom — a page, said and read back" {
     given "a page" {
-        then "reads back as the same page" { spelled(again(standing(1))) == spelled(said(standing(1))) }
+        then "reads back as the page it was said from" { read_back(standing(1)) == page_line(standing(1)) }
         then "keeps its next number and its sheet" {
             let read? = taken(said(standing(1))) else { return false }
             read.next == standing(1).next && read.sheet == ".a{b:c}"
@@ -66,8 +111,14 @@ spec "std/ui dom — a page, said and read back" {
         then "a run with a byte left over is refused" {
             taken([said(standing(1)), "x".bytes()].bytes()) == null
         }
-        then "another version is refused" { taken([2, 0, 0, 0, 0].bytes() ?? "".bytes()) == null }
+        then "another dialect is refused" { taken([Dialect.Dom16.code(), 0, 0, 0, 0].bytes() ?? "".bytes()) == null }
         then "nothing is refused" { taken("".bytes()) == null }
+        then "every element, without any one of its fields, is refused" {
+            each_kept().all((k) -> (0..arity(k)).all(taken(dropped(k, it)) == null))
+        }
+        then "and the shape says as many fields as each element has" {
+            Kept.frame_rows().map("${it.fields.length}").join(",") == "4,7"
+        }
     }
 }
 

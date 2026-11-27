@@ -84,6 +84,8 @@ enum Carried {
     WordOrNone(w: Worded)
     Nested(of: string)
     NestedOrNone(of: string)
+    Many(of: string)
+    Words(w: Worded)
     Told(of: string)
 }
 
@@ -110,11 +112,19 @@ fn carried(f: Field) -> Carried? {
         .Float -> if told { null } else { Carried.Fraction },
         .Str -> if told { null } else { Carried.Text },
         .List(.Str) -> if told { null } else { Carried.Texts },
+        .List(.Named(n, _)) -> if told { null } else { list_carried(n) },
         .Bytes -> if told { null } else { Carried.Octets },
         .Named(n, _) -> named_carried(n, told),
         .Opt(.Named(n, _)) -> if told { null } else { opt_carried(n) },
         rest -> null,
     }
+}
+
+/// A list of framed values, or of words: its count, then each.
+fn list_carried(n: string) -> Carried? {
+    if derived(n, "Frame") { return Carried.Many(n) }
+    let w? = worded(n) else { return null }
+    Carried.Words(w)
 }
 
 /// A field that may be absent: a word, zero for none; or a framed value, behind
@@ -164,7 +174,23 @@ fn written(c: Carried, v: Code, at: int) -> Stmts {
         .WordOrNone(n) -> quote { w.word_or_none(${word_or_none_of(n, v)}) },
         .Nested(_) -> quote { ${v}.framed(w) },
         .NestedOrNone(_) -> maybe_written(v, "some_${at}"),
+        .Many(_) -> many_written(v, "each_${at}"),
+        .Words(n) -> words_written(n, v, "each_${at}"),
         .Told(_) -> told_written(v, "told_${at}"),
+    }
+}
+
+fn many_written(v: Code, each: string) -> Stmts {
+    quote {
+        w.word(${v}.length)
+        for ${each} in ${v} { ${name(each)}.framed(w) }
+    }
+}
+
+fn words_written(n: Worded, v: Code, each: string) -> Stmts {
+    quote {
+        w.word(${v}.length)
+        for ${each} in ${v} { w.word(${word_of(n, name(each))}) }
     }
 }
 
@@ -272,6 +298,8 @@ fn read(c: Carried, into: string, at: int) -> Stmts {
         },
         .Nested(n) -> quote { let ${into} = ${name(n)}.unframed(r)? },
         .NestedOrNone(n) -> quote { let ${into} = if r.present()? { ${name(n)}.unframed(r)? } else { null } },
+        .Many(n) -> quote { let ${into} = [${name(n)}.unframed(r)? for _j in 0..r.word()?] },
+        .Words(w) -> quote { let ${into} = [${read_word(w)} for _j in 0..r.word()?] },
         .Told(n) -> told_read(n, into, at),
     }
 }
@@ -332,6 +360,8 @@ fn kind_word(c: Carried) -> Code {
         .WordOrNone(_) -> quote { FieldKind.WordOrNone },
         .Nested(_) -> quote { FieldKind.Nested },
         .NestedOrNone(_) -> quote { FieldKind.NestedOrNone },
+        .Many(_) -> quote { FieldKind.Many },
+        .Words(_) -> quote { FieldKind.Words },
         .Told(_) -> quote { FieldKind.Told },
     }
 }
@@ -339,8 +369,8 @@ fn kind_word(c: Carried) -> Code {
 /// The type a field names, when it names one the frame reads by.
 fn of_name(c: Carried) -> string {
     match c {
-        .Word(w) or .WordOrNone(w) -> worded_name(w),
-        .Nested(n) or .NestedOrNone(n) or .Told(n) -> n,
+        .Word(w) or .WordOrNone(w) or .Words(w) -> worded_name(w),
+        .Nested(n) or .NestedOrNone(n) or .Many(n) or .Told(n) -> n,
         .Number or .Flag or .Fraction or .Text or .Texts or .Octets -> "",
     }
 }
@@ -352,7 +382,7 @@ fn worded_name(w: Worded) -> string {
 /// The words a field's numbers stand for: a `Words` enum's, in order.
 fn words_code(c: Carried) -> Code {
     match c {
-        .Word(.Placed(n)) or .WordOrNone(.Placed(n)) -> quote { ${name(n)}.every().map(it.word()) },
+        .Word(.Placed(n)) or .WordOrNone(.Placed(n)) or .Words(.Placed(n)) -> quote { ${name(n)}.every().map(it.word()) },
         rest -> quote { [] },
     }
 }
@@ -381,16 +411,22 @@ fn carried_types(fields: List<Field>) -> List<string> {
 
 fn nested_name(c: Carried) -> List<string> {
     match c {
-        .Nested(n) or .NestedOrNone(n) or .Told(n) -> [n],
-        .Number or .Flag or .Fraction or .Text or .Texts or .Octets or .Word(_) or .WordOrNone(_) -> [],
+        .Nested(n) or .NestedOrNone(n) or .Many(n) or .Told(n) -> [n],
+        .Number or .Flag or .Fraction or .Text or .Texts or .Octets or .Word(_) or .WordOrNone(_) or .Words(_) -> [],
     }
 }
 
-fn types_of(t: Type, choice: bool, carried: List<string>) -> Code {
+/// This type's shape and those it carries, past the types `seen` already
+/// walked — so a type that carries itself is told once.
+fn types_of(t: Type, choice: bool, carried: List<string>) -> Stmts {
     mut all = quote { [FrameType { name: ${literal(t.name)}, choice: ${choice}, rows: ${name(t.name)}.frame_rows() }] }
     // LICENSED loops.push_loop: each carried type's shapes join the chain built before it
-    for n in carried { all = quote { ${all}.concat(${name(n)}.frame_types()) } }
-    quote { distinct_types(${all}) }
+    for n in carried { all = quote { ${all}.concat(${name(n)}.frame_types_past(walked)) } }
+    quote {
+        if seen.contains(${literal(t.name)}) { return [] }
+        let walked = seen.concat([${literal(t.name)}])
+        ${all}
+    }
 }
 
 // ── the impls ───────────────────────────────────────────────────
@@ -418,7 +454,12 @@ fn choice_frame(t: Type) -> Decls {
             static fn frame_rows() -> List<FrameRow> { [..${rows}] }
 
             /// This type's shape and every framed type its fields carry.
-            static fn frame_types() -> List<FrameType> { ${types_of(t, true, carried)} }
+            static fn frame_types() -> List<FrameType> { distinct_types(${name(t.name)}.frame_types_past([])) }
+
+            /// This type's shape and those it carries, past the types `seen` already walked.
+            static fn frame_types_past(seen: List<string>) -> List<FrameType> {
+                ${[types_of(t, true, carried)]}
+            }
         }
     }
 }
@@ -453,7 +494,12 @@ fn record_frame(t: Type) -> Decls {
             }
 
             /// This type's shape and every framed type its fields carry.
-            static fn frame_types() -> List<FrameType> { ${types_of(t, false, carried)} }
+            static fn frame_types() -> List<FrameType> { distinct_types(${name(t.name)}.frame_types_past([])) }
+
+            /// This type's shape and those it carries, past the types `seen` already walked.
+            static fn frame_types_past(seen: List<string>) -> List<FrameType> {
+                ${[types_of(t, false, carried)]}
+            }
         }
     }
 }
@@ -549,6 +595,8 @@ fn refused_frame(t: Type) -> Decls {
             static fn frame_rows() -> List<FrameRow> { [] }
 
             static fn frame_types() -> List<FrameType> { [] }
+
+            static fn frame_types_past(seen: List<string>) -> List<FrameType> { [] }
         }
     }
 }
