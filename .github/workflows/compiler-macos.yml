@@ -140,6 +140,19 @@ jobs:
           [ "$at" != edited ] || { echo "::error::the build says it was built from edited source"; exit 1; }
           [ "$gen" = 2 ] || echo "::warning::the Mac's compiler is generation $gen of its source, not 2"
           echo "hash=$hash" >> "$GITHUB_OUTPUT"
+      # THE MAC'S wisp, beside its compiler: `./wisp` built by this generation 2, keyed as the Linux one is (`./wisp
+      # --key`, git's hash of packages/wisp), so a Mac lane fetches it by key and builds no compiler for its keepers
+      - name: wisp
+        id: wisp
+        timeout-minutes: 15
+        run: |
+          key=$(./wisp --key)
+          bin=$(./wisp --compiler build/avra --path)
+          [ "$bin" = "build/wisp/$key/wisp" ] || { echo "::error::./wisp --path answered $bin, not build/wisp/$key/wisp"; exit 1; }
+          file "$bin" | grep -q "Mach-O 64-bit executable arm64" || { echo "::error::$bin is no arm64 Mach-O: $(file "$bin")"; exit 1; }
+          COPYFILE_DISABLE=1 tar -czf wisp-macos.tar.gz "$bin"
+          echo "compiler-macos: wisp of key $key, $(du -k wisp-macos.tar.gz | cut -f1) KB"
+          echo "key=$key" >> "$GITHUB_OUTPUT"
       - name: pack
         run: |
           { for f in build/avra build/avra_hot.bc build/avra_hot.inc build/.avra-built-from; do [ ! -f "$f" ] || echo "$f"; done
@@ -150,7 +163,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: compiler-macos
-          path: compiler-macos.tar.gz
+          path: |
+            compiler-macos.tar.gz
+            wisp-macos.tar.gz
           retention-days: 7
       # BESIDE THE RELEASE'S OWN COMPILER ONLY: a landing's upload may come after this build, so the stamp is
       # asked again for up to 15 minutes; a dispatched ref of another source stays an artifact
@@ -165,5 +180,6 @@ jobs:
             echo "compiler-macos: the release's compiler is of source ${have:-unread}, waiting for $want"
             sleep 60
           done
-          gh release upload gate-builder compiler-macos.tar.gz --clobber --repo "$GITHUB_REPOSITORY"
+          gh release upload gate-builder compiler-macos.tar.gz wisp-macos.tar.gz --clobber --repo "$GITHUB_REPOSITORY"
           echo "compiler-macos: https://github.com/$GITHUB_REPOSITORY/releases/download/gate-builder/compiler-macos.tar.gz"
+          echo "compiler-macos: https://github.com/$GITHUB_REPOSITORY/releases/download/gate-builder/wisp-macos.tar.gz (key ${{ steps.wisp.outputs.key }})"
