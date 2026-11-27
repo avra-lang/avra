@@ -13,7 +13,7 @@
 #     ONE string literal in ONE body moved to fresh text per round so a
 #     round is never a store hit, the wall read from the clock.
 #   - the CEILINGS are the ledger's `warm:` and `work:` rows
-#     (`tools/cost.baseline`): this script measures and hands its raw stream
+#     (`the record under cost/`): this script measures and hands its raw stream
 #     to tools/ledger_rows.sh, and `wisp cost`, the ONE reader of that
 #     file, REFUSES past a row and names each by how much. On CI the clock is
 #     told, never judged (a shared runner's wall is a fact); the work is judged
@@ -197,17 +197,15 @@ edit "counts"
 counted edit >> "$raw"
 
 cat "$raw"
-# `WARM_EDIT_ACCEPT` lowers this host's warm ceilings to what was measured
-# (never raises one); a human sets it when a real run landed under them.
-[ -z "${WARM_EDIT_ACCEPT:-}" ] || echo "warm_edit_bench: --accept — the warm ceilings may only fall" >&2
+# `WARM_EDIT_ACCEPT="<cause>"` records this host's warm clocks as measured, the cause on each file
+# the record moved in; `WORK_ACCEPT="<cause>"` the work counts.
 clock=judge
 [ -z "${WARM_EDIT_ACCEPT:-}" ] || clock=accept
 [ "${GITHUB_ACTIONS:-}" != true ] || [ -n "${WARM_EDIT_ACCEPT:-}" ] || clock=tell
-sh tools/ledger_rows.sh "$raw" warm-clock clock "$clock"
+sh tools/ledger_rows.sh "$raw" warm-clock clock "$clock" "${WARM_EDIT_ACCEPT:-}"
 st=$?
-# `WORK_ACCEPT` lowers the work-count ceilings to what was counted (never raises one).
 work=judge
 [ -z "${WORK_ACCEPT:-}" ] || work=accept
-sh tools/ledger_rows.sh "$raw" warm-work work "$work" >&2 || st=1
+sh tools/ledger_rows.sh "$raw" warm-work work "$work" "${WORK_ACCEPT:-}" >&2 || st=1
 rm -f "$raw"
 exit $st

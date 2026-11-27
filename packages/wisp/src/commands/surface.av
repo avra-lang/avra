@@ -248,10 +248,10 @@ fn carried(key: string, place: CostPlaced, targets: List<string>, overs: List<st
     }
     let target = targets
         .find(
-            (t) -> t.split(" ").length == 5 &&
-                t.split(" ")[1] == kind &&
-                t.split(" ")[2] == plain &&
-                t.split(" ")[3] == counter,
+            it.split(" ").length == 5 &&
+                it.split(" ")[1] == kind &&
+                it.split(" ")[2] == plain &&
+                it.split(" ")[3] == counter,
         )
     let over = overs
         .find(it.split(" ").length == 5 && "${it.split(" ")[1]} ${it.split(" ")[2]}" == key)
@@ -260,7 +260,7 @@ fn carried(key: string, place: CostPlaced, targets: List<string>, overs: List<st
         .concat(if over == null { [] } else { ["over", over!.split(" ")[3], over!.split(" ")[4]] })
 }
 
-fn header_for(path: string) -> string { "# ${path.substring(0, path.length - 5)} — migrated from tools/cost.baseline" }
+fn header_for(path: string) -> string { "# ${path.substring(0, path.length - 5)} — what the compiler costs, measured by `wisp cost`" }
 
 // THE VIEW
 
@@ -327,3 +327,111 @@ fn section(workload: string, measures: List<CostMeasure>) -> CostSection { CostS
 
 /// A count of `workload` in the file at `path`.
 fn section_of(path: string, workload: string) -> CostPlaced { CostPlaced { path: path, workload: workload, kind: CostKind.Count } }
+
+// THE RECORD AS THE LEDGER
+
+/// The commit every count is measured over, beside the record.
+export const SNAPSHOT_FILE: string = "cost/SNAPSHOT"
+
+/// How each kind of row is judged: a count exactly, a told row by nothing, a share within two in a
+/// million of its program, a clock within its band of what was accepted.
+const RECORD_KINDS: string = "kind bytes keyed-by toolchain over 0ppm\nkind count keyed-by - over 0ppm\nkind grows keyed-by toolchain over none\nkind share keyed-by - over 0ppm+2000\nkind speed keyed-by host over 250000ppm+250 least\nkind told keyed-by - over none\nkind wall keyed-by host over 0ppm\nkind warm keyed-by host over 300000ppm+250 least\nkind work keyed-by - over 0ppm\n"
+
+/// The record as the ledger `wisp cost` judges: its kinds, every clock's target and over line, the
+/// pinned snapshot and every row.
+export fn record_ledger(files: List<CostFile>, snapshot: string) -> string {
+    let clocks = [Clocked { key: "${row_workload(f.path, s.workload, m.kind)} ${m.counter}", m: m } for f in files for s in f.sections for m in s.measures if m.kind is .Clock]
+    let targets = [target_of(c)! for c in clocks if target_of(c) != null]
+    let overs = [over_of(c)! for c in clocks if over_of(c) != null]
+    let rows = surface_rows(files)
+    let lines = [key_line(t) for t in sorted_by(distinct_counters(targets), text_before)].join("") +
+        [key_line(o) for o in overs].join("")
+    "${RECORD_KINDS}${lines}snapshot ${snapshot}\n" +
+        [key_line("${k} ${rows.get(k) ?? 0}") for k in sorted_by([k for k, _n in rows], text_before)]
+            .join("")
+}
+
+/// A clock and the row it projects to.
+type Clocked = { key: string, m: CostMeasure }
+
+/// The `target <kind> <workload> <counter> <n>` line a clock carries.
+fn target_of(c: Clocked) -> string? {
+    let at = c.m.extra.index_of("target")
+    if at < 0 || at + 1 >= c.m.extra.length { return null }
+    let w = c.key.split(" ")[0].split(":")
+    "target ${w[0]} ${w.last()!} ${c.m.counter} ${c.m.extra[at + 1]}"
+}
+
+/// The `over <row> <owner> <ticket>` line a clock carries.
+fn over_of(c: Clocked) -> string? {
+    let at = c.m.extra.index_of("over")
+    if at < 0 || at + 2 >= c.m.extra.length { return null }
+    "over ${c.key} ${c.m.extra[at + 1]} ${c.m.extra[at + 2]}"
+}
+
+/// Every told row the record holds, by its row, with the ticket that owes it a cause.
+export fn told_rows(files: List<CostFile>) -> Map<string, string> {
+    mut told: Map<string, string> = {}
+    for f in files {
+        for s in f.sections {
+            for m in s.measures {
+                if m.kind is .Told {
+                    told
+                        .set(
+                            "${row_workload(f.path, s.workload, m.kind)} ${m.counter}",
+                            m.extra.first() ?? "",
+                        )
+                }
+            }
+        }
+    }
+    told
+}
+
+/// The record with `rows` laid into it: each measure the rows hold takes its value, a row the record
+/// holds no measure of joins the file its workload names, and each file a value moved in names
+/// `cause` on its `# accepted:` line. A measure's kind and what it carries stand as they were.
+export fn record_accepted(files: List<CostFile>, rows: Map<string, int>, cause: string) -> List<
+    CostFile,
+> {
+    let held = surface_rows(files)
+    let fresh = [k for k in sorted_by([k for k, _n in rows], text_before) if !held.has(k)]
+    let grown = [g for g in migrated("", rows.filter((e) -> fresh.contains(e.key)), [], [])]
+    let paths = distinct_counters([f.path for f in files].concat([g.path for g in grown]))
+    [accepted_file(p, files.find(it.path == p), grown.find(it.path == p), rows, cause) for p in paths]
+}
+
+fn accepted_file(
+    path: string,
+    was: CostFile?,
+    grown: CostFile?,
+    rows: Map<string, int>,
+    cause: string,
+) -> CostFile {
+    let before = was ?? CostFile { path: path, header: [], sections: [] }
+    let laid = [section(
+        s.workload,
+        [m with { value: rows.get("${row_workload(path, s.workload, m.kind)} ${m.counter}") ?? m.value } for m in s.measures],
+    ) for s in before.sections]
+    let joined_in = merged(laid, grown?.sections ?? [])
+    let moved = grown != null ||
+        !same_rows(
+            surface_rows([before]),
+            surface_rows([CostFile { path: path, header: [], sections: laid }]),
+        )
+    let header = if moved { [h for h in before.header if !h.starts_with("# accepted:")].concat(["# accepted: ${cause}"]) } else { before.header }
+    CostFile {
+        path: path,
+        header: if header.is_empty() { [header_for(path)] } else { header },
+        sections: joined_in,
+    }
+}
+
+/// `laid`'s sections with `grown`'s measures joined in, a new workload's section appended.
+fn merged(laid: List<CostSection>, grown: List<CostSection>) -> List<CostSection> {
+    let old = [section(s.workload, s.measures.concat(grown.find(it.workload == s.workload)?.measures ?? [])) for s in laid]
+    old.concat([g for g in grown if !laid.any(it.workload == g.workload)])
+}
+
+/// Whether two sets of rows hold the same rows, each at the same value.
+export fn same_rows(a: Map<string, int>, b: Map<string, int>) -> bool { a.length == b.length && a.all((e) -> b.get(e.key) == e.value) }

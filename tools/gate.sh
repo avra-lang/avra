@@ -57,7 +57,7 @@ idioms     the same on every other package the diff from <base> touches
 fmt        fmt --check on every .av the diff from <base> changes (tools/fmt_changed.sh); <base> is the program landed last, never a batch's own base
 sound      AVRA_SOUND_CHECK=1 check packages/cli, the memory pass's proof run over the program, 0 defects; AVRA_VERIFY_LLVM=1 build packages/cli, every emitted fn verified
 cost-answers the snapshot's std answers, made once by the census compiler (COST_PART=answers) for every slice that lays them
-cost-cold-a make cost, COST_PART=cold-a: the census compiler (built here by this tree's of generation 2) over tools/cost.baseline's snapshot — build-cli; every count within 0.05% of its row
+cost-cold-a make cost, COST_PART=cold-a: the census compiler (built here by this tree's of generation 2) over the record under cost/'s snapshot — build-cli; every count within 0.05% of its row
 cost-cold-b make cost, COST_PART=cold-b: check-program, and the cli's check over an empty store, the store's fill
 cost-laid  make cost, COST_PART=laid: the cli's cold check over the std answers the census compiler makes of the snapshot's std, laid into an empty store
 cost-ledger-cold-a make cost, COST_PART=ledger-cold-a: the pass ledger of cold-a's run, made again uncounted beside it; each pass's asks and asks per unit within 0.05% of its row
@@ -1060,7 +1060,7 @@ if compiler; then
             planted_row clock-holds
             # SPEED-RATCHET GATES NOTHING YET: the ledger holds no `speed:ci-warm:` row for the phases it
             # measures, so it would spend ~800 s measuring and compare none; said every gate until it has rows
-            echo "fact keeper speed-ratchet not run: tools/cost.baseline holds no speed:ci-warm row for its phases" >>"$out/rows"
+            echo "fact keeper speed-ratchet not run: the record under cost/ holds no speed:ci-warm row for its phases" >>"$out/rows"
             ;;
         cost-cold-a) slice_cost cold-a ;;
         cost-cold-b) slice_cost cold-b ;;

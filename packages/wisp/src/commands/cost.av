@@ -30,7 +30,6 @@ use @std.path.{dir_of, joined_path}
 use @std.text.{parse_int, text_before, repeat}
 use @std.program.sorted.{sorted_by}
 
-const BASELINE: string = "tools/cost.baseline"
 /// THE STD PACKAGES THE SNAPSHOT'S ANSWERS SHIP A VERDICT FOR, as the baseline's run found them: a
 /// run whose list lacks one fails, naming it, since a package that loses its verdict is one today's
 /// compiler refuses over the snapshot, and the laid row then measures laws the user's never asks.
@@ -93,14 +92,14 @@ impl Runnable for CostCmd {
     fn run(args: CliResult) -> int {
         let rest = args.args_of("rest")
         match args.arg("verb") {
-            "judge" or "accept" -> if rest.length == 1 { judged_run(rest[0], args.arg("verb") == "accept") } else { usage() },
+            "judge" -> if rest.length == 1 { judged_run(rest[0], "") } else { usage() },
+            "accept" -> if rest.length == 2 && !rest[1].trim().is_empty() { judged_run(rest[0], rest[1].trim()) } else { causeless() },
             "tell" -> if rest.length == 1 { told_run(rest[0]) } else { usage() },
             "rows" -> if rest.length == 1 { rows_said(rest[0]) } else { usage() },
             "edit" -> if rest.length == 4 { edit_made(rest[0], rest[1], rest[2], rest[3]) } else { usage() },
             "same" -> if rest.length == 2 { same_warm(rest[0], rest[1]) } else { usage() },
-            "migrate" -> if rest.is_empty() { surface_migrated() } else { usage() },
             "show" -> if rest.length <= 1 { surface_shown(rest.first() ?? "") } else { usage() },
-            "surface-same" -> if rest.is_empty() { surface_same() } else { usage() },
+
             _ -> usage(),
         }
     }
@@ -109,7 +108,7 @@ impl Runnable for CostCmd {
 export command cost {
     description: "The exact-count gate: judge, accept or read a tools/cost.sh run; make one of its edits; hold two warm runs alike"
     arg verb {
-        description: "`judge`, `accept`, `tell`, `rows`, `edit`, `same`; `migrate`, `show` or `surface-same` over the record under `cost/`"
+        description: "`judge`, `accept <run> <cause>`, `tell`, `rows`, `edit`, `same`, or `show [family]` — the record under `cost/` as a table"
         required: true
     }
     arg rest {
@@ -258,7 +257,7 @@ fn pass_row(line: string) -> PassRow? {
 
 fn all_digits(s: string) -> bool { !s.is_empty() && chars_all(s, "0123456789") }
 
-// THE RUN AND THE BASELINE
+// THE RUN AND THE RECORD
 
 /// Every workload a run kept (`<name>.out`, and each edit's `edit-<kind>.census`) → `<workload>
 /// <counter>` → count.
@@ -400,13 +399,18 @@ fn places(n: int, k: int) -> string {
 /// kind no line declares; each row a run measured under; and each move of a row its kind tells.
 export type Judged = { failed: List<string>, fell: List<string>, told: List<string> }
 
-export fn judge(now: Map<string, int>, base: Map<string, int>, kinds: Map<string, Kind>) -> Judged {
+export fn judge(
+    now: Map<string, int>,
+    base: Map<string, int>,
+    kinds: Map<string, Kind>,
+    told_by: Map<string, string> = {},
+) -> Judged {
     mut failed: List<string> = []
     mut fell: List<string> = []
     mut told: List<string> = []
     for key in sorted_by([k for k, _n in base], text_before) {
         let old = base.get(key) ?? 0
-        let kind? = kinds.get(if unsettled(key) == null { kind_name_of(key) } else { "told" }) else {
+        let kind? = kinds.get(if told_by.has(key) { "told" } else { kind_name_of(key) }) else {
             failed.push(undeclared_said(key))
             continue
         }
@@ -430,13 +434,21 @@ export fn judge(now: Map<string, int>, base: Map<string, int>, kinds: Map<string
     Judged { failed: failed, fell: fell, told: told }
 }
 
-/// A row whose count moves between compiler builds with no change to what it weighs: judged as
-/// `told`, by nothing, and said every run with the ticket that owes it a cause. Null for every other.
-fn unsettled(key: string) -> string? {
-    match key {
-        "matrix-build-bare-back-signature pass_lower_asks" or "matrix-build-laid-back-signature pass_lower_asks" -> ".112.22",
-        rest -> null,
+/// The rows the record tells, each judged by nothing and said every run with the ticket that owes it
+/// a cause.
+fn record_told() -> Map<string, string> { told_rows(surface_at(".")) }
+
+/// The ledger the record makes, over the snapshot it pins.
+fn ledger_text() -> string { record_ledger(surface_at("."), (read_text(SNAPSHOT_FILE) catch "").trim()) }
+
+/// The record with `rows` laid into it over `snapshot`, each file a value moved in naming `cause`.
+fn record_written(rows: Map<string, int>, snapshot: string, cause: string) {
+    for f in record_accepted(surface_at("."), rows, cause) {
+        let path = joined_path(SURFACE, f.path)
+        let _ = make_dirs(dir_of(path))
+        let _ = write_text(path, file_text(f))
     }
+    if snapshot != (read_text(SNAPSHOT_FILE) catch "").trim() { let _ = write_text(SNAPSHOT_FILE, "${snapshot}\n") }
 }
 
 /// The least fall a judge names: an exact row's every fall, else past the build's own jitter.
@@ -591,19 +603,6 @@ fn names_work(key: string) -> bool { workload_of(key).starts_with("ledger-") && 
 /// A ledger row's counted twin: the same counter of the workload the ledger ran.
 fn twin_of(key: string) -> string { key.substring("ledger-".length, key.length) }
 
-/// The rows an accept writes: over the same snapshot each row falls to what was measured and none
-/// rises, a new one seeded; over another, every row is what was measured.
-export fn accepted(now: Map<string, int>, base: Map<string, int>, same_snapshot: bool) -> Map<
-    string,
-    int,
-> {
-    if !same_snapshot { return now }
-    mut out: Map<string, int> = {}
-    for k, n in base { out.set(k, n) }
-    for k, n in now { out.set(k, if base.get(k) ?? n < n { base.get(k) ?? n } else { n }) }
-    out
-}
-
 /// The packages the baseline's verdicts name that this run's don't, where the run made answers.
 fn verdicts_lost(run_dir: string) -> List<string> {
     let made? = text_at(joined_path(run_dir, "verdicts")) else { return [] }
@@ -666,10 +665,12 @@ fn rows_said(run_dir: string) -> int {
 }
 
 /// A run judged, or accepted into the baseline: 0 held (or recorded), 1 refused.
-fn judged_run(run_dir: string, accept: bool) -> int {
-    if exists(joined_path(run_dir, "rows")) { return keyed_run(run_dir, accept) }
+/// A run judged, or with a `cause` recorded into the record: 0 held (or recorded), 1 refused.
+fn judged_run(run_dir: string, cause: string) -> int {
+    let accept = !cause.is_empty()
+    if exists(joined_path(run_dir, "rows")) { return keyed_judged(run_dir, cause, false) }
     let ran = (read_text(joined_path(run_dir, "snapshot")) catch "").trim()
-    let text = read_text(BASELINE) catch ""
+    let text = ledger_text()
     let pinned = snapshot_of(text) ?? ""
     let kinds = kinds_of(text)
     let ledger = rows_of(text)
@@ -708,23 +709,15 @@ fn judged_run(run_dir: string, accept: bool) -> int {
         return 1
     }
     if accept {
-        return accept_recorded(
-            run_dir,
-            ran,
-            pinned,
-            now,
-            base,
-            {..others, ..keyed},
-            text,
-            part.part,
-        )
+        return accept_recorded(run_dir, ran, now, {..others, ..keyed}, part.part, cause)
     }
     if ran != pinned {
         println(snapshot_apart_said(ran, pinned))
         return 1
     }
-    let j = judge(now, base, kinds)
-    for line in [unsettled_said(k, n, unsettled(k)!) for k, n in now if unsettled(k) != null] { println(line) }
+    let told = record_told()
+    let j = judge(now, base, kinds, told)
+    for line in [unsettled_said(k, n, told.get(k)!) for k, n in now if told.has(k)] { println(line) }
     for line in j.fell.concat(j.failed) { println(line) }
     println(rows_counted(base.length, j.failed.length, j.fell.length))
     candidates_said(run_dir, false)
@@ -736,26 +729,15 @@ fn judged_run(run_dir: string, accept: bool) -> int {
 fn accept_recorded(
     run_dir: string,
     ran: string,
-    pinned: string,
     now: Map<string, int>,
-    base: Map<string, int>,
     others: Map<string, int>,
-    text: string,
     part: string,
+    cause: string,
 ) -> int {
-    let same = ran == pinned
-    if same {
-        let failed = judge(now, base, kinds_of(text)).failed
-        if !failed.is_empty() {
-            println(failed.join("\n"))
-            println("cost: an accept never raises a row over the same snapshot")
-            return 1
-        }
-    }
     mut rows: Map<string, int> = {}
     for k, n in others { rows.set(k, n) }
-    for k, n in accepted(now.filter((e) -> recorded_row(e.key)), base, same) { rows.set(k, n) }
-    let _ = write_text(BASELINE, render(ran, kind_lines(text), rows))
+    for k, n in now.filter((e) -> recorded_row(e.key)) { rows.set(k, n) }
+    record_written(rows, ran, cause)
     let made = text_at(joined_path(run_dir, "verdicts"))
     if made != null {
         let _ = write_text(
@@ -765,7 +747,7 @@ fn accept_recorded(
     }
     // a part's run classifies only its own sites, and a ledger's none: the record is the whole run's
     candidates_said(run_dir, part == "all")
-    println("cost: tools/cost.baseline recorded (snapshot ${ran})")
+    println(recorded_said(cause, ran))
     0
 }
 
@@ -778,7 +760,6 @@ type Folded = { rows: Map<string, int>, apart: List<string> }
 /// A KEYED RUN writes `rows`: each `<kind>:<key>:<workload> <counter> <n>` line one round's measure.
 /// Its rows are judged within each kind and key it measured, every other row standing as it was; a
 /// key the ledger holds no row of is measured and told, never gated, and an accept seeds it.
-fn keyed_run(run_dir: string, accept: bool) -> int { keyed_judged(run_dir, accept, false) }
 
 /// A keyed run told: judged as `judge` judges it, each refusal a warning, the answer 0.
 fn told_run(run_dir: string) -> int {
@@ -786,11 +767,12 @@ fn told_run(run_dir: string) -> int {
         println("cost: `tell` judges a keyed run, and ${run_dir} holds no rows")
         return 1
     }
-    keyed_judged(run_dir, false, true)
+    keyed_judged(run_dir, "", true)
 }
 
-fn keyed_judged(run_dir: string, accept: bool, tell: bool) -> int {
-    let text = read_text(BASELINE) catch ""
+fn keyed_judged(run_dir: string, cause: string, tell: bool) -> int {
+    let accept = !cause.is_empty()
+    let text = ledger_text()
     let kinds = kinds_of(text)
     let folded = rounds_folded(read_text(joined_path(run_dir, "rows")) catch "", kinds)
     if !folded.apart.is_empty() {
@@ -809,7 +791,7 @@ fn keyed_judged(run_dir: string, accept: bool, tell: bool) -> int {
     for g in groups {
         if !base.any(group_of(it.key) == g) { println(unkeyed_said(g, rows_in(now, g))) }
     }
-    let j = judge(now, base, kinds)
+    let j = judge(now, base, kinds, record_told())
     let failed = j
         .failed
         .concat(unrecorded(now, base))
@@ -819,25 +801,14 @@ fn keyed_judged(run_dir: string, accept: bool, tell: bool) -> int {
     println(rows_counted(base.length, failed.length, j.fell.length))
     if tell { return 0 }
     if !accept { return if failed.is_empty() { 0 } else { 1 } }
-    if !j.failed.is_empty() {
-        println("cost: an accept never raises a row within its key")
-        return 1
-    }
     if failed.length > j.failed.length + unrecorded(now, base).length {
         println(
             "cost: an accept never records a row above its target — name its owner and ticket on an `over` line",
         )
         return 1
     }
-    let _ = write_text(
-        BASELINE,
-        render(
-            snapshot_of(text) ?? "",
-            kind_lines(text),
-            {..others, ..keyed_accepted(now, base, kinds)},
-        ),
-    )
-    println("cost: tools/cost.baseline recorded (${groups.join(", ")})")
+    record_written({..others, ..base, ..now}, snapshot_of(text) ?? "", cause)
+    println(recorded_said(cause, groups.join(", ")))
     0
 }
 
@@ -867,21 +838,6 @@ export fn rounds_folded(text: string, kinds: Map<string, Kind>) -> Folded {
         if kind.least { rows.set(key, if n < was { n } else { was }) } else if n != was { apart.push(rounds_apart_said(key, was, n)) }
     }
     Folded { rows: rows, apart: apart }
-}
-
-/// The rows a keyed accept writes: each falls to what was measured and none rises, a new one seeded;
-/// a row its kind only tells is what was measured.
-export fn keyed_accepted(now: Map<string, int>, base: Map<string, int>, kinds: Map<string, Kind>) -> Map<
-    string,
-    int,
-> {
-    mut out: Map<string, int> = {}
-    for k, n in base { out.set(k, n) }
-    for k, n in now {
-        let held = base.get(k) ?? n
-        out.set(k, if is_told(kinds, k) || n < held { n } else { held })
-    }
-    out
 }
 
 /// Whether a row's kind tells it and never judges it.
@@ -1118,25 +1074,6 @@ fn warm_counted(rows: int, moved: int, unheld: int) -> string {
 
 // THE RECORD UNDER `cost/`
 
-/// tools/cost.baseline written as the record: each file under `cost/` laid down from its rows.
-fn surface_migrated() -> int {
-    let text = read_text(BASELINE) catch ""
-    let lines = [l.trim() for l in text.split("\n")]
-    let files = migrated(
-        text,
-        rows_of(text),
-        [l for l in lines if l.starts_with("target ")],
-        [l for l in lines if l.starts_with("over ")],
-    )
-    for f in files {
-        let path = joined_path(SURFACE, f.path)
-        let _ = make_dirs(dir_of(path))
-        let _ = write_text(path, file_text(f))
-    }
-    println(migrated_said(files.length, rows_of(text).length))
-    0
-}
-
 /// The record as its table, a family's files alone where one is named.
 fn surface_shown(family: string) -> int {
     let view = cost_view(surface_at("."), family)
@@ -1144,23 +1081,11 @@ fn surface_shown(family: string) -> int {
     0
 }
 
-/// Whether the record holds exactly the ledger's rows: each with its value, and none beside them.
-fn surface_same() -> int {
-    let ledger = rows_of(read_text(BASELINE) catch "")
-    let record = surface_rows(surface_at("."))
-    let apart = [k for k, n in ledger if record.get(k) != n]
-        .concat([k for k, _n in record if !ledger.has(k)])
-    for k in sorted_by(apart, text_before) { println(surface_apart_said(k, ledger.get(k), record.get(k))) }
-    println(surface_same_said(ledger.length, record.length, apart.length))
-    if apart.is_empty() { 0 } else { 1 }
-}
+fn recorded_said(cause: string, what: string) -> string { "cost: the record under cost/ recorded (${what}) — ${cause}" }
 
-fn migrated_said(files: int, rows: int) -> string { "cost: ${rows} rows of tools/cost.baseline written as ${files} files under cost/" }
-
-fn surface_apart_said(key: string, ledger: int?, record: int?) -> string {
-    "cost: ${key}: the ledger holds ${if ledger == null { "none" } else { "${ledger!}" }}, the record ${if record == null { "none" } else { "${record!}" }}"
-}
-
-fn surface_same_said(ledger: int, record: int, apart: int) -> string {
-    "cost: the ledger holds ${ledger} rows, the record ${record}; ${apart} apart"
+fn causeless() -> int {
+    println(
+        "cost: an accept names its cause — `wisp cost accept <run> \"<what moved the rows, and why>\"`",
+    )
+    2
 }
