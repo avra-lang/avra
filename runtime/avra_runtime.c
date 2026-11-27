@@ -3771,6 +3771,7 @@ void* avra_map_new(void) {
     m->vals = (AvraArray*)avra_array_new();
     m->index = NULL;
     m->icap = 0;
+    m->words = 0;
     return m;
 }
 
@@ -3783,6 +3784,7 @@ void* avra_map_sized(int64_t n) {
     m->vals = (AvraArray*)(n > 0 ? avra_array_sized(n) : avra_array_new());
     m->index = NULL;
     m->icap = 0;
+    m->words = 0;
     if (n > SMALL) index_made(m, table_for(n), 0);
     return m;
 }
@@ -4390,6 +4392,7 @@ static void* map_clone(AvraMap* m) {
     c->vals = m->vals;
     c->index = NULL;
     c->icap = 0;
+    c->words = m->words;
     if (m->index) {
         int64_t bytes = index_bytes(m);
         void* block = index_block(m->icap, (size_t)bytes);
