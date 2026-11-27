@@ -25,8 +25,8 @@
 //! a row over the same snapshot. Moving the snapshot is an accept with `COST_SNAPSHOT=<sha>`, which
 //! records the new commit and every count it measured. A run that printed no count for a row FAILS.
 use @std.cli.{CliResult, Runnable, command, arg}
-use @std.io.{read_text, write_text, list_dir, exists}
-use @std.path.{joined_path}
+use @std.io.{read_text, write_text, list_dir, exists, make_dirs}
+use @std.path.{dir_of, joined_path}
 use @std.text.{parse_int, text_before, repeat}
 use @std.program.sorted.{sorted_by}
 
@@ -98,6 +98,9 @@ impl Runnable for CostCmd {
             "rows" -> if rest.length == 1 { rows_said(rest[0]) } else { usage() },
             "edit" -> if rest.length == 4 { edit_made(rest[0], rest[1], rest[2], rest[3]) } else { usage() },
             "same" -> if rest.length == 2 { same_warm(rest[0], rest[1]) } else { usage() },
+            "migrate" -> if rest.is_empty() { surface_migrated() } else { usage() },
+            "show" -> if rest.length <= 1 { surface_shown(rest.first() ?? "") } else { usage() },
+            "surface-same" -> if rest.is_empty() { surface_same() } else { usage() },
             _ -> usage(),
         }
     }
@@ -106,7 +109,7 @@ impl Runnable for CostCmd {
 export command cost {
     description: "The exact-count gate: judge, accept or read a tools/cost.sh run; make one of its edits; hold two warm runs alike"
     arg verb {
-        description: "`judge`, `accept`, `tell`, `rows`, `edit` or `same`"
+        description: "`judge`, `accept`, `tell`, `rows`, `edit`, `same`; `migrate`, `show` or `surface-same` over the record under `cost/`"
         required: true
     }
     arg rest {
@@ -1111,4 +1114,53 @@ fn warm_moved_said(key: string, old: int?, new: int?, tenths: int, held: bool) -
 
 fn warm_counted(rows: int, moved: int, unheld: int) -> string {
     "cost: ${rows} warm rows, ${moved} moved, ${unheld} past ${STABLE_PPM} ppm or an answer moved"
+}
+
+// THE RECORD UNDER `cost/`
+
+/// tools/cost.baseline written as the record: each file under `cost/` laid down from its rows.
+fn surface_migrated() -> int {
+    let text = read_text(BASELINE) catch ""
+    let lines = [l.trim() for l in text.split("\n")]
+    let files = migrated(
+        text,
+        rows_of(text),
+        [l for l in lines if l.starts_with("target ")],
+        [l for l in lines if l.starts_with("over ")],
+    )
+    for f in files {
+        let path = joined_path(SURFACE, f.path)
+        let _ = make_dirs(dir_of(path))
+        let _ = write_text(path, file_text(f))
+    }
+    println(migrated_said(files.length, rows_of(text).length))
+    0
+}
+
+/// The record as its table, a family's files alone where one is named.
+fn surface_shown(family: string) -> int {
+    let view = cost_view(surface_at("."), family)
+    println(view.substring(0, if view.ends_with("\n") { view.length - 1 } else { view.length }))
+    0
+}
+
+/// Whether the record holds exactly the ledger's rows: each with its value, and none beside them.
+fn surface_same() -> int {
+    let ledger = rows_of(read_text(BASELINE) catch "")
+    let record = surface_rows(surface_at("."))
+    let apart = [k for k, n in ledger if record.get(k) != n]
+        .concat([k for k, _n in record if !ledger.has(k)])
+    for k in sorted_by(apart, text_before) { println(surface_apart_said(k, ledger.get(k), record.get(k))) }
+    println(surface_same_said(ledger.length, record.length, apart.length))
+    if apart.is_empty() { 0 } else { 1 }
+}
+
+fn migrated_said(files: int, rows: int) -> string { "cost: ${rows} rows of tools/cost.baseline written as ${files} files under cost/" }
+
+fn surface_apart_said(key: string, ledger: int?, record: int?) -> string {
+    "cost: ${key}: the ledger holds ${if ledger == null { "none" } else { "${ledger!}" }}, the record ${if record == null { "none" } else { "${record!}" }}"
+}
+
+fn surface_same_said(ledger: int, record: int, apart: int) -> string {
+    "cost: the ledger holds ${ledger} rows, the record ${record}; ${apart} apart"
 }
