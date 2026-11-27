@@ -49,7 +49,6 @@ slices() {
 build      make try; make avra twice, the second cold, the two binaries one; cli build cold+warm
 avrac-a    test packages/std-avrac — half of src/compiler/tests, dealt in turn, and every dir of src/compiler but tests and soundness
 avrac-g    test packages/std-avrac — the other half of src/compiler/tests, and src/compiler/soundness
-avrac-d    test packages/std-avrac — src/features/[n-r]*
 avrac-f    test packages/std-avrac — src/features' own files, and every dir of src/ but compiler and features
 idioms-avrac  check --baseline tools/idioms.baseline on std-avrac, when the diff from <base> touches it
 idioms-cli    the same on cli
@@ -65,7 +64,6 @@ cost-ledger-cold-a make cost, COST_PART=ledger-cold-a: the pass ledger of cold-a
 cost-ledger-cold-b make cost, COST_PART=ledger-cold-b: the same of cold-b's runs
 cost-ledger-warm make cost, COST_PART=ledger-warm: the pass ledger of the cli's cold check and every warm edit, made again uncounted beside cost-warm; asks per moved item
 cost-matrix-check-bare make cost, COST_PART=matrix-check-bare: the warm-edit matrix — every kind of edit and its taking back, met by a warm check of the cli, no std answers laid; each pass's asks per cell a row, each wall said
-cost-matrix-check-laid make cost, COST_PART=matrix-check-laid: the same, the std answers laid beside the compiler
 doors-a    test std-json std-task std-validate std-text std-sql std-queue std-time
 doors-b    test std-ui std-http; make ui-host-test and ui-host, std-ui's program tests built and run
 ui-browser the UI board: its wasm claims over the page glue (tools/ui_board.sh), its native binary's symbols and bytes (tools/ui_board_native.sh), then its claims in headless Firefox (tools/ui_board_browser.sh)
@@ -101,6 +99,7 @@ EOF
 splits() {
     cat <<'EOF'
 avrac-b|3|test packages/std-avrac — src/features/[a-e]*, its dirs dealt in turn
+avrac-d|2|test packages/std-avrac — src/features/[n-r]*, its dirs dealt in turn
 avrac-c|2|test packages/std-avrac — src/features/[f-m]*, its dirs dealt in turn
 avrac-e|2|test packages/std-avrac — src/features/[s-z]*, its dirs dealt in turn
 edit-n|13|witness_program_edit's numbered edits, each alone over its own cold product, the frontier walk checked; the witness's edit count held to the parts
@@ -113,8 +112,9 @@ needs|6|witness_program_needs over every package and refusal witness, dealt in t
 witness-b|5|the witnesses and attacks of witness_b_rows, dealt in turn
 pkgs|2|test every package's suite no slice above names, of the packages the diff from <base> reaches (tools/affected_packages.sh; every one where there is no <base>), dealt by their measured seconds; an owed one (tools/gate/suites.owed) judged by its line
 cost-warm|7|make cost, COST_PART=warm: the cli's cold check, then the warm edits (COST_EDITS) dealt in turn, the noop in every part
-cost-matrix-build-bare|2|make cost, COST_PART=matrix-build-bare: the warm-edit matrix met by a warm build, each part the cold build and a share of the edits (COST_EDITS) dealt in turn
-cost-matrix-build-laid|2|make cost, COST_PART=matrix-build-laid: the same, the std answers laid
+cost-matrix-build-bare|4|make cost, COST_PART=matrix-build-bare: the warm-edit matrix met by a warm build, each part the cold build and a share of the edits (COST_EDITS) dealt in turn
+cost-matrix-check-laid|2|make cost, COST_PART=matrix-check-laid: the warm-edit matrix met by a warm check, the std answers laid beside the compiler, each part the cold check and a share of the edits (COST_EDITS) dealt in turn
+cost-matrix-build-laid|4|make cost, COST_PART=matrix-build-laid: the same, the std answers laid
 keepers-b|3|every keeper of KEEPERS_B no other slice runs, a row each, dealt in turn, the browser's libraries beside it
 keepers-tw|4|tool-witnesses, a share of its witnesses each (TOOL_WITNESS_SHARD), every witness its seconds
 keepers-alone|2|KEEPERS_ALONE, held to a clock and alone on its runner: runtime-tests, and runtime-mutations' part (MUTATION_SHARD)
@@ -478,7 +478,6 @@ slice_avrac_a() {
     )
 }
 slice_avrac_g() { avrac $({ compiler_tests_half 1; echo packages/std-avrac/src/compiler/soundness; } | sort); }
-slice_avrac_d() { avrac $(find packages/std-avrac/src/features -mindepth 1 -maxdepth 1 -type d -name '[n-r]*' | sort); }
 slice_avrac_f() {
     avrac $(
         {
@@ -983,6 +982,7 @@ part_of() {
     case $1 in
         avrac-b) avrac $(features '[a-e]*' | dealt "$(($2 - 1))" "$3") ;;
         avrac-c) avrac $(features '[f-m]*' | dealt "$(($2 - 1))" "$3") ;;
+        avrac-d) avrac $(features '[n-r]*' | dealt "$(($2 - 1))" "$3") ;;
         avrac-e) avrac $(features '[s-z]*' | dealt "$(($2 - 1))" "$3") ;;
         edit-n)
             # every numbered edit a part: a witness that holds another count than the parts runs none
@@ -1002,7 +1002,7 @@ part_of() {
         needs) row needs-witness sh tools/witness_program_needs.sh build/avra $(sh tools/witness_program_needs.sh --cases | dealt "$(($2 - 1))" "$3") ;;
         witness-b) rows_dealt witness_b_rows "$2" "$3" ;;
         cost-warm) slice_cost warm "$2/$3" ;;
-        cost-matrix-build-bare | cost-matrix-build-laid) slice_cost "${1#cost-}" "$2/$3" ;;
+        cost-matrix-build-bare | cost-matrix-build-laid | cost-matrix-check-laid) slice_cost "${1#cost-}" "$2/$3" ;;
         keepers-b)
             planted_enough KEEPERS_B "$3" || return
             names=$(keepers_of KEEPERS_B | grep -vx tool-witnesses | planted_first | dealt "$(($2 - 1))" "$3")
@@ -1118,7 +1118,6 @@ if compiler; then
         build) slice_build ;;
         avrac-a) slice_avrac_a ;;
         avrac-g) slice_avrac_g ;;
-        avrac-d) slice_avrac_d ;;
         avrac-f) slice_avrac_f ;;
         idioms-avrac) idioms_on "${1:-}" keep std-avrac ;;
         idioms-cli) idioms_on "${1:-}" keep cli ;;
@@ -1162,7 +1161,7 @@ if compiler; then
         cost-ledger-cold-a) slice_cost ledger-cold-a ;;
         cost-ledger-cold-b) slice_cost ledger-cold-b ;;
         cost-ledger-warm) slice_cost ledger-warm ;;
-        cost-matrix-check-bare | cost-matrix-check-laid) slice_cost "${slice#cost-}" ;;
+        cost-matrix-check-bare) slice_cost "${slice#cost-}" ;;
         *) part_of "${slice%-*}" "${slice##*-}" "$(splits | awk -F'|' -v f="${slice%-*}" '$1 == f { print $2 }')" "${1:-}" ;;
     esac
 fi
