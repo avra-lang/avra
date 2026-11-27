@@ -26,7 +26,7 @@ use package_sets.{NO_NAMES, NameSets, name_sets}
 use input_stamps.{InputStamp, places_held}
 use defect.{defect}
 use hash_keyed_table.{HashKeyedTable, ReadTable, hash_keyed_table, read_table}
-use interned.{HIGH_LANE, LOW_LANE}
+use interned.{text_key}
 use query_times.{QueryTimes, TimedSide, query_times}
 use saved_layout.{SavedBytes, SavedList, SavedSlots, SavedSource}
 use answer_record.{
@@ -1214,10 +1214,14 @@ impl QueryEngine {
         part_name: string,
         whole: AnswerParts?,
     ) -> KeptPart? {
-        let high = HIGH_LANE.finished(HIGH_LANE.text(HIGH_LANE.seed, part_name))
-        let low = LOW_LANE.finished(LOW_LANE.text(LOW_LANE.seed, part_name))
-        let found = held.part_found(answer, high, low, part_name) ?? held
-            .part_kept(answer, high, low, self.part_looked_up(held.question, answer, part_name, whole))
+        let key = text_key(part_name)
+        let found = held.part_found(answer, key.high_word, key.low_word, part_name) ?? held
+            .part_kept(
+                answer,
+                key.high_word,
+                key.low_word,
+                self.part_looked_up(held.question, answer, part_name, whole),
+            )
         self.record_read(found.read)
         found.kept
     }
