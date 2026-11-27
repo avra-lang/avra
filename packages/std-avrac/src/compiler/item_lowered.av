@@ -81,6 +81,7 @@ use core.{
 use features.collects.{collected_list}
 use features.specs.{case_lowered}
 use @std.program.address.{SourceFileAddress}
+use @std.program.answer_record.{ContentHash}
 use @std.program.source_facts.{source_text}
 use diagnostics.{new_source_file}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
@@ -135,11 +136,11 @@ export type Unprojected = { name: string, lo: int, hi: int }
 /// fn's call where the fn's body key is one of `reaching`. A rule over sites, never a flag per test,
 /// so it places every revision of a body, however many tests it holds.
 @derive(Saved)
-export type TestsKept = { checks: TaskChecks, reaching: List<string> }
+export type TestsKept = { checks: TaskChecks, reaching: List<ContentHash> }
 
 impl TestsKept {
     /// Whether a test at `site` is placed.
-    fn keeps(site: TestSite) -> bool { self.checks.keeps(site, (c: CalledFn) -> self.reaching.contains(body_at(c).key())) }
+    fn keeps(site: TestSite) -> bool { self.checks.keeps(site, (c: CalledFn) -> reaches_one(self.reaching, body_at(c).print())) }
 
     /// Which of `tests` are placed, in their order.
     fn keeping(tests: List<TaskTest>) -> List<bool> { tests_chosen(tests, (site: TestSite) -> self.keeps(site)) }
