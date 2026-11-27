@@ -3283,6 +3283,17 @@ part of a key, so a compiler rebuilt against another LLVM with the same Avra sou
 old LLVM made. The day a static is shared by name with differing contents, or a build means to compare
 LLVM versions, the key owes that input.
 
+### A wasm module's refusal names its entry two ways (owner unconfirmed)
+
+`tools/program-refusals/wasm_package_c` pins the refusal "a wasm module has no body for @case/native
+(`program$wasm_package_c_src_main_av` calls `native_twice`)", and a compiler built at a215d75e, run
+where a wasm toolchain stands, says `main` in the parentheses instead. The case runs only where
+the toolchain does: a machine without one reports it untooled, so the gate's run has not judged it.
+It was seen once, on a container whose wasi sysroot and linker wrapper were assembled by hand, so the
+question is first whether a real toolchain reproduces it. If it does, decide which name a reader
+should see — the program's entry as the build names it, or the source's — and pin that; the witness
+is `sh tools/witness_program_refusal.sh <compiler> wasm_package_c`.
+
 ### The naming law skips two kinds of name, on both paths
 
 A keyword, `Self` or a reserved word is refused as a name everywhere but two places: an `extern fn`'s
