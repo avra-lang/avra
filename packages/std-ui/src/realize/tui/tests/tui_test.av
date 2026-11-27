@@ -29,6 +29,9 @@ use @std.ui.realize.tests.support.{
 
 fn drawn(n: Node, width: int) -> string { render(n, Env {}, width) }
 
+/// `n` drawn on a terminal whose locale has no UTF-8.
+fn drawn_ascii(n: Node) -> string { render(n, Env { utf8: false }, 40) }
+
 fn item(s: string) -> Node { holding(.Item, [text_node(s)]) }
 
 fn pair() -> List<Node> { [text_node("a"), text_node("b")] }
@@ -43,12 +46,12 @@ spec "std/ui tui — primitives" {
         then "a link is its label then its target" { drawn(link_node("docs", "/docs"), 40) == "docs (/docs)" }
         then "a button is its label in spaced brackets" { drawn(button_node("Add"), 40) == "[ Add ]" }
         then "a switch shows whether it is checked" {
-            drawn(switch_node("Done", true), 40) == "[x] Done" &&
-                drawn(switch_node("Done", false), 40) == "[ ] Done"
+            drawn(switch_node("Done", true), 40) == "☑ Done" &&
+                drawn(switch_node("Done", false), 40) == "☐ Done"
         }
         then "a checkbox shows whether it is checked" {
-            drawn(leaf(.Checkbox, [.Label("Done"), .Checked(true)]), 40) == "[x] Done" &&
-                drawn(leaf(.Checkbox, [.Label("Done")]), 40) == "[ ] Done"
+            drawn(leaf(.Checkbox, [.Label("Done"), .Checked(true)]), 40) == "☑ Done" &&
+                drawn(leaf(.Checkbox, [.Label("Done")]), 40) == "☐ Done"
         }
         then "a field pads its value with underscores to twelve" { drawn(field_node("Name", "Ada"), 40) == "Name: Ada_________" }
         then "an empty field is twelve underscores" { drawn(field_node("Name", ""), 40) == "Name: ____________" }
@@ -59,11 +62,34 @@ spec "std/ui tui — primitives" {
         then "a progress is its label and its amount over its max" {
             drawn(leaf(.Progress, [.Label("Up"), .Amount(3), .Max(10)]), 40) == "Up: 3/10"
         }
-        then "an alert and a spinner are their words" {
+        then "an alert is its words, and a spinner its busy mark before them" {
             drawn(leaf(.Alert, [.Text("Saved")]), 40) == "Saved" &&
-                drawn(leaf(.Spinner, [.Label("Loading")]), 40) == "Loading"
+                drawn(leaf(.Spinner, [.Label("Loading")]), 40) == "… Loading"
         }
         then "a divider is a dash rule across the width" { drawn(leaf(.Divider, []), 6) == "------" }
+    }
+    given "a control's state" {
+        then "a disabled control says it is unavailable" {
+            drawn(leaf(.Button, [.Label("Save"), .Disabled(true)]), 40) == "[ Save ] (unavailable)" &&
+                drawn(leaf(.Checkbox, [.Label("Done"), .Disabled(true)]), 40) == "☐ Done (unavailable)"
+        }
+        then "a busy button draws the busy mark before its label" {
+            drawn(leaf(.Button, [.Label("Save"), .Loading(true)]), 40) == "[ … Save ]"
+        }
+        then "an invalid field draws the cross before its label" {
+            drawn(leaf(.Field, [.Label("Name"), .Invalid(true)]), 40) == "✗ Name: ____________"
+        }
+        then "a spinner with no words is its busy mark" { drawn(leaf(.Spinner, []), 40) == "…" }
+    }
+    given "a locale without UTF-8" {
+        then "a tick and its absence are bracketed" {
+            drawn_ascii(leaf(.Checkbox, [.Label("Done"), .Checked(true)])) == "[x] Done" &&
+                drawn_ascii(leaf(.Checkbox, [.Label("Done")])) == "[ ] Done"
+        }
+        then "busy and invalid draw dots and an x" {
+            drawn_ascii(leaf(.Button, [.Label("Save"), .Loading(true)])) == "[ ... Save ]" &&
+                drawn_ascii(leaf(.Field, [.Label("Name"), .Invalid(true)])) == "x Name: ____________"
+        }
     }
     given "the containers" {
         then "a column stacks its children with no gap by default" { drawn(holding(.Column, pair()), 40) == "a\nb" }
