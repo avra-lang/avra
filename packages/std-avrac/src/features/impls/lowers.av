@@ -160,21 +160,22 @@ fn owned_rule(mut cx: Lowering, m: MethodCall, e: ExprId, subject: SignedType) -
 fn owned_row(mut cx: Lowering, m: MethodCall, e: ExprId, word: string, own: OwnRow) -> Reg {
     let row? = rt_sig_of(own.row) else { return cx.missed_as(verb_unlowered(word, m.name.of)) }
     match own.answer {
-        .Answer -> row_called(cx, m, e, word, row),
+        .Answer -> row_called(cx, m, e, word, row, own.receiver == OwnType.Map),
         .Folds -> {
             let code = folded_code(cx, m)
             if code != null { return cx.const_int(code!) }
-            row_called(cx, m, e, word, row)
+            row_called(cx, m, e, word, row, own.receiver == OwnType.Map)
         },
     }
 }
 
 /// The row handed the receiver then each argument, answering the call's value; a seat the call leaves
-/// filled by the default the verb's declaration writes for it.
-fn row_called(mut cx: Lowering, m: MethodCall, e: ExprId, word: string, row: RtSig) -> Reg {
+/// filled by the default the verb's declaration writes for it. A map's row is the one its key reads.
+fn row_called(mut cx: Lowering, m: MethodCall, e: ExprId, word: string, row: RtSig, map: bool) -> Reg {
     if m.args.length + 1 >= row.params.length {
-        return cx
-            .call_words(cx.layout_at(e), row, [cx.lower(m.subject)].concat([cx.lower(a) for a in m.args]))
+        let args = [cx.lower(m.subject)].concat([cx.lower(a) for a in m.args])
+        let keyed = if map && args.length > 1 { cx.map_row(row.name, args[1]) } else { row }
+        return cx.call_words(cx.layout_at(e), keyed, args)
     }
     let subject = cx.type_at(m.subject)!
     let declared? = cx.declared_verb(subject, m.name.of) else { return cx.missed_as(default_unwritten(word, m.name.of)) }

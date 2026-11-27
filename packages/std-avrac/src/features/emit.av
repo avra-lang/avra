@@ -9,7 +9,22 @@
 //! -> … } else { cx -> … }`), so a site cannot open a bracket it
 //! does not close; the open/arm/close verbs remain for the folds and
 //! switches whose arms are not two.
-use core.{Reg, Ins, Type, TypeId, ExprId, StmtId, BinOp, UnOp, Rounding, RtSig, RtFlag, same_type}
+use core.{
+    Reg,
+    Ins,
+    Type,
+    TypeId,
+    ExprId,
+    StmtId,
+    BinOp,
+    UnOp,
+    Rounding,
+    RtSig,
+    RtFlag,
+    keyed_row,
+    rt_sig_of,
+    same_type,
+}
 use features.{MethodCall, LoopMark}
 
 // ── Constants ───────────────────────────────────────────────────
@@ -293,6 +308,32 @@ impl LowerCx {
     // The one door a row is called through — `rt()`'s generated
     // wrapper fns are the only callers; a feature spells a runtime
     // call as `rt().<name>(cx, ...)`, never `Ins.CallRt` directly.
+
+    /// The row a map answers `row` by under the key `k`, by the type
+    /// the key wears.
+    fn map_row(row: string, k: Reg) -> RtSig { self.keyed_by(row, self.out.type_of_reg(k)) }
+
+    /// The row that makes a map of `ty`: its key's, where `ty` names
+    /// a key, else text's.
+    fn made_map_row(row: string, ty: TypeId) -> RtSig {
+        match self.view.types.seen_shape(ty) {
+            .Map(k, _) -> self.keyed_by(row, k),
+            rest -> rt_sig_of(row)!,
+        }
+    }
+
+    /// The row a map of `key`s answers `row` by. Typing refused a key
+    /// no map files, so one reaching here is the compiler's defect.
+    fn keyed_by(row: string, key: TypeId) -> RtSig {
+        let keys? = self.view.types.map_keys_of(key) else {
+            self
+                .defect(
+                    "a map keyed by `${self.view.types.name_of(key)}`, which no map files, survived typing",
+                )
+            return rt_sig_of(row)!
+        }
+        keyed_row(row, keys)
+    }
 
     /// A row answering a value: minted at `sh`, the row's C symbol
     /// named by `row.name` alone — never a feature's own string.
@@ -607,11 +648,12 @@ impl LowerCx {
     /// own arrays, held, which a write into the map copies first.
     mut fn keyed(subject: ExprId, value: TypeId) -> Keyed {
         let m = self.reg_of(subject)
-        let listed = self.type(List<string>)
+        let key = self.view.types.map_key(self.type_at(subject)) ?? self.type(string)
+        let listed = self.type(List<key>)
         let keys = self.map_walk_keys(self.view.types.shape_of(listed), m)
         let vals = self.map_walk_vals(self.view.types.shape_of(self.type(List<value>)), m)
         Keyed {
-            keys: self.opened_reg(subject, keys, listed, self.type(string)),
+            keys: self.opened_reg(subject, keys, listed, key),
             vals: vals,
             value: value,
         }

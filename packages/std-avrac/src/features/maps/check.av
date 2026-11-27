@@ -13,13 +13,10 @@ fn map_type(mut cx: TypeCx, e: ExprId, entries: List<MapEntry>) -> TypeId {
     let values = map_values(entries)
     let maps = map_spreads(entries)
     if !maps.is_empty() { return spread_map_type(cx, e, keys, values, maps) }
-    let str = cx.type(string)
-    for k in keys {
-        if !cx.accepts(k, str) { return key_not_string(cx, k) }
-    }
+    let key? = literal_key(cx, e, keys, cx.type_at(keys[0])) else { return cx.error_type }
     if cx.want_refused(e) { return cx.error_type }
     let want: TypeId? = wanted_value(cx, e)
-    if want != null { return heard_map(cx, e, values, want!) }
+    if want != null { return heard_map(cx, e, key, values, want!) }
     let head = cx.led_by(values)
     if cx.errored(head) { return cx.error_type }
     if cx.awaits_seat(e, head) { return cx.error_type }
@@ -28,7 +25,25 @@ fn map_type(mut cx: TypeCx, e: ExprId, entries: List<MapEntry>) -> TypeId {
     for x in values {
         if !cx.accepts(x, v) { return disagreeing_value(cx, x, v) }
     }
-    cx.type(Map<str, v>)
+    cx.type(Map<key, v>)
+}
+
+/// The key type a literal's keys answer to — the want's, else `led`, its first key's or its first
+/// spread's — when a map files it and every key stands in it; each refusal speaks once.
+fn literal_key(mut cx: TypeCx, e: ExprId, keys: List<ExprId>, led: TypeId) -> TypeId? {
+    let key = wanted_key(cx, e) ?? led
+    if cx.errored_ty(key) { return null }
+    if !cx.view.types.files_keys(key) {
+        key_unfiled(cx, keys.first() ?? e, key)
+        return null
+    }
+    for k in keys {
+        if !cx.accepts(k, key) {
+            key_unfiled(cx, k, cx.type_at(k))
+            return null
+        }
+    }
+    key
 }
 
 /// A literal with `..` entries: each spread is a map, and the pairs'
@@ -40,15 +55,13 @@ fn spread_map_type(
     singles: List<ExprId>,
     maps: List<ExprId>,
 ) -> TypeId {
-    let str = cx.type(string)
-    for k in keys {
-        if !cx.accepts(k, str) { return key_not_string(cx, k) }
-    }
     for m in maps {
         if !spreads_map(cx, m) { return cx.error_type }
     }
+    let led = if keys.is_empty() { spread_key(cx, maps) } else { cx.type_at(keys[0]) }
+    let key? = literal_key(cx, e, keys, led) else { return cx.error_type }
     let v? = spread_value(cx, e, singles, maps) else { return cx.view.types.intern(Type.EmptyMap) }
-    let held = cx.type(Map<str, v>)
+    let held = cx.type(Map<key, v>)
     for m in maps {
         if !cx.accepts(m, held) { return disagreeing_value(cx, m, v) }
     }
@@ -77,6 +90,17 @@ fn spreads_map(mut cx: TypeCx, m: ExprId) -> bool {
     false
 }
 
+/// The key type a literal of spreads alone takes: its first non-empty map's, else text.
+fn spread_key(cx: TypeCx, maps: List<ExprId>) -> TypeId {
+    maps.find_map((m) -> cx.view.types.map_key(cx.type_at(m))) ?? cx.type(string)
+}
+
+/// The key type the planted want declares, when the slot is a map.
+fn wanted_key(cx: TypeCx, e: ExprId) -> TypeId? {
+    let w? = cx.want_at(e) else { return null }
+    match cx.view.types.shape_of(w) { .Map(k, _) -> k, _ -> null }
+}
+
 /// The value type the planted want declares, when the slot is a map.
 fn wanted_value(cx: TypeCx, e: ExprId) -> TypeId? {
     let w? = cx.want_at(e) else { return null }
@@ -84,12 +108,12 @@ fn wanted_value(cx: TypeCx, e: ExprId) -> TypeId? {
 }
 
 /// Every value through `accepts` against the declared value type.
-fn heard_map(mut cx: TypeCx, e: ExprId, values: List<ExprId>, want: TypeId) -> TypeId {
+fn heard_map(mut cx: TypeCx, e: ExprId, key: TypeId, values: List<ExprId>, want: TypeId) -> TypeId {
     if !slot_worthy(cx.view.types.shape_of(want)) { return cx.unslottable_want(e, want, MAP_VALUE) }
     for x in values {
         if !cx.accepts(x, want) { return unwanted_value(cx, x, want) }
     }
-    cx.type(Map<string, want>)
+    cx.type(Map<key, want>)
 }
 
 // ── The voices ──
@@ -120,15 +144,20 @@ export fn map_spread_unmapped(found: string) -> Voice {
     }
 }
 
-/// What a map literal's key of `found` says: a map's keys are text.
-export fn map_keyed(found: string) -> string { "a map's keys are strings, this is `${found}`" }
+/// What a map literal's key of `found` says: a map's keys are one type, text or a word.
+export fn map_keyed(found: string) -> string {
+    "a map's keys are one type, text or a word — an int, a bool, an enum whose variants carry nothing — this is `${found}`"
+}
+
+/// How a key no map files is mended.
+export const KEY_REMEDY: string = "key by text or a word — `Map<string, …>`, `Map<int, …>`"
 
 /// What a map literal's value of `found` says where the map holds `want`.
 export fn map_holds(want: string, found: string) -> string { "this map holds `${want}`, this is `${found}`" }
 
-fn key_not_string(mut cx: TypeCx, k: ExprId) -> TypeId {
-    let n = cx.name_at(k)
-    cx.spoken(refusal("type.map_key", cx.loc_of(k), map_keyed(n), this_is(n), "key by text"))
+fn key_unfiled(mut cx: TypeCx, k: ExprId, found: TypeId) {
+    let n = cx.view.types.name_of(found)
+    let _ = cx.spoken(refusal("type.map_key", cx.loc_of(k), map_keyed(n), this_is(n), KEY_REMEDY))
 }
 
 fn disagreeing_value(mut cx: TypeCx, x: ExprId, v: TypeId) -> TypeId {

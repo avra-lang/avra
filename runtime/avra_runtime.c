@@ -3625,6 +3625,33 @@ static inline uint64_t key_hash(int keyed, const char* key) {
     return __builtin_expect(keyed, 0) ? sip_hash(g_sip_key[0], g_sip_key[1], key, n) : fast_hash(key, n);
 }
 
+
+// A map's key is one word: a text box's address, or the key itself when
+// the map holds words. These three read it by the map's class.
+typedef int64_t MapKey;
+
+__attribute__((always_inline))
+static inline uint64_t word_hash(int keyed, int64_t k) {
+    return __builtin_expect(keyed, 0) ? sip_hash(g_sip_key[0], g_sip_key[1], (const char*)&k, 8)
+                                      : wide_mix((uint64_t)k ^ g_text_key[0], g_text_key[1]);
+}
+
+__attribute__((always_inline))
+static inline uint64_t map_key_hash(const AvraMap* m, int keyed, MapKey k) {
+    return m->words ? word_hash(keyed, k) : key_hash(keyed, (const char*)(uintptr_t)k);
+}
+
+__attribute__((always_inline))
+static inline int map_key_same(const AvraMap* m, MapKey a, MapKey b) {
+    return a == b || (!m->words && avra_streq((const char*)(uintptr_t)a, (const char*)(uintptr_t)b));
+}
+
+// Whether entry `i` stands: a text map's hole is a null key, a word map's
+// a key marked absent, since every word is some key.
+static inline int map_entry_live(const AvraMap* m, const AvraArray* keys, int64_t i) {
+    return m->words ? !(avra_mark_at(keys, i) & MARK_ABSENT) : keys->data[i] != 0;
+}
+
 static inline int64_t index_word(uint32_t h32, int64_t slot) {
     return (int64_t)(((uint64_t)h32 << 32) | (uint64_t)(slot + 1));
 }
@@ -3713,16 +3740,15 @@ static void index_rehashed(AvraMap* m, int64_t icap, int keyed) {
     AvraArray* keys = m->keys;
     if (icap < 0) {
         for (int64_t s = 0; s < keys->len; s++) {
-            uint64_t h = key_hash(0, (const char*)(uintptr_t)keys->data[s]);
+            uint64_t h = map_key_hash(m, 0, keys->data[s]);
             index_small(m)->tag[s] = small_tag(h);
             index_small(m)->h32[s] = (uint32_t)h;
         }
         return;
     }
     for (int64_t s = 0; s < keys->len; s++) {
-        const char* key = (const char*)(uintptr_t)keys->data[s];
-        if (key == NULL) continue;
-        if (past_tripwire(index_filed(m, (uint32_t)key_hash(keyed, key), s)) && !keyed) { index_rehashed(m, icap, 1); return; }
+        if (!map_entry_live(m, keys, s)) continue;
+        if (past_tripwire(index_filed(m, (uint32_t)map_key_hash(m, keyed, keys->data[s]), s)) && !keyed) { index_rehashed(m, icap, 1); return; }
     }
 }
 
@@ -3765,27 +3791,28 @@ static void index_grown(AvraMap* m, uint32_t h32, int64_t s) {
     index_filed(m, h32, s);
 }
 
-void* avra_map_new(void) {
-    AvraMap* m = (AvraMap*)box_alloc(sizeof(AvraMap), KIND_MAP);
-    m->keys = (AvraArray*)avra_array_new();
-    m->vals = (AvraArray*)avra_array_new();
-    m->index = NULL;
-    m->icap = 0;
-    return m;
-}
-
-// A map that will hold `n` keys — a literal of `n` pairs: its arrays reserved for them, and past
-// a SMALL map's count its table made at the size they need, so the writes that fill it grow
-// nothing.
-void* avra_map_sized(int64_t n) {
+static AvraMap* map_made(int64_t n, int64_t words) {
     AvraMap* m = (AvraMap*)box_alloc(sizeof(AvraMap), KIND_MAP);
     m->keys = (AvraArray*)(n > 0 ? avra_array_sized(n) : avra_array_new());
     m->vals = (AvraArray*)(n > 0 ? avra_array_sized(n) : avra_array_new());
     m->index = NULL;
     m->icap = 0;
+    m->words = words;
     if (n > SMALL) index_made(m, table_for(n), 0);
     return m;
 }
+
+void* avra_map_new(void) { return map_made(0, 0); }
+
+// A map keyed by machine words: an int, a bool, a payload-free enum.
+void* avra_map_w_new(void) { return map_made(0, 1); }
+
+// A map that will hold `n` keys — a literal of `n` pairs: its arrays reserved for them, and past
+// a SMALL map's count its table made at the size they need, so the writes that fill it grow
+// nothing.
+void* avra_map_sized(int64_t n) { return map_made(n, 0); }
+
+void* avra_map_w_sized(int64_t n) { return map_made(n, 1); }
 
 // Releases both arrays (their owned slots follow), then the map.
 __attribute__((noinline))
@@ -3860,7 +3887,7 @@ static void map_stats_settled(void) {
 typedef struct { int64_t slot; uint64_t hash; uint64_t at; int64_t walked; } Probe;
 
 __attribute__((always_inline))
-static inline Probe small_probe(AvraMap* m, const char* key, uint64_t h) {
+static inline Probe small_probe(AvraMap* m, MapKey key, uint64_t h) {
     const SmallIndex* x = index_small(m);
     const int64_t* keys = m->keys->data;
     int64_t n = m->keys->len;
@@ -3868,7 +3895,7 @@ static inline Probe small_probe(AvraMap* m, const char* key, uint64_t h) {
     // a place past the entries holds tag 0, which no tag equals
     for (uint64_t b = tags_matching_all(word_at(x->tag), small_tag(h)); b; b &= b - 1) {
         int64_t s = lane_of(b);
-        if (s < n && x->h32[s] == h32 && avra_streq((const char*)(uintptr_t)keys[s], key)) return (Probe){ s, h, (uint64_t)s, 0 };
+        if (s < n && x->h32[s] == h32 && map_key_same(m, keys[s], key)) return (Probe){ s, h, (uint64_t)s, 0 };
     }
     return (Probe){ -1, h, (uint64_t)n, 0 };
 }
@@ -3877,7 +3904,7 @@ static inline Probe small_probe(AvraMap* m, const char* key, uint64_t h) {
 // may lie past the chunk the miss ends at: that chunk ends the search
 // when nothing passed it, full or not.
 __attribute__((always_inline))
-static inline Probe chunk_probe(AvraMap* m, const char* key, uint64_t h, int placing) {
+static inline Probe chunk_probe(AvraMap* m, MapKey key, uint64_t h, int placing) {
     uint64_t mask = (uint64_t)m->icap - 1;
     uint32_t h32 = (uint32_t)h;
     uint8_t tag = chunk_tag(h32);
@@ -3894,7 +3921,7 @@ static inline Probe chunk_probe(AvraMap* m, const char* key, uint64_t h, int pla
             int64_t w = ch->word[lane];
             if ((uint32_t)((uint64_t)w >> 32) != h32 || (uint32_t)w == 0) continue;
             int64_t s = (int64_t)(uint32_t)w - 1;
-            if (avra_streq((const char*)(uintptr_t)keys[s], key)) return (Probe){ s, h, c * 8 + (uint64_t)lane, walked };
+            if (map_key_same(m, keys[s], key)) return (Probe){ s, h, c * 8 + (uint64_t)lane, walked };
         }
         if (placing && at == UINT64_MAX) {
             uint64_t e = tags_empty(tags);
@@ -3911,19 +3938,19 @@ static inline Probe chunk_probe(AvraMap* m, const char* key, uint64_t h, int pla
 }
 
 __attribute__((always_inline))
-static inline Probe map_probed(AvraMap* m, const char* key, int placing) {
+static inline Probe map_probed(AvraMap* m, MapKey key, int placing) {
     map_indexed(m);
     if (__builtin_expect(g_map_stats, 0)) g_map_probes++;
     // a SMALL map is never keyed: eight keys build no chain
-    if (m->icap < 0) return small_probe(m, key, key_hash(0, key));
-    return chunk_probe(m, key, key_hash(map_keyed(m), key), placing);
+    if (m->icap < 0) return small_probe(m, key, map_key_hash(m, 0, key));
+    return chunk_probe(m, key, map_key_hash(m, map_keyed(m), key), placing);
 }
 
 __attribute__((always_inline))
-static inline Probe map_probe(AvraMap* m, const char* key) { return map_probed(m, key, 1); }
+static inline Probe map_probe(AvraMap* m, MapKey key) { return map_probed(m, key, 1); }
 
 // The slot a key names, or -1.
-static inline int64_t map_find(AvraMap* m, const char* key) {
+static inline int64_t map_find(AvraMap* m, MapKey key) {
     return map_probed(m, key, 0).slot;
 }
 
@@ -3955,8 +3982,9 @@ static int64_t chunk_placed(AvraMap* m, uint32_t h32, uint64_t at, int64_t walke
 // map taking its own reference to it — the index growing first where it
 // must. The fresh slot's value is the caller's to push.
 __attribute__((always_inline))
-static inline int64_t map_filed(AvraMap* m, const char* key, Probe p) {
-    avra_array_push_owned(map_keys_owned(m), (void*)key);
+static inline int64_t map_filed(AvraMap* m, MapKey key, Probe p) {
+    if (m->words) avra_array_push(map_keys_owned(m), key);
+    else avra_array_push_owned(map_keys_owned(m), (void*)(uintptr_t)key);
     int64_t s = m->keys->len - 1;
     if (m->icap < 0) {
         if (s < SMALL) {
@@ -3982,7 +4010,7 @@ static inline int64_t map_filed(AvraMap* m, const char* key, Probe p) {
 
 // The slot a key names — a NEW key appended and filed. `*fresh` says which.
 __attribute__((always_inline))
-static inline int64_t map_claim(AvraMap* m, const char* key, int* fresh) {
+static inline int64_t map_claim(AvraMap* m, MapKey key, int* fresh) {
     Probe p = map_probe(m, key);
     *fresh = p.slot < 0;
     if (p.slot >= 0) return p.slot;
@@ -4013,12 +4041,11 @@ static inline int64_t probe_token(AvraMap* m, Probe p) {
 // map's miss is checked against its own tags. Anything else is probed
 // afresh.
 __attribute__((always_inline))
-static inline int64_t map_claim_at(AvraMap* m, const char* key, int64_t token, int* fresh) {
+static inline int64_t map_claim_at(AvraMap* m, MapKey key, int64_t token, int* fresh) {
     if (token == -1) return map_claim(m, key, fresh);
     if (token >= 0) {
         if (token < m->keys->len) {
-            const char* held = (const char*)(uintptr_t)m->keys->data[token];
-            if (held == key || avra_streq(held, key)) { *fresh = 0; return token; }
+            if (map_entry_live(m, m->keys, token) && map_key_same(m, m->keys->data[token], key)) { *fresh = 0; return token; }
         }
         return map_claim(m, key, fresh);
     }
@@ -4028,7 +4055,7 @@ static inline int64_t map_claim_at(AvraMap* m, const char* key, int64_t token, i
     if (m->icap < 0) {
         // a SMALL map checks its own tags: the filing hashes the key either way, and one compare
         // of eight tags says whether it arrived since — so its remove need mint no generation
-        Probe p = small_probe(m, key, key_hash(0, key));
+        Probe p = small_probe(m, key, map_key_hash(m, 0, key));
         *fresh = p.slot < 0;
         return p.slot >= 0 ? p.slot : map_filed(m, key, p);
     }
@@ -4036,7 +4063,7 @@ static inline int64_t map_claim_at(AvraMap* m, const char* key, int64_t token, i
         return map_claim(m, key, fresh);
     }
     *fresh = 1;
-    return map_filed(m, key, (Probe){ -1, key_hash(map_keyed(m), key), at, -1 });
+    return map_filed(m, key, (Probe){ -1, map_key_hash(m, map_keyed(m), key), at, -1 });
 }
 
 int64_t avra_map_len(void* map) {
@@ -4046,12 +4073,13 @@ int64_t avra_map_len(void* map) {
 
 // The cells of `a` whose key in `keys` is not a hole, in order, as a
 // fresh list — owned cells retained.
-static void* array_closed(AvraArray* a, AvraArray* keys) {
+static void* array_closed(const AvraMap* m, AvraArray* a) {
+    const AvraArray* keys = m->keys;
     int64_t live = 0;
-    for (int64_t i = 0; i < keys->len; i++) live += keys->data[i] != 0;
+    for (int64_t i = 0; i < keys->len; i++) live += map_entry_live(m, keys, i);
     AvraArray* c = array_made(live > 0 ? live : ARRAY_FIRST, AVRA_CALLER(), avra_packed(a));
     for (int64_t i = 0; i < keys->len; i++) {
-        if (keys->data[i] == 0) continue;
+        if (!map_entry_live(m, keys, i)) continue;
         c->data[c->len] = a->data[i];
         if (a->marks) {
             c->marks[c->len] = a->marks[i];
@@ -4066,13 +4094,13 @@ static void* array_closed(AvraArray* a, AvraArray* keys) {
 // its own reference to each, so the copy retains them.
 void* avra_map_keys(void* map) {
     AvraMap* m = (AvraMap*)map;
-    return map_holes(m) == 0 ? array_clone(m->keys) : array_closed(m->keys, m->keys);
+    return map_holes(m) == 0 ? array_clone(m->keys) : array_closed(m, m->keys);
 }
 
 // The map's values in insertion order, as a fresh list.
 void* avra_map_vals(void* map) {
     AvraMap* m = (AvraMap*)map;
-    return map_holes(m) == 0 ? array_clone(m->vals) : array_closed(m->vals, m->keys);
+    return map_holes(m) == 0 ? array_clone(m->vals) : array_closed(m, m->vals);
 }
 
 // WHAT A WALK READS: the map's keys, and its values, in insertion order —
@@ -4084,13 +4112,13 @@ void* avra_map_vals(void* map) {
 void* avra_map_walk_keys(void* map) {
     AvraMap* m = (AvraMap*)map;
     if (map_holes(m) == 0) { avra_rc_retain(m->keys); return m->keys; }
-    return array_closed(m->keys, m->keys);
+    return array_closed(m, m->keys);
 }
 
 void* avra_map_walk_vals(void* map) {
     AvraMap* m = (AvraMap*)map;
     if (map_holes(m) == 0) { avra_rc_retain(m->vals); return m->vals; }
-    return array_closed(m->vals, m->keys);
+    return array_closed(m, m->vals);
 }
 
 // Both arrays' holes closed up in one pass, the live entries keeping
@@ -4100,7 +4128,7 @@ static void map_closed_up(AvraMap* m) {
     AvraArray* vals = map_vals_owned(m);
     int64_t j = 0;
     for (int64_t i = 0; i < keys->len; i++) {
-        if (keys->data[i] == 0) continue;
+        if (!map_entry_live(m, keys, i)) continue;
         keys->data[j] = keys->data[i];
         if (keys->marks) keys->marks[j] = keys->marks[i];
         vals->data[j] = vals->data[i];
@@ -4170,6 +4198,7 @@ static void map_removed(AvraMap* m, int64_t s, uint64_t h, uint64_t at, int64_t 
     }
     index_head(m)->filed--;
     hole_left(map_keys_owned(m), s);
+    if (m->words) mark_put(m->keys, s, MARK_ABSENT);
     hole_left(map_vals_owned(m), s);
     IndexHead* hd = index_head(m);
     hd->holes++;
@@ -4178,7 +4207,7 @@ static void map_removed(AvraMap* m, int64_t s, uint64_t h, uint64_t at, int64_t 
 }
 
 // A key removed. A key that is not there removes nothing.
-void avra_map_remove(void* map, const char* key) {
+static inline void keyed_remove(void* map, MapKey key) {
     AvraMap* m = (AvraMap*)map;
     Probe p = map_probed(m, key, 0);
     if (p.slot >= 0) map_removed(m, p.slot, p.hash, p.at, p.walked);
@@ -4189,14 +4218,13 @@ void avra_map_remove(void* map, const char* key) {
 // slot holds this very key, else the key is probed afresh. The text is
 // not compared again where the slot holds the very box, and a table finds
 // the key's place by the word naming the slot, comparing no text at all.
-void avra_map_remove_at(void* map, const char* key, int64_t token) {
+static inline void keyed_remove_at(void* map, MapKey key, int64_t token) {
     AvraMap* m = (AvraMap*)map;
-    if (token < 0 || token >= m->keys->len || m->icap == 0) { avra_map_remove(map, key); return; }
-    const char* held = (const char*)(uintptr_t)m->keys->data[token];
-    if (held == NULL || !(held == key || avra_streq(held, key))) { avra_map_remove(map, key); return; }
+    if (token < 0 || token >= m->keys->len || m->icap == 0) { keyed_remove(map, key); return; }
+    if (!map_entry_live(m, m->keys, token) || !map_key_same(m, m->keys->data[token], key)) { keyed_remove(map, key); return; }
     // a SMALL map shifts its cells by the slot alone: no hash, no place
     if (m->icap < 0) { map_removed(m, token, 0, 0, 0); return; }
-    uint64_t h = key_hash(map_keyed(m), key);
+    uint64_t h = map_key_hash(m, map_keyed(m), key);
     const Chunk* chunks = index_chunks(m);
     uint64_t mask = (uint64_t)m->icap - 1, c = (uint32_t)h & mask;
     int64_t want = index_word((uint32_t)h, token);
@@ -4207,22 +4235,22 @@ void avra_map_remove_at(void* map, const char* key, int64_t token) {
         }
         if (chunks[c].overflow == 0) break;
     }
-    avra_map_remove(map, key);
+    keyed_remove(map, key);
 }
 
-int64_t avra_map_has(void* map, const char* key) {
+static inline int64_t keyed_has(void* map, MapKey key) {
     return map_find((AvraMap*)map, key) >= 0;
 }
 
 // The value under a key — read only after avra_map_has said so.
-int64_t avra_map_get(void* map, const char* key) {
+static inline int64_t keyed_get(void* map, MapKey key) {
     AvraMap* m = (AvraMap*)map;
     int64_t s = map_find(m, key);
     return s < 0 ? 0 : m->vals->data[s];
 }
 
-void* avra_map_get_owned(void* map, const char* key) {
-    void* v = (void*)(uintptr_t)avra_map_get(map, key);
+static inline void* keyed_get_owned(void* map, MapKey key) {
+    void* v = (void*)(uintptr_t)keyed_get(map, key);
     avra_rc_retain(v);
     return v;
 }
@@ -4231,7 +4259,7 @@ void* avra_map_get_owned(void* map, const char* key) {
 // that is not there. The reads below take that slot, so `get` hashes
 // once whatever it asks after — and a write handed the word back
 // (`avra_map_set_at`) walks nothing where the map confirms it.
-int64_t avra_map_slot(void* map, const char* key) {
+static inline int64_t keyed_slot(void* map, MapKey key) {
     AvraMap* m = (AvraMap*)map;
     return probe_token(m, map_probe(m, key));
 }
@@ -4256,7 +4284,7 @@ int64_t avra_map_present_at(void* map, int64_t slot) {
 // owned value released), a new key appends in written order and
 // the map takes its own reference to the key. Answers the slot.
 __attribute__((always_inline))
-static inline int64_t map_put_at(AvraMap* m, const char* key, int64_t token, int64_t v) {
+static inline int64_t map_put_at(AvraMap* m, MapKey key, int64_t token, int64_t v) {
     int fresh;
     int64_t s = map_claim_at(m, key, token, &fresh);
     if (fresh) avra_array_push(map_vals_owned(m), v);
@@ -4264,30 +4292,30 @@ static inline int64_t map_put_at(AvraMap* m, const char* key, int64_t token, int
     return s;
 }
 
-static int64_t map_put(AvraMap* m, const char* key, int64_t v) {
+static int64_t map_put(AvraMap* m, MapKey key, int64_t v) {
     return map_put_at(m, key, -1, v);
 }
 
-void avra_map_set(void* map, const char* key, int64_t v) {
+static inline void keyed_set(void* map, MapKey key, int64_t v) {
     map_put((AvraMap*)map, key, v);
 }
 
 // A nullable scalar under a key: its word, its absence in the value
 // cell's mark — the slots' own law, one table over.
-void avra_map_set_maybe(void* map, const char* key, int64_t present, int64_t v) {
+static inline void keyed_set_maybe(void* map, MapKey key, int64_t present, int64_t v) {
     AvraMap* m = (AvraMap*)map;
     int64_t s = map_put(m, key, present ? v : 0);
     m->vals->marks[s] = present ? 0 : MARK_ABSENT;
 }
 
 // Whether the value under a key is there — 0 for a key that is not.
-int64_t avra_map_value_present(void* map, const char* key) {
+static inline int64_t keyed_value_present(void* map, MapKey key) {
     AvraMap* m = (AvraMap*)map;
     int64_t s = map_find(m, key);
     return s >= 0 && !(m->vals->marks[s] & MARK_ABSENT);
 }
 
-void avra_map_set_owned(void* map, const char* key, void* v) {
+static inline void keyed_set_owned(void* map, MapKey key, void* v) {
     AvraMap* m = (AvraMap*)map;
     int fresh;
     int64_t s = map_claim(m, key, &fresh);
@@ -4295,24 +4323,24 @@ void avra_map_set_owned(void* map, const char* key, void* v) {
     else avra_slot_set_owned(map_vals_owned(m), s, v);
 }
 
-void avra_map_set_maybe_owned(void* map, const char* key, int64_t present, void* v) {
-    if (present) avra_map_set_owned(map, key, v);
-    else avra_map_set_maybe(map, key, 0, 0);
+static inline void keyed_set_maybe_owned(void* map, MapKey key, int64_t present, void* v) {
+    if (present) keyed_set_owned(map, key, v);
+    else keyed_set_maybe(map, key, 0, 0);
 }
 
 // THE SET FAMILY UNDER A TOKEN: the write `avra_map_slot`'s word
 // already found the place for. Each is its twin above, less the probe.
-void avra_map_set_at(void* map, const char* key, int64_t token, int64_t v) {
+static inline void keyed_set_at(void* map, MapKey key, int64_t token, int64_t v) {
     map_put_at((AvraMap*)map, key, token, v);
 }
 
-void avra_map_set_at_maybe(void* map, const char* key, int64_t token, int64_t present, int64_t v) {
+static inline void keyed_set_at_maybe(void* map, MapKey key, int64_t token, int64_t present, int64_t v) {
     AvraMap* m = (AvraMap*)map;
     int64_t s = map_put_at(m, key, token, present ? v : 0);
     m->vals->marks[s] = present ? 0 : MARK_ABSENT;
 }
 
-void avra_map_set_at_owned(void* map, const char* key, int64_t token, void* v) {
+static inline void keyed_set_at_owned(void* map, MapKey key, int64_t token, void* v) {
     AvraMap* m = (AvraMap*)map;
     int fresh;
     int64_t s = map_claim_at(m, key, token, &fresh);
@@ -4320,10 +4348,43 @@ void avra_map_set_at_owned(void* map, const char* key, int64_t token, void* v) {
     else avra_slot_set_owned(map_vals_owned(m), s, v);
 }
 
-void avra_map_set_at_maybe_owned(void* map, const char* key, int64_t token, int64_t present, void* v) {
-    if (present) avra_map_set_at_owned(map, key, token, v);
-    else avra_map_set_at_maybe(map, key, token, 0, 0);
+static inline void keyed_set_at_maybe_owned(void* map, MapKey key, int64_t token, int64_t present, void* v) {
+    if (present) keyed_set_at_owned(map, key, token, v);
+    else keyed_set_at_maybe(map, key, token, 0, 0);
 }
+
+// THE KEYED ROWS, twice: under a text key, and under a word key for a map
+// made by `avra_map_w_new`.
+int64_t avra_map_has(void* map, const char* key) { return keyed_has(map, (MapKey)(uintptr_t)key); }
+int64_t avra_map_w_has(void* map, int64_t key) { return keyed_has(map, key); }
+int64_t avra_map_get(void* map, const char* key) { return keyed_get(map, (MapKey)(uintptr_t)key); }
+int64_t avra_map_w_get(void* map, int64_t key) { return keyed_get(map, key); }
+void* avra_map_get_owned(void* map, const char* key) { return keyed_get_owned(map, (MapKey)(uintptr_t)key); }
+void* avra_map_w_get_owned(void* map, int64_t key) { return keyed_get_owned(map, key); }
+int64_t avra_map_slot(void* map, const char* key) { return keyed_slot(map, (MapKey)(uintptr_t)key); }
+int64_t avra_map_w_slot(void* map, int64_t key) { return keyed_slot(map, key); }
+void avra_map_set(void* map, const char* key, int64_t v) { keyed_set(map, (MapKey)(uintptr_t)key, v); }
+void avra_map_w_set(void* map, int64_t key, int64_t v) { keyed_set(map, key, v); }
+void avra_map_set_owned(void* map, const char* key, void* v) { keyed_set_owned(map, (MapKey)(uintptr_t)key, v); }
+void avra_map_w_set_owned(void* map, int64_t key, void* v) { keyed_set_owned(map, key, v); }
+void avra_map_set_maybe(void* map, const char* key, int64_t present, int64_t v) { keyed_set_maybe(map, (MapKey)(uintptr_t)key, present, v); }
+void avra_map_w_set_maybe(void* map, int64_t key, int64_t present, int64_t v) { keyed_set_maybe(map, key, present, v); }
+void avra_map_set_maybe_owned(void* map, const char* key, int64_t present, void* v) { keyed_set_maybe_owned(map, (MapKey)(uintptr_t)key, present, v); }
+void avra_map_w_set_maybe_owned(void* map, int64_t key, int64_t present, void* v) { keyed_set_maybe_owned(map, key, present, v); }
+int64_t avra_map_value_present(void* map, const char* key) { return keyed_value_present(map, (MapKey)(uintptr_t)key); }
+int64_t avra_map_w_value_present(void* map, int64_t key) { return keyed_value_present(map, key); }
+void avra_map_remove(void* map, const char* key) { keyed_remove(map, (MapKey)(uintptr_t)key); }
+void avra_map_w_remove(void* map, int64_t key) { keyed_remove(map, key); }
+void avra_map_remove_at(void* map, const char* key, int64_t token) { keyed_remove_at(map, (MapKey)(uintptr_t)key, token); }
+void avra_map_w_remove_at(void* map, int64_t key, int64_t token) { keyed_remove_at(map, key, token); }
+void avra_map_set_at(void* map, const char* key, int64_t token, int64_t v) { keyed_set_at(map, (MapKey)(uintptr_t)key, token, v); }
+void avra_map_w_set_at(void* map, int64_t key, int64_t token, int64_t v) { keyed_set_at(map, key, token, v); }
+void avra_map_set_at_maybe(void* map, const char* key, int64_t token, int64_t present, int64_t v) { keyed_set_at_maybe(map, (MapKey)(uintptr_t)key, token, present, v); }
+void avra_map_w_set_at_maybe(void* map, int64_t key, int64_t token, int64_t present, int64_t v) { keyed_set_at_maybe(map, key, token, present, v); }
+void avra_map_set_at_owned(void* map, const char* key, int64_t token, void* v) { keyed_set_at_owned(map, (MapKey)(uintptr_t)key, token, v); }
+void avra_map_w_set_at_owned(void* map, int64_t key, int64_t token, void* v) { keyed_set_at_owned(map, key, token, v); }
+void avra_map_set_at_maybe_owned(void* map, const char* key, int64_t token, int64_t present, void* v) { keyed_set_at_maybe_owned(map, (MapKey)(uintptr_t)key, token, present, v); }
+void avra_map_w_set_at_maybe_owned(void* map, int64_t key, int64_t token, int64_t present, void* v) { keyed_set_at_maybe_owned(map, key, token, present, v); }
 
 // The index walks so far, counted from the first ask — for the
 // runtime's own tests.
@@ -4380,6 +4441,7 @@ static void* map_clone(AvraMap* m) {
     c->vals = m->vals;
     c->index = NULL;
     c->icap = 0;
+    c->words = m->words;
     if (m->index) {
         int64_t bytes = index_bytes(m);
         void* block = index_block(m->icap, (size_t)bytes);

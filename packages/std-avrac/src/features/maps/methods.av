@@ -16,7 +16,7 @@ export fn on_map(t: Type) -> bool {
 
 export fn check_get(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     let value? = value_held(cx, mc, "get") else { return cx.error_type }
-    got_type(cx, mc.e, mc.args, value)
+    got_type(cx, mc.e, mc.subject, mc.args, value)
 }
 export fn check_set(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     let value? = value_held(cx, mc, "set") else { return cx.error_type }
@@ -35,7 +35,7 @@ export fn check_has(mut cx: TypeCx, mc: MethodCall) -> TypeId {
         cx.wrong_arity(mc.e, "has", 1, mc.args.length)
         return cx.error_type
     }
-    let key = cx.type(string)
+    let key = key_held(cx, mc.subject)
     if !cx.accepts(mc.args[0], key) { cx.wrong_argument("has", 0, key, mc.args[0]) }
     cx.type(bool)
 }
@@ -43,7 +43,8 @@ export fn check_has(mut cx: TypeCx, mc: MethodCall) -> TypeId {
 export fn check_keys(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     let _held? = value_held(cx, mc, "keys") else { return cx.error_type }
     if !cx.seated(mc, "keys", []) { return cx.error_type }
-    cx.type(List<string>)
+    let key = key_held(cx, mc.subject)
+    cx.type(List<key>)
 }
 
 export fn check_values(mut cx: TypeCx, mc: MethodCall) -> TypeId {
@@ -52,19 +53,19 @@ export fn check_values(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     cx.type(List<value>)
 }
 
-/// `m.entries()` answers the prelude's `Entry<string, V>` — a record
+/// `m.entries()` answers the prelude's `Entry<K, V>` — a record
 /// the program can name, whatever the file calls its own types.
 export fn check_entries(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     let value? = value_held(cx, mc, "entries") else { return cx.error_type }
     if !cx.seated(mc, "entries", []) { return cx.error_type }
-    let held? = cx.entry_type(mc.e, value) else { return cx.error_type }
+    let held? = cx.entry_type(mc.e, key_held(cx, mc.subject), value) else { return cx.error_type }
     cx.type(List<held>)
 }
 
 export fn lower_has(mut cx: LowerCx, mc: MethodCall) -> Reg {
     let m = cx.reg_of(mc.subject)
     let key = cx.reg_of(mc.args[0])
-    cx.map_has(Type.Bool, m, key)
+    cx.call(Type.Bool, cx.map_row("avra_map_has", key), [m, key])
 }
 
 export fn lower_keys(mut cx: LowerCx, mc: MethodCall) -> Reg {
@@ -107,7 +108,7 @@ export fn check_remove(mut cx: TypeCx, mc: MethodCall) -> TypeId {
         cx.wrong_arity(mc.e, "remove", 1, mc.args.length)
         return cx.error_type
     }
-    let key = cx.type(string)
+    let key = key_held(cx, mc.subject)
     if !cx.accepts(mc.args[0], key) { cx.wrong_argument("remove", 0, key, mc.args[0]) }
     cx.type(value?)
 }
@@ -125,12 +126,12 @@ fn removed_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, key: ExprId) -> Reg 
     let box = cx.unique_box(subject)
     let k = cx.reg_of(key)
     let cell = cx.seeded_cell(opt, cx.absent_of(opt))
-    let slot = cx.map_slot(Type.Int, box, k)
+    let slot = cx.call(Type.Int, cx.map_row("avra_map_slot", k), [box, k])
     cx
         .void_region(cx.bin(Type.Bool, BinOp.Ge, slot, cx.const_int(0))) { cx ->
             let raw = cx.map_value(box, slot, cx.carried_type(opt))
             cx.emit(Ins.Store(cell, cx.adopted(opt, false, raw)))
-            cx.map_remove_at(box, k, slot)
+            cx.call_void(cx.map_row("avra_map_remove_at", k), [box, k, slot])
         }
     cx.loaded(e, cell)
 }
@@ -152,12 +153,17 @@ fn value_held(mut cx: TypeCx, mc: MethodCall, name: string) -> TypeId? {
     held
 }
 
-fn got_type(mut cx: TypeCx, e: ExprId, args: List<ExprId>, value: TypeId) -> TypeId {
+/// The key type the map `subject` files: text for `{}`, which names none.
+fn key_held(cx: TypeCx, subject: ExprId) -> TypeId {
+    match cx.seen_at(subject) { .Map(k, _) -> k, _ -> cx.type(string) }
+}
+
+fn got_type(mut cx: TypeCx, e: ExprId, subject: ExprId, args: List<ExprId>, value: TypeId) -> TypeId {
     if args.length != 1 {
         cx.wrong_arity(e, "get", 1, args.length)
         return cx.error_type
     }
-    let key = cx.type(string)
+    let key = key_held(cx, subject)
     if !cx.accepts(args[0], key) { cx.wrong_argument("get", 0, key, args[0]) }
     cx.type(value?)
 }
@@ -170,7 +176,7 @@ fn set_type(mut cx: TypeCx, e: ExprId, subject: ExprId, args: List<ExprId>, valu
     let root? = cx.view.store.place_root(subject) else { return cx.not_a_place_call(e, "set") }
     if !cx.is_mut(root) { return cx.not_mut_call(e, "set", cx.view.store.ident_name(root) ?? "this name") }
     cx.alias_copy_law(e, subject, root)
-    let key = cx.type(string)
+    let key = key_held(cx, subject)
     if !cx.accepts(args[0], key) { cx.wrong_argument("set", 0, key, args[0]) }
     if !cx.accepts(args[1], value) { cx.wrong_argument("set", 1, value, args[1]) }
     cx.type(void)
@@ -181,7 +187,8 @@ fn set_type(mut cx: TypeCx, e: ExprId, subject: ExprId, args: List<ExprId>, valu
 /// absent, like `find`.
 fn got_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, key: ExprId) -> Reg {
     let m = cx.reg_of(subject)
-    got_at(cx, e, m, cx.map_slot(Type.Int, m, cx.reg_of(key)))
+    let k = cx.reg_of(key)
+    got_at(cx, e, m, cx.call(Type.Int, cx.map_row("avra_map_slot", k), [m, k]))
 }
 
 /// The value a probe's word names in `m`, as `get` answers it.
@@ -207,7 +214,7 @@ fn set_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, key: ExprId, value: Expr
         cx.map_write(box, k, cx.reg_of(value))
         return cx.zero(e)
     }
-    let slot = cx.map_slot(Type.Int, box, k)
+    let slot = cx.call(Type.Int, cx.map_row("avra_map_slot", k), [box, k])
     cx.body.set_reg(read, got_at(cx, read, box, slot))
     cx.map_write_at(box, k, slot, cx.reg_of(value))
     cx.zero(e)
@@ -323,20 +330,20 @@ export fn map_shape(args: TypeArgs) -> Type {
     Type.Map(args.parts[0], args.parts[1])
 }
 
-/// A map's keys are strings.
-export fn string_keys(types: TypeRegistry, args: TypeArgs) -> List<Refusal> {
+/// A map's keys are text or a word.
+export fn filed_keys(types: TypeRegistry, args: TypeArgs) -> List<Refusal> {
     let key = args.parts[0]
-    if types.shape_of(key) is .Str { return [] }
+    if types.files_keys(key) { return [] }
     let said = map_unkeyed(types.name_of(key))
     [Refusal { message: said.message, help: said.help ?? "" }]
 }
 
-/// A map type keyed by `found`, which is no text.
+/// A map type keyed by `found`, which no map files.
 export fn map_unkeyed(found: string) -> Voice {
     Voice {
-        message: "a map's keys are strings, not `${found}`",
+        message: "a map's keys are text or a word — an int, a bool, an enum whose variants carry nothing — not `${found}`",
         label: "this type",
-        help: "key by text — `Map<string, …>`",
+        help: KEY_REMEDY,
     }
 }
 

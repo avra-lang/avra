@@ -23,7 +23,7 @@ impl StaticBuild {
             .Str -> match v { .Text(s) -> Slot.Text(s), rest -> null },
             .Opt(inner) -> self.optional_slot(v, heap, inner),
             .List(inner) -> self.list_slot(v, heap, inner),
-            .Map(_, value) -> self.table_slot(v, heap, value),
+            .Map(key, value) -> if self.text_keyed(key) { self.table_slot(v, heap, value) } else { null },
             .Struct(_, _) -> self.record_slot(v, heap, ty),
             .Enum(_, _) -> if self.decls.types.is_flat(ty) { self.flat_variant_slot(v) } else { self.variant_slot(v, heap, ty) },
             .Res(_, _) -> self.variant_slot(v, heap, ty),
@@ -37,6 +37,13 @@ impl StaticBuild {
     /// alike; a flat record's presence is its one-slot box, a
     /// pointer's is the value itself. A SCALAR is its word, and its
     /// absence the cell's absent mark.
+    /// Whether a map of `key`s is laid out as data: a static map's keys are text, which the runtime
+    /// hashes on first lookup.
+    fn text_keyed(key: TypeId) -> bool {
+        let keys? = self.decls.types.map_keys_of(key) else { return false }
+        match keys { .Text -> true, .Words -> false }
+    }
+
     mut fn optional_slot(v: MetaVal, heap: MetaHeap, inner: TypeId) -> Slot? {
         // the NICHE first: a flat record that RIDES a pointer is its
         // own absence, and only a flat WORD needs the one-slot box
