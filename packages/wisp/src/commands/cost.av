@@ -452,8 +452,13 @@ fn record_refused(rows: Map<string, int>) -> bool {
 fn ledger_text() -> string { record_ledger(surface_at("."), (read_text(SNAPSHOT_FILE) catch "").trim()) }
 
 /// The record with `rows` laid into it over `snapshot`, each file a value moved in naming `cause`.
-fn record_written(rows: Map<string, int>, snapshot: string, cause: string) {
-    for f in record_accepted(surface_at("."), rows, cause) {
+fn record_written(
+    rows: Map<string, int>,
+    snapshot: string,
+    cause: string,
+    struck: List<string> = [],
+) {
+    for f in record_accepted(surface_at("."), rows, cause, struck) {
         let path = joined_path(SURFACE, f.path)
         let _ = make_dirs(dir_of(path))
         let _ = write_text(path, file_text(f))
@@ -844,7 +849,12 @@ fn keyed_judged(run_dir: string, cause: string, tell: bool) -> int {
         for line in past { println(line) }
         return 1
     }
-    record_written({..others, ..keyed_accepted(now, base, kinds)}, snapshot_of(text) ?? "", cause)
+    record_written(
+        {..others, ..keyed_accepted(now, base, kinds)},
+        snapshot_of(text) ?? "",
+        cause,
+        struck_rows(now, base, kinds),
+    )
     println(recorded_said(cause, groups.join(", ")))
     0
 }
@@ -856,6 +866,13 @@ export fn keyed_accepted(now: Map<string, int>, base: Map<string, int>, kinds: M
     int,
 > {
     {..base, ..now}.filter((e) -> !at_or_under_cap(e.key, e.value, kinds))
+}
+
+/// The rows an accept strikes: each the ledger holds that was measured at or under its kind's cap.
+export fn struck_rows(now: Map<string, int>, base: Map<string, int>, kinds: Map<string, Kind>) -> List<
+    string,
+> {
+    [k for k in sorted_by([k for k, _n in now], text_before) if base.has(k) && at_or_under_cap(k, now.get(k) ?? 0, kinds)]
 }
 
 /// The cap of the kind a row's key names; absent where it has none.

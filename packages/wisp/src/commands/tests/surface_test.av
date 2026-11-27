@@ -168,6 +168,32 @@ spec "cost surface — the accept" {
         let rows: Map<string, int> = {"check-cli queries_computed": 145200}
         told_rows(record_accepted(with_told(), rows, "moved")).get("check-cli queries_computed") == ".112.27"
     }
+    then "a struck row leaves its file, which names the cause, and its siblings stand" {
+        let files = [
+            cost_file(
+                "reads/check-cli.cost",
+                "[check-cli]\ncount long_q 4000\ncount longer_q 5000\n",
+            ),
+        ]
+        let got = record_accepted(
+            files,
+            {"reads:-:check-cli longer_q": 5000},
+            "paid",
+            ["reads:-:check-cli long_q"],
+        )
+        let back = surface_rows(got)
+        back.get("reads:-:check-cli long_q") == null &&
+            back.get("reads:-:check-cli longer_q") == 5000 &&
+            header_of("reads/check-cli.cost", got).contains("# accepted: paid")
+    }
+    then "a section whose every row is struck goes with them" {
+        let files = [cost_file("reads/check-cli.cost", "[check-cli]\ncount long_q 4000\n")]
+        (accepted_at(
+            "reads/check-cli.cost",
+            record_accepted(files, {}, "paid", ["reads:-:check-cli long_q"]),
+        )?.sections ?? [])
+            .is_empty()
+    }
 }
 
 /// A row of every keyed kind the record declares, each under a key of what keys it.
