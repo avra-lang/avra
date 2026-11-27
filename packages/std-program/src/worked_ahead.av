@@ -103,7 +103,8 @@ export fn engine_worked_ahead<T, R>(
 /// `from` with every unknown item of `work` answered across processes that go on from everything
 /// `from`'s engine has settled, the wave then taken as `engine_worked_ahead` takes one: the store at
 /// `directory` opened again, the processes' packs merged, and their answers taken by a fresh engine,
-/// its frontier `program`'s. With nothing to fork, `from` as it stands.
+/// its frontier `program`'s, which then holds every answer `from`'s engine settled, so the frontier it
+/// keeps holds what the cores went on from. With nothing to fork, `from` as it stands.
 export fn worked_within<T, R>(
     directory: string,
     definitions: List<QueryDefinition>,
@@ -114,7 +115,9 @@ export fn worked_within<T, R>(
     let wave = waves_forked().get()
     if !cores_within<T, R>(from.store, from.engine, work, () -> 0) { return from }
     edited_mid_build(wave)
-    merged_anew<T, R>(directory, definitions, from.engine, work, program)
+    let taken = merged_anew<T, R>(directory, definitions, from.engine, work, program)
+    taken.engine.settled_from(from.engine)
+    taken
 }
 
 /// THE WAVE'S ANSWERS TAKEN ANEW, once its processes have gone: the store at `directory` opened
@@ -269,7 +272,12 @@ export fn asked_across_while<T, R>(
 /// Every unknown item of `work` answered across processes that go on from everything `engine` has
 /// settled, the asking process doing `meanwhile` while they run; whether any process ran: none where
 /// fewer than `WORTH_FORKING` are unknown, or nothing could be forked. Nothing of theirs is taken.
-fn cores_within<T, R>(store: LayeredStore, engine: QueryEngine, work: WorkAhead<T, R>, meanwhile: fn() -> int) -> bool {
+fn cores_within<T, R>(
+    store: LayeredStore,
+    engine: QueryEngine,
+    work: WorkAhead<T, R>,
+    meanwhile: fn() -> int,
+) -> bool {
     let known_by = work.is_known
     let items = (work.items)(engine)
     if work.process_count < 2 || !at_least(items, WORTH_FORKING, (item) -> !known_by(engine, item)) { return false }
