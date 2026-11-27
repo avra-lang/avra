@@ -25,7 +25,7 @@ fn qa_q_asked_body(target: string, filler: int) -> Request<Unrouted> {
     framed_from(head.bytes().concat([97 for i in 0..filler].bytes()!))!
 }
 
-fn qa_q_of(target: string) -> Query { qa_q_asked_body(target, 0).query() }
+fn qa_q_of(target: string) -> Query { qa_q_asked_body(target, 0).raw_query() }
 
 fn qa_said(a: Asked) -> string {
     match a {
@@ -57,14 +57,14 @@ spec "@std.http query adversarial" {
         then "and an empty query holds nothing" { qa_q_of("/x?").raw.length == 0 }
         then "and a request with no query holds nothing either" { qa_q_of("/x").raw.length == 0 }
         then "a query at the line bound holds exactly its own octets" {
-            qa_q_asked_body(qa_many(1000), 0).query().raw.length == qa_many(1000).length - 3
+            qa_q_asked_body(qa_many(1000), 0).raw_query().raw.length == qa_many(1000).length - 3
         }
         then "AND A MEGABYTE OF BODY BEHIND IT CHANGES NEITHER THE ANSWER NOR THE OCTETS HELD" {
-            let big = qa_q_asked_body("/x?a=1&b=2", 1048570).query()
+            let big = qa_q_asked_body("/x?a=1&b=2", 1048570).raw_query()
             qa_shown(big) == qa_shown(qa_q_of("/x?a=1&b=2")) && big.raw.length == 7
         }
         then "a thousand pairs behind a megabyte answer what a thousand pairs answer" {
-            qa_q_asked_body(qa_many(1000), 1048570).query().length() == 1000
+            qa_q_asked_body(qa_many(1000), 1048570).raw_query().length() == 1000
         }
         then "A BARE KEY'S `=` SEARCH ENDS AT ITS OWN `&`, so a later pair's `=` never splits it" {
             qa_one("/x?a&b=1", "a") == "bare" && qa_one("/x?a&b=1", "b") == "[1]"
@@ -133,5 +133,5 @@ spec "@std.http query adversarial" {
 /// `body` — the octets a reader must never reach.
 fn qa_body_query(target: string, body: string) -> string {
     let head = "POST ${target} HTTP/1.1\r\nHost: h\r\nContent-Length: ${body.length}\r\n\r\n"
-    qa_shown(framed_from((head + body).bytes())!.query())
+    qa_shown(framed_from((head + body).bytes())!.raw_query())
 }

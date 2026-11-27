@@ -1,10 +1,13 @@
 //! The formats, each read into one `Value`, so every decoder reads
 //! them all. Text that is not the format is refused as an issue at
 //! the root, the same kind a decode answers.
-use @std.json.{Json, parse}
+use @std.json.{Json, Field, parse}
 use @std.toml.{TomlDoc, TomlValue, TomlError, parse_toml}
 use issue.{Issue, Issues, root}
 use value.{Value, Entry}
+use decode.{Coercion, Limits}
+use derive.{Decode}
+use shape.{FieldShape}
 
 /// JSON text as a value. @std/json refuses nesting past its own
 /// `MAX_DEPTH` at the opener; a decoder bounds its depth again, at
@@ -117,4 +120,34 @@ fn toml_syntax(e: TomlError) -> Issue {
 
 fn syntax(format: string, message: string) -> Issue {
     Issue { path: root(), rule: format, message: "is not ${format}: ${message}" }
+}
+
+/// A value as JSON: `json_value`'s inverse.
+export fn value_json(v: Value) -> Json {
+    match v {
+        .Null -> Json.Null,
+        .Bool(b) -> Json.Bool(b),
+        .Int(n) -> Json.Int(n),
+        .Float(x) -> Json.Float(x),
+        .Text(s) -> Json.Str(s),
+        .List(items) -> Json.Arr([value_json(x) for x in items]),
+        .Map(entries) -> Json.Obj([Field { key: e.key, value: value_json(e.value) } for e in entries]),
+    }
+}
+
+/// JSON decodes as itself: any value is one, so the only refusal is
+/// text that is not JSON.
+impl Decode for Json {
+    static fn decode(v: Value, coercion: Coercion, limits: Limits) -> Result<Json, Issues> { value_json(v) }
+
+    static fn fields() -> List<FieldShape> { [] }
+
+    fn value() -> Value { json_value(self) }
+
+    static fn from_json(text: string, coercion: Coercion, limits: Limits) -> Result<Json, Issues> {
+        match parse(text) {
+            .Ok(j) -> j,
+            .Err(e) -> { fail Issues { all: [syntax("json", e.describe().message)] } },
+        }
+    }
 }
