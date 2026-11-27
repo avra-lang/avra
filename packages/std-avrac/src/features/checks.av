@@ -1454,13 +1454,8 @@ impl TypeCx {
             postfix_ready(self.view.store.expr(at)) -> "${shown}.of"
             _ -> "(${shown}).of"
         }
-        let call = "${name}(${value})"
-        let fix = Suggestion {
-            confidence: Confidence.High,
-            description: "write `${call}`",
-            edits: [Edit { loc: l, replacement: call } for l in some_list(self.loc_of(at))],
-        }
-        d with { help: "`${name}` is its own type — a value of its shape crosses by construction", suggestions: [fix] }
+        let c = crossed_by_name(name, value)
+        d with { help: c.help, suggestions: [c.at(l) for l in some_list(self.loc_of(at))] }
     }
 
     /// What a seat that refused `found` says it needs: a type's name is
@@ -2365,25 +2360,52 @@ impl Conversion {
 /// one: presence for a nullable, emptiness for text and a list.
 fn tested(g: Type, held: string) -> Conversion? {
     match g {
-        .Opt(_) -> Conversion {
-            help: "a condition tests a value — a nullable's test is its presence",
-            how: "test presence — `${held} != null`",
-            text: "${held} != null",
-            confidence: Confidence.Medium,
-        },
-        .Str -> Conversion {
-            help: "a condition tests a value — text's test is that it holds some",
-            how: "test for text — `${held} != \"\"`",
-            text: "${held} != \"\"",
-            confidence: Confidence.Low,
-        },
-        .List(_) -> Conversion {
-            help: "a condition tests a value — a list's test is that it holds elements",
-            how: "test for elements — `${held}.length > 0`",
-            text: "${held}.length > 0",
-            confidence: Confidence.Low,
-        },
+        .Opt(_) -> presence_tested(held),
+        .Str -> text_tested(held),
+        .List(_) -> elements_tested(held),
         _ -> null,
+    }
+}
+
+/// A nullable, held as `held` where a postfix binds, as a condition: its presence.
+export fn presence_tested(held: string) -> Conversion {
+    Conversion {
+        help: "a condition tests a value — a nullable's test is its presence",
+        how: "test presence — `${held} != null`",
+        text: "${held} != null",
+        confidence: Confidence.Medium,
+    }
+}
+
+/// Text, held as `held`, as a condition: that it holds some.
+export fn text_tested(held: string) -> Conversion {
+    Conversion {
+        help: "a condition tests a value — text's test is that it holds some",
+        how: "test for text — `${held} != \"\"`",
+        text: "${held} != \"\"",
+        confidence: Confidence.Low,
+    }
+}
+
+/// A list, held as `held`, as a condition: that it holds elements.
+export fn elements_tested(held: string) -> Conversion {
+    Conversion {
+        help: "a condition tests a value — a list's test is that it holds elements",
+        how: "test for elements — `${held}.length > 0`",
+        text: "${held}.length > 0",
+        confidence: Confidence.Low,
+    }
+}
+
+/// `Name(value)` — a value of the shape the named type `name` stands over, written `value`, crossing
+/// into it by construction.
+export fn crossed_by_name(name: string, value: string) -> Conversion {
+    let call = "${name}(${value})"
+    Conversion {
+        help: "`${name}` is its own type — a value of its shape crosses by construction",
+        how: "write `${call}`",
+        text: call,
+        confidence: Confidence.High,
     }
 }
 
@@ -2478,7 +2500,7 @@ export fn interpolation(shown: string) -> Conversion {
 }
 
 /// Whether a postfix read lands on the whole of this form as written.
-fn postfix_ready(e: Expr) -> bool {
+export fn postfix_ready(e: Expr) -> bool {
     match e {
         .Ident(_) or .Call(_, _, _) or .MethodCall(_, _, _) or .Prop(_, _) or .Index(_, _) -> true,
         _ -> false,

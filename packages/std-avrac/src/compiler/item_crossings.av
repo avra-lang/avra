@@ -1,0 +1,99 @@
+//! THE ONE HONEST CONVERSION A SEAT OFFERS, on the program layer: what carries a refused value into
+//! its seat, when exactly one thing does — a scalar into text, a value into a list of it, a nullable
+//! into its payload's seat, a value of a name's shape into the name — and, at a condition, the test
+//! a value's shape most plainly means. Decided where a refusal is placed, while its types stand, and
+//! kept on the row as its help and the edit over the value as written.
+use core.{ExprId, Seating, SignedType, SyntaxArena}
+use features.{
+    Conversion,
+    crossed_by_name,
+    elements_tested,
+    interpolation,
+    postfix_ready,
+    presence_asserted,
+    presence_tested,
+    text_tested,
+    wrapped,
+}
+use @std.errors.{Confidence}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+use @std.program.saved_derive.{Saved}
+use @std.meta.{derive}
+
+/// A refusal's conversion as a row keeps it: why the seat refuses, what the edit does, the text that
+/// replaces the value, and how sure the edit is — `sure` for a certain one, `guess` for a weak one.
+@derive(Saved)
+type SeatCrossing = { help: string, how: string, text: string, sure: bool, guess: bool }
+
+/// The conversion that carries the value at `at`, written `shown` in `store`, from `found` into the
+/// seat `seat` wanting `want`, where the seat judges a value against its want; absent where none
+/// does, or the value is not written here.
+fn seat_crossing(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    store: SyntaxArena,
+    at: int,
+    seat: Seating,
+    want: SignedType,
+    found: SignedType,
+    shown: string?,
+) -> SeatCrossing? {
+    let written? = shown else { return null }
+    let e = ExprId { index: at }
+    // a spread hands its elements to the seat, and no conversion of one value carries them
+    if store.spread_operand(e) != null { return null }
+    let held = if postfix_ready(store.expr(e)) { written } else { "(${written})" }
+    let c? = match seat {
+        .Condition(_) -> condition_test(found, held),
+        .Argument(_, _) or .Method(_, _, _) or .Field(_) or .Setting(_) or .Payload(_, _) or .Binding(_) or .Return(_) or .Body(_) or .FieldDefault(_) or .SeatDefault(_) or .Element or .MapValue -> carried(engine, file, want, found, written, held),
+        // every other seat speaks its own law, and no conversion answers it
+        rest -> null,
+    } else { return null }
+    kept_crossing(c)
+}
+
+/// A conversion as a row keeps it.
+fn kept_crossing(c: Conversion) -> SeatCrossing {
+    SeatCrossing {
+        help: c.help,
+        how: c.how,
+        text: c.text,
+        sure: c.confidence == Confidence.High,
+        guess: c.confidence == Confidence.Low,
+    }
+}
+
+/// The test a condition's value `found`, held as `held`, most plainly means: presence for a
+/// nullable, emptiness for text and a list.
+fn condition_test(found: SignedType, held: string) -> Conversion? {
+    if found.nullable() { return presence_tested(held) }
+    if found.owned() == "string" { return text_tested(held) }
+    if found.listed() != null { elements_tested(held) } else { null }
+}
+
+/// What carries `found`, written `written` and held as `held`, into a seat wanting `want`, read in
+/// `file`: a name's construction where the want is a named type `file` may build, the one shape
+/// conversion otherwise.
+fn carried(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    want: SignedType,
+    found: SignedType,
+    written: string,
+    held: string,
+) -> Conversion? {
+    let shape? = named_next_over(engine, want) else { return shaped(want, found, written, held) }
+    if sealed_home(engine, file, want) != null { return null }
+    if shape.same_type(found) { return crossed_by_name(want.spelled(), written) }
+    let through? = named_next_over(engine, found) else { return null }
+    if through.same_type(shape) { crossed_by_name(want.spelled(), "${held}.of") } else { null }
+}
+
+/// The one conversion between two shapes: a scalar into text, a value into a list of it, a nullable
+/// into its own payload's seat.
+fn shaped(want: SignedType, found: SignedType, written: string, held: string) -> Conversion? {
+    if want.owned() == "string" && ["int", "float", "bool"].contains(found.owned() ?? "") { return interpolation(written) }
+    if want.listed()?.same_type(found) ?? false { return wrapped(written) }
+    if found.nullable() && found.unwrapped().same_type(want) { presence_asserted(written, held) } else { null }
+}

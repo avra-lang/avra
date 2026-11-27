@@ -64,6 +64,8 @@ export type LawFinding = {
     item: ItemId? = null,
     /// The parse refusal the finding's name may stand behind, said in place of its remedy.
     unread: UnreadKept? = null,
+    /// The remedy the finding's own value offers, said in place of its voice's.
+    help: string? = null,
 }
 
 /// An edit a finding offers, where it writes: in the finding's item, or the item `item`; sure, likely,
@@ -153,6 +155,7 @@ fn finding_of(by: string, s: Found) -> LawFinding {
         local: s.local,
         item: s.item,
         unread: kept_unread(s.unread),
+        help: s.help,
     }
 }
 
@@ -540,7 +543,8 @@ fn placed_args(f: LawFinding, path: string) -> List<string> {
 /// fix its guess offers at the name it stands on; absent for a law this compiler doesn't hold.
 export fn finding_diag(f: LawFinding, path: string) -> Diag? {
     let l? = held_laws().find(it.name == f.by) else { return null }
-    let v = (l.voice)(placed_args(f, path))
+    let spoken = (l.voice)(placed_args(f, path))
+    let v = spoken with { help: f.help ?? spoken.help }
     let loc = loc_at(path, span_of(f.at))
     let d = said_as(f.kind ?? l.kind, loc, v) with { suggestions: guessed_fixes(v.guess, f.named ?? f.at, path).concat(offered(f.fixes, path)), secondary: [Frame { label: a.label, loc: loc_at(path, span_of(a.at)) } for a in some_list(f.aside)] }
     let said = behind(d, f.unread, path)

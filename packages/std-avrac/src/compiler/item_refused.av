@@ -219,6 +219,8 @@ type RefusedSeat = {
     spread: bool = false,
     instance: string? = null,
     item: ItemId? = null,
+    /// The one conversion that carries the node into its seat, where one does.
+    crossing: SeatCrossing? = null,
 }
 
 /// What the sugar a refused node's operator means says of itself, where it stands.
@@ -253,7 +255,7 @@ type ConstSeated = { at: FindingAt?, name: string, seat: string }
 type UnreadName = { at: FindingAt?, name: string, read: ReadAs, written_here: bool }
 
 /// A typed body beside the store its nodes stand in.
-type StoredBody = { store: SyntaxArena, typed: TypedBody }
+type StoredBody = { store: SyntaxArena, typed: TypedBody, text: string? = null }
 
 /// Every node a seat refused, and every name read that nothing binds or declares, in the written
 /// item `at` of `file`: in the bodies it declares, then in the statements it runs where its file is
@@ -281,7 +283,8 @@ fn refusals_made(view: ItemView) -> ItemRefusals {
     if !item_judged(engine, file, at) { return ItemRefusals { rows: [] } }
     let item = view.item
     if !item.store.refusals().is_empty() { return ItemRefusals { rows: [] } }
-    let bodies = [StoredBody { store: item.store, typed: b } for b in bodies_seen(view)]
+    let text = item_under(engine, file, at).text
+    let bodies = [StoredBody { store: item.store, typed: b, text: text } for b in bodies_seen(view)]
         .concat(
             [StoredBody {
                 store: b.item.store,
@@ -289,13 +292,19 @@ fn refusals_made(view: ItemView) -> ItemRefusals {
             } for b in default_bodies(engine, file, at, item, impls_seen(view))],
         )
     let cases = [StoredBody { store: c.item.store, typed: kept_body(body_checked(engine, file, c, false)) } for c in case_bodies(engine, file, at)]
-    let worn = [StoredBody { store: item.store, typed: kept_body(body_checked(engine, file, b, false)) } for b in annotation_bodies(engine, file, item)]
+    let worn = [StoredBody {
+        store: item.store,
+        typed: kept_body(body_checked(engine, file, b, false)),
+        text: text,
+    } for b in annotation_bodies(engine, file, item)]
     let entry = entry_found(engine, file)
     ItemRefusals {
         rows: flatten(
-            [[sited(engine, file, at, b.store, r, p) for r in b.typed.refused for p in refusals_placed(b.store, [r])] for b in bodies.concat(worn)],
+            [[sited(engine, file, at, b.store, r, p) for r in b.typed.refused for p in refusals_placed(engine, file, b.store, [r], (_i) -> b.text)] for b in bodies.concat(worn)],
         )
-            .concat([case_seated(r) for b in cases for r in refusals_placed(b.store, b.typed.refused)])
+            .concat(
+                [case_seated(r) for b in cases for r in refusals_placed(engine, file, b.store, b.typed.refused, (_i) -> b.text)],
+            )
             .concat([r.seat for r in entry.refused if r.item == at]),
         unread: flatten(
             [unread_placed(b.store, [u for u in b.typed.unread if !answered(engine, file, u)]) for b in bodies.concat(cases).concat(worn)],
@@ -435,8 +444,16 @@ fn unread_placed(store: SyntaxArena, rows: List<UnreadAt>) -> List<UnreadName> {
     } for u in rows]
 }
 
-/// What `rows`, refused in `store`, are where they stand.
-fn refusals_placed(store: SyntaxArena, rows: List<RefusedAt>) -> List<RefusedSeat> {
+/// What `rows`, refused in `store` of `file`, are where they stand, each node's conversion read over
+/// the text `text_at` answers for the item holding it (absent where its spans count from no text this
+/// item holds).
+fn refusals_placed(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    store: SyntaxArena,
+    rows: List<RefusedAt>,
+    text_at: fn(int) -> string?,
+) -> List<RefusedSeat> {
     [RefusedSeat {
         at: kept_at(refused_place(store, r)),
         seat: r.seat,
@@ -445,7 +462,28 @@ fn refusals_placed(store: SyntaxArena, rows: List<RefusedAt>) -> List<RefusedSea
         note: sugar_noted(store, r.seat, r.at),
         spread: store.spread_operand(ExprId { index: r.at }) != null,
         instance: handed_by(store, ExprId { index: r.at }, r.seat),
+        crossing: seat_crossing(
+            engine,
+            file,
+            store,
+            r.at,
+            r.seat,
+            r.want,
+            r.found,
+            written_in(store, r.at, text_at(r.at)),
+        ),
     } for r in rows]
+}
+
+/// The text the node `at` of `store` is written as, read in `text`; absent where it is not written
+/// there.
+fn written_in(store: SyntaxArena, at: int, text: string?) -> string? {
+    let held? = text else { return null }
+    let e = ExprId { index: at }
+    if store.spanned_elsewhere(e) { return null }
+    let span? = store.expr_span(e) else { return null }
+    if span.hi > held.length { return null }
+    held.substring(span.lo, span.hi)
 }
 
 /// `placed`, the refusal `r` of the item `at` of `file` read in `store`, said where its site wrote it
@@ -766,7 +804,13 @@ fn entry_found(engine: QueryEngine, file: SourceFileAddress) -> EntryFound {
     let signed? = entry_signed(read) else { return EntryFound { refused: [], unread: [] } }
     let typed = kept_body(body_checked(engine, file, signed, false))
     EntryFound {
-        refused: [EntryRefused { item: item_holding(read, r.at), seat: s } for r in typed.refused for s in refusals_placed(read.store, [r])],
+        refused: [EntryRefused { item: item_holding(read, r.at), seat: s } for r in typed.refused for s in refusals_placed(
+            engine,
+            file,
+            read.store,
+            [r],
+            (i) -> item_under(engine, file, item_holding(read, i)).text,
+        )],
         unread: [EntryUnread { item: item_holding(read, u.at), name: n } for u in typed.unread if !answered(engine, file, u) for n in unread_placed(read.store, [u])],
         compared: compared_placed(read.store, typed.binds),
     }
@@ -815,10 +859,26 @@ fn innermost_instance(store: SyntaxArena, e: ExprId) -> ExprId? {
 
 /// A refusal as its law's voice is handed it: the seat's own words, then what it wants and what it
 /// found.
-fn found_in(r: RefusedSeat, words: List<string>) -> Found { Found { at: span_of(r.at), args: words.concat([r.want, r.found]), item: r.item } }
+fn found_in(r: RefusedSeat, words: List<string>) -> Found { crossed(r, Found { at: span_of(r.at), args: words.concat([r.want, r.found]), item: r.item }) }
 
 /// The refusal `r` said where it stands, its voice handed `words`.
-fn found_saying(r: RefusedSeat, words: List<string>) -> List<Found> { [Found { at: span_of(r.at), args: words }] }
+fn found_saying(r: RefusedSeat, words: List<string>) -> List<Found> { [crossed(r, Found { at: span_of(r.at), args: words })] }
+
+/// The finding `f` of the refusal `r`, offering its conversion where one carries the value: the
+/// conversion's help in its voice's place, and its edit over the value.
+fn crossed(r: RefusedSeat, f: Found) -> Found {
+    let c? = r.crossing else { return f }
+    f with { help: c.help, fixes: [
+        FoundFix {
+            description: c.how,
+            at: f.at,
+            replacement: c.text,
+            sure: c.sure,
+            guess: c.guess,
+            item: r.item,
+        },
+    ] }
+}
 
 /// A kept place as a span.
 fn span_of(at: FindingAt?) -> Span? {
@@ -1288,7 +1348,7 @@ fn conditions_refused(view: ItemView) -> List<Found> {
 
 fn condition_words(r: RefusedSeat) -> List<Found> {
     match r.seat {
-        .Condition(of) -> [Found { at: span_of(r.at), args: [of.subject(), of.decides(), r.found] }],
+        .Condition(of) -> [crossed(r, Found { at: span_of(r.at), args: [of.subject(), of.decides(), r.found] })],
         .Argument(_, _) or .Method(_, _, _) or .Field(_) or .Setting(_) or .Payload(_, _) or .Binding(_) or .Return(_) or .Body(_) or .Hole(_) or .FieldDefault(_) or .AnnotationSeat(_) or .SeatDefault(_) or .Pronoun or .Index or .Element or .MapKey or .MapValue or .Uncovered(_, _) or .Catchless(_) or .Refutable(_) or .Unmatchable or .Repeated(_) or .Unbinding(_, _) or .Arity(_, _, _) or .BindsTwice(_) or .ElementsApart(_) or .SpreadUnlike(_) or .SpreadPlace(_, _) or .Restless(_) or .VariantCount(_, _, _, _) or .Misshapen(_, _, _) or .OrBinds(_, _, _) or .PayloadOutside or .Isolated(_, _, _) or .Sealed(_, _, _) or .Computed(_, _) or .Walk(_, _, _, _) or .Unwalked(_, _, _) or .Unwritten(_, _) or .Valued(_) or .Unvaried(_, _, _, _) or .Handed(_, _, _, _) or .Unwaited(_) or .Nameless(_, _) or .Operand(_, _) or .Negated or .Compared(_, _) or .TwoNames or .Unnamed or .KeptArm or .Arm(_) or .Lambda(_) or .Unenumed(_, _, _) or .Unmatched or .Unasked or .Fnless(_) or .Bare(_) or .Shaped or .Unlistable(_) or .CellUnmapped(_) or .ExternValue(_, _, _) or .SeatNamed(_, _, _, _) or .CompUnwalked(_) or .NotOffered(_, _, _) or .Unwaitable(_) or .ArmBinder(_, _, _) or .SpentArm or .SelectFault(_) or .HoleFault(_) or .Fateless(_) or .Miscounted(_, _, _, _, _, _, _, _) or .OneFn(_, _) or .WalkSeats(_, _) or .Block(_, _, _) or .Unpredicated(_, _, _) or .Assigned(_, _) or .ArmApart(_) or .BranchesApart or .WhenApart or .FieldRepeated(_) or .Uncalled(_, _) or .FailureUnpromised(_, _) or .AbsenceUnpromised(_, _) or .FailuresApart(_, _) or .Raised(_) or .RangeBound(_) or .Caught(_) or .CaughtArm or .Voided or .Within(_) or .Guarantee(_) or .ForUnwalked(_) or .Literal(_) or .Unimplemented or .Folded(_) or .Pinned(_, _, _) or .Unpinned(_, _) or .CompBound(_) or .NullPin(_, _) or .TypeHole(_) or .Unprojected(_) or .Unknowable(_) or .CellHolds or .DefaultUnimplemented(_) or .StaticUnpinned(_, _) or .Heard(_) or .LiteralUnpinned(_, _, _, _) or .Propagated or .LiteralUnimplemented -> [],
     }
 }
