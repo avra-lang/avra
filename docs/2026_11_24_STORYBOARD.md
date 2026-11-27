@@ -506,3 +506,25 @@ caught (11); 82 s. Snapshots: 124 (`text/stated` added), 33 stories, 119 cases.
 
 **Not yet:** the native target carries no writing direction (web and iOS agree on the words, not yet
 on the layout); `Layout.inset` reaches native facts and the html writer drops it.
+
+### Slice 7 — parity: every target heard one way, held to the Node
+
+| Part | Done |
+|---|---|
+| one projection | `Heard { role: Prim, name, value, states: List<State>, direction: Direction? }` (`@std/ui_gallery`'s `parity.av`): what an assistive reader hears of one element. Every reader answers into it, so a new target adds a reader and never a comparison |
+| the role table | `heard_as(Prim) -> Prim?`: a row, column, surface or key is heard as no role; an icon is the image it draws |
+| the laws every reader shares | a name's precedence (name, label, title, alt, then the element's own words); states in their declared order; text or an alert with no words announces nothing; a decorative element, or a dialog that is not open, is unheard with all it holds |
+| the readers | the Node (the reference row), the HTML (`html_heard`: a label names the control it holds, a card is named by its title, a division only by the role it says), native facts (`native_heard`) and the outline, read back from its text (`outline_heard`) |
+| the check | `parity(shelves, owed)`: every case on every target, the first line where a target parts from the Node, less what a line of `owed` names; an owed line whose case now agrees is `struck`. The test fails on either, so the list only shrinks |
+
+The survey (118 cases, program `13c2fd4a`), each fixed or owed:
+
+| Disagreement | Answer |
+|---|---|
+| a spinner is a `div` with an `aria-label` and no role, so a reader passes it by (4 cases) | fixed: it says `role="status"` |
+| the outline drops a stated words direction (`text/stated`) | fixed: the line says `dir=rtl`/`dir=ltr` where `Style.writing` states one |
+| native facts carry no stated words direction (`text/stated`) | owed (`storyboard`): slice 6's `WordsWriting` fact pays it, and the native reader reads it then |
+| the terminal draws no disabled, busy, invalid or selected state | not yet a reader: its form is the UI lead's ruling (words after the control, a glyph, or a reader that declares what it cannot say) |
+
+**The cost.** The four readers over 118 cases run in ~1.6 s and 330 MB in the evaluator, beside the
+snapshot pass. `role="status"` is 14 bytes per spinner.
