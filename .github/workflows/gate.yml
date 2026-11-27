@@ -70,12 +70,34 @@ jobs:
           else
             echo "builder stores: none this seed reads — generation 1 builds cold"
           fi
+      # THE RUNGS A TRAIN CLIMBS ARE KEPT FOR ITS NEXT GATE: each rung's product under its builder's bytes,
+      # its tree and the toolchain (tools/ladder.sh), restored from this branch's last gate, and kept back
+      # pruned to the rungs this run read or built. A gate's first climb builds; a re-gate takes them up.
+      - uses: actions/cache/restore@v4
+        with:
+          path: ladder-cache
+          key: ladder-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: ladder-${{ github.ref_name }}-
       - name: seed
         timeout-minutes: 70
+        env:
+          AVRA_LADDER_CACHE: ${{ github.workspace }}/ladder-cache
         run: |
+          mkdir -p "$AVRA_LADDER_CACHE" && : > "$AVRA_LADDER_CACHE/.used"
           sh tools/gate.sh seed && exit 0
           find build/gate/pack -type f -exec sh -c 'echo "== $1"; tail -80 "$1"' _ {} \;
           exit 1
+      - name: rungs kept
+        if: always()
+        run: |
+          [ -s ladder-cache/.used ] || { echo "ladder: no rung climbed, none kept"; exit 0; }
+          for d in ladder-cache/*/; do grep -qx "$(basename "$d")" ladder-cache/.used || find "$d" -delete; done
+          echo "ladder: $(ls -d ladder-cache/*/ | wc -l) rung(s) kept for this branch's next gate"
+      - if: always() && hashFiles('ladder-cache/*/avra') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: ladder-cache
+          key: ladder-${{ github.ref_name }}-${{ github.run_id }}
       - name: slices
         id: slices
         run: |
