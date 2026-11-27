@@ -4,6 +4,7 @@
 //! Colour is laid over them, never in their place. The Unicode marks are the
 //! default; a locale without UTF-8 draws the ASCII ones.
 use env.{Env}
+use @std.text.{ascii_lower}
 
 /// The marks the terminal draws states with.
 export type Glyphs = {
@@ -14,7 +15,6 @@ export type Glyphs = {
     invalid: string,
     focus: string,
     busy: string,
-    frames: List<string>,
     unavailable: string,
 }
 
@@ -27,7 +27,6 @@ export const unicode = Glyphs {
     invalid: "✗",
     focus: "❯ ",
     busy: "…",
-    frames: ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
     unavailable: "(unavailable)",
 }
 
@@ -40,9 +39,16 @@ export const ascii = Glyphs {
     invalid: "x",
     focus: "> ",
     busy: "...",
-    frames: ["..."],
     unavailable: "(unavailable)",
 }
 
 /// The marks a device's terminal draws.
 export fn glyphs_for(e: Env) -> Glyphs { if e.utf8 { unicode } else { ascii } }
+
+/// Whether the locale the environment names draws UTF-8: the first of
+/// `LC_ALL`, `LC_CTYPE` and `LANG` that is set decides, and a locale named
+/// without UTF-8 draws none. No locale named keeps the default.
+export fn utf8_named(named: List<string?>) -> bool {
+    let locale? = [n ?? "" for n in named if n ?? "" != ""].first() else { return true }
+    ascii_lower(locale).contains("utf-8") || ascii_lower(locale).contains("utf8")
+}
