@@ -1,0 +1,55 @@
+From 5c6a69fdf8d8c1958cb5223467846e2eccbd7514 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 27 Nov 2026 09:15:27 +0000
+Subject: [PATCH] work ahead: the last wave forks from the engine the
+ generators settled
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The last wave opened a fresh store and engine, so every core proved the
+program-wide answers it reused read by read — some 44 thousand summaries,
+parts and tapes a core. It now asks across the engine that ran the
+generators and filed the impls, whose cores go on from what it settled.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01QBqJuohz3zZcD1EaBpAgwY
+---
+ packages/std-avrac/src/compiler/item_ahead.av | 18 ++++++++++++------
+ 1 file changed, 12 insertions(+), 6 deletions(-)
+
+diff --git a/packages/std-avrac/src/compiler/item_ahead.av b/packages/std-avrac/src/compiler/item_ahead.av
+index e3bc90978..a66a27c7d 100644
+--- a/packages/std-avrac/src/compiler/item_ahead.av
++++ b/packages/std-avrac/src/compiler/item_ahead.av
+@@ -92,15 +92,21 @@ export fn program_worked(
+     let _ = generated.store.saved()
+     clock.closed()
+     clock.opened("bodies lowered", TimedSide.Outside, Pass.Lower)
+-    let lowered = ahead(
+-        at,
+-        (_engine: QueryEngine) -> parsed.program,
+-        (e, f) -> file_work_is_known(e, f, work, stands.contains(spelled_file(f))),
+-        (e, f) -> file_work_done(e, f, work, stands.contains(spelled_file(f))),
++    let _ = asked_across<SourceFileAddress, int>(
++        generated.store,
++        generated.engine,
++        WorkAhead {
++            items: (_engine: QueryEngine) -> parsed.program,
++            is_known: (e, f) -> file_work_is_known(e, f, work, stands.contains(spelled_file(f))),
++            ask: (e, f) -> file_work_done(e, f, work, stands.contains(spelled_file(f))),
++            process_count: at.process_count,
++            timed: at.timed,
++            counted: at.counted,
++        },
+     )
+     clock.closed()
+     if at.timed { eprintln(phases_said(clock, filed)) }
+-    lowered
++    generated
+ }
+ 
+ /// EVERY BODY A PROGRAM'S WALK MET, PLACED ACROSS PROCESSES before the program's shape asks for any:
+-- 
+2.43.0
+

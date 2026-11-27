@@ -1,0 +1,262 @@
+From e66fd1d2ebdf85d12e342ffbfe16f374fcfbffdd Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 27 Nov 2026 08:10:41 +0000
+Subject: [PATCH] a body's cancel key is its content print, folded with nothing
+ boxed
+
+BodyAt.key() interpolated every field into text on each lookup; the
+survey's memos, the walk's seen set, TestsKept.reaching and the fold's
+callee diff now key by print(), a two-lane ContentHash, through
+HashKeyedTable, so a field added to BodyAt costs no allocation.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01QBqJunZcEyAdXLmQJftdiw
+---
+ .../std-avrac/src/compiler/item_cancels.av    | 107 +++++++++++++-----
+ .../std-avrac/src/compiler/item_lowered.av    |   5 +-
+ .../std-avrac/src/compiler/item_program.av    |  10 +-
+ 3 files changed, 86 insertions(+), 36 deletions(-)
+
+diff --git a/packages/std-avrac/src/compiler/item_cancels.av b/packages/std-avrac/src/compiler/item_cancels.av
+index 9ab5f2765..88fa6cd19 100644
+--- a/packages/std-avrac/src/compiler/item_cancels.av
++++ b/packages/std-avrac/src/compiler/item_cancels.av
+@@ -14,16 +14,18 @@ use core.{
+     SignedType,
+     TaskChecks,
+     TestSite,
+-    distinct,
+     flatten,
+     hosted_symbol,
+     rt_waits,
++    sorted_by,
+ }
+ use @std.meta.{derive}
+ use @std.program.address.{SourceFileAddress}
++use @std.program.answer_record.{ContentHash}
++use @std.program.hash_keyed_table.{HashKeyedTable, hash_keyed_table}
++use @std.program.interned.{HIGH_LANE, LOW_LANE, KeyLane, key_of_lanes}
+ use @std.program.query_engine.{QueryEngine}
+ use @std.program.saved_derive.{Saved}
+-use @std.relation.engine.{map_cell}
+ 
+ /// A body a call runs: the fn, method, static, trait's body or field default `CalledFn` names, and
+ /// for a generic one's unit, the type filling each type parameter.
+@@ -47,10 +49,21 @@ export type BodyAt = {
+ }
+ 
+ impl BodyAt {
+-    /// The body as a walk tells it from another.
+-    fn key() -> string {
+-        let of = if self.of == null { "" } else { spelled_file(self.of!) }
+-        "${spelled_file(self.file)} ${self.name} ${self.owner ?? ""} ${of} ${self.statics} ${self.defaulted.word()} ${self.seat_of ?? ""} ${self.given_by ?? ""} ${[f.spelled() for f in self.fills].join(",")} ${self.case_item ?? -1} ${self.case_index}"
++    /// The body as a walk tells it from another: its content key, every field folded into both
++    /// lanes with nothing boxed.
++    fn print() -> ContentHash { key_of_lanes(self.folded(HIGH_LANE), self.folded(LOW_LANE)) }
++
++    /// Every field folded into `lane`, each to one word of its own.
++    fn folded(lane: KeyLane) -> int {
++        let placed = file_folded(lane, file_folded(lane, lane.seed, self.file), self.of)
++        let named = text_folded(lane, text_folded(lane, text_folded(lane, placed, self.name), self.owner), self.seat_of)
++        let marked = lane
++            .word(
++                lane.word(lane.word(text_folded(lane, named, self.given_by), flag(self.external)), flag(self.statics)),
++                defaulting_word(self.defaulted),
++            )
++        let filled = lane.word(lane.word(marked, fills_folded(lane, self.fills)), bounds_folded(lane, self.bounded))
++        lane.word(lane.word(filled, (self.case_item ?? -1) + 1), self.case_index)
+     }
+ 
+     /// The call of this body, as the program layer reaches it, a generic one's unit under `parameters`.
+@@ -111,22 +124,18 @@ impl CancelFact {
+ @derive(Saved)
+ export type BodyCancels = { own: CancelFact, callees: List<BodyAt> }
+ 
+-/// What `cell`'s map holds under `key`, read in a frame of its own, so the map is held by no one but
+-/// the cell once the read is done and a write after it lands in place.
+-fn held_at<V>(cell: Cell<Map<string, V>>, key: string) -> V? { cell.get().get(key) }
+-
+ /// What the bodies a program reaches reach, each read from its saved facts: a body's evidence, by its
+ /// key, and whether a call of each body asked about reaches a cancel point and links a scheduler. It
+ /// is one walk's working set, made for that walk and never outliving it; nothing in it is saved.
+ export type TaskSurvey = {
+     engine: QueryEngine,
+-    met: Cell<Map<string, BodyCancels>>,
+-    reaching: Cell<Map<string, bool>>,
+-    linking: Cell<Map<string, bool>>,
++    met: HashKeyedTable<BodyCancels>,
++    reaching: HashKeyedTable<bool>,
++    linking: HashKeyedTable<bool>,
+ }
+ 
+ /// A survey over `engine`'s program that has met nothing yet.
+-export fn task_survey(engine: QueryEngine) -> TaskSurvey { TaskSurvey { engine: engine, met: map_cell(), reaching: map_cell(), linking: map_cell() } }
++export fn task_survey(engine: QueryEngine) -> TaskSurvey { TaskSurvey { engine: engine, met: hash_keyed_table(), reaching: hash_keyed_table(), linking: hash_keyed_table() } }
+ 
+ impl TaskSurvey {
+     /// The body a call of `c` runs, lowered with its tests held; absent where its declaration gives
+@@ -149,7 +158,7 @@ impl TaskSurvey {
+     fn kept_at(sites: List<TestSite>, checks: TaskChecks) -> TestsKept {
+         if !checks.tests() { return kept_bare(checks) }
+         let called = [body_at(c!) for s in sites for c in [s.callee()] if c != null && self.reaches(c!)]
+-        TestsKept { checks: checks, reaching: sorted_names(distinct([b.key() for b in called])) }
++        TestsKept { checks: checks, reaching: prints_of(called) }
+     }
+ 
+     /// Whether `checks` places a test at `site`, a fn's call tested where the fn may reach a cancel
+@@ -173,9 +182,9 @@ impl TaskSurvey {
+ 
+     /// Whether `at`, or a body it reaches, holds evidence `found` answers for, kept in `known`: each
+     /// surveyed once, in one walk that stops at the first.
+-    fn finds(at: BodyAt, known: Cell<Map<string, bool>>, found: fn(CancelFact) -> bool) -> bool {
+-        let key = at.key()
+-        let asked = held_at(known, key)
++    fn finds(at: BodyAt, known: HashKeyedTable<bool>, found: fn(CancelFact) -> bool) -> bool {
++        let key = at.print()
++        let asked = known.get(key)
+         if asked != null { return asked! }
+         let answer = self.walk_finds(at, key, known, found)
+         known.put(key, answer)
+@@ -187,22 +196,21 @@ impl TaskSurvey {
+     /// body it met, since all each reaches was met.
+     fn walk_finds(
+         at: BodyAt,
+-        key: string,
+-        known: Cell<Map<string, bool>>,
++        key: ContentHash,
++        known: HashKeyedTable<bool>,
+         found: fn(CancelFact) -> bool,
+     ) -> bool {
+         mut reached = [at]
+-        mut seen: Map<string, bool> = {}
+-        seen.set(key, true)
++        let seen: HashKeyedTable<bool> = hash_keyed_table()
++        seen.put(key, true)
+         mut i = 0
+         while i < reached.length {
+             let own = self.cancels(reached[i])
+             if found(own.own) { return true }
+             for c in own.callees {
+-                let met = c.key()
+-                if seen.has(met) { continue }
+-                seen.set(met, true)
+-                let asked = held_at(known, met)
++                let met = c.print()
++                if !seen.first_put(met, true) { continue }
++                let asked = known.get(met)
+                 if asked != null {
+                     if asked! { return true }
+                     continue
+@@ -211,14 +219,14 @@ impl TaskSurvey {
+             }
+             i = i + 1
+         }
+-        for met, _held in seen { known.put(met, false) }
++        for r in reached { known.put(r.print(), false) }
+         false
+     }
+ 
+     /// The body `at`'s evidence, read once for the walk.
+     fn cancels(at: BodyAt) -> BodyCancels {
+-        let key = at.key()
+-        let met = held_at(self.met, key)
++        let key = at.print()
++        let met = self.met.get(key)
+         if met != null { return met! }
+         let cancels = self.evidence(at)
+         self.met.put(key, cancels)
+@@ -277,3 +285,44 @@ fn row_fact(name: string) -> CancelFact { CancelFact { parks: rt_waits(name), sp
+ /// The evidence of a body this layer can't read: it may reach either way, and is known to link
+ /// nothing.
+ fn unseen() -> BodyCancels { BodyCancels { own: CancelFact { parks: true, spins: true, links: false }, callees: [] } }
++
++/// The prints of `bodies`, each once, in their order: what `TestsKept` names the reaching bodies by.
++fn prints_of(bodies: List<BodyAt>) -> List<ContentHash> {
++    let seen: HashKeyedTable<bool> = hash_keyed_table()
++    sorted_by([p for b in bodies for p in [b.print()] if seen.first_put(p, true)], (a: ContentHash, b: ContentHash) -> a.comes_before(b))
++}
++
++/// `file` folded into `lane` after `h`, as its content key's two words.
++fn file_folded(lane: KeyLane, h: int, file: SourceFileAddress?) -> int {
++    let f? = file else { return lane.word(h, 0) }
++    lane.word(lane.word(lane.word(h, 1), f.key.high_word), f.key.low_word)
++}
++
++/// `text` folded into `lane` after `h` as one word; none folds apart from every text.
++fn text_folded(lane: KeyLane, h: int, text: string?) -> int {
++    let t? = text else { return lane.word(h, 0) }
++    lane.word(lane.word(h, 1), lane.text(lane.seed, t))
++}
++
++/// `fills` folded into one word of `lane`: their count, then each type.
++fn fills_folded(lane: KeyLane, fills: List<SignedType>) -> int { fills.fold(lane.word(lane.seed, fills.length), (h, f) -> f.lane_folded(lane, h)) }
++
++/// `bounded` folded into one word of `lane`: their count, then each.
++fn bounds_folded(lane: KeyLane, bounded: List<bool>) -> int { bounded.fold(lane.word(lane.seed, bounded.length), (h, b) -> lane.word(h, flag(b))) }
++
++fn flag(b: bool) -> int { if b { 1 } else { 0 } }
++
++/// Whose default a body is, as one word.
++fn defaulting_word(d: Defaulting) -> int {
++    match d { .Not -> 0, .Field -> 1, .Seat -> 2 }
++}
++
++/// Whether `prints` names the body printed `p`.
++fn reaches_one(prints: List<ContentHash>, p: ContentHash) -> bool { prints.any(it.same_as(p)) }
++
++/// `bodies` by their prints.
++fn printed(bodies: List<BodyAt>) -> HashKeyedTable<bool> {
++    let out: HashKeyedTable<bool> = hash_keyed_table()
++    for b in bodies { out.put(b.print(), true) }
++    out
++}
+diff --git a/packages/std-avrac/src/compiler/item_lowered.av b/packages/std-avrac/src/compiler/item_lowered.av
+index 314a61a4f..80e28febc 100644
+--- a/packages/std-avrac/src/compiler/item_lowered.av
++++ b/packages/std-avrac/src/compiler/item_lowered.av
+@@ -81,6 +81,7 @@ use core.{
+ use features.collects.{collected_list}
+ use features.specs.{case_lowered}
+ use @std.program.address.{SourceFileAddress}
++use @std.program.answer_record.{ContentHash}
+ use @std.program.source_facts.{source_text}
+ use diagnostics.{new_source_file}
+ use @std.program.query_engine.{QueryDefinition, QueryEngine}
+@@ -135,11 +136,11 @@ export type Unprojected = { name: string, lo: int, hi: int }
+ /// fn's call where the fn's body key is one of `reaching`. A rule over sites, never a flag per test,
+ /// so it places every revision of a body, however many tests it holds.
+ @derive(Saved)
+-export type TestsKept = { checks: TaskChecks, reaching: List<string> }
++export type TestsKept = { checks: TaskChecks, reaching: List<ContentHash> }
+ 
+ impl TestsKept {
+     /// Whether a test at `site` is placed.
+-    fn keeps(site: TestSite) -> bool { self.checks.keeps(site, (c: CalledFn) -> self.reaching.contains(body_at(c).key())) }
++    fn keeps(site: TestSite) -> bool { self.checks.keeps(site, (c: CalledFn) -> reaches_one(self.reaching, body_at(c).print())) }
+ 
+     /// Which of `tests` are placed, in their order.
+     fn keeping(tests: List<TaskTest>) -> List<bool> { tests_chosen(tests, (site: TestSite) -> self.keeps(site)) }
+diff --git a/packages/std-avrac/src/compiler/item_program.av b/packages/std-avrac/src/compiler/item_program.av
+index 36bdb15fe..13e5f7789 100644
+--- a/packages/std-avrac/src/compiler/item_program.av
++++ b/packages/std-avrac/src/compiler/item_program.av
+@@ -577,11 +577,11 @@ impl WalkFold {
+         if cancels_text(was) == cancels_text(now) { return true }
+         let own = now.cancels.own
+         if content_text(was.cancels.own.saved_bytes()) != content_text(own.saved_bytes()) { return false }
+-        let before = names_wanted([b.key() for b in was.cancels.callees])
+-        let after = names_wanted([b.key() for b in now.cancels.callees])
+-        let added = now.cancels.callees.filter((b) -> !before.has(b.key()))
+-        let dropped = was.cancels.callees.filter((b) -> !after.has(b.key()))
+-        let kept = now.cancels.callees.filter((b) -> before.has(b.key()))
++        let before = printed(was.cancels.callees)
++        let after = printed(now.cancels.callees)
++        let added = now.cancels.callees.filter((b) -> before.get(b.print()) == null)
++        let dropped = was.cancels.callees.filter((b) -> after.get(b.print()) == null)
++        let kept = now.cancels.callees.filter((b) -> before.get(b.print()) != null)
+         let survey = self.survey
+         reach_alike(own.may(), added, dropped, kept, (b: BodyAt) -> survey.reaches_at(b)) &&
+             reach_alike(own.linked(), added, dropped, kept, (b: BodyAt) -> survey.links(b))
+-- 
+2.43.0
+

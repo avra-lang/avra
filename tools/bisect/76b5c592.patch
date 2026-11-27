@@ -1,0 +1,516 @@
+From 76b5c592b1719315dd4dc2928d5e8c0bbcf2b3f9 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 27 Nov 2026 09:06:21 +0000
+Subject: [PATCH] a read-back item, a question's counted words and a node's
+ kind bucket are reached with nothing minted per probe
+
+The held items' cache keys by a ContentHash folded from the item's file,
+place and print; a question's counted prefix is minted once per query,
+its bytes and so its identity unchanged; an arena's kind buckets are
+probed by the tag's own word.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01QBqJunZcEyAdXLmQJftdiw
+---
+ .../std-avrac/src/compiler/item_signatures.av | 39 +++++++--
+ .../src/compiler/tests/item_tapes_test.av     |  8 +-
+ packages/std-avrac/src/core/arena.av          | 30 ++++---
+ packages/std-program/src/answer_record.av     | 33 ++++++-
+ packages/std-program/src/bounded_cache.av     | 31 +++----
+ .../src/tests/bounded_cache_test.av           | 86 ++++++++++---------
+ 6 files changed, 147 insertions(+), 80 deletions(-)
+
+diff --git a/packages/std-avrac/src/compiler/item_signatures.av b/packages/std-avrac/src/compiler/item_signatures.av
+index 374ec67a0..84c4e406d 100644
+--- a/packages/std-avrac/src/compiler/item_signatures.av
++++ b/packages/std-avrac/src/compiler/item_signatures.av
+@@ -40,6 +40,7 @@ use compiler.typing.{builtin_type_name}
+ use @std.meta.{derive}
+ use @std.program.address.{SourceFileAddress}
+ use @std.program.answer_record.{ContentHash, content_hash}
++use @std.program.interned.{HIGH_LANE, LOW_LANE, KeyLane, key_of_lanes}
+ use @std.program.bounded_cache.{BoundedCache, bounded_cache}
+ use @std.program.query_engine.{QueryDefinition, QueryEngine}
+ use @std.program.saved_derive.{Saved}
+@@ -786,22 +787,50 @@ fn item_read(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ReadIt
+ }
+ 
+ /// What a written item read back is held under: its file, its place, and its text's print.
+-export fn written_key(file: SourceFileAddress, at: ItemId, start: int, text: string) -> string { printed_key(file, at, start, fp_str(text)) }
++export fn written_key(file: SourceFileAddress, at: ItemId, start: int, text: string) -> ContentHash { printed_key(file, at, start, fp_str(text)) }
+ 
+ /// What a written item whose text prints as `print` read back is held under.
+-fn printed_key(file: SourceFileAddress, at: ItemId, start: int, print: int) -> string { "${spelled_file(file)}#${at}#${start}#${print}" }
++fn printed_key(file: SourceFileAddress, at: ItemId, start: int, print: int) -> ContentHash { item_key_of(file, at, WRITTEN_ITEM, start, print) }
+ 
+ /// What a made item read back is held under: its file, its place, and its whole tape's print —
+ /// places included, so a template that moves makes another key.
+-export fn made_key(file: SourceFileAddress, at: ItemId, tape: SyntaxTape) -> string {
++export fn made_key(file: SourceFileAddress, at: ItemId, tape: SyntaxTape) -> ContentHash {
+     let print = content_hash(tape.saved_bytes())
+-    "${spelled_file(file)}#${at}#made#${print.high_word}:${print.low_word}"
++    item_key_of(file, at, MADE_ITEM, print.high_word, print.low_word)
+ }
+ 
++/// The key of the item at `at` in `file`, read back as `kind` from two words of what it was read from:
++/// each part folded into both lanes as a word of its own, nothing boxed.
++fn item_key_of(file: SourceFileAddress, at: ItemId, kind: int, first: int, second: int) -> ContentHash {
++    key_of_lanes(
++        item_key_folded(HIGH_LANE, file, at, kind, first, second),
++        item_key_folded(LOW_LANE, file, at, kind, first, second),
++    )
++}
++
++fn item_key_folded(
++    lane: KeyLane,
++    file: SourceFileAddress,
++    at: ItemId,
++    kind: int,
++    first: int,
++    second: int,
++) -> int {
++    let placed = lane
++        .word(lane.word(lane.word(lane.seed, file.key.high_word), file.key.low_word), at.of)
++    lane.word(lane.word(lane.word(placed, kind), first), second)
++}
++
++/// How a written item's key tells it from a made one's.
++const WRITTEN_ITEM: int = 0
++
++/// How a made item's key tells it from a written one's.
++const MADE_ITEM: int = 1
++
+ /// The item `key` names, read back from the tape `placed` answers: the one held under the key, else
+ /// read and held. `key` names its content — a written item's text, a made one's whole tape — so two
+ /// items share an entry only where they read back alike.
+-fn held_read(key: string, placed: fn() -> PlacedTape, at: ItemId?) -> ReadItem {
++fn held_read(key: ContentHash, placed: fn() -> PlacedTape, at: ItemId?) -> ReadItem {
+     if !items_held() { return item_whole(placed(), at) }
+     let kept = held_items().get(key)
+     if kept != null { return kept! }
+diff --git a/packages/std-avrac/src/compiler/tests/item_tapes_test.av b/packages/std-avrac/src/compiler/tests/item_tapes_test.av
+index 3d8eacbd7..e3a52d5a5 100644
+--- a/packages/std-avrac/src/compiler/tests/item_tapes_test.av
++++ b/packages/std-avrac/src/compiler/tests/item_tapes_test.av
+@@ -80,18 +80,20 @@ spec "a file's items on tapes" {
+     given "the key a read-back item is held under" {
+         then "two texts at one place never share a key" {
+             let f = source_file("app", "src/main.av")
+-            written_key(f, 2, 10, "fn a() -> int { 1 }") != written_key(f, 2, 10, "fn b() -> int { 1 }")
++            !written_key(f, 2, 10, "fn a() -> int { 1 }")
++                .same_as(written_key(f, 2, 10, "fn b() -> int { 1 }"))
+         }
+         then "a made item whose tape moved but means the same keys apart" {
+             let f = source_file("app", "src/main.av")
+             let near = tape_of_source("fn a() -> int { 1 }")
+             let far = tape_of_source("fn a() -> int {\n    1\n}")
+             near.meaning_hash.high_word == far.meaning_hash.high_word &&
+-                made_key(f, 3, near) != made_key(f, 3, far)
++                !made_key(f, 3, near).same_as(made_key(f, 3, far))
+         }
+         then "a made item whose tape means something else keys apart" {
+             let f = source_file("app", "src/main.av")
+-            made_key(f, 3, tape_of_source("fn a() -> int { 1 }")) != made_key(f, 3, tape_of_source("fn a() -> int { 2 }"))
++            !made_key(f, 3, tape_of_source("fn a() -> int { 1 }"))
++                .same_as(made_key(f, 3, tape_of_source("fn a() -> int { 2 }")))
+         }
+     }
+     given "a place past a file's items" {
+diff --git a/packages/std-avrac/src/core/arena.av b/packages/std-avrac/src/core/arena.av
+index 7c01213ea..a0296d18d 100644
+--- a/packages/std-avrac/src/core/arena.av
++++ b/packages/std-avrac/src/core/arena.av
+@@ -2,17 +2,19 @@
+ //! shape every node arena shares. Callers wrap the raw index in their
+ //! typed id.
+ use @std.meta.{identity, plain_field}
+-use @std.relation.engine.{list_cell, map_cell}
++use @std.program.hash_keyed_table.{HashKeyedTable, hash_keyed_table}
++use @std.relation.engine.{list_cell}
+ 
+ /// ONE IDENTITY: every table is a `Cell`, so a copy of the arena
+ /// appends into the same storage as the original. `kinds` is the arena
+ /// relation's `@index kind`: one bucket of raw indexes per variant tag,
+-/// ascending, covering the first `kinded` nodes and caught up on each ask.
++/// probed by the tag's own word, ascending, covering the first `kinded`
++/// nodes and caught up on each ask.
+ @identity
+ export type Arena<N> = {
+     nodes: Cell<List<N>>,
+     spans: Cell<List<Span?>>,
+-    kinds: Cell<Map<string, Cell<List<int>>>>,
++    kinds: HashKeyedTable<Cell<List<int>>>,
+     kinded: Cell<int>,
+     /// The first node replaced since the arena last forgot its rewrites, -1 for none.
+     rewritten: Cell<int>,
+@@ -22,7 +24,7 @@ export fn new_arena<N>() -> Arena<N> {
+     Arena {
+         nodes: list_cell<N>(),
+         spans: list_cell<Span?>(),
+-        kinds: map_cell(),
++        kinds: hash_keyed_table(),
+         kinded: Cell.new(0),
+         rewritten: Cell.new(-1),
+     }
+@@ -42,7 +44,7 @@ impl Arena {
+         Arena {
+             nodes: Cell.new(self.nodes.get()),
+             spans: Cell.new(self.spans.get()),
+-            kinds: map_cell(),
++            kinds: hash_keyed_table(),
+             kinded: Cell.new(0),
+             rewritten: Cell.new(self.rewritten.get()),
+         }
+@@ -74,27 +76,33 @@ impl Arena {
+     /// sliced by two binary searches, so no node of another kind is read.
+     fn of_kind(lo: int, hi: int, k: int, tag: fn(N) -> int) -> List<int> {
+         self.index_kinds(tag)
+-        let ids = self.kinds.get().get("${k}")?.get() ?? []
++        let ids = self.filed(k)?.get() ?? []
+         ids.slice(lower_bound(ids, lo), lower_bound(ids, hi))
+     }
+ 
+     /// Files every node appended since the last ask under its tag.
+     fn index_kinds(tag: fn(N) -> int) {
+         let nodes = self.nodes.get()
+-        for i in self.kinded.get()..nodes.length { self.bucket("${tag(nodes[i])}").push(i) }
++        for i in self.kinded.get()..nodes.length { self.bucket(tag(nodes[i])).push(i) }
+         self.kinded.set(nodes.length)
+     }
+ 
+-    /// The bucket a tag files into, opened on first use.
+-    fn bucket(key: string) -> Cell<List<int>> {
+-        self.kinds.get().get(key) ?? {
++    /// The bucket the tag `k` files into, opened on first use.
++    fn bucket(k: int) -> Cell<List<int>> {
++        self.filed(k) ?? {
+             let fresh: Cell<List<int>> = list_cell()
+-            self.kinds.put(key, fresh)
++            self.kinds.put_at(k, KIND_WORD, fresh)
+             fresh
+         }
+     }
++
++    /// The bucket the tag `k` has filed into, absent before its first node.
++    fn filed(k: int) -> Cell<List<int>>? { self.kinds.get_at(k, KIND_WORD) }
+ }
+ 
++/// The second word of a kind's key: a tag is one word, and the table keys by two.
++const KIND_WORD: int = 0
++
+ /// The first index in `xs` (ascending) whose value is `>= target`;
+ /// `xs.length` when every value is smaller.
+ fn lower_bound(xs: List<int>, target: int) -> int {
+diff --git a/packages/std-program/src/answer_record.av b/packages/std-program/src/answer_record.av
+index 60ec84fae..5aa39acdb 100644
+--- a/packages/std-program/src/answer_record.av
++++ b/packages/std-program/src/answer_record.av
+@@ -109,8 +109,7 @@ export type Question = { query_name: string, code_hash: string, arguments: Bytes
+ /// changed query never finds its old answers. The name and the code are counted, so they can't
+ /// trade octets with the arguments.
+ export fn question(query_name: string, code_hash: string, arguments: Bytes) -> Question {
+-    let counted = "saved ${QUESTION_SHAPE} ${query_name.length}:${query_name}${code_hash.length}:${code_hash}"
+-        .bytes()
++    let counted = counted_for(query_name, code_hash).saved
+     Question {
+         query_name: query_name,
+         code_hash: code_hash,
+@@ -119,6 +118,33 @@ export fn question(query_name: string, code_hash: string, arguments: Bytes) -> Q
+     }
+ }
+ 
++/// What a query's questions are counted from ahead of their arguments: its code's hash, and its name
++/// and that hash counted, for a question saving its arguments and for one spelling their keys.
++type Counted = { code_hash: string, saved: Bytes, keyed: Bytes }
++
++/// Each query's counted words, by its name: minted the first time it asks, and again where its code
++/// moved.
++once fn counted_by_query() -> Cell<Map<string, Counted>> { Cell.new({}) }
++
++/// The counted words of the query `query_name` whose code hashes as `code_hash`.
++fn counted_for(query_name: string, code_hash: string) -> Counted {
++    let held = counted_by_query().get().get(query_name)
++    if held != null && held!.code_hash == code_hash { return held! }
++    let made = Counted {
++        code_hash: code_hash,
++        saved: counted_words("saved", query_name, code_hash),
++        keyed: counted_words("keyed", query_name, code_hash),
++    }
++    counted_by_query().put(query_name, made)
++    made
++}
++
++/// The query's name and code's hash counted under `kind`, in the question's shape.
++fn counted_words(kind: string, query_name: string, code_hash: string) -> Bytes {
++    "${kind} ${QUESTION_SHAPE} ${query_name.length}:${query_name}${code_hash.length}:${code_hash}"
++        .bytes()
++}
++
+ /// THE SHAPE A QUESTION'S IDENTITY IS MADE IN: how its arguments are written into what it's known
+ /// by. Every identity and every frontier's print names it, so a question made in another shape is
+ /// never known as one made in this, and a store written in another shape is simply cold.
+@@ -127,8 +153,7 @@ export const QUESTION_SHAPE: string = "3"
+ /// A question whose arguments are spelled as their keys. It's counted apart from one whose arguments
+ /// are saved bytes, so no question of one kind is ever known as one of the other.
+ export fn keyed_question(query_name: string, code_hash: string, arguments: Bytes) -> Question {
+-    let counted = "keyed ${QUESTION_SHAPE} ${query_name.length}:${query_name}${code_hash.length}:${code_hash}"
+-        .bytes()
++    let counted = counted_for(query_name, code_hash).keyed
+     Question {
+         query_name: query_name,
+         code_hash: code_hash,
+diff --git a/packages/std-program/src/bounded_cache.av b/packages/std-program/src/bounded_cache.av
+index c2fbd6266..cd20603c2 100644
+--- a/packages/std-program/src/bounded_cache.av
++++ b/packages/std-program/src/bounded_cache.av
+@@ -4,6 +4,8 @@
+ //! stay. Reads are kept in the order they happen, a value's latest read naming it there, and the
+ //! record is packed down to the values held once it holds twice as many reads as values. An
+ //! identity: every holder sees one cache.
++use answer_record.{ContentHash}
++use hash_keyed_table.{HashKeyedTable, hash_keyed_table}
+ use @std.meta.{identity}
+ 
+ /// The slot of a key whose value was let go.
+@@ -13,14 +15,14 @@ const NOT_HELD: int = -1
+ const PACKED_SLACK: int = 64
+ 
+ /// A value held, under its key, with what it weighs.
+-type Held<V> = { key: string, value: V, bytes: int }
++type Held<V> = { key: ContentHash, value: V, bytes: int }
+ 
+ @identity
+ export type BoundedCache<V> = {
+     /// The bytes the held values may weigh together.
+     bound: Cell<int>,
+     /// Each key's slot, or NOT_HELD once its value is let go.
+-    slot_of: Cell<Map<string, int>>,
++    slot_of: HashKeyedTable<int>,
+     /// Each slot's value, absent once let go.
+     slots: Cell<List<Held<V>?>>,
+     /// Each slot's latest read's place in the record: a read writes one number, and the value it
+@@ -36,13 +38,12 @@ export type BoundedCache<V> = {
+ 
+ /// An empty cache whose values may weigh `bound` bytes together.
+ export fn bounded_cache<V>(bound: int) -> BoundedCache<V> {
+-    let slot_of: Cell<Map<string, int>> = Cell.new({})
+     let slots: Cell<List<Held<V>?>> = Cell.new([])
+     let read_at: Cell<List<int>> = Cell.new([])
+     let reads: Cell<List<int>> = Cell.new([])
+     BoundedCache {
+         bound: Cell.new(bound),
+-        slot_of: slot_of,
++        slot_of: hash_keyed_table(),
+         slots: slots,
+         read_at: read_at,
+         reads: reads,
+@@ -54,8 +55,8 @@ export fn bounded_cache<V>(bound: int) -> BoundedCache<V> {
+ 
+ impl BoundedCache<V> {
+     /// The value under `key`, absent when none is held; a value found is read most recently now.
+-    fn get(key: string) -> V? {
+-        let slot? = self.slot_of.get().get(key) else { return null }
++    fn get(key: ContentHash) -> V? {
++        let slot? = self.slot_of.get(key) else { return null }
+         if slot < 0 { return null }
+         let held? = self.slots.get()[slot] else { return null }
+         self.touched(slot)
+@@ -64,7 +65,7 @@ impl BoundedCache<V> {
+ 
+     /// `value` under `key`, weighing `bytes`, read most recently now. The least recently read
+     /// values are let go first until it fits; a value heavier than the bound is held alone.
+-    fn put(key: string, value: V, bytes: int) {
++    fn put(key: ContentHash, value: V, bytes: int) {
+         self.let_go(key)
+         while self.held_count.get() > 0 && self.held_bytes.get() + bytes > self.bound.get() {
+             self.oldest_let_go()
+@@ -87,7 +88,7 @@ impl BoundedCache<V> {
+ 
+     /// Nothing held.
+     fn clear() {
+-        self.slot_of.set({})
++        self.slot_of.clear()
+         self.slots.set([])
+         self.read_at.set([])
+         self.reads.set([])
+@@ -97,8 +98,8 @@ impl BoundedCache<V> {
+     }
+ 
+     /// The value under `key` let go, when one is held.
+-    fn let_go(key: string) {
+-        let slot? = self.slot_of.get().get(key) else { return }
++    fn let_go(key: ContentHash) {
++        let slot? = self.slot_of.get(key) else { return }
+         if slot < 0 { return }
+         let held? = self.slots.get()[slot] else { return }
+         self.slot_let_go(slot, held)
+@@ -147,15 +148,9 @@ impl BoundedCache<V> {
+         let kept = [slots[slot]! for place, slot in self.reads.get() if slots[slot] != null && read_at[slot] == place]
+         self.slots.set([h for h in kept])
+         self.read_at.set([at for at in 0..kept.length])
+-        self.slot_of.set(slots_by_key(kept))
++        self.slot_of.clear()
++        for at, held in kept { self.slot_of.put(held.key, at) }
+         self.reads.set([at for at in 0..kept.length])
+         self.oldest.set(0)
+     }
+ }
+-
+-/// Each value's key, to the slot its place in `kept` gives it.
+-fn slots_by_key<V>(kept: List<Held<V>>) -> Map<string, int> {
+-    mut by_key: Map<string, int> = {}
+-    for at, held in kept { by_key.set(held.key, at) }
+-    by_key
+-}
+diff --git a/packages/std-program/src/tests/bounded_cache_test.av b/packages/std-program/src/tests/bounded_cache_test.av
+index a91948a21..8e312a366 100644
+--- a/packages/std-program/src/tests/bounded_cache_test.av
++++ b/packages/std-program/src/tests/bounded_cache_test.av
+@@ -1,21 +1,23 @@
+ // An empty cache, then puts under the bound, past it, reads that keep a value, a value heavier than
+ // the bound, a key put twice, and enough reads to pack the record many times over.
++use answer_record.{ContentHash}
+ use bounded_cache.{bounded_cache}
++use interned.{HIGH_LANE, LOW_LANE, key_of_lanes}
+ 
+ spec "bounded_cache — values under a bound on their bytes, the least recently read let go first" {
+     given "an empty cache" {
+         then "nothing is found and nothing weighs" {
+             let cache = bounded_cache<string>(10)
+-            cache.get("a") == null && cache.bytes() == 0 && cache.count() == 0
++            cache.get(k("a")) == null && cache.bytes() == 0 && cache.count() == 0
+         }
+     }
+     given "values that fit the bound" {
+         then "every one is found" {
+             let cache = bounded_cache<string>(10)
+-            cache.put("a", "one", 4)
+-            cache.put("b", "two", 4)
+-            cache.get("a") == "one" &&
+-                cache.get("b") == "two" &&
++            cache.put(k("a"), "one", 4)
++            cache.put(k("b"), "two", 4)
++            cache.get(k("a")) == "one" &&
++                cache.get(k("b")) == "two" &&
+                 cache.bytes() == 8 &&
+                 cache.count() == 2
+         }
+@@ -23,32 +25,35 @@ spec "bounded_cache — values under a bound on their bytes, the least recently
+     given "a put past the bound" {
+         then "the least recently put is let go" {
+             let cache = bounded_cache<string>(10)
+-            cache.put("a", "one", 4)
+-            cache.put("b", "two", 4)
+-            cache.put("c", "three", 4)
+-            cache.get("a") == null &&
+-                cache.get("b") == "two" &&
+-                cache.get("c") == "three" &&
++            cache.put(k("a"), "one", 4)
++            cache.put(k("b"), "two", 4)
++            cache.put(k("c"), "three", 4)
++            cache.get(k("a")) == null &&
++                cache.get(k("b")) == "two" &&
++                cache.get(k("c")) == "three" &&
+                 cache.bytes() == 8
+         }
+     }
+     given "a value read since it was put" {
+         then "it outlives one put after it that was never read" {
+             let cache = bounded_cache<string>(10)
+-            cache.put("a", "one", 4)
+-            cache.put("b", "two", 4)
+-            let read = cache.get("a") == "one"
+-            cache.put("c", "three", 4)
+-            read && cache.get("a") == "one" && cache.get("b") == null && cache.get("c") == "three"
++            cache.put(k("a"), "one", 4)
++            cache.put(k("b"), "two", 4)
++            let read = cache.get(k("a")) == "one"
++            cache.put(k("c"), "three", 4)
++            read &&
++                cache.get(k("a")) == "one" &&
++                cache.get(k("b")) == null &&
++                cache.get(k("c")) == "three"
+         }
+     }
+     given "a value heavier than the bound" {
+         then "it is held alone" {
+             let cache = bounded_cache<string>(10)
+-            cache.put("a", "one", 4)
+-            cache.put("big", "large", 25)
+-            cache.get("a") == null &&
+-                cache.get("big") == "large" &&
++            cache.put(k("a"), "one", 4)
++            cache.put(k("big"), "large", 25)
++            cache.get(k("a")) == null &&
++                cache.get(k("big")) == "large" &&
+                 cache.count() == 1 &&
+                 cache.bytes() == 25
+         }
+@@ -56,42 +61,45 @@ spec "bounded_cache — values under a bound on their bytes, the least recently
+     given "a key put twice" {
+         then "the later value stands and weighs once" {
+             let cache = bounded_cache<string>(10)
+-            cache.put("a", "one", 4)
+-            cache.put("a", "uno", 5)
+-            cache.get("a") == "uno" && cache.bytes() == 5 && cache.count() == 1
++            cache.put(k("a"), "one", 4)
++            cache.put(k("a"), "uno", 5)
++            cache.get(k("a")) == "uno" && cache.bytes() == 5 && cache.count() == 1
+         }
+     }
+     given "a key let go and put again" {
+         then "it is found again" {
+             let cache = bounded_cache<string>(4)
+-            cache.put("a", "one", 4)
+-            cache.put("b", "two", 4)
+-            cache.put("a", "again", 4)
+-            cache.get("a") == "again" && cache.get("b") == null
++            cache.put(k("a"), "one", 4)
++            cache.put(k("b"), "two", 4)
++            cache.put(k("a"), "again", 4)
++            cache.get(k("a")) == "again" && cache.get(k("b")) == null
+         }
+     }
+     given "thousands of reads, packing the record many times" {
+         then "the least recently read is still the one let go" {
+             let cache = bounded_cache<int>(30)
+-            for key in 0..3 { cache.put("k${key}", key, 10) }
+-            for round in 0..2000 { cache.get("k${round % 3}") }
+-            let hot = cache.get("k0") == 0 && cache.get("k2") == 2
+-            cache.put("k3", 3, 10)
++            for key in 0..3 { cache.put(k("k${key}"), key, 10) }
++            for round in 0..2000 { cache.get(k("k${round % 3}")) }
++            let hot = cache.get(k("k0")) == 0 && cache.get(k("k2")) == 2
++            cache.put(k("k3"), 3, 10)
+             hot &&
+-                cache.get("k1") == null &&
+-                cache.get("k0") == 0 &&
+-                cache.get("k2") == 2 &&
+-                cache.get("k3") == 3
++                cache.get(k("k1")) == null &&
++                cache.get(k("k0")) == 0 &&
++                cache.get(k("k2")) == 2 &&
++                cache.get(k("k3")) == 3
+         }
+     }
+     given "a cleared cache" {
+         then "nothing is found and puts start afresh" {
+             let cache = bounded_cache<string>(10)
+-            cache.put("a", "one", 4)
++            cache.put(k("a"), "one", 4)
+             cache.clear()
+-            let empty = cache.get("a") == null && cache.bytes() == 0
+-            cache.put("b", "two", 4)
+-            empty && cache.get("b") == "two" && cache.count() == 1
++            let empty = cache.get(k("a")) == null && cache.bytes() == 0
++            cache.put(k("b"), "two", 4)
++            empty && cache.get(k("b")) == "two" && cache.count() == 1
+         }
+     }
+ }
++
++/// The key a test names by `text`.
++fn k(text: string) -> ContentHash { key_of_lanes(HIGH_LANE.text(HIGH_LANE.seed, text), LOW_LANE.text(LOW_LANE.seed, text)) }
+-- 
+2.43.0
+
