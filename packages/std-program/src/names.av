@@ -1,12 +1,12 @@
 //! NAMES, INTERNED: a name's text is minted a dense id the first time it arrives in a process, so two
 //! names are one exactly when their ids are, one compare. A text is found by its 128-bit content key
-//! and its length, never by comparing it with a text already minted: the trust the store gives a
+//! (`text_key`), never by comparing it with a text already minted: the trust the store gives a
 //! content hash. AN ID IS THE PROCESS'S OWN: another process
 //! mints its own, in its own order, so nothing an id stands for may leave the process as the id. A
 //! name is saved as its TEXT and interned again where it is read back, and every fold of a name is a
 //! fold of its text: a saved answer, a content key and a print are the same in every process.
 use answer_record.{ContentHash}
-use interned.{HIGH_LANE, LOW_LANE, Interned, KeyLane, interned}
+use interned.{Interned, interned, text_key}
 use saved_layout.{SavedLayoutWriter, SavedRecord, SavedSource}
 use saved_derive.{Saved}
 use @std.meta.{derive, sealed}
@@ -20,24 +20,10 @@ export type Name = { id: int }
 type NameText = { text: string }
 
 /// The names this process has minted, by their texts' keys: a name's id is its key's.
-once fn names() -> Interned<NameKey> { interned(key_hashed, (a, b) -> a == b) }
+once fn names() -> Interned<ContentHash> { interned(hash_hashed, (a, b) -> a == b) }
 
 /// Each name's text, by id, kept beside the keys it was minted under.
 once fn name_texts() -> Cell<List<string>> { Cell.new([]) }
-
-/// What a name's text is found by: its content key over both lanes, and its length.
-type NameKey = { high: int, low: int, length: int }
-
-/// The key `text` is found by.
-fn name_key(text: string) -> NameKey {
-    NameKey {
-        high: HIGH_LANE.text(HIGH_LANE.seed, text),
-        low: LOW_LANE.text(LOW_LANE.seed, text),
-        length: text.length,
-    }
-}
-
-fn key_hashed(k: NameKey) -> int { k.high }
 
 /// The name the text numbered `number` of a tape's `texts` spells, minted once for the tape's meaning;
 /// the text is read only to mint it. Every reading shares one list of slots, by text number: each
@@ -59,9 +45,10 @@ export fn tape_name(mine: int, texts: List<string>, number: int) -> Name {
 export fn reading_of(meaning: ContentHash) -> int { meanings().id_of(meaning).index + 1 }
 
 /// The tape meanings read in this process, each numbered once, told apart by their hash's two words.
-once fn meanings() -> Interned<ContentHash> { interned(meaning_hashed, (a, b) -> a == b) }
+once fn meanings() -> Interned<ContentHash> { interned(hash_hashed, (a, b) -> a == b) }
 
-fn meaning_hashed(h: ContentHash) -> int { h.high_word ^ h.low_word }
+/// What a content key is hashed as, among the names' or the meanings' keys.
+fn hash_hashed(h: ContentHash) -> int { h.high_word ^ h.low_word }
 
 /// What the slots hold at `number`, read and let go before they are written; -1 past their end.
 fn slot_held(slots: Cell<List<int>>, number: int) -> int {
@@ -133,7 +120,7 @@ fn printed_through(id: int) -> int {
 export fn name_of(text: string) -> Name {
     let minted = names()
     let before = minted.count()
-    let id = minted.id_of(name_key(text)).index
+    let id = minted.id_of(text_key(text)).index
     if id == before { name_texts().push(text) }
     Name { id: id }
 }
