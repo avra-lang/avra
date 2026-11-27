@@ -2,6 +2,8 @@
 
 **Base:** `origin/program` at `94c02115` (train49). Re-measured from the tree: Make targets parsed from the Makefile, `tools/` top-level entries, `AVRA_*` tokens over Makefile, `.github/`, `tools/`, `packages/`, `runtime/`, `backend/`, the shims and CLAUDE/README/DOGFOODING, and `packages/cli/src/commands`. First measured at `d7cd84d9`; a row standing since then keeps its class and action, its callers re-read (Make, tools). A row marked *new since d7cd84d9* is classed by its shape, and the lead confirms it.
 
+**Since train52** the nine `KEEPERS_*` sets are rows of `./wisp keepers` (packages/wisp/src/commands/keepers.av); a caller below named `KEEPERS_X` reads as that set.
+
 **Class:** `user` a person building or using Avra reaches it; `internal` the repo's machinery; `not config` an `AVRA_` token that is no setting (a C macro, guard, enum or fixture name). **Action:** `keep`; `merge: <verb>` becomes that wisp verb and the old path dies in the same change; `delete`.
 
 ## Counts
