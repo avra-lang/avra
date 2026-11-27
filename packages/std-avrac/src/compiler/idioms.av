@@ -1979,14 +1979,18 @@ fn layer_refusals(u: Code) -> List<string> {
     layer_words(u.of.view.source.file, u.package(), target)
 }
 
+/// A compiler file's `use` that names a layer above its own; a test, or a file in no layer, names none.
+fn compiler_climbs(file: string, target: string) -> List<string> {
+    let own? = segment_after(file, "/src/") else { return [] }
+    if file.contains("/tests/") || !layer_order.contains(own) { return [] }
+    let named? = layer_named(target) else { return [] }
+    if layer_order.index_of(named) > layer_order.index_of(own) { ["`${own}` names `${named}` — `use ${target}`"] } else { [] }
+}
+
 /// Every way a `use` of `target`, in the file `file` of the package `package`, breaks the layering.
 fn layer_words(file: string, package: string, target: string) -> List<string> {
     let pkg = package.replace("/", ".")
-    let own = if pkg == "@std.avrac" { segment_after(file, "/src/") } else { null }
-    if own != null && !file.contains("/tests/") && layer_order.contains(own!) {
-        let named = layer_named(target)
-        return if named != null && layer_order.index_of(named!) > layer_order.index_of(own!) { ["`${own!}` names `${named!}` — `use ${target}`"] } else { [] }
-    }
+    if pkg == "@std.avrac" { return compiler_climbs(file, target) }
     if pkg != "@std.relation" { return [] }
     let tests = file.contains("/tests/")
     let engine = file.contains("/src/engine/") && !tests
@@ -2149,6 +2153,7 @@ fn blocking_extern_found(x: Code) -> Fix {
 /// claim, so the next free tag is read off them.
 ///
 /// NO REWRITE: which kind keeps the number, and what the other takes, is the author's choice.
+@scope(RuleScope.File)
 @keeps("fp(1, [a])\nfp(2, [b])")
 @says("which kind keeps the number, and what the other takes, is the author's choice")
 export rule fp_tag_once {
