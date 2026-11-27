@@ -177,11 +177,12 @@ export trait AnswerStore {
     /// store, whatever it read, and what packages an answer read decides nothing.
     fn shares_any() -> bool { false }
 
-    /// Every set of package names a record kept here may name by its print.
-    fn name_sets_kept() -> List<KeptNameSet> { [] }
+    /// Every set of package names a record the binary printed `print` kept here may name by its print.
+    fn name_sets_kept(_print: string) -> List<KeptNameSet> { [] }
 
-    /// Keeps `sets` as every set of package names this store's records may name by print.
-    fn keep_name_sets(_sets: List<KeptNameSet>) {}
+    /// Keeps `sets` as every set of package names the binary printed `print`'s records here may name
+    /// by print.
+    fn keep_name_sets(_print: string, _sets: List<KeptNameSet>) {}
 
     /// Keeps a record of a SHARED question: one whose every input lies in packages this store shares.
     fn keep_shared_record(asked: Question, record: AnswerRecord) { self.keep_record(asked, record) }
@@ -1068,7 +1069,7 @@ impl QueryEngine {
     fn kept_sets_read() {
         if self.name_sets_read.get() { return }
         self.name_sets_read.set(true)
-        for kept in self.store.name_sets_kept() {
+        for kept in self.store.name_sets_kept(self.frontier_print()) {
             let _ = self.sets.of_kept(kept)
             self.kept_prints.put("${kept.print}", true)
         }
@@ -1081,7 +1082,7 @@ impl QueryEngine {
         self.kept_sets_read()
         let sets = self.sets.kept_sets()
         if sets.all((s) -> self.kept_prints.get().has("${s.print}")) { return }
-        self.store.keep_name_sets(sets)
+        self.store.keep_name_sets(self.frontier_print(), sets)
     }
 
     /// The set of the frontier's answer at `at`, walked from its reads.

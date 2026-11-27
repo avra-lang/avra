@@ -1191,17 +1191,18 @@ impl AnswerStore for DiskStore {
         )
     }
 
-    /// The sets of package names kept here, none where the file isn't whole.
-    fn name_sets_kept() -> List<KeptNameSet> {
-        let sealed? = sealed_body("${self.directory}/${NAME_SETS_FILE}") else { return [] }
+    /// The sets of package names kept here for the binary printed `print`, none where the file isn't
+    /// whole: each binary reads only the sets it wrote, in its own layout.
+    fn name_sets_kept(print: string) -> List<KeptNameSet> {
+        let sealed? = sealed_body(name_sets_path(self.directory, print)) else { return [] }
         KeptNameSets.from_saved_bytes(sealed.body).sets
     }
 
     /// Writes `sets` at once, whole or not at all.
-    fn keep_name_sets(sets: List<KeptNameSet>) {
+    fn keep_name_sets(print: string, sets: List<KeptNameSet>) {
         let _ = make_dirs(self.directory) catch ""
         sealed_written(
-            "${self.directory}/${NAME_SETS_FILE}",
+            name_sets_path(self.directory, print),
             KeptNameSets { sets: sets }.saved_bytes(),
         )
     }
@@ -1216,8 +1217,9 @@ fn named_from(dir: string, path: string) -> string {
 /// The file a store keeps its inputs' stamps in.
 const STAMPS_FILE: string = "inputs.stamps"
 
-/// Where a store keeps the sets of package names its records name by print.
-const NAME_SETS_FILE: string = "names.sets"
+/// Where a store in `directory` keeps the sets of package names the binary printed `print`'s records
+/// name by print.
+fn name_sets_path(directory: string, print: string) -> string { "${directory}/names-${print}.sets" }
 
 impl DiskStore {
     /// Every question this process put in this store's draft.
