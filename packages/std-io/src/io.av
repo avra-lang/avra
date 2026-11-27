@@ -530,6 +530,36 @@ fn fixed_width(n: int, width: int) -> string {
     repeat("0", width - digits.length) + digits
 }
 
+/// A count as a file name spells it: in `COUNT_DIGITS` digits, so its width never says how big it is.
+export fn count_name(n: int) -> string { fixed_width(n, COUNT_DIGITS) }
+
+/// The digits a count in a file name is written in.
+const COUNT_DIGITS: int = 10
+
+/// A 64-bit word as sixteen hex digits, its high digit first: the same width for every word.
+export fn word_hex(w: int) -> string { [HEX.substring(d, d + 1) for i in 0..16 for d in [(w >> 60 - 4 * i) & 15]].join("") }
+
+/// A 64-bit word as a file name spells it: `x` and its sixteen hex digits, so the name's width never
+/// says which word it holds, and the mark tells it from the decimal an older store wrote.
+export fn word_name(w: int) -> string { "${WORD_MARK}${word_hex(w)}" }
+
+/// The word a file name spells: as `word_name` writes it, or in the decimal an older store wrote;
+/// absent where it spells neither.
+export fn named_word(s: string) -> int? {
+    if !s.starts_with(WORD_MARK) { return parse_int(s) }
+    let digits = s.substring(WORD_MARK.length, s.length)
+    if digits.length != 16 { return null }
+    let values = [HEX.index_of(digits.substring(i, i + 1)) for i in 0..16]
+    if values.any(it < 0) { return null }
+    values.fold(0, (w, d) -> w.wrapping_shl(4) + d)
+}
+
+/// What marks a word `word_name` spelled.
+const WORD_MARK: string = "x"
+
+/// The hex digits, by their value.
+const HEX: string = "0123456789abcdef"
+
 /// The file cut back to exactly `len` bytes — what a caller trims a
 /// TORN TAIL to (bytes an earlier crash left past the last frame it
 /// could verify) before appending past it, so a half-written frame
