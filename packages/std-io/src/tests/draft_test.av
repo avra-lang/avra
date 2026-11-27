@@ -3,7 +3,11 @@
 use @std.io.{
     Draft,
     abandoned_drafts,
+    count_name,
     draft_name,
+    named_word,
+    word_hex,
+    word_name,
     drafted,
     exists,
     list_dir,
@@ -100,5 +104,23 @@ spec "std/io draft" {
         then "they are one length" { draft_name("/s/out", 7, 3).length == draft_name("/s/out", 1234567, 3).length }
         then "a serial's digit count moves no name's length either" { draft_name("/s/out", 7, 3).length == draft_name("/s/out", 7, 123456).length }
         then "the process reads back out of each, zeros and all" { draft_name("/s/out", 7, 3) == "/s/out.0000000007-0000000003.draft" }
+    }
+    given "a 64-bit word spelled in a file name" {
+        then "every word is one width" {
+            [0, 1, 0 - 1, 9223372036854775807, 0 - 9223372036854775807 - 1, 1234567]
+                .all(word_name(it).length == 17)
+        }
+        then "each reads back as itself" {
+            [0, 1, 0 - 1, 9223372036854775807, 0 - 9223372036854775807 - 1, 1234567]
+                .all((w) -> named_word(word_name(w)) == w)
+        }
+        then "a word's sixteen hex digits are two's complement" { word_hex(0 - 1) == "ffffffffffffffff" && word_hex(255) == "00000000000000ff" }
+        then "the decimal an older store wrote still reads" { named_word("-42") == 0 - 42 && named_word("1234567890123456") == 1234567890123456 }
+        then "a name that spells no word reads as none" {
+            named_word("x12") == null &&
+                named_word("xzzzzzzzzzzzzzzzz") == null &&
+                named_word("q") == null
+        }
+        then "a count is one width however big it is" { count_name(3).length == count_name(1234567).length }
     }
 }

@@ -1,0 +1,37 @@
+// What the store spells into its file names, and how it reads a directory: every hash at one
+// width, the spelling an older store wrote still read, a listing in name order whatever order the
+// kernel answers in.
+use @std.io.{env_or, make_dirs, write_text}
+use answer_record.{ContentHash, content_hash}
+use disk_store.{hash_name, hash_named, store_names}
+
+/// A scratch directory under `name`.
+fn scratch(name: string) -> string {
+    let dir = "${env_or("TMPDIR", "/tmp")}/avra-store-names-spec/${name}"
+    let _ = make_dirs(dir)
+    dir
+}
+
+spec "std/program store names" {
+    given "hashes spelled into file names" {
+        then "every hash is one width" {
+            let widths = [hash_name(content_hash("${i}".bytes())).length for i in 0..40]
+            widths.all(it == widths[0])
+        }
+        then "a hash reads back as itself" {
+            let h = content_hash("a question".bytes())
+            hash_named(hash_name(h)) == h
+        }
+        then "the decimal words an older store wrote still read" { hash_named("-12_34") == ContentHash { high_word: 0 - 12, low_word: 34 } }
+        then "a name that spells no hash reads as none" { hash_named("x1_x2") == null && hash_named("12") == null }
+    }
+    given "a directory the store reads" {
+        then "its names come in name order, whatever order they were made in" {
+            let dir = scratch("ordered")
+            for name in ["pack-c", "pack-a", "kept-b", "frontier-a"] { let _ = write_text("${dir}/${name}", name) }
+            let names = store_names(dir)
+                .filter((n: string) -> ["pack-c", "pack-a", "kept-b", "frontier-a"].contains(n))
+            names == ["frontier-a", "kept-b", "pack-a", "pack-c"]
+        }
+    }
+}

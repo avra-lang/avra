@@ -15,6 +15,7 @@
 use settings.{program_settings}
 use @std.io.{
     AppendFile,
+    count_name,
     Draft,
     IoError,
     abandoned_drafts,
@@ -25,12 +26,14 @@ use @std.io.{
     link,
     list_dir,
     make_dirs,
+    named_word,
     opened_for_append,
     read_text,
     remove,
     stamp,
     this_process,
     truncate_to,
+    word_name,
     write_text,
 }
 use @std.meta.{derive}
@@ -869,7 +872,7 @@ const PACK_PREFIX: string = "pack-"
 /// A pack's file name: the print of the binary whose answers it holds, the generation it was
 /// written in, and the hash naming its index.
 fn pack_file_name(print: string, generation: int, named: ContentHash) -> string {
-    "${PACK_PREFIX}${print}.${generation}.${named.high_word}_${named.low_word}${PACK_SUFFIX}"
+    "${PACK_PREFIX}${print}.${count_name(generation)}.${hash_name(named)}${PACK_SUFFIX}"
 }
 
 /// A pack file as its name says: whose answers it holds and when it was written.
@@ -1005,8 +1008,7 @@ const KEPT_SEAL: string = "sealed"
 
 /// Every kept file in `directory`, of any binary, by its name.
 fn kept_names_in(directory: string) -> List<string> {
-    // LICENSED input.store_io: the store's own files, never an input of what is answered
-    [n for n in list_dir(directory) catch [] if n.starts_with(KEPT_PREFIX) && n.ends_with(KEPT_SUFFIX)]
+    [n for n in store_names(directory) if n.starts_with(KEPT_PREFIX) && n.ends_with(KEPT_SUFFIX)]
 }
 
 /// The print a kept file's name says it is of.
@@ -1029,11 +1031,11 @@ fn kept_of_binary(directory: string, binary: string) -> List<ContentHash> {
 /// draft and one rename: its path, or none where it couldn't be.
 fn kept_written(directory: string, binary: string, questions: List<ContentHash>) -> string? {
     mut seen: Map<string, bool> = {}
-    for q in questions { seen.set("${q.high_word}_${q.low_word}", true) }
+    for q in questions { seen.set(hash_name(q), true) }
     let lines = sorted_by([k for k, _v in seen], text_before)
     let bytes = "${lines.join("\n")}\n${KEPT_SEAL}\n".bytes()
     let id = content_hash(bytes)
-    let path = "${directory}/${KEPT_PREFIX}${binary}.${id.high_word}_${id.low_word}${KEPT_SUFFIX}"
+    let path = "${directory}/${KEPT_PREFIX}${binary}.${hash_name(id)}${KEPT_SUFFIX}"
     // LICENSED input.store_io: the store's own kept file, asked whether it stands
     if exists(path) { return path }
     let draft? = match drafted("${directory}/kept") { .Ok(d) -> d, .Err(_) -> null } else { return null }
@@ -1059,7 +1061,7 @@ fn suffix_of(kind: FrontierKind) -> string {
 
 /// Where the binary printed `print` keeps the frontier file of `kind` named by `id`.
 export fn frontier_file_path(directory: string, print: string, kind: FrontierKind, id: ContentHash) -> string {
-    "${directory}/${FRONTIER_PREFIX}${print}.${id.high_word}_${id.low_word}${suffix_of(kind)}"
+    "${directory}/${FRONTIER_PREFIX}${print}.${hash_name(id)}${suffix_of(kind)}"
 }
 
 /// A frontier file as its name says: where it is and whose it is. Nothing of it is read.
@@ -1067,8 +1069,7 @@ type FrontierName = { path: string, print: string }
 
 /// Every frontier file in `directory`, of any binary, by its name alone.
 fn frontier_names_in(directory: string) -> List<FrontierName> {
-    // LICENSED input.store_io: the store's own files, never an input of what is answered
-    let names = list_dir(directory) catch []
+    let names = store_names(directory)
     [FrontierName {
         path: "${directory}/${name}",
         print: name.substring(FRONTIER_PREFIX.length, name.length).split(".")[0],
@@ -1100,8 +1101,7 @@ fn frontiers_of(directory: string, print: string) -> List<FoundFrontier> {
 
 /// The names of the binary printed `print`'s frontier files in `directory`.
 fn frontier_file_names(directory: string, print: string) -> List<string> {
-    // LICENSED input.store_io: the store's own files, never an input of what is answered
-    [name for name in list_dir(directory) catch [] if name.starts_with("${FRONTIER_PREFIX}${print}.")]
+    [name for name in store_names(directory) if name.starts_with("${FRONTIER_PREFIX}${print}.")]
 }
 
 /// Whether two listings of a directory name the same files: names are distinct, and a binary keeps
@@ -1132,19 +1132,29 @@ fn found_frontier(directory: string, name: string) -> FoundFrontier? {
     }
 }
 
-/// The hash a file name spells as its two words, absent when it spells none.
-fn hash_named(spelled: string) -> ContentHash? {
+/// The hash a file name spells as its two words, as `hash_name` writes them or as an older store
+/// did; absent when it spells none.
+export fn hash_named(spelled: string) -> ContentHash? {
     let words = spelled.split("_")
     if words.length != 2 { return null }
-    let high? = parse_int(words[0]) else { return null }
-    let low? = parse_int(words[1]) else { return null }
+    let high? = named_word(words[0]) else { return null }
+    let low? = named_word(words[1]) else { return null }
     ContentHash { high_word: high, low_word: low }
+}
+
+/// A hash as a file name spells it: its two words, each at the namer's fixed width.
+export fn hash_name(h: ContentHash) -> string { "${word_name(h.high_word)}_${word_name(h.low_word)}" }
+
+/// Every name in `directory`, in name order: what the store reads of a directory, so the order the
+/// kernel lists in reaches nothing it does.
+export fn store_names(directory: string) -> List<string> {
+    // LICENSED input.store_io: the store's own files, never an input of what is answered
+    sorted_by(list_dir(directory) catch [], text_before)
 }
 
 /// Every pack in `directory` a binary of this format wrote, as its name says.
 fn pack_names_in(directory: string) -> List<PackName> {
-    // LICENSED input.store_io: the store's own files, never an input of what is answered
-    [p! for name in list_dir(directory) catch [] for p in [pack_named(name)] if p != null]
+    [p! for name in store_names(directory) for p in [pack_named(name)] if p != null]
 }
 
 /// The packs in `directory` that hold answers for the binary printed `print`, by file name.
@@ -1153,11 +1163,7 @@ export fn packs_answering(directory: string, print: string) -> List<string> {
 }
 
 /// Every pack file in `directory` no binary of this format wrote.
-fn unnamed_packs_in(directory: string) -> List<string> {
-    // LICENSED input.store_io: the store's own files, never an input of what is answered
-    (list_dir(directory) catch [])
-        .filter((name) -> name.ends_with(PACK_SUFFIX) && pack_named(name) == null)
-}
+fn unnamed_packs_in(directory: string) -> List<string> { store_names(directory).filter((name) -> name.ends_with(PACK_SUFFIX) && pack_named(name) == null) }
 
 impl AnswerStore for DiskStore {
     /// The store answers for the binary printed `print`: that binary's packs are mapped, and no
