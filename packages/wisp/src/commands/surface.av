@@ -1,0 +1,329 @@
+//! THE COST SURFACE: what the compiler costs, as the tree records it under `cost/` — one file a
+//! workload (a matrix part's edits its sections), every measure a line. A count is a number the
+//! census compiler counts the same on every machine; a told count is printed and judged by nothing,
+//! its ticket beside it; a share is a count held per million of the program; a clock is a time, held
+//! within a band of its accepted value and under its target, never to an exact value.
+//!
+//! The files ARE the ledger: `wisp cost show` renders them, and every other reader projects them to
+//! the rows `wisp cost` judges (`surface_rows`), so one record has one reading.
+use @std.io.{read_text, list_dir, is_dir}
+use @std.path.{joined_path}
+use @std.text.{parse_int, repeat, text_before}
+use @std.program.sorted.{sorted_by}
+
+/// Where the record stands, beside the tree's root.
+export const SURFACE: string = "cost"
+
+/// What a measure is, and so how it is judged.
+export enum CostKind {
+    Count
+    Told
+    Share
+    Clock
+}
+
+/// One measure of a workload: its kind, its counter, its value, and what a clock or a told count
+/// carries after it (a band, a target, an over line's owner and ticket, a told count's ticket).
+export type CostMeasure = { kind: CostKind, counter: string, value: int, extra: List<string> }
+
+/// One workload's measures, under its name.
+export type CostSection = { workload: string, measures: List<CostMeasure> }
+
+/// One file of the record: where it stands under `cost/`, its comment lines, and its workloads.
+export type CostFile = { path: string, header: List<string>, sections: List<CostSection> }
+
+// THE FILES
+
+/// A file's text read back: `# ` comment lines, `[<workload>]` headers, and a measure a line.
+export fn cost_file(path: string, text: string) -> CostFile {
+    mut header: List<string> = []
+    mut sections: List<CostSection> = []
+    mut workload = ""
+    mut measures: List<CostMeasure> = []
+    for raw in text.split("\n") {
+        let line = raw.trim()
+        if line.is_empty() { continue }
+        if line.starts_with("#") {
+            if sections.is_empty() && workload.is_empty() { header.push(line) }
+            continue
+        }
+        if line.starts_with("[") && line.ends_with("]") {
+            if !workload.is_empty() { sections.push(section(workload, measures)) }
+            workload = line.substring(1, line.length - 1)
+            measures = []
+            continue
+        }
+        let m? = measure_line(line) else { continue }
+        measures.push(m)
+    }
+    if !workload.is_empty() { sections.push(section(workload, measures)) }
+    CostFile { path: path, header: header, sections: sections }
+}
+
+/// A file as the record writes it: its comments, then each workload and its measures, in order.
+export fn file_text(f: CostFile) -> string {
+    let head = [key_line(h) for h in f.header].join("")
+    let body = [section_text(s) for s in f.sections].join("\n")
+    "${head}${if head.is_empty() { "" } else { "\n" }}${body}"
+}
+
+fn section_text(s: CostSection) -> string { "[${s.workload}]\n${[key_line(measure_text(m)) for m in s.measures].join("")}" }
+
+fn key_line(s: string) -> string { "${s}\n" }
+
+/// `<kind> <counter> <value>`, then what the measure carries.
+fn measure_text(m: CostMeasure) -> string {
+    ["${kind_word(m.kind)} ${m.counter} ${m.value}"].concat(m.extra).join(" ")
+}
+
+fn measure_line(line: string) -> CostMeasure? {
+    let w = line.split(" ")
+    if w.length < 3 { return null }
+    let kind? = kind_named(w[0]) else { return null }
+    let value? = parse_int(w[2]) else { return null }
+    CostMeasure { kind: kind, counter: w[1], value: value, extra: w.drop(3) }
+}
+
+fn kind_word(k: CostKind) -> string {
+    match k { .Count -> "count", .Told -> "told", .Share -> "share", .Clock -> "clock" }
+}
+
+fn kind_named(word: string) -> CostKind? {
+    match word {
+        "count" -> CostKind.Count,
+        "told" -> CostKind.Told,
+        "share" -> CostKind.Share,
+        "clock" -> CostKind.Clock,
+        rest -> null,
+    }
+}
+
+/// Every file under `root`'s `cost/`, read back, by its path under it.
+export fn surface_at(root: string) -> List<CostFile> {
+    let top = joined_path(root, SURFACE)
+    [cost_file(p, read_text(joined_path(top, p)) catch "") for p in files_under(top, "")]
+}
+
+fn files_under(top: string, at: string) -> List<string> {
+    let here = if at.is_empty() { top } else { joined_path(top, at) }
+    let names = sorted_by(list_dir(here) catch [], text_before)
+    flatten_paths(
+        [when {
+            is_dir(joined_path(here, n)) -> files_under(top, joined(at, n))
+            n.ends_with(".cost") -> [joined(at, n)]
+            _ -> []
+        } for n in names],
+    )
+}
+
+fn joined(at: string, n: string) -> string { if at.is_empty() { n } else { "${at}/${n}" } }
+
+fn flatten_paths(xs: List<List<string>>) -> List<string> { xs.fold([], (all, x) -> all.concat(x)) }
+
+// THE ROWS
+
+/// The record as the rows `wisp cost` judges: `<workload> <counter>` for a census, ledger or matrix
+/// count, `<kind>:<key>:<workload> <counter>` for a keyed one — the key the file's name under its
+/// family's directory.
+export fn surface_rows(files: List<CostFile>) -> Map<string, int> {
+    mut rows: Map<string, int> = {}
+    for f in files {
+        for s in f.sections {
+            for m in s.measures { rows.set("${row_workload(f.path, s.workload, m.kind)} ${m.counter}", m.value) }
+        }
+    }
+    rows
+}
+
+/// The row's workload for a measure of `workload` in the file at `path`.
+fn row_workload(path: string, workload: string, kind: CostKind) -> string {
+    let family = path.split("/").first() ?? ""
+    let key = key_of(path)
+    match family {
+        "speed" -> "speed:${key}:${workload}",
+        "warm" -> "warm:${key}:${workload}",
+        "footprint" -> "bytes:${key}:${workload}",
+        "work" -> "${work_kind(kind)}:-:${workload}",
+        rest -> workload,
+    }
+}
+
+fn work_kind(kind: CostKind) -> string {
+    match kind { .Count -> "work", .Told -> "told", .Share -> "share", .Clock -> "work" }
+}
+
+/// The key a keyed family's file names: its file name without `.cost`.
+fn key_of(path: string) -> string {
+    let name = path.split("/").last() ?? path
+    name.substring(0, name.length - 5)
+}
+
+// THE MIGRATION
+
+/// The record `tools/cost.baseline`'s text holds, as files: each row placed in the family its workload
+/// names, a matrix part's edits and the edits of the cli's warm check sections of one file each, and
+/// each keyed row in its key's file; a target and an over line ride the clock they hold.
+export fn migrated(
+    baseline: string,
+    rows: Map<string, int>,
+    targets: List<string>,
+    overs: List<string>,
+) -> List<CostFile> {
+    mut by_file: Map<string, Map<string, List<CostMeasure>>> = {}
+    for key in sorted_by([k for k, _n in rows], text_before) {
+        let w = key.split(" ")
+        let place = placed(w[0])
+        let m = CostMeasure {
+            kind: place.kind,
+            counter: w[1],
+            value: rows.get(key) ?? 0,
+            extra: carried(key, place, targets, overs),
+        }
+        let sections = by_file.get(place.path) ?? {}
+        by_file
+            .set(
+                place.path,
+                {..sections, place.workload: (sections.get(place.workload) ?? []).concat([m])},
+            )
+    }
+    let _ = baseline
+    [CostFile {
+        path: p,
+        header: [header_for(p)],
+        sections: [CostSection { workload: w, measures: ms } for w, ms in secs],
+    } for p, secs in by_file]
+}
+
+/// Where a row lies: its file, its section, its kind.
+type CostPlaced = { path: string, workload: string, kind: CostKind }
+
+fn placed(workload: string) -> CostPlaced {
+    let parts = workload.split(":")
+    if parts.length == 3 { return keyed(parts[0], parts[1], parts[2]) }
+    if workload.starts_with("matrix-") {
+        let w = workload.split("-")
+        return CostPlaced {
+            path: "matrix/${w[1]}-${w[2]}.cost",
+            workload: workload,
+            kind: CostKind.Count,
+        }
+    }
+    if workload.starts_with("ledger-edit-") { return section_of("ledger/edits.cost", workload) }
+    if workload.starts_with("ledger-") {
+        return CostPlaced {
+            path: "ledger/${workload.substring(7, workload.length)}.cost",
+            workload: workload,
+            kind: CostKind.Count,
+        }
+    }
+    if workload.starts_with("edit-") { return section_of("census/edits.cost", workload) }
+    CostPlaced { path: "census/${workload}.cost", workload: workload, kind: CostKind.Count }
+}
+
+fn keyed(kind: string, key: string, workload: string) -> CostPlaced {
+    match kind {
+        "speed" -> CostPlaced { path: "speed/${key}.cost", workload: workload, kind: CostKind.Clock },
+        "warm" -> CostPlaced { path: "warm/${key}.cost", workload: workload, kind: CostKind.Clock },
+        "wall" -> CostPlaced { path: "wall/${key}.cost", workload: workload, kind: CostKind.Clock },
+        "bytes" -> CostPlaced { path: "footprint/${key}.cost", workload: workload, kind: CostKind.Count },
+        "share" -> CostPlaced { path: "work/warm.cost", workload: workload, kind: CostKind.Share },
+        "told" -> CostPlaced { path: "work/warm.cost", workload: workload, kind: CostKind.Told },
+        rest -> CostPlaced { path: "work/warm.cost", workload: workload, kind: CostKind.Count },
+    }
+}
+
+/// What a clock carries: the band its kind allows, the target its workload and counter are held to,
+/// and the over line that lets it stand above.
+fn carried(key: string, place: CostPlaced, targets: List<string>, overs: List<string>) -> List<
+    string,
+> {
+    if !(place.kind is .Clock) { return [] }
+    let kind = key.split(":").first() ?? ""
+    let counter = key.split(" ").last() ?? ""
+    let plain = (key.split(" ").first() ?? "").split(":").last() ?? ""
+    let band = when {
+        kind == "speed" -> ["band", "25%+250"]
+        kind == "warm" -> ["band", "30%+250"]
+        _ -> []
+    }
+    let target = targets
+        .find(
+            (t) -> t.split(" ").length == 5 &&
+                t.split(" ")[1] == kind &&
+                t.split(" ")[2] == plain &&
+                t.split(" ")[3] == counter,
+        )
+    let over = overs
+        .find(it.split(" ").length == 5 && "${it.split(" ")[1]} ${it.split(" ")[2]}" == key)
+    band
+        .concat(if target == null { [] } else { ["target", target!.split(" ")[4]] })
+        .concat(if over == null { [] } else { ["over", over!.split(" ")[3], over!.split(" ")[4]] })
+}
+
+fn header_for(path: string) -> string { "# ${path.substring(0, path.length - 5)} — migrated from tools/cost.baseline" }
+
+// THE VIEW
+
+/// The record as a table: a file a block, each workload a row and each counter a column, a told
+/// count marked `~`, a clock over its target `!`.
+export fn cost_view(files: List<CostFile>, only: string) -> string {
+    [file_view(f) for f in files if only.is_empty() || f.path.starts_with("${only}/") || f.path == "${only}.cost"]
+        .join("\n")
+}
+
+fn file_view(f: CostFile) -> string {
+    let counters = distinct_counters([m.counter for s in f.sections for m in s.measures])
+    let width = f
+        .sections
+        .fold(8, (w, s) -> if s.workload.length > w { s.workload.length } else { w })
+    let head = "${padded(f.path, width)}  ${[right(c, cell_width(c)) for c in counters].join("  ")}"
+    let rows = ["${padded(s.workload, width)}  ${[right(cell(s, c), cell_width(c)) for c in counters].join("  ")}" for s in f.sections]
+    [head].concat(rows).join("\n") + "\n"
+}
+
+fn cell(s: CostSection, counter: string) -> string {
+    let m? = s.measures.find(it.counter == counter) else { return "·" }
+    "${m.value}${mark(m)}"
+}
+
+/// A told count `~`; a clock above its target `!` where an over line lets it stand, `!!` where none does.
+fn mark(m: CostMeasure) -> string {
+    match m.kind {
+        .Told -> "~",
+        .Clock -> when {
+            !above_target(m) -> ""
+            m.extra.contains("over") -> "!"
+            _ -> "!!"
+        },
+        .Count or .Share -> "",
+    }
+}
+
+/// Whether a clock measures above the target it carries.
+fn above_target(m: CostMeasure) -> bool {
+    let at = m.extra.index_of("target")
+    if at < 0 || at + 1 >= m.extra.length { return false }
+    m.value > parse_int(m.extra[at + 1]) ?? m.value
+}
+
+fn cell_width(counter: string) -> int { if counter.length > 12 { counter.length } else { 12 } }
+
+fn distinct_counters(cs: List<string>) -> List<string> {
+    mut seen: Map<string, bool> = {}
+    mut out: List<string> = []
+    for c in cs {
+        if seen.has(c) { continue }
+        seen.set(c, true)
+        out.push(c)
+    }
+    out
+}
+
+fn padded(s: string, n: int) -> string { if s.length >= n { s } else { s + repeat(" ", n - s.length) } }
+
+fn right(s: string, n: int) -> string { if s.length >= n { s } else { repeat(" ", n - s.length) + s } }
+
+fn section(workload: string, measures: List<CostMeasure>) -> CostSection { CostSection { workload: workload, measures: measures } }
+
+/// A count of `workload` in the file at `path`.
+fn section_of(path: string, workload: string) -> CostPlaced { CostPlaced { path: path, workload: workload, kind: CostKind.Count } }

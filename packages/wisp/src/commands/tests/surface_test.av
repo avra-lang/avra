@@ -1,0 +1,92 @@
+// The record under `cost/` holds exactly the rows the ledger held: migrated, written, read back and
+// projected, every row and its value come home, and a clock keeps its band, target and over line.
+use commands.{CostFile, cost_file, cost_view, file_text, migrated, rows_of, surface_rows}
+
+fn ledger() -> string {
+    [
+        "kind warm keyed-by host over 300000ppm+250 least",
+        "target warm warm edit 300",
+        "target warm warm unchanged 300",
+        "over warm:ci-warm:warm edit avra-lane-r2-warm .112.26",
+        "snapshot ea25dd426b98aa9ea1b22e1a5d014cccc49d34b3",
+        "check-cli boxes 154152527",
+        "check-cli queries_computed 145145",
+        "edit-body boxes 25637476",
+        "edit-noop worked 0",
+        "ledger-check-cli pass_tape_asks 12",
+        "ledger-edit-body pass_tape_asks 9",
+        "ledger-edit-noop pass_tape_asks 0",
+        "matrix-check-bare-body pass_tape_asks 19",
+        "matrix-check-bare-none pass_tape_asks 7",
+        "matrix-build-laid-std pass_lower_asks 106",
+        "speed:linux-x86-64-amd-epyc:build keep 6704",
+        "warm:ci-warm:warm edit 23216",
+        "warm:ci-warm:warm unchanged 314",
+        "bytes:linux-x86_64-clang-22.1.2:footprint-hello stripped 16384",
+        "share:-:warm-edit query_reads_ppm 1588651",
+        "work:-:warm-unchanged files_loaded 0",
+    ]
+        .join("\n")
+}
+
+fn lines_of(text: string) -> List<string> { [l for l in text.split("\n") if !l.is_empty()] }
+
+fn files() -> List<CostFile> {
+    let text = ledger()
+    migrated(
+        text,
+        rows_of(text),
+        [l for l in lines_of(text) if l.starts_with("target ")],
+        [l for l in lines_of(text) if l.starts_with("over ")],
+    )
+}
+
+/// Each file written as the record writes it and read back from its text.
+fn read_back() -> List<CostFile> { [cost_file(f.path, file_text(f)) for f in files()] }
+
+fn file_at(path: string) -> CostFile? { read_back().find(it.path == path) }
+
+fn sections_in(path: string) -> int { (file_at(path)?.sections ?? []).length }
+
+spec "cost surface — the record holds the ledger's rows" {
+    then "migrated, written and read back, every row comes home with its value" {
+        let back = surface_rows(read_back())
+        let rows = rows_of(ledger())
+        back.length == rows.length && rows.all((e) -> back.get(e.key) == e.value)
+    }
+    then "a matrix part is one file, its edits its sections" {
+        sections_in("matrix/check-bare.cost") == 2
+    }
+    then "the cli's edits share one file, and the ledger's theirs" {
+        sections_in("census/edits.cost") == 2 && sections_in("ledger/edits.cost") == 2
+    }
+    then "a keyed row stands in its key's file" {
+        file_at("warm/ci-warm.cost") != null &&
+            file_at("speed/linux-x86-64-amd-epyc.cost") != null &&
+            file_at("footprint/linux-x86_64-clang-22.1.2.cost") != null
+    }
+    then "a clock keeps its band, its target and its over line" {
+        let warm? = file_at("warm/ci-warm.cost") else { return false }
+        let edit? = warm.sections[0].measures.find(it.counter == "edit") else { return false }
+        edit.extra.join(" ") == "band 30%+250 target 300 over avra-lane-r2-warm .112.26"
+    }
+    then "a count carries nothing after its value" {
+        file_text(file_at("census/check-cli.cost")!).contains("count boxes 154152527\n")
+    }
+}
+
+spec "cost surface — the view" {
+    then "a file is a table: a workload a row, a counter a column" {
+        let v = cost_view(read_back(), "matrix")
+        v.contains("matrix/check-bare.cost") &&
+            v.contains("matrix-check-bare-body") &&
+            v.contains("pass_tape_asks")
+    }
+    then "a clock above its target is marked: `!` on an over line, `!!` on none" {
+        let v = cost_view(read_back(), "warm")
+        v.contains("23216! ") && v.contains("314!!")
+    }
+    then "a family names only its own files" {
+        !cost_view(read_back(), "warm").contains("check-cli")
+    }
+}
