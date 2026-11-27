@@ -313,28 +313,40 @@ fn bodies_known(engine: QueryEngine, file: SourceFileAddress) -> bool { declared
 /// Every body `file` declares lowered: how many lowered.
 fn bodies_lowered(engine: QueryEngine, file: SourceFileAddress) -> int { declared_bodies(engine, file).filter((b) -> body_lowered(engine, b)).length }
 
-/// What a program's last wave works of each of its files: what a build of it reads, or only what
-/// its laws find, which is all a check reads.
+/// What a program's last wave works of each of its files: what a build of it reads, or what a check
+/// of `package` reads, which is what its laws find and, in that package's own files, what they warn
+/// of and what its rules find.
 export enum FileWork {
     Built
-    Checked
+    Checked(package: string)
 }
 
 /// Whether what `work` asks of `file` is kept, its laws standing where `vouched`.
 fn file_work_is_known(engine: QueryEngine, file: SourceFileAddress, work: FileWork, vouched: bool) -> bool {
     match work {
         .Built -> file_worked_is_known(engine, file, vouched),
-        .Checked -> vouched || file_erring_is_known(engine, file),
+        .Checked(package) -> (vouched || file_erring_is_known(engine, file)) &&
+            (file.package_name != package || file_rule_rows_is_known(engine, package, file)),
     }
 }
 
 /// What `work` asks of `file`, its laws standing where `vouched`: how many bodies it lowered, or
-/// how many findings fail a build.
+/// how many findings it holds.
 fn file_work_done(engine: QueryEngine, file: SourceFileAddress, work: FileWork, vouched: bool) -> int {
     match work {
         .Built -> file_worked(engine, file, vouched),
-        .Checked -> if vouched { 0 } else { file_erring(engine, file).errors },
+        .Checked(package) -> file_checked(engine, file, package, vouched),
     }
+}
+
+/// What a check of `package` reads of `file`, its laws standing where `vouched`: how many findings
+/// fail a build, then, in the package's own files, how many warn and how many rule rows stand.
+fn file_checked(engine: QueryEngine, file: SourceFileAddress, package: string, vouched: bool) -> int {
+    let erring = if vouched { 0 } else { file_erring(engine, file).errors }
+    if file.package_name != package { return erring }
+    erring +
+        file_warned(engine, file).findings.length +
+        file_rule_rows(engine, package, file).rows.length
 }
 
 /// Whether anything is kept about the lowering of every body `file` declares and, unless a verdict
