@@ -2,11 +2,12 @@
 //! value a terminal can diff. Every
 //! node writes its own lines at its box, in tree order, so a child covers
 //! what its parent drew under it; a list draws a bullet beside each child,
-//! and the node the keys go to draws `> ` in the gutter it keeps. A glyph
+//! and the node the keys go to draws its focus mark in the gutter it keeps. A glyph
 //! takes the cells it is wide, and what passes the grid's width is cut off.
 use @std.text.{graphemes, cells}
 use tree.node.{Node}
 use place.solve.{Placed}
+use realize.tui.glyphs.{Glyphs}
 use realize.tui.layout.{
     own_lines,
     kept_cells,
@@ -31,7 +32,7 @@ export type Grid = { width: int, height: int, cells: List<Tile>, cursor: Pos? }
 
 /// What is being drawn on: a row at a time, each as long as what is written
 /// in it, and the caret once the focused node has drawn its mark.
-type Canvas = { width: int, rows: List<Cell<List<string>>>, cursor: Cell<Pos?> }
+type Canvas = { width: int, rows: List<Cell<List<string>>>, cursor: Cell<Pos?>, glyphs: Glyphs }
 
 /// A tree drawn: its rows (each only as long as it is written) and the caret.
 export type Painted = { rows: List<List<string>>, cursor: Pos? }
@@ -46,11 +47,12 @@ fn reached(row: Cell<List<string>>, to: int) {
 
 /// The tree `root` placed as `placed`, drawn in `width` cells; `focus` is
 /// the path of the node the keys go to.
-export fn painted(root: Node, placed: Placed, width: int, focus: string) -> Painted {
+export fn painted(root: Node, placed: Placed, width: int, focus: string, glyphs: Glyphs) -> Painted {
     let canvas = Canvas {
         width: width,
         rows: [blank_row() for _y in 0..placed.rect.h],
         cursor: no_caret(),
+        glyphs: glyphs,
     }
     paint(canvas, root, placed, "0", focus)
     Painted { rows: [row.get() for row in canvas.rows], cursor: canvas.cursor.get() }
@@ -117,11 +119,11 @@ fn paint(grid: Canvas, n: Node, p: Placed, path: string, focus: string) {
     let top = r.y + gap_rows(pad?.top ?? .None)
     let gutter = if path == focus { pointer_cells } else { 0 }
     if gutter > 0 {
-        put(grid, left, top, "> ")
+        put(grid, left, top, grid.glyphs.focus)
         grid.cursor.set(Pos { x: left + gutter, y: top })
     }
     let inner = r.w - (left - r.x) - pad_cols(pad?.end ?? .None) - gutter - kept_cells(n)
-    for i, line in own_lines(n, inner) { put(grid, left + gutter + kept_cells(n), top + i, line) }
+    for i, line in own_lines(n, inner, grid.glyphs) { put(grid, left + gutter + kept_cells(n), top + i, line) }
     let held = if holds_children(n) { n.children } else { [] }
     for i, c in held {
         if n.prim is .List && !closed_node(c) { put(grid, p.kids[i].rect.x - kept_cells(n), p.kids[i].rect.y, "• ") }

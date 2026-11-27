@@ -6,6 +6,7 @@
 use @std.text.{cells}
 use tree.node.{Node}
 use style.tokens.{Size}
+use realize.tui.glyphs.{Glyphs, unicode}
 use realize.tui.layout.{
     own_lines,
     kept_cells,
@@ -45,15 +46,16 @@ export trait Measure {
 }
 
 /// The terminal's answers: one cell across, one line down. `focus` is the
-/// path of the node the keys go to, which keeps a gutter for its mark.
-export type Cells = { focus: string = "" }
+/// path of the node the keys go to, which keeps a gutter for its mark, and
+/// `glyphs` the marks its states are drawn with.
+export type Cells = { focus: string = "", glyphs: Glyphs = unicode }
 
 impl Measure for Cells {
-    fn own(n: Node, avail: int) -> Extent { extent_of(own_lines(n, avail / fine)) }
+    fn own(n: Node, avail: int) -> Extent { extent_of(own_lines(n, avail / fine, self.glyphs)) }
     fn kept(n: Node, path: string) -> int { kept_cells(n) + if path == self.focus { pointer_cells } else { 0 } }
     fn hidden(n: Node) -> bool { closed_node(n) }
     fn holds(n: Node) -> bool { holds_children(n) }
-    fn min_own(n: Node) -> int { unbreakable_cells(n) * fine }
+    fn min_own(n: Node) -> int { unbreakable_cells(n, self.glyphs) * fine }
     fn gap_x(z: Size) -> int { gap_cols(z) }
     fn gap_y(z: Size) -> int { gap_rows(z) }
     fn pad_x(z: Size) -> int { pad_cols(z) }
