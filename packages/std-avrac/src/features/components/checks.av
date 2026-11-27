@@ -9,6 +9,7 @@ use core.{
     Checks,
     ExprId,
     Expected,
+    LiteralFault,
     OwnType,
     Seating,
     SignedType,
@@ -30,7 +31,7 @@ impl Checks for Component {
         cx.checked_free(self.heads)
         if self.key != null { let _ = cx.check(self.key!, Expected.Free) }
         let instance = instance_type(cx, self.word, self.targs)
-        if instance != null && self.body != null { settings_seated(cx, instance!, self.body!) }
+        if instance != null && self.body != null { settings_seated(cx, self.word, instance!, self.body!) }
         if self.body != null { let _ = cx.check(self.body!, Expected.Unknown) }
         if self.name != null { cx.bind(self.name!.text(), instance) }
         instance
@@ -66,14 +67,21 @@ fn instance_type(cx: Checking, word: string, targs: List<TypeRef>) -> SignedType
     }
 }
 
-/// Each setting the block `body` writes, its value checked against the field of `instance` it names:
-/// what every instance's settings owe their declared types.
-fn settings_seated(mut cx: Checking, instance: SignedType, body: ExprId) {
+/// Each setting the block `body` of an instance of `word` writes, its value checked against the
+/// field of `instance` it names: what every instance's settings owe their declared types. A field
+/// is set once, and a setting names a field the component has; a handler is its event's law's.
+fn settings_seated(mut cx: Checking, word: string, instance: SignedType, body: ExprId) {
     let record? = cx.record_of(instance) else { return }
-    for s in cx.store.block_stmts(body) ?? [] {
-        let set? = cx.store.setting_parts(s) else { continue }
-        let seat? = record.fields.find(it.name == set.name)?.ty else { continue }
-        let _ = cx.check_seated(set.value, seat.bound(instance.args), Seating.Setting(set.name))
+    let set = [p! for s in cx.store.block_stmts(body) ?? [] for p in [cx.store.setting_parts(s)] if p != null]
+    let plain = [p for p in set if cx.store.on_handler(p.value) == null]
+    if cx.fields_repeated([p.name for p in plain], [p.value for p in plain], "") { return }
+    let fields = [f.name for f in record.fields]
+    for p in set {
+        let seat? = record.fields.find(it.name == p.name)?.ty else {
+            if !cx.store.refused_elsewhere(p.value) { cx.literal_refused(p.value, LiteralFault.Unknown(word, p.name, fields)) }
+            continue
+        }
+        let _ = cx.check_seated(p.value, seat.bound(instance.args), Seating.Setting(p.name))
     }
 }
 
