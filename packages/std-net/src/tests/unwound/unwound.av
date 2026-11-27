@@ -33,15 +33,17 @@ fn connect_cut(port: int) -> int {
     0
 }
 
-/// Whether the cuts left the table where it was. A resolver thread
-/// holds its wake end until its lookup answers, so the table is asked
-/// again, up to `tries` times: a thread's end comes back, a leak never
-/// does.
-fn kept(before: int, tries: int) -> Result<bool, NetError> {
+/// Whether the cuts left the table where it was: `true`, or `false` with
+/// the reach it started from and each reach asked after, so a table that
+/// stayed high says how high. A resolver thread holds its wake end until
+/// its lookup answers, so the table is asked again, up to `tries` times:
+/// a thread's end comes back, a leak never does.
+fn kept(before: int, tries: int, seen: string = "") -> Result<string, NetError> {
     sleep(ms(200))
-    if reach()? < before + 4 { return .Ok(true) }
-    if tries < 2 { return .Ok(false) }
-    kept(before, tries - 1)
+    let r = reach()?
+    if r < before + 4 { return .Ok("true") }
+    if tries < 2 { return .Ok("false (from ${before}:${seen} ${r})") }
+    kept(before, tries - 1, "${seen} ${r}")
 }
 
 fn run() -> Result<string, NetError> {
