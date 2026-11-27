@@ -5,7 +5,7 @@
 use core.{Layout, SignedType, own_type_named}
 use compiler.laws.{Found, law}
 use diagnostics.{Voice}
-use features.consts.{const_written, unformed_voice}
+use features.consts.{const_written, unformed_voice, unlaid_voice}
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryEngine}
 
@@ -14,8 +14,7 @@ use @std.program.query_engine.{QueryEngine}
 /// holds formed.
 export fn const_formed(engine: QueryEngine, file: SourceFileAddress, ty: SignedType) -> bool {
     if !ty.nullable() { return formed(engine, ty, []) }
-    let l? = program_of(engine, file, Signing { engine: engine, file: file, type_params: [] })
-        .layout(ty) else { return false }
+    let l? = file_program(engine, file).layout(ty) else { return false }
     (l is .Boxed || l is .Word) && formed(engine, ty.unwrapped(), [])
 }
 
@@ -79,12 +78,17 @@ fn consts_unformed(view: ItemView) -> List<Found> {
     for s in item.stmts {
         let value? = store.const_value(s) else { continue }
         let name? = store.let_name(s) else { continue }
-        if const_written(store.valued(value)) || store.is_component_inst(s) { continue }
+        if store.is_component_inst(s) { continue }
         let ty? = binding_type(view.engine, view.file, name) ?? const_value_type(
             view.engine,
             view.file,
             name,
         ) else { continue }
+        if word_keyed(view.engine, view.file, ty, []) {
+            found.push(Found { at: store.expr_span(value), args: [name, ty.spelled(), UNLAID] })
+            continue
+        }
+        if const_written(store.valued(value)) { continue }
         if !const_formed(view.engine, view.file, ty) { found.push(Found { at: store.expr_span(value), args: [name, ty.spelled()] }) }
     }
     found
@@ -93,7 +97,54 @@ fn consts_unformed(view: ItemView) -> List<Found> {
         )
 }
 
-fn unformed_said(a: List<string>) -> Voice { unformed_voice(a[0], a[1]) }
+fn unformed_said(a: List<string>) -> Voice { if a.length > 2 && a[2] == UNLAID { unlaid_voice(a[0], a[1]) } else { unformed_voice(a[0], a[1]) } }
+
+/// The words a const holding a map keyed by words is refused with, beside its name and type.
+const UNLAID: string = "unlaid"
+
+/// Whether a value of `ty`, read where `file` reads it, holds a map whose keys the binary doesn't
+/// lay out — one keyed by words — anywhere inside it: a list's elements, a map's keys and values, a
+/// result's sides, a record's fields, an enum's payloads, what a name or an alias stands over; each
+/// declared type judged once, so a recursive one ends.
+fn word_keyed(engine: QueryEngine, file: SourceFileAddress, ty: SignedType, seen: List<string>) -> bool {
+    let t = ty.unwrapped()
+    match t.head {
+        .Owned(word) -> {
+            if word == "Map" && t.args.length == 2 && !keys_laid_out(engine, file, t.args[0]) { return true }
+            t.args.any((a) -> word_keyed(engine, file, a, seen))
+        },
+        .Declared(at, name) -> declared_word_keyed(engine, file, at, name, t, seen),
+        .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Union or .Never or .Meta -> false,
+    }
+}
+
+/// Whether a map keyed by `key` is one the binary lays out.
+fn keys_laid_out(engine: QueryEngine, file: SourceFileAddress, key: SignedType) -> bool {
+    let program = file_program(engine, file)
+    program.layout(key)?.map_keys()?.laid_out() ?? true
+}
+
+/// Whether the type `at` declares as `name`, `ty` applying it, holds a map keyed by words: a record
+/// by its fields, an enum by its payloads, a named type or an alias by what it stands over.
+fn declared_word_keyed(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    at: SourceFileAddress,
+    name: string,
+    ty: SignedType,
+    seen: List<string>,
+) -> bool {
+    let key = ty.spelled()
+    if seen.contains(key) { return false }
+    let deeper = seen.concat([key])
+    let part = (p: SignedType?) -> p != null && word_keyed(engine, file, p!.bound(ty.args), deeper)
+    let record = record_signature(engine, at, name)
+    if record != null { return record!.fields.any(part(it.ty)) }
+    let variants = enum_signature(engine, at, name)
+    if variants != null { return variants!.variants.any((v) -> v.payloads.any(part(it.ty))) }
+    let shape = named_shape(engine, at, name) ?? alias_target(engine, at, name)
+    shape != null && part(shape!.of)
+}
 
 /// a computed const whose type has no compile-time value form
 export law const_unformed {
