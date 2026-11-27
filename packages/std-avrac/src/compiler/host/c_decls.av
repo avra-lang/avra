@@ -1,0 +1,192 @@
+//! A C HEADER'S DECLARATIONS, AS CLANG READ THEM. The reader takes
+//! clang's JSON dump of one translation unit (`clang -fsyntax-only
+//! -Xclang -ast-dump=json`) and answers each function it declares: its
+//! name, its answer, its seats and whether it is variadic, every type in
+//! its CANONICAL form — typedefs followed to what they stand for, so
+//! `int64_t` and `long` are one answer.
+//!
+//! A WIDTH IS THE DATA MODEL'S, NEVER THE SPELLING'S: `long` is 64 bits
+//! under LP64 and 32 under ILP32, and plain `char`'s sign is the
+//! target's. The reader is handed the model; it never guesses one.
+//!
+//! WHAT THE DUMP DOES NOT CARRY IS NOT INVENTED: a function's own type
+//! keeps its typedef names (`wide_t (u32_t)`), so the answer is resolved
+//! through the unit's own `TypedefDecl`s; a type the reader cannot place
+//! (`long double`, a function pointer, an array, an enum) is `Unread`
+//! with its spelling, never a near guess.
+use @std.json.{Json, parse}
+
+/// The integer widths and `char`'s sign a target gives C.
+export type DataModel = { long_bits: int, char_signed: bool }
+
+/// Linux and macOS on 64-bit machines.
+export fn lp64() -> DataModel { DataModel { long_bits: 64, char_signed: true } }
+
+/// A C type, canonical.
+export enum CType {
+    Void
+    Int(bits: int, signed: bool)
+    Float(bits: int)
+    /// A pointer `depth` deep to `target`, canonical; `constant` when the
+    /// pointee is.
+    Pointer(target: string, depth: int, constant: bool)
+    /// A struct or union passed by value.
+    Record(spelling: string)
+    Unread(spelling: string)
+}
+
+/// One function a header declares.
+export type CDecl = { name: string, answer: CType, seats: List<CType>, variadic: bool }
+
+/// A typedef's name and the spelling it stands for.
+type Alias = { name: string, spelling: string }
+
+/// The functions one dump declares, in the order it declares them, or
+/// why the text is no dump.
+export fn c_decls(dump: string, model: DataModel) -> Result<List<CDecl>, string> {
+    let root? = parsed(dump) else { return .Err("clang's dump is not JSON") }
+    if root.member("kind").text() != "TranslationUnitDecl" { return .Err("clang's dump holds no translation unit") }
+    let top = [d for d in root.member("inner").items() if d.member("isImplicit").truth() != true]
+    let aliases = [Alias { name: d.member("name").text() ?? "", spelling: spelled(d) } for d in top if d.member("kind").text() == "TypedefDecl"]
+    .Ok([declared(d, aliases, model) for d in top if d.member("kind").text() == "FunctionDecl"])
+}
+
+/// A dump's JSON, or none where it is not JSON.
+fn parsed(dump: string) -> Json? {
+    match parse(dump) { .Ok(j) -> j, .Err(_) -> null }
+}
+
+/// A function declaration's row.
+fn declared(d: Json, aliases: List<Alias>, model: DataModel) -> CDecl {
+    CDecl {
+        name: d.member("name").text() ?? "",
+        answer: answered(d.member("type").member("qualType").text() ?? "", aliases, model),
+        seats: [canonical(spelled(p), aliases, model) for p in d.member("inner").items() if p.member("kind").text() == "ParmVarDecl"],
+        variadic: d.member("variadic").truth() == true,
+    }
+}
+
+/// A node's type as clang spelled it, desugared where clang did.
+fn spelled(d: Json) -> string {
+    let t = d.member("type")
+    t.member("desugaredQualType").text() ?? t.member("qualType").text() ?? ""
+}
+
+/// A function type's answer: what stands before its parameter list —
+/// `Unread` as the whole function type where that is no type alone, as
+/// for a function answering a function pointer.
+fn answered(fn_type: string, aliases: List<Alias>, model: DataModel) -> CType {
+    let open = params_open(fn_type)
+    let answer = if open < 0 { "" } else { fn_type.substring(0, open).trim() }
+    if answer.is_empty() || answer.contains("(") { return .Unread(fn_type) }
+    canonical(answer, aliases, model)
+}
+
+/// Where the parameter list that closes `t` opens, or -1.
+fn params_open(t: string) -> int {
+    if !t.ends_with(")") { return -1 }
+    let codes = t.bytes()
+    mut depth = 0
+    mut i = t.length - 1
+    while i >= 0 {
+        let c = codes.at(i)
+        if c == 41 { depth = depth + 1 }
+        if c == 40 {
+            depth = depth - 1
+            if depth == 0 { return i }
+        }
+        i = i - 1
+    }
+    -1
+}
+
+/// A spelling's canonical type: its typedefs followed, its words read
+/// under the model.
+fn canonical(spelling: string, aliases: List<Alias>, model: DataModel) -> CType {
+    if spelling.contains("(") || spelling.contains("[") { return .Unread(spelling) }
+    let parts = spelling.split("*")
+    let depth = parts.length - 1 + trailing_stars(spelling)
+    let base = based(parts.first() ?? "", aliases)
+    if base.contains("*") { return deepened(canonical(base, aliases, model), depth) }
+    if depth > 0 { return .Pointer(plain(base), depth, words_of(base).contains("const")) }
+    valued(plain(base), model)
+}
+
+/// The stars `split` drops at a spelling's end, which it does for a
+/// trailing empty segment.
+fn trailing_stars(spelling: string) -> int {
+    if spelling.trim().ends_with("*") { 1 } else { 0 }
+}
+
+/// A pointer to a typedef that is itself a pointer: the depths add.
+fn deepened(t: CType, depth: int) -> CType {
+    match t {
+        .Pointer(target, d, constant) -> .Pointer(target, d + depth, constant),
+        .Void or .Int(_, _) or .Float(_) or .Record(_) or .Unread(_) -> if depth == 0 { t } else { .Pointer(spelled_back(t), depth, false) },
+    }
+}
+
+/// A canonical type's spelling, for a pointer that targets it.
+fn spelled_back(t: CType) -> string {
+    match t {
+        .Void -> "void",
+        .Int(bits, signed) -> if signed { "int${bits}" } else { "uint${bits}" },
+        .Float(bits) -> "float${bits}",
+        .Pointer(target, _, _) -> target,
+        .Record(s) or .Unread(s) -> s,
+    }
+}
+
+/// A base spelling with its typedef followed, once per name, its
+/// qualifiers kept: `const u32_t` is `const unsigned int`.
+fn based(base: string, aliases: List<Alias>) -> string {
+    let named = plain(base)
+    let named_as? = aliases.find(it.name == named) else { return base.trim() }
+    let kept = if words_of(base).contains("const") { "const " } else { "" }
+    based("${kept}${named_as.spelling}", aliases.filter(it.name != named))
+}
+
+/// A spelling's words.
+fn words_of(s: string) -> List<string> {
+    [w for w in s.trim().split(" ") if !w.is_empty()]
+}
+
+/// A spelling without its qualifiers.
+fn plain(s: string) -> string {
+    [w for w in words_of(s) if !qualifier(w)].join(" ")
+}
+
+fn qualifier(w: string) -> bool {
+    ["const", "volatile", "restrict", "__restrict"].contains(w)
+}
+
+/// A value type's canonical form under the model.
+fn valued(base: string, model: DataModel) -> CType {
+    let words = words_of(base)
+    if words.is_empty() { return .Unread(base) }
+    let head = words[0]
+    if head == "struct" || head == "union" { return .Record(base) }
+    if base == "void" { return .Void }
+    if base == "float" { return .Float(32) }
+    if base == "double" { return .Float(64) }
+    if base == "_Bool" || base == "bool" { return .Int(8, false) }
+    if !words.all(integer_word(it)) { return .Unread(base) }
+    let signed = !words.contains("unsigned") &&
+        (!words.contains("char") || words.contains("signed") || model.char_signed)
+    .Int(integer_bits(words, model), signed)
+}
+
+fn integer_word(w: string) -> bool {
+    ["signed", "unsigned", "char", "short", "int", "long"].contains(w)
+}
+
+/// An integer's width: `char` 8, `short` 16, one `long` the model's,
+/// two 64, and anything else `int`'s 32.
+fn integer_bits(words: List<string>, model: DataModel) -> int {
+    if words.contains("char") { return 8 }
+    if words.contains("short") { return 16 }
+    let longs = words.filter(it == "long").length
+    if longs >= 2 { return 64 }
+    if longs == 1 { return model.long_bits }
+    32
+}
