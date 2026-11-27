@@ -16,10 +16,9 @@ const PLAIN_FIELD: string = "plain_field"
 /// Every field of an `@identity` record the written item `view` shows declares that a copy's
 /// write could fork: where the record stands, the field, and its type.
 fn plain_identity_fields(view: ItemView) -> List<Found> {
-    let worn = file_marks(view.engine, view.file).worn
     let records = [d for d in file_declares_at(view.engine, view.file, view.at).names if d.item == view.at &&
         d.kind == ItemKind.Record &&
-        worn.any(it.name == d.name && it.mark == IDENTITY)]
+        writes_identity(view.engine, view.file, d.name)]
     if records.is_empty() { return [] }
     let item = view.item
     [Found { at: record_place(item, r.name), args: [f.name, f.ty!.spelled()] } for r in records for f in record_signature(view.engine, view.file, r.name)?.fields ?? [] if f.ty != null &&
@@ -51,18 +50,22 @@ fn names_text(l: Literal, text: string) -> bool {
 }
 
 /// Whether every copy of a value of `ty` shares what a write through it reaches: a `Cell`, or a type
-/// wearing `@identity` itself, as written or as a generator made it.
+/// wearing `@identity` itself, as written or as a generator made it (a generated mark, written in its
+/// generator's file, is taken by its word).
 fn shared(engine: QueryEngine, ty: SignedType) -> bool {
     match ty.head {
         .Owned(word) -> word == "Cell",
-        .Declared(file, name, _) -> wears_identity(file_marks(engine, file), name) ||
-            wears_identity(generated_marks(engine, file), name),
+        .Declared(file, name, _) -> writes_identity(engine, file, name) ||
+            generated_marks(engine, file).worn.any(it.name == name && it.mark == IDENTITY),
         rest -> false,
     }
 }
 
-/// Whether the declaration `name` among `marks` wears `@identity`.
-fn wears_identity(marks: FileMarks, name: string) -> bool { marks.worn.any(it.name == name && it.mark == IDENTITY) }
+/// Whether the declaration `name` of `file` is written wearing `@std/meta`'s `@identity`: a mark whose
+/// word names it, never a package's own fn of that name.
+fn writes_identity(engine: QueryEngine, file: SourceFileAddress, name: string) -> bool {
+    file_marks(engine, file).worn.any(it.name == name && meta_fn(engine, file, it.mark, IDENTITY))
+}
 
 /// an identity's fields are shared by every copy
 export law identity_field_plain_law {
