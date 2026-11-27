@@ -111,4 +111,81 @@ spec "ci_path_gate — which jobs a change owes" {
                 )
         }
     }
+    given "every keeper that needs a compiler" {
+        then "each has a row, so a preflight owes it by what a change touches" {
+            KEEPERS
+                .filter(!it.free)
+                .all((k) -> !owed(k.name, "pull_request", ["preflight/an-unread-path"], []))
+        }
+        then "a change to a file its row names owes it" {
+            keeper_reads().all((r) -> owed(r.keeper, "pull_request", [r.path], COMPILER))
+        }
+        then "a change no compiler source and no row holds owes none of them" {
+            KEEPERS
+                .filter(!it.free)
+                .all((k) -> !owed(k.name, "pull_request", ["docs/x.md"], COMPILER))
+        }
+    }
+}
+
+/// The compiler's source as a test names it: a path under these is compiler source.
+const COMPILER: List<string> = [
+    "Makefile",
+    "backend",
+    "bootstrap",
+    "packages/cli",
+    "packages/std-avrac",
+    "runtime",
+]
+
+/// A keeper and one path its row names.
+type KeeperRead = { keeper: string, path: string }
+
+fn keeper_reads() -> List<KeeperRead> {
+    [
+        KeeperRead { keeper: "clock-holds", path: "tools/clock_holds.py" },
+        KeeperRead { keeper: "speed-ratchet", path: "cost/a_file" },
+        KeeperRead { keeper: "cost", path: "cost/a_file" },
+        KeeperRead { keeper: "fmt-lossless", path: "tools/probe/a.av" },
+        KeeperRead { keeper: "stems", path: "tools/stems.sh" },
+        KeeperRead { keeper: "read-cost", path: "benchmarks/db/a_file" },
+        KeeperRead { keeper: "read-lists", path: "tools/read_lists.py" },
+        KeeperRead { keeper: "warm-edit", path: "cost/a_file" },
+        KeeperRead { keeper: "traps", path: "tools/traps.sh" },
+        KeeperRead { keeper: "compile-slots", path: "tools/compile_slots.sh" },
+        KeeperRead { keeper: "witness", path: "packages/wisp/a_file" },
+        KeeperRead { keeper: "flow-trace", path: "tools/flow_trace/a_file" },
+        KeeperRead { keeper: "libscope", path: "tools/libscope.sh" },
+        KeeperRead { keeper: "cutoff-witness", path: "tools/cutoff_witness.sh" },
+        KeeperRead { keeper: "h2spec", path: "tools/h2spec/a_file" },
+        KeeperRead { keeper: "pool-check", path: "tools/pool/a_file" },
+        KeeperRead { keeper: "inputs", path: "packages/wisp/a_file" },
+        KeeperRead { keeper: "trap-marks", path: "tools/traps.py" },
+        KeeperRead { keeper: "parser", path: "packages/wisp/a_file" },
+        KeeperRead { keeper: "witnesses", path: "docs/DIAGNOSTICS.md" },
+        KeeperRead { keeper: "dogfooding-rules", path: "DOGFOODING.md" },
+        KeeperRead { keeper: "rule-examples", path: "packages/std-avrac/src/core/a.av" },
+        KeeperRead { keeper: "attack", path: "tools/attack.sh" },
+        KeeperRead { keeper: "voices", path: "docs/VOICES.md" },
+        KeeperRead { keeper: "defects", path: "packages/wisp/a_file" },
+        KeeperRead { keeper: "bench-build", path: "packages/wisp/a_file" },
+        KeeperRead { keeper: "ui-host", path: "tools/ui_host.sh" },
+        KeeperRead { keeper: "ui-host-test", path: "tools/ui_host_test.sh" },
+        KeeperRead { keeper: "ui-board", path: "tools/ui-board/a_file" },
+        KeeperRead { keeper: "exact-patches", path: "tools/exact-patches/a_file" },
+        KeeperRead { keeper: "dev-server", path: "tools/lib/a_file" },
+        KeeperRead { keeper: "ui-browser", path: "tools/ui-board/a_file" },
+        KeeperRead { keeper: "tool-witnesses", path: "tools/a_file" },
+        KeeperRead { keeper: "footprint", path: "cost/a_file" },
+        KeeperRead { keeper: "pkgs-witness", path: "packages/a_file" },
+        KeeperRead { keeper: "wasm-host-check", path: "tools/wasm-host/a_file" },
+        KeeperRead { keeper: "wasm-check", path: "tools/wasm-check.sh" },
+        KeeperRead { keeper: "wasm-seam", path: "tools/wasm-seam-check.sh" },
+        KeeperRead { keeper: "wasm-refuses", path: "tools/wasm-refuses.sh" },
+        KeeperRead { keeper: "wasm-tasks-mutations", path: "tools/wasm-tasks-mutations.sh" },
+        KeeperRead { keeper: "wasm-cache", path: "tools/wasm-cache-attacks.sh" },
+        KeeperRead { keeper: "wasm-archive", path: "tools/wasm-archive.sh" },
+        KeeperRead { keeper: "wasm-size-guard", path: "tools/ui-board/a_file" },
+        KeeperRead { keeper: "wasm-routes-size", path: "tools/wasm-routes/a_file" },
+    ]
 }
