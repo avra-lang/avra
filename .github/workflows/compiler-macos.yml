@@ -75,9 +75,15 @@ jobs:
             echo "compiler-macos: the release's compiler is this tree's"
           else
             tar -xzf "$RUNNER_TEMP/gb.tar.gz" build/avra
-            echo "compiler-macos: generations 1 and 2 of this tree from the release's compiler"
-            # a landed tree is one squashed commit, so it carries no rung
-            make -s compiler RUNGS=""
+            # THE RUNGS BETWEEN THE RELEASE'S SOURCE AND THIS TREE (tools/rungs.sh), climbed as a gate climbs
+            # them: a landing keeps its commits, so a rung it carries is in that history, and the release's
+            # compiler cannot read the tree past one
+            read -r _hash at _gen < "$RUNNER_TEMP/stamp"
+            git fetch -q --unshallow origin 2>/dev/null || :
+            rungs=
+            if git merge-base --is-ancestor "$at" HEAD 2>/dev/null; then rungs=$(sh tools/rungs.sh "$at" HEAD | tr '\n' ' '); fi
+            echo "compiler-macos: generations 1 and 2 of this tree from the release's compiler, over $(echo $rungs | wc -w) rung(s) since $at: $rungs"
+            make -s compiler RUNGS="$rungs" LADDER_BASE="$at" LADDER_BOUND=1800
           fi
           cat build/.avra-built-from
       - name: the tree's seed
