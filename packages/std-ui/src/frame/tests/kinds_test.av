@@ -151,6 +151,25 @@ spec "std/ui frame — the kinds" {
             fault_of(again.bytes.get()) == "a told value is named by its place among those told, and nothing was told at 0"
         }
     }
+    given "a stream whose writer starts over" {
+        then "is read as the values told since, over what its reader kept" {
+            let heard = heard_nothing()
+            let a = Detail { words: "a", many: [], at: 1.0 }
+            let b = Detail { words: "b", many: [], at: 2.0 }
+            let first = writer(told_nothing())
+            Rec.Again(a).framed(first)
+            let anew = writer(told_nothing())
+            Rec.Again(b).framed(anew)
+            Rec.Again(b).framed(anew)
+            let one = Rec.unframed(reader(first.take(), heard))
+            let again = reader(anew.take(), heard)
+            let two = Rec.unframed(again)
+            let three = Rec.unframed(again)
+            [one, two, three]
+                .map((x) -> match x { .Ok(rec) -> told(rec), .Err(f) -> f.says })
+                .join("; ") == "again a|0:|1.0; again b|0:|2.0; again b|0:|2.0"
+        }
+    }
     given "a frame that breaks a law" {
         then "a code no variant wears" { fault_of([200]) == "a record opens with its variant's code, and no `Rec` variant is 200" }
         then "a record cut short" { fault_of([2, 2]) == "a frame ends at a record's end, and this one ends inside a record" }

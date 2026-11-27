@@ -12,7 +12,9 @@
 // path the page takes.
 import fs from "node:fs";
 import { run, parseFrame } from "../../runtime/dom/bootstrap.js";
-import { OP } from "../../runtime/dom/wire.gen.js";
+import { CODES } from "../../runtime/dom/wire.gen.js";
+
+const OP = CODES.Patch;
 import { wasiPreview1 } from "../../runtime/dom/wasi.js";
 import { dispatch, stubDocument, stubElement, textOf } from "../../runtime/dom/stub_dom.js";
 
@@ -443,6 +445,8 @@ const adopting = async (print, early = null) => {
   for (const n of placed) at.insertBefore(n, null);
   if (early !== null) every(at, (n) => n.attrs["aria-label"] === "New task")[0].value = early;
   const sentFrames = [];
+  // What this page's frames have told it once: one stream, read in order.
+  const told = [];
   const sizes = [];
   const quiet = console.warn;
   console.warn = () => {};
@@ -451,7 +455,7 @@ const adopting = async (print, early = null) => {
     mount: at,
     style: { textContent: "" },
     wasi: (memory) => wasiPreview1(memory, (code) => { throw new Error(`the program exited ${code}`); }),
-    sent: (bytes) => { sizes.push(bytes.length); sentFrames.push(parseFrame(bytes)); },
+    sent: (bytes) => { sizes.push(bytes.length); sentFrames.push(parseFrame(bytes, told)); },
     clock,
     fetch: fetchFn,
     raf: (cb) => rafs.push(cb),
@@ -466,7 +470,7 @@ const all = kept.sentFrames.flat();
 const first = kept.sentFrames[0] ?? [];
 claim("the server's print is the number the module folds from the same view", first[0]?.op === OP.adopt && first[0].kinds.length > 0, serverPrint);
 claim("an adopted page builds nothing", all.filter((p) => p.op === OP.create || p.op === OP.create_text).length === 0, `${all.length} patch(es)`);
-claim("the first paint over an adopted page is the adoption, then define and listen only", first.length > 1 && first.slice(1).every((p) => p.op === OP.listen || p.op === OP.define), first.map((p) => p.op).join(","));
+claim("the first paint over an adopted page is the adoption, then listen only", first.length > 1 && first.slice(1).every((p) => p.op === OP.listen), first.map((p) => p.op).join(","));
 claim("the server's nodes are the page the module stands on", kept.at.childNodes.length === kept.placed.length && kept.placed.every((n, j) => kept.at.childNodes[j] === n));
 claim("the adopted page is the page the module drew itself", kept.at.childNodes.map(shape).join() === servedPaint.map(shape).join());
 claim("the first frame over an adopted page is under 1500 bytes (9326 without a server page)", kept.sizes[0] < 1500, `${kept.sizes[0]}`);
@@ -496,6 +500,7 @@ const swapping = async () => {
   const doc = stubDocument();
   const at = stubElement("root");
   const sentFrames = [];
+  const told = [];
   const timers = new Map();
   const own = {
     setTimeout: (fn, ms) => { const h = timers.size + 1; timers.set(h, fn); return h; },
@@ -510,7 +515,7 @@ const swapping = async () => {
     mount: at,
     style: { textContent: "" },
     wasi: (memory) => wasiPreview1(memory, (code) => { throw new Error(`the program exited ${code}`); }),
-    sent: (bytes) => sentFrames.push(parseFrame(bytes)),
+    sent: (bytes) => sentFrames.push(parseFrame(bytes, told)),
     clock: own,
     fetch: fetchFn,
     raf: (cb) => frames2.push(cb),
@@ -530,7 +535,7 @@ const nodesOf = (n) => [n, ...n.childNodes.flatMap(nodesOf)];
   const ops = s.sentFrames.flat();
   const after = s.at.childNodes.flatMap(nodesOf);
   claim("a swap to the same module keeps every element the page holds", before.length === after.length && before.every((n, j) => after[j] === n), `${before.length} vs ${after.length}`);
-  claim("a swap to the same module says define and listen and nothing built", ops.length > 0 && ops.every((p) => p.op === OP.listen || p.op === OP.define), ops.map((p) => p.op).join(","));
+  claim("a swap to the same module says listen and nothing built", ops.length > 0 && ops.every((p) => p.op === OP.listen), ops.map((p) => p.op).join(","));
   claim("and the page it leaves is the page it had", s.at.childNodes.map(shape).join() === shapeBefore);
 }
 {

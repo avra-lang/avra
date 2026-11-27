@@ -15,8 +15,10 @@ import { firefoxBinary, openPage } from "../firefox.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const wire = path.join(here, "../../../runtime/dom/wire.gen.js");
-// a file under comparison brings its own wire table when it sits beside one
-const wireOf = (f) => (fs.existsSync(path.join(path.dirname(f), "wire.gen.js")) ? path.join(path.dirname(f), "wire.gen.js") : wire);
+// a file under comparison brings its own wire table and kind readers when they sit beside it
+const beside = (f, name, fallback) => (fs.existsSync(path.join(path.dirname(f), name)) ? path.join(path.dirname(f), name) : fallback);
+const wireOf = (f) => beside(f, "wire.gen.js", wire);
+const frameOf = (f) => beside(f, "frame.js", path.join(here, "../../../runtime/dom/frame.js"));
 const files = process.argv.slice(2).map((f) => path.resolve(f));
 const binary = firefoxBinary();
 if (!binary) { console.log("listen_bench: SKIPPED — no Firefox here"); process.exit(0); }
@@ -26,6 +28,7 @@ const served = new Map([["/", [path.join(here, "page.html"), "text/html"]]]);
 files.forEach((f, i) => {
   served.set(`/v${i}/bootstrap.js`, [f, "text/javascript"]);
   served.set(`/v${i}/wire.gen.js`, [wireOf(f), "text/javascript"]);
+  served.set(`/v${i}/frame.js`, [frameOf(f), "text/javascript"]);
 });
 const server = http.createServer((req, res) => {
   const hit = served.get(req.url.split("?")[0]);

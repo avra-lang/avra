@@ -2,10 +2,12 @@
 //! frame a page could not apply is a fault it names, and a frame it can
 //! is the page the records say. The diff is judged by this host, so each
 //! refusal is made to happen here.
-use @std.ui.realize.tests.support.{action, seat_for}
-use @std.ui.realize.dom.patch.{Patch, Held, listening_of}
+use @std.ui.realize.tests.support.{action, seat_for, holding}
+use @std.ui.realize.dom.live.{live}
+use @std.ui.realize.dom.patch.{After, Patch, Held, listening_of}
 use @std.ui.realize.dom.tests.support.{host, records, told, whole}
-use @std.ui.realize.dom.wire.{frame, wire_version}
+use @std.ui.realize.dom.wire.{frame}
+use @std.ui.frame.dialect.{Dialect}
 use @std.ui.tree.identity.{NodeId}
 use @std.ui.tree.node.{Action, Handler}
 
@@ -14,7 +16,7 @@ fn el(n: int) -> NodeId { NodeId { n: n } }
 fn nothing() {}
 
 /// A `div` numbered `n`, made and placed first on the page.
-fn standing(n: int) -> List<Patch> { [Patch.Create(el(n), .Div), Patch.Place(el(n), null, null)] }
+fn standing(n: int) -> List<Patch> { [Patch.Create(el(n), .Div), Patch.Place(el(n), null, After.First)] }
 
 fn pressed() -> Patch {
     Patch.Listen(el(0), listening_of(action(.Press, Handler.Nothing(nothing))))
@@ -36,7 +38,7 @@ fn page(patches: List<Patch>) -> string {
 
 spec "the modelled host — a frame a page could not apply" {
     given "a record naming an element never made" {
-        then "is a fault for place" { faults([Patch.Place(el(4), null, null)]) == "place names 4, which is not on the page" }
+        then "is a fault for place" { faults([Patch.Place(el(4), null, After.First)]) == "place names 4, which is not on the page" }
         then "is a fault for an attribute" {
             faults([Patch.SetAttr(el(4), .Title, "t")]) == "set_attr names 4, which is not on the page"
         }
@@ -54,7 +56,7 @@ spec "the modelled host — a frame a page could not apply" {
                     .concat(
                         [
                             Patch.Create(el(1), .Span),
-                            Patch.Place(el(1), el(0), null),
+                            Patch.Place(el(1), el(0), After.First),
                             Patch.Remove(el(0)),
                             Patch.SetAttr(el(1), .Title, "t"),
                         ],
@@ -75,21 +77,26 @@ spec "the modelled host — a frame a page could not apply" {
             faults(
                 standing(0)
                     .concat(standing(1))
-                    .concat([Patch.Create(el(2), .Span), Patch.Place(el(2), el(0), el(1))]),
+                    .concat(
+                        [
+                            Patch.Create(el(2), .Span),
+                            Patch.Place(el(2), el(0), After.Sibling(el(1))),
+                        ],
+                    ),
             ) == "place puts 2 after 1, which does not stand under 0; 2 is held and stands nowhere on the page"
         }
     }
     given "an element placed under itself" {
-        then "is a fault" { faults(standing(0).concat([Patch.Place(el(0), el(0), null)])) == "place puts 0 under itself" }
+        then "is a fault" { faults(standing(0).concat([Patch.Place(el(0), el(0), After.First)])) == "place puts 0 under itself" }
     }
     given "an element placed under a run of text" {
         then "is a fault" {
             faults(
                 [
                     Patch.CreateText(el(0), "a"),
-                    Patch.Place(el(0), null, null),
+                    Patch.Place(el(0), null, After.First),
                     Patch.Create(el(1), .Span),
-                    Patch.Place(el(1), el(0), null),
+                    Patch.Place(el(1), el(0), After.First),
                 ],
             ) == "place puts 1 under 0, which is no element on the page; 1 is held and stands nowhere on the page"
         }
@@ -104,7 +111,7 @@ spec "the modelled host — a frame a page could not apply" {
             faults(
                 [
                     Patch.CreateText(el(0), "a"),
-                    Patch.Place(el(0), null, null),
+                    Patch.Place(el(0), null, After.First),
                     Patch.SetAttr(el(0), .Title, "t"),
                 ],
             ) == "set_attr names 0, which is text"
@@ -121,7 +128,7 @@ spec "the modelled host — a frame a page could not apply" {
                 [
                     Patch.Create(el(0), .Dialog),
                     Patch.Call(el(0), "showModal"),
-                    Patch.Place(el(0), null, null),
+                    Patch.Place(el(0), null, After.First),
                 ],
             ) == "call asks 0 for showModal, and it does not stand on the page"
         }
@@ -143,11 +150,11 @@ spec "the modelled host — a frame a page could not apply" {
             faults(standing(0).concat([Patch.Call(el(0), "open")])) == "call asks 0 for open, which is no verb of a page's element"
         }
     }
-    given "a frame of another version" {
+    given "a frame of another dialect" {
         then "is a fault, and nothing is applied" {
             mut at = host()
-            at.take([wire_version - 1, 1].bytes()!)
-            at.faults.join("; ") == "a frame of another version"
+            at.take([Dialect.Dom15.code(), 1].bytes()!)
+            at.faults.join("; ") == "this frame is `dom15`, and this reader reads `dom16`"
         }
     }
 }
@@ -162,16 +169,16 @@ spec "the modelled host — a frame a page can apply" {
                     Patch.SetAttr(el(0), .Class, "c"),
                     Patch.SetAttr(el(0), .Title, "t"),
                     Patch.Create(el(1), .Li),
-                    Patch.Place(el(1), el(0), null),
+                    Patch.Place(el(1), el(0), After.First),
                     Patch.Create(el(2), .Input),
                     Patch.SetProp(el(2), .Value, Held.Text("v")),
                     Patch.SetProp(el(2), .Checked, Held.Flag(true)),
-                    Patch.Place(el(2), el(0), el(1)),
+                    Patch.Place(el(2), el(0), After.Sibling(el(1))),
                     Patch.CreateText(el(3), "line\nbreak"),
-                    Patch.Place(el(3), el(1), null),
-                    Patch.Place(el(0), null, null),
+                    Patch.Place(el(3), el(1), After.First),
+                    Patch.Place(el(0), null, After.First),
                     pressed(),
-                    Patch.Place(el(1), el(0), el(2)),
+                    Patch.Place(el(1), el(0), After.Sibling(el(2))),
                     Patch.DropAttr(el(0), .Class),
                 ],
             ) == "#0 ul title=\"t\" @${seat_for(.Press).number()}:click:0::false\n  #2 input .checked=true .value=\"v\"\n  #1 li\n    #3 \"line\\nbreak\""
@@ -210,7 +217,10 @@ spec "the modelled host — a frame a page can apply" {
     given "an element numbered past thirty-two bits" {
         then "is read back whole" {
             page(
-                [Patch.Create(el(1099511627776), .Div), Patch.Place(el(1099511627776), null, null)],
+                [
+                    Patch.Create(el(1099511627776), .Div),
+                    Patch.Place(el(1099511627776), null, After.First),
+                ],
             ) == "#1099511627776 div"
         }
     }
@@ -240,31 +250,29 @@ spec "the wire's numbers" {
     }
     given "children placed under a parent made in the same frame" {
         then "say the end of the run and no sibling" {
-            let kids = [
-                Patch.Create(el(0), .Ul),
-                Patch.Create(el(1), .Li),
-                Patch.Create(el(2), .Li),
-                Patch.Place(el(0), null, null),
-                Patch.Place(el(1), el(0), null),
-                Patch.Place(el(2), el(0), el(1)),
-            ]
-            lines(kids).contains("place 1 in 0 after end|place 2 in 0 after end")
+            let drawn = records(
+                frame(live().patches(holding(.List, [holding(.Item, []), holding(.Item, [])]))),
+            )
+            [r.split(" after ")[1] for r in drawn if r.starts_with("place")].join(",") == "end,end,-"
+        }
+        then "read back as the end of the run" {
+            lines([Patch.Place(el(1), el(0), After.Append)]) == "place 1 in 0 after end"
         }
         then "name the sibling under a parent an earlier frame made" {
-            lines([Patch.Place(el(2), el(0), el(1))]) == "place 2 in 0 after 1"
+            lines([Patch.Place(el(2), el(0), After.Sibling(el(1)))]) == "place 2 in 0 after 1"
         }
         then "name it again once a child has moved away from the end" {
             let moved = [
                 Patch.Create(el(0), .Ul),
                 Patch.Create(el(1), .Li),
                 Patch.Create(el(2), .Li),
-                Patch.Place(el(1), el(0), null),
-                Patch.Place(el(2), el(0), el(1)),
-                Patch.Place(el(2), el(0), null),
-                Patch.Place(el(1), el(0), el(2)),
+                Patch.Place(el(1), el(0), After.First),
+                Patch.Place(el(2), el(0), After.Sibling(el(1))),
+                Patch.Place(el(2), el(0), After.First),
+                Patch.Place(el(1), el(0), After.Sibling(el(2))),
             ]
             lines(moved).contains("place 1 in 0 after 2") &&
-                faults(moved.concat([Patch.Place(el(0), null, null)])) == ""
+                faults(moved.concat([Patch.Place(el(0), null, After.First)])) == ""
         }
     }
 }

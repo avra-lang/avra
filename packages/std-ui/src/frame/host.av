@@ -1,0 +1,70 @@
+//! `frame/host.av` — A JAVASCRIPT HOST'S READERS, written from the framed
+//! types' own shapes (`frame/rows.av`): one function a type, each reading its
+//! fields in the order the type declares them, by the kind readers of
+//! `runtime/dom/frame.js`. No host spells a record's layout by hand.
+use frame.rows.{FieldKind, FrameField, FrameRow, FrameType, distinct_types}
+use frame.dialect.{Dialect}
+
+/// Every dialect's name and its number.
+export fn dialects_source() -> string {
+    "export const DIALECT = { ${["${r.word}: ${r.code}" for r in Dialect.coded()].join(", ")} };"
+}
+
+/// Each choice's variants, by word, under the type's name.
+export fn codes_source(types: List<FrameType>) -> string {
+    let each = ["${t.name}: { ${["${r.word}: ${r.code}" for r in t.rows].join(", ")} }" for t in distinct_types(types) if t.choice]
+    "export const CODES = { ${each.join(", ")} };"
+}
+
+/// The words each worded field's numbers stand for, by the type that names them.
+export fn words_source(types: List<FrameType>) -> string {
+    let worded = [f for t in distinct_types(types) for r in t.rows for f in r.fields if !f.words.is_empty()]
+    let named = [f for j, f in worded if !worded.slice(0, j).any(it.of == f.of)]
+    "export const WORDS = { ${["${f.of}: [${f.words.map(quoted(it)).join(", ")}]" for f in named].join(", ")} };"
+}
+
+/// One reader a type: `READ.<Type>(r)` answers the value at `r`.
+export fn readers_source(types: List<FrameType>) -> string {
+    "export const READ = {\n${[reader_of(t) for t in distinct_types(types)].join("\n")}\n};"
+}
+
+fn reader_of(t: FrameType) -> string {
+    if !t.choice { return "  ${t.name}: (r) => (${record_of(t.rows[0])})," }
+    let arms = ["      case ${r.code}: return ${choice_record(r)};" for r in t.rows]
+    [
+        "  ${t.name}: (r) => {",
+        "    const op = r.byte();",
+        "    switch (op) {",
+        arms.join("\n"),
+        "      default: return r.unknown(${quoted(t.name)}, op);",
+        "    }",
+        "  },",
+    ]
+        .join("\n")
+}
+
+fn choice_record(r: FrameRow) -> string {
+    "{ ${["op"].concat([field_of(f) for f in r.fields]).join(", ")} }"
+}
+
+fn record_of(r: FrameRow) -> string { "{ ${[field_of(f) for f in r.fields].join(", ")} }" }
+
+fn field_of(f: FrameField) -> string { "${f.name}: ${read_of(f)}" }
+
+/// The read a field's kind is. Every kind spelled.
+fn read_of(f: FrameField) -> string {
+    match f.kind {
+        .Word -> if f.words.is_empty() { "r.word()" } else { "r.named(WORDS.${f.of})" },
+        .WordOrNone -> if f.words.is_empty() { "r.wordOrNone()" } else { "r.namedOrNone(WORDS.${f.of})" },
+        .Number -> "r.number()",
+        .Flag -> "r.flag()",
+        .Fraction -> "r.fraction()",
+        .Text -> "r.text()",
+        .Texts -> "r.texts()",
+        .Octets -> "r.octets()",
+        .Nested -> "READ.${f.of}(r)",
+        .Told -> "r.told(READ.${f.of})",
+    }
+}
+
+fn quoted(s: string) -> string { "\"${s}\"" }

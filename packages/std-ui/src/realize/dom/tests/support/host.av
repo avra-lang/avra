@@ -4,9 +4,10 @@
 //! the diff, so what it ends holding is what the patches SAID. A record a
 //! page could not apply — an element it does not hold, a sibling under
 //! another parent, a number given twice — is a FAULT, kept and told.
-use realize.dom.wire.{Op, wire_version, no_id, after_first, after_append, after_sibling}
-use realize.html.tags.{HtmlTag}
-use realize.dom.patch.{Says}
+use realize.dom.wire.{no_id, page_dialect}
+use realize.dom.patch.{After, Held as Holds, Listening, Patch, Says}
+use frame.kinds.{Heard, heard_nothing, reader}
+use frame.dialect.{read_dialect}
 
 /// A `place`'s `after` that names no sibling but the end of the run.
 const appended = -2
@@ -21,8 +22,7 @@ enum Rec {
     DropAttr(id: int, name: string)
     SetProp(id: int, name: string, says: int, value: string)
     SetText(id: int, content: string)
-    Define(ear: Ear)
-    Listen(id: int, kind: int, says: int)
+    Listen(id: int, ear: Ear)
     Unlisten(id: int, kind: int)
     Style(css: string)
     Call(id: int, verb: string)
@@ -33,122 +33,74 @@ enum Rec {
 
 // ── reading a frame ─────────────────────────────────────────────
 
-/// A frame being read, and how far.
-type Reader = { bytes: Bytes, at: Cell<int> = Cell.new(0) }
-
-impl Reader {
-    fn ended() -> bool { self.at.get() >= self.bytes.length }
-
-    /// The next `count` bytes, as where they start.
-    fn skip(count: int) -> int {
-        let from = self.at.get()
-        self.at.set(from + count)
-        from
+/// A record as a page holds it: ids as numbers, words as text, a
+/// listener's hearing as the event it names.
+fn rec_of(p: Patch) -> Rec {
+    match p {
+        .Create(id, tag) -> Rec.Create(id.n, tag.word()),
+        .CreateText(id, content) -> Rec.CreateText(id.n, content),
+        .Place(id, parent, after) -> Rec.Place(id.n, parent?.n ?? no_id, after_number(after)),
+        .Remove(id) -> Rec.Remove(id.n),
+        .SetAttr(id, name, value) -> Rec.SetAttr(id.n, Pair { name: name.word(), value: value }),
+        .DropAttr(id, name) -> Rec.DropAttr(id.n, name.word()),
+        .SetProp(id, name, value) -> Rec.SetProp(id.n, name.word(), says_of(value).code(), held_text(value)),
+        .SetText(id, content) -> Rec.SetText(id.n, content),
+        .Listen(id, to) -> Rec.Listen(id.n, ear_of(to)),
+        .Unlisten(id, seat) -> Rec.Unlisten(id.n, seat.number()),
+        .Style(css) -> Rec.Style(css),
+        .Call(id, verb) -> Rec.Call(id.n, verb),
+        .SetVar(id, property, value) -> Rec.SetVar(id.n, Pair { name: property, value: value }),
+        .DropVar(id, property) -> Rec.DropVar(id.n, property),
+        .Adopt(kinds, words) -> Rec.Kept(kinds, words),
     }
+}
 
-    fn byte() -> int { self.bytes.at(self.skip(1)) }
+/// Where a `place` puts its element: the first place, the end of the
+/// parent's run (`appended`), or the sibling it follows.
+fn after_number(a: After) -> int {
+    match a { .First -> no_id, .Append -> appended, .Sibling(id) -> id.n }
+}
 
-    /// Four little-endian bytes as a number from zero up.
-    fn word() -> int {
-        let from = self.skip(4)
-        [self.bytes.at(from + j) << 8 * j for j in 0..4].sum()
-    }
+/// What a held value is, as a page reads a property of it.
+fn says_of(value: Holds) -> Says {
+    match value { .Text(_) -> .Text, .Flag(_) -> .Flag }
+}
 
-    /// Four little-endian bytes as a signed number.
-    fn int() -> int {
-        let w = self.word()
-        if w >= 2147483648 { w - 4294967296 } else { w }
-    }
+/// What a property holds, as the text a page writes it from.
+fn held_text(value: Holds) -> string {
+    match value { .Text(t) -> t, .Flag(on) -> if on { "1" } else { "" } }
+}
 
-    /// Seven-bit groups, the low group first, as a number from zero up.
-    fn varint() -> int {
-        mut n = 0
-        mut scale = 1
-        while true {
-            let b = self.byte()
-            n = n + b % 128 * scale
-            scale = scale * 128
-            if b < 128 { return n }
-        }
-        n
-    }
-
-    /// An id is one more than its number; zero is no id.
-    fn id() -> int { self.varint() - 1 }
-
-    /// Where a `place` puts its element: the first place, the end of the
-    /// parent's run (`appended`), or the sibling it follows.
-    fn after() -> int {
-        let v = self.varint()
-        when {
-            v == after_first -> no_id
-            v == after_append -> appended
-            _ -> v - after_sibling
-        }
-    }
-
-    /// A tag by its place among the tags.
-    fn tag() -> string { HtmlTag.every()[self.varint()].word() }
-
-    /// A length, then that many bytes as text.
-    fn text() -> string {
-        let length = self.int()
-        let from = self.skip(length)
-        self.bytes.slice(from, from + length).text()!
-    }
-
-    fn ear() -> Ear {
-        Ear {
-            kind: self.int(),
-            says: self.int(),
-            event: self.text(),
-            reads: self.text(),
-            prevents: self.int() != 0,
-            key: self.text(),
-        }
-    }
-
-    /// The record under `op`, each field read in the order the wire
-    /// writes it. Every op spelled.
-    fn record(op: Op) -> Rec {
-        match op {
-            .Create -> Rec.Create(self.id(), self.tag()),
-            .CreateText -> Rec.CreateText(self.id(), self.text()),
-            .Place -> Rec.Place(self.id(), self.id(), self.after()),
-            .Remove -> Rec.Remove(self.id()),
-            .SetAttr -> Rec.SetAttr(self.id(), Pair { name: self.text(), value: self.text() }),
-            .DropAttr -> Rec.DropAttr(self.id(), self.text()),
-            .SetProp -> Rec.SetProp(self.id(), self.text(), self.int(), self.text()),
-            .SetText -> Rec.SetText(self.id(), self.text()),
-            .Define -> Rec.Define(self.ear()),
-            .Listen -> Rec.Listen(self.id(), self.int(), self.int()),
-            .Unlisten -> Rec.Unlisten(self.id(), self.int()),
-            .Style -> Rec.Style(self.text()),
-            .Call -> Rec.Call(self.id(), self.text()),
-            .SetVar -> Rec.SetVar(self.id(), Pair { name: self.text(), value: self.text() }),
-            .DropVar -> Rec.DropVar(self.id(), self.text()),
-            .Adopt -> {
-                let words = self.int()
-                Rec.Kept([self.text() for j in 0..self.int()], words)
-            },
-        }
+fn ear_of(to: Listening) -> Ear {
+    Ear {
+        kind: to.seat.number(),
+        says: to.says.code(),
+        event: to.event,
+        reads: to.reads?.word() ?? "",
+        prevents: to.prevents,
+        key: to.key,
     }
 }
 
 /// What a frame holds: its records, or why it could not be read.
-type Read = { records: List<Rec>, fault: string? = null }
+type Read = { records: List<Rec>, fault: string? = null, tellings: int = 0 }
 
-fn read(frame: Bytes) -> Read {
-    let from = Reader { bytes: frame }
-    if from.byte() != wire_version { return Read { records: [], fault: "a frame of another version" } }
+/// A frame read as the page's dialect, its stream having heard `heard`.
+fn read(frame: Bytes, heard: Heard) -> Read {
+    let r = reader(frame, heard)
+    match read_dialect(r, page_dialect) {
+        .Ok(_) -> {},
+        .Err(f) -> { return Read { records: [], fault: f.says } },
+    }
     mut records: List<Rec> = []
     // LICENSED loops.push_loop: each record starts where the one before it ended
-    while !from.ended() {
-        let code = from.byte()
-        let op? = Op.coded_as(code) else { return Read { records: records, fault: "a record under ${code}, which is no op" } }
-        records.push(from.record(op))
+    while !r.ended() {
+        match Patch.unframed(r) {
+            .Ok(p) -> records.push(rec_of(p)),
+            .Err(f) -> { return Read { records: records, fault: f.says, tellings: r.tellings.get() } },
+        }
     }
-    Read { records: records }
+    Read { records: records, tellings: r.tellings.get() }
 }
 
 // ── the page ────────────────────────────────────────────────────
@@ -172,7 +124,7 @@ export type Host = {
     top: List<int> = [],
     faults: List<string> = [],
     sheet: string = "",
-    defs: List<Ear> = [],
+    heard: Heard = heard_nothing(),
 }
 
 /// A host showing nothing.
@@ -318,15 +270,6 @@ impl Host {
         self.rewrite(id, "listen", (s) -> s with { ears: s.ears.concat([ear]) })
     }
 
-    /// A listen, resolved by the definition an earlier record gave its seat.
-    mut fn listened(id: int, kind: int, says: int) {
-        let ear? = self.defs.find(it.kind == kind && it.says == says) else {
-            return self
-                .fault("listen names ${id} saying ${says} of seat ${kind}, which no define told")
-        }
-        self.listen(id, ear)
-    }
-
     /// Whether `id`'s door stands open.
     fn open(id: int) -> bool { self.live(id)?.seen?.props?.any(it.name == door) ?? false }
 
@@ -368,8 +311,7 @@ impl Host {
                 .rewrite(id, "drop_attr", (s) -> s with { attrs: [a for a in s.attrs if a.name != name] }),
             .SetProp(id, name, says, value) -> self.set_prop(id, name, says, value),
             .SetText(id, content) -> self.set_text(id, content),
-            .Define(ear) -> { self.defs = self.defs.concat([ear]) },
-            .Listen(id, kind, says) -> self.listened(id, kind, says),
+            .Listen(id, ear) -> self.listen(id, ear),
             .Unlisten(id, kind) -> self
                 .rewrite(id, "unlisten", (s) -> s with { ears: [e for e in s.ears if e.kind != kind] }),
             .Style(css) -> { self.sheet = css },
@@ -409,7 +351,7 @@ impl Host {
     /// A frame applied whole. An element still held and standing nowhere
     /// on the page when the frame ends is an orphan, and a fault.
     mut fn take(frame: Bytes) {
-        let got = read(frame)
+        let got = read(frame, self.heard)
         for r in got.records { self.apply(r) }
         for f in present(got.fault) { self.fault(f) }
         for id in self.made {
@@ -418,8 +360,14 @@ impl Host {
     }
 }
 
+/// How many hearings each of a stream's frames told for the first time.
+export fn tellings(frames: List<Bytes>) -> List<int> {
+    let heard = heard_nothing()
+    [read(f, heard).tellings for f in frames]
+}
+
 /// The records of a frame, a line each, as a reader follows them.
-export fn records(frame: Bytes) -> List<string> { [rec_line(r) for r in read(frame).records] }
+export fn records(frame: Bytes) -> List<string> { [rec_line(r) for r in read(frame, heard_nothing()).records] }
 
 /// An id as a line spells it: `-` where a record names none.
 fn id_word(id: int) -> string { if id == no_id { "-" } else { "${id}" } }
@@ -437,8 +385,7 @@ fn rec_line(r: Rec) -> string {
         .DropAttr(id, name) -> "unattr ${id} ${name}",
         .SetProp(id, name, says, value) -> "prop ${id} ${name}=${says}:${quoted(value)}",
         .SetText(id, content) -> "retext ${id} ${quoted(content)}",
-        .Define(ear) -> "define ${ear.kind}:${ear.event}:${ear.says}:${ear.reads}:${ear.prevents}:${ear.key}",
-        .Listen(id, kind, says) -> "listen ${id} ${kind}:${says}",
+        .Listen(id, ear) -> "listen ${id} ${ear.kind}:${ear.event}:${ear.says}:${ear.reads}:${ear.prevents}:${ear.key}",
         .Unlisten(id, kind) -> "unlisten ${id} ${kind}",
         .Style(_) -> "style",
         .Call(id, verb) -> "call ${id} ${verb}",

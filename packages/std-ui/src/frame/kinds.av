@@ -9,8 +9,9 @@
 //!   fraction  its eight bytes of bits, low byte first
 //!   text      its byte length as a word, then its bytes
 //!   texts     their count as a word, then each text
-//!   told      a value a stream says once: zero, then the value, the first
-//!             time; one more than its place among those told, after
+//!   octets    their count as a word, then each byte
+//!   told      a value a stream says once: zero, its place among those told,
+//!             then the value, the first time; one more than its place, after
 //!
 //! A word stands for absence only where a field may be absent: zero for
 //! none, one more than the word for any other. Every sequence carries its
@@ -91,8 +92,10 @@ impl FrameWriter {
         let bytes = value.bytes.get()
         let key = bytes.map("${it}").join(",")
         let was? = self.told.get().get(key) else {
-            self.told.put(key, self.told.get().length)
+            let place = self.told.get().length
+            self.told.put(key, place)
             self.word(0)
+            self.word(place)
             // LICENSED loops.push_loop: a cell's list grows in place — a concat copies all said so far
             for b in bytes { self.byte(b) }
             return
@@ -115,7 +118,13 @@ export fn heard_nothing() -> Heard {
 }
 
 /// A frame being read: its bytes, how far, and what its stream was told.
-export type FrameReader = { bytes: List<int>, at: Cell<int> = Cell.new(0), heard: Heard = heard_nothing() }
+/// `tellings` counts the values this frame told for the first time.
+export type FrameReader = {
+    bytes: List<int>,
+    at: Cell<int> = Cell.new(0),
+    heard: Heard = heard_nothing(),
+    tellings: Cell<int> = Cell.new(0),
+}
 
 /// `frame` to be read, its stream having heard `heard`.
 export fn reader(frame: Bytes, heard: Heard) -> FrameReader {
@@ -179,10 +188,15 @@ impl FrameReader {
 
     fn text() -> Result<string, FrameFault> {
         let from = self.at.get()
-        let raw = self.octets()?
-        let bytes? = raw.bytes() else { fail FrameFault { at: from, says: runs_past() } }
-        let s? = bytes.text() else { fail FrameFault { at: from, says: not_text() } }
+        let s? = (self.bytes()?).text() else { fail FrameFault { at: from, says: not_text() } }
         s
+    }
+
+    fn bytes() -> Result<Bytes, FrameFault> {
+        let from = self.at.get()
+        let raw = self.octets()?
+        let out? = raw.bytes() else { fail FrameFault { at: from, says: runs_past() } }
+        out
     }
 
     fn texts() -> Result<List<string>, FrameFault> {
@@ -199,9 +213,13 @@ impl FrameReader {
         FrameReader { bytes: bytes }
     }
 
-    /// The value read from `from` on, kept as told where it was first told.
-    fn kept_told(from: int) {
-        self.heard.push(self.bytes.slice(from, self.at.get()))
+    /// The value read from `from` on, kept as the one told at `place`.
+    fn kept_told(place: int, from: int) {
+        let bytes = self.bytes.slice(from, self.at.get())
+        // LICENSED loops.push_loop: a place told past the end grows the list to it
+        while self.heard.get().length <= place { self.heard.push([]) }
+        self.heard.set_at(place, bytes)
+        self.tellings.set(self.tellings.get() + 1)
     }
 }
 

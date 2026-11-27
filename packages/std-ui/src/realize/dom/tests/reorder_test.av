@@ -4,7 +4,7 @@
 //! list that reads plausibly and leaves a row in the wrong place fails
 //! here and nowhere else.
 use @std.ui.realize.dom.live.{Live, live}
-use @std.ui.realize.dom.patch.{Patch}
+use @std.ui.realize.dom.patch.{After, Patch}
 use @std.ui.tree.identity.{NodeId}
 use @std.ui.tree.node.{Node}
 use @std.ui.realize.tests.support.{holding, keyed, text_node}
@@ -20,16 +20,20 @@ fn arrangements(pool: List<string>) -> List<List<string>> {
 }
 
 /// `order` with `id` placed after `after`, or first.
-fn placed(order: List<int>, id: int, after: int?) -> List<int> {
+fn placed(order: List<int>, id: int, after: After) -> List<int> {
     let others = [x for x in order if x != id]
-    let at = if after == null { 0 } else { others.index_of(after!) + 1 }
+    let at = match after {
+        .First -> 0,
+        .Append -> others.length,
+        .Sibling(s) -> others.index_of(s.n) + 1,
+    }
     others.slice(0, at).concat([id]).concat(others.slice(at, others.length))
 }
 
 /// The children of `list` after one patch, as a host would leave them.
 fn after_patch(order: List<int>, list: NodeId, p: Patch) -> List<int> {
     match p {
-        .Place(id, parent, after) -> if parent == list { placed(order, id.n, after?.n) } else { order },
+        .Place(id, parent, after) -> if parent == list { placed(order, id.n, after) } else { order },
         .Remove(id) -> [x for x in order if x != id.n],
         .Create(_, _) or .CreateText(_, _) or .SetAttr(_, _, _) or .DropAttr(_, _) or .SetProp(_, _, _) or .SetText(_, _) or .Listen(_, _) or .Unlisten(_, _) or .Style(_) or .Call(_, _) or .SetVar(_, _, _) or .DropVar(_, _) or .Adopt(_, _) -> order,
     }

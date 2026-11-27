@@ -1,7 +1,7 @@
 //! `tests/support/spoken.av` — a paint as text a test reads: each patch one
 //! line, each element spelled by the path it stands at. Never the wire.
 use realize.dom.live.{Live}
-use realize.dom.patch.{Patch, Held, Says, diff}
+use realize.dom.patch.{After, Patch, Held, Says, diff}
 use realize.html.element.{Element, lowered}
 use realize.html.css.{page_drawn}
 use tree.identity.{NodeId, readable, under}
@@ -58,6 +58,11 @@ fn spelled(id: NodeId?, at: Map<string, string>) -> string {
     at.get("${held.n}") ?? "?${held.n}"
 }
 
+/// Where a place puts its element, as a line spells it: `-` first, `end` at the end of the run.
+fn after_word(a: After, at: Map<string, string>) -> string {
+    match a { .First -> "-", .Append -> "end", .Sibling(id) -> spelled(id, at) }
+}
+
 fn held_word(value: Held) -> string {
     match value { .Text(t) -> "\"${t}\"", .Flag(on) -> "${on}" }
 }
@@ -72,13 +77,13 @@ fn patch_line(p: Patch, at: Map<string, string>) -> string {
     match p {
         .Create(id, tag) -> "create ${spelled(id, at)} ${tag.word()}",
         .CreateText(id, content) -> "text ${spelled(id, at)} ${content}",
-        .Place(id, parent, after) -> "place ${spelled(id, at)} in ${spelled(parent, at)} after ${spelled(after, at)}",
+        .Place(id, parent, after) -> "place ${spelled(id, at)} in ${spelled(parent, at)} after ${after_word(after, at)}",
         .Remove(id) -> "remove ${spelled(id, at)}",
         .SetAttr(id, name, value) -> "attr ${spelled(id, at)} ${name.word()}=${value}",
         .DropAttr(id, name) -> "unattr ${spelled(id, at)} ${name.word()}",
         .SetProp(id, name, value) -> "prop ${spelled(id, at)} ${name.word()}=${held_word(value)}",
         .SetText(id, content) -> "retext ${spelled(id, at)} ${content}",
-        .Listen(id, to) -> "listen ${spelled(id, at)} ${row_at(to.action.seat).event}${says_word(to.says)}",
+        .Listen(id, to) -> "listen ${spelled(id, at)} ${row_at(to.seat).event}${says_word(to.says)}",
         .Unlisten(id, seat) -> "unlisten ${spelled(id, at)} ${row_at(seat).event}",
         .Style(_) -> "style",
         .Call(id, verb) -> "call ${spelled(id, at)} ${verb}",

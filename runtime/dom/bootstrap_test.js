@@ -3,37 +3,47 @@
 // and what an event says. Op numbers come from the generated table, so a
 // wire the program changed is the wire this test speaks.
 import { compiled, stateOf, printOf, wordsOf, standingOf, createApplier, createFetches, createFeeds, createFrames, createTimers, guarded, parseFrame, parseRequest, sendAnswer, sendEvent, run, HOST, ROWS, WIRE_VERSION } from "./bootstrap.js";
-import { AFTER, NO_ID, OP, SAYS, TAGS } from "./wire.gen.js";
+import { CODES, DIALECT, NO_ID, SAYS, WORDS } from "./wire.gen.js";
+
+const OP = CODES.Patch;
 import v8 from "node:v8";
 import vm from "node:vm";
 import { dispatch, stubDocument, stubElement, textOf } from "./stub_dom.js";
 
-// A fixture encoder — the CONSUMING side is what is under test; the
-// producing side's exact bytes are pinned by the Avra wire test.
-const i32 = (v) => [v & 255, (v >>> 8) & 255, (v >>> 16) & 255, (v >>> 24) & 255];
+// A fixture encoder over the frame's kinds — the CONSUMING side is what is
+// under test; the producing side's exact bytes are pinned by the Avra wire
+// test, and the layout each record reads is generated (`READ`).
 const utf8 = (s) => [...new TextEncoder().encode(s)];
-const str = (s) => [...i32(utf8(s).length), ...utf8(s)];
-// An id is a number; a fixture names elements by small ones.
-const varint = (n) => (n < 128 ? [n] : [(n % 128) + 128, ...varint(Math.floor(n / 128))]);
-const idBytes = (n) => varint(n + 1);
-const afterBytes = (n) => varint(n === NO_ID ? AFTER.first : n + AFTER.sibling);
-const create = (id, tag) => [OP.create, ...idBytes(id), ...varint(TAGS.indexOf(tag))];
-const createText = (id, content) => [OP.create_text, ...idBytes(id), ...str(content)];
-const place = (id, parent, after) => [OP.place, ...idBytes(id), ...idBytes(parent), ...afterBytes(after)];
-const placeAtEnd = (id, parent) => [OP.place, ...idBytes(id), ...idBytes(parent), ...varint(AFTER.append)];
-const remove = (id) => [OP.remove, ...idBytes(id)];
-const setAttr = (id, name, value) => [OP.set_attr, ...idBytes(id), ...str(name), ...str(value)];
-const dropAttr = (id, name) => [OP.drop_attr, ...idBytes(id), ...str(name)];
-const setProp = (id, name, says, value) => [OP.set_prop, ...idBytes(id), ...str(name), ...i32(says), ...str(value)];
-const setText = (id, content) => [OP.set_text, ...idBytes(id), ...str(content)];
-const define = (kind, event, says, reads, prevents, key = "") => [OP.define, ...i32(kind), ...i32(says), ...str(event), ...str(reads), ...i32(prevents ? 1 : 0), ...str(key)];
-const listen = (id, kind, event, says, reads, prevents, key = "") => [...define(kind, event, says, reads, prevents, key), OP.listen, ...idBytes(id), ...i32(kind), ...i32(says)];
-const unlisten = (id, kind) => [OP.unlisten, ...idBytes(id), ...i32(kind)];
-const setVar = (id, property, value) => [OP.set_var, ...idBytes(id), ...str(property), ...str(value)];
-const dropVar = (id, property) => [OP.drop_var, ...idBytes(id), ...str(property)];
-const style = (css) => [OP.style, ...str(css)];
-const call = (id, verb) => [OP.call, ...idBytes(id), ...str(verb)];
-const adopt = (words, ...kinds) => [OP.adopt, ...i32(words), ...i32(kinds.length), ...kinds.flatMap(str)];
+const word = (n) => (n < 128 ? [n] : [(n % 128) + 128, ...word(Math.floor(n / 128))]);
+const orNone = (n) => word(n === NO_ID ? 0 : n + 1);
+const text = (s) => [...word(utf8(s).length), ...utf8(s)];
+const named = (words, w) => word(words.indexOf(w));
+const namedOrNone = (words, w) => (w ? word(words.indexOf(w) + 1) : [0]);
+const flag = (on) => [on ? 1 : 0];
+const number = (n) => word(n < 0 ? -2 * n - 1 : 2 * n);
+const AFTER = CODES.After;
+const HELD = CODES.Held;
+const afterBytes = (n) => (n === NO_ID ? [AFTER.first] : [AFTER.sibling, ...word(n)]);
+const create = (id, tag) => [OP.create, ...word(id), ...named(WORDS.HtmlTag, tag)];
+const createText = (id, content) => [OP.create_text, ...word(id), ...text(content)];
+const place = (id, parent, after) => [OP.place, ...word(id), ...orNone(parent), ...afterBytes(after)];
+const placeAtEnd = (id, parent) => [OP.place, ...word(id), ...orNone(parent), AFTER.append];
+const remove = (id) => [OP.remove, ...word(id)];
+const setAttr = (id, name, value) => [OP.set_attr, ...word(id), ...named(WORDS.HtmlAttrName, name), ...text(value)];
+const dropAttr = (id, name) => [OP.drop_attr, ...word(id), ...named(WORDS.HtmlAttrName, name)];
+const heldBytes = (says, value) => (says === SAYS.flag ? [HELD.flag, ...flag(value !== "")] : [HELD.text, ...text(value)]);
+const setProp = (id, name, says, value) => [OP.set_prop, ...word(id), ...named(WORDS.HtmlAttrName, name), ...heldBytes(says, value)];
+const setText = (id, content) => [OP.set_text, ...word(id), ...text(content)];
+// Each hearing a fixture tells is told at a place of its own.
+let places = 0;
+const hearing = (kind, event, says, reads, prevents, key) => [...word(kind), ...text(event), ...word(says), ...namedOrNone(WORDS.HtmlAttrName, reads), ...flag(prevents), 0, ...text(key)];
+const listen = (id, kind, event, says, reads, prevents, key = "") => [OP.listen, ...word(id), 0, ...word(places++), ...hearing(kind, event, says, reads, prevents, key)];
+const unlisten = (id, kind) => [OP.unlisten, ...word(id), ...word(kind)];
+const setVar = (id, property, value) => [OP.set_var, ...word(id), ...text(property), ...text(value)];
+const dropVar = (id, property) => [OP.drop_var, ...word(id), ...text(property)];
+const style = (css) => [OP.style, ...text(css)];
+const call = (id, verb) => [OP.call, ...word(id), ...text(verb)];
+const adopt = (words, ...kinds) => [OP.adopt, ...word(kinds.length), ...kinds.flatMap(text), ...number(words)];
 const frame = (...recs) => Uint8Array.from([WIRE_VERSION, ...recs.flat()]);
 
 let fails = 0;
@@ -305,9 +315,9 @@ try { parseFrame(Uint8Array.from([WIRE_VERSION + 1])); } catch { refused = true;
 check("a frame of another VERSION refuses", refused, true);
 let unknown = "";
 try { parseFrame(Uint8Array.from([WIRE_VERSION, 200])); } catch (e) { unknown = e.message; }
-check("an op the table does not hold refuses", unknown, "unknown patch op 200");
+check("an op the table does not hold refuses", unknown, "a frame breaks a law at byte 2: no Patch variant is 200");
 check("an id past 32 bits reads whole", parseFrame(frame(create(5000000000, "div")))[0].id, 5000000000);
-check("no id reads as no id", parseFrame(frame(place(1, NO_ID, NO_ID)))[0].after, NO_ID);
+check("no parent reads as no id, and no sibling as the first place", [parseFrame(frame(place(1, NO_ID, NO_ID)))[0].parent, parseFrame(frame(place(1, NO_ID, NO_ID)))[0].after.op], [NO_ID, AFTER.first]);
 // ── a removed element is let go ──
 const churn = page();
 const rows = 10000;
@@ -324,11 +334,11 @@ collect();
 check("a row taken off the page is collected, not kept by the host", watched.deref(), undefined);
 
 const edges = [0, 127, 128, 16383, 16384, 2097151, 2097152, 2 ** 40];
-check("ids at the seven-bit edges read whole, in the bytes of one more than the id", [parseFrame(frame(...edges.map((n) => remove(n)))).map((p) => p.id), edges.map((n) => idBytes(n).length)], [edges, [1, 2, 2, 3, 3, 4, 4, 6]]);
+check("ids at the seven-bit edges read whole, each in the bytes of its own number", [parseFrame(frame(...edges.map((n) => remove(n)))).map((p) => p.id), edges.map((n) => word(n).length)], [edges, [1, 1, 2, 2, 3, 3, 4, 6]]);
 const ended = page();
 ended.apply(frame(create(0, "div"), place(0, NO_ID, NO_ID), create(1, "span"), placeAtEnd(1, 0), create(2, "a"), placeAtEnd(2, 0), create(3, "li"), place(3, 0, NO_ID)));
 check("a place that says the end of the run goes last, and one that says first goes first", tags(ended.mount.childNodes[0]), ["li", "span", "a"]);
-check("every op the table holds has a fixture here", Object.keys(OP).sort(), ["adopt", "call", "create", "create_text", "define", "drop_attr", "drop_var", "listen", "place", "remove", "set_attr", "set_prop", "set_text", "set_var", "style", "unlisten"]);
+check("every op the table holds has a fixture here", Object.keys(OP).sort(), ["adopt", "call", "create", "create_text", "drop_attr", "drop_var", "listen", "place", "remove", "set_attr", "set_prop", "set_text", "set_var", "style", "unlisten"]);
 
 
 // ── the echo's seam ──
@@ -416,7 +426,7 @@ const clockAt = () => {
 // method's word, the URL, the wait (-1: none), the fields, the body's content
 // type and its octets.
 const requestFrame = ({ method = "GET", url, timeoutMs = -1, headers = [], kind = "", body = [] }) => Uint8Array.from([
-  WIRE_VERSION, ...str(method), ...str(url), ...i32(timeoutMs), ...i32(headers.length), ...headers.flatMap(([n, v]) => [...str(n), ...str(v)]), ...str(kind), ...i32(body.length), ...body,
+  WIRE_VERSION, ...text(method), ...text(url), ...number(timeoutMs), ...word(headers.length * 2), ...headers.flatMap(([n, v]) => [...text(n), ...text(v)]), ...text(kind), ...word(body.length), ...body,
 ]);
 {
   const r = parseRequest(requestFrame({ method: "POST", url: "/a?b=1", timeoutMs: 250, headers: [["accept", "text/plain"]], kind: "application/json", body: utf8("{}") }));
@@ -424,8 +434,8 @@ const requestFrame = ({ method = "GET", url, timeoutMs = -1, headers = [], kind 
   const e = parseRequest(requestFrame({ url: "/x" }));
   check("a bare get has no wait, no fields and no body", [e.method, e.timeoutMs, e.headers.length, e.kind, e.body.length], ["GET", -1, 0, "", 0]);
   let refused = "";
-  try { parseRequest(Uint8Array.from([WIRE_VERSION + 1, 0, 0, 0, 0])); } catch (err) { refused = err.message; }
-  check("a request of another wire version is refused by name", refused.startsWith("unsupported wire version"), true);
+  try { parseRequest(Uint8Array.from([DIALECT.dom15, 0, 0, 0, 0])); } catch (err) { refused = err.message; }
+  check("a request of another dialect is refused by both names", refused, "this frame is `dom15`, and this host reads `dom16`");
 }
 {
   // A fetch a test answers by hand: each call is a promise the test settles.
@@ -614,16 +624,16 @@ const requestFrame = ({ method = "GET", url, timeoutMs = -1, headers = [], kind 
   check("a page that is not the program's is emptied, the rest of the frame skipped, and the program asked to draw again", [t.mount.childNodes.length, repairs], [0, 1]);
 
   {
-    // The frame a host drops takes its definitions with it: what answers the
-    // repair must define what it listens to, or the host refuses the listen.
+    // A hearing is named by the place it was told at: a listen naming a place
+    // nothing told is refused, and one that tells its hearing is applied.
     const lost = served(doc);
     const apply7 = createApplier(doc, lost.mount, () => {}, null, () => {});
-    const seat = (id) => [OP.listen, ...idBytes(id), ...i32(2), ...i32(SAYS.text)];
+    const seat = (id) => [OP.listen, ...word(id), ...word(100)];
     const repair = (...recs) => { try { apply7(frame(create(1, "input"), ...recs)); return "applied"; } catch (e) { return e.message; } };
     apply7(frame(adopt(wordsOf(standingOf(lost.mount)), "div"), listen(1, 2, "input", SAYS.text, "value", false)));
     const forgotten = repair(seat(1));
-    const defined = repair(define(2, "input", SAYS.text, "value", false), seat(1));
-    check("a repair after a dropped frame that listens without defining is refused, and one that defines is applied", [/no definition told/.test(forgotten), defined], [true, "applied"]);
+    const defined = repair(listen(1, 2, "input", SAYS.text, "value", false));
+    check("a repair that names a hearing never told is refused, and one that tells it is applied", [/nothing was told at 99/.test(forgotten), defined], [true, "applied"]);
   }
 
   {

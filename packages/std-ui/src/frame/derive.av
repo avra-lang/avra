@@ -5,7 +5,7 @@
 //! decided by its type alone (`frame/kinds.av`):
 //!
 //!   int → number · bool → flag · float → fraction · string → text ·
-//!   List<string> → texts · a `@derive(Codes)` enum → its code as a word ·
+//!   List<string> → texts · Bytes → octets · a `@derive(Codes)` enum → its code as a word ·
 //!   a `@derive(Words)` enum → its place as a word · a record or named type
 //!   over one int → that int as a word · `T?` over any word → a word, zero
 //!   for none · a `@derive(Frame)` type → nested, written by its own frame
@@ -79,6 +79,7 @@ enum Carried {
     Fraction
     Text
     Texts
+    Octets
     Word(w: Worded)
     WordOrNone(w: Worded)
     Nested(of: string)
@@ -108,6 +109,7 @@ fn carried(f: Field) -> Carried? {
         .Float -> if told { null } else { Carried.Fraction },
         .Str -> if told { null } else { Carried.Text },
         .List(.Str) -> if told { null } else { Carried.Texts },
+        .Bytes -> if told { null } else { Carried.Octets },
         .Named(n, _) -> named_carried(n, told),
         .Opt(.Named(n, _)) -> {
             let w? = worded(n) else { return null }
@@ -151,6 +153,7 @@ fn written(c: Carried, v: Code, at: int) -> Stmts {
         .Fraction -> quote { w.fraction(${v}) },
         .Text -> quote { w.text(${v}) },
         .Texts -> quote { w.texts(${v}) },
+        .Octets -> quote { w.octets(${v}) },
         .Word(n) -> quote { w.word(${word_of(n, v)}) },
         .WordOrNone(n) -> quote { w.word_or_none(${word_or_none_of(n, v)}) },
         .Nested(_) -> quote { ${v}.framed(w) },
@@ -237,6 +240,7 @@ fn read(c: Carried, into: string, at: int) -> Stmts {
         .Fraction -> quote { let ${into} = r.fraction()? },
         .Text -> quote { let ${into} = r.text()? },
         .Texts -> quote { let ${into} = r.texts()? },
+        .Octets -> quote { let ${into} = r.bytes()? },
         .Word(w) -> quote { let ${into} = ${read_word(w)} },
         .WordOrNone(w) -> {
             let got = "got_${at}"
@@ -258,9 +262,10 @@ fn told_read(n: string, into: string, at: int) -> Stmts {
     quote {
         let ${ref} = r.word()?
         let ${into} = if ${name(ref)} == 0 {
+            let place = r.word()?
             let ${from} = r.at.get()
             let first = ${name(n)}.unframed(r)?
-            r.kept_told(${name(from)})
+            r.kept_told(place, ${name(from)})
             first
         } else {
             ${name(n)}.unframed(r.told_at(${name(ref)})?)?
@@ -302,6 +307,7 @@ fn kind_word(c: Carried) -> Code {
         .Fraction -> quote { FieldKind.Fraction },
         .Text -> quote { FieldKind.Text },
         .Texts -> quote { FieldKind.Texts },
+        .Octets -> quote { FieldKind.Octets },
         .Word(_) -> quote { FieldKind.Word },
         .WordOrNone(_) -> quote { FieldKind.WordOrNone },
         .Nested(_) -> quote { FieldKind.Nested },
@@ -314,7 +320,7 @@ fn of_name(c: Carried) -> string {
     match c {
         .Word(w) or .WordOrNone(w) -> worded_name(w),
         .Nested(n) or .Told(n) -> n,
-        .Number or .Flag or .Fraction or .Text or .Texts -> "",
+        .Number or .Flag or .Fraction or .Text or .Texts or .Octets -> "",
     }
 }
 

@@ -7,7 +7,7 @@ use @std.ui.realize.dom.live.{live}
 use @std.ui.realize.tests.support.{named, seat_for, Event}
 use @std.ui.realize.dom.page.{Paged, paged}
 use @std.ui.realize.dom.patch.{Says}
-use @std.ui.realize.dom.tests.support.{records}
+use @std.ui.realize.dom.tests.support.{records, tellings}
 
 /// The frames a host was sent, in order.
 type Host = { frames: Cell<List<Bytes>> = Cell.new([]) }
@@ -181,21 +181,18 @@ spec "an app on a live page" {
     }
 }
 
-/// How many `define` records a frame holds.
-fn defines(frame: Bytes) -> int { records(frame).filter(it.starts_with("define")).length }
-
 spec "what a host is told of a seat" {
     given "a page painting again" {
-        then "is told once: a later frame defines nothing it already did" {
+        then "is told once: a later frame tells nothing it already did" {
             let host = Host {}
             let on = counting(Cell.new(0), host)
             on.app.paint()
             let _ = press(on, "Raise")
-            [defines(f) for f in host.frames.get()].map("${it}").join(",") == "1,0"
+            tellings(host.frames.get()).map("${it}").join(",") == "1,0"
         }
     }
     given "the same app on a new connection" {
-        then "defines again, so the new page refuses nothing" {
+        then "tells its hearing again, so the new page refuses nothing" {
             let host = Host {}
             let on = counting(Cell.new(0), host)
             on.app.paint()
@@ -203,7 +200,7 @@ spec "what a host is told of a seat" {
             on.app.paint()
             let frames = host.frames.get()
             frames.length == 2 &&
-                defines(frames[1]) == 1 &&
+                tellings(frames)[1] == 1 &&
                 records(frames[1]).filter(it.starts_with("listen")).length == 1
         }
     }

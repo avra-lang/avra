@@ -8,61 +8,33 @@
 // program's own declarations — see realize/dom/wire.av.
 //
 // Same file for every app.
-import { WIRE_VERSION, NO_ID, OP, SAYS, HOST, ROWS, TAGS, AFTER } from "./wire.gen.js";
+import { WIRE_VERSION, DIALECT, NO_ID, CODES, READ, SAYS, HOST, ROWS } from "./wire.gen.js";
+import { reader } from "./frame.js";
 import { createWindows } from "./windows.js";
 
 export { WIRE_VERSION, HOST, ROWS };
 
-// A `place` that follows no sibling but the end of the parent's run.
-export const APPENDED = -2;
+// The codes a patch and a place say themselves by.
+const OP = CODES.Patch;
+const AFTER = CODES.After;
 
-// A frame's patches, in order. An id is one more than its number in seven-bit
-// groups, so zero is `NO_ID`, where a record names none: the page itself as a
-// parent. A `place` says where it goes with one number: the first place, the
-// end of the parent's run, or two more than the sibling it follows. A tag is
-// its place among `TAGS`. Every other number is four bytes; a text is its
-// byte length, then its bytes.
-export function parseFrame(bytes) {
-  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const decoder = new TextDecoder();
-  let i = 0;
-  const seen = bytes[i++];
-  if (seen !== WIRE_VERSION) {
-    throw new Error(`unsupported wire version ${seen} — this host speaks ${WIRE_VERSION}`);
-  }
-  const int = () => { const v = dv.getInt32(i, true); i += 4; return v; };
-  const varint = () => { let n = 0, scale = 1, b; do { b = bytes[i++]; n += (b & 127) * scale; scale *= 128; } while (b >= 128); return n; };
-  const id = () => varint() - 1;
-  const after = () => { const v = varint(); return v === AFTER.first ? NO_ID : v === AFTER.append ? APPENDED : v - AFTER.sibling; };
-  const tag = () => TAGS[varint()];
-  const str = () => { const len = int(); const s = decoder.decode(bytes.subarray(i, i + len)); i += len; return s; };
+// The dialect a frame names first, by its name: a frame of another is
+// refused by both names, never read as this one.
+const dialectName = (code) => Object.keys(DIALECT).find((name) => DIALECT[name] === code) ?? `${code}`;
+const readsDialect = (r) => {
+  const seen = r.byte();
+  if (seen !== WIRE_VERSION) throw new Error(`this frame is \`${dialectName(seen)}\`, and this host reads \`${dialectName(WIRE_VERSION)}\``);
+};
+
+// A frame's patches, in order: each record as the program's own `Patch`
+// declares it, read by the readers generated from it (`READ`). `told` is
+// what the frames before this one told, kept by the caller.
+export function parseFrame(bytes, told = []) {
+  const r = reader(bytes, told);
+  readsDialect(r);
   const patches = [];
-  while (i < bytes.length) {
-    const op = bytes[i++];
-    if (op === OP.create) patches.push({ op, id: id(), tag: tag() });
-    else if (op === OP.create_text || op === OP.set_text) patches.push({ op, id: id(), content: str() });
-    else if (op === OP.place) patches.push({ op, id: id(), parent: id(), after: after() });
-    else if (op === OP.remove) patches.push({ op, id: id() });
-    else if (op === OP.set_attr) patches.push({ op, id: id(), name: str(), value: str() });
-    else if (op === OP.drop_attr) patches.push({ op, id: id(), name: str() });
-    else if (op === OP.set_prop) patches.push({ op, id: id(), name: str(), says: int(), value: str() });
-    else if (op === OP.define) patches.push({ op, kind: int(), says: int(), event: str(), reads: str(), prevents: int() !== 0, key: str() });
-    else if (op === OP.listen) patches.push({ op, id: id(), kind: int(), says: int() });
-    else if (op === OP.unlisten) patches.push({ op, id: id(), kind: int() });
-    else if (op === OP.style) patches.push({ op, css: str() });
-    else if (op === OP.call) patches.push({ op, id: id(), verb: str() });
-    else if (op === OP.set_var) patches.push({ op, id: id(), property: str(), value: str() });
-    else if (op === OP.drop_var) patches.push({ op, id: id(), property: str() });
-    else if (op === OP.adopt) patches.push({ op, words: int(), kinds: Array.from({ length: int() }, str) });
-    else throw new Error(`unknown patch op ${op}`);
-  }
+  while (!r.ended()) patches.push(READ.Patch(r));
   return patches;
-}
-
-// A property's value as the wire's text for it. A property holds text or a
-// flag: a number control's `value` is the text that spells it.
-function valueOf(says, text) {
-  return says === SAYS.flag ? text !== "" : text;
 }
 
 // What a control says, read off the property the patch named. A control
@@ -108,7 +80,7 @@ function caretOf(el) {
 // makes a list.
 function with_seat(mine, def) {
   if (mine === undefined) return def;
-  const rest = (Array.isArray(mine) ? mine : [mine]).filter((d) => d.kind !== def.kind);
+  const rest = (Array.isArray(mine) ? mine : [mine]).filter((d) => d.seat !== def.seat);
   return rest.length === 0 ? def : [...rest, def];
 }
 
@@ -202,7 +174,8 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null, repai
   // seat, or a list of them for a second — so an element costs no object here.
   const nodes = [];
   const hears = [];
-  const defined = new Map();
+  // What this page's frames have told it once, by place.
+  const told = [];
   const armed = new Set();
   // WHO HEARS WHAT IS DATA HERE, NEVER A LISTENER ON EACH ELEMENT: one
   // capturing listener per event word on the mount finds the hearers on the
@@ -213,7 +186,7 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null, repai
     if (def.event !== ev.type) return;
     if (def.key && (ev.key !== def.key || ev.isComposing || ev.keyCode === 229)) return;
     if (def.prevents && ev.preventDefault) ev.preventDefault();
-    send(el.__avra_id, def.kind, saidBy(el, def.says, def.reads));
+    send(el.__avra_id, def.seat, saidBy(el, def.says, def.reads));
   };
   const hearing = (el, ev) => {
     const mine = hears[el.__avra_id];
@@ -280,7 +253,7 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null, repai
         if (!def.reads || el[def.reads] === undefined) continue;
         const seeded = def.reads === "checked" ? el.getAttribute("checked") !== null : el.getAttribute(def.reads) ?? "";
         if (el[def.reads] === seeded) continue;
-        send(el.__avra_id, def.kind, saidBy(el, def.says, def.reads));
+        send(el.__avra_id, def.seat, saidBy(el, def.says, def.reads));
         break;
       }
     }
@@ -328,7 +301,7 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null, repai
     [OP.place]: (p) => {
       const parent = p.parent === NO_ID ? mount : need(p.parent);
       const el = need(p.id);
-      const before = (p.after === NO_ID ? parent.childNodes[0] : p.after === APPENDED ? null : need(p.after).nextSibling) || null;
+      const before = (p.after.op === AFTER.first ? parent.childNodes[0] : p.after.op === AFTER.append ? null : need(p.after.id).nextSibling) || null;
       if (before === el || (el.parentNode === parent && el.nextSibling === before)) return;
       carry(parent, el, before);
     },
@@ -347,17 +320,15 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null, repai
     // text back to it would move the caret a user is typing at.
     [OP.set_prop]: (p) => {
       const el = need(p.id);
-      const value = valueOf(p.says, p.value);
+      const value = p.value.value;
       if (el[p.name] !== value) el[p.name] = value;
     },
     [OP.set_text]: (p) => { need(p.id).textContent = p.content; },
-    // WHAT A SEAT'S EVENT IS arrives once (`define`), and each `listen` of it
-    // is an element and two numbers.
-    [OP.define]: (p) => { defined.set(p.kind * 4 + p.says, p); },
+    // WHAT A SEAT'S EVENT IS arrives once a stream, and each `listen` of it
+    // after is an element and the place it was told at.
     [OP.listen]: (p) => {
       need(p.id);
-      const def = defined.get(p.kind * 4 + p.says);
-      if (!def) throw new Error(`a patch listens to seat ${p.kind} saying ${p.says}, which no definition told`);
+      const def = p.to;
       hears[p.id] = with_seat(hears[p.id], def);
       if (!armed.has(def.event)) {
         armed.add(def.event);
@@ -371,7 +342,7 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null, repai
       }
     },
     [OP.unlisten]: (p) => {
-      const rest = listed(p.id).filter((def) => def.kind !== p.kind);
+      const rest = listed(p.id).filter((def) => def.seat !== p.seat);
       hears[p.id] = rest.length === 0 ? undefined : rest.length === 1 ? rest[0] : rest;
     },
     [OP.style]: (p) => { if (styleEl) styleEl.textContent = p.css; },
@@ -385,7 +356,7 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null, repai
   };
 
   const applyFrame = (bytes) => {
-    for (const p of parseFrame(bytes)) {
+    for (const p of parseFrame(bytes, told)) {
       apply[p.op](p);
       if (broken) break;
     }
@@ -393,7 +364,7 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null, repai
     replay();
   };
   // What each element hears, for a reader of the page to inspect.
-  applyFrame.ears = (id) => listed(id).map((def) => [def.kind, def]);
+  applyFrame.ears = (id) => listed(id).map((def) => [def.seat, def]);
   // How many slots hold an element and a hearing: what the page still keeps.
   applyFrame.held = () => ({ nodes: nodes.filter((n) => n !== undefined).length, hears: hears.filter((h) => h !== undefined).length });
   return applyFrame;
@@ -515,28 +486,16 @@ export function createTimers(clock, fired) {
 }
 
 // A request frame the program wrote (`request_frame`, realize/dom/wire.av):
-// the wire's version, the method's word, the URL, the wait in milliseconds
-// (-1: none), the fields as a count and name/value pairs, and the body as its
-// content type (empty: none) and its octets.
+// the program's `Asked`, read by the reader generated from it — the method's
+// word, the URL, the wait in milliseconds (-1: none), the fields' names and
+// values in turn, and the body as its content type (empty: none) and octets.
 export function parseRequest(bytes) {
-  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const decoder = new TextDecoder();
-  let i = 0;
-  const seen = bytes[i++];
-  if (seen !== WIRE_VERSION) {
-    throw new Error(`unsupported wire version ${seen} — this host speaks ${WIRE_VERSION}`);
-  }
-  const int = () => { const v = dv.getInt32(i, true); i += 4; return v; };
-  const octets = () => { const len = int(); const o = bytes.slice(i, i + len); i += len; return o; };
-  const str = () => decoder.decode(octets());
-  const method = str();
-  const url = str();
-  const timeoutMs = int();
+  const r = reader(bytes, []);
+  readsDialect(r);
+  const asked = READ.Asked(r);
   const headers = [];
-  for (let n = int(); n > 0; n--) headers.push([str(), str()]);
-  const kind = str();
-  const body = octets();
-  return { method, url, timeoutMs, headers, kind, body };
+  for (let j = 0; j + 1 < asked.fields.length; j += 2) headers.push([asked.fields[j], asked.fields[j + 1]]);
+  return { method: asked.method, url: asked.url, timeoutMs: asked.wait_ms, headers, kind: asked.kind, body: asked.body };
 }
 
 // The page's requests, for the program's asks. The program names one by a

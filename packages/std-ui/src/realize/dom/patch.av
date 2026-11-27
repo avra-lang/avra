@@ -12,6 +12,7 @@ use tree.node.{Action, Handler, Said}
 use tree.codes.{Codes, Coded}
 use tree.seats.{Seat, row_at}
 use tree.trap.{trapped}
+use frame.derive.{Frame}
 use realize.html.css.{CssVar}
 use realize.html.delivery.{on_web, web_event}
 use realize.html.element.{Element, Tagged, Worded}
@@ -19,29 +20,42 @@ use realize.html.tags.{HtmlTag, HtmlAttr, HtmlAttrName}
 use realize.diff.matcher.{Draws, Drawn, Stands, siblings}
 
 /// One change to the page. `Place` puts an element under its parent —
-/// the page itself when absent — right after a sibling, or first. `Call`
-/// asks an element for a verb of its own, once everything is placed.
+/// the page itself when absent — where `after` says. `Listen`'s hearing is
+/// told once a stream, and named by its place after. `Call` asks an element
+/// for a verb of its own, once everything is placed. Each variant's code is
+/// the one its record opens with on the wire.
+@derive(Frame)
 export enum Patch {
-    Create(id: NodeId, tag: HtmlTag)
-    CreateText(id: NodeId, content: string)
-    Place(id: NodeId, parent: NodeId?, after: NodeId?)
-    Remove(id: NodeId)
-    SetAttr(id: NodeId, name: HtmlAttrName, value: string)
-    DropAttr(id: NodeId, name: HtmlAttrName)
-    SetProp(id: NodeId, name: HtmlAttrName, value: Held)
-    SetText(id: NodeId, content: string)
-    Listen(id: NodeId, to: Listening)
-    Unlisten(id: NodeId, seat: Seat)
-    Style(css: string)
-    Call(id: NodeId, verb: string)
-    SetVar(id: NodeId, property: string, value: string)
-    DropVar(id: NodeId, property: string)
-    Adopt(kinds: List<string>, words: int)
+    @code(1) Create(id: NodeId, tag: HtmlTag)
+    @code(2) CreateText(id: NodeId, content: string)
+    @code(3) Place(id: NodeId, parent: NodeId?, after: After)
+    @code(4) Remove(id: NodeId)
+    @code(5) SetAttr(id: NodeId, name: HtmlAttrName, value: string)
+    @code(6) DropAttr(id: NodeId, name: HtmlAttrName)
+    @code(7) SetProp(id: NodeId, name: HtmlAttrName, value: Held)
+    @code(8) SetText(id: NodeId, content: string)
+    @code(9) Listen(id: NodeId, @told to: Listening)
+    @code(10) Unlisten(id: NodeId, seat: Seat)
+    @code(11) Style(css: string)
+    @code(12) Call(id: NodeId, verb: string)
+    @code(14) SetVar(id: NodeId, property: string, value: string)
+    @code(15) DropVar(id: NodeId, property: string)
+    @code(16) Adopt(kinds: List<string>, words: int)
+}
+
+/// Where a `Place` puts its element among its parent's: first, at the end of
+/// a run the same diff is building — said of a parent made in it, whose
+/// children it places in order — or right after a sibling.
+@derive(Frame)
+export enum After {
+    @code(1) First
+    @code(2) Append
+    @code(3) Sibling(id: NodeId)
 }
 
 /// What a value a control holds IS — the tag a host is told to read a
-/// control's answer as, and writes a property's value as. ONE variant per
-/// thing a control can say, and one for saying nothing.
+/// control's answer as. ONE variant per thing a control can say, and one
+/// for saying nothing.
 @derive(Codes)
 export enum Says {
     @code(0) Nothing
@@ -50,13 +64,14 @@ export enum Says {
     @code(3) Text
 }
 
-/// How an element hears one event: the page's own word for it, what the
+/// How an element hears one event: the seat it hears, the page's own word for it, what the
 /// event says and the property that answer is read from — none for an
 /// event that says nothing — whether the page's own answer to it is
 /// stopped, the door that answer shuts when it is not, and the one key that
 /// fires it, where one alone does.
+@derive(Frame)
 export type Listening = {
-    action: Action,
+    seat: Seat,
     event: string,
     says: Says,
     reads: HtmlAttrName?,
@@ -73,19 +88,15 @@ export type Heard = { id: NodeId, name: HtmlAttrName, value: Held }
 /// is text whatever the control, so a number a control says is held as
 /// the text that spells it — ONE currency for what was drawn and what was
 /// heard.
+@derive(Frame)
 export enum Held {
-    Text(value: string)
-    Flag(value: bool)
+    @code(1) Text(value: string)
+    @code(2) Flag(value: bool)
 }
 
 /// What a control said, as the property it was read from now holds it.
 export fn held_as(said: Said) -> Held {
     match said { .Text(t) -> .Text(t), .Number(n) -> .Text("${n}"), .Flag(on) -> .Flag(on) }
-}
-
-/// What a held value is, as the wire tags it.
-export fn held_says(value: Held) -> Says {
-    match value { .Text(_) -> .Text, .Flag(_) -> .Flag }
 }
 
 // ── the page's own facts ────────────────────────────────────────
@@ -114,7 +125,7 @@ export fn listening_of(a: Action) -> Listening {
     let web = on_web(a.seat)
     if web.by == null { trapped(unlistened(a.seat)) }
     Listening {
-        action: a,
+        seat: a.seat,
         event: web.by!.word(),
         says: told,
         reads: read_from(told),
@@ -213,7 +224,15 @@ fn same_hearing(a: Action, b: Action) -> bool { a.seat == b.seat && says(a.handl
 /// A CALL WAITS FOR THE END (`after`): an element answers a verb of its
 /// own only once it stands on the page, and one made inside a new parent
 /// stands there when that parent is placed.
-type Differ = { heard: List<Heard>, said: Cell<List<Patch>> = Cell.new([]), after: Cell<List<Patch>> = Cell.new([]) }
+/// THE RUNS BEING BUILT (`building`): each element made in this diff, while
+/// its children are placed — in order, at the end of a run nothing else
+/// holds — so each of them is placed at the end, naming no sibling.
+type Differ = {
+    heard: List<Heard>,
+    said: Cell<List<Patch>> = Cell.new([]),
+    after: Cell<List<Patch>> = Cell.new([]),
+    building: Cell<List<int>> = Cell.new([]),
+}
 
 impl Differ {
     fn say(patches: List<Patch>) {
@@ -222,6 +241,20 @@ impl Differ {
     }
 
     fn later(calls: List<Patch>) { self.after.set(self.after.get().concat(calls)) }
+
+    /// The run built last, done.
+    fn built() {
+        let runs = self.building.get()
+        self.building.set(runs.slice(0, runs.length - 1))
+    }
+
+    /// Where an element placed under `parent` after `after` stands: at the end
+    /// of the run being built, else right after its sibling, else first.
+    fn where_after(parent: NodeId?, after: NodeId?) -> After {
+        if parent != null && self.building.get().last() == parent!.n { return After.Append }
+        let sibling? = after else { return After.First }
+        After.Sibling(sibling)
+    }
 
     /// A kept element: its differences said, its children matched under it.
     /// One of another kind stands anew.
@@ -264,7 +297,9 @@ impl Differ {
                     .say([Patch.SetProp(id, p.name, p.value) for p in props_of(el) if !rests(p.value)])
                 self.say([Patch.Listen(id, listening_of(a)) for a in el.hears])
                 self.later([Patch.Call(id, d.enter) for d in doors_of(el)])
+                self.building.push(id.n)
                 let laid = siblings(self, id, [], el.kids, next + 1)
+                self.built()
                 Drawn { element: Element.Tag(el with { id: id, kids: laid.page }), next: laid.next }
             },
         }
@@ -315,7 +350,7 @@ impl Differ {
 impl Draws<Element> for Differ {
     fn removed(id: NodeId) { self.said.push(Patch.Remove(id)) }
 
-    fn placed(id: NodeId, parent: NodeId?, after: NodeId?) { self.said.push(Patch.Place(id, parent, after)) }
+    fn placed(id: NodeId, parent: NodeId?, after: NodeId?) { self.said.push(Patch.Place(id, parent, self.where_after(parent, after))) }
 
     fn drawn(p: Stands<Element>, next: int) -> Drawn<Element> {
         match p { .Made(e) -> self.made(e, next), .Kept(_, was, now) -> self.kept(was, now, next) }
