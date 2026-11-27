@@ -7,7 +7,7 @@
 //! its value everywhere it is read — the IR is born SSA.
 use @std.program.saved_derive.{Saved}
 
-use @std.meta.{derive}
+use @std.meta.{Reach, derive}
 use @std.relation.engine.{Table}
 use @std.relation.{codec}
 
@@ -1121,15 +1121,7 @@ export enum RtHost {
 /// carries an address. `Void` means seat `j` is not an inout. Only
 /// an extern fills it: the registry's own rows take addresses of
 /// nothing.
-/// What a runtime row REACHES: `Pure` answers from its arguments
-/// alone, or touches only the running task's own state, so a settlement
-/// may run it; `Embed` reads a file the BUILD
-/// owns, beside the source, so a settlement may run it and records
-/// the file; `Lookup` reads the compiler's OWN declaration table —
-/// deterministic for a given program, never the process's world, so
-/// every compile-time run may use it; `World` reads or writes the
-/// process's world — io, time, env, a child — and no compile-time
-/// evaluation may.
+/// What a runtime row reaches is `@std/meta`'s `Reach`.
 ///
 /// `takes` says when the body takes its OWN reference to a seat, and
 /// `stood` that an owned answer is a box that ALREADY STOOD — a slot's,
@@ -1144,7 +1136,6 @@ export enum RtHost {
 /// `waits` says the body may switch the calling task out — a CANCEL
 /// POINT: a cancel or a deadline standing there is heard there, so
 /// every caller that may reach the row tests for one after the call.
-export enum Reach { Pure, Embed, Lookup, World }
 
 export type RtSig = { name: string, ret: RtKind, params: List<RtKind>, owns_result: bool, has_owned_twin: bool, host: RtHost, lends: bool = false, keeps: List<bool> = [], writes: List<bool> = [], aliases_arg0: bool = false, cells: List<RtKind> = [], reach: Reach = Reach.Pure, boxes: List<Box> = [], answer: Box = Box.Any, inert: bool = false, has_reusing_twin: bool = false, has_moving_twin: bool = false, wasm: bool = true, takes: Takes = Takes.Never, stood: bool = false, waits: bool = false, traps: bool = false }
 

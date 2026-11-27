@@ -15,7 +15,7 @@
 //! within them before reading it: a lie reads as absent, never as a trap.
 
 use defect.{defect}
-use @std.meta.{pure}
+use @std.meta.{Reach, reach}
 
 /// In a label's first octet, the value saying a variant or a length follows in full.
 const WRITTEN_IN_FULL: int = 7
@@ -29,9 +29,9 @@ const CODES_PER_WORD: int = 32
 /// The room a writer's buffer starts each answer with.
 const ANSWER_ROOM: int = 256
 
-@pure
+@reach(Reach.Pure)
 extern fn avra_float_to_bits(value: float) -> int
-@pure
+@reach(Reach.Pure)
 extern fn avra_float_of_bits(bits: int) -> float
 extern fn avra_mmap_word_at(mapping: ptr, position: int) -> int
 extern fn avra_mmap_slice(mapping: ptr, from: int, to: int) -> string
@@ -75,33 +75,32 @@ const HELD_NUMBER: int = 0
 const HELD_CHILD: int = 1
 const HELD_NOTHING: int = 2
 
-@pure
+@reach(Reach.Pure)
 extern fn avra_sw_new(room: int) -> ptr
-@pure
+@reach(Reach.Pure)
 extern fn avra_sw_length(writer: ptr) -> int
-@pure
+@reach(Reach.Pure)
 extern fn avra_sw_push(writer: ptr, held: int, word: int)
-@pure
+@reach(Reach.Pure)
 extern fn avra_sw_record(writer: ptr, variant: int, count: int) -> int
-@pure
+@reach(Reach.Pure)
 extern fn avra_sw_list_open(writer: ptr)
-@pure
+@reach(Reach.Pure)
 extern fn avra_sw_list_close(writer: ptr) -> int
-@pure
+@reach(Reach.Pure)
 extern fn avra_sw_label(writer: ptr, width: int, variant: int, length: int)
-@pure
+@reach(Reach.Pure)
 extern fn avra_sw_big(writer: ptr, value: int, width: int)
-@pure
+@reach(Reach.Pure)
 extern fn avra_sw_octets(writer: ptr, octets: Bytes) -> int
-@pure
+@reach(Reach.Pure)
 extern fn avra_sw_text(writer: ptr, text: string) -> int
-@pure
+@reach(Reach.Pure)
 extern fn avra_sw_closed(writer: ptr, root: int) -> int
-@pure
+@reach(Reach.Pure)
 extern fn avra_sw_octets_at(writer: ptr) -> ptr
-@pure
+@reach(Reach.Pure)
 extern fn avra_sw_emptied(writer: ptr)
-@pure
 extern fn avra_bytes_adopted(p: ptr, n: int) -> Bytes
 
 impl SavedLayoutWriter {
@@ -171,6 +170,7 @@ impl SavedLayoutWriter {
     /// writer is idle after, for the next answer.
     fn finished(root: int) -> Bytes {
         let length = avra_sw_closed(self.handle, root)
+        // LICENSED input.unrecorded_read: the octets adopted are the ones this writer laid from what it was handed
         let octets = avra_bytes_adopted(avra_sw_octets_at(self.handle), length)
         avra_sw_emptied(self.handle)
         self.idled()
