@@ -5,6 +5,7 @@
 #   build|check <phase> <ms>          a phase of the cli's build or check   speed:<host>:<cmd> <phase>
 #   warm <scenario> <ms>              a warm check's wall                   warm:<host>:warm <scenario>
 #   wall <job> <ms>                   a run's job clock                     wall:<host>:wall <job>
+#   gate <class> <ms>                 a gate run's wall, its rungs priced   gate:<host>:gate <class>
 #   counts <scenario> <counter> <n>   the work a warm check counted         work:-:warm-<scenario> <counter>
 #                                     — an edit's `_ppm` ratio a `share` row, the program's sizes and the
 #                                     raw counts behind a ratio `told` rows
@@ -43,7 +44,8 @@ if [ "$family" = clock ]; then
     awk -v h="$host" '
         $1 ~ /^(build|check)$/ && NF == 3 && $3 ~ /^[0-9]+$/ { print "speed:" h ":" $1 " " $2 " " $3 }
         $1 == "warm" && NF == 3 && $3 ~ /^[0-9]+$/ { print "warm:" h ":warm " $2 " " $3 }
-        $1 == "wall" && NF == 3 && $3 ~ /^[0-9]+$/ { print "wall:" h ":wall " $2 " " $3 }' "$stream" > "$out/rows"
+        $1 == "wall" && NF == 3 && $3 ~ /^[0-9]+$/ { print "wall:" h ":wall " $2 " " $3 }
+        $1 == "gate" && NF == 3 && $3 ~ /^[0-9]+$/ { print "gate:" h ":gate " $2 " " $3 }' "$stream" > "$out/rows"
 else
     awk -v told="$told" '
         $1 == "counts" && NF == 4 && $4 ~ /^[0-9]+$/ {
