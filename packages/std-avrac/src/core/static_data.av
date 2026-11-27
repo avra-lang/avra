@@ -226,10 +226,13 @@ impl Lowering {
         pushed(boxes, StaticBox.Slots([Slot.Int(tag)].concat(flatten([c! for c in cells]))))
     }
 
-    /// A map's box: its keys in written order beside each value's slot.
+    /// A map's box: its keys in written order beside each value's slot; none for a map whose keys
+    /// aren't laid out.
     fn table_slot(raw: Expr, ty: SignedType, boxes: Cell<List<StaticBox>>) -> Slot? {
         let entries? = match raw { .MapLit(entries) -> entries, rest -> null } else { return null }
         let value? = ty.mapped() else { return null }
+        let key? = ty.map_key() else { return null }
+        if !(self.program.checked.layout(key)?.map_keys()?.laid_out() ?? false) { return null }
         if !map_spreads(entries).is_empty() { return null }
         let keys = [self.store.valued(k).text_of() for k in map_keys(entries)]
         let cells = [self.data_slot(v, value, boxes) for v in map_values(entries)]

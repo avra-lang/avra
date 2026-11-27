@@ -523,9 +523,12 @@ impl Crossing {
         self.pushed(StaticBox.Slots([Slot.Int(tag)].concat(cells)))
     }
 
-    /// A map's box: its keys in written order beside each value's slot.
+    /// A map's box: its keys in written order beside each value's slot; none for a map whose keys
+    /// aren't laid out.
     fn table_slot(v: MetaVal, ty: SignedType) -> Slot? {
         let value? = ty.mapped() else { return null }
+        let key? = ty.map_key() else { return null }
+        if !(self.program.layout(key)?.map_keys()?.laid_out() ?? false) { return null }
         let id? = match v { .Map(i) -> i, rest -> null } else { return null }
         let row = self.heap.maps[id]
         let cells = [self.slot(x, value) for x in row.values]
