@@ -1,0 +1,100 @@
+//! The proposed sync model's hot path, measured: a document is a table of
+//! per-field registers, an edit is one op, a merge is one stamp compare per op.
+extern fn avra_now_ns() -> int
+
+fn now_ns() -> int { avra_now_ns() }
+
+/// One write to one field of one record: the whole of a sync op.
+type Op = { rec: int, field: int, clock: int, replica: int, value: int }
+
+/// How many octets an unsigned LEB128 varint of `v` takes.
+fn varint_len(v: int) -> int {
+    if v < 128 { return 1 }
+    1 + varint_len(v / 128)
+}
+
+/// An op's size on the wire, each field a varint, the clock sent as a delta
+/// from the batch's previous clock and the replica as an index into the
+/// batch's replica table.
+fn wire_len(o: Op, prev_clock: int) -> int {
+    varint_len(o.rec) + 1 + varint_len(o.clock - prev_clock) + 1 + varint_len(o.value)
+}
+
+/// A document: one register per (record, field), its value and the stamp that won it.
+type Doc = { clocks: Cell<List<int>>, replicas: Cell<List<int>>, values: Cell<List<int>> }
+
+fn doc(cells: int) -> Doc {
+    Doc {
+        clocks: Cell.new([0 for _i in 0..cells]),
+        replicas: Cell.new([0 for _i in 0..cells]),
+        values: Cell.new([0 for _i in 0..cells]),
+    }
+}
+
+impl Doc {
+    /// Whether `o` wins its register: a later clock, or the same clock from a higher replica.
+    fn wins(o: Op, at: int) -> bool {
+        let c = self.clocks.get()[at]
+        o.clock > c || o.clock == c && o.replica > self.replicas.get()[at]
+    }
+
+    /// The op merged; answers whether it changed the value shown.
+    fn merged(o: Op, fields: int) -> bool {
+        let at = o.rec * fields + o.field
+        if !self.wins(o, at) { return false }
+        self.clocks.set_at(at, o.clock)
+        self.replicas.set_at(at, o.replica)
+        self.values.set_at(at, o.value)
+        true
+    }
+}
+
+fn ops(n: int, recs: int, fields: int, replica: int, base: int) -> List<Op> {
+    [Op {
+        rec: i * 7919 % recs,
+        field: i % fields,
+        clock: base + i,
+        replica: replica,
+        value: i % 1000,
+    } for i in 0..n]
+}
+
+fn wire_total(xs: List<Op>) -> int {
+    mut total = 0
+    mut prev = 0
+    // LICENSED loops.push_loop: a sum over a batch, it builds no list
+    for o in xs {
+        total = total + wire_len(o, prev)
+        prev = o.clock
+    }
+    total
+}
+
+fn merged_count(d: Doc, xs: List<Op>, fields: int) -> int {
+    mut changed = 0
+    // LICENSED loops.push_loop: a timed merge counts, it builds no list
+    for o in xs { if d.merged(o, fields) { changed = changed + 1 } }
+    changed
+}
+
+fn round(recs: int, fields: int, n: int) {
+    let d = doc(recs * fields)
+    let mine = ops(n, recs, fields, 1, 0)
+    let theirs = ops(n, recs, fields, 2, n / 2)
+    let t0 = now_ns()
+    let a = merged_count(d, mine, fields)
+    let t1 = now_ns()
+    let b = merged_count(d, theirs, fields)
+    let t2 = now_ns()
+    let again = merged_count(d, theirs, fields)
+    let t3 = now_ns()
+    let bytes = wire_total(theirs)
+    println(
+        "${recs} records x ${fields} fields, ${n} ops: local ${(t1 - t0) / n} ns/op  concurrent ${(t2 - t1) / n} ns/op  replay ${(t3 - t2) / n} ns/op  wire ${bytes * 100 / n / 100}.${bytes * 100 / n % 100} B/op  (changed ${a} ${b} ${again})",
+    )
+}
+
+// LICENSED loops.push_loop: rounds print, they build nothing
+for _r in 0..3 { round(1000, 3, 10000) }
+// LICENSED loops.push_loop: rounds print, they build nothing
+for _r in 0..3 { round(100000, 8, 1000000) }
