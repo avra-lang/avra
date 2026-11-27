@@ -260,6 +260,9 @@ type OpenFrontier = {
 }
 
 /// What this process has learned so far. An identity: every holder asks through the one engine.
+/// A query and the reads one of its computed questions made.
+export type QueryReads = { query_name: string, reads: int }
+
 export type QueryEngine = {
     store: dyn AnswerStore,
     definitions: Cell<Map<string, QueryDefinition>>,
@@ -282,6 +285,11 @@ export type QueryEngine = {
     /// The query each question this process computed belongs to, in the order they ran: what a
     /// budget test reads.
     computed: Cell<List<string>>,
+    /// The reads the questions this process computed made, all told, and the most one made with its
+    /// query: a computed question's own work, which a count of questions cannot weigh. An input's
+    /// are never counted, as `worked_count` counts no input.
+    query_reads: Cell<int>,
+    heaviest: Cell<QueryReads>,
     /// The query each answer this process folded forward belongs to, in the order they were folded.
     folded: Cell<List<string>>,
     /// The kept records this process checked to reuse an answer: what an edit's cost is counted in.
@@ -352,6 +360,8 @@ export fn query_engine(
     let gathering: Cell<List<ReadsGathered>> = Cell.new([])
     let unrecorded_at: Cell<List<int>> = Cell.new([])
     let computed: Cell<List<string>> = Cell.new([])
+    let query_reads: Cell<int> = Cell.new(0)
+    let heaviest: Cell<QueryReads> = Cell.new(QueryReads { query_name: "", reads: 0 })
     let folded: Cell<List<string>> = Cell.new([])
     let asked_alone: HashKeyedTable<bool> = hash_keyed_table()
     let verifying: HashKeyedTable<bool> = hash_keyed_table()
@@ -375,6 +385,8 @@ export fn query_engine(
         unrecorded_at: unrecorded_at,
         readers: Cell.new(0),
         computed: computed,
+        query_reads: query_reads,
+        heaviest: heaviest,
         folded: folded,
         records_checked: Cell.new(0),
         rechecked: Cell.new([0 for _p in 0..every_pass().length]),
@@ -911,6 +923,18 @@ impl QueryEngine {
     /// The query of each question this process computed, in the order they ran.
     fn computed_queries() -> List<string> { self.computed.get() }
 
+    /// A computed question of `query_name` made `reads` reads.
+    fn read_worked(query_name: string, reads: int) {
+        self.query_reads.set(self.query_reads.get() + reads)
+        if reads > self.heaviest.get().reads { self.heaviest.set(QueryReads { query_name: query_name, reads: reads }) }
+    }
+
+    /// The reads every question this process computed made.
+    fn reads_worked() -> int { self.query_reads.get() }
+
+    /// The computed question that made the most reads, and how many; reads 0 with none computed.
+    fn heaviest_worked() -> QueryReads { self.heaviest.get() }
+
     /// The pass the query named `query_name` belongs to, as its definition names it; absent for one
     /// this engine doesn't define, or a definition written by hand.
     fn pass_named(query_name: string) -> Pass? { self.definitions.get().get(query_name)?.pass }
@@ -1076,6 +1100,7 @@ impl QueryEngine {
         let compute = definition.compute
         let bytes = compute(self, asked.arguments)
         self.closed_to(outer)
+        if !self.input_named(definition.query_name) { self.read_worked(definition.query_name, reads.count()) }
         QueryRun { bytes: bytes, reads: reads }
     }
 

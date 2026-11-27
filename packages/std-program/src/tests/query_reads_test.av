@@ -1,0 +1,61 @@
+// A computed question's own work, counted: the reads it made. Two runs that compute as many questions
+// tell apart the one whose question read more, which a count of questions cannot.
+use tests.support.store_in_memory.{store_in_memory}
+use answer_record.{question}
+use query_engine.{QueryDefinition, QueryEngine, query_engine}
+
+fn ask_text(engine: QueryEngine, query_name: string, argument: string) -> string {
+    engine.answer_to(question(query_name, "code", argument.bytes())).copied().text() ?? ""
+}
+
+/// `source` is an input; `gather` reads `source` once for each of its argument's `width` words.
+fn definitions() -> List<QueryDefinition> {
+    [
+        QueryDefinition {
+            query_name: "source",
+            code_hash: "code",
+            is_input: true,
+            compute: (_e, a) -> a,
+        },
+        QueryDefinition {
+            query_name: "gather",
+            code_hash: "code",
+            is_input: false,
+            compute: (e, a) -> [ask_text(e, "source", w) for w in (a.text() ?? "").split(" ")]
+                .join(",")
+                .bytes(),
+        },
+    ]
+}
+
+/// A fresh engine asking `gather` over `words`.
+fn gathered(words: string) -> QueryEngine {
+    let engine = query_engine(store_in_memory(), definitions())
+    let _ = ask_text(engine, "gather", words)
+    engine
+}
+
+spec "query reads — a computed question's own work" {
+    given "two runs that each compute one question" {
+        then "the one whose question read more says so, while their computed counts agree" {
+            let light = gathered("a")
+            let heavy = gathered("a b c d e f g h")
+            light.worked_count() == heavy.worked_count() &&
+                light.reads_worked() == 1 &&
+                heavy.reads_worked() == 8
+        }
+        then "the heaviest names its query and its reads" {
+            let h = gathered("a b c").heaviest_worked()
+            h.query_name == "gather" && h.reads == 3
+        }
+        then "two words are two reads: one for each source the question asked" {
+            gathered("a b").reads_worked() == 2
+        }
+    }
+    given "a run that computes nothing" {
+        then "it read nothing and names no heaviest" {
+            let engine = query_engine(store_in_memory(), definitions())
+            engine.reads_worked() == 0 && engine.heaviest_worked().reads == 0
+        }
+    }
+}

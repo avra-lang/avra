@@ -37,7 +37,7 @@ use @std.path.{joined_path, relative_path, under_dir}
 use @std.program.address.{SourceFileAddress}
 use @std.program.layered_store.{program_store_at}
 use @std.program.pass_ledger.{PassUnits, ledger_rows, ledger_table, pass_ledger}
-use @std.program.query_engine.{QueryEngine, decodes_said, query_engine}
+use @std.program.query_engine.{QueryEngine, QueryReads, decodes_said, query_engine}
 use @std.program.sorted.{sorted_by}
 use @std.text.{text_before}
 use @std.time.{now_ns}
@@ -109,6 +109,7 @@ fn disk_checked(
     }
     if counted {
         eprintln(counts_said(layer_counts(engine, files)))
+        eprintln(heaviest_said(engine.heaviest_worked()))
         eprintln(decodes_said())
     }
     ledger_said(engine, ledger, () -> program_units(engine, [h.file for h in files], 0))
@@ -197,6 +198,8 @@ fn same_said(a: Diag, b: Diag) -> bool { a.kind == b.kind && a.primary.loc?.lo =
 ///                      judges no kept verdict and keeps no spelling table
 ///   program_files, program_modules, program_decls — the files the program reads, the packages they
 ///                      stand in, and their items
+///   query_reads        the reads every computed question made; query_reads_most, the most one made —
+///                      a question's own work, which the number of questions cannot weigh
 /// The rule pass's counts are its own, as on the old path.
 fn layer_counts(engine: QueryEngine, files: List<ProgramFile>) -> WorkCounts {
     let computed = engine.computed_queries()
@@ -214,6 +217,8 @@ fn layer_counts(engine: QueryEngine, files: List<ProgramFile>) -> WorkCounts {
         program_modules: distinct([h.file.package_name for h in files]).length,
         program_decls: [item_count(engine, h.file) for h in files].fold(0, (sum, n) -> sum + n),
         spell_lookups: 0,
+        query_reads: engine.reads_worked(),
+        query_reads_most: engine.heaviest_worked().reads,
     }
 }
 
@@ -320,3 +325,5 @@ fn program_time_line(files: int, t0: int, stood: bool) -> string {
 
 /// A citation of the file `h` that names nothing, as `check` says it.
 fn citation_said(h: ProgramFile, c: StaleCitation) -> string { stale_citation(h.full, "${c.line}", c.id) }
+
+fn heaviest_said(q: QueryReads) -> string { "heaviest: ${q.query_name} made ${q.reads} reads, the most of any computed question" }

@@ -37,7 +37,7 @@ out=$tree/build/ledger/$name
 mkdir -p "$out"
 find "$out" -mindepth 1 -delete
 # the program's sizes and the raw counts whose ratios are held: reported, never judged
-told=" rule_ms program_files program_modules program_decls files_minted modules_minted queries_computed store_rows_written "
+told=" rule_ms program_files program_modules program_decls files_minted modules_minted queries_computed store_rows_written query_reads query_reads_most "
 if [ "$family" = clock ]; then
     awk -v h="$host" '
         $1 ~ /^(build|check)$/ && NF == 3 && $3 ~ /^[0-9]+$/ { print "speed:" h ":" $1 " " $2 " " $3 }
