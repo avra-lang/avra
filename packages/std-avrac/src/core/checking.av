@@ -261,7 +261,7 @@ export type Checking = {
     /// Each `if` condition met, by its node's index: a payload `is` there binds.
     conditions: Cell<List<int>>,
     /// Each name read, by its node's index, as `read` resolved it.
-    names_read: Cell<Map<string, NameRead>>,
+    names_read: Cell<List<NameRead?>>,
     /// Each binding made, in the order made.
     names_bound: Cell<List<NameBound>>,
     /// The node being checked, where a binding made now is bound.
@@ -1036,7 +1036,8 @@ export fn checking(store: SyntaxArena, program: CheckedProgram, answer: SignedTy
     let consting: Cell<List<int>> = Cell.new([])
     let seat_reads: Cell<List<SeatRead>> = Cell.new([])
     let conditions: Cell<List<int>> = Cell.new([])
-    let names_read: Cell<Map<string, NameRead>> = Cell.new({})
+    let unread_here: NameRead? = null
+    let names_read: Cell<List<NameRead?>> = Cell.new([unread_here for _i in 0..store.exprs.count()])
     let names_bound: Cell<List<NameBound>> = Cell.new([])
     Checking {
         unread: unread,
@@ -2095,17 +2096,14 @@ impl Checking {
             }
             return self
                 .names_read
-                .put(
-                    "${e.index}",
+                .set_at(
+                    e.index,
                     NameRead { at: e.index, name: name, binder: local.binder, crossed: crossed },
                 )
         }
         self
             .names_read
-            .put(
-                "${e.index}",
-                NameRead { at: e.index, name: name, binder: null, home: self.home_of(e) },
-            )
+            .set_at(e.index, NameRead { at: e.index, name: name, binder: null, home: self.home_of(e) })
     }
 
     /// The name the place `target` is rooted in, where it names a type and no value: no place a write
@@ -2121,8 +2119,8 @@ impl Checking {
     /// The read at the root of the place `target` kept as a write of its seat.
     fn wrote(target: ExprId) {
         let root? = self.store.place_root(target) else { return }
-        let read? = self.names_read.get().get("${root.index}") else { return }
-        self.names_read.put("${root.index}", read with { writes: true })
+        let read? = self.names_read.get()[root.index] else { return }
+        self.names_read.set_at(root.index, read with { writes: true })
     }
 
     /// Each value handed a `mut` or a `state` seat among `seats` kept as a write of its place.
