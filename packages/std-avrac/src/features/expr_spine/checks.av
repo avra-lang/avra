@@ -336,15 +336,11 @@ impl Checks for Trailed {
 impl Checks for BlockLambda {
     /// A block that names no seat and whose body the pronoun rides takes one, `it`.
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
-        let pronouned = self.seats.is_empty() && cx.store.pronoun_rides(self.body)
+        let seats = if self.seats.is_empty() && cx.store.pronoun_rides(self.body) { [cx.store.pronoun_seat()] } else { self.seats }
+        // a block naming no seat is the call's to refuse, as the argument it fills
+        if !seats.is_empty() && cx.lambda_refused(e, seats, expected) { return null }
         if cx.offer_refused(e, self.seats, expected) { return null }
-        cx
-            .lambda_checked(
-                if pronouned { [cx.store.pronoun_seat()] } else { self.seats },
-                self.body,
-                expected,
-                true,
-            )
+        cx.lambda_checked(seats, self.body, expected, true)
     }
 }
 

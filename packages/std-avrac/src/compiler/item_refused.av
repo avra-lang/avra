@@ -101,6 +101,8 @@ use features.impls.{default_impl_missing, method_arity_missed, static_arity_miss
 use features.consts.{const_written}
 use features.specs.{CASE_ANSWER_HELP, CASE_ANSWER_LABEL, case_answers_said}
 use features.closures.{
+    lambda_misfit,
+    pronoun_seatless,
     block_unseated,
     lambda_seat_twice,
     lambda_seat_unheard,
@@ -1458,6 +1460,37 @@ fn blocks_unseated(view: ItemView) -> List<Found> {
         },
     )
 }
+
+fn lambdas_misfit(view: ItemView) -> List<Found> {
+    lambdas_faulted(view, (f: LambdaFault) -> match f { .Misfit(seat) -> [seat], rest -> null })
+}
+
+fn pronouns_seatless(view: ItemView) -> List<Found> {
+    lambdas_faulted(
+        view,
+        (f: LambdaFault) -> match f { .PronounUnseated(seat) -> [seat], rest -> null },
+    )
+}
+
+/// a lambda's seats are as many as its seat's fn type hands it
+export law lambda_fits_its_seat {
+    kind: "type.lambda"
+    reads_view: lambdas_misfit
+    voice: misfit_words
+    witness: "fn apply(v: int, f: fn(int) -> int) -> int { f(v) }\n\nfn g() -> int { apply(1, (x, y) -> x) }\n"
+}
+
+fn misfit_words(a: List<string>) -> Voice { lambda_misfit(a[0]) }
+
+/// a block whose body reads `it` stands in a slot that hands it a seat
+export law pronoun_block_seated {
+    kind: "type.lambda"
+    reads_view: pronouns_seatless
+    voice: seatless_words
+    witness: "fn run(f: fn() -> int) -> int { f() }\n\nfn g() -> int { run { it } }\n"
+}
+
+fn seatless_words(a: List<string>) -> Voice { pronoun_seatless(a[0]) }
 
 fn values_called(view: ItemView) -> List<Found> {
     lambdas_faulted(

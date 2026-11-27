@@ -501,6 +501,10 @@ export enum LambdaFault {
     Uncallable(callee: string, held: string)
     /// The call pins type arguments on `callee`, a fn value.
     Pinned(callee: string)
+    /// The lambda's seats are not as many as its seat's fn type `seat` hands it.
+    Misfit(seat: string)
+    /// The block's body reads the pronoun, and its seat's fn type `seat` hands it no seat.
+    PronounUnseated(seat: string)
 }
 
 /// Why a `mut` seat refused the argument it was handed.
@@ -1756,21 +1760,57 @@ impl Checking {
     }
 
     /// Whether the lambda at `e` of `params` is refused as written: two of its seats wearing one name;
-    /// one in a seat that takes no fn, a named type read as the shape it stands over; or, under no
+    /// one in a seat that takes no fn, a named type read as the shape it stands over; one whose seats
+    /// are not as many as its seat's fn type hands it — the pronoun's one seat included; or, under no
     /// seat, one of its seats wearing no type.
     mut fn lambda_refused(e: ExprId, params: List<Param>, expected: Expected) -> bool {
         let twice = seat_worn_twice(params)
         if twice != null { return self.lambda_faulted(e, LambdaFault.SeatTwice(twice!)) }
-        if params.any(it.implicit) { return false }
+        if params.any(it.implicit) { return self.pronoun_unseated(e, params, expected) }
         let unheard = params.find(it.ty == null)
         match expected {
-            .Exactly(want) -> !self.holds_fn(want) &&
+            .Exactly(want) -> if !self.holds_fn(want) {
                 self
-                    .lambda_faulted(e, LambdaFault.Unseated(want.spelled(), self.store.written_as_block(e))),
+                    .lambda_faulted(e, LambdaFault.Unseated(want.spelled(), self.store.written_as_block(e)))
+            } else {
+                self.seats_misfit(e, params, want)
+            },
             .Free or .Dropped -> unheard != null &&
                 self.lambda_faulted(e, LambdaFault.Unheard(unheard!.name.text(), "int")),
             .Unknown or .Partly(_) -> false,
         }
+    }
+
+    /// The fn type a seat wanting `want` hands a lambda, itself or through its name; absent where it
+    /// hands one typing doesn't know whole.
+    fn seat_fn_type(want: SignedType) -> SignedType? {
+        let held = self.named_over(want with { nulls: 0 }) ?? want
+        if held.head is .Function && !held.dynamic { held } else { null }
+    }
+
+    /// Whether the lambda at `e` of `params`, in a seat wanting `want`, is refused for seats that are
+    /// not as many as the seat's fn type hands it — but where it hands one record, whose fields an
+    /// offer takes by name.
+    mut fn seats_misfit(e: ExprId, params: List<Param>, want: SignedType) -> bool {
+        let f? = self.seat_fn_type(want) else { return false }
+        if f.seats.length == params.length || self.offered(f) { return false }
+        self.lambda_faulted(e, LambdaFault.Misfit(want.spelled()))
+    }
+
+    /// Whether the fn type `f` hands one record, whose fields a lambda may take by name in any number.
+    fn offered(f: SignedType) -> bool {
+        if f.seats.length != 1 { return false }
+        let record? = known(f.seats[0].ty) else { return false }
+        self.record_of(record) != null
+    }
+
+    /// Whether the block at `e`, whose body the pronoun rides, is refused in a seat whose fn type hands
+    /// it no seat.
+    mut fn pronoun_unseated(e: ExprId, params: List<Param>, expected: Expected) -> bool {
+        if params.length != 1 { return false }
+        let want? = match expected { .Exactly(ty) -> ty, rest -> null } else { return false }
+        let f? = self.seat_fn_type(want) else { return false }
+        f.seats.is_empty() && self.lambda_faulted(e, LambdaFault.PronounUnseated(want.spelled()))
     }
 
     /// The bare variant literal `.name` at `e`, whose seat names no enum that builds it, refused:
@@ -3833,6 +3873,15 @@ impl Checking {
         true
     }
 
+    /// Whether `v` is a lambda whose body typing left untyped: what its body asks of a value that has
+    /// none says its own refusal, and the call it fills says nothing more.
+    fn body_untyped(v: ExprId) -> bool {
+        match self.store.expr(v) {
+            .Lambda(_, body) or .BlockLambda(_, body) -> self.type_of(body) == null,
+            rest -> false,
+        }
+    }
+
     /// What the program wrote that `v` holds: `v` itself where no template wrote it, else the first
     /// node within it a hole filled from the program; absent where a template wrote it whole.
     fn written_within(v: ExprId) -> ExprId? {
@@ -4286,7 +4335,9 @@ impl Checking {
         // seat's pronoun reads as no type of its own — is refused at its first type parameter
         // nothing pinned, never left untyped for its lowering to find
         let found? = filled else {
-            if self.refused.get().length == before && !self.handed_unfilled(fill.values) {
+            if self.refused.get().length == before &&
+                !self.handed_unfilled(fill.values) &&
+                !fill.values.any((v) -> self.body_untyped(v)) {
                 let _ = self.left_unpinned(declared, pinned, [])
             }
             return null
