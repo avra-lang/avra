@@ -24,6 +24,9 @@ on:
       ref:
         description: the commit to build (default — the gate-builder release's stamp)
         required: false
+      start:
+        description: a witness of the climb — the commit whose compiler starts it (built here from the release's), never published
+        required: false
 
 concurrency:
   group: compiler-macos-${{ github.ref }}
@@ -70,11 +73,25 @@ jobs:
           echo "compiler-macos: the tree is $(git rev-parse HEAD)"
       - name: the tree's Linux compiler
         timeout-minutes: 50
+        env:
+          START: ${{ inputs.start }}
         run: |
-          if sh tools/gate.sh unpack "$RUNNER_TEMP/gb.tar.gz"; then
+          if [ -n "$START" ]; then
+            # THE CLIMB WITNESSED: the start's own source built once by the release's compiler reads what that
+            # source reads, so the tree's rungs since it are a ladder the build must climb
+            git fetch -q --unshallow origin 2>/dev/null || :
+            tar -xzf "$RUNNER_TEMP/gb.tar.gz" build/avra
+            git worktree add -q --detach "$RUNNER_TEMP/start" "$START"
+            mkdir -p "$RUNNER_TEMP/start/build" && cp build/avra "$RUNNER_TEMP/start/build/avra"
+            (cd "$RUNNER_TEMP/start" && make -s avra) || { echo "::error::the release's compiler did not build the start, $START"; exit 1; }
+            cp "$RUNNER_TEMP/start/build/avra" build/avra
+            echo "x $(git rev-parse "$START") 1" > "$RUNNER_TEMP/stamp"
+            echo "compiler-macos: the climb starts from $START's own compiler"
+          fi
+          if [ -z "$START" ] && sh tools/gate.sh unpack "$RUNNER_TEMP/gb.tar.gz"; then
             echo "compiler-macos: the release's compiler is this tree's"
           else
-            tar -xzf "$RUNNER_TEMP/gb.tar.gz" build/avra
+            [ -n "$START" ] || tar -xzf "$RUNNER_TEMP/gb.tar.gz" build/avra
             # THE RUNGS BETWEEN THE RELEASE'S SOURCE AND THIS TREE (tools/rungs.sh), climbed as a gate climbs
             # them: a landing keeps its commits, so a rung it carries is in that history, and the release's
             # compiler cannot read the tree past one
@@ -82,6 +99,7 @@ jobs:
             git fetch -q --unshallow origin 2>/dev/null || :
             rungs=
             if git merge-base --is-ancestor "$at" HEAD 2>/dev/null; then rungs=$(sh tools/rungs.sh "$at" HEAD | tr '\n' ' '); fi
+            [ -z "$START" ] || [ -n "$rungs" ] || { echo "::error::the witness climbs no rung between $START and the tree — start below one"; exit 1; }
             echo "compiler-macos: generations 1 and 2 of this tree from the release's compiler, over $(echo $rungs | wc -w) rung(s) since $at: $rungs"
             make -s compiler RUNGS="$rungs" LADDER_BASE="$at" LADDER_BOUND=1800
           fi
@@ -102,6 +120,8 @@ jobs:
 
   build:
     needs: [seed]
+    # a witness of the climb ends at the tree's seed: the Mac's half reads that seed alone
+    if: inputs.start == ''
     runs-on: macos-latest
     timeout-minutes: 120
     env:
@@ -176,7 +196,7 @@ jobs:
       # BESIDE THE RELEASE'S OWN COMPILER ONLY: a landing's upload may come after this build, so the stamp is
       # asked again for up to 15 minutes; a dispatched ref of another source stays an artifact
       - name: publish
-        if: inputs.ref == ''
+        if: inputs.ref == '' && inputs.start == ''
         run: |
           want=${{ steps.held.outputs.hash }}
           for i in $(seq 1 16); do
