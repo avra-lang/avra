@@ -904,6 +904,18 @@ keeper_wants() {
 keepers_run() {
     for k in "$@"; do
         keeper_wants "$k" || { judged "keeper-$k-wants" 1; continue; }
+        # A RUNG TRAIN'S SEED IS OWED BY THE NEXT ONE: no seed reads a rung, so seed-check stands down, said,
+        # and the train's own compiler emits the seed (`make seed`) for the landing to commit as the next train
+        if [ "$k" = seed-check ]; then
+            rungs_read
+            if [ -n "$rungs" ]; then
+                echo "fact keeper seed-check SKIPPED: this train carries $(echo $rungs | wc -w) rung(s) ($rungs) — no seed reads a rung; its seed is emitted beside the verdict (seed.ll.gz), and the next train commits it" >>"$out/rows"
+                row keeper-seed-emitted make -s -o avra seed &&
+                    cp bootstrap/seed.ll.gz bootstrap/seed.sources "$out/" &&
+                    git checkout -q -- bootstrap/seed.ll.gz bootstrap/seed.sources
+                continue
+            fi
+        fi
         owed=$(awk -v k="$k" '$1 == k { print $2; exit }' "$root/tools/gate/keepers.owed")
         if [ -z "$owed" ]; then
             row "keeper-$k" env AVRA_NO_SUPERVISOR_TESTS=1 UI_BROWSER_ENGINES="firefox webkit webkit-iphone" $(keeper_env "$k") ${keeper_via:-} make -s -o avra "$k"
