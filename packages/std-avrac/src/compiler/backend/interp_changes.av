@@ -21,12 +21,12 @@ impl Machine {
     /// `map_at_end`) lands in a new handle no one watches, as a native copy
     /// lands at a new address.
     fn touched(v: Val) {
-        if self.watched.is_empty() { return }
-        let k = "${box_key(v)}"
-        let stamp? = self.watched.get(k) else { return }
+        if self.watching == 0 { return }
+        let k = box_key(v)
+        let stamp? = self.watch_of(k) else { return }
         if stamp == self.turn { return }
-        self.watched.set(k, self.turn)
-        self.changed.push(box_key(v))
+        self.watch_set(k, self.turn)
+        self.changed.push(k)
     }
 
     /// A box a site reads is held and watched, stamped as not yet
@@ -35,18 +35,34 @@ impl Machine {
     fn box_observe_val(v: Val) -> Val {
         let key = box_key(v)
         if key == 0 || self.frozen.get(v.handle()) != null { return Val.I(0) }
-        if self.watched.get("${key}") == null { self.holding(v) }
-        self.watched.set("${key}", 0)
+        if self.watch_of(key) == null { self.holding(v) }
+        self.watch_set(key, 0)
         Val.I(1)
     }
 
     /// A box let go: released, and out of the watch.
     fn box_unobserve_val(v: Val) -> Val {
-        let key = "${box_key(v)}"
-        if self.watched.get(key) == null { return Val.I(0) }
-        self.watched.remove(key)
+        let key = box_key(v)
+        if self.watch_of(key) == null { return Val.I(0) }
+        self.watch_dropped(key)
         self.releases_val(v)
         Val.I(1)
+    }
+
+    /// The turn the box keyed `k` last logged under, absent where it isn't watched.
+    fn watch_of(k: int) -> int? { if k < self.watched.length && self.watched[k] >= 0 { self.watched[k] } else { null } }
+
+    /// The box keyed `k` watched, stamped `stamp`.
+    fn watch_set(k: int, stamp: int) {
+        while self.watched.length <= k { self.watched.push(-1) }
+        if self.watched[k] < 0 { self.watching = self.watching + 1 }
+        self.watched[k] = stamp
+    }
+
+    /// The box keyed `k`, watched, out of the watch.
+    fn watch_dropped(k: int) {
+        self.watched[k] = -1
+        self.watching = self.watching - 1
     }
 
     /// A watched aggregate holds a reference of its own; a cell has no
