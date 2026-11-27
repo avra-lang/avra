@@ -1881,3 +1881,35 @@ fn setting_read_by_hand_found(n: Syntax) -> Fix {
             ),
         )
 }
+
+/// A map probed by a key interpolated at the probe — `m.get("${a} ${b}")`, `.has`, `.set`,
+/// `.remove` — builds a text and boxes every non-text hole on EVERY lookup, so a memo's price grows
+/// with each field its key names. Key by the value itself: fold it to a `ContentHash` over both
+/// lanes (`key_of_lanes`, nothing boxed) and probe a `HashKeyedTable`, or intern it (`Interned`).
+///
+/// NO REWRITE: the fold names the value's fields, and the probe's holes do not say which value
+/// they spell.
+@keeps("m.get(name)")
+@keeps("m.get(\"fixed\")")
+@says("the content key folds the value's own fields, and the holes do not say which value they spell")
+export fact_rule text_keyed_probe {
+    quote { ${m}.get(${k}) } if text_keyed(m, k) -> text_keyed_found(k),
+    quote { ${m}.has(${k}) } if text_keyed(m, k) -> text_keyed_found(k),
+    quote { ${m}.set(${k}, ${v}) } if text_keyed(m, k) -> text_keyed_found(k),
+    quote { ${m}.remove(${k}) } if text_keyed(m, k) -> text_keyed_found(k),
+}
+
+/// Whether `m` is a map probed by `k`, a text interpolated at the probe.
+fn text_keyed(m: Code, k: Code) -> bool { (m.type()?.is_map() ?? false) && k.text_head() != null && !k.is_str_lit() }
+
+fn text_keyed_found(k: Code) -> Fix {
+    Fix
+        .Say(
+            said(
+                k.loc(),
+                "a map probed by a key interpolated at the probe builds a text, and boxes each hole that is not one, on every lookup — fold the value to a `ContentHash` (`key_of_lanes`) and probe a `HashKeyedTable`, or intern it",
+                "this key",
+                null,
+            ),
+        )
+}
