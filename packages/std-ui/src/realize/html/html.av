@@ -111,15 +111,21 @@ export fn render(root: Node, _env: Env) -> string {
 /// `style` element, for a policy that allows styles by nonce alone.
 export type Page = { title: string, env: Env = Env {}, nonce: string? = null }
 
-/// What a page's head says: its title and the environment's words.
-fn head_of(p: Page) -> Head { Head { title: p.title, locale: p.env.locale, direction: p.env.direction } }
+/// What a page's head says: its title, the environment's words, and whether `root` keeps clear of
+/// the device's edges itself.
+fn head_of(p: Page, root: Node) -> Head {
+    Head { title: p.title, locale: p.env.locale, direction: p.env.direction, covers: insets(root) }
+}
+
+/// Whether a box in the tree keeps clear of the device's edges.
+fn insets(n: Node) -> bool { n.box.layout.inset != null || n.children.any(insets(it)) }
 
 /// A complete document with no script: the page's head, its one
 /// stylesheet, then the tree.
 export fn page(p: Page, root: Node) -> string {
     let drawn_in = page_drawn(root)
     let d = drawn(drawn_in.root)
-    page_source(head_of(p), sheet_of(drawn_in, d), p.nonce, d.ops)
+    page_source(head_of(p, root), sheet_of(drawn_in, d), p.nonce, d.ops)
 }
 
 /// A page a module can ADOPT: the tree as HTML, the sheet the live page
@@ -152,7 +158,7 @@ export fn takeover(
     let run = lowered(drawn_in.root)
     let css = page_sheet_of(distinct_rules(rules_of(drawn_in.root)), drawn_in)
     takeover_source(
-        head_of(p),
+        head_of(p, root),
         css,
         run_ops(run),
         Takeover {

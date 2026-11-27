@@ -3,7 +3,9 @@
 //! stylesheet whose classes name theme tokens.
 use @std.ui.components.{text, heading, button, column, row, field, checkbox}
 use @std.ui.tree.view.{View, tree_of}
-use @std.ui.realize.html.html.{render}
+use @std.ui.realize.html.html.{render, page, Page}
+use @std.ui.style.layout.{Layout, Edge}
+use @std.ui.style.tokens.{Size}
 use @std.ui.realize.html.tags.{HtmlAttrName, HtmlTag}
 use @std.ui.realize.tui.tui.{render as tui_render}
 use @std.ui.env.{Env, Direction, writing}
@@ -17,6 +19,14 @@ fn html(v: dyn View) -> string { render(tree_of(v), Env {}) }
 fn html_in(v: dyn View, env: Env) -> string { render(tree_of(v), env) }
 
 fn term(v: dyn View) -> string { tui_render(tree_of(v), Env {}, 40) }
+
+/// A column kept clear of the device's edges: a small step at its start, a medium one at its top.
+fn safe_column() -> column {
+    column {
+        layout: Layout { inset: Edge { start: Size.S, top: Size.M } }
+        text "a"
+    }
+}
 
 /// A row laid out right to left, holding `words`.
 component flipped(words: string) {
@@ -102,6 +112,22 @@ spec "std/ui render — the HTML target" {
         then "read in the direction their style states" {
             html(text "3 ب" { style: Style { writing: .Rtl } })
                 .contains("<span dir=\"rtl\">3 ب</span>")
+        }
+    }
+    given "a box kept clear of the device's edges" {
+        then "pads each stated edge by its step or the safe area there, the larger" {
+            let out = page(Page { title: "t" }, tree_of(safe_column()))
+            out.contains("<div class=\"dir-col ins-s int-m\">") &&
+                out
+                    .contains(
+                        ".ins-s{padding-inline-start:max(var(--space-s),env(safe-area-inset-left),env(safe-area-inset-right))}",
+                    ) &&
+                out.contains(".int-m{padding-top:max(var(--space-m),env(safe-area-inset-top))}")
+        }
+        then "lets its page reach under the device's edges" { page(Page { title: "t" }, tree_of(safe_column())).contains("viewport-fit=cover") }
+        then "a page with no such box keeps the device's own margins" {
+            !page(Page { title: "t" }, tree_of(column { items: [text "a"] }))
+                .contains("viewport-fit")
         }
     }
     given "the sheet" {
