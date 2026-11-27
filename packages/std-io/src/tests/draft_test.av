@@ -3,6 +3,7 @@
 use @std.io.{
     Draft,
     abandoned_drafts,
+    draft_name,
     drafted,
     exists,
     list_dir,
@@ -83,10 +84,21 @@ spec "std/io draft" {
                 !found.contains("out.1-0.draft") &&
                 !found.any((name) -> mine.path.ends_with(name))
         }
+        then "a draft named for a process that's gone is abandoned, at the fixed width it's named in" {
+            let dir = fresh_dir("named")
+            let gone = draft_name("${dir}/out", 2147483646, 3)
+            let _ = write_bytes(gone, "dead".bytes())
+            abandoned_drafts(dir).any((name) -> gone.ends_with(name))
+        }
         then "a name that isn't a draft is never one" {
             let dir = fresh_dir("not-drafts")
             let _ = write_bytes("${dir}/a.pack", "x".bytes())
             abandoned_drafts(dir).is_empty()
         }
+    }
+    given "draft names of processes whose ids have different digit counts" {
+        then "they are one length" { draft_name("/s/out", 7, 3).length == draft_name("/s/out", 1234567, 3).length }
+        then "a serial's digit count moves no name's length either" { draft_name("/s/out", 7, 3).length == draft_name("/s/out", 7, 123456).length }
+        then "the process reads back out of each, zeros and all" { draft_name("/s/out", 7, 3) == "/s/out.0000000007-0000000003.draft" }
     }
 }
