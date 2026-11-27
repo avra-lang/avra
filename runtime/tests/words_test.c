@@ -56,6 +56,14 @@ int main(void) {
     SAME(256, "%s: site %lld", "copy", 3LL);
     SAME(256, "[%-13s] [%13s] [%2s] [%s]", "string", "list", "record", "");
     SAME(256, "e%c%d 100%% %c", '-', 12, 'x');
+    // zeros pad a number after its sign, at a fixed width
+    SAME(256, ".tmpav%010lld", 12345LL);
+    SAME(256, ".tmpav%010lld", 7LL);
+    SAME(256, "%010lld", 0LL);
+    SAME(256, "%06lld", -42LL);
+    SAME(256, "%03lld", 123456LL);
+    SAME(256, "%05d", -7);
+    SAME(256, "%08llx", 0xbeefULL);
     SAME(256, "a take at EOF — `read` answered 0, which names no bytes");
     SAME(1, "%s", "cut to nothing");
     SAME(5, "%s", "cut");

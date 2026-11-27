@@ -106,8 +106,8 @@ static void words_put(Words* w, const char* s, size_t n) {
     }
 }
 
-static void words_fill(Words* w, int n) {
-    for (; n > 0; n--) words_put(w, " ", 1);
+static void words_fill(Words* w, int n, char c) {
+    for (; n > 0; n--) words_put(w, &c, 1);
 }
 
 // `v` in `base`, written backwards from `end`; answers its first digit.
@@ -119,9 +119,12 @@ static char* digits_before(char* end, unsigned long long v, unsigned base) {
 static void rt_vfmt(Words* w, const char* fmt, va_list ap) {
     for (; *fmt; fmt++) {
         if (*fmt != '%') { words_put(w, fmt, 1); continue; }
-        int left = *++fmt == '-';
-        if (left) fmt++;
+        int left = 0, zero = 0;
+        for (fmt++; *fmt == '-' || *fmt == '0'; fmt++) {
+            if (*fmt == '-') left = 1; else zero = 1;
+        }
         int width = 0;
+        int number = 0;
         while (*fmt >= '0' && *fmt <= '9') width = width * 10 + (*fmt++ - '0');
         char held[24];
         char* end = held + sizeof held;
@@ -134,12 +137,14 @@ static void rt_vfmt(Words* w, const char* fmt, va_list ap) {
             s = end++;
         } else if (*fmt == 'd' || (fmt[0] == 'l' && fmt[1] == 'l' && fmt[2] == 'd')) {
             long long v = *fmt == 'd' ? va_arg(ap, int) : va_arg(ap, long long);
+            number = 1;
             if (*fmt == 'l') fmt += 2;
             char* at = digits_before(end, v < 0 ? 0ULL - (unsigned long long)v : (unsigned long long)v, 10);
             if (v < 0) *--at = '-';
             s = at;
         } else if (fmt[0] == 'l' && fmt[1] == 'l' && fmt[2] == 'x') {
             fmt += 2;
+            number = 1;
             s = digits_before(end, va_arg(ap, unsigned long long), 16);
         } else if (*fmt == 'p') {
             char* at = digits_before(end, (unsigned long long)(uintptr_t)va_arg(ap, void*), 16);
@@ -153,9 +158,15 @@ static void rt_vfmt(Words* w, const char* fmt, va_list ap) {
             end = (char*)fmt + 1;
         }
         int n = (int)(end - s);
-        if (!left) words_fill(w, width - n);
+        // `0` pads a number with zeros after its sign, as printf does
+        if (zero && number && !left) {
+            if (*s == '-') { words_put(w, s, 1); s++; n--; width--; }
+            words_fill(w, width - n, '0');
+        } else if (!left) {
+            words_fill(w, width - n, ' ');
+        }
         words_put(w, s, (size_t)n);
-        if (left) words_fill(w, width - n);
+        if (left) words_fill(w, width - n, ' ');
     }
 }
 
@@ -6630,7 +6641,7 @@ static int64_t write_whole(const char* path, const char* content) {
     size_t n = strlen(path);
     char* tmp = (char*)malloc(n + 32);
     memcpy(tmp, path, n);
-    avra_fmt(tmp + n, 32, ".tmpav%lld", (long long)getpid());
+    avra_fmt(tmp + n, 32, ".tmpav%010lld", (long long)getpid());
     FILE* f = fopen(tmp, "wb");
     if (!f) { int64_t e = -errno; free(tmp); return e; }
     // the HEADER's length, never strlen: a text may hold NUL bytes, and
