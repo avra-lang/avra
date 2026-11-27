@@ -101,22 +101,22 @@ fn kind_named(word: string) -> CostKind? {
 /// Every file under `root`'s `cost/`, read back, by its path under it.
 export fn surface_at(root: string) -> List<CostFile> {
     let top = joined_path(root, SURFACE)
-    [cost_file(p, read_text(joined_path(top, p)) catch "") for p in files_under(top, "")]
+    [cost_file(p, read_text(joined_path(top, p)) catch "") for p in record_files(top, "")]
 }
 
-fn files_under(top: string, at: string) -> List<string> {
+fn record_files(top: string, at: string) -> List<string> {
     let here = if at.is_empty() { top } else { joined_path(top, at) }
     let names = sorted_by(list_dir(here) catch [], text_before)
     flatten_paths(
         [when {
-            is_dir(joined_path(here, n)) -> files_under(top, joined(at, n))
-            n.ends_with(".cost") -> [joined(at, n)]
+            is_dir(joined_path(here, n)) -> record_files(top, under_path(at, n))
+            n.ends_with(".cost") -> [under_path(at, n)]
             _ -> []
         } for n in names],
     )
 }
 
-fn joined(at: string, n: string) -> string { if at.is_empty() { n } else { "${at}/${n}" } }
+fn under_path(at: string, n: string) -> string { if at.is_empty() { n } else { "${at}/${n}" } }
 
 fn flatten_paths(xs: List<List<string>>) -> List<string> { xs.fold([], (all, x) -> all.concat(x)) }
 
