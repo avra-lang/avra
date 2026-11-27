@@ -506,3 +506,14 @@ caught (11); 82 s. Snapshots: 124 (`text/stated` added), 33 stories, 119 cases.
 
 **Not yet:** the native target carries no writing direction (web and iOS agree on the words, not yet
 on the layout); `Layout.inset` reaches native facts and the html writer drops it.
+
+### Slice 6 — the native direction, the safe area, and `dir` only where it is not known
+
+| Part | Done |
+|---|---|
+| native writing direction | `Writing` (rtl/ltr) on the node where the layout direction moves (the stamp's `rewritten`, the root counted from the document's left to right); `WordsWriting` where `Style.writing` states the words' direction; unstated, a host lays words out in their natural direction (UIKit's `.natural`). The style and layout fact projections read their records whole, so a field left out is `type.record_pattern`'s refusal — slice 5's `Style.writing` had reached no native fact. A direction is spelled once, `Direction.word()` |
+| `dir` only where it is not known | an element that is a node's words says the stated direction; `auto` where a reading says the words or the reader types them; `auto` where their first strong letter reads the other way from the layout; nothing otherwise. The mount test's first frame: 3802 octets before any `dir`, 3836 with `auto` everywhere, 3819 now (the field's typed input) |
+| the safe area | `Layout.inset` keeps content clear of the device's edges: each stated edge pads by its step or by `env(safe-area-inset-…)`, the larger, an inline edge clear of both screen sides so it lays out alike in either direction; a page holding such a box says `viewport-fit=cover`. Natively the four inset facts are the host's to hold against its safe-area insets |
+
+**Not yet:** a relative offset is no part of `Layout` (the spec's inset is the safe area); a site that
+wants one asks in the sugar backlog.
