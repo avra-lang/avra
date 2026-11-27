@@ -360,8 +360,28 @@ cold() { for p in "$@"; do find "packages/$p" -name .avra-cache -prune -exec fin
 compiler() {
     if compiler_stands; then return 0; fi
     if [ ! -x build/avra ]; then row compiler-recover make recover || return 1; fi
-    row compiler-gen1 env AVRA_STD_ANSWERS=0 make avra || return 1
+    rungs_read
+    if [ -n "$rungs" ]; then
+        # A RUNG IS A TREE THE STANDING COMPILER CANNOT READ: each is built by the product of the one
+        # before (`make compiler`, tools/ladder.sh), as a pull request's check builds it, and HEAD's
+        # generation 1 by the last
+        echo "fact rungs $(echo $rungs | wc -w) over $(printf '%.8s' "$rung_base"): $rungs" >>"$out/rows"
+        row compiler-ladder env AVRA_STD_ANSWERS=0 make -s compiler RUNGS="$rungs" LADDER_BASE="$rung_base" LADDER_BOUND=1800 GENS=1 || return 1
+    else
+        row compiler-gen1 env AVRA_STD_ANSWERS=0 make avra || return 1
+    fi
     row compiler-libs make -o avra libs
+}
+
+# THE RUNGS THIS BRANCH CARRIES over the program it lands on (tools/rungs.sh), oldest first, into
+# `rungs`, and that program's commit into `rung_base`; none where the program cannot be told. A gate's
+# checkout is shallow, and a rung is found in the history between them.
+rungs_read() {
+    rungs=""
+    [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" != true ] || git fetch -q --unshallow origin 2>/dev/null || :
+    git fetch -q origin program:refs/remotes/origin/program 2>/dev/null || :
+    rung_base=$(git merge-base origin/program HEAD 2>/dev/null) || return 0
+    rungs=$(sh tools/rungs.sh "$rung_base" HEAD | tr '\n' ' ')
 }
 
 # what the cold build of packages/cli took, in seconds, and the warm one after it
