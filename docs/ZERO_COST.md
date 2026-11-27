@@ -32,6 +32,7 @@ human reading code.
 | a list made and only walked once | deforestation |
 | an indirect call whose target set is one fn | devirtualization |
 | a `dyn` box laid with N code pointers | static method tables |
+| a number's text minted in an Avra fn (`box text by avra_int_text`) | content keys |
 
 `avra census --candidates` prints the top sites per technique with their counts and the source
 line, so a ranked work list is one command. Run per batch on the gate's workloads, its output
@@ -42,7 +43,7 @@ writes `build/cost/candidates.txt` (`avra census --candidates [--root <tree>] <r
 ten per technique). A `(technique, fn)` that `tools/cost.candidates` lacks is NAMED, never failed;
 `make cost-accept` rewrites that record. Deforestation and devirtualization have no census hook
 yet, and borrows across quiet calls are found by the memory pass's own tally (`AVRA_RC_REASONS`), so
-the classifier reads the other eight shapes.
+the classifier reads the other nine shapes.
 
 ## How work is assessed
 
@@ -64,6 +65,7 @@ the classifier reads the other eight shapes.
 | aggregates as leaf scalars, unfilled parts zeroed | in progress (parallel-main) | SelectionDAG fallbacks, undef words |
 | release rows | landed (batch 48) | release call sites |
 | interned names | proposed | string compares in lookups |
+| content keys: a table keyed by a value folds it to a `ContentHash` over both lanes and probes a `HashKeyedTable` (or interns it), never a text built per lookup | landed for the cancel survey (`BodyAt.print`); the general form waits on maps keyed by any hashable value, and `compiler.text_keyed_probe` (lane/replay-defects/text-keyed-rule) turns on with it | a text, and a box per number in it, on every probe — `BodyAt.key()` minted 2.32 M of them on a cold build-cli |
 | reuse in place (Perceus/FBIP) | proposed | free + alloc pairs |
 | fresh empties: a first write into `[]` makes its buffer, never a clone of the static | proposed | the open of the empty literal (`empty_opens`) |
 | move at last use (borrow inference) | partial (params' consumes) | retain/release pairs |
