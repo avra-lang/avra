@@ -38,10 +38,11 @@ use saved_layout.{
     sealed_end,
     sealed_root_record,
 }
+use package_sets.{KeptNameSet}
 use sorted.{sorted_by}
 
 /// What ends every frontier file: a torn one never reads as one.
-export const FRONTIER_SEAL: string = "avrafront3"
+export const FRONTIER_SEAL: string = "avrafront4"
 
 /// THE CHAIN IS BOUNDED BY WHAT IT MOVED, NEVER BY THE BASE: it holds at most this many deltas, and
 /// the write after them rebases the chain and itself into one delta over the base, holding every
@@ -96,7 +97,7 @@ impl HeldEntry {
 
 /// What a process learned beside the frontier it read: every answer it settled that may differ from
 /// what the frontier says, and the places of the frontier's suspects it never settled.
-export type FrontierLearned = { on: Frontier?, entries: List<HeldEntry>, stale: List<int> }
+export type FrontierLearned = { on: Frontier?, entries: List<HeldEntry>, stale: List<int>, sets: List<KeptNameSet> = [] }
 
 /// Which part of a frontier a file holds.
 export enum FrontierKind {
@@ -137,14 +138,14 @@ type FrontierColumns = {
     readers: List<int> = [],
 }
 
-/// A base as written: its answers, each at its own place, the places that are stale, and the
-/// generation it was written in.
+/// A base as written: its answers, each at its own place, the places that are stale, the generation
+/// it was written in, and every set of package names its answers' records name by print.
 @derive(Saved)
-type FrontierBase = { columns: FrontierColumns, stale: List<int>, generation: int }
+type FrontierBase = { columns: FrontierColumns, stale: List<int>, generation: int, name_sets: List<KeptNameSet> }
 
 /// A delta as written: the state it was built on, the answers it writes, sorted by question, the place
-/// of each, the places that went stale, how many places the state holds after it, and the generation
-/// it was written in.
+/// of each, the places that went stale, how many places the state holds after it, the generation
+/// it was written in, and the sets of package names it names that the state beneath it doesn't.
 @derive(Saved)
 type FrontierDelta = {
     parent: ContentHash,
@@ -153,6 +154,7 @@ type FrontierDelta = {
     stale: List<int>,
     extent: int,
     generation: int,
+    name_sets: List<KeptNameSet>,
 }
 
 /// A file's columns where they lie, and the bytes they lie in.
@@ -279,7 +281,7 @@ fn places_below(source: SavedSource, list: SavedList, extent: int) -> bool { (0.
 fn place_below(place: int, extent: int) -> bool { place >= 0 && place < extent }
 
 /// A base read where it lies.
-type BaseLayer = { id: ContentHash, columns: LaidColumns, stale: SavedList, generation: int }
+type BaseLayer = { id: ContentHash, columns: LaidColumns, stale: SavedList, generation: int, name_sets: SavedList }
 
 /// A delta read where it lies.
 type DeltaLayer = {
@@ -290,6 +292,12 @@ type DeltaLayer = {
     stale: SavedList,
     extent: int,
     generation: int,
+    name_sets: SavedList,
+}
+
+/// The sets of package names laid out at `list` in `source`.
+fn sets_laid(source: SavedSource, list: SavedList) -> List<KeptNameSet> {
+    [KeptNameSet.read_from(source, list.record_in(source, at)) for at in 0..list.length]
 }
 
 /// Whether a file of `kind` holds a base.
@@ -305,11 +313,13 @@ fn base_read(file: FrontierFile) -> BaseLayer? {
     let columns? = laid_columns(file.source, held, end) else { return null }
     let stale? = FrontierBase.stale_within(file.source, root, end) else { return null }
     if !places_below(file.source, stale, columns.length()) || !columns.turned_round() { return null }
+    let sets? = FrontierBase.name_sets_within(file.source, root, end) else { return null }
     BaseLayer {
         id: file.id,
         columns: columns,
         stale: stale,
         generation: FrontierBase.generation_in(file.source, root),
+        name_sets: sets,
     }
 }
 
@@ -323,6 +333,7 @@ fn delta_read(file: FrontierFile) -> DeltaLayer? {
     let places? = FrontierDelta.places_within(file.source, root, end) else { return null }
     let stale? = FrontierDelta.stale_within(file.source, root, end) else { return null }
     let extent = FrontierDelta.extent_in(file.source, root)
+    let sets? = FrontierDelta.name_sets_within(file.source, root, end) else { return null }
     if places.length != columns.length() ||
         !places_below(file.source, places, extent) ||
         !places_below(file.source, stale, extent) { return null }
@@ -334,6 +345,7 @@ fn delta_read(file: FrontierFile) -> DeltaLayer? {
         stale: stale,
         extent: extent,
         generation: FrontierDelta.generation_in(file.source, root),
+        name_sets: sets,
     }
 }
 
@@ -414,6 +426,16 @@ impl Frontier {
 
     /// The generation its newest file was written in.
     fn generation() -> int { self.chain.last()?.generation ?? self.base.generation }
+
+    /// Every set of package names its files name, base first.
+    fn name_sets() -> List<KeptNameSet> {
+        self
+            .base_name_sets()
+            .concat([sets_laid(d.columns.source, d.name_sets) for d in self.chain].flatten())
+    }
+
+    /// The sets of package names its base names.
+    fn base_name_sets() -> List<KeptNameSet> { sets_laid(self.base.columns.source, self.base.name_sets) }
 
     /// Every question it holds.
     fn questions() -> List<ContentHash> { [self.question_at(at) for at in 0..self.extent] }
@@ -796,9 +818,9 @@ export fn files_kept(files: List<FrontierFile>) -> List<ContentHash> {
 export fn frontier_written(now: Frontier?, learned: FrontierLearned, generation: int, whole: bool) -> FrontierWrite? {
     if !same_state(now, learned.on) {
         let state = standing_state(learned)
-        if agrees(now, state) { return written_over(now, state, [], generation, whole) }
+        if agrees(now, state) { return written_over(now, state, [], learned.sets, generation, whole) }
     }
-    written_over(learned.on, learned.entries, learned.stale, generation, whole)
+    written_over(learned.on, learned.entries, learned.stale, learned.sets, generation, whole)
 }
 
 /// Whether two frontiers are one state: both none, or both naming one newest file.
@@ -838,32 +860,45 @@ fn standing_state(learned: FrontierLearned) -> List<HeldEntry> {
         .concat(learned.entries)
 }
 
-/// The write `held` and `stale` make over `state`; a state whose reads don't lie within it is
-/// written as nothing, the learned answers alone.
+/// The write `held` and `stale` make over `state`, beside the name sets `sets` its records name; a
+/// state whose reads don't lie within it is written as nothing, the learned answers alone.
 fn written_over(
     state: Frontier?,
     held: List<HeldEntry>,
     stale: List<int>,
+    sets: List<KeptNameSet>,
     generation: int,
     whole: bool,
 ) -> FrontierWrite? {
-    let change? = change_of(state, held, stale) else { return written_over(null, held, [], generation, whole) }
+    let change? = change_of(state, held, stale) else { return written_over(null, held, [], sets, generation, whole) }
+    let every = sets_with(state?.name_sets() ?? [], sets)
     if change.written.is_empty() && change.stale.is_empty() { return null }
-    let s? = state else { return folded(change, generation) }
-    if !whole && s.takes(change) { return delta_written(change, generation) }
+    let s? = state else { return folded(change, every, generation) }
+    if !whole && s.takes(change) { return delta_written(change, sets_beyond(every, s.name_sets()), generation) }
     if !whole && !s.forked && !s.chain.is_empty() {
-        let rebased = chain_rebased(s, change, max_of(generation, s.generation()))
+        let rebased = chain_rebased(
+            s,
+            change,
+            sets_beyond(every, s.base_name_sets()),
+            max_of(generation, s.generation()),
+        )
         if rebased != null { return rebased }
     }
-    folded(change, generation) ?? written_over(null, held, [], generation, whole)
+    folded(change, every, generation) ?? written_over(null, held, [], sets, generation, whole)
 }
+
+/// The sets `held` holds and those `more` adds, each once by print.
+fn sets_with(held: List<KeptNameSet>, more: List<KeptNameSet>) -> List<KeptNameSet> { held.concat(sets_beyond(more, held)) }
+
+/// The sets of `sets` whose print `held` holds none of.
+fn sets_beyond(sets: List<KeptNameSet>, held: List<KeptNameSet>) -> List<KeptNameSet> { [s for s in sets if !held.any(it.print == s.print)] }
 
 /// THE CHAIN REBASED: the newest entry the chain over `s`'s base wrote at each place, with `change`
 /// laid over them, written as one delta over the base; every place the chain or the change found
 /// stale stays stale. A delta never renumbers a place, so each entry is carried at its place with its
 /// reads as they stand, and nothing is placed again. Absent when that delta is too big for its base,
 /// and the change folds instead.
-fn chain_rebased(s: Frontier, change: FrontierChange, generation: int) -> FrontierWrite? {
+fn chain_rebased(s: Frontier, change: FrontierChange, sets: List<KeptNameSet>, generation: int) -> FrontierWrite? {
     mut written: List<HeldEntry> = []
     mut reads: List<List<int>> = []
     mut places: List<int> = []
@@ -893,7 +928,7 @@ fn chain_rebased(s: Frontier, change: FrontierChange, generation: int) -> Fronti
         extent: change.extent,
     }
     if !base.takes(rebased) { return null }
-    delta_written(rebased, generation) with { replaces: [d.id for d in s.chain] }
+    delta_written(rebased, sets, generation) with { replaces: [d.id for d in s.chain] }
 }
 
 /// The entry at `at` as a rebased chain carries it: its reads ride beside it, already placed.
@@ -1368,7 +1403,7 @@ fn holds_every(among: List<ContentHash>, wanted: List<ContentHash>) -> bool {
 
 /// `change` as a base: every place a root reaches, in question order, the stale ones still stale.
 /// Absent when an entry's reads don't lie within its state.
-fn folded(change: FrontierChange, generation: int) -> FrontierWrite? {
+fn folded(change: FrontierChange, sets: List<KeptNameSet>, generation: int) -> FrontierWrite? {
     let order? = reached_in_order(change) else { return null }
     let numbered = indexed_at(order, change.extent)
     let stale_now = marked(change.stale, change.extent)
@@ -1376,6 +1411,7 @@ fn folded(change: FrontierChange, generation: int) -> FrontierWrite? {
         columns_at(change, order, (r) -> numbered[r] - 1),
         [index for index, at in order if stale_now[at] || change.written_entry(at) == null && !change.state!.stands(at)],
         next_generation(change.state, generation),
+        sets,
     )
 }
 
@@ -1386,8 +1422,8 @@ fn reached_in_order(change: FrontierChange) -> List<int>? {
     [at for at in change.places_in_order() if reached[at]]
 }
 
-/// `change` over its state as a delta.
-fn delta_written(change: FrontierChange, generation: int) -> FrontierWrite {
+/// `change` over its state as a delta, naming the sets `sets` its state doesn't hold.
+fn delta_written(change: FrontierChange, sets: List<KeptNameSet>, generation: int) -> FrontierWrite {
     let state = change.state!
     let places = change.in_question_order(change.places)
     delta_file_of(
@@ -1397,6 +1433,7 @@ fn delta_written(change: FrontierChange, generation: int) -> FrontierWrite {
         change.stale,
         change.extent,
         if generation > state.generation() { generation } else { state.generation() },
+        sets,
     )
 }
 
@@ -1522,7 +1559,7 @@ export fn delta_file(
     extent: int,
     generation: int,
 ) -> FrontierWrite {
-    delta_file_of(parent, columns_of(entries), places, stale, extent, generation)
+    delta_file_of(parent, columns_of(entries), places, stale, extent, generation, [])
 }
 
 /// A delta over the state `parent` names, writing the answers `columns` holds, each at its place
@@ -1534,6 +1571,7 @@ fn delta_file_of(
     stale: List<int>,
     extent: int,
     generation: int,
+    sets: List<KeptNameSet>,
 ) -> FrontierWrite {
     let delta = FrontierDelta {
         parent: parent,
@@ -1542,6 +1580,7 @@ fn delta_file_of(
         stale: stale,
         extent: extent,
         generation: generation,
+        name_sets: sets,
     }
     let writer = saved_layout_writer()
     file_written(FrontierKind.Delta, writer.finished_runs_of(delta.written_into(writer)))
@@ -1549,13 +1588,23 @@ fn delta_file_of(
 
 /// A base of `entries`, sorted by question, each at its own place, the places `stale` stale.
 export fn base_file(entries: List<FrontierEntry>, stale: List<int>, generation: int) -> FrontierWrite {
-    base_file_of(columns_of(entries), stale, generation)
+    base_file_of(columns_of(entries), stale, generation, [])
 }
 
 /// A base of the answers `columns` holds, sorted by question, each at its own place, the places
 /// `stale` stale.
-fn base_file_of(columns: FrontierColumns, stale: List<int>, generation: int) -> FrontierWrite {
-    let base = FrontierBase { columns: turned_round(columns), stale: stale, generation: generation }
+fn base_file_of(
+    columns: FrontierColumns,
+    stale: List<int>,
+    generation: int,
+    sets: List<KeptNameSet>,
+) -> FrontierWrite {
+    let base = FrontierBase {
+        columns: turned_round(columns),
+        stale: stale,
+        generation: generation,
+        name_sets: sets,
+    }
     let writer = saved_layout_writer()
     file_written(FrontierKind.Base, writer.finished_runs_of(base.written_into(writer)))
 }

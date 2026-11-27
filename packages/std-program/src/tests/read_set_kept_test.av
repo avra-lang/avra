@@ -1,6 +1,7 @@
 // What an answer read is said by its kept record: a later process that reads an answer the frontier
 // stands on takes that answer's read set from the record's print, never by walking the frontier
 // beneath it, and one whose store shares no package works no set out at all.
+use @std.io.{list_dir}
 use @std.time.{stamp}
 use tests.support.store_in_memory.{StoreInMemory, store_in_memory}
 use answer_record.{question}
@@ -36,6 +37,21 @@ fn chain(world: Cell<string>) -> List<QueryDefinition> {
         chained("length", "source", (t) -> "${t.length}"),
         chained("doubled", "length", (t) -> t + t),
         chained("tripled", "doubled", (t) -> t + "!"),
+        QueryDefinition {
+            query_name: "other",
+            code_hash: "code",
+            is_input: true,
+            compute: (e, _a) -> read_stamped(e, "/other/k", () -> "ab").bytes(),
+        },
+        QueryDefinition {
+            query_name: "both",
+            code_hash: "code",
+            is_input: false,
+            compute: (e, a) -> (chained_text(e, "length", a.text() ?? "") +
+                chained_text(e, "other", a.text() ?? ""))
+                .bytes(),
+        },
+        chained("both_marked", "both", (t) -> t + "!"),
     ]
 }
 
@@ -47,18 +63,28 @@ fn sharing_store(own: string, shared: string) -> LayeredStore {
     layered_store(
         disk_store_at(own),
         disk_store_at(shared),
-        [PackagePlace { name: "@std/x", root: "/std", shared: true }],
+        [
+            PackagePlace { name: "@std/x", root: "/std", shared: true },
+            PackagePlace { name: "@std/y", root: "/other", shared: true },
+        ],
         "test",
     )
 }
 
 /// A process over `store` asking `query_name` while the world says `text`, its frontier kept.
-fn process_over(store: dyn AnswerStore, text: string, query_name: string) -> QueryEngine {
+fn process_over(store: dyn AnswerStore, text: string, query_name: string) -> QueryEngine { process_asking(store, text, query_name, ["w"]) }
+
+/// A process over `store` asking `query_name` of each of `arguments` while the world says `text`, its
+/// frontier kept.
+fn process_asking(store: dyn AnswerStore, text: string, query_name: string, arguments: List<string>) -> QueryEngine {
     let engine = query_engine(store, chain(Cell.new(text)))
-    let _ = chained_text(engine, query_name, "w")
+    for a in arguments { let _ = chained_text(engine, query_name, a) }
     engine.frontier_kept()
     engine
 }
+
+/// Whether `directory` holds a frontier delta.
+fn holds_delta(directory: string) -> bool { (list_dir(directory) catch []).any(it.ends_with(".delta")) }
 
 spec "read sets — an answer's kept record says what it read" {
     given "a later process over a sharing store reading an answer the frontier stands on" {
@@ -72,6 +98,26 @@ spec "read sets — an answer's kept record says what it read" {
             let later = process_over(second, "four", "tripled")
             let _ = second.saved()
             chained_text(later, "tripled", "w") == "44!" &&
+                later.worked_count() == 1 &&
+                later.read_sets_walked_count() == 0
+        }
+    }
+    given "a set of packages first named in a delta over the frontier's base" {
+        then "a process after it reads that set from the delta, and walks no read set" {
+            let own = unused_directory("delta-own")
+            let shared = unused_directory("delta-shared")
+            let first = sharing_store(own, shared)
+            let _ = process_asking(first, "four", "doubled", ["w", "a", "b", "c"])
+            let _ = first.saved()
+            let second = sharing_store(own, shared)
+            let _ = process_over(second, "four", "both")
+            let _ = second.saved()
+            let delta_written = holds_delta(own)
+            let third = sharing_store(own, shared)
+            let later = process_over(third, "four", "both_marked")
+            let _ = third.saved()
+            delta_written &&
+                chained_text(later, "both_marked", "w") == "4ab!" &&
                 later.worked_count() == 1 &&
                 later.read_sets_walked_count() == 0
         }

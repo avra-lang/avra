@@ -22,7 +22,7 @@ use frontier.{
     NOT_CUT,
     place_key,
 }
-use package_sets.{KeptNameSet, NO_NAMES, NameSets, SET_UNWORKED, name_sets}
+use package_sets.{NO_NAMES, NameSets, SET_UNWORKED, name_sets}
 use input_stamps.{InputStamp, places_held}
 use defect.{defect}
 use hash_keyed_table.{HashKeyedTable, ReadTable, hash_keyed_table, read_table}
@@ -177,13 +177,6 @@ export trait AnswerStore {
     /// store, whatever it read, and what packages an answer read decides nothing.
     fn shares_any() -> bool { false }
 
-    /// Every set of package names a record the binary printed `print` kept here may name by its print.
-    fn name_sets_kept(_print: string) -> List<KeptNameSet> { [] }
-
-    /// Keeps `sets` as every set of package names the binary printed `print`'s records here may name
-    /// by print.
-    fn keep_name_sets(_print: string, _sets: List<KeptNameSet>) {}
-
     /// Keeps a record of a SHARED question: one whose every input lies in packages this store shares.
     fn keep_shared_record(asked: Question, record: AnswerRecord) { self.keep_record(asked, record) }
 
@@ -297,10 +290,8 @@ export type QueryEngine = {
     records_checked: Cell<int>,
     /// The answers whose read set this process walked the frontier for, its kept record carrying none.
     read_sets_walked: Cell<int>,
-    /// Whether the store's kept name sets were read into `sets`.
+    /// Whether the frontier's name sets were read into `sets`.
     name_sets_read: Cell<bool>,
-    /// The prints of the sets the store kept, each spelled, once they were read.
-    kept_prints: Cell<Map<string, bool>>,
     /// The answers this engine checked against a kept record and kept, by the pass of their family,
     /// as `pass_index` numbers the passes: what a warm run verified rather than worked out.
     rechecked: Cell<List<int>>,
@@ -374,7 +365,6 @@ export fn query_engine(
     let stamps_kept: Cell<HashKeyedTable<InputStamp>?> = Cell.new(null)
     let stamps_seen: HashKeyedTable<InputStamp> = hash_keyed_table()
     let read_sets: HashKeyedTable<int> = hash_keyed_table()
-    let no_prints: Map<string, bool> = {}
     let reached: Cell<int> = Cell.new(0)
     let held: Cell<int> = Cell.new(0)
     let proved: Cell<int> = Cell.new(0)
@@ -396,7 +386,6 @@ export fn query_engine(
         records_checked: Cell.new(0),
         read_sets_walked: Cell.new(0),
         name_sets_read: Cell.new(false),
-        kept_prints: Cell.new(no_prints),
         rechecked: Cell.new([0 for _p in 0..every_pass().length]),
         frontier: Cell.new(FrontierState.Unread),
         asked_alone: asked_alone,
@@ -768,7 +757,6 @@ impl QueryEngine {
     fn frontier_kept() {
         if self.unhashed() { return }
         self.stamps_kept_now()
-        self.name_sets_kept_now()
         match self.frontier.get() {
             .Unread or .Opening -> { return },
             .Missing or .Unusable -> self.learned_kept(null),
@@ -787,7 +775,12 @@ impl QueryEngine {
             .store
             .keep_frontier(
                 self.frontier_print(),
-                FrontierLearned { on: open?.frontier, entries: entries, stale: stale },
+                FrontierLearned {
+                    on: open?.frontier,
+                    entries: entries,
+                    stale: stale,
+                    sets: if self.sharing { self.sets.kept_sets() } else { [] },
+                },
             )
     }
 
@@ -1056,33 +1049,16 @@ impl QueryEngine {
         let answer = f.answer_at(at)
         let record? = self.store.records_of(f.question_at(at)).find(it.answer.same_as(answer)) else { return null }
         if record.read_set == SET_UNWORKED { return null }
-        self.sets.printed_as(record.read_set) ?? self.kept_sets_printed(record.read_set)
+        self.sets.printed_as(record.read_set) ?? self.kept_sets_printed(f, record.read_set)
     }
 
-    /// The set kept under `print`, the store's kept sets read into `sets` the first time one is asked.
-    fn kept_sets_printed(print: int) -> int? {
-        self.kept_sets_read()
-        self.sets.printed_as(print)
-    }
-
-    /// The store's kept sets read into `sets`, each under the print it was kept with, once.
-    fn kept_sets_read() {
-        if self.name_sets_read.get() { return }
-        self.name_sets_read.set(true)
-        for kept in self.store.name_sets_kept(self.frontier_print()) {
-            let _ = self.sets.of_kept(kept)
-            self.kept_prints.put("${kept.print}", true)
+    /// The set kept under `print`, `f`'s name sets read into `sets` the first time one is asked.
+    fn kept_sets_printed(f: Frontier, print: int) -> int? {
+        if !self.name_sets_read.get() {
+            self.name_sets_read.set(true)
+            for kept in f.name_sets() { let _ = self.sets.of_kept(kept) }
         }
-    }
-
-    /// Keeps the sets this process named beside those the store kept, where it met one the store
-    /// didn't hold and the store shares a package.
-    fn name_sets_kept_now() {
-        if !self.sharing { return }
-        self.kept_sets_read()
-        let sets = self.sets.kept_sets()
-        if sets.all((s) -> self.kept_prints.get().has("${s.print}")) { return }
-        self.store.keep_name_sets(self.frontier_print(), sets)
+        self.sets.printed_as(print)
     }
 
     /// The set of the frontier's answer at `at`, walked from its reads.

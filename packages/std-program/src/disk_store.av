@@ -54,8 +54,7 @@ use frontier.{
     frontier_written,
 }
 use hash_keyed_table.{HashKeyedTable, hash_keyed_table}
-use input_stamps.{InputStamp, sealed_body, sealed_written, stamps_read, stamps_written}
-use package_sets.{KeptNameSet, KeptNameSets}
+use input_stamps.{InputStamp, stamps_read, stamps_written}
 use pack_collection.{
     Live,
     QuestionRecords,
@@ -1190,22 +1189,6 @@ impl AnswerStore for DiskStore {
             [s with { path: named_from(self.directory, s.path) } for s in stamps],
         )
     }
-
-    /// The sets of package names kept here for the binary printed `print`, none where the file isn't
-    /// whole: each binary reads only the sets it wrote, in its own layout.
-    fn name_sets_kept(print: string) -> List<KeptNameSet> {
-        let sealed? = sealed_body(name_sets_path(self.directory, print)) else { return [] }
-        KeptNameSets.from_saved_bytes(sealed.body).sets
-    }
-
-    /// Writes `sets` at once, whole or not at all.
-    fn keep_name_sets(print: string, sets: List<KeptNameSet>) {
-        let _ = make_dirs(self.directory) catch ""
-        sealed_written(
-            name_sets_path(self.directory, print),
-            KeptNameSets { sets: sets }.saved_bytes(),
-        )
-    }
 }
 
 /// `path` named from the directory `dir` where the two are spelled from one root, else as it stands.
@@ -1216,10 +1199,6 @@ fn named_from(dir: string, path: string) -> string {
 
 /// The file a store keeps its inputs' stamps in.
 const STAMPS_FILE: string = "inputs.stamps"
-
-/// Where a store in `directory` keeps the sets of package names the binary printed `print`'s records
-/// name by print.
-fn name_sets_path(directory: string, print: string) -> string { "${directory}/names-${print}.sets" }
 
 impl DiskStore {
     /// Every question this process put in this store's draft.
@@ -1329,6 +1308,7 @@ impl DiskStore {
     /// `write` published as the binary printed `print`'s file, by a draft and one rename; whether
     /// it was.
     fn file_published(print: string, write: FrontierWrite) -> bool {
+        let _ = make_dirs(self.directory) catch ""
         let draft? = match drafted("${self.directory}/frontier") { .Ok(d) -> d, .Err(_) -> null } else { return false }
         for run in write.runs {
             let wrote = draft.write(run) catch -1
