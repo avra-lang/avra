@@ -1,8 +1,8 @@
 diff --git a/packages/std-program/src/frontier.av b/packages/std-program/src/frontier.av
-index 766080f18..33854ffc8 100644
+index 52f1eeca0..b63d2cf5c 100644
 --- a/packages/std-program/src/frontier.av
 +++ b/packages/std-program/src/frontier.av
-@@ -1035,7 +1035,7 @@ fn change_of(state: Frontier?, held: List<HeldEntry>, stale: List<int>) -> Front
+@@ -1047,7 +1047,7 @@ fn change_of(state: Frontier?, held: List<HeldEntry>, stale: List<int>) -> Front
      )
      let fresh = closed.entries
      let existing_reads = [placed_reads(state, closed.places, h) for h in existing]
@@ -12,14 +12,14 @@ index 766080f18..33854ffc8 100644
          .concat([before + at for at in 0..fresh.length])
      let extent = before + fresh.length
 diff --git a/packages/std-program/src/query_engine.av b/packages/std-program/src/query_engine.av
-index d86ba9638..d39fb6136 100644
+index 78bbc3bf5..0eb2ddc33 100644
 --- a/packages/std-program/src/query_engine.av
 +++ b/packages/std-program/src/query_engine.av
-@@ -511,7 +511,6 @@ impl QueryEngine {
-     /// WITHOUT ASKING: what it read is asked by nothing standing, and asking it would write an answer
-     /// back no root reaches.
-     fn meets(f: Frontier, reader: int, by: int) -> bool {
+@@ -530,7 +530,6 @@ impl QueryEngine {
+     /// reads of its own question.
+     fn meets(f: Frontier, reader: int, by: int, readers: HashKeyedTable<ReaderRecord>) -> bool {
+         self.meets_asked.set(self.meets_asked.get() + 1)
 -        if !f.stands(reader) { return true }
-         let answer = f.answer_at(reader)
-         let held = self.store.records_of(f.question_at(reader)).filter(it.answer.same_as(answer))
-         if held.length != 1 { return true }
+         let reads? = self.reader_reads(f, reader, readers) else { return true }
+         let of = f.question_at(by)
+         let wholes = reads.wholes.get(of) ?? []
