@@ -1,0 +1,95 @@
+// A command's options as one config component: `options_of` declares each leaf, so the line
+// refuses what the component does not name and the help says each leaf's `///`; `settings_of`
+// reads the typed value from the component's own sources.
+use @std.meta.{derive}
+use @std.validate.{Decode}
+use @std.config.{Configured, flags}
+use @std.config.cli.{options_of, settings_of}
+use @std.cli.{cli, command, Runnable, CliResult, CliError, parse, command_help}
+
+/// Where a rung builds.
+@derive(Decode)
+type Tree = {
+    /// The directory the tree stands in.
+    dir: string = "",
+}
+
+/// The ladder's options, as its line spells them.
+@derive(Decode)
+component Rungs {
+    /// The commit the ladder replays from.
+    base: string = ""
+    /// The bound of one rung, in seconds.
+    secs: int = 900
+    /// Whether every rung is built again.
+    cold: bool = false
+    tree: Tree = Tree {}
+    flags ["--base=q", "--secs=3", "--cold=1", "--tree.dir=/x"]
+}
+
+/// A number its type cannot read.
+@derive(Decode)
+component Miscounted {
+    secs: int = 0
+    flags ["--secs=x"]
+}
+
+type Ladder = {}
+
+impl Runnable for Ladder {
+    fn run(args: CliResult) -> int { 0 }
+}
+
+fn app() -> cli {
+    cli probe {
+        command ladder {
+            description: "replay the rungs"
+            options: options_of<Rungs>()
+            run: Ladder {}
+        }
+    }
+    probe
+}
+
+fn ladder() -> command { app().commands[0] }
+
+fn refusal_of(words: List<string>) -> string {
+    match parse(app(), words) {
+        .Ok(_) -> "",
+        .Err(e) -> match e {
+            .UnknownFlag(_, token) -> token,
+            .UnknownCommand(n) or .MissingValue(_, n) or .MissingArg(_, n) or .ExtraArg(_, n) -> "other ${n}",
+        },
+    }
+}
+
+spec "std/config — a command's options are one config" {
+    given "a component of three leaves and a nested record" {
+        then "each leaf is an option, a nested one by its dotted path" {
+            [o.name for o in options_of<Rungs>()].join(" ") == "base secs cold tree.dir"
+        }
+        then "the help names each leaf as its option" {
+            let help = command_help(app(), ladder())
+            ["--base <value>", "--secs <value>", "--cold <value>", "--tree.dir <value>"]
+                .all((o) -> help.contains(o))
+        }
+    }
+    given "the command line" {
+        then "a declared option is taken" { refusal_of(["ladder", "--secs=4", "--tree.dir=/y"]) == "" }
+        then "an option the component does not declare is refused" { refusal_of(["ladder", "--bogus=1"]) == "--bogus=1" }
+    }
+    given "the body's read" {
+        then "each leaf comes typed from the component's sources" {
+            match settings_of<Rungs>() {
+                .Ok(l) -> l.value.base == "q" && l.value.secs == 3 && l.value.cold && l.value.tree.dir == "/x",
+                .Err(_) -> false,
+            }
+        }
+        then "a value its type cannot read is the config's issue" {
+            match settings_of<Miscounted>() {
+                .Ok(_) -> false,
+                .Err(u) -> u.report().contains("config.spelling") && u.report().contains("--secs"),
+            }
+        }
+    }
+}

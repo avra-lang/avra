@@ -34,22 +34,23 @@ export type Want = { fields: List<FieldShape>, stage: string, variables: List<Va
 /// A leaf read from the environment variable `name` exactly.
 export type Variable = { path: string, name: string }
 
-/// One leaf field of the record: its dotted path, what it holds, and
-/// whether it is secret.
-export type Leaf = { path: string, kind: FieldKind, secret: bool }
+/// One leaf field of the record: its dotted path, what it holds, whether
+/// it is secret, and its declaration's `///`.
+export type Leaf = { path: string, kind: FieldKind, secret: bool, doc: string = "" }
 
 impl Want {
     /// Every leaf field, a nested record's fields under its name.
     fn leaves() -> List<Leaf> { leaves_under(self.fields, "") }
 }
 
-fn leaves_under(fields: List<FieldShape>, at: string) -> List<Leaf> {
+/// Every leaf of `fields`, each path read from `at`.
+export fn leaves_under(fields: List<FieldShape>, at: string) -> List<Leaf> {
     [leaves_of(f, joined(at, f.name)) for f in fields].flatten()
 }
 
 fn leaves_of(f: FieldShape, path: string) -> List<Leaf> {
     match f.kind {
         .Record(inner) -> leaves_under(inner, path),
-        _ -> [Leaf { path: path, kind: f.kind, secret: f.secret }],
+        _ -> [Leaf { path: path, kind: f.kind, secret: f.secret, doc: f.doc }],
     }
 }
