@@ -221,9 +221,15 @@ impl AnswerStore for LayeredStore {
         shared.keep_record(asked, record)
     }
 
+    fn answer_kept(answer: ContentHash) -> bool {
+        self.own.answer_kept(answer) ||
+            self.shared?.answer_kept(answer) ?? false ||
+            wave_answer(answer) != null
+    }
+
     fn shared_answer_kept(answer: ContentHash) -> bool {
-        let shared? = self.shared else { return self.own.answer_bytes(answer) != null }
-        shared.answer_bytes(answer) != null
+        let shared? = self.shared else { return self.own.answer_kept(answer) }
+        shared.answer_kept(answer)
     }
 
     fn keep_shared_answer_bytes(answer: ContentHash, bytes: Bytes) {

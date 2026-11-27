@@ -117,6 +117,10 @@ export trait AnswerStore {
     /// An answer's bytes where they lie, by their hash, absent when they aren't kept.
     fn answer_bytes(answer: ContentHash) -> SavedBytes?
 
+    /// WHETHER AN ANSWER'S BYTES ARE KEPT for the processes after this one: bytes held for this
+    /// process alone are not, so a question answering what an input held keeps its own.
+    fn answer_kept(answer: ContentHash) -> bool { self.answer_bytes(answer) != null }
+
     fn keep_answer_bytes(answer: ContentHash, bytes: Bytes)
 
     /// An answer's bytes for this process alone, for what the next process reads afresh anyway.
@@ -184,7 +188,7 @@ export trait AnswerStore {
     fn keep_shared_answer_bytes(answer: ContentHash, bytes: Bytes) { self.keep_answer_bytes(answer, bytes) }
 
     /// Whether an answer's bytes lie where a shared question's answer is kept.
-    fn shared_answer_kept(answer: ContentHash) -> bool { self.answer_bytes(answer) != null }
+    fn shared_answer_kept(answer: ContentHash) -> bool { self.answer_kept(answer) }
 }
 
 /// A run of a query: its answer's bytes and every read it made.
@@ -1043,7 +1047,7 @@ impl QueryEngine {
         let read = if self.definition_of(asked).is_input { self.read_sets.get(asked.known_as) ?? NO_NAMES } else { self.set_of_reads(reads) }
         self.read_sets.put(asked.known_as, read)
         let is_shared = self.set_shared(if self.store.shares_any() { read } else { NO_NAMES })
-        let kept = if is_shared { self.store.shared_answer_kept(answer) } else { self.store.answer_bytes(answer) != null }
+        let kept = if is_shared { self.store.shared_answer_kept(answer) } else { self.store.answer_kept(answer) }
         if !kept { self.keep_or_hold(asked, answer, bytes, is_shared) }
         let record = run.reads.record_of(answer, self.sets.members_of(read))
         if !self.store.records_of(asked.known_as).any(it.same_as(record)) { self.record_kept(asked, record, is_shared) }
