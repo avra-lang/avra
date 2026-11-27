@@ -1,0 +1,68 @@
+// The parity check: what each target says of every case, heard as role, name, value, states and
+// direction, held to what the Node says; each reader read on trees that tell its rules apart.
+use @std.ui.components.{button, dialog, icon, spinner, text}
+use @std.ui.tree.view.{View, tree_of}
+use @std.ui.tree.node.{Prim}
+use @std.ui.tree.outline.{outline}
+use @std.ui.realize.html.element.{lowered}
+use @std.ui.tree.viewed.{views}
+use @std.ui.tree.story.{stories}
+use @std.ui_gallery.{
+    Owed,
+    Target,
+    Heard,
+    shelves,
+    parity,
+    owed,
+    spoken,
+    heard_as,
+    node_heard,
+    html_heard,
+    outline_heard,
+}
+
+fn said(hs: List<Heard>) -> string { [spoken(h) for h in hs].join(" | ") }
+
+fn by_node(v: dyn View) -> string { said(node_heard(tree_of(v))) }
+
+fn by_html(v: dyn View) -> string { said([h for e in lowered(tree_of(v)) for h in html_heard(e)]) }
+
+fn by_outline(v: dyn View) -> string { said(outline_heard(outline(tree_of(v)))) }
+
+fn all_apart() -> string {
+    [a.view + "/" + a.case + " " + a.target.word() for a in parity(shelves(views, stories), owed).apart]
+        .join(", ")
+}
+
+spec "@std/ui_gallery parity" {
+    given "every case std-ui's stories tell" {
+        then "no target's hearing parts from the Node's but where a line owes it" { all_apart() == "" }
+        then "every owed line still parts" { parity(shelves(views, stories), owed).struck.is_empty() }
+    }
+    given "an owed line whose case agrees" {
+        then "is struck" {
+            parity(
+                shelves(views, stories),
+                [Owed { view: "button", case: "base", target: Target.Html, owner: "x", why: "y" }],
+            )
+                .struck
+                .length == 1
+        }
+    }
+    given "the role table" {
+        then "an icon is heard as the image it draws" { heard_as(Prim.Icon) == Prim.Image }
+        then "a row says nothing of its own" { heard_as(Prim.Row) == null }
+    }
+    given "a spinner" {
+        then "the html says it as a status, named" { by_html(spinner "Loading") == "spinner \"Loading\"" }
+    }
+    given "a closed dialog" {
+        then "is heard as nothing, on the Node and in the html" { by_node(dialog "Sure?" { text "x" }) == "" && by_html(dialog "Sure?" { text "x" }) == "" }
+    }
+    given "a disabled, busy button" {
+        then "the outline is heard with both states" { by_outline(button "Save" { disabled: true, loading: true }) == "button \"Save\" disabled loading" }
+    }
+    given "a quoted name holding a quote" {
+        then "the outline reads it back whole" { by_outline(text "say \"hi\" now") == "text \"say \"hi\" now\"" }
+    }
+}
