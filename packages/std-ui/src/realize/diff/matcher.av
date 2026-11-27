@@ -50,11 +50,12 @@ export fn siblings<E: Diffable, D: Draws<E>>(
     next: int,
 ) -> Run<E> {
     let pairs = matched(old, new)
-    let held = marked(old.length, [at for p in pairs for at in keeps(p)])
+    let was = [stood(p) for p in pairs]
+    let held = marked(old.length, [at! for at in was if at != null])
     for j, e in old {
         if !held[j] { d.removed(e.id()) }
     }
-    let stays = still([stood(p) for p in pairs])
+    let stays = still(was)
     mut page: List<E> = []
     mut free = next
     // LICENSED loops.push_loop: each element takes the numbers the ones before it left
@@ -70,11 +71,6 @@ export fn siblings<E: Diffable, D: Draws<E>>(
 /// Where in the old run an element stood — nowhere for a new one.
 fn stood<E>(p: Stands<E>) -> int? {
     match p { .Made(_) -> null, .Kept(at, _, _) -> at }
-}
-
-/// The old place an element keeps, as a run of none or one.
-fn keeps<E>(p: Stands<E>) -> List<int> {
-    match p { .Made(_) -> [], .Kept(at, _, _) -> [at] }
 }
 
 /// `e` against the old element at `at`.
@@ -124,6 +120,12 @@ fn first_not_before(tails: List<int>, was: List<int>, stood: int) -> int {
     low
 }
 
+/// Whether the kept elements' old places already rise, so every one of them stands still.
+fn rising(stood: List<int?>) -> bool {
+    let kept = [at! for at in stood if at != null]
+    (1..kept.length).all(kept[it - 1] < kept[it])
+}
+
 /// WHICH KEPT ELEMENTS STAND STILL: the longest run of them whose old places
 /// still rise, so the fewest are moved — a row carried to the front is one
 /// move, whatever the length of the list. `stood` is each new element's old
@@ -131,6 +133,7 @@ fn first_not_before(tails: List<int>, was: List<int>, stood: int) -> int {
 /// are. Patience sorting: `tails[k]` is the element ending the best rising
 /// run of length k + 1, `before` the one it follows.
 export fn still(stood: List<int?>) -> List<bool> {
+    if rising(stood) { return [at != null for at in stood] }
     let kept = [j for j, at in stood if at != null]
     let was = [at ?? 0 for at in stood]
     let tails: Cell<List<int>> = Cell.new([])
