@@ -99,7 +99,7 @@ impl Request {
     /// not be handed a path that looks routable; the server keeps the
     /// framer's law for them, and `target()` still answers whole.
     fn path() -> Bytes? {
-        match self.form() {
+        match self.target_kind() {
             .Origin -> self.raw.slice(self.head.target.lo, self.split_at()),
             .Absolute -> self.absolute_path(),
             .Asterisk or .Authority or .Other -> null,
@@ -126,14 +126,14 @@ impl Request {
     /// absent here: it is a tunnel's destination and not this
     /// request's, and `target()` hands it over whole.
     fn authority() -> string? {
-        match self.form() {
+        match self.target_kind() {
             .Absolute -> self.raw.slice(self.authority_from(), self.authority_to()).text(),
             .Origin or .Asterisk or .Authority or .Other -> null,
         }
     }
 
     /// Which of the four forms this request's target is in.
-    fn form() -> TargetForm { target_form(self.raw, self.head.method, self.head.target.lo, self.head.target.hi) }
+    fn target_kind() -> TargetForm { target_form(self.raw, self.head.method, self.head.target.lo, self.head.target.hi) }
 
     /// An absolute-form target's path: from the first `/` after its
     /// authority to where the path class ends.
@@ -153,7 +153,7 @@ impl Request {
     /// An absolute-form target's scheme, as written; null for every
     /// other form.
     fn scheme() -> Bytes? {
-        if !(self.form() is .Absolute) { return null }
+        if !(self.target_kind() is .Absolute) { return null }
         self.raw.slice(self.head.target.lo, self.authority_from() - 3)
     }
 
