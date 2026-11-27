@@ -208,11 +208,11 @@ listed() { if [ -f "$1" ]; then grep -v '^#' "$1" | cut -f1 | grep . | sort -u; 
 # `<scope>` whole and ended no case, one whose file the scope holds and whose case did not fail: a pin
 # only shrinks, so a case that passes is a line to strike
 pins_said() {
-    pkg=$1 failed=$2 trapped=$3
+    pins_pkg=$1 pins_failed=$2 pins_trapped=$3
     shift 3
-    pin="tools/gate/$pkg.names"
-    [ -f "$pin" ] || return 0
-    awk -F'\t' -v pkg="$pkg" -v pin="$pin" -v failed_at="$failed" -v ended="$([ -s "$trapped" ] && echo 1 || echo 0)" -v scope="$(printf '%s ' "$@" | sed 's|/ | |g')" '
+    pins_file="tools/gate/$pins_pkg.names"
+    [ -f "$pins_file" ] || return 0
+    awk -F'\t' -v pkg="$pins_pkg" -v pin="$pins_file" -v failed_at="$pins_failed" -v ended="$([ -s "$pins_trapped" ] && echo 1 || echo 0)" -v scope="$(printf '%s ' "$@" | sed 's|/ | |g')" '
         BEGIN { while ((getline c < failed_at) > 0) failed[c] = 1; close(failed_at) }
         /^#/ || NF == 0 { next }
         {
@@ -224,7 +224,7 @@ pins_said() {
             if (ended || ($1 in failed)) next
             k = split(scope, s, " ")
             for (i = 1; i <= k; i++) if (f == s[i] || index(f, s[i] "/") == 1) { print "passes, and " pin " still pins it (" w[2] " " w[3] ") — strike its line: " $1; next }
-        }' "$pin"
+        }' "$pins_file"
 }
 
 # held <package> <log> <status>: whether a suite run of `package` that exited `status` holds as a gate's
