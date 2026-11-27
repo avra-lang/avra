@@ -360,6 +360,11 @@ const SEALED_MARK: string = "sealed"
 /// The mark a record wears that holds producers its binding's scope settles.
 const OWNS_MARK: string = "owns"
 
+/// The program `file`'s bodies are read in, under no type parameters.
+fn file_program(engine: QueryEngine, file: SourceFileAddress) -> CheckedProgram {
+    program_of(engine, file, Signing { engine: engine, file: file, type_params: [] })
+}
+
 /// What a body in `file` reads of the program: every answer typing asks, from the queries that hold
 /// it, under `signing`'s type parameters; a type written in the body is read where `signing`'s writer
 /// stands, a type named by a node where the template that wrote the node stands. A fn's answer is
@@ -505,11 +510,7 @@ export fn const_value_type(engine: QueryEngine, file: SourceFileAddress, name: s
     let item? = declaring_item(engine, file, name, ItemKind.Const) else { return null }
     let value? = [v! for s in item.stmts if item.store.let_name(s) == name for v in [item.store.const_value(s)] if v != null]
         .first() else { return null }
-    mut cx = checking(
-        item.store,
-        program_of(engine, file, Signing { engine: engine, file: file, type_params: [] }),
-        null,
-    )
+    mut cx = checking(item.store, file_program(engine, file), null)
     cx.check_seated(value, null, Seating.Binding(name))
 }
 
