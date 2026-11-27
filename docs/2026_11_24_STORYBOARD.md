@@ -524,7 +524,7 @@ The survey (118 cases, program `13c2fd4a`), each fixed or owed:
 | a spinner is a `div` with an `aria-label` and no role, so a reader passes it by (4 cases) | fixed: it says `role="status"` |
 | the outline drops a stated words direction (`text/stated`) | fixed: the line says `dir=rtl`/`dir=ltr` where `Style.writing` states one |
 | native facts carry no stated words direction (`text/stated`) | owed (`storyboard`): slice 6's `WordsWriting` fact pays it, and the native reader reads it then |
-| the terminal draws no disabled, busy, invalid or selected state | not yet a reader: its form is the UI lead's ruling (words after the control, a glyph, or a reader that declares what it cannot say) |
+| the terminal draws no disabled, busy, invalid or selected state | owed (`storyboard`, ROADMAP): the UI lead's ruling — no state by colour alone, a glyph or words that survive `NO_COLOR` — is slice 8, and the terminal's reader lands with it |
 
 **The cost.** The four readers over 118 cases run in ~1.6 s and 330 MB in the evaluator, beside the
 snapshot pass. `role="status"` is 14 bytes per spinner.
