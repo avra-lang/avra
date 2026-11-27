@@ -26,11 +26,18 @@ use grammar.{avra_known_terminals, parse_grammar}
 use @std.grammar.{ready}
 use @std.meta.{derive}
 use @std.program.defect.{defect}
-use @std.path.{dir_of, under_dir}
+use @std.path.{dir_of, file_name, under_dir}
 use @std.text.{parse_int}
 use @std.program.address.{DirectoryAddress, SourceFileAddress, source_file}
 use @std.program.saved_derive.{Saved}
-use @std.program.source_facts.{file_context, item_spans, item_tape_saved, listed, source_text}
+use @std.program.source_facts.{
+    file_context,
+    item_spans,
+    item_tape_saved,
+    listed,
+    listing,
+    source_text,
+}
 use @std.program.syntax_tape.{SyntaxTape, TapeName, tape_about, tape_declares}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
 use @std.program.answer_parts.{AnswerParts, NamedValue, answer_parts}
@@ -1217,6 +1224,16 @@ export fn program_path(facts: PackageFacts) -> string { facts.bin ?? DEFAULT_PRO
 
 /// The source a package's program is where its manifest names none.
 const DEFAULT_PROGRAM: string = "src/main.av"
+
+/// The names in `dir` that are no source: where its package's program stands there, the binary a
+/// build of it is written at, under every platform's suffix. The program is the manifest's `[bin]`,
+/// asked through the manifest's own query, so a `[bin]` renamed moves the listing.
+export fn unsourced_in(engine: QueryEngine, dir: DirectoryAddress) -> List<string> {
+    let entry = program_path(package_facts(engine, dir.package_name))
+    if dir_of(entry) != dir.path_in_package ||
+        !(listing(engine, dir) ?? []).contains(file_name(entry)) { return [] }
+    [file_name(product_stem(entry)) + suffix for suffix in binary_suffixes()]
+}
 
 /// What a package's manifest says of where its modules stand and whom it reads: what it excludes,
 /// its program, its library, and the packages it depends on. A package with no manifest says none.

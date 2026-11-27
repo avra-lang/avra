@@ -160,7 +160,7 @@ use @std.avrac.compiler.{
     apple_link_tail,
     platform_of,
     binary_suffix,
-    binary_suffixes,
+    product_stem,
     wasm_link_tail,
     program_calls,
     shipped,
@@ -366,7 +366,6 @@ fn worlded(root: string, only: string, lone: string) -> Disk? {
         deps: deps,
         lone: lone,
         admitted: admitted,
-        products: if lone.is_empty() { product_paths(entry_written(root)) } else { [] },
     }
     disk.entered()
     disk
@@ -654,16 +653,6 @@ fn entry_written(root: string) -> string? {
 
 /// Where the program at `root` whose entry is `bin` keeps its binary.
 fn binary_stem(root: string, bin: string) -> string { joined_path(root, product_stem(bin)) }
-
-/// The path in its package a program whose entry is `bin` is built at, before its platform's suffix.
-fn product_stem(bin: string) -> string { if bin.ends_with(".av") { bin.substring(0, bin.length - 3) } else { bin } }
-
-/// Every path in its package a build of the program whose entry is `bin` may write its binary at, one
-/// for each platform; none for a package that declares no program.
-fn product_paths(bin: string?) -> List<string> {
-    let entry? = bin else { return [] }
-    [product_stem(entry) + suffix for suffix in binary_suffixes()]
-}
 
 /// What a build of the package at `root` asks, as `engine` reads it.
 fn binary_asked(
@@ -1341,9 +1330,6 @@ type Disk = {
     /// Files the named package holds that no disk does, by where each would stand: a command's own
     /// text, read as a source beside the ones written.
     over: Map<string, string> = {},
-    /// Where in the named package a build writes its program's binary: what a listing of it leaves
-    /// out, as it does the store.
-    products: List<string> = [],
 }
 
 impl Disk {
@@ -1360,15 +1346,12 @@ impl Disk {
         )
     }
 
-    /// The names in a package's directory: a lone file's package holds that file alone. A PROGRAM'S
-    /// BINARY IS NO SOURCE: it is the build's own output, written beside the sources it reads, so a
-    /// listing that held it would be moved by the build that wrote it.
+    /// The names in a package's directory: a lone file's package holds that file alone.
     fn listed(package: string, dir: string) -> List<string>? {
         let over = if package == self.name { [file_name(p) for p, _text in self.over if dir_of(p) == self.on_disk(package, dir)] } else { [] }
         if !self.lone.is_empty() && package == self.name { return if dir == "src" { distinct([self.lone].concat(over)) } else { [] } }
         let names? = names_at(self.on_disk(package, dir)) else { return if over.is_empty() { null } else { over } }
-        let written = if package == self.name { self.products } else { [] }
-        distinct([n for n in names if !written.contains(joined_path(dir, n))].concat(over))
+        distinct(names.concat(over))
     }
 
     /// What decides where each of its packages lies and what each file there says: its root and name,
