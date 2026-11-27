@@ -176,6 +176,12 @@ extern const char avra_rt_held_avra_float_text __asm__(AVRA_RT_LABEL(avra_float_
 extern const char avra_rt_held_avra_float_to_bits __asm__(AVRA_RT_LABEL(avra_float_to_bits));
 extern const char avra_rt_held_avra_float_of_bits __asm__(AVRA_RT_LABEL(avra_float_of_bits));
 extern const char avra_rt_held_avra_float_text_bits __asm__(AVRA_RT_LABEL(avra_float_text_bits));
+extern const char avra_rt_held_avra_text_begin __asm__(AVRA_RT_LABEL(avra_text_begin));
+extern const char avra_rt_held_avra_text_add __asm__(AVRA_RT_LABEL(avra_text_add));
+extern const char avra_rt_held_avra_text_add_int __asm__(AVRA_RT_LABEL(avra_text_add_int));
+extern const char avra_rt_held_avra_text_add_float __asm__(AVRA_RT_LABEL(avra_text_add_float));
+extern const char avra_rt_held_avra_text_add_bool __asm__(AVRA_RT_LABEL(avra_text_add_bool));
+extern const char avra_rt_held_avra_text_end __asm__(AVRA_RT_LABEL(avra_text_end));
 extern const char avra_rt_held_avra_int_and __asm__(AVRA_RT_LABEL(avra_int_and));
 extern const char avra_rt_held_avra_int_or __asm__(AVRA_RT_LABEL(avra_int_or));
 extern const char avra_rt_held_avra_int_xor __asm__(AVRA_RT_LABEL(avra_int_xor));
@@ -485,6 +491,12 @@ __attribute__((used)) static const void* const avra_rt_held[] = {
     &avra_rt_held_avra_float_to_bits,
     &avra_rt_held_avra_float_of_bits,
     &avra_rt_held_avra_float_text_bits,
+    &avra_rt_held_avra_text_begin,
+    &avra_rt_held_avra_text_add,
+    &avra_rt_held_avra_text_add_int,
+    &avra_rt_held_avra_text_add_float,
+    &avra_rt_held_avra_text_add_bool,
+    &avra_rt_held_avra_text_end,
     &avra_rt_held_avra_int_and,
     &avra_rt_held_avra_int_or,
     &avra_rt_held_avra_int_xor,
@@ -909,6 +921,18 @@ _Static_assert(__builtin_types_compatible_p(__typeof__(avra_float_of_bits(AVRA_R
     "avra_float_of_bits: its row answers f64, so its C body answers double");
 _Static_assert(__builtin_classify_type(avra_float_text_bits(AVRA_RT_I64)) == AVRA_RT_POINTER,
     "avra_float_text_bits: its row answers ptr, so its C body answers a pointer");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_text_begin()), void),
+    "avra_text_begin: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_text_add(AVRA_RT_PTR)), void),
+    "avra_text_add: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_text_add_int(AVRA_RT_I64)), void),
+    "avra_text_add_int: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_text_add_float(AVRA_RT_F64)), void),
+    "avra_text_add_float: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_text_add_bool(AVRA_RT_I64)), void),
+    "avra_text_add_bool: its row answers void, so its C body answers void");
+_Static_assert(__builtin_classify_type(avra_text_end()) == AVRA_RT_POINTER,
+    "avra_text_end: its row answers ptr, so its C body answers a pointer");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_int_and(AVRA_RT_I64, AVRA_RT_I64)), int64_t),
     "avra_int_and: its row answers i64, so its C body answers int64_t");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_int_or(AVRA_RT_I64, AVRA_RT_I64)), int64_t),

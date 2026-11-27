@@ -2060,14 +2060,22 @@ int64_t avra_int_mod(int64_t a, int64_t b) {
 // allocation — shrinking it afterwards misfiles the box.
 // Digits written backwards from the end of a scratch buffer — the
 // magnitude taken as unsigned, so the smallest int has one too.
-const char* avra_int_text(int64_t v) {
-    char digits[24];
-    char* end = digits + sizeof digits;
+#define INT_SPELLED_MAX 24
+
+static const char* int_spelled(int64_t v, char digits[INT_SPELLED_MAX], size_t* n) {
+    char* end = digits + INT_SPELLED_MAX;
     char* p = end;
     uint64_t m = v < 0 ? (uint64_t)0 - (uint64_t)v : (uint64_t)v;
     do { *--p = (char)('0' + m % 10); m /= 10; } while (m != 0);
     if (v < 0) *--p = '-';
-    size_t n = (size_t)(end - p);
+    *n = (size_t)(end - p);
+    return p;
+}
+
+const char* avra_int_text(int64_t v) {
+    char digits[INT_SPELLED_MAX];
+    size_t n;
+    const char* p = int_spelled(v, digits, &n);
     char* buf = sized_box(n, KIND_STR);
     memcpy(buf, p, n);
     buf[n] = '\0';
@@ -4817,12 +4825,13 @@ int64_t avra_float_fits(const char* s) { return isfinite(strtod(s, NULL)); }
    and JSON writers share. A `.0` is kept on an integral positional
    value, because a float that prints as `3` is a float wearing an
    int's clothes. Infinity and NaN keep `%g`'s words. */
-static const char* float_text(double d) {
+#define FLOAT_SPELLED_MAX 64
+
+static size_t float_spelled(double d, char out[FLOAT_SPELLED_MAX]) {
     char sci[40];
-    char out[64];
     if (!isfinite(d)) {
-        snprintf(out, sizeof out, "%g", d);
-        return str_owned(out, strlen(out));
+        snprintf(out, FLOAT_SPELLED_MAX, "%g", d);
+        return strlen(out);
     }
     for (int prec = 1; prec <= 17; prec++) {
         snprintf(sci, sizeof sci, "%.*e", prec - 1, d);
@@ -4864,12 +4873,87 @@ static const char* float_text(double d) {
             memcpy(out + o, digits + 1, n - 1);
             o += n - 1;
         }
-        o += (size_t)snprintf(out + o, sizeof out - o, "e%c%d", e10 < 0 ? '-' : '+', e10 < 0 ? -e10 : e10);
+        o += (size_t)snprintf(out + o, FLOAT_SPELLED_MAX - o, "e%c%d", e10 < 0 ? '-' : '+', e10 < 0 ? -e10 : e10);
     }
-    return str_owned(out, o);
+    return o;
+}
+
+static const char* float_text(double d) {
+    char out[FLOAT_SPELLED_MAX];
+    size_t n = float_spelled(d, out);
+    return str_owned(out, n);
 }
 const char* avra_float_text(double d) { return float_text(d); }
 const char* avra_float_text_bits(int64_t bits) { return float_text(as_double(bits)); }
+
+// ── A text built in one box ─────────────────────────────────────
+// AN INTERPOLATION PAYS ONE BOX: its pieces are appended to the calling
+// thread's scratch and the text is minted once, at its own length.
+// BUILDS NEST: a begin marks where its text starts and its end mints
+// from that mark and gives the scratch back to it, so a build begun and
+// ended between another's steps — an evaluator spelling its own text
+// while it runs a program's — leaves the outer one whole.
+
+static _Thread_local char* g_built = NULL;
+static _Thread_local size_t g_built_len = 0;
+static _Thread_local size_t g_built_cap = 0;
+static _Thread_local size_t* g_built_starts = NULL;
+static _Thread_local size_t g_built_depth = 0;
+static _Thread_local size_t g_built_starts_cap = 0;
+
+static void built_appended(const char* s, size_t n) {
+    if (n == 0) return;
+    if (g_built_len + n > g_built_cap) {
+        size_t cap = g_built_cap ? g_built_cap : 64;
+        while (cap < g_built_len + n) cap *= 2;
+        char* grown = realloc(g_built, cap);
+        if (!grown) avra_trap(WORDS("a text being built ran out of memory"));
+        g_built = grown;
+        g_built_cap = cap;
+    }
+    memcpy(g_built + g_built_len, s, n);
+    g_built_len += n;
+}
+
+void avra_text_begin(void) {
+    if (g_built_depth == g_built_starts_cap) {
+        size_t cap = g_built_starts_cap ? g_built_starts_cap * 2 : 8;
+        size_t* grown = realloc(g_built_starts, cap * sizeof *grown);
+        if (!grown) avra_trap(WORDS("a text being built ran out of memory"));
+        g_built_starts = grown;
+        g_built_starts_cap = cap;
+    }
+    g_built_starts[g_built_depth++] = g_built_len;
+}
+
+void avra_text_add(const char* s) { built_appended(s, str_len(s)); }
+
+void avra_text_add_int(int64_t v) {
+    char digits[INT_SPELLED_MAX];
+    size_t n;
+    const char* p = int_spelled(v, digits, &n);
+    built_appended(p, n);
+}
+
+void avra_text_add_float(double d) {
+    char out[FLOAT_SPELLED_MAX];
+    built_appended(out, float_spelled(d, out));
+}
+
+void avra_text_add_bool(int64_t b) {
+    if (b != 0) built_appended("true", 4);
+    else built_appended("false", 5);
+}
+
+const char* avra_text_end(void) {
+    size_t start = g_built_depth ? g_built_starts[--g_built_depth] : 0;
+    size_t n = g_built_len - start;
+    char* buf = sized_box(n, KIND_STR);
+    if (n) memcpy(buf, g_built + start, n);
+    buf[n] = '\0';
+    g_built_len = start;
+    return buf;
+}
 
 /* The EVALUATOR's arithmetic. It holds a float as bits and reaches
    the machine only through here, so an answer under `avra run` and an
