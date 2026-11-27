@@ -863,6 +863,25 @@ keepers_list() {
 # A KEEPER SLICE ENDS ON A PLANTED FAULT its keeper must refuse, naming it (tools/keeper_planted.sh):
 # a slice whose keepers examined nothing is no slice that passes. `$1` is the plant; a part that
 # names no keeper with a plant fails rather than passing unproved.
+# THE KEEPERS ON STDIN, those with a plant first: dealt in turn, the first n go one to each of n parts, so
+# every part holds a plant whatever keeper the set gains
+planted_first() {
+    all=$(cat)
+    plants=$(sh tools/keeper_planted.sh --list)
+    printf '%s\n' $all | grep -xF "$(printf '%s\n' $plants)" || :
+    printf '%s\n' $all | grep -vxF "$(printf '%s\n' $plants)" || :
+}
+
+# whether the set `$1`, dealt into `$2` parts, holds a planted keeper for each: a set with fewer plants
+# than parts fails by that name, never a part's planted row
+planted_enough() {
+    held=$(keepers_of "$1" | grep -vx tool-witnesses | planted_first | head -n "$2" | grep -cxF "$(sh tools/keeper_planted.sh --list)" || :)
+    [ "$held" -ge "$2" ] && return 0
+    echo "fact keepers-planted: $1 holds $held planted keeper(s) for its $2 parts — give the set another plant (tools/keeper_planted.sh)" >>"$out/rows"
+    judged "keepers-planted-enough" 1
+    return 1
+}
+
 planted_row() {
     [ -n "$1" ] || { judged "$slice-planted" 1; return; }
     row "planted-$1" sh tools/keeper_planted.sh "$1"
@@ -897,7 +916,8 @@ part_of() {
         cost-warm) slice_cost warm "$2/$3" ;;
         cost-matrix-build-bare | cost-matrix-build-laid) slice_cost "${1#cost-}" "$2/$3" ;;
         keepers-b)
-            names=$(keepers_of KEEPERS_B | grep -vx tool-witnesses | dealt "$(($2 - 1))" "$3")
+            planted_enough KEEPERS_B "$3" || return
+            names=$(keepers_of KEEPERS_B | grep -vx tool-witnesses | planted_first | dealt "$(($2 - 1))" "$3")
             [ -n "$names" ] || { judged "keepers-b-named" 1; return; }
             keepers_run $names
             planted_row "$(sh tools/keeper_planted.sh --pick $names)"
