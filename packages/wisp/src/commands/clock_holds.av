@@ -1,0 +1,310 @@
+//! `wisp clock_holds` — EVERY BLOCKING CALL IN C HOLDS THE WORLD, or says why it is no wait on time.
+//!
+//! A virtual clock moves only when every task waits on time; a call that blocks the thread on the
+//! world must hold the clock across it, or every deadline read around it stands still. This reads
+//! the C the runtime and the packages own (`runtime/*.c`, `runtime/host/*.c`,
+//! `packages/*/src/c/*.c`) for a call of a BLOCKING name. Vendored C (`packages/*/vendor`) is
+//! counted and not read: it blocks on nothing, or its waits are taken at its door.
+//!
+//! A call is HELD when, in code with comments and literals taken out, `avra_clock_hold(1)` stands
+//! within three lines above it and `avra_clock_hold(-1)` within three lines below. Proximity cannot
+//! tell a hold inside an `if` from one on the call's own path: that is the reader's to see. A call
+//! that cannot wait on time says so on the line above: `// the clock: <why>`, a reason of three
+//! words at least. One HELD ELSEWHERE names the C fn that holds — `// the clock: held by `<fn>``
+//! — and that fn stands in the C read here with both halves of a hold in its body. Anything else
+//! is refused, by file and line. Exit 0 held, 1 refused.
+use @std.cli.{CliResult, Runnable, command}
+use @std.io.{read_text, list_dir}
+
+/// The blocking names, in the order a call is matched: waits, sleeps, reaps, the read family, the
+/// disk, the resolver, and a database that sleeps in its busy handler.
+const BLOCKING: List<string> = [
+    "poll",
+    "ppoll",
+    "select",
+    "pselect",
+    "kevent",
+    "epoll_wait",
+    "nanosleep",
+    "usleep",
+    "sleep",
+    "waitpid",
+    "read",
+    "recv",
+    "recvfrom",
+    "recvmsg",
+    "accept",
+    "accept4",
+    "connect",
+    "fsync",
+    "fdatasync",
+    "flock",
+    "getaddrinfo",
+    "sqlite3_step",
+    "sqlite3_exec",
+]
+
+/// How far above and below a call its hold may stand.
+const REACH: int = 3
+
+const TAKE: string = "avra_clock_hold(1)"
+
+const GIVE: string = "avra_clock_hold(-1)"
+
+/// Whether a character may not stand before a call's name: part of a longer name, a member or an
+/// arrow.
+fn joins_name(c: int) -> bool { word_char(c) || c == 46 || c == 62 }
+
+/// The blocking name a code line calls first, or null.
+export fn blocking_call(code: string) -> string? {
+    mut k = 0
+    while k < code.length {
+        if k == 0 || !joins_name(code.char_code(k - 1)) {
+            let hit = BLOCKING.find((n) -> stands_at(code, n, k) && opens_call(code, k + n.length))
+            if hit != null { return hit }
+        }
+        k = k + 1
+    }
+    null
+}
+
+fn opens_call(code: string, at: int) -> bool {
+    let p = run_end(code, at, (c) -> c == 32 || c >= 9 && c <= 13)
+    p < code.length && code.char_code(p) == 40
+}
+
+/// The end of the literal opened by the quote at `i`, past its closing quote.
+fn literal_end(line: string, i: int) -> int {
+    let mark = line.char_code(i)
+    mut j = i + 1
+    while j < line.length && line.char_code(j) != mark { j = j + if line.char_code(j) == 92 { 2 } else { 1 } }
+    j + 1
+}
+
+/// One line's code and whether a `/* … */` is still open after it.
+type Coded = { kept: string, open: bool }
+
+fn coded(line: string, open: bool) -> Coded {
+    mut kept = ""
+    mut inside = open
+    mut i = 0
+    while i < line.length {
+        if inside {
+            let end = index_from(line, "*/", i)
+            if end < 0 {
+                i = line.length
+            } else {
+                inside = false
+                i = end + 2
+            }
+        } else if stands_at(line, "/*", i) {
+            inside = true
+            i = i + 2
+        } else if stands_at(line, "//", i) {
+            i = line.length
+        } else if line.char_code(i) == 34 || line.char_code(i) == 39 {
+            let q = line.substring(i, i + 1)
+            kept = "${kept}${q}${q}"
+            i = literal_end(line, i)
+        } else {
+            kept = "${kept}${line.substring(i, i + 1)}"
+            i = i + 1
+        }
+    }
+    Coded { kept: kept, open: inside }
+}
+
+/// Each line with its comments taken out — `//` to the end, and every `/* … */`, which may span
+/// lines — and each string or character literal emptied.
+export fn c_code(lines: List<string>) -> List<string> {
+    mut out: List<string> = []
+    mut open = false
+    for line in lines {
+        let c = coded(line, open)
+        out.push(c.kept)
+        open = c.open
+    }
+    out
+}
+
+/// What follows `// the clock:` on a line, or null.
+fn excuse_of(line: string) -> string? {
+    mut k = line.index_of("//")
+    while k >= 0 {
+        let a = run_end(line, k + 2, (c) -> c == 32 || c >= 9 && c <= 13)
+        if stands_at(line, "the clock:", a) { return left_trimmed(line.substring(a + 10, line.length)) }
+        k = index_from(line, "//", k + 1)
+    }
+    null
+}
+
+/// Whether a line excuses the call under it: a reason, not a bare mark.
+export fn excused(line: string) -> bool { words(excuse_of(line) ?? "").length >= 3 }
+
+/// The C fn a `// the clock: held by `<fn>`` line names, or null.
+export fn held_by(line: string) -> string? {
+    let e? = excuse_of(line) else { return null }
+    if !e.starts_with("held by") { return null }
+    let a = run_end(e, 7, (c) -> c == 32 || c >= 9 && c <= 13)
+    if a == 7 || !stands_at(e, "`", a) { return null }
+    let end = run_end(e, a + 1, word_char)
+    if end == a + 1 || !stands_at(e, "`", end) { null } else { e.substring(a + 1, end) }
+}
+
+/// The C fn a code line opens a definition of (`<type> name(<args>) {`), or null.
+export fn defined(code: string) -> string? {
+    if code.length == 0 ||
+        !(word_char(code.char_code(0)) && !(code.char_code(0) >= 48 && code.char_code(0) <= 57)) { return null }
+    mut k = run_end(code, 0, word_char)
+    while k < code.length {
+        let c = code.char_code(k)
+        if word_char(c) {
+            let end = run_end(code, k, word_char)
+            if opens_call(code, end) { return defined_by(code, k, end) }
+            k = end
+        } else if c == 32 || c >= 9 && c <= 13 || c == 42 {
+            k = k + 1
+        } else {
+            return null
+        }
+    }
+    null
+}
+
+/// The name at `k..end` when what follows its `(` closes with `)` then `{` before any `;`.
+fn defined_by(code: string, k: int, end: int) -> string? {
+    let open = index_from(code, "(", end)
+    let stop = [index_from(code, ";", open), index_from(code, "{", open)]
+        .filter(it >= 0)
+        .fold(code.length, (a, b) -> if b < a { b } else { a })
+    if stop >= code.length || code.char_code(stop) != 123 { return null }
+    if code.substring(open + 1, stop).trim().ends_with(")") { code.substring(k, end) } else { null }
+}
+
+/// Every C fn defined in `lines` whose body takes a hold and gives it back, by its body's braces.
+export fn holders_of(lines: List<string>) -> List<string> {
+    let code = c_code(lines)
+    let after = depths(code)
+    [n! for i, c in code for n in [if i == 0 || after[i - 1] == 0 { defined(c) } else { null }] if n != null && holds_between(code, i, closing(after, i))]
+}
+
+/// The brace depth after each line.
+fn depths(code: List<string>) -> List<int> {
+    mut out: List<int> = []
+    mut depth = 0
+    for c in code {
+        depth = depth + count_of(c, 123) - count_of(c, 125)
+        out.push(depth)
+    }
+    out
+}
+
+/// The first line at or after `i` that leaves the depth at zero, or -1.
+fn closing(after: List<int>, i: int) -> int {
+    let j? = (i..after.length).find(after[it] == 0) else { return -1 }
+    j
+}
+
+/// Whether lines `i..=j` take a hold and give it back.
+fn holds_between(code: List<string>, i: int, j: int) -> bool {
+    let body = code.drop(i).take(j - i + 1)
+    j >= i && body.any(it.contains(TAKE)) && body.any(it.contains(GIVE))
+}
+
+/// How many times the character `c` stands in `s`.
+fn count_of(s: string, c: int) -> int { [i for i in 0..s.length if s.char_code(i) == c].length }
+
+fn held_around(code: List<string>, i: int) -> bool {
+    let lo = if i > REACH { i - REACH } else { 0 }
+    code.drop(lo).take(i - lo).any(it.contains(TAKE)) &&
+        code.drop(i + 1).take(REACH).any(it.contains(GIVE))
+}
+
+/// Each `// the clock: holds for <name>` claim over a C fn that does not take a hold and give it back.
+export fn false_holders(path: string, lines: List<string>) -> List<string> {
+    let code = c_code(lines)
+    let holders = holders_of(lines)
+    [holds_nothing(path, i + 1, f ?? "nothing", words(e!).drop(2).join(" ")) for i, line in lines for e in [excuse_of(line)] if e != null && e!.starts_with("holds for ") && i + 1 < code.length for f in [defined(code[i + 1])] if f == null || !holders.contains(f!)]
+}
+
+/// Each blocking call in `lines` neither held nor excused.
+export fn faults(path: string, lines: List<string>, holders: List<string>) -> List<string> {
+    let code = c_code(lines)
+    flatten_texts(
+        [fault_at(path, lines, code, i, hit!, holders) for i, c in code for hit in [blocking_call(c)] if hit != null],
+    )
+}
+
+fn fault_at(
+    path: string,
+    lines: List<string>,
+    code: List<string>,
+    i: int,
+    hit: string,
+    holders: List<string>,
+) -> List<string> {
+    let above = if i > 0 { lines[i - 1] } else { "" }
+    let named = held_by(above)
+    if named != null { return if holders.contains(named!) { [] } else { [held_by_nobody(path, i + 1, hit, named!)] } }
+    if i > 0 && excused(above) || held_around(code, i) { return [] }
+    [unheld(path, i + 1, hit)]
+}
+
+fn c_files(dir: string) -> List<string> {
+    sorted_distinct(
+        [f for f in files_under(dir) if f.ends_with(".c") && f.split("/").length == dir.split("/").length + 1],
+    )
+}
+
+/// The C the runtime and the packages own, in path order.
+fn c_sources() -> List<string> {
+    let package_c = rooted("packages/*/src/c")
+    sorted_distinct(
+        c_files("runtime")
+            .concat(c_files("runtime/host"))
+            .concat(flatten_texts(package_c.map(c_files(it)))),
+    )
+}
+
+type ClockHoldsCmd = {}
+
+impl Runnable for ClockHoldsCmd {
+    fn run(_args: CliResult) -> int {
+        let sources = c_sources()
+        let vendored = flatten_texts(rooted("packages/*/vendor").map(files_under(it)))
+            .filter(it.ends_with(".c"))
+        mut holders: List<string> = []
+        mut found: List<string> = []
+        mut calls = 0
+        for path in sources {
+            let lines = (read_text(path) catch "").split("\n")
+            calls = calls + c_code(lines).filter(blocking_call(it) != null).length
+            holders = holders.concat(holders_of(lines))
+            found = found.concat(faults(path, lines, holders)).concat(false_holders(path, lines))
+        }
+        if found.length > 0 { println(found.join("\n")) }
+        println(
+            "clock-holds: ${sources.length} C source(s) read, ${calls} blocking call(s); ${vendored.length} vendored C file(s) not read; ${found.length} unheld",
+        )
+        if found.length > 0 { 1 } else { 0 }
+    }
+}
+
+export command clock_holds {
+    description: "Hold every blocking call in the tree's own C to the virtual clock, or to a stated reason"
+    run: ClockHoldsCmd {}
+}
+
+// ── voices ───────────────────────────────────────────────────────────
+
+fn unheld(path: string, line: int, call: string) -> string {
+    "${path}:${line}: `${call}` blocks without holding the clock — wrap it in avra_clock_hold(1)/(-1), or say `// the clock: <why>` above it"
+}
+
+fn holds_nothing(path: string, line: int, fn_name: string, call: string) -> string {
+    "${path}:${line}: says `${fn_name}` holds the clock for `${call}`, and the fn under it takes no hold or gives none back"
+}
+
+fn held_by_nobody(path: string, line: int, call: string, fn_name: string) -> string {
+    "${path}:${line}: `${call}` says `${fn_name}` holds the clock for it, and no C fn of that name read here takes a hold and gives it back"
+}

@@ -988,9 +988,10 @@ inputs:
 	@./wisp inputs
 
 # EVERY BLOCKING CALL IN C HOLDS THE WORLD: a virtual clock flows across
-# it, or the call says why it waits on no time (tools/clock_holds.py).
+# it, or the call says why it waits on no time (`wisp clock_holds`; an
+# extern of a blocking name is the rule `compiler.blocking_extern`).
 clock-holds:
-	@python3 tools/clock_holds.py
+	@./wisp clock_holds
 
 inputs-accept:
 	@./wisp inputs --accept

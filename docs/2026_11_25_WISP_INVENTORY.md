@@ -231,7 +231,7 @@ A running list: each entry is gone from the tree, named with the train that remo
 | ci_invariants.py | Makefile | internal | merge: keepers | PORTED — `wisp ci_invariants` |
 | ci_verdict.sh | checks.yml | internal | merge: gate |  |
 | ci_wall.sh | gate.yml, Makefile, ledger_rows.sh | internal | merge: gate |  |
-| clock_holds.py | Makefile | internal | merge: cost |  |
+| clock_holds.py | Makefile | internal | merge: cost | PORTED — `wisp clock_holds` + rule `compiler.blocking_extern` |
 | closure_fold_attack.sh | Makefile | internal | merge: oracle |  |
 | closure_gather_attack.sh | Makefile, gate.sh | internal | merge: oracle |  |
 | code_hash_attacks.sh | Makefile | internal | merge: oracle |  |

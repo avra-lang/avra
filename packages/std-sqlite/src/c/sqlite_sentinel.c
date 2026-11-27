@@ -55,6 +55,7 @@ void avra_trap(const char* message) __attribute__((noreturn));
 static sqlite3_vfs* g_platform = NULL;
 static sqlite3_vfs g_held;
 
+// the clock: holds for sqlite3_step
 static int held_sleep(sqlite3_vfs* vfs, int micros) {
     (void)vfs;
     avra_clock_hold(1);

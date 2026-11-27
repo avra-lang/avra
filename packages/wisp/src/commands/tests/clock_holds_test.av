@@ -1,0 +1,101 @@
+use commands.{false_holders, faults, holders_of}
+
+fn unheld(lines: List<string>) -> int { faults("fixture", lines, []).length }
+
+fn holders() -> List<string> {
+    holders_of(
+        [
+            "static int held_sleep(sqlite3_vfs* v, int us) {",
+            "    avra_clock_hold(1);",
+            "    int r = base->xSleep(base, us);",
+            "    avra_clock_hold(-1);",
+            "    return r;",
+            "}",
+            "static int half_sleep(sqlite3_vfs* v, int us) {",
+            "    avra_clock_hold(1);",
+            "    return base->xSleep(base, us);",
+            "}",
+            "int one_line(void) { avra_clock_hold(1); usleep(1); avra_clock_hold(-1); return 0; }",
+        ],
+    )
+}
+
+spec "clock_holds — every blocking call in C holds the clock" {
+    then "a held call and an excused one stand" {
+        unheld(["avra_clock_hold(1);", "int r = poll(fds, n, ms);", "avra_clock_hold(-1);"]) == 0 &&
+            unheld(["// the clock: a zero timeout", "int n = kevent(fd, NULL, 0, evs, 8, &now);"]) == 0
+    }
+    then "a bare call, a half hold and an excuse too far up are refused" {
+        unheld(["nanosleep(&ts, NULL);"]) == 1 &&
+            unheld(["avra_clock_hold(1);", "waitpid(pid, &st, 0);"]) == 1 &&
+            unheld(["// the clock: far away here", "int x = 0;", "usleep(10);"]) == 1
+    }
+    then "a method named alike, a comment and a comment over lines are no call" {
+        unheld(["w->sleep(3);", "self.poll(1);"]) == 0 &&
+            unheld(["// poll(fds) would block", "/* sleep(1) */"]) == 0 &&
+            unheld(["/* a server", "   may select (one) */", "x = 1;"]) == 0
+    }
+    then "code after a closed comment and a hold commented out are refused" {
+        unheld(["/* note */ usleep(5);"]) == 1 &&
+            unheld(["// avra_clock_hold(1);", "poll(fds, n, ms);", "// avra_clock_hold(-1);"]) == 1
+    }
+    then "an excuse needs a reason of three words" {
+        unheld(["// the clock:", "fsync(fd);"]) == 1 &&
+            unheld(["// the clock: fine", "fsync(fd);"]) == 1
+    }
+    then "the resolver, a read and a database step block" {
+        unheld(["int rc = getaddrinfo(host, service, &hints, out);"]) == 1 &&
+            unheld(["ssize_t got = read(fd, buf, n);"]) == 1 &&
+            unheld(["int rc = sqlite3_step(stmt);"]) == 1
+    }
+    then "a literal holds no call and no comment" {
+        unheld(["avra_trap(\"its waiters are read (0) or write (1)\");"]) == 0 &&
+            unheld(["printf(\"// x\"); sleep(1);"]) == 1 &&
+            unheld(["char q = '\"'; usleep(1);"]) == 1 &&
+            unheld(["puts(\"say \\\"read(\\\" now\"); poll(fds, 1, 0);"]) == 1
+    }
+    then "the holders are the fns whose bodies take a hold and give it back" { holders().join(" ") == "held_sleep one_line" }
+    then "a call held by a fn names a holder" {
+        faults(
+                "fixture",
+                [
+                    "// the clock: held by `held_sleep` — where sqlite sleeps",
+                    "x = read(fd, b, n);",
+                ],
+                holders(),
+            )
+                .length == 0 &&
+            faults(
+                "fixture",
+                [
+                    "// the clock: held by `half_sleep` — where sqlite sleeps",
+                    "x = read(fd, b, n);",
+                ],
+                holders(),
+            )
+                .length == 1
+    }
+    then "a claim to hold for a call is held to the fn under it" {
+        false_holders(
+                "f.c",
+                [
+                    "// the clock: holds for sqlite3_step",
+                    "static int s(int us) {",
+                    "    avra_clock_hold(1);",
+                    "    avra_clock_hold(-1);",
+                    "}",
+                ],
+            )
+                .length == 0 &&
+            false_holders(
+                "f.c",
+                [
+                    "// the clock: holds for sqlite3_step",
+                    "static int s(int us) {",
+                    "    avra_clock_hold(1);",
+                    "}",
+                ],
+            )
+                .length == 1
+    }
+}

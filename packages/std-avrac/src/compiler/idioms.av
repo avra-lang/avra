@@ -7,7 +7,7 @@
 //! before the language grew able to say them; a sibling shape not
 //! yet landed is noted at its rule, not silently dropped
 //! (avra-8sb5.25.16).
-use core.{TypeRef, flatten}
+use core.{Stmt, TypeRef, flatten}
 use features.{
     ArmBind,
     ArmInfo,
@@ -2047,6 +2047,85 @@ fn by_id_found(c: Code) -> Fix {
                 "`.${c.method_name() ?? "?"}(` files rows by id — the declaration table's alone; hand rows over with `Rel.replaced`",
                 "this call",
                 "hand the owner's rows over as a value with `Rel.replaced`",
+            ),
+        )
+}
+
+/// EVERY BLOCKING CALL HOLDS THE CLOCK, and an `extern fn` of a BLOCKING C name is Avra calling
+/// the library straight, with no C of ours between to hold it: a virtual clock moves only when
+/// every task waits on time, so a call that blocks the thread on the world stands every deadline
+/// still. Such an extern says on the line above why it needs no hold, or where its hold is taken:
+/// `// the clock: <why>`, a reason of three words at least. The C that holds carries its own claim
+/// (`wisp clock_holds` reads that half). A BARE-HOLE ROOT over an `extern fn`, judged by its name.
+///
+/// NO REWRITE: the reason is the writer's, and no declaration states it.
+@keeps("extern fn sqlite3_reset(s: ptr?) -> i32")
+@keeps("// the clock: a reason in three words\nextern fn sqlite3_step(s: ptr?) -> i32")
+@says("the clock's reason is the writer's sentence, which no declaration states")
+export fact_rule blocking_extern { quote { ${x} } if unheld_extern(x) != null -> blocking_extern_found(x) }
+
+/// The C names that block the thread on the world.
+const blocking_names: List<string> = [
+    "poll",
+    "ppoll",
+    "select",
+    "pselect",
+    "kevent",
+    "epoll_wait",
+    "nanosleep",
+    "usleep",
+    "sleep",
+    "waitpid",
+    "read",
+    "recv",
+    "recvfrom",
+    "recvmsg",
+    "accept",
+    "accept4",
+    "connect",
+    "fsync",
+    "fdatasync",
+    "flock",
+    "getaddrinfo",
+    "sqlite3_step",
+    "sqlite3_exec",
+]
+
+/// The blocking name an `extern fn` declares with no reason above it, or null.
+fn unheld_extern(x: Code) -> string? {
+    let name? = match x.at {
+        .Stmt(s) -> extern_name(x.of.view.store.stmt(s)),
+        .Expr(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> null,
+    } else { return null }
+    if !blocking_names.contains(name) { return null }
+    let loc? = x.loc() else { return null }
+    let text = x.of.view.source.text
+    let start = line_start_of(text, loc.lo)
+    let above = if start == 0 { "" } else { text.substring(line_start_of(text, start - 1), start - 1) }
+    if clock_reason(above).split(" ").filter(it != "").length >= 3 { null } else { name }
+}
+
+/// An `extern fn`'s own name — null for every other statement.
+fn extern_name(s: Stmt) -> string? {
+    match s { .ExternFn(n, _, _) -> n.text(), _ -> null }
+}
+
+/// What follows `// the clock:` on a comment line, or nothing.
+fn clock_reason(line: string) -> string {
+    let t = line.trim()
+    if !t.starts_with("//") { return "" }
+    let rest = t.substring(2, t.length).trim()
+    if rest.starts_with("the clock:") { rest.substring(10, rest.length).trim() } else { "" }
+}
+
+fn blocking_extern_found(x: Code) -> Fix {
+    Fix
+        .Say(
+            said(
+                x.loc(),
+                "`${unheld_extern(x) ?? "?"}` blocks the thread on the world, and an extern calls it with no C of ours to hold the clock",
+                "this extern",
+                "say on the line above why it needs no hold, or where its hold is taken: `// the clock: <a reason of three words>`",
             ),
         )
 }
