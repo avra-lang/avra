@@ -37,4 +37,4 @@ done
 load=$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null || sysctl -n vm.loadavg)
 echo "$(hostname), $(nproc 2>/dev/null || sysctl -n hw.ncpu) cores, load $load after the runs, median of $rounds, $(rustc --version)"
 echo
-sh "$root/tools/avra_tools.sh" bench collections-table "$out/raw"
+"$root/wisp" bench collections-table "$out/raw"

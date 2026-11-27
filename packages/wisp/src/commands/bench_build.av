@@ -1,9 +1,9 @@
 //! `bench --build`: EVERY BENCH PACKAGE BUILDS, so none rots between runs. A package under
 //! `benchmarks/` whose manifest declares a `[bin]`, or which holds the default entry
 //! `src/main.av`, is a program and is built; any other is a library its programs import, and is
-//! named as skipped. Nothing is run. One compiler builds them all: `$AVRA_TOOLS_COMPILER`, else
+//! named as skipped. Nothing is run. One compiler builds them all: `--compiler`, else
 //! `build/avra`.
-use @std.io.{read_text, list_dir, is_dir, is_file, env}
+use @std.io.{read_text, list_dir, is_dir, is_file}
 use @std.path.{joined_path}
 use @std.text.{text_before}
 
@@ -87,9 +87,9 @@ export fn build_tally(built: int, failed: int, skipped: int) -> string {
     "bench-build: ${built} built, ${failed} failed, ${skipped} skipped (libraries)"
 }
 
-fn build_benches() -> int {
+fn build_benches(asked: string) -> int {
     let root = tree_root()
-    let compiler = env("AVRA_TOOLS_COMPILER") ?? joined_path(root, "build/avra")
+    let compiler = if asked == "" { joined_path(root, "build/avra") } else { asked }
     if !is_file(compiler) {
         eprintln("bench-build: no compiler at ${compiler} — the benches examined nothing")
         return 1

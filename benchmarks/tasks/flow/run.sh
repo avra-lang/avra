@@ -79,9 +79,9 @@ if [ "${1:-bench}" = --gate ] || [ "${1:-bench}" = --record ]; then
     done
     echo "== $(uname -srm), $(nproc 2>/dev/null || sysctl -n hw.ncpu) cpus, page $(getconf PAGESIZE)"
     if [ "$mode" = record ]; then
-        sh "$root/tools/avra_tools.sh" bench flow-gate --record --baseline "$here/gate.baseline" "$out/gate-raw"
+        "$root/wisp" bench flow-gate --record --baseline "$here/gate.baseline" "$out/gate-raw"
     else
-        sh "$root/tools/avra_tools.sh" bench flow-gate --baseline "$here/gate.baseline" ${2:-} "$out/gate-raw"
+        "$root/wisp" bench flow-gate --baseline "$here/gate.baseline" ${2:-} "$out/gate-raw"
     fi
     exit $?
 fi
@@ -280,7 +280,7 @@ fi
 load=$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null || sysctl -n vm.loadavg)
 echo "$(uname -srm), $(nproc 2>/dev/null || sysctl -n hw.ncpu) cpus, page $(getconf PAGESIZE), load $load after the runs, least of $rounds, $("$go" version)"
 echo
-sh "$root/tools/avra_tools.sh" bench flow-table "$out/raw"
+"$root/wisp" bench flow-table "$out/raw"
 echo
 echo "## G1 — Avra beside Go on THIS machine (gate: 2x time, 3x memory)"
-sh "$root/tools/avra_tools.sh" bench flow-table "$out/raw" --gates ${FLOW_GATE:+--enforce}
+"$root/wisp" bench flow-table "$out/raw" --gates ${FLOW_GATE:+--enforce}

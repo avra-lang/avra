@@ -1207,7 +1207,7 @@ footprint-accept: $(RUNTIME_LIB) $(UNINSTRUMENTED_LIB)
 # row a REFUSAL; a lane measuring a runtime saved elsewhere points
 # FLOW_RUNTIME at it.
 flow-gate:
-	@sh tools/avra_tools.sh bench flow-gate --self-test
+	@./wisp bench flow-gate --self-test
 	@sh benchmarks/tasks/flow/run.sh --gate $(FLOW_GATE_ARGS)
 # Re-accept this machine's rows deliberately (FLOW_RUNTIME for another tree).
 flow-gate-accept:
@@ -1475,7 +1475,7 @@ bench-collections: build/libavra_runtime.a
 # EVERY BENCH PACKAGE BUILDS: each program under benchmarks/ built with one compiler, none run,
 # so a bench cannot rot between the runs that read it (tools/src/commands/bench_build.av).
 bench-build: build/libavra_runtime.a $(PACKAGE_OBJS)
-	@sh tools/avra_tools.sh bench --build
+	@./wisp bench --build --compiler build/avra
 
 # THE BENCHMARK SUITE, ONE DOOR: `benchmarks/run.sh` measures every
 # registered language's twin on this machine and `--g1` prints each Avra

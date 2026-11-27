@@ -25,4 +25,4 @@
 # The runner is the tools program's `bench` command (tools/src/commands/bench.av).
 set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
-exec sh "$root/tools/avra_tools.sh" bench "$@"
+exec "$root/wisp" bench "$@"
