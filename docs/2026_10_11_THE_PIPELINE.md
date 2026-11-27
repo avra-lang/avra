@@ -174,7 +174,7 @@ and the batcher, which read `test` for SUCCESS, refuse it. A light run
 judges `fmt` and the idioms with the tree's own compiler only. When the tree's
 compiler is not the published one, the `gate` job is skipped and the light run
 says so: a skipped gate is not a pass, and the full run on ready is the verdict.
-The mode is read from the PR's API answer at run time (`tools/pr_mode.py`), so a
+The mode is read from the PR's API answer at run time (`./wisp pr_mode`), so a
 queued run cannot keep the light mode after the PR is ready. Readying the PR,
 or labelling it `full-ci`, is what starts the whole run; the `ready_for_review`
 and `labeled` events are in the trigger list for that reason.
