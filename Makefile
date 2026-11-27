@@ -945,8 +945,7 @@ libs: avra $(PACKAGE_OBJS)
 # The suites, derived and counted: a cycle or a dependency that is no
 # package refuses here, before a silent empty list runs nothing.
 suites:
-	@python3 tools/shards.py --self-test
-	@python3 tools/shards.py --check-splits
+	@./wisp shards --check-splits --skip "$(SHARDS_SKIP)"
 	@sh tools/suites_links.sh
 	@./wisp suites --report
 

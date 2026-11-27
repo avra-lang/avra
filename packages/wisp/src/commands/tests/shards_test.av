@@ -1,0 +1,113 @@
+use @std.io.{make_dirs, write_text, env_or}
+use @std.time.{stamp}
+use commands.{
+    item_paths,
+    layered,
+    makespan,
+    merge_times,
+    pack,
+    splits_in,
+    split_items,
+    unsharded,
+    weights_in,
+}
+
+once fn scratch() -> string { "${env_or("TMPDIR", "/tmp")}/wisp-shards/${stamp()}" }
+
+fn file(path: string, text: string) -> string {
+    let full = "${scratch()}/${path}"
+    let _ = make_dirs(full.substring(0, full.length - (full.split("/").last() ?? "").length - 1))
+    let _ = write_text(full, text)
+    full
+}
+
+fn w3() -> Map<string, int> { {"a": 100, "b": 60, "c": 50} }
+
+fn shown(bins: List<List<string>>) -> string { bins.map(it.join(" ")).join(" | ") }
+
+fn shown_map(m: Map<string, int>) -> string { sorted_keys(m).map((k) -> "${k}=${m.get(k)!}").join(" ") }
+
+fn sorted_keys(m: Map<string, int>) -> List<string> { m.keys() }
+
+spec "shards — packing suites into shards of even weight" {
+    then "the heaviest goes first into the lightest shard, and empty shards drop" {
+        shown(pack(["x", "a", "c", "b", "y"], 2, w3(), [], {})) == "x y a | c b" &&
+            shown(pack([], 4, w3(), [], {})) == "" &&
+            pack([], 4, w3(), [], {}).length == 1 &&
+            shown(pack(["x"], 4, w3(), [], {})) == "x"
+    }
+    then "nine light suites spread over four shards" {
+        let got = pack(["p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8"], 4, {}, [], {})
+        got.length == 4 &&
+            got.map(it.length).fold(0, (a, x) -> a + x) == 9 &&
+            got.all(it.length == 2 || it.length == 3)
+    }
+    then "a split package becomes its paths" {
+        split_items(["p", "q"], {"p": ["src/a", "src/b"]}).join(" ") == "p/src/a p/src/b q" &&
+            split_items([], {"p": ["src/a"]}).length == 0
+    }
+    then "a cold item runs first in a shard of its own" {
+        let got = pack(["a", "b", "c", "d"], 2, {"a": 9, "b": 1, "c": 1, "d": 1}, ["c", "d"], {})
+        got.map(it[0]).join(" ") == "c d"
+    }
+    then "a measured run moves each weight half way, a first suite less its cold start" {
+        let _ = file("m1/a/suite-times.txt", "cli 400 first\nstd-http 120\nstd-ui 30\n")
+        shown_map(merge_times("${scratch()}/m1", {"cli": 100, "std-http": 140, "old": 7}, {})) == "cli=200 std-http=130 old=7 std-ui=30" &&
+            merge_times("${scratch()}/m1", {}, {}).get("cli") == 300
+    }
+    then "a later layer wins per row" {
+        shown_map(
+            layered([weights_in("cli 120\nstd-ui 5\n"), weights_in("cli 300\n"), weights_in("")]),
+        ) == "cli=300 std-ui=5"
+    }
+    then "a package's compile comes out of its first suite" {
+        let _ = file("m2/a/suite-times.txt", "p/x 150 first\np/y 40\nq 7\nq/z 6\n")
+        let got = merge_times("${scratch()}/m2", {}, {"p": 100})
+        got.get("p/x") == 50 &&
+            got.get("p/y") == 40 &&
+            got.get("q") == 7 &&
+            got.get("q/z") == 6 &&
+            merge_times("${scratch()}/m2", {}, {}).get("p/x") == 50
+    }
+    then "a package's compile counts once per shard" {
+        let w = {"p/a": 30, "p/b": 30, "p/c": 30, "q": 100, "r": 20, "s": 20}
+        let pc = {"p": 100}
+        let names = ["p/a", "p/b", "p/c", "q", "r", "s"]
+        makespan([["p/a", "p/b"], ["q"]], w, pc) == 160 &&
+            makespan([["p/a"], ["p/b"]], w, pc) == 130 &&
+            [2, 3, 4]
+                .all(
+                    (n) -> makespan(pack(names, n, w, [], pc), w, pc) <= makespan(pack(names, n, w, [], {}), w, pc),
+                ) &&
+            shown(pack(["p/a", "p/b", "q"], 2, {"p/a": 50, "p/b": 50, "q": 200}, [], pc)) == "q | p/a p/b"
+    }
+}
+
+spec "shards — the splits and what they cover" {
+    then "a splits row names its paths, its cold item and its groups" {
+        let s = splits_in("p src/a cold\np @g src/b src/c  # a group\np src/d\n")
+        (s.items.get("p") ?? []).join(" ") == "src/a @g src/d" &&
+            s.cold.join(" ") == "p/src/a" &&
+            (s.groups.get("p/@g") ?? []).join(" ") == "src/b src/c" &&
+            item_paths("p/@g", s.groups, ".").join(" ") == "packages/p/src/b packages/p/src/c" &&
+            item_paths("p/src/d", s.groups, ".").join(" ") == "packages/p/src/d" &&
+            item_paths("cli", s.groups, ".").join(" ") == "packages/cli"
+    }
+    then "a directory is dealt in hands, and a missing hand is named" {
+        let root = "${scratch()}/dealt"
+        for n in ["a_test.av", "b_test.av", "c_test.av"] { let _ = file("dealt/packages/p/src/t/${n}", "spec x {\n}\n") }
+        let g = {"p/@a": ["src/t%0/2"], "p/@b": ["src/t%1/2"]}
+        item_paths("p/@a", g, root).join(" ") == "packages/p/src/t/a_test.av packages/p/src/t/c_test.av" &&
+            item_paths("p/@b", g, root).join(" ") == "packages/p/src/t/b_test.av" &&
+            unsharded(root, splits_in("p @a src/t%0/2\np @b src/t%1/2\n"), []).length == 0 &&
+            unsharded(root, splits_in("p @a src/t%0/2\n"), []).any(it.contains("not listed"))
+    }
+    then "an unlisted proof is named, and a declared transient is not" {
+        let root = "${scratch()}/stray"
+        for sub in ["u", "v"] { let _ = file("stray/packages/p/src/${sub}/s_test.av", "spec x {\n}\n") }
+        let s = splits_in("p src/none\n")
+        unsharded(root, s, []).any(it.ends_with("u/s_test.av")) &&
+            !unsharded(root, s, ["p/src/u"]).any(it.contains("u/")) &&
+            unsharded(root, s, ["p/src/u"]).any(it.contains("v/"))
+    }
+}

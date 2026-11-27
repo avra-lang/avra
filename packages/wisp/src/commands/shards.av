@@ -1,0 +1,394 @@
+//! `wisp shards [<shards>] [--split]` — PACKS PACKAGE SUITES INTO SHARDS OF EVEN WEIGHT. The packages
+//! come on stdin, one a line, and the answer is a JSON list of lists for the checks workflow's suite
+//! matrix: the heaviest suite first, each into the shard it makes lightest, so the slowest shard is
+//! as short as the heaviest suite allows. Empty shards are dropped; no package at all is one empty
+//! shard, which the workflow skips.
+//!
+//! Weights are measured seconds, two layers, the later winning per row: the committed seed
+//! (.github/ci/suite-seconds.txt) and the rows main's own runs keep (suite-seconds.measured). A
+//! package with no row weighs 5. A package's first suite on a shard pays its COMPILE, which its
+//! later suites there reuse (.github/ci/suite-cold.txt), so a package's compile counts once per
+//! shard it appears in.
+//!
+//!   --split               a package named in .github/ci/suite-splits.txt becomes one item per path
+//!   --paths <item>        the `packages/…` paths one packed item is proved by
+//!   --check-splits        refuses a proof under a split package outside every listed path; a
+//!                         `--skip <package/path>…` is declared transient and said so
+//!   --merge-times <dir>   the measured rows from every `suite-times.txt` under `dir`
+//!   --predict <dir> [n]   a run's own times packed both ways, each packing's slowest shard
+use @std.cli.{CliResult, Runnable, arg, command, flag, option}
+use @std.io.{read_text, is_file, is_dir, list_dir}
+use @std.program.sorted.{sorted_by}
+use @std.text.{text_before}
+
+/// The weight of a suite with no row.
+const DEFAULT: int = 5
+
+/// The seconds a shard's first suite pays that no later one does: a runner's cold store.
+const COLD: int = 100
+
+const CI: string = ".github/ci"
+
+/// `path`'s `<name> <seconds>` rows, a `#` starting a comment; nothing where it is absent.
+export fn weights_in(text: string) -> Map<string, int> {
+    mut out: Map<string, int> = {}
+    for line in lines_of(text) {
+        let parts = words(code_of(line))
+        let n = if parts.length == 2 { digits(parts[1]) } else { null }
+        if n != null { out.set(parts[0], n!) }
+    }
+    out
+}
+
+fn weights(path: string) -> Map<string, int> { weights_in(read_text(path) catch "") }
+
+/// A run of digits, read; null for anything else.
+fn digits(s: string) -> int? {
+    if s.length == 0 || run_end(s, 0, (c) -> c >= 48 && c <= 57) != s.length { return null }
+    (0..s.length).fold(0, (acc, i) -> acc * 10 + s.char_code(i) - 48)
+}
+
+/// The layers' rows, a later layer winning per row.
+export fn layered(layers: List<Map<string, int>>) -> Map<string, int> {
+    mut out: Map<string, int> = {}
+    for l in layers {
+        for k, v in l { out.set(k, v) }
+    }
+    out
+}
+
+/// The package an item belongs to: `std-avrac/src/core` is `std-avrac`.
+export fn suite_package(item: string) -> string { item.split("/").first() ?? item }
+
+fn weight(w: Map<string, int>, name: string) -> int { w.get(name) ?? DEFAULT }
+
+/// What `name` adds to a shard that already holds `held`: its warm seconds, and its package's
+/// compile unless the shard has paid it.
+fn shard_cost(name: string, held: List<string>, w: Map<string, int>, pcold: Map<string, int>) -> int {
+    let pkg = suite_package(name)
+    weight(w, name) + if held.contains(pkg) { 0 } else { pcold.get(pkg) ?? 0 }
+}
+
+/// One shard's seconds, each package's compile counted once.
+fn shard_load(b: List<string>, w: Map<string, int>, pcold: Map<string, int>) -> int {
+    [shard_cost(n, b.take(i).map(suite_package(it)), w, pcold) for i, n in b]
+        .fold(0, (a, x) -> a + x)
+}
+
+/// The slowest shard.
+export fn makespan(bins: List<List<string>>, w: Map<string, int>, pcold: Map<string, int>) -> int {
+    bins.map(shard_load(it, w, pcold)).fold(0, (a, x) -> if x > a { x } else { a })
+}
+
+/// One `suite-times.txt` row: its path, its seconds, and whether it ran first on its shard.
+type SuiteTime = { path: string, secs: int, first: bool }
+
+fn timed_rows(text: string) -> List<SuiteTime> {
+    [SuiteTime { path: p[0], secs: digits(p[1])!, first: p.length == 3 && p[2] == "first" } for line in lines_of(text) for p in [words(line)] if (p.length == 2 || p.length == 3) && digits(p[1]) != null]
+}
+
+/// A file's rows with the compile each package's first suite paid taken out.
+fn warm_rows(rows: List<SuiteTime>, pcold: Map<string, int>) -> List<SuiteTime> {
+    [r with { secs: if paid > 0 { if r.secs - paid > 1 { r.secs - paid } else { 1 } } else { r.secs } } for i, r in rows for paid in [
+        if rows.take(i).any(suite_package(it.path) == suite_package(r.path)) { 0 } else { pcold.get(suite_package(r.path)) ?? if r.first { COLD } else { 0 } },
+    ]]
+}
+
+/// Rows measured by a run -> the new weights. `prior` is the measured weights so far; a path not
+/// timed this run keeps its prior row, and a timed one moves half way to what it measured.
+export fn merge_times(root: string, prior: Map<string, int>, pcold: Map<string, int>) -> Map<
+    string,
+    int,
+> {
+    let files = files_under(root).filter(it.ends_with("/suite-times.txt"))
+    let rows = flatten_timed(files.map(warm_rows(timed_rows(read_text(it) catch ""), pcold)))
+    mut seen: Map<string, int> = {}
+    for r in rows {
+        if !seen.has(r.path) || seen.get(r.path)! < r.secs { seen.set(r.path, r.secs) }
+    }
+    mut out = layered([prior])
+    for path, warm in seen {
+        let before = prior.get(path)
+        out.set(path, if before == null { warm } else { (before! + warm + 1) / 2 })
+    }
+    out
+}
+
+fn flatten_timed(xss: List<List<SuiteTime>>) -> List<SuiteTime> { xss.fold([], (acc, xs) -> acc.concat(xs)) }
+
+/// The splits table: each package's items, the items that run first in their shard, and each
+/// group's paths. A row is `<package> <path> [cold]` or `<package> @<group> <path>… [cold]`.
+export type Splits = { items: Map<string, List<string>>, cold: List<string>, groups: Map<string, List<string>> }
+
+export fn splits_in(text: string) -> Splits {
+    mut items: Map<string, List<string>> = {}
+    mut cold: List<string> = []
+    mut groups: Map<string, List<string>> = {}
+    for line in lines_of(text) {
+        let all = words(code_of(line))
+        if all.length >= 2 {
+            let is_cold = all.last() == "cold"
+            let parts = if is_cold { all.take(all.length - 1) } else { all }
+            if is_cold { cold.push("${all[0]}/${all[1]}") }
+            items.set(parts[0], (items.get(parts[0]) ?? []).concat([parts[1]]))
+            if parts[1].starts_with("@") { groups.set("${parts[0]}/${parts[1]}", parts.drop(2)) }
+        }
+    }
+    Splits { items: items, cold: cold, groups: groups }
+}
+
+/// A `dir%k/n` path: the directory, the hand and how many hands.
+type Stride = { dir: string, k: int, n: int }
+
+fn stride_of(p: string) -> Stride? {
+    let pct? = last_at(p, "%") else { return null }
+    let tail = p.substring(pct + 1, p.length).split("/")
+    if pct == 0 || tail.length != 2 { return null }
+    let k? = digits(tail[0]) else { return null }
+    let n? = digits(tail[1]) else { return null }
+    Stride { dir: p.substring(0, pct), k: k, n: n }
+}
+
+fn last_at(s: string, needle: string) -> int? {
+    mut k = s.length - needle.length
+    while k >= 0 && !stands_at(s, needle, k) { k = k - 1 }
+    if k < 0 { null } else { k }
+}
+
+/// A directory's proof files, dealt round-robin in name order into `n` hands: hand `k`.
+fn stride_files(base: string, d: string, k: int, n: int) -> List<string> {
+    let here = "${base}/${d}"
+    let names = sorted_distinct(
+        [f for f in list_dir(here) catch [] if is_file("${here}/${f}") && is_proof("${here}/${f}")],
+    )
+    ["${d}/${f}" for i, f in names if i % n == k]
+}
+
+/// The `packages/…` paths one packed item is proved by: a package, a path under it, or every path
+/// of a group. A `dir%k/n` is hand `k` of `n` of the proof files directly in `dir`; a `!file` only
+/// LOOKS like a proof, and no shard runs it.
+export fn item_paths(item: string, groups: Map<string, List<string>>, root: string) -> List<string> {
+    let pkg = suite_package(item)
+    let rest = item
+        .substring(pkg.length + if item.length > pkg.length { 1 } else { 0 }, item.length)
+    if !rest.starts_with("@") { return ["packages/${item}"] }
+    flatten_texts([group_path(root, pkg, p) for p in groups.get(item) ?? [] if !p.starts_with("!")])
+}
+
+/// The paths one group entry stands for: a dealt hand, or a path.
+fn group_path(root: string, pkg: string, p: string) -> List<string> {
+    let s? = stride_of(p) else { return ["packages/${pkg}/${p}"] }
+    stride_files("${root}/packages/${pkg}", s.dir, s.k, s.n).map("packages/${pkg}/${it}")
+}
+
+/// The packed items: each package, or each of its split paths.
+export fn split_items(names: List<string>, listed: Map<string, List<string>>) -> List<string> {
+    flatten_texts(
+        names
+            .map(
+                (n) -> if (listed.get(n) ?? []).length == 0 { [n] } else { listed.get(n)!.map("${n}/${it}") },
+            ),
+    )
+}
+
+/// Whether a file proves something: a program test's marker, or an `.av` with a `spec`.
+export fn is_proof(path: string) -> bool {
+    if path.ends_with(".expected") || path.ends_with(".refuses") || path.ends_with(".verdict") { return true }
+    path.ends_with(".av") &&
+        lines_of(read_text(path) catch "")
+            .any(left_trimmed(it).starts_with("spec ") || left_trimmed(it).starts_with("spec("))
+}
+
+fn under(rel: string, p: string) -> bool { rel == p || rel.starts_with("${right_trim_slash(p)}/") }
+
+fn right_trim_slash(p: string) -> string { if p.ends_with("/") { p.substring(0, p.length - 1) } else { p } }
+
+/// Proof files under a split package that no listed path holds. A `skip` item is a `package/path`
+/// whose proofs the caller declared transient.
+export fn unsharded(root: string, s: Splits, skip: List<string>) -> List<string> {
+    let skips = skip.map(right_trim_slash(it))
+    flatten_texts([unreached_in(root, pkg, listed, s.groups, skips) for pkg, listed in s.items])
+}
+
+fn unreached_in(
+    root: string,
+    pkg: string,
+    listed: List<string>,
+    groups: Map<string, List<string>>,
+    skips: List<string>,
+) -> List<string> {
+    let paths_listed = flatten_texts(
+        listed.map((p) -> if p.starts_with("@") { groups.get("${pkg}/${p}") ?? [] } else { [p] }),
+    )
+    let base = "${root}/packages/${pkg}"
+    let strides = [s! for s in paths_listed.map(stride_of(it)) if s != null]
+    let plain = [p for p in paths_listed if stride_of(p) == null]
+    let dealt = joined([], strides.map("${it.dir}%${it.n}"))
+    let hand_faults = flatten_texts(
+        dealt.map((key) -> hand_fault(base, pkg, strides.filter("${it.dir}%${it.n}" == key))),
+    )
+    let dealt_held = flatten_texts(
+        dealt.map((key) -> dealt_files(base, strides.filter("${it.dir}%${it.n}" == key))),
+    )
+    let path_faults = ["${pkg}/${p} is not a directory or a file" for p in plain if !p.starts_with("!") && !is_file("${base}/${p}") && !is_dir("${base}/${p}")]
+    let held = dealt_held
+        .concat(
+            [if p.starts_with("!") { p.substring(1, p.length) } else { p } for p in plain if p.starts_with("!") || is_file("${base}/${p}")],
+        )
+    let dirs = [p for p in plain if !p.starts_with("!") && is_dir("${base}/${p}")]
+    let stray = [rel for f in files_under("${base}/src") for rel in [f.substring(base.length + 1, f.length)] if !dirs.any(under(dir_of_rel(rel), it)) &&
+        is_proof(f) &&
+        !held.contains(rel) &&
+        !skips.any((s) -> under("${pkg}/${rel}", s))]
+    hand_faults.concat(path_faults).concat(stray)
+}
+
+fn dir_of_rel(rel: string) -> string { rel.substring(0, rel.length - (rel.split("/").last() ?? "").length - 1) }
+
+/// A dealt directory's fault: not a directory, or a hand nobody lists.
+fn hand_fault(base: string, pkg: string, hands: List<Stride>) -> List<string> {
+    let first = hands[0]
+    if !is_dir("${base}/${first.dir}") { return ["${pkg}/${first.dir} is not a directory"] }
+    let missing = [k for k in 0..first.n if !hands.any(it.k == k)]
+    if missing.length > 0 {
+        [
+            "${pkg}/${first.dir} is dealt in ${first.n} hands and [${missing.map("${it}").join(", ")}] are not listed",
+        ]
+    } else {
+        []
+    }
+}
+
+fn dealt_files(base: string, hands: List<Stride>) -> List<string> {
+    let first = hands[0]
+    if !is_dir("${base}/${first.dir}") || (0..first.n).any((k) -> !hands.any(it.k == k)) { return [] }
+    flatten_texts(hands.map(stride_files(base, it.dir, it.k, it.n)))
+}
+
+/// Heaviest first, then by name.
+fn heavier(w: Map<string, int>) -> fn(string, string) -> bool {
+    (a, b) -> weight(w, a) > weight(w, b) || weight(w, a) == weight(w, b) && text_before(a, b)
+}
+
+/// Heaviest first into the shard it makes lightest, a package's compile counted once per shard. A
+/// cold item takes a shard of its own among the cold ones and runs first there.
+export fn pack(
+    names: List<string>,
+    n: int,
+    w: Map<string, int>,
+    cold: List<string>,
+    pcold: Map<string, int>,
+) -> List<List<string>> {
+    let firsts = sorted_by(names.filter((x) -> cold.contains(x)), heavier(w))
+    let rest = sorted_by(names.filter((x) -> !cold.contains(x)), heavier(w))
+    let none: List<string> = []
+    mut bins = [none for _i in 0..n]
+    for i, name in firsts { bins = placed(bins, i, name) }
+    for name in rest {
+        let costs = bins
+            .map(
+                (b) -> shard_load(b, w, pcold) +
+                    shard_cost(name, b.map(suite_package(it)), w, pcold),
+            )
+        let least = costs.fold(costs[0], (a, c) -> if c < a { c } else { a })
+        bins = placed(bins, costs.index_of(least), name)
+    }
+    let run_order = (a: string, b: string) -> {
+        let ca = cold.contains(a)
+        let cb = cold.contains(b)
+        ca && !cb ||
+            ca == cb &&
+                (weight(w, a) < weight(w, b) || weight(w, a) == weight(w, b) && text_before(a, b))
+    }
+    let kept = [sorted_by(b, run_order) for b in bins if b.length > 0]
+    if kept.length == 0 { [[]] } else { kept }
+}
+
+fn placed(bins: List<List<string>>, i: int, name: string) -> List<List<string>> {
+    [if j == i { b.concat([name]) } else { b } for j, b in bins]
+}
+
+/// A packing as JSON, the way the workflow's matrix reads it.
+export fn packed_json(bins: List<List<string>>) -> string {
+    "[${bins.map("[${it.map("\"${it}\"").join(", ")}]").join(", ")}]"
+}
+
+fn ci_splits() -> Splits { splits_in(read_text("${CI}/suite-splits.txt") catch "") }
+
+fn int_or(s: string?, d: int) -> int { digits(s ?? "") ?? d }
+
+type ShardsCmd = {}
+
+impl Runnable for ShardsCmd {
+    fn run(args: CliResult) -> int {
+        let s = ci_splits()
+        let said_words = args.args_of("words")
+        if args.has_flag("paths") {
+            println(item_paths(said_words.first() ?? "", s.groups, ".").join(" "))
+            return 0
+        }
+        if args.has_flag("check_splits") {
+            let skip = words(args.option("skip"))
+            for k in skip { println("shards: ${k} is declared transient — its proofs are not sharded") }
+            let bad = unsharded(".", s, skip)
+            for b in bad {
+                println(
+                    "shards: ${b} — outside every path in .github/ci/suite-splits.txt, so no shard proves it",
+                )
+            }
+            if bad.length == 0 {
+                println(
+                    "shards: ${s.items.length} split package(s), every proof under a listed path",
+                )
+            }
+            return if bad.length > 0 { 1 } else { 0 }
+        }
+        let measured = "${CI}/suite-seconds.measured"
+        let pcold = weights("${CI}/suite-cold.txt")
+        if args.has_flag("predict") {
+            let n = int_or(said_words.drop(1).first(), 6)
+            let w = merge_times(said_words.first() ?? ".", {}, pcold)
+            let names = sorted_distinct(w.keys())
+            for label, packed in {
+                "old (cold ignored)": pack(names, n, w, [], {}),
+                "new (cold once per shard and package)": pack(names, n, w, [], pcold),
+            } {
+                let each = sorted_by(packed.map(makespan([it], w, pcold)), (a, b) -> a > b)
+                println(
+                    "${label}: slowest shard ${makespan(packed, w, pcold)}s, shards [${each.map("${it}").join(", ")}]",
+                )
+            }
+            return 0
+        }
+        if args.has_flag("merge_times") {
+            let rows = merge_times(said_words.first() ?? ".", weights(measured), pcold)
+            println("# Suite seconds measured on main's own runs (wisp shards --merge-times).")
+            for k in sorted_distinct(rows.keys()) { println("${k} ${rows.get(k)!}") }
+            return 0
+        }
+        let n = int_or(said_words.first(), 4)
+        let names = lines_of(read_text("/dev/stdin") catch "").map(it.trim()).filter(it != "")
+        let items = if args.has_flag("split") { split_items(names, s.items) } else { names }
+        let w = layered([weights("${CI}/suite-seconds.txt"), weights(measured)])
+        println(packed_json(pack(items, n, w, s.cold, pcold)))
+        0
+    }
+}
+
+export command shards {
+    description: "Pack package suites into shards of even weight, or check and measure the shards"
+    arg words {
+        description: "the shard count; the item for --paths; the times directory (and shard count) for --merge-times/--predict"
+        variadic: true
+    }
+    flag split { description: "a package named in suite-splits.txt becomes one item per listed path" }
+    flag paths { description: "print the packages/… paths one packed item is proved by" }
+    flag check_splits { description: "refuse a proof under a split package outside every listed path" }
+    flag merge_times { description: "the measured rows from every suite-times.txt under the directory" }
+    flag predict { description: "a run's own times packed both ways, each packing's slowest shard" }
+    option skip {
+        description: "package/path items whose proofs are declared transient, space-separated"
+        default: ""
+    }
+    run: ShardsCmd {}
+}

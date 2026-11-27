@@ -24,7 +24,7 @@
 # nothing and owes nothing.
 # A run asked for by hand (`gh workflow run checks --ref <branch>`) runs the
 # whole gate over every package. The shards are packed by measured seconds
-# (tools/shards.py), so the slowest is as short as the heaviest suite allows. The shard count
+# (wisp shards), so the slowest is as short as the heaviest suite allows. The shard count
 # trades runner slots against wall time: six shards keeps a PR's gate short.
 name: checks
 
@@ -217,7 +217,7 @@ jobs:
           if [ "$event" = pull_request ] && ! git diff --quiet "origin/$BASE"...HEAD -- \
               packages/std-avrac/src tools/codecs.py; then codecs=1; fi
           key=$(sh tools/compiler_paths.sh --key)
-          shards=$(printf '%s\n' "$pkgs" | python3 tools/shards.py --split 6)
+          shards=$(printf '%s\n' "$pkgs" | ./wisp shards --split 6)
           if [ -f .github/ci/suite-seconds.measured ]; then echo "suite weights: $(grep -vc '^#' .github/ci/suite-seconds.measured) measured row(s) over the committed seed"; else echo "suite weights: the committed seed alone"; fi
           # A DRAFT RUNS THE LIGHT GATE: the compiler and the changed-file gate,
           # the compiler-free keepers and the codecs scan. The heavy legs owe
@@ -770,10 +770,10 @@ jobs:
             # std-avrac's suite stands on the old path: its spec harness (testing/mod.av) checks programs
             # through the old Workspace, which the program layer does not answer yet.
             pin=""; case $p in std-avrac*) pin="AVRA_PROGRAM=0" ;; esac
-            python3 tools/step_cpu.py --state "$p" -- env $pin AVRA_SOUND_CHECK=1 build/avra test --time $(python3 tools/shards.py --paths "$p") || { fail=1; echo "::error::suite $p failed"; }
+            python3 tools/step_cpu.py --state "$p" -- env $pin AVRA_SOUND_CHECK=1 build/avra test --time $(./wisp shards --paths "$p") || { fail=1; echo "::error::suite $p failed"; }
             echo "::endgroup::"
             echo "$(echo "$p" | tr / _) $(( $(date +%s) - t ))s" | tee -a speed.log
-            # What the packer learns from (tools/shards.py --merge-times): the suite's own seconds,
+            # What the packer learns from (wisp shards --merge-times): the suite's own seconds,
             # marked when it was the shard's first, which also paid the runner's cold start.
             echo "$p $(( $(date +%s) - t )) $first" >> suite-times.txt
             first=
@@ -823,7 +823,7 @@ jobs:
           key: suite-seconds-${{ github.run_id }}
           restore-keys: suite-seconds-
       - name: merge
-        run: python3 tools/shards.py --merge-times times > suite-seconds.new && mv suite-seconds.new .github/ci/suite-seconds.measured && cat .github/ci/suite-seconds.measured
+        run: ./wisp shards --merge-times times > suite-seconds.new && mv suite-seconds.new .github/ci/suite-seconds.measured && cat .github/ci/suite-seconds.measured
       - uses: actions/cache/save@v4
         with:
           path: .github/ci/suite-seconds.measured

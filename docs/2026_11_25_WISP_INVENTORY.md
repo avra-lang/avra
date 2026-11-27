@@ -348,7 +348,7 @@ A running list: each entry is gone from the tree, named with the train that remo
 | rungs.sh | action.yml, orders.yml, Makefile +2 | internal | merge: seed |  |
 | seed_guard.sh | Makefile | internal | merge: seed |  |
 | seed_is_tree.sh | Makefile | internal | merge: seed |  |
-| shards.py | suite-cold.txt, suite-seconds.txt, suite-splits.txt +3 | internal | merge: gate |  |
+| shards.py | suite-cold.txt, suite-seconds.txt, suite-splits.txt +3 | internal | merge: gate | PORTED — `wisp shards` |
 | shim_guard_test.sh | none | internal | merge: fixtures |  |
 | sig_restore_attack.sh | Makefile | internal | merge: oracle |  |
 | soak_http.sh | Makefile | internal | merge: oracle |  |
