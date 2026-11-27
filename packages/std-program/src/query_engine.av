@@ -320,6 +320,10 @@ export type QueryEngine = {
     held: Cell<int>,
     proved: Cell<int>,
     reads_checked: Cell<int>,
+    /// How many times a change asked whether it meets a reader, and how many readers' records those
+    /// asks read.
+    meets_asked: Cell<int>,
+    reader_records_read: Cell<int>,
     sets: NameSets,
     /// Whether each set's every package is one the store shares, by the set's id.
     sets_shared: HashKeyedTable<bool>,
@@ -392,6 +396,8 @@ export fn query_engine(
         held: held,
         proved: proved,
         reads_checked: reads_checked,
+        meets_asked: Cell.new(0),
+        reader_records_read: Cell.new(0),
         sets: name_sets(),
         sets_shared: hash_keyed_table(),
         serial: next_serial(),
@@ -520,20 +526,61 @@ impl QueryEngine {
     /// one part of an answer is met only where that part moved, or appeared. Met wherever that can't
     /// be told: no record, or several standing on that answer. A READER THAT NO LONGER STANDS IS MET
     /// WITHOUT ASKING: what it read is asked by nothing standing, and asking it would write an answer
-    /// back no root reaches.
-    fn meets(f: Frontier, reader: int, by: int) -> bool {
+    /// back no root reaches. A reader's record is read once (`readers`), so a change asks only the
+    /// reads of its own question.
+    fn meets(f: Frontier, reader: int, by: int, readers: HashKeyedTable<ReaderRecord>) -> bool {
+        self.meets_asked.set(self.meets_asked.get() + 1)
         if !f.stands(reader) { return true }
+        let reads? = self.reader_reads(f, reader, readers) else { return true }
+        let of = f.question_at(by)
+        let wholes = reads.wholes.get(of) ?? []
+        let parts = reads.parts.get(of) ?? []
+        if wholes.is_empty() && parts.is_empty() { return true }
+        let record = reads.record
+        !(wholes
+                .all(
+                    (i) -> record
+                        .whole_read_holds(i, (question, seen) -> self.whole_read_holds(question, seen)),
+                ) &&
+            parts
+                .all(
+                    (i) -> record
+                        .part_read_holds(
+                            i,
+                            (question, seen, part_name, part_hash) -> self
+                                .part_read_holds(question, seen, part_name, part_hash),
+                        ),
+                ))
+    }
+
+    /// The reads of the one record the frontier's answer at `reader` stands on, by question; absent
+    /// where no one record does. Each reader is read once into `readers`.
+    fn reader_reads(f: Frontier, reader: int, readers: HashKeyedTable<ReaderRecord>) -> ReaderReads? {
+        let known? = readers.get(place_key(reader)) else {
+            let read = self.reader_record(f, reader)
+            readers.put(place_key(reader), read)
+            return read.reads()
+        }
+        known.reads()
+    }
+
+    /// The one record the frontier's answer at `reader` stands on, its reads by question.
+    fn reader_record(f: Frontier, reader: int) -> ReaderRecord {
+        self.reader_records_read.set(self.reader_records_read.get() + 1)
         let answer = f.answer_at(reader)
         let held = self.store.records_of(f.question_at(reader)).filter(it.answer.same_as(answer))
-        if held.length != 1 { return true }
+        if held.length != 1 { return ReaderRecord.Untold }
         let record = held[0]
-        let of = f.question_at(by)
-        if !record.read_questions().any(it.same_as(of)) { return true }
-        !record
-            .every_read(
-                (question, seen) -> !question.same_as(of) || self.whole_read_holds(question, seen),
-                (question, seen, part_name, part_hash) -> !question.same_as(of) ||
-                    self.part_read_holds(question, seen, part_name, part_hash),
+        ReaderRecord
+            .Held(
+                ReaderReads {
+                    record: record,
+                    wholes: reads_by_question(
+                        record.whole_read_count(),
+                        (i) -> record.whole_read_question(i),
+                    ),
+                    parts: reads_by_question(record.part_read_count(), (i) -> record.part_read_question(i)),
+                },
             )
     }
 
@@ -698,8 +745,13 @@ impl QueryEngine {
     fn suspects_of(f: Frontier, reach: FrontierReach) -> List<bool>? {
         if reach.changed.is_empty() { return [false for _i in 0..f.length()] }
         let decided: HashKeyedTable<int> = hash_keyed_table()
+        let readers: HashKeyedTable<ReaderRecord> = hash_keyed_table()
         f
-            .settled(reach, (at) -> self.cut_at(f, at, decided), (reader, by) -> self.meets(f, reader, by))
+            .settled(
+                reach,
+                (at) -> self.cut_at(f, at, decided),
+                (reader, by) -> self.meets(f, reader, by, readers),
+            )
     }
 
     /// How the answer at `at` meets a change: a cutting query's that comes out the same now, which
@@ -910,6 +962,12 @@ impl QueryEngine {
 
     /// How many answers' read sets this process walked the frontier for.
     fn read_sets_walked_count() -> int { self.read_sets_walked.get() }
+
+    /// How many times opening the frontier asked whether a change meets a reader.
+    fn meets_asked_count() -> int { self.meets_asked.get() }
+
+    /// How many readers' records opening the frontier read to answer those asks.
+    fn reader_records_read_count() -> int { self.reader_records_read.get() }
 
     /// How many answers of the pass `p`'s families this engine checked against a kept record and kept.
     fn rechecked_in(p: Pass) -> int { self.rechecked.get()[pass_index(p)] }
@@ -1654,6 +1712,35 @@ impl KeyReader {
         let package = self.text()
         source_file(package, self.text())
     }
+}
+
+/// What a frontier reader's record says of the changes that reach it: `Untold` where no one record
+/// stands on its answer, so every change meets it.
+enum ReaderRecord { Untold, Held(ReaderReads) }
+
+impl ReaderRecord {
+    /// The reads by question, absent where they can't be told.
+    fn reads() -> ReaderReads? {
+        match self { .Held(reads) -> reads, .Untold -> null }
+    }
+}
+
+/// A reader's one record, and where in it each question it read lies: its whole reads and its part
+/// reads, by position.
+type ReaderReads = {
+    record: KeptRecord,
+    wholes: HashKeyedTable<List<int>>,
+    parts: HashKeyedTable<List<int>>,
+}
+
+/// The positions of `count` reads by the question `question_at` says each asked, in the order kept.
+fn reads_by_question(count: int, question_at: fn(int) -> ContentHash) -> HashKeyedTable<List<int>> {
+    let by: HashKeyedTable<List<int>> = hash_keyed_table()
+    for i in 0..count {
+        let question = question_at(i)
+        by.put(question, (by.get(question) ?? []).concat([i]))
+    }
+    by
 }
 
 /// A question's key: its arguments' spellings, in order.
