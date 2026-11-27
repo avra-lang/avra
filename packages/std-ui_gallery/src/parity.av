@@ -1,0 +1,475 @@
+//! `parity.av` — WHAT EACH TARGET SAYS, HEARD ONE WAY. An assistive reader hears an element as a
+//! role, a name, a value, the states it is in and the direction its words run: `Heard`, the one
+//! projection every target's reader answers into. The Node's own reading is the reference row; a
+//! target whose hearing of a case differs from it is APART, and an apart case is either fixed or
+//! owed by name (`Owed`), never held by a baseline. A new target adds a reader, never a comparison.
+use @std.meta.{derive}
+use @std.ui.style.words.{Words}
+use @std.ui.env.{Direction}
+use @std.ui.tree.node.{Node, Prim, Attribute}
+use @std.ui.tree.controls.{shows_content}
+use @std.ui.tree.view.{tree_of}
+use @std.ui.tree.outline.{outline}
+use @std.ui.realize.native.element.{Native, lowered as native_lowered}
+use @std.ui.realize.native.fact.{Fact, What, Scalar}
+use @std.ui.realize.html.element.{Element, Tagged, lowered as html_lowered}
+use @std.ui.realize.html.tags.{HtmlTag, HtmlAttrName}
+use @std.text.{chars}
+
+/// A state an element is heard in.
+@derive(Words)
+export enum State {
+    @word(checked) Checked
+    @word(disabled) Disabled
+    @word(invalid) Invalid
+    @word(loading) Loading
+    @word(open) Open
+    @word(selected) Selected
+}
+
+/// What a reader hears of one element.
+export type Heard = { role: Prim, name: string, value: string, states: List<State>, direction: Direction? }
+
+/// The target a reader hears; the Node is the reference every one is held to.
+@derive(Words)
+export enum Target {
+    @word(html) Html
+    @word(native) Native
+    @word(outline) Outline
+}
+
+/// A case whose hearing on `target` differs from the Node's: the first line where they part.
+export type Apart = { view: string, case: string, target: Target, node: string, theirs: string }
+
+/// A disagreement known and owed: its case, its target, who owes it and why.
+export type Owed = { view: string, case: string, target: Target, owner: string, why: string }
+
+/// The disagreements known and owed. A line whose case agrees is struck, and an apart case no line
+/// names fails the parity test, so the list only shrinks.
+export const owed: List<Owed> = []
+
+/// The disagreements no line owes, and the owed lines whose case now agrees — each to strike.
+export type Parity = { apart: List<Apart>, struck: List<Owed>, cases: int }
+
+/// The role a reader hears a prim as: none for one that only lays its children out or draws
+/// nothing; an icon is the image it draws. Every primitive spelled.
+export fn heard_as(p: Prim) -> Prim? {
+    match p {
+        .Row or .Column or .Surface or .Key -> null,
+        .Icon -> .Image,
+        .Text or .Heading or .Button or .Link or .Image or .Field or .Checkbox or .Dialog or .Divider or .List or .Item or .Card or .Progress or .Alert or .Spinner or .Form or .Fieldset or .Switch or .Slider -> p,
+    }
+}
+
+/// A hearing as one line: role, quoted name, value, states, direction.
+export fn spoken(h: Heard) -> string {
+    let value: List<string> = if h.value == "" { [] } else { ["value=\"${h.value}\""] }
+    let dir: List<string> = match h.direction {
+        d? -> ["dir=${d.word()}"]
+        null -> []
+    }
+    [h.role.word(), "\"${h.name}\""]
+        .concat(value)
+        .concat([s.word() for s in h.states])
+        .concat(dir)
+        .join(" ")
+}
+
+/// What one attribute or fact tells a reader: a name of some precedence (lower wins), a value, a
+/// state, that the element is hidden from readers, or nothing.
+enum Part {
+    Named(rank: int, words: string)
+    Valued(words: string)
+    Stated(state: State)
+    Hidden
+    Nothing
+}
+
+// ── Reading parts ──────────────────────────────────────────────
+
+fn rank_of(p: Part) -> List<int> { match p { .Named(r, _) -> [r], .Valued(_) or .Stated(_) or .Hidden or .Nothing -> [] } }
+
+fn words_at(p: Part, rank: int) -> List<string> {
+    match p {
+        .Named(r, w) -> if r == rank { [w] } else { [] },
+        .Valued(_) or .Stated(_) or .Hidden or .Nothing -> [],
+    }
+}
+
+fn value_of(p: Part) -> List<string> { match p { .Valued(w) -> [w], .Named(_, _) or .Stated(_) or .Hidden or .Nothing -> [] } }
+
+fn state_of(p: Part) -> List<State> { match p { .Stated(s) -> [s], .Named(_, _) or .Valued(_) or .Hidden or .Nothing -> [] } }
+
+fn hides(p: Part) -> bool { match p { .Hidden -> true, .Named(_, _) or .Valued(_) or .Stated(_) or .Nothing -> false } }
+
+/// The name the parts give, the element's own words standing last.
+fn name_from(parts: List<Part>, words: string) -> string {
+    let all = parts.concat([Part.Named(9, words)])
+    let low = [r for p in all for r in rank_of(p)].fold(9, (m, r) -> if r < m { r } else { m })
+    [w for p in all for w in words_at(p, low)].first() ?? ""
+}
+
+/// The one element the parts describe, as `p` reads, or nothing: a prim heard as no role says
+/// nothing, and text or an alert with no words announces nothing on any target.
+fn heard_from(p: Prim, parts: List<Part>, words: string, direction: Direction?) -> List<Heard> {
+    let role? = heard_as(p) else { return [] }
+    let name = name_from(parts, words)
+    if unheard(p, parts) || (role == Prim.Text || role == Prim.Alert) && name == "" { return [] }
+    let value = [w for q in parts for w in value_of(q)].first() ?? ""
+    [
+        Heard {
+            role: role,
+            name: name,
+            value: value,
+            states: ordered([s for q in parts for s in state_of(q)]),
+            direction: direction,
+        },
+    ]
+}
+
+/// Whether an element and all it holds go unheard: it is hidden from readers, or a dialog that
+/// is not open.
+fn unheard(p: Prim, parts: List<Part>) -> bool {
+    parts.any(hides(it)) ||
+        p == Prim.Dialog && ![s for q in parts for s in state_of(q)].any(it == State.Open)
+}
+
+/// States in their declared order, so no reader's order of discovery reads as a difference.
+fn ordered(states: List<State>) -> List<State> { [s for s in State.every() if states.any(it == s)] }
+
+fn flagged(on: bool, s: State) -> Part { if on { Part.Stated(s) } else { Part.Nothing } }
+
+// ── The Node: the reference ────────────────────────────────────
+
+/// What a reader hears of a tree, read from its Nodes.
+export fn node_heard(n: Node) -> List<Heard> {
+    let parts = [attr_part(a) for a in n.attrs]
+    if unheard(n.prim, parts) || !shows_content(n) { return [] }
+    heard_from(n.prim, parts, n.words(), n.box.style.writing)
+        .concat([h for k in n.children for h in node_heard(k)])
+}
+
+/// What one attribute tells a reader. Every attribute spelled.
+fn attr_part(a: Attribute) -> Part {
+    match a {
+        .Name(t) -> .Named(0, t),
+        .Label(t) -> .Named(1, t),
+        .Title(t) -> .Named(2, t),
+        .Alt(t) -> .Named(3, t),
+        .Value(t) -> .Valued(t),
+        .Amount(k) -> .Valued("${k}"),
+        .Decorative(on) -> if on { Part.Hidden } else { Part.Nothing },
+        .Disabled(on) -> flagged(on, .Disabled),
+        .Checked(on) -> flagged(on, .Checked),
+        .Selected(on) -> flagged(on, .Selected),
+        .Open(on) -> flagged(on, .Open),
+        .Invalid(on) -> flagged(on, .Invalid),
+        .Loading(on) -> flagged(on, .Loading),
+        .Text(_) or .Level(_) or .Placeholder(_) or .Source(_) or .Href(_) or .Min(_) or .Max(_) or .Urgency(_) or .Submits(_) or .Masked(_) or .SubmitLabel(_) or .Skipped(_, _, _) or .Placed(_, _, _) -> .Nothing,
+    }
+}
+
+// ── Native ─────────────────────────────────────────────────────
+
+/// What a reader hears of a tree, read from the facts a native host is handed.
+export fn native_heard(e: Native) -> List<Heard> {
+    let parts = [fact_part(f) for f in e.facts if f.under == null]
+    if unheard(e.prim, parts) { return [] }
+    heard_from(
+        e.prim,
+        parts,
+        fact_said(e, What.Words) ?? "",
+        direction_of(fact_said(e, What.WordsWriting)),
+    )
+        .concat([h for k in e.kids for h in native_heard(k)])
+}
+
+/// What an element's own fact about `w` says, if it carries one.
+fn fact_said(e: Native, w: What) -> string? { [scalar_words(f.holds) for f in e.facts if f.under == null && f.what == w].first() }
+
+fn scalar_words(s: Scalar) -> string {
+    match s { .Text(t) -> t, .Number(k) -> "${k}", .Flag(b) -> "${b}", .Fraction(x) -> "${x}" }
+}
+
+fn scalar_on(s: Scalar) -> bool { match s { .Flag(b) -> b, .Text(_) or .Number(_) or .Fraction(_) -> false } }
+
+/// What one fact tells a reader. Every fact spelled.
+fn fact_part(f: Fact) -> Part {
+    match f.what {
+        .Name -> .Named(0, scalar_words(f.holds)),
+        .Label -> .Named(1, scalar_words(f.holds)),
+        .Title -> .Named(2, scalar_words(f.holds)),
+        .Alt -> .Named(3, scalar_words(f.holds)),
+        .Value or .Amount -> .Valued(scalar_words(f.holds)),
+        .Decorative -> if scalar_on(f.holds) { Part.Hidden } else { Part.Nothing },
+        .Disabled -> flagged(scalar_on(f.holds), .Disabled),
+        .Checked -> flagged(scalar_on(f.holds), .Checked),
+        .Selected -> flagged(scalar_on(f.holds), .Selected),
+        .Open -> flagged(scalar_on(f.holds), .Open),
+        .Invalid -> flagged(scalar_on(f.holds), .Invalid),
+        .Loading -> flagged(scalar_on(f.holds), .Loading),
+        .Words or .Rank or .Placeholder or .Source or .SourceWidth or .SourceHeight or .Href or .Min or .Max or .Urgency or .Submits or .Masked or .SkippedPath or .SkippedRows or .SkippedExtent or .PlacedAt or .PlacedOf or .Reveal or .SubmitLabel or .Radius or .Fill or .Ink or .Elevation or .Face or .TextSize or .LineHeight or .Tracking or .Direction or .Wrap or .Gap or .PadStart or .PadEnd or .PadTop or .PadBottom or .MarginStart or .MarginEnd or .MarginTop or .MarginBottom or .Align or .Distribute or .Width or .Height or .Grow or .Aspect or .InsetStart or .InsetEnd or .InsetTop or .InsetBottom or .Order or .Mode or .Contrast or .Writing or .WordsWriting -> .Nothing,
+    }
+}
+
+// ── HTML ───────────────────────────────────────────────────────
+
+/// What a reader hears of a tree, read from the HTML a page is handed.
+export fn html_heard(e: Element) -> List<Heard> {
+    let el? = tag_in(e).first() else { return [] }
+    if attr(el, .Hidden) != null || attr(el, .AriaHidden) == "true" { return [] }
+    match el.tag {
+        .Label -> labelled(el),
+        .Article -> heard_from(Prim.Card, html_parts(el), attr(el, .Title) ?? "", null)
+            .concat(read_on(el, (k) -> !heads(k))),
+        rest -> html_own(el),
+    }
+}
+
+/// A label names the control it holds by its words beside it: one element heard, the rest read on.
+fn labelled(el: Tagged) -> List<Heard> {
+    let control? = [k for c in el.kids for k in tag_in(c) if controls(k)].first() else { return read_on(el, (k) -> true) }
+    let words = [k for c in el.kids for k in tag_in(c) if k.tag == HtmlTag.Span].first()
+    let p? = html_prim(control) else { return [] }
+    heard_from(p, html_parts(control), own_text(words), dir_in(words))
+        .concat(read_on(el, (k) -> !controls(k) && k.tag != HtmlTag.Span))
+}
+
+fn html_own(el: Tagged) -> List<Heard> {
+    let p? = html_prim(el) else { return read_on(el, (k) -> true) }
+    if unheard(p, html_parts(el)) { return [] }
+    heard_from(p, html_parts(el), own_text(el), dir_in(el)).concat(read_on(el, (k) -> true))
+}
+
+fn read_on(el: Tagged, keeps: fn(Tagged) -> bool) -> List<Heard> {
+    [h for c in el.kids for k in tag_in(c) if keeps(k) for h in html_heard(c)]
+}
+
+/// The element an element is, as a run of none or one.
+fn tag_in(e: Element) -> List<Tagged> { match e { .Tag(el) -> [el], .Text(_) -> [] } }
+
+fn run_in(e: Element) -> List<string> { match e { .Text(r) -> [r.content], .Tag(_) -> [] } }
+
+fn own_text(el: Tagged?) -> string { [w for k in el?.kids ?? [] for w in run_in(k)].join("") }
+
+fn attr(el: Tagged, name: HtmlAttrName) -> string? { el.attrs.find(it.name == name)?.value }
+
+fn controls(el: Tagged) -> bool { el.tag == HtmlTag.Input || el.tag == HtmlTag.Progress }
+
+fn heads(el: Tagged) -> bool { html_prim(el) == Prim.Heading }
+
+/// The direction an element's words are said to run; `auto` leaves it to the words.
+fn dir_in(el: Tagged?) -> Direction? {
+    let at? = el else { return null }
+    match attr(at, .Dir) ?? "" { "rtl" -> .Rtl, "ltr" -> .Ltr, _ -> null }
+}
+
+/// What an element's attributes tell a reader.
+fn html_parts(el: Tagged) -> List<Part> {
+    [
+        named_by(attr(el, .AriaLabel), 0),
+        named_by(attr(el, .Alt), 3),
+        named_by(attr(el, .Title), 2),
+        valued_by(attr(el, .Value)),
+        flagged(attr(el, .Checked) != null, .Checked),
+        flagged(attr(el, .Disabled) != null, .Disabled),
+        flagged(attr(el, .AriaInvalid) == "true", .Invalid),
+        flagged(attr(el, .AriaBusy) == "true", .Loading),
+        flagged(attr(el, .Open) != null, .Open),
+        flagged(attr(el, .AriaSelected) == "true", .Selected),
+    ]
+}
+
+fn named_by(words: string?, rank: int) -> Part {
+    match words {
+        w? -> .Named(rank, w)
+        null -> .Nothing
+    }
+}
+
+fn valued_by(words: string?) -> Part {
+    match words {
+        w? -> .Valued(w)
+        null -> .Nothing
+    }
+}
+
+/// The role a reader hears an element as, by its tag and the role it says. Every tag spelled.
+fn html_prim(el: Tagged) -> Prim? {
+    match el.tag {
+        .Span -> .Text,
+        .H1 or .H2 or .H3 or .H4 or .H5 or .H6 -> .Heading,
+        .Button -> .Button,
+        .A -> .Link,
+        .Img -> .Image,
+        .Input -> input_prim(el),
+        .Progress -> .Progress,
+        .Dialog -> .Dialog,
+        .Hr -> .Divider,
+        .Ul -> .List,
+        .Li -> .Item,
+        .Article -> .Card,
+        .Form -> .Form,
+        .Fieldset -> .Fieldset,
+        .Div -> div_prim(el),
+        .Label or .Legend -> null,
+    }
+}
+
+fn input_prim(el: Tagged) -> Prim {
+    match attr(el, .Type) ?? "" {
+        "checkbox" -> if attr(el, .Role) == "switch" { Prim.Switch } else { Prim.Checkbox },
+        "range" -> .Slider,
+        _ -> .Field,
+    }
+}
+
+/// A division is heard only by the role it says: a live region is an alert, a status a spinner.
+fn div_prim(el: Tagged) -> Prim? {
+    if attr(el, .AriaLive) != null { return .Alert }
+    if attr(el, .Role) == "status" { return .Spinner }
+    null
+}
+
+// ── The outline ────────────────────────────────────────────────
+
+/// What a reader hears of a tree, read back from its outline: a line a node, its prim, its quoted
+/// words, its `key="value"` notes and its state words.
+export fn outline_heard(text: string) -> List<Heard> { [h for l in text.split("\n") for h in outline_line(l)] }
+
+fn outline_line(line: string) -> List<Heard> {
+    let words = tokens(line)
+    let p? = Prim.worded(words.first()?.text ?? "") else { return [] }
+    let said = words.drop(1)
+    heard_from(
+        p,
+        [token_part(t) for t in said],
+        [t.text for t in said if t.key == "" && t.quoted].first() ?? "",
+        direction_of([t.text for t in said if t.key == "dir"].first()),
+    )
+}
+
+/// One token of an outline line: a bare word, a quoted text, or a `key=value` note.
+type Token = { key: string, text: string, quoted: bool }
+
+fn token_part(t: Token) -> Part {
+    match t.key {
+        "name" -> .Named(0, t.text),
+        "title" -> .Named(2, t.text),
+        "alt" -> .Named(3, t.text),
+        "value" or "amount" -> .Valued(t.text),
+        "" -> if t.quoted { Part.Nothing } else { bare_part(t.text) },
+        _ -> .Nothing,
+    }
+}
+
+fn bare_part(word: string) -> Part {
+    if word == "decorative" { return .Hidden }
+    match State.worded(word) {
+        s? -> .Stated(s)
+        null -> .Nothing
+    }
+}
+
+fn direction_of(word: string?) -> Direction? {
+    match word ?? "" { "rtl" -> .Rtl, "ltr" -> .Ltr, _ -> null }
+}
+
+/// A line's tokens, split at spaces outside quotes; a quoted text's escapes read back.
+fn tokens(line: string) -> List<Token> {
+    let cs = chars(line)
+    mut out: List<Token> = []
+    mut key = ""
+    mut text = ""
+    mut quoted = false
+    mut inside = false
+    mut i = 0
+    while i < cs.length {
+        let c = cs[i]
+        if inside {
+            if c == "\\" && i + 1 < cs.length {
+                text = text + unescaped(cs[i + 1])
+                i = i + 1
+            } else if c == "\"" {
+                inside = false
+            } else {
+                text = text + c
+            }
+        } else if c == " " {
+            out = out.concat(ended(key, text, quoted))
+            key = ""
+            text = ""
+            quoted = false
+        } else if c == "\"" {
+            inside = true
+            quoted = true
+        } else if c == "=" && !quoted && key == "" {
+            key = text
+            text = ""
+        } else {
+            text = text + c
+        }
+        i = i + 1
+    }
+    out.concat(ended(key, text, quoted))
+}
+
+/// The token a space ends, if one was begun.
+fn ended(key: string, text: string, quoted: bool) -> List<Token> {
+    if text == "" && !quoted { return [] }
+    [Token { key: key, text: text, quoted: quoted }]
+}
+
+fn unescaped(c: string) -> string {
+    match c { "n" -> "\n", "r" -> "\r", _ -> c }
+}
+
+// ── Parity ─────────────────────────────────────────────────────
+
+/// What each target's reader hears of a tree.
+fn hears(t: Target, n: Node) -> List<Heard> {
+    match t {
+        .Html -> [h for e in html_lowered(n) for h in html_heard(e)],
+        .Native -> [h for e in native_lowered(n) for h in native_heard(e)],
+        .Outline -> outline_heard(outline(n)),
+    }
+}
+
+/// Where a target's hearing of a tree first parts from the Node's, if it does.
+fn parted(view: string, case: string, t: Target, n: Node) -> List<Apart> {
+    let ours = [spoken(h) for h in node_heard(n)]
+    let theirs = [spoken(h) for h in hears(t, n)]
+    if ours.join("\n") == theirs.join("\n") { return [] }
+    let at = [j for j in 0..ours.length if j >= theirs.length || ours[j] != theirs[j]].first() ?? ours
+        .length
+    [
+        Apart {
+            view: view,
+            case: case,
+            target: t,
+            node: line_at(ours, at),
+            theirs: line_at(theirs, at),
+        },
+    ]
+}
+
+fn line_at(lines: List<string>, at: int) -> string {
+    if at < lines.length { lines[at] } else { "-" }
+}
+
+/// Every case of every view, heard on every target and held to the Node: what parts that no line
+/// owes, and the owed lines whose case now agrees.
+export fn parity(shelves: List<Shelf>, owed: List<Owed>) -> Parity {
+    let cases = [Hearing { view: s.viewed.name, case: c.name, tree: tree_of(c.view) } for s in shelves for c in s.cases]
+    let all = [a for c in cases for t in Target.every() for a in parted(c.view, c.case, t, c.tree)]
+    Parity {
+        apart: [a for a in all if !owed.any(owes(it, a))],
+        struck: [o for o in owed if !all.any(owes(o, it))],
+        cases: cases.length,
+    }
+}
+
+/// A case to hear: its view, its name, its tree.
+type Hearing = { view: string, case: string, tree: Node }
+
+fn owes(o: Owed, a: Apart) -> bool { o.view == a.view && o.case == a.case && o.target == a.target }

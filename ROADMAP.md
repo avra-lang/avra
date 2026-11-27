@@ -3864,6 +3864,12 @@ its own ticket. The wanting site of both is the storyboard (`docs/2026_11_24_STO
   breaks at none of them. `Callsite:` `@std/ui_gallery`'s storyboard frames (`frame`,
   `storyboard.av`); the interim is one frame a row, a reader's checkbox.
 
+- **OWED (storyboard): the terminal's parity reader.** `@std/ui_gallery`'s `parity` holds the
+  HTML, native facts and the outline to the Node, but not the terminal, which draws no disabled,
+  busy, invalid or selected state today. The UI lead's terminal-state ruling (no state by colour
+  alone: a glyph or words that survive `NO_COLOR`) sets what the terminal draws; the reader lands
+  with those states, as `Target.Terminal`, with a mutant per glyph.
+
 ### Interim record — the tasks server was unreachable at landing
 
 The two asks of `docs/2026_10_01_FIRST_OF_AND_IS_BINDING.md`
