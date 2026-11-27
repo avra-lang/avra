@@ -746,11 +746,12 @@ registry is the idiom engine's spec, written by dogfooding.
   code stamped those three. A LAW WRITTEN AS A DOC COMMENT THAT
   ENUMERATES ITS INSTANCES DECAYS INTO A LIST, and the list stops
   growing before the code does; the reader sees a stated law and
-  stops looking. `make fingerprints` is the enforcement now — it
-  refuses a run spliced into a parts list (both surfaces witnessed
-  failing), counts the lists it read, and claims the shared fold's
-  tag in every file that CALLS it, since a borrowed tag mixes into
-  that file's space.
+  stops looking. Two rules are the enforcement now, found by `avra
+  check`: `compiler.fp_run_spliced` refuses a run spliced into a parts
+  list, and `compiler.fp_tag_once` refuses a tag claimed twice in one
+  file, claiming the shared fold's tag in every file that CALLS it,
+  since a borrowed tag mixes into that file's space. `avra rules
+  --groups compiler.fp_tag_once --file <path>` answers which are taken.
 - AN IDENTITY ASSIGNED LATE MUST RE-KEY WHAT WAS FILED UNDER ITS ABSENCE. The evaluator files the program's own run as
   a task the first time a task row asks (`rooted`), and a `contained` guard records the task that opened it — so a
   guard opened BEFORE any task row ran was filed under "no task" (-1), and the first `spawn`, wait or write inside
