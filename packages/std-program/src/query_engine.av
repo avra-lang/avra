@@ -1602,7 +1602,34 @@ export fn held_bool(b: bool) -> string { if b { "T" } else { "F" } }
 
 /// A file argument as a question's key spells it: its kind, then its package and its path, each a
 /// text, in one spelling.
-export fn held_file(a: SourceFileAddress) -> string { "fs${a.package_name.length}:${a.package_name}s${a.path_in_package.length}:${a.path_in_package}" }
+export fn held_file(a: SourceFileAddress) -> string { file_spelled_before(a) ?? file_spelled_anew(a) }
+
+/// The spelling `held_file` minted for `a` before, absent where none stands for this very file.
+fn file_spelled_before(a: SourceFileAddress) -> string? {
+    let held? = files_spelled().get(a.key) else { return null }
+    if held.package_name == a.package_name && held.path_in_package == a.path_in_package { held.spelled } else { null }
+}
+
+/// `a` spelled as a question's key, and kept for the next ask.
+fn file_spelled_anew(a: SourceFileAddress) -> string {
+    let spelled = "fs${a.package_name.length}:${a.package_name}s${a.path_in_package.length}:${a.path_in_package}"
+    files_spelled()
+        .put(
+            a.key,
+            FileSpelled {
+                package_name: a.package_name,
+                path_in_package: a.path_in_package,
+                spelled: spelled,
+            },
+        )
+    spelled
+}
+
+/// A file's key as `held_file` spelled it, beside the file it spells.
+type FileSpelled = { package_name: string, path_in_package: string, spelled: string }
+
+/// Each file's spelling, by its address's key: minted the first time a question names the file.
+once fn files_spelled() -> HashKeyedTable<FileSpelled> { hash_keyed_table() }
 
 /// A question's arguments as its keys spell them, as the bytes it's known by and read back from.
 export fn keyed_arguments(keys: List<string>) -> Bytes { held_key_of(keys).bytes() }
