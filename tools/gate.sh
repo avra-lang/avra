@@ -832,11 +832,11 @@ part_of() {
             names=$(keepers_of KEEPERS_ALONE)
             [ -n "$names" ] || { judged "keepers-alone-named" 1; return; }
             # THE MUTATIONS RUN WHERE WHAT THEY READ MOVED: each breaks a line of runtime/ and is killed by
-            # runtime/tests, its list runtime/tests/mutations.py, so a diff from the program landed last
-            # (`$4`) that touches nothing under runtime/ would kill the same breaks again; said every gate
-            if [ -n "${4:-}" ] && git diff --quiet "$4" HEAD -- runtime; then
+            # runtime/tests, its list packages/wisp/src/commands/mutation_rows.av, so a diff from the program landed last
+            # (`$4`) that touches neither runtime/ nor the keeper would kill the same breaks again; said every gate
+            if [ -n "${4:-}" ] && git diff --quiet "$4" HEAD -- runtime packages/wisp/src/commands/mutation_rows.av packages/wisp/src/commands/mutations.av; then
                 names=$(printf '%s\n' $names | grep -vx runtime-mutations || :)
-                echo "fact keeper runtime-mutations not run: nothing under runtime/ moved since $(git rev-parse --short=8 "$4")" >>"$out/rows"
+                echo "fact keeper runtime-mutations not run: nothing under runtime/ nor the keeper moved since $(git rev-parse --short=8 "$4")" >>"$out/rows"
             fi
             [ -n "$names" ] || return 0
             export MUTATION_SHARD="$(($2 - 1))/$3"

@@ -1,0 +1,3199 @@
+//! The breaks `wisp mutations` makes: each one line of a scheduler source, or the few
+//! that make one fault, and some runtime test must fail for it.
+
+/// The source a break edits.
+enum Unit {
+    Fiber
+    Clock
+    Door
+    Host
+}
+
+/// One text replacement; its `old` must stand exactly once in the source.
+type Edit = { old: string, new: string }
+
+type Break = { name: string, file: Unit, edits: List<Edit> }
+
+const VTASK_ASKED: string = "int64_t avra_vtask_asked(int64_t t) { return virtual_at(t)->cancel_by != 0; }"
+const VTASK_SHIELDED: string = "int64_t avra_vtask_shielded(int64_t t) { return virtual_at(t)->shield_depth != 0; }"
+
+/// The deadline claims only a wait that heeds it.
+fn deadline_heeds() -> Edit {
+    Edit {
+        old: "    if (f->parked && f->heeds) set_claimed(f, -1, 1, BY_DEADLINE);",
+        new: "    if (f->parked) set_claimed(f, -1, 1, BY_DEADLINE);",
+    }
+}
+
+/// The switch's floor test, spelled by the machine's assembly.
+fn floor() -> List<Edit> {
+    if on_arm() {
+        [Edit { old: "    \"    b.lo 1f\\n\"\n", new: "    \"    nop\\n\"\n" }]
+    } else {
+        [Edit { old: "    \"    jb 1f\\n\"\n", new: "    \"    nop\\n\"\n" }]
+    }
+}
+
+/// The switch's canary test, spelled by the machine's assembly.
+fn canary() -> List<Edit> {
+    if on_arm() {
+        [Edit { old: "    \"    cbnz x10, 1f\\n\"\n", new: "    \"    nop\\n\"\n" }]
+    } else {
+        [Edit { old: "    \"    jne 1f\\n\"\n", new: "    \"    nop\\n\"\n" }]
+    }
+}
+
+/// Every break, in the order the shards number them.
+fn breaks() -> List<Break> {
+    [
+        // MUTATIONS
+        Break { name: "the switch does not test the floor", file: Unit.Fiber, edits: floor() },
+        Break { name: "the switch does not test the canary", file: Unit.Fiber, edits: canary() },
+        Break {
+            name: "a claimant leaves the winner filed",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    waiter_out(w);\n    return set_claimed(w->fiber, w->arm, w->member, by);",
+                    new: "    return set_claimed(w->fiber, w->arm, w->member, by);",
+                },
+            ],
+        },
+        Break {
+            name: "a compiled join is not in the trace",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    if (TRACING) traced_join(self, task_id(task));\n", new: "" }],
+        },
+        Break {
+            name: "a spawn's site is not in the trace",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    traced_site(f, site_of(body), (const void*)(uintptr_t)((AvraArray*)body)->data[0]);\n",
+                    new: "",
+                },
+            ],
+        },
+        Break {
+            name: "code no row names is read as the first row's",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "        if (rows[i].code == code) return rows[i].site;\n",
+                    new: "        return rows[i].site;\n",
+                },
+            ],
+        },
+        Break {
+            name: "the site table is read short by a row",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    for (size_t i = 0; i < n; i++) {\n        if (rows[i].code == code)",
+                    new: "    for (size_t i = 1; i < n; i++) {\n        if (rows[i].code == code)",
+                },
+            ],
+        },
+        Break {
+            name: "a virtual task's site is not in the trace",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    if (TRACING) traced_site(virtual_at(t), site, NULL);\n", new: "" }],
+        },
+        Break {
+            name: "a cancel displaces a claim",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (f->parked && !shield_scope_stands(f)) set_claimed(f, -1, 0, by);",
+                    new: "    f->arm = -1; f->member = 0; if (f->parked) set_claimed(f, -1, 0, by);",
+                },
+            ],
+        },
+        Break {
+            name: "a cancel does not wake an evaluated task's sleep or join",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (f->parked && !shield_scope_stands(f)) set_claimed(f, -1, 0, by);",
+                    new: "    if (f->parked && !(f->legacy && f->virtual)) set_claimed(f, -1, 0, by);",
+                },
+            ],
+        },
+        Break {
+            name: "a cancel claim leaves an evaluated task's unwind bit clear",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (arm == -1 && member <= 1 && f->virtual) f->unwinding = 1;",
+                    new: "    if (arm == -1 && member == 1 && f->virtual) f->unwinding = 1;",
+                },
+            ],
+        },
+        Break {
+            name: "a cancel cuts no sleep, join or descriptor park",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (f->parked && !shield_scope_stands(f)) set_claimed(f, -1, 0, by);",
+                    new: "    if (f->parked && !f->legacy) set_claimed(f, -1, 0, by);",
+                },
+            ],
+        },
+        Break {
+            name: "a cancel is not passed down a scope's join",
+            file: Unit.Fiber,
+            edits: [Edit { old: "        if (f->joining) task_cancelled(f->joining, by);\n", new: "" }],
+        },
+        Break {
+            name: "a scope's end does not cancel what it owns",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (g_current->cancel_by != 0) task_cancelled(task, id_of(g_current));\n",
+                    new: "",
+                },
+            ],
+        },
+        Break {
+            name: "a scope's end is cut by a cancel",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    task_awaited(task, 1);", new: "    task_awaited(task, 0);" }],
+        },
+        Break {
+            name: "a cut sleep sets no unwind bit",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    legacy_parked(self, 1);\n    run_next();\n    if (claimed_by_cut(self)) cancel_met();\n}",
+                    new: "    legacy_parked(self, 1);\n    run_next();\n}",
+                },
+            ],
+        },
+        Break {
+            name: "a cut descriptor park sets no unwind bit",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "        run_next();\n        if (claimed_by_cut(self)) cancel_met();\n",
+                    new: "        run_next();\n",
+                },
+            ],
+        },
+        Break {
+            name: "a park a cancel claims sets no unwind bit",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (park_begun(self)) run_next();\n    if (claimed_by_cut(self)) cancel_met();\n",
+                    new: "    if (park_begun(self)) run_next();\n",
+                },
+            ],
+        },
+        Break {
+            name: "a yield is no cancel point",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (!g_current->shield_depth && __builtin_expect(g_current->cancel_by != 0, 0)) cancel_met();\n    if (!g_ready_head && g_timers_len == 0 && g_parked_fds == 0) return;\n",
+                    new: "    if (!g_ready_head && g_timers_len == 0 && g_parked_fds == 0) return;\n",
+                },
+            ],
+        },
+        Break {
+            name: "a cut yield stops switching",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (!g_current->shield_depth && __builtin_expect(g_current->cancel_by != 0, 0)) cancel_met();\n    if (!g_ready_head && g_timers_len == 0 && g_parked_fds == 0) return;\n",
+                    new: "    if (__builtin_expect(g_current->cancel_by != 0, 0)) { cancel_met(); return; }\n    if (!g_ready_head && g_timers_len == 0 && g_parked_fds == 0) return;\n",
+                },
+            ],
+        },
+        Break {
+            name: "a scope opened under a shield is no shield scope",
+            file: Unit.Fiber,
+            edits: [Edit { old: "f->shield_depth > 0 };", new: "0 };" }],
+        },
+        Break {
+            name: "a shield scope is not a shield scope",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    return f->scopes_n > 0 && scope_at(f, f->scopes_n - 1)->shield;",
+                    new: "    return 0;",
+                },
+            ],
+        },
+        Break {
+            name: "a park under a shield scope is claimed by a cancel",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    return f->cancel_by != 0 && !shield_scope_stands(f);",
+                    new: "    return f->cancel_by != 0;",
+                },
+            ],
+        },
+        Break {
+            name: "a cancel claims a shield scope's parked wait",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (f->parked && !shield_scope_stands(f)) set_claimed(f, -1, 0, by);",
+                    new: "    if (f->parked) set_claimed(f, -1, 0, by);",
+                },
+            ],
+        },
+        Break {
+            name: "a shield scope's limit is dropped by a task cancel",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (f->cancel_by != 0 && !scope_at(f, f->owner)->shield) {",
+                    new: "    if (f->cancel_by != 0) {",
+                },
+            ],
+        },
+        Break {
+            name: "a shielded back-edge raises its cancel",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (!f->shield_depth && (deadline_passed(f) || __builtin_expect(g_current->cancel_by != 0, 0))) cancel_met();",
+                    new: "    if (deadline_passed(f) || __builtin_expect(g_current->cancel_by != 0, 0)) cancel_met();",
+                },
+            ],
+        },
+        Break {
+            name: "a shielded yield raises its cancel",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (!g_current->shield_depth && __builtin_expect(g_current->cancel_by != 0, 0)) cancel_met();",
+                    new: "    if (__builtin_expect(g_current->cancel_by != 0, 0)) cancel_met();",
+                },
+            ],
+        },
+        Break {
+            name: "the shield never saves or clears the bit",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (f->shield_depth++ == 0) {\n        f->shield_saved = *bit;\n        *bit = 0;\n    }\n",
+                    new: "    f->shield_depth++;\n",
+                },
+            ],
+        },
+        Break {
+            name: "the shield saves and clears on every bracket",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (f->shield_depth++ == 0) {\n        f->shield_saved = *bit;\n        *bit = 0;\n    }\n",
+                    new: "    f->shield_saved = *bit;\n    *bit = 0;\n    f->shield_depth++;\n",
+                },
+            ],
+        },
+        Break {
+            name: "the shield never puts the saved bit back",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    if (--f->shield_depth == 0) *bit |= f->shield_saved;\n", new: "" }],
+        },
+        Break {
+            name: "the shield overwrites a bit raised inside",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (--f->shield_depth == 0) *bit |= f->shield_saved;\n",
+                    new: "    if (--f->shield_depth == 0) *bit = f->shield_saved;\n",
+                },
+            ],
+        },
+        Break {
+            name: "the shield restores on every bracket",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (f->shield_depth == 0) return;\n    if (--f->shield_depth == 0) *bit |= f->shield_saved;",
+                    new: "    if (f->shield_depth == 0) return;\n    f->shield_depth--;\n    *bit = f->shield_saved;",
+                },
+            ],
+        },
+        Break {
+            name: "the evaluator's set does not raise the bit",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "void avra_vtask_set_unwinding(int64_t t, int64_t v) { virtual_at(t)->unwinding = v != 0; }",
+                    new: "void avra_vtask_set_unwinding(int64_t t, int64_t v) { (void)t; (void)v; }",
+                },
+            ],
+        },
+        Break {
+            name: "a task handle that is not the last joins the task",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    if (((const Header*)task - 1)->rc != 2) return;\n", new: "" }],
+        },
+        Break {
+            name: "a list that is not released by its last handle joins its members",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (!list || ((const Header*)list - 1)->rc != 1) return;\n",
+                    new: "    if (!list) return;\n",
+                },
+            ],
+        },
+        Break {
+            name: "the shield's enter is its leave",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "static void running_shield_entered(void) { shield_entered(g_current, &avra_unwinding); }",
+                    new: "static void running_shield_entered(void) { shield_left(g_current, &avra_unwinding); }",
+                },
+            ],
+        },
+        Break {
+            name: "a join answers a cancelled task",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "        cancel_met();\n        return NULL;\n    }\n    void* answer = (void*)(uintptr_t)cells[TASK_ANSWER];",
+                    new: "        cancel_met();\n    }\n    void* answer = (void*)(uintptr_t)cells[TASK_ANSWER];",
+                },
+            ],
+        },
+        Break {
+            name: "an unwinding caller's join is handed an answer, or another's request",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (avra_unwinding) return NULL;\n    if (cells[TASK_END] == END_CANCELLED) {",
+                    new: "    if (cells[TASK_END] == END_CANCELLED) {",
+                },
+            ],
+        },
+        Break {
+            name: "a shielded join of a cancelled task passes its cancel on",
+            file: Unit.Fiber,
+            edits: [Edit { old: "        if (g_current->shield_depth) join_refused();\n", new: "" }],
+        },
+        Break {
+            name: "a join of a cancelled task cancels nobody",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "        cancel_passed(g_current, cells[TASK_BY]);\n        cancel_met();",
+                    new: "        cancel_met();",
+                },
+            ],
+        },
+        Break {
+            name: "a join of a cancelled task sets no bit",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "        cancel_passed(g_current, cells[TASK_BY]);\n        cancel_met();",
+                    new: "        cancel_passed(g_current, cells[TASK_BY]);",
+                },
+            ],
+        },
+        Break {
+            name: "a passed cancel displaces a standing request",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (f->cancel_by == 0) fiber_cancelled(f, by);",
+                    new: "    fiber_cancelled(f, by);",
+                },
+            ],
+        },
+        Break {
+            name: "the program's own run forgets who asked",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    if (f == &g_main) avra_main_asker = f->cancel_by;\n", new: "" }],
+        },
+        Break {
+            name: "a cancelled virtual task reads as unasked",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: VTASK_ASKED,
+                    new: "int64_t avra_vtask_asked(int64_t t) { (void)t; return 0; }",
+                },
+            ],
+        },
+        Break {
+            name: "an unasked virtual task reads as cancelled",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: VTASK_ASKED,
+                    new: "int64_t avra_vtask_asked(int64_t t) { (void)t; return 1; }",
+                },
+            ],
+        },
+        Break {
+            name: "a park on a finished peer's descriptor waits for an edge that never comes",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    else if (!writable && (g_fds[fd].ready & READ_CLOSED)) waiter_claims(w, BY_POLLER);\n",
+                    new: "",
+                },
+            ],
+        },
+        Break {
+            name: "an evaluated yield meets no cancel",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (!f->shield_depth && f->cancel_by != 0) f->unwinding = 1;\n}",
+                    new: "    (void)f;\n}",
+                },
+            ],
+        },
+        Break {
+            name: "an evaluated yield is cut under a shield",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (!f->shield_depth && f->cancel_by != 0) f->unwinding = 1;\n}",
+                    new: "    if (f->cancel_by != 0) f->unwinding = 1;\n}",
+                },
+            ],
+        },
+        Break {
+            name: "an evaluated yield is cut with no cancel",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (!f->shield_depth && f->cancel_by != 0) f->unwinding = 1;\n}",
+                    new: "    if (!f->shield_depth) f->unwinding = 1;\n}",
+                },
+            ],
+        },
+        Break {
+            name: "a shielded virtual task reads as unshielded",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: VTASK_SHIELDED,
+                    new: "int64_t avra_vtask_shielded(int64_t t) { (void)t; return 0; }",
+                },
+            ],
+        },
+        Break {
+            name: "an unshielded virtual task reads as shielded",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: VTASK_SHIELDED,
+                    new: "int64_t avra_vtask_shielded(int64_t t) { (void)t; return 1; }",
+                },
+            ],
+        },
+        Break {
+            name: "a virtual task's passed cancel sets no bit",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    cancel_passed(f, by);\n    f->unwinding = 1;",
+                    new: "    cancel_passed(f, by);",
+                },
+            ],
+        },
+        Break {
+            name: "a virtual task's passed cancel is nobody's",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    cancel_passed(f, by);\n    f->unwinding = 1;",
+                    new: "    f->unwinding = 1;",
+                },
+            ],
+        },
+        Break {
+            name: "an asker is named one off",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "return f->cancel_by ? f->cancel_by - 1 : f->scope_by; }",
+                    new: "return f->cancel_by ? f->cancel_by : f->scope_by; }",
+                },
+            ],
+        },
+        Break {
+            name: "a caught join passes the awaited cancel on",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (cells[TASK_END] != END_CANCELLED) return NULL;\n    void* box = avra_array_sized(2);",
+                    new: "    if (cells[TASK_END] != END_CANCELLED) return NULL;\n    avra_unwinding = 1;\n    void* box = avra_array_sized(2);",
+                },
+            ],
+        },
+        Break {
+            name: "a spawned cancel forgets the asker",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    int64_t* cells = task_cells(task);\n    // The asker is kept on the task where a caught join reads it: a\n    // fiber task ends in `fiber_start` and never reaches `task_ended`.\n    cells[TASK_BY] = by;\n    Fiber* f = (Fiber*)(uintptr_t)cells[TASK_FIBER];",
+                    new: "    int64_t* cells = task_cells(task);\n    Fiber* f = (Fiber*)(uintptr_t)cells[TASK_FIBER];",
+                },
+            ],
+        },
+        Break {
+            name: "the switch leaves the unwind bit where it was",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    self->unwinding = avra_unwinding;\n    avra_unwinding = next->unwinding;\n    fiber_switched(self, next);\n    bury_finished();\n}\n\n// The caller",
+                    new: "    fiber_switched(self, next);\n    bury_finished();\n}\n\n// The caller",
+                },
+            ],
+        },
+        Break {
+            name: "a body that unwinds ends answered",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    cells[TASK_END] = avra_unwinding ? END_CANCELLED : END_ANSWERED;",
+                    new: "    cells[TASK_END] = END_ANSWERED;",
+                },
+            ],
+        },
+        Break {
+            name: "a cancel is not heard at the next wait",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (cancel_heard(f)) { cut_claims(f, 0, f->cancel_by - 1); return 0; }\n",
+                    new: "",
+                },
+            ],
+        },
+        Break {
+            name: "a standing cancel is answered before a claim another party made while the set armed",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    if (f->claimed == CLAIMED) return 0;\n", new: "" }],
+        },
+        Break {
+            name: "an arm found ready at arming outranks a standing cancel and a passed limit",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (f->claimed == CLAIMED) return 0;\n",
+                    new: "    if (f->claimed) return 0;\n",
+                },
+            ],
+        },
+        Break {
+            name: "an open gate's claim at arming is read as another party's",
+            file: Unit.Fiber,
+            edits: [Edit { old: "        if (f->claimed) f->claimed = CLAIMED_OWN;\n", new: "" }],
+        },
+        Break {
+            name: "a passed limit is not heard at a wait",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if ((f->scope_by | f->deadline) != 0 && deadline_passed(f)) { cut_claims(f, 1, BY_DEADLINE); return 0; }\n",
+                    new: "",
+                },
+            ],
+        },
+        Break {
+            name: "a cut leaves the arm a task claimed for itself standing",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    f->claimed = 0;\n    set_claimed(f, -1, member, by);",
+                    new: "    set_claimed(f, -1, member, by);",
+                },
+            ],
+        },
+        Break {
+            name: "an own claim's park is no turn for the world",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    if (f->claimed) turn_counted(f);\n", new: "" }],
+        },
+        Break {
+            name: "a scan is no turn for the world",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    g_scan_now = 0;\n    turn_counted(f);\n",
+                    new: "    g_scan_now = 0;\n",
+                },
+            ],
+        },
+        Break {
+            name: "a scan hears no cancel",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (cancel_heard(f)) { set_claimed(f, -1, 0, f->cancel_by - 1); return 1; }\n",
+                    new: "",
+                },
+            ],
+        },
+        Break {
+            name: "a scan hears no limit",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if ((f->scope_by | f->deadline) != 0 && deadline_passed(f)) { set_claimed(f, -1, 1, BY_DEADLINE); return 1; }\n",
+                    new: "",
+                },
+            ],
+        },
+        Break {
+            name: "a scan may begin inside a set",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    alone(f);\n    g_scan_now = 0;\n", new: "    g_scan_now = 0;\n" }],
+        },
+        Break {
+            name: "a new scan keeps the last one's clock",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    alone(f);\n    g_scan_now = 0;\n", new: "    alone(f);\n" }],
+        },
+        Break {
+            name: "a scan reads the clock at every time",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (g_scan_now == 0) g_scan_now = now_ns();\n",
+                    new: "    g_scan_now = now_ns();\n",
+                },
+            ],
+        },
+        Break {
+            name: "a due time is not ready",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    return at_ns <= g_scan_now ? (at_ns | INT64_MIN) : 0;",
+                    new: "    return 0;",
+                },
+            ],
+        },
+        Break {
+            name: "a time to come is ready",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    return at_ns <= g_scan_now ? (at_ns | INT64_MIN) : 0;",
+                    new: "    return at_ns | INT64_MIN;",
+                },
+            ],
+        },
+        Break {
+            name: "a due time queues behind the tasks that answered",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    return at_ns <= g_scan_now ? (at_ns | INT64_MIN) : 0;",
+                    new: "    return at_ns <= g_scan_now ? INT64_MAX : 0;",
+                },
+            ],
+        },
+        Break {
+            name: "due times are one stamp, whatever their instants",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    return at_ns <= g_scan_now ? (at_ns | INT64_MIN) : 0;",
+                    new: "    return at_ns <= g_scan_now ? INT64_MIN : 0;",
+                },
+            ],
+        },
+        Break {
+            name: "a drawn stamp is the last one again",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "int64_t avra_stamp_next(void) { return ++g_stamp; }",
+                    new: "int64_t avra_stamp_next(void) { return g_stamp; }",
+                },
+            ],
+        },
+        Break {
+            name: "the stamps count down",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    cells[TASK_SINCE] = how == END_ANSWERED ? ++g_stamp : 0;\n",
+                    new: "    cells[TASK_SINCE] = how == END_ANSWERED ? --g_stamp - 1000000 : 0;\n",
+                },
+            ],
+        },
+        Break {
+            name: "a body's answer draws no stamp",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    cells[TASK_SINCE] = avra_unwinding ? 0 : ++g_stamp;\n", new: "" }],
+        },
+        Break {
+            name: "a body that was cut is stamped ready",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    cells[TASK_SINCE] = avra_unwinding ? 0 : ++g_stamp;\n",
+                    new: "    cells[TASK_SINCE] = ++g_stamp;\n",
+                },
+            ],
+        },
+        Break {
+            name: "another's answer draws no stamp",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    cells[TASK_SINCE] = how == END_ANSWERED ? ++g_stamp : 0;\n",
+                    new: "",
+                },
+            ],
+        },
+        Break {
+            name: "a cancelled task nothing runs is stamped ready",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    cells[TASK_SINCE] = how == END_ANSWERED ? ++g_stamp : 0;\n",
+                    new: "    cells[TASK_SINCE] = ++g_stamp;\n",
+                },
+            ],
+        },
+        Break {
+            name: "a timer's end draws no stamp",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    cells[TASK_SINCE] = ++g_stamp;\n    gate_opened(task, BY_TIMER);",
+                    new: "    gate_opened(task, BY_TIMER);",
+                },
+            ],
+        },
+        Break {
+            name: "one instant is the earlier-filed entry's",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    if (limit_x != limit_y) return limit_x;\n", new: "" }],
+        },
+        Break {
+            name: "an arm's time wins a limit's instant",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (limit_x != limit_y) return limit_x;\n",
+                    new: "    if (limit_x != limit_y) return limit_y;\n",
+                },
+            ],
+        },
+        Break {
+            name: "a scan's site is not kept",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    site_kept(&self->scan_site, site);\n", new: "" }],
+        },
+        Break {
+            name: "a site is borrowed, never counted",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    avra_rc_retain((void*)site);\n    avra_rc_release((void*)*held);",
+                    new: "    avra_rc_release((void*)*held);",
+                },
+            ],
+        },
+        Break {
+            name: "the site before is never let go",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    avra_rc_retain((void*)site);\n    avra_rc_release((void*)*held);",
+                    new: "    avra_rc_retain((void*)site);",
+                },
+            ],
+        },
+        Break {
+            name: "a task's end keeps its scan's site",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    avra_rc_release((void*)f->scan_site);\n", new: "" }],
+        },
+        Break {
+            name: "a virtual task's end keeps the site it was spawned at",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    if (f->virtual) avra_rc_release((void*)f->site);\n", new: "" }],
+        },
+        Break {
+            name: "a virtual task's spawn site is borrowed",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    site_kept(&virtual_at(t)->site, site);\n",
+                    new: "    virtual_at(t)->site = site;\n",
+                },
+            ],
+        },
+        Break {
+            name: "a rest in a scan is not marked",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    rests(g_current);\n", new: "" }],
+        },
+        Break {
+            name: "a claim leaves the task marked resting",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    f->rested = 0;\n    f->claimed = 0;", new: "    f->claimed = 0;" }],
+        },
+        Break {
+            name: "a timer's listing says no time left",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: " due_in=%lld\", (long long)ms_until(g_timers[w->on.timer - 1].at, now));",
+                    new: " due_in=%lld\", 0LL);",
+                },
+            ],
+        },
+        Break {
+            name: "a task parked on nothing is left out of the listing",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (!filed && !f->virtual && f->state == FIBER_PARKED && !f->joining) fprintf",
+                    new: "    if (0) fprintf",
+                },
+            ],
+        },
+        Break {
+            name: "a join is listed as a park on nothing",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (!filed && !f->virtual && f->state == FIBER_PARKED && !f->joining) fprintf",
+                    new: "    if (!filed && !f->virtual && f->state == FIBER_PARKED) fprintf",
+                },
+            ],
+        },
+        Break {
+            name: "an overflow waiter is made anew each time",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    Over* o = g_overs;\n    if (!o) {",
+                    new: "    Over* o = NULL;\n    if (!o) {",
+                },
+            ],
+        },
+        Break {
+            name: "an overflow waiter is freed, never kept",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "        waiter_out(&o->w);\n        over_given(o);",
+                    new: "        waiter_out(&o->w);\n        free(o);",
+                },
+            ],
+        },
+        Break {
+            name: "the kept waiters are never cut back",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    pool_trimmed(&g_shared);\n    overs_trimmed();\n",
+                    new: "    pool_trimmed(&g_shared);\n",
+                },
+            ],
+        },
+        Break {
+            name: "the kept waiters are cut back to none",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    while (g_overs_n > OVERS_KEPT) {",
+                    new: "    while (g_overs_n > 0) {",
+                },
+            ],
+        },
+        Break {
+            name: "a park with nothing filed waits",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    if (!set_open(g_current)) no_open_arm();\n", new: "" }],
+        },
+        Break {
+            name: "a virtual rest with nothing filed parks",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    if (!set_open(f)) return -1;\n", new: "" }],
+        },
+        Break {
+            name: "a virtual scan answers nothing",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    return scan_begun(f) ? claim_taken(f) : 0;",
+                    new: "    return scan_begun(f) ? 0 : 0;",
+                },
+            ],
+        },
+        Break {
+            name: "a task that waits without switching never asks the world",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: " && ++f->own_turns >= FAIR_TURNS) world_asked(f);",
+                    new: " && 0) world_asked(f);",
+                },
+            ],
+        },
+        Break {
+            name: "a signal's wake claims nobody",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    while (g_sig_head[sig]) waiter_claims(g_sig_head[sig], BY_POLLER);",
+                    new: "    (void)sig;",
+                },
+            ],
+        },
+        Break {
+            name: "the turns that ask the world never ask the poller",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (g_timers_len > 0) fire_due_timers(now_ns());\n    if (g_parked_fds > 0) poller_wait(0);\n}",
+                    new: "    if (g_timers_len > 0) fire_due_timers(now_ns());\n}",
+                },
+            ],
+        },
+        Break {
+            name: "the turns that ask the world fire no timer",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    f->own_turns = 0;\n    if (g_timers_len > 0) fire_due_timers(now_ns());\n",
+                    new: "    f->own_turns = 0;\n",
+                },
+            ],
+        },
+        Break {
+            name: "a task that ends leaves its waits filed",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    retract(self);\n    self->claimed = 0;\n    waiter_out(&self->due);\n",
+                    new: "    waiter_out(&self->due);\n",
+                },
+            ],
+        },
+        Break {
+            name: "a task that ends leaves its deadline filed",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    retract(self);\n    self->claimed = 0;\n    waiter_out(&self->due);\n",
+                    new: "    retract(self);\n    self->claimed = 0;\n",
+                },
+            ],
+        },
+        Break {
+            name: "the deadline wakes a sleep or a join",
+            file: Unit.Fiber,
+            edits: [deadline_heeds()],
+        },
+        Break {
+            name: "a scope's end leaves its deadline filed",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (f->due.filed && f->due_at != f->deadline) waiter_out(&f->due);\n    return landed;",
+                    new: "    return landed;",
+                },
+            ],
+        },
+        Break {
+            name: "an interrupt is a deadline",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "        set_claimed(f, -1, 2, BY_CLOSE);",
+                    new: "        set_claimed(f, -1, 1, BY_CLOSE);",
+                },
+            ],
+        },
+        Break {
+            name: "a descriptor park does not say it was interrupted",
+            file: Unit.Fiber,
+            edits: [Edit { old: "        f->interrupted = arm == -1 && member == 2;\n", new: "" }],
+        },
+        Break {
+            name: "a descriptor park says every time-out was an interrupt",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "        f->interrupted = arm == -1 && member == 2;",
+                    new: "        f->interrupted = arm == -1;",
+                },
+            ],
+        },
+        Break {
+            name: "a descriptor park keeps the last park's interrupt",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    f->timed_out = 0;\n    f->interrupted = 0;",
+                    new: "    f->timed_out = 0;",
+                },
+            ],
+        },
+        Break {
+            name: "a child does not inherit its spawner's deadline",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    scope_inherited(f, g_current);\n", new: "" }],
+        },
+        Break {
+            name: "a virtual child does not inherit its spawner's deadline",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "void avra_vtask_inherits(int64_t t, int64_t from) { scope_inherited(virtual_at(t), virtual_at(from)); }",
+                    new: "void avra_vtask_inherits(int64_t t, int64_t from) { (void)t; (void)from; }",
+                },
+            ],
+        },
+        Break {
+            name: "a spawned task shares the program's own frames",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (g_current->task) return (AvraUnwind*)(task_cells(g_current->task) + TASK_FRAMES);\n    return avra_unwind_main();\n}",
+                    new: "    return avra_unwind_main();\n}",
+                },
+            ],
+        },
+        Break {
+            name: "a task's record begins with frames, not nothing",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    for (int i = TASK_SITE; i < TASK_CELLS; i++) avra_array_push(task, 0);",
+                    new: "    for (int i = TASK_SITE; i < TASK_CELLS; i++) avra_array_push(task, 1);",
+                },
+            ],
+        },
+        Break {
+            name: "a second cancel point clears the unwind's own frames",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "static void cancel_met(void) {\n    if (avra_unwinding) return;\n    avra_unwinding = 1;",
+                    new: "static void cancel_met(void) {\n    avra_unwinding = 1;",
+                },
+            ],
+        },
+        Break {
+            name: "a child inherits the owner over the standing request",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "from->scope_by != 0 ? scope_at(from, from->armed) :",
+                    new: "from->scope_by != 0 ? scope_at(from, from->owner) :",
+                },
+            ],
+        },
+        Break {
+            name: "a child inherits a copy of its spawner's id",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    child->scope[0] = (Scope){ .id = s->id, .at = s->at, .first = 0, .shield = 0 };",
+                    new: "    child->scope[0] = (Scope){ .id = s->id + 1, .at = s->at, .first = 0, .shield = 0 };",
+                },
+            ],
+        },
+        Break {
+            name: "the inner scope owns a tie",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "        if (scope_at(f, outer)->at <= at) first = outer;",
+                    new: "        if (scope_at(f, outer)->at < at) first = outer;",
+                },
+            ],
+        },
+        Break {
+            name: "an opened scope never owns the limit",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    uint32_t first = i;\n    if (i > 0) {",
+                    new: "    uint32_t first = 0;\n    if (i > 0) {",
+                },
+            ],
+        },
+        Break {
+            name: "an opened scope always owns the limit",
+            file: Unit.Fiber,
+            edits: [Edit { old: "        if (scope_at(f, outer)->at <= at) first = outer;\n", new: "" }],
+        },
+        Break {
+            name: "a window's owner is the outermost scope's",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    f->owner = scope_at(f, f->armed - 1)->first;",
+                    new: "    f->owner = scope_at(f, 0)->first;",
+                },
+            ],
+        },
+        Break {
+            name: "an opened scope leaves the deadline as it was",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    f->armed = i + 1;\n    owner_found(f);\n    return id;",
+                    new: "    f->armed = i + 1;\n    return id;",
+                },
+            ],
+        },
+        Break {
+            name: "a scope opened under a standing request may ask",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    if (f->armed != i) return id;\n", new: "" }],
+        },
+        Break {
+            name: "scope ids are task ids",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    int64_t id = AVRA_SCOPE_IDS | ++g_scope_seq;",
+                    new: "    int64_t id = ++g_scope_seq;",
+                },
+            ],
+        },
+        Break {
+            name: "scope ids repeat",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    int64_t id = AVRA_SCOPE_IDS | ++g_scope_seq;",
+                    new: "    int64_t id = AVRA_SCOPE_IDS | (g_scope_seq++ % 64);",
+                },
+            ],
+        },
+        Break {
+            name: "a scope ends out of order",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (n == 0 || scope_at(f, n - 1)->id != id) scope_out_of_order(f, id);\n",
+                    new: "",
+                },
+            ],
+        },
+        Break {
+            name: "a scope's end lands any request",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    int64_t landed = f->scope_by == id;",
+                    new: "    int64_t landed = f->scope_by != 0;",
+                },
+            ],
+        },
+        Break {
+            name: "a landed request stands on",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    if (landed) f->scope_by = 0;\n", new: "" }],
+        },
+        Break {
+            name: "a scope's end leaves the owner as it was",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (f->armed > n) {\n        f->armed = n;\n        owner_found(f);\n    }\n",
+                    new: "",
+                },
+            ],
+        },
+        Break {
+            name: "a fifth scope is written over the fourth",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    return i < SCOPES ? (Scope*)&f->scope[i] : &f->deeper[i - SCOPES];",
+                    new: "    return i < SCOPES ? (Scope*)&f->scope[i] : (Scope*)&f->scope[SCOPES - 1];",
+                },
+            ],
+        },
+        Break {
+            name: "a scope's limit outranks a task's cancel",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (f->cancel_by != 0 && !scope_at(f, f->owner)->shield) {\n        if (TRACING) traced_dropped(f, id, f->cancel_by);\n        f->armed = 0;\n        f->deadline = 0;\n        return;\n    }\n",
+                    new: "",
+                },
+            ],
+        },
+        Break {
+            name: "a dropped request is not traced",
+            file: Unit.Fiber,
+            edits: [Edit { old: "        if (TRACING) traced_dropped(f, id, f->cancel_by);\n", new: "" }],
+        },
+        Break {
+            name: "an inner request stays when the outer's limit passes",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    f->scope_by = id;\n    f->armed = f->owner;",
+                    new: "    if (f->scope_by == 0) f->scope_by = id;\n    f->armed = f->owner;",
+                },
+            ],
+        },
+        Break {
+            name: "an inner scope may ask after the outer did",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    f->scope_by = id;\n    f->armed = f->owner;",
+                    new: "    f->scope_by = id;",
+                },
+            ],
+        },
+        Break {
+            name: "the next owner is not filed when one asks",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    if (f->deadline != 0) due_filed(f);\n}", new: "}" }],
+        },
+        Break {
+            name: "a standing scope request lets a park wait",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (f->scope_by != 0) return 1;\n    if (f->deadline == 0) return 0;",
+                    new: "    if (f->deadline == 0) return 0;",
+                },
+            ],
+        },
+        Break {
+            name: "a limit found passed at a park asks nothing",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "        deadline_reached(f);\n        return f->scope_by != 0;",
+                    new: "        return 0;",
+                },
+            ],
+        },
+        Break {
+            name: "a task's cancel leaves a scope's request standing",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (f->scope_by != 0) {\n        if (TRACING) traced_dropped(f, f->scope_by, by + 1);\n        f->scope_by = 0;\n    }\n",
+                    new: "",
+                },
+            ],
+        },
+        Break {
+            name: "the request read forgets a task's cancel",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    return !f ? 0 : f->cancel_by ? f->cancel_by : f->scope_by;",
+                    new: "    return !f ? 0 : f->scope_by;",
+                },
+            ],
+        },
+        Break {
+            name: "a fork keeps other tasks' waiters",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "        retract(f);\n        if (f != g_current) waiter_out(&f->due);\n",
+                    new: "        if (f != g_current) waiter_out(&f->due);\n",
+                },
+            ],
+        },
+        Break {
+            name: "a fork keeps other tasks' deadlines",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "        retract(f);\n        if (f != g_current) waiter_out(&f->due);\n",
+                    new: "        retract(f);\n",
+                },
+            ],
+        },
+        Break {
+            name: "a fork drops the timer's tasks",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    g_ready_head = g_ready_tail = NULL;\n    g_parked_fds = 0;",
+                    new: "    g_ready_head = g_ready_tail = NULL;\n    g_timers_len = 0;\n    g_parked_fds = 0;",
+                },
+            ],
+        },
+        Break {
+            name: "a freed virtual task leaves its waits filed",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    retract(f);\n    waiter_out(&f->due);\n    if (f->state == FIBER_READY) {",
+                    new: "    waiter_out(&f->due);\n    if (f->state == FIBER_READY) {",
+                },
+            ],
+        },
+        Break {
+            name: "a freed virtual task leaves its deadline filed",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    retract(f);\n    waiter_out(&f->due);\n    if (f->state == FIBER_READY) {",
+                    new: "    retract(f);\n    if (f->state == FIBER_READY) {",
+                },
+            ],
+        },
+        Break {
+            name: "two sets at once are allowed",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (f->held_n != 0 || f->claimed) avra_trap(\"a task waited inside a wait it had not parked\");",
+                    new: "",
+                },
+            ],
+        },
+        Break {
+            name: "the one-set check ignores a claimed set",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (f->held_n != 0 || f->claimed) avra_trap",
+                    new: "    if (f->held_n != 0) avra_trap",
+                },
+            ],
+        },
+        Break {
+            name: "a descriptor park that timed out reads as ready",
+            file: Unit.Fiber,
+            edits: [Edit { old: "        f->timed_out = arm != 0;", new: "        f->timed_out = 0;" }],
+        },
+        Break {
+            name: "an interrupt reads as readiness",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "        set_claimed(f, -1, 2, BY_CLOSE);",
+                    new: "        set_claimed(f, 0, 0, BY_CLOSE);",
+                },
+            ],
+        },
+        Break {
+            name: "a late parker takes an edge that came before it",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if ((size_t)fd < g_fds_cap && g_fds[fd].head[writable != 0]) poller_wait(0);\n",
+                    new: "",
+                },
+            ],
+        },
+        Break {
+            name: "a level wait leaves its direction's edge consumed",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    if (level) fd_refresh((int)fd, writable);\n", new: "" }],
+        },
+        Break {
+            name: "a closing descriptor keeps its registration",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "waiter_claims(w->head[d], BY_CLOSE);\n    w->armed = 0;\n",
+                    new: "waiter_claims(w->head[d], BY_CLOSE);\n",
+                },
+            ],
+        },
+        Break {
+            name: "a waiter's gate is never let go",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (w->kind == W_GATE) avra_rc_release(w->on.gate);\n    else g_parked_fds--;",
+                    new: "    if (w->kind != W_GATE) g_parked_fds--;",
+                },
+            ],
+        },
+        Break {
+            name: "a timer task is not released when it fires",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    gate_opened(task, BY_TIMER);\n    avra_rc_release(task);",
+                    new: "    gate_opened(task, BY_TIMER);",
+                },
+            ],
+        },
+        Break {
+            name: "a task's slots outlive it",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "        self->own.slot[i] = NULL;\n        avra_rc_release(held);",
+                    new: "        self->own.slot[i] = NULL;",
+                },
+            ],
+        },
+        Break {
+            name: "the switch does not repoint the task's locals",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    g_current = next;\n    avra_task_local = next->local;\n    avra_ctx_now = next->local->slot[AVRA_SLOT_CTX];\n    avra_ctx_heard_now = avra_ctx_heard_of(next->local->slot);\n    self->unwinding = avra_unwinding;\n    avra_unwinding = next->unwinding;\n    fiber_switched(self, next);\n    bury_finished();\n}\n\n// The caller has already filed itself",
+                    new: "    g_current = next;\n    avra_ctx_now = next->local->slot[AVRA_SLOT_CTX];\n    avra_ctx_heard_now = avra_ctx_heard_of(next->local->slot);\n    self->unwinding = avra_unwinding;\n    avra_unwinding = next->unwinding;\n    fiber_switched(self, next);\n    bury_finished();\n}\n\n// The caller has already filed itself",
+                },
+            ],
+        },
+        Break {
+            name: "the guarded count never runs out",
+            file: Unit.Fiber,
+            edits: [Edit { old: "            if (!g_guards_all) g_each_left -= n;\n", new: "" }],
+        },
+        Break {
+            name: "a stack given back forgets what guards it",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (f->base) stack_give((Stack){ f->base, f->guard });",
+                    new: "    if (f->base) stack_give((Stack){ f->base, f->base - g_page });",
+                },
+            ],
+        },
+        Break {
+            name: "a guarded stack is not preferred",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    return pool_taken(g_guarded.len > 0 ? &g_guarded : &g_shared);",
+                    new: "    return pool_taken(g_shared.len > 0 ? &g_shared : &g_guarded);",
+                },
+            ],
+        },
+        Break {
+            name: "a misspelled guard count is read as none",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "        if (!end || *end != 0 || errno != 0) guards_misspelled(env);\n",
+                    new: "",
+                },
+            ],
+        },
+        Break {
+            name: "a due timer among ready tasks waits for the source",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "            if (g_ready_head == NULL || avra_clock.virtual || forced || g_timer_until <= 0) {",
+                    new: "            if (g_ready_head == NULL || avra_clock.virtual || forced) {",
+                },
+            ],
+        },
+        Break {
+            name: "filing a descriptor waiter does not bring the poller within reach",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "        if (g_until_poll > FAIR_TURNS) g_until_poll = FAIR_TURNS;\n",
+                    new: "",
+                },
+            ],
+        },
+        Break {
+            name: "the poller's turn comes every million switches",
+            file: Unit.Fiber,
+            edits: [Edit { old: "#define FAIR_TURNS 64\n", new: "#define FAIR_TURNS 1000000\n" }],
+        },
+        Break {
+            name: "the switch always takes the fast path",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    return __builtin_expect(!__atomic_load_n(&avra_tick, __ATOMIC_RELAXED) && left > 0, 1);",
+                    new: "    return 1;",
+                },
+            ],
+        },
+        Break {
+            name: "the poller is never asked while tasks are ready",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (g_parked_fds > 0) poller_wait(0);\n    else g_until_poll = POLL_IDLE;",
+                    new: "    g_until_poll = FAIR_TURNS;",
+                },
+            ],
+        },
+        Break {
+            name: "a pick among one is counted as a choice",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (n < 2) return ready_pop();\n    uint64_t k = chosen(n);",
+                    new: "    if (n < 1) return ready_pop();\n    uint64_t k = chosen(n);",
+                },
+            ],
+        },
+        Break {
+            name: "schedule 0 draws like any other",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    if (g_schedule == 0) return 0;\n", new: "" }],
+        },
+        Break {
+            name: "the pick ignores the schedule's choice",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    uint64_t k = chosen(n);", new: "    uint64_t k = chosen(n) * 0;" }],
+        },
+        Break {
+            name: "a seeded switch takes the fast path",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (pinned()) {\n        g_until_poll = 0;\n        g_pinned_until_poll = FAIR_TURNS;",
+                    new: "    if (pinned()) {\n        g_until_poll = POLL_IDLE;\n        g_pinned_until_poll = FAIR_TURNS;",
+                },
+            ],
+        },
+        Break {
+            name: "a seeded run asks the poller at every switch",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "        if (g_parked_fds > 0 && --g_pinned_until_poll <= 0) poller_wait(0);",
+                    new: "        if (g_parked_fds > 0) poller_wait(0);",
+                },
+            ],
+        },
+        Break {
+            name: "a seeded run never asks the poller while tasks are ready",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "        if (g_parked_fds > 0 && --g_pinned_until_poll <= 0) poller_wait(0);\n        return;",
+                    new: "        return;",
+                },
+            ],
+        },
+        Break {
+            name: "a poll in a seeded run hands the next switches to the fast path",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    g_polls++;\n    poll_counted();",
+                    new: "    g_polls++;\n    g_until_poll = g_parked_fds > 0 ? FAIR_TURNS : POLL_IDLE;",
+                },
+            ],
+        },
+        Break {
+            name: "a settle leaves the order seeded",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    g_seeded = 0;\n    __atomic_store_n(&avra_tick, 0, __ATOMIC_RELAXED);\n    if (g_path_mode == PATH_ENUM) path_step();\n    return g_choices;",
+                    new: "    __atomic_store_n(&avra_tick, 0, __ATOMIC_RELAXED);\n    if (g_path_mode == PATH_ENUM) path_step();\n    return g_choices;",
+                },
+            ],
+        },
+        Break {
+            name: "the pick walks the whole queue",
+            file: Unit.Fiber,
+            edits: [Edit { old: "enum { PICK_WINDOW = 16 };", new: "enum { PICK_WINDOW = 16384 };" }],
+        },
+        Break {
+            name: "a seeded run holds no tick",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    __atomic_store_n(&avra_tick, 1, __ATOMIC_RELAXED);\n    __atomic_store_n(&avra_tick_wanted, 0, __ATOMIC_RELAXED);\n    g_timer_until = 0;\n    poll_counted();",
+                    new: "    __atomic_store_n(&avra_tick, 0, __ATOMIC_RELAXED);\n    __atomic_store_n(&avra_tick_wanted, 0, __ATOMIC_RELAXED);\n    g_timer_until = 0;\n    poll_counted();",
+                },
+            ],
+        },
+        Break {
+            name: "a seeded count never falls",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (--f->tick_turns > 0) return 0;\n    f->tick_turns = tick_turns_drawn();\n    return 1;",
+                    new: "    return 0;",
+                },
+            ],
+        },
+        Break {
+            name: "schedule 0 preempts like any other",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    if (g_schedule == 0) { return 0; }\n", new: "" }],
+        },
+        Break {
+            name: "the seeded draw is not the schedule's",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    return (uint32_t)chosen(TICK_TURNS) + 1;", new: "    return 1;" }],
+        },
+        Break {
+            name: "the switch ignores the tick",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    return __builtin_expect(!__atomic_load_n(&avra_tick, __ATOMIC_RELAXED) && left > 0, 1);",
+                    new: "    return __builtin_expect(left > 0, 1);",
+                },
+            ],
+        },
+        Break {
+            name: "the tick's cold side ignores a due timer",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    __atomic_store_n(&avra_tick, 0, __ATOMIC_RELAXED);\n    // A DUE TIMER FIRES, AND THE RUNNING TASK'S OWN DEADLINE IS CHECKED:\n    // a task that never waits files no deadline, so the cold side asks here.\n    if (g_timers_len > 0) fire_due_timers(now_ns());\n    // A CHECKED BACK-EDGE IN A SHIELDED TASK YIELDS AND RAISES NOTHING.\n    if (!f->shield_depth && (deadline_passed(f) || __builtin_expect(g_current->cancel_by != 0, 0))) cancel_met();\n    if (g_ready_head != NULL) avra_fiber_yield();\n}",
+                    new: "    __atomic_store_n(&avra_tick, 0, __ATOMIC_RELAXED);\n    // A DUE TIMER FIRES, AND THE RUNNING TASK'S OWN DEADLINE IS CHECKED:\n    // a task that never waits files no deadline, so the cold side asks here.\n    // A CHECKED BACK-EDGE IN A SHIELDED TASK YIELDS AND RAISES NOTHING.\n    if (!f->shield_depth && (deadline_passed(f) || __builtin_expect(g_current->cancel_by != 0, 0))) cancel_met();\n    if (g_ready_head != NULL) avra_fiber_yield();\n}",
+                },
+            ],
+        },
+        Break {
+            name: "the tick's cold side ignores a deadline",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (g_timers_len > 0) fire_due_timers(now_ns());\n    // A CHECKED BACK-EDGE IN A SHIELDED TASK YIELDS AND RAISES NOTHING.\n    if (!f->shield_depth && (deadline_passed(f) || __builtin_expect(g_current->cancel_by != 0, 0))) cancel_met();\n",
+                    new: "    if (g_timers_len > 0) fire_due_timers(now_ns());\n",
+                },
+            ],
+        },
+        Break {
+            name: "the evaluator's cold side ignores a deadline",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (!f->shield_depth && (deadline_passed(f) || f->cancel_by != 0)) f->unwinding = 1;\n",
+                    new: "",
+                },
+            ],
+        },
+        Break {
+            name: "a compiled back-edge draws inside an evaluated run",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "void avra_tick_cold(void) {\n    if (g_runs > 0) return;\n",
+                    new: "void avra_tick_cold(void) {\n",
+                },
+            ],
+        },
+        Break {
+            name: "a scope's opening arms no source",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    __atomic_store_n(&avra_tick_wanted, 1, __ATOMIC_RELAXED);\n    if (!f->virtual && !pinned()) avra_tick_armed();\n",
+                    new: "    if (!f->virtual && !pinned()) avra_tick_armed();\n",
+                },
+            ],
+        },
+        Break {
+            name: "a scope's opening brings no source up",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    if (!f->virtual && !pinned()) avra_tick_armed();\n", new: "" }],
+        },
+        Break {
+            name: "the first timer of a burst arms no clock read",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (g_timers_len == 0) { g_timer_until = 0; g_until_poll = 0; }\n",
+                    new: "    if (g_timers_len == 0) { g_timer_until = 0; }\n",
+                },
+            ],
+        },
+        Break {
+            name: "a forked child gets no source",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    if (!pinned()) avra_tick_armed();\n}", new: "}" }],
+        },
+        Break {
+            name: "a seed does not restart the count of choices",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    g_choices = 0;\n", new: "" }],
+        },
+        Break {
+            name: "a frozen clock never jumps",
+            file: Unit.Fiber,
+            edits: [Edit { old: "        if (world_waited_virtually()) continue;\n", new: "" }],
+        },
+        Break {
+            name: "the clock jumps past a descriptor's waiter",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    return g_parked_fds == 0 && g_timers_len > 0 && avra_clock_jumped(g_timers[0].at);",
+                    new: "    return g_timers_len > 0 && avra_clock_jumped(g_timers[0].at);",
+                },
+            ],
+        },
+        Break {
+            name: "the poller's wait does not hold the clock",
+            file: Unit.Fiber,
+            edits: [Edit { old: "        if (held) avra_clock_hold(1);\n", new: "" }],
+        },
+        Break {
+            name: "the poller's hold is never given back",
+            file: Unit.Fiber,
+            edits: [Edit { old: "        if (held) avra_clock_hold(-1);\n", new: "" }],
+        },
+        Break {
+            name: "the scheduler's reads of the clock count as a task's waiting",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "static inline int64_t now_ns(void) { return avra_clock_read(); }",
+                    new: "static inline int64_t now_ns(void) { return avra_now_ns(); }",
+                },
+            ],
+        },
+        Break {
+            name: "a task that parks keeps its count of clock reads",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (avra_clock.virtual && g_current->state == FIBER_PARKED) g_current->local->clock_asks = 0;\n",
+                    new: "",
+                },
+            ],
+        },
+        Break {
+            name: "a task that yields begins its count of clock reads again",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (avra_clock.virtual && g_current->state == FIBER_PARKED) g_current->local->clock_asks = 0;",
+                    new: "    if (avra_clock.virtual) g_current->local->clock_asks = 0;",
+                },
+            ],
+        },
+        Break {
+            name: "a virtual clock leaves the switch on the fast path",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "static int pinned(void) { return g_seeded || avra_clock.virtual; }",
+                    new: "static int pinned(void) { return g_seeded; }",
+                },
+            ],
+        },
+        Break {
+            name: "the evaluator's count of clock reads outlives its task's park",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    if (parked) avra_task_local->clock_asks = 0;\n", new: "" }],
+        },
+        Break {
+            name: "a world visit leaves the poller's countdown spent",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "            else if (g_parked_fds > 0) g_until_poll = FAIR_TURNS;\n",
+                    new: "",
+                },
+            ],
+        },
+        Break {
+            name: "a forked child inherits its parent's schedule",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    g_seeded = 0;\n    // THE SOURCE IS THE CALLING THREAD'S",
+                    new: "    // THE SOURCE IS THE CALLING THREAD'S",
+                },
+            ],
+        },
+        Break {
+            name: "a virtual join parks on nothing",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    alone(f);\n    waits_gate(f, task, 0, 0);\n    legacy_parked(f, 1);\n    return host_waited(1);",
+                    new: "    alone(f);\n    legacy_parked(f, 1);\n    return host_waited(1);",
+                },
+            ],
+        },
+        Break {
+            name: "a task's end names no one to those it wakes",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "void avra_vgate_ended(void* gate, int64_t by) { gate_opened(gate, by); }",
+                    new: "void avra_vgate_ended(void* gate, int64_t by) { (void)by; gate_opened(gate, BY_CLOSE); }",
+                },
+            ],
+        },
+        Break {
+            name: "a virtual join of an ended task parks",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (task_cells(task)[GATE_OPEN]) return 0;\n    alone(f);\n    waits_gate(f, task, 0, 0);\n    legacy_parked(f, 1);",
+                    new: "    alone(f);\n    waits_gate(f, task, 0, 0);\n    legacy_parked(f, 1);",
+                },
+            ],
+        },
+        Break {
+            name: "a run begins with its host's schedule",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    g_seeded = 0;\n    __atomic_store_n(&avra_tick, 0, __ATOMIC_RELAXED);\n    avra_clock_run_begins();",
+                    new: "    __atomic_store_n(&avra_tick, 0, __ATOMIC_RELAXED);\n    avra_clock_run_begins();",
+                },
+            ],
+        },
+        Break {
+            name: "the scheduler never stores wanted",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    // PRECOMPTION WORK STANDS exactly while a task runs with others\n    // ready, a deadline filed or a cancel asked of it; the source stands\n    // down otherwise.\n    __atomic_store_n(&avra_tick_wanted, g_ready_head != NULL || g_timers_len != 0 || (next->deadline | next->cancel_by) != 0, __ATOMIC_RELAXED);\n    g_current = next;",
+                    new: "    // PRECOMPTION WORK STANDS exactly while a task runs with others\n    // ready, a deadline filed or a cancel asked of it; the source stands\n    // down otherwise.\n    __atomic_store_n(&avra_tick_wanted, 0, __ATOMIC_RELAXED);\n    g_current = next;",
+                },
+            ],
+        },
+        Break {
+            name: "a switch to a cancelled task lets the source stand down",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    // down otherwise.\n    __atomic_store_n(&avra_tick_wanted, g_ready_head != NULL || g_timers_len != 0 || (next->deadline | next->cancel_by) != 0, __ATOMIC_RELAXED);\n",
+                    new: "    // down otherwise.\n    __atomic_store_n(&avra_tick_wanted, g_ready_head != NULL || g_timers_len != 0 || next->deadline != 0, __ATOMIC_RELAXED);\n",
+                },
+            ],
+        },
+        Break {
+            name: "a seeded evaluator task counts its turn before it hears a cancel",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "        if (!f->shield_depth && f->cancel_by != 0) { f->unwinding = 1; return 0; }\n        return tick_turn_comes(f);\n",
+                    new: "        return tick_turn_comes(f);\n",
+                },
+            ],
+        },
+        Break {
+            name: "a run's end keeps its seed",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    g_seeded = outer.seeded;\n", new: "" }],
+        },
+        Break {
+            name: "a run's end restarts the outer schedule's stream",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    g_seed_state = outer.state;\n",
+                    new: "    g_seed_state = (uint64_t)outer.schedule;\n",
+                },
+            ],
+        },
+        Break {
+            name: "a run's choices are counted as its host's",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    g_choices = outer.choices;\n", new: "" }],
+        },
+        Break {
+            name: "a run's schedule ends and its clock does not",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    avra_clock_run_ends();\n}\n\n// THE TRIPWIRE",
+                    new: "}\n\n// THE TRIPWIRE",
+                },
+            ],
+        },
+        Break {
+            name: "a deadlock inside a case ends the process",
+            file: Unit.Fiber,
+            edits: [Edit { old: "            if (case_deadlocked()) continue;\n", new: "" }],
+        },
+        Break {
+            name: "a case that leaks passes",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    g_case_answer = left == 0 && !g_case_spoiled ? answer : 0;",
+                    new: "    g_case_answer = answer;",
+                },
+            ],
+        },
+        Break {
+            name: "a task that outlives its case is named and left alive",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    for (int64_t i = 0; i < n; i++) abandoned(alive[i]);\n", new: "" }],
+        },
+        Break {
+            name: "an abandoned task keeps what its slots held",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "        avra_rc_release(f->own.slot[i]);\n        f->own.slot[i] = NULL;",
+                    new: "        f->own.slot[i] = NULL;",
+                },
+            ],
+        },
+        Break {
+            name: "an abandoned task is never released",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    avra_vgate_open(task);\n    avra_rc_release(task);\n}",
+                    new: "    avra_vgate_open(task);\n}",
+                },
+            ],
+        },
+        Break {
+            name: "an abandoned task stays where it is filed",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    cells[TASK_END] = END_CANCELLED;\n    gone(f);",
+                    new: "    cells[TASK_END] = END_CANCELLED;",
+                },
+            ],
+        },
+        Break {
+            name: "an abandoned task reads as alive to whoever holds it",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    gone(f);\n    avra_vgate_open(task);", new: "    gone(f);" }],
+        },
+        Break {
+            name: "a task's number counts from the process's first spawn",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "(uint64_t)id_of(f) - g_case_first - 1);",
+                    new: "(uint64_t)id_of(f) - 1);",
+                },
+            ],
+        },
+        Break {
+            name: "a case's body runs on a task's own stack",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    ((Fiber*)(uintptr_t)task_cells(task)[TASK_FIBER])->wide = 1;\n",
+                    new: "",
+                },
+            ],
+        },
+        Break {
+            name: "tasks made before the case count as its own",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "!f->virtual && (uint64_t)id_of(f) > g_case_first && f->state",
+                    new: "!f->virtual && f->state",
+                },
+            ],
+        },
+        Break {
+            name: "a case inside a case is allowed",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (g_case_waited || g_timers_len > 0 || g_parked_fds > 0) return case_refused();",
+                    new: "    if (g_timers_len > 0 || g_parked_fds > 0) return case_refused();",
+                },
+            ],
+        },
+        Break {
+            name: "a case runs beside a filed timer",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (g_case_waited || g_timers_len > 0 || g_parked_fds > 0) return case_refused();",
+                    new: "    if (g_case_waited) return case_refused();",
+                },
+            ],
+        },
+        Break {
+            name: "a case inside a case leaves its outer case passing",
+            file: Unit.Fiber,
+            edits: [Edit { old: "        g_case_spoiled = 1;\n", new: "" }],
+        },
+        Break {
+            name: "a timer's task the case left filed passes it",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    int64_t left = case_cleared(0) + case_timers_cleared() + case_holds_cleared();",
+                    new: "    int64_t left = case_cleared(0) + case_holds_cleared();",
+                },
+            ],
+        },
+        Break {
+            name: "a hold outlives its abandoned holder",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    free(alive);\n    avra_clock_holds_let_go(held);",
+                    new: "    free(alive);",
+                },
+            ],
+        },
+        Break {
+            name: "a case that ends holding the world passes",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    int64_t left = case_cleared(0) + case_timers_cleared() + case_holds_cleared();",
+                    new: "    int64_t left = case_cleared(0) + case_timers_cleared();",
+                },
+            ],
+        },
+        Break {
+            name: "every hold is let go when a case leaks",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    free(alive);\n    avra_clock_holds_let_go(held);",
+                    new: "    free(alive);\n    avra_clock_holds_dropped();",
+                },
+            ],
+        },
+        Break {
+            name: "a deep case's pages stay resident",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    wide_given_back();\n    return g_case_answer;",
+                    new: "    return g_case_answer;",
+                },
+            ],
+        },
+        Break {
+            name: "a guest waits beside its host's timer",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (g_runs == 0 || (g_timers_len == 0 && g_parked_fds == 0)) return;",
+                    new: "    return;",
+                },
+            ],
+        },
+        Break {
+            name: "a host outside any run is tripped",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (g_runs == 0 || (g_timers_len == 0",
+                    new: "    if ((g_timers_len == 0",
+                },
+            ],
+        },
+        Break {
+            name: "a case that made no choice runs every schedule",
+            file: Unit.Fiber,
+            edits: [Edit { old: "        if (choices == 0) return 1;\n", new: "" }],
+        },
+        Break {
+            name: "a failing schedule passes the case",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "        if (!one(k, &choices)) return choices == 0 && k == 0 ? 0 : case_failed_under(what, label, k);",
+                    new: "        one(k, &choices);",
+                },
+            ],
+        },
+        Break {
+            name: "the seed setting is not heard",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (g_sched_only >= 0) return one(",
+                    new: "    if (0) return one(",
+                },
+            ],
+        },
+        Break {
+            name: "the runs setting is not heard",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    g_sched_runs = whole_setting(SCHED_RUNS_SETTING, 1, SCHED_RUNS_DEFAULT);",
+                    new: "    g_sched_runs = SCHED_RUNS_DEFAULT;",
+                },
+            ],
+        },
+        Break {
+            name: "the count is never said",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (!g_any_chose || g_sched_only >= 0) return;",
+                    new: "    return;",
+                },
+            ],
+        },
+        Break {
+            name: "a trap does not know its case's schedule",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    avra_case_schedule = schedule;\n", new: "" }],
+        },
+        Break {
+            name: "a seeded deadlock names no schedule",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (g_seeded) fprintf(stderr, \"avra: under schedule %lld — \" SCHED_SEED_SETTING",
+                    new: "    if (0) fprintf(stderr, \"avra: under schedule %lld — \" SCHED_SEED_SETTING",
+                },
+            ],
+        },
+        Break {
+            name: "a case's answer is read past its lowest bit",
+            file: Unit.Fiber,
+            edits: [Edit { old: "{ return g_case_body() & 1; }", new: "{ return g_case_body() != 0; }" }],
+        },
+        Break {
+            name: "a path walk never advances",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    if (g_path_mode == PATH_ENUM) path_step();\n", new: "" }],
+        },
+        Break {
+            name: "a path ignores the order it names",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    return g_path_last[i];\n", new: "    return 0;\n" }],
+        },
+        Break {
+            name: "a case with one order names a schedule when it fails",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "return choices == 0 && k == 0 ? 0 : case_failed_under(what, label, k);",
+                    new: "return case_failed_under(what, label, k);",
+                },
+            ],
+        },
+        Break {
+            name: "a case runs on the wall's clock",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (g_case_clock_virtual) {\n        avra_clock_run_begins();\n        avra_clock_virtual(1);\n    }",
+                    new: "    if (0) {\n        avra_clock_run_begins();\n        avra_clock_virtual(1);\n    }",
+                },
+            ],
+        },
+        Break {
+            name: "a case's clock outlives it",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (g_case_clock_virtual) avra_clock_run_ends();\n",
+                    new: "    if (g_case_clock_virtual) avra_clock_virtual(0);\n",
+                },
+            ],
+        },
+        Break {
+            name: "the clock setting is not heard",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    g_case_clock_virtual = 0;\n", new: "" }],
+        },
+        Break {
+            name: "a spin on the frozen clock ends the process",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    avra_clock_spun_hook = case_spun;\n", new: "" }],
+        },
+        Break {
+            name: "a run a stopped case opened outlives it",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "        while ((int64_t)g_runs > runs) avra_sched_run_ends();\n",
+                    new: "",
+                },
+            ],
+        },
+        Break {
+            name: "a clock run a stopped case opened outlives it",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "        while (avra_clock_run_depth() > clocks) avra_clock_run_ends();\n",
+                    new: "",
+                },
+            ],
+        },
+        Break {
+            name: "a stopped task says nothing of why",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    if (f == g_case_spinner) { fputs(", new: "    if (0) { fputs(" }],
+        },
+        Break {
+            name: "a program prints what it likes",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    int64_t same = ended && avra_streq(got, g_program_expected);",
+                    new: "    int64_t same = ended;",
+                },
+            ],
+        },
+        Break {
+            name: "a program's schedules share one process",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    int told[2];\n    if (pipe(told) != 0)",
+                    new: "    { avra_capture_begin(); scheduled(schedule, choices, program_body_called); const char* g = avra_capture_end(); int64_t s = avra_streq(g, g_program_expected); avra_rc_release((void*)g); return s; }\n    int told[2];\n    if (pipe(told) != 0)",
+                },
+            ],
+        },
+        Break {
+            name: "an evaluated deadlock ends the process",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (!next) { deadlock_reported(); return 0; }",
+                    new: "    if (!next) { deadlock_reported(); }",
+                },
+            ],
+        },
+        Break {
+            name: "a program runs off the schedules",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    return over_schedules(\"program \", label, program_under);",
+                    new: "    int64_t c = 0;\n    return program_under(0, &c);",
+                },
+            ],
+        },
+        Break {
+            name: "the evaluated leg reads schedule i whatever is replayed",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    return g_sched_only >= 0 ? g_sched_only : i;",
+                    new: "    return i;",
+                },
+            ],
+        },
+        Break {
+            name: "the evaluated leg reads one schedule whatever is set",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    return g_sched_only >= 0 ? 1 : g_sched_runs;",
+                    new: "    return 1;",
+                },
+            ],
+        },
+        Break {
+            name: "the evaluator asks the poller at every switch",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    Fiber* next = next_ready();\n    g_vnext_asking = 0;",
+                    new: "    Fiber* next = next_with_world();\n    g_vnext_asking = 0;",
+                },
+                Edit { old: "    if (g_until_poll > 0) return;\n", new: "" },
+            ],
+        },
+        Break {
+            name: "a caught join answers every ended task",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    if (cells[TASK_END] != END_CANCELLED) return NULL;\n", new: "" }],
+        },
+        Break {
+            name: "a fired timer's task answers nothing",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    cells[TASK_ANSWER] = (int64_t)(uintptr_t)unit;\n",
+                    new: "    avra_rc_release(unit);\n",
+                },
+            ],
+        },
+        Break {
+            name: "a cancelled end names itself",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    cells[TASK_BY] = avra_unwinding ? asker_of(self) : id_of(self);\n",
+                    new: "    cells[TASK_BY] = id_of(self);\n",
+                },
+            ],
+        },
+        Break {
+            name: "a task's end records no asker",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    cells[TASK_END] = how;\n    cells[TASK_BY] = by;\n",
+                    new: "    cells[TASK_END] = how;\n",
+                },
+            ],
+        },
+        Break {
+            name: "the ended-by row answers the end, not the asker",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    return task_cells(task)[TASK_BY];\n}",
+                    new: "    return task_cells(task)[TASK_END];\n}",
+                },
+            ],
+        },
+        Break {
+            name: "the parked-on row counts no waiter",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    for (const Waiter* w = (const Waiter*)(uintptr_t)task_cells(on)[GATE_HEAD]; w; w = w->next) n++;",
+                    new: "    (void)on;",
+                },
+            ],
+        },
+        Break {
+            name: "the fd-parked row counts the wrong side",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    for (const Waiter* w = g_fds[fd].head[dir]; w; w = w->next) n++;",
+                    new: "    for (const Waiter* w = g_fds[fd].head[1 - dir]; w; w = w->next) n++;",
+                },
+            ],
+        },
+        Break {
+            name: "the fd-parked row takes any direction",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    if (dir != 0 && dir != 1) fd_parked_bad_direction();\n", new: "" }],
+        },
+        Break {
+            name: "the ended-by row answers no asker",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "int64_t avra_task_ended_by(void* task) {\n    return task_cells(task)[TASK_BY];\n}",
+                    new: "int64_t avra_task_ended_by(void* task) {\n    (void)task;\n    return 0;\n}",
+                },
+            ],
+        },
+        Break {
+            name: "a virtual claim names whoever the host runs",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    return gate_claimed(gate, id_of(virtual_at(t)));",
+                    new: "    return gate_claimed(gate, id_of(g_current));",
+                },
+            ],
+        },
+        Break {
+            name: "a virtual task's end is not traced",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    if (TRACING) traced_fiber(\"end\", virtual_at(t), 0);\n", new: "" }],
+        },
+        Break {
+            name: "a virtual task keeps the policy's count for its id",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    virtual_at(t)->own.id = id;\n", new: "" }],
+        },
+        Break {
+            name: "the handler leaves the switch's countdown alone",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    g_until_poll = 0;\n    prior_called(", new: "    prior_called(" }],
+        },
+        Break {
+            name: "a switch never answers an ask",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "        if (__builtin_expect(g_asked, 0)) tasks_answered();\n",
+                    new: "",
+                },
+            ],
+        },
+        Break {
+            name: "a forked child is asked under its parent's id",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    g_asked = 0;\n    tasks_door_named();\n    // a schedule",
+                    new: "    g_asked = 0;\n    // a schedule",
+                },
+            ],
+        },
+        Break {
+            name: "an evaluated program's line names the host's task",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    if (g_evaluated) {", new: "    if (0) {" }],
+        },
+        Break {
+            name: "a handler set before ours is no longer called",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    prior_called(sig, info, context);\n", new: "" }],
+        },
+        Break {
+            name: "a forked child owes its parent's ask",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    g_asked = 0;\n    tasks_door_named();\n    // a schedule",
+                    new: "    tasks_door_named();\n    // a schedule",
+                },
+            ],
+        },
+        Break {
+            name: "a second signal is not answered by the handler",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (g_asked++ > 0 && !g_in_world && g_until_poll == 0) {",
+                    new: "    if (0) {",
+                },
+            ],
+        },
+        Break {
+            name: "the handler answers from inside the world's path",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (g_asked++ > 0 && !g_in_world && g_until_poll == 0) {",
+                    new: "    if (g_asked++ > 0 && g_until_poll == 0) {",
+                },
+            ],
+        },
+        Break {
+            name: "an ask is answered without an ask file",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (ask_ours(dfd, names)) listing_written(dfd, names);",
+                    new: "    listing_written(dfd, names);",
+                },
+            ],
+        },
+        Break {
+            name: "an ask that is no plain file is taken as ours",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "S_ISREG(st.st_mode) && st.st_uid == geteuid();\n}",
+                    new: "st.st_uid == geteuid();\n}",
+                },
+            ],
+        },
+        Break {
+            name: "an answered ask is left in place",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    unlinkat(dfd, names->ask, 0);\n    renameat(dfd, names->tmp,",
+                    new: "    renameat(dfd, names->tmp,",
+                },
+            ],
+        },
+        Break {
+            name: "the handler's line shares the listing's file",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    unlinkat(dfd, names->line, 0);\n    int fd = openat(dfd, names->line,",
+                    new: "    unlinkat(dfd, names->tmp, 0);\n    int fd = openat(dfd, names->tmp,",
+                },
+            ],
+        },
+        Break {
+            name: "a relative door directory is used",
+            file: Unit.Fiber,
+            edits: [Edit { old: "chosen[0] == '/' ? chosen : \"\"", new: "chosen" }],
+        },
+        Break {
+            name: "the door's directory is chosen once",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    g_asked = 0;\n    tasks_door_named();\n    const DoorNames*",
+                    new: "    g_asked = 0;\n    const DoorNames*",
+                },
+            ],
+        },
+        Break {
+            name: "the handler's line is stamped with no time",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    k += digits_put(line + k, (long long)now_ns());",
+                    new: "    line[k++] = '0';",
+                },
+            ],
+        },
+        Break {
+            name: "a task that has not run is listed as parked",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    for (uint32_t i = 0; i < f->held_n; i++) filed += waiter_listed(out, now, f, &f->held[i]);",
+                    new: "    if (!f->sp) fprintf(out, \"ts=%lld park id=%lld src=at arm=0:0\\n\", (long long)now, id);\n    for (uint32_t i = 0; i < f->held_n; i++) filed += waiter_listed(out, now, f, &f->held[i]);",
+                },
+            ],
+        },
+        Break {
+            name: "the door is never opened",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    guard_handler_install();\n    tasks_door_opened();",
+                    new: "    guard_handler_install();",
+                },
+            ],
+        },
+        Break {
+            name: "a compiled deadlock lists no task",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "            deadlock_reported();\n            avra_trap(\"every task is waiting — deadlock\");",
+                    new: "            avra_trap(\"every task is waiting — deadlock\");",
+                },
+            ],
+        },
+        Break {
+            name: "an evaluated deadlock lists no task",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (!next) { deadlock_reported(); return 0; }",
+                    new: "    if (!next) { return 0; }",
+                },
+            ],
+        },
+        Break {
+            name: "a deadlock's report names no wait",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "        task_said(stderr, process_id, f);\n        waits_said(stderr, process_id, f);",
+                    new: "        task_said(stderr, process_id, f);",
+                },
+            ],
+        },
+        Break {
+            name: "a deadline's claim leaves an evaluated task's unwind bit clear",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (arm == -1 && member <= 1 && f->virtual) f->unwinding = 1;",
+                    new: "    if (arm == -1 && member == 0 && f->virtual) f->unwinding = 1;",
+                },
+            ],
+        },
+        Break {
+            name: "an interrupt raises an evaluated task's unwind bit",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (arm == -1 && member <= 1 && f->virtual) f->unwinding = 1;",
+                    new: "    if (arm == -1 && f->virtual) f->unwinding = 1;",
+                },
+            ],
+        },
+        Break {
+            name: "a sleep its deadline cuts sets no unwind bit",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    legacy_parked(self, 1);\n    run_next();\n    if (claimed_by_cut(self)) cancel_met();\n}",
+                    new: "    legacy_parked(self, 1);\n    run_next();\n    if (self->arm == -1 && self->member == 0) cancel_met();\n}",
+                },
+            ],
+        },
+        Break {
+            name: "a join its deadline cuts sets no unwind bit",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    run_next();\n    if (claimed_by_cut(self)) cancel_met();\n    self->joining = NULL;",
+                    new: "    run_next();\n    if (self->arm == -1 && self->member == 0) cancel_met();\n    self->joining = NULL;",
+                },
+            ],
+        },
+        Break {
+            name: "a sleep does not heed its deadline",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    legacy_parked(self, 1);\n    run_next();",
+                    new: "    legacy_parked(self, 0);\n    run_next();",
+                },
+            ],
+        },
+        Break {
+            name: "a join does not heed its deadline",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    legacy_parked(self, !deaf);", new: "    legacy_parked(self, 0);" }],
+        },
+        Break {
+            name: "a scope's end heeds its deadline",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    legacy_parked(self, !deaf);", new: "    legacy_parked(self, 1);" }],
+        },
+        Break {
+            name: "a descriptor park its deadline cuts sets no unwind bit",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "        run_next();\n        if (claimed_by_cut(self)) cancel_met();\n",
+                    new: "        run_next();\n        if (self->arm == -1 && self->member == 0) cancel_met();\n",
+                },
+            ],
+        },
+        Break {
+            name: "an evaluated task's passed limit raises the compiled bit",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (f->virtual) f->unwinding = 1;\n    else cancel_met();",
+                    new: "    cancel_met();",
+                },
+            ],
+        },
+        Break {
+            name: "a landing leaves the unwind bit set",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    *bit = 0;\n    return 1;", new: "    return 1;" }],
+        },
+        Break {
+            name: "a landing answers for a block nothing cut",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (!scope_ended(f, id) || !*bit) return 0;",
+                    new: "    if (!scope_ended(f, id)) return 0;",
+                },
+            ],
+        },
+        Break {
+            name: "a landing ends an unwind another asked for",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (!scope_ended(f, id) || !*bit) return 0;",
+                    new: "    scope_ended(f, id);\n    if (!*bit) return 0;",
+                },
+            ],
+        },
+        Break {
+            name: "a park its deadline claims sets no unwind bit",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (park_begun(self)) run_next();\n    if (claimed_by_cut(self)) cancel_met();\n",
+                    new: "    if (park_begun(self)) run_next();\n    if (self->arm == -1 && self->member == 0) cancel_met();\n",
+                },
+            ],
+        },
+        Break {
+            name: "a standing cancel stops no wait",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if ((f->cancel_by == 0 || shield_scope_stands(f)) && !deadline_passed(f)) return 0;",
+                    new: "    if (!deadline_passed(f)) return 0;",
+                },
+            ],
+        },
+        Break {
+            name: "a passed limit stops no wait",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if ((f->cancel_by == 0 || shield_scope_stands(f)) && !deadline_passed(f)) return 0;",
+                    new: "    if (f->cancel_by == 0 || shield_scope_stands(f)) return 0;",
+                },
+            ],
+        },
+        Break {
+            name: "a shield scope's wait is cut by a standing cancel",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if ((f->cancel_by == 0 || shield_scope_stands(f)) && !deadline_passed(f)) return 0;",
+                    new: "    if (f->cancel_by == 0 && !deadline_passed(f)) return 0;",
+                },
+            ],
+        },
+        Break {
+            name: "a request that stands stops a wait and sets no bit",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    cut_met(f);\n    return 1;\n}", new: "    return 1;\n}" }],
+        },
+        Break {
+            name: "a compiled task's standing request raises no bit",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (f->virtual) f->unwinding = 1;\n    else cancel_met();",
+                    new: "    if (f->virtual) f->unwinding = 1;",
+                },
+            ],
+        },
+        Break {
+            name: "a sleep parks under a request that stands",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    if (request_stands(self)) return;\n", new: "" }],
+        },
+        Break {
+            name: "a join parks under a request that stands",
+            file: Unit.Fiber,
+            edits: [Edit { old: "    if (!deaf && request_stands(self)) return cells;\n", new: "" }],
+        },
+        Break {
+            name: "a scope's end under a request that stands does not wait",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (!deaf && request_stands(self)) return cells;\n",
+                    new: "    if (request_stands(self)) return cells;\n",
+                },
+            ],
+        },
+        Break {
+            name: "a descriptor park parks under a request that stands",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (request_stands(f)) { f->timed_out = 1; return 0; }\n",
+                    new: "",
+                },
+            ],
+        },
+        Break {
+            name: "the deadline cuts a scope's end",
+            file: Unit.Fiber,
+            edits: [deadline_heeds()],
+        },
+        Break {
+            name: "a virtual join does not heed its deadline",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    waits_gate(f, task, 0, 0);\n    legacy_parked(f, 1);\n    return host_waited(1);",
+                    new: "    waits_gate(f, task, 0, 0);\n    legacy_parked(f, 0);\n    return host_waited(1);",
+                },
+            ],
+        },
+        Break {
+            name: "a virtual sleep does not heed its deadline",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    legacy_parked(f, 1);\n    host_waited(1);\n}",
+                    new: "    legacy_parked(f, 0);\n    host_waited(1);\n}",
+                },
+            ],
+        },
+        Break {
+            name: "a standing request lets a virtual sleep park",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (ms < 1 || request_stands(f)) { ready_push(f); return; }",
+                    new: "    if (ms < 1) { ready_push(f); return; }",
+                },
+            ],
+        },
+        Break {
+            name: "a virtual scope's end heeds its deadline",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    legacy_parked(f, 0);\n    f->deaf = 1;",
+                    new: "    legacy_parked(f, 1);\n    f->deaf = 1;",
+                },
+            ],
+        },
+        Break {
+            name: "a cancel cuts a virtual scope's end",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    legacy_parked(f, 0);\n    f->deaf = 1;",
+                    new: "    legacy_parked(f, 0);",
+                },
+            ],
+        },
+        Break {
+            name: "a virtual task stays deaf past its scope's end",
+            file: Unit.Fiber,
+            edits: [Edit { old: "        if (f->virtual) f->deaf = 0;\n", new: "" }],
+        },
+        Break {
+            name: "a virtual scope's end of an ended task parks",
+            file: Unit.Fiber,
+            edits: [
+                Edit {
+                    old: "    if (task_cells(task)[GATE_OPEN]) return 0;\n    alone(f);\n    waits_gate(f, task, 0, 0);\n    legacy_parked(f, 0);",
+                    new: "    alone(f);\n    waits_gate(f, task, 0, 0);\n    legacy_parked(f, 0);",
+                },
+            ],
+        },
+        // CLOCK_MUTATIONS
+        Break {
+            name: "a cancelled run's end answers its own code",
+            file: Unit.Clock,
+            edits: [
+                Edit {
+                    old: "    return __builtin_expect(avra_main_asker != 0, 0) ? main_cancelled() : code;",
+                    new: "    return code;",
+                },
+            ],
+        },
+        Break {
+            name: "an uncancelled run's end reports a cancel",
+            file: Unit.Clock,
+            edits: [
+                Edit {
+                    old: "    return __builtin_expect(avra_main_asker != 0, 0) ? main_cancelled() : code;",
+                    new: "    return main_cancelled();",
+                },
+            ],
+        },
+        Break {
+            name: "a run unwinding under no passed cancel reports one",
+            file: Unit.Clock,
+            edits: [
+                Edit {
+                    old: "    return __builtin_expect(avra_main_asker != 0, 0) ? main_cancelled() : code;",
+                    new: "    return avra_unwinding ? main_cancelled() : code;",
+                },
+            ],
+        },
+        Break {
+            name: "a cancelled run's end says nothing",
+            file: Unit.Clock,
+            edits: [Edit { old: "    fprintf(stderr, cancelled_format(by), (long long)by);\n", new: "" }],
+        },
+        Break {
+            name: "a cancelled run's end names its asker one off",
+            file: Unit.Clock,
+            edits: [
+                Edit {
+                    old: "    int64_t by = avra_main_asker - 1;\n    fflush(stdout);",
+                    new: "    int64_t by = avra_main_asker;\n    fflush(stdout);",
+                },
+            ],
+        },
+        Break {
+            name: "a cancelled run ends as a clean one",
+            file: Unit.Clock,
+            edits: [
+                Edit {
+                    old: "    fputc('\\n', stderr);\n    return 1;",
+                    new: "    fputc('\\n', stderr);\n    return 0;",
+                },
+            ],
+        },
+        Break {
+            name: "a scope's request is named as a task's",
+            file: Unit.Clock,
+            edits: [Edit { old: "    if (by & AVRA_SCOPE_IDS) return", new: "    if (0) return" }],
+        },
+        Break {
+            name: "the run's own request is named as a task's",
+            file: Unit.Clock,
+            edits: [Edit { old: "    if (by == 0) return", new: "    if (0) return" }],
+        },
+        Break {
+            name: "a hold on the world is charged to no task",
+            file: Unit.Clock,
+            edits: [Edit { old: "    avra_task_local->clock_holds += by;\n", new: "" }],
+        },
+        Break {
+            name: "a wait on the world does not restart a task's reads",
+            file: Unit.Clock,
+            edits: [Edit { old: "    if (by < 0) avra_task_local->clock_asks = 0;\n", new: "" }],
+        },
+        Break {
+            name: "freezing loses the present reading",
+            file: Unit.Clock,
+            edits: [
+                Edit {
+                    old: "        avra_clock.at = clock_real() + avra_clock.skew;",
+                    new: "        avra_clock.at = 0;",
+                },
+            ],
+        },
+        Break {
+            name: "flowing again starts from the wall",
+            file: Unit.Clock,
+            edits: [
+                Edit {
+                    old: "    } else avra_clock.skew = avra_clock.at - clock_real();",
+                    new: "    } else avra_clock.skew = 0;",
+                },
+            ],
+        },
+        Break {
+            name: "a held clock stays frozen",
+            file: Unit.Clock,
+            edits: [
+                Edit {
+                    old: "    int frozen = avra_clock.virtual && avra_clock.held == 0;",
+                    new: "    int frozen = avra_clock.virtual;",
+                },
+            ],
+        },
+        Break {
+            name: "a jump can move the clock back",
+            file: Unit.Clock,
+            edits: [
+                Edit {
+                    old: "    if (at > avra_clock.at) avra_clock.at = at;",
+                    new: "    avra_clock.at = at;",
+                },
+            ],
+        },
+        Break {
+            name: "a task waiting on a frozen clock is never told",
+            file: Unit.Clock,
+            edits: [
+                Edit {
+                    old: "    if (g_clock_asks_most > 0 && ++avra_task_local->clock_asks > g_clock_asks_most) clock_never_comes();\n",
+                    new: "",
+                },
+            ],
+        },
+        Break {
+            name: "a limit of none still traps",
+            file: Unit.Clock,
+            edits: [
+                Edit {
+                    old: "    if (g_clock_asks_most > 0 && ++avra_task_local->clock_asks",
+                    new: "    if (++avra_task_local->clock_asks",
+                },
+            ],
+        },
+        Break {
+            name: "the limit is not the setting's",
+            file: Unit.Clock,
+            edits: [Edit { old: "    g_clock_asks_most = n;\n", new: "" }],
+        },
+        Break {
+            name: "a limit that is no number is read as one",
+            file: Unit.Clock,
+            edits: [
+                Edit {
+                    old: "    if (*end != 0 || n < 0) avra_trap(CLOCK_ASKS_SETTING",
+                    new: "    if (0) avra_trap(CLOCK_ASKS_SETTING",
+                },
+            ],
+        },
+        Break {
+            name: "a hold let go too often goes unsaid",
+            file: Unit.Clock,
+            edits: [
+                Edit {
+                    old: "    if (avra_clock.held < 0) avra_trap(WORDS(\"the world was let go",
+                    new: "    if (0) avra_trap(WORDS(\"the world was let go",
+                },
+            ],
+        },
+        Break {
+            name: "dropped holds still hold",
+            file: Unit.Clock,
+            edits: [
+                Edit {
+                    old: "    int64_t held = avra_clock.held;\n    avra_clock.held = 0;",
+                    new: "    int64_t held = avra_clock.held;",
+                },
+            ],
+        },
+        Break {
+            name: "a run begins with its host's holds",
+            file: Unit.Clock,
+            edits: [
+                Edit {
+                    old: "    g_clock_outer[g_clock_runs++] = avra_clock;\n    avra_clock.held = 0;",
+                    new: "    g_clock_outer[g_clock_runs++] = avra_clock;",
+                },
+            ],
+        },
+        Break {
+            name: "a run's end keeps its clock",
+            file: Unit.Clock,
+            edits: [
+                Edit {
+                    old: "    avra_clock = g_clock_outer[--g_clock_runs];",
+                    new: "    --g_clock_runs;",
+                },
+            ],
+        },
+        // UNWIND_MUTATIONS
+        Break {
+            name: "a pushed frame does not raise the count",
+            file: Unit.Clock,
+            edits: [
+                Edit {
+                    old: "        held->frames[held->n++] = (int64_t)(uintptr_t)frame;",
+                    new: "        held->frames[held->n] = (int64_t)(uintptr_t)frame;",
+                },
+            ],
+        },
+        Break {
+            name: "a full list drops nothing, overwriting the newest",
+            file: Unit.Clock,
+            edits: [
+                Edit {
+                    old: "    memmove(\n        &held->frames[AVRA_UNWIND_CAP / 2],\n        &held->frames[AVRA_UNWIND_CAP / 2 + 1],\n        (AVRA_UNWIND_CAP / 2 - 1) * sizeof(int64_t));\n    held->frames[AVRA_UNWIND_CAP - 1] = (int64_t)(uintptr_t)frame;",
+                    new: "    held->frames[AVRA_UNWIND_CAP - 1] = (int64_t)(uintptr_t)frame;",
+                },
+            ],
+        },
+        Break {
+            name: "a full list does not count its drops",
+            file: Unit.Clock,
+            edits: [Edit { old: "    held->dropped = held->dropped + 1;\n", new: "" }],
+        },
+        Break {
+            name: "a frame read past the list answers a frame",
+            file: Unit.Clock,
+            edits: [Edit { old: "    if (i < 0 || i >= held->n) return NULL;\n", new: "" }],
+        },
+        Break {
+            name: "a cancel point leaves the frames it passed",
+            file: Unit.Clock,
+            edits: [
+                Edit {
+                    old: "void avra_unwind_clear(void) { memset(running_unwind(), 0, sizeof(AvraUnwind)); }",
+                    new: "void avra_unwind_clear(void) { }",
+                },
+            ],
+        },
+        // DOOR_MUTATIONS
+        Break {
+            name: "a door directory others may write is a door",
+            file: Unit.Door,
+            edits: [Edit { old: " && (st.st_mode & 077) == 0) return dfd;", new: ") return dfd;" }],
+        },
+        Break {
+            name: "a door directory that is a link is followed",
+            file: Unit.Door,
+            edits: [
+                Edit {
+                    old: "    int dfd = open(dir, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);",
+                    new: "    int dfd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);",
+                },
+            ],
+        },
+        // HOST_MUTATIONS
+        Break {
+            name: "the source never sets the byte",
+            file: Unit.Host,
+            edits: [
+                Edit {
+                    old: "            __atomic_store_n(&avra_tick, 1, __ATOMIC_RELAXED);\n",
+                    new: "",
+                },
+            ],
+        },
+        Break {
+            name: "the source ignores its period",
+            file: Unit.Host,
+            edits: [
+                Edit {
+                    old: "    if (us < 0) us = 0;\n",
+                    new: "    if (us < 0) us = 0;\n    us = 0;\n",
+                },
+            ],
+        },
+        Break {
+            name: "a parked source is never woken",
+            file: Unit.Host,
+            edits: [
+                Edit {
+                    old: "        if (__atomic_load_n(&g_parked, __ATOMIC_RELAXED)) wake_once();\n",
+                    new: "",
+                },
+            ],
+        },
+        Break {
+            name: "a forked child keeps its parent's source",
+            file: Unit.Host,
+            edits: [
+                Edit {
+                    old: "        pthread_atfork(NULL, NULL, tick_after_fork);\n",
+                    new: "        if (0) pthread_atfork(NULL, NULL, tick_after_fork);\n",
+                },
+            ],
+        },
+        Break {
+            name: "a forked child is armed under its parent's pid",
+            file: Unit.Host,
+            edits: [
+                Edit {
+                    old: "static void tick_after_fork(void) {\n    g_owner = 0;\n",
+                    new: "static void tick_after_fork(void) {\n",
+                },
+            ],
+        },
+        Break {
+            name: "the hot arm reads the process id again",
+            file: Unit.Host,
+            edits: [
+                Edit {
+                    old: "    if (g_started && g_owner) {\n        if (__atomic_load_n(&g_parked, __ATOMIC_RELAXED)) wake_once();",
+                    new: "    if (g_started && g_owner == this_pid()) {\n        if (__atomic_load_n(&g_parked, __ATOMIC_RELAXED)) wake_once();",
+                },
+            ],
+        },
+        Break {
+            name: "the arm ignores the owner",
+            file: Unit.Host,
+            edits: [
+                Edit {
+                    old: "    if (g_started && g_owner) {\n        if (__atomic_load_n(&g_parked, __ATOMIC_RELAXED)) wake_once();",
+                    new: "    if (g_started) {\n        if (__atomic_load_n(&g_parked, __ATOMIC_RELAXED)) wake_once();",
+                },
+            ],
+        },
+        Break {
+            name: "the stood-down arm reads the process id again",
+            file: Unit.Host,
+            edits: [
+                Edit {
+                    old: "void avra_tick_stood_down(void) {\n    if (g_started && g_owner) wake_once();\n}",
+                    new: "void avra_tick_stood_down(void) {\n    if (g_started && g_owner == this_pid()) wake_once();\n}",
+                },
+            ],
+        },
+        Break {
+            name: "a cold arm never records the pid",
+            file: Unit.Host,
+            edits: [
+                Edit {
+                    old: "    g_owner = this_pid();\n    __atomic_store_n(&g_parked, 0, __ATOMIC_RELAXED);",
+                    new: "    g_owner = 0;\n    __atomic_store_n(&g_parked, 0, __ATOMIC_RELAXED);",
+                },
+            ],
+        },
+        Break {
+            name: "the pid read is never counted",
+            file: Unit.Host,
+            edits: [
+                Edit {
+                    old: "    pid_t pid = getpid();\n    __atomic_add_fetch(&g_pid_reads, 1, __ATOMIC_RELAXED);\n    return pid;",
+                    new: "    return getpid();",
+                },
+            ],
+        },
+
+    ]
+}

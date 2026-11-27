@@ -1603,7 +1603,7 @@ static void rc_guard_init(void) {
 #else
 // The word a program's inlined leaves read (the compiler carries them built with instruments):
 // here it is always off.
-const int avra_rc_guard_off __asm__("avra_rc_guard_on") = 0;
+const int avra_rc_guard_off __asm__(AVRA_LABEL(avra_rc_guard_on)) = 0;
 #endif
 static void* g_chain[64];
 static int g_chain_len = 0;

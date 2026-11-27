@@ -749,9 +749,9 @@ runtime-test-%: build/runtime-tests/%
 	@$<
 
 # THE TESTS, TESTED: one line of the scheduler broken at a time, and some
-# runtime test must fail for each (runtime/tests/mutations.py).
+# runtime test must fail for each (`wisp mutations`, packages/wisp/src/commands/mutations.av).
 runtime-mutations: $(RUNTIME_OBJS)
-	@python3 runtime/tests/mutations.py build/runtime-mutations "$(STACK_PROBES)" $(filter-out build/avra_fiber.o,$(RUNTIME_OBJS))
+	@./wisp mutations -- build/runtime-mutations "$(STACK_PROBES)" $(filter-out build/avra_fiber.o,$(RUNTIME_OBJS))
 
 # A KEPT OBJECT OR BINARY IS ITS COMPILER'S: one compiler's build is never taken by another.
 compiler-key: $(COMPILER_OBJS) $(PACKAGE_OBJS)

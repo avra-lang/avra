@@ -1,0 +1,40 @@
+use commands.{Edit, Verdict, breaks, chunks, broken_text, failing}
+
+spec "mutations — each break edits one standing line" {
+    then "an edit whose line stands once applies" {
+        (broken_text("a\nb\nc", [Edit { old: "b", new: "x" }]) catch "") == "a\nx\nc"
+    }
+    then "an edit whose line is gone no longer applies, with the count" {
+        match broken_text("a\nc", [Edit { old: "b", new: "x" }]) {
+            .Err(why) -> why.contains("(x0)"),
+            .Ok(_) -> false,
+        }
+    }
+    then "an edit whose line stands twice no longer applies" {
+        match broken_text("b b", [Edit { old: "b", new: "x" }]) {
+            .Err(why) -> why.contains("(x2)"),
+            .Ok(_) -> false,
+        }
+    }
+    then "edits apply in order, each to the text the one before left" {
+        (broken_text("ab", [Edit { old: "a", new: "c" }, Edit { old: "cb", new: "d" }]) catch "") == "d"
+    }
+    then "a failing test is named by its first FAILED line" {
+        match failing("t", "ok\nFAILED the clock moved\n", "exit 1") {
+            .Killed(by) -> by == "t: the clock moved",
+            .Alive or .Rotten(_) -> false,
+        }
+    }
+    then "a failing test that printed no FAILED line is named by how it ended" {
+        match failing("t", "nothing\n", "signal 11") {
+            .Killed(by) -> by == "t (signal 11)",
+            .Alive or .Rotten(_) -> false,
+        }
+    }
+    then "the breaks are dealt in waves of the worker count, every one once" {
+        chunks([0, 1, 2, 3, 4], 2).map("${it.length}").join(",") == "2,2,1"
+    }
+    then "every break carries at least one edit" {
+        breaks().all(!it.edits.is_empty())
+    }
+}

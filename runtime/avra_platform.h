@@ -27,6 +27,12 @@
 // log, a pinned hash seed — are switched on by the environment, at
 // load. A runtime built AVRA_INSTRUMENTS=0 has no switch to read: each
 // is the constant 0, so the bodies behind it are in nothing it links.
+// A SYMBOL AS THE LINKER SPELLS IT: an asm label is taken verbatim, so it carries the platform's C
+// prefix (`_` on Mach-O, none on ELF) or it names a different symbol from the C one.
+#define AVRA_LABEL_TEXT(x) #x
+#define AVRA_LABEL_SPELLED(x) AVRA_LABEL_TEXT(x)
+#define AVRA_LABEL(name) AVRA_LABEL_SPELLED(__USER_LABEL_PREFIX__) #name
+
 // A RUNTIME'S WORDS LIVE APART: a message in a section of its own, so a link keeps the words of
 // the paths a program reaches and drops the rest. An ELF compiler merges a file's literals into one
 // section, which a program carries whole once it says any of them; Mach-O's linker already strips

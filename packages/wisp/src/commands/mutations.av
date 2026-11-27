@@ -1,0 +1,315 @@
+//! `wisp mutations` — THE SCHEDULER'S TESTS, TESTED. Each break (mutation_rows.av) edits one
+//! line of a scheduler source, and some runtime test must fail for it. A break every test survives
+//! is a law nothing holds; a break whose line no longer stands is a break nobody checks. Either
+//! fails the run.
+//!
+//!     wisp mutations <build dir> <cc flags> <object>...
+//!     MUTATION_SHARD=<k>/<n> wisp mutations ...   # only the breaks numbered k mod n
+//!
+//! The objects are the runtime's, the scheduler's own left out. Each break builds and runs apart,
+//! `--workers` at once; a test that outlives BOUND is a kill, since a hang is a failure too.
+use @std.cli.{CliResult, Runnable, arg, command, option}
+use @std.io.{read_text, write_text, make_dirs, env_or}
+use @std.process.{Command, Exit, ProcessError, cmd, inherited, tool}
+use @std.text.{parse_int}
+use @std.time.{secs}
+
+const OUT_FIBER: string = "avra_fiber"
+const TESTS: List<string> = [
+    "flow_test",
+    "case_test",
+    "verdict_test",
+    "tasks_door_test",
+    "clock_test",
+    "seed_test",
+    "cores_test",
+    "vtask_test",
+    "fiber_test",
+    "fiber_adversarial_test",
+    "tick_test",
+    "sig_test",
+    "task_release_test",
+]
+/// Seconds a mutated test may run before its outliving is a kill.
+const BOUND: int = 60
+/// A mutated test's ceilings — its processes, its address space, its log — fixed, never derived
+/// from the machine: a break that spawns without bound dies inside its own test, not the runner.
+const TEST_PROCS: int = 2048
+const TEST_AS_KB: int = 4194304
+const LOG_CAP_BLOCKS: int = 32768
+/// A test's words are read back up to this many bytes.
+const HEAD_BYTES: int = 65536
+/// Workers at once unless `--workers` says, on every machine: each runs a compiler and then a test.
+const WORKERS: int = 4
+
+enum Verdict {
+    Killed(string)
+    Alive
+    Rotten(string)
+}
+
+type Tried = { name: string, verdict: Verdict }
+
+/// What one run of the keeper builds against.
+type Bench = { out: string, flags: List<string>, sources: Map<string, string>, rest: Map<string, List<string>> }
+
+type MutationsCmd = {}
+
+impl Runnable for MutationsCmd {
+    fn run(args: CliResult) -> int {
+        let words = args.args_of("objects")
+        match benched(args.arg("build_dir"), args.arg("cc_flags"), words) {
+            .Err(said) -> {
+                eprintln("runtime-mutations: ${said}")
+                1
+            },
+            .Ok(b) -> judged(b, parse_int(args.option("workers")) ?? WORKERS),
+        }
+    }
+}
+
+export command mutations {
+    description: "Break each scheduler line in turn; some runtime test must fail for every break"
+    option workers { description: "breaks tried at once" }
+    arg build_dir {
+        description: "the build directory the breaks are written under"
+        required: true
+    }
+    arg cc_flags {
+        description: "the C flags, one word list"
+        required: true
+    }
+    arg objects {
+        description: "the runtime's objects, the scheduler's own left out"
+        variadic: true
+    }
+    run: MutationsCmd {}
+}
+
+/// Every break this part owns tried, the verdicts printed, the run's status answered.
+fn judged(b: Bench, asked: int) -> int {
+    let workers = if asked < 1 { 1 } else { asked }
+    let s = shard()
+    let part = s.part
+    let parts = s.parts
+    let all = breaks()
+    let mine = [i for i in 0..all.length if i % parts == part]
+    eprintln(
+        "runtime-mutations: ${workers} workers over ${mine.length} of ${all.length} breaks (part ${part + 1} of ${parts})",
+    )
+    let results = flatten_tried([waves(b, all, chunk) for chunk in chunks(mine, workers)])
+    for t in results { println("  ${t.name}: ${said(t.verdict)}") }
+    let killed = results.filter(it.verdict is .Killed).length
+    let bound = results.filter(outlived(it.verdict)).length
+    let alive = results.filter(it.verdict is .Alive).length
+    let rotten = results.filter(it.verdict is .Rotten).length
+    let survive = if alive > 0 { "; ${alive} survive" } else { "" }
+    let gone = if rotten > 0 { "; ${rotten} no longer apply" } else { "" }
+    println(
+        "runtime-mutations: ${killed} of ${mine.length} killed, ${killed - bound} by a failing check and ${bound} by the bound${survive}${gone}",
+    )
+    if alive > 0 || rotten > 0 { 1 } else { 0 }
+}
+
+/// One wave: up to the worker count of breaks tried at once, answered in order.
+fn waves(b: Bench, all: List<Break>, chunk: List<int>) -> List<Tried> {
+    let ts = [spawn tried(b, i, all[i]) for i in chunk]
+    [t.await for t in ts]
+}
+
+fn chunks(xs: List<int>, n: int) -> List<List<int>> {
+    [xs.drop(at).take(n) for at in 0..xs.length if at % n == 0]
+}
+
+fn flatten_tried(xss: List<List<Tried>>) -> List<Tried> {
+    xss.fold([], (acc, xs) -> acc.concat(xs))
+}
+
+fn outlived(v: Verdict) -> bool {
+    match v { .Killed(by) -> by.contains("outlived"), .Alive or .Rotten(_) -> false }
+}
+
+fn said(v: Verdict) -> string {
+    match v {
+        .Killed(by) -> "killed by ${by}",
+        .Alive -> "SURVIVED every runtime test",
+        .Rotten(why) -> why,
+    }
+}
+
+type Shard = { part: int, parts: int }
+
+/// `MUTATION_SHARD`'s part and count, the whole when unset.
+fn shard() -> Shard {
+    let words = env_or("MUTATION_SHARD", "0/1").split("/")
+    let part = parse_int(words.first() ?? "0") ?? 0
+    let parts = parse_int(words.last() ?? "1") ?? 1
+    Shard { part: part, parts: if parts < 1 { 1 } else { parts } }
+}
+
+/// The sources read, the tests and the whole scheduler built, and what each unit links beside it.
+fn benched(out: string, flag_words: string, objects: List<string>) -> Result<Bench, string> {
+    let flags = [w for w in flag_words.split(" ") if w != ""]
+    let _ = make_dirs(out) catch { return .Err("cannot make ${out}") }
+    for test in TESTS {
+        built(
+            ["-c", "-O2"]
+                .concat(flags)
+                .concat(["-o", "${out}/${test}.o", "runtime/tests/${test}.c"]),
+        )?
+    }
+    built(
+        ["-c", "-O2"]
+            .concat(flags)
+            .concat(["-Iruntime", "-o", "${out}/${OUT_FIBER}.o", "runtime/${OUT_FIBER}.c"]),
+    )?
+    let fiber_o = "${out}/${OUT_FIBER}.o"
+    let sources = {
+        "Fiber": source_of("runtime/avra_fiber.c")?,
+        "Clock": source_of("runtime/avra_runtime.c")?,
+        "Door": source_of("runtime/avra_door.h")?,
+        "Host": source_of("runtime/host/avra_tick.c")?,
+    }
+    let rest = {
+        "Fiber": objects,
+        "Clock": objects.filter(!it.ends_with("/avra_runtime.o")).concat([fiber_o]),
+        "Door": objects,
+        "Host": objects.filter(!it.ends_with("/avra_tick.o")).concat([fiber_o]),
+    }
+    .Ok(Bench { out: out, flags: flags, sources: sources, rest: rest })
+}
+
+fn source_of(path: string) -> Result<string, string> {
+    match read_text(path) { .Ok(t) -> .Ok(t), .Err(_) -> .Err("cannot read ${path}") }
+}
+
+/// A `cc` run that must succeed.
+fn built(words: List<string>) -> Result<int, string> {
+    let o = compiled(words)
+    match o { .Ok(_) -> .Ok(0), .Err(why) -> .Err(why) }
+}
+
+/// A `cc` run: ok, or its first line of complaint.
+fn compiled(words: List<string>) -> Result<int, string> {
+    let cc = tool("cc") catch { return .Err("no cc on PATH") }
+    let c = cmd(cc, words) with { env: inherited() }
+    match c.outcome() {
+        .Err(e) -> .Err(e.describe().message),
+        .Ok(o) -> {
+            match o.exit {
+                .Clean -> .Ok(0),
+                .Code(_) or .Signal(_, _) -> .Err(first_line(o.out.stderr)),
+            }
+        },
+    }
+}
+
+fn first_line(text: string) -> string {
+    clipped(text.trim().split("\n").first() ?? "", 120)
+}
+
+fn unit_key(u: Unit) -> string {
+    match u { .Fiber -> "Fiber", .Clock -> "Clock", .Door -> "Door", .Host -> "Host" }
+}
+
+/// The source with every edit applied, or why the break no longer stands.
+fn broken_text(text: string, edits: List<Edit>) -> Result<string, string> {
+    let seed: Result<string, string> = .Ok(text)
+    edits.fold(seed, (acc, e) -> stepped(acc, e))
+}
+
+fn stepped(acc: Result<string, string>, e: Edit) -> Result<string, string> {
+    let t = acc?
+    let n = occurrences(t, e.old)
+    if n != 1 { return .Err("its line is not in the source (x${n})") }
+    .Ok(t.replace(e.old, e.new))
+}
+
+/// One break: written, built, and every test run until one fails.
+fn tried(b: Bench, at: int, br: Break) -> Tried {
+    Tried { name: br.name, verdict: verdict_of(b, at, br) }
+}
+
+fn verdict_of(b: Bench, at: int, br: Break) -> Verdict {
+    let key = unit_key(br.file)
+    let text = match broken_text(b.sources.get(key) ?? "", br.edits) {
+        .Err(why) -> { return .Rotten(why) },
+        .Ok(t) -> t,
+    }
+    let here = "${b.out}/${at}"
+    let _ = make_dirs(here) catch { return .Rotten("cannot make ${here}") }
+    let unit = match br.file {
+        .Door or .Fiber -> "avra_fiber",
+        .Clock -> "avra_runtime",
+        .Host -> "avra_tick",
+    }
+    let body = match br.file {
+        .Door -> {
+            let _ = write_text("${here}/avra_door.h", text) catch { return .Rotten("cannot write the header") }
+            b.sources.get("Fiber") ?? ""
+        },
+        .Fiber or .Clock or .Host -> text,
+    }
+    let _ = write_text("${here}/${unit}.c", body) catch { return .Rotten("cannot write the source") }
+    let obj = "${here}/${key}.o"
+    match compiled(
+        ["-c", "-O2"].concat(b.flags).concat(["-Iruntime", "-o", obj, "${here}/${unit}.c"]),
+    ) { .Err(why) -> { return .Rotten("does not build — ${why}") }, .Ok(_) -> {} }
+    let rest = b.rest.get(key) ?? []
+    for test in TESTS {
+        let exe = "${here}/${test}"
+        match compiled(
+            ["-O2"].concat(b.flags).concat(["-o", exe, "${b.out}/${test}.o", obj]).concat(rest),
+        ) { .Err(why) -> { return .Rotten("${test} does not link — ${why}") }, .Ok(_) -> {} }
+        let v = ran(exe, test)
+        if v != null { return v! }
+    }
+    .Alive
+}
+
+/// A mutated test run under its ceilings: null when it passed, else the kill.
+fn ran(exe: string, test: string) -> Verdict? {
+    let sh = tool("sh") catch { return .Killed("${test} (no sh)") }
+    let limiter = "ulimit -f ${LOG_CAP_BLOCKS}; ulimit -u ${TEST_PROCS}; ulimit -v ${TEST_AS_KB}; exec \"\$0\" 2>&1"
+    let c = cmd(sh, ["-c", limiter, exe]) with { env: inherited(), timeout: secs(BOUND), max_capture: HEAD_BYTES }
+    match c.outcome() {
+        .Err(e) -> {
+            match e {
+                .TimedOut(_, _) -> .Killed("${test} (it outlived ${BOUND} s)"),
+                .TooMuch(_, _, o) -> failing(test, o.stdout, "a flood"),
+                .NotFound(_, _) or .Denied(_, _) or .NoCwd(_) or .BadEnvName(_) or .Failed(_, _) or .Unplaceable(_, _) or .Holed(_, _) or .NotReady(_, _) or .StageFailed(_, _, _) or .Unscripted(_, _) or .Empty(_) or .Host(_, _) -> .Killed("${test} (${e.describe().message})"),
+            }
+        },
+        .Ok(o) -> {
+            match o.exit {
+                .Clean -> null,
+                .Code(n) -> failing(test, o.out.stdout, "exit ${n}"),
+                .Signal(n, _) -> failing(test, o.out.stdout, "signal ${n}"),
+            }
+        },
+    }
+}
+
+/// A failed test's kill, named by its first `FAILED` line when it printed one.
+fn failing(test: string, said: string, how: string) -> Verdict {
+    let line? = said.split("\n").find(it.contains("FAILED ")) else { return .Killed("${test} (${how})") }
+    let words = line.split("FAILED ")
+    .Killed("${test}: ${clipped(words.drop(1).join("FAILED "), 70)}")
+}
+
+fn on_arm() -> bool {
+    let u = tool("uname") catch { return false }
+    let m = (cmd(u, ["-m"]).run() catch { return false }).stdout.trim()
+    m == "arm64" || m == "aarch64"
+}
+
+fn clipped(text: string, n: int) -> string {
+    if text.length <= n { text } else { text.substring(0, n) }
+}
+
+/// How many times `needle` stands in `text`, without overlap.
+fn occurrences(text: string, needle: string) -> int {
+    let at = text.index_of(needle)
+    if at < 0 { return 0 }
+    1 + occurrences(text.substring(at + needle.length, text.length), needle)
+}
