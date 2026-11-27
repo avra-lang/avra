@@ -478,12 +478,21 @@ static void lookup_answered(NetLookup* l) {
     lookup_let_go(l);
 }
 
+// How many lookup threads are still resolving: each holds what
+// getaddrinfo opens while it runs, so a count of the process's
+// descriptors is settled only once this is 0.
+static _Atomic int64_t g_lookups_running = 0;
+
 static void* lookup_thread(void* arg) {
     NetLookup* l = arg;
     lookup_fill(l, 0);
     lookup_answered(l);
+    atomic_fetch_sub_explicit(&g_lookups_running, 1, memory_order_acq_rel);
     return NULL;
 }
+
+// How many lookup threads are still resolving.
+int64_t avra_net_lookups_running(void) { return atomic_load_explicit(&g_lookups_running, memory_order_acquire); }
 
 // Room in the table for descriptor `fd`, or false when memory ran out.
 static int lookups_reach(int64_t fd) {
@@ -508,6 +517,7 @@ static NetLookup* lookup_at(int64_t h) {
 // answers each such lookup as one to try again, and closes the wake
 // end no thread of its will write.
 static void lookups_forked(void) {
+    atomic_store(&g_lookups_running, 0);
     for (int64_t h = 0; h < g_lookups_cap; h++) {
         NetLookup* l = g_lookups[h];
         if (!l || atomic_load_explicit(&l->done, memory_order_acquire)) continue;
@@ -541,7 +551,9 @@ static int lookup_spawned(NetLookup* l) {
     pthread_attr_init(&attr);
     pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
     pthread_t t;
+    atomic_fetch_add_explicit(&g_lookups_running, 1, memory_order_acq_rel);
     int rc = pthread_create(&t, &attr, lookup_thread, l);
+    if (rc != 0) atomic_fetch_sub_explicit(&g_lookups_running, 1, memory_order_acq_rel);
     pthread_attr_destroy(&attr);
     pthread_sigmask(SIG_SETMASK, &was, NULL);
     return rc;

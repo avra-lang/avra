@@ -3,6 +3,9 @@
 use @std.net.{NetError, listen, connect, resolve, resolver_for}
 use @std.time.{secs, ms, sleep}
 
+/// How many lookup threads are still resolving.
+extern fn avra_net_lookups_running() -> int
+
 /// The highest of sixteen descriptors taken at once, each returned:
 /// the kernel hands out the lowest free, so one left behind anywhere
 /// below pushes the answer up.
@@ -33,13 +36,23 @@ fn connect_cut(port: int) -> int {
     0
 }
 
+/// The table read only once no lookup thread is resolving: a thread
+/// opens files of its own while getaddrinfo runs, and those are no cut's
+/// to answer for. Asked up to `tries` times, 50 ms apart.
+fn settled(tries: int) {
+    if avra_net_lookups_running() == 0 || tries < 1 { return }
+    sleep(ms(50))
+    settled(tries - 1)
+}
+
 /// Whether the cuts left the table where it was: `true`, or `false` with
 /// the reach it started from and each reach asked after, so a table that
-/// stayed high says how high. A resolver thread holds its wake end until
-/// its lookup answers, so the table is asked again, up to `tries` times:
-/// a thread's end comes back, a leak never does.
+/// stayed high says how high. Each reach is read with every lookup thread
+/// done, and asked again up to `tries` times: what a task leaves on its way
+/// out comes back, a leak never does.
 fn kept(before: int, tries: int, seen: string = "") -> Result<string, NetError> {
     sleep(ms(200))
+    settled(200)
     let r = reach()?
     if r < before + 4 { return .Ok("true") }
     if tries < 2 { return .Ok("false (from ${before}:${seen} ${r})") }
@@ -52,6 +65,7 @@ fn run() -> Result<string, NetError> {
     let b0 = reach()?
     let _ = [lookup_cut(i) for i in 0..20]
     let lookups = kept(b0, 25)?
+    settled(200)
     let b1 = reach()?
     let _ = [connect_cut(l.port) for i in 0..20]
     let connects = kept(b1, 25)?
