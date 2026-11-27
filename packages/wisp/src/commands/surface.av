@@ -29,8 +29,14 @@ export type CostMeasure = { kind: CostKind, counter: string, value: int, extra: 
 /// One workload's measures, under its name.
 export type CostSection = { workload: string, measures: List<CostMeasure> }
 
-/// One file of the record: where it stands under `cost/`, its comment lines, and its workloads.
-export type CostFile = { path: string, header: List<string>, sections: List<CostSection> }
+/// One file of the record: where it stands under `cost/`, its comment lines, its workloads, and every
+/// line it holds that reads as no measure.
+export type CostFile = {
+    path: string,
+    header: List<string>,
+    sections: List<CostSection>,
+    unread: List<string> = [],
+}
 
 // THE FILES
 
@@ -40,6 +46,7 @@ export fn cost_file(path: string, text: string) -> CostFile {
     mut sections: List<CostSection> = []
     mut workload = ""
     mut measures: List<CostMeasure> = []
+    mut unread: List<string> = []
     for raw in text.split("\n") {
         let line = raw.trim()
         if line.is_empty() { continue }
@@ -53,11 +60,14 @@ export fn cost_file(path: string, text: string) -> CostFile {
             measures = []
             continue
         }
-        let m? = measure_line(line) else { continue }
+        let m? = measure_line(line) else {
+            unread.push(line)
+            continue
+        }
         measures.push(m)
     }
     if !workload.is_empty() { sections.push(section(workload, measures)) }
-    CostFile { path: path, header: header, sections: sections }
+    CostFile { path: path, header: header, sections: sections, unread: unread }
 }
 
 /// A file as the record writes it: its comments, then each workload and its measures, in order.
@@ -94,7 +104,7 @@ fn kind_named(word: string) -> CostKind? {
         "told" -> CostKind.Told,
         "share" -> CostKind.Share,
         "clock" -> CostKind.Clock,
-        rest -> null,
+        _ -> null,
     }
 }
 
@@ -129,22 +139,36 @@ export fn surface_rows(files: List<CostFile>) -> Map<string, int> {
     mut rows: Map<string, int> = {}
     for f in files {
         for s in f.sections {
-            for m in s.measures { rows.set("${row_workload(f.path, s.workload, m.kind)} ${m.counter}", m.value) }
+            for m in s.measures {
+                let k? = row_key(f.path, s.workload, m) else { continue }
+                rows.set(k, m.value)
+            }
         }
     }
     rows
 }
 
-/// The row's workload for a measure of `workload` in the file at `path`.
-fn row_workload(path: string, workload: string, kind: CostKind) -> string {
-    let family = path.split("/").first() ?? ""
+/// The row a measure of `workload` in the file at `path` projects to; none where the record holds no
+/// such family.
+fn row_key(path: string, workload: string, m: CostMeasure) -> string? {
+    let w? = row_workload(path, workload, m.kind) else { return null }
+    "${w} ${m.counter}"
+}
+
+/// The row's workload for a measure of `workload` in the file at `path`: an unkeyed family's rows are
+/// their workload's, a keyed one's carry its kind and the file's key. None for a family the record
+/// does not hold.
+fn row_workload(path: string, workload: string, kind: CostKind) -> string? {
     let key = key_of(path)
-    match family {
+    match path.split("/").first() ?? "" {
+        "census" or "ledger" or "matrix" -> workload,
         "speed" -> "speed:${key}:${workload}",
         "warm" -> "warm:${key}:${workload}",
+        "wall" -> "wall:${key}:${workload}",
         "footprint" -> "bytes:${key}:${workload}",
+        "grows" -> "grows:${key}:${workload}",
         "work" -> "${work_kind(kind)}:-:${workload}",
-        rest -> workload,
+        _ -> null,
     }
 }
 
@@ -172,7 +196,7 @@ export fn migrated(
     mut by_file: Map<string, Map<string, List<CostMeasure>>> = {}
     for key in sorted_by([k for k, _n in rows], text_before) {
         let w = key.split(" ")
-        let place = placed(w[0])
+        let place? = placed(w[0]) else { continue }
         let m = CostMeasure {
             kind: place.kind,
             counter: w[1],
@@ -197,7 +221,8 @@ export fn migrated(
 /// Where a row lies: its file, its section, its kind.
 type CostPlaced = { path: string, workload: string, kind: CostKind }
 
-fn placed(workload: string) -> CostPlaced {
+/// Where a row of `workload` lies; none for a keyed row whose kind no family holds.
+fn placed(workload: string) -> CostPlaced? {
     let parts = workload.split(":")
     if parts.length == 3 { return keyed(parts[0], parts[1], parts[2]) }
     if workload.starts_with("matrix-") {
@@ -220,7 +245,8 @@ fn placed(workload: string) -> CostPlaced {
     CostPlaced { path: "census/${workload}.cost", workload: workload, kind: CostKind.Count }
 }
 
-fn keyed(kind: string, key: string, workload: string) -> CostPlaced {
+/// The family a keyed row of `kind` lies in, every kind the record judges spelled; none for any other.
+fn keyed(kind: string, key: string, workload: string) -> CostPlaced? {
     match kind {
         "speed" -> CostPlaced { path: "speed/${key}.cost", workload: workload, kind: CostKind.Clock },
         "warm" -> CostPlaced { path: "warm/${key}.cost", workload: workload, kind: CostKind.Clock },
@@ -228,7 +254,9 @@ fn keyed(kind: string, key: string, workload: string) -> CostPlaced {
         "bytes" -> CostPlaced { path: "footprint/${key}.cost", workload: workload, kind: CostKind.Count },
         "share" -> CostPlaced { path: "work/warm.cost", workload: workload, kind: CostKind.Share },
         "told" -> CostPlaced { path: "work/warm.cost", workload: workload, kind: CostKind.Told },
-        rest -> CostPlaced { path: "work/warm.cost", workload: workload, kind: CostKind.Count },
+        "work" -> CostPlaced { path: "work/warm.cost", workload: workload, kind: CostKind.Count },
+        "grows" -> CostPlaced { path: "grows/${key}.cost", workload: workload, kind: CostKind.Count },
+        _ -> null,
     }
 }
 
@@ -328,6 +356,18 @@ fn section(workload: string, measures: List<CostMeasure>) -> CostSection { CostS
 /// A count of `workload` in the file at `path`.
 fn section_of(path: string, workload: string) -> CostPlaced { CostPlaced { path: path, workload: workload, kind: CostKind.Count } }
 
+// THE RECORD'S FAULTS
+
+/// What the record cannot hold, each said: a file under a family it does not know, a line of a file
+/// that reads as no measure, and a row of `rows` whose kind no family holds. A reader that keeps
+/// going past one loses that row's kind and what it is held to, so every reader refuses on any.
+export fn record_faults(files: List<CostFile>, rows: Map<string, int>) -> List<string> {
+    let families = [unknown_family_said(f.path) for f in files if row_workload(f.path, "", CostKind.Count) == null]
+    let lines = [unread_said(f.path, l) for f in files for l in f.unread]
+    let kinds = [unknown_kind_said(k) for k, _n in rows if placed(k.split(" ").first() ?? "") == null]
+    families.concat(lines).concat(kinds)
+}
+
 // THE RECORD AS THE LEDGER
 
 /// The commit every count is measured over, beside the record.
@@ -340,7 +380,7 @@ const RECORD_KINDS: string = "kind bytes keyed-by toolchain over 0ppm\nkind coun
 /// The record as the ledger `wisp cost` judges: its kinds, every clock's target and over line, the
 /// pinned snapshot and every row.
 export fn record_ledger(files: List<CostFile>, snapshot: string) -> string {
-    let clocks = [Clocked { key: "${row_workload(f.path, s.workload, m.kind)} ${m.counter}", m: m } for f in files for s in f.sections for m in s.measures if m.kind is .Clock]
+    let clocks = clocks_of(files)
     let targets = [target_of(c)! for c in clocks if target_of(c) != null]
     let overs = [over_of(c)! for c in clocks if over_of(c) != null]
     let rows = surface_rows(files)
@@ -353,6 +393,21 @@ export fn record_ledger(files: List<CostFile>, snapshot: string) -> string {
 
 /// A clock and the row it projects to.
 type Clocked = { key: string, m: CostMeasure }
+
+/// Every clock the record holds, under the row it projects to.
+fn clocks_of(files: List<CostFile>) -> List<Clocked> {
+    mut clocks: List<Clocked> = []
+    for f in files {
+        for s in f.sections {
+            for m in s.measures {
+                if !(m.kind is .Clock) { continue }
+                let k? = row_key(f.path, s.workload, m) else { continue }
+                clocks.push(Clocked { key: k, m: m })
+            }
+        }
+    }
+    clocks
+}
 
 /// The `target <kind> <workload> <counter> <n>` line a clock carries.
 fn target_of(c: Clocked) -> string? {
@@ -375,13 +430,9 @@ export fn told_rows(files: List<CostFile>) -> Map<string, string> {
     for f in files {
         for s in f.sections {
             for m in s.measures {
-                if m.kind is .Told {
-                    told
-                        .set(
-                            "${row_workload(f.path, s.workload, m.kind)} ${m.counter}",
-                            m.extra.first() ?? "",
-                        )
-                }
+                if !(m.kind is .Told) { continue }
+                let k? = row_key(f.path, s.workload, m) else { continue }
+                told.set(k, m.extra.first() ?? "")
             }
         }
     }
@@ -411,7 +462,7 @@ fn accepted_file(
     let before = was ?? CostFile { path: path, header: [], sections: [] }
     let laid = [section(
         s.workload,
-        [m with { value: rows.get("${row_workload(path, s.workload, m.kind)} ${m.counter}") ?? m.value } for m in s.measures],
+        [m with { value: rows.get(row_key(path, s.workload, m) ?? "") ?? m.value } for m in s.measures],
     ) for s in before.sections]
     let joined_in = merged(laid, grown?.sections ?? [])
     let moved = grown != null ||
@@ -434,4 +485,13 @@ fn merged(laid: List<CostSection>, grown: List<CostSection>) -> List<CostSection
 }
 
 /// Whether two sets of rows hold the same rows, each at the same value.
+// LICENSED compiler.trait_family: maps do not compare, so two row sets agree key by key
 export fn same_rows(a: Map<string, int>, b: Map<string, int>) -> bool { a.length == b.length && a.all((e) -> b.get(e.key) == e.value) }
+
+// VOICES
+
+fn unknown_family_said(path: string) -> string { "cost: cost/${path} stands under no family the record holds — census, ledger, matrix, speed, warm, wall, footprint, grows or work" }
+
+fn unread_said(path: string, line: string) -> string { "cost: cost/${path} holds `${line}`, which reads as no measure — `<count|told|share|clock> <counter> <value>`" }
+
+fn unknown_kind_said(row: string) -> string { "cost: the row `${row}` names a kind no family holds — a new kind is declared in RECORD_KINDS and given its family's arm in `keyed`" }

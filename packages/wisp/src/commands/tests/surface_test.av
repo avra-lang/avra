@@ -1,6 +1,7 @@
 // The record under `cost/` holds exactly the rows the ledger held: migrated, written, read back and
 // projected, every row and its value come home, and a clock keeps its band, target and over line.
 use commands.{
+    RECORD_KINDS,
     CostFile,
     cost_file,
     cost_view,
@@ -8,6 +9,7 @@ use commands.{
     kinds_of,
     migrated,
     record_accepted,
+    record_faults,
     record_ledger,
     rows_of,
     surface_rows,
@@ -109,7 +111,7 @@ fn with_told() -> List<CostFile> {
     let told = file_text(file_at("census/check-cli.cost")!)
         .replace("count queries_computed 145145", "told queries_computed 145145 .112.27")
     read_back()
-        .filter((f) -> f.path != "census/check-cli.cost")
+        .filter(it.path != "census/check-cli.cost")
         .concat([cost_file("census/check-cli.cost", told)])
 }
 
@@ -165,5 +167,49 @@ spec "cost surface — the accept" {
     then "a told count stays told, its ticket kept, when its value moves" {
         let rows: Map<string, int> = {"check-cli queries_computed": 145200}
         told_rows(record_accepted(with_told(), rows, "moved")).get("check-cli queries_computed") == ".112.27"
+    }
+}
+
+/// A row of every keyed kind the record declares, each under a key of what keys it.
+fn keyed_rows() -> Map<string, int> {
+    mut rows: Map<string, int> = {}
+    for name, k in kinds_of(RECORD_KINDS) {
+        if name == "count" { continue }
+        rows
+            .set("${name}:${if k.keyed_by == "-" { "-" } else { "a-host" }}:a-workload a_counter", 7)
+    }
+    rows
+}
+
+fn round_trip(rows: Map<string, int>) -> Map<string, int> {
+    let made = migrated("", rows, [], [])
+    surface_rows([cost_file(f.path, file_text(f)) for f in made])
+}
+
+spec "cost surface — every kind keeps its kind" {
+    then "a row of each keyed kind the record declares comes home under its own kind" {
+        let rows = keyed_rows()
+        let back = round_trip(rows)
+        rows.length == 8 &&
+            back.length == rows.length &&
+            rows.all((e) -> back.get(e.key) == e.value)
+    }
+    then "a record of every declared kind holds no fault" {
+        record_faults(read_back(), keyed_rows()).is_empty()
+    }
+    then "a row of a kind no family holds refuses, naming the row" {
+        let faults = record_faults(read_back(), {"reads:-:warm-edit proved": 3})
+        faults.length == 1 && faults[0].contains("`reads:-:warm-edit proved`")
+    }
+    then "a row of a kind no family holds is never laid in as another kind" {
+        round_trip({"reads:-:warm-edit proved": 3}).is_empty()
+    }
+    then "a file under a family the record does not hold refuses, naming the file" {
+        let faults = record_faults([cost_file("reads/a-workload.cost", "[w]\ncount c 1\n")], {})
+        faults.length == 1 && faults[0].contains("cost/reads/a-workload.cost")
+    }
+    then "a line that reads as no measure refuses, naming the line" {
+        let faults = record_faults([cost_file("census/w.cost", "[w]\ncount c 1\nproofs c 2\n")], {})
+        faults.length == 1 && faults[0].contains("`proofs c 2`")
     }
 }

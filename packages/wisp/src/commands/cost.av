@@ -438,6 +438,13 @@ export fn judge(
 /// a cause.
 fn record_told() -> Map<string, string> { told_rows(surface_at(".")) }
 
+/// Whether the record, or a row `rows` would lay into it, holds what it cannot: each fault said.
+fn record_refused(rows: Map<string, int>) -> bool {
+    let faults = record_faults(surface_at("."), rows)
+    for f in faults { println(f) }
+    !faults.is_empty()
+}
+
 /// The ledger the record makes, over the snapshot it pins.
 fn ledger_text() -> string { record_ledger(surface_at("."), (read_text(SNAPSHOT_FILE) catch "").trim()) }
 
@@ -677,6 +684,7 @@ fn judged_run(run_dir: string, cause: string) -> int {
     let keyed = ledger.filter((e) -> kind_name_of(e.key) != "count")
     let all_base = ledger.filter((e) -> kind_name_of(e.key) == "count")
     let now = measured(run_dir)
+    if record_refused(now) { return 1 }
     if now.is_empty() {
         println("cost: the run printed no counts — refusing to judge")
         return 1
@@ -780,6 +788,7 @@ fn keyed_judged(run_dir: string, cause: string, tell: bool) -> int {
         return 1
     }
     let now = folded.rows
+    if record_refused(now) { return 1 }
     if now.is_empty() {
         println("cost: the run measured no rows — refusing to judge")
         return 1
