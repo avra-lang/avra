@@ -898,7 +898,7 @@ _Static_assert(offsetof(AvraArray, cap) == 0 && offsetof(AvraArray, len) == 8 &&
                offsetof(AvraArray, marks) == 24 && offsetof(AvraArray, site) == 32 && sizeof(AvraArray) == 40,
                "the static array layout mirrors AvraArray");
 _Static_assert(offsetof(AvraMap, keys) == 0 && offsetof(AvraMap, vals) == 8 && offsetof(AvraMap, index) == 16 &&
-               offsetof(AvraMap, icap) == 24 && sizeof(AvraMap) == 32,
+               offsetof(AvraMap, icap) == 24 && offsetof(AvraMap, words) == 32 && sizeof(AvraMap) == 40,
                "the static map layout mirrors AvraMap");
 
 // The header as constant fields: tag, kind, count, length.
@@ -1060,20 +1060,20 @@ LLVMValueRef avra_llvm_static_array(LLVMModuleRef m, const char* name, LLVMValue
     return LLVMConstInBoundsGEP2(i8, g, &offset, 1);
 }
 
-// A map laid out whole over its two static arrays; the index is
+// A text-keyed map laid out whole over its two static arrays; the index is
 // left UNBUILT (capacity zero) for the runtime to hash on first use.
 LLVMValueRef avra_llvm_static_map(LLVMModuleRef m, const char* name, LLVMValueRef keys, LLVMValueRef vals) {
     LLVMContextRef ctx = LLVMGetModuleContext(m);
     LLVMTypeRef i64 = LLVMInt64TypeInContext(ctx);
     LLVMTypeRef ptr = LLVMPointerTypeInContext(ctx, 0);
-    LLVMValueRef map_fields[4] = { keys, vals, LLVMConstPointerNull(ptr), LLVMConstInt(i64, 0, 0) };
-    // the target's own size, not the compiler's: a wasm32 AvraMap is 24 bytes
-    LLVMTypeRef map_ty = LLVMStructTypeInContext(ctx, (LLVMTypeRef[]){ ptr, ptr, ptr, i64 }, 4, 0);
+    LLVMValueRef map_fields[5] = { keys, vals, LLVMConstPointerNull(ptr), LLVMConstInt(i64, 0, 0), LLVMConstInt(i64, 0, 0) };
+    // the target's own size, not the compiler's: a wasm32 AvraMap is smaller
+    LLVMTypeRef map_ty = LLVMStructTypeInContext(ctx, (LLVMTypeRef[]){ ptr, ptr, ptr, i64, i64 }, 5, 0);
     LLVMTargetDataRef td = LLVMGetModuleDataLayout(m);
     uint32_t map_bytes = td != NULL && LLVMPointerSize(td) == 4 ? (uint32_t)LLVMABISizeOfType(td, map_ty) : (uint32_t)sizeof(AvraMap);
     LLVMValueRef fields[2] = {
         header_const(ctx, KIND_IMMORTAL(KIND_MAP), map_bytes),
-        LLVMConstStructInContext(ctx, map_fields, 4, 0),
+        LLVMConstStructInContext(ctx, map_fields, 5, 0),
     };
     return headered_global(m, LLVMConstStructInContext(ctx, fields, 2, 0), name, 0);
 }
