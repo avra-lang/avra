@@ -1,21 +1,23 @@
 // An empty cache, then puts under the bound, past it, reads that keep a value, a value heavier than
 // the bound, a key put twice, and enough reads to pack the record many times over.
+use answer_record.{ContentHash}
 use bounded_cache.{bounded_cache}
+use interned.{HIGH_LANE, LOW_LANE, key_of_lanes}
 
 spec "bounded_cache — values under a bound on their bytes, the least recently read let go first" {
     given "an empty cache" {
         then "nothing is found and nothing weighs" {
             let cache = bounded_cache<string>(10)
-            cache.get("a") == null && cache.bytes() == 0 && cache.count() == 0
+            cache.get(k("a")) == null && cache.bytes() == 0 && cache.count() == 0
         }
     }
     given "values that fit the bound" {
         then "every one is found" {
             let cache = bounded_cache<string>(10)
-            cache.put("a", "one", 4)
-            cache.put("b", "two", 4)
-            cache.get("a") == "one" &&
-                cache.get("b") == "two" &&
+            cache.put(k("a"), "one", 4)
+            cache.put(k("b"), "two", 4)
+            cache.get(k("a")) == "one" &&
+                cache.get(k("b")) == "two" &&
                 cache.bytes() == 8 &&
                 cache.count() == 2
         }
@@ -23,32 +25,35 @@ spec "bounded_cache — values under a bound on their bytes, the least recently 
     given "a put past the bound" {
         then "the least recently put is let go" {
             let cache = bounded_cache<string>(10)
-            cache.put("a", "one", 4)
-            cache.put("b", "two", 4)
-            cache.put("c", "three", 4)
-            cache.get("a") == null &&
-                cache.get("b") == "two" &&
-                cache.get("c") == "three" &&
+            cache.put(k("a"), "one", 4)
+            cache.put(k("b"), "two", 4)
+            cache.put(k("c"), "three", 4)
+            cache.get(k("a")) == null &&
+                cache.get(k("b")) == "two" &&
+                cache.get(k("c")) == "three" &&
                 cache.bytes() == 8
         }
     }
     given "a value read since it was put" {
         then "it outlives one put after it that was never read" {
             let cache = bounded_cache<string>(10)
-            cache.put("a", "one", 4)
-            cache.put("b", "two", 4)
-            let read = cache.get("a") == "one"
-            cache.put("c", "three", 4)
-            read && cache.get("a") == "one" && cache.get("b") == null && cache.get("c") == "three"
+            cache.put(k("a"), "one", 4)
+            cache.put(k("b"), "two", 4)
+            let read = cache.get(k("a")) == "one"
+            cache.put(k("c"), "three", 4)
+            read &&
+                cache.get(k("a")) == "one" &&
+                cache.get(k("b")) == null &&
+                cache.get(k("c")) == "three"
         }
     }
     given "a value heavier than the bound" {
         then "it is held alone" {
             let cache = bounded_cache<string>(10)
-            cache.put("a", "one", 4)
-            cache.put("big", "large", 25)
-            cache.get("a") == null &&
-                cache.get("big") == "large" &&
+            cache.put(k("a"), "one", 4)
+            cache.put(k("big"), "large", 25)
+            cache.get(k("a")) == null &&
+                cache.get(k("big")) == "large" &&
                 cache.count() == 1 &&
                 cache.bytes() == 25
         }
@@ -56,42 +61,45 @@ spec "bounded_cache — values under a bound on their bytes, the least recently 
     given "a key put twice" {
         then "the later value stands and weighs once" {
             let cache = bounded_cache<string>(10)
-            cache.put("a", "one", 4)
-            cache.put("a", "uno", 5)
-            cache.get("a") == "uno" && cache.bytes() == 5 && cache.count() == 1
+            cache.put(k("a"), "one", 4)
+            cache.put(k("a"), "uno", 5)
+            cache.get(k("a")) == "uno" && cache.bytes() == 5 && cache.count() == 1
         }
     }
     given "a key let go and put again" {
         then "it is found again" {
             let cache = bounded_cache<string>(4)
-            cache.put("a", "one", 4)
-            cache.put("b", "two", 4)
-            cache.put("a", "again", 4)
-            cache.get("a") == "again" && cache.get("b") == null
+            cache.put(k("a"), "one", 4)
+            cache.put(k("b"), "two", 4)
+            cache.put(k("a"), "again", 4)
+            cache.get(k("a")) == "again" && cache.get(k("b")) == null
         }
     }
     given "thousands of reads, packing the record many times" {
         then "the least recently read is still the one let go" {
             let cache = bounded_cache<int>(30)
-            for key in 0..3 { cache.put("k${key}", key, 10) }
-            for round in 0..2000 { cache.get("k${round % 3}") }
-            let hot = cache.get("k0") == 0 && cache.get("k2") == 2
-            cache.put("k3", 3, 10)
+            for key in 0..3 { cache.put(k("k${key}"), key, 10) }
+            for round in 0..2000 { cache.get(k("k${round % 3}")) }
+            let hot = cache.get(k("k0")) == 0 && cache.get(k("k2")) == 2
+            cache.put(k("k3"), 3, 10)
             hot &&
-                cache.get("k1") == null &&
-                cache.get("k0") == 0 &&
-                cache.get("k2") == 2 &&
-                cache.get("k3") == 3
+                cache.get(k("k1")) == null &&
+                cache.get(k("k0")) == 0 &&
+                cache.get(k("k2")) == 2 &&
+                cache.get(k("k3")) == 3
         }
     }
     given "a cleared cache" {
         then "nothing is found and puts start afresh" {
             let cache = bounded_cache<string>(10)
-            cache.put("a", "one", 4)
+            cache.put(k("a"), "one", 4)
             cache.clear()
-            let empty = cache.get("a") == null && cache.bytes() == 0
-            cache.put("b", "two", 4)
-            empty && cache.get("b") == "two" && cache.count() == 1
+            let empty = cache.get(k("a")) == null && cache.bytes() == 0
+            cache.put(k("b"), "two", 4)
+            empty && cache.get(k("b")) == "two" && cache.count() == 1
         }
     }
 }
+
+/// The key a test names by `text`.
+fn k(text: string) -> ContentHash { key_of_lanes(HIGH_LANE.text(HIGH_LANE.seed, text), LOW_LANE.text(LOW_LANE.seed, text)) }

@@ -2,17 +2,19 @@
 //! shape every node arena shares. Callers wrap the raw index in their
 //! typed id.
 use @std.meta.{identity, plain_field}
-use @std.relation.engine.{list_cell, map_cell}
+use @std.program.hash_keyed_table.{HashKeyedTable, hash_keyed_table}
+use @std.relation.engine.{list_cell}
 
 /// ONE IDENTITY: every table is a `Cell`, so a copy of the arena
 /// appends into the same storage as the original. `kinds` is the arena
 /// relation's `@index kind`: one bucket of raw indexes per variant tag,
-/// ascending, covering the first `kinded` nodes and caught up on each ask.
+/// probed by the tag's own word, ascending, covering the first `kinded`
+/// nodes and caught up on each ask.
 @identity
 export type Arena<N> = {
     nodes: Cell<List<N>>,
     spans: Cell<List<Span?>>,
-    kinds: Cell<Map<string, Cell<List<int>>>>,
+    kinds: HashKeyedTable<Cell<List<int>>>,
     kinded: Cell<int>,
     /// The first node replaced since the arena last forgot its rewrites, -1 for none.
     rewritten: Cell<int>,
@@ -22,7 +24,7 @@ export fn new_arena<N>() -> Arena<N> {
     Arena {
         nodes: list_cell<N>(),
         spans: list_cell<Span?>(),
-        kinds: map_cell(),
+        kinds: hash_keyed_table(),
         kinded: Cell.new(0),
         rewritten: Cell.new(-1),
     }
@@ -42,7 +44,7 @@ impl Arena {
         Arena {
             nodes: Cell.new(self.nodes.get()),
             spans: Cell.new(self.spans.get()),
-            kinds: map_cell(),
+            kinds: hash_keyed_table(),
             kinded: Cell.new(0),
             rewritten: Cell.new(self.rewritten.get()),
         }
@@ -74,26 +76,32 @@ impl Arena {
     /// sliced by two binary searches, so no node of another kind is read.
     fn of_kind(lo: int, hi: int, k: int, tag: fn(N) -> int) -> List<int> {
         self.index_kinds(tag)
-        let ids = self.kinds.get().get("${k}")?.get() ?? []
+        let ids = self.filed(k)?.get() ?? []
         ids.slice(lower_bound(ids, lo), lower_bound(ids, hi))
     }
 
     /// Files every node appended since the last ask under its tag.
     fn index_kinds(tag: fn(N) -> int) {
         let nodes = self.nodes.get()
-        for i in self.kinded.get()..nodes.length { self.bucket("${tag(nodes[i])}").push(i) }
+        for i in self.kinded.get()..nodes.length { self.bucket(tag(nodes[i])).push(i) }
         self.kinded.set(nodes.length)
     }
 
-    /// The bucket a tag files into, opened on first use.
-    fn bucket(key: string) -> Cell<List<int>> {
-        self.kinds.get().get(key) ?? {
+    /// The bucket the tag `k` files into, opened on first use.
+    fn bucket(k: int) -> Cell<List<int>> {
+        self.filed(k) ?? {
             let fresh: Cell<List<int>> = list_cell()
-            self.kinds.put(key, fresh)
+            self.kinds.put_at(k, KIND_WORD, fresh)
             fresh
         }
     }
+
+    /// The bucket the tag `k` has filed into, absent before its first node.
+    fn filed(k: int) -> Cell<List<int>>? { self.kinds.get_at(k, KIND_WORD) }
 }
+
+/// The second word of a kind's key: a tag is one word, and the table keys by two.
+const KIND_WORD: int = 0
 
 /// The first index in `xs` (ascending) whose value is `>= target`;
 /// `xs.length` when every value is smaller.

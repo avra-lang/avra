@@ -40,6 +40,7 @@ use compiler.typing.{builtin_type_name}
 use @std.meta.{derive}
 use @std.program.address.{SourceFileAddress}
 use @std.program.answer_record.{ContentHash, content_hash}
+use @std.program.interned.{HIGH_LANE, LOW_LANE, KeyLane, key_of_lanes}
 use @std.program.bounded_cache.{BoundedCache, bounded_cache}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
 use @std.program.saved_derive.{Saved}
@@ -786,22 +787,50 @@ fn item_read(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ReadIt
 }
 
 /// What a written item read back is held under: its file, its place, and its text's print.
-export fn written_key(file: SourceFileAddress, at: ItemId, start: int, text: string) -> string { printed_key(file, at, start, fp_str(text)) }
+export fn written_key(file: SourceFileAddress, at: ItemId, start: int, text: string) -> ContentHash { printed_key(file, at, start, fp_str(text)) }
 
 /// What a written item whose text prints as `print` read back is held under.
-fn printed_key(file: SourceFileAddress, at: ItemId, start: int, print: int) -> string { "${spelled_file(file)}#${at}#${start}#${print}" }
+fn printed_key(file: SourceFileAddress, at: ItemId, start: int, print: int) -> ContentHash { item_key_of(file, at, WRITTEN_ITEM, start, print) }
 
 /// What a made item read back is held under: its file, its place, and its whole tape's print —
 /// places included, so a template that moves makes another key.
-export fn made_key(file: SourceFileAddress, at: ItemId, tape: SyntaxTape) -> string {
+export fn made_key(file: SourceFileAddress, at: ItemId, tape: SyntaxTape) -> ContentHash {
     let print = content_hash(tape.saved_bytes())
-    "${spelled_file(file)}#${at}#made#${print.high_word}:${print.low_word}"
+    item_key_of(file, at, MADE_ITEM, print.high_word, print.low_word)
 }
+
+/// The key of the item at `at` in `file`, read back as `kind` from two words of what it was read from:
+/// each part folded into both lanes as a word of its own, nothing boxed.
+fn item_key_of(file: SourceFileAddress, at: ItemId, kind: int, first: int, second: int) -> ContentHash {
+    key_of_lanes(
+        item_key_folded(HIGH_LANE, file, at, kind, first, second),
+        item_key_folded(LOW_LANE, file, at, kind, first, second),
+    )
+}
+
+fn item_key_folded(
+    lane: KeyLane,
+    file: SourceFileAddress,
+    at: ItemId,
+    kind: int,
+    first: int,
+    second: int,
+) -> int {
+    let placed = lane
+        .word(lane.word(lane.word(lane.seed, file.key.high_word), file.key.low_word), at.of)
+    lane.word(lane.word(lane.word(placed, kind), first), second)
+}
+
+/// How a written item's key tells it from a made one's.
+const WRITTEN_ITEM: int = 0
+
+/// How a made item's key tells it from a written one's.
+const MADE_ITEM: int = 1
 
 /// The item `key` names, read back from the tape `placed` answers: the one held under the key, else
 /// read and held. `key` names its content — a written item's text, a made one's whole tape — so two
 /// items share an entry only where they read back alike.
-fn held_read(key: string, placed: fn() -> PlacedTape, at: ItemId?) -> ReadItem {
+fn held_read(key: ContentHash, placed: fn() -> PlacedTape, at: ItemId?) -> ReadItem {
     if !items_held() { return item_whole(placed(), at) }
     let kept = held_items().get(key)
     if kept != null { return kept! }

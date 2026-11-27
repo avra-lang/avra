@@ -4,6 +4,8 @@
 //! stay. Reads are kept in the order they happen, a value's latest read naming it there, and the
 //! record is packed down to the values held once it holds twice as many reads as values. An
 //! identity: every holder sees one cache.
+use answer_record.{ContentHash}
+use hash_keyed_table.{HashKeyedTable, hash_keyed_table}
 use @std.meta.{identity}
 
 /// The slot of a key whose value was let go.
@@ -13,14 +15,14 @@ const NOT_HELD: int = -1
 const PACKED_SLACK: int = 64
 
 /// A value held, under its key, with what it weighs.
-type Held<V> = { key: string, value: V, bytes: int }
+type Held<V> = { key: ContentHash, value: V, bytes: int }
 
 @identity
 export type BoundedCache<V> = {
     /// The bytes the held values may weigh together.
     bound: Cell<int>,
     /// Each key's slot, or NOT_HELD once its value is let go.
-    slot_of: Cell<Map<string, int>>,
+    slot_of: HashKeyedTable<int>,
     /// Each slot's value, absent once let go.
     slots: Cell<List<Held<V>?>>,
     /// Each slot's latest read's place in the record: a read writes one number, and the value it
@@ -36,13 +38,12 @@ export type BoundedCache<V> = {
 
 /// An empty cache whose values may weigh `bound` bytes together.
 export fn bounded_cache<V>(bound: int) -> BoundedCache<V> {
-    let slot_of: Cell<Map<string, int>> = Cell.new({})
     let slots: Cell<List<Held<V>?>> = Cell.new([])
     let read_at: Cell<List<int>> = Cell.new([])
     let reads: Cell<List<int>> = Cell.new([])
     BoundedCache {
         bound: Cell.new(bound),
-        slot_of: slot_of,
+        slot_of: hash_keyed_table(),
         slots: slots,
         read_at: read_at,
         reads: reads,
@@ -54,8 +55,8 @@ export fn bounded_cache<V>(bound: int) -> BoundedCache<V> {
 
 impl BoundedCache<V> {
     /// The value under `key`, absent when none is held; a value found is read most recently now.
-    fn get(key: string) -> V? {
-        let slot? = self.slot_of.get().get(key) else { return null }
+    fn get(key: ContentHash) -> V? {
+        let slot? = self.slot_of.get(key) else { return null }
         if slot < 0 { return null }
         let held? = self.slots.get()[slot] else { return null }
         self.touched(slot)
@@ -64,7 +65,7 @@ impl BoundedCache<V> {
 
     /// `value` under `key`, weighing `bytes`, read most recently now. The least recently read
     /// values are let go first until it fits; a value heavier than the bound is held alone.
-    fn put(key: string, value: V, bytes: int) {
+    fn put(key: ContentHash, value: V, bytes: int) {
         self.let_go(key)
         while self.held_count.get() > 0 && self.held_bytes.get() + bytes > self.bound.get() {
             self.oldest_let_go()
@@ -87,7 +88,7 @@ impl BoundedCache<V> {
 
     /// Nothing held.
     fn clear() {
-        self.slot_of.set({})
+        self.slot_of.clear()
         self.slots.set([])
         self.read_at.set([])
         self.reads.set([])
@@ -97,8 +98,8 @@ impl BoundedCache<V> {
     }
 
     /// The value under `key` let go, when one is held.
-    fn let_go(key: string) {
-        let slot? = self.slot_of.get().get(key) else { return }
+    fn let_go(key: ContentHash) {
+        let slot? = self.slot_of.get(key) else { return }
         if slot < 0 { return }
         let held? = self.slots.get()[slot] else { return }
         self.slot_let_go(slot, held)
@@ -147,15 +148,9 @@ impl BoundedCache<V> {
         let kept = [slots[slot]! for place, slot in self.reads.get() if slots[slot] != null && read_at[slot] == place]
         self.slots.set([h for h in kept])
         self.read_at.set([at for at in 0..kept.length])
-        self.slot_of.set(slots_by_key(kept))
+        self.slot_of.clear()
+        for at, held in kept { self.slot_of.put(held.key, at) }
         self.reads.set([at for at in 0..kept.length])
         self.oldest.set(0)
     }
-}
-
-/// Each value's key, to the slot its place in `kept` gives it.
-fn slots_by_key<V>(kept: List<Held<V>>) -> Map<string, int> {
-    mut by_key: Map<string, int> = {}
-    for at, held in kept { by_key.set(held.key, at) }
-    by_key
 }
