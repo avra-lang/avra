@@ -1,11 +1,9 @@
 use commands.{
-    accepted,
     candidates_of,
     census_counters,
     counts_of,
     edited,
     judge,
-    keyed_accepted,
     kinds_of,
     Kind,
     new_candidates,
@@ -62,6 +60,12 @@ fn counted() -> Map<string, Kind> { kinds_of(ledger_kinds()) }
 /// The kinds with `told` among them, as the ledger declares it.
 fn told_too() -> Map<string, Kind> { kinds_of("${ledger_kinds()}\nkind told keyed-by - over none") }
 
+/// The record telling the one row `key`, its ticket beside it.
+fn told_of(key: string) -> Map<string, string> {
+    let told: Map<string, string> = {key: ".112.22"}
+    told
+}
+
 fn edit_said(r: Result<string, string>) -> string {
     match r { .Ok(t) -> "ok ${t}", .Err(why) -> "err ${why}" }
 }
@@ -105,16 +109,18 @@ spec "cost — the judgement" {
         let j = judge(one("w boxes", 999951), one("w boxes", 1000000), counted())
         j.failed.is_empty() && j.fell.is_empty()
     }
-    then "an unsettled row moved either way fails nothing and falls nothing" {
+    then "a row the record tells, moved either way, fails nothing and falls nothing" {
         let up = judge(
             one("matrix-build-bare-back-signature pass_lower_asks", 7),
             one("matrix-build-bare-back-signature pass_lower_asks", 6),
             told_too(),
+            told_of("matrix-build-bare-back-signature pass_lower_asks"),
         )
         let down = judge(
             one("matrix-build-laid-back-signature pass_lower_asks", 6),
             one("matrix-build-laid-back-signature pass_lower_asks", 7),
             told_too(),
+            told_of("matrix-build-laid-back-signature pass_lower_asks"),
         )
         up.failed.is_empty() &&
             up.fell.is_empty() &&
@@ -122,11 +128,12 @@ spec "cost — the judgement" {
             down.fell.is_empty() &&
             up.told.length == 1
     }
-    then "a sibling of an unsettled row is judged exactly" {
+    then "a sibling of a told row is judged exactly" {
         !judge(
             one("matrix-build-bare-signature pass_lower_asks", 23),
             one("matrix-build-bare-signature pass_lower_asks", 22),
             told_too(),
+            told_of("matrix-build-bare-back-signature pass_lower_asks"),
         )
             .failed
             .is_empty()
@@ -152,17 +159,10 @@ spec "cost — the judgement" {
 }
 
 spec "cost — the accept" {
-    then "over the same snapshot a row never rises" { accepted(one("w boxes", 1004), one("w boxes", 1000), true).get("w boxes") == 1000 }
-    then "over the same snapshot a row falls to what was measured" {
-        accepted(one("w boxes", 900), one("w boxes", 1000), true).get("w boxes") == 900
-    }
     then "a ledger run's pass rows are recorded, and never the work its twin's rows hold" {
         recorded_row("ledger-x pass_tape_asks") &&
             !recorded_row("ledger-x queries_computed") &&
             recorded_row("x queries_computed")
-    }
-    then "over another snapshot every row is what was measured" {
-        accepted(one("w boxes", 1200), one("w boxes", 1000), false).get("w boxes") == 1200
     }
 }
 
@@ -336,20 +336,6 @@ spec "cost — a keyed run's rounds" {
             .join("|") == "cost: bytes:k:hello stripped: one run measured 10 and 11, and its kind holds its rounds equal"
     }
     then "a round of an undeclared kind is refused" { !rounds_folded("weight:k:x n 1\n", counted()).apart.is_empty() }
-    then "a keyed accept lowers, seeds, never raises, and records what a told row measured" {
-        mut now = one("bytes:k:a n", 9)
-        now.set("bytes:k:b n", 12)
-        now.set("bytes:k:new n", 5)
-        now.set("grows:k:board n", 700)
-        mut base = one("bytes:k:a n", 10)
-        base.set("bytes:k:b n", 11)
-        base.set("grows:k:board n", 500)
-        let got = keyed_accepted(now, base, counted())
-        got.get("bytes:k:a n") == 9 &&
-            got.get("bytes:k:b n") == 11 &&
-            got.get("bytes:k:new n") == 5 &&
-            got.get("grows:k:board n") == 700
-    }
     then "a keyed row reads back from the ledger's text" {
         let text = render(
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",

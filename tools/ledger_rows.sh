@@ -1,5 +1,5 @@
 #!/bin/sh
-# A MEASUREMENT'S STREAM AS LEDGER ROWS, judged by `wisp cost` against tools/cost.baseline. The
+# A MEASUREMENT'S STREAM AS LEDGER ROWS, judged by `wisp cost` against the record under cost/. The
 # stream is the lines tools/speed_measure.sh, tools/warm_edit_bench.sh and tools/ci_wall.sh print:
 #   host <host>                       the machine that measured; it keys every clock row
 #   build|check <phase> <ms>          a phase of the cli's build or check   speed:<host>:<cmd> <phase>
@@ -19,6 +19,7 @@ stream=${1:?ledger_rows: a stream}
 name=${2:?ledger_rows: a name}
 family=${3:?ledger_rows: clock or work}
 verb=${4:?ledger_rows: judge, accept or tell}
+cause=${5:-}
 case $family in clock | work) ;; *) echo "ledger_rows: clock or work, never $family" >&2; exit 2 ;; esac
 case $verb in judge | accept | tell) ;; *) echo "ledger_rows: judge, accept or tell, never $verb" >&2; exit 2 ;; esac
 [ -f "$stream" ] || { echo "ledger_rows: no stream at $stream" >&2; exit 1; }
@@ -54,4 +55,5 @@ else
 fi
 [ -s "$out/rows" ] || { echo "ledger_rows: REFUSED — $name's stream holds no $family row (did the measurement run?)" >&2; exit 1; }
 echo "ledger_rows: $name, $(wc -l < "$out/rows" | tr -d ' ') $family row(s) measured on $host"
+if [ "$verb" = accept ]; then exec sh "$here/../wisp" cost accept "$out" "$cause"; fi
 exec sh "$here/../wisp" cost "$verb" "$out"

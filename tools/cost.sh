@@ -1,6 +1,6 @@
 #!/bin/sh
 # THE EXACT-COUNT GATE'S MEASUREMENT: the census compiler of this tree, run over FIXED workloads whose
-# sources are one pinned commit (the `snapshot` row of tools/cost.baseline): cold, each run's census
+# sources are one pinned commit (cost/SNAPSHOT): cold, each run's census
 # kept as build/cost/<workload>.out; and warm after each edit of a fixed set, the answers it worked out
 # again kept as build/cost/edit-<kind>.out. `wisp cost` judges them.
 #   sh tools/cost.sh [judge|accept]       the baseline's snapshot, then (named) its verdict or its accept
@@ -21,22 +21,24 @@
 # changed in the last two seconds), so what a run stamps never depends on how fast it began.
 set -eu
 verdict=
+cause=
 edits_named=
 builder_gen1=
 while [ "$#" -gt 0 ]; do
     case $1 in
         judge | accept) verdict=$1 ;;
+        --cause) cause=${2:?cost: --cause names what moved the rows}; shift ;;
         --edits) edits_named=${2:?cost: --edits names the warm edits}; shift ;;
         --builder-gen1) builder_gen1=1 ;;
-        *) echo "cost: \`sh tools/cost.sh\` takes judge, accept, --edits <kinds> and --builder-gen1, never $1"; exit 2 ;;
+        *) echo "cost: \`sh tools/cost.sh\` takes judge, accept --cause <what moved the rows>, --edits <kinds> and --builder-gen1, never $1"; exit 2 ;;
     esac
     shift
 done
 cd "$(dirname "$0")/.."
 root=$(pwd)
 out=build/cost
-snapshot=${COST_SNAPSHOT:-$(awk '$1 == "snapshot" { print $2 }' tools/cost.baseline 2> /dev/null)}
-[ -n "$snapshot" ] || { echo "cost: tools/cost.baseline names no snapshot"; exit 1; }
+snapshot=${COST_SNAPSHOT:-$(cat cost/SNAPSHOT 2> /dev/null)}
+[ -n "$snapshot" ] || { echo "cost: cost/SNAPSHOT names no snapshot"; exit 1; }
 # A SHALLOW CLONE FETCHES THE ONE COMMIT IT PINS.
 git cat-file -e "$snapshot^{commit}" 2> /dev/null || git fetch -q --depth=1 origin "$snapshot" 2> /dev/null || :
 git cat-file -e "$snapshot^{commit}" 2> /dev/null || {
@@ -529,4 +531,4 @@ fi
 for made in "$place" "$out/edited.orig"; do [ ! -e "$made" ] || find "$made" -delete; done
 # THE VERDICT, where one is asked (`make cost` judges, `make cost-accept` records): the run judged by
 # `wisp cost`, so the measurement and the verdict change together and the Makefile never does
-[ -z "$verdict" ] || sh "$root/wisp" cost "$verdict" "$out"
+if [ "$verdict" = accept ]; then sh "$root/wisp" cost accept "$out" "${cause:-}"; elif [ -n "$verdict" ]; then sh "$root/wisp" cost "$verdict" "$out"; fi
