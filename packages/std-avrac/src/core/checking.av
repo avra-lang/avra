@@ -236,7 +236,7 @@ export type Checking = {
     /// a lambda's among them, answers nothing.
     fnless: bool = false,
     /// The type each node's seat wanted, by its index, where the body was checked as the core it means.
-    seats: Cell<Map<string, SignedType>>,
+    seats: Cell<List<SignedType?>>,
     /// Each node whose seat refused it, in the order met.
     refused: Cell<List<Refused>>,
     /// The seats being checked in, innermost last, each beside the type it wants: a node checked
@@ -1026,7 +1026,7 @@ export fn checking(store: SyntaxArena, program: CheckedProgram, answer: SignedTy
     let types: Cell<List<SignedType?>> = Cell.new([unchecked for _i in 0..store.exprs.count()])
     let scopes: Cell<List<CheckScope>> = Cell.new([open_scope()])
     let proofs: Cell<Map<string, Proof>> = Cell.new({})
-    let seats: Cell<Map<string, SignedType>> = Cell.new({})
+    let seats: Cell<List<SignedType?>> = Cell.new([unchecked for _i in 0..store.exprs.count()])
     let refused: Cell<List<Refused>> = Cell.new([])
     let seated: Cell<List<SeatWant>> = Cell.new([])
     let agreements: Cell<List<SeatJudged>?> = Cell.new(null)
@@ -1253,7 +1253,7 @@ impl Checking {
         let found? = read else { return read }
         let held? = found.listed() else { return read }
         if wanted.listed() != null { return read }
-        self.seats.put("${v.index}", found)
+        self.seats.set_at(v.index, found)
         self.unrefused(v, before)
         self.elements_judged(v, held, wanted, self.store.list_lit_values(v) ?? [])
         read
@@ -1270,7 +1270,7 @@ impl Checking {
         let operand = self.store.spread_operand(v)
         if operand != null { self.unrefused(operand!, before) }
         if self.refused.get().length > before { return read }
-        self.seats.put("${v.index}", found)
+        self.seats.set_at(v.index, found)
         self.elements_judged(v, held, elem, [])
         read
     }
@@ -1450,7 +1450,7 @@ impl Checking {
     /// The type a node's seat wants, kept by the node: what the core may answer in its place.
     fn seat_kept(e: ExprId, expected: Expected) {
         let wanted? = match expected { .Exactly(ty) -> ty, rest -> null } else { return }
-        self.seats.put("${e.index}", wanted)
+        self.seats.set_at(e.index, wanted)
     }
 
     /// A node with no rule of its own: the core it means checked in its place, where it's a sugar;

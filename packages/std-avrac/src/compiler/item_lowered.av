@@ -278,8 +278,7 @@ fn signed_lowered(
     let body = elaborated(engine, file, signed)
     let fills = bound_fills(parameters ?? [])
     let signature = signed.signature with { params: [p with { ty: p.ty?.filled(fills) } for p in signed.signature.params], answer: signed.signature.answer.filled(fills) }
-    mut seats: Map<string, SignedType> = {}
-    for k, v in body.seats { seats.set(k, v.filled(fills)) }
+    let seats = [s?.filled(fills) for s in body.seats]
     mut cx = lowering(
         body.store,
         lowered_program(
@@ -858,7 +857,7 @@ fn lowered_collect_for(
     let made? = collected(engine, file, name, gathering) else { return null }
     let ty? = binding_type(engine, file, name) else { return null }
     let store = new_node_store()
-    mut cx = lowering(store, lowered_program(engine, file, store, name, [], null), [], {}, ty)
+    mut cx = lowering(store, lowered_program(engine, file, store, name, [], null), [], [], ty)
     cx.scope_enter()
     let r = collected_list(cx, ty, made.fields, made.rows)
     cx.scope_exit(r)
@@ -893,7 +892,7 @@ fn stand_in(
         store,
         lowered_program(engine, file, store, symbol, [], null),
         [],
-        {},
+        [],
         owned_type("void"),
     )
     for l in seats { let _ = cx.mint(l) }
@@ -922,7 +921,7 @@ export fn lowered_every_variant(
         store,
         lowered_program(engine, file, store, "${name}.${method}", [], null),
         [],
-        {},
+        [],
         ty,
     )
     cx.scope_enter()

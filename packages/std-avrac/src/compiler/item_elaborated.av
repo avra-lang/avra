@@ -44,7 +44,7 @@ export type ElaboratedBody = {
     surface: List<SignedType?>,
     core: List<SignedType?>,
     /// The type each node's seat wanted in the core, by the node's index, where its seat names one.
-    seats: Map<string, SignedType>,
+    seats: List<SignedType?>,
     /// How many nodes a seat refused on the surface.
     refused: int = 0,
     /// Each name the surface reads that nothing binds and the program gives no type.
@@ -55,7 +55,7 @@ export type ElaboratedBody = {
 
 impl ElaboratedBody {
     /// The type the seat of the node at `index` wanted in the core, absent where it names none.
-    fn seat_at(index: int) -> SignedType? { self.seats.get("${index}") }
+    fn seat_at(index: int) -> SignedType? { if index < self.seats.length { self.seats[index] } else { null } }
 }
 
 /// The body of the fn `file` declares as `name`, elaborated; absent when it declares none with a
@@ -137,7 +137,7 @@ fn core_alike(
     file: SourceFileAddress,
     signed: SignedBody,
     surface: TypedBody,
-    seats: Map<string, SignedType>,
+    seats: List<SignedType?>,
 ) {
     let core = body_checked(engine, file, signed, true)
     let types = core.types.get()
@@ -146,7 +146,7 @@ fn core_alike(
             .all((i: int) -> types[i]?.spelled() ?? "" == surface.types[i]?.spelled() ?? "")
     let core_seats = core.seats.get()
     let seated_alike = core_seats.length == seats.length &&
-        core_seats.keys().all((k) -> seats.get(k)?.spelled() == core_seats.get(k)?.spelled())
+        (0..seats.length).all((i: int) -> seats[i]?.spelled() == core_seats[i]?.spelled())
     let read_alike = [content_said(r.saved_bytes()) for r in reads_kept(core)].join(" ") == [content_said(r.saved_bytes()) for r in surface.reads].join(" ")
     if typed_alike && seated_alike && read_alike { return }
     defect(
