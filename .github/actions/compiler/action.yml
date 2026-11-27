@@ -28,6 +28,9 @@ inputs:
   keep-rungs:
     description: "'true' keeps a built ladder product for the next push"
     default: "false"
+  base:
+    description: "the trunk a tree is judged against: its rungs are read from the merge-base with it, and replayed on it"
+    default: "program"
 outputs:
   hit:
     description: "'true' when the restored or fetched compiler is this tree's own"
@@ -57,8 +60,9 @@ runs:
           [ -z "$n" ] || list=$(sh tools/rungs.sh --pr "$n" 2>/dev/null | tr '\n' ' ') || list=""
         else
           head="${{ github.event.pull_request.head.sha || github.sha }}"
-          git fetch -q --unshallow origin main "$head" 2>/dev/null || git fetch -q origin main "$head" 2>/dev/null || :
-          base=$(git merge-base origin/main "$head" 2>/dev/null || :)
+          trunk="${{ inputs.base }}"
+          git fetch -q --unshallow origin "$trunk:refs/remotes/origin/$trunk" "$head" 2>/dev/null || git fetch -q origin "$trunk:refs/remotes/origin/$trunk" "$head" 2>/dev/null || :
+          base=$(git merge-base "origin/$trunk" "$head" 2>/dev/null || :)
           [ -z "$base" ] || list=$(sh tools/rungs.sh "$base" "$head" | tr '\n' ' ')
         fi
         }
@@ -172,7 +176,7 @@ runs:
         # back to the seed, a full build that forgives a compiler too old,
         # never a source wrong.
         # each rung is replayed on the base this tree is judged against, never on its own stale tree
-        lbase=origin/main
+        lbase="origin/${{ inputs.base }}"
         [ "${{ inputs.main }}" != 1 ] || [ "${{ github.event_name }}" != push ] || [ "${{ github.ref }}" != refs/heads/main ] || lbase=HEAD~1
         make -s compiler RUNGS="$rungs" LADDER_BASE="$(git rev-parse "$lbase")" GEN_BOUND=1500 STORE_ASIDE="${RUNNER_TEMP:-/tmp}/avra-cache-of-an-older-compiler" \
           || { echo "::error::the compiler did not build"; exit 1; }
