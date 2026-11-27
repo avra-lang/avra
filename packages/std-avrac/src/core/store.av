@@ -1,7 +1,7 @@
 //! The node store: append-only arenas in one table, side tables keyed
 //! by id, and the mint/access seam. The node MODEL lives in nodes.av.
 use @std.meta.{derive, identity, plain_field}
-use @std.relation.engine.{list_cell, map_cell}
+use @std.relation.engine.{list_cell}
 use @std.program.dense_window.{DenseWindow, dense_window}
 
 /// How a sugar's meaning is minted beside it: the language's own door,
@@ -295,7 +295,7 @@ export type SyntaxArena = {
     @copied_by_hand("minted_expr: mean re-mints what a sugar means") @taped(expr, meaning_read) meaning: SideColumn<ExprId?>,
     // the statements a statement means, by the statement — few, so kept
     // by key; none for a statement no meaning rewrote
-    @not_copied("a statement's meaning is made by elaboration, never by a copy") @remade("elaborated: elaboration makes a statement's meaning again once a tape is read") stmt_meanings: Cell<Map<string, List<StmtId>>>,
+    @not_copied("a statement's meaning is made by elaboration, never by a copy") @remade("elaborated: elaboration makes a statement's meaning again once a tape is read") stmt_meanings: SideColumn<List<StmtId>?>,
     // what a sugar node says its meaning is, by the sugar — the one
     // sentence `avra expand` prints and a refusal about a minted
     // node carries
@@ -378,7 +378,7 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         minted_by: side_column<ExprId?>(null),
         mints: side_column(no_expr_ids()),
         meaning: side_column<ExprId?>(null),
-        stmt_meanings: map_cell(),
+        stmt_meanings: side_column<List<StmtId>?>(null),
         means_notes: side_column<string?>(null),
         extensions: side_column(no_expr_ids()),
         instance_owners: side_column<StmtId?>(null),
@@ -431,7 +431,7 @@ impl SyntaxArena {
             minted_by: self.minted_by.forked(),
             mints: self.mints.forked(),
             meaning: self.meaning.forked(),
-            stmt_meanings: Cell.new(self.stmt_meanings.get()),
+            stmt_meanings: self.stmt_meanings.forked(),
             means_notes: self.means_notes.forked(),
             extensions: self.extensions.forked(),
             instance_owners: self.instance_owners.forked(),
@@ -769,10 +769,10 @@ impl SyntaxArena {
     }
 
     /// Gives the statement `sugar` the statements it means.
-    fn stmt_means_as(sugar: StmtId, meant: List<StmtId>) { self.stmt_meanings.put("${sugar.index}", meant) }
+    fn stmt_means_as(sugar: StmtId, meant: List<StmtId>) { self.stmt_meanings.set_at(sugar.index, meant) }
 
     /// The statements `s` means; null for a statement no meaning rewrote.
-    fn stmt_meant(s: StmtId) -> List<StmtId>? { self.stmt_meanings.get().get("${s.index}") }
+    fn stmt_meant(s: StmtId) -> List<StmtId>? { self.stmt_meanings.at(s.index) }
 
     /// The root of what `sugar` means; null for any other node.
     fn meant(e: ExprId) -> ExprId? {
