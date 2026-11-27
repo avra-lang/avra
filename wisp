@@ -103,10 +103,16 @@ bin=$dir/wisp
 if [ ! -x "$bin" ] && pb=$(sh tools/work program-base . 2>/dev/null); then
     mkdir -p "$dir"
     t=$(mktemp -d "${TMPDIR:-/tmp}/wisp.XXXXXX")
-    url=https://github.com/avra-lang/avra/releases/download/gate-builder/wisp.tar.gz
-    # the published binary is a Linux x86-64 ELF: another machine builds its own with its standing compiler
-    if [ "$(uname -s)-$(uname -m)" != Linux-x86_64 ]; then
-        fetched="no fetch: $url holds a Linux x86-64 binary and this is $(uname -s)-$(uname -m)"
+    # ONE ASSET A PLATFORM, both keyed alike: Linux x86-64's ELF (tools-release.yml) and Darwin arm64's Mach-O
+    # (compiler-macos.yml); any other machine builds its own with its standing compiler
+    case $(uname -s)-$(uname -m) in
+        (Linux-x86_64) asset=wisp.tar.gz ;;
+        (Darwin-arm64) asset=wisp-macos.tar.gz ;;
+        (*) asset= ;;
+    esac
+    url=https://github.com/avra-lang/avra/releases/download/gate-builder/$asset
+    if [ -z "$asset" ]; then
+        fetched="no fetch: the gate's builder publishes wisp for Linux x86-64 and Darwin arm64, and this is $(uname -s)-$(uname -m)"
     elif ! curl -fsSL --retry 2 -m 120 -o "$t/wisp.tar.gz" "$url" 2>/dev/null; then
         fetched="$url did not download"
     elif ! tar -xzf "$t/wisp.tar.gz" -C "$t" "build/wisp/$k/wisp" 2>/dev/null; then
@@ -116,7 +122,7 @@ if [ ! -x "$bin" ] && pb=$(sh tools/work program-base . 2>/dev/null); then
     fi
     if [ -z "$fetched" ]; then
         cp "$t/build/wisp/$k/wisp" "$bin" && chmod +x "$bin"
-        echo "wisp: the wisp of key $(printf '%.12s' "$k") published beside the gate's builder" >&2
+        echo "wisp: the wisp of key $(printf '%.12s' "$k") published beside the gate's builder ($asset)" >&2
     fi
     find "$t" -delete
     c=$compiler
