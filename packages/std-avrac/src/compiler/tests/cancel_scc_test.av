@@ -3,7 +3,7 @@
 use @std.avrac.testing.{held_at, Judged}
 use compiler.{task_survey, body_at, BodyAt, CancelFact, declared_symbol}
 use core.{CalledFn}
-use @std.relation.engine.{map_cell}
+use @std.program.hash_keyed_table.{hash_keyed_table}
 
 /// The program `main` writes, judged on the layer.
 fn cancel_judged(main: string) -> Judged {
@@ -42,9 +42,8 @@ spec "compiler/cancel_reach — a fn's cancel bits settle with its own set" {
 fn met_after(asked: string, names: List<string>) -> string {
     let j = cancel_judged(cancel_cycle("avra_fiber_sleep(1)"))
     let survey = task_survey(j.engine)
-    let _ = survey.finds(called(j, asked), map_cell(), (f: CancelFact) -> f.parks)
-    let met = survey.met.get()
-    [if met.has(called(j, n).key()) { "y" } else { "n" } for n in names].join("")
+    let _ = survey.finds(called(j, asked), hash_keyed_table(), (f: CancelFact) -> f.parks)
+    [if survey.met.get(called(j, n).print()) != null { "y" } else { "n" } for n in names].join("")
 }
 
 /// The body a call of the entry's free fn `name` runs.
