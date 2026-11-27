@@ -20,8 +20,8 @@
 #      whose compilers predate program's source;
 #   2. the published asset for the key, fetched — on Linux x86-64 only, the one platform CI
 #      publishes for; any other machine builds its own;
-#   3. built here by `--compiler`, else by main's published compiler (Linux x86-64) or
-#      the standing build/avra (any other machine);
+#   3. built here by `--compiler`, and by nothing else: a miss with no compiler given refuses, naming
+#      the key, never builds with whatever compiler is newest;
 #   4. the Python tool of the same name (tools/<command with _>.py), while no
 #      binary answers — said on stderr, so a fallback is never silent.
 set -eu
@@ -269,17 +269,6 @@ build_wisp() {
     fi
 }
 
-# Main's compiler, installed beside (never over) the standing build/avra: main's own
-# key, else the newest published (main's key is unpublished until its run proves it).
-# A checkout of the PR's ref alone holds no origin/main, so it is fetched first.
-main_compiler() {
-    git rev-parse -q --verify origin/main >/dev/null 2>&1 ||
-        git fetch -q --depth 1 origin main:refs/remotes/origin/main >&2 || true
-    rel_install --into "$dir/compiler" >&2 && return 0
-    mkdir -p "$dir/compiler"
-    rel_latest "$dir/compiler/avra" >&2
-}
-
 k=$(key)
 dir=build/wisp/$k
 bin=$dir/wisp
@@ -334,12 +323,7 @@ if [ ! -x "$bin" ] && [ "$published" = 1 ]; then
     rel_fetch "wisp-$k" "$bin" wisp >&2 || true
 fi
 if [ ! -x "$bin" ] && [ -z "$compiler" ]; then
-    if [ "$published" = 1 ]; then
-        main_compiler && compiler="$dir/compiler/avra" || true
-    elif [ -x build/avra ]; then
-        mkdir -p "$dir"
-        compiler=build/avra
-    fi
+    echo "wisp: no wisp of key $(printf '%.12s' "$k") is here or published — pass \`./wisp --compiler <avra>\` to build it with a compiler that reads this tree" >&2
 fi
 if [ ! -x "$bin" ] && [ -n "$compiler" ] && [ -x "$compiler" ]; then
     mkdir -p "$dir"
