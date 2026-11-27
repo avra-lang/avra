@@ -2,7 +2,6 @@
 //! `@std/meta`'s `List<Diagnostic>`, or taking a seat; a head spelled `Format` that names another type
 //! than `@std/meta`'s pattern. Read off the component's signature and its `check`'s.
 use core.{
-    At,
     expand_of,
     ComponentParts,
     ExprId,
@@ -282,10 +281,15 @@ export law repeated_row_keyed {
 fn row_words(a: List<string>) -> Voice { row_unkeyed(a[0]) }
 
 /// Every call the written item `view` shows whose callee is a component's word, where it stands:
-/// a parenthesis after the word is read as a call, never as the instance's head.
+/// a parenthesis after the word is read as a call, never as the instance's head. Only a callee
+/// spelled as a word the item is read under is asked what it names.
 fn components_called(view: ItemView) -> List<Found> {
+    let words = [w.word for w in WordShapes.from_saved_bytes(item_under(view.engine, view.file, view.at).context).components]
+    if words.is_empty() { return [] }
     let store = view.item.store
-    [Found { at: store.expr_span(e), args: [c!.callee.text()] } for top in view.item.stmts for e in exprs_under(store, At.Stmt(top)) for c in [store.call_parts(e)] if c != null && names_component(view.engine, view.file, c!.callee.text())]
+    [Found { at: store.expr_span(e), args: [c!.callee.text()] } for e in store.expr_ids() for c in [store.call_parts(e)] if c != null &&
+        words.contains(c!.callee.text()) &&
+        names_component(view.engine, view.file, c!.callee.text())]
 }
 
 /// Whether `word`, read where `file` reads it, names a component and no value.
