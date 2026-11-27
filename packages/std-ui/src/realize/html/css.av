@@ -211,6 +211,27 @@ fn edge_rule(prefix: string, prop: string, z: Size?, state: Interaction?) -> Lis
     }
 }
 
+/// An inset's padding: each edge stated, by its step or by the device's safe area there, the larger.
+/// The safe area's sides are the screen's, so an inline edge keeps clear of both of them and lays out
+/// the same in either direction.
+fn inset_rules(e: Edge?, state: Interaction?) -> List<CssRule> {
+    let v? = e else { return [] }
+    safe_rule("ins", "padding-inline-start", v.start, inline_safe, state)
+        .concat(safe_rule("ine", "padding-inline-end", v.end, inline_safe, state))
+        .concat(safe_rule("int", "padding-top", v.top, "env(safe-area-inset-top)", state))
+        .concat(safe_rule("inb", "padding-bottom", v.bottom, "env(safe-area-inset-bottom)", state))
+}
+
+/// The safe area at either inline edge of the screen.
+const inline_safe: string = "env(safe-area-inset-left),env(safe-area-inset-right)"
+
+fn safe_rule(prefix: string, prop: string, z: Size?, safe: string, state: Interaction?) -> List<
+    CssRule,
+> {
+    let v? = z else { return [] }
+    rule("${prefix}-${v.word()}", state, "${prop}:max(var(--space-${v.word()}),${safe})")
+}
+
 fn pad_rules(e: Edge?, state: Interaction?) -> List<CssRule> {
     match e {
         v? -> edge_rule("pis", "padding-inline-start", v.start, state)
@@ -280,6 +301,7 @@ fn layout_rules(l: Layout, state: Interaction?) -> List<CssRule> {
         axis_rule(l.direction, state),
         gap_rule(l.gap, state),
         pad_rules(l.pad, state),
+        inset_rules(l.inset, state),
         align_rule(l.align, state),
         distribute_rule(l.distribute, state),
         sizing_rule(.Row, "w", "width", "min-width", l.width, state),
@@ -424,6 +446,7 @@ fn layout_vocabulary() -> List<CssRule> {
         [axis_rule(a, null) for a in axes].flatten(),
         [gap_rule(z, null) for z in Size.every()].flatten(),
         [pad_rules(around(z), null) for z in Size.every()].flatten(),
+        [inset_rules(around(z), null) for z in Size.every()].flatten(),
         [margin_rules(around(z), null) for z in Size.every()].flatten(),
         [align_rule(a, null) for a in aligns].flatten(),
         [distribute_rule(d, null) for d in distributions].flatten(),

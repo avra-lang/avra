@@ -18,6 +18,7 @@ use realize.html.tags.{HtmlTag, HtmlAttr, HtmlAttrName, carries, control_attrs, 
 use realize.html.css.{class_names, box_vars, drawn_box, CssVar, scopes_of}
 use tree.sites.{Reading}
 use env.{Direction}
+use @std.text.{codepoints}
 use @std.meta.{Structural, Opaque}
 use @std.assets.{Picture}
 use realize.diff.matcher.{Diffable}
@@ -231,7 +232,7 @@ fn node_attrs(n: Node, scopes: List<string>, laid: Direction) -> List<HtmlAttr> 
 /// their direction in place of the layout's.
 fn own_attrs(n: Node, scopes: List<string>, laid: Direction, worded: bool) -> List<HtmlAttr> {
     if !worded { return node_attrs(n, scopes, laid) }
-    node_attrs(n, scopes, laying(n, laid)).concat([words_dir(n)])
+    node_attrs(n, scopes, laying(n, laid)).concat(words_dir(n, laying(n, laid), settled_words(n)))
 }
 
 // ── the writing direction ───────────────────────────────────────
@@ -242,19 +243,65 @@ fn laying(n: Node, laid: Direction) -> Direction { n.theme?.writing ?? laid }
 /// The `dir` of a node whose layout direction moved from `laid`; none where it did not.
 fn laid_out(n: Node, laid: Direction) -> List<HtmlAttr> {
     let here = laying(n, laid)
-    if here == laid { [] } else { [HtmlAttr { name: .Dir, value: direction_word(here) }] }
+    if here == laid { [] } else { [HtmlAttr { name: .Dir, value: here.word() }] }
 }
 
-/// The `dir` of an element that holds a node's words: the direction its style states, else `auto`,
-/// so the words read in their own script's direction and stand isolated from what is beside them.
-fn words_dir(n: Node) -> HtmlAttr {
-    let stated? = n.box.style.writing else { return HtmlAttr { name: .Dir, value: "auto" } }
-    HtmlAttr { name: .Dir, value: direction_word(stated) }
+/// The `dir` of an element that holds a node's words, laid out in `laid`: the direction its style
+/// states; `auto` where the words are not this paint's alone (`moving`, null), or where they read the
+/// other way from `laid`; none where they read as `laid` does, or say no direction at all.
+fn words_dir(n: Node, laid: Direction, moving: string?) -> List<HtmlAttr> {
+    if n.box.style.writing != null { return [HtmlAttr { name: .Dir, value: n.box.style.writing!.word() }] }
+    let words? = moving else { return [auto_dir()] }
+    let reads? = strong_direction(words) else { return [] }
+    if reads == laid { [] } else { [auto_dir()] }
 }
 
-/// The `dir` value a writing direction names.
-fn direction_word(d: Direction) -> string {
-    match d { .Ltr -> "ltr", .Rtl -> "rtl" }
+/// The words a node says this paint, or none where a reading says them and they move after it.
+fn settled_words(n: Node) -> string? { if n.sites.is_empty() { n.words() } else { null } }
+
+fn auto_dir() -> HtmlAttr { HtmlAttr { name: .Dir, value: "auto" } }
+
+/// The direction of a text's first strong character: right to left for Hebrew, Arabic and the
+/// scripts beside them, left to right for a letter of any other script; none where it holds no
+/// letter (digits, marks, symbols, emoji).
+fn strong_direction(words: string) -> Direction? {
+    let first? = codepoints(words).find((c) -> leftward(c) || rightward(c)) else { return null }
+    if leftward(first) { Direction.Rtl } else { Direction.Ltr }
+}
+
+/// Whether a code point is a strong right-to-left letter.
+fn leftward(c: int) -> bool { leftward_letters.any(it.lo <= c && c <= it.hi) }
+
+/// Whether a code point is a strong left-to-right letter.
+fn rightward(c: int) -> bool { rightward_letters.any(it.lo <= c && c <= it.hi) }
+
+/// A run of code points, both ends held.
+type Run = { lo: int, hi: int }
+
+/// The letters written right to left: Hebrew, Arabic and their neighbours, and their presentation
+/// forms.
+const leftward_letters = table<Run> {
+    lo     | hi
+    1424   | 2303
+    64285  | 65023
+    65136  | 65276
+    67584  | 69631
+    124928 | 126975
+}
+
+/// The letters written left to right: Latin, Greek, Cyrillic, kana, the ideographs and Hangul.
+const rightward_letters = table<Run> {
+    lo    | hi
+    65    | 90
+    97    | 122
+    192   | 214
+    216   | 246
+    248   | 591
+    880   | 1023
+    1024  | 1279
+    12352 | 12543
+    13312 | 40959
+    44032 | 55215
 }
 
 /// Whether a control's own element holds text the reader types.
@@ -304,18 +351,26 @@ fn titles(a: Attribute) -> List<string> {
 
 /// The headings a titled grouping shows above its children. Every
 /// primitive spelled: a card draws its title, a fieldset its legend.
-fn headings(n: Node) -> List<Element> {
+fn headings(n: Node, laid: Direction) -> List<Element> {
     match n.prim {
-        .Card -> titled(n, .H2),
-        .Fieldset -> titled(n, .Legend),
+        .Card -> titled(n, .H2, laid),
+        .Fieldset -> titled(n, .Legend, laid),
         .Text or .Heading or .Button or .Link or .Image or .Field or .Checkbox or .Row or .Column or .Dialog or .Divider or .Icon or .Surface or .List or .Item or .Progress or .Alert or .Spinner or .Form or .Switch or .Slider or .Key -> [],
     }
 }
 
 /// The title a node carries, drawn as `tag`: an element that is the node's words, so it reads in their
 /// direction.
-fn titled(n: Node, tag: HtmlTag) -> List<Element> {
-    [Element.Tag(Tagged { seat: title_part(j), tag: tag, attrs: [words_dir(n)], kids: said(title) }) for j, title in [t for a in n.attrs for t in titles(a)]]
+fn titled(n: Node, tag: HtmlTag, laid: Direction) -> List<Element> {
+    [Element
+        .Tag(
+            Tagged {
+                seat: title_part(j),
+                tag: tag,
+                attrs: words_dir(n, laid, title),
+                kids: said(title),
+            },
+        ) for j, title in [t for a in n.attrs for t in titles(a)]]
 }
 
 /// Whether a control's words are read before it. Every primitive
@@ -349,7 +404,8 @@ fn labelled(n: Node, at: Seat, kids: List<Element>, scopes: List<string>, laid: 
             Tagged {
                 seat: control_part,
                 tag: tag_of(n),
-                attrs: element_attrs(n).concat(if types_words(n.prim) { [words_dir(n)] } else { [] }),
+                attrs: element_attrs(n)
+                    .concat(if types_words(n.prim) { words_dir(n, laying(n, laid), null) } else { [] }),
                 rests: rests_of(n.attrs),
                 hears: heard(n),
                 crowded: at.crowded,
@@ -361,7 +417,7 @@ fn labelled(n: Node, at: Seat, kids: List<Element>, scopes: List<string>, laid: 
             Tagged {
                 seat: words_part,
                 tag: .Span,
-                attrs: if n.says_words() { [words_dir(n)] } else { [] },
+                attrs: if n.says_words() { words_dir(n, laying(n, laid), settled_words(n)) } else { [] },
                 kids: said,
             },
         )
@@ -437,7 +493,7 @@ fn lower(n: Node, at: Seat, scopes: List<string>, laid: Direction) -> List<Eleme
                 n,
                 at,
                 said_of(n)
-                    .concat(headings(n))
+                    .concat(headings(n, here))
                     .concat(lower_each(n, stands, null, at.crowded, scopes, here)),
                 scopes,
                 laid,

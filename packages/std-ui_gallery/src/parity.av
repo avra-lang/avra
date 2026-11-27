@@ -46,10 +46,7 @@ export type Owed = { view: string, case: string, target: Target, owner: string, 
 
 /// The disagreements known and owed. A line whose case agrees is struck, and an apart case no line
 /// names fails the parity test, so the list only shrinks.
-export const owed = table<Owed> {
-    view   | case     | target        | owner        | why
-    "text" | "stated" | Target.Native | "storyboard" | "a native host is handed no stated words direction"
-}
+export const owed: List<Owed> = []
 
 /// The disagreements no line owes, and the owed lines whose case now agrees — each to strike.
 export type Parity = { apart: List<Apart>, struck: List<Owed>, cases: int }
@@ -68,7 +65,7 @@ export fn heard_as(p: Prim) -> Prim? {
 export fn spoken(h: Heard) -> string {
     let value: List<string> = if h.value == "" { [] } else { ["value=\"${h.value}\""] }
     let dir: List<string> = match h.direction {
-        d? -> ["dir=${direction_word(d)}"]
+        d? -> ["dir=${d.word()}"]
         null -> []
     }
     [h.role.word(), "\"${h.name}\""]
@@ -77,8 +74,6 @@ export fn spoken(h: Heard) -> string {
         .concat(dir)
         .join(" ")
 }
-
-fn direction_word(d: Direction) -> string { match d { .Ltr -> "ltr", .Rtl -> "rtl" } }
 
 /// What one attribute or fact tells a reader: a name of some precedence (lower wins), a value, a
 /// state, that the element is hidden from readers, or nothing.
@@ -180,11 +175,12 @@ fn attr_part(a: Attribute) -> Part {
 export fn native_heard(e: Native) -> List<Heard> {
     let parts = [fact_part(f) for f in e.facts if f.under == null]
     if unheard(e.prim, parts) { return [] }
-    heard_from(e.prim, parts, fact_words(e), null)
+    heard_from(e.prim, parts, fact_said(e, What.Words) ?? "", direction_of(fact_said(e, What.WordsWriting)))
         .concat([h for k in e.kids for h in native_heard(k)])
 }
 
-fn fact_words(e: Native) -> string { [scalar_words(f.holds) for f in e.facts if f.under == null && f.what == What.Words].first() ?? "" }
+/// What an element's own fact about `w` says, if it carries one.
+fn fact_said(e: Native, w: What) -> string? { [scalar_words(f.holds) for f in e.facts if f.under == null && f.what == w].first() }
 
 fn scalar_words(s: Scalar) -> string {
     match s { .Text(t) -> t, .Number(k) -> "${k}", .Flag(b) -> "${b}", .Fraction(x) -> "${x}" }
@@ -207,7 +203,7 @@ fn fact_part(f: Fact) -> Part {
         .Open -> flagged(scalar_on(f.holds), .Open),
         .Invalid -> flagged(scalar_on(f.holds), .Invalid),
         .Loading -> flagged(scalar_on(f.holds), .Loading),
-        .Words or .Rank or .Placeholder or .Source or .SourceWidth or .SourceHeight or .Href or .Min or .Max or .Urgency or .Submits or .Masked or .SkippedPath or .SkippedRows or .SkippedExtent or .PlacedAt or .PlacedOf or .Reveal or .SubmitLabel or .Radius or .Fill or .Ink or .Elevation or .Face or .TextSize or .LineHeight or .Tracking or .Direction or .Wrap or .Gap or .PadStart or .PadEnd or .PadTop or .PadBottom or .MarginStart or .MarginEnd or .MarginTop or .MarginBottom or .Align or .Distribute or .Width or .Height or .Grow or .Aspect or .InsetStart or .InsetEnd or .InsetTop or .InsetBottom or .Order or .Mode or .Contrast -> .Nothing,
+        .Words or .Rank or .Placeholder or .Source or .SourceWidth or .SourceHeight or .Href or .Min or .Max or .Urgency or .Submits or .Masked or .SkippedPath or .SkippedRows or .SkippedExtent or .PlacedAt or .PlacedOf or .Reveal or .SubmitLabel or .Radius or .Fill or .Ink or .Elevation or .Face or .TextSize or .LineHeight or .Tracking or .Direction or .Wrap or .Gap or .PadStart or .PadEnd or .PadTop or .PadBottom or .MarginStart or .MarginEnd or .MarginTop or .MarginBottom or .Align or .Distribute or .Width or .Height or .Grow or .Aspect or .InsetStart or .InsetEnd or .InsetTop or .InsetBottom or .Order or .Mode or .Contrast or .Writing or .WordsWriting -> .Nothing,
     }
 }
 
