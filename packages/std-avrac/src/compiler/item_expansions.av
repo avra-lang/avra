@@ -318,14 +318,69 @@ export fn file_meant(engine: QueryEngine, file: SourceFileAddress) -> List<Place
 /// word, written elsewhere.
 fn meant_tape(engine: QueryEngine, file: SourceFileAddress, item: ItemUnder) -> SavedAt<SavedRecord> {
     let written = item_tape_saved(engine, item.text, item.context)
+    tape_meant(engine, item, written, meaning_asked(engine, file, item, written))
+}
+
+/// What an expanded item's meaning was read under: the components its instances name, the words its
+/// blocks wait for, the inputs those gave, and the engine that read them.
+type MeaningAsked = { components: List<ComponentAt>, blocks: List<string>, inputs: Bytes, engine: int }
+
+/// What the item `item` of `file`, its written tape at `written`, means by beside its text; absent for
+/// one that names no component and waits on no block.
+fn meaning_asked(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    item: ItemUnder,
+    written: SavedAt<SavedRecord>,
+) -> MeaningAsked? {
     let needs = needs_on(written, item.context)
-    if needs.components.is_empty() && needs.blocks.is_empty() { return written }
-    let inputs = ExpansionInputs {
-        components: [component_key(engine, u.home, u.declared) for u in needs.components],
-        grammars: grammars_named(engine, file, needs.blocks),
+    if needs.components.is_empty() && needs.blocks.is_empty() { return null }
+    let components = [ComponentAt { home: u.home, declared: u.declared } for u in needs.components]
+    MeaningAsked {
+        components: components,
+        blocks: needs.blocks,
+        inputs: expansion_inputs(engine, file, components, needs.blocks),
+        engine: engine.serial,
+    }
+}
+
+/// The tape `item` means by: its written tape `written`, expanded by `asked` where it has a meaning.
+fn tape_meant(
+    engine: QueryEngine,
+    item: ItemUnder,
+    written: SavedAt<SavedRecord>,
+    asked: MeaningAsked?,
+) -> SavedAt<SavedRecord> {
+    let meaning? = asked else { return written }
+    item_expanded_saved(engine, item.text, item.context, meaning.inputs)
+}
+
+/// The inputs an item of `file` naming `components` and waiting on `blocks` means by, as saved.
+fn expansion_inputs(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    components: List<ComponentAt>,
+    blocks: List<string>,
+) -> Bytes {
+    ExpansionInputs {
+        components: [component_key(engine, c.home, c.declared) for c in components],
+        grammars: grammars_named(engine, file, blocks),
         instances: file_instances(engine, file),
     }
-    item_expanded_saved(engine, item.text, item.context, inputs.saved_bytes())
+        .saved_bytes()
+}
+
+/// Whether what `asked` names still gives the inputs it printed, each query asked again: the engine
+/// that read them answers each alike, so it asks them where they lie and compares nothing.
+fn meaning_stands(engine: QueryEngine, file: SourceFileAddress, asked: MeaningAsked) -> bool {
+    if asked.engine != engine.serial {
+        return content_hash(expansion_inputs(engine, file, asked.components, asked.blocks))
+            .same_as(content_hash(asked.inputs))
+    }
+    for c in asked.components { let _ = component_key(engine, c.home, c.declared) }
+    if !asked.blocks.is_empty() { let _ = file_grammars_saved(engine, file) }
+    let _ = file_instances_saved(engine, file)
+    true
 }
 
 collect listed_expansion_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name

@@ -47,7 +47,7 @@ use @std.program.saved_derive.{Saved}
 use @std.program.saved_query.{ListedQuery, cut_query, definitions_of, query, query_definition}
 use @std.io.{env}
 use @std.text.{parse_int}
-use @std.program.source_facts.{PlacedTape}
+use @std.program.source_facts.{PlacedTape, item_tape_saved}
 use @std.program.syntax_tape.{SyntaxTape, tape_read}
 
 /// A fn's parameter: its name, its type when written, the promises its seat makes, and the width it
@@ -781,10 +781,28 @@ fn item_read(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ReadIt
         return held_read(made_key(file, at, tape), () -> PlacedTape { start: 0, tape: tape }, null)
     }
     let item = item_under(engine, file, at)
-    held_read(
-        printed_key(file, at, 0, item.print ?? fp_str(item.text)),
-        () -> placed_item(engine, file, item, 0),
+    held_meant(engine, file, printed_key(file, at, 0, item.print ?? fp_str(item.text)), item, 0, at)
+}
+
+/// The written item `item` of `file` read back at `start`, held under `key`: a held read stands only
+/// while what its meaning was read under answers as it did, each of those queries asked again.
+fn held_meant(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    key: ContentHash,
+    item: ItemUnder,
+    start: int,
+    at: ItemId,
+) -> ReadItem {
+    let kept = held_standing(engine, file, key)
+    if kept != null { return kept! }
+    let written = item_tape_saved(engine, item.text, item.context)
+    let asked = meaning_asked(engine, file, item, written)
+    held_put(
+        key,
+        PlacedTape { start: start, tape: tape_read(tape_meant(engine, item, written, asked)) },
         at,
+        asked,
     )
 }
 
@@ -833,18 +851,32 @@ const MADE_ITEM: int = 1
 /// read and held. `key` names its content — a written item's text, a made one's whole tape — so two
 /// items share an entry only where they read back alike.
 fn held_read(key: ContentHash, placed: fn() -> PlacedTape, at: ItemId?) -> ReadItem {
-    if !items_held() { return item_whole(placed(), at) }
-    let kept = held_items().get(key)
+    let kept = if items_held() { held_items().get(key) } else { null }
     if kept != null { return kept! }
+    held_put(key, placed(), at, null)
+}
+
+/// `placed` read back, its meaning read under `meaning`, and held under `key` in place of any read
+/// held there.
+fn held_put(key: ContentHash, placed: PlacedTape, at: ItemId?, meaning: MeaningAsked?) -> ReadItem {
+    if !items_held() { return item_whole(placed, at, meaning) }
     let before = avra_mem_live()
-    let read = item_whole(placed(), at)
+    let read = item_whole(placed, at, meaning)
     held_items().put(key, read, avra_mem_live() - before)
     read
 }
 
+/// The read held under `key`, absent where none is held or what its meaning was read under moved.
+fn held_standing(engine: QueryEngine, file: SourceFileAddress, key: ContentHash) -> ReadItem? {
+    if !items_held() { return null }
+    let kept? = held_items().get(key) else { return null }
+    let asked? = kept.meaning else { return kept }
+    if meaning_stands(engine, file, asked) { kept } else { null }
+}
+
 /// An item's tape read back into a store of its own: its statements, then each declaration it
 /// hoists, which a read by name finds as it finds the written ones.
-fn item_whole(placed: PlacedTape, at: ItemId?) -> ReadItem {
+fn item_whole(placed: PlacedTape, at: ItemId?, meaning: MeaningAsked?) -> ReadItem {
     let store = new_node_store()
     let stmts = item_read_back(store, placed)
     ReadItem {
@@ -852,6 +884,7 @@ fn item_whole(placed: PlacedTape, at: ItemId?) -> ReadItem {
         stmts: stmts.concat(store.hoisted_decls()),
         written: store.expr_count(),
         at: at,
+        meaning: meaning,
     }
 }
 
@@ -898,7 +931,10 @@ fn placed_item(engine: QueryEngine, file: SourceFileAddress, item: ItemUnder, st
 ///
 /// `at` is the item its places are counted from the start of (`file_placed`); absent where they're
 /// counted from its file's, or, for an entry read item by item, from each item's (`ItemBase`).
-type ReadItem = { store: SyntaxArena, stmts: List<StmtId>, written: int, at: ItemId? = null }
+///
+/// `meaning` is what a written item's meaning was read under beside its text, absent for one that
+/// means its text alone: a held read of it stands only while those queries answer as they did.
+type ReadItem = { store: SyntaxArena, stmts: List<StmtId>, written: int, at: ItemId? = null, meaning: MeaningAsked? = null }
 
 /// The item that declares `name` as `kind` in `file`, read back without a view of it: what its caller
 /// reads is its syntax, so no view is made, and none of the views held for the items being judged
