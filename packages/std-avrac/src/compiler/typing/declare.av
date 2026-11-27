@@ -4,6 +4,7 @@
 //! name, a built-in constructor, a generic application, `dyn`.
 //! Bodies never walk here; a sig may name any file's declaration.
 use core.{
+    Lacked,
     scoped,
     Variant,
     carries_composed,
@@ -40,7 +41,9 @@ use features.{
     FnSig,
     StructSig,
     slot_want,
-    Lacked,
+    lacks_field_declared,
+    lacks_field_twice,
+    lacks_on_enum,
     EnumSig,
     NamedSig,
     DeclSig,
@@ -364,44 +367,13 @@ impl TypeCx {
         }
     }
 
-    fn enum_lacks(s: StmtId) {
-        self
-            .emit(
-                refusal(
-                    "type.lacks",
-                    self.stmt_loc(s),
-                    "an enum has no fields to lack",
-                    "`@lacks` on an enum",
-                    "`@lacks` marks a record",
-                ),
-            )
-    }
+    fn enum_lacks(s: StmtId) { self.lacks_said(s, lacks_on_enum()) }
 
-    fn lacks_twice(s: StmtId, owner: string, field: string) {
-        self
-            .emit(
-                refusal(
-                    "type.lacks",
-                    self.stmt_loc(s),
-                    "`${owner}` lacks `${field}` twice",
-                    "a second `@lacks(\"${field}\", …)` here",
-                    "keep one reason",
-                ),
-            )
-    }
+    fn lacks_twice(s: StmtId, owner: string, field: string) { self.lacks_said(s, lacks_field_twice(owner, field)) }
 
-    fn lacks_declared(s: StmtId, owner: string, field: string) {
-        self
-            .emit(
-                refusal(
-                    "type.lacks",
-                    self.stmt_loc(s),
-                    "`${owner}` cannot lack `${field}` — it declares it",
-                    "`@lacks(\"${field}\", …)` here",
-                    "drop the field, or the `@lacks`",
-                ),
-            )
-    }
+    fn lacks_declared(s: StmtId, owner: string, field: string) { self.lacks_said(s, lacks_field_declared(owner, field)) }
+
+    fn lacks_said(s: StmtId, v: Voice) { self.emit(said_as("type.lacks", self.stmt_loc(s), v)) }
 
     fn non_identity_field(s: StmtId, field: string, found: TypeId) {
         self

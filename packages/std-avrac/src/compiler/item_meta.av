@@ -3,6 +3,7 @@
 //! named type's shape; and the annotations its item writes. The crossing's own writer
 //! (`meta_of_type`) lays the value out, so the rows it's held to are the one contract.
 use core.{
+    Lacked,
     module_path,
     literal_of,
     template_home,
@@ -424,6 +425,38 @@ fn file_marks(engine: QueryEngine, file: SourceFileAddress) -> FileMarks {
         worn: flatten([declared_marks(engine, d) for d in file_declares(engine, file).names]),
     }
 }
+
+/// Each field a written declaration of `file` is marked lacking (`@std/meta`'s `@lacks` of two texts):
+/// the marks resolved once a file, so a record that lacks nothing reads no mark.
+@query("summary")
+fn file_lacks(engine: QueryEngine, file: SourceFileAddress) -> FileLacks {
+    FileLacks {
+        rows: [LackRow { name: m.name, item: m.item, lacked: l! } for m in file_marks(engine, file).worn if meta_fn(engine, file, m.mark, LACKS) for l in [lacked_of(m.literals)] if l != null],
+    }
+}
+
+/// The fields the record `name` of `file` lacks, asked once a program: a generated record's only where
+/// the file writes nothing of that name.
+@query("summary")
+fn record_lacked(engine: QueryEngine, file: SourceFileAddress, name: string) -> RecordLacks {
+    let written = file_declares_named(engine, file, name)
+    let d? = record_named(written, name) ?? if written.names.is_empty() { record_named(generated_declares(engine, file), name) } else { null } else {
+        return RecordLacks { lacked: [] }
+    }
+    RecordLacks { lacked: lacks_worn(engine, d) }
+}
+
+/// The fields one record lacks.
+@derive(Saved)
+type RecordLacks = { lacked: List<Lacked> }
+
+/// The fields a file's written declarations lack.
+@derive(Saved)
+type FileLacks = { rows: List<LackRow> }
+
+/// A field the declaration `name` at `item` lacks, and why.
+@derive(Saved)
+type LackRow = { name: string, item: ItemId, lacked: Lacked }
 
 /// The marks the declarations generators make in `file` wear: apart from its written ones', so a
 /// gathering that reads no generator's work never asks a generator.

@@ -47,7 +47,7 @@ use core.{
     Minting,
     minting,
 }
-use core.{SeatMark, SideTable, Fingerprint, StaticBox, closest, nothing_bound}
+use core.{Lacked, SeatMark, SideTable, Fingerprint, StaticBox, closest, nothing_bound}
 use core.{fp, fp_list, fp_str}
 // LICENSED modules.unused_import: the GENERATED impls call these; the keeper reads source, and generated code is not source
 use diagnostics.{Diag, Voice, refusal, said_as}
@@ -168,10 +168,6 @@ export type Sub = { target: DeclId, args: List<TypeId>, consts: List<string> = [
 /// fills it. `lacking` names what it leaves out ON PURPOSE (`@lacks`).
 @derive(Fingerprint)
 export type StructSig = { names: List<string>, types: List<TypeId>, defaults: List<DeclId?>, lacking: List<Lacked> = [], states: List<bool> = [] }
-
-/// A field a record leaves out on purpose, and the reason a read hears.
-@derive(Fingerprint)
-export type Lacked = { field: string, why: string }
 
 /// A NAMED TYPE's table: the ONE shape it stands over. The name is
 /// its own type at every seat; this says what it travels as.
@@ -736,10 +732,6 @@ export fn no_variant_read_of(owner: string, name: string, names: List<string>) -
 /// The help naming the variants `names` an enum declares.
 export fn variants_named(names: List<string>) -> string { "the variants are ${named_list(names)}" }
 
-/// The same, for a record: a property read and a literal both name
-/// a field, so both offer the same list.
-export fn fields_are(sig: StructSig) -> string { fields_named(sig.names) }
-
 /// The help naming the fields `names` a record declares.
 export fn fields_named(names: List<string>) -> string { "the fields are ${named_list(names)}" }
 
@@ -755,6 +747,51 @@ export fn no_field_on(record: string, field: string, fields: List<string>) -> Vo
 /// A lacked field's refusal, read or written: the record's own reason.
 export fn lacks_voice(record: string, field: string, why: string) -> string {
     "`${record}` lacks `${field}` on purpose — ${why}"
+}
+
+/// A read of the field `field` that `record`, declaring `fields`, lacks on purpose for `why`.
+export fn lacked_read(record: string, field: string, why: string, fields: List<string>) -> Voice {
+    Voice {
+        message: lacks_voice(record, field, why),
+        label: "read here",
+        help: fields_named(fields),
+    }
+}
+
+/// A write of the field `field` that `record`, declaring `fields`, lacks on purpose for `why`.
+export fn lacked_written(record: string, field: string, why: string, fields: List<string>) -> Voice {
+    Voice {
+        message: lacks_voice(record, field, why),
+        label: "written here",
+        help: fields_named(fields),
+    }
+}
+
+/// A record `owner` lacking `field`, which it declares.
+export fn lacks_field_declared(owner: string, field: string) -> Voice {
+    Voice {
+        message: "`${owner}` cannot lack `${field}` — it declares it",
+        label: "`@lacks(\"${field}\", …)` here",
+        help: "drop the field, or the `@lacks`",
+    }
+}
+
+/// A record `owner` lacking `field` a second time.
+export fn lacks_field_twice(owner: string, field: string) -> Voice {
+    Voice {
+        message: "`${owner}` lacks `${field}` twice",
+        label: "a second `@lacks(\"${field}\", …)` here",
+        help: "keep one reason",
+    }
+}
+
+/// An enum wearing `@lacks`.
+export fn lacks_on_enum() -> Voice {
+    Voice {
+        message: "an enum has no fields to lack",
+        label: "`@lacks` on an enum",
+        help: "`@lacks` marks a record",
+    }
 }
 
 /// What to write when a RECORD name was used where an enum was

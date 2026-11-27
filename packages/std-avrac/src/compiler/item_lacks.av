@@ -1,0 +1,100 @@
+//! A FIELD LEFT OUT ON PURPOSE: a record wearing `@std/meta`'s `@lacks(field, why)` names a field it
+//! does not declare, and a read or a write of it hears the reason rather than "no field". A record
+//! lacks each field once, and never one it declares; an enum has no fields to lack. Read off the
+//! marks a declaration wears: a written one's word must name `@std/meta`'s `lacks`, and a generated
+//! one's, written in its generator's file, is taken by its word.
+use core.{Lacked, Literal, NodeKind, Span}
+use compiler.laws.{Found, law}
+use features.{lacks_field_declared, lacks_field_twice, lacks_on_enum}
+use diagnostics.{Voice}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+
+/// The mark naming a field a record lacks.
+const LACKS: string = "lacks"
+
+/// The fields the record `name` of `file` lacks on purpose, in the order its marks are written.
+export fn record_lacks(engine: QueryEngine, file: SourceFileAddress, name: string) -> List<Lacked> { record_lacked(engine, file, name).lacked }
+
+/// The record `name` among `declared`; absent where none is.
+fn record_named(declared: Declarations, name: string) -> DeclaredName? { declared.names.find(it.name == name && it.kind == ItemKind.Record) }
+
+/// The fields the declaration `d` is marked lacking, each mark a `@lacks` of two texts: a written
+/// declaration's as its file's resolved rows hold them, a generated one's read off its marks.
+fn lacks_worn(engine: QueryEngine, d: DeclaredName) -> List<Lacked> {
+    if item_held(engine, d.file, d.item) { return [r.lacked for r in file_lacks(engine, d.file).rows if r.name == d.name && r.item == d.item] }
+    [l! for m in generated_marks(engine, d.file).worn if m.name == d.name && m.item == d.item && m.mark == LACKS for l in [lacked_of(m.literals)] if l != null]
+}
+
+/// The field and reason a `@lacks` written with `literals` names; absent unless they are two texts.
+fn lacked_of(literals: List<Literal>?) -> Lacked? {
+    let written? = literals else { return null }
+    match written { [.Text(field), .Text(why)] -> Lacked { field: field, why: why }, rest -> null }
+}
+
+/// Every declaration of the written item `view` shows that wears a `@lacks`, with what it lacks.
+fn lacking_in(view: ItemView) -> List<Lacking> {
+    [Lacking { d: d, lacked: lacked } for d in file_declares_at(view.engine, view.file, view.at).names if d.item == view.at for lacked in [lacks_worn(view.engine, d)] if !lacked.is_empty()]
+}
+
+/// A declaration and the fields its marks say it lacks.
+type Lacking = { d: DeclaredName, lacked: List<Lacked> }
+
+/// Where the declaration `name` the item `item` holds stands.
+fn declaration_place(item: ReadItem, name: string) -> Span? {
+    let s? = item.stmts.find((st) -> item.store.declared_name(st) == name) else { return null }
+    item.store.stmt_span(s)
+}
+
+/// The finding of the field `field` the declaration of `l` lacks, said where the declaration stands.
+fn lacked_found(view: ItemView, l: Lacking, field: string) -> Found {
+    Found { at: declaration_place(view.item, l.d.name), args: [l.d.name, field] }
+}
+
+/// Each field a record of `view` lacks that it also declares: the record and the field.
+fn declared_lacks(view: ItemView) -> List<Found> {
+    [lacked_found(view, l, x.field) for l in lacking_in(view) if l.d.kind == ItemKind.Record for fields in [[f.name for f in record_signature(view.engine, view.file, l.d.name)?.fields ?? []]] for x in l.lacked if fields.contains(x.field)]
+}
+
+/// Each field a record of `view` lacks a second time: the record and the field.
+fn twice_lacks(view: ItemView) -> List<Found> {
+    [lacked_found(view, l, x.field) for l in lacking_in(view) if l.d.kind == ItemKind.Record for j, x in l.lacked if l.lacked.take(j).any(it.field == x.field)]
+}
+
+/// Each enum of `view` wearing a `@lacks`.
+fn enum_lacks(view: ItemView) -> List<Found> {
+    [Found { at: declaration_place(view.item, l.d.name), args: [] } for l in lacking_in(view) if l.d.kind == ItemKind.Enum]
+}
+
+/// a record lacks only a field it does not declare
+export law lacks_undeclared {
+    kind: "type.lacks"
+    needs: [NodeKind.StmtStructDecl]
+    reads_view: declared_lacks
+    voice: declared_words
+    witness: "use @std.meta.{lacks}\n\n@lacks(\"a\", \"why\")\ntype P = { a: int }\n"
+}
+
+fn declared_words(a: List<string>) -> Voice { lacks_field_declared(a[0], a[1]) }
+
+/// a record lacks each field once
+export law lacks_once {
+    kind: "type.lacks"
+    needs: [NodeKind.StmtStructDecl]
+    reads_view: twice_lacks
+    voice: twice_words
+    witness: "use @std.meta.{lacks}\n\n@lacks(\"x\", \"first\")\n@lacks(\"x\", \"second\")\ntype P = { a: int }\n"
+}
+
+fn twice_words(a: List<string>) -> Voice { lacks_field_twice(a[0], a[1]) }
+
+/// only a record lacks a field
+export law lacks_a_record {
+    kind: "type.lacks"
+    needs: [NodeKind.StmtEnumDecl]
+    reads_view: enum_lacks
+    voice: enum_words
+    witness: "use @std.meta.{lacks}\n\n@lacks(\"x\", \"why\")\nenum K {\n    A\n    B\n}\n"
+}
+
+fn enum_words(_a: List<string>) -> Voice { lacks_on_enum() }

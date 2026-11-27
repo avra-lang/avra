@@ -6,6 +6,7 @@
 //! it, while a node a template copies into a written item, or a body an annotation wraps, is typed
 //! apart from the file's own nodes, so it has none here.
 use core.{
+    NodeKind,
     OwnType,
     Expr,
     declared_head,
@@ -43,6 +44,7 @@ use features.closures.{uncallable_value}
 use features.enums.{variant_unbuilt, variant_unenumed, variant_unwanted}
 use features.let_stmt.{let_unblocked}
 use features.{
+    lacked_read,
     door_unknown,
     static_unknown,
     static_unvalued,
@@ -241,6 +243,8 @@ enum Miss {
     MarkedUnnamed
     /// `?.name` over a value always absent.
     ChainedAbsent(name: string)
+    /// A field the record lacks on purpose, for the reason `why`, beside the fields it declares.
+    Lacked(record: string, name: string, why: string, fields: List<string>)
 }
 
 impl Miss {
@@ -1352,7 +1356,15 @@ fn field_miss(engine: QueryEngine, subject: SignedType?, name: string, at: Span?
     let s? = declared_value(subject) else { return [] }
     let fields? = fields_of_record(engine, s) else { return [] }
     if fields.contains(name) || property_type(engine, s, name) != null || home_unread(engine, s) { return [] }
-    [MissPlaced { at: at, miss: Miss.Field(s.spelled(), name, fields) }]
+    [MissPlaced { at: at, miss: field_missed(engine, s, name, fields) }]
+}
+
+/// What a read of `name` on the record `s`, declaring `fields`, misses: a field it lacks on purpose,
+/// or no field of it.
+fn field_missed(engine: QueryEngine, s: SignedType, name: string, fields: List<string>) -> Miss {
+    let at? = declared_at(s) else { return Miss.Field(s.spelled(), name, fields) }
+    let lacked? = record_lacks(engine, at.file, at.name).find(it.field == name) else { return Miss.Field(s.spelled(), name, fields) }
+    Miss.Lacked(s.spelled(), name, lacked.why, fields)
 }
 
 /// A property `name` read on a value of `subject`, a type the language owns, that no property of
@@ -1800,6 +1812,16 @@ fn misses_seen_in(view: ItemView, pick: fn(Miss) -> List<string>) -> List<Found>
 
 fn found_missing(misses: ItemMisses, pick: fn(Miss) -> List<string>) -> List<Found> {
     [Found { at: span_of(r.at), args: a } for r in misses.rows for a in [pick(r.miss)] if !a.is_empty()]
+}
+
+fn lacked_missed(view: ItemView) -> List<Found> {
+    misses_seen_in(
+        view,
+        (m: Miss) -> match m {
+            .Lacked(record, name, why, fields) -> [record, name, why].concat(fields),
+            rest -> [],
+        },
+    )
 }
 
 fn fields_missed(view: ItemView) -> List<Found> {
@@ -2329,6 +2351,17 @@ export law field_unknown {
     voice: field_words
     witness: "type P = { x: int }\n\nfn g(p: P) -> int { p.y }\n"
 }
+
+/// a field a record lacks on purpose is read with the record's reason
+export law field_lacked {
+    kind: "type.unknown_prop"
+    needs: [NodeKind.ExprProp]
+    reads_view: lacked_missed
+    voice: lacked_words
+    witness: "use @std.meta.{lacks}\n\n@lacks(\"secret\", \"it stays where it was minted\")\ntype P = { x: int }\n\nfn g(p: P) -> int { p.secret }\n"
+}
+
+fn lacked_words(a: List<string>) -> Voice { lacked_read(a[0], a[1], a[2], a.drop(3)) }
 
 /// a method call names a method the declared type has
 export law method_unknown {

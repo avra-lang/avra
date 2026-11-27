@@ -55,14 +55,12 @@ impl Checks for StructLit {
         if self.fields.any(it.of == spread_entry) { return spread_checked(cx, self, named, record.params) }
         let seats = [record.fields.find(it.name == f.of)?.ty for f in self.fields]
         if seats.any(it == null) {
-            let fields = [f.name for f in record.fields]
             for at, f in self.fields {
                 // a handler its instance cannot hear is refused by the event's law, not as a field
                 if seats[at] == null &&
                     at < self.values.length &&
                     !cx.store.refused_elsewhere(self.values[at]) {
-                    cx
-                        .literal_refused(self.values[at], LiteralFault.Unknown(self.name.of, f.of, fields))
+                    cx.literal_refused(self.values[at], field_fault(self.name.of, f.of, record))
                 }
             }
             cx.checked_free(self.values)
@@ -283,15 +281,20 @@ fn written(mut cx: Checking, subject: SignedType?, v: ExprId, name: string) {
     }
     let field? = cx.field_of(held, name) else {
         let record = cx.record_of(held)
-        if record != null && !cx.store.refused_elsewhere(v) {
-            cx
-                .literal_refused(v, LiteralFault.Unknown(held.spelled(), name, [f.name for f in record!.fields]))
-        }
+        if record != null && !cx.store.refused_elsewhere(v) { cx.literal_refused(v, field_fault(held.spelled(), name, record!)) }
         let _ = cx.check(v, Expected.Free)
         return
     }
     if meta_key(field.unwrapped()) { return seated(cx, v, field, name) }
     let _ = cx.check(v, Expected.Exactly(field))
+}
+
+/// What a literal or a `with` writing `field` of `record`, named `shown`, is refused for: a field it
+/// lacks on purpose hears the record's reason, any other is no field of it.
+fn field_fault(shown: string, field: string, record: RecordShape) -> LiteralFault {
+    let fields = [f.name for f in record.fields]
+    let lacked? = record.lacked.find(it.field == field) else { return LiteralFault.Unknown(shown, field, fields) }
+    LiteralFault.Lacked(shown, field, lacked.why, fields)
 }
 
 impl Checks for With {
