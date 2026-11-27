@@ -472,20 +472,20 @@ fn kind_lines(text: string) -> string {
 
 /// A ceiling every row of a kind's workload and counter is held to, whatever its key: `target <kind>
 /// <workload> <counter> <n>`.
-export type Target = { kind: string, workload: string, counter: string, most: int }
+export type ClockTarget = { kind: string, workload: string, counter: string, most: int }
 
 /// A row let stand above its target: `over <row> <owner> <ticket>`, the row its workload and counter.
 export type Over = { key: string, owner: string, ticket: string }
 
-export fn targets_of(text: string) -> List<Target> {
+export fn targets_of(text: string) -> List<ClockTarget> {
     [t! for l in text.split("\n") for t in [target_line(l.trim())] if t != null]
 }
 
-fn target_line(line: string) -> Target? {
+fn target_line(line: string) -> ClockTarget? {
     let w = line.split(" ")
     if w.length != 5 || w[0] != "target" || !is_plain(w[1]) || !is_plain(w[2]) || !is_counter(w[3]) { return null }
     let most? = whole_of(w[4]) else { return null }
-    Target { kind: w[1], workload: w[2], counter: w[3], most: most }
+    ClockTarget { kind: w[1], workload: w[2], counter: w[3], most: most }
 }
 
 export fn overs_of(text: string) -> List<Over> {
@@ -504,7 +504,7 @@ fn over_line(line: string) -> Over? {
 }
 
 /// The target a row is held to, where one names its kind, workload and counter.
-fn target_for(key: string, targets: List<Target>) -> Target? {
+fn target_for(key: string, targets: List<ClockTarget>) -> ClockTarget? {
     let plain = workload_of(key).split(":").last()!
     targets
         .find(it.kind == kind_name_of(key) && it.workload == plain && it.counter == counter_of(key))
@@ -515,7 +515,7 @@ fn target_for(key: string, targets: List<Target>) -> Target? {
 /// owner or ticket: a ceiling only falls.
 export fn targets_failed(
     now: Map<string, int>,
-    targets: List<Target>,
+    targets: List<ClockTarget>,
     overs: List<Over>,
     text: string,
 ) -> List<string> {
