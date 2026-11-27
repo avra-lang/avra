@@ -31,6 +31,9 @@ trap 'cp "$R/orig.av" "$F"; [ ! -d "$answers.cutoff" ] || mv "$answers.cutoff" "
 # The cli built cold over a store of its own, then warm.
 for d in $(find packages -name .avra-cache -type d -prune); do find "$d" -mindepth 1 -delete; done
 find "$AVRA_CACHE_DIR" -mindepth 1 -delete 2>/dev/null
+# THE COLD BUILD STARTS FROM A FRESH CHECKOUT'S TREE, which holds no built cli: a binary an earlier build
+# left beside the sources would otherwise decide what the cold build lists there.
+rm -f packages/cli/src/main
 steps=$((steps + 1))
 "$A" build packages/cli > "$R/cold.log" 2>&1 || fail "the cold build failed: $(tail -3 "$R/cold.log")"
 [ "$(grep -cF "$before" "$F")" = 1 ] || fail "the literal edited is not one line of $F"
