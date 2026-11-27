@@ -59,12 +59,25 @@ export enum Layout {
     Maybe(value: Layout)
 }
 
+impl BoxKind {
+    /// How a map keyed by a value in this box files it: text as its text, and null for a box no map
+    /// files.
+    fn map_keys() -> MapKeys? {
+        match self {
+            .Text -> MapKeys.Text,
+            .Bytes or .List or .Map or .Record or .Enum or .Closure or .Cell or .Task or .Dyn or .Union or .Range or .Slot -> null,
+        }
+    }
+}
+
 impl Layout {
-    /// How a map keyed by a value of this layout files it: a word as itself, anything else by its text.
-    fn map_keys() -> MapKeys {
+    /// How a map keyed by a value of this layout files it: a word as itself, text as its text, and
+    /// null for a layout no map files.
+    fn map_keys() -> MapKeys? {
         match self {
             .Word or .Truth -> MapKeys.Words,
-            .Void or .Real or .Boxed(_) or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> MapKeys.Text,
+            .Boxed(b) -> b.map_keys(),
+            .Void or .Real or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> null,
         }
     }
 
