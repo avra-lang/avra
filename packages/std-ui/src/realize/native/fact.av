@@ -7,7 +7,7 @@
 use @std.meta.{derive}
 use @std.assets.{Picture}
 use tree.codes.{Codes}
-use tree.node.{Attribute}
+use tree.node.{Attribute, Node}
 use style.style.{Style, Interaction}
 use style.layout.{Layout, Axis, Wrap, Align, Distribute, Sizing, Edge}
 use style.tokens.{Size}
@@ -79,6 +79,7 @@ export enum What {
     @code(45) TextSize
     @code(46) LineHeight
     @code(47) Tracking
+    @code(48) WordsWriting
     @code(60) Direction
     @code(61) Wrap
     @code(62) Gap
@@ -103,6 +104,7 @@ export enum What {
     @code(81) Order
     @code(90) Mode
     @code(91) Contrast
+    @code(92) Writing
 }
 
 /// One fact: what it is about, the interaction it holds under (none for the
@@ -115,7 +117,7 @@ export type Fact = { what: What, under: Interaction? = null, holds: Scalar }
 /// moves nothing.
 export fn moves_box(w: What) -> bool {
     match w {
-        .Words or .Label or .Rank or .Placeholder or .Source or .SourceWidth or .SourceHeight or .Open or .Title or .SkippedRows or .SkippedExtent or .Face or .TextSize or .LineHeight or .Tracking or .Direction or .Wrap or .Gap or .PadStart or .PadEnd or .PadTop or .PadBottom or .MarginStart or .MarginEnd or .MarginTop or .MarginBottom or .Align or .Distribute or .Width or .Height or .Grow or .Aspect or .InsetStart or .InsetEnd or .InsetTop or .InsetBottom or .Order or .Contrast -> true,
+        .Words or .Label or .Rank or .Placeholder or .Source or .SourceWidth or .SourceHeight or .Open or .Title or .SkippedRows or .SkippedExtent or .Face or .TextSize or .LineHeight or .Tracking or .Direction or .Wrap or .Gap or .PadStart or .PadEnd or .PadTop or .PadBottom or .MarginStart or .MarginEnd or .MarginTop or .MarginBottom or .Align or .Distribute or .Width or .Height or .Grow or .Aspect or .InsetStart or .InsetEnd or .InsetTop or .InsetBottom or .Order or .Contrast or .Writing or .WordsWriting -> true,
         .Value or .Amount or .Alt or .Decorative or .Href or .Min or .Max or .Disabled or .Checked or .Selected or .Invalid or .Loading or .Urgency or .Name or .Submits or .SubmitLabel or .Masked or .SkippedPath or .PlacedAt or .PlacedOf or .Reveal or .Fill or .Ink or .Radius or .Elevation or .Mode -> false,
     }
 }
@@ -192,32 +194,42 @@ export fn style_facts(s: Style) -> List<Fact> {
         .concat([f with { under: st.state } for st in s.states for f in rest_facts(st.style)])
 }
 
+/// A style's own fields, each read: a field this leaves out is `type.record_pattern`'s refusal.
 fn rest_facts(s: Style) -> List<Fact> {
-    word(.Radius, s.radius?.word())
-        .concat(word(.Fill, s.fill?.word()))
-        .concat(word(.Ink, s.color?.word()))
-        .concat(word(.Elevation, s.elevation?.word()))
-        .concat(word(.Face, s.face?.word()))
-        .concat(word(.TextSize, s.text_size?.word()))
-        .concat(word(.LineHeight, s.line_height?.word()))
-        .concat(word(.Tracking, s.tracking?.word()))
+    let Style { radius, fill, color, elevation, face, text_size, line_height, tracking, writing, states: _ } = s
+    word(.Radius, radius?.word())
+        .concat(word(.Fill, fill?.word()))
+        .concat(word(.Ink, color?.word()))
+        .concat(word(.Elevation, elevation?.word()))
+        .concat(word(.Face, face?.word()))
+        .concat(word(.TextSize, text_size?.word()))
+        .concat(word(.LineHeight, line_height?.word()))
+        .concat(word(.Tracking, tracking?.word()))
+        .concat(word(.WordsWriting, writing?.word()))
 }
 
-/// What a layout says. Every field spelled.
+/// What a layout says, each field read: a field this leaves out is `type.record_pattern`'s refusal.
 export fn layout_facts(l: Layout) -> List<Fact> {
-    word(.Direction, axis_word(l.direction))
-        .concat(word(.Wrap, wrap_word(l.wrap)))
-        .concat(word(.Gap, l.gap?.word()))
-        .concat(edge_facts(l.pad, [.PadStart, .PadEnd, .PadTop, .PadBottom]))
-        .concat(edge_facts(l.margin, [.MarginStart, .MarginEnd, .MarginTop, .MarginBottom]))
-        .concat(word(.Align, align_word(l.align)))
-        .concat(word(.Distribute, distribute_word(l.distribute)))
-        .concat(sizing_facts(.Width, l.width))
-        .concat(sizing_facts(.Height, l.height))
-        .concat(if l.grow == 0 { [] } else { number(.Grow, l.grow) })
-        .concat(fraction_facts(.Aspect, l.aspect))
-        .concat(edge_facts(l.inset, [.InsetStart, .InsetEnd, .InsetTop, .InsetBottom]))
-        .concat(if l.order == 0 { [] } else { number(.Order, l.order) })
+    let Layout { direction, wrap, gap, pad, margin, align, distribute, width, height, grow, aspect, inset, order } = l
+    word(.Direction, axis_word(direction))
+        .concat(word(.Wrap, wrap_word(wrap)))
+        .concat(word(.Gap, gap?.word()))
+        .concat(edge_facts(pad, [.PadStart, .PadEnd, .PadTop, .PadBottom]))
+        .concat(edge_facts(margin, [.MarginStart, .MarginEnd, .MarginTop, .MarginBottom]))
+        .concat(word(.Align, align_word(align)))
+        .concat(word(.Distribute, distribute_word(distribute)))
+        .concat(sizing_facts(.Width, width))
+        .concat(sizing_facts(.Height, height))
+        .concat(if grow == 0 { [] } else { number(.Grow, grow) })
+        .concat(fraction_facts(.Aspect, aspect))
+        .concat(edge_facts(inset, [.InsetStart, .InsetEnd, .InsetTop, .InsetBottom]))
+        .concat(if order == 0 { [] } else { number(.Order, order) })
+}
+
+/// The direction a node is laid out in, where it is another than the one the node above it was.
+export fn writing_facts(n: Node) -> List<Fact> {
+    let stamp? = n.theme else { return [] }
+    if stamp.rewritten { text(.Writing, stamp.writing.word()) } else { [] }
 }
 
 /// The theme a tree is drawn in: its mode and its contrast.

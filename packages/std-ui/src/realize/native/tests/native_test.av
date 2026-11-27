@@ -9,6 +9,9 @@ use @std.ui.tree.node.{Node, Prim}
 use @std.ui.style.style.{Style, StateStyle, Interaction}
 use @std.ui.style.tokens.{Tone}
 use @std.ui.style.theme.{default_theme}
+use @std.ui.components.{column, text}
+use @std.ui.tree.view.{tree_of}
+use @std.ui.env.{Direction, writing}
 
 fn counter(n: int) -> Node { holding(.Column, [text_node("taps: ${n}"), button_node("taps+")]) }
 
@@ -36,6 +39,22 @@ fn word(p: NativePatch) -> string {
         .Unlisten(_, _) -> "unlisten",
     }
 }
+
+/// A column laid out right to left, holding `words`.
+component flipped(words: string) {
+    ctx writing = Direction.Rtl
+    column { items: [text self.words] }
+}
+
+/// Every fact an element and the elements it holds say.
+fn facts_under(n: Native) -> List<Fact> { n.facts.concat([f for k in n.kids for f in facts_under(k)]) }
+
+/// The values of the facts named `name` a tree's elements say, in page order.
+fn said_as(n: Node, name: string) -> List<string> {
+    [w for f in facts_under(lowered(n)[0]) if named(f.what) == name for w in texts(f.holds)]
+}
+
+fn texts(s: Scalar) -> List<string> { match s { .Text(t) -> [t], rest -> [] } }
 
 /// How many elements a tree lowers to.
 fn count(e: List<Native>) -> int { e.fold(0, (a: int, x: Native) -> a + 1 + count(x.kids)) }
@@ -119,5 +138,13 @@ spec "std/ui native — the diff" {
         then "NaN is the same NaN, so it never reads as changed" { same(Scalar.Fraction(0.0 / 0.0), Scalar.Fraction(0.0 / 0.0)) }
         then "two fractions differ by value" { !same(Scalar.Fraction(0.5), Scalar.Fraction(0.25)) }
         then "a number is never a fraction" { !same(Scalar.Number(1), Scalar.Fraction(1.0)) }
+    }
+    given "a subtree laid out right to left" {
+        then "says so once, on the node where it moves" { said_as(tree_of(column { items: [text "a", flipped "b"] }), "writing").join(",") == "rtl" }
+        then "a tree in the document's own direction says nothing of it" { said_as(tree_of(column { items: [text "a"] }), "writing").is_empty() }
+    }
+    given "a style stating its words' direction" {
+        then "says it as the words' own" { style_facts(Style { writing: .Rtl }).any(named(it.what) == "words_writing") }
+        then "an unstated one says nothing, the host's natural direction" { !style_facts(Style {}).any(named(it.what) == "words_writing") }
     }
 }
