@@ -18,10 +18,12 @@ use core.{
     Mark,
     Param,
     Plain,
+    Remark,
     SignedType,
     Span,
     StmtId,
     SyntaxArena,
+    Trivia,
     TypeHead,
     own_type_named,
     Variant as VariantDecl,
@@ -251,6 +253,7 @@ fn declared_meta(engine: QueryEngine, d: DeclaredName) -> MetaType? {
         .Record or .Component -> {
             let parts? = item.store.struct_parts(s) else { return null }
             let signed = record_signature_written(engine, d.file, d.name)?.fields ?? []
+            let docs = field_docs(item.store, item.store.stmt_span(s)?.lo ?? 0, parts.fields)
             base with { fields: [field_meta(
                 engine,
                 d.file,
@@ -259,7 +262,8 @@ fn declared_meta(engine: QueryEngine, d: DeclaredName) -> MetaType? {
                 field_kind(signed, p.name.text()),
                 written_default(engine, d.file, item, p),
                 field_cell(engine, signed, p),
-            ) for p in parts.fields], spreads: [spelled(x.of) for x in parts.spreads], body: body_meta(engine, d.file, item, s) }
+                docs[i],
+            ) for i, p in parts.fields], spreads: [spelled(x.of) for x in parts.spreads], body: body_meta(engine, d.file, item, s) }
         },
         .Enum -> {
             let parts? = item.store.enum_parts(s) else { return null }
@@ -518,6 +522,11 @@ fn gathered_variant(engine: QueryEngine, m: DeclaredName, derived: List<string>)
     let item = read_item(engine, m.file, m.item)
     let declaring = [s for s in item.stmts if item.store.declared_name(s) == m.name]
     let fields = [p for s in declaring for p in item.store.struct_parts(s)?.fields ?? []]
+    let docs = [doc for s in declaring for doc in field_docs(
+        item.store,
+        item.store.stmt_span(s)?.lo ?? 0,
+        item.store.struct_parts(s)?.fields ?? [],
+    )]
     let signed = record_signature_written(engine, m.file, m.name)?.fields ?? []
     MetaVariant {
         name: m.name,
@@ -531,7 +540,8 @@ fn gathered_variant(engine: QueryEngine, m: DeclaredName, derived: List<string>)
             field_kind(signed, p.name.text()),
             written_default(engine, m.file, item, p),
             field_cell(engine, signed, p),
-        ) for p in fields],
+            docs[i],
+        ) for i, p in fields],
         marks: [annotated_mark(engine, m.file, item, a) for s in declaring for a in item.store.annotations_of(s) if marks_a_member(engine, m.file, a.name)],
         annotations: [annotation_meta(engine, m.file, item, a) for s in declaring for a in item.store.annotations_of(s)],
         impls: distinct(written_traits(engine, m.file, m.name).concat(derived)),
@@ -575,9 +585,11 @@ fn field_meta(
     kind: Kind,
     default: MetaCode?,
     cell: bool,
+    doc: string?,
 ) -> MetaField {
     MetaField {
         name: p.name.text(),
+        doc: doc,
         ty: if p.ty == null { "" } else { spelled(p.ty!) },
         at: meta_place(engine, file, item, item.store.param_id_span(p.id)),
         kind: if cell { Kind.Cell(kind) } else { kind },
@@ -589,6 +601,37 @@ fn field_meta(
         state: cell,
         prop: p.prop,
     }
+}
+
+/// Each field's doc, `fields` in order from `floor`: the run of `///` lines directly above it. A
+/// field is no declaration the lexer documents, so its doc stands among the remarks, and a blank
+/// line or a plain comment ends the run, as it ends a declaration's.
+fn field_docs(store: SyntaxArena, floor: int, fields: List<Param>) -> List<string?> {
+    let remarks = store.remarks.get()
+    let starts = [store.param_id_span(p.id)?.lo ?? floor for p in fields]
+    [doc_between(remarks, if i == 0 { floor } else { starts[i - 1] }, at) for i, at in starts]
+}
+
+/// The `///` run that ends at `at`, among the remarks from `floor`; absent where none does.
+fn doc_between(remarks: List<Remark>, floor: int, at: int) -> string? {
+    let near = [r for r in remarks if r.at >= floor && r.at < at]
+    let from = ([i for i, r in near if doc_line_of(r) == null].last() ?? -1) + 1
+    let lines = [doc_line_of(r) ?? "" for r in near.slice(from, near.length)]
+    if lines.is_empty() { null } else { lines.join("\n") }
+}
+
+/// A remark's text as a doc line: what follows its `///` and one space; absent for any other.
+fn doc_line_of(r: Remark) -> string? {
+    if r.same_line { return null }
+    match r.trivia {
+        .Comment(text) -> if text.starts_with("///") { text_after_slashes(text) } else { null },
+        .Blank -> null,
+    }
+}
+
+fn text_after_slashes(text: string) -> string {
+    let rest = text.substring(3, text.length)
+    if rest.starts_with(" ") { rest.substring(1, rest.length) } else { rest }
 }
 
 /// Whether the field `p`, among `signed`, is a cell: written `state`, or a prop whose type compares by
@@ -655,11 +698,12 @@ fn variant_meta(
     v: VariantDecl,
     signed: List<FieldSeat>,
 ) -> MetaVariant {
+    let docs = field_docs(item.store, v.span?.lo ?? 0, v.payloads)
     MetaVariant {
         name: v.name.of,
         payload: [if p.ty == null { "" } else { spelled(p.ty!) } for p in v.payloads],
         at: meta_place(engine, file, item, v.span),
-        fields: [field_meta(engine, file, item, p, field_kind(signed, p.name.text()), null, false) for p in v.payloads],
+        fields: [field_meta(engine, file, item, p, field_kind(signed, p.name.text()), null, false, docs[i]) for i, p in v.payloads],
         marks: [mark_meta(engine, file, item, m) for m in v.marks],
     }
 }
