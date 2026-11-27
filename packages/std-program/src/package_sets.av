@@ -68,8 +68,10 @@ export fn set_print(names: List<string>) -> int {
 
 impl NameSets {
     /// The id of the set holding `names`, kept now if it's new.
-    fn of(names: List<string>) -> int {
-        let sorted = distinct_sorted(names)
+    fn of(names: List<string>) -> int { self.of_sorted(distinct_sorted(names)) }
+
+    /// The id of the set holding `sorted`, its names in text order and each once, kept now if it's new.
+    fn of_sorted(sorted: List<string>) -> int {
         let spelled = spelled_set(sorted)
         let known = self.ids.get().get(spelled)
         if known != null { return known! }
@@ -110,7 +112,7 @@ impl NameSets {
         let spread = joined_word(low, if a < b { b } else { a })
         let known = self.unions.get_at(low, spread)
         if known != null { return known! }
-        let id = self.of(self.members_of(a).concat(self.members_of(b)))
+        let id = self.of_sorted(merged(self.members_of(a), self.members_of(b)))
         self.unions.put_at(low, spread, id)
         id
     }
@@ -124,6 +126,29 @@ impl NameSets {
 fn joined_word(low: int, high: int) -> int { high ^ low.wrapping_mul(0 - 7046029254386353131) }
 
 /// `names` with each kept once, in text order.
+/// The names of two sorted sets, each once, in text order.
+fn merged(a: List<string>, b: List<string>) -> List<string> {
+    mut out: List<string> = []
+    mut i = 0
+    mut j = 0
+    while i < a.length && j < b.length {
+        let x = a[i]
+        let y = b[j]
+        if x == y {
+            out.push(x)
+            i = i + 1
+            j = j + 1
+        } else if text_before(x, y) {
+            out.push(x)
+            i = i + 1
+        } else {
+            out.push(y)
+            j = j + 1
+        }
+    }
+    out.concat(a.drop(i)).concat(b.drop(j))
+}
+
 fn distinct_sorted(names: List<string>) -> List<string> {
     let sorted = sorted_by(names, text_before)
     [name for at, name in sorted if at == 0 || sorted[at - 1] != name]
