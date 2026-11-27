@@ -97,6 +97,36 @@ export fn engine_worked_ahead<T, R>(
     if !forked_for<T, R>(before, asking, definitions, work) { return Worked { store: before, engine: asking } }
     waves_forked().set(wave + 1)
     edited_mid_build(wave)
+    merged_anew<T, R>(directory, definitions, asking, work, program)
+}
+
+/// `from` with every unknown item of `work` answered across processes that go on from everything
+/// `from`'s engine has settled, the wave then taken as `engine_worked_ahead` takes one: the store at
+/// `directory` opened again, the processes' packs merged, and their answers taken by a fresh engine,
+/// its frontier `program`'s. With nothing to fork, `from` as it stands.
+export fn worked_within<T, R>(
+    directory: string,
+    definitions: List<QueryDefinition>,
+    from: Worked,
+    work: WorkAhead<T, R>,
+    program: string = "",
+) -> Worked {
+    let wave = waves_forked().get()
+    if !cores_within<T, R>(from.store, from.engine, work, () -> 0) { return from }
+    edited_mid_build(wave)
+    merged_anew<T, R>(directory, definitions, from.engine, work, program)
+}
+
+/// THE WAVE'S ANSWERS TAKEN ANEW, once its processes have gone: the store at `directory` opened
+/// again, the packs they published merged, and what they learned taken by a fresh engine over it, its
+/// frontier `program`'s, `asking` saying where the time went.
+fn merged_anew<T, R>(
+    directory: string,
+    definitions: List<QueryDefinition>,
+    asking: QueryEngine,
+    work: WorkAhead<T, R>,
+    program: string,
+) -> Worked {
     asking.kept_times()?.opened("the work merged", TimedSide.Outside, Pass.StoreSave)
     let after = program_store_at(directory)
     let engine = query_engine(after, definitions, program)
@@ -227,6 +257,19 @@ export fn asked_across_while<T, R>(
     work: WorkAhead<T, R>,
     meanwhile: fn() -> int,
 ) -> bool {
+    if !cores_within<T, R>(store, engine, work, meanwhile) { return false }
+    store.packs_read_again()
+    engine.kept_times()?.opened(ANSWERS_TAKEN, TimedSide.Outside, Pass.StoreOpen)
+    let taken = shared_taken(store, engine, work.process_count, work.counted)
+    engine.kept_times()?.closed()
+    if work.timed { eprintln("within: ${taken}") }
+    true
+}
+
+/// Every unknown item of `work` answered across processes that go on from everything `engine` has
+/// settled, the asking process doing `meanwhile` while they run; whether any process ran: none where
+/// fewer than `WORTH_FORKING` are unknown, or nothing could be forked. Nothing of theirs is taken.
+fn cores_within<T, R>(store: LayeredStore, engine: QueryEngine, work: WorkAhead<T, R>, meanwhile: fn() -> int) -> bool {
     let known_by = work.is_known
     let items = (work.items)(engine)
     if work.process_count < 2 || !at_least(items, WORTH_FORKING, (item) -> !known_by(engine, item)) { return false }
@@ -251,11 +294,6 @@ export fn asked_across_while<T, R>(
     engine.kept_times()?.closed()
     waves_forked().set(wave + 1)
     if finished < work.process_count { cores_lost(work.process_count - finished, work.process_count) }
-    store.packs_read_again()
-    engine.kept_times()?.opened(ANSWERS_TAKEN, TimedSide.Outside, Pass.StoreOpen)
-    let taken = shared_taken(store, engine, work.process_count, work.counted)
-    engine.kept_times()?.closed()
-    if work.timed { eprintln("within: ${taken}") }
     true
 }
 
