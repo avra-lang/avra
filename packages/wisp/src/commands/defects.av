@@ -62,8 +62,8 @@ export type Probe = { name: string, verbs: List<string>, body: string, mutant: b
 /// speaks in, and what it says as it goes.
 export type DefectRig = {
     avra: string,
-    timeout: int = 60,
-    stall: int = 10,
+    timeout_ms: int = 60000,
+    stall_ms: int = 10000,
     workers: int = 4,
     warm_clock: int = 300,
     who: string = "defects",
@@ -111,8 +111,8 @@ impl Runnable for DefectsCmd {
         }
         let rig = DefectRig {
             avra: or_default(args.option("avra"), "${env("PWD") ?? "."}/avra"),
-            timeout: number(args.option("timeout"), 60),
-            stall: number(args.option("stall"), 10),
+            timeout_ms: 1000 * number(args.option("timeout"), 60),
+            stall_ms: 1000 * number(args.option("stall"), 10),
             workers: number(args.option("workers"), 4),
             warm_clock: number(args.option("warm_clock"), 300),
             progress: number(args.option("progress"), 0),
@@ -687,13 +687,13 @@ fn watched(rig: DefectRig, verb: string, package: string, name: string) -> Resul
     let began = now_ms()
     let c = cmd(tool_at(rig.avra, rig.avra), [verb, package]) with { env: inherited().with_var("AVRA_WATCH_HELD", "1").with_var("AVRA_MAX_COMPILES", "0"), stop_grace: ms(200), drain_grace: ms(500) }
     mut child = c.start(Ready.Started, secs(5))?
-    let stall_at = began + 1000 * if rig.stall < rig.timeout { rig.stall } else { rig.timeout }
+    let stall_at = began + if rig.stall_ms < rig.timeout_ms { rig.stall_ms } else { rig.timeout_ms }
     mut gone = child.pump(0)
     while !gone && now_ms() < stall_at { gone = child.pump(100) }
-    let dump: List<string>? = if !gone && rig.stall < rig.timeout { stalled(child.pid()) } else { null }
+    let dump: List<string>? = if !gone && rig.stall_ms < rig.timeout_ms { stalled(child.pid()) } else { null }
     if dump != null {
-        println(stalled_words(name, verb, rig.stall, dump!))
-        let end = began + 1000 * rig.timeout
+        println(stalled_words(name, verb, rig.stall_ms / 1000, dump!))
+        let end = began + rig.timeout_ms
         while !gone && now_ms() < end { gone = child.pump(100) }
     }
     if !gone {
@@ -701,7 +701,7 @@ fn watched(rig: DefectRig, verb: string, package: string, name: string) -> Resul
         let _ = child.stop()
         return ProbeRun {
             code: 124,
-            out: "timed out after ${rig.timeout}s",
+            out: "timed out after ${seconds_of(rig.timeout_ms)}",
             took: now_ms() - began,
             dump: at_kill,
         }
@@ -996,7 +996,7 @@ fn hundredths(ms_: int) -> string {
 
 /// The words of a program that ran out the clock, against its last green seconds when known.
 export fn timeout_words(rig: DefectRig, name: string, previous: List<ProbeTiming>) -> string {
-    "timed out after ${rig.timeout}s (last green run: ${last_green(previous, name)})"
+    "timed out after ${seconds_of(rig.timeout_ms)} (last green run: ${last_green(previous, name)})"
 }
 
 fn last_green(previous: List<ProbeTiming>, name: string) -> string {
@@ -1137,3 +1137,6 @@ fn fetched_previous(repo: string, out: string) -> int {
     let _ = remove(zip)
     0
 }
+
+/// A bound in milliseconds, spoken in whole seconds where it is one.
+fn seconds_of(ms: int) -> string { if ms % 1000 == 0 { "${ms / 1000}s" } else { "${ms}ms" } }

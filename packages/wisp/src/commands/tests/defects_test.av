@@ -38,7 +38,12 @@ fn probe(name: string, text: string) -> Probe {
 }
 
 fn rig_of(avra: string) -> DefectRig {
-    DefectRig { avra: avra, timeout: 2, who: "defects self-test (a fixture's expected refusal)" }
+    DefectRig {
+        avra: avra,
+        timeout_ms: 300,
+        stall_ms: 300,
+        who: "defects self-test (a fixture's expected refusal)",
+    }
 }
 
 fn draws(seed: int, ns: List<int>) -> string {
@@ -102,7 +107,7 @@ spec "defects — the pool" {
         let count = "${scratch()}/count"
         let first_slow = fake(
             "once",
-            "n=\$(cat \"${count}\" 2>/dev/null || echo 0); echo \$((n+1)) > \"${count}\"; [ \"\$n\" = 0 ] && sleep 4; exit 0",
+            "n=\$(cat \"${count}\" 2>/dev/null || echo 0); echo \$((n+1)) > \"${count}\"; [ \"\$n\" = 0 ] && sleep 1; exit 0",
         )
         let s = survey(rig_of(first_slow), [probe("probe", "1\n")], 1, [], [])
         s.bad.is_empty() &&
@@ -112,7 +117,7 @@ spec "defects — the pool" {
             s.notes[0].contains("load:")
     }
     then "a program that hangs twice refuses with both durations" {
-        let s = survey(rig_of(fake("hangs", "sleep 4")), [probe("probe", "1\n")], 1, [], [])
+        let s = survey(rig_of(fake("hangs", "sleep 1")), [probe("probe", "1\n")], 1, [], [])
         s.bad.map(it.name).join(",") == "probe" &&
             s.bad[0].why.contains("timed out twice") &&
             s.notes.is_empty()
@@ -153,8 +158,8 @@ spec "defects — the timings" {
     }
     then "a timeout names its last green seconds, or says they are not known" {
         let rig = rig_of("avra")
-        timeout_words(rig, "hang", [ProbeTiming { name: "hang", took: 400 }]) == "timed out after 2s (last green run: 0.4s)" &&
-            timeout_words(rig, "hang", []) == "timed out after 2s (last green run: not known)"
+        timeout_words(rig, "hang", [ProbeTiming { name: "hang", took: 400 }]) == "timed out after 300ms (last green run: 0.4s)" &&
+            timeout_words(rig, "hang", []) == "timed out after 300ms (last green run: not known)"
     }
     then "the newest live timings artifact is picked, by id" {
         let pick = (text: string) -> match parse(text) catch Json.Null {
