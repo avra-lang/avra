@@ -75,6 +75,8 @@ env:
   AVRA_STORE_KEPT_HERE: "1"
   AVRA_CACHE_DIR: ${{ github.workspace }}/.avra-machine
   PR_BODY: ${{ github.event.pull_request.body }}
+  # THE BRANCH A DIFF IS MEASURED FROM: a PR's own base, else program, where trains land.
+  BASE: ${{ github.base_ref || 'program' }}
   PR_NUMBER: ${{ github.event.pull_request.number }}
   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -118,10 +120,10 @@ jobs:
           path: .github/ci/suite-seconds.measured
           key: suite-seconds-${{ github.run_id }}
           restore-keys: suite-seconds-
-      # A PR diffs against its base, `origin/main`; so does the train.
+      # A PR diffs against its base, `origin/$BASE`; so does the train.
       - if: github.event_name != 'push'
         name: base
-        run: git fetch -q --depth=20 origin main
+        run: git fetch -q --depth=20 origin "$BASE:refs/remotes/origin/$BASE"
       # WHAT THIS RUN OWES, decided before anything is built. Both a PR and a
       # train check the packages a diff AFFECTS — touched plus every package
       # that reaches one (tools/affected_packages.sh, the ONE definition) —
@@ -148,14 +150,14 @@ jobs:
           cache=0
           codecs=0
           if [ "$event" != push ] && [ -z "${{ inputs.only }}" ]; then
-            changed=$(git diff --name-only --diff-filter=d origin/main HEAD -- '*.av' | tr '\n' ' ')
+            changed=$(git diff --name-only --diff-filter=d "origin/$BASE" HEAD -- '*.av' | tr '\n' ' ')
           fi
           # A DIFF UNDER runtime/ OWES THE LATENCY GATE: the scheduler's
           # transition rows, which no suite catches (#490's tick cost a
           # getpid() a transition, silently). Held over every event, main's
           # own push included (against its parent), so the gate is the
           # runtime path's, not a PR's own invention.
-          runtime_base=origin/main
+          runtime_base="origin/$BASE"
           if [ "$event" = push ]; then runtime_base=HEAD~1; fi
           if git diff --name-only "$runtime_base" HEAD -- 'runtime/' | grep -q .; then runtime=1; fi
           # THE C RUNTIME'S OWN TESTS owe a PR only a change they read (runtime/,
@@ -169,7 +171,7 @@ jobs:
           # A PR AND A TRAIN OWE THE SAME CHECK SET: the affected closure. The
           # train adds the suites over it, never a package the PR skipped.
           if [ "$event" = merge_group ] || [ "$event" = pull_request ]; then
-            pkgs=$(sh tools/affected_packages.sh origin/main HEAD "$PWD")
+            pkgs=$(sh tools/affected_packages.sh "origin/$BASE" HEAD "$PWD")
           fi
           # THE BUILD CACHE'S OWN ATTACKS RUN WHEREVER THE STORE CAN MOVE: the
           # train always, main's own push (so a store change main just took is
@@ -179,7 +181,7 @@ jobs:
           # after it failed until the queue stalled.
           if [ "$event" = merge_group ] || [ "$event" = push ]; then cache=1; fi
           if [ "$event" = workflow_dispatch ] && [ -z "${{ inputs.only }}" ]; then cache=1; fi
-          if [ "$event" = pull_request ] && ! git diff --quiet origin/main...HEAD -- \
+          if [ "$event" = pull_request ] && ! git diff --quiet "origin/$BASE"...HEAD -- \
               packages/std-avrac/src/compiler/store \
               packages/std-avrac/src/compiler/build.av \
               packages/std-avrac/src/compiler/record.av \
@@ -195,12 +197,12 @@ jobs:
             pkgs=$(sh tools/packages.sh) || exit 1
           fi
           if [ "$event" = pull_request ]; then
-            if git diff --quiet origin/main...HEAD -- $(sh tools/compiler_paths.sh) ':(exclude,glob)**/tests/**'; then compiler=0; fi
+            if git diff --quiet "origin/$BASE"...HEAD -- $(sh tools/compiler_paths.sh) ':(exclude,glob)**/tests/**'; then compiler=0; fi
             if [ -z "$changed$pkgs" ] && [ "$compiler" = 0 ]; then build=0; fi
             # a compiler change moves how often the store settles, which the attacks count
             if [ "$compiler" = 1 ]; then cache=1; fi
             # a file a PR keeper holds to the compiler wants one built to hold it to
-            if ! git diff --quiet origin/main...HEAD -- docs/DIAGNOSTICS.md DOGFOODING.md Makefile 'tools/footprint*' tools/attack.sh tools/ui_board_browser.sh 'tools/ui-board/*.mjs' .github/ci/packages-browser.txt; then build=1; fi
+            if ! git diff --quiet "origin/$BASE"...HEAD -- docs/DIAGNOSTICS.md DOGFOODING.md Makefile 'tools/footprint*' tools/attack.sh tools/ui_board_browser.sh 'tools/ui-board/*.mjs' .github/ci/packages-browser.txt; then build=1; fi
           fi
           # The attacks need a compiler and its objects: a run that owes them
           # owes the build, even when the diff itself is only the harness.
@@ -212,7 +214,7 @@ jobs:
           # unregistered encoder/decoder pair on the PR instead of one train
           # later. The registry's round trip needs a whole compiler and stays
           # with the train.
-          if [ "$event" = pull_request ] && ! git diff --quiet origin/main...HEAD -- \
+          if [ "$event" = pull_request ] && ! git diff --quiet "origin/$BASE"...HEAD -- \
               packages/std-avrac/src tools/codecs.py; then codecs=1; fi
           key=$(sh tools/compiler_paths.sh --key)
           shards=$(printf '%s\n' "$pkgs" | python3 tools/shards.py --split 6)

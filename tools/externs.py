@@ -40,7 +40,7 @@ extern, while a hand-written `int f(void){return -1;}` at -O2 answers
 callee-dependent and invisible to any test that runs the callee it
 happens to have. Only the declaration can be held to account.
 """
-import re, sys, glob, os
+import bisect, re, sys, glob, os
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # The compiler's own C — GLOBBED, not listed: every `.c` one directory
@@ -274,13 +274,24 @@ def package_sources():
     return found, seen
 
 
+def line_starts(text):
+    """The offset each line of `text` starts at, so a line is a search, never a count from the top."""
+    return [0] + [m.end() for m in re.finditer(r"\n", text)]
+
+
+def line_at(starts, offset):
+    """The 1-based line that holds `offset`."""
+    return bisect.bisect_right(starts, offset)
+
+
 def c_returns(sources):
     """Every C function we define, by name, with its written return type."""
     out = {}
     for rel in sources:
         text = open(os.path.join(ROOT, rel)).read()
+        starts = line_starts(text)
         for m in re.finditer(r"^([A-Za-z_][A-Za-z_0-9 ]*?[ *])\s*([A-Za-z_][A-Za-z_0-9]*)\s*\(", text, re.M):
-            out[m.group(2)] = (m.group(1).strip(), rel, text.count("\n", 0, m.start()) + 1)
+            out[m.group(2)] = (m.group(1).strip(), rel, line_at(starts, m.start()))
     return out
 
 # WHERE AN EXTERN CAN BE DECLARED. `packages/**` reaches a package's
@@ -484,6 +495,7 @@ def c_signatures(sources, wanted):
     out = {}
     for rel in sources:
         text = open(os.path.join(ROOT, rel)).read()
+        starts = None
         for name in wanted:
             if name in out:
                 continue
@@ -509,8 +521,9 @@ def c_signatures(sources, wanted):
                     close += 1
                 tail = text[close + 1:close + 40].lstrip()
                 if close < len(text) and text[close] == ")" and tail[:1] == "{":
+                    starts = starts or line_starts(text)
                     out[name] = (" ".join(COMMENT.sub(" ", text[head + 1:close]).split()),
-                                 rel, text.count("\n", 0, at) + 1)
+                                 rel, line_at(starts, at))
                     break
                 at = head
     return out

@@ -11,7 +11,7 @@
 #   sh tools/keeper_planted.sh --pick <k>…    the first of the keepers `k` that has a plant, else nothing
 set -u
 root=$(cd "$(dirname "$0")/.." && pwd)
-PLANTS="fmt-lossless traps clock-holds wasm-refuses tool-witnesses runtime-tests witness-place-kill witness-machine-store inputs externs layers bash-parse dogfooding-rules rt-header"
+PLANTS="fmt-lossless traps clock-holds wasm-refuses tool-witnesses runtime-tests witness-place-kill witness-machine-store inputs externs layers bash-parse dogfooding-rules rt-header pkgs-witness"
 case ${1:-} in
     --list) printf '%s\n' $PLANTS; exit 0 ;;
     --pick)
@@ -93,6 +93,10 @@ case $plant in
     rt-header)
         printf '/* planted: a row the rows do not say */\n' >>runtime/avra_rt.h
         word='planted: a row the rows do not say'
+        ;;
+    pkgs-witness)
+        sed -i.planted 's/^named_suites() { printf .%s\\n. std-avrac /named_suites() { printf '"'"'%s\\n'"'"' std-queue_store std-avrac /' tools/gate.sh
+        word='did not select std-queue_store'
         ;;
 esac
 find . -name '*.planted' -type f -exec rm -f {} + 2>/dev/null

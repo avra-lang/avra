@@ -1,0 +1,466 @@
+//! `wisp preflight [--base <ref>] [--budget <seconds>]` — WHAT THE GATE WOULD SAY, ASKED
+//! IN THE LANE'S OWN CONTAINER, OVER ITS OWN WARM STORE, BEFORE IT SENDS. Cold proving is the gate's: here
+//! every check reads the store the lane's builds and checks already filled, so only what the change
+//! touched is worked out again. Against `--base` (origin/program), with this tree's compiler — the
+//! standing build/avra or `make try`'s product where its record names this tree, else `make try` once —
+//! it runs the fixed steps, then the suites and narrowed keepers that fit what is left of the budget
+//! (180 s; 480 s where compiler source changed):
+//!
+//!   - fmt over the changed `.av`, a parse of each and nothing more;
+//!   - each touched package's warm check against the idiom baseline, so only the edited items recompute
+//!     — by the compiler the lane ran before, where compiler source changed, since a new compiler's
+//!     store is cold (the gate checks with the new one);
+//!   - voices, where compiler source changed: every voice and its witness are the compiler's;
+//!   - the touched packages' test files, cheapest first by tools/gate/path.seconds, and of each
+//!     package that depends on them (tools/affected_packages.sh) the few that `use` a changed one;
+//!   - every static keeper (`wisp keepers`, the set that needs no compiler) a change owes, and every
+//!     other the one table of what a check reads (`ci_path_gate`) narrows to a changed path;
+//!   - where compiler source changed (tools/compiler_paths.sh), the cost gate's cheap rows — the program's cold check — over the
+//!     pinned snapshot, by a census compiler of this tree kept or made once, judged by `wisp
+//!     cost` — and only there: the rows measure the compiler, so nothing else can move them.
+//!
+//! Each step says its seconds. What it does not run is said by name, with why, so a lane knows what
+//! the gate still owns; the compiler's two-generation fixed point is always the gate's. 0 when nothing
+//! it ran refused.
+use @std.cli.{CliResult, Runnable, command, option, flag}
+use @std.process.{Tool, status_of}
+use @std.io.{read_text, exists, write_text}
+use @std.process.{tool, cmd, inherited}
+use @std.text.{parse_int, text_before}
+use @std.program.sorted.{sorted_by}
+
+/// The budget a change that leaves the compiler alone gets, and one that changes it.
+const BUDGET_S: int = 180
+const COMPILER_BUDGET_S: int = 480
+/// How many of a dependent's test files run: those that `use` a changed package, cheapest first.
+const DEPENDENT_FILES: int = 5
+/// What a census compiler takes to make, once a tree, and the cheap rows with one standing.
+const CENSUS_S: int = 240
+const COST_S: int = 45
+const PATH_SECONDS: string = "tools/gate/path.seconds"
+const KEEPER_SECONDS: string = "tools/gate/keeper.seconds"
+
+type PreflightCmd = {}
+
+impl Runnable for PreflightCmd {
+    fn run(args: CliResult) -> int {
+        let base = args.option("base")
+        asked(
+            if base.is_empty() { "origin/program" } else { base },
+            parse_int(args.option("budget")),
+        )
+    }
+}
+
+export command preflight {
+    description: "What the gate would say, asked over this lane's warm store before it sends: fmt, idioms, the static keepers and the suites and keepers a change reaches, and the cheap cost rows where compiler source changed"
+    option base { description: "the ref the change is measured from (origin/program)" }
+    option budget { description: "seconds to spend (180, or 480 where compiler source changed); what does not fit is said by name" }
+    run: PreflightCmd {}
+}
+
+/// A step run: its name, whether it held, its seconds.
+type Ran = { name: string, held: bool, secs: int }
+
+/// One piece of work: its name, its weight in seconds, the shell line that runs it.
+type Work = { name: string, secs: int, line: string }
+
+/// What a run asks: the paths changed, the compiler's source paths and whether one is among them, the packages touched and
+/// those that depend on them.
+type Change = { base: string, paths: List<string>, compiler_paths: List<string>, compiler: bool, touched: List<string>, dependents: List<string> }
+
+fn asked(base: string, budget_said: int?) -> int {
+    let paths = changed_since(base)
+    if paths.is_empty() {
+        println("preflight: nothing changed since ${base} — nothing to ask")
+        return 0
+    }
+    let change = change_of(base, paths)
+    let budget = budget_said ?? if change.compiler { COMPILER_BUDGET_S } else { BUDGET_S }
+    println(
+        "preflight: ${paths.length} path(s) changed since ${base}; ${change.touched.length} package(s) touched, ${change.dependents.length} depending; compiler source ${if change.compiler { "changed" } else { "unchanged" }}; budget ${budget} s",
+    )
+    mut ran: List<Ran> = []
+    mut left: List<string> = []
+    let compiler = this_compiler()
+    if compiler.ran != null {
+        ran.push(compiler.ran!)
+        if !compiler.ran!.held {
+            return ended(
+                ran,
+                ["every check: this tree's compiler did not build (build/preflight/compiler.log)"],
+            )
+        }
+    }
+    println("preflight: compiler ${compiler.said}")
+    let avra = "AVRA_BIN=${compiler.bin} ./avra"
+    ran = ran.concat([step(u) for u in quick_units(change, avra, compiler.warm)])
+    ran = ran
+        .concat([step(u) for u in sorted_by(keeper_units(change, compiler.bin, true), cheaper)])
+    if change.compiler {
+        let priced = cost_steps(compiler)
+        ran = ran.concat(priced.ran)
+        left = left.concat(priced.left)
+    } else {
+        left
+            .push(
+                "voices: no compiler source changed — every voice and its witness are the compiler's",
+            )
+        left
+            .push(
+                "cost: no compiler source changed — the rows measure the compiler over the pinned snapshot, so they can't move",
+            )
+    }
+    let picked = fitted(
+        test_units(change).concat(keeper_units(change, compiler.bin, false)),
+        budget - spent(ran),
+    )
+    ran = ran.concat([step(u) for u in grouped(picked.take, avra)])
+    ended(
+        ran,
+        left
+            .concat(left_tests(change, picked.leave))
+            .concat([leftover_said(u) for u in picked.leave if !u.name.starts_with("test ")]),
+    )
+}
+
+/// What the cost steps ran and left: the census compiler where none of this tree's stands, then the
+/// cheap rows.
+type Priced = { ran: List<Ran>, left: List<string> }
+
+fn cost_steps(compiler: Compiler) -> Priced {
+    mut ran: List<Ran> = []
+    if !census_stands() {
+        let made = step(
+            Work {
+                name: "census",
+                secs: CENSUS_S,
+                line: "CENSUS_BUILDER=${compiler.bin} sh tools/census_compiler.sh build/avra.census",
+            },
+        )
+        ran.push(made)
+        if !made.held {
+            return Priced {
+                ran: ran,
+                left: [
+                    "the cheap cost rows: the census compiler did not build (build/preflight/census.log)",
+                ],
+            }
+        }
+    }
+    ran.push(step(cost_unit(compiler.gen < 2)))
+    Priced {
+        ran: ran,
+        left: [
+            "cost: the cli's rows, warm and laid — each stands behind the cli's cold check, the gate's",
+        ],
+    }
+}
+
+fn change_of(base: string, paths: List<string>) -> Change {
+    let compiler_paths = lines(stdout_of("sh tools/compiler_paths.sh"))
+    let touched = packages_of("--touched", base)
+    Change {
+        base: base,
+        paths: paths,
+        compiler_paths: compiler_paths,
+        compiler: paths.any((p) -> compiler_paths.any((c) -> under(p, c))),
+        touched: touched,
+        dependents: [d for d in packages_of("", base) if !touched.contains(d)],
+    }
+}
+
+/// The packages a change since `base` reaches, the files not yet committed among it, as paths.
+fn packages_of(flags: string, base: string) -> List<string> {
+    ["packages/${n}" for n in lines(stdout_of("sh tools/affected_packages.sh ${flags} --worktree ${base} HEAD . 2>/dev/null"))]
+}
+
+// THE COMPILER
+
+/// This tree's compiler: the binary, its generation, how it was had, the run that made it if one did,
+/// and the compiler the lane ran before it, which its store is warm for.
+type Compiler = { bin: string, gen: int, said: string, ran: Ran?, warm: string }
+
+fn this_compiler() -> Compiler {
+    let tree = tree_print()
+    for bin in ["build/avra", "build/avra-try"] {
+        let rec = text_or_empty(record_of(bin))
+        if exists(bin) && first_word(rec) == tree {
+            return Compiler {
+                bin: bin,
+                gen: generation(rec),
+                said: "${bin}, this tree's (generation ${generation(rec)}), kept",
+                ran: null,
+                warm: bin,
+            }
+        }
+    }
+    let warm = if exists("build/avra-try") { "build/avra-try.warm" } else { "build/avra" }
+    let r = step(
+        Work {
+            name: "compiler",
+            secs: 0,
+            line: "{ [ ! -x build/avra-try ] || cp build/avra-try build/avra-try.warm; } && make -s try",
+        },
+    )
+    Compiler {
+        bin: "build/avra-try",
+        gen: generation(text_or_empty(record_of("build/avra-try"))),
+        said: "build/avra-try, made by `make try` (${r.secs} s); idioms read by ${warm}, the compiler this lane's store is warm for",
+        ran: r,
+        warm: warm,
+    }
+}
+
+/// Whether a census compiler of this tree stands.
+fn census_stands() -> bool {
+    exists("build/avra.census") &&
+        first_word(text_or_empty(record_of("build/avra.census"))) == tree_print()
+}
+
+/// What this tree's source prints as, the key a compiler's build record names.
+fn tree_print() -> string { first_word(stdout_of("sh tools/work built-from .")) }
+
+fn record_of(bin: string) -> string {
+    let at = bin.split("/")
+    "${at.take(at.length - 1).join("/")}/.${at.last()!}-built-from"
+}
+
+fn generation(record: string) -> int { parse_int(word_at(record, 2)) ?? 1 }
+
+// THE STEPS
+
+/// fmt over the changed `.av`, each touched package's warm check against the idiom baseline, and voices
+/// where compiler source changed: the quick ones, first.
+fn quick_units(change: Change, avra: string, warm: string) -> List<Work> {
+    let avs = [p for p in change.paths if p.ends_with(".av") && exists(p)]
+    let fmt = if avs.is_empty() { [] } else { [Work { name: "fmt", secs: 1, line: "${avra} fmt --check ${avs.join(" ")}" }] }
+    let idioms = [Work {
+        name: "idioms ${p}",
+        secs: 10,
+        line: "AVRA_BIN=${warm} ./avra check ${p} --baseline tools/idioms.baseline",
+    } for p in change.touched if exists("${p}/src")]
+    let voices = if change.compiler {
+        [
+            Work {
+                name: "voices",
+                secs: 30,
+                line: "${avra} voices --baseline tools/voices.baseline",
+            },
+        ]
+    } else {
+        []
+    }
+    fmt.concat(idioms).concat(voices)
+}
+
+/// Every test file of a touched package, and of each dependent the files that `use` a changed package.
+fn test_units(change: Change) -> List<Work> {
+    let weights = seconds_of(text_or_empty(PATH_SECONDS))
+    let dflt = median(weights)
+    let uses = [std_name(p) for p in change.touched if std_name(p) != ""]
+    let own = [test_unit(f, weights, dflt) for p in change.touched for f in test_files(p)]
+    let theirs = [f for d in change.dependents for f in sorted_by(
+        [f for f in test_files(d) if uses.any((u) -> text_or_empty(f).contains("@std.${u}"))],
+        (a, b) -> weights.get(a) ?? dflt < weights.get(b) ?? dflt,
+    )
+        .take(DEPENDENT_FILES)]
+    own.concat([test_unit(f, weights, dflt) for f in theirs])
+}
+
+fn test_unit(f: string, weights: Map<string, int>, dflt: int) -> Work {
+    Work { name: "test ${f}", secs: weights.get(f) ?? dflt, line: "" }
+}
+
+/// Every keeper a change owes that runs here: each static one, which needs no compiler, and each the
+/// one table narrows to a changed path, weighed by tools/gate/keeper.seconds. One it holds no row of and
+/// that drives the compiler reads every path and is the gate's, whose cold run it needs.
+fn keeper_units(change: Change, bin: string, statics: bool) -> List<Work> {
+    let weights = seconds_of(text_or_empty(KEEPER_SECONDS))
+    let dflt = median(weights)
+    [Work {
+        name: "keeper ${k.name}",
+        secs: weights.get(k.name) ?? dflt,
+        line: "AVRA_BIN=${bin} make -s -o avra ${k.name}",
+    } for k in KEEPERS if if statics { k.free } else { !k.free && narrowed(k.name) } &&
+        owed(k.name, "pull_request", change.paths, change.compiler_paths)]
+}
+
+/// Whether the table holds a row of `k`: a row narrows, so a path no row names owes it nothing.
+fn narrowed(k: string) -> bool { !owed(k, "pull_request", ["preflight/an-unread-path"], []) }
+
+/// The cheap cost rows, judged.
+fn cost_unit(gen1: bool) -> Work {
+    let flags = if gen1 { " --builder-gen1" } else { "" }
+    Work {
+        name: "cost-cheap",
+        secs: COST_S,
+        line: "COST_PART=cheap COST_COMPILER=build/avra.census sh tools/cost.sh judge${flags}",
+    }
+}
+
+/// What fits, cheapest first, and what is left.
+type Picked = { take: List<Work>, leave: List<Work> }
+
+fn fitted(units: List<Work>, budget: int) -> Picked {
+    mut take: List<Work> = []
+    mut leave: List<Work> = []
+    mut room = budget
+    for u in sorted_by(units, cheaper) {
+        if u.secs <= room {
+            take.push(u)
+            room = room - u.secs
+        } else {
+            leave.push(u)
+        }
+    }
+    Picked { take: take, leave: leave }
+}
+
+fn cheaper(a: Work, b: Work) -> bool { a.secs < b.secs || a.secs == b.secs && text_before(a.name, b.name) }
+
+/// The units chosen, a package's test files joined into one call over the warm store behind the C
+/// objects the suites link; every other unit as it is.
+fn grouped(units: List<Work>, avra: string) -> List<Work> {
+    let tests = [test_path(u) for u in units if u.name.starts_with("test ")]
+    let all = [package_of(f) for f in tests]
+    let packages = [p for i, p in all if all.index_of(p) == i]
+    // `-o avra`: the compiler standing is the one asked, never rebuilt
+    let libs = if tests.is_empty() { [] } else { [Work { name: "libs", secs: 0, line: "make -s -o avra libs" }] }
+    [u for u in units if !u.name.starts_with("test ")]
+        .concat(libs)
+        .concat(
+            [Work {
+                name: "tests ${p}",
+                secs: 0,
+                line: suite_line(avra, p, [f for f in tests if package_of(f) == p]),
+            } for p in packages],
+        )
+}
+
+/// A package's test files run over the warm store, held as a gate's row holds them: each case that fails
+/// must be one tools/gate/<package>.names pins, each that ends the run one its .traps lists
+/// (`gate.sh held`, the gate's own judgement).
+fn suite_line(avra: string, p: string, files: List<string>) -> string {
+    let run = "build/preflight/suite-${p}.run"
+    "{ ${avra} test ${files.join(" ")} > ${run} 2>&1; st=\$?; cat ${run}; sh tools/gate.sh held ${p} ${run} \$st; }"
+}
+
+fn test_path(u: Work) -> string { u.name.substring(5, u.name.length) }
+
+/// What a package's suite leaves to the gate, counted by package: the files the budget did not take,
+/// and a dependent's files past its few.
+fn left_tests(change: Change, leave: List<Work>) -> List<string> {
+    let dropped = [package_of(test_path(u)) for u in leave if u.name.starts_with("test ")]
+    ["${package_of("${p}/x")}: ${test_files(p).length - ran_count(p, change, dropped)} test file(s) left to the gate" for p in change.touched.concat(change.dependents) if test_files(p).length > ran_count(p, change, dropped)]
+}
+
+/// How many of a package's test files the run takes.
+fn ran_count(p: string, change: Change, dropped: List<string>) -> int {
+    let all = test_files(p).length
+    let chosen = if change.touched.contains(p) { all } else { if all < DEPENDENT_FILES { all } else { DEPENDENT_FILES } }
+    chosen - dropped.filter(it == package_of("${p}/x")).length
+}
+
+// THE RUN
+
+/// One unit run under `sh -c`, its words kept in build/preflight/<name>.log.
+fn step(u: Work) -> Ran {
+    let log = "build/preflight/${log_name(u.name)}.log"
+    let began = stdout_of("date +%s%3N")
+    let st = status("mkdir -p build/preflight && { ${u.line}; } > ${log} 2>&1")
+    let ms = (parse_int(stdout_of("date +%s%3N")) ?? 0) - (parse_int(began) ?? 0)
+    println(
+        "preflight: ${if st == 0 { "pass" } else { "FAIL" }} ${u.name} ${ms / 1000}.${ms % 1000 / 100} s${if st == 0 { "" } else { " — ${log}" }}",
+    )
+    if st != 0 { println(stdout_of("tail -15 ${log}")) }
+    Ran { name: u.name, held: st == 0, secs: ms / 1000 }
+}
+
+fn spent(ran: List<Ran>) -> int { ran.fold(0, (sum, r) -> sum + r.secs) }
+
+fn ended(ran: List<Ran>, left: List<string>) -> int {
+    let failed = [r.name for r in ran if !r.held]
+    for l in left { println("preflight: left to the gate — ${l}") }
+    println("preflight: fixed point: the gate's build slice judges it")
+    println(
+        "preflight: ${ran.length} ran in ${spent(ran)} s, ${failed.length} refused, ${left.length} left to the gate",
+    )
+    if failed.is_empty() { 0 } else { 1 }
+}
+
+fn leftover_said(u: Work) -> string { "${u.name}: past the budget" }
+
+// THE WORDS AND THE FILES
+
+/// The paths changed since `base`, committed or not.
+fn changed_since(base: string) -> List<string> {
+    lines(
+        stdout_of(
+            "{ git diff --name-only ${base}...HEAD; git diff --name-only HEAD; git ls-files --others --exclude-standard; } | sort -u",
+        ),
+    )
+}
+
+/// Whether `path` is `entry` or under it.
+fn under(path: string, entry: string) -> bool { path == entry || path.starts_with("${entry}/") }
+
+/// A package's test files.
+fn test_files(p: string) -> List<string> { lines(stdout_of("find ${p}/src -name '*_test.av' -path '*/tests/*' 2>/dev/null | sort")) }
+
+/// `packages/std-x` -> `x`, as a `use @std.x` names it; a package that is no std one has none.
+fn std_name(p: string) -> string {
+    let n = package_of("${p}/x")
+    if n.starts_with("std-") { n.substring(4, n.length).replace("-", "_") } else { "" }
+}
+
+/// `<name> <seconds>` lines, read past `#`.
+fn seconds_of(text: string) -> Map<string, int> {
+    mut out: Map<string, int> = {}
+    for line in text.split("\n") {
+        let w = line.trim().split(" ")
+        if line.starts_with("#") || w.length != 2 { continue }
+        let n? = parse_int(w[1]) else { continue }
+        out.set(w[0], n)
+    }
+    out
+}
+
+fn median(weights: Map<string, int>) -> int {
+    let ns = sorted_by([n for _k, n in weights], (a, b) -> a < b)
+    if ns.is_empty() { 60 } else { ns[ns.length / 2] }
+}
+
+fn package_of(path: string) -> string { path.split("/")[1] }
+
+fn log_name(name: string) -> string { name.replace(" ", "-").replace("/", "_") }
+
+fn lines(text: string) -> List<string> { [l.trim() for l in text.split("\n") if !l.trim().is_empty()] }
+
+fn text_or_empty(path: string) -> string { read_text(path) catch "" }
+
+fn first_word(text: string) -> string { word_at(text, 0) }
+
+fn word_at(text: string, i: int) -> string {
+    let w = text.trim().split(" ")
+    if i < w.length { w[i] } else { "" }
+}
+
+/// The shell, where it stands.
+fn shell() -> Tool? {
+    match tool("sh") { .Ok(t) -> t, .Err(_) -> null }
+}
+
+/// A shell line's standard output, trimmed; empty where it could not run.
+fn stdout_of(line: string) -> string {
+    let sh? = shell() else { return "" }
+    let c = cmd(sh, ["-c", line]) with { env: inherited() }
+    match c.outcome() { .Ok(o) -> o.out.stdout.trim(), .Err(_) -> "" }
+}
+
+/// A shell line's exit status, its own streams wherever the line sends them.
+fn status(line: string) -> int {
+    let sh? = shell() else { return 127 }
+    let c = cmd(sh, ["-c", line]) with { env: inherited() }
+    match c.outcome() { .Ok(o) -> status_of(o.exit), .Err(_) -> 127 }
+}

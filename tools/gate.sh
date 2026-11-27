@@ -11,6 +11,7 @@
 #
 #   sh tools/gate.sh list               each slice, one a line, with what it holds
 #   sh tools/gate.sh jobs               the runner jobs: each job, then the slices it runs, dealt by seconds
+#   sh tools/gate.sh pkgs-suites [<base>]   the suites the pkgs family runs over the diff from <base> (every one, with none)
 #   sh tools/gate.sh seconds <log…>     each suite row's measured seconds (`fact path <path> <n>`) kept in
 #                                       tools/gate/path.seconds, which the cli's shares are dealt by
 #   sh tools/gate.sh <slice> [arg]      one slice; the idioms slices take the base sha their diff starts at
@@ -109,6 +110,7 @@ program|6|the rows of program_rows — std-program, std-relation, rt-header, rt-
 refusal|8|witness_program_refusal over its cases, dealt in turn
 needs|6|witness_program_needs over every package and refusal witness, dealt in turn
 witness-b|5|the witnesses and attacks of witness_b_rows, dealt in turn
+pkgs|2|test every package's suite no slice above names, of the packages the diff from <base> reaches (tools/affected_packages.sh; every one where there is no <base>), dealt by their measured seconds; an owed one (tools/gate/suites.owed) judged by its line
 cost-warm|7|make cost, COST_PART=warm: the cli's cold check, then the warm edits (COST_EDITS) dealt in turn, the noop in every part
 cost-matrix-build-bare|2|make cost, COST_PART=matrix-build-bare: the warm-edit matrix met by a warm build, each part the cold build and a share of the edits (COST_EDITS) dealt in turn
 cost-matrix-build-laid|2|make cost, COST_PART=matrix-build-laid: the same, the std answers laid
@@ -193,11 +195,59 @@ jobs() {
         }' "$root/tools/gate/slice.seconds" -
 }
 
+# A SUITE LOG'S CASES, each once: those it failed by name, and those that ended its process
+failed_names() { grep '^    ✗' "$1" | sed 's/ @ .*//; s/^    ✗ //' | sort -u; }
+trapped_names() { grep '^avra: while running ' "$1" | sed 's/ @ .*//; s/^avra: while running //' | sort -u; }
+
+# held <package> <log> <status>: whether a suite run of `package` that exited `status` holds as a gate's
+# row holds it — every failed case one tools/gate/<package>.names pins, every ended one its .traps lists,
+# and a run that failed or ended none exited clean. Each case that does not hold is said.
+held() {
+    d=$(mktemp -d "${TMPDIR:-/tmp}/avra-held.XXXXXX")
+    for k in names traps; do
+        if [ -f "tools/gate/$1.$k" ]; then grep -v '^#' "tools/gate/$1.$k" | sort -u >"$d/$k"; else : >"$d/$k"; fi
+    done
+    failed_names "$2" >"$d/failed"
+    trapped_names "$2" >"$d/trapped"
+    comm -23 "$d/failed" "$d/names" | sed 's/^/unpinned failure: /' >"$d/said"
+    comm -23 "$d/trapped" "$d/traps" | sed 's/^/unlisted trap: /' >>"$d/said"
+    cat "$d/said"
+    st=0
+    if [ -s "$d/said" ]; then st=1; elif [ "$3" != 0 ] && [ ! -s "$d/failed" ] && [ ! -s "$d/trapped" ]; then st=1; fi
+    find "$d" -delete
+    return "$st"
+}
+
+# THE SUITES A SLICE NAMES: every other package's suite is the pkgs family's
+named_suites() { printf '%s\n' std-avrac cli std-program std-relation std-ui_gallery $DOORS_A $DOORS_B; }
+
+# THE PKGS FAMILY'S SUITES, as package paths into `$2`: of `wisp suites`, those the diff from `$1` reaches
+# (every one where `$1` is empty), less the ones a slice names; 1 where the suites could not be listed
+pkgs_suites() {
+    ./wisp suites | sort -u >"$2.all" || return 1
+    [ -s "$2.all" ] || return 1
+    if [ -n "$1" ]; then
+        sh tools/affected_packages.sh "$1" HEAD . 2>"$2.affected.log" | sed 's|^|packages/|' | sort -u >"$2.reached"
+    else
+        cp "$2.all" "$2.reached"
+    fi
+    named_suites | sed 's|^|packages/|' | sort -u >"$2.named"
+    comm -12 "$2.all" "$2.reached" | comm -23 - "$2.named" >"$2"
+}
+
 [ $# -ge 1 ] || { echo "gate: name a slice, or \`list\`" >&2; exit 2; }
 slice=$1
 shift
 if [ "$slice" = list ]; then slices; exit 0; fi
 if [ "$slice" = jobs ]; then jobs; exit 0; fi
+if [ "$slice" = held ]; then held "$@"; exit $?; fi
+if [ "$slice" = pkgs-suites ]; then
+    out=$(mktemp -d "${TMPDIR:-/tmp}/avra-pkgs.XXXXXX")
+    pkgs_suites "${1:-}" "$out/pkgs" && cat "$out/pkgs"
+    st=$?
+    find "$out" -delete
+    exit "$st"
+fi
 if [ "$slice" = seconds ]; then
     [ $# -ge 1 ] || { echo "gate: seconds names the gate logs it reads" >&2; exit 2; }
     kept="$root/tools/gate/path.seconds"
@@ -429,10 +479,10 @@ tested() {
     sh tools/bounded.sh "$ROW_SECS" build/avra test "$@" >"$out/$name.log" 2>&1
     ran=$?
     took="$(( $(date +%s) - t0 ))s"
-    grep '^    ✗' "$out/$name.log" | sed 's/ @ .*//; s/^    ✗ //' | sort -u >"$out/$name.failed"
+    failed_names "$out/$name.log" >"$out/$name.failed"
     listed "tools/gate/$pkg.names" >"$out/$name.known"
     comm -23 "$out/$name.failed" "$out/$name.known" >"$out/$name.unpinned"
-    grep '^avra: while running ' "$out/$name.log" | sed 's/ @ .*//; s/^avra: while running //' | sort -u >"$out/$name.trapped"
+    trapped_names "$out/$name.log" >"$out/$name.trapped"
     listed "tools/gate/$pkg.traps" >"$out/$name.traps"
     comm -23 "$out/$name.trapped" "$out/$name.traps" >"$out/$name.untrapped"
     # EVERY PRINTING PROGRAM THE ROW DOES NOT PROVE, said by its path under src/ — unmade, trapped in the
@@ -630,6 +680,36 @@ census_stands() {
 
 doors() { for p in "$@"; do cold "$p"; tested "test-$p" "packages/$p"; done; }
 slice_doors_a() { doors $DOORS_A; }
+
+# part `$1` of `$2` of the pkgs family over the diff from `$3`: each suite dealt here, a row each; an owed
+# one (tools/gate/suites.owed) runs as any, its red the line's debt, its green a line to strike
+pkgs_part() {
+    judged suites-owed-lines "$(awk '!/^#/ && NF > 0 && NF < 3' "$root/tools/gate/suites.owed" | wc -l | tr -d ' ')"
+    pkgs_suites "$3" "$out/pkgs" || { judged pkgs-suites-listed 1; return; }
+    suites=$(dealt_by_seconds "$(($1 - 1))" "$2" <"$out/pkgs")
+    if [ -z "$suites" ]; then
+        echo "fact pkgs-$1: no suite the diff reaches is dealt to this part" >>"$out/rows"
+        return 0
+    fi
+    for path in $suites; do
+        p=${path#packages/}
+        cold "$p"
+        owner=$(awk -v p="$p" '$1 == p { print $2; exit }' "$root/tools/gate/suites.owed")
+        if [ -z "$owner" ]; then
+            tested "test-$p" "$path"
+            continue
+        fi
+        rows=$((rows + 1))
+        t0=$(date +%s)
+        if sh tools/bounded.sh "$ROW_SECS" build/avra test "$path" >"$out/test-$p.log" 2>&1; then
+            failed=$((failed + 1))
+            failures="$failures test-$p"
+            echo "row test-$p FAIL $(( $(date +%s) - t0 ))s (passes, and tools/gate/suites.owed still owes it — strike its line)" >>"$out/rows"
+        else
+            echo "row test-$p OWED $(( $(date +%s) - t0 ))s ($owner: $(awk -v p="$p" '$1 == p { $1 = ""; $2 = ""; sub(/^  /, ""); print; exit }' "$root/tools/gate/suites.owed"))" >>"$out/rows"
+        fi
+    done
+}
 slice_doors_b() {
     doors $DOORS_B
     row ui-host-test make -s -o avra ui-host-test
@@ -805,6 +885,7 @@ part_of() {
             ;;
         edit-f) edit_part "modes-whole-$2" ;;
         edit-g) edit_part "modes-layered-$2" ;;
+        pkgs) pkgs_part "$2" "$3" "${4:-}" ;;
         cli) slice_cli $(find packages/cli/src/tests packages/cli/src/commands/tests -mindepth 1 -maxdepth 1 ! -name '.*' | sort | dealt_by_seconds "$(($2 - 1))" "$3") ;;
         program)
             cold std-program std-relation
@@ -831,12 +912,12 @@ part_of() {
         keepers-alone)
             names=$(keepers_of KEEPERS_ALONE)
             [ -n "$names" ] || { judged "keepers-alone-named" 1; return; }
-            # THE MUTATIONS RUN WHERE WHAT THEY READ MOVED: each breaks a line of runtime/ and is killed by
-            # runtime/tests, its list packages/wisp/src/commands/mutation_rows.av, so a diff from the program landed last
-            # (`$4`) that touches neither runtime/ nor the keeper would kill the same breaks again; said every gate
-            if [ -n "${4:-}" ] && git diff --quiet "$4" HEAD -- runtime packages/wisp/src/commands/mutation_rows.av packages/wisp/src/commands/mutations.av; then
+            # THE MUTATIONS RUN WHERE WHAT THEY READ MOVED, as the one table of what a check reads says
+            # (`wisp ci_path_gate`): a diff from the program landed last (`$4`) that touches none of
+            # it would kill the same breaks again; said every gate
+            if [ -n "${4:-}" ] && [ "$(git diff --name-only "$4" HEAD | ./wisp ci_path_gate runtime-mutations --event pull_request)" = 0 ]; then
                 names=$(printf '%s\n' $names | grep -vx runtime-mutations || :)
-                echo "fact keeper runtime-mutations not run: nothing under runtime/ nor the keeper moved since $(git rev-parse --short=8 "$4")" >>"$out/rows"
+                echo "fact keeper runtime-mutations not run: nothing it reads moved since $(git rev-parse --short=8 "$4")" >>"$out/rows"
             fi
             [ -n "$names" ] || return 0
             export MUTATION_SHARD="$(($2 - 1))/$3"

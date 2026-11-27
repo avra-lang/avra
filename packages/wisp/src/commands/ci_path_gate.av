@@ -1,7 +1,9 @@
-//! `wisp ci_path_gate <job> --event <event>` — which jobs a change owes, decided from the
-//! changed paths on stdin (one per line). Prints 1 when the job owes the run, 0 when it does not.
-//! A push, a hand-run and any other non-PR event owe every job, so main's own run always carries
-//! them; a PR owes a job only when a path it reads is changed.
+//! `wisp ci_path_gate <name> --event <event>` — whether a change owes a job or a keeper a run,
+//! decided from the changed paths on stdin (one per line). Prints 1 when it is owed, 0 when not.
+//! A push, a hand-run and any other non-PR event owe every one, so a landed run always carries them;
+//! judged by paths (`pull_request`), one is owed only when a path it reads is changed. THE ONE TABLE
+//! of what a check reads: the workflows, tools/gate.sh and the preflight all ask it, and a name it
+//! holds no row of reads every path, so a row only ever narrows.
 use @std.cli.{CliResult, Runnable, arg, command, option}
 use @std.io.{read_text}
 
@@ -10,35 +12,78 @@ type PathGateCmd = {}
 impl Runnable for PathGateCmd {
     fn run(args: CliResult) -> int {
         let changed = [l.trim() for l in (read_text("/dev/stdin") catch "").split("\n") if l.trim() != ""]
-        println(if owes(args.arg("job"), args.option("event"), changed) { "1" } else { "0" })
+        let job = args.arg("job")
+        let compiler = if reads_compiler(job) == null { [] } else { lines(stdout_of("sh tools/compiler_paths.sh")) }
+        println(if owed(job, args.option("event"), changed, compiler) { "1" } else { "0" })
         0
     }
 }
 
 export command ci_path_gate {
-    description: "Whether a job owes the run: 1 when a PR changed a path the job reads, or on any other event, else 0"
+    description: "Whether a change owes a job or keeper a run: 1 when a path it reads changed (or on an event not judged by paths), else 0"
     arg job {
-        description: "the gated job: `runtime-keep` or `layout-oracle`"
+        description: "the job or keeper: a name with no row reads every path"
         required: true
     }
     option event { description: "the workflow event (`pull_request` is judged by paths, every other owes the job)" }
     run: PathGateCmd {}
 }
 
-/// What each gated job reads. A trailing slash is a directory; any other entry is one file.
-fn reads_of(job: string) -> List<string> {
+/// What each job or keeper reads, where that is narrower than the tree: a trailing slash is a
+/// directory, `*.<ext>` every file of that extension, a bare `*` every file whose name has no dot, any
+/// other entry one file. A keeper that drives the compiler reads the compiler's sources,
+/// which is nearly every path, and has no row; null is every path.
+fn reads_of(job: string) -> List<string>? {
     match job {
         "runtime-keep" -> ["runtime/", "Makefile", "tools/memcap.sh"],
         "layout-oracle" -> ["packages/std-ui/", "packages/std-text/", "tools/layout-oracle/", "tools/layout_oracle.sh"],
-        rest -> [],
+        // each break is a line of runtime/ killed by runtime/tests, listed in mutation_rows.av
+        "runtime-mutations" -> [
+            "runtime/",
+            "packages/wisp/src/commands/mutation_rows.av",
+            "packages/wisp/src/commands/mutations.av",
+        ],
+        "runtime-tests" -> ["runtime/", "Makefile"],
+        "tick-object" or "no-threads" -> ["runtime/", "tools/tick.py", "Makefile"],
+        "hash-door" -> ["packages/std-hash/", "Makefile"],
+        // every tracked `.sh` file and every script a first line names sh or bash, which has no extension
+        "bash-parse" -> ["*.sh", "*", "tools/bash_parse.sh"],
+        "ci-invariants" -> [".github/", "tools/", "Makefile"],
+        rest -> null,
+    }
+}
+
+/// What a check reads beside the compiler's own source (tools/compiler_paths.sh), for one whose
+/// input is otherwise fixed: null for every other.
+export fn reads_compiler(job: string) -> List<string>? {
+    match job {
+        // the pinned snapshot is fixed: only the compiler that checks it, and the pin, move the answer
+        "cost-snapshot" -> ["tools/cost.baseline", "tools/cost_snapshot.sh"],
+        rest -> null,
     }
 }
 
 fn reads(path: string, entry: string) -> bool {
-    path == entry || entry.ends_with("/") && path.starts_with(entry)
+    let name = path.split("/").last() ?? path
+    path == entry ||
+        entry.ends_with("/") && path.starts_with(entry) ||
+        entry == "*" && !name.contains(".") ||
+        entry.starts_with("*.") && name.ends_with(entry.substring(1, entry.length))
+}
+
+/// Whether a change owes `job`, `compiler` the compiler's source paths a compiler-read row is judged by.
+export fn owed(job: string, event: string, changed: List<string>, compiler: List<string>) -> bool {
+    let beside? = reads_compiler(job) else { return owes(job, event, changed) }
+    if event != "pull_request" { return true }
+    changed
+        .any(
+            (path) -> beside.any((entry) -> reads(path, entry)) ||
+                compiler.any((c) -> reads(path, c) || reads(path, "${c}/")),
+        )
 }
 
 export fn owes(job: string, event: string, changed: List<string>) -> bool {
-    event != "pull_request" ||
-        changed.any((path) -> reads_of(job).any((entry) -> reads(path, entry)))
+    if event != "pull_request" { return true }
+    let entries? = reads_of(job) else { return !changed.is_empty() }
+    changed.any((path) -> entries.any((entry) -> reads(path, entry)))
 }

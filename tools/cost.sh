@@ -4,6 +4,9 @@
 # kept as build/cost/<workload>.out; and warm after each edit of a fixed set, the answers it worked out
 # again kept as build/cost/edit-<kind>.out. `wisp cost` judges them.
 #   sh tools/cost.sh [judge|accept]       the baseline's snapshot, then (named) its verdict or its accept
+#     --edits <kind…>                     the warm edits by name, the noop with them (one word, spaces apart)
+#     --builder-gen1                      a census compiler built at generation 1 of this tree is held,
+#                                         and every count it makes is said to be its
 #   COST_SNAPSHOT=<sha> sh tools/cost.sh  another snapshot (what `make cost-accept` records)
 #   COST_COMPILER=<file> sh tools/cost.sh a census compiler already built from this tree
 #
@@ -17,7 +20,18 @@
 # A FILE IS READ ONLY ONCE IT IS OLDER THAN THE STAMP WINDOW (io.stamp withholds a stamp from a path
 # changed in the last two seconds), so what a run stamps never depends on how fast it began.
 set -eu
-case "${1:-}" in judge | accept | '') verdict=${1:-} ;; *) echo "cost: \`sh tools/cost.sh\` takes judge, accept or nothing, never $1"; exit 2 ;; esac
+verdict=
+edits_named=
+builder_gen1=
+while [ "$#" -gt 0 ]; do
+    case $1 in
+        judge | accept) verdict=$1 ;;
+        --edits) edits_named=${2:?cost: --edits names the warm edits}; shift ;;
+        --builder-gen1) builder_gen1=1 ;;
+        *) echo "cost: \`sh tools/cost.sh\` takes judge, accept, --edits <kinds> and --builder-gen1, never $1"; exit 2 ;;
+    esac
+    shift
+done
 cd "$(dirname "$0")/.."
 root=$(pwd)
 out=build/cost
@@ -87,8 +101,13 @@ EOF
 }
 
 # this run's share of a list of edits on stdin: COST_EDITS=<k>/<n>, the k-th (from 1) of n dealt in
-# turn, the noop — the first, which edits nothing — in every share; every edit where it names none
+# turn, or `--edits <kind…>`, those by name; the noop — the first, which edits nothing — in
+# every share; every edit where neither names any
 shared() {
+    if [ -n "$edits_named" ]; then
+        awk -F'|' -v names=" $edits_named " 'NR == 1 || index(names, " " $1 " ") > 0'
+        return
+    fi
     case ${COST_EDITS:-} in
         '') cat ;;
         */*) awk -v k="${COST_EDITS%/*}" -v n="${COST_EDITS#*/}" 'NR == 1 || (NR - 2) % n == k - 1' ;;
@@ -109,7 +128,10 @@ compiler=${COST_COMPILER:-build/avra.census}
 held_builder() { # <what it is> <its record>
     read -r b_hash _b_at b_gen _b_more < "$2" 2> /dev/null || { echo "cost: $1 has no record of what built it ($2) — \`make avra\` twice"; exit 1; }
     [ "$b_hash" = "$(sh tools/work built-from . | cut -d' ' -f1)" ] || { echo "cost: $1 was built from another compiler source — \`make avra\` twice"; exit 1; }
-    [ "${b_gen:-1}" -ge 2 ] || { echo "cost: $1 is generation ${b_gen:-1} of this tree — \`make avra\` once more"; exit 1; }
+    if [ "${b_gen:-1}" -lt 2 ]; then
+        [ -n "$builder_gen1" ] || { echo "cost: $1 is generation ${b_gen:-1} of this tree — \`make avra\` once more"; exit 1; }
+        echo "cost: counted by a census compiler built at generation 1 of this tree — a rise may be its builder's codegen, not the tree's; the gate's generation-2 census judges"
+    fi
 }
 builder=${CENSUS_BUILDER:-build/avra}
 if [ -z "${COST_COMPILER:-}" ]; then
@@ -423,11 +445,20 @@ matrix() {
 # measurement as the whole run's do, so a run that depends on another before it shows.
 part=${COST_PART:-all}
 for p in $part; do
-    case $p in all | answers | cold-a | cold-b | laid | warm | ledger-cold | ledger-cold-a | ledger-cold-b | ledger-warm | matrix-check-bare | matrix-check-laid | matrix-build-bare | matrix-build-laid) ;;
-        *) echo "cost: COST_PART names all, answers, cold-a, cold-b, laid, warm, ledger-cold, ledger-cold-a, ledger-cold-b, ledger-warm or a matrix-<check|build>-<laid|bare>, never $p"; exit 2 ;; esac
+    case $p in all | answers | cheap | cold-a | cold-b | laid | warm | ledger-cold | ledger-cold-a | ledger-cold-b | ledger-warm | matrix-check-bare | matrix-check-laid | matrix-build-bare | matrix-build-laid) ;;
+        *) echo "cost: COST_PART names all, answers, cheap, cold-a, cold-b, laid, warm, ledger-cold, ledger-cold-a, ledger-cold-b, ledger-warm or a matrix-<check|build>-<laid|bare>, never $p"; exit 2 ;; esac
 done
 if [ -n "${COST_EDITS:-}" ]; then printf '%s edits %s\n' "$part" "$COST_EDITS"; else printf '%s\n' "$part"; fi > "$out/part"
 : > "$out/workloads"
+# THE CHEAP PART, a lane's own preflight: the program's cold check alone. The cli's checks, warm and
+# laid, and their edits are the gate's: each stands behind the cli's cold check, which a lane would
+# pay whole for one row.
+cheap_holds() {
+    [ "$1" = cheap ] || return 1
+    case $2 in check-program) return 0 ;; esac
+    return 1
+}
+
 # measure <how> <part>: each workload of the part, counted, or its ledger's run (the ledger of the laid
 # check is not kept: its passes are the cli check's, over answers it reads)
 measure() {
@@ -441,7 +472,7 @@ measure() {
             esac
             lname=ledger-$name
         else
-            [ "$2" = all ] || [ "$2" = "$in_part" ] || continue
+            [ "$2" = all ] || [ "$2" = "$in_part" ] || cheap_holds "$2" "$name" "$in_part" || continue
             lname=$name
         fi
         echo "$lname" >> "$out/workloads"
@@ -483,6 +514,7 @@ for p in $part; do
             measure counted all
             measure ledgered all
             ;;
+        cheap) measure counted cheap ;;
         *) measure counted "$p" ;;
     esac
 done

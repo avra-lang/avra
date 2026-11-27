@@ -1,9 +1,9 @@
 #!/bin/sh
 # WHICH PACKAGES A LANDING MUST TEST — from a diff's own touched files,
 # never from a guess. `sh tools/affected_packages.sh <base> <branch>
-# [<repo-root>]` prints one package NAME per line on stdout
-# (`packages/<name>`, as a path a caller hands straight to `build/avra
-# test`), and its reasoning on stderr.
+# [<repo-root>]` prints one package NAME per line on stdout (the
+# directory under packages/, so `packages/<name>` is its path), and its
+# reasoning on stderr.
 #
 # `--touched` first answers the touched packages alone, no dependents:
 # what a PR's own floor runs, the same run's gate covering the rest.
@@ -30,9 +30,12 @@
 # not `use`d, it is invoked.
 set -eu
 
-usage="usage: sh tools/affected_packages.sh [--touched] <base-ref> <branch-ref> [<repo-root>]"
+usage="usage: sh tools/affected_packages.sh [--touched] [--worktree] <base-ref> <branch-ref> [<repo-root>]"
 touched_only=0
+worktree=0
 [ "${1:-}" != --touched ] || { touched_only=1; shift; }
+# `--worktree`: the files not yet committed count too, changed and untracked, as a lane's preflight asks
+[ "${1:-}" != --worktree ] || { worktree=1; shift; }
 base="${1:?$usage}"
 branch="${2:?$usage}"
 root="${3:-$(git rev-parse --show-toplevel)}"
@@ -43,6 +46,7 @@ touched_files="$(git diff --name-only "$base...$branch" 2>&1)" || {
     echo "$touched_files" >&2
     exit 1
 }
+[ "$worktree" = 0 ] || touched_files=$(printf '%s\n%s\n%s\n' "$touched_files" "$(git diff --name-only HEAD)" "$(git ls-files --others --exclude-standard)" | sed '/^$/d' | sort -u)
 
 # Every package this tree carries: its directory name and, when its
 # manifest names a `@std/…` package, the word a `use @std.<word>` spells.

@@ -1,4 +1,4 @@
-use commands.{owes}
+use commands.{owed, owes}
 
 spec "ci_path_gate — which jobs a change owes" {
     given "the runtime-keep job" {
@@ -26,12 +26,69 @@ spec "ci_path_gate — which jobs a change owes" {
                 !owes("layout-oracle", "pull_request", ["packages/std-uix/a.av"])
         }
     }
+    given "a keeper" {
+        then "runtime-mutations is owed by runtime/ alone, its list among it" {
+            owes(
+                    "runtime-mutations",
+                    "pull_request",
+                    ["packages/wisp/src/commands/mutation_rows.av"],
+                ) &&
+                owes("runtime-mutations", "pull_request", ["runtime/avra_runtime.c"]) &&
+                !owes("runtime-mutations", "pull_request", ["packages/cli/src/main.av", "Makefile"])
+        }
+        then "a name with no row reads every path, so it is owed by any change" {
+            owes("dogfooding-rules", "pull_request", ["docs/x.md"]) &&
+                owes("no-such-keeper", "pull_request", ["a"])
+        }
+        then "a name with no row is owed nothing by no change" { !owes("dogfooding-rules", "pull_request", []) }
+    }
     given "an event that is no pull request" {
         then "every job is owed" {
             owes("runtime-keep", "push", []) &&
                 owes("runtime-keep", "push", ["packages/cli/src/main.av"]) &&
                 owes("runtime-keep", "workflow_dispatch", []) &&
                 owes("layout-oracle", "push", [])
+        }
+    }
+    given "the bash-parse keeper, which reads shell scripts" {
+        then "a `.sh` file anywhere, a file with no extension and its own script are owed" {
+            owes("bash-parse", "pull_request", ["tools/lib/tree.sh"]) &&
+                owes("bash-parse", "pull_request", ["tools/work"]) &&
+                owes("bash-parse", "pull_request", ["wisp"]) &&
+                owes("bash-parse", "pull_request", ["tools/bash_parse.sh"])
+        }
+        then "a source file, a doc and a name ending in `sh` without its dot are not" {
+            !owes("bash-parse", "pull_request", ["packages/std-queue/src/schedule.av"]) &&
+                !owes("bash-parse", "pull_request", ["docs/x.md", "runtime/avra_runtime.c"]) &&
+                !owes("bash-parse", "pull_request", ["tools/fresh.py"]) &&
+                !owes("bash-parse", "pull_request", ["packages/std-sh/a.av"])
+        }
+    }
+    given "the cost-snapshot keeper, which reads the compiler and its pin" {
+        then "a compiler path, a file under one and the pin are owed" {
+            owed("cost-snapshot", "pull_request", ["Makefile"], ["Makefile", "packages/cli"]) &&
+                owed(
+                    "cost-snapshot",
+                    "pull_request",
+                    ["packages/cli/src/main.av"],
+                    ["Makefile", "packages/cli"],
+                ) &&
+                owed("cost-snapshot", "pull_request", ["tools/cost.baseline"], [])
+        }
+        then "a package that is no compiler source, a sibling's prefix and a test-free change are not" {
+            !owed(
+                    "cost-snapshot",
+                    "pull_request",
+                    ["packages/std-queue/src/schedule.av"],
+                    ["packages/cli"],
+                ) &&
+                !owed("cost-snapshot", "pull_request", ["packages/cli-x/a.av"], ["packages/cli"]) &&
+                !owed("cost-snapshot", "pull_request", [], ["packages/cli"])
+        }
+        then "a push owes it, and another keeper is judged by its own row" {
+            owed("cost-snapshot", "push", [], []) &&
+                owed("runtime-keep", "pull_request", ["runtime/a.c"], []) &&
+                !owed("runtime-keep", "pull_request", ["packages/cli/a.av"], ["packages/cli"])
         }
     }
 }

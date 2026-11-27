@@ -639,6 +639,9 @@ try: $(COMPILER_OBJS)
 	@sh tools/capped.sh build/avra-try-build.out 200000 env AVRA_PROGRAM_MODE=release ./avra build packages/cli --time || { cat build/avra-try-build.out; exit 1; }
 	@grep '^time: ast' build/avra-try-build.out | grep -oE 'held [0-9]+/[0-9]+' || true
 	@cp packages/cli/src/main build/avra-try.next && mv -f build/avra-try.next build/avra-try
+	@# what it was built from and its generation, as `make avra` records its own: the preflight takes it
+	@# as this tree's compiler only where the record names this tree's source
+	@sh tools/work built-from . build/.avra-built-from > build/.avra-try-built-from 2>/dev/null || rm -f build/.avra-try-built-from
 	@codesign -f -s - build/avra-try 2>/dev/null || true
 	@rm -f packages/cli/src/main packages/cli/src/main.av.ll
 	@echo "try: build/avra-try — ./avra-try runs it"
@@ -1250,6 +1253,11 @@ store-witnesses: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 # THE CI STRUCTURE RATCHET: the release path and the compiler-free keepers a
 # PR must reach are held before a green PR can break them. It reads the
 # workflow and this Makefile alone, so no compiler.
+# THE PKGS FAMILY REACHES WHAT IMPORTS A CHANGE: a std-http change selects std-queue_store's suite
+# (tools/witness_gate_pkgs.sh, over `gate.sh pkgs-suites`).
+pkgs-witness:
+	@sh tools/witness_gate_pkgs.sh
+
 ci-invariants:
 	@python3 tools/ci_invariants.py --self-test
 	@python3 tools/ci_invariants.py
@@ -1268,7 +1276,7 @@ bash-parse:
 	@sh tools/bash_parse.sh --self-test
 	@sh tools/bash_parse.sh
 
-.PHONY: compiler compiler-files store-witnesses cache-attacks-w keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b keepers-wasm keepers-static keepers-pr bash-parse ci-invariants
+.PHONY: compiler compiler-files store-witnesses cache-attacks-w keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b keepers-wasm keepers-static keepers-pr bash-parse ci-invariants pkgs-witness
 # THE CODEC SCAN: every encoder/decoder-shaped pair in the tree is one
 # compiler/codecs.av's registry names (tools/codecs.py). It needs no
 # compiler, so a pull request reaching the compiler's source hears an
