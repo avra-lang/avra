@@ -1,0 +1,37 @@
+//! A COMMAND'S OPTIONS ARE ONE CONFIG. A command declares what it takes
+//! as a component its `@std/cli` declaration and its body both read:
+//!
+//!     /// The ladder's flags.
+//!     @derive(Decode)
+//!     export component LadderFlags {
+//!         /// The commit the ladder replays from.
+//!         base: string = ""
+//!         /// The bound of one rung, in seconds.
+//!         secs: int = 900
+//!         flags argv()
+//!     }
+//!
+//!     command ladder {
+//!         options: options_of<LadderFlags>()
+//!         run: Ladder {}
+//!     }
+//!
+//! `options_of` lists each leaf as the option `--<path>`, its `///` as the
+//! help, so the command line refuses a name the component does not
+//! declare; the body reads `settings_of<LadderFlags>()`, the typed value
+//! and where each leaf came from, a value its type cannot read being the
+//! config's issue. A switch is `--name=1` or `--name=0`. The type rides a
+//! type argument, so a command names a component declared anywhere.
+use @std.cli.{option}
+use @std.validate.{Decode}
+use config.{Configured, Loaded, Unloaded}
+use source.{leaves_under}
+
+/// Each leaf of `T` as the option `--<path>`, described by its `///`.
+export fn options_of<T: Decode>() -> List<option> {
+    [option { name: l.path, description: l.doc } for l in leaves_under(T.fields(), "")]
+}
+
+/// `T` read from its sources: the value and each leaf's origin, or every
+/// issue at once.
+export fn settings_of<T: Configured>() -> Result<Loaded<T>, Unloaded> { T.load() }
