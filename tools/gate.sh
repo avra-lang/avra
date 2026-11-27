@@ -577,7 +577,15 @@ tested() {
     fi
     # a run that fails no case and ends none must have exited clean; one that fails only pinned cases
     # or ends at a listed one stopped on them
-    if [ ! -s "$out/$name.failed" ] && [ ! -s "$out/$name.trapped" ]; then judged "$name" "$ran"; return; fi
+    if [ ! -s "$out/$name.failed" ] && [ ! -s "$out/$name.trapped" ]; then
+        # a suite whose only reds are programs its pin file names exits 1 for them, and holds
+        if [ "$ran" != 0 ] && [ -s "$out/$name.unproved" ] && [ -f "tools/gate/$pkg.unproved" ] && [ ! -s "$out/$name.unproved-words" ]; then
+            judged "$name" 0
+            return
+        fi
+        judged "$name" "$ran"
+        return
+    fi
     judged "$name" "$(wc -l <"$out/$name.unpinned" | tr -d ' ')"
 }
 
