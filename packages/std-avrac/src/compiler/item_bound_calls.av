@@ -1,6 +1,17 @@
 //! WHERE A FN ASKS A VALUE OF ITS TYPE PARAMETER A METHOD THE BOUND DOESN'T GIVE: the bound decides
 //! what the parameter can do, and a parameter with no bound has no methods at all.
-use core.{Expr, ExprId, MethodParts, SignedType, Span, SyntaxArena, TypeHead, flatten, headed_type}
+use core.{
+    Expr,
+    ExprId,
+    MethodParts,
+    SignedType,
+    Span,
+    StmtId,
+    SyntaxArena,
+    TypeHead,
+    flatten,
+    headed_type,
+}
 use compiler.laws.{Aside, Found, law}
 use diagnostics.{Voice}
 use features.impls.{
@@ -84,7 +95,8 @@ fn ungiven_made(view: ItemView) -> ItemUngiven {
 }
 
 /// Each body the written item `at` of `file` declares, signed and typed as its query keeps it: each
-/// fn's, then each method's and static's an impl there writes.
+/// fn's, then each method's and static's an impl there writes, then each fn a component there writes,
+/// beside the parameters that component writes with no bound.
 fn item_signed_bodies(
     engine: QueryEngine,
     file: SourceFileAddress,
@@ -92,22 +104,41 @@ fn item_signed_bodies(
     impls: List<ImplAt>,
 ) -> List<CheckedBody> {
     let fns = [CheckedBody { signed: b!, typed: typed_fn(engine, file, p!.name)! } for s in item.stmts for p in [item.store.fn_parts(s)] if p != null for b in [signed_body(engine, file, p!.name)] if b != null]
-    fns
-        .concat(
-            [CheckedBody { signed: m!.signed, typed: method_body_typed(engine, a, name, statics) } for a in impls for s in impl_fns(item, a) for name in [item.store.fn_parts(s)!.name] for statics in [item.store.is_static(s)] for m in [signed_method(engine, a, name, statics)] if m != null],
-        )
+    let methods = [CheckedBody { signed: m!.signed, typed: method_body_typed(engine, a, name, statics) } for a in impls for s in impl_fns(item, a) for name in [item.store.fn_parts(s)!.name] for statics in [item.store.is_static(s)] for m in [signed_method(engine, a, name, statics)] if m != null]
+    let components = [CheckedBody {
+        signed: m!.signed,
+        typed: method_body_typed(engine, a, name, statics),
+        unbounded: unbounded_of(item.store, c!),
+    } for a in impls for c in [component_stmt_at(item, a)] if c != null for s in item.store.component_parts(c!)!.fns for p in [item.store.fn_parts(s)] if p != null for name in [p!.name] for statics in [item.store.is_static(s)] for m in [signed_method(engine, a, name, statics)] if m != null]
+    fns.concat(methods).concat(components)
 }
 
-/// A body an item declares, signed, beside its typing.
-type CheckedBody = { signed: SignedBody, typed: TypedBody }
+/// The component statement the impl `at` names in `item`: a component's impls stand after the
+/// item's written ones.
+fn component_stmt_at(item: ReadItem, at: ImplAt) -> StmtId? {
+    let impls = [s for s in item.stmts if item.store.impl_parts(s) != null]
+    let components = [s for s in item.stmts if item.store.component_parts(s) != null]
+    let k = at.nth - impls.length
+    if k >= 0 && k < components.length { components[k] } else { null }
+}
 
-/// Each method call in the body `b` that its type parameter's bound doesn't give.
+/// The type parameters the component `s` writes with no bound.
+fn unbounded_of(store: SyntaxArena, s: StmtId) -> List<string> { [p.name.text() for p in store.decl_tbounds(s) if p.ty == null] }
+
+/// A body an item declares, signed, beside its typing; a component's fn beside the parameters its
+/// component writes with no bound, which alone are judged there.
+type CheckedBody = { signed: SignedBody, typed: TypedBody, unbounded: List<string>? = null }
+
+/// Each method call in the body `b` that its type parameter's bound doesn't give: in a component's
+/// fn, each on a parameter the component writes with no bound, whose remedy is the bound it takes.
 fn body_ungiven(engine: QueryEngine, text: string, b: CheckedBody) -> List<UngivenAt> {
     let signed = b.signed
     let typed = b.typed
     let store = signed.item.store
     let own = [p.name.text() for p in store.fn_parts(signed.stmt)?.tparams ?? []]
-    [r! for k in 0..typed.types.length if called_on(store, ExprId { index: k }) != null for r in [ungiven(engine, store, text, signed.signature, own, typed.types, ExprId { index: k })] if r != null]
+    let rows = [r! for k in 0..typed.types.length if called_on(store, ExprId { index: k }) != null for r in [ungiven(engine, store, text, signed.signature, own, typed.types, ExprId { index: k })] if r != null]
+    let unbounded? = b.unbounded else { return rows }
+    [r with { bound: null, typewide: false } for r in rows if unbounded.contains(r.param)]
 }
 
 /// The type parameter of `sig` the node `e` names, where it is written as a bare name: a static
