@@ -3991,12 +3991,16 @@ static inline int64_t map_filed(AvraMap* m, const char* key, Probe p) {
 
 // The slot a key names — a NEW key appended and filed. `*fresh` says which.
 __attribute__((always_inline))
-static inline int64_t map_claim(AvraMap* m, const char* key, int* fresh) {
+static inline int64_t map_claimed(AvraMap* m, const char* key, int* fresh) {
     Probe p = map_probe(m, key);
     *fresh = p.slot < 0;
     if (p.slot >= 0) return p.slot;
     return map_filed(m, key, p);
 }
+
+// `map_claimed`, out of line: the one copy every write but a plain `set` shares.
+__attribute__((noinline))
+static int64_t map_claim(AvraMap* m, const char* key, int* fresh) { return map_claimed(m, key, fresh); }
 
 // A PROBE AS ONE WORD, so the write that follows a read walks nothing:
 // a hit is its slot; a miss is negative — the sign bit, the generation
@@ -4020,9 +4024,9 @@ static inline int64_t probe_token(AvraMap* m, Probe p) {
 // free: within one generation places only fill (a remove mints a new
 // one), and this key's own arrival would have filled that one. A SMALL
 // map's miss is checked against its own tags. Anything else is probed
-// afresh.
-__attribute__((always_inline))
-static inline int64_t map_claim_at(AvraMap* m, const char* key, int64_t token, int* fresh) {
+// afresh. One copy, out of line, for every write under a token.
+__attribute__((noinline))
+static int64_t map_claim_at(AvraMap* m, const char* key, int64_t token, int* fresh) {
     if (token == -1) return map_claim(m, key, fresh);
     if (token >= 0) {
         if (token < m->keys->len) {
@@ -4034,18 +4038,19 @@ static inline int64_t map_claim_at(AvraMap* m, const char* key, int64_t token, i
     uint64_t at = (uint64_t)token & TOKEN_AT_MASK;
     uint64_t gen = ((uint64_t)token >> TOKEN_AT_BITS) & GEN_SPENT;
     if (token == -1 || m->icap == 0 || gen != map_gen(m)) return map_claim(m, key, fresh);
+    Probe p;
     if (m->icap < 0) {
         // a SMALL map checks its own tags: the filing hashes the key either way, and one compare
         // of eight tags says whether it arrived since — so its remove need mint no generation
-        Probe p = small_probe(m, key, key_hash(0, key));
-        *fresh = p.slot < 0;
-        return p.slot >= 0 ? p.slot : map_filed(m, key, p);
-    }
-    if ((at >> 3) >= (uint64_t)m->icap || (at & 7) >= CHUNK_SLOTS || index_chunks(m)[at >> 3].tag[at & 7] != 0) {
+        p = small_probe(m, key, key_hash(0, key));
+        if (p.slot >= 0) { *fresh = 0; return p.slot; }
+    } else if ((at >> 3) >= (uint64_t)m->icap || (at & 7) >= CHUNK_SLOTS || index_chunks(m)[at >> 3].tag[at & 7] != 0) {
         return map_claim(m, key, fresh);
+    } else {
+        p = (Probe){ -1, key_hash(map_keyed(m), key), at, -1 };
     }
     *fresh = 1;
-    return map_filed(m, key, (Probe){ -1, key_hash(map_keyed(m), key), at, -1 });
+    return map_filed(m, key, p);
 }
 
 int64_t avra_map_len(void* map) {
@@ -4273,8 +4278,13 @@ static inline int64_t map_put_at(AvraMap* m, const char* key, int64_t token, int
     return s;
 }
 
-static int64_t map_put(AvraMap* m, const char* key, int64_t v) {
-    return map_put_at(m, key, -1, v);
+// A write under a key no probe's word names — the commonest write, so its claim is its own.
+static inline int64_t map_put(AvraMap* m, const char* key, int64_t v) {
+    int fresh;
+    int64_t s = map_claimed(m, key, &fresh);
+    if (fresh) avra_array_push(map_vals_owned(m), v);
+    else avra_slot_set(map_vals_owned(m), s, v);
+    return s;
 }
 
 void avra_map_set(void* map, const char* key, int64_t v) {
