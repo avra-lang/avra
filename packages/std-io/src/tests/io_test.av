@@ -14,6 +14,7 @@ use @std.io.{
     list_dir,
     make_dirs,
     remove,
+    renamed,
     env,
     env_or,
 }
@@ -107,6 +108,29 @@ spec "std/io" {
         then "removing what is not there" {
             let p = fresh("never")
             message(remove(p)) == "`${p}` does not exist"
+        }
+        then "a file renamed stands under its new name alone" {
+            let from = fresh("moved-from.txt")
+            let to = fresh("moved-to.txt")
+            let _ = write_text(from, "carried")
+            message(renamed(from, to)) == "ok: ${to}" &&
+                !exists(from) &&
+                (read_text(to) catch "") == "carried"
+        }
+        then "a directory renamed carries what it holds" {
+            let from = fresh("moved-dir")
+            let to = fresh("moved-dir-to")
+            let _ = make_dirs(from)
+            let _ = write_text("${from}/inside.txt", "held")
+            let moved = message(renamed(from, to))
+            let read = read_text("${to}/inside.txt") catch ""
+            let _ = remove("${to}/inside.txt")
+            let _ = remove(to)
+            moved == "ok: ${to}" && read == "held" && !exists(from)
+        }
+        then "renaming what is not there" {
+            let p = fresh("never-moved")
+            message(renamed(p, fresh("never-landed"))) == "`${p}` does not exist"
         }
         then "the refusal is a value: a match reads the variant" {
             let p = fresh("v.txt")

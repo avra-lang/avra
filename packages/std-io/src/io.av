@@ -18,6 +18,7 @@ use @std.text.{nul_at, parse_int, repeat}
 // status, a descriptor, a handle, a kind, or a negative errno. No text
 // and no bytes cross here.
 extern fn avra_io_kind(path: string) -> int
+extern fn avra_io_link_kind(path: string) -> int
 extern fn avra_io_open(path: string) -> int
 extern fn avra_io_regular_size(fd: int) -> int
 extern fn avra_io_offset(fd: int) -> int
@@ -26,6 +27,7 @@ extern fn avra_io_stamp(path: string) -> int
 extern fn avra_io_close(fd: int) -> int
 extern fn avra_io_mkdir(path: string) -> int
 extern fn avra_io_remove(path: string) -> int
+extern fn avra_io_rename(from: string, to: string) -> int
 extern fn avra_io_link(from: string, to: string) -> int
 extern fn avra_file_touch(path: string) -> int
 extern fn avra_io_temp(path: string) -> int
@@ -153,6 +155,12 @@ export enum Entry {
 
 export fn kind_of(path: string) -> Result<Entry, IoError> {
     entry_of(done(path, avra_io_kind(one_path(path)?))?)
+}
+
+/// What stands at `path` itself: a link is `Other`, never what it names — what a walk that
+/// removes asks, so it never leaves the tree it was given.
+export fn link_kind(path: string) -> Result<Entry, IoError> {
+    entry_of(done(path, avra_io_link_kind(one_path(path)?))?)
 }
 
 fn entry_of(kind: int) -> Entry {
@@ -593,6 +601,14 @@ export fn make_dirs(path: string) -> Result<string, IoError> {
 export fn remove(path: string) -> Result<string, IoError> {
     done(path, avra_io_remove(one_path(path)?))?
     path
+}
+
+/// The file or directory at `from` moved to the name `to`, in one rename: what stood at `to` is
+/// replaced where the system replaces it, and a `to` on another volume refuses, the refusal naming
+/// `from`. Answers `to`.
+export fn renamed(from: string, to: string) -> Result<string, IoError> {
+    done(from, avra_io_rename(one_path(from)?, one_path(to)?))?
+    to
 }
 
 /// The file at `from` known by a second name, `to`: one file, two names, never a copy. A name that

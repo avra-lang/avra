@@ -1,0 +1,596 @@
+//! `wisp store_fuzz` — THE STORE, FUZZED BY A MODEL: random edit sequences over a fixture, each
+//! step built warm over the stores the step before left, and held to five invariants:
+//!
+//!   - WARM == COLD, BYTE FOR BYTE: the warm build's exit, its words, its product and what it
+//!     prints are a cold build's of the same tree, every store emptied, in the same place;
+//!   - THE STORE IS CLEAN: `avra cache check` finds nothing in any store the build left;
+//!   - THE WALK HOLDS: no frontier write's walk from the cut disagrees with the whole walk
+//!     (AVRA_FRONTIER_WALK_CHECK);
+//!   - A FRESH COPY BUILDS AS THE TREE DOES: the tree's sources copied beside it, no store of their
+//!     own, built over the same machine store, exit and print as the warm build;
+//!   - NOTHING MOVED, NOTHING WORKED: the main package checked twice, the second check working out
+//!     no answer (`queries_computed=0`); for a save beside the sources, its neighbour is checked on
+//!     its own between the two.
+//!
+//! TWO FIXTURES. `packages` is the model program of `store_fuzz/` over two packages, `app` and
+//! `lib`. `board` is tools/ui-board, its hydrate main its main, as a dev loop edits it. A failing
+//! seed is shrunk (ddmin over its ops) and said as one line that replays it. A fixture that fails
+//! to build before any edit is the harness's fault, exit 2, never a find.
+//!
+//!     ./wisp store_fuzz --compiler build/avra --seeds 1-8 --steps 12
+//!     ./wisp store_fuzz --compiler build/avra --fixture board --seeds 7-8 --steps 3
+//!     ./wisp store_fuzz --compiler build/avra --replay 'seed=3 ops=body:11,rename:7'
+use @std.cli.{CliResult, Runnable, command, flag, option}
+use @std.io.{
+    read_text,
+    read_bytes,
+    write_text,
+    write_bytes,
+    list_dir,
+    make_dirs,
+    remove,
+    renamed,
+    exists,
+    link_kind,
+    Entry,
+    IoError,
+    env_or,
+    draft_name,
+    this_process,
+}
+use @std.path.{joined_path}
+use @std.process.{tool_at, cmd, Env, EnvPair, Exit, ProcessError}
+use @std.text.{parse_int}
+use @std.time.{secs}
+
+type StoreFuzzCmd = {}
+
+impl Runnable for StoreFuzzCmd {
+    fn run(args: CliResult) -> int {
+        let fixture? = fixture_named(args.option("fixture")) else {
+            eprintln("store_fuzz: no fixture `${args.option("fixture")}` — packages or board")
+            return 2
+        }
+        let f = Fuzz {
+            compiler: absolute(or_given(args.option("compiler"), "build/avra")),
+            fixture: fixture,
+            serial: Cell.new(0),
+        }
+        let replay = args.option("replay")
+        if replay != "" { return f.replayed_line(replay) }
+        let steps = parse_int(args.option("steps")) ?? 10
+        let seeds? = seed_range(or_given(args.option("seeds"), "1-4")) else {
+            eprintln("store_fuzz: --seeds is `<n>` or `<lo>-<hi>`")
+            return 2
+        }
+        f.fuzzed(seeds, steps, args.has_flag("no_shrink"))
+    }
+}
+
+export command store_fuzz {
+    description: "Random edit sequences over a fixture, each step built warm and held to the store's invariants"
+    option compiler { description: "the compiler under test (default build/avra)" }
+    option seeds { description: "`<n>` or `<lo>-<hi>` (default 1-4)" }
+    option steps { description: "ops a seed draws (default 10)" }
+    option replay { description: "one said line, `seed=<n> ops=<kind>:<seed>,…`, run and kept" }
+    option fixture { description: "packages (default) or board" }
+    flag no_shrink { description: "say a failing sequence whole, unshrunk" }
+    run: StoreFuzzCmd {}
+}
+
+// ── the fixtures ────────────────────────────────────────────────
+
+/// A fixture: the model a seed starts, what an op makes of it, how it's laid on disk, the edits
+/// drawn and their weights, the package built, the one a save beside the sources checks, and every
+/// package that keeps a store.
+type Fixture = {
+    name: string,
+    start: fn(int) -> Model,
+    apply: fn(Model, Op) -> Applied,
+    write: fn(Model, string) -> Result<string, string>,
+    kinds: List<Edit>,
+    weights: List<int>,
+    main: string,
+    neighbour: string,
+    stored: List<string>,
+}
+
+fn fixture_named(word: string) -> Fixture? {
+    match word {
+        "" or "packages" -> Fixture {
+            name: "packages",
+            start: initial,
+            apply: applied,
+            write: packages_written,
+            kinds: [
+                Edit.Body,
+                Edit.Rename,
+                Edit.Add,
+                Edit.Delete,
+                Edit.Signature,
+                Edit.Seat,
+                Edit.Broken,
+                Edit.Revert,
+                Edit.Move,
+                Edit.Beside,
+            ],
+            weights: [5, 3, 3, 2, 3, 4, 2, 2, 2, 1],
+            main: "app",
+            neighbour: "lib",
+            stored: ["app", "lib"],
+        },
+        "board" -> Fixture {
+            name: "board",
+            start: board_start,
+            apply: board_applied,
+            write: board_written,
+            kinds: [Edit.Add, Edit.Delete, Edit.Broken, Edit.Revert, Edit.Beside],
+            weights: [3, 2, 3, 2, 1],
+            main: "board",
+            neighbour: "board/model",
+            stored: ["board", "board/model"],
+        },
+        rest -> null,
+    }
+}
+
+/// The model's two packages laid under `where`: every file the model holds, none it doesn't.
+fn packages_written(m: Model, where: string) -> Result<string, string> {
+    for pkg in ["lib", "app"] {
+        let src = joined_path(where, "${pkg}/src")
+        io(make_dirs(src))?
+        for name in io(list_dir(src))? {
+            if name.ends_with(".av") &&
+                !m.files.any(file_key(it) == "${pkg}/${name.substring(0, name.length - 3)}") { io(remove(joined_path(src, name)))? }
+        }
+    }
+    io(
+        write_text(
+            joined_path(where, "lib/avra.toml"),
+            "[package]\nname = \"@f/lib\"\nversion = \"0.0.1\"\n",
+        ),
+    )?
+    io(
+        write_text(
+            joined_path(where, "app/avra.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.0.1\"\n\n[dependencies]\n\"@f/lib\" = { path = \"../lib\" }\n",
+        ),
+    )?
+    for i, f in m.files { io(kept_as(joined_path(where, "${f.package}/src/${f.module}.av"), source_of(m, i)))? }
+    where
+}
+
+/// The board laid at `where/board`: copied once, its hydrate main its main, then its file as the
+/// model says.
+fn board_written(m: Model, where: string) -> Result<string, string> {
+    let board = joined_path(where, "board")
+    let original = joined_path(where, "board.av.orig")
+    if !exists(board) {
+        copied_tree(
+            joined_path(tree_root(), "tools/ui-board"),
+            board,
+            [".avra-cache", "node_modules"],
+        )?
+        io(
+            write_bytes(
+                joined_path(board, "src/main.av"),
+                io(read_bytes(joined_path(board, "hydrate/main.av")))?,
+            ),
+        )?
+        io(write_bytes(original, io(read_bytes(joined_path(board, "src/board.av")))?))?
+    }
+    io(kept_as(joined_path(board, "src/board.av"), board_text(m, io(read_text(original))?)))?
+    where
+}
+
+/// `text` at `path`, written only where it stands otherwise, so an unmoved file keeps its stamp.
+fn kept_as(path: string, text: string) -> Result<string, IoError> {
+    if (read_text(path) catch "") == text { return path }
+    write_text(path, text)
+}
+
+// ── one sequence's run ──────────────────────────────────────────
+
+/// The fuzzer: the compiler under test, the fixture, and the serial each run's directory is named
+/// by.
+type Fuzz = { compiler: string, fixture: Fixture, serial: Cell<int> }
+
+/// What a sequence came to: it held, a step broke an invariant, or the harness could not hold it.
+enum Verdict {
+    Holds
+    Fails(at: int, why: string)
+    Broke(why: string)
+}
+
+impl Fuzz {
+    /// Every seed's sequence run, a failing one shrunk and said: exit 2 where the harness broke, 1
+    /// where a seed failed.
+    fn fuzzed(seeds: List<int>, steps: int, whole: bool) -> int {
+        mut bad = 0
+        mut broken = 0
+        for seed in seeds {
+            let ops = drawn(seed, steps, self.fixture.kinds, self.fixture.weights)
+            match self.ran(seed, ops, false) {
+                .Holds -> {
+                    println("store_fuzz: seed ${seed}, ${steps} steps — holds")
+                },
+                .Broke(why) -> {
+                    broken = broken + 1
+                    println("store_fuzz: seed ${seed} — the harness failed: ${why}")
+                },
+                .Fails(at, why) -> {
+                    bad = bad + 1
+                    let least = if whole { ops.take(at + 1) } else { self.shrunk(seed, ops, at) }
+                    println("store_fuzz: seed ${seed} FAILS at step ${at + 1}: ${why}")
+                    println(
+                        "store_fuzz:   shrunk to ${least.length} op(s), replay with --fixture ${self.fixture.name} --replay '${said(seed, least)}'",
+                    )
+                },
+            }
+        }
+        when {
+            broken > 0 -> 2
+            bad > 0 -> 1
+            _ -> 0
+        }
+    }
+
+    /// One said line run and its directory kept.
+    fn replayed_line(line: string) -> int {
+        let run? = parsed(line) else {
+            eprintln("store_fuzz: `${line}` names no `seed=<n> ops=<kind>:<seed>,…`")
+            return 2
+        }
+        let verdict = self.ran(run.seed, run.ops, true)
+        let word = match verdict {
+            .Holds -> "holds",
+            .Fails(at, why) -> "fails at step ${at + 1}: ${why}",
+            .Broke(why) -> "the harness failed: ${why}",
+        }
+        println("store_fuzz: ${said(run.seed, run.ops)} — ${word}")
+        match verdict { .Holds -> 0, .Fails(_, _) -> 1, .Broke(_) -> 2 }
+    }
+
+    /// The sequence run from a fresh tree.
+    fn ran(seed: int, ops: List<Op>, keep: bool) -> Verdict {
+        let where = self.fresh_dir(seed)
+        let verdict = match self.stepped(seed, ops, where) {
+            .Ok(v) -> v,
+            .Err(why) -> Verdict.Broke(why),
+        }
+        if !keep { removed_tree(where) catch "" }
+        verdict
+    }
+
+    /// A directory of its own for one run, named as a draft beside the machine's temporary files.
+    fn fresh_dir(seed: int) -> string {
+        self.serial.set(self.serial.get() + 1)
+        let at = draft_name(
+            joined_path(env_or("TMPDIR", "/tmp"), "avra-store-fuzz-${seed}"),
+            this_process(),
+            self.serial.get(),
+        )
+        removed_tree(at) catch ""
+        at
+    }
+
+    /// The fixture built before any edit, then each step built and held to the invariants.
+    fn stepped(seed: int, ops: List<Op>, where: string) -> Result<Verdict, string> {
+        let run = Run {
+            compiler: self.compiler,
+            where: where,
+            fixture: self.fixture,
+            trips: joined_path(where, "walk-trips"),
+        }
+        io(make_dirs(run.machine()))?
+        let start = (self.fixture.start)(seed)
+        (self.fixture.write)(start, where)?
+        let first = run.built(self.fixture.main)?
+        if first.exit != 0 { return Verdict.Broke("the first cold build failed: ${tail_of(first.words, 400)}") }
+        for step in replayed(start, ops, self.fixture.apply) {
+            (self.fixture.write)(step.model, where)?
+            let warm = run.built(self.fixture.main)?
+            let cold = run.cold()?
+            let failed = step_failure(warm, cold) ?? run.tripped() ?? run.store_fault()? ?? run
+                .fresh_failure(warm)? ?? run.work_failure(step.word == "beside")?
+            if failed != null { return Verdict.Fails(step.index, "${step.word}: ${failed!}") }
+        }
+        Verdict.Holds
+    }
+
+    /// The fewest ops that still fail, by ddmin: chunks dropped while the sequence still fails.
+    fn shrunk(seed: int, all: List<Op>, failing_at: int) -> List<Op> {
+        mut ops = all.take(failing_at + 1)
+        mut n = 2
+        while ops.length >= 2 {
+            let chunk = max_of(1, ops.length / n)
+            let trial = [t for start in 0..chunk_count(ops.length, chunk) for t in [ops.take(start * chunk).concat(ops.drop(start * chunk + chunk))] if !t.is_empty() && self.ran(seed, t, false) is .Fails]
+                .first()
+            if trial != null {
+                ops = trial!
+                n = max_of(n - 1, 2)
+            } else if chunk == 1 {
+                break
+            } else {
+                n = min_of(ops.length, n * 2)
+            }
+        }
+        ops
+    }
+}
+
+fn chunk_count(length: int, chunk: int) -> int { (length + chunk - 1) / chunk }
+
+fn max_of(a: int, b: int) -> int { if a > b { a } else { b } }
+
+fn min_of(a: int, b: int) -> int { if a < b { a } else { b } }
+
+// ── the oracles ─────────────────────────────────────────────────
+
+/// One run's tree: the compiler, where it stands, the fixture, and the file a tripped walk is
+/// written to.
+type Run = { compiler: string, where: string, fixture: Fixture, trips: string }
+
+/// A build's exit, its words with this run's paths one word, its product's bytes and what it
+/// prints.
+type Built = { exit: int, words: string, product: Bytes?, printed: string }
+
+/// A child's end: its status (124 past its bound) and what it said.
+type Said = { code: int, out: string, err: string }
+
+impl Run {
+    /// The store every package of the run shares.
+    fn machine() -> string { joined_path(self.where, "machine") }
+
+    /// Every store a build leaves: each package's own, then the machine's.
+    fn stores() -> List<string> {
+        [joined_path(self.where, "${p}/.avra-cache") for p in self.fixture.stored]
+            .concat([self.machine()])
+    }
+
+    /// The store's environment: the machine store, every write kept beside its package, no net,
+    /// the frontier walk checked into `trips`, and the whole program linked at once.
+    fn env() -> List<EnvPair> {
+        [
+            EnvPair { name: "AVRA_CACHE_DIR", value: self.machine() },
+            EnvPair { name: "AVRA_PROGRAM", value: "1" },
+            EnvPair { name: "AVRA_STORE_KEPT_HERE", value: "1" },
+            EnvPair { name: "AVRA_PROGRAM_NET", value: "0" },
+            EnvPair { name: "AVRA_FRONTIER_WALK_CHECK", value: self.trips },
+            EnvPair { name: "AVRA_PROGRAM_MODE", value: "link=whole" },
+        ]
+    }
+
+    /// The compiler run with `args` under the store's environment.
+    fn compiled(args: List<string>, limit: int) -> Result<Said, string> { spawned(self.compiler, args, self.env(), limit) }
+
+    /// `pkg` built, and its product run where it built.
+    fn built(pkg: string) -> Result<Built, string> {
+        let done = self.compiled(["build", joined_path(self.where, pkg)], 900)?
+        let words = [l for l in (done.out + done.err).replace(self.where, "<run>").split("\n") if !timing_line(l)]
+            .join("\n")
+        let at = joined_path(self.where, "${pkg}/src/main")
+        let product = if done.code == 0 && exists(at) { product_of(at) } else { null }
+        let printed = if product != null { (spawned(at, [], [], 60)?).out } else { "" }
+        Built { exit: done.code, words: words, product: product, printed: printed }
+    }
+
+    /// The same tree built cold, in the same place, every store set aside and put back after.
+    fn cold() -> Result<Built, string> {
+        let aside = joined_path(self.where, "aside")
+        removed_tree(aside)?
+        io(make_dirs(aside))?
+        for i, s in self.stores() {
+            if exists(s) { io(renamed(s, joined_path(aside, "${i}")))? }
+        }
+        io(make_dirs(self.machine()))?
+        let got = (self with { trips: joined_path(self.where, "cold-trips") })
+            .built(self.fixture.main)
+        for i, s in self.stores() {
+            removed_tree(s)?
+            if exists(joined_path(aside, "${i}")) { io(renamed(joined_path(aside, "${i}"), s))? }
+        }
+        removed_tree(aside)?
+        got
+    }
+
+    /// The walk's trip, where one was written.
+    fn tripped() -> string? {
+        let trips = (read_text(self.trips) catch "").trim()
+        if trips == "" { null } else { "the frontier walk tripped: ${head_of(trips, 300)}" }
+    }
+
+    /// The first fault `avra cache check` finds in a store the build left; an `Err` where this
+    /// compiler has no such check.
+    fn store_fault() -> Result<string?, string> {
+        for d in [d for s in self.stores() for d in frontier_dirs(s)] {
+            let done = self.compiled(["cache", "check", d], 300)?
+            let words = if done.err != "" { done.err } else { done.out }
+                .replace(self.where, "<run>")
+                .trim()
+            if done.code != 0 && !words.contains("avra cache check:") { fail "`avra cache check` isn't this compiler's: ${head_of(words, 200)}" }
+            if done.code != 0 { return "the store holds what no write may leave: ${head_of(words, 400)}" }
+        }
+        null
+    }
+
+    /// A FRESH COPY BUILDS AS THE TREE DOES: the tree's sources copied beside it, no store of their
+    /// own, built over the same machine store; said where its exit or print isn't the warm build's.
+    fn fresh_failure(warm: Built) -> Result<string?, string> {
+        let fresh = joined_path(self.where, "fresh")
+        removed_tree(fresh)?
+        for p in self.fixture.stored {
+            if !p.contains("/") {
+                copied_tree(
+                    joined_path(self.where, p),
+                    joined_path(fresh, p),
+                    [".avra-cache", "main"],
+                )?
+            }
+        }
+        let got = (self with { where: fresh }).built_over(self.machine(), self.fixture.main)
+        removed_tree(fresh)?
+        let copy = got?
+        if copy.exit != warm.exit { return "a fresh copy over the same machine store differs in its exit: copy ${copy.exit} tree ${warm.exit} ${tail_of(copy.words, 300)}" }
+        if copy.printed != warm.printed { return "a fresh copy over the same machine store differs in what it prints: copy `${head_of(copy.printed, 200)}` tree `${head_of(warm.printed, 200)}`" }
+        null
+    }
+
+    /// `pkg` built with `machine` as its machine store.
+    fn built_over(machine: string, pkg: string) -> Result<Built, string> {
+        let done = spawned(
+            self.compiler,
+            ["build", joined_path(self.where, pkg)],
+            [EnvPair { name: "AVRA_CACHE_DIR", value: machine }].concat(self.env().drop(1)),
+            900,
+        )?
+        let at = joined_path(self.where, "${pkg}/src/main")
+        let printed = if done.code == 0 && exists(at) { (spawned(at, [], [], 60)?).out } else { "" }
+        Built {
+            exit: done.code,
+            words: (done.out + done.err).replace(self.where, "<run>"),
+            product: null,
+            printed: printed,
+        }
+    }
+
+    /// NOTHING MOVED, NOTHING WORKED: the main package checked, its neighbour on its own between
+    /// for a save beside the sources, then the main package again, which works nothing out.
+    fn work_failure(beside: bool) -> Result<string?, string> {
+        self.computed(self.fixture.main)?
+        if beside { self.computed(self.fixture.neighbour)? }
+        let again = self.computed(self.fixture.main)? ?? 0
+        if again == 0 { return null }
+        let how = if beside { "after a save beside ${self.fixture.neighbour}'s sources" } else { "checked again with nothing moved" }
+        "${self.fixture.main} ${how} worked ${again} answer(s) out again"
+    }
+
+    /// How many answers a check of `pkg` worked out, inputs aside; absent where it didn't say.
+    fn computed(pkg: string) -> Result<int?, string> {
+        let done = self.compiled(["check", "--counts", joined_path(self.where, pkg)], 900)?
+        let counts = [parse_int(w.substring(COMPUTED.length, w.length)) for l in (done.out + done.err).split("\n") for w in l.split(" ") if w.starts_with(COMPUTED)]
+        counts.last() ?? null
+    }
+}
+
+/// The word a check's count of worked answers is said under.
+const COMPUTED: string = "queries_computed="
+
+/// The first of warm != cold, said; absent where they agree.
+fn step_failure(warm: Built, cold: Built) -> string? {
+    if warm.exit != cold.exit { return "warm != cold in its exit: warm ${warm.exit} cold ${cold.exit}" }
+    if warm.words != cold.words { return "warm != cold in its words: warm `${head_of(warm.words, 300)}` cold `${head_of(cold.words, 300)}`" }
+    if warm.product != cold.product { return "warm != cold in its product" }
+    if warm.printed != cold.printed { return "warm != cold in what it prints: warm `${head_of(warm.printed, 300)}` cold `${head_of(cold.printed, 300)}`" }
+    null
+}
+
+/// A line that says how long or how much, which no two builds share.
+fn timing_line(l: string) -> bool {
+    let t = l.trim()
+    t.starts_with("worked:") ||
+        t.starts_with("program:") ||
+        t.starts_with("[time]") ||
+        l.split(" ms").drop(1).any(it == "" || !word_char(head_of(it, 1)))
+}
+
+fn word_char(c: string) -> bool { c != "" && WORD_CHARS.contains(c) }
+
+/// What a word is made of.
+const WORD_CHARS: string = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"
+
+/// The last `n` characters of `s`.
+fn tail_of(s: string, n: int) -> string { if s.length <= n { s } else { s.substring(s.length - n, s.length) } }
+
+/// The first `n` characters of `s`.
+fn head_of(s: string, n: int) -> string { if s.length <= n { s } else { s.substring(0, n) } }
+
+// ── the machine ─────────────────────────────────────────────────
+
+/// `program` run with `args` over the invoker's environment and `extra`, bounded by `limit`
+/// seconds; a run past its bound is status 124.
+fn spawned(program: string, args: List<string>, extra: List<EnvPair>, limit: int) -> Result<
+    Said,
+    string,
+> {
+    let c = cmd(tool_at(program, program), args) with { env: Env.Inherit(extra), timeout: secs(limit) }
+    match c.outcome() {
+        .Ok(o) -> Said { code: status_of_exit(o.exit), out: o.out.stdout, err: o.out.stderr },
+        .Err(e) -> match e {
+            .TimedOut(_, _) -> Said { code: 124, out: "", err: "past its bound of ${limit} s" },
+            rest -> { fail "`${program}` did not run: ${e.describe().message}" },
+        },
+    }
+}
+
+fn status_of_exit(e: Exit) -> int {
+    match e { .Clean -> 0, .Code(n) -> n, .Signal(s, _) -> 0 - s }
+}
+
+/// Every directory under `root` that holds a frontier file.
+fn frontier_dirs(root: string) -> List<string> {
+    if !((link_kind(root) catch Entry.Missing) is .Dir) { return [] }
+    let names = list_dir(root) catch []
+    let here = if names.any(it.starts_with("frontier-")) { [root] } else { [] }
+    here.concat([d for n in names for d in frontier_dirs(joined_path(root, n))])
+}
+
+/// The bytes a product is; absent where it can't be read.
+fn product_of(at: string) -> Bytes? {
+    match read_bytes(at) { .Ok(b) -> b, .Err(_) -> null }
+}
+
+/// The tree at `from` copied to `to`, entries named in `skipped` left out; a link is never
+/// followed.
+fn copied_tree(from: string, to: string, skipped: List<string>) -> Result<string, string> {
+    io(make_dirs(to))?
+    for name in io(list_dir(from))? {
+        if skipped.contains(name) { continue }
+        let a = joined_path(from, name)
+        let b = joined_path(to, name)
+        match io(link_kind(a))? {
+            .Dir -> copied_tree(a, b, skipped)?,
+            .File -> io(write_bytes(b, io(read_bytes(a))?))?,
+            .Missing or .Other -> b,
+        }
+    }
+    to
+}
+
+/// Everything at `path` removed, a directory with all it holds; a link is removed, never what it
+/// names.
+fn removed_tree(path: string) -> Result<string, string> {
+    match io(link_kind(path))? {
+        .Missing -> path,
+        .Dir -> io(remove(emptied(path)?)),
+        .File or .Other -> io(remove(path)),
+    }
+}
+
+/// The directory at `dir` with everything it holds removed.
+fn emptied(dir: string) -> Result<string, string> {
+    for name in io(list_dir(dir))? { removed_tree(joined_path(dir, name))? }
+    dir
+}
+
+/// An io answer, its failure said.
+fn io<T>(r: Result<T, IoError>) -> Result<T, string> {
+    match r { .Ok(v) -> v, .Err(e) -> { fail e.describe().message } }
+}
+
+/// The seeds `<n>` or `<lo>-<hi>` names.
+fn seed_range(word: string) -> List<int>? {
+    let halves = word.split("-")
+    let lo? = parse_int(halves[0]) else { return null }
+    let hi? = parse_int(halves.last() ?? halves[0]) else { return null }
+    [s for s in lo..hi + 1]
+}
+
+/// `word`, or `default` where it's empty.
+fn or_given(word: string, default: string) -> string { if word == "" { default } else { word } }
+
+/// The tree the wisp shim stands in.
+fn tree_root() -> string { env_or("PWD", ".") }
+
+/// `path` read from the tree's root where it's relative.
+fn absolute(path: string) -> string { if path.starts_with("/") { path } else { joined_path(tree_root(), path) } }
