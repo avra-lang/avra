@@ -1215,10 +1215,15 @@ impl AnswerStore for DiskStore {
         unpublished
     }
 
+    fn answer_kept(answer: ContentHash) -> bool {
+        self.drafted_answer(answer) ||
+            first_answering(self.packs.get(), (pack) -> pack.answer_bytes(answer)) != null
+    }
+
     /// An answer kept in the draft. A store that can't write keeps it for this process alone, so a
     /// full disk costs the next process work and never this one an answer.
     fn keep_answer_bytes(answer: ContentHash, bytes: Bytes) {
-        if self.unpublished_answer(answer) != null { return }
+        if self.drafted_answer(answer) { return }
         wave_kept(WAVE_ANSWERS, answer, bytes)
         let segment? = self.writing() else { return self.held_answers.put(answer, bytes) }
         segment.keep(segment.answers, answer, bytes)
@@ -1437,6 +1442,12 @@ impl DiskStore {
             }
         }
         (draft.published(frontier_file_path(self.directory, print, write.kind, write.id)) catch "") != ""
+    }
+
+    /// Whether the draft keeps an answer's bytes: held bytes aside, which no later process reads.
+    fn drafted_answer(answer: ContentHash) -> bool {
+        let segment? = self.segment.get().first() else { return false }
+        segment.saved_in(segment.answers, answer) != null
     }
 
     fn unpublished_answer(answer: ContentHash) -> SavedBytes? {
