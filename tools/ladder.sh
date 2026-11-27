@@ -3,7 +3,7 @@
 # BUILDS A LADDER: each rung's tree, in a worktree of its own, with the compiler of the rung before it, and
 # answers the last product's path. The one definition CI's prepare and a lane's Sprite both call.
 #
-#   sh tools/ladder.sh <compiler> <rung-commit>...      prints the last rung's compiler on stdout
+#   sh tools/ladder.sh [--cache <dir>] <compiler> <rung-commit>...   prints the last rung's compiler on stdout; --cache keeps each rung
 #   sh tools/ladder.sh --clean <dir>                    removes a ladder's scratch (its caller does, once it has copied the product)
 #   sh tools/ladder.sh --self-test
 #
@@ -63,14 +63,14 @@ Rung: two"
         || { echo "ladder: the product was not built twice in a chain: $out"; exit 1; }
     # a cached climb: the first builds and keeps each rung, the second takes both up and builds none,
     # its product the same bytes; another builder is another key, and builds again
-    out=$(cd "$d/repo" && AVRA_LADDER_CACHE="$d/cache" AVRA_LADDER_DIR="$d/c1" sh "$me" "$d/start" "$r1" "$r2" 2>"$d/c1.err") || { cat "$d/c1.err"; echo "ladder: a cached ladder's first climb failed"; exit 1; }
+    out=$(cd "$d/repo" && AVRA_LADDER_DIR="$d/c1" sh "$me" --cache "$d/cache" "$d/start" "$r1" "$r2" 2>"$d/c1.err") || { cat "$d/c1.err"; echo "ladder: a cached ladder's first climb failed"; exit 1; }
     first=$(cat "$out")
-    out=$(cd "$d/repo" && AVRA_LADDER_CACHE="$d/cache" AVRA_LADDER_DIR="$d/c2" sh "$me" "$d/start" "$r1" "$r2" 2>"$d/c2.err") || { cat "$d/c2.err"; echo "ladder: a cached ladder's second climb failed"; exit 1; }
+    out=$(cd "$d/repo" && AVRA_LADDER_DIR="$d/c2" sh "$me" --cache "$d/cache" "$d/start" "$r1" "$r2" 2>"$d/c2.err") || { cat "$d/c2.err"; echo "ladder: a cached ladder's second climb failed"; exit 1; }
     [ "$(grep -c ' kept ' "$d/c2.err")" = 2 ] && ! grep -q ' built in ' "$d/c2.err" \
         || { cat "$d/c2.err"; echo "ladder: a second climb over the same builder and rungs built again"; exit 1; }
     [ "$(cat "$out")" = "$first" ] || { echo "ladder: a kept rung's product differs from the one built"; exit 1; }
     printf '#!/bin/sh\nanother\n' > "$d/start2"; chmod +x "$d/start2"
-    (cd "$d/repo" && AVRA_LADDER_CACHE="$d/cache" AVRA_LADDER_DIR="$d/c3" sh "$me" "$d/start2" "$r1" > /dev/null 2>"$d/c3.err") || { cat "$d/c3.err"; echo "ladder: another builder's climb failed"; exit 1; }
+    (cd "$d/repo" && AVRA_LADDER_DIR="$d/c3" sh "$me" --cache "$d/cache" "$d/start2" "$r1" > /dev/null 2>"$d/c3.err") || { cat "$d/c3.err"; echo "ladder: another builder's climb failed"; exit 1; }
     grep -q ' built in ' "$d/c3.err" || { echo "ladder: another builder took up a rung kept for the first"; exit 1; }
     (cd "$d/repo" && sh "$me" --clean "$d/c1" && sh "$me" --clean "$d/c2" && sh "$me" --clean "$d/c3") > /dev/null 2>&1
     # a rung whose build fails names itself and the ladder stops
@@ -111,7 +111,9 @@ Rung: stale"
     echo "ladder: self-test passed — two rungs chain their products, a kept rung is taken up and another builder's is not, a failing rung names itself and stops, a stale rung is replayed on the base, a rung the base holds is skipped"
     exit 0
 fi
-cur=$(cd "$(dirname "${1:?usage: ladder.sh <compiler> <rung>...}")" && pwd)/$(basename "$1")
+cache=
+if [ "${1:-}" = --cache ]; then cache=${2:?usage: ladder.sh --cache <dir> <compiler> <rung>...}; shift 2; fi
+cur=$(cd "$(dirname "${1:?usage: ladder.sh [--cache <dir>] <compiler> <rung>...}")" && pwd)/$(basename "$1")
 shift
 # AVRA_LADDER_REPO: the repository that holds the rungs and the base, where the tree under build has no .git (a Sprite's).
 [ -z "${AVRA_LADDER_REPO:-}" ] || cd "$AVRA_LADDER_REPO"
@@ -148,13 +150,13 @@ for r in "$@"; do
     why=$(git log -1 --format=%B "$r" | sed -n 's/^Rung: //p' | head -n 1)
     echo "ladder: rung $i at $(git log -1 --format=%h "$r") — $why" >&2
     # A RUNG'S PRODUCT IS ITS BUILDER'S BYTES, ITS TREE AND THE TOOLCHAIN, and nothing else: kept under
-    # that key in AVRA_LADDER_CACHE, it is taken up again rather than built, and every key a ladder
+    # that key in the `--cache` directory, it is taken up again rather than built, and every key a ladder
     # reads or writes is named in the cache's .used, so its keeper keeps those alone
     key=$(printf '%s\n%s\n%s\n' "$(sha256sum < "$cur" | cut -d' ' -f1)" "$(git -C "$wt" rev-parse 'HEAD^{tree}')" \
         "$(uname -m) ${LLVM_PREFIX:-} $(cc --version 2>/dev/null | head -n 1)" | sha256sum | cut -c1-32)
-    if [ -n "${AVRA_LADDER_CACHE:-}" ] && [ -x "$AVRA_LADDER_CACHE/$key/avra" ]; then
-        cp "$AVRA_LADDER_CACHE/$key/avra" "$wt/build/avra"
-        echo "$key" >> "$AVRA_LADDER_CACHE/.used"
+    if [ -n "$cache" ] && [ -x "$cache/$key/avra" ]; then
+        cp "$cache/$key/avra" "$wt/build/avra"
+        echo "$key" >> "$cache/.used"
         echo "ladder: rung $i kept — its builder and its tree are the ones a ladder built before ($key)" >&2
         cur=$wt/build/avra
         continue
@@ -166,9 +168,9 @@ for r in "$@"; do
         exit 1
     fi
     echo "ladder: rung $i built in $(($(date +%s) - s)) s" >&2
-    if [ -n "${AVRA_LADDER_CACHE:-}" ]; then
-        mkdir -p "$AVRA_LADDER_CACHE/$key" && cp "$wt/build/avra" "$AVRA_LADDER_CACHE/$key/avra.next" &&
-            mv "$AVRA_LADDER_CACHE/$key/avra.next" "$AVRA_LADDER_CACHE/$key/avra" && echo "$key" >> "$AVRA_LADDER_CACHE/.used"
+    if [ -n "$cache" ]; then
+        mkdir -p "$cache/$key" && cp "$wt/build/avra" "$cache/$key/avra.next" &&
+            mv "$cache/$key/avra.next" "$cache/$key/avra" && echo "$key" >> "$cache/.used"
     fi
     cur=$wt/build/avra
 done

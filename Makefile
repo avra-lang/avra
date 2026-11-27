@@ -606,6 +606,8 @@ compiler-files:
 # one compiler's.
 RUNGS ?=
 LADDER_BASE ?=
+# where a ladder keeps each rung it builds and takes up what it kept (tools/ladder.sh --cache); none keeps nothing
+LADDER_CACHE ?=
 GEN_BOUND ?=
 LADDER_BOUND ?= 900
 STORE_ASIDE ?=
@@ -619,7 +621,7 @@ compiler:
 	  [ -z "$(strip $(RUNGS))" ] || cp build/avra build/avra-ladder; \
 	elif [ -n "$(strip $(RUNGS))" ]; then \
 	  [ -x build/avra ] || $(MAKE) -s recover || { echo "compiler: the ladder has no start — none stands and the seed did not link"; exit 1; }; \
-	  product=$$(AVRA_LADDER_BASE=$(LADDER_BASE) AVRA_LADDER_S=$(LADDER_BOUND) sh tools/ladder.sh build/avra $(RUNGS)) \
+	  product=$$(AVRA_LADDER_BASE=$(LADDER_BASE) AVRA_LADDER_S=$(LADDER_BOUND) sh tools/ladder.sh $(if $(LADDER_CACHE),--cache $(LADDER_CACHE)) build/avra $(RUNGS)) \
 	    || { echo "compiler: the ladder failed — a rung did not build with the compiler of the rung before it"; exit 1; }; \
 	  cp "$$product" build/avra-ladder && cp "$$product" build/avra.next && mv -f build/avra.next build/avra; \
 	  sh tools/ladder.sh --clean "$${AVRA_LADDER_DIR:-$${RUNNER_TEMP:-/tmp}/ladder}"; \
