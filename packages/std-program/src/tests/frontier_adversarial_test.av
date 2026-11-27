@@ -268,6 +268,10 @@ fn unedited() -> Map<string, string> { wide("xxxx", "xxxxxx") }
 /// A world whose every path is one longer: its lengths total 90.
 fn every_path_edited() -> Map<string, string> { entries_map([Entry { key: "p${i}", value: ["y" for _j in 0..i + 2].join("") } for i in 0..12]) }
 
+/// A world whose every path is rewritten in another letter at its own length: every text moves, and
+/// no length does.
+fn every_path_relettered() -> Map<string, string> { entries_map([Entry { key: "p${i}", value: ["y" for _j in 0..i + 1].join("") } for i in 0..12]) }
+
 /// A process asking `total` of every path in `world`.
 fn totaled(directory: string, world: Map<string, string>) -> Ran { ran(directory, wide_binary(world), "total", WIDE_PATHS) }
 
@@ -525,6 +529,15 @@ spec "frontier — attacked" {
             let directory = fresh("two_changed")
             let _ = reported(directory, two("abc", "xy"))
             reported(directory, two("ab", "wxyz")).answer == "even/4"
+        }
+        then "a reader every change reaches reads its record once: thirteen readers read over twenty-four asks" {
+            let directory = fresh("reader_read_once")
+            let _ = totaled(directory, unedited())
+            let later = totaled(directory, every_path_relettered())
+            later.answer == "78" &&
+                later.engine.worked_count() == 12 &&
+                later.engine.meets_asked_count() == 24 &&
+                later.engine.reader_records_read_count() == 13
         }
         then "a change its reader throws away stops there" {
             let directory = fresh("cutoff")
