@@ -1,0 +1,182 @@
+//! The field kinds and `@derive(Frame)`, over sample types: the empty case
+//! of each kind first, then every pair two values could be mistaken for,
+//! each read back from its own bytes.
+use @std.meta.{derive}
+use @std.ui.tree.codes.{Codes}
+use @std.ui.style.words.{Words}
+use @std.ui.frame.derive.{Frame}
+use @std.ui.frame.kinds.{
+    FrameReader,
+    FrameWriter,
+    FrameFault,
+    reader,
+    writer,
+    told_nothing,
+    heard_nothing,
+}
+use @std.ui.frame.dialect.{Dialect, opened, read_dialect}
+
+@derive(Words)
+enum Shade {
+    Low
+    High
+}
+
+@derive(Codes)
+enum Mood {
+    @code(3) Calm
+    @code(9) Wild
+}
+
+type Mark = { n: int }
+
+type Place = int
+
+@derive(Frame)
+type Detail = { words: string, many: List<string>, at: float }
+
+@derive(Frame)
+enum Rec {
+    @code(1) Bare
+    @code(2) Counts(n: int, on: bool)
+    @code(3) Worded(shade: Shade, mood: Mood, mark: Mark, place: Place)
+    @code(4) Maybe(mark: Mark?, shade: Shade?)
+    @code(5) Holds(d: Detail)
+    @code(6) Again(@told d: Detail)
+}
+
+fn detail_told(d: Detail) -> string { "${d.words}|${d.many.length}:${d.many.join(",")}|${d.at}" }
+
+/// A record as a line, every field spelled — written apart from the derive,
+/// so a field the derive drops is a line that differs.
+fn told(r: Rec) -> string {
+    match r {
+        .Bare -> "bare",
+        .Counts(n, on) -> "counts ${n} ${on}",
+        .Worded(s, m, k, p) -> "worded ${s.word()} ${m.code()} ${k.n} ${p}",
+        .Maybe(k, s) -> "maybe ${k?.n ?? -1} ${s?.word() ?? "-"}",
+        .Holds(d) -> "holds ${detail_told(d)}",
+        .Again(d) -> "again ${detail_told(d)}",
+    }
+}
+
+fn bytes_of(rs: List<Rec>) -> List<int> {
+    let w = writer(told_nothing())
+    for r in rs { r.framed(w) }
+    w.bytes.get()
+}
+
+/// The records `rs` written into one frame, read back from its bytes.
+fn read_back(rs: List<Rec>) -> List<string> {
+    let r = reader(bytes_of(rs).bytes()!, heard_nothing())
+    mut out: List<string> = []
+    // LICENSED loops.push_loop: each record starts where the one before it ended
+    while !r.ended() {
+        match Rec.unframed(r) {
+            .Ok(rec) -> out.push(told(rec)),
+            .Err(f) -> { return out.concat(["fault ${f.says}"]) },
+        }
+    }
+    out
+}
+
+fn round_trips(rs: List<Rec>) -> bool { read_back(rs).join("\n") == rs.map(told(it)).join("\n") }
+
+fn spelled(rs: List<Rec>) -> string { bytes_of(rs).map("${it}").join(",") }
+
+fn fault_of(bytes: List<int>) -> string {
+    match Rec.unframed(reader(bytes.bytes()!, heard_nothing())) {
+        .Ok(rec) -> "read ${told(rec)}",
+        .Err(f) -> f.says,
+    }
+}
+
+const empty = Detail { words: "", many: [], at: 0.0 }
+
+spec "std/ui frame — the kinds" {
+    given "nothing" {
+        then "nothing written is no bytes" { bytes_of([]).is_empty() }
+        then "a frame of no bytes has ended before its first record" { reader("".bytes(), heard_nothing()).ended() }
+        then "a record of no fields is its code alone" { spelled([Rec.Bare]) == "1" }
+        then "an empty text, an empty list and a zero fraction read back" { round_trips([Rec.Holds(empty)]) }
+    }
+    given "each kind" {
+        then "reads back what was written" {
+            round_trips(
+                [
+                    Rec.Counts(0, false),
+                    Rec.Counts(-1, true),
+                    Rec.Counts(9007199254740991, false),
+                    Rec.Worded(Shade.High, Mood.Wild, Mark { n: 300 }, 7),
+                    Rec.Maybe(Mark { n: 0 }, Shade.Low),
+                    Rec.Maybe(null, null),
+                    Rec.Holds(Detail { words: "café", many: ["a", "", "b"], at: -2.5 }),
+                ],
+            )
+        }
+    }
+    given "pairs a frame could mistake" {
+        then "a number and its negation" { spelled([Rec.Counts(1, false)]) != spelled([Rec.Counts(-1, false)]) }
+        then "absent and the word zero" { spelled([Rec.Maybe(null, null)]) != spelled([Rec.Maybe(Mark { n: 0 }, Shade.Low)]) }
+        then "no texts and one empty text" {
+            spelled([Rec.Holds(empty)]) != spelled([Rec.Holds(empty with { many: [""] })])
+        }
+        then "one text of two letters and two texts of one" {
+            spelled([Rec.Holds(empty with { many: ["ab"] })]) != spelled([Rec.Holds(empty with { many: ["a", "b"] })])
+        }
+        then "a text and the next field's text" {
+            round_trips(
+                [
+                    Rec.Holds(Detail { words: "a", many: ["b"], at: 0.0 }),
+                    Rec.Holds(Detail { words: "", many: ["a", "b"], at: 0.0 }),
+                ],
+            )
+        }
+        then "a word's code and its place" { spelled([Rec.Worded(Shade.Low, Mood.Calm, Mark { n: 0 }, 0)]) == "3,0,3,0,0" }
+    }
+    given "a value told once" {
+        then "costs less the second time, and reads back both times" {
+            let d = Detail { words: "long words", many: [], at: 1.0 }
+            let first = bytes_of([Rec.Again(d)]).length
+            let twice = bytes_of([Rec.Again(d), Rec.Again(d)]).length
+            twice - first < first && round_trips([Rec.Again(d), Rec.Again(empty), Rec.Again(d)])
+        }
+        then "is told again to a stream that heard nothing" {
+            let d = Detail { words: "x", many: [], at: 1.0 }
+            let told_once = told_nothing()
+            let w = writer(told_once)
+            Rec.Again(d).framed(w)
+            let again = writer(told_once)
+            Rec.Again(d).framed(again)
+            fault_of(again.bytes.get()) == "a told value is named by its place among those told, and nothing was told at 0"
+        }
+    }
+    given "a frame that breaks a law" {
+        then "a code no variant wears" { fault_of([200]) == "a record opens with its variant's code, and no `Rec` variant is 200" }
+        then "a record cut short" { fault_of([2, 2]) == "a frame ends at a record's end, and this one ends inside a record" }
+        then "a flag that is neither" { fault_of([2, 0, 2]) == "a flag is 0 or 1, and this one is 2" }
+        then "a word naming no variant" { fault_of([3, 5, 3, 0, 0]) == "a word names one `Shade`, and no `Shade` is numbered so" }
+        then "a text longer than the frame" { fault_of([5, 9, 97]) == "a text holds as many bytes as its length says, and this one runs past the frame" }
+    }
+    given "the dialect" {
+        then "is the frame's first byte" {
+            let w = writer(told_nothing())
+            opened(w, Dialect.Neutral1)
+            w.bytes.get().map("${it}").join(",") == "17"
+        }
+        then "a reader refuses another by its name" {
+            let r = reader([16].bytes()!, heard_nothing())
+            match read_dialect(r, Dialect.Neutral1) {
+                .Ok(_) -> false,
+                .Err(f) -> f.says == "this frame is `dom16`, and this reader reads `neutral1`",
+            }
+        }
+        then "a reader refuses a dialect it does not know" {
+            let r = reader([99].bytes()!, heard_nothing())
+            match read_dialect(r, Dialect.Dom16) {
+                .Ok(_) -> false,
+                .Err(f) -> f.says == "a frame names its dialect first, and 99 is none this reader knows — it reads `dom16`",
+            }
+        }
+    }
+}

@@ -1,0 +1,524 @@
+//! `frame/derive.av` — `@derive(Frame)`: a type that writes itself into a
+//! frame and reads itself back. The declaration IS the shape: an enum's
+//! record opens with its variant's `@code(n)`, then each payload field in
+//! the order written; a record is its fields in order. A field's KIND is
+//! decided by its type alone (`frame/kinds.av`):
+//!
+//!   int → number · bool → flag · float → fraction · string → text ·
+//!   List<string> → texts · a `@derive(Codes)` enum → its code as a word ·
+//!   a `@derive(Words)` enum → its place as a word · a record or named type
+//!   over one int → that int as a word · `T?` over any word → a word, zero
+//!   for none · a `@derive(Frame)` type → nested, written by its own frame
+//!
+//! A field marked `@told` is said once per stream and named by its place
+//! after (`told`). The derive gives `framed(w)`, `T.unframed(r)`,
+//! `T.frame_rows()` (the shape as data, `frame/rows.av`) and
+//! `T.frame_types()` (this type's shape and every framed type it carries).
+//! `framed_dropping(w, slot)` writes a record without its field at `slot`:
+//! the mutant a reader must refuse, built from the same declaration.
+use @std.meta.{
+    Arms,
+    Code,
+    Decls,
+    Declared,
+    Diagnostic,
+    Field,
+    Kind,
+    Stmts,
+    Type,
+    Variant,
+    beside,
+    flat_field,
+    flat_made,
+    literal,
+    name,
+    refuse_as_at,
+    stored_scalar,
+    type_named,
+}
+use @std.text.{parse_int}
+use tree.codes.{snake}
+use frame.kinds.{FrameWriter, FrameReader, FrameFault, known, nth}
+use frame.rows.{FieldKind, FrameField, FrameRow, FrameType, distinct_types}
+
+/// A type a frame carries.
+export trait Frame {
+    fn framed(w: FrameWriter)
+
+    static fn derive(t: Type) -> Declared {
+        let problems = if t.variants.is_empty() { fields_problems(t.fields) } else { variants_problems(t) }
+        if !problems.is_empty() { return Declared { made: [beside(t, refused_frame(t))], problems: problems } }
+        Declared {
+            made: [beside(t, if t.variants.is_empty() { record_frame(t) } else { choice_frame(t) })],
+        }
+    }
+
+    static fn marks(t: Type) -> List<string> { [code_mark, told_mark] }
+}
+
+const code_mark = "code"
+
+const told_mark = "told"
+
+// ── what a field is ─────────────────────────────────────────────
+
+/// How a field's value becomes a word and a word becomes the value.
+enum Worded {
+    /// A `@derive(Codes)` enum: its code.
+    Coded(of: string)
+    /// A `@derive(Words)` enum: its place among its variants.
+    Placed(of: string)
+    /// A record or named type over one int: that int.
+    Flat(of: string)
+}
+
+/// A field's kind, as the derive reads it from the field's type.
+enum Carried {
+    Number
+    Flag
+    Fraction
+    Text
+    Texts
+    Word(w: Worded)
+    WordOrNone(w: Worded)
+    Nested(of: string)
+    Told(of: string)
+}
+
+/// Whether the type named `n` carries `@derive(<tr>)`.
+fn derived(n: string, tr: string) -> bool {
+    let t? = type_named(n) else { return false }
+    t.annotations.any(it.name == "derive" && it.args.contains(tr))
+}
+
+/// How a value of the type named `n` is one word, when it is.
+fn worded(n: string) -> Worded? {
+    if derived(n, "Codes") { return Worded.Coded(n) }
+    if derived(n, "Words") { return Worded.Placed(n) }
+    let k? = stored_scalar(n) else { return null }
+    match k { .Int -> Worded.Flat(n), rest -> null }
+}
+
+/// What a field of kind `k` is carried as; absent for a kind no frame spells.
+fn carried(f: Field) -> Carried? {
+    let told = f.marks.any(it.name == told_mark)
+    match f.kind {
+        .Int -> if told { null } else { Carried.Number },
+        .Bool -> if told { null } else { Carried.Flag },
+        .Float -> if told { null } else { Carried.Fraction },
+        .Str -> if told { null } else { Carried.Text },
+        .List(.Str) -> if told { null } else { Carried.Texts },
+        .Named(n, _) -> named_carried(n, told),
+        .Opt(.Named(n, _)) -> {
+            let w? = worded(n) else { return null }
+            if told { null } else { Carried.WordOrNone(w) }
+        },
+        rest -> null,
+    }
+}
+
+fn named_carried(n: string, told: bool) -> Carried? {
+    if derived(n, "Frame") { return if told { Carried.Told(n) } else { Carried.Nested(n) } }
+    let w? = worded(n) else { return null }
+    if told { null } else { Carried.Word(w) }
+}
+
+// ── writing ─────────────────────────────────────────────────────
+
+/// The word a value is written as.
+fn word_of(w: Worded, v: Code) -> Code {
+    match w {
+        .Coded(_) -> quote { ${v}.code() },
+        .Placed(_) -> quote { ${v}.ordinal() },
+        .Flat(n) -> quote { ${v}.${flat_field(n)} },
+    }
+}
+
+/// The word an absent-or-present value is written as: absent, or its word.
+fn word_or_none_of(w: Worded, v: Code) -> Code {
+    match w {
+        .Coded(_) -> quote { ${v}?.code() },
+        .Placed(_) -> quote { ${v}?.ordinal() },
+        .Flat(n) -> quote { ${v}?.${flat_field(n)} },
+    }
+}
+
+/// The statements that write field `at`, holding `v`.
+fn written(c: Carried, v: Code, at: int) -> Stmts {
+    match c {
+        .Number -> quote { w.number(${v}) },
+        .Flag -> quote { w.flag(${v}) },
+        .Fraction -> quote { w.fraction(${v}) },
+        .Text -> quote { w.text(${v}) },
+        .Texts -> quote { w.texts(${v}) },
+        .Word(n) -> quote { w.word(${word_of(n, v)}) },
+        .WordOrNone(n) -> quote { w.word_or_none(${word_or_none_of(n, v)}) },
+        .Nested(_) -> quote { ${v}.framed(w) },
+        .Told(_) -> told_written(v, "told_${at}"),
+    }
+}
+
+fn told_written(v: Code, aside: string) -> Stmts {
+    quote {
+        let ${aside} = w.aside()
+        ${v}.framed(${name(aside)})
+        w.tell(${name(aside)})
+    }
+}
+
+/// Field `at` written unless it is the one `slot` drops.
+fn dropped_unless(s: Stmts, at: int) -> Stmts {
+    quote {
+        if slot != ${at} {
+            ${[s]}
+        }
+    }
+}
+
+fn op_byte(code: int) -> Stmts { quote { w.byte(${code}) } }
+
+/// Each field of a variant written from its binder.
+fn variant_writes(v: Variant) -> List<Stmts> {
+    [written(c, name(binder(j)), j) for j, f in v.fields for c in present(carried(f))]
+}
+
+fn binder(j: int) -> string { "f${j}" }
+
+fn present<T>(v: T?) -> List<T> {
+    match v {
+        x? -> [x]
+        null -> []
+    }
+}
+
+fn write_arm(v: Variant, dropping: bool) -> Arms {
+    let fields = variant_writes(v)
+    let steps = [op_byte(code_of(v) ?? 0)]
+        .concat(if dropping { [dropped_unless(s, j) for j, s in fields] } else { fields })
+    if v.fields.is_empty() { return quote { .${v} -> { ${steps} } } }
+    let bs = [binder(j) for j in 0..v.fields.length]
+    quote {
+        .${v}(${bs}) -> {
+            ${steps}
+        }
+    }
+}
+
+fn record_writes(t: Type, dropping: bool) -> List<Stmts> {
+    let fields = [written(c, quote { self.${f} }, j) for j, f in t.fields for c in present(carried(f))]
+    if dropping { [dropped_unless(s, j) for j, s in fields] } else { fields }
+}
+
+// ── reading ─────────────────────────────────────────────────────
+
+/// The value a word read now names.
+fn read_word(w: Worded) -> Code {
+    match w {
+        .Coded(n) -> quote { known(${name(n)}.coded_as(r.word()?), r, ${literal(n)})? },
+        .Placed(n) -> quote { known(nth(${name(n)}.every(), r.word()?), r, ${literal(n)})? },
+        .Flat(n) -> flat_made(n, quote { r.word()? }),
+    }
+}
+
+/// The value a word read as `got` names.
+fn named_word(w: Worded, got: Code) -> Code {
+    match w {
+        .Coded(n) -> quote { known(${name(n)}.coded_as(${got}), r, ${literal(n)})? },
+        .Placed(n) -> quote { known(nth(${name(n)}.every(), ${got}), r, ${literal(n)})? },
+        .Flat(n) -> flat_made(n, got),
+    }
+}
+
+/// The statements that read field `at` into the binder `into`.
+fn read(c: Carried, into: string, at: int) -> Stmts {
+    match c {
+        .Number -> quote { let ${into} = r.number()? },
+        .Flag -> quote { let ${into} = r.flag()? },
+        .Fraction -> quote { let ${into} = r.fraction()? },
+        .Text -> quote { let ${into} = r.text()? },
+        .Texts -> quote { let ${into} = r.texts()? },
+        .Word(w) -> quote { let ${into} = ${read_word(w)} },
+        .WordOrNone(w) -> {
+            let got = "got_${at}"
+            quote {
+                let ${into} = match r.word_or_none()? {
+                    ${got}? -> ${named_word(w, name(got))}
+                    null -> null
+                }
+            }
+        },
+        .Nested(n) -> quote { let ${into} = ${name(n)}.unframed(r)? },
+        .Told(n) -> told_read(n, into, at),
+    }
+}
+
+fn told_read(n: string, into: string, at: int) -> Stmts {
+    let ref = "ref_${at}"
+    let from = "from_${at}"
+    quote {
+        let ${ref} = r.word()?
+        let ${into} = if ${name(ref)} == 0 {
+            let ${from} = r.at.get()
+            let first = ${name(n)}.unframed(r)?
+            r.kept_told(${name(from)})
+            first
+        } else {
+            ${name(n)}.unframed(r.told_at(${name(ref)})?)?
+        }
+    }
+}
+
+fn reads_of(fields: List<Field>) -> List<Stmts> {
+    [read(c, binder(j), j) for j, f in fields for c in present(carried(f))]
+}
+
+fn read_arm(t: Type, v: Variant) -> Arms {
+    let code = code_of(v) ?? 0
+    if v.fields.is_empty() { return quote { ${code} -> ${name(t.name)}.${v} } }
+    let made = quote { ${name(t.name)}.${v}(..${[name(binder(j)) for j in 0..v.fields.length]}) }
+    quote {
+        ${code} -> {
+            ${reads_of(v.fields)}
+            ${made}
+        }
+    }
+}
+
+fn unknown_arm(t: Type) -> Arms {
+    quote { unknown -> { fail r.fault(no_variant(${literal(t.name)}, unknown)) } }
+}
+
+fn record_made(t: Type) -> Code {
+    let inits = [quote { Init { ${f.name}: ${name(binder(j))} } } for j, f in t.fields]
+    quote { ${t} { ..${inits} } }
+}
+
+// ── the shape, as data ──────────────────────────────────────────
+
+fn kind_word(c: Carried) -> Code {
+    match c {
+        .Number -> quote { FieldKind.Number },
+        .Flag -> quote { FieldKind.Flag },
+        .Fraction -> quote { FieldKind.Fraction },
+        .Text -> quote { FieldKind.Text },
+        .Texts -> quote { FieldKind.Texts },
+        .Word(_) -> quote { FieldKind.Word },
+        .WordOrNone(_) -> quote { FieldKind.WordOrNone },
+        .Nested(_) -> quote { FieldKind.Nested },
+        .Told(_) -> quote { FieldKind.Told },
+    }
+}
+
+/// The type a field names, when it names one the frame reads by.
+fn of_name(c: Carried) -> string {
+    match c {
+        .Word(w) or .WordOrNone(w) -> worded_name(w),
+        .Nested(n) or .Told(n) -> n,
+        .Number or .Flag or .Fraction or .Text or .Texts -> "",
+    }
+}
+
+fn worded_name(w: Worded) -> string {
+    match w { .Coded(n) or .Placed(n) or .Flat(n) -> n }
+}
+
+/// The words a field's numbers stand for: a `Words` enum's, in order.
+fn words_code(c: Carried) -> Code {
+    match c {
+        .Word(.Placed(n)) or .WordOrNone(.Placed(n)) -> quote { ${name(n)}.every().map(it.word()) },
+        rest -> quote { [] },
+    }
+}
+
+fn field_row(f: Field, c: Carried) -> Code {
+    quote {
+        FrameField { name: ${literal(f.name)}, kind: ${kind_word(c)}, of: ${literal(of_name(c))}, words: ${words_code(c)} }
+    }
+}
+
+fn field_rows(fields: List<Field>) -> List<Code> {
+    [field_row(f, c) for f in fields for c in present(carried(f))]
+}
+
+fn variant_row(v: Variant) -> Code {
+    quote {
+        FrameRow { word: ${literal(snake(v.name))}, code: ${code_of(v) ?? 0}, fields: [..${field_rows(v.fields)}] }
+    }
+}
+
+/// The framed types `fields` carry, each named once.
+fn carried_types(fields: List<Field>) -> List<string> {
+    let named = [n for f in fields for c in present(carried(f)) for n in nested_name(c)]
+    [n for j, n in named if !named.slice(0, j).contains(n)]
+}
+
+fn nested_name(c: Carried) -> List<string> {
+    match c { .Nested(n) or .Told(n) -> [n], rest -> [] }
+}
+
+fn types_of(t: Type, choice: bool, carried: List<string>) -> Code {
+    mut all = quote { [FrameType { name: ${literal(t.name)}, choice: ${choice}, rows: ${name(t.name)}.frame_rows() }] }
+    // LICENSED loops.push_loop: each carried type's shapes join the chain built before it
+    for n in carried { all = quote { ${all}.concat(${name(n)}.frame_types()) } }
+    quote { distinct_types(${all}) }
+}
+
+// ── the impls ───────────────────────────────────────────────────
+
+fn choice_frame(t: Type) -> Decls {
+    let writes = [write_arm(v, false) for v in t.variants]
+    let drops = [write_arm(v, true) for v in t.variants]
+    let reads = [read_arm(t, v) for v in t.variants].concat([unknown_arm(t)])
+    let rows = [variant_row(v) for v in t.variants]
+    let carried = carried_types([f for v in t.variants for f in v.fields])
+    quote {
+        impl ${t} {
+            /// This value as its record: its variant's code, then its fields.
+            fn framed(w: FrameWriter) { match self { ${writes} } }
+
+            /// This value's record without its field at `slot`.
+            fn framed_dropping(w: FrameWriter, slot: int) { match self { ${drops} } }
+
+            /// The value the record at `r` holds.
+            static fn unframed(r: FrameReader) -> Result<${t}, FrameFault> {
+                match r.byte()? { ${reads} }
+            }
+
+            /// Each variant's shape, as a frame carries it.
+            static fn frame_rows() -> List<FrameRow> { [..${rows}] }
+
+            /// This type's shape and every framed type its fields carry.
+            static fn frame_types() -> List<FrameType> { ${types_of(t, true, carried)} }
+        }
+    }
+}
+
+fn record_frame(t: Type) -> Decls {
+    let writes = record_writes(t, false)
+    let drops = record_writes(t, true)
+    let reads = reads_of(t.fields)
+    let made = record_made(t)
+    let carried = carried_types(t.fields)
+    quote {
+        impl ${t} {
+            /// This record's fields, in order.
+            fn framed(w: FrameWriter) {
+                ${writes}
+            }
+
+            /// This record without its field at `slot`.
+            fn framed_dropping(w: FrameWriter, slot: int) {
+                ${drops}
+            }
+
+            /// The record at `r`.
+            static fn unframed(r: FrameReader) -> Result<${t}, FrameFault> {
+                ${reads}
+                ${made}
+            }
+
+            /// This record's one shape, as a frame carries it.
+            static fn frame_rows() -> List<FrameRow> {
+                [FrameRow { word: ${literal(snake(t.name))}, code: 0, fields: [..${field_rows(t.fields)}] }]
+            }
+
+            /// This type's shape and every framed type its fields carry.
+            static fn frame_types() -> List<FrameType> { ${types_of(t, false, carried)} }
+        }
+    }
+}
+
+// ── what the derive refuses ─────────────────────────────────────
+
+/// The number a variant wrote for its code, when it wrote one.
+fn code_of(v: Variant) -> int? { parse_int(v.marks.find(it.name == code_mark)?.args?.first() ?? "") }
+
+fn variants_problems(t: Type) -> List<Diagnostic> {
+    [p for j, v in t.variants for p in variant_problem(t.variants, j)]
+        .concat([p for v in t.variants for p in fields_problems(v.fields)])
+}
+
+/// What is wrong with variant `j`'s code, when anything is: ONE reason, the
+/// first that holds.
+fn variant_problem(vs: List<Variant>, j: int) -> List<Diagnostic> {
+    let v = vs[j]
+    let code? = code_of(v) else { return [uncoded(v)] }
+    if code < 1 || code > 255 { return [out_of_byte(v, code)] }
+    if vs.slice(0, j).any(code_of(it) == code) { return [code_taken(v, code)] }
+    []
+}
+
+fn fields_problems(fields: List<Field>) -> List<Diagnostic> {
+    [field_problem(f) for f in fields if carried(f) == null]
+}
+
+fn field_problem(f: Field) -> Diagnostic {
+    if f.marks.any(it.name == told_mark) { told_unframed(f) } else { unframed_field(f) }
+}
+
+// ── voices ──
+
+fn no_variant(owner: string, code: int) -> string { "a record opens with its variant's code, and no `${owner}` variant is ${code}" }
+
+fn uncoded(v: Variant) -> Diagnostic {
+    refuse_as_at(
+        "frame-code-missing",
+        v.at,
+        "a framed variant says the code its record opens with, and `${v.name}` says none",
+        "`@code(n) ${v.name}`, n from 1 to 255, one no other variant wears",
+    )
+}
+
+fn out_of_byte(v: Variant, code: int) -> Diagnostic {
+    refuse_as_at(
+        "frame-code-byte",
+        v.at,
+        "a framed variant's code is one byte, 1 to 255, and `${v.name}` wrote ${code}",
+        "`@code(n) ${v.name}`, n from 1 to 255",
+    )
+}
+
+fn code_taken(v: Variant, code: int) -> Diagnostic {
+    refuse_as_at(
+        "frame-code-taken",
+        v.at,
+        "two framed variants share no code, and `${v.name}` wears ${code}, which a variant above it has",
+        "give `${v.name}` a code no other variant wears",
+    )
+}
+
+fn told_unframed(f: Field) -> Diagnostic {
+    refuse_as_at(
+        "frame-told-kind",
+        f.at,
+        "a `@told` field is a framed type, said once a stream, and `${f.name}: ${f.ty}` is not one",
+        "mark a `@derive(Frame)` type `@told`, or carry `${f.name}` as it is",
+    )
+}
+
+fn unframed_field(f: Field) -> Diagnostic {
+    refuse_as_at(
+        "frame-field-kind",
+        f.at,
+        "a frame carries a field by a kind it spells, and `${f.name}: ${f.ty}` is none of them",
+        "an int, bool, float, string, `List<string>`, a `Codes` or `Words` enum, a type over one int, a `T?` of a word, or a `@derive(Frame)` type; `@told` marks a framed type",
+    )
+}
+
+/// What a refused type is given: the verbs, answering nothing anyone wrote — the build is
+/// already refused, so none of them runs, and no caller is blamed for a verb never made.
+fn refused_frame(t: Type) -> Decls {
+    quote {
+        impl ${t} {
+            fn framed(w: FrameWriter) {}
+
+            fn framed_dropping(w: FrameWriter, slot: int) {}
+
+            static fn unframed(r: FrameReader) -> Result<${t}, FrameFault> { fail r.fault("") }
+
+            static fn frame_rows() -> List<FrameRow> { [] }
+
+            static fn frame_types() -> List<FrameType> { [] }
+        }
+    }
+}

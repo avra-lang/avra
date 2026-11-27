@@ -1,0 +1,234 @@
+//! `frame/kinds.av` — THE FIELD KINDS: the one spelling of each thing a
+//! frame carries, written and read. A record opens with its variant's
+//! code, one byte; then each field, in the order its type declares them:
+//!
+//!   word      a count in seven-bit groups, low group first, the high bit
+//!             of each byte saying another follows
+//!   number    the word of its zigzag: 0, -1, 1, -2 … as 0, 1, 2, 3 …
+//!   flag      one byte, 0 or 1
+//!   fraction  its eight bytes of bits, low byte first
+//!   text      its byte length as a word, then its bytes
+//!   texts     their count as a word, then each text
+//!   told      a value a stream says once: zero, then the value, the first
+//!             time; one more than its place among those told, after
+//!
+//! A word stands for absence only where a field may be absent: zero for
+//! none, one more than the word for any other. Every sequence carries its
+//! count, so no boundary between two moves.
+use tree.trap.{trapped}
+
+extern fn avra_float_to_bits(value: float) -> int
+extern fn avra_float_of_bits(bits: int) -> float
+
+/// Why a frame could not be read: where, and the law it broke.
+export type FrameFault = { at: int, says: string }
+
+/// What a stream has told so far: each told value's bytes, and its place
+/// among them.
+export alias Told = Cell<Map<string, int>>
+
+/// A stream that has told nothing.
+export fn told_nothing() -> Told {
+    let none: Map<string, int> = {}
+    Cell.new(none)
+}
+
+/// A frame being written, and what its stream has told.
+export type FrameWriter = { bytes: Cell<List<int>> = Cell.new([]), told: Told = told_nothing() }
+
+/// A frame begun for a stream that has told `told`.
+export fn writer(told: Told) -> FrameWriter { FrameWriter { told: told } }
+
+impl FrameWriter {
+    /// One byte, 0..255.
+    fn byte(v: int) { self.bytes.push(v & 255) }
+
+    /// A count. A count is never negative, so a negative one ends the program.
+    fn word(n: int) {
+        if n < 0 { trapped(negative_word(n)) }
+        mut rest = n
+        while rest >= 128 {
+            self.byte(rest % 128 + 128)
+            rest = rest / 128
+        }
+        self.byte(rest)
+    }
+
+    /// A count that may be absent: zero for none.
+    fn word_or_none(n: int?) { self.word((n ?? -1) + 1) }
+
+    /// A whole number of either sign.
+    fn number(n: int) { self.word(if n < 0 { -2 * n - 1 } else { 2 * n }) }
+
+    fn flag(on: bool) { self.byte(if on { 1 } else { 0 }) }
+
+    fn fraction(x: float) {
+        let bits = avra_float_to_bits(x)
+        for j in 0..8 { self.byte(bits >> 8 * j) }
+    }
+
+    fn octets(b: Bytes) {
+        self.word(b.length)
+        mut i = 0
+        while i < b.length {
+            self.byte(b.at(i))
+            i = i + 1
+        }
+    }
+
+    fn text(s: string) { self.octets(s.bytes()) }
+
+    fn texts(xs: List<string>) {
+        self.word(xs.length)
+        for x in xs { self.text(x) }
+    }
+
+    /// A writer for one value a stream tells once, beside this one.
+    fn aside() -> FrameWriter { FrameWriter {} }
+
+    /// The value `told` holds, said as its stream says a value once.
+    fn tell(value: FrameWriter) {
+        let bytes = value.bytes.get()
+        let key = bytes.map("${it}").join(",")
+        let was? = self.told.get().get(key) else {
+            self.told.put(key, self.told.get().length)
+            self.word(0)
+            // LICENSED loops.push_loop: a cell's list grows in place — a concat copies all said so far
+            for b in bytes { self.byte(b) }
+            return
+        }
+        self.word(was + 1)
+    }
+
+    /// The bytes written so far.
+    fn take() -> Bytes { self.bytes.get().bytes() ?? "".bytes() }
+}
+
+/// What a stream has read of the values it is told once: each one's bytes,
+/// by its place.
+export alias Heard = Cell<List<List<int>>>
+
+/// A stream that has heard nothing told.
+export fn heard_nothing() -> Heard {
+    let none: List<List<int>> = []
+    Cell.new(none)
+}
+
+/// A frame being read: its bytes, how far, and what its stream was told.
+export type FrameReader = { bytes: List<int>, at: Cell<int> = Cell.new(0), heard: Heard = heard_nothing() }
+
+/// `frame` to be read, its stream having heard `heard`.
+export fn reader(frame: Bytes, heard: Heard) -> FrameReader {
+    FrameReader { bytes: [frame.at(i) for i in 0..frame.length], heard: heard }
+}
+
+impl FrameReader {
+    /// Whether every byte has been read.
+    fn ended() -> bool { self.at.get() >= self.bytes.length }
+
+    fn fault(says: string) -> FrameFault { FrameFault { at: self.at.get(), says: says } }
+
+    fn byte() -> Result<int, FrameFault> {
+        let i = self.at.get()
+        if i >= self.bytes.length { fail self.fault(ends_inside()) }
+        self.at.set(i + 1)
+        self.bytes[i]
+    }
+
+    fn word() -> Result<int, FrameFault> {
+        mut n = 0
+        mut scale = 1
+        mut b = self.byte()?
+        while b >= 128 {
+            n = n + (b - 128) * scale
+            scale = scale * 128
+            b = self.byte()?
+        }
+        n + b * scale
+    }
+
+    fn word_or_none() -> Result<int?, FrameFault> {
+        let w = self.word()?
+        if w == 0 { null } else { w - 1 }
+    }
+
+    fn number() -> Result<int, FrameFault> {
+        let z = self.word()?
+        if z % 2 == 1 { -(z + 1) / 2 } else { z / 2 }
+    }
+
+    fn flag() -> Result<bool, FrameFault> {
+        let b = self.byte()?
+        if b > 1 { fail self.fault(not_a_flag(b)) }
+        b == 1
+    }
+
+    fn fraction() -> Result<float, FrameFault> {
+        mut bits = 0
+        for j in 0..8 { bits = bits | (self.byte()? << 8 * j) }
+        avra_float_of_bits(bits)
+    }
+
+    fn octets() -> Result<List<int>, FrameFault> {
+        let n = self.word()?
+        let from = self.at.get()
+        if from + n > self.bytes.length { fail self.fault(runs_past()) }
+        self.at.set(from + n)
+        self.bytes.slice(from, from + n)
+    }
+
+    fn text() -> Result<string, FrameFault> {
+        let from = self.at.get()
+        let raw = self.octets()?
+        let bytes? = raw.bytes() else { fail FrameFault { at: from, says: runs_past() } }
+        let s? = bytes.text() else { fail FrameFault { at: from, says: not_text() } }
+        s
+    }
+
+    fn texts() -> Result<List<string>, FrameFault> {
+        let n = self.word()?
+        mut out: List<string> = []
+        // LICENSED loops.push_loop: each text starts where the one before it ended
+        for _j in 0..n { out.push(self.text()?) }
+        out
+    }
+
+    /// A reader over the bytes the value told at `ref` was first told in.
+    fn told_at(ref: int) -> Result<FrameReader, FrameFault> {
+        let bytes? = nth(self.heard.get(), ref - 1) else { fail self.fault(never_told(ref)) }
+        FrameReader { bytes: bytes }
+    }
+
+    /// The value read from `from` on, kept as told where it was first told.
+    fn kept_told(from: int) {
+        self.heard.push(self.bytes.slice(from, self.at.get()))
+    }
+}
+
+/// `v`, or the fault that no `what` wears the number just read.
+export fn known<T>(v: T?, r: FrameReader, what: string) -> Result<T, FrameFault> {
+    let x? = v else { fail r.fault(unnumbered(what)) }
+    x
+}
+
+/// The `n`th of `xs`, when there is one.
+export fn nth<T>(xs: List<T>, n: int) -> T? {
+    if n < 0 || n >= xs.length { return null }
+    xs[n]
+}
+
+// ── voices ──
+
+fn negative_word(n: int) -> string { "a frame's word is a count, and a count is never negative — this one is ${n}" }
+
+fn ends_inside() -> string { "a frame ends at a record's end, and this one ends inside a record" }
+
+fn runs_past() -> string { "a text holds as many bytes as its length says, and this one runs past the frame" }
+
+fn not_text() -> string { "a frame's text is UTF-8, and this one is not" }
+
+fn not_a_flag(b: int) -> string { "a flag is 0 or 1, and this one is ${b}" }
+
+fn never_told(ref: int) -> string { "a told value is named by its place among those told, and nothing was told at ${ref - 1}" }
+
+fn unnumbered(what: string) -> string { "a word names one `${what}`, and no `${what}` is numbered so" }

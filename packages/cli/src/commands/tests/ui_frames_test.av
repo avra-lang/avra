@@ -1,0 +1,45 @@
+//! `@derive(Frame)` over types a frame cannot carry: each mistake is refused
+//! at its variant or field, under its own kind — and nothing else is said.
+//! `avra_ran` and `scratch_dir` are the neighbouring tests' own.
+use @std.io.{make_dirs, write_text}
+use @std.meta.{embed}
+use @std.time.{stamp}
+
+/// One well-framed type, then one type a mistake — and a caller of the
+/// verbs of refused types, which must not be blamed for the refusal.
+const enums: string = embed("ui_view/refused_frames.txt")
+
+/// What stands for a run that never answered: no line of it is a refusal.
+const frames_never_ran = "the check did not run"
+
+/// What `avra check` says about the package, once.
+once fn frames_refused() -> string {
+    let root = "${scratch_dir()}/ui_frames_${stamp()}"
+    let _ = make_dirs("${root}/src")
+    let _ = write_text(
+        "${root}/avra.toml",
+        "[package]\nname = \"ui_frames\"\nversion = \"0.1.0\"\n",
+    )
+    let _ = write_text("${root}/src/main.av", enums)
+    match avra_ran(["check", root]) { .Ok(o) -> o.out.stdout, .Err(_) -> frames_never_ran }
+}
+
+fn frames_lines(opening: string) -> List<string> { [l for l in frames_refused().split("\n") if l.starts_with(opening)] }
+
+/// Every refusal the fixture owes, one per mistake, in the order written.
+const frames_owed = [
+    "error[@std/ui:frame-code-missing]: a framed variant says the code its record opens with, and `Second` says none",
+    "error[@std/ui:frame-code-byte]: a framed variant's code is one byte, 1 to 255, and `First` wrote 256",
+    "error[@std/ui:frame-code-byte]: a framed variant's code is one byte, 1 to 255, and `First` wrote 0",
+    "error[@std/ui:frame-code-taken]: two framed variants share no code, and `Second` wears 1, which a variant above it has",
+    "error[@std/ui:frame-field-kind]: a frame carries a field by a kind it spells, and `m: Map<string, int>` is none of them",
+    "error[@std/ui:frame-told-kind]: a `@told` field is a framed type, said once a stream, and `n: int` is not one",
+]
+
+spec "a framed type's every record has a code and every field a kind" {
+    given "one type for each way a frame can be wrong, beside one that is right" {
+        then "each mistake is refused once, under its own kind — the well-framed type and every caller not at all" {
+            frames_lines("error[").join("\n") == frames_owed.join("\n")
+        }
+    }
+}

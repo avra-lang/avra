@@ -1,0 +1,49 @@
+//! `frame/rows.av` — A FRAMED TYPE'S SHAPE, as data: each variant's word and
+//! code, and each field's name and kind, in the order a frame carries them.
+//! `@derive(Frame)` answers them from the declaration it framed, so a host's
+//! reader, a tape's header and the keeper of each dialect's shapes all read
+//! one definition.
+use @std.meta.{derive}
+use tree.codes.{Codes}
+
+/// How a field is carried (`frame/kinds.av`).
+@derive(Codes)
+export enum FieldKind {
+    @code(1) Word
+    @code(2) WordOrNone
+    @code(3) Number
+    @code(4) Flag
+    @code(5) Fraction
+    @code(6) Text
+    @code(7) Texts
+    @code(8) Nested
+    @code(9) Told
+}
+
+/// One field: its name, its kind, the type it is when that type is framed
+/// or numbered, and the words its numbers stand for, when they stand for
+/// words.
+export type FrameField = { name: string, kind: FieldKind, of: string = "", words: List<string> = [] }
+
+/// One variant, or a record's one shape: its word, its code (none for a
+/// record) and its fields.
+export type FrameRow = { word: string, code: int, fields: List<FrameField> }
+
+/// A framed type: its name, whether a record opens with its variant's code,
+/// and its shapes.
+export type FrameType = { name: string, choice: bool, rows: List<FrameRow> }
+
+/// `types` with each name kept once, first where it first stands.
+export fn distinct_types(types: List<FrameType>) -> List<FrameType> {
+    [t for j, t in types if !types.slice(0, j).any(it.name == t.name)]
+}
+
+/// A row as a line: `word code field:kind:of …`.
+export fn row_line(r: FrameRow) -> string {
+    ["${r.word} ${r.code}"].concat([field_word(f) for f in r.fields]).join(" ")
+}
+
+fn field_word(f: FrameField) -> string {
+    let kind = FieldKind.coded().find(it.code == f.kind.code())?.word ?? ""
+    if f.of == "" { "${f.name}:${kind}" } else { "${f.name}:${kind}:${f.of}" }
+}

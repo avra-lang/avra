@@ -1,0 +1,46 @@
+//! `frame/dialect.av` — WHAT A STREAM IS. Its first byte names its
+//! vocabulary and that vocabulary's version as ONE number from ONE table,
+//! so no two vocabularies share a first byte, and a reader refuses any
+//! other dialect by its name. A shape that MOVES — a field renamed,
+//! reordered or dropped, a code given to another variant — is a new
+//! dialect; one that only GROWS — a variant added, a field appended — is
+//! the same dialect (`frame/standing.av` holds each dialect's shapes).
+use @std.meta.{derive}
+use tree.codes.{Codes}
+use frame.kinds.{FrameReader, FrameFault, FrameWriter}
+
+@derive(Codes)
+export enum Dialect {
+    /// The page's patches, a four-byte number for every count and length.
+    @code(15) Dom15
+    /// The page's patches over the shared kinds.
+    @code(16) Dom16
+    /// A native host's patches.
+    @code(17) Neutral1
+}
+
+impl Dialect {
+    /// The name a reader refuses this dialect by.
+    fn name() -> string { Dialect.coded().find(it.code == self.code())?.word ?? "" }
+}
+
+/// A frame opened in `d`.
+export fn opened(w: FrameWriter, d: Dialect) { w.byte(d.code()) }
+
+/// A frame's first byte read, refused unless it names `wants`.
+export fn read_dialect(r: FrameReader, wants: Dialect) -> Result<Dialect, FrameFault> {
+    let code = r.byte()?
+    let seen? = Dialect.coded_as(code) else { fail r.fault(unknown_dialect(code, wants)) }
+    if seen != wants { fail r.fault(other_dialect(seen, wants)) }
+    seen
+}
+
+// ── voices ──
+
+fn unknown_dialect(code: int, wants: Dialect) -> string {
+    "a frame names its dialect first, and ${code} is none this reader knows — it reads `${wants.name()}`"
+}
+
+fn other_dialect(seen: Dialect, wants: Dialect) -> string {
+    "this frame is `${seen.name()}`, and this reader reads `${wants.name()}`"
+}
