@@ -109,14 +109,40 @@ export type Question = { query_name: string, code_hash: string, arguments: Bytes
 /// changed query never finds its old answers. The name and the code are counted, so they can't
 /// trade octets with the arguments.
 export fn question(query_name: string, code_hash: string, arguments: Bytes) -> Question {
-    let counted = "saved ${QUESTION_SHAPE} ${query_name.length}:${query_name}${code_hash.length}:${code_hash}"
-        .bytes()
+    let counted = counted_for(query_name, code_hash).saved
     Question {
         query_name: query_name,
         code_hash: code_hash,
         arguments: arguments,
         known_as: content_hash(counted.concat(arguments)),
     }
+}
+
+/// What a query's questions are counted from ahead of their arguments: its code's hash, and its name
+/// and that hash counted, for a question saving its arguments and for one spelling their keys.
+type Counted = { code_hash: string, saved: Bytes, keyed: Bytes }
+
+/// Each query's counted words, by its name: minted the first time it asks, and again where its code
+/// moved.
+once fn counted_by_query() -> Cell<Map<string, Counted>> { Cell.new({}) }
+
+/// The counted words of the query `query_name` whose code hashes as `code_hash`.
+fn counted_for(query_name: string, code_hash: string) -> Counted {
+    let held = counted_by_query().get().get(query_name)
+    if held != null && held!.code_hash == code_hash { return held! }
+    let made = Counted {
+        code_hash: code_hash,
+        saved: counted_words("saved", query_name, code_hash),
+        keyed: counted_words("keyed", query_name, code_hash),
+    }
+    counted_by_query().put(query_name, made)
+    made
+}
+
+/// The query's name and code's hash counted under `kind`, in the question's shape.
+fn counted_words(kind: string, query_name: string, code_hash: string) -> Bytes {
+    "${kind} ${QUESTION_SHAPE} ${query_name.length}:${query_name}${code_hash.length}:${code_hash}"
+        .bytes()
 }
 
 /// THE SHAPE A QUESTION'S IDENTITY IS MADE IN: how its arguments are written into what it's known
@@ -127,8 +153,7 @@ export const QUESTION_SHAPE: string = "3"
 /// A question whose arguments are spelled as their keys. It's counted apart from one whose arguments
 /// are saved bytes, so no question of one kind is ever known as one of the other.
 export fn keyed_question(query_name: string, code_hash: string, arguments: Bytes) -> Question {
-    let counted = "keyed ${QUESTION_SHAPE} ${query_name.length}:${query_name}${code_hash.length}:${code_hash}"
-        .bytes()
+    let counted = counted_for(query_name, code_hash).keyed
     Question {
         query_name: query_name,
         code_hash: code_hash,
