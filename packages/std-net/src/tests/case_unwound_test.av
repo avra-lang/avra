@@ -1,0 +1,39 @@
+// A CASE THAT SPAWNS AND CANCELS LINKS A SCHEDULER, as a program does:
+// a task cancelled inside one runs its deferred calls whole, so a
+// socket its `errdefer` closes is closed and the peer reads the end.
+use @std.net.{Conn, NetError, listen, connect, timely}
+use @std.time.{ms, secs, sleep}
+
+/// A read that closes its socket on the way out, however it leaves.
+fn read_closing(c: Conn) -> Result<bool, NetError> {
+    errdefer { let _ = c.close() }
+    let got? = c.read(64)? else { return .Ok(false) }
+    .Ok(got.length > 0)
+}
+
+fn reads(c: Conn) -> bool { read_closing(c) is .Ok }
+
+/// A server's read cancelled while its client says nothing: whether
+/// the client then reads the end.
+fn read_unwound() -> Result<bool, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let c = connect("127.0.0.1", l.port, secs(2))?
+    let peer = l.accept()?
+    let t = spawn reads(peer)
+    sleep(ms(50))
+    t.cancel()
+    sleep(ms(50))
+    let ended = match timely(within secs(2) { c.read(16) }) {
+        .Ok(b) -> b == null,
+        .Err(_) -> false,
+    }
+    c.close()?
+    l.close()?
+    .Ok(ended)
+}
+
+spec "std.net under a cancel" {
+    given "a case's task unwound while it reads" {
+        then "its errdefer closes the socket, and the client reads the end" { read_unwound() catch _ -> false }
+    }
+}
