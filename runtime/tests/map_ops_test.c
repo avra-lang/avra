@@ -1,4 +1,5 @@
-// A MAP ANSWERS WHAT A PLAIN MODEL ANSWERS, through every operation: a
+// A MAP ANSWERS WHAT A PLAIN MODEL ANSWERS, under text keys and under word
+// keys alike (zero and negative words among them), through every operation: a
 // seeded walk of writes, removes, fused read-then-writes and
 // read-then-removes (a slot's word handed to the write or the remove,
 // sometimes across another remove), clones written after,
@@ -32,12 +33,43 @@ int64_t avra_array_len(void* arr);
 int64_t avra_array_get(void* arr, int64_t i);
 const char* avra_bytes_adopted(const void* p, int64_t n);
 const char* avra_str_of_bytes(const char* b);
+void* avra_map_w_new(void);
+void avra_map_w_set(void* map, int64_t key, int64_t v);
+int64_t avra_map_w_has(void* map, int64_t key);
+int64_t avra_map_w_get(void* map, int64_t key);
+void avra_map_w_remove(void* map, int64_t key);
+int64_t avra_map_w_slot(void* map, int64_t key);
+void avra_map_w_set_at(void* map, int64_t key, int64_t token, int64_t v);
+void avra_map_w_remove_at(void* map, int64_t key, int64_t token);
 
 static int g_checks = 0, g_fails = 0;
 #define CHECK(cond, what, step) do { g_checks++; if (!(cond)) { if (g_fails++ < 10) fprintf(stderr, "map_ops_test: FAILED %s at step %ld (%s:%d)\n", what, (long)(step), __FILE__, __LINE__); } } while (0)
 
 enum { KEYS = 300, MAPS = 4, STEPS = 60000 };
 static const char* g_keys[KEYS];
+
+// Which class of key the walk writes under: text, or the word `k - 150`.
+static int g_words;
+
+static int64_t key_word(int k) { return (int64_t)k - 150; }
+
+// The map's own word for key number `k`: its text's address, or the word itself.
+static int64_t key_of(int k) { return g_words ? key_word(k) : (int64_t)(uintptr_t)g_keys[k]; }
+
+static void* made(void) { return g_words ? avra_map_w_new() : avra_map_new(); }
+static void set(void* m, int k, int64_t v) { if (g_words) avra_map_w_set(m, key_word(k), v); else avra_map_set(m, g_keys[k], v); }
+static int64_t has(void* m, int k) { return g_words ? avra_map_w_has(m, key_word(k)) : avra_map_has(m, g_keys[k]); }
+static int64_t get(void* m, int k) { return g_words ? avra_map_w_get(m, key_word(k)) : avra_map_get(m, g_keys[k]); }
+static void removed(void* m, int k) { if (g_words) avra_map_w_remove(m, key_word(k)); else avra_map_remove(m, g_keys[k]); }
+static int64_t slot(void* m, int k) { return g_words ? avra_map_w_slot(m, key_word(k)) : avra_map_slot(m, g_keys[k]); }
+static void set_at(void* m, int k, int64_t token, int64_t v) {
+    if (g_words) avra_map_w_set_at(m, key_word(k), token, v);
+    else avra_map_set_at(m, g_keys[k], token, v);
+}
+static void removed_at(void* m, int k, int64_t token) {
+    if (g_words) avra_map_w_remove_at(m, key_word(k), token);
+    else avra_map_remove_at(m, g_keys[k], token);
+}
 
 // The model: a map's keys and values in insertion order.
 typedef struct { int n; int key[KEYS]; int64_t val[KEYS]; } Model;
@@ -67,7 +99,7 @@ static void model_remove(Model* o, int k) {
 static int lists_are(void* ks, void* vs, const Model* o) {
     if (avra_array_len(ks) != o->n || avra_array_len(vs) != o->n) return 0;
     for (int i = 0; i < o->n; i++) {
-        if ((const char*)(uintptr_t)avra_array_get(ks, i) != g_keys[o->key[i]] || avra_array_get(vs, i) != o->val[i]) return 0;
+        if (avra_array_get(ks, i) != key_of(o->key[i]) || avra_array_get(vs, i) != o->val[i]) return 0;
     }
     return 1;
 }
@@ -86,7 +118,7 @@ static void read_whole(void* m, const Model* o, long step) {
     avra_rc_release(vs);
     for (int k = 0; k < KEYS; k += 7) {
         int i = model_find(o, k);
-        CHECK(avra_map_has(m, g_keys[k]) == (i >= 0) && (i < 0 || avra_map_get(m, g_keys[k]) == o->val[i]), "a lookup answers the model", step);
+        CHECK(has(m, k) == (i >= 0) && (i < 0 || get(m, k) == o->val[i]), "a lookup answers the model", step);
     }
 }
 
@@ -99,6 +131,8 @@ static uint32_t next(void) {
     return (uint32_t)g_seed;
 }
 
+static void walked(void);
+
 int main(void) {
     for (int i = 0; i < KEYS; i++) {
         char buf[16];
@@ -107,10 +141,19 @@ int main(void) {
         g_keys[i] = avra_str_of_bytes(b);
         avra_rc_release((void*)b);
     }
+    for (g_words = 0; g_words < 2; g_words++) walked();
+    for (int i = 0; i < KEYS; i++) avra_rc_release((void*)g_keys[i]);
+    printf("map ops: %d checks, %d failed\n", g_checks, g_fails);
+    return g_fails ? 1 : 0;
+}
+
+// One seeded walk of every operation over MAPS maps of the walk's key class.
+static void walked(void) {
     int64_t live = avra_mem_live();
     void* m[MAPS];
     static Model o[MAPS];
-    for (int i = 0; i < MAPS; i++) m[i] = avra_map_new();
+    memset(o, 0, sizeof o);
+    for (int i = 0; i < MAPS; i++) m[i] = made();
     for (long s = 0; s < STEPS; s++) {
         int j = (int)(next() % MAPS);
         int span = j == 0 ? 6 : j == 1 ? 20 : KEYS;
@@ -118,30 +161,30 @@ int main(void) {
         int op = (int)(next() % 100);
         int64_t v = next();
         if (op < 40) {
-            avra_map_set(m[j], g_keys[k], v);
+            set(m[j], k, v);
             model_set(&o[j], k, v);
         } else if (op < 65) {
-            avra_map_remove(m[j], g_keys[k]);
+            removed(m[j], k);
             model_remove(&o[j], k);
         } else if (op < 75) {
             // a read's word, handed to the write — sometimes across a remove
-            int64_t token = avra_map_slot(m[j], g_keys[k]);
+            int64_t token = slot(m[j], k);
             if (next() % 3 == 0) {
                 int gone = (int)(next() % (uint32_t)span);
-                avra_map_remove(m[j], g_keys[gone]);
+                removed(m[j], gone);
                 model_remove(&o[j], gone);
             }
-            avra_map_set_at(m[j], g_keys[k], token, v);
+            set_at(m[j], k, token, v);
             model_set(&o[j], k, v);
         } else if (op < 78) {
             // a read's word, handed to the remove — sometimes across another remove
-            int64_t token = avra_map_slot(m[j], g_keys[k]);
+            int64_t token = slot(m[j], k);
             if (next() % 3 == 0) {
                 int gone = (int)(next() % (uint32_t)span);
-                avra_map_remove(m[j], g_keys[gone]);
+                removed(m[j], gone);
                 model_remove(&o[j], gone);
             }
-            avra_map_remove_at(m[j], g_keys[k], token);
+            removed_at(m[j], k, token);
             model_remove(&o[j], k);
         } else if (op < 82) {
             // a clone, written after: neither sees the other's writes
@@ -157,10 +200,10 @@ int main(void) {
             Model before = o[j];
             void* ks = avra_map_walk_keys(m[j]);
             void* vs = avra_map_walk_vals(m[j]);
-            avra_map_set(m[j], g_keys[k], v);
+            set(m[j], k, v);
             model_set(&o[j], k, v);
             int gone = (int)(next() % (uint32_t)span);
-            avra_map_remove(m[j], g_keys[gone]);
+            removed(m[j], gone);
             model_remove(&o[j], gone);
             CHECK(lists_are(ks, vs, &before), "a walk held across writes reads the snapshot it began on", s);
             avra_rc_release(ks);
@@ -168,7 +211,7 @@ int main(void) {
         } else if (op < 86) {
             while (o[j].n) {
                 int first = o[j].key[0];
-                avra_map_remove(m[j], g_keys[first]);
+                removed(m[j], first);
                 model_remove(&o[j], first);
             }
         } else {
@@ -180,7 +223,4 @@ int main(void) {
         avra_rc_release(m[i]);
     }
     CHECK(avra_mem_live() == live, "every map, released, leaves the live count where it began", STEPS);
-    for (int i = 0; i < KEYS; i++) avra_rc_release((void*)g_keys[i]);
-    printf("map ops: %d checks, %d failed\n", g_checks, g_fails);
-    return g_fails ? 1 : 0;
 }

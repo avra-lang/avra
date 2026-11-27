@@ -10,7 +10,16 @@ fn map_reg(mut cx: LowerCx, e: ExprId, entries: List<MapEntry>) -> Reg {
     if !map_spreads(entries).is_empty() { return spread_reg(cx, e, entries) }
     let ks = [cx.reg_of(k) for k in map_keys(entries)]
     let vs = [cx.reg_of(v) for v in map_values(entries)]
-    let dst = if ks.is_empty() { cx.map_new(cx.shape_at(e)) } else { cx.map_sized(cx.shape_at(e), cx.const_int(ks.length)) }
+    let dst = if ks.is_empty() {
+        cx.call(cx.shape_at(e), cx.made_map_row("avra_map_new", cx.type_at(e)), [])
+    } else {
+        cx
+            .call(
+                cx.shape_at(e),
+                cx.made_map_row("avra_map_sized", cx.type_at(e)),
+                [cx.const_int(ks.length)],
+            )
+    }
     for j, k in ks {
         cx.map_write(dst, k, vs[j])
     }
@@ -21,7 +30,7 @@ fn map_reg(mut cx: LowerCx, e: ExprId, entries: List<MapEntry>) -> Reg {
 /// spread writes each of its map's entries in the map's order — a key
 /// already there keeps its place and takes the new value.
 fn spread_reg(mut cx: LowerCx, e: ExprId, entries: List<MapEntry>) -> Reg {
-    let dst = cx.map_new(cx.shape_at(e))
+    let dst = cx.call(cx.shape_at(e), cx.made_map_row("avra_map_new", cx.type_at(e)), [])
     for entry in entries {
         match entry {
             .Pair(key, value) -> cx.map_write(dst, cx.reg_of(key), cx.reg_of(value)),
