@@ -14,10 +14,12 @@ export type NameSets = {
     members: Cell<List<List<string>>>,
     /// Each set's id, by its members spelled.
     ids: Cell<Map<string, int>>,
-    /// Each set's print, by its id.
+    /// Each set's print, by its id: `SET_UNWORKED` until it is first asked.
     prints: Cell<List<int>>,
-    /// Each set's id, by its print spelled.
+    /// Each printed set's id, by its print spelled.
     printed: Cell<Map<string, int>>,
+    /// How many sets, from id zero, `printed` holds every one of.
+    printed_through: Cell<int>,
     /// Each union asked, by its two ids.
     unions: HashKeyedTable<int>,
 }
@@ -33,6 +35,7 @@ export fn name_sets() -> NameSets {
         ids: ids,
         prints: Cell.new([EMPTY_SET_PRINT]),
         printed: printed,
+        printed_through: Cell.new(1),
         unions: hash_keyed_table(),
     }
 }
@@ -71,19 +74,30 @@ impl NameSets {
         let known = self.ids.get().get(spelled)
         if known != null { return known! }
         let id = self.members.get().length
-        let print = set_print(sorted)
         self.members.push(sorted)
         self.ids.put(spelled, id)
-        self.prints.push(print)
-        self.printed.put("${print}", id)
+        self.prints.push(SET_UNWORKED)
         id
     }
 
-    /// The print the set `id` is kept under.
-    fn print_of(id: int) -> int { self.prints.get()[id] }
+    /// The print the set `id` is kept under, worked out the first time it is asked.
+    fn print_of(id: int) -> int {
+        let known = self.prints.get()[id]
+        if known != SET_UNWORKED { return known }
+        let print = set_print(self.members_of(id))
+        self.prints.set_at(id, print)
+        self.printed.put("${print}", id)
+        print
+    }
 
-    /// The id of the set kept under `print`, where this table holds it.
-    fn printed_as(print: int) -> int? { self.printed.get().get("${print}") }
+    /// The id of the set kept under `print`, where this table holds it: every set it holds printed
+    /// first.
+    fn printed_as(print: int) -> int? {
+        let held = self.members.get().length
+        for id in self.printed_through.get()..held { let _ = self.print_of(id) }
+        self.printed_through.set(held)
+        self.printed.get().get("${print}")
+    }
 
     /// Every set this table holds but the empty one, each sorted.
     fn all_sets() -> List<List<string>> { self.members.get().drop(1) }

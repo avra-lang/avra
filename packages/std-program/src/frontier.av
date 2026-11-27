@@ -1274,18 +1274,17 @@ fn places_from(fresh: List<HeldEntry>, before: int) -> HashKeyedTable<int> {
 /// memory.
 fn placed_reads(state: Frontier?, fresh: HashKeyedTable<int>, h: HeldEntry) -> List<int>? {
     if h.read_count() == 0 { return NO_PLACES }
-    let places = [read_place(state, fresh, h.read_at(r)) for r in 0..h.read_count()]
-    if places.contains(NO_PLACE) { null } else { places }
+    mut places: List<int> = []
+    for r in 0..h.read_count() {
+        let q = h.read_at(r)
+        let place? = fresh.get(q) ?? place_in(state, q) else { return null }
+        places.push(place)
+    }
+    places
 }
-
-/// Where `fresh` places `q` or `state` holds it, else `NO_PLACE`.
-fn read_place(state: Frontier?, fresh: HashKeyedTable<int>, q: ContentHash) -> int { fresh.get(q) ?? place_in(state, q) ?? NO_PLACE }
 
 /// The places of an answer that read nothing.
 const NO_PLACES: List<int> = []
-
-/// What `read_place` answers for a question placed nowhere: no place is ever below zero.
-const NO_PLACE: int = -1
 
 /// New questions laid past a state's end: each answer, where each question stands, and the places
 /// each answer read, one for one with the answers.
