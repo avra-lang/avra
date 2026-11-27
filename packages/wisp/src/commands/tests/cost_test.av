@@ -18,6 +18,9 @@ use commands.{
     rows_of,
     same_work,
     snapshot_of,
+    targets_failed,
+    targets_of,
+    overs_of,
     unprinted,
     warm_counters,
 }
@@ -365,5 +368,54 @@ spec "cost — growth within a key" {
     }
     then "a key the ledger holds no row of names no growth: it is told whole" {
         unrecorded(one("speed:other:check emit", 5), one("speed:h:check analyze", 10)).is_empty()
+    }
+}
+
+/// A ledger's head with the warm edit's target, and the row a run measured.
+fn targeted(over: string) -> string {
+    ["kind warm keyed-by host over 300000ppm+250 least", "target warm warm edit 300", over]
+        .join("\n")
+}
+
+fn edit_at(ms: int) -> Map<string, int> { one("warm:linux-x86-64-amd-epyc:warm edit", ms) }
+
+fn failed_at(ms: int, over: string) -> List<string> {
+    targets_failed(
+        edit_at(ms),
+        targets_of(targeted(over)),
+        overs_of(targeted(over)),
+        targeted(over),
+    )
+}
+
+spec "cost — the targets" {
+    then "a row's first appearance above its target fails: a born value is no baseline" {
+        failed_at(68208, "").join("|") == "cost: warm:linux-x86-64-amd-epyc:warm edit: 68208, above its target 300 — a row stands above its target only on an `over <row> <owner> <ticket>` line"
+    }
+    then "a row within its target passes, and one at it" {
+        failed_at(299, "").is_empty() && failed_at(300, "").is_empty()
+    }
+    then "an over line with its owner and ticket lets the row stand" {
+        failed_at(68208, "over warm:linux-x86-64-amd-epyc:warm edit avra-lane-r2-warm .112.26")
+            .is_empty()
+    }
+    then "an over line whose row came within its target fails until it is struck" {
+        failed_at(250, "over warm:linux-x86-64-amd-epyc:warm edit avra-lane-r2-warm .112.26").length == 1
+    }
+    then "an over line naming no ticket fails, and lets nothing stand" {
+        failed_at(68208, "over warm:linux-x86-64-amd-epyc:warm edit avra-lane-r2-warm").length == 2
+    }
+    then "a target holds its kind's workload and counter on every key, and no other" {
+        let ledger = targeted("")
+        let rows: Map<string, int> = {
+            "warm:ci-warm:warm edit": 400,
+            "warm:ci-warm:warm unchanged": 9000,
+        }
+        targets_failed(rows, targets_of(ledger), overs_of(ledger), ledger).length == 1
+    }
+    then "a warm row twice its baseline fails; a third over passes inside the tolerance" {
+        let kinds = kinds_of(targeted(""))
+        !judge(edit_at(2000), edit_at(1000), kinds).failed.is_empty() &&
+            judge(edit_at(1300), edit_at(1000), kinds).failed.is_empty()
     }
 }

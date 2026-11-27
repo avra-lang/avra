@@ -39,7 +39,7 @@ const VERDICTS: string = "tools/cost.verdicts"
 /// candidate is work, never a regression: a new one is said, never failed on.
 const CANDIDATES: string = "tools/cost.candidates"
 const CANDIDATES_HEAD: string = "# THE ZERO-COST CANDIDATES THE LAST `make cost-accept` SAW: each `<technique> <fn>` that stood in its\n# technique's top sites (`avra census --candidates`, docs/ZERO_COST.md). `make cost` names every\n# candidate this file lacks; a candidate is a registry row or a ticket at discovery.\n"
-const HEAD: string = "# THE LEDGER: what the toolchain does and weighs, one row a line. A row's KIND says how it is judged,\n# and each kind is declared below by what keys it — what makes it deterministic — and how far it may\n# rise (`wisp cost`). A count names no kind: the census compiler, cold, on each fixed workload of\n# the pinned snapshot (`make cost`, tools/cost.sh), the same on every machine. A row only falls,\n# through an accept; a new snapshot is `COST_SNAPSHOT=<sha> make cost-accept`.\n"
+const HEAD: string = "# THE LEDGER: what the toolchain does and weighs, one row a line. A row's KIND says how it is judged,\n# and each kind is declared below by what keys it — what makes it deterministic — and how far it may\n# rise (`wisp cost`). A count names no kind: the census compiler, cold, on each fixed workload of\n# the pinned snapshot (`make cost`, tools/cost.sh), the same on every machine. A row only falls,\n# through an accept; a new snapshot is `COST_SNAPSHOT=<sha> make cost-accept`.\n# A `target` line is the ceiling every row of a kind's workload and counter is held to, first appearance\n# included; a row stands above it only on an `over <row> <owner> <ticket>` line, which only shrinks.\n"
 /// A fall this small is the build's own: a file it writes and reads back within the stamp window.
 const FALL_PPM: int = 50
 /// A WARM ROW HOLDS when two compilers that differ in nothing the work reads move it by no more than
@@ -461,8 +461,73 @@ export fn kinds_of(text: string) -> Map<string, Kind> {
     kinds
 }
 
-/// The ledger's `kind` lines as it wrote them, each with its line break.
-fn kind_lines(text: string) -> string { [key_line(l.trim()) for l in text.split("\n") if kind_line(l.trim()) != null].join("") }
+/// The ledger's `kind`, `target` and `over` lines as it wrote them, each with its line break: what an
+/// accept keeps above the rows it writes.
+fn kind_lines(text: string) -> string {
+    [key_line(l.trim()) for l in text.split("\n") if kind_line(l.trim()) != null || l.trim().starts_with("target ") || l.trim().starts_with("over ")]
+        .join("")
+}
+
+// THE TARGETS
+
+/// A ceiling every row of a kind's workload and counter is held to, whatever its key: `target <kind>
+/// <workload> <counter> <n>`.
+export type Target = { kind: string, workload: string, counter: string, most: int }
+
+/// A row let stand above its target: `over <row> <owner> <ticket>`, the row its workload and counter.
+export type Over = { key: string, owner: string, ticket: string }
+
+export fn targets_of(text: string) -> List<Target> {
+    [t! for l in text.split("\n") for t in [target_line(l.trim())] if t != null]
+}
+
+fn target_line(line: string) -> Target? {
+    let w = line.split(" ")
+    if w.length != 5 || w[0] != "target" || !is_plain(w[1]) || !is_plain(w[2]) || !is_counter(w[3]) { return null }
+    let most? = whole_of(w[4]) else { return null }
+    Target { kind: w[1], workload: w[2], counter: w[3], most: most }
+}
+
+export fn overs_of(text: string) -> List<Over> {
+    [o! for l in text.split("\n") for o in [over_line(l.trim())] if o != null]
+}
+
+fn over_line(line: string) -> Over? {
+    let w = line.split(" ")
+    if w.length != 5 ||
+        w[0] != "over" ||
+        !is_workload(w[1]) ||
+        !is_counter(w[2]) ||
+        w[3].is_empty() ||
+        !w[4].starts_with(".") { return null }
+    Over { key: "${w[1]} ${w[2]}", owner: w[3], ticket: w[4] }
+}
+
+/// The target a row is held to, where one names its kind, workload and counter.
+fn target_for(key: string, targets: List<Target>) -> Target? {
+    let plain = workload_of(key).split(":").last()!
+    targets
+        .find(it.kind == kind_name_of(key) && it.workload == plain && it.counter == counter_of(key))
+}
+
+/// Each row measured above its target with no `over` line letting it stand — on its first appearance as
+/// on any — each `over` line whose row measured within its target, and each `over` line that names no
+/// owner or ticket: a ceiling only falls.
+export fn targets_failed(
+    now: Map<string, int>,
+    targets: List<Target>,
+    overs: List<Over>,
+    text: string,
+) -> List<string> {
+    let above = [above_said(k, now.get(k) ?? 0, target_for(k, targets)!.most) for k in sorted_by([k for k, _n in now], text_before) if target_for(k, targets) != null &&
+        now.get(k) ?? 0 > target_for(k, targets)!.most &&
+        !overs.any(it.key == k)]
+    let under = [within_said(o.key, now.get(o.key) ?? 0, target_for(o.key, targets)?.most ?? 0) for o in overs if now.has(o.key) &&
+        (target_for(o.key, targets) == null ||
+            now.get(o.key) ?? 0 <= target_for(o.key, targets)!.most)]
+    let unowned = [unowned_said(l.trim()) for l in text.split("\n") if l.trim().starts_with("over ") && over_line(l.trim()) == null]
+    above.concat(under).concat(unowned)
+}
 
 fn kind_line(line: string) -> Kind? {
     let w = line.split(" ")
@@ -742,7 +807,10 @@ fn keyed_judged(run_dir: string, accept: bool, tell: bool) -> int {
         if !base.any(group_of(it.key) == g) { println(unkeyed_said(g, rows_in(now, g))) }
     }
     let j = judge(now, base, kinds)
-    let failed = j.failed.concat(unrecorded(now, base))
+    let failed = j
+        .failed
+        .concat(unrecorded(now, base))
+        .concat(targets_failed(now, targets_of(text), overs_of(text), text))
     for line in j.told.concat(j.fell) { println(line) }
     for line in failed { println(if tell { "::warning::${line}" } else { line }) }
     println(rows_counted(base.length, failed.length, j.fell.length))
@@ -750,6 +818,12 @@ fn keyed_judged(run_dir: string, accept: bool, tell: bool) -> int {
     if !accept { return if failed.is_empty() { 0 } else { 1 } }
     if !j.failed.is_empty() {
         println("cost: an accept never raises a row within its key")
+        return 1
+    }
+    if failed.length > j.failed.length + unrecorded(now, base).length {
+        println(
+            "cost: an accept never records a row above its target — name its owner and ticket on an `over` line",
+        )
         return 1
     }
     let _ = write_text(
@@ -1003,6 +1077,16 @@ fn candidates_counted(found: int, new: int) -> string { "cost: ${found} candidat
 fn unsettled_said(key: string, n: int, ticket: string) -> string {
     "cost: ${key} ${n} — told, judged by nothing: it moves between compiler builds with no change to what it weighs (${ticket})"
 }
+
+fn above_said(key: string, n: int, most: int) -> string {
+    "cost: ${key}: ${n}, above its target ${most} — a row stands above its target only on an `over <row> <owner> <ticket>` line"
+}
+
+fn within_said(key: string, n: int, most: int) -> string {
+    "cost: ${key}: ${n}, within its target ${most}, and an `over` line still lets it stand above — strike the line"
+}
+
+fn unowned_said(line: string) -> string { "cost: `${line}` names no owner and ticket — `over <row> <owner> <.ticket>`" }
 
 fn rows_counted(rows: int, over: int, fell: int) -> string { "cost: ${rows} rows, ${over} over, ${fell} fell" }
 

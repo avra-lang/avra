@@ -90,7 +90,7 @@ export fn engine_worked_ahead<T, R>(
     let before = program_store_at(directory)
     let asking = query_engine(before, definitions, program)
     if work.timed || work.counted { asking.time_queries() }
-    asking.kept_times()?.opened("the frontier opened", TimedSide.Outside, Pass.StoreOpen)
+    asking.kept_times()?.opened("the frontier opened", TimedSide.Outside, Pass.FrontierOpen)
     let _ = asking.inputs_moved()
     asking.kept_times()?.closed()
     let wave = waves_forked().get()
@@ -104,7 +104,7 @@ export fn engine_worked_ahead<T, R>(
     let merging = merge_begun(after, work.process_count)
     asking.kept_times()?.closed()
     asking.kept_times()?.opened(ANSWERS_TAKEN, TimedSide.Outside, Pass.StoreOpen)
-    let taken = shared_taken(after, engine, work.process_count)
+    let taken = shared_taken(after, engine, work.process_count, work.counted)
     asking.kept_times()?.closed()
     asking.kept_times()?.opened("the work merged", TimedSide.Outside, Pass.StoreSave)
     merge_ended(after, merging, work.process_count)
@@ -253,7 +253,7 @@ export fn asked_across_while<T, R>(
     if finished < work.process_count { cores_lost(work.process_count - finished, work.process_count) }
     store.packs_read_again()
     engine.kept_times()?.opened(ANSWERS_TAKEN, TimedSide.Outside, Pass.StoreOpen)
-    let taken = shared_taken(store, engine, work.process_count)
+    let taken = shared_taken(store, engine, work.process_count, work.counted)
     engine.kept_times()?.closed()
     if work.timed { eprintln("within: ${taken}") }
     true
@@ -302,7 +302,7 @@ export fn asked_beside<T, R>(
     if finished < 1 { cores_lost(1, 1) }
     store.packs_read_again()
     engine.kept_times()?.opened(ANSWERS_TAKEN, TimedSide.Outside, Pass.StoreOpen)
-    let taken = shared_taken(store, engine, 1)
+    let taken = shared_taken(store, engine, 1, work.counted)
     engine.kept_times()?.closed()
     if work.timed { eprintln("beside: ${taken}") }
     true
@@ -336,15 +336,15 @@ fn within_and_gone<T, R>(
 }
 
 /// What the `processes` processes of a wave learned, taken by `engine` where they stand in `store`'s
-/// table of the build, every input among them remembered as read anew: how many processes' answers
-/// were taken, or why none were.
-fn shared_taken(store: LayeredStore, engine: QueryEngine, processes: int) -> string {
+/// table of the build, every input among them remembered as read anew where the run is `counted`:
+/// how many processes' answers were taken, or why none were.
+fn shared_taken(store: LayeredStore, engine: QueryEngine, processes: int, counted: bool) -> string {
     if table_spoiled().get() {
         engine.shared_let_go()
         return "no core's answers taken: a process of this build ended before it published"
     }
     let why? = engine.took_shared(!program_settings().debug.ahead_unproven) else {
-        for e in store.shared_entries(true) { inputs_taken().put(e.question, true) }
+        if counted { for e in store.shared_entries(true) { inputs_taken().put(e.question, true) } }
         return "${processes} cores' answers taken"
     }
     "no core's answers taken: ${why}"

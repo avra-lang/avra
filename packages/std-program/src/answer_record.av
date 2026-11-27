@@ -149,12 +149,12 @@ export type PartSeen = { part_name: ContentHash, part_hash: ContentHash }
 @derive(Saved)
 export type RecordedRead = { question: ContentHash, whole_answer: ContentHash, part: PartSeen? }
 
-/// One way a question was answered: the hash that finds the answer's bytes, and everything read to
-/// get there, as words, so a record is checked where it lies. A whole read is four words, its
-/// question then the whole answer it saw; a part read is eight, those then the part's name and the
-/// part's hash.
+/// One way a question was answered: the hash that finds the answer's bytes, everything read to get
+/// there, as words, so a record is checked where it lies, and the packages those reads read, sorted.
+/// A whole read is four words, its question then the whole answer it saw; a part read is eight,
+/// those then the part's name and the part's hash.
 @derive(Saved)
-export type AnswerRecord = { answer: ContentHash, whole_reads: List<int>, part_reads: List<int> }
+export type AnswerRecord = { answer: ContentHash, whole_reads: List<int>, part_reads: List<int>, packages: List<string> }
 
 /// The words of a whole read.
 const WHOLE_READ_WORDS: int = 4
@@ -162,12 +162,13 @@ const WHOLE_READ_WORDS: int = 4
 /// The words of a part read.
 const PART_READ_WORDS: int = 8
 
-/// The record of an answer and what was read to get there.
-export fn answer_record(answer: ContentHash, reads: List<RecordedRead>) -> AnswerRecord {
+/// The record of an answer, what was read to get there, and the packages those reads read.
+export fn answer_record(answer: ContentHash, reads: List<RecordedRead>, packages: List<string>) -> AnswerRecord {
     AnswerRecord {
         answer: answer,
         whole_reads: [word for read in reads.filter(it.part == null) for word in read.words()],
         part_reads: [word for read in reads.filter(it.part != null) for word in read.words()],
+        packages: packages,
     }
 }
 
@@ -177,6 +178,7 @@ impl AnswerRecord {
             answer: self.answer,
             whole_reads: RecordWords.Held(self.whole_reads),
             part_reads: RecordWords.Held(self.part_reads),
+            packages: RecordTexts.Held(self.packages),
         }
     }
 
@@ -216,8 +218,29 @@ impl RecordWords {
     }
 }
 
+/// A record's package names, held in memory or read where they lie, in the bytes beside them.
+export enum RecordTexts {
+    Held(List<string>)
+    Laid(source: SavedSource, texts: SavedList)
+}
+
+impl RecordTexts {
+    /// Every name, held.
+    fn texts() -> List<string> {
+        match self {
+            .Held(texts) -> texts,
+            .Laid(source, texts) -> [t! for i in 0..texts.length for t in [texts.text_at(source, i)] if t != null],
+        }
+    }
+
+    fn same_as(other: List<string>) -> bool {
+        let held = self.texts()
+        held.length == other.length && (0..other.length).all(held[it] == other[it])
+    }
+}
+
 /// A record as the engine checks it, its reads never decoded.
-export type KeptRecord = { answer: ContentHash, whole_reads: RecordWords, part_reads: RecordWords }
+export type KeptRecord = { answer: ContentHash, whole_reads: RecordWords, part_reads: RecordWords, packages: RecordTexts }
 
 /// The record saved at `record` in `source`, read where it lies.
 export fn kept_in_place(source: SavedSource, record: SavedRecord) -> KeptRecord {
@@ -225,6 +248,7 @@ export fn kept_in_place(source: SavedSource, record: SavedRecord) -> KeptRecord 
         answer: ContentHash.read_from(source, AnswerRecord.answer_in_place(source, record)),
         whole_reads: RecordWords.Laid(source, AnswerRecord.whole_reads_in_place(source, record)),
         part_reads: RecordWords.Laid(source, AnswerRecord.part_reads_in_place(source, record)),
+        packages: RecordTexts.Laid(source, AnswerRecord.packages_in_place(source, record)),
     }
 }
 
@@ -232,7 +256,8 @@ impl KeptRecord {
     fn same_as(other: AnswerRecord) -> bool {
         self.answer.same_as(other.answer) &&
             self.whole_reads.same_as(other.whole_reads) &&
-            self.part_reads.same_as(other.part_reads)
+            self.part_reads.same_as(other.part_reads) &&
+            self.packages.same_as(other.packages)
     }
 
     /// The record, its words held.
@@ -241,6 +266,7 @@ impl KeptRecord {
             answer: self.answer,
             whole_reads: self.whole_reads.words(),
             part_reads: self.part_reads.words(),
+            packages: self.packages.texts(),
         }
     }
 

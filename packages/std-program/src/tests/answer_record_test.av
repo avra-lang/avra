@@ -24,7 +24,7 @@ fn kept_at(bytes: Bytes) -> KeptRecord {
 fn hash_of(text: string) -> ContentHash { content_hash(text.bytes()) }
 
 fn record_reading(reads: List<RecordedRead>) -> AnswerRecord {
-    answer_record(hash_of("an int"), reads)
+    answer_record(hash_of("an int"), reads, [])
 }
 
 spec "answer_record — what's remembered about an answer" {
@@ -103,6 +103,16 @@ spec "answer_record — what's remembered about an answer" {
             }
             !record_reading([a, c]).same_as(record_reading([part]))
         }
+        then "the same reads that read other packages aren't" {
+            let read = RecordedRead {
+                question: hash_of("a"),
+                whole_answer: hash_of("b"),
+                part: null,
+            }
+            let std = answer_record(hash_of("an int"), [read], ["@std/x"])
+            let own = answer_record(hash_of("an int"), [read], ["proj"])
+            !std.kept().same_as(own) && std.kept().same_as(std)
+        }
     }
     given "a read's key" {
         then "a part read is apart from its whole read and from another part" {
@@ -123,6 +133,17 @@ spec "answer_record — what's remembered about an answer" {
             }
             !whole.read_key().same_as(part_a.read_key()) &&
                 !part_a.read_key().same_as(part_b.read_key())
+        }
+    }
+    given "a record's packages read where they lie" {
+        then "a record that read no package reads back none" {
+            kept_at(record_reading([]).saved_bytes()).packages.texts().is_empty()
+        }
+        then "each package it read reads back, in order" {
+            let kept = kept_at(
+                answer_record(hash_of("an int"), [], ["@std/x", "proj"]).saved_bytes(),
+            )
+            kept.packages.texts().join(",") == "@std/x,proj"
         }
     }
     given "a record saved and read back" {
