@@ -36,6 +36,11 @@ while [ "$#" -gt 0 ]; do
 done
 cd "$(dirname "$0")/.."
 root=$(pwd)
+# A COUNT IS THE COMPILER'S, NEVER THE SEED'S: the runtime draws its hash keys from the OS unless
+# AVRA_HASH_SEED pins them, and a map's probes, collisions and the compares inside them follow the
+# keys — so every run this script makes hashes under one fixed seed, and two runs of one compiler
+# count alike.
+export AVRA_HASH_SEED=1
 out=build/cost
 snapshot=${COST_SNAPSHOT:-$(cat cost/SNAPSHOT 2> /dev/null)}
 [ -n "$snapshot" ] || { echo "cost: cost/SNAPSHOT names no snapshot"; exit 1; }
