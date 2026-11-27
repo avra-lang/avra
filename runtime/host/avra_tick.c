@@ -82,12 +82,9 @@ static void wake_once(void) {
 
 static void* tick_loop(void* self) {
     (void)self;
-    // A PROCESS-DIRECTED SIGNAL MUST REACH THE TASK THAT WAITS ON IT: this
-    // thread blocks every signal, so none is delivered here and spent on
-    // its default action while a task has parked on it instead.
-    sigset_t all;
-    sigfillset(&all);
-    pthread_sigmask(SIG_BLOCK, &all, NULL);
+    // A PROCESS-DIRECTED SIGNAL MUST REACH THE TASK THAT WAITS ON IT: this thread blocks every
+    // signal from its creation (`tick_armed_cold`), so none is delivered here and spent on its
+    // default action while a task has parked on it instead.
     int unwanted = 0;
     for (;;) {
         if (__atomic_load_n(&avra_tick_wanted, __ATOMIC_RELAXED)) {
@@ -131,7 +128,14 @@ static void tick_armed_cold(void) {
     g_started = 1;
     g_owner = this_pid();
     __atomic_store_n(&g_parked, 0, __ATOMIC_RELAXED);
+    // BORN BLOCKED: a thread takes its creator's mask, and a process-directed signal reaches any
+    // thread that does not block it, so the tick is created with every signal blocked — never in
+    // the gap before its own first line, where a TERM a task has armed for would take its default.
+    sigset_t all, was;
+    sigfillset(&all);
+    pthread_sigmask(SIG_SETMASK, &all, &was);
     if (pthread_create(&g_thread, NULL, tick_loop, NULL) != 0) g_started = 0;
+    pthread_sigmask(SIG_SETMASK, &was, NULL);
 }
 
 // The source comes up, or a parked one is woken. The owner is the pid the
