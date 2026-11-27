@@ -1,0 +1,26 @@
+//! `realize/native/frame.av` — A NATIVE PAGE'S PATCHES AS A FRAME, for any
+//! wall between the program and a host that is not called directly: dev
+//! tools, a tape, a storyboard's parity. The `neutral1` dialect, then each
+//! patch as `@derive(Frame)` writes it. A host in the program's own process
+//! is handed the patches themselves, and nothing is written.
+use frame.kinds.{FrameFault, writer, reader, told_nothing, heard_nothing}
+use frame.dialect.{Dialect, opened, read_dialect}
+use realize.native.patch.{NativePatch}
+
+/// `patches` as one frame.
+export fn neutral_frame(patches: List<NativePatch>) -> Bytes {
+    let w = writer(told_nothing())
+    opened(w, Dialect.Neutral1)
+    for p in patches { p.framed(w) }
+    w.take()
+}
+
+/// The patches a frame holds, or the law it broke.
+export fn read_neutral(frame: Bytes) -> Result<List<NativePatch>, FrameFault> {
+    let r = reader(frame, heard_nothing())
+    let _ = read_dialect(r, Dialect.Neutral1)?
+    mut out: List<NativePatch> = []
+    // LICENSED loops.push_loop: each record starts where the one before it ended
+    while !r.ended() { out.push(NativePatch.unframed(r)?) }
+    out
+}

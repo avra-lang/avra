@@ -1,0 +1,23 @@
+// proves: a native page's first paint, written as the neutral frame and read
+// back, is the patches the diff made — the same bytes and the same patches in
+// both engines.
+use @std.ui.realize.native.frame.{neutral_frame, read_neutral}
+use @std.ui.realize.native.live.{native_live}
+use @std.ui.components.{button, checkbox, column, text}
+
+let page = native_live()
+let patches = page
+    .patches(
+        page
+            .drawn(
+                column {
+                    text "Tasks"
+                    checkbox "Done" { on change {} }
+                    button "Add" { on press {} }
+                },
+            ),
+    )
+let frame = neutral_frame(patches)
+let read = match read_neutral(frame) { .Ok(ps) -> ps.length, .Err(f) -> -f.at }
+let sum = [frame.at(i) * (i + 1) for i in 0..frame.length].fold(0, (a, b) -> a + b)
+"${patches.length} patches, ${frame.length} bytes, ${read} read back, sum ${sum}"

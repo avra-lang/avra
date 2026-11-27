@@ -1,0 +1,47 @@
+//! The board's paints, as each wire carries them: the page's frame and the
+//! neutral frame of the same view, with `rows` tasks standing.
+use @ui.board.{view, tasks_written}
+use @std.ui.realize.dom.live.{live}
+use @std.ui.realize.native.live.{native_live}
+use @std.ui.realize.native.patch.{NativePatch}
+use @std.ui.realize.native.frame.{neutral_frame, read_neutral}
+use @std.ui.realize.native.patch.{patch_line}
+
+/// `n` tasks as the server sends them, task `done` marked done.
+export fn tasks(n: int, done: int) -> string { "[${[task(i, i == done) for i in 1..n + 1].join(",")}]" }
+
+fn task(i: int, done: bool) -> string { "{\"id\":${i},\"title\":\"Task number ${i}\",\"done\":${done}}" }
+
+/// The board with `n` tasks standing, task `done` marked done.
+export fn stood(n: int, done: int) { let _ = tasks_written(tasks(n, done)) }
+
+/// The board's first paint and one row toggled after, on a native page.
+export type NativePaints = { first: List<NativePatch>, toggled: List<NativePatch> }
+
+export fn native_paints(n: int) -> NativePaints {
+    stood(n, 0)
+    let page = native_live()
+    let first = page.patches(page.drawn(view()))
+    stood(n, 1)
+    NativePaints { first: first, toggled: page.patches(page.drawn(view())) }
+}
+
+/// The board's first paint and one row toggled after, as the page's frames.
+export type PageFrames = { first: Bytes, toggled: Bytes }
+
+export fn page_frames(n: int) -> PageFrames {
+    stood(n, 0)
+    let page = live()
+    let first = page.paint_view(view())
+    stood(n, 1)
+    PageFrames { first: first, toggled: page.paint_view(view()) }
+}
+
+/// Whether `patches`, written as the neutral frame and read back, are the
+/// patches themselves.
+export fn read_back_whole(patches: List<NativePatch>) -> bool {
+    match read_neutral(neutral_frame(patches)) {
+        .Ok(read) -> read.map(patch_line(it)).join("\n") == patches.map(patch_line(it)).join("\n"),
+        .Err(_) -> false,
+    }
+}

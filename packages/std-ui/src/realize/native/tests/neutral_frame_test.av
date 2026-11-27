@@ -1,0 +1,159 @@
+//! The neutral frame: a native page's patches written and read back,
+//! compared with the patches the diff made — never with a frame written
+//! again — over every story's first paint and a paint that changes each
+//! thing. And every field of every record dropped in turn: a reader that
+//! does not refuse each one has a field it does not read.
+use @std.ui.realize.native.patch.{NativePatch, native_diff, patch_line}
+use @std.ui.realize.native.frame.{neutral_frame, read_neutral}
+use @std.ui.realize.native.element.{lowered}
+use @std.ui.realize.native.fact.{Fact, Scalar, What}
+use @std.ui.realize.native.live.{native_live}
+use @std.ui.realize.tests.support.{holding, keyed, text_node, button_node, switch_node}
+use @std.ui.frame.kinds.{writer, told_nothing}
+use @std.ui.frame.dialect.{Dialect, opened}
+use @std.ui.style.style.{Interaction}
+use @std.ui.tree.identity.{NodeId}
+use @std.ui.tree.node.{Node, Prim}
+use @std.ui.tree.story.{stories}
+use @std.ui.tree.seats.{Seat}
+use @std.ui.tree.view.{View}
+
+fn lines(ps: List<NativePatch>) -> string { ps.map(patch_line(it)).join("\n") }
+
+/// The patches a frame of `ps` reads back as, or the fault.
+fn read_back(ps: List<NativePatch>) -> string {
+    match read_neutral(neutral_frame(ps)) {
+        .Ok(read) -> lines(read),
+        .Err(f) -> "fault at ${f.at}: ${f.says}",
+    }
+}
+
+fn round_trips(ps: List<NativePatch>) -> bool { read_back(ps) == lines(ps) }
+
+/// Every story's cases, each drawn first on a native page of its own.
+fn first_paints() -> List<List<NativePatch>> {
+    [first_paint(c.view) for t in stories for c in t.tell().cases]
+}
+
+fn first_paint(v: dyn View) -> List<NativePatch> {
+    let page = native_live()
+    page.patches(page.drawn(v))
+}
+
+fn row(title: string, done: bool) -> Node { keyed(holding(.Item, [switch_node(title, done), button_node("Remove")]), title) }
+
+fn board(rows: List<string>, done: string) -> Node { holding(.List, [row(t, t == done) for t in rows]) }
+
+/// A paint that moves, removes and sets a fact.
+fn changed() -> List<NativePatch> {
+    let first = native_diff([], lowered(board(["a", "b", "c"], "")), 0)
+    native_diff(
+        first.page,
+        lowered(holding(.List, [row("c", true), text_node("gone"), row("a", false)])),
+        first.next,
+    )
+        .patches
+}
+
+/// One record of every variant, and of every case of what a fact holds.
+fn each_record() -> List<NativePatch> {
+    let id = NodeId { n: 130 }
+    [
+        NativePatch.Create(id, Prim.Button),
+        NativePatch.SetFact(id, Fact { what: What.Words, holds: Scalar.Text("é") }),
+        NativePatch
+            .SetFact(id, Fact { what: What.Disabled, under: Interaction.Hover, holds: Scalar.Flag(true) }),
+        NativePatch.SetFact(id, Fact { what: What.Rank, holds: Scalar.Number(-3) }),
+        NativePatch.SetFact(id, Fact { what: What.Grow, holds: Scalar.Fraction(0.5) }),
+        NativePatch.DropFact(id, What.Fill, Interaction.Pressed),
+        NativePatch.Place(id, NodeId { n: 0 }, NodeId { n: 7 }),
+        NativePatch.Remove(id),
+        NativePatch.Listen(id, Seat(2)),
+        NativePatch.Unlisten(id, Seat(2)),
+    ]
+}
+
+/// The code a record opens with.
+fn code_of(p: NativePatch) -> int {
+    let w = writer(told_nothing())
+    p.framed(w)
+    w.bytes.get()[0]
+}
+
+/// A frame of `p` alone, written without its field at `slot`.
+fn dropped(p: NativePatch, slot: int) -> Bytes {
+    let w = writer(told_nothing())
+    opened(w, Dialect.Neutral1)
+    p.framed_dropping(w, slot)
+    w.take()
+}
+
+fn arity(p: NativePatch) -> int { NativePatch.frame_rows().find(it.code == code_of(p))?.fields?.length ?? 0 }
+
+/// Whether the frame without `slot` is refused, or reads as something else.
+fn caught(p: NativePatch, slot: int) -> bool {
+    match read_neutral(dropped(p, slot)) {
+        .Ok(read) -> lines(read) != patch_line(p),
+        .Err(_) -> true,
+    }
+}
+
+/// Each (record, slot) a reader let through.
+fn missed() -> List<string> {
+    [patch_line(p) + " without slot ${slot}" for p in each_record() for slot in 0..arity(p) if !caught(p, slot)]
+}
+
+/// A fact's every field dropped in turn, inside its record.
+fn fact_missed() -> List<string> {
+    let f = Fact { what: What.Words, under: Interaction.Focus, holds: Scalar.Text("x") }
+    ["fact without slot ${slot}" for slot in 0..Fact.frame_rows()[0].fields.length if fact_let_through(f, slot)]
+}
+
+fn fact_let_through(f: Fact, slot: int) -> bool {
+    let w = writer(told_nothing())
+    opened(w, Dialect.Neutral1)
+    w.byte(code_of(NativePatch.SetFact(NodeId { n: 1 }, f)))
+    w.word(1)
+    f.framed_dropping(w, slot)
+    match read_neutral(w.take()) {
+        .Ok(read) -> lines(read) == patch_line(NativePatch.SetFact(NodeId { n: 1 }, f)),
+        .Err(_) -> false,
+    }
+}
+
+spec "std/ui native — the neutral frame" {
+    given "nothing" {
+        then "a paint that changed nothing is the dialect alone" { neutral_frame([]).length == 1 }
+        then "and reads back as no patches" { read_back([]) == "" }
+    }
+    given "every record a frame carries" {
+        then "reads back as the patches the diff made" { round_trips(each_record()) }
+        then "covers every variant the frame's shape names" {
+            NativePatch.frame_rows().all((row) -> each_record().any(code_of(it) == row.code))
+        }
+        then "and a patch for every field the shape names" { each_record().all(arity(it) > 0) }
+    }
+    given "every story, drawn first" {
+        then "each first paint reads back as its patches" { first_paints().all(round_trips(it)) }
+        then "and there are stories to read" { first_paints().length > 100 }
+    }
+    given "a paint that changes a page" {
+        then "reads back as its patches" { round_trips(changed()) }
+        then "moves, removes and sets" {
+            let words = lines(changed())
+            words.contains("remove ") && words.contains("place ") && words.contains("set ")
+        }
+    }
+    given "a record with a field dropped" {
+        then "every record, without any one of its fields, is refused" { missed().join("; ") == "" }
+        then "every fact, without any one of its fields, is refused" { fact_missed().join("; ") == "" }
+    }
+    given "another dialect" {
+        then "is refused by name" {
+            match read_neutral([16].bytes()!) {
+                .Ok(_) -> false,
+                .Err(f) -> f.says == "this frame is `dom16`, and this reader reads `neutral1`",
+            }
+        }
+    }
+}

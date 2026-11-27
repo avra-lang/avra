@@ -1,0 +1,49 @@
+//! Bytes and times per paint of the board on each wire. `ROWS` tasks stand
+//! (100 by default); each time is the fastest of `REPS` runs (21), in µs.
+//! With `OUT` set, the first paints' frames are written there for a host's
+//! reader to be timed (`decode.mjs`).
+use @std.io.{env, write_bytes}
+use @std.text.{parse_int}
+use @std.time.{now_ns}
+use @std.ui.realize.dom.live.{live}
+use @std.ui.realize.dom.wire.{frame}
+use @std.ui.realize.native.frame.{neutral_frame, read_neutral}
+use @ui.board.{view}
+use frame.{stood, page_frames, native_paints, read_back_whole}
+
+fn timed(reps: int, work: fn()) -> int {
+    [spent(work) for _r in 0..reps].fold(9223372036854775807, (a, b) -> if b < a { b } else { a }) / 1000
+}
+
+fn spent(work: fn()) -> int {
+    let from = now_ns()
+    work()
+    now_ns() - from
+}
+
+let rows = parse_int(env("ROWS") ?? "") ?? 100
+let reps = parse_int(env("REPS") ?? "") ?? 21
+let pages = page_frames(rows)
+let natives = native_paints(rows)
+let first_neutral = neutral_frame(natives.first)
+stood(rows, 0)
+let page = live()
+let patches = page.patches_drawn(page.drawn(view()))
+let web_us = timed(reps, () -> { let _ = frame(patches) })
+let neutral_us = timed(reps, () -> { let _ = neutral_frame(natives.first) })
+let read_us = timed(reps, () -> { let _ = read_neutral(first_neutral) })
+println("rows ${rows}")
+println(
+    "page first ${pages.first.length} B, toggled ${pages.toggled.length} B, encode ${web_us} us",
+)
+println(
+    "neutral first ${first_neutral.length} B, toggled ${neutral_frame(natives.toggled).length} B, encode ${neutral_us} us, read ${read_us} us",
+)
+println(
+    "neutral read back whole: ${read_back_whole(natives.first) && read_back_whole(natives.toggled)}",
+)
+let out = env("OUT") ?? ""
+if out != "" {
+    let _ = write_bytes("${out}/page.bin", pages.first)
+    let _ = write_bytes("${out}/neutral.bin", first_neutral)
+}

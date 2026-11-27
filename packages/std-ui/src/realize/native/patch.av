@@ -2,24 +2,27 @@
 //! elements into the ones it should hold, said by the same matcher the page
 //! uses. A kept element says the facts that changed and the ones it no
 //! longer holds; a new one is created with its facts and placed.
+use @std.meta.{derive}
+use frame.derive.{Frame}
 use tree.identity.{NodeId}
 use tree.node.{Action, Prim}
 use tree.seats.{Seat}
 use style.style.{Interaction}
 use realize.diff.matcher.{Draws, Drawn, Stands, siblings}
 use realize.native.element.{Native}
-use realize.native.fact.{Fact, What, about, agree, moves_box}
+use realize.native.fact.{Fact, Scalar, What, about, agree, moves_box}
 
 /// One change to a native host's elements. `Place` puts an element under its
 /// parent — the root when absent — right after a sibling, or first.
+@derive(Frame)
 export enum NativePatch {
-    Create(id: NodeId, prim: Prim)
-    SetFact(id: NodeId, fact: Fact)
-    DropFact(id: NodeId, what: What, under: Interaction?)
-    Place(id: NodeId, parent: NodeId?, after: NodeId?)
-    Remove(id: NodeId)
-    Listen(id: NodeId, seat: Seat)
-    Unlisten(id: NodeId, seat: Seat)
+    @code(1) Create(id: NodeId, prim: Prim)
+    @code(2) SetFact(id: NodeId, fact: Fact)
+    @code(3) DropFact(id: NodeId, what: What, under: Interaction?)
+    @code(4) Place(id: NodeId, parent: NodeId?, after: NodeId?)
+    @code(5) Remove(id: NodeId)
+    @code(6) Listen(id: NodeId, seat: Seat)
+    @code(7) Unlisten(id: NodeId, seat: Seat)
 }
 
 /// Whether `patches` can move a box: anything but a fact that only changes how a
@@ -99,3 +102,32 @@ export fn native_diff(old: List<Native>, new: List<Native>, next: int) -> Native
     let drawn = siblings(at, null, old, new, next)
     NativeDiffed { patches: at.said.get(), page: drawn.page, next: drawn.next }
 }
+
+// ── a patch as a line ───────────────────────────────────────────
+
+/// A patch as a reader of a page's patches sees it: every field spelled, in
+/// words, apart from how any frame writes it.
+export fn patch_line(p: NativePatch) -> string {
+    match p {
+        .Create(id, prim) -> "create ${id.n} ${prim.word()}",
+        .SetFact(id, f) -> "set ${id.n} ${f.what.code()} ${under_line(f.under)} ${scalar_line(f.holds)}",
+        .DropFact(id, what, under) -> "drop ${id.n} ${what.code()} ${under_line(under)}",
+        .Place(id, parent, after) -> "place ${id.n} ${id_line(parent)} ${id_line(after)}",
+        .Remove(id) -> "remove ${id.n}",
+        .Listen(id, seat) -> "listen ${id.n} ${seat.number()}",
+        .Unlisten(id, seat) -> "unlisten ${id.n} ${seat.number()}",
+    }
+}
+
+fn scalar_line(s: Scalar) -> string {
+    match s {
+        .Text(t) -> "text '${t}'",
+        .Flag(on) -> "flag ${on}",
+        .Number(n) -> "number ${n}",
+        .Fraction(x) -> "fraction ${x}",
+    }
+}
+
+fn under_line(i: Interaction?) -> string { i?.word() ?? "-" }
+
+fn id_line(id: NodeId?) -> string { if id == null { "-" } else { "${id!.n}" } }
