@@ -285,7 +285,7 @@ fn refusals_made(view: ItemView) -> ItemRefusals {
             [StoredBody {
                 store: b.item.store,
                 typed: kept_body(body_checked(engine, file, b, false)),
-            } for b in default_bodies(engine, file, at, item)],
+            } for b in default_bodies(engine, file, at, item, impls_seen(view))],
         )
     let cases = [StoredBody { store: c.item.store, typed: kept_body(body_checked(engine, file, c, false)) } for c in case_bodies(engine, file, at)]
     let worn = [StoredBody { store: item.store, typed: kept_body(body_checked(engine, file, b, false)) } for b in annotation_bodies(engine, file, item)]
@@ -510,13 +510,17 @@ fn fields_named_once(engine: QueryEngine, file: SourceFileAddress, name: string)
 /// The bodies a written item holds beside its fns' and methods': each seat's default a fn or a
 /// method writes, each record's and component's field default, each const's value and each state's start, and each
 /// body a trait's own members write.
-fn default_bodies(engine: QueryEngine, file: SourceFileAddress, at: ItemId, item: ReadItem) -> List<
-    SignedBody,
-> {
+fn default_bodies(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    at: ItemId,
+    item: ReadItem,
+    impls: List<ImplAt>,
+) -> List<SignedBody> {
     let names = [d for d in file_declares_at(engine, file, at).names if d.item == at]
     let fns = [s! for d in names if d.kind == ItemKind.Fn &&
         item.stmts.any((s) -> item.store.fn_parts(s)?.name == d.name && defaults_a_seat(item, s)) for s in [signed_body(engine, file, d.name)] if s != null]
-    let methods = [m!.signed for a in impls_at(engine, file, at) for s in impl_fns(item, a) if defaults_a_seat(item, s) for m in [signed_method(engine, a, item.store.fn_parts(s)!.name, item.store.is_static(s))] if m != null]
+    let methods = [m!.signed for a in impls for s in impl_fns(item, a) if defaults_a_seat(item, s) for m in [signed_method(engine, a, item.store.fn_parts(s)!.name, item.store.is_static(s))] if m != null]
     let seats = [b! for s in fns.concat(methods) for p in s.signature.params for b in [seat_default_body(s, p.name)] if b != null]
     let fields = [b! for d in names if d.kind == ItemKind.Record || d.kind == ItemKind.Component for n in fields_named_once(engine, file, d.name) for b in [field_default_body(engine, file, d.name, n)] if b != null]
     let consts = [b for d in names if d.kind == ItemKind.Const for b in some_list(const_body_of(engine, d))]
