@@ -27,12 +27,11 @@ export fn name_sets() -> NameSets {
     let empty: List<string> = []
     let members: Cell<List<List<string>>> = Cell.new([empty])
     let ids: Cell<Map<string, int>> = Cell.new({"": 0})
-    let none = set_print(empty)
-    let printed: Cell<Map<string, int>> = Cell.new({"${none}": 0})
+    let printed: Cell<Map<string, int>> = Cell.new({"${EMPTY_SET_PRINT}": 0})
     NameSets {
         members: members,
         ids: ids,
-        prints: Cell.new([none]),
+        prints: Cell.new([EMPTY_SET_PRINT]),
         printed: printed,
         unions: hash_keyed_table(),
     }
@@ -52,9 +51,17 @@ export type KeptNameSets = { sets: List<KeptNameSet> }
 /// What a kept record says of a read set nobody worked out: no set's print is ever it.
 export const SET_UNWORKED: int = 0
 
+/// The empty set's print: a fixed word, never `SET_UNWORKED`.
+export const EMPTY_SET_PRINT: int = 1
+
 /// The print a set of `names` is kept under across processes: the same for the same members in any
-/// order, and never `SET_UNWORKED`.
-export fn set_print(names: List<string>) -> int { content_hash(spelled_set(distinct_sorted(names)).bytes()).high_word | 1 }
+/// order, `EMPTY_SET_PRINT` for none, and for any other set a word carrying its second bit, so it is
+/// never `SET_UNWORKED` and never the empty set's.
+export fn set_print(names: List<string>) -> int {
+    let sorted = distinct_sorted(names)
+    if sorted.is_empty() { return EMPTY_SET_PRINT }
+    content_hash(spelled_set(sorted).bytes()).high_word | 2
+}
 
 impl NameSets {
     /// The id of the set holding `names`, kept now if it's new.
