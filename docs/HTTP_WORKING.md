@@ -122,7 +122,7 @@ decoder is RESUMABLE (`chunker`/`fed`, a `Phase`), never a re-walk;
 45 attack-table rows pinned in `tests/frame_test.av`. `http.av`:
 `Request` (spans into its own buffer; `header(name)` slices on ask),
 `Response`, `wire`, `reason`. THE FRAMER'S COST, MEASURED (bench in
-`tools/bench/frame_head`, ignored): 3457 ns per four-field 112-byte
+`benchmarks/http/frame_head`, ignored): 3457 ns per four-field 112-byte
 head natively, an order of magnitude off picohttpparser's 366 ns for
 nine fields. Sampled top of stack: `once` reads a THIRD (`once_at` does
 a strcmp per earlier entry on every read — lane A's, asked with the
@@ -300,7 +300,7 @@ now test the admission rule with a name no grammar declares; three review
 collapses and one voice (`doorless`). `corpus/grammar_print.av` on both
 engines. THE ARC IS COMPLETE: S1 the paper, S2 the patterns, S3 the
 octet parity, S4 the value that parses, S5 print and the law. S6 ANSWERED
-NO, with an attack table (b6f63d6, `tools/bench/frame_patterns`): the
+NO, with an attack table (b6f63d6, `benchmarks/http/frame_patterns`): the
 framer keeps its hand scans. Nine request lines from the framing laws
 against `grammar RequestLine = "{method} {path} HTTP/{major}.{minor}"`:
 the pattern TAKES seven the framer REFUSES — two spaces, `HTTP/1.1extra`,
@@ -341,7 +341,7 @@ SCANNING OCTETS AND CROSSING ON A HIT 661 — keeping the framer's
 boundary is faster than the shortcut, 80 ns a route to 54; one crossing
 on a hit is every capture's crossing, because a span between two literal
 matches inside valid UTF-8 is itself valid. THE SWEEP, GENERATED
-(f348e6c, `tools/bench/routes/generate.py`): 370 ns at 3 routes, 1860 at
+(f348e6c, `benchmarks/http/routes/generate.py`): 370 ns at 3 routes, 1860 at
 30, 23,800 at 300 — at thirty routes, where a real API sits, dispatch
 costs nearly what framing a head costs (2410 on `frame_head`), and at
 three hundred ten times; the trie has its number at the point that
@@ -661,7 +661,7 @@ THE LIBRARY IS WHOLE — framer, router, server loop, client.
 
 ## Slice 6 — THE LOOP UNDER LOAD (b83abf9, 2fd7fd6)
 
-`tools/bench/serve` is a server answering "hello" on 18080;
+`benchmarks/http/serve` is a server answering "hello" on 18080;
 ApacheBench on the same machine, one server thread, loopback:
 
     keep-alive,  50 concurrent, 20,000 requests   102,059 req/s   99% ≤ 1 ms
@@ -675,7 +675,7 @@ system per 300,000 — 8.2 µs a request, 4.9 µs the loop's own code and
 so the generator and the loop are both near the ceiling. THE SAMPLER
 LIED: `AVRA_SAMPLE` under watch.sh reported every sample in `kevent`
 for a server that accounting shows 96% busy — read a server profile
-from that tool with that in mind. `tools/bench/turn` (a server and a
+from that tool with that in mind. `benchmarks/http/turn` (a server and a
 client on one thread, 200,000 keep-alive requests turned by hand) is
 the deterministic instrument: 21.1 µs a round trip including the
 client's own three calls, census-able. The instrument is named because
@@ -697,7 +697,7 @@ held it. The loop's suite now drives the router with such a target.
 
 ## Slice 7 — THE FRAMER UNDER THE CENSUS (bccc2f4)
 
-`-DAVRA_CENSUS` with `AVRA_CENSUS_SITES=1` over `tools/bench/frame_head`
+`-DAVRA_CENSUS` with `AVRA_CENSUS_SITES=1` over `benchmarks/http/frame_head`
 (2M four-field heads), sites named by `atos`. PER HEAD: 226 retains,
 263 releases, 74 reclaims, 132 list reads, 140 list writes, and 52
 `once` reads costing 988 POINTER COMPARES — nineteen per read, because
@@ -716,7 +716,7 @@ inside its loop; 2410 → 2185 ns a head, 254/254. Left where it is: the
 `Framing` fold's per-field record copies (4 retains a head at
 `settled`) and the empty-literal copies on a `mut` list's first push
 (2 a head) — small, and allocation here is cheap. THE LOOP UNDER THE
-CENSUS (`tools/bench/turn`, 200k round trips): 323 retains, 401
+CENSUS (`benchmarks/http/turn`, 200k round trips): 323 retains, 401
 releases, 308 list writes and 37 `once` reads a round trip; the
 sites are the framer's per-field records, the poller's event list,
 `Conn.read`'s record and `avra_once_get` — and ONE SCALABILITY DEFECT:
@@ -950,7 +950,7 @@ copies (lane A's probe: `after poke: 3, cache now: 2`).
 
 THE NUMBER LANE A COULD NOT TAKE, taken here on ONE tree: lane/http
 1c47ce5, the same compiler and the same bench binary
-(`tools/bench/frame_head`, 2M four-field heads), only the runtime
+(`benchmarks/http/frame_head`, 2M four-field heads), only the runtime
 object swapped between e45e37b's and 1c47ce5's, census sites resolved
 by `nm`.
 
@@ -1792,7 +1792,7 @@ idiom bar named it. Two more live blind spots, both measured:
 
 - `tools/externs.py` walked `packages/**`, `corpus/**` and
   `tools/*.sh` — non-recursive for the last — so
-  `tools/bench/frame_head/src/main.av`'s `extern fn avra_now_ns() ->
+  `benchmarks/http/frame_head/src/main.av`'s `extern fn avra_now_ns() ->
   int` had never once been checked. It is CORRECT (`int64_t
   avra_now_ns(void)`), which is exactly why nobody found it. Fixed
   here; the keeper now reads 520 declaring sources and says so.

@@ -39,6 +39,8 @@ use @std.path.{joined_path, relative_path, under_dir}
 use @std.program.address.{SourceFileAddress}
 use @std.program.pass_ledger.{PassUnits, ledger_rows, ledger_table, pass_ledger}
 use @std.program.query_engine.{QueryEngine, decodes_said}
+use @std.program.worked_ahead.{read_by_cores}
+use @std.program.source_facts.{source_text_question}
 use @std.program.sorted.{sorted_by}
 use @std.text.{text_before}
 use @std.time.{now_ns}
@@ -65,6 +67,7 @@ fn disk_checked(
     // LICENSED input.clock: a check's duration is timing, never an input of what is found
     let t0 = now_ns()
     let root = disk.root
+    let timing = timed || avrac_settings().debug.query_times || !(ledger is .Unsaid)
     let worked = program_worked(
         joined_path(root, checks_kept_at()),
         disk.name,
@@ -74,10 +77,11 @@ fn disk_checked(
         (e: QueryEngine) -> vouched_files(e, disk),
         disk.name,
         FileWork.Checked(disk.name),
+        timing,
     )
     let store = worked.store
     let engine = worked.engine
-    if timed || avrac_settings().debug.query_times || !(ledger is .Unsaid) { engine.time_queries() }
+    if timing { engine.time_queries() }
     let refused = manifests_door(engine, disk)
     if refused != null { return refused! }
     let files = sorted_by(
@@ -248,9 +252,9 @@ fn ledger_said(engine: QueryEngine, said: LedgerSaid, units: fn() -> PassUnits) 
 
 /// What the run over `files` worked over, by unit: the files, their written items, the bodies their
 /// fns and impls declare, the `objects` a build emitted and those it `linked`, and the items of each file whose items were
-/// read anew — what an edit moved.
+/// read anew — what an edit moved — here or, its text read by a core, in a wave.
 fn program_units(engine: QueryEngine, files: List<SourceFileAddress>, objects: int, linked: int = 0) -> PassUnits {
-    let moved = [item_count(engine, f) for f in files if engine.worked_here(file_items_question(engine, f))]
+    let moved = [item_count(engine, f) for f in files if read_anew(engine, f)]
         .fold(0, (sum, n) -> sum + n)
     PassUnits {
         files: files.length,
@@ -260,6 +264,13 @@ fn program_units(engine: QueryEngine, files: List<SourceFileAddress>, objects: i
         linked: linked,
         moved: moved,
     }
+}
+
+/// Whether this run read the items of `file` anew: this engine worked them out, or a core of a wave read
+/// its text.
+fn read_anew(engine: QueryEngine, file: SourceFileAddress) -> bool {
+    engine.worked_here(file_items_question(engine, file)) ||
+        read_by_cores(source_text_question(engine, file))
 }
 
 /// The bodies `file` declares: each fn's, and each method's and static's its impls give.

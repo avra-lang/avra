@@ -1,0 +1,146 @@
+use @std.json.{Json, field}
+use commands.{
+    contract_failures,
+    gate_fixture_failures,
+    go_fixture_failures,
+    go_fixture_refused,
+    flow_fixture_failures,
+    fixed,
+    general,
+    thousands_grouped,
+    repr,
+    parse_rows,
+    dumped,
+    SPACED,
+    TIGHT,
+    Layout,
+    flow_table_rows,
+    FlowLine,
+    full_flow_table,
+    gate_flow_table,
+    collection_faults,
+    Timed,
+    package_kind,
+    BenchPackage,
+    build_tally,
+}
+
+spec "bench — the suite's rules on fixtures" {
+    then "the row contract holds" { contract_failures().is_empty() }
+    then "the baseline gate's rules hold" { gate_fixture_failures().is_empty() }
+    then "the Go gate refuses both rows past their target" { go_fixture_refused() == 2 }
+    then "the Go gate's rules hold" { go_fixture_failures().is_empty() }
+    then "the flow gate's rules hold" { flow_fixture_failures().is_empty() }
+}
+
+spec "bench — a float spelled as the report spells it" {
+    then "`%.2f` rounds a tie on the float's exact value" {
+        fixed(0.885, 2) == "0.89" &&
+            fixed(2.675, 2) == "2.67" &&
+            fixed(0.125, 2) == "0.12" &&
+            fixed(0.375, 2) == "0.38"
+    }
+    then "`%.0f` rounds an exact half to even" { fixed(2.5, 0) == "2" && fixed(3.5, 0) == "4" && fixed(0.0 - 2.5, 0) == "-2" }
+    then "`%.1f` pads and carries" { fixed(52.0, 1) == "52.0" && fixed(999.95, 1) == "1000.0" && fixed(0.04, 1) == "0.0" }
+    then "`%.4g` drops trailing zeros and takes the exponent past its digits" {
+        general(250.0, 4) == "250" &&
+            general(123.45, 4) == "123.5" &&
+            general(49995000.0, 4) == "5e+07" &&
+            general(0.00012345, 4) == "0.0001234" &&
+            general(0.15 / 1000000.0, 4) == "1.5e-07" &&
+            general(0.0, 4) == "0"
+    }
+    then "`%.3g` carries into the next power" { general(9.995, 3) == "9.99" && general(99950.0, 3) == "1e+05" }
+    then "`{:,.0f}` groups by thousands" {
+        thousands_grouped(1234567.5) == "1,234,568" &&
+            thousands_grouped(999.0) == "999" &&
+            thousands_grouped(0.4) == "0"
+    }
+    then "`repr` keeps a point and takes the exponent outside [-4, 16)" {
+        repr(52.0) == "52.0" &&
+            repr(333283335000.0) == "333283335000.0" &&
+            repr(10000000000000000.0) == "1e+16" &&
+            repr(0.00001) == "1e-05"
+    }
+    then "infinity is spelled as a word" { fixed(1.0 / 0.0, 2) == "inf" && general(0.0 - 1.0 / 0.0, 4) == "-inf" }
+}
+
+spec "bench — the row contract" {
+    then "a row and a note parse, and a duplicate row keeps its first place" {
+        match parse_rows("a\t1\tns\t5\n#  note\nb\t2.5\tx\t1\na\t3\tns\t2\n") {
+            .Ok(p) -> p.rows.map(it.name).join(",") == "a,b" &&
+                p.rows[0].value == 3.0 &&
+                p.notes.join("|") == "note",
+            .Err(_) -> false,
+        }
+    }
+    then "a line that is not four tab-separated fields is refused" { parse_rows("a 1 ns 5\n") is .Err }
+    then "a value that is not a number names its row" {
+        match parse_rows("a\tx\tns\t5\n") {
+            .Err(why) -> why == "row a: could not convert string to float: 'x'",
+            .Ok(_) -> false,
+        }
+    }
+}
+
+spec "bench — JSON as the suite's files hold it" {
+    then "keys sort, and a printed row spaces its separators" {
+        dumped(Json.Obj([field("b", Json.Int(1)), field("a", Json.Float(2.0))]), SPACED) == "{\"a\": 2.0, \"b\": 1}"
+    }
+    then "a stored row is tight" {
+        dumped(Json.Obj([field("k", Json.Arr([Json.Str("x"), Json.Null]))]), TIGHT) == "{\"k\":[\"x\",null]}"
+    }
+    then "past ASCII is escaped, a pair past the basic plane" {
+        dumped(Json.Str("é—😀\n\""), TIGHT) == "\"\\u00e9\\u2014\\ud83d\\ude00\\n\\\"\""
+    }
+    then "an indented document keeps an empty object bare" {
+        dumped(
+            Json.Obj([field("rows", Json.Obj([])), field("schema", Json.Int(1))]),
+            Layout.Indented(2),
+        ) == "{\n  \"rows\": {},\n  \"schema\": 1\n}"
+    }
+}
+
+/// Two rounds of one row, Go's once, and a run that left words.
+fn flow_fixture() -> List<FlowLine> {
+    flow_table_rows(
+        "avra spawn_fiber 300 1\navra spawn_fiber 100 1\ngo1 spawn_fiber 50 1\ngoN spawn_fiber exit 1: gone\n",
+    )
+}
+
+spec "bench — the flow table" {
+    given "two rounds of one row, and a row that left words" {
+        then "a row reads least (median), words stand as written" {
+            full_flow_table(flow_fixture())[2] == "| spawn_fiber | 100 ns (200 ns) | 50.0 ns | exit 1: gone | — |"
+        }
+        then "the G1 view passes a row AT 2x Go's best" {
+            let t = gate_flow_table(flow_fixture())
+            t.fails == 0 &&
+                t.said[3] == "| spawn + join, one at a time | 50.0 ns | — | 100 ns | 2.00x | ≤ 2x | PASS |"
+        }
+    }
+}
+
+spec "bench — the collection table's faults" {
+    then "a checksum the engines disagree on is named" {
+        let timed = [
+            Timed { engine: "avra", row: "C1", sum: "1", ns: 1.0 },
+            Timed { engine: "rust", row: "C1", sum: "2", ns: 1.0 },
+        ]
+        collection_faults(timed)[0] == "checksum mismatch, C1: ['1', '2']"
+    }
+    then "a row the table does not know is named" {
+        collection_faults([Timed { engine: "avra", row: "C99", sum: "1", ns: 1.0 }])
+            .contains("row C99 is not in the table")
+    }
+}
+
+spec "bench --build — which packages are programs" {
+    then "a manifest declaring a [bin] is a program" {
+        package_kind("d", "[package]\nname = \"x\"\n\n[bin]\npath = \"src/run.av\"\n", false) is .Program
+    }
+    then "a package holding src/main.av is a program" { package_kind("d", "[package]\n", true) is .Program }
+    then "a package with neither is a library, skipped" { package_kind("d", "[package]\n[dependencies]\n", false) is .Library }
+    then "a `[bin]` inside another word is no bin" { package_kind("d", "# not [bin] here\n", false) is .Library }
+    then "the tally names each count" { build_tally(3, 1, 2) == "bench-build: 3 built, 1 failed, 2 skipped (libraries)" }
+}

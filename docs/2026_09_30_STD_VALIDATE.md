@@ -549,7 +549,7 @@ Recorded as each decision landed on `lane/validate`.
 ## 15. Speed
 
 The bar: decode plus every rule at serde_json + garde speed or better,
-and a refusal within 1.5x of an acceptance. `tools/bench/validate/run.sh`
+and a refusal within 1.5x of an acceptance. `benchmarks/http/validate/run.sh`
 is the receipt: §11's Signup (eight fields, a list of named strings, a
 nullable named field, a cross-field rule) read from the same two files
 by Avra, by Rust (serde_json straight into the struct, then garde) and

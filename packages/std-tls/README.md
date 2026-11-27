@@ -114,7 +114,7 @@ first. A client names the host in `session`/`dial`: it is the SNI sent
   nothing else; upgrading is re-running it.
 - The X25519 key agreement is Everest's formally verified HACL* code,
   shipped in the same tarball (Apache-2.0 only, which is how the engine
-  is taken): `tools/bench/handshake` measures what it buys.
+  is taken): `benchmarks/http/handshake` measures what it buys.
 
 Each upstream unit compiles as its own object through a one-line
 wrapper (`vendor/mbedtls_<unit>.c`), and the objects are archived as

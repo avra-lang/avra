@@ -449,7 +449,7 @@ wasm-archive:
 # `$(shell)` runs on every make, `try` included.
 SUITES = $(shell ./wisp suites 2>/dev/null)
 
-.PHONY: compiler-key pool-check ready dev-server cost cost-accept cost-snapshot trap-marks llvm-libs libs-self-test read-lists db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz exact-patches ui-board ui-browser ui-browser-skip host-events layout-oracle wasm-host-check wasm-tasks-mutations h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks test tested clean seed-check gate externs idioms fuzz-http soak-http dogfooding-rules rule-examples idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns parser witnesses libs libscope layers pre-commit-hook inputs inputs-accept read-cost \
+.PHONY: compiler-key pool-check ready dev-server cost cost-accept cost-snapshot trap-marks llvm-libs libs-self-test read-lists db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz exact-patches ui-board ui-browser ui-browser-skip host-events layout-oracle wasm-host-check wasm-tasks-mutations h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks test tested clean seed-check gate externs idioms fuzz-http soak-http dogfooding-rules rule-examples idioms-accept bench bench-collections bench-build fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns parser witnesses libs libscope layers pre-commit-hook inputs inputs-accept read-cost \
         check run ir emit build-native native-check avra suites install sprite sprite-check codecs-static keepers voices voices-accept defects tool-witnesses ci-invariants wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept wasm-routes-size speed-ratchet speed-accept wall-ratchet wall-accept warm-edit warm-accept work-accept
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -648,7 +648,7 @@ try: $(COMPILER_OBJS)
 
 # THE WARM EDIT LOOP, measured: a one-edit check and build of the cli, and `make try` on a leaf and a core edit.
 edit-loop:
-	@sh tools/db_measure/edit_loop.sh
+	@sh benchmarks/db/edit_loop.sh
 
 # THE INSTALL: the binary under bin/, and what it finds from its own
 # directory — the runtime's object and every std package — under
@@ -1013,7 +1013,7 @@ inputs-accept:
 # per read, counted on the census runtime, never over read_cost.budget.
 # Its bench links the tree's own package objects, so it names them.
 read-cost: $(COMPILER_OBJS) $(PACKAGE_OBJS)
-	@sh tools/db_measure/read_cost.sh
+	@sh benchmarks/db/read_cost.sh
 
 # THE SPEED RATCHET, HARD: each phase of `packages/cli`'s own build and check, the LEAST of warm
 # one-edit rounds (tools/speed_measure.sh), held as the ledger's `speed:<host>:` rows
@@ -1199,7 +1199,7 @@ footprint-accept: $(RUNTIME_LIB) $(UNINSTRUMENTED_LIB)
 	@sh tools/footprint_bytes.sh accept
 
 # THE FLOW G1 GATE: the scheduler's transition rows (a gate round trip,
-# spawn+join, a cold parked spawn) against tools/flow_bench/gate.baseline,
+# spawn+join, a cold parked spawn) against benchmarks/tasks/flow/gate.baseline,
 # refusing past 2x. A change under runtime/ can cost the transition hot
 # path without touching a test, so a runtime PR runs this before its own
 # checks (the `flow-gate` job in .github/workflows/checks.yml, which fires
@@ -1207,11 +1207,11 @@ footprint-accept: $(RUNTIME_LIB) $(UNINSTRUMENTED_LIB)
 # row a REFUSAL; a lane measuring a runtime saved elsewhere points
 # FLOW_RUNTIME at it.
 flow-gate:
-	@python3 tools/flow_bench/gate.py --self-test
-	@sh tools/flow_bench/run.sh --gate $(FLOW_GATE_ARGS)
+	@./wisp bench flow-gate --self-test
+	@sh benchmarks/tasks/flow/run.sh --gate $(FLOW_GATE_ARGS)
 # Re-accept this machine's rows deliberately (FLOW_RUNTIME for another tree).
 flow-gate-accept:
-	@sh tools/flow_bench/run.sh --record
+	@sh benchmarks/tasks/flow/run.sh --record
 
 # THE TICK'S TWO KEEPERS. `tick-object` holds the hosted source's
 # undefined symbols to the no-lock set a forked child may inherit;
@@ -1468,9 +1468,14 @@ bench: $(COMPILER_OBJS)
 	@sh tools/bench.sh
 
 # The collection vocabulary's bench: C1–C12, each Avra program against
-# its Rust twin, median of 5 (tools/bench/collections/run.sh).
+# its Rust twin, median of 5 (benchmarks/collections/collections/run.sh).
 bench-collections: build/libavra_runtime.a
-	@sh tools/bench/collections/run.sh
+	@sh benchmarks/collections/collections/run.sh
+
+# EVERY BENCH PACKAGE BUILDS: each program under benchmarks/ built with one compiler, none run,
+# so a bench cannot rot between the runs that read it (tools/src/commands/bench_build.av).
+bench-build: build/libavra_runtime.a $(PACKAGE_OBJS)
+	@./wisp bench --build --compiler build/avra
 
 # THE BENCHMARK SUITE, ONE DOOR: `benchmarks/run.sh` measures every
 # registered language's twin on this machine and `--g1` prints each Avra
@@ -1479,7 +1484,7 @@ bench-collections: build/libavra_runtime.a
 # view, and each Avra row past its target against the recorded Go row
 # REFUSES.
 #
-# `tools/flow_bench/` is the older scheduler-transition harness. Its
+# `benchmarks/tasks/flow/` is the older scheduler-transition harness. Its
 # Go-beside-Avra view is the design the suite now carries at scale; what
 # it uniquely holds stays here — `flow-gate` is the runtime-only C floor
 # a runtime/*.c change answers, and `flow-probes` is the stack
@@ -1490,7 +1495,7 @@ flow-bench: build/libavra_runtime.a
 flow-g1: build/libavra_runtime.a
 	@sh benchmarks/run.sh --g1 --gate --require --quiet
 flow-probes:
-	@sh tools/flow_bench/run.sh probes
+	@sh benchmarks/tasks/flow/run.sh probes
 
 # h2spec over std-http's HTTP/2 server, in the clear and over TLS;
 # skipped, with a word, when h2spec is not installed.
@@ -1499,8 +1504,8 @@ h2spec: $(COMPILER_OBJS)
 
 # Boxes a program's runtime rows answer, by type, ranked — the
 # representation-selection opportunity list.
-#   make census-types PROGRAM=tools/bench/request/src/main.av
-PROGRAM ?= tools/bench/request/src/main.av
+#   make census-types PROGRAM=benchmarks/http/request/src/main.av
+PROGRAM ?= benchmarks/http/request/src/main.av
 # not a keeper — a report: one program's representation opportunities
 census-types:
 	@sh tools/census_types.sh $(PROGRAM)
@@ -1508,21 +1513,21 @@ census-types:
 # Bytes of code per symbol by package: the compiler and a request's
 # server, each against BEFORE / REQUEST_BEFORE when given (a saved
 # binary), as the tables a slice's size delta is read from; then what
-# each reach probe carries (tools/bench/reach) — a program pays for
+# each reach probe carries (benchmarks/compile/reach) — a program pays for
 # what it calls, never for what it imports.
 #   make sizes BEFORE=build/avra.pre
 REACH := hello limits plain unreached tls sign
 # not a keeper — a report: what each reach program carries
 sizes:
-	@AVRA_PROGRAM_MODE=release build/avra build tools/bench/request/src/main.av >/dev/null
+	@AVRA_PROGRAM_MODE=release build/avra build benchmarks/http/request/src/main.av >/dev/null
 	@python3 tools/symsize.py build/avra $(BEFORE)
 	@echo
-	@python3 tools/symsize.py tools/bench/request/src/main $(REQUEST_BEFORE)
+	@python3 tools/symsize.py benchmarks/http/request/src/main $(REQUEST_BEFORE)
 	@echo
 	@echo '| reach probe | bytes |'
 	@echo '|---|---:|'
-	@for p in $(REACH); do AVRA_PROGRAM_MODE=release build/avra build tools/bench/reach/$$p >/dev/null && \
-	    echo "| $$p | $$(wc -c < tools/bench/reach/$$p/src/main | tr -d ' ') |"; done
+	@for p in $(REACH); do AVRA_PROGRAM_MODE=release build/avra build benchmarks/compile/reach/$$p >/dev/null && \
+	    echo "| $$p | $$(wc -c < benchmarks/compile/reach/$$p/src/main | tr -d ' ') |"; done
 
 # Mutated program tests through `avra check`: diagnose, never crash.
 # keeper: nightly (orders) — 465 s, too long for every pull request

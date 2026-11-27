@@ -616,7 +616,7 @@ the loop changed nothing measurable (971 ns before, 813–972 after) —
 consistent with CLAUDE.md's "allocation here is cheap, so avoiding one is
 a trade, not a win", and a reminder that the scan's cost is scanning.
 
-**THE COMPILED SCAN, MEASURED.** `tools/bench/frame_scan` reads one
+**THE COMPILED SCAN, MEASURED.** `benchmarks/http/frame_scan` reads one
 HTTP request line five ways in the same run: the framer over a whole
 head, and then the line split BY HAND and by a FORMAT PATTERN, over
 text and over octets. 200,000 runs each, the subject hoisted out of
@@ -1216,7 +1216,7 @@ and trimming lines loses the distinction between protocol syntax and
 content" before any of this existed; this section is that sentence with
 a number and an attack table behind it.
 
-`tools/bench/frame_patterns` is the harness, kept so the claim can be
+`benchmarks/http/frame_patterns` is the harness, kept so the claim can be
 re-run rather than believed.
 
 ---
@@ -1244,7 +1244,7 @@ replaced, and both are constructional rather than tested-into:
   answers is the first route declared, exactly as the scan chose.
 
 Measured against a linear scan in one program, so both numbers share a
-machine and a minute (`tools/bench/routes`, 50 000 runs each, hitting
+machine and a minute (`benchmarks/http/routes`, 50 000 runs each, hitting
 the LAST route so the scan pays its worst case):
 
 | table | scan | compiled |

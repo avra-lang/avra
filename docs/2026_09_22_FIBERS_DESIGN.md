@@ -368,7 +368,7 @@ PROOF the compiler demands before work may go there.
   while every close of a parkable descriptor goes through
   `avra_fiber_fd_closing`.
 - MEASURED on a Linux Sprite (8 × EPYC, server pinned to one core, wrk
-  on the rest; `tools/bench/wrk.sh`, `FLOOR=1` for the C floor):
+  on the rest; `benchmarks/http/wrk.sh`, `FLOOR=1` for the C floor):
 
   | | keep-alive c=50 | c=200 | c=1000 | pipelined ×16 |
   |---|---|---|---|---|
@@ -378,7 +378,7 @@ PROOF the compiler demands before work may go there.
 
   Syscalls per request match the floor (one read, one write). The gap is
   user space — about 5 µs a request against the floor's 1 µs
-  (`tools/bench/request`): immutable values copied instead of reused.
+  (`benchmarks/http/request`): immutable values copied instead of reused.
   That is the reuse-in-place campaign's, not HTTP's.
 
 
@@ -432,7 +432,7 @@ PROOF the compiler demands before work may go there.
   (not a crash) answers `run`'s `Err`. `stop` (or the supervisor dying)
   reaches every core.
 - MEASURED on a Linux Sprite (8 × EPYC; the server on cores 0..N-1, wrk
-  on the rest; `CORES=N sh tools/bench/wrk.sh`, `FLOOR=1` for the C
+  on the rest; `CORES=N sh benchmarks/http/wrk.sh`, `FLOOR=1` for the C
   floor, forked N ways the same way):
 
   | req/s | N | keep-alive c=50 | c=200 | c=1000 | pipelined ×16 |

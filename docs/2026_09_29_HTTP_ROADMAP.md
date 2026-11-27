@@ -158,7 +158,7 @@ Marked, not folded:
 
 ## H7 numbers
 
-`sh tools/bench/public.sh` produces this table; how it does, and what a
+`sh benchmarks/http/public.sh` produces this table; how it does, and what a
 row means, is the methodology below.
 
 ### Methodology
@@ -167,7 +167,7 @@ row means, is the methodology below.
 server and the floor, but the package libraries are `make libs`'s on
 purpose, because that target may rebuild a stale compiler and a
 rebuild must not be a benchmark's side effect. Then
-`sh tools/bench/public.sh`. `CORES` is how many cores the server
+`sh benchmarks/http/public.sh`. `CORES` is how many cores the server
 serves on, `CONNS` the wrk connections, `ROUNDS` and `SECS` the load,
 `SERVERS` a subset (`SERVERS="avra floor"`), `PORT` when 18080 is
 taken, and `KEEP=1` keeps the work directory (logs, configs) for
@@ -180,9 +180,9 @@ floor-shaped, never a like-for-like serializer comparison; `/db` is
 Avra only, one random row of a 10,000-row in-memory SQLite table per
 request, each core holding its own table.
 
-**The servers.** `avra` is `tools/bench/scenarios`, the same
+**The servers.** `avra` is `benchmarks/http/scenarios`, the same
 `served(…)` server a program writes, on `CORES` processes that share
-only the listener; `floor` is `tools/bench/floor`, the kernel's floor
+only the listener; `floor` is `benchmarks/http/floor`, the kernel's floor
 for this workload (epoll/kqueue, no parsing past the request
 terminator, every answer the same bytes the Avra server writes) and
 serves plaintext and json only; `nginx` and `h2o` run when installed,

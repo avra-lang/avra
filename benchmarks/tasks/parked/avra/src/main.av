@@ -1,7 +1,8 @@
 //! MEMORY PER PARKED TASK in Avra: n tasks block on a rendezvous
 //! channel, the resident set is read from the process's own status,
-//! then the channel is closed and every task is joined. Prints bytes per
-//! parked task and the count.
+//! then the channel is closed and every task is joined. Prints resident
+//! and page-table bytes per parked task and the count; `BENCH_HOLD_MS`
+//! holds them parked that long after the reading, for a reader outside.
 use @std.io.{env_or, read_text}
 use @std.text.{codepoints, parse_int}
 use @std.time.{ms, sleep}
@@ -27,16 +28,17 @@ fn first_number(s: string) -> int {
     out
 }
 
-/// The process's resident bytes, from `/proc/self/status`.
-fn rss_bytes() -> int {
+/// A `kB` field of `/proc/self/status` in bytes; zero where there is none.
+fn status_bytes(key: string) -> int {
     let text = match read_text("/proc/self/status") { .Ok(t) -> t, .Err(_) -> { return 0 } }
-    let line = text.split("\n").find((l: string) -> l.starts_with("VmRSS:")) ?? ""
+    let line = text.split("\n").find((l: string) -> l.starts_with(key)) ?? ""
     first_number(line) * 1024
 }
 
 let n = env_int("BENCH_N", 10000)
 let ch = open_channel<int>(0)
-let before = rss_bytes()
+let before = status_bytes("VmRSS:")
+let tables = status_bytes("VmPTE:")
 mut ts: List<Task<int?>> = []
 mut i = 0
 while i < n {
@@ -44,9 +46,12 @@ while i < n {
     i = i + 1
 }
 sleep(ms(50))
-let after = rss_bytes()
+let after = status_bytes("VmRSS:")
+let tables_after = status_bytes("VmPTE:")
+sleep(ms(env_int("BENCH_HOLD_MS", 0)))
 ch.sink.close()
 for t in ts { let _ = t.await }
-let per = if n > 0 { (after - before) / n } else { 0 }
-println("parked_bytes\t${per}\tbytes\t1")
+let per = (bytes: int) -> if n > 0 { bytes / n } else { 0 }
+println("parked_bytes\t${per(after - before)}\tbytes\t1")
+println("parked_pte_bytes\t${per(tables_after - tables)}\tbytes\t1")
 println("parked_n\t${n}\tops\t1")

@@ -51,7 +51,7 @@ enum Verdict {
 type Tried = { name: string, verdict: Verdict }
 
 /// What one run of the keeper builds against.
-type Bench = { out: string, flags: List<string>, sources: Map<string, string>, rest: Map<string, List<string>> }
+type Rig = { out: string, flags: List<string>, sources: Map<string, string>, rest: Map<string, List<string>> }
 
 type MutationsCmd = {}
 
@@ -87,7 +87,7 @@ export command mutations {
 }
 
 /// Every break this part owns tried, the verdicts printed, the run's status answered.
-fn judged(b: Bench, asked: int) -> int {
+fn judged(b: Rig, asked: int) -> int {
     let workers = if asked < 1 { 1 } else { asked }
     let s = shard()
     let part = s.part
@@ -112,7 +112,7 @@ fn judged(b: Bench, asked: int) -> int {
 }
 
 /// One wave: up to the worker count of breaks tried at once, answered in order.
-fn waves(b: Bench, all: List<Break>, chunk: List<int>) -> List<Tried> {
+fn waves(b: Rig, all: List<Break>, chunk: List<int>) -> List<Tried> {
     let ts = [spawn tried(b, i, all[i]) for i in chunk]
     [t.await for t in ts]
 }
@@ -148,7 +148,7 @@ fn shard() -> Shard {
 }
 
 /// The sources read, the tests and the whole scheduler built, and what each unit links beside it.
-fn benched(out: string, flag_words: string, objects: List<string>) -> Result<Bench, string> {
+fn benched(out: string, flag_words: string, objects: List<string>) -> Result<Rig, string> {
     let flags = [w for w in flag_words.split(" ") if w != ""]
     let _ = make_dirs(out) catch { return .Err("cannot make ${out}") }
     for test in TESTS {
@@ -176,7 +176,7 @@ fn benched(out: string, flag_words: string, objects: List<string>) -> Result<Ben
         "Door": objects,
         "Host": objects.filter(!it.ends_with("/avra_tick.o")).concat([fiber_o]),
     }
-    .Ok(Bench { out: out, flags: flags, sources: sources, rest: rest })
+    .Ok(Rig { out: out, flags: flags, sources: sources, rest: rest })
 }
 
 fn source_of(path: string) -> Result<string, string> {
@@ -226,11 +226,11 @@ fn stepped(acc: Result<string, string>, e: Edit) -> Result<string, string> {
 }
 
 /// One break: written, built, and every test run until one fails.
-fn tried(b: Bench, at: int, br: Break) -> Tried {
+fn tried(b: Rig, at: int, br: Break) -> Tried {
     Tried { name: br.name, verdict: verdict_of(b, at, br) }
 }
 
-fn verdict_of(b: Bench, at: int, br: Break) -> Verdict {
+fn verdict_of(b: Rig, at: int, br: Break) -> Verdict {
     let key = unit_key(br.file)
     let text = match broken_text(b.sources.get(key) ?? "", br.edits) {
         .Err(why) -> { return .Rotten(why) },

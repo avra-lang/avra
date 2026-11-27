@@ -551,7 +551,7 @@ types that share a word shape.
 
 ### 3.8 Bench plan
 
-`tools/bench/collections/`, one Avra program and one Rust twin per
+`benchmarks/collections/collections/`, one Avra program and one Rust twin per
 workload, same input generated from one seed. Runs on a quiet Sprite,
 interleaved, median of 5, `make bench-collections` prints the table.
 

@@ -9,9 +9,9 @@ deliberately **not** `@std`.
 ```
 benchmarks/
   bench.toml            the registry: families, languages, toolchain pins, the gate
-  run.sh                the one door (below)
+  run.sh                the one door (below): the tools program's `bench` command
+                        (tools/src/commands/bench*.av) — runner, reporter, gate, self-test
   README.md             this file
-  lib/                  the runner, the reporter, the gate, the self-test
   results/runs.jsonl    the stored rows, one JSON object per line (checked in)
   baseline.json         the accepted gate baseline (checked in)
   report/               GENERATED: results.md and index.html, never hand-edited
@@ -34,6 +34,7 @@ sh benchmarks/run.sh --gate --require      a machine with no row, C or Go, refus
 sh benchmarks/run.sh --g1                  each Avra row printed beside Go's, with the target verdict
 sh benchmarks/run.sh --list                benchmarks and languages
 sh benchmarks/run.sh --self-test           the gate's rules, the row contract, the report
+sh benchmarks/run.sh --build               every bench package built, none run (`make bench-build`, a gate keeper)
 ```
 
 A plain run prints one JSON row per `(benchmark, language)` to stdout.
@@ -148,10 +149,10 @@ A machine with no accepted row prints the rows and does not gate;
 `--require` refuses instead. The `drain_scale` row carries its own 3.0x
 margin because a scaling ratio is noisier than a fixed cost.
 
-This is the idea `tools/flow_bench/gate.py` landed for the scheduler's
-transition rows, at the suite's scale. `tools/flow_bench/` is the OLDER
+This is the idea the flow gate (`bench flow-gate`) landed for the scheduler's
+transition rows, at the suite's scale. `benchmarks/tasks/flow/` is the OLDER
 harness and this suite is the ONE DOOR for the Avra-beside-Go question:
-`make flow-bench` runs `benchmarks/run.sh --g1`. What `tools/flow_bench/`
+`make flow-bench` runs `benchmarks/run.sh --g1`. What `benchmarks/tasks/flow/`
 uniquely holds stays there — `make flow-gate` is the runtime-only C
 floor a `runtime/*.c` change answers (no compiler, no Go) and
 `make flow-probes` is the stack allocator's own measurements. Those are
@@ -210,6 +211,6 @@ Avra twin's run command needs — an exact-token match never reached it.
 
 What is **not** measured here, deliberately: the memory-per-task row off
 Linux (RSS comes from `/proc`); and throughput under load, which is
-`tools/bench/public.sh`'s subject (the public harness against nginx and
+`benchmarks/http/public.sh`'s subject (the public harness against nginx and
 h2o, ticket `avra-8sb5.34.36`), alongside the methodology ticket
 `avra-8sb5.1.31.12`.

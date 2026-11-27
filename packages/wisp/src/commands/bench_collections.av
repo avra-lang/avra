@@ -1,0 +1,141 @@
+//! THE COLLECTION BENCH'S TABLE, from `run.sh`'s raw lines `<engine> <row> <checksum> <ns>`: each
+//! workload's median Avra time beside Rust's, against its target. The engines disagreeing on a
+//! checksum, or a row missing from either, fails the run.
+use @std.io.{read_text}
+use @std.text.{parse_int, text_before}
+
+/// What a row is held to: a ratio to Rust, its per-key cost against C9i's, constant time from 1M
+/// to 10M, or nothing (a reference row).
+enum Target {
+    Ratio(x: float)
+    PerKey
+    Constant
+    Reference
+}
+
+/// A workload: its id, what it does, and its target.
+type Workload = { id: string, what: string, target: Target }
+
+fn workload(id: string, what: string, target: Target) -> Workload { Workload { id: id, what: what, target: target } }
+
+fn workloads() -> List<Workload> {
+    [
+        workload("C1", "`filter(p).map(f).sum()`, 10M ints", Target.Ratio(1.2)),
+        workload("C2", "`map(f)` to a list, 10M ints, source kept", Target.Ratio(1.3)),
+        workload("C3", "`map(f)` to a list, 10M ints, source dying", Target.Ratio(1.2)),
+        workload("C4", "`flat_map`, 1M ints × 4", Target.Ratio(1.5)),
+        workload("C5r", "`sorted()`, 1M ints, random", Target.Ratio(1.3)),
+        workload("C5s", "`sorted()`, 1M ints, sorted", Target.Ratio(1.3)),
+        workload("C5v", "`sorted()`, 1M ints, reversed", Target.Ratio(1.3)),
+        workload("C5u", "`sorted()`, 1M ints, 16 values", Target.Ratio(1.3)),
+        workload("C6", "`sorted()`, 200k strings", Target.Ratio(1.5)),
+        workload("C7", "`sorted_by(it.key)`, 500k records", Target.Ratio(1.5)),
+        workload("C8", "`group_by`, 1M ints to 1k keys: key to slot", Target.Ratio(1.5)),
+        workload("C8m", "`group_by`, 1M ints to 1k keys: map of lists, `concat`", Target.Ratio(1.5)),
+        workload("C9", "map, 1M inserts + 1M hits + 1M misses", Target.Ratio(1.5)),
+        workload("C9i", "map, 1M inserts alone", Target.Reference),
+        workload("C10n", "map, 100k inserts sharing a NUL prefix", Target.PerKey),
+        workload("C10f", "map, 100k inserts colliding under FNV-1a", Target.PerKey),
+        workload("C11", "`join`, 1M strings", Target.Ratio(1.2)),
+        workload("C12l", "`(0..n).find(p)`, early hit, ×10, n = 10M: loop", Target.Constant),
+        workload(
+            "C12c",
+            "`(0..n).find(p)`, early hit, ×10, n = 10M: comprehension",
+            Target.Constant,
+        ),
+    ]
+}
+
+/// The keys a per-key row is counted over.
+fn keys_in(id: string) -> float { if id == "C9i" { 1000000.0 } else { 100000.0 } }
+
+/// One raw line: the engine, the row, its checksum and its nanoseconds.
+type Timed = { engine: string, row: string, sum: string, ns: float }
+
+/// The row keys a workload prints: a constant row at both sizes.
+fn printed_keys(w: Workload) -> List<string> {
+    match w.target { .Constant -> [w.id + "1", w.id + "10"], rest -> [w.id] }
+}
+
+fn distinct_sorted(xs: List<string>) -> List<string> {
+    ordered_by(distinct_words(xs), text_before)
+}
+
+/// The engines' disagreements: a checksum two engines differ on, a row one never ran, a row the
+/// table does not know.
+fn collection_faults(timed: List<Timed>) -> List<string> {
+    let rows = distinct_sorted(timed.map(it.row))
+    let bad = ["checksum mismatch, ${row}: [${sums.map("'${it}'").join(", ")}]" for row in rows for sums in [distinct_sorted(timed.filter(it.row == row).map(it.sum))] if sums.length != 1]
+    let wanted = workloads().flat_map(printed_keys(it))
+    let ran = (engine: string, row: string) -> timed.any(it.engine == engine && it.row == row)
+    let missing = ["row ${r} missing from an engine" for r in distinct_sorted(wanted) if !ran("avra", r) || !ran("rust", r)]
+    let unknown = ["row ${r} is not in the table" for r in rows if !wanted.contains(r)]
+    bad.concat(missing).concat(unknown)
+}
+
+fn median_ns(timed: List<Timed>, engine: string, row: string) -> float {
+    median_of(timed.filter(it.engine == engine && it.row == row).map(it.ns))
+}
+
+fn seconds(ns: float) -> string { general(ns / 1000000000.0, 3) }
+
+/// One workload's line.
+fn collection_line(timed: List<Timed>, w: Workload) -> string {
+    let key = match w.target { .Constant -> w.id + "10", rest -> w.id }
+    let a = median_ns(timed, "avra", key)
+    let r = median_ns(timed, "rust", key)
+    let ratio = a / r
+    let judged = match w.target {
+        .Reference -> Said { key: "—", text: "reference" },
+        .PerKey -> per_key_said(a / keys_in(w.id) / (median_ns(timed, "avra", "C9i") / keys_in("C9i"))),
+        .Constant -> constant_said(a / median_ns(timed, "avra", w.id + "1")),
+        .Ratio(x) -> Said { key: "≤${x}x", text: if ratio <= x { "met" } else { "over" } },
+    }
+    "| ${w.id} | ${w.what} | ${seconds(a)} | ${seconds(r)} | ${fixed(ratio, 2)}x | ${judged.key} | ${judged.text} |"
+}
+
+fn per_key_said(k: float) -> Said {
+    Said {
+        key: "≤2x C9i per key",
+        text: "${if k <= 2.0 { "met" } else { "over" }} (${fixed(k, 2)}x)",
+    }
+}
+
+fn constant_said(k: float) -> Said {
+    Said {
+        key: "constant",
+        text: "${if k <= 2.0 { "constant" } else { "linear" }} (10M/1M ${fixed(k, 1)}x)",
+    }
+}
+
+fn timed_of(line: string) -> Timed? {
+    let p = blank_words(line)
+    if p.length != 4 { return null }
+    let ns? = parse_int(p[3]) else { return null }
+    Timed { engine: p[0], row: p[1], sum: p[2], ns: ns.float() }
+}
+
+fn collections_table(raw: string) -> int {
+    let text = match text_of_file(raw) {
+        .Ok(t) -> t,
+        .Err(why) -> {
+            eprintln("bench: ${why}")
+            return 1
+        },
+    }
+    let lines = [l for l in text.split("\n") if !l.trim().is_empty()]
+    let timed = [t! for l in lines for t in [timed_of(l)] if t != null]
+    if timed.length != lines.length {
+        eprintln("bench: a raw line is not `<engine> <row> <checksum> <ns>`")
+        return 1
+    }
+    let faults = collection_faults(timed)
+    if !faults.is_empty() {
+        for f in faults { eprintln(f) }
+        return 1
+    }
+    println("| id | workload | Avra s | Rust s | ratio | target | verdict |")
+    println("|---|---|---:|---:|---:|---|---|")
+    for w in workloads() { println(collection_line(timed, w)) }
+    0
+}

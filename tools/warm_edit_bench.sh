@@ -9,7 +9,7 @@
 # unchanged and 21 819 ms for one edit stood with nothing to fail.
 #
 # TWO EXISTING DEFINITIONS, never a second copy:
-#   - the MECHANISM is `tools/db_measure/warm_edit.sh`'s: a `check --time`,
+#   - the MECHANISM is `benchmarks/db/warm_edit.sh`'s: a `check --time`,
 #     ONE string literal in ONE body moved to fresh text per round so a
 #     round is never a store hit, the wall read from the clock.
 #   - the CEILINGS are the ledger's `warm:` and `work:` rows

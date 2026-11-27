@@ -1,0 +1,563 @@
+//! THE FLOW BENCH'S TABLES. `flow-gate` is the runtime change gate: the scheduler's transition
+//! rows against `benchmarks/tasks/flow/gate.baseline`, one row per machine and toolchain, refusing
+//! past a ratio — a `runtime/*.c` change can tax the hot path without touching a test. `flow-table`
+//! prints each engine's rounds side by side, `least (median)` per unit, and `--gates` the G1 rows:
+//! Avra against Go's best, 2x on time and 3x on parked bytes.
+use @std.cli.{CliResult}
+use @std.io.{read_text, write_text, is_file, env}
+use @std.path.{joined_path}
+use @std.text.{parse_int, parse_float, ascii_lower, text_before, codepoints, repeat}
+
+const FLOW_DEFAULT_RATIO: float = 2.0
+
+/// The rows the gate holds, in print order: each a transition edge the scheduler can tax.
+const FLOW_ROWS: List<string> = ["c_gate_round_trip", "c_spawn_one", "c_spawn_parked_cold"]
+
+const FLOW_HEADER: List<string> = [
+    "# THE LAST ACCEPTED FLOW G1 BASELINE: the scheduler's transition rows,",
+    "# <platform> <row> <total ns> <count> <toolchain>, written by",
+    "# `sh benchmarks/tasks/flow/run.sh --record` and held by `make flow-gate`.",
+    "# One row is ONE machine's; the gate compares like with like. No row,",
+    "# no gate on that machine.",
+]
+
+/// A row's rounds folded to its least: the total and the units it covers.
+type FlowCell = { row: string, total: int, count: int }
+
+/// An accepted row: the machine and toolchain it was measured on.
+type FlowBase = { platform: string, toolchain: string, cell: FlowCell }
+
+/// Where a gate stands: the platform and the C toolchain.
+type FlowHost = { platform: string, toolchain: string }
+
+/// A line's words split on blanks; past `most` the rest is one word, its lead blanks dropped.
+fn words_upto(line: string, most: int) -> List<string> {
+    mut out: List<string> = []
+    mut i = 0
+    let n = line.length
+    while i < n {
+        while i < n && is_blank_code(line.char_code(i)) { i = i + 1 }
+        if i >= n { break }
+        if out.length == most - 1 {
+            out.push(line.substring(i, n))
+            break
+        }
+        let start = i
+        while i < n && !is_blank_code(line.char_code(i)) { i = i + 1 }
+        out.push(line.substring(start, i))
+    }
+    out
+}
+
+fn blank_words(line: string) -> List<string> { words_upto(line, 0 - 1) }
+
+fn is_digits(s: string) -> bool { !s.is_empty() && codepoints(s).all(it >= 48 && it <= 57) }
+
+/// `<engine> <row> <total> <count>` lines, each row its least total over the rounds.
+fn flow_rows(text: string) -> List<FlowCell> {
+    let cells = [FlowCell { row: p[1], total: parse_int(p[2])!, count: parse_int(p[3])! } for line in text.split("\n") for p in [blank_words(line)] if p.length == 4 && is_digits(p[2]) && is_digits(p[3])]
+    let none: List<FlowCell> = []
+    cells.fold(none, least_into)
+}
+
+fn least_into(acc: List<FlowCell>, c: FlowCell) -> List<FlowCell> {
+    let had? = acc.find(it.row == c.row) else { return acc.concat([c]) }
+    if c.total < had.total { [if x.row == c.row { c } else { x } for x in acc] } else { acc }
+}
+
+/// `<platform> <row> <total> <count> <toolchain>` lines; a comment or a short line is read past.
+fn flow_baseline(text: string) -> List<FlowBase> {
+    [base! for line in text.split("\n") if !line.starts_with("#") for base in [flow_base_of(line)] if base != null]
+}
+
+fn flow_base_of(line: string) -> FlowBase? {
+    let p = words_upto(line, 5)
+    if p.length != 5 { return null }
+    let total? = parse_int(p[2]) else { return null }
+    let count? = parse_int(p[3]) else { return null }
+    FlowBase {
+        platform: p[0],
+        toolchain: p[4].trim(),
+        cell: FlowCell { row: p[1], total: total, count: count },
+    }
+}
+
+fn per_unit(c: FlowCell) -> float { if c.count == 0 { 0.0 } else { c.total.float() / c.count.float() } }
+
+fn flow_host() -> FlowHost {
+    FlowHost {
+        platform: "${ascii_lower(printed_by(["uname", "-s"]))}-${ascii_lower(printed_by(["uname", "-m"]))}",
+        toolchain: cc_toolchain(),
+    }
+}
+
+fn cc_toolchain() -> string {
+    match spawned(["cc", "--version"], null, [], 30) {
+        .Done(r) -> if r.code == 0 { first_said(r.out) ?? "absent" } else { "absent" },
+        rest -> "absent",
+    }
+}
+
+/// Every row judged against this machine's accepted one. A row nobody measured refuses (a verdict
+/// over nothing); a machine with no accepted row refuses only under `require`.
+fn flow_checked(
+    measured: List<FlowCell>,
+    accepted: List<FlowBase>,
+    here: FlowHost,
+    ratio: float,
+    require: bool,
+) -> GateReading {
+    mut j = unjudged()
+    for row in FLOW_ROWS {
+        let found? = measured.find(it.row == row) else {
+            j
+                .refusals
+                .push(
+                    GateRefusal {
+                        place: row,
+                        why: "NOT MEASURED — the gate examined nothing for it",
+                    },
+                )
+            continue
+        }
+        let base? = accepted
+            .find(it.platform == here.platform && it.toolchain == here.toolchain && it.cell.row == row) else {
+            let machine = "${here.platform} / ${here.toolchain}"
+            j.words.push("NO BASELINE ROW for ${machine} — `run.sh --record` accepts it")
+            if require {
+                j
+                    .refusals
+                    .push(
+                        GateRefusal {
+                            place: row,
+                            why: "NO BASELINE ROW for ${machine} — refused",
+                        },
+                    )
+            }
+            continue
+        }
+        let now_unit = per_unit(found)
+        let was = per_unit(base.cell)
+        if was == 0.0 {
+            j
+                .refusals
+                .push(GateRefusal { place: row, why: "the baseline row is 0 — nothing to compare" })
+            continue
+        }
+        j.gated = j.gated + 1
+        let got = now_unit / was
+        let line = "${pass_word(got <= ratio)} — ${fixed(now_unit, 1)} ns/unit vs baseline ${fixed(was, 1)} ns/unit, ${fixed(got, 2)}x (gate ${fixed(ratio, 1)}x)"
+        j.said.push("gate: ${row}: ${line}")
+        if got > ratio { j.refusals.push(GateRefusal { place: row, why: line }) }
+    }
+    j
+}
+
+/// A baseline rewritten with this machine's rows: every other machine's kept, its header too.
+type Rewritten = { text: string, said: List<string>, wrote: int }
+
+fn flow_recorded(raw: string, base: string, here: FlowHost) -> Rewritten {
+    let measured = flow_rows(raw)
+    let lines = base.split("\n")
+    let head = lines.filter(it.starts_with("#"))
+    let kept = lines.filter(!it.starts_with("#") && kept_line(it, here))
+    let missing = FLOW_ROWS.filter((row) -> !measured.any(it.row == row))
+    let fresh = ["${here.platform} ${c.row} ${c.total} ${c.count} ${here.toolchain}" for row in FLOW_ROWS for c in measured.filter(it.row == row)]
+    Rewritten {
+        text: if head.is_empty() { FLOW_HEADER } else { head }.concat(kept).concat(fresh).join("\n") +
+            "\n",
+        said: ["gate: ${row} was not measured — nothing recorded for it" for row in missing],
+        wrote: fresh.length,
+    }
+}
+
+fn kept_line(line: string, here: FlowHost) -> bool {
+    let p = words_upto(line, 5)
+    p.length == 5 &&
+        !(p[0] == here.platform && p[4].trim() == here.toolchain && FLOW_ROWS.contains(p[1]))
+}
+
+fn flow_gate(args: CliResult, raw: string) -> int {
+    if args.has_flag("self_test") { return flow_self_test() }
+    let named = args.option("baseline")
+    let base = if named.is_empty() { joined_path(bench_root(), "tasks/flow/gate.baseline") } else { named }
+    if args.has_flag("record") {
+        if raw.is_empty() { return 2 }
+        return flow_record(raw, base)
+    }
+    if raw.is_empty() {
+        eprintln("gate: no raw file — run `sh benchmarks/tasks/flow/run.sh --gate`")
+        return 2
+    }
+    let stated = args.option("ratio")
+    let ratio = parse_float(if stated.is_empty() { env("FLOW_GATE_RATIO") ?? "" } else { stated }) ?? FLOW_DEFAULT_RATIO
+    flow_judged(raw, base, ratio, args.has_flag("require"))
+}
+
+fn flow_record(raw: string, base: string) -> int {
+    let here = flow_host()
+    let text = match text_of_file(raw) {
+        .Ok(t) -> t,
+        .Err(why) -> {
+            eprintln("gate: ${why}")
+            return 1
+        },
+    }
+    let r = flow_recorded(text, if is_file(base) { read_text(base) catch "" } else { "" }, here)
+    said_all(r.said)
+    let _ = write_text(base, r.text)
+    println("gate: recorded ${r.wrote} row(s) for ${here.platform} / ${here.toolchain} in ${base}")
+    if r.wrote == FLOW_ROWS.length { 0 } else { 1 }
+}
+
+fn flow_judged(raw: string, base: string, ratio: float, require: bool) -> int {
+    let text = match text_of_file(raw) {
+        .Ok(t) -> t,
+        .Err(why) -> {
+            eprintln("gate: ${why}")
+            return 1
+        },
+    }
+    let measured = flow_rows(text)
+    let accepted = if is_file(base) { flow_baseline(read_text(base) catch "") } else { [] }
+    let here = flow_host()
+    println("gate: ${here.platform}, cc: ${here.toolchain}")
+    let j = flow_checked(measured, accepted, here, ratio, require)
+    said_all(j.said)
+    println(
+        "gate: ${measured.length} of ${FLOW_ROWS.length} row(s) examined, ${j.gated} gated here",
+    )
+    said_all(["gate: ${w}" for w in j.words])
+    if !j.refusals.is_empty() {
+        println(
+            "gate: REFUSED — ${j.refusals.length} row(s) past ${fixed(ratio, 1)}x or unmeasured:",
+        )
+        said_all(["gate:   ${f.place}: ${f.why}" for f in j.refusals])
+        return 1
+    }
+    if j.gated == 0 {
+        println("gate: NOT GATED — no accepted row on this machine, so nothing was compared")
+        return if require { 1 } else { 0 }
+    }
+    println("gate: clean — ${FLOW_ROWS.length} row(s) within ${fixed(ratio, 1)}x of the baseline")
+    0
+}
+
+// ── the gate's rules on fixtures, no runtime ─────────────────────
+
+const FLOW_FIXTURE_BASE: string = "linux-x86_64 c_gate_round_trip 19600000 200000 cc 1\nlinux-x86_64 c_spawn_one 1210000 10000 cc 1\nlinux-x86_64 c_spawn_parked_cold 8380000 10000 cc 1\n"
+
+const FLOW_FIXTURE_OTHER: string = "darwin-arm64 c_gate_round_trip 16400000 200000 cc 2\n"
+
+const FLOW_FIXTURE_SAME: string = "c c_gate_round_trip 19600000 200000\nc c_spawn_one 1210000 10000\nc c_spawn_parked_cold 8380000 10000\n"
+
+/// The flow gate's own rules on fixtures: each claim that did not hold.
+export fn flow_fixture_failures() -> List<string> {
+    let accepted = flow_baseline(
+        "# a comment\n" + FLOW_FIXTURE_BASE + "linux-x86_64 notarow cc 1\n",
+    )
+    let where = FlowHost { platform: "linux-x86_64", toolchain: "cc 1" }
+    let same = flow_rows(FLOW_FIXTURE_SAME)
+    let at = (text: string, base: List<FlowBase>, require: bool) -> flow_checked(
+        flow_rows(text),
+        base,
+        where,
+        2.0,
+        require,
+    )
+    let over = at(FLOW_FIXTURE_SAME.replace("19600000", "58800000"), accepted, false)
+    let elsewhere = flow_baseline(FLOW_FIXTURE_OTHER)
+    let alone = at(FLOW_FIXTURE_SAME, elsewhere, false)
+    let refused = at(FLOW_FIXTURE_SAME, elsewhere, true)
+    let twice = flow_rows("c not a row\nc c_gate_round_trip 29400000 200000\n" + FLOW_FIXTURE_SAME)
+    let rewritten = flow_recorded(
+        FLOW_FIXTURE_SAME + FLOW_FIXTURE_SAME.replace("19600000", "49000000"),
+        "# keep me\n" + FLOW_FIXTURE_BASE + FLOW_FIXTURE_OTHER,
+        where,
+    )
+    let kept = flow_baseline(rewritten.text)
+    let held = [
+        Held {
+            label: "a comment and a line that is not a row are read past",
+            held: accepted.length == 3,
+        },
+        Held {
+            label: "identical rows pass",
+            held: flow_checked(same, accepted, where, 2.0, false).refusals.is_empty(),
+        },
+        Held {
+            label: "a row AT the margin passes",
+            held: at(FLOW_FIXTURE_SAME.replace("19600000", "39200000"), accepted, false)
+                .refusals
+                .is_empty(),
+        },
+        Held {
+            label: "a row past the margin fails by name",
+            held: same_words(over.refusals.map(it.place), ["c_gate_round_trip"]) && over.gated == 3,
+        },
+        Held {
+            label: "a row nobody measured refuses",
+            held: at("c c_gate_round_trip 19600000 200000\n", accepted, false).refusals.length == 2,
+        },
+        Held {
+            label: "a machine with no accepted row gates 0",
+            held: alone.refusals.is_empty() && alone.gated == 0,
+        },
+        Held {
+            label: "`--require` refuses a machine with no accepted row",
+            held: refused.refusals.length == 3 && refused.refusals.all(it.why.contains("refused")),
+        },
+        Held {
+            label: "the least of the rounds is the row",
+            held: twice.find(it.row == "c_gate_round_trip")?.total == 19600000,
+        },
+        Held {
+            label: "--record keeps another machine's rows",
+            held: kept
+                .any(
+                    it.platform == "darwin-arm64" &&
+                        it.toolchain == "cc 2" &&
+                        it.cell.row == "c_gate_round_trip",
+                ),
+        },
+        Held {
+            label: "--record replaces this machine's row by the measured least, keeping the header",
+            held: kept
+                    .find(
+                        it.platform == "linux-x86_64" &&
+                            it.toolchain == "cc 1" &&
+                            it.cell.row == "c_gate_round_trip",
+                    )?.cell?.total == 19600000 &&
+                rewritten.text.starts_with("# keep me\n"),
+        },
+    ]
+    ["gate self-test: ${h.label}" for h in held if !h.held]
+}
+
+fn flow_self_test() -> int {
+    let failed = flow_fixture_failures()
+    if failed.is_empty() {
+        println("gate self-test: 10 fixture(s) held")
+        return 0
+    }
+    said_all(failed)
+    1
+}
+
+// ── the side-by-side table ───────────────────────────────────────
+
+const FLOW_ENGINES: List<string> = ["avra", "go1", "goN", "c"]
+
+/// An engine's column: its rounds per unit, or the words it left instead.
+type EngineCell = { engine: string, words: string?, values: List<float> }
+
+/// A row's cells across engines, in first-seen row order.
+type FlowLine = { key: string, cells: List<EngineCell> }
+
+fn flow_table_rows(text: string) -> List<FlowLine> {
+    let none: List<FlowLine> = []
+    text.split("\n").fold(none, flow_line_into)
+}
+
+fn flow_line_into(acc: List<FlowLine>, line: string) -> List<FlowLine> {
+    let parts = words_upto(line, 3)
+    if parts.length < 3 { return acc }
+    let rows = if acc.any(it.key == parts[1]) { acc } else { acc.concat([FlowLine { key: parts[1], cells: [] }]) }
+    [if r.key == parts[1] { r with { cells: cell_into(r.cells, parts[0], parts[2]) } } else { r } for r in rows]
+}
+
+fn signed_digits(s: string) -> bool { is_digits(left_dashless(s)) }
+
+fn left_dashless(s: string) -> string {
+    let lead = (0..s.length).find((i) -> s.char_code(i) != 45) ?? s.length
+    s.substring(lead, s.length)
+}
+
+fn cell_into(cells: List<EngineCell>, engine: string, rest: string) -> List<EngineCell> {
+    let nums = blank_words(rest)
+    let had = cells.find(it.engine == engine)
+    let counted = nums.length == 2 && nums.all(signed_digits(it)) && parse_int(nums[1]) ?? 0 > 0
+    let next = when {
+        counted && had?.words != null -> had!
+        counted -> EngineCell {
+            engine: engine,
+            words: null,
+            values: (had?.values ?? [])
+                .concat([(parse_int(nums[0]) ?? 0).float() / (parse_int(nums[1]) ?? 1).float()]),
+        }
+        _ -> EngineCell { engine: engine, words: rest.trim(), values: [] }
+    }
+    if had == null { cells.concat([next]) } else { [if c.engine == engine { next } else { c } for c in cells] }
+}
+
+fn flow_unit_of(key: string) -> string {
+    when {
+        key.starts_with("parked_left_ms") -> "ms"
+        key.starts_with("parked") -> "B"
+        _ -> "ns"
+    }
+}
+
+fn flow_one(key: string, v: float) -> string {
+    let mag = if v < 0.0 { 0.0 - v } else { v }
+    "${if mag < 100.0 { fixed(v, 1) } else { fixed(v, 0) }} ${flow_unit_of(key)}"
+}
+
+fn flow_shown(key: string, c: EngineCell?) -> string {
+    let cell? = c else { return "—" }
+    let words? = cell.words else { return rounds_shown(key, cell.values) }
+    words
+}
+
+fn rounds_shown(key: string, vs: List<float>) -> string {
+    if vs.length == 1 { return flow_one(key, vs[0]) }
+    "${flow_one(key, least_of(vs))} (${flow_one(key, median_of(vs))})"
+}
+
+fn flow_head(e: string) -> string {
+    match e {
+        "avra" -> "Avra (compiled)",
+        "go1" -> "Go, GOMAXPROCS=1",
+        "goN" -> "Go, default",
+        _ -> "runtime rows from C",
+    }
+}
+
+fn full_flow_table(rows: List<FlowLine>) -> List<string> {
+    [
+        "| row: least (median) | ${FLOW_ENGINES.map(flow_head(it)).join(" | ")} |",
+        "|---|${repeat("---|", FLOW_ENGINES.length)}",
+    ]
+        .concat(
+            ["| ${r.key} | ${FLOW_ENGINES.map((e) -> flow_shown(r.key, r.cells.find(it.engine == e))).join(" | ")} |" for r in rows],
+        )
+}
+
+/// A G1 time row: its label and the key Avra and Go each print it under.
+type TimeRow = { label: string, avra: string, go: string }
+
+const TIME_ROWS: List<TimeRow> = [
+    TimeRow { label: "ping-pong round trip (rendezvous)", avra: "pingpong_ns", go: "pingpong_ns" },
+    TimeRow { label: "spawn + join, one at a time", avra: "spawn_fiber", go: "spawn_fiber" },
+    TimeRow { label: "10k tasks alive, cold", avra: "spawn_alive_cold", go: "spawn_alive_cold" },
+    TimeRow { label: "10k tasks alive, warm", avra: "spawn_fiber_alive", go: "spawn_fiber_alive" },
+    TimeRow {
+        label: "10k tasks alive and parked, cold",
+        avra: "spawn_parked_cold",
+        go: "spawn_parked_cold",
+    },
+    TimeRow {
+        label: "10k tasks alive and parked, warm",
+        avra: "spawn_parked_warm",
+        go: "spawn_parked_warm",
+    },
+]
+
+/// Rows with a Go twin and no Avra twin yet, and the slice that makes each writable.
+const CHANNELS_SLICE: string = "channels — slice 05 (FLOW 05, avra-8sb5.34.53.6)"
+
+const BLOCKED_ROWS: List<Said> = [
+    Said { key: "ping-pong over a buffered channel", text: CHANNELS_SLICE },
+    Said { key: "fan-in, N producers to one consumer", text: CHANNELS_SLICE },
+    Said {
+        key: "select over N sources (2, 8, 64)",
+        text: "select — slice 04 (FLOW 04, avra-8sb5.34.53.4)",
+    },
+    Said { key: "cancel a tree of tasks", text: "cancel — slice 03 (FLOW 03, avra-8sb5.34.53.3)" },
+]
+
+const TIME_GATE: float = 2.0
+
+const MEM_GATE: float = 3.0
+
+fn flow_least(rows: List<FlowLine>, key: string, engine: string) -> float? {
+    let line? = rows.find(it.key == key) else { return null }
+    let cell? = line.cells.find(it.engine == engine) else { return null }
+    if cell.words != null || cell.values.is_empty() { return null }
+    least_of(cell.values)
+}
+
+/// Go's best of its two runs; none when neither ran or both read zero.
+fn best_go(go1: float?, go_n: float?) -> float? {
+    if go1 ?? 0.0 == 0.0 && go_n ?? 0.0 == 0.0 { return null }
+    let ran = [g! for g in [go1, go_n] if g != null]
+    least_of(ran)
+}
+
+fn flow_verdict(v: float?, best: float?, gate: float) -> string {
+    if v == null || best == null { return "n/a" }
+    if v! <= gate * best! { "PASS" } else { "FAIL" }
+}
+
+fn maybe_one(key: string, v: float?) -> string { if v == null { "—" } else { flow_one(key, v!) } }
+
+fn maybe_ratio(v: float?, best: float?) -> string {
+    if v == null || best ?? 0.0 == 0.0 { return "—" }
+    "${fixed(v! / best!, 2)}x"
+}
+
+/// One G1 row's line, and whether it failed its gate.
+fn g1_flow_line(label: string, key: string, avra: float?, go1: float?, go_n: float?, gate: float) -> G1Line {
+    let best = best_go(go1, go_n)
+    let verdict = flow_verdict(avra, best, gate)
+    G1Line {
+        line: "| ${label} | ${maybe_one(key, go1)} | ${maybe_one(key, go_n)} | ${maybe_one(key, avra)} | ${maybe_ratio(avra, best)} | ≤ ${fixed(gate, 0)}x | ${verdict} |",
+        fails: verdict == "FAIL",
+    }
+}
+
+fn parked_sum(rows: List<FlowLine>, n: string, engine: string) -> float? {
+    let total = [v! for v in [flow_least(rows, "parked_rss_${n}", engine), flow_least(rows, "parked_pte_${n}", engine)] if v != null]
+        .fold(0.0, (a, b) -> a + b)
+    if total == 0.0 { null } else { total }
+}
+
+fn gate_flow_table(rows: List<FlowLine>) -> Table {
+    let time = [g1_flow_line(
+        t.label,
+        t.go,
+        flow_least(rows, t.avra, "avra"),
+        flow_least(rows, t.go, "go1"),
+        flow_least(rows, t.go, "goN"),
+        TIME_GATE,
+    ) for t in TIME_ROWS]
+    let parked_keys = ordered_by(
+        [r.key for r in rows if r.key.starts_with("parked_rss_")],
+        text_before,
+    )
+    let mem = [g1_flow_line(
+        "parked bytes a task, N=${k.substring(11, k.length)}",
+        k,
+        parked_sum(rows, k.substring(11, k.length), "avra"),
+        parked_sum(rows, k.substring(11, k.length), "go1"),
+        parked_sum(rows, k.substring(11, k.length), "goN"),
+        MEM_GATE,
+    ) for k in parked_keys]
+    let lines = time.concat(mem)
+    let said = [
+        "| G1 row | Go, 1 proc | Go, default | Avra | ratio vs best Go | gate | verdict |",
+        "|---|---|---|---|---|---|---|",
+    ]
+        .concat(lines.map(it.line))
+        .concat(["", "| G1 row that cannot run yet | blocker |", "|---|---|"])
+        .concat(["| ${b.key} | ${b.text} |" for b in BLOCKED_ROWS])
+    Table { said: said, fails: lines.filter(it.fails).length }
+}
+
+fn flow_table(raw: string, gates: bool, enforce: bool) -> int {
+    let text = match text_of_file(raw) {
+        .Ok(t) -> t,
+        .Err(why) -> {
+            eprintln("bench: ${why}")
+            return 1
+        },
+    }
+    let rows = flow_table_rows(text)
+    if !gates {
+        said_all(full_flow_table(rows))
+        return 0
+    }
+    let t = gate_flow_table(rows)
+    said_all(t.said)
+    if enforce && t.fails > 0 { 1 } else { 0 }
+}
