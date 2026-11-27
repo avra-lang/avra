@@ -12,6 +12,7 @@
 //! live in machine tables addressed by handle, and calls run on the
 //! machine's own stack, never the host's.
 use core.settings.{avrac_settings}
+use @std.meta.{reach_held}
 use core.{
     EmbedKind,
     digest_of_octets,
@@ -40,6 +41,7 @@ use core.{
     Slot,
     cleanups_open,
     debug,
+    distinct,
 }
 use @std.path.{joined_path, normalized}
 use features.{Unsettled, Settled, MetaVal, MetaHeap, new_meta_heap, Lifted, nothing, Budgets}
@@ -603,6 +605,7 @@ fn unembedded(_path: string, _kind: EmbedKind) -> Result<Bytes, string> {
 /// Refused BEFORE running when any body reaches the world, DURING
 /// it when the budget runs out or a body traps, and AFTER it when
 /// the body answers nothing.
+@reach_held
 export fn run_settle(
     l: Lowered,
     budgets: Budgets,
@@ -650,6 +653,7 @@ export type EmbedReader = { read: fn(string, EmbedKind) -> Result<Bytes, string>
 /// world, and no embed unless `embeds` reads them — and names each body
 /// as `spelled` names it to its reader, and the run on the settle line as
 /// `settled_as` where the symbol alone doesn't say what it ran over.
+@reach_held
 export fn run_lifted(
     l: Lowered,
     symbol: string,
@@ -687,6 +691,7 @@ export fn run_lifted(
 /// Unlike scalar const settlement, no source literal is synthesized:
 /// nested records, lists and maps remain values. Embed is permitted
 /// because the result exists only while the compiler call runs.
+@reach_held
 export fn run_crossed(
     l: Lowered,
     budgets: Budgets,
@@ -818,10 +823,17 @@ fn world_in(rows: Map<string, RtSig>, b: Body, permits_embed: bool) -> Ins? { b.
 /// A row a compile-time call may not run: one the registry marks
 /// World, an embed without an input-carrying result — or one unknown,
 /// which is a program's own extern and reaches whatever it likes.
-fn reaches_out(rows: Map<string, RtSig>, i: Ins, permits_embed: bool) -> bool {
+export fn reaches_out(rows: Map<string, RtSig>, i: Ins, permits_embed: bool) -> bool {
     let h? = hosted_symbol(i) else { return false }
     let row? = rows.get(h) else { return true }
     match row.reach { .Pure or .Lookup -> false, .Embed -> !permits_embed, .World -> true }
+}
+
+/// Each row the instructions `ins` call that reaches the world, an embed among them, in the order
+/// first called.
+export fn world_rows(ins: List<Ins>) -> List<string> {
+    let rows = rt_index()
+    distinct([hosted_symbol(i)! for i in ins if reaches_out(rows, i, false)])
 }
 
 /// The deepest call the machine runs before it refuses. Calls live on

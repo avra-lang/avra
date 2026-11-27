@@ -1,0 +1,476 @@
+//! A QUERY BODY READS THE WORLD ONLY THROUGH ITS DOOR. A query's answer is kept under its question
+//! and served to every later process whose recorded reads hold, so a read its record doesn't hold
+//! is one the store answers wrong the day it moves. From each `@query`, `@cut_query` and
+//! `@parted_query` body this follows every body its lowering calls — fns, methods, the lambdas it
+//! and they make, and every fn they name as a value — and stops at an `@input` body, whose answer
+//! the engine records. What it finds is a call that reads the world: a runtime row the registry
+//! marks World, an embed, a program's own extern, or an engine member marked `@unrecorded`.
+//!
+//! A FINDING STANDS AT THE CROSSING: the last call on the way from the query to the read whose
+//! caller and callee stand in different packages — the call into the package that reads, where the
+//! one reading lives in a package of its own — or the read's own call where the way never leaves
+//! one. `// LICENSED input.unrecorded_read: <what the question's key covers>` on the line above that
+//! call says the read is the query's to make, for every query reaching it.
+//!
+//! A CALL THROUGH A VALUE THE LOWERING CAN'T NAME IS NOT FOLLOWED: a fn value made off the way — a
+//! seat, a field, a cell, a call's answer — is reached by nothing this walks, and its reads go unseen
+//! (features/tests/query_door's `unnamed_value` pins the miss).
+use core.{CalledFn, ExprId, FnParts, StmtId, SyntaxArena, flatten}
+use compiler.laws.{Found, law}
+use diagnostics.{SourceFile, Voice, new_source_file}
+use @std.meta.{identity}
+use @std.program.address.{SourceFileAddress}
+use @std.program.query_engine.{QueryEngine}
+use @std.program.source_facts.{source_text}
+
+/// The licence a crossing's author writes where the read is the query's to make.
+const READ_LICENCE: string = "input.unrecorded_read"
+
+/// The annotations that make a fn a query's body.
+const QUERY_MARKS: List<string> = ["query", "cut_query", "parted_query"]
+
+/// The annotation that makes a fn a door: its answer is the input the engine records.
+const DOOR_MARK: string = "input"
+
+/// The annotation that marks an engine member reading past its records.
+const UNRECORDED_MARK: string = "unrecorded"
+
+/// The annotation that marks an extern whose row answers from its arguments alone.
+const PURE_MARK: string = "pure"
+
+/// The annotation that marks a fn running a program its reach law holds before it starts.
+const HELD_MARK: string = "reach_held"
+
+/// The annotation that marks a type whose methods read through the records it keeps.
+const RECORDS_MARK: string = "records"
+
+/// a query body that reads the world past what its record holds
+export law query_reads_world {
+    kind: "query.reads_world"
+    reads_view: queries_reading_world
+    voice: reads_world_words
+    witness: "use @std.program.saved_query.{query}\nuse @std.io.{env}\n\n@query(\"summary\")\nfn home(_e: int, _of: string) -> string { env(\"HOME\") ?? \"\" }\n"
+}
+
+/// A body on the way from a query: the call that runs it, and the calls that led there.
+type Step = { called: CalledFn, way: List<CalledFn> }
+
+/// A read a query reaches: what it reads, and every call from the query to it, the query's own
+/// body first.
+type WorldReached = { read: WorldRead, way: List<CalledFn> }
+
+/// What a query reaches of the world: a row its way's last body calls, or the engine member its
+/// way ends at.
+enum WorldRead {
+    Row(name: string)
+    Unrecorded(name: string)
+}
+
+impl WorldRead {
+    /// The read, worded.
+    fn words() -> string {
+        match self { .Row(name) -> "`${name}`", .Unrecorded(name) -> "the engine's `${name}`" }
+    }
+}
+
+/// Each query body `view`'s item holds whose reads cross into the world at an unlicensed call.
+fn queries_reading_world(view: ItemView) -> List<Found> {
+    let item = view.item
+    flatten(
+        [query_findings(view, s, p!) for s in item.stmts for p in [item.store.fn_parts(s)] if p != null && is_query(item, s)],
+    )
+}
+
+/// Whether the fn statement `s` wears a query's annotation.
+fn is_query(item: ReadItem, s: StmtId) -> bool { item.store.annotations_of(s).any((a) -> QUERY_MARKS.contains(a.name)) }
+
+/// The query `p`'s unlicensed crossings, one finding a crossing, at the query's own statement.
+fn query_findings(view: ItemView, s: StmtId, p: FnParts) -> List<Found> {
+    let own? = callee_at(view.engine, view.file, view.at, p.name) else { return [] }
+    let sites = [c! for r in reads_reached(view.engine, own, view.at) for c in [crossing_of(view.engine, r)] if c != null]
+    let places = [c.place for c in sites]
+    [Found { at: view.item.store.stmt_span(s), args: [p.name, c.read, c.place, c.through] } for i, c in sites if !c.licensed && places.index_of(c.place) == i]
+}
+
+/// Every read the query whose body is `own` reaches, each by one way from `own` to it: the bodies
+/// its item `home` generates walked as its own, every other body's reads read off the process's walk.
+fn reads_reached(engine: QueryEngine, own: CalledFn, home: ItemId) -> List<WorldReached> {
+    let walk = reach_walk(engine)
+    let seen: Cell<Map<string, bool>> = Cell.new({})
+    mut out: List<WorldReached> = []
+    mut pending: List<Step> = [Step { called: own, way: [own] }]
+    while !pending.is_empty() {
+        let step = pending.pop()
+        let facts? = facts_read(engine, step.called) else { continue }
+        out = joined(
+            out,
+            [WorldReached { read: r.read, way: step.way.concat(r.way.drop(1)) } for r in own_reads(engine, step.called, facts)],
+        )
+        for c in facts.callees {
+            if seen.get().has(body_at(c).key()) { continue }
+            seen.put(body_at(c).key(), true)
+            if own_generated(engine, c, own.file, home) {
+                pending.push(Step { called: c, way: step.way.concat([c]) })
+            } else if walked(walk.met(engine, c)) {
+                out = joined(
+                    out,
+                    [WorldReached { read: r.read, way: step.way.concat(r.way) } for r in walk.reads_of(engine, c)],
+                )
+            }
+        }
+    }
+    out
+}
+
+/// What the body `c` reads itself, the way to each `c` first: each row it and its lambdas call that
+/// reaches the world, where no `@pure` extern answers it, and each call of an engine member
+/// reading past its records.
+fn own_reads(engine: QueryEngine, c: CalledFn, facts: UnitFacts) -> List<WorldReached> {
+    let pure = [d.symbol for d in facts.callees if d.external && marks_of(engine, d).contains(PURE_MARK)]
+    let rows = [WorldReached { read: WorldRead.Row(row), way: [c] } for row in facts.world if !pure.contains(row)]
+    rows
+        .concat(
+            [WorldReached { read: WorldRead.Unrecorded(d.name), way: [c, d] } for d in facts.callees if unrecorded(met_as(engine, d))],
+        )
+}
+
+/// `had` and each read of `more` it doesn't hold, a read told apart by what it reads and the body
+/// that makes the call.
+fn joined(had: List<WorldReached>, more: List<WorldReached>) -> List<WorldReached> {
+    let keys: Cell<Map<string, bool>> = Cell.new({})
+    for r in had { keys.put(read_key(r), true) }
+    mut out = had
+    for r in more {
+        if !keys.get().has(read_key(r)) {
+            keys.put(read_key(r), true)
+            out.push(r)
+        }
+    }
+    out
+}
+
+/// What tells one read from another: what it reads, and the body whose call makes it.
+fn read_key(r: WorldReached) -> string {
+    let maker = match r.read { .Row(_) -> r.way.last()!, .Unrecorded(_) -> r.way[r.way.length - 2] }
+    "${r.read.words()} ${body_at(maker).key()}"
+}
+
+/// THE BODIES QUERIES REACH, WALKED ONCE A PROCESS: what each body reaches of the world below it,
+/// each read by one way from the body, kept for every query its engine judges. A body is walked
+/// once, the bodies that reach each other settled together (`settle`), so a recursion asks nothing
+/// twice.
+@identity
+type ReachWalk = {
+    below: Cell<Map<string, List<WorldReached>>>,
+    met_held: Cell<Map<string, Met>>,
+    order: Cell<Map<string, int>>,
+    low: Cell<Map<string, int>>,
+    open: Cell<Map<string, bool>>,
+    /// The bodies walked and not settled, the first `top` of them.
+    stack: Cell<List<string>>,
+    top: Cell<int>,
+    own: Cell<Map<string, List<WorldReached>>>,
+    next: Cell<Map<string, List<CalledFn>>>,
+    called: Cell<Map<string, CalledFn>>,
+    count: Cell<int>,
+}
+
+/// Each engine's walk, by its serial.
+once fn reach_walks() -> Cell<Map<string, ReachWalk>> { Cell.new({}) }
+
+/// The walk the engine's process keeps.
+fn reach_walk(engine: QueryEngine) -> ReachWalk {
+    let held? = reach_walks().get().get("${engine.serial}") else {
+        let made = ReachWalk {
+            below: Cell.new({}),
+            met_held: Cell.new({}),
+            order: Cell.new({}),
+            low: Cell.new({}),
+            open: Cell.new({}),
+            stack: Cell.new([]),
+            top: Cell.new(0),
+            own: Cell.new({}),
+            next: Cell.new({}),
+            called: Cell.new({}),
+            count: Cell.new(0),
+        }
+        reach_walks().put("${engine.serial}", made)
+        return made
+    }
+    held
+}
+
+impl ReachWalk {
+    /// How the walk meets the body `c` runs, asked once.
+    fn met(engine: QueryEngine, c: CalledFn) -> Met {
+        let key = body_at(c).key()
+        let held? = self.met_held.get().get(key) else {
+            let found = met_as(engine, c)
+            self.met_held.put(key, found)
+            return found
+        }
+        held
+    }
+
+    /// Every read the body `c` reaches, each by one way from `c`.
+    fn reads_of(engine: QueryEngine, c: CalledFn) -> List<WorldReached> {
+        let key = body_at(c).key()
+        if !self.order.get().has(key) { self.visit(engine, c) }
+        self.below.get().get(key) ?? self.own.get().get(key) ?? []
+    }
+
+    /// Walks the body `c`, and every body below it the walk hasn't met.
+    fn visit(engine: QueryEngine, c: CalledFn) {
+        let key = body_at(c).key()
+        let n = self.count.get()
+        self.count.set(n + 1)
+        self.order.put(key, n)
+        self.low.put(key, n)
+        self.open.put(key, true)
+        self.pushed(key)
+        self.called.put(key, c)
+        let facts = facts_read(engine, c)
+        self.own.put(key, if facts == null { [] } else { own_reads(engine, c, facts!) })
+        let next = [d for d in facts?.callees ?? [] if walked(self.met(engine, d))]
+        self.next.put(key, next)
+        for d in next {
+            let at = body_at(d).key()
+            if !self.order.get().has(at) {
+                self.visit(engine, d)
+                self.lowered(key, self.low.get().get(at)!)
+            } else if self.open.get().get(at) ?? false {
+                self.lowered(key, self.order.get().get(at)!)
+            }
+        }
+        if self.low.get().get(key) == self.order.get().get(key) { self.settle(key) }
+    }
+
+    /// `key` on the stack of bodies walked and not settled.
+    fn pushed(key: string) {
+        let top = self.top.get()
+        if top < self.stack.get().length { self.stack.set_at(top, key) } else { self.stack.push(key) }
+        self.top.set(top + 1)
+    }
+
+    /// The body on top of the stack, taken off it.
+    fn popped() -> string {
+        let top = self.top.get() - 1
+        self.top.set(top)
+        self.stack.get()[top]
+    }
+
+    /// `key`'s lowest reach, lowered to `to` where that is lower.
+    fn lowered(key: string, to: int) { if to < self.low.get().get(key)! { self.low.put(key, to) } }
+
+    /// The bodies that reach each other with `root`, settled together: each holds its own reads,
+    /// then those below each body it calls, its way first, until none holds more.
+    fn settle(root: string) {
+        mut members: List<string> = []
+        mut at = ""
+        while at != root {
+            at = self.popped()
+            self.open.put(at, false)
+            members.push(at)
+        }
+        for m in members { self.below.put(m, self.own.get().get(m) ?? []) }
+        mut moved = true
+        while moved {
+            moved = false
+            for m in members {
+                let had = self.below.get().get(m) ?? []
+                let c = self.called.get().get(m)!
+                let more = [WorldReached { read: r.read, way: [c].concat(r.way) } for d in self.next.get().get(m) ?? [] for r in self.below.get().get(body_at(d).key()) ?? []]
+                let grown = joined(had, more)
+                if grown.length != had.length {
+                    self.below.put(m, grown)
+                    moved = true
+                }
+            }
+        }
+    }
+}
+
+/// Whether the walk goes into a body met as `m`.
+fn walked(m: Met) -> bool {
+    match m { .Walked -> true, .Door or .Unrecorded -> false }
+}
+
+/// Whether a body met as `m` is a read itself.
+fn unrecorded(m: Met) -> bool {
+    match m { .Unrecorded -> true, .Door or .Walked -> false }
+}
+
+/// One call on the way to a read: the body it stands in, what it calls by name, and the package of
+/// what it calls.
+type CallOnWay = { caller: CalledFn, target: string, package: string }
+
+/// Where a read crosses in, worded: what it reads, the call's place as `package/path:line`, the way
+/// to it, and whether that call carries the read's licence.
+type Crossing = { read: string, place: string, through: string, licensed: bool }
+
+/// The crossing of the read `r`: the last call on its way whose caller and callee stand in
+/// different packages, else the last call; absent where no body on the way can be read back.
+fn crossing_of(engine: QueryEngine, r: WorldReached) -> Crossing? {
+    let calls = calls_on_way(r)
+    let crossing? = calls.filter(it.caller.file.package_name != it.package).last() ?? calls.last() else { return null }
+    let site? = call_site(engine, crossing.caller, crossing.target) else { return null }
+    Crossing {
+        read: r.read.words(),
+        place: "${site.file.package_name}/${site.file.path_in_package}:${site.line}",
+        through: [c.name for c in r.way].join(" → "),
+        licensed: site.licensed,
+    }
+}
+
+/// Every call on `r`'s way, the query's first: each body's call of the next, then the read's own.
+fn calls_on_way(r: WorldReached) -> List<CallOnWay> {
+    let between = [CallOnWay { caller: r.way[i - 1], target: c.name, package: c.file.package_name } for i, c in r.way if i > 0]
+    match r.read {
+        .Row(name) -> between
+            .concat(
+                [
+                    CallOnWay {
+                        caller: r.way.last()!,
+                        target: name,
+                        package: r.way.last()!.file.package_name,
+                    },
+                ],
+            ),
+        .Unrecorded(_) -> between,
+    }
+}
+
+/// A call as its file holds it: the file, its line there, and whether the licence stands above it.
+type CallSite = { file: SourceFileAddress, line: int, licensed: bool }
+
+/// Where the body `caller` calls `target` by that name: the first such call in it, or the body's
+/// own statement where none is written so.
+fn call_site(engine: QueryEngine, caller: CalledFn, target: string) -> CallSite? {
+    let d? = declaring(engine, caller) else { return null }
+    let store = d.item.store
+    let named = store.every_expr(d.parts.body).find((e) -> calls_by(store, e, target))
+    let at? = (if named == null { store.stmt_span(d.stmt) } else { store.expr_span(named!) }) else { return null }
+    let text = source_text(engine, d.file) ?? ""
+    let start = item_start(engine, d.file, d.at)
+    let starts = item_starts(engine, d.file)
+    let end = starts.find(it > start) ?? text.length
+    let own = new_source_file(d.file.path_in_package, text.substring(start, end))
+    let line = own.linecol(at.lo).line
+    CallSite {
+        file: d.file,
+        line: new_source_file(d.file.path_in_package, text).linecol(start + at.lo).line,
+        licensed: site_licensed(store, own, line, READ_LICENCE),
+    }
+}
+
+/// Whether `e` calls `target` by name, or as a method of that name.
+fn calls_by(store: SyntaxArena, e: ExprId, target: string) -> bool { store.callee_name(e) == target || store.method_parts(e)?.name == target }
+
+/// A body's declaring statement read back: its file, its item, the item's syntax and the statement.
+type StmtAt = { file: SourceFileAddress, at: ItemId, item: ReadItem, stmt: StmtId }
+
+/// A body's declaration read back, its parts beside its statement.
+type Declaring = { file: SourceFileAddress, at: ItemId, item: ReadItem, stmt: StmtId, parts: FnParts }
+
+/// The declaration of the body `c` runs, where it is a fn's: free, or a method of the impl that
+/// gives it.
+fn declaring(engine: QueryEngine, c: CalledFn) -> Declaring? {
+    let d? = declared_stmt(engine, c) else { return null }
+    let parts? = d.item.store.fn_parts(d.stmt) else { return null }
+    Declaring { file: d.file, at: d.at, item: d.item, stmt: d.stmt, parts: parts }
+}
+
+/// The statement declaring what `c` calls: a free fn or an extern by its name in its file, or a
+/// method of the impl that gives it; absent for any other body.
+fn declared_stmt(engine: QueryEngine, c: CalledFn) -> StmtAt? {
+    let owner? = c.owner else { return free_stmt(engine, c.file, c.name) }
+    let at? = impls_given(engine, c.of ?? c.file, owner, c.name, c.statics, c.file.package_name)
+        .first() else { return null }
+    let item = read_item(engine, at.file, at.item)
+    let s? = impl_fns_at(item, at).find((f) -> item.store.fn_parts(f)?.name == c.name) else { return null }
+    StmtAt { file: at.file, at: at.item, item: item, stmt: s }
+}
+
+/// The fn or extern `file` declares as `name`, its statement read back.
+fn free_stmt(engine: QueryEngine, file: SourceFileAddress, name: string) -> StmtAt? {
+    let d? = file_declares(engine, file).names.find(it.name == name) else { return null }
+    let item = read_item(engine, file, d.item)
+    let s? = item.stmts.find((f) -> declares_fn(item.store, f, name)) else { return null }
+    StmtAt { file: file, at: d.item, item: item, stmt: s }
+}
+
+/// Whether `s` declares the fn or the extern `name`.
+fn declares_fn(store: SyntaxArena, s: StmtId, name: string) -> bool { store.fn_parts(s)?.name == name || store.extern_parts(s)?.name == name }
+
+/// How the walk meets a body a call runs.
+enum Met {
+    /// A door: an `@input`, another query's body, judged on its own, or a method of a type that
+    /// records what it's asked. Nothing past it is followed.
+    Door
+    /// An engine member reading past its records: a read itself.
+    Unrecorded
+    /// A body the walk goes into.
+    Walked
+}
+
+/// How the walk meets the body `c` runs: a body any query's annotation generates is that query's,
+/// judged on its own.
+fn met_as(engine: QueryEngine, c: CalledFn) -> Met {
+    let marks = marks_of(engine, c)
+    when {
+        marks.contains(UNRECORDED_MARK) -> Met.Unrecorded
+        marks.contains(DOOR_MARK) || marks.contains(HELD_MARK) || records_asked(engine, c) -> Met
+            .Door
+        query_item(engine, c) != null -> Met.Door
+        _ -> Met.Walked
+    }
+}
+
+/// Whether `c` is a body the query the item `home` of `file` declares generates, its own body among
+/// them.
+fn own_generated(engine: QueryEngine, c: CalledFn, file: SourceFileAddress, home: ItemId) -> bool {
+    let d? = query_item(engine, c) else { return false }
+    spelled_file(d.file) == spelled_file(file) && d.item == home
+}
+
+/// The declaration of the free fn `c`, where its item declares a query: written there, or made by
+/// the query's annotation.
+fn query_item(engine: QueryEngine, c: CalledFn) -> DeclaredName? {
+    if c.owner != null { return null }
+    let d? = file_declares(engine, c.file).names.find(it.name == c.name) ?? generated_declares(
+        engine,
+        c.file,
+    )
+        .names
+        .find(it.name == c.name) else { return null }
+    let item = read_item(engine, d.file, d.item)
+    if item.stmts.any((s) -> is_query(item, s)) { d } else { null }
+}
+
+/// Whether `c` is a method of a type wearing `@records`.
+fn records_asked(engine: QueryEngine, c: CalledFn) -> bool {
+    let owner? = c.owner else { return false }
+    let of? = c.of else { return false }
+    let d? = file_declares(engine, of).names.find(it.name == owner) else { return false }
+    wears_mark(engine, d, RECORDS_MARK)
+}
+
+/// The annotations the body `c` runs is written wearing, by name.
+fn marks_of(engine: QueryEngine, c: CalledFn) -> List<string> {
+    let d? = declared_stmt(engine, c) else { return [] }
+    [a.name for a in d.item.store.annotations_of(d.stmt)]
+}
+
+fn reads_world_words(a: List<string>) -> Voice { query_reads_past_record(a[0], a[1], a[2], a[3]) }
+
+// voices
+
+/// A query's answer is kept under its record's reads, and `query` reaches `read` past them at
+/// `place`, by the way `through`.
+fn query_reads_past_record(query: string, read: string, place: string, through: string) -> Voice {
+    Voice {
+        message: "a query's answer is kept under the reads its record holds, and `${query}` reaches ${read} past them, at ${place}",
+        label: "reaches ${read} through ${through}",
+        help: "move the read behind an `@input`, or license the call at ${place}: `// LICENSED ${READ_LICENCE}: <what the question's key covers>` on the line above it",
+    }
+}
