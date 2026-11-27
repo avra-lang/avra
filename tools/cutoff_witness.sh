@@ -7,6 +7,10 @@
 # ceilings in tools/cutoff.ceiling are shares of what the frontier held, never counts, so they hold
 # as the program grows: per ten thousand answers held, at most `proved` proved and at most `reads`
 # reads checked. They pin what a cut-off costs now, and are lowered as it tightens.
+# THE CEILINGS HOLD PROVED AND READS, NEVER REACHED: an input that truly moved is reached, and so is
+# the one query that cuts on it — a directory the build wrote its binary into, read again as the same
+# sources — so reached may differ between two trees by that input and its cut, while what the change
+# costs to prove does not.
 #
 #   sh tools/cutoff_witness.sh [compiler]   (default build/avra)
 set -u
