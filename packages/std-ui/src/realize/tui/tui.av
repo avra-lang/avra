@@ -8,37 +8,39 @@ use place.solve.{Placed, place}
 use realize.tui.paint.{painted, trimmed, gridded, Grid, Painted}
 use realize.tui.wrap.{at_least_one}
 use env.{Env}
+use realize.tui.glyphs.{Glyphs, unicode, glyphs_for}
 
 /// The tree as text in `width` cells, one `\n` between rows and none after
 /// the last. A width below one reads as one. Text wraps on word boundaries; a
 /// word wider than the line is cut at the width, and an atom (button, link,
-/// image) wider than it is clipped there.
-export fn render(root: Node, _env: Env, width: int) -> string { focused(root, width, null) }
+/// image) wider than it is clipped there. A state is drawn in the device's
+/// marks (`glyphs_for`).
+export fn render(root: Node, env: Env, width: int) -> string { focused(root, width, null, glyphs_for(env)) }
 
-/// `render`, with the node at walk seat `focus` marked `> ` as the one
-/// the keys go to.
-export fn focused(root: Node, width: int, focus: int?) -> string {
+/// `render`, with the node at walk seat `focus` marked as the one the keys
+/// go to.
+export fn focused(root: Node, width: int, focus: int?, glyphs: Glyphs = unicode) -> string {
     let w = at_least_one(width)
-    [trimmed(row) for row in drawn(root, w, path_of(root, focus)).rows].join("\n")
+    [trimmed(row) for row in drawn(root, w, path_of(root, focus), glyphs).rows].join("\n")
 }
 
 /// The screen as a value: `width` cells across and `height` down (absent: as
 /// tall as the layout asks), the node at walk seat `focus` marked and the
 /// caret at its content. Rows past the layout are blank, rows past the
 /// height are cut off.
-export fn raster(root: Node, width: int, height: int?, focus: int?) -> Grid {
+export fn raster(root: Node, width: int, height: int?, focus: int?, glyphs: Glyphs = unicode) -> Grid {
     let w = at_least_one(width)
-    gridded(drawn(root, w, path_of(root, focus)), w, height)
+    gridded(drawn(root, w, path_of(root, focus), glyphs), w, height)
 }
 
-fn drawn(root: Node, w: int, at: string) -> Painted {
-    painted(root, place(root, Cells { focus: at }, w), w, at)
+fn drawn(root: Node, w: int, at: string, glyphs: Glyphs) -> Painted {
+    painted(root, place(root, Cells { focus: at, glyphs: glyphs }, w), w, at, glyphs)
 }
 
 /// The boxes the solver gives the tree in `width` cells, with the node at
 /// walk seat `focus` holding the keys: where `raster` draws everything.
-export fn placed(root: Node, width: int, focus: int?) -> Placed {
-    place(root, Cells { focus: path_of(root, focus) }, at_least_one(width))
+export fn placed(root: Node, width: int, focus: int?, glyphs: Glyphs = unicode) -> Placed {
+    place(root, Cells { focus: path_of(root, focus), glyphs: glyphs }, at_least_one(width))
 }
 
 /// The path of the node at walk seat `seat`, which is its place in the
