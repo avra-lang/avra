@@ -387,6 +387,7 @@ fn entry_nodes(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> Type
 /// minted is read for its fields and for a name the language owns, which a `table<int>` writes.
 fn misses_in(engine: QueryEngine, t: TypedNodes) -> List<MissAt> {
     let inferred = indexed(
+        t.store.expr_count(),
         flatten(
             [flatten([t.store.every_expr(b) for b in inferred_body(t.store, ExprId { index: i })])
                 .concat(held_call(t.store, ExprId { index: i })) for i in t.lo..t.hi],
@@ -397,7 +398,7 @@ fn misses_in(engine: QueryEngine, t: TypedNodes) -> List<MissAt> {
         values: statement_values(t.store),
         generic: [p! for s in t.store.stmt_ids() for p in [t.store.fn_parts(s)] if p != null && !p!.tparams.is_empty()],
     }
-    [kept_miss(m) for i in t.lo..t.hi for e in [ExprId { index: i }] if t.judges(e) && t.store.minted_for(e) == null && !inferred.has("${i}") for m in miss_at(engine, t, e, scope)]
+    [kept_miss(m) for i in t.lo..t.hi for e in [ExprId { index: i }] if t.judges(e) && t.store.minted_for(e) == null && !inferred[i] for m in miss_at(engine, t, e, scope)]
         .concat(
             [kept_miss(m) for i in t.lo..t.hi for e in [ExprId { index: i }] if t.judges(e) && t.store.minted_for(e) != null for m in literal_miss(engine, t, e).concat(owned_literal_miss(engine, t, e))],
         )
@@ -439,10 +440,10 @@ fn held_call(store: SyntaxArena, e: ExprId) -> List<ExprId> {
     }
 }
 
-/// `nodes` as a set, by index.
-fn indexed(nodes: List<ExprId>) -> Map<string, bool> {
-    mut out: Map<string, bool> = {}
-    for n in nodes { out.set("${n.index}", true) }
+/// `nodes`, among a store's first `count`, as a set: whether each node is one, at its own index.
+fn indexed(count: int, nodes: List<ExprId>) -> List<bool> {
+    mut out = [false for _at in 0..count]
+    for n in nodes { out[n.index] = true }
     out
 }
 
@@ -528,7 +529,7 @@ fn miss_at(engine: QueryEngine, t: TypedNodes, e: ExprId, scope: MissScope) -> L
 
 /// What every miss of a store reads of it whole: the values its statements bind, each by its node,
 /// and the fns it declares with type parameters, in the order it holds them.
-type MissScope = { values: Map<string, bool>, generic: List<FnParts> }
+type MissScope = { values: List<bool>, generic: List<FnParts> }
 
 /// What the node `e` asks of the shape of a value whether or not typing typed it: a `with` over no
 /// record, a literal's spread of no record, a `when`'s `_` arm, a type a binding holds as its value.
@@ -551,7 +552,7 @@ fn shape_misses(engine: QueryEngine, t: TypedNodes, e: ExprId, scope: MissScope)
         .ChainCall(subject, name, _) -> chain_call_miss(t, e, subject).concat(chain_method_miss(engine, t, e, subject, name.of)),
         .Ident(name) -> param_value_miss(t.store, e, name, scope.generic)
             .concat(
-                if scope.values.has("${e.index}") && read_as_type(t, e) { type_value_miss(engine, t, name.text(), t.store.expr_span(e)) } else { [] },
+                if scope.values[e.index] && read_as_type(t, e) { type_value_miss(engine, t, name.text(), t.store.expr_span(e)) } else { [] },
             ),
         rest -> [],
     }
@@ -601,8 +602,9 @@ fn chain_call_miss(t: TypedNodes, e: ExprId, subject: ExprId) -> List<MissPlaced
 }
 
 /// Each node of `store` that is a statement's value where the statement stands, by its index.
-fn statement_values(store: SyntaxArena) -> Map<string, bool> {
+fn statement_values(store: SyntaxArena) -> List<bool> {
     indexed(
+        store.expr_count(),
         [v! for i in 0..store.stmts.count() for v in [store.stmt_value(StmtId { index: i })] if v != null],
     )
 }
