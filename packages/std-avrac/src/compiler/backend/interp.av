@@ -12,7 +12,7 @@
 //! live in machine tables addressed by handle, and calls run on the
 //! machine's own stack, never the host's.
 use core.settings.{avrac_settings}
-use @std.meta.{reach_held}
+use @std.meta.{Reach, reach_held}
 use core.{
     EmbedKind,
     digest_of_octets,
@@ -25,7 +25,6 @@ use core.{
     RtSig,
     RtKind,
     Takes,
-    Reach,
     opens_region,
     closes_region,
     filled,
@@ -41,7 +40,6 @@ use core.{
     Slot,
     cleanups_open,
     debug,
-    distinct,
 }
 use @std.path.{joined_path, normalized}
 use features.{Unsettled, Settled, MetaVal, MetaHeap, new_meta_heap, Lifted, nothing, Budgets}
@@ -823,17 +821,14 @@ fn world_in(rows: Map<string, RtSig>, b: Body, permits_embed: bool) -> Ins? { b.
 /// A row a compile-time call may not run: one the registry marks
 /// World, an embed without an input-carrying result — or one unknown,
 /// which is a program's own extern and reaches whatever it likes.
-export fn reaches_out(rows: Map<string, RtSig>, i: Ins, permits_embed: bool) -> bool {
+fn reaches_out(rows: Map<string, RtSig>, i: Ins, permits_embed: bool) -> bool {
     let h? = hosted_symbol(i) else { return false }
     let row? = rows.get(h) else { return true }
-    match row.reach { .Pure or .Lookup -> false, .Embed -> !permits_embed, .World -> true }
-}
-
-/// Each row the instructions `ins` call that reaches the world, an embed among them, in the order
-/// first called.
-export fn world_rows(ins: List<Ins>) -> List<string> {
-    let rows = rt_index()
-    distinct([hosted_symbol(i)! for i in ins if reaches_out(rows, i, false)])
+    match row.reach {
+        .Pure or .Lookup -> false,
+        .Embed -> !permits_embed,
+        .World or .Writes -> true,
+    }
 }
 
 /// The deepest call the machine runs before it refuses. Calls live on

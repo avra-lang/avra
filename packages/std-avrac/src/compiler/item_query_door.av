@@ -1,29 +1,38 @@
 //! A QUERY BODY READS THE WORLD ONLY THROUGH ITS DOOR. A query's answer is kept under its question
 //! and served to every later process whose recorded reads hold, so a read its record doesn't hold
 //! is one the store answers wrong the day it moves. From each `@query`, `@cut_query` and
-//! `@parted_query` body this follows every body its lowering calls — fns, methods, the lambdas it
-//! and they make, and every fn they name as a value — and stops at an `@input` body, whose answer
-//! the engine records. What it finds is a call that reads the world: a runtime row the registry
-//! marks World, an embed, a program's own extern, or an engine member marked `@unrecorded`.
+//! `@parted_query` body this follows every body it calls as its typing resolves the call — a fn by
+//! name, a method by its receiver's type, a fn named as a value, and the same in every lambda it
+//! writes — and stops at a door: an `@input`, another query's body, judged on its own, a method of a
+//! type marked `@records`, and a run marked `@reach_held`. A READ is a call of an extern whose row
+//! reaches the world — one whose reach, its registry row's or what its declaration states in
+//! `@reach(…)`, is World or Embed, or one nothing describes — or of an engine member marked `@unrecorded`.
 //!
-//! A FINDING STANDS AT THE CROSSING: the last call on the way from the query to the read whose
-//! caller and callee stand in different packages — the call into the package that reads, where the
-//! one reading lives in a package of its own — or the read's own call where the way never leaves
-//! one. `// LICENSED input.unrecorded_read: <what the question's key covers>` on the line above that
-//! call says the read is the query's to make, for every query reaching it.
+//! EVERY CALL THAT ENTERS THE READING PACKAGE IS A SITE, on any way from the query: a call from a
+//! body of another package into a body of the package whose own call reads, where that body reaches
+//! the read; and the read's own call where the query stands in that package. Each needs
+//! `// LICENSED input.unrecorded_read: <why>` on the line above it. At the read's own call the
+//! licence says the call reads nothing of the world that varies — what it reads is what the call
+//! was handed — so the read is gone for every way; at an entering call it says the query's key
+//! covers what lies past it.
 //!
-//! A CALL THROUGH A VALUE THE LOWERING CAN'T NAME IS NOT FOLLOWED: a fn value made off the way — a
-//! seat, a field, a cell, a call's answer — is reached by nothing this walks, and its reads go unseen
-//! (features/tests/query_door's `unnamed_value` pins the miss).
-use core.{CalledFn, ExprId, FnParts, StmtId, SyntaxArena, flatten}
+//! WHAT TYPING CAN'T NAME IS NOT FOLLOWED: a call through a fn value made off the way (a seat, a
+//! field, a cell, a call's answer), and a method of a type parameter, reached through its bound.
+//! Each is pinned as a miss (features/tests/query_door).
+//!
+//! A body is read once, from its typing, into its summary (`body_world`), kept in the store; a
+//! process walks the summaries once, settling the bodies that reach each other together.
+use core.{ExprId, SignedType, StmtId, SyntaxArena, flatten, rt_index}
 use compiler.laws.{Found, law}
-use diagnostics.{SourceFile, Voice, new_source_file}
-use @std.meta.{identity}
+use diagnostics.{Voice, new_source_file}
+use @std.meta.{Reach, derive, identity}
 use @std.program.address.{SourceFileAddress}
-use @std.program.query_engine.{QueryEngine}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.saved_derive.{Saved}
+use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
 use @std.program.source_facts.{source_text}
 
-/// The licence a crossing's author writes where the read is the query's to make.
+/// The licence a site's author writes where the read is the query's to make.
 const READ_LICENCE: string = "input.unrecorded_read"
 
 /// The annotations that make a fn a query's body.
@@ -35,14 +44,17 @@ const DOOR_MARK: string = "input"
 /// The annotation that marks an engine member reading past its records.
 const UNRECORDED_MARK: string = "unrecorded"
 
-/// The annotation that marks an extern whose row answers from its arguments alone.
-const PURE_MARK: string = "pure"
+/// The annotation an extern states its row's reach in.
+const REACH_MARK: string = "reach"
 
 /// The annotation that marks a fn running a program its reach law holds before it starts.
 const HELD_MARK: string = "reach_held"
 
 /// The annotation that marks a type whose methods read through the records it keeps.
 const RECORDS_MARK: string = "records"
+
+/// The suffix the body a query's annotation wraps is declared under.
+const WRAPPED_BODY: string = "\$body"
 
 /// a query body that reads the world past what its record holds
 export law query_reads_world {
@@ -52,127 +64,248 @@ export law query_reads_world {
     witness: "use @std.program.saved_query.{query}\nuse @std.io.{env}\n\n@query(\"summary\")\nfn home(_e: int, _of: string) -> string { env(\"HOME\") ?? \"\" }\n"
 }
 
-/// A body on the way from a query: the call that runs it, and the calls that led there.
-type Step = { called: CalledFn, way: List<CalledFn> }
+/// A body a call runs, as the walk names it: the file declaring it, the type it's a method of — ""
+/// for a fn — and its name.
+@derive(Saved)
+type DoorBody = { file: SourceFileAddress, owner: string, name: string }
 
-/// A read a query reaches: what it reads, and every call from the query to it, the query's own
-/// body first.
-type WorldReached = { read: WorldRead, way: List<CalledFn> }
+/// A place in a file: the item, the offset, and whether the offset counts from the item's start
+/// rather than the file's — as the item's read counts its places.
+@derive(Saved)
+type ItemPlace = { file: SourceFileAddress, item: ItemId, lo: int, from_item: bool }
 
-/// What a query reaches of the world: a row its way's last body calls, or the engine member its
-/// way ends at.
-enum WorldRead {
-    Row(name: string)
-    Unrecorded(name: string)
+/// A read a body makes itself: what it reads, worded, and where the call stands.
+@derive(Saved)
+type ReadAt = { read: string, at: ItemPlace }
+
+/// A call a body makes of another body: the callee, and where the call stands.
+@derive(Saved)
+type CallAt = { callee: DoorBody, at: ItemPlace }
+
+/// How a call of a body is met.
+@derive(Saved)
+enum Met {
+    /// A door: an `@input`, a query's body or what its annotation makes, a method of a type that
+    /// records what it's asked, a run its reach law holds, an extern whose row reads nothing, or a
+    /// body no declaration here gives. Nothing past it is followed.
+    Door
+    /// A call of it is a read itself: an extern whose row reaches the world, or an engine member
+    /// reading past its records.
+    Read
+    /// A body the walk goes into.
+    Walked
 }
 
-impl WorldRead {
-    /// The read, worded.
-    fn words() -> string {
-        match self { .Row(name) -> "`${name}`", .Unrecorded(name) -> "the engine's `${name}`" }
-    }
-}
+/// What one body says of the world as its typing reads it: the reads it makes itself, and the
+/// calls it makes of bodies the walk goes into.
+@derive(Saved)
+type BodyWorld = { reads: List<ReadAt>, calls: List<CallAt> }
 
-/// Each query body `view`'s item holds whose reads cross into the world at an unlicensed call.
+/// Each query body `view`'s item holds, one finding a site it reaches unlicensed.
 fn queries_reading_world(view: ItemView) -> List<Found> {
     let item = view.item
     flatten(
-        [query_findings(view, s, p!) for s in item.stmts for p in [item.store.fn_parts(s)] if p != null && is_query(item, s)],
+        [query_findings(view, s, p!.name) for s in item.stmts for p in [item.store.fn_parts(s)] if p != null && is_query(item, s)],
     )
 }
 
 /// Whether the fn statement `s` wears a query's annotation.
 fn is_query(item: ReadItem, s: StmtId) -> bool { item.store.annotations_of(s).any((a) -> QUERY_MARKS.contains(a.name)) }
 
-/// The query `p`'s unlicensed crossings, one finding a crossing, at the query's own statement.
-fn query_findings(view: ItemView, s: StmtId, p: FnParts) -> List<Found> {
-    let own? = callee_at(view.engine, view.file, view.at, p.name) else { return [] }
-    let sites = [c! for r in reads_reached(view.engine, own, view.at) for c in [crossing_of(view.engine, r)] if c != null]
-    let places = [c.place for c in sites]
-    [Found { at: view.item.store.stmt_span(s), args: [p.name, c.read, c.place, c.through] } for i, c in sites if !c.licensed && places.index_of(c.place) == i]
+/// The query `name`'s unlicensed sites, at its own statement.
+fn query_findings(view: ItemView, s: StmtId, name: string) -> List<Found> {
+    let walk = reach_walk(view.engine)
+    let wrapped = DoorBody { file: view.file, owner: "", name: "${name}${WRAPPED_BODY}" }
+    let start = if declared_body(view.engine, wrapped) == null { DoorBody { file: view.file, owner: "", name: name } } else { wrapped }
+    let sites = walk
+        .sites_of(view.engine, start)
+        .filter((x) -> !x.row || x.package == view.file.package_name)
+    let places = [place_key(x.at) for x in sites]
+    [Found { at: view.item.store.stmt_span(s), args: [name, x.read, place_said(view.engine, x.at)] } for i, x in sites if places.index_of(place_key(x.at)) == i && !walk.licensed(view.engine, x.at)]
 }
 
-/// Every read the query whose body is `own` reaches, each by one way from `own` to it: the bodies
-/// its item `home` generates walked as its own, every other body's reads read off the process's walk.
-fn reads_reached(engine: QueryEngine, own: CalledFn, home: ItemId) -> List<WorldReached> {
-    let walk = reach_walk(engine)
-    let seen: Cell<Map<string, bool>> = Cell.new({})
-    mut out: List<WorldReached> = []
-    mut pending: List<Step> = [Step { called: own, way: [own] }]
-    while !pending.is_empty() {
-        let step = pending.pop()
-        let facts? = facts_read(engine, step.called) else { continue }
-        out = joined(
-            out,
-            [WorldReached { read: r.read, way: step.way.concat(r.way.drop(1)) } for r in own_reads(engine, step.called, facts)],
-        )
-        for c in facts.callees {
-            if seen.get().has(body_at(c).key()) { continue }
-            seen.put(body_at(c).key(), true)
-            if own_generated(engine, c, own.file, home) {
-                pending.push(Step { called: c, way: step.way.concat([c]) })
-            } else if walked(walk.met(engine, c)) {
-                out = joined(
-                    out,
-                    [WorldReached { read: r.read, way: step.way.concat(r.way) } for r in walk.reads_of(engine, c)],
-                )
-            }
-        }
+/// How a call of the body `c` is met, read from its declaration alone.
+@query("laws")
+fn body_met(engine: QueryEngine, c: DoorBody) -> Met {
+    let d? = declared_body(engine, c) else { return Met.Door }
+    let marks = [a.name for a in d.item.store.annotations_of(d.stmt)]
+    if marks.contains(UNRECORDED_MARK) { return Met.Read }
+    if marks.contains(DOOR_MARK) || marks.contains(HELD_MARK) || records_asked(engine, c) { return Met.Door }
+    if query_made(engine, c) { return Met.Door }
+    if d.item.store.extern_parts(d.stmt) == null { return Met.Walked }
+    if reads_world(row_reach(c.name, d)) { Met.Read } else { Met.Door }
+}
+
+/// What the extern `name` reaches: its registry row's reach, else the reach its declaration
+/// states, else the world, which a row no one describes may reach.
+fn row_reach(name: string, d: BodyDeclared) -> Reach { rt_index().get(name)?.reach ?? declared_reach(d.item.store, d.stmt) ?? Reach.World }
+
+/// The reach the `@reach(…)` on the declaration `s` states; absent where it states none.
+fn declared_reach(store: SyntaxArena, s: StmtId) -> Reach? {
+    let mark? = store.annotations_of(s).find(it.name == REACH_MARK) else { return null }
+    let arg? = mark.args.first() else { return null }
+    reach_named(store.prop_parts(arg)?.name ?? store.ident_name(arg) ?? "")
+}
+
+/// The reach a variant's word names; absent for a word no variant spells.
+fn reach_named(word: string) -> Reach? {
+    match word {
+        "Pure" -> Reach.Pure,
+        "Embed" -> Reach.Embed,
+        "Lookup" -> Reach.Lookup,
+        "World" -> Reach.World,
+        "Writes" -> Reach.Writes,
+        _ -> null,
     }
-    out
 }
 
-/// What the body `c` reads itself, the way to each `c` first: each row it and its lambdas call that
-/// reaches the world, where no `@pure` extern answers it, and each call of an engine member
-/// reading past its records.
-fn own_reads(engine: QueryEngine, c: CalledFn, facts: UnitFacts) -> List<WorldReached> {
-    let pure = [d.symbol for d in facts.callees if d.external && marks_of(engine, d).contains(PURE_MARK)]
-    let rows = [WorldReached { read: WorldRead.Row(row), way: [c] } for row in facts.world if !pure.contains(row)]
-    rows
-        .concat(
-            [WorldReached { read: WorldRead.Unrecorded(d.name), way: [c, d] } for d in facts.callees if unrecorded(met_as(engine, d))],
-        )
+/// Whether a call of a row reaching `r` reads the world: a write reads nothing there, and a lookup
+/// reads the compiler's own table.
+fn reads_world(r: Reach) -> bool {
+    match r { .Embed or .World -> true, .Pure or .Lookup or .Writes -> false }
 }
 
-/// `had` and each read of `more` it doesn't hold, a read told apart by what it reads and the body
-/// that makes the call.
-fn joined(had: List<WorldReached>, more: List<WorldReached>) -> List<WorldReached> {
-    let keys: Cell<Map<string, bool>> = Cell.new({})
-    for r in had { keys.put(read_key(r), true) }
-    mut out = had
-    for r in more {
-        if !keys.get().has(read_key(r)) {
-            keys.put(read_key(r), true)
-            out.push(r)
-        }
+/// What the body `c` says of the world as its typing reads it.
+@query("laws")
+fn body_world(engine: QueryEngine, c: DoorBody) -> BodyWorld {
+    let d? = declared_body(engine, c) else { return BodyWorld { reads: [], calls: [] } }
+    let parts? = d.item.store.fn_parts(d.stmt) else { return BodyWorld { reads: [], calls: [] } }
+    let typed = typed_body(engine, c, d)
+    let store = d.item.store
+    let named = [CallAt { callee: n!, at: place_at(d, store, r.at) } for r in typed.reads if r.binder == null for n in [named_callee(engine, d.file, r.home, r.name)] if n != null]
+    let methods = [CallAt { callee: m!, at: place_at(d, store, e.index) } for e in store.every_expr(parts.body) for m in [method_callee(store, typed.types, e)] if m != null]
+    let calls = named.concat(methods)
+    BodyWorld {
+        reads: [ReadAt { read: read_words(x.callee), at: x.at } for x in calls if read_met(body_met(engine, x.callee)) && !licensed_at(engine, x.at)],
+        calls: [x for x in calls if walked_met(body_met(engine, x.callee))],
     }
-    out
 }
 
-/// What tells one read from another: what it reads, and the body whose call makes it.
-fn read_key(r: WorldReached) -> string {
-    let maker = match r.read { .Row(_) -> r.way.last()!, .Unrecorded(_) -> r.way[r.way.length - 2] }
-    "${r.read.words()} ${body_at(maker).key()}"
+/// The body `c`'s typing.
+fn typed_body(engine: QueryEngine, c: DoorBody, d: BodyDeclared) -> TypedBody {
+    let at? = d.impl_at else { return typed_fn(engine, c.file, c.name) ?? TypedBody { types: [] } }
+    method_body_typed(engine, at, c.name, d.item.store.is_static(d.stmt))
 }
 
-/// THE BODIES QUERIES REACH, WALKED ONCE A PROCESS: what each body reaches of the world below it,
-/// each read by one way from the body, kept for every query its engine judges. A body is walked
-/// once, the bodies that reach each other settled together (`settle`), so a recursion asks nothing
-/// twice.
+/// The fn a name the program declares, read in `file` or the template `home` wrote, names.
+fn named_callee(engine: QueryEngine, file: SourceFileAddress, home: string?, name: string) -> DoorBody? {
+    let d? = resolved(engine, home_file(engine, home) ?? file, Space.Value, name).named() else { return null }
+    if !(d.kind is .Fn) { return null }
+    DoorBody { file: d.file, owner: "", name: d.name }
+}
+
+/// The method a call at `e` runs, by its receiver's declared type.
+fn method_callee(store: SyntaxArena, types: List<SignedType?>, e: ExprId) -> DoorBody? {
+    let m? = store.method_parts(e) else { return null }
+    let subject = if m.subject.index < types.length { types[m.subject.index] } else { null }
+    let ty? = subject else { return null }
+    match ty.head {
+        .Declared(file, name) -> DoorBody { file: file, owner: name, name: m.name },
+        _ -> null,
+    }
+}
+
+/// The read a call of `c` makes, worded.
+fn read_words(c: DoorBody) -> string { if c.owner == "" { "`${c.name}`" } else { "the `${c.owner}`'s `${c.name}`" } }
+
+/// Where the node `index` of `d`'s item stands: the body's own statement, for a node a template
+/// copied, whose span is its origin file's; the item's own start, for an item a generator made,
+/// whose every span is its template's.
+fn place_at(d: BodyDeclared, store: SyntaxArena, index: int) -> ItemPlace {
+    if generated_rank(d.at) != null { return ItemPlace { file: d.file, item: d.at, lo: 0, from_item: true } }
+    let e = ExprId { index: index }
+    let lo = if store.spanned_elsewhere(e) { store.stmt_span(d.stmt)?.lo } else { store.expr_span(e)?.lo }
+    ItemPlace { file: d.file, item: d.at, lo: lo ?? 0, from_item: d.item.at != null }
+}
+
+fn read_met(m: Met) -> bool {
+    match m { .Read -> true, .Door or .Walked -> false }
+}
+
+fn walked_met(m: Met) -> bool {
+    match m { .Walked -> true, .Door or .Read -> false }
+}
+
+/// A body's declaration read back: its file and item, the item's syntax, its statement, and the
+/// impl that gives it where it's a method.
+type BodyDeclared = { file: SourceFileAddress, at: ItemId, item: ReadItem, stmt: StmtId, impl_at: ImplAt? }
+
+/// The declaration of the body `c`: a fn or an extern its file declares or a generator makes there,
+/// or a method of the impl that gives it; absent where none does.
+fn declared_body(engine: QueryEngine, c: DoorBody) -> BodyDeclared? {
+    if c.owner == "" {
+        let d? = file_declares(engine, c.file).names.find(it.name == c.name) ?? generated_declares(
+            engine,
+            c.file,
+        )
+            .names
+            .find(it.name == c.name) else { return null }
+        let item = read_item(engine, d.file, d.item)
+        let s? = item.stmts.find((x) -> declares_fn(item.store, x, c.name)) else { return null }
+        return BodyDeclared { file: d.file, at: d.item, item: item, stmt: s, impl_at: null }
+    }
+    let at? = impls_given(engine, c.file, c.owner, c.name, false, c.file.package_name).first() ?? impls_given(
+        engine,
+        c.file,
+        c.owner,
+        c.name,
+        true,
+        c.file.package_name,
+    )
+        .first() else { return null }
+    let item = read_item(engine, at.file, at.item)
+    let s? = impl_fns_at(item, at).find((x) -> item.store.fn_parts(x)?.name == c.name) else { return null }
+    BodyDeclared { file: at.file, at: at.item, item: item, stmt: s, impl_at: at }
+}
+
+/// Whether `s` declares the fn or the extern `name`.
+fn declares_fn(store: SyntaxArena, s: StmtId, name: string) -> bool { store.fn_parts(s)?.name == name || store.extern_parts(s)?.name == name }
+
+/// Whether `c` is a method of a type wearing `@records`.
+fn records_asked(engine: QueryEngine, c: DoorBody) -> bool {
+    if c.owner == "" { return false }
+    let d? = file_declares(engine, c.file).names.find(it.name == c.owner) else { return false }
+    wears_mark(engine, d, RECORDS_MARK)
+}
+
+/// Whether `c` is a query's body, or a fn its annotation makes: declared at an item whose fn wears a
+/// query's annotation.
+fn query_made(engine: QueryEngine, c: DoorBody) -> bool {
+    if c.owner != "" { return false }
+    let d? = file_declares(engine, c.file).names.find(it.name == c.name) ?? generated_declares(
+        engine,
+        c.file,
+    )
+        .names
+        .find(it.name == c.name) else { return false }
+    let item = read_item(engine, d.file, d.item)
+    item.stmts.any((s) -> is_query(item, s))
+}
+
+/// A read a body reaches: what it reads, where the call making it stands, and that call's package.
+type ReadBelow = { read: string, at: ItemPlace, package: string }
+
+/// A site: what it reads, where the call stands, the package of the body it enters — of the body
+/// that reads, for the read's own call — and whether it is the read's own call.
+type Site = { read: string, at: ItemPlace, package: string, row: bool }
+
+/// THE BODIES QUERIES REACH, WALKED ONCE A PROCESS: for each body, what it reaches of the world and
+/// the sites on the way to it, read off the bodies' summaries. A body is walked once, the bodies that
+/// reach each other settled together (`settle`).
 @identity
 type ReachWalk = {
-    below: Cell<Map<string, List<WorldReached>>>,
-    met_held: Cell<Map<string, Met>>,
+    reads: Cell<Map<string, List<ReadBelow>>>,
+    sites: Cell<Map<string, List<Site>>>,
+    worlds: Cell<Map<string, BodyWorld>>,
     order: Cell<Map<string, int>>,
     low: Cell<Map<string, int>>,
     open: Cell<Map<string, bool>>,
     /// The bodies walked and not settled, the first `top` of them.
     stack: Cell<List<string>>,
     top: Cell<int>,
-    own: Cell<Map<string, List<WorldReached>>>,
-    next: Cell<Map<string, List<CalledFn>>>,
-    called: Cell<Map<string, CalledFn>>,
+    callees: Cell<Map<string, DoorBody>>,
     count: Cell<int>,
+    granted: Cell<Map<string, bool>>,
 }
 
 /// Each engine's walk, by its serial.
@@ -182,17 +315,17 @@ once fn reach_walks() -> Cell<Map<string, ReachWalk>> { Cell.new({}) }
 fn reach_walk(engine: QueryEngine) -> ReachWalk {
     let held? = reach_walks().get().get("${engine.serial}") else {
         let made = ReachWalk {
-            below: Cell.new({}),
-            met_held: Cell.new({}),
+            reads: Cell.new({}),
+            sites: Cell.new({}),
+            worlds: Cell.new({}),
             order: Cell.new({}),
             low: Cell.new({}),
             open: Cell.new({}),
             stack: Cell.new([]),
             top: Cell.new(0),
-            own: Cell.new({}),
-            next: Cell.new({}),
-            called: Cell.new({}),
+            callees: Cell.new({}),
             count: Cell.new(0),
+            granted: Cell.new({}),
         }
         reach_walks().put("${engine.serial}", made)
         return made
@@ -200,43 +333,36 @@ fn reach_walk(engine: QueryEngine) -> ReachWalk {
     held
 }
 
-impl ReachWalk {
-    /// How the walk meets the body `c` runs, asked once.
-    fn met(engine: QueryEngine, c: CalledFn) -> Met {
-        let key = body_at(c).key()
-        let held? = self.met_held.get().get(key) else {
-            let found = met_as(engine, c)
-            self.met_held.put(key, found)
-            return found
-        }
-        held
-    }
+/// A body as the walk tells it from another.
+fn callee_key(c: DoorBody) -> string { "${spelled_file(c.file)} ${c.owner} ${c.name}" }
 
-    /// Every read the body `c` reaches, each by one way from `c`.
-    fn reads_of(engine: QueryEngine, c: CalledFn) -> List<WorldReached> {
-        let key = body_at(c).key()
+/// A place as the walk tells it from another.
+fn place_key(p: ItemPlace) -> string { "${spelled_file(p.file)} ${p.item} ${p.lo}" }
+
+impl ReachWalk {
+    /// Every site on a way from the body `c` to a read it reaches.
+    fn sites_of(engine: QueryEngine, c: DoorBody) -> List<Site> {
+        let key = callee_key(c)
         if !self.order.get().has(key) { self.visit(engine, c) }
-        self.below.get().get(key) ?? self.own.get().get(key) ?? []
+        self.sites.get().get(key) ?? []
     }
 
     /// Walks the body `c`, and every body below it the walk hasn't met.
-    fn visit(engine: QueryEngine, c: CalledFn) {
-        let key = body_at(c).key()
+    fn visit(engine: QueryEngine, c: DoorBody) {
+        let key = callee_key(c)
         let n = self.count.get()
         self.count.set(n + 1)
         self.order.put(key, n)
         self.low.put(key, n)
         self.open.put(key, true)
         self.pushed(key)
-        self.called.put(key, c)
-        let facts = facts_read(engine, c)
-        self.own.put(key, if facts == null { [] } else { own_reads(engine, c, facts!) })
-        let next = [d for d in facts?.callees ?? [] if walked(self.met(engine, d))]
-        self.next.put(key, next)
-        for d in next {
-            let at = body_at(d).key()
+        self.callees.put(key, c)
+        let world = body_world(engine, c)
+        self.worlds.put(key, world)
+        for x in world.calls {
+            let at = callee_key(x.callee)
             if !self.order.get().has(at) {
-                self.visit(engine, d)
+                self.visit(engine, x.callee)
                 self.lowered(key, self.low.get().get(at)!)
             } else if self.open.get().get(at) ?? false {
                 self.lowered(key, self.order.get().get(at)!)
@@ -262,8 +388,9 @@ impl ReachWalk {
     /// `key`'s lowest reach, lowered to `to` where that is lower.
     fn lowered(key: string, to: int) { if to < self.low.get().get(key)! { self.low.put(key, to) } }
 
-    /// The bodies that reach each other with `root`, settled together: each holds its own reads,
-    /// then those below each body it calls, its way first, until none holds more.
+    /// The bodies that reach each other with `root`, settled together: each holds its own reads and
+    /// sites, then those below each body it calls and each call it makes that enters the package of
+    /// a read below it, until none holds more.
     fn settle(root: string) {
         mut members: List<string> = []
         mut at = ""
@@ -272,205 +399,129 @@ impl ReachWalk {
             self.open.put(at, false)
             members.push(at)
         }
-        for m in members { self.below.put(m, self.own.get().get(m) ?? []) }
+        for m in members {
+            let c = self.callees.get().get(m)!
+            let own = self.worlds.get().get(m)!.reads
+            self
+                .reads
+                .put(
+                    m,
+                    [ReadBelow { read: r.read, at: r.at, package: c.file.package_name } for r in own],
+                )
+            self
+                .sites
+                .put(
+                    m,
+                    [Site { read: r.read, at: r.at, package: c.file.package_name, row: true } for r in own],
+                )
+        }
         mut moved = true
         while moved {
             moved = false
-            for m in members {
-                let had = self.below.get().get(m) ?? []
-                let c = self.called.get().get(m)!
-                let more = [WorldReached { read: r.read, way: [c].concat(r.way) } for d in self.next.get().get(m) ?? [] for r in self.below.get().get(body_at(d).key()) ?? []]
-                let grown = joined(had, more)
-                if grown.length != had.length {
-                    self.below.put(m, grown)
-                    moved = true
-                }
-            }
+            for m in members { if self.grew(m) { moved = true } }
         }
     }
-}
 
-/// Whether the walk goes into a body met as `m`.
-fn walked(m: Met) -> bool {
-    match m { .Walked -> true, .Door or .Unrecorded -> false }
-}
+    /// Whether the body `m` holds more once it takes what each body it calls holds.
+    fn grew(m: string) -> bool {
+        let c = self.callees.get().get(m)!
+        let calls = self.worlds.get().get(m)!.calls
+        let had_reads = self.reads.get().get(m) ?? []
+        let had_sites = self.sites.get().get(m) ?? []
+        let reads = reads_joined(
+            had_reads,
+            flatten([self.reads.get().get(callee_key(x.callee)) ?? [] for x in calls]),
+        )
+        let entering = [Site { read: r.read, at: x.at, package: x.callee.file.package_name, row: false } for x in calls if x.callee.file.package_name != c.file.package_name for r in self.reads.get().get(callee_key(x.callee)) ?? [] if r.package == x.callee.file.package_name]
+        let sites = sites_joined(
+            had_sites,
+            entering
+                .concat(flatten([self.sites.get().get(callee_key(x.callee)) ?? [] for x in calls])),
+        )
+        self.reads.put(m, reads)
+        self.sites.put(m, sites)
+        reads.length != had_reads.length || sites.length != had_sites.length
+    }
 
-/// Whether a body met as `m` is a read itself.
-fn unrecorded(m: Met) -> bool {
-    match m { .Unrecorded -> true, .Door or .Walked -> false }
-}
-
-/// One call on the way to a read: the body it stands in, what it calls by name, and the package of
-/// what it calls.
-type CallOnWay = { caller: CalledFn, target: string, package: string }
-
-/// Where a read crosses in, worded: what it reads, the call's place as `package/path:line`, the way
-/// to it, and whether that call carries the read's licence.
-type Crossing = { read: string, place: string, through: string, licensed: bool }
-
-/// The crossing of the read `r`: the last call on its way whose caller and callee stand in
-/// different packages, else the last call; absent where no body on the way can be read back.
-fn crossing_of(engine: QueryEngine, r: WorldReached) -> Crossing? {
-    let calls = calls_on_way(r)
-    let crossing? = calls.filter(it.caller.file.package_name != it.package).last() ?? calls.last() else { return null }
-    let site? = call_site(engine, crossing.caller, crossing.target) else { return null }
-    Crossing {
-        read: r.read.words(),
-        place: "${site.file.package_name}/${site.file.path_in_package}:${site.line}",
-        through: [c.name for c in r.way].join(" → "),
-        licensed: site.licensed,
+    /// Whether the call at `p` carries the read's licence, read once.
+    fn licensed(engine: QueryEngine, p: ItemPlace) -> bool {
+        let key = place_key(p)
+        let held? = self.granted.get().get(key) else {
+            let found = licensed_at(engine, p)
+            self.granted.put(key, found)
+            return found
+        }
+        held
     }
 }
 
-/// Every call on `r`'s way, the query's first: each body's call of the next, then the read's own.
-fn calls_on_way(r: WorldReached) -> List<CallOnWay> {
-    let between = [CallOnWay { caller: r.way[i - 1], target: c.name, package: c.file.package_name } for i, c in r.way if i > 0]
-    match r.read {
-        .Row(name) -> between
-            .concat(
-                [
-                    CallOnWay {
-                        caller: r.way.last()!,
-                        target: name,
-                        package: r.way.last()!.file.package_name,
-                    },
-                ],
-            ),
-        .Unrecorded(_) -> between,
+/// `had` and each read of `more` it doesn't hold, a read told apart by what it reads and where.
+fn reads_joined(had: List<ReadBelow>, more: List<ReadBelow>) -> List<ReadBelow> {
+    let keys: Cell<Map<string, bool>> = Cell.new({})
+    for r in had { keys.put("${r.read} ${place_key(r.at)}", true) }
+    mut out = had
+    for r in more {
+        let k = "${r.read} ${place_key(r.at)}"
+        if !keys.get().has(k) {
+            keys.put(k, true)
+            out.push(r)
+        }
     }
+    out
 }
 
-/// A call as its file holds it: the file, its line there, and whether the licence stands above it.
-type CallSite = { file: SourceFileAddress, line: int, licensed: bool }
-
-/// Where the body `caller` calls `target` by that name: the first such call in it, or the body's
-/// own statement where none is written so.
-fn call_site(engine: QueryEngine, caller: CalledFn, target: string) -> CallSite? {
-    let d? = declaring(engine, caller) else { return null }
-    let store = d.item.store
-    let named = store.every_expr(d.parts.body).find((e) -> calls_by(store, e, target))
-    let at? = (if named == null { store.stmt_span(d.stmt) } else { store.expr_span(named!) }) else { return null }
-    let text = source_text(engine, d.file) ?? ""
-    let start = item_start(engine, d.file, d.at)
-    let starts = item_starts(engine, d.file)
-    let end = starts.find(it > start) ?? text.length
-    let own = new_source_file(d.file.path_in_package, text.substring(start, end))
-    let line = own.linecol(at.lo).line
-    CallSite {
-        file: d.file,
-        line: new_source_file(d.file.path_in_package, text).linecol(start + at.lo).line,
-        licensed: site_licensed(store, own, line, READ_LICENCE),
+/// `had` and each site of `more` it doesn't hold, a site told apart by what it reads and where.
+fn sites_joined(had: List<Site>, more: List<Site>) -> List<Site> {
+    let keys: Cell<Map<string, bool>> = Cell.new({})
+    for s in had { keys.put("${s.read} ${place_key(s.at)}", true) }
+    mut out = had
+    for s in more {
+        let k = "${s.read} ${place_key(s.at)}"
+        if !keys.get().has(k) {
+            keys.put(k, true)
+            out.push(s)
+        }
     }
+    out
 }
 
-/// Whether `e` calls `target` by name, or as a method of that name.
-fn calls_by(store: SyntaxArena, e: ExprId, target: string) -> bool { store.callee_name(e) == target || store.method_parts(e)?.name == target }
-
-/// A body's declaring statement read back: its file, its item, the item's syntax and the statement.
-type StmtAt = { file: SourceFileAddress, at: ItemId, item: ReadItem, stmt: StmtId }
-
-/// A body's declaration read back, its parts beside its statement.
-type Declaring = { file: SourceFileAddress, at: ItemId, item: ReadItem, stmt: StmtId, parts: FnParts }
-
-/// The declaration of the body `c` runs, where it is a fn's: free, or a method of the impl that
-/// gives it.
-fn declaring(engine: QueryEngine, c: CalledFn) -> Declaring? {
-    let d? = declared_stmt(engine, c) else { return null }
-    let parts? = d.item.store.fn_parts(d.stmt) else { return null }
-    Declaring { file: d.file, at: d.at, item: d.item, stmt: d.stmt, parts: parts }
-}
-
-/// The statement declaring what `c` calls: a free fn or an extern by its name in its file, or a
-/// method of the impl that gives it; absent for any other body.
-fn declared_stmt(engine: QueryEngine, c: CalledFn) -> StmtAt? {
-    let owner? = c.owner else { return free_stmt(engine, c.file, c.name) }
-    let at? = impls_given(engine, c.of ?? c.file, owner, c.name, c.statics, c.file.package_name)
-        .first() else { return null }
-    let item = read_item(engine, at.file, at.item)
-    let s? = impl_fns_at(item, at).find((f) -> item.store.fn_parts(f)?.name == c.name) else { return null }
-    StmtAt { file: at.file, at: at.item, item: item, stmt: s }
-}
-
-/// The fn or extern `file` declares as `name`, its statement read back.
-fn free_stmt(engine: QueryEngine, file: SourceFileAddress, name: string) -> StmtAt? {
-    let d? = file_declares(engine, file).names.find(it.name == name) else { return null }
-    let item = read_item(engine, file, d.item)
-    let s? = item.stmts.find((f) -> declares_fn(item.store, f, name)) else { return null }
-    StmtAt { file: file, at: d.item, item: item, stmt: s }
-}
-
-/// Whether `s` declares the fn or the extern `name`.
-fn declares_fn(store: SyntaxArena, s: StmtId, name: string) -> bool { store.fn_parts(s)?.name == name || store.extern_parts(s)?.name == name }
-
-/// How the walk meets a body a call runs.
-enum Met {
-    /// A door: an `@input`, another query's body, judged on its own, or a method of a type that
-    /// records what it's asked. Nothing past it is followed.
-    Door
-    /// An engine member reading past its records: a read itself.
-    Unrecorded
-    /// A body the walk goes into.
-    Walked
-}
-
-/// How the walk meets the body `c` runs: a body any query's annotation generates is that query's,
-/// judged on its own.
-fn met_as(engine: QueryEngine, c: CalledFn) -> Met {
-    let marks = marks_of(engine, c)
-    when {
-        marks.contains(UNRECORDED_MARK) -> Met.Unrecorded
-        marks.contains(DOOR_MARK) || marks.contains(HELD_MARK) || records_asked(engine, c) -> Met
-            .Door
-        query_item(engine, c) != null -> Met.Door
-        _ -> Met.Walked
+/// Whether the line above the call at `p` cites the read's licence.
+fn licensed_at(engine: QueryEngine, p: ItemPlace) -> bool {
+    let item = read_item(engine, p.file, p.item)
+    let text = source_text(engine, p.file) ?? ""
+    if !p.from_item {
+        let whole = new_source_file(p.file.path_in_package, text)
+        return site_licensed(item.store, whole, whole.linecol(p.lo).line, READ_LICENCE)
     }
+    let start = item_start(engine, p.file, p.item)
+    let end = item_starts(engine, p.file).find(it > start) ?? text.length
+    let own = new_source_file(p.file.path_in_package, text.substring(start, end))
+    site_licensed(item.store, own, own.linecol(p.lo).line, READ_LICENCE)
 }
 
-/// Whether `c` is a body the query the item `home` of `file` declares generates, its own body among
-/// them.
-fn own_generated(engine: QueryEngine, c: CalledFn, file: SourceFileAddress, home: ItemId) -> bool {
-    let d? = query_item(engine, c) else { return false }
-    spelled_file(d.file) == spelled_file(file) && d.item == home
+/// Where the call at `p` stands, as `package/path:line`.
+fn place_said(engine: QueryEngine, p: ItemPlace) -> string {
+    let text = source_text(engine, p.file) ?? ""
+    let lo = if p.from_item { item_start(engine, p.file, p.item) + p.lo } else { p.lo }
+    let line = new_source_file(p.file.path_in_package, text).linecol(lo).line
+    "${p.file.package_name}/${p.file.path_in_package}:${line}"
 }
 
-/// The declaration of the free fn `c`, where its item declares a query: written there, or made by
-/// the query's annotation.
-fn query_item(engine: QueryEngine, c: CalledFn) -> DeclaredName? {
-    if c.owner != null { return null }
-    let d? = file_declares(engine, c.file).names.find(it.name == c.name) ?? generated_declares(
-        engine,
-        c.file,
-    )
-        .names
-        .find(it.name == c.name) else { return null }
-    let item = read_item(engine, d.file, d.item)
-    if item.stmts.any((s) -> is_query(item, s)) { d } else { null }
-}
+fn reads_world_words(a: List<string>) -> Voice { query_reads_past_record(a[0], a[1], a[2]) }
 
-/// Whether `c` is a method of a type wearing `@records`.
-fn records_asked(engine: QueryEngine, c: CalledFn) -> bool {
-    let owner? = c.owner else { return false }
-    let of? = c.of else { return false }
-    let d? = file_declares(engine, of).names.find(it.name == owner) else { return false }
-    wears_mark(engine, d, RECORDS_MARK)
-}
+collect listed_query_door_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
 
-/// The annotations the body `c` runs is written wearing, by name.
-fn marks_of(engine: QueryEngine, c: CalledFn) -> List<string> {
-    let d? = declared_stmt(engine, c) else { return [] }
-    [a.name for a in d.item.store.annotations_of(d.stmt)]
-}
-
-fn reads_world_words(a: List<string>) -> Voice { query_reads_past_record(a[0], a[1], a[2], a[3]) }
+/// The queries the query-door law is read through, for a process to hand its engine.
+export fn query_door_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_query_door_facts) }
 
 // voices
 
-/// A query's answer is kept under its record's reads, and `query` reaches `read` past them at
-/// `place`, by the way `through`.
-fn query_reads_past_record(query: string, read: string, place: string, through: string) -> Voice {
+/// A query's answer is kept under its record's reads, and `query` reaches `read` past them through
+/// the call at `place`.
+fn query_reads_past_record(query: string, read: string, place: string) -> Voice {
     Voice {
-        message: "a query's answer is kept under the reads its record holds, and `${query}` reaches ${read} past them, at ${place}",
-        label: "reaches ${read} through ${through}",
+        message: "a query's answer is kept under the reads its record holds, and `${query}` reaches ${read} past them, through the call at ${place}",
+        label: "reaches ${read}",
         help: "move the read behind an `@input`, or license the call at ${place}: `// LICENSED ${READ_LICENCE}: <what the question's key covers>` on the line above it",
     }
 }

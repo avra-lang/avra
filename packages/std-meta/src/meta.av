@@ -480,12 +480,23 @@ export fn unrecorded(_f: Fn) {}
 /// into a method marked `@unrecorded`, which reads past them.
 export fn records(_t: Type) {}
 
-/// The extern's row is PURE: it answers from its arguments and reads
-/// and writes nothing of the world, as a registry row whose reach is
-/// `Pure` does. A claim about C the compiler can't check, written where
-/// the row is declared; the query-door law (`query.reads_world`) takes a
-/// call of it as no read.
-export fn pure(_f: Fn) {}
+/// What a runtime row REACHES: `Pure` answers from its arguments alone,
+/// or touches only the running task's own state, so a settlement may run
+/// it; `Embed` reads a file the BUILD owns, beside the source, so a
+/// settlement may run it and records the file; `Lookup` reads the
+/// compiler's OWN declaration table — deterministic for a given program,
+/// never the process's world, so every compile-time run may use it;
+/// `World` reads the process's world — io, time, env, a child — and no
+/// compile-time evaluation may; `Writes` changes the process's world and
+/// answers nothing it read there, so no compile-time evaluation may run
+/// it and no answer that calls it reads the world by it.
+export enum Reach { Pure, Embed, Lookup, World, Writes }
+
+/// The extern's row REACHES `reach`, said where the row is declared: the
+/// one word the registry's own rows carry (`RtSig.reach`), for a row it
+/// doesn't hold. A claim about C the compiler can't check; the
+/// query-door law (`query.reads_world`) reads it.
+export fn reach(_f: Fn, _r: Reach) {}
 
 /// The fn runs a program HELD TO THE REACH LAW BEFORE IT STARTS: a run
 /// whose program would read the world is refused before a step of it
