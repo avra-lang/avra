@@ -910,7 +910,9 @@ keepers_run() {
             rungs_read
             if [ -n "$rungs" ]; then
                 echo "fact keeper seed-check SKIPPED: this train carries $(echo $rungs | wc -w) rung(s) ($rungs) — no seed reads a rung; its seed is emitted beside the verdict (seed.ll.gz), and the next train commits it" >>"$out/rows"
-                row keeper-seed-emitted make -s -o avra seed &&
+                # the cli's whole IR is the largest thing a compiler is asked for (about 8 GB at its peak),
+                # past the shim's default cap: the emit is let take the runner, less a margin, as the Mac's seed is
+                row keeper-seed-emitted env AVRA_CAP_MB="$(awk '/^MemTotal:/ { print int($2 / 1024) - 1200 }' /proc/meminfo)" make -s -o avra seed &&
                     cp bootstrap/seed.ll.gz bootstrap/seed.sources "$out/" &&
                     git checkout -q -- bootstrap/seed.ll.gz bootstrap/seed.sources
                 continue

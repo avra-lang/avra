@@ -1132,18 +1132,18 @@ fix (high): write `label` as `chip`'s head
 a type applied to arguments it does not take
 
 ```avra
-let m: Map<int, int> = {}
+let m: Map<float, int> = {}
 1
 ```
 
 ```
-error[type.applied]: a map's keys are strings, not `int`
+error[type.applied]: a map's keys are text or a word — an int, a bool, an enum whose variants carry nothing — not `float`
   ╭─[<source>:1:1]
-1 │ let m: Map<int, int> = {}
+1 │ let m: Map<float, int> = {}
   · ┬
   · ╰── this type
 ──╯
-help: key by text — `Map<string, …>`
+help: key by text or a word — `Map<string, …>`, `Map<int, …>`
 ```
 
 ## annotation.callee
@@ -6696,21 +6696,21 @@ help: a continuing operator ends the line it continues — end the previous line
 
 ## type.map_key
 
-a map's keys are strings
+a map's keys are one type, text or a word
 
 ```avra
-let m = {1: 2}
+let m = {1.5: 2}
 1
 ```
 
 ```
-error[type.map_key]: a map's keys are strings, this is `int`
+error[type.map_key]: a map's keys are one type, text or a word — an int, a bool, an enum whose variants carry nothing — this is `float`
   ╭─[<source>:1:10]
-1 │ let m = {1: 2}
+1 │ let m = {1.5: 2}
   ·          ┬
-  ·          ╰── this is `int`
+  ·          ╰── this is `float`
 ──╯
-help: key by text
+help: key by text or a word — `Map<string, …>`, `Map<int, …>`
 ```
 
 ## type.spread_map
