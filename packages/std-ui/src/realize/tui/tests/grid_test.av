@@ -5,11 +5,14 @@ use @std.ui.tree.node.{Node}
 use @std.ui.realize.tui.tui.{raster, render}
 use @std.ui.realize.tui.paint.{Grid, lines}
 use @std.ui.env.{Env}
-use @std.ui.realize.tests.support.{holding, text_node, button_node}
+use @std.ui.realize.tests.support.{holding, text_node, button_node, leaf}
 
 fn texts(g: Grid) -> string { [c.text for c in g.cells].join("|") }
 
 fn wides(g: Grid) -> string { ["${c.wide}" for c in g.cells].join(",") }
+
+/// The style of each cell of the grid's first row.
+fn styles(g: Grid) -> string { ["${g.cells[x].style}" for x in 0..g.width].join(",") }
 
 spec "std/ui tui — the grid" {
     given "the shape" {
@@ -39,6 +42,19 @@ spec "std/ui tui — the grid" {
             let g = raster(holding(.Column, [text_node("a"), button_node("go")]), 10, null, 2)
             g.cursor?.x == 2 && g.cursor?.y == 1
         }
+    }
+    given "the looks over a state's marks" {
+        then "an unavailable control is dim across its line, marks and words" {
+            styles(raster(leaf(.Button, [.Label("go"), .Disabled(true)]), 24, null, null)) == "2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,0,0,0,0"
+        }
+        then "an invalid field is red, its cross included" {
+            styles(raster(leaf(.Field, [.Label("N"), .Invalid(true)]), 20, null, null))
+                .starts_with("512,512,512")
+        }
+        then "the control that holds the keys is reversed, its focus mark included" {
+            styles(raster(button_node("go"), 10, null, 0)) == "16,16,16,16,16,16,16,16,0,0"
+        }
+        then "a control in no state wears no look" { styles(raster(button_node("go"), 8, null, null)) == "0,0,0,0,0,0,0,0" }
     }
     given "the text" {
         then "lines of the grid are what render prints" {

@@ -148,7 +148,29 @@ spec "the same view ends in the same state by keys and by verbs" {
     }
 }
 
+/// A busy button that counts its presses, beside one that is idle.
+fn busy_counting(hits: Cell<int>) -> Terminal {
+    terminal(
+        () -> column {
+            button "Save" {
+                loading: true
+                on press { hits.set(hits.get() + 1) }
+            }
+            button "Idle" { on press {} }
+        },
+        40,
+    )
+}
+
 spec "one control holds the focus" {
+    given "a busy control that holds the focus" {
+        then "a key on it does nothing, and the focus stays" {
+            let hits: Cell<int> = Cell.new(0)
+            let on = busy_counting(hits)
+            on.feed("\n ")
+            hits.get() == 0 && on.screen().starts_with("❯ [ … Save ]")
+        }
+    }
     given "a screen just painted" {
         then "the first control holds it, and the screen marks it" {
             let hits: Cell<int> = Cell.new(0)

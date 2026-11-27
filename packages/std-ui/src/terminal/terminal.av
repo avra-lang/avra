@@ -14,6 +14,9 @@ use tree.controls.{Control, said_by_control}
 use tree.node.{Said, Node, Attribute}
 use realize.tui.said.{said_of}
 use realize.tui.tui.{focused, placed, raster}
+use realize.tui.glyphs.{Glyphs, unicode, utf8_named, glyphs_for}
+use env.{Env}
+use @std.io.{env}
 use realize.tui.hit.{hit, list_at, list_nodes, places}
 use tree.view.{View, rooted}
 use terminal.screen.{Screen, screen}
@@ -74,6 +77,7 @@ export type Terminal = {
     keyboard: Cell<int> = Cell.new(-1),
     input: Cell<Heard> = Cell.new(Heard { keys: [], held: "".bytes() }),
     reads: Cell<int> = Cell.new(0),
+    glyphs: Glyphs = unicode,
 }
 
 /// `view` in a terminal `width` cells wide and `height` lines tall. The
@@ -84,6 +88,7 @@ export fn terminal<V: View>(
     width: int = 80,
     height: int = 24,
     paste_limit: int = paste_cap,
+    glyphs: Glyphs = unicode,
 ) -> Terminal {
     let nowhere: Screen? = null
     let made = Terminal {
@@ -94,6 +99,7 @@ export fn terminal<V: View>(
         interrupts: stopped,
         moded: moded_nothing,
         paste_limit: paste_limit,
+        glyphs: glyphs,
     }
     let _ = made.fit()
     made
@@ -112,6 +118,7 @@ export fn terminal_in_place<V: View>(
     interrupts: fn() -> void,
     moded: fn(int) -> void,
     paste_limit: int = paste_cap,
+    glyphs: Glyphs = unicode,
 ) -> Terminal {
     let made = Terminal {
         shown: shown(view, rows: height, spaced: true),
@@ -121,6 +128,7 @@ export fn terminal_in_place<V: View>(
         interrupts: interrupts,
         moded: moded,
         paste_limit: paste_limit,
+        glyphs: glyphs,
     }
     let _ = made.fit()
     leaves(screen.parts())
@@ -338,7 +346,7 @@ impl Terminal {
 
     /// How many rows of `l` the screen has lines for.
     fn room(l: Listed) -> int {
-        let lines = [focused(r, self.width(), null).split("\n").length for r in l.rows]
+        let lines = [focused(r, self.width(), null, self.glyphs).split("\n").length for r in l.rows]
         let taken = lines.fold(0, (a: int, n: int) -> a + n)
         let each = if l.rows.is_empty() { 1 } else { (taken + l.rows.length - 1) / l.rows.length }
         let rest = self.screen().split("\n").length - taken
@@ -397,7 +405,8 @@ impl Terminal {
         let screen? = self.on_screen else { return }
         let root? = self.shown.tree.get() else { return }
         let said? = self.shown.app.failed.get() else {
-            screen.paint(raster(root, self.width(), self.height(), self.focused()?.seat))
+            screen
+                .paint(raster(root, self.width(), self.height(), self.focused()?.seat, self.glyphs))
             return
         }
         screen
@@ -407,6 +416,7 @@ impl Terminal {
                     self.width(),
                     self.height(),
                     self.focused()?.seat,
+                    self.glyphs,
                 ),
             )
     }
@@ -445,7 +455,7 @@ impl Terminal {
     fn click(x: int, y: int) -> bool {
         let root? = self.shown.tree.get() else { return false }
         let on = self.reachable()
-        let boxes = placed(root, self.width(), self.focused()?.seat)
+        let boxes = placed(root, self.width(), self.focused()?.seat, self.glyphs)
         let seat? = hit(root, boxes, x, y, (s: int) -> on.any(it.seat == s)) else { return false }
         let at? = [j for j, c in on if c.seat == seat].first() else { return false }
         self.rests(on, at)
@@ -456,7 +466,7 @@ impl Terminal {
     /// over none: which list a wheel turned there moves.
     fn list_under(x: int, y: int) -> int {
         let root? = self.shown.tree.get() else { return 0 }
-        list_at(root, placed(root, self.width(), self.focused()?.seat), x, y) ?? 0
+        list_at(root, placed(root, self.width(), self.focused()?.seat, self.glyphs), x, y) ?? 0
     }
 
     /// The wheel moves the window `by` rows, held inside the rows there are.
@@ -517,11 +527,13 @@ impl Terminal {
 
     /// The control that holds the focus is acted on by `act`, through the
     /// app's door. The focus is pinned to it first, so it stays with the
-    /// control whatever the paint moves around it.
+    /// control whatever the paint moves around it. A busy control holds the
+    /// focus and hears nothing.
     fn act(by: fn(Control) -> bool) -> bool {
         let on = self.reachable()
         let at? = self.resting(on) else { return false }
         self.rests(on, at)
+        if said_of(on[at].node.attrs).loading { return false }
         self.shown.app.turn_of(on[at].path, () -> by(on[at]))
     }
 
@@ -644,9 +656,9 @@ impl Terminal {
     /// last turn has failed.
     fn screen() -> string {
         let root? = self.shown.tree.get() else { return "" }
-        let drawn = focused(root, self.width(), self.focused()?.seat)
+        let drawn = focused(root, self.width(), self.focused()?.seat, self.glyphs)
         let said? = self.shown.app.failed.get() else { return drawn }
-        "${drawn}\n${focused(notice_node(said), self.width(), null)}"
+        "${drawn}\n${focused(notice_node(said), self.width(), null, self.glyphs)}"
     }
 
     /// The screen as a reader finds it, with no terminal's drawing.
@@ -733,7 +745,8 @@ export fn mount<V: View>(view: fn() -> V, width: int = 80, height: int = 24, inp
     let live = inplace ?? (size > 0)
     let columns = if size > 0 { size / 65536 } else { width }
     let lines = if size > 0 { size % 65536 } else { height }
-    let on = if live { taken_over(view, columns, lines) } else { terminal(view, width, height) }
+    let glyphs = glyphs_for(Env { utf8: utf8_named([env("LC_ALL"), env("LC_CTYPE"), env("LANG")]) })
+    let on = if live { taken_over(view, columns, lines, glyphs) } else { terminal(view, width, height, glyphs: glyphs) }
     if !live { println(on.screen()) }
     on.shown.app.warn()
     let before = running()
@@ -751,7 +764,7 @@ export fn mount<V: View>(view: fn() -> V, width: int = 80, height: int = 24, inp
 /// The terminal taken over: the input unechoed and unbuffered with its signals
 /// kept, the screen written in place on the output, and the process told what
 /// to leave the terminal as before the first byte.
-fn taken_over<V: View>(view: fn() -> V, columns: int, lines: int) -> Terminal {
+fn taken_over<V: View>(view: fn() -> V, columns: int, lines: int, glyphs: Glyphs) -> Terminal {
     let _ = avra_fd_tty_raw(input, 1)
     let sent = (s: string) -> write_all(output, s.bytes())
     let leaves = (s: string) -> avra_fd_exit_writes(output, s.bytes())
@@ -766,6 +779,7 @@ fn taken_over<V: View>(view: fn() -> V, columns: int, lines: int) -> Terminal {
         leaves,
         () -> avra_sig_raise(sigint),
         moded,
+        glyphs: glyphs,
     )
 }
 

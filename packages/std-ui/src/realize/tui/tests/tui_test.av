@@ -3,6 +3,7 @@
 use @std.ui.tree.url.{local}
 use @std.ui.tree.node.{Node, Prim}
 use @std.ui.realize.tui.tui.{render}
+use @std.ui.realize.tui.glyphs.{utf8_named}
 use @std.ui.env.{Env}
 use @std.ui.style.box.{Box}
 use @std.ui.style.layout.{Layout, Edge, around}
@@ -80,6 +81,14 @@ spec "std/ui tui — primitives" {
             drawn(leaf(.Field, [.Label("Name"), .Invalid(true)]), 40) == "✗ Name: ____________"
         }
         then "a spinner with no words is its busy mark" { drawn(leaf(.Spinner, []), 40) == "…" }
+    }
+    given "the locale the environment names" {
+        then "a UTF-8 locale draws the Unicode marks, in either spelling" {
+            utf8_named([null, null, "en_US.UTF-8"]) && utf8_named(["C.utf8", null, null])
+        }
+        then "the first one set decides" { !utf8_named(["C", null, "en_US.UTF-8"]) && utf8_named(["", "en_US.UTF-8", "C"]) }
+        then "a locale named without UTF-8 draws none" { !utf8_named([null, null, "POSIX"]) }
+        then "no locale named keeps the default" { utf8_named([null, null, null]) }
     }
     given "a locale without UTF-8" {
         then "a tick and its absence are bracketed" {
