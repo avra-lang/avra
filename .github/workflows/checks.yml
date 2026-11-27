@@ -113,9 +113,13 @@ jobs:
       - uses: actions/checkout@v4
         with: { fetch-depth: 20 }
       # THE RUN'S ONE WISP, made here and nowhere else: by its key from the published asset, else built by
-      # main's compiler (./wisp). Every other job takes this binary through .github/actions/wisp.
+      # the trunk's compiler, the gate-builder release (./wisp --compiler). Every other job takes this binary through .github/actions/wisp.
       - name: wisp
-        run: ./wisp --path
+        run: |
+          mkdir -p build/gate-builder
+          curl -fsSL --retry 3 -o build/gate-builder/compiler.tar.gz https://github.com/avra-lang/avra/releases/download/gate-builder/compiler.tar.gz
+          tar xzf build/gate-builder/compiler.tar.gz -C build/gate-builder build/avra
+          ./wisp --compiler build/gate-builder/build/avra --path
       - uses: actions/upload-artifact@v4
         with:
           name: wisp

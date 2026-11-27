@@ -686,9 +686,14 @@ export fn job_runs_wisp(
     all.any(calls_wisp(it) || vars.any((v) -> it.contains(v)))
 }
 
-/// The jobs of a workflow that build its wisp (`./wisp --path`) and hand it on (`name: wisp`).
+/// The jobs of a workflow that build its wisp (`./wisp … --path`) and hand it on (`name: wisp`).
 fn wisp_makers(jobs: Map<string, string>) -> List<string> {
-    [n for n, b in jobs if uncommented(b).contains("./wisp --path") && uncommented(b).contains("name: wisp")]
+    [n for n, b in jobs if makes_wisp(b) && uncommented(b).contains("name: wisp")]
+}
+
+/// Whether a job asks `./wisp` for its binary's path, which builds or fetches it.
+fn makes_wisp(job_text: string) -> bool {
+    uncommented(job_text).split("\n").any(it.contains("./wisp ") && it.contains("--path"))
 }
 
 /// A workflow builds ONE wisp, in one job, and every other job that runs wisp takes that binary through
@@ -731,8 +736,7 @@ fn route_refusals(
     let users = [j for j, b in jobs if !makers.contains(j) && job_runs_wisp(uncommented(b), make, tool_text, action_text)]
     let unmade = if users.length > 0 && makers.length != 1 { [wisp_makers_not_one(name, makers)] } else { [] }
     let untaken = [wisp_not_taken(name, j) for j in users if !uncommented(job(jobs, j)).contains("uses: ${WISP_ACTION}")]
-    let own = [wisp_made_again(name, j) for j, b in jobs if !makers.contains(j) &&
-        (uncommented(b).contains("./wisp --path") || uncommented(b).contains("./wisp --compiler"))]
+    let own = [wisp_made_again(name, j) for j, b in jobs if !makers.contains(j) && (makes_wisp(b) || uncommented(b).contains("./wisp --compiler"))]
     unmade.concat(untaken).concat(own)
 }
 
