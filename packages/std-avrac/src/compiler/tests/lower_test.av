@@ -198,8 +198,8 @@ spec "compiler/lower" {
         then "string == lowers through the runtime" {
             ir_of("let t = \"a\" == \"b\"\n\"done\"").entry.ins.filter(it is .CallRt).length == 1
         }
-        then "an interpolated string still lowers to ONE join over its pieces" {
-            render_ir(ir_of("let x = 1\nlet s = \"a \${x} b\"\ns")).contains("call avra_str_join")
+        then "an interpolated string is built in one box — one end, no number's own text, no join" {
+            interpolation_built(render_ir(ir_of("let x = 1\nlet s = \"a \${x} b\"\ns")))
         }
     }
     given "the ownership roles read as behavior" {
@@ -1017,4 +1017,14 @@ fn relation() -> string {
         "    @plans(\"tag\")\n" +
         "    static fn by_tag(db: int, v: string) -> List<Row> { [] }\n" +
         "}\n"
+}
+
+/// Whether an interpolation's IR builds its text once: one begin, one end, its number appended as
+/// itself, and no text of the number's own or join of pieces minted.
+fn interpolation_built(ir: string) -> bool {
+    ir.split("call avra_text_begin").length == 2 &&
+        ir.split("call avra_text_end").length == 2 &&
+        ir.contains("call avra_text_add_int") &&
+        !ir.contains("avra_int_text") &&
+        !ir.contains("avra_str_join")
 }

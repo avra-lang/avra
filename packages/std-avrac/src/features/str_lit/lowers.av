@@ -1,6 +1,6 @@
 //! The lowering rules of a string literal, a byte string and an interpolated one: a literal is its
-//! text, a byte string its octets, each the binary's own; an interpolated string joins its runs and
-//! its holes' text, one piece as itself, two by the runtime's concatenation, more by its join.
+//! text, a byte string its octets, each the binary's own; an interpolated string builds its runs and
+//! its holes' text in one box, a text hole standing alone as itself.
 use core.{
     BoxKind,
     ExprId,
@@ -49,65 +49,63 @@ impl Lowers for Body {
     }
 }
 
-/// An interpolated string: each run that holds text, and each hole as text, in written order, joined.
-/// A hole whose text the runtime doesn't spell isn't lowered yet.
+/// An interpolated string: each run that holds text, and each hole as text, in written order, built
+/// in one box — a text hole standing alone is itself. A hole whose text the runtime doesn't spell
+/// isn't lowered yet.
 fn text_lowered(mut cx: Lowering, e: ExprId, b: Body) -> Reg {
     if b.holes.any((h) -> cx.type_at(h)?.generic() ?? false) { return cx.missed_as(unbounded_asked("a type parameter's value as text")) }
-    if b.holes.any((h) -> spelling(cx, h) == null) { return cx.missed_as("a hole that isn't a number, a truth or text") }
-    let lead = run(cx, b.parts[0])
-    let pieces = lead
-        .concat(flatten([[texted(cx, h)].concat(run(cx, b.parts[j + 1])) for j, h in b.holes]))
-    let l = cx.layout_at(e)
-    match pieces.length {
-        0 -> cx.const_str(""),
-        1 -> pieces[0],
-        2 -> cx.call_row(l, rt_sig_of("avra_str_concat")!, pieces),
-        _ -> joined(cx, l, pieces),
+    if b.holes.any((h) -> added_as(cx, h) == null) { return cx.missed_as("a hole that isn't a number, a truth or text") }
+    if b.holes.is_empty() { return cx.const_str(b.parts[0]) }
+    let values = [cx.lower(h) for h in b.holes]
+    if values.length == 1 && b.parts.all(it == "") && added_as(cx, b.holes[0]) == Added.Text { return values[0] }
+    cx.run_row(rt_sig_of("avra_text_begin")!, [])
+    added_run(cx, b.parts[0])
+    for j, h in b.holes {
+        cx.run_row(rt_sig_of(added_row(added_as(cx, h)!))!, [values[j]])
+        added_run(cx, b.parts[j + 1])
+    }
+    cx.call_row(cx.layout_at(e), rt_sig_of("avra_text_end")!, [])
+}
+
+/// A run of text between holes appended to the text being built; an empty run appends nothing.
+fn added_run(mut cx: Lowering, s: string) { if s != "" { cx.run_row(rt_sig_of(added_row(Added.Text))!, [cx.const_str(s)]) } }
+
+/// How a hole's value is appended to the text being built: as text, or as a number's or a truth's
+/// spelling.
+enum Added {
+    Text
+    Int
+    Float
+    Bool
+}
+
+/// The row appending a value added as `a`.
+fn added_row(a: Added) -> string {
+    match a {
+        .Text -> "avra_text_add",
+        .Int -> "avra_text_add_int",
+        .Float -> "avra_text_add_float",
+        .Bool -> "avra_text_add_bool",
     }
 }
 
-/// A run of text between holes as its constant; an empty run is nothing.
-fn run(mut cx: Lowering, s: string) -> List<Reg> { if s == "" { [] } else { [cx.const_str(s)] } }
-
-/// The pieces in a box sized for them, joined by the runtime with nothing between.
-fn joined(mut cx: Lowering, l: Layout, pieces: List<Reg>) -> Reg {
-    let parts = cx.call_row(l, rt_sig_of("avra_array_sized")!, [cx.const_int(pieces.length)])
-    for p in pieces { cx.run_row(rt_sig_of("avra_array_push")!, [parts, p]) }
-    cx.call_row(l, rt_sig_of("avra_str_join")!, [parts, cx.const_str("")])
-}
-
-/// How a hole's value is spelled as text: itself, or the runtime row that spells it.
-enum Spelling {
-    Itself
-    Row(name: string)
-}
-
-/// How the hole `h` is spelled: a string as itself, an `int`, a `float` or a `bool` by its row, a
-/// named type as its shape; absent for any other type, or one the language doesn't own.
-fn spelling(cx: Lowering, h: ExprId) -> Spelling? {
+/// How the hole `h` is appended: a string as text, an `int`, a `float` or a `bool` by its spelling,
+/// a named type as its shape; absent for any other type, or one the language doesn't own.
+fn added_as(cx: Lowering, h: ExprId) -> Added? {
     let read? = cx.type_at(h) else { return null }
     let ty = cx.program.checked.named_shape(read) ?? read
     if ty.nullable() || ty.dynamic || !ty.args.is_empty() { return null }
     let own? = match ty.head { .Owned(_) -> ty, rest -> null } else { return null }
     let l? = cx.program.checked.layout(own) else { return null }
     match l {
-        .Word -> Spelling.Row("avra_int_text"),
-        .Real -> Spelling.Row("avra_float_text"),
-        .Truth -> Spelling.Row("avra_bool_text"),
+        .Word -> Added.Int,
+        .Real -> Added.Float,
+        .Truth -> Added.Bool,
         .Boxed(box) -> match box {
-            .Text -> Spelling.Itself,
+            .Text -> Added.Text,
             .Bytes or .List or .Map or .Record or .Enum or .Closure or .Cell or .Task or .Dyn or .Union or .Range or .Slot -> null,
         },
         .Void or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> null,
-    }
-}
-
-/// The hole `h` as text.
-fn texted(mut cx: Lowering, h: ExprId) -> Reg {
-    let v = cx.lower(h)
-    match spelling(cx, h)! {
-        .Itself -> v,
-        .Row(name) -> cx.call_row(Layout.Boxed(BoxKind.Text), rt_sig_of(name)!, [v]),
     }
 }
 

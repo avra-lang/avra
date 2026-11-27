@@ -65,6 +65,7 @@ the classifier reads the other nine shapes.
 | aggregates as leaf scalars, unfilled parts zeroed | in progress (parallel-main) | SelectionDAG fallbacks, undef words |
 | release rows | landed (batch 48) | release call sites |
 | interned names | proposed | string compares in lookups |
+| interpolation in one buffer: a string's runs and holes appended to the thread's scratch between `avra_text_begin` and `avra_text_end`, builds nesting, the text minted once | landed (str_lit's `text_lowered`) | a box per number's spelling, the pieces' list and the join — one box per interpolation instead (`box text by avra_text_end` in the census) |
 | content keys: a table keyed by a value folds it to a `ContentHash` over both lanes and probes a `HashKeyedTable` (or interns it), never a text built per lookup | landed for the cancel survey (`BodyAt.print`); the general form waits on maps keyed by any hashable value, and `compiler.text_keyed_probe` (lane/replay-defects/text-keyed-rule) turns on with it | a text, and a box per number in it, on every probe — `BodyAt.key()` minted 2.32 M of them on a cold build-cli |
 | reuse in place (Perceus/FBIP) | proposed | free + alloc pairs |
 | fresh empties: a first write into `[]` makes its buffer, never a clone of the static | proposed | the open of the empty literal (`empty_opens`) |
