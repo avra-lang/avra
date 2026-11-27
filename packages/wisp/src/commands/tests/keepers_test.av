@@ -1,0 +1,29 @@
+use commands.{KEEPERS, KeeperSet, refusals, in_set, members, set_named, sets_text}
+
+fn refuses_two_and_four(name: string) -> bool {
+    name != "k2" && name != "k4"
+}
+
+fn always(_name: string) -> bool {
+    true
+}
+
+spec "keepers — one registry, its sets asked of the rows" {
+    then "every refusal is named, in order" {
+        refusals(["k1", "k2", "k3", "k4", "k5"], refuses_two_and_four).join(" ") == "k2 k4"
+    }
+    then "a clean run names none" { refusals(["k1", "k3"], always).is_empty() }
+    then "every keeper names itself once" { KEEPERS.all((k) -> KEEPERS.filter(it.name == k.name).length == 1) }
+    then "every keeper is in the train" { KEEPERS.all(in_set(it, KeeperSet.All)) }
+    then "the a set is both halves" {
+        members(KeeperSet.A).length == members(KeeperSet.A1).length + members(KeeperSet.A2).length
+    }
+    then "a word names its set" { set_named("static") == KeeperSet.Static && set_named("nope") == null }
+    then "the sets print as the variables the CI checks read" {
+        sets_text().split("\n").map(it.split(" = ")[0]).join(" ") == "KEEPERS KEEPERS_ALONE KEEPERS_A KEEPERS_A1 KEEPERS_A2 KEEPERS_B KEEPERS_WASM KEEPERS_STATIC KEEPERS_PR"
+    }
+    then "the pr check's sets name what a pr runs" {
+        members(KeeperSet.Static).contains("fingerprints") &&
+            members(KeeperSet.Pr).contains("rt-header")
+    }
+}

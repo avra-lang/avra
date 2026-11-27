@@ -720,14 +720,14 @@ rows_dealt() {
 # std-avrac's feature dirs whose names match `$1`, sorted
 features() { find packages/std-avrac/src/features -mindepth 1 -maxdepth 1 -type d -name "$1" | sort; }
 
-# THE KEEPERS ON THE GATE: every keeper the Makefile's KEEPERS names, each a row `keeper-<name>` run as
+# THE KEEPERS ON THE GATE: every keeper the registry's KEEPERS names, each a row `keeper-<name>` run as
 # checks.yml runs it (`make -s -o avra <name>`), in the slice of its own list. Those another slice
 # already runs, as the same target over the same tree, are its rows and are not run twice; speed-ratchet
 # is the one keeper no slice runs, which keepers-clock says every gate.
 KEEPERS_RUN_ELSEWHERE="speed-ratchet cost flow-trace rt-header rt-ns ui-host ui-host-test ui-board"
-# the keepers the Makefile's list `$1` names, those run elsewhere left out, one a line
+# the keepers the registry's set `$1` names (`./wisp keepers --sets`), those run elsewhere left out, one a line
 keepers_of() {
-    make -s -pn 2>/dev/null | awk -v v="$1" '$1 == v && $2 == "=" { $1 = ""; $2 = ""; print; exit }' | tr ' ' '\n' | grep . |
+    ./wisp keepers --sets | awk -v v="$1" '$1 == v && $2 == "=" { $1 = ""; $2 = ""; print; exit }' | tr ' ' '\n' | grep . |
         grep -vxF "$(printf '%s\n' $KEEPERS_RUN_ELSEWHERE)"
 }
 # what a keeper's checks.yml job sets beside it, one `NAME=value` a word: speed-ratchet's budgets are
@@ -772,7 +772,7 @@ keepers_run() {
         fi
     done
 }
-# a keeper list that names nothing fails: a Makefile edit that renamed the list keeps nothing silently
+# a keeper list that names nothing fails: a renamed set keeps nothing silently
 keepers_list() {
     judged keepers-owed-lines "$(awk '!/^#/ && NF > 0 && NF < 3' "$root/tools/gate/keepers.owed" | wc -l | tr -d ' ')"
     names=$(keepers_of "$1")

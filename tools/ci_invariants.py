@@ -66,6 +66,7 @@ review question, not a silent skip.
 """
 import os
 import re
+import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -118,7 +119,7 @@ def _expand(vals, raw, seen):
 
 
 def keeper_lists(text):
-    """The Makefile's `KEEPERS*` variables, `$(…)` references expanded."""
+    """The `KEEPERS*` variables (the keeper registry's sets), `$(…)` references expanded."""
     vals = parse_make_vars(text)
     out = {}
     for name, raw in vals.items():
@@ -670,10 +671,18 @@ def check_keeper_reach(make_text, workflows, tool_text):
                 % (len(shaped), "; owed: " + ", ".join(owed) if owed else "")]
 
 
+def tree_make_text():
+    """The Makefile, with the keeper registry's sets (`./wisp keepers --sets`) as the
+    `KEEPERS*` variables the checks read."""
+    sets = subprocess.run([os.path.join(ROOT, "wisp"), "keepers", "--sets"],
+                          capture_output=True, text=True, check=True).stdout
+    return open(MAKEFILE, encoding="utf-8").read() + "\n" + sets
+
+
 def run(make_text=None, workflow_text=None):
     """Every check over the real tree. Answers the number of refusals."""
     if make_text is None:
-        make_text = open(MAKEFILE, encoding="utf-8").read()
+        make_text = tree_make_text()
     if workflow_text is None:
         workflow_text = open(CHECKS, encoding="utf-8").read()
     refusals, words = [], []

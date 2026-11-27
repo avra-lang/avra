@@ -1755,7 +1755,7 @@ Runtime facts, ours to ratify:
   nothing pushes to it but the landing.
   1. A lane works on `lane/<lane>/<what>`, rebased onto `origin/program`.
   2. PRE-FLIGHT, in the lane's own container: the tests the change
-     touches, `make keepers-static`, every keeper over what it touches,
+     touches, `make keepers-static` (no compiler build: it runs the published wisp), every keeper over what it touches,
      and `make try` (the compiler built twice) when it touches compiler
      source. A keeper in `tools/gate/keepers.owed` that the change makes
      pass has its line struck in the same branch. The lane then reports

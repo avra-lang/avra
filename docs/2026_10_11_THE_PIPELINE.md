@@ -392,23 +392,23 @@ that make "nothing is landing" hard.
 
 A **keeper** is a mechanical refusal: a script that reads the tree (or
 runs the compiler over it) and refuses a shape the project decided is
-wrong. Keepers are declared in the Makefile, in **one list**, and that
-list is what decides where each runs. A keeper not in the list is held
+wrong. Keepers are declared in **one registry**
+(packages/wisp/src/commands/keepers.av, `./wisp keepers --sets`), and that
+registry decides where each runs. A keeper not in the list is held
 by nobody.
 
 ### The three keeper layers
 
 | target | what it is | who runs it |
 |---|---|---|
-| `make keepers-static` | the keepers that need no compiler, ~half a minute | a PR before it builds anything; a lane before pushing |
+| `make keepers-static` | the keepers that need no compiler build: they run the published wisp | a PR before it builds anything; a lane before pushing |
 | `make keepers-pr` | the keepers a PR can break alone | a lane before pushing |
 | `make keepers-a` / `make keepers-b` | the two halves a gate run splits onto separate runners | the PR's `test` check |
 | `make keepers` | every keeper, union of the above | `tools/gate_changed.sh` when not told `--no-keepers` |
 | `make gate` | the full local gate: keepers plus suites plus the vocabulary proofs | a lane proving a whole tree |
 
-`KEEPERS_STATIC` and `KEEPERS_PR` are quoted in `make keepers-static` and
-`make keepers-pr`, so a keeper named there but absent from the one
-`KEEPERS` list is refused by the target itself.
+Every set is asked of the registry's rows, so a keeper cannot sit in
+`static` or `pr` and be missing from the train.
 
 ### What each keeper protects
 
@@ -696,7 +696,7 @@ auto-merge (§0). None of these is a command to run.
 | `sh tools/work done --remove-worktree` | remove this lane too, only with the owner's say-so |
 | `sh tools/work command <stage> …` | the hand-off's words: stage word then link plans |
 | `sh tools/gate_changed.sh --refs origin/main HEAD --no-keepers` | the changed-file gate |
-| `make keepers-static` | the compiler-free keepers |
+| `make keepers-static` | the keepers that need no compiler build: they run the published wisp |
 | `make keepers-pr` | the keepers a PR can break alone |
 | `make try` | build `build/avra-try` with the standing compiler |
 | `make bootstrap` | the cold path: recover the seed, then build twice |

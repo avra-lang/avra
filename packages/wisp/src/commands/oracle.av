@@ -1,0 +1,398 @@
+//! `wisp oracle [<case>…]` — THE AGREEMENT CASES. A case names a subject and the readings taken
+//! of it, in order, each over a store it names; it holds when every reading answers alike on the
+//! facets the case compares (what it printed, its exit status — a refusal is an answer too), after
+//! the case's own masks. Agreement is consistency, never truth: a case whose readings are all
+//! Avra's carries a golden or a reader built outside Avra (`How.Reference`), or it is refused.
+//! A case STANDS one of three ways: it holds, it is KNOWN TO DIFFER (it must still differ — a
+//! difference that closed is said, so its mark goes), or one reading stands ALONE against its
+//! golden. Attacks, fuzzing and scenario witnesses (a killed build, a full disk) are programs,
+//! never cases. Every child runs under `minimal()` plus the names `PASSED` declares, so nothing
+//! ambient reaches a verdict. Exit 0 every case stood, 1 one did not, 2 usage.
+use @std.cli.{CliResult, Runnable, arg, command, option}
+use @std.process.{Tool, Outcome, Env, Exit, ProcessError, cmd, tool, tool_at, minimal, exit_text}
+use @std.io.{read_text, make_dirs, env}
+use @std.time.{secs}
+
+/// How a reading is produced.
+export enum How {
+    /// The compiler builds the subject natively; the binary its last line names runs. A build that
+    /// refuses is the reading: its status and its words.
+    Native
+    /// A reader built outside Avra: each step runs in order, the last one's answer is read.
+    Reference(steps: List<List<string>>)
+}
+
+/// The store a reading runs over.
+export enum Store {
+    /// A machine store of its own, empty when the reading starts.
+    Fresh
+    /// The store the reading at this index left, read after it.
+    After(reading: int)
+}
+
+/// One reading, by name: how it is produced and over which store.
+export type Reading = { name: string, how: How, store: Store = Store.Fresh }
+
+/// What readings are compared on.
+export enum Facet {
+    Stdout
+    Stderr
+    Exit
+}
+
+/// A text an answer carries that is no part of the claim, and what stands in its place.
+export enum Masked {
+    /// The tree's own path, wherever it stands.
+    Tree
+    Text(s: string)
+}
+
+export type Mask = { from: Masked, to: string }
+
+/// How a case stands when it is right.
+export enum Standing {
+    /// Every reading answers alike.
+    Holds
+    /// The readings are known to differ, and why; agreeing is the news.
+    Differs(why: string)
+    /// One reading, held to the golden alone, and why no second reading exists.
+    Alone(why: string)
+}
+
+/// A subject, the files Make builds before it is read, its readings in the order they run, the
+/// facets compared, the masks applied first, an optional golden for the first reading's stdout, and
+/// how it stands.
+export type Case = {
+    name: string,
+    subject: string,
+    needs: List<string> = [],
+    readings: List<Reading>,
+    compare: List<Facet> = [Facet.Stdout, Facet.Exit],
+    masks: List<Mask> = [],
+    golden: string? = null,
+    standing: Standing = Standing.Holds,
+}
+
+/// What a reading answered, masked; or why it could not be taken.
+export type Answer = { stdout: string, stderr: string, exit: string }
+
+export type Read = { reading: string, said: Result<Answer, string> }
+
+/// The environment names a child may see beyond `minimal()`: the link's toolchain prefix. A
+/// reading's store reaches the compiler as its `cache_dir` setting (`AVRA_CACHE_DIR`).
+const PASSED: List<string> = ["LLVM_PREFIX"]
+
+/// Where each case's stores stand, under the tree's `build/`.
+const STORES: string = "build/oracle"
+
+type OracleCmd = {}
+
+impl Runnable for OracleCmd {
+    fn run(args: CliResult) -> int {
+        let asked = args.args_of("cases")
+        let unknown = asked.filter((n) -> !CASES.any(it.name == n))
+        if !unknown.is_empty() {
+            eprintln(no_case(unknown))
+            return 2
+        }
+        let avra = args.option("avra")
+        let verdicts = [stood(c, avra) for c in CASES if asked.is_empty() || asked.contains(c.name)]
+        if verdicts.all(it) { 0 } else { 1 }
+    }
+}
+
+export command oracle {
+    description: "Run the agreement cases: every reading of a subject answers alike, or as its case says"
+    arg cases {
+        description: "the cases to run, by name; none runs every case"
+        variadic: true
+    }
+    option avra {
+        description: "the compiler under test"
+        default: "./avra"
+    }
+    run: OracleCmd {}
+}
+
+/// Why a case is malformed, or null: a reading's store names a reading after it, an all-Avra case
+/// carries no golden, a lone case carries more than one reading or no golden.
+export fn malformed(c: Case) -> string? {
+    if c.readings.is_empty() { return no_readings() }
+    let ahead = (0..c.readings.length).find(reads_ahead(c.readings[it], it))
+    if ahead != null { return store_ahead(c.readings[ahead!].name) }
+    match c.standing {
+        .Alone(_) -> if c.readings.length != 1 || c.golden == null { lone_shape() } else { null },
+        .Holds or .Differs(_) -> if c.golden == null && !c.readings.any(outside(it)) { all_avra() } else { null },
+    }
+}
+
+fn reads_ahead(r: Reading, at: int) -> bool {
+    match r.store { .Fresh -> false, .After(i) -> i >= at }
+}
+
+fn outside(r: Reading) -> bool {
+    match r.how { .Reference(_) -> true, .Native -> false }
+}
+
+/// Runs one case and says its verdict; true when it stood as its case says.
+export fn stood(c: Case, avra: string) -> bool {
+    let bad = malformed(c)
+    if bad != null {
+        eprintln(refused_case(c.name, bad!))
+        return false
+    }
+    let built = made(c.needs)
+    if built != null {
+        eprintln(unbuilt(c.name, built!))
+        return false
+    }
+    let reads = [taken(c, i, avra) for i in 0..c.readings.length]
+    let failed = reads.find(!answered(it))
+    if failed != null {
+        eprintln(unread(c.name, failed!))
+        return false
+    }
+    let off_golden = golden_difference(c, reads[0])
+    if off_golden != null {
+        eprintln(off_the_golden(c.name, reads[0].reading, off_golden!))
+        return false
+    }
+    let apart = reads.find(differs_at(c.compare, reads[0], it) != null)
+    match c.standing {
+        .Holds or .Alone(_) -> {
+            if apart != null {
+                eprintln(
+                    disagreed(c.name, reads[0], apart!, differs_at(c.compare, reads[0], apart!)),
+                )
+                return false
+            }
+            println(agreed(c.name, reads))
+            true
+        },
+        .Differs(why) -> {
+            if apart == null {
+                eprintln(difference_closed(c.name, why))
+                return false
+            }
+            println(still_differs(c.name, why))
+            true
+        },
+    }
+}
+
+fn answered(r: Read) -> bool {
+    match r.said { .Ok(_) -> true, .Err(_) -> false }
+}
+
+fn answer_of(r: Read) -> Answer {
+    match r.said { .Ok(a) -> a, .Err(_) -> Answer { stdout: "", stderr: "", exit: "" } }
+}
+
+fn why_of(r: Read) -> string {
+    match r.said { .Ok(_) -> "", .Err(why) -> why }
+}
+
+fn facet_of(a: Answer, f: Facet) -> string {
+    match f { .Stdout -> a.stdout, .Stderr -> a.stderr, .Exit -> a.exit }
+}
+
+fn facet_word(f: Facet) -> string {
+    match f { .Stdout -> "stdout", .Stderr -> "stderr", .Exit -> "exit" }
+}
+
+/// Where two readings first differ on the compared facets; null when they agree.
+fn differs_at(facets: List<Facet>, a: Read, b: Read) -> string? {
+    let f? = facets.find(facet_of(answer_of(a), it) != facet_of(answer_of(b), it)) else { return null }
+    "${facet_word(f)} ${first_difference(facet_of(answer_of(a), f), facet_of(answer_of(b), f)) ?? ""}"
+}
+
+fn golden_difference(c: Case, first: Read) -> string? {
+    let path? = c.golden else { return null }
+    match read_text(path) {
+        .Ok(want) -> first_difference(want, answer_of(first).stdout),
+        .Err(_) -> no_golden(path),
+    }
+}
+
+/// The files a case needs, built by Make; null when every one stands, else Make's words.
+fn made(needs: List<string>) -> string? {
+    if needs.is_empty() { return null }
+    let a? = ran(["make", "-s"].concat(needs), minimal().passing(PASSED)) else { return not_found("make") }
+    if a.exit == "0" { null } else { last_line(a.stderr) }
+}
+
+/// The reading at index `i` of a case, over its store, masked.
+fn taken(c: Case, i: int, avra: string) -> Read {
+    let r = c.readings[i]
+    let store = store_dir(c, i)
+    let child = minimal().passing(PASSED).with_var("AVRA_CACHE_DIR", store)
+    let said = match r.how {
+        .Native -> native(c.subject, avra, child),
+        .Reference(steps) -> stepped(steps, child),
+    }
+    match said {
+        .Ok(a) -> Read { reading: r.name, said: .Ok(masked(a, c.masks)) },
+        .Err(why) -> Read { reading: r.name, said: .Err(why) },
+    }
+}
+
+/// A reading's store: its own, emptied first, or the one an earlier reading left.
+fn store_dir(c: Case, i: int) -> string {
+    match c.readings[i].store {
+        .After(j) -> "${STORES}/${c.name}/${j}",
+        .Fresh -> fresh("${STORES}/${c.name}/${i}"),
+    }
+}
+
+fn fresh(dir: string) -> string {
+    let _ = ran(["find", dir, "-mindepth", "1", "-delete"], minimal())
+    let _ = make_dirs(dir)
+    dir
+}
+
+fn native(subject: string, avra: string, child: Env) -> Result<Answer, string> {
+    let built? = ran([avra, "build", subject], child) else { return .Err(not_found(avra)) }
+    if built.exit != "0" { return .Ok(built) }
+    let path = last_line(built.stdout)
+    if path == "" { return .Err(no_binary(subject)) }
+    let ran_binary? = ran([path], child) else { return .Err(not_found(path)) }
+    .Ok(ran_binary)
+}
+
+/// Each step in order; a step that fails answers for the reading, else the last one does.
+fn stepped(steps: List<List<string>>, child: Env) -> Result<Answer, string> {
+    mut last = Answer { stdout: "", stderr: "", exit: "0" }
+    for step in steps {
+        let a? = ran(step, child) else { return .Err(not_found(step[0])) }
+        if a.exit != "0" { return .Ok(a) }
+        last = a
+    }
+    .Ok(last)
+}
+
+/// One argv run under `child`; its answer, or null when the program is not there.
+fn ran(argv: List<string>, child: Env) -> Answer? {
+    let t? = located(argv[0]) else { return null }
+    let c = cmd(t, argv.drop(1)) with { env: child, timeout: secs(600) }
+    match c.outcome() {
+        .Ok(o) -> answer(o),
+        .Err(e) -> Answer { stdout: "", stderr: unstarted(argv, e), exit: "unstarted" },
+    }
+}
+
+fn answer(o: Outcome) -> Answer {
+    Answer { stdout: o.out.stdout, stderr: o.out.stderr, exit: exit_word(o.exit) }
+}
+
+fn exit_word(e: Exit) -> string {
+    match e { .Clean -> "0", .Code(n) -> "${n}", .Signal(_, _) -> exit_text(e) }
+}
+
+/// A word naming a path runs from there; a bare word is looked up on PATH.
+fn located(word: string) -> Tool? {
+    if word.contains("/") { return tool_at(word, word) }
+    match tool(word) { .Ok(t) -> t, .Err(_) -> null }
+}
+
+fn masked(a: Answer, masks: List<Mask>) -> Answer {
+    Answer { stdout: unmasked(a.stdout, masks), stderr: unmasked(a.stderr, masks), exit: a.exit }
+}
+
+fn unmasked(text: string, masks: List<Mask>) -> string {
+    masks.fold(text, (t, m) -> t.replace(mask_text(m.from), m.to))
+}
+
+fn mask_text(m: Masked) -> string {
+    match m { .Tree -> env("PWD") ?? ".", .Text(s) -> s }
+}
+
+fn last_line(text: string) -> string {
+    text.trim().split("\n").last() ?? ""
+}
+
+/// The first line two answers differ at, 1-based, with each side's text; null when they agree.
+export fn first_difference(a: string, b: string) -> string? {
+    if a == b { return null }
+    let la = a.split("\n")
+    let lb = b.split("\n")
+    let at = (0..longer(la.length, lb.length)).find(line_at(la, it) != line_at(lb, it)) ?? 0
+    "line ${at + 1}: `${line_at(la, at)}` vs `${line_at(lb, at)}`"
+}
+
+fn longer(a: int, b: int) -> int {
+    if a > b { a } else { b }
+}
+
+fn line_at(lines: List<string>, i: int) -> string {
+    if i < lines.length { lines[i] } else { "(nothing)" }
+}
+
+// ── voices ──
+
+fn agreed(name: string, reads: List<Read>) -> string {
+    "oracle: ${name}: ${reads.map(it.reading).join(" == ")} — ${answer_of(reads[0]).stdout.split("\n").first() ?? ""}"
+}
+
+fn still_differs(name: string, why: string) -> string {
+    "oracle: ${name}: differs, as known — ${why}"
+}
+
+fn difference_closed(name: string, why: string) -> string {
+    "oracle: ${name}: the known difference closed (${why}) — the readings agree; mark the case `Holds`"
+}
+
+fn disagreed(name: string, a: Read, b: Read, at: string?) -> string {
+    "oracle: ${name}: ${a.reading} and ${b.reading} disagree on ${at ?? "their end"}"
+}
+
+fn off_the_golden(name: string, reading: string, at: string) -> string {
+    "oracle: ${name}: ${reading} is off its golden at ${at}"
+}
+
+fn unread(name: string, r: Read) -> string {
+    "oracle: ${name}: the ${r.reading} reading answered nothing — ${why_of(r)}"
+}
+
+fn unbuilt(name: string, why: string) -> string {
+    "oracle: ${name}: what it needs did not build — ${why}"
+}
+
+fn refused_case(name: string, why: string) -> string {
+    "oracle: ${name}: the case is malformed — ${why}"
+}
+
+fn no_readings() -> string {
+    "it takes no reading"
+}
+
+fn store_ahead(reading: string) -> string {
+    "the ${reading} reading reads a store no reading before it left"
+}
+
+fn all_avra() -> string {
+    "every reading is Avra's, and agreement is not truth: add a golden or a reader built outside Avra"
+}
+
+fn lone_shape() -> string {
+    "a case that stands alone takes one reading and a golden"
+}
+
+fn no_case(names: List<string>) -> string {
+    "oracle: no case named ${names.map("`${it}`").join(", ")}; the cases are ${CASES.map(it.name).join(", ")}"
+}
+
+fn no_golden(path: string) -> string {
+    "its golden ${path} cannot be read"
+}
+
+fn no_binary(subject: string) -> string {
+    "the build of ${subject} named no binary"
+}
+
+fn not_found(word: string) -> string {
+    "`${word}` is not a program here"
+}
+
+fn unstarted(argv: List<string>, e: ProcessError) -> string {
+    "`${argv.join(" ")}` did not start: ${e.describe().message}"
+}

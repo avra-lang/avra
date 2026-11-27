@@ -15,7 +15,7 @@
 #
 # With the tree's OWN compiler (${AVRA:-build/avra}; `tools/work run` builds
 # it from the branch on the lane's Sprite), it runs:
-#   - the keepers (`make keepers`, the Makefile's one list — the wasm target's
+#   - the keepers (`make keepers`, the keeper registry — the wasm target's
 #     proof among them)
 #   - `fmt --check` on the changed `.av`
 #   - `check <pkg> --baseline tools/idioms.baseline` on each affected package

@@ -103,10 +103,18 @@ bin=$dir/wisp
 if [ ! -x "$bin" ] && pb=$(sh tools/work program-base . 2>/dev/null); then
     mkdir -p "$dir"
     t=$(mktemp -d "${TMPDIR:-/tmp}/wisp.XXXXXX")
+    url=https://github.com/avra-lang/avra/releases/download/gate-builder/wisp.tar.gz
     # the published binary is a Linux x86-64 ELF: another machine builds its own with its standing compiler
-    if [ "$(uname -s)-$(uname -m)" = Linux-x86_64 ] &&
-        curl -fsSL --retry 2 -m 120 -o "$t/wisp.tar.gz" https://github.com/avra-lang/avra/releases/download/gate-builder/wisp.tar.gz 2>/dev/null &&
-        tar -xzf "$t/wisp.tar.gz" -C "$t" "build/wisp/$k/wisp" 2>/dev/null; then
+    if [ "$(uname -s)-$(uname -m)" != Linux-x86_64 ]; then
+        fetched="no fetch: $url holds a Linux x86-64 binary and this is $(uname -s)-$(uname -m)"
+    elif ! curl -fsSL --retry 2 -m 120 -o "$t/wisp.tar.gz" "$url" 2>/dev/null; then
+        fetched="$url did not download"
+    elif ! tar -xzf "$t/wisp.tar.gz" -C "$t" "build/wisp/$k/wisp" 2>/dev/null; then
+        fetched="$url holds no wisp of this key (it carries the last landing's)"
+    else
+        fetched=""
+    fi
+    if [ -z "$fetched" ]; then
         cp "$t/build/wisp/$k/wisp" "$bin" && chmod +x "$bin"
         echo "wisp: the wisp of key $(printf '%.12s' "$k") published beside the gate's builder" >&2
     fi
@@ -121,7 +129,7 @@ if [ ! -x "$bin" ] && pb=$(sh tools/work program-base . 2>/dev/null); then
     fi
     if [ ! -x "$bin" ]; then
         if [ -n "$c" ]; then why="$c did not build it (above)"; else why="no compiler of this tree's source stands here to build it"; fi
-        echo "wisp: a tree of program's (merge-base $(printf '%.8s' "$pb")): no wisp of key $(printf '%.12s' "$k") beside the gate's builder, and $why — nothing older is run instead" >&2
+        echo "wisp: a tree of program's (merge-base $(printf '%.8s' "$pb")): no wisp of key $(printf '%.12s' "$k") — $fetched, and $why; nothing older is run instead" >&2
         exit 1
     fi
 fi

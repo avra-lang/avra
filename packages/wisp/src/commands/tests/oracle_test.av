@@ -1,0 +1,143 @@
+use commands.{
+    stood,
+    malformed,
+    first_difference,
+    Case,
+    Reading,
+    How,
+    Store,
+    Standing,
+    Facet,
+    Mask,
+    Masked,
+    CASES,
+}
+use @std.io.{write_text, make_dirs, env_or}
+use @std.time.{stamp}
+
+once fn base() -> string { "${env_or("TMPDIR", "/tmp")}/wisp-oracle/${stamp()}" }
+
+fn printing(name: string, text: string) -> Reading {
+    Reading { name: name, how: How.Reference([["printf", text]]) }
+}
+
+fn exiting(name: string, code: string) -> Reading {
+    Reading { name: name, how: How.Reference([["sh", "-c", "exit ${code}"]]) }
+}
+
+fn native() -> Reading {
+    Reading { name: "native", how: How.Native }
+}
+
+/// A golden file holding `text`, written once per name.
+fn golden(name: string, text: string) -> string {
+    let _ = make_dirs(base())
+    let path = "${base()}/${name}.golden"
+    let _ = write_text(path, text)
+    path
+}
+
+fn case(name: string, readings: List<Reading>) -> Case {
+    Case { name: name, subject: "-", readings: readings }
+}
+
+spec "oracle — the first difference" {
+    then "two equal answers have no difference" { first_difference("a\nb", "a\nb") == null }
+    then "the first differing line is named, 1-based" { first_difference("a\nb\nc", "a\nx\nc") == "line 2: `b` vs `x`" }
+    then "an answer that stops early differs where it stops" { first_difference("a\nb", "a") == "line 2: `b` vs `(nothing)`" }
+}
+
+spec "oracle — every kind of case can fail (a planted disagreement each)" {
+    then "a holding case stands when its readings agree" { stood(case("alike", [printing("one", "x"), printing("two", "x")]), "./avra") }
+    then "a holding case falls when its readings print apart" { !stood(case("unlike", [printing("one", "x"), printing("two", "y")]), "./avra") }
+    then "a holding case falls when its readings exit apart, words alike" {
+        !stood(case("exits", [exiting("zero", "0"), exiting("three", "3")]), "./avra")
+    }
+    then "a refusal is an answer: two readings refusing alike agree" {
+        stood(case("refusals", [exiting("one", "4"), exiting("two", "4")]), "./avra")
+    }
+    then "a case held to its golden falls off it" {
+        !stood(
+            case("golden", [printing("one", "x"), printing("two", "x")]) with { golden: golden("off", "y") },
+            "./avra",
+        )
+    }
+    then "a case on its golden stands" {
+        stood(
+            case("golden_on", [printing("one", "x"), printing("two", "x")]) with { golden: golden("on", "x") },
+            "./avra",
+        )
+    }
+    then "a known difference stands while it differs" {
+        stood(
+            case("known", [printing("one", "x"), printing("two", "y")]) with { standing: Standing.Differs("planted") },
+            "./avra",
+        )
+    }
+    then "a known difference that closed falls" {
+        !stood(
+            case("closed", [printing("one", "x"), printing("two", "x")]) with { standing: Standing.Differs("planted") },
+            "./avra",
+        )
+    }
+    then "a lone case falls off its golden" {
+        !stood(
+            case("lone", [printing("one", "x")]) with { golden: golden("lone", "y"), standing: Standing.Alone("one engine") },
+            "./avra",
+        )
+    }
+    then "a mask makes a carried path no part of the claim" {
+        stood(
+            case("masked", [printing("one", "at /a/b"), printing("two", "at /c/d")]) with { masks: [
+                Mask { from: Masked.Text("/a/b"), to: "<p>" },
+                Mask { from: Masked.Text("/c/d"), to: "<p>" },
+            ] },
+            "./avra",
+        )
+    }
+    then "stderr is compared only when the case asks" {
+        !stood(
+            case(
+                "stderr",
+                [
+                    Reading { name: "one", how: How.Reference([["sh", "-c", "echo a >&2"]]) },
+                    exiting("two", "0"),
+                ],
+            ) with { compare: [Facet.Stdout, Facet.Exit, Facet.Stderr] },
+            "./avra",
+        )
+    }
+    then "a reading whose program is not there falls" {
+        !stood(
+            case(
+                "missing",
+                [Reading { name: "gone", how: How.Reference([["wisp-no-such-program"]]) }],
+            ) with { golden: golden("missing", "") },
+            "./avra",
+        )
+    }
+}
+
+spec "oracle — a malformed case is refused before it runs" {
+    then "an all-Avra case with no golden" { malformed(case("avra", [native(), native()])) != null }
+    then "an all-Avra case with a golden is whole" { malformed(case("avra", [native(), native()]) with { golden: "x" }) == null }
+    then "a store read before any reading left it" {
+        malformed(case("ahead", [printing("one", "x") with { store: Store.After(0) }])) != null
+    }
+    then "a store a reading before left is whole" {
+        malformed(
+            case(
+                "after",
+                [printing("one", "x"), printing("two", "x") with { store: Store.After(0) }],
+            ),
+        ) == null
+    }
+    then "a lone case with two readings" {
+        malformed(
+            case("lone", [printing("one", "x"), printing("two", "x")]) with { golden: "x", standing: Standing.Alone("w") },
+        ) != null
+    }
+    then "every case in the table is whole and named once" {
+        CASES.all((c) -> malformed(c) == null && CASES.filter(it.name == c.name).length == 1)
+    }
+}
