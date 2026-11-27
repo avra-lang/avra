@@ -45,13 +45,20 @@ impl Runnable for ReleaseCmd {
         }
         let api = if args.has_flag("dry_run") { dry(curled) } else { curled }
         let asset_name = or_else(args.option("asset_name"), "avra")
-        match publish(api, base, args.arg("key"), asset_name, args.arg("file"), size) {
+        let tag = match tag_of(args.arg("key"), asset_name) {
+            .Ok(t) -> t,
+            .Err(why) -> {
+                eprintln(why)
+                return 2
+            },
+        }
+        match publish(api, base, tag, asset_name, args.arg("file"), size) {
             .Ok(said) -> {
                 println(said)
                 0
             },
             .Err(why) -> {
-                eprintln("compiler-release: ${args.arg("key")}: ${why}")
+                eprintln("compiler-release: ${tag}: ${why}")
                 1
             },
         }
@@ -65,7 +72,7 @@ export command release {
         required: true
     }
     arg key {
-        description: "the release's tag"
+        description: "the key: the release's tag is formed from it and the asset"
         required: true
     }
     arg file {
@@ -217,4 +224,15 @@ fn not_here(verb: string) -> string {
 
 fn no_file(path: string) -> string {
     "compiler-release: ${path} is not a file"
+}
+
+/// A key's release tag for an asset: `wisp-<key>` for wisp, `avrac-<key>` for the compiler. A key that
+/// already wears a prefix is refused, so a tag is never doubled.
+export fn tag_of(key: string, asset_name: string) -> Result<string, string> {
+    if key.starts_with("avrac-") || key.starts_with("wisp-") { return .Err(tag_given(key)) }
+    .Ok(if asset_name == "wisp" { "wisp-${key}" } else { "avrac-${key}" })
+}
+
+fn tag_given(key: string) -> string {
+    "wisp release: `${key}` is a tag — pass the key; the tag is formed from it and the asset"
 }

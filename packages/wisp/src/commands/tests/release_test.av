@@ -1,6 +1,6 @@
 use @std.io.{make_dirs, write_text, read_text, append_bytes, is_file, env_or}
 use @std.time.{stamp}
-use commands.{Api, Ask, Heard, publish, carries, heard_of, dry}
+use commands.{Api, Ask, Heard, publish, carries, heard_of, dry, tag_of}
 use @std.json.{parse, Json}
 
 once fn root() -> string { "${env_or("TMPDIR", "/tmp")}/wisp-release-${stamp()}" }
@@ -84,5 +84,17 @@ spec "release — reading the API's answer" {
     then "an asset is carried by its name" {
         let r = parse(WITH_ASSET) catch Json.Null
         carries(r, "avra") && !carries(r, "wisp")
+    }
+}
+
+spec "release — a key names its tag" {
+    then "the compiler's tag is avrac-<key>" { (tag_of("k1", "avra") catch "") == "avrac-k1" }
+    then "wisp's tag is wisp-<key>" { (tag_of("k1", "wisp") catch "") == "wisp-k1" }
+    then "a tag where the key belongs is refused, saying so" {
+        match tag_of("avrac-k1", "avra") {
+                .Err(why) -> why.contains("is a tag — pass the key"),
+                .Ok(_) -> false,
+            } &&
+            match tag_of("wisp-k1", "wisp") { .Err(_) -> true, .Ok(_) -> false }
     }
 }

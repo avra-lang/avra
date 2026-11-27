@@ -74,7 +74,8 @@ done
 # are shell here, and only `wisp release publish`, which runs after a build, is the binary's. A release is
 # named by its key, so one key is one binary and an asset is never replaced.
 #
-#   ./wisp release fetch  <key> <dest> [--asset <name>]   the key's release asset at dest, or 1 and why
+#   ./wisp release fetch  <key> <dest> [--asset <name>]   the key's release asset at dest, or 1 and why; the tag is
+#                                                          formed inside (avrac-<key>, wisp-<key> for wisp)
 #   ./wisp release latest <dest>                           the newest release carrying the compiler
 #   ./wisp release install [<rev> | --key <key>] [--into <dir>]
 #                                                          the compiler published for a commit's source (default
@@ -241,7 +242,10 @@ rel_route() {
 
 if [ "${1:-}" = release ]; then
     case ${2:-} in
-        (fetch) shift 2; asset=avra; [ "${3:-}" != --asset ] || asset=$4; rel_fetch "$1" "$2" "$asset"; exit $? ;;
+        (fetch) shift 2; asset=avra; [ "${3:-}" != --asset ] || asset=$4
+            case $1 in (avrac-* | wisp-*) echo "wisp release: \`$1\` is a tag — pass the key; the tag is formed from it and the asset" >&2; exit 2 ;; esac
+            if [ "$asset" = wisp ]; then tag=wisp-$1; else tag=avrac-$1; fi
+            rel_fetch "$tag" "$2" "$asset"; exit $? ;;
         (latest) rel_latest "$3"; exit $? ;;
         (install) shift 2; rel_install "$@"; exit $? ;;
         (key-of) c=$(git rev-parse --verify --quiet "$3^{commit}") || exit 1; rel_key_of "$c"; exit $? ;;
