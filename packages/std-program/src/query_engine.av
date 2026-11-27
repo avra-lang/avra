@@ -612,7 +612,11 @@ impl QueryEngine {
     fn settled_from_frontier(question: ContentHash) -> SettledAnswer? {
         let open? = self.frontier_open() else { return null }
         let f = open.frontier
-        let at? = f.place_of(question) else { return null }
+        let at? = f.place_of(question) else {
+            if program_settings().user.qtrace && self.store.question_known_as(question)?.query_name == "listed" { eprintln("Q frontier lacks listed ${question.high_word}_${question.low_word}") }
+            return null
+        }
+        if program_settings().user.qtrace && self.store.question_known_as(question)?.query_name == "listed" { eprintln("Q frontier holds listed at ${at} input ${f.entry_at(at).input()} stale ${open.stale[at]} suspect ${open.suspects[at]}") }
         if open.stale[at] { return null }
         let entry = f.entry_at(at)
         if entry.input() { return null }
@@ -801,6 +805,7 @@ impl QueryEngine {
     /// Leaves what this process learned beside the frontier it read, for its store to write as this
     /// binary's frontier. Leaves nothing when it asked nothing.
     fn frontier_kept() {
+        if program_settings().user.qtrace { eprintln("Q frontier kept now") }
         if self.unhashed() { return }
         self.stamps_kept_now()
         match self.frontier.get() {
