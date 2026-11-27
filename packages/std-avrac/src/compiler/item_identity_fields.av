@@ -51,14 +51,18 @@ fn names_text(l: Literal, text: string) -> bool {
 }
 
 /// Whether every copy of a value of `ty` shares what a write through it reaches: a `Cell`, or a type
-/// wearing `@identity` itself.
+/// wearing `@identity` itself, as written or as a generator made it.
 fn shared(engine: QueryEngine, ty: SignedType) -> bool {
     match ty.head {
         .Owned(word) -> word == "Cell",
-        .Declared(file, name, _) -> file_marks(engine, file).worn.any(it.name == name && it.mark == IDENTITY),
+        .Declared(file, name, _) -> wears_identity(file_marks(engine, file), name) ||
+            wears_identity(generated_marks(engine, file), name),
         rest -> false,
     }
 }
+
+/// Whether the declaration `name` among `marks` wears `@identity`.
+fn wears_identity(marks: FileMarks, name: string) -> bool { marks.worn.any(it.name == name && it.mark == IDENTITY) }
 
 /// an identity's fields are shared by every copy
 export law identity_field_plain_law {
