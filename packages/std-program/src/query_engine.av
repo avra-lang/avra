@@ -286,6 +286,8 @@ export type QueryEngine = {
     folded: Cell<List<string>>,
     /// The kept records this process checked to reuse an answer: what an edit's cost is counted in.
     records_checked: Cell<int>,
+    /// The answers whose read set this process walked the frontier for, its kept record carrying none.
+    read_sets_walked: Cell<int>,
     /// The answers this engine checked against a kept record and kept, by the pass of their family,
     /// as `pass_index` numbers the passes: what a warm run verified rather than worked out.
     rechecked: Cell<List<int>>,
@@ -377,6 +379,7 @@ export fn query_engine(
         computed: computed,
         folded: folded,
         records_checked: Cell.new(0),
+        read_sets_walked: Cell.new(0),
         rechecked: Cell.new([0 for _p in 0..every_pass().length]),
         frontier: Cell.new(FrontierState.Unread),
         asked_alone: asked_alone,
@@ -905,6 +908,9 @@ impl QueryEngine {
     /// How many kept records this process checked.
     fn records_checked_count() -> int { self.records_checked.get() }
 
+    /// How many answers' read sets this process walked the frontier for.
+    fn read_sets_walked_count() -> int { self.read_sets_walked.get() }
+
     /// How many answers of the pass `p`'s families this engine checked against a kept record and kept.
     fn rechecked_in(p: Pass) -> int { self.rechecked.get()[pass_index(p)] }
 
@@ -980,10 +986,10 @@ impl QueryEngine {
         let reads = run.reads.question_words()
         let read = if self.definition_of(asked).is_input { self.read_sets.get(asked.known_as) ?? NO_NAMES } else { self.set_of_reads(reads) }
         self.read_sets.put(asked.known_as, read)
-        let is_shared = self.set_shared(read)
+        let is_shared = self.set_shared(if self.store.shares_any() { read } else { NO_NAMES })
         let kept = if is_shared { self.store.shared_answer_kept(answer) } else { self.store.answer_bytes(answer) != null }
         if !kept { self.keep_or_hold(asked, answer, bytes, is_shared) }
-        let record = run.reads.record_of(answer)
+        let record = run.reads.record_of(answer, self.sets.members_of(read))
         if !self.store.records_of(asked.known_as).any(it.same_as(record)) { self.record_kept(asked, record, is_shared) }
         self.learned(asked, answer, reads)
     }
@@ -1002,23 +1008,35 @@ impl QueryEngine {
         if is_shared { self.store.keep_shared_record(asked, record) } else { self.store.keep_record(asked, record) }
     }
 
-    /// The set of packages every question `reads`' words name read; none asked where the store shares
-    /// no package, since then no set decides where anything is kept.
-    fn set_of_reads(reads: List<int>) -> int {
-        if !self.store.shares_any() { return NO_NAMES }
-        hashes_in(reads).fold(NO_NAMES, (set, q) -> self.sets.union(set, self.read_set_of(q)))
-    }
+    /// The set of packages every question `reads`' words name read.
+    fn set_of_reads(reads: List<int>) -> int { hashes_in(reads).fold(NO_NAMES, (set, q) -> self.sets.union(set, self.read_set_of(q))) }
 
-    /// The set of packages the question known as `question` read: as settled here, else as it stands
-    /// in the frontier, read by read; a question this process can't tell read a package nobody shares.
+    /// The set of packages the question known as `question` read: as settled here, else as its kept
+    /// record of the answer the frontier stands on says, else as the frontier stands, read by read; a
+    /// question this process can't tell read a package nobody shares.
     fn read_set_of(question: ContentHash) -> int {
         let known = self.read_sets.get(question)
         if known != null { return known! }
         let open? = self.frontier_open() else { return self.unplaced() }
         let at? = open.frontier.place_of(question) else { return self.unplaced() }
-        let found = self.read_set_at(open.frontier, at)
+        let found = self.kept_read_set(open.frontier, at) ?? self.walked_read_set(open.frontier, at)
         self.read_sets.put(question, found)
         found
+    }
+
+    /// The set the kept record of the frontier's answer at `at` carries; absent for an input, whose
+    /// set is its stamp's, and where no kept record holds that answer.
+    fn kept_read_set(f: Frontier, at: int) -> int? {
+        if f.input_at(at) { return null }
+        let answer = f.answer_at(at)
+        let record? = self.store.records_of(f.question_at(at)).find(it.answer.same_as(answer)) else { return null }
+        self.sets.of(record.packages.texts())
+    }
+
+    /// The set of the frontier's answer at `at`, walked from its reads.
+    fn walked_read_set(f: Frontier, at: int) -> int {
+        if !f.input_at(at) { self.read_sets_walked.set(self.read_sets_walked.get() + 1) }
+        self.read_set_at(f, at)
     }
 
     /// The set of packages the frontier's answer at `at` read: an input's, the package holding the
