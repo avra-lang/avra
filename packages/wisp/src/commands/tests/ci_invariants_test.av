@@ -13,6 +13,7 @@ use commands.{
     check_ready_race,
     check_compiler_route,
     check_one_spelling,
+    check_wisp_route,
     check_ci_image,
     check_keeper_reach,
     tree_verdicts,
@@ -521,4 +522,44 @@ spec "ci_invariants — keeper-reach" {
 
 spec "ci_invariants — the tree" {
     then "every invariant holds on the tree" { tree_verdicts(root()).all(clean(it)) }
+}
+
+fn no_tool(_name: string) -> string? { null }
+
+fn route(flow: string) -> Holding {
+    check_wisp_route(
+        one_file("checks.yml", flow),
+        "probe:\n\t@./wisp keepers\n",
+        no_tool,
+        (_a) -> null,
+    )
+}
+
+fn maker() -> string {
+    "jobs:\n  prepare:\n    steps:\n      - uses: actions/checkout@v4\n      - run: ./wisp --path\n      - uses: actions/upload-artifact@v4\n        with:\n          name: wisp\n"
+}
+
+spec "ci_invariants — wisp-route" {
+    then "one maker, and every job that runs wisp takes its binary, holds" {
+        clean(
+            route(
+                "${maker()}  k:\n    steps:\n      - uses: actions/checkout@v4\n      - uses: ./.github/actions/wisp\n      - run: make -s probe\n",
+            ),
+        )
+    }
+    then "a job reaching wisp through make without the action is refused by name" {
+        refuses(route("${maker()}  k:\n    steps:\n      - run: make -s probe\n"), "`k` runs wisp")
+    }
+    then "a job that builds its own is refused, and so is a workflow with no maker" {
+        refuses(
+                route(
+                    "${maker()}  k:\n    steps:\n      - uses: ./.github/actions/wisp\n      - run: ./wisp --compiler build/avra --path\n",
+                ),
+                "of its own",
+            ) &&
+            refuses(
+                route("jobs:\n  k:\n    steps:\n      - run: ./wisp shards 4\n"),
+                "0 job(s) build wisp",
+            )
+    }
 }

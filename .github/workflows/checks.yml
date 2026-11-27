@@ -112,6 +112,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 20 }
+      # THE RUN'S ONE WISP, made here and nowhere else: by its key from the published asset, else built by
+      # main's compiler (./wisp). Every other job takes this binary through .github/actions/wisp.
+      - name: wisp
+        run: ./wisp --path
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wisp
+          path: build/wisp/*/wisp
+          if-no-files-found: error
+          retention-days: 1
       # THE SHARDS ARE PACKED BY MEASURED SECONDS: the newest weights a main run kept
       # (`suite-timing`), else the committed seed rows alone.
       - uses: actions/cache/restore@v4
@@ -273,14 +283,6 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "plan: $event — full=$full build=$build compiler-changed=$compiler runtime=$runtime cache=$cache codecs=$codecs packages: $(echo $pkgs)"
       # THE TOOLS THE PLAN BUILT OR FETCHED, HANDED DOWN: keepers-static runs them and builds none.
-      - name: wisp for keepers-static
-        if: github.event_name == 'pull_request'
-        uses: actions/upload-artifact@v4
-        with:
-          name: wisp
-          path: build/wisp/*/wisp
-          if-no-files-found: error
-          retention-days: 1
       # THE COMPILER, taken or built (.github/actions/compiler — lane-run.yml stands on the same
       # action): its rungs, the cache, the published release, then the build.
       - if: steps.plan.outputs.build == '1'
@@ -453,6 +455,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/wisp
       - uses: actions/download-artifact@v4
         with: { name: avra-compiler, path: build }
       - name: publish
@@ -460,16 +463,15 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           chmod +x build/avra
-          key="${{ needs.prepare.outputs.key }}"; ./wisp --compiler build/avra release publish "${key#avrac-}" build/avra
-      # THE TOOLS ARE PUBLISHED BESIDE THE COMPILER, built by it from main's
-      # own packages/wisp and keyed by that source (./wisp --key): a PR that does
-      # not touch packages/wisp fetches this binary, never builds one.
+          key="${{ needs.prepare.outputs.key }}"; ./wisp release publish "${key#avrac-}" build/avra
+      # THE RUN'S WISP IS PUBLISHED BESIDE THE COMPILER, keyed by its source (./wisp --key): a PR that
+      # does not touch packages/wisp fetches this binary in its prepare, never builds one.
       - name: publish wisp
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          built=$(./wisp --compiler build/avra --path)
-          ./wisp --compiler build/avra release publish "$(./wisp --key)" "$built" --asset-name wisp
+          built=$(ls build/wisp/*/wisp)
+          ./wisp release publish "$(./wisp --key)" "$built" --asset-name wisp
 
   keepers-a:
     needs: [prepare]
@@ -483,6 +485,7 @@ jobs:
         group: ['1', '2']
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/wisp
       - uses: ./.github/actions/handed-down
       # THE RUNTIME KEEPERS HELD TO A CLOCK (KEEPERS_ALONE: runtime-tests,
       # runtime-mutations) ARE NOT THIS JOB'S: a runner that held them beside
@@ -540,6 +543,7 @@ jobs:
         list: ['b', 'wasm']
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/wisp
       - uses: ./.github/actions/handed-down
       # gdb: the defects keeper dumps the stack of a compile that stalls, while it lives.
       - if: matrix.list == 'b'
@@ -625,6 +629,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/wisp
       - uses: ./.github/actions/handed-down
       # A BRANCH WITH RUNGS IS NOT THE SEED'S TO BUILD: the committed seed cannot read a row's first
       # reader, by construction, so the check is spoken as skipped here and the seed is refreshed after
@@ -654,6 +659,7 @@ jobs:
         shard: ['b1', 'b2', 'w']
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/wisp
       - uses: ./.github/actions/handed-down
       - name: cache-attacks
         timeout-minutes: 15
@@ -696,6 +702,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/wisp
       - uses: actions/download-artifact@v4
         with: { name: avra-compiler, path: build }
       # The tree's own `.avra-cache`, so `check` reads what prepare's
@@ -730,6 +737,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/wisp
       - name: flow gate
         timeout-minutes: 10
         run: make -s flow-gate FLOW_GATE_ARGS=--require
@@ -748,6 +756,7 @@ jobs:
         shard: ${{ fromJSON(needs.prepare.outputs.shards) }}
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/wisp
       - uses: ./.github/actions/handed-down
       - name: suites
         timeout-minutes: 50
@@ -815,6 +824,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/wisp
       - uses: actions/download-artifact@v4
         with: { pattern: suite-times-*, path: times, merge-multiple: false }
       - uses: actions/cache/restore@v4
@@ -861,12 +871,9 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with: { name: wisp, path: build/wisp }
+      - uses: ./.github/actions/wisp
       - name: keepers-static
-        run: |
-          chmod +x build/wisp/*/wisp
-          make -s keepers-static
+        run: make -s keepers-static
   # THE MAC'S /bin/bash IS 3.2, and it refuses shapes dash and bash 5 accept: every tracked script parsed
   # under it on every pull request, beside keepers-static's Linux bash (tools/bash_parse.sh)
   bash-parse-mac:
@@ -903,6 +910,7 @@ jobs:
         part: ['0/2', '1/2']
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/wisp
       - uses: ./.github/actions/handed-down
       - name: keepers held to a clock
         env:

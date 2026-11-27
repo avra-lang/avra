@@ -644,6 +644,98 @@ export fn check_keeper_reach(
     )
 }
 
+// ── wisp-route ───────────────────────────────────────────────────────
+
+/// The composite action every job takes its wisp through.
+const WISP_ACTION: string = "./.github/actions/wisp"
+
+/// Whether a text runs `./wisp`: from the tree's root, or a tool's own path to it.
+fn calls_wisp(text: string) -> bool { text.contains("./wisp") || text.contains("/wisp\" ") }
+
+/// The local actions a job's text steps through, its own wisp action aside.
+fn local_actions(code: string) -> List<string> {
+    [rest.substring(0, run_end(rest, 0, (c) -> c != 32 && c != 10 && c != 13 && c != 9)) for line in lines_of(code) for rest in [keyed_value(line, "- uses: ") ?? keyed_value(line, "uses: ") ?? ""] if rest.starts_with("./.github/actions/") && rest != WISP_ACTION]
+}
+
+/// The Makefile variables whose value runs wisp, spelled `$(NAME)`.
+fn wisp_vars(make: string) -> List<string> { ["\$(${n})" for n, v in make_vars(make) if calls_wisp(v)] }
+
+/// Whether a job runs wisp: its own steps, the local actions it calls, the tools and targets those
+/// reach, and a recipe naming a variable that runs it.
+export fn job_runs_wisp(
+    code: string,
+    make: string,
+    tool_text: fn(string) -> string?,
+    action_text: fn(string) -> string?,
+) -> bool {
+    let rules = make_rules(make)
+    let vars = wisp_vars(make)
+    let texts = [code].concat([t! for t in local_actions(code).map(action_text(it)) if t != null])
+    let tools = tool_closure(flatten_texts(texts.map(run_tools(it))), [], tool_text)
+    let tool_texts = [t! for t in tools.map(tool_text(it)) if t != null]
+    let targets = target_closure(
+        flatten_texts(texts.concat(tool_texts).map(made_targets(it, {}))),
+        [],
+        rules,
+    )
+    let recipes = targets.map(rule_of(rules, it).recipe)
+    let recipe_tools = tool_closure(flatten_texts(recipes.map(run_tools(it))), tools, tool_text)
+    let all = texts
+        .concat(recipes)
+        .concat([t! for t in recipe_tools.map(tool_text(it)) if t != null])
+    all.any(calls_wisp(it) || vars.any((v) -> it.contains(v)))
+}
+
+/// The jobs of a workflow that build its wisp (`./wisp --path`) and hand it on (`name: wisp`).
+fn wisp_makers(jobs: Map<string, string>) -> List<string> {
+    [n for n, b in jobs if uncommented(b).contains("./wisp --path") && uncommented(b).contains("name: wisp")]
+}
+
+/// A workflow builds ONE wisp, in one job, and every other job that runs wisp takes that binary through
+/// `.github/actions/wisp` — never a fetch, a hand-down of its own or a build. A workflow that runs no
+/// wisp owes nothing; `gate.yml`, `compiler-macos.yml` and `tools-release.yml` make their own by design
+/// and are not read.
+export fn check_wisp_route(
+    workflows: Map<string, string>,
+    make: string,
+    tool_text: fn(string) -> string?,
+    action_text: fn(string) -> string?,
+) -> Holding {
+    let names = sorted_distinct(workflows.keys()).filter(it == "checks.yml" || it == "orders.yml")
+    let refusals = flatten_texts(
+        names
+            .map(
+                (n) -> route_refusals(
+                    n,
+                    parse_jobs(workflows.get(n) ?? ""),
+                    make,
+                    tool_text,
+                    action_text,
+                ),
+            ),
+    )
+    held(
+        refusals,
+        "wisp-route: ${names.join(", ")} build one wisp each and every job that runs it takes that one",
+    )
+}
+
+fn route_refusals(
+    name: string,
+    jobs: Map<string, string>,
+    make: string,
+    tool_text: fn(string) -> string?,
+    action_text: fn(string) -> string?,
+) -> List<string> {
+    let makers = wisp_makers(jobs)
+    let users = [j for j, b in jobs if !makers.contains(j) && job_runs_wisp(uncommented(b), make, tool_text, action_text)]
+    let unmade = if users.length > 0 && makers.length != 1 { [wisp_makers_not_one(name, makers)] } else { [] }
+    let untaken = [wisp_not_taken(name, j) for j in users if !uncommented(job(jobs, j)).contains("uses: ${WISP_ACTION}")]
+    let own = [wisp_made_again(name, j) for j, b in jobs if !makers.contains(j) &&
+        (uncommented(b).contains("./wisp --path") || uncommented(b).contains("./wisp --compiler"))]
+    unmade.concat(untaken).concat(own)
+}
+
 // ── the tree ─────────────────────────────────────────────────────────
 
 /// The workflows under `root`, by file name.
@@ -660,6 +752,17 @@ export fn workflow_texts(root: string) -> Map<string, string> {
 export fn tree_make_text(root: string) -> string { "${read_text("${root}/Makefile") catch ""}\n${sets_text()}\n" }
 
 fn tree_file(root: string, path: string) -> string { read_text("${root}/${path}") catch "" }
+
+/// The text of a tools/ script under `root`, null when absent.
+fn tool_in(root: string) -> fn(string) -> string? {
+    (name) -> if is_file("${root}/tools/${name}") { read_text("${root}/tools/${name}") catch "" } else { null }
+}
+
+/// The text of a local action (`./.github/actions/<name>`) under `root`, null when absent.
+fn action_in(root: string, a: string) -> string? {
+    let path = "${root}/${a.substring(2, a.length)}/action.yml"
+    if is_file(path) { read_text(path) catch "" } else { null }
+}
 
 /// Every check over the tree at `root`, in order.
 export fn tree_verdicts(root: string) -> List<Holding> {
@@ -682,13 +785,10 @@ export fn tree_verdicts(root: string) -> List<Holding> {
         check_dup_run(workflow),
         check_ready_race(),
         check_warm_edit(make, "${root}/tools/warm_edit_bench.sh", "${root}/tools/ledger_rows.sh"),
-        check_keeper_reach(
-            make,
-            workflows,
-            (name) -> if is_file("${root}/tools/${name}") { read_text("${root}/tools/${name}") catch "" } else { null },
-        ),
+        check_keeper_reach(make, workflows, tool_in(root)),
         check_ci_image(workflows),
         check_one_spelling(workflows),
+        check_wisp_route(workflows, make, tool_in(root), (a) -> action_in(root, a)),
     ]
 }
 
@@ -721,6 +821,18 @@ export command ci_invariants {
 }
 
 // ── voices ───────────────────────────────────────────────────────────
+
+fn wisp_makers_not_one(name: string, makers: List<string>) -> string {
+    "${name}: ${makers.length} job(s) build wisp and hand it on (${makers.join(", ")}) — one job builds it (`./wisp --path`, uploaded as `wisp`)"
+}
+
+fn wisp_not_taken(name: string, j: string) -> string {
+    "${name}: `${j}` runs wisp and does not take the run's own (`uses: ./.github/actions/wisp`)"
+}
+
+fn wisp_made_again(name: string, j: string) -> string {
+    "${name}: `${j}` builds or fetches a wisp of its own — take the run's (`uses: ./.github/actions/wisp`)"
+}
 
 fn no_fetch() -> string { "no `prepare` step fetches the compiler from the release asset" }
 
