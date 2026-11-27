@@ -1,0 +1,1106 @@
+//! `wisp inputs [--accept] [--avra <compiler>]` — EVERY READ OF THE WORLD IS AN INPUT THROUGH ONE
+//! DOOR, and this counts the reads that are not: a call in the compiler or its CLI that asks the
+//! disk, the environment, a tool, a child process, the clock, the process table or argv, outside
+//! the door — the files that define the input verbs and the disk's answers to them (DOOR), never
+//! the directories they stand in.
+//!
+//! A SITE IS FOUND FROM WHAT ITS FILE IMPORTS, never from a verb's spelling: a name taken from a
+//! world package is looked up in that package's table and its calls counted, so a local fn that
+//! happens to be called `env` is nobody's site. Beside those: a call through a `Host` value
+//! (`host.read(…)`), and a call of a world runtime row the file declares itself.
+//!
+//! THE TABLES CANNOT GO STALE QUIETLY. A `use @std.…` line the keeper cannot read is refused; a
+//! `@std` package a scope file imports is in WORLD or INERT, or refused; a WORLD package's name
+//! classed pure is held to its own source (a read reached only through a METHOD is not followed);
+//! an INERT package declares the rows pinned here and no other, and imports inert packages alone;
+//! a name imported from a WORLD package, and a row a scope file declares, is classified or refused.
+//!
+//! THE BASELINE LISTS SITES, NEVER COUNTS: tools/inputs.baseline holds a group, a file and the
+//! site's own source line. A site not listed fails, naming its line. A licence comment (`LICENSED`, an `input.` id, a reason) on
+//! the line above says a read is no input and takes it out; its id's shape is the compiler's own
+//! (`avra licences --json`). The file only falls: `--accept` prunes what a move made gone.
+use @std.cli.{CliResult, Runnable, command, flag, option}
+use @std.io.{read_text, write_text}
+use @std.json.{Json, parse}
+use @std.process.{cmd, tool_at}
+use @std.path.{dir_of}
+use @std.text.{pad_left, pad_right}
+
+const SCOPE: List<string> = [
+    "packages/std-avrac/src",
+    "packages/cli/src",
+    "packages/std-program/src",
+]
+
+/// The `@std` packages whose sources the scope reads: their own, never WORLD or INERT.
+const OWN: List<string> = ["avrac", "program"]
+
+/// The FILES that define the input verbs and the disk's answers to them. A read beside one, in the
+/// same directory, is outside like any other.
+const DOOR: List<string> = [
+    "packages/cli/src/commands/disk_host.av",
+    "packages/std-avrac/src/compiler/host/host.av",
+    "packages/std-program/src/source_facts.av",
+]
+
+const BASELINE: string = "tools/inputs.baseline"
+
+/// What a call asks of the world. A kind here is a read; the rest classify a name.
+const COUNTED: List<string> = ["read", "env", "tool", "spawn", "clock", "pid", "argv", "fetch"]
+
+/// A WORLD package: every name a scope file imports from it.
+export const WORLD: Map<string, Map<string, string>> = {
+    "io": {
+        "read_text": "read",
+        "read_bytes": "read",
+        "exists": "read",
+        "is_file": "read",
+        "is_dir": "read",
+        "list_dir": "read",
+        "stamp": "read",
+        "kind_of": "read",
+        "open_beneath": "read",
+        "watch": "read",
+        "own_dir": "read",
+        "user_dir": "read",
+        "env": "env",
+        "env_or": "env",
+        "compile_slot": "env",
+        "write_text": "write",
+        "write_bytes": "write",
+        "append_bytes": "write",
+        "synced": "write",
+        "Draft": "type",
+        "drafted": "write",
+        "drafts_leaving": "effect",
+        "drafts_left": "effect",
+        "abandoned_drafts": "read",
+        "this_process": "pid",
+        "opened_for_append": "write",
+        "truncate_to": "write",
+        "make_dirs": "write",
+        "remove": "write",
+        "touch": "write",
+        "link": "write",
+        "println": "effect",
+        "eprintln": "effect",
+        "one_path": "pure",
+        "refused": "pure",
+        "enoent": "pure",
+        "eacces": "pure",
+        "enotdir": "pure",
+        "IoError": "type",
+        "Entry": "type",
+        "Opened": "type",
+        "AppendFile": "type",
+        "Watch": "type",
+        "OwnDir": "type",
+    },
+    "process": {
+        "tool": "tool",
+        "tool_from_env": "tool",
+        "tool_at": "pure",
+        "host": "spawn",
+        "run_through": "spawn",
+        "parallel": "spawn",
+        "race": "spawn",
+        "serving": "spawn",
+        "minimal": "env",
+        "developer": "env",
+        "signalled": "pid",
+        "cmd": "pure",
+        "inherited": "pure",
+        "exit_text": "pure",
+        "status_of": "pure",
+        "scripted": "pure",
+        "plan": "pure",
+        "exit": "effect",
+        "Tool": "type",
+        "Command": "type",
+        "Exit": "type",
+        "Output": "type",
+        "Outcome": "type",
+        "Env": "type",
+        "EnvPair": "type",
+        "Stdin": "type",
+        "Streams": "type",
+        "Ready": "type",
+        "Stream": "type",
+        "ProcessError": "type",
+        "Child": "type",
+        "Pipeline": "type",
+        "PipeOutcome": "type",
+        "Script": "type",
+        "Signal": "type",
+        "Signalled": "type",
+        "Runner": "type",
+    },
+    "time": {
+        "now_ms": "clock",
+        "now_ns": "clock",
+        "wall_secs": "clock",
+        "sleep": "effect",
+        "ms": "pure",
+        "secs": "pure",
+        "mins": "pure",
+        "quiet": "pure",
+        "duration_text": "pure",
+        "Duration": "type",
+    },
+    "task": {"signals": "pid", "Source": "type", "Sig": "type", "Signals": "type"},
+    "cli": {
+        "argv": "argv",
+        "cli": "argv",
+        "command": "pure",
+        "arg": "pure",
+        "flag": "pure",
+        "option": "pure",
+        "CliResult": "type",
+        "Runnable": "type",
+    },
+    "net": {"Bell": "type", "Listener": "type", "Conn": "type", "listen": "effect", "connect": "fetch"},
+    "http": {
+        "get": "fetch",
+        "fetch": "fetch",
+        "server": "effect",
+        "directory": "read",
+        "event_stream": "effect",
+        "compiled": "pure",
+        "dispatch": "pure",
+        "fixed": "pure",
+        "framed": "pure",
+        "limits": "pure",
+        "text": "pure",
+        "mounted": "pure",
+        "quiet_default": "pure",
+        "options": "pure",
+        "chunker": "pure",
+        "unchunked": "pure",
+        "Request": "type",
+        "Unrouted": "type",
+        "Response": "type",
+        "Pulled": "type",
+        "Header": "type",
+        "Route": "type",
+        "Event": "type",
+        "Next": "type",
+        "Source": "type",
+        "Resume": "type",
+        "Method": "type",
+        "Files": "type",
+        "Body": "type",
+        "Payload": "type",
+        "Redirects": "type",
+        "Reach": "type",
+        "Stream": "type",
+        "Chunker": "type",
+        "Decoded": "type",
+        "Hosted": "type",
+        "asset_answer": "pure",
+    },
+    "http_compress": {"precoded": "pure"},
+    "ui": {"fetched_tags": "pure"},
+}
+
+/// A spawn is a METHOD on a command a file built, so a file that imports one of these is read for
+/// `.run()`, `.outcome(` and `.start(` too.
+const SPAWNERS: List<string> = ["cmd", "Command", "Tool", "Pipeline", "Runner"]
+
+/// An INERT package reads nothing: the rows it may declare, and the names of it that do read.
+export type Inert = { rows: List<string>, world: Map<string, string> }
+
+export const INERT: Map<string, Inert> = {
+    "meta": Inert {
+        rows: ["avra_embed", "avra_embed_octets", "avra_type_named", "avra_fn_declared"],
+        world: {"embed": "read"},
+    },
+    "relation": Inert {
+        rows: [
+            "avra_trap",
+            "avra_qtrace",
+            "avra_cores_group",
+            "avra_cores_fork",
+            "avra_cores_end_fd",
+            "avra_cores_heard",
+            "avra_cores_leave",
+            "avra_cores_result",
+            "avra_fiber_park_fd",
+            "avra_ctx_listen",
+            "avra_ctx_listened",
+            "avra_ctx_holds",
+            "avra_ctx_heard_drop",
+            "avra_ctx_reheard",
+        ],
+        world: {},
+    },
+    "text": Inert {
+        rows: [
+            "avra_str_from_codepoint",
+            "avra_str_parsed_float",
+            "avra_str_parsed_int",
+            "avra_str_parses_float",
+            "avra_str_parses_int",
+            "avra_bytes_with_room",
+            "avra_str_word_at",
+            "avra_cell_bytes_word",
+            "avra_cell_bytes_run",
+        ],
+        world: {},
+    },
+    "hash": Inert {
+        rows: [
+            "avra_b3_state_len",
+            "avra_b3_fresh",
+            "avra_b3_update",
+            "avra_b3_digest",
+            "avra_b3_oneshot",
+            "avra_b3_digest_hex",
+            "avra_b3_oneshot_hex",
+            "avra_bytes_adopted",
+            "avra_trap",
+        ],
+        world: {},
+    },
+}
+
+/// The INERT packages that declare no row and read nothing.
+const SILENT: List<string> = [
+    "assets",
+    "derive",
+    "errors",
+    "grammar",
+    "http_message",
+    "json",
+    "math",
+    "path",
+    "testing",
+    "toml",
+    "url",
+    "validate",
+]
+
+/// An INERT package's claim, or null for a package that is not one.
+export fn inert_of(pkg: string) -> Inert? {
+    INERT.get(pkg) ?? if SILENT.contains(pkg) { Inert { rows: [], world: {} } } else { null }
+}
+
+/// A runtime row a scope file declares for itself, by what it asks.
+export const ROWS: Map<string, string> = {
+    "avra_host_env": "env",
+    "avra_host_is_dir": "read",
+    "avra_io_list": "read",
+    "avra_selfhost_file_exists": "read",
+    "avra_selfhost_read_file": "read",
+    "avra_fd_read": "read",
+    "avra_fd_tty_size": "read",
+    "avra_fd_tty_raw": "write",
+    "avra_fd_exit_writes": "write",
+    "avra_sig_raise": "write",
+    "avra_ffi_open": "read",
+    "avra_embed": "read",
+    "avra_embed_octets": "read",
+    "avra_embed_digest": "read",
+    "avra_spawn_in": "spawn",
+    "avra_spawn_status": "spawn",
+    "avra_exec_self": "spawn",
+    "avra_self_dir": "tool",
+    "avra_self_path": "tool",
+    "avra_now_ns": "clock",
+    "avra_file_touch": "write",
+    "avra_own_pid": "pid",
+    "avra_pid_alive": "pid",
+    "avra_box_observe": "effect",
+    "avra_box_unobserve": "effect",
+    "avra_turn_next": "effect",
+    "avra_changes_take": "effect",
+    "avra_sched_runs_wanted": "env",
+    "avra_sched_schedule_at": "env",
+    "avra_case_clock_virtual": "env",
+    "avra_cores_online": "env",
+    "avra_selfhost_argc": "argv",
+    "avra_selfhost_get_arg_cstr": "argv",
+    "avra_mmap_open": "read",
+    "avra_mmap_len": "read",
+    "avra_mmap_slice": "read",
+    "avra_mmap_word_at": "read",
+    "avra_mmap_close": "write",
+    "avra_disk_free_bytes": "read",
+    "avra_file_bytes": "read",
+    "avra_file_placed": "write",
+    "avra_cpu_ns": "clock",
+    "avra_cores_group": "spawn",
+    "avra_cores_fork": "spawn",
+    "avra_cores_heir": "spawn",
+}
+
+/// The `avra_<family>_…` rows that read nothing.
+const INERT_FAMILIES: List<string> = [
+    "llvm",
+    "float",
+    "int",
+    "str",
+    "bytes",
+    "vtask",
+    "fiber",
+    "ffi",
+    "sw",
+    "lane",
+    "shared",
+]
+
+const INERT_CORES: List<string> = [
+    "claimed",
+    "leave",
+    "end_fd",
+    "heard",
+    "killed",
+    "finished",
+    "stderr_to",
+    "heir_gone",
+]
+
+const INERT_NAMED: List<string> = [
+    "debug",
+    "eputs",
+    "puts",
+    "errno_text",
+    "ptr_at",
+    "qtrace",
+    "trap",
+    "utf8_bad_at",
+    "mem_live",
+    "fd_taken",
+    "fd_write",
+    "type_named",
+    "vgate_open",
+    "vgate_ended",
+    "vgate_claim",
+    "gate_new",
+    "rc_release",
+    "task_at",
+    "task_done",
+    "task_cancel",
+    "process_exit",
+    "sched_seed",
+    "sched_settle",
+    "sched_run_begins",
+    "sched_run_ends",
+    "sched_guest_waits",
+    "clock_virtual",
+    "main_cancelled_words",
+]
+
+/// The verbs of the filesystem seam: a read behind `Host`, not yet an input.
+const HOST_VERBS: List<string> = ["read", "exists", "beneath", "list", "is_dir", "stamp", "octets"]
+
+/// A world read: where it stands, what it asks, and whether the door, a licence or nothing holds it.
+export type Site = { file: string, line: int, text: string, kind: string, verb: string, state: string }
+
+/// A family of licence ids, as the compiler holds it: a prefix and its shape.
+export type Family = { prefix: string, shape: string }
+
+/// What the keeper reads by: the world packages and the licence families.
+export type Tables = { world: Map<string, Map<string, string>>, families: List<Family> }
+
+// ── names and rows ───────────────────────────────────────────────────
+
+fn ident_start(c: int) -> bool { word_char(c) && !(c >= 48 && c <= 57) }
+
+fn seg_char(c: int) -> bool { c >= 97 && c <= 122 || c >= 48 && c <= 57 || c == 95 }
+
+fn seg_start(c: int) -> bool { c >= 97 && c <= 122 || c == 95 }
+
+fn blank(c: int) -> bool { c == 32 || c >= 9 && c <= 13 }
+
+/// A name a row of no world is: no read, no write.
+export fn inert_row(row: string) -> bool {
+    if row.starts_with("LLVM") { return run_end(row, 4, word_char) == row.length }
+    if row == "host" || row == "println" { return true }
+    if !row.starts_with("avra_") { return false }
+    let rest = row.substring(5, row.length)
+    INERT_FAMILIES
+            .any(
+                (f) -> rest.starts_with("${f}_") &&
+                    rest.length > f.length + 1 &&
+                    run_end(rest, 0, word_char) == rest.length,
+            ) ||
+        rest.starts_with("cores_") && INERT_CORES.contains(rest.substring(6, rest.length)) ||
+        INERT_NAMED.contains(rest)
+}
+
+/// The row an `extern fn <name>` line declares, `export` allowed, or null.
+fn extern_row(line: string) -> string? {
+    let s = left_trimmed(line)
+    let e = if s.starts_with("export") && s.length > 6 && blank(s.char_code(6)) { left_trimmed(s.substring(6, s.length)) } else { s }
+    if !e.starts_with("extern") || e.length <= 6 || !blank(e.char_code(6)) { return null }
+    let f = left_trimmed(e.substring(6, e.length))
+    if !f.starts_with("fn") || f.length <= 2 || !blank(f.char_code(2)) { return null }
+    let n = left_trimmed(f.substring(2, f.length))
+    if n.length == 0 || !ident_start(n.char_code(0)) { return null }
+    n.substring(0, run_end(n, 1, word_char))
+}
+
+fn externs(text: string) -> List<string> { [r! for r in lines_of(text).map(extern_row(it)) if r != null] }
+
+/// The world rows a file declares. A module's files share its names, so a sibling's row is
+/// called here by the same word.
+fn declared_rows(text: string) -> List<string> { joined([], [r for r in externs(text) if ROWS.has(r)]) }
+
+// ── imports ──────────────────────────────────────────────────────────
+
+/// One `use @std.<pkg>….<names>` statement: its package and the text of its names.
+type Use = { pkg: string, names: string }
+
+/// The names a use's tail takes at `p` (`.{…}` or `.Name`, after any `.seg` path), or null.
+fn use_tail(text: string, p: int) -> string? {
+    if p + 1 >= text.length || text.char_code(p) != 46 { return null }
+    if text.char_code(p + 1) == 123 {
+        let close = index_from(text, "}", p + 2)
+        return if close < 0 { null } else { text.substring(p + 1, close + 1) }
+    }
+    if !ident_start(text.char_code(p + 1)) { return null }
+    let end = run_end(text, p + 2, word_char)
+    let ident = text.substring(p + 1, end)
+    let deeper = if seg_start(ident.char_code(0)) && run_end(ident, 0, seg_char) == ident.length { use_tail(text, end) } else { null }
+    deeper ?? ident
+}
+
+/// The use statement at offset `at`, or null where its shape is not `use @std.pkg.{names}`.
+fn use_at(text: string, at: int) -> Use? {
+    if !stands_at(text, "use", at) { return null }
+    let gap = run_end(text, at + 3, blank)
+    if gap == at + 3 || !stands_at(text, "@std.", gap) { return null }
+    let p = gap + 5
+    if p >= text.length || !seg_start(text.char_code(p)) { return null }
+    let end = run_end(text, p + 1, seg_char)
+    let names? = use_tail(text, end) else { return null }
+    Use { pkg: text.substring(p, end), names: names }
+}
+
+/// Where each line starts.
+fn line_starts(text: string) -> List<int> {
+    [0].concat([i + 1 for i in 0..text.length if text.char_code(i) == 10 && i + 1 < text.length])
+}
+
+fn uses(text: string) -> List<Use> {
+    [u! for u in line_starts(text).map(use_at(text, it)) if u != null]
+}
+
+/// One name a file takes from `@std`: its package, its name there, and its name here.
+export type Import = { pkg: string, name: string, local: string }
+
+fn stripped_braces(s: string) -> string {
+    let a = if s.starts_with("{") { s.substring(1, s.length) } else { s }
+    if a.ends_with("}") { a.substring(0, a.length - 1) } else { a }
+}
+
+fn import_of(pkg: string, n: string) -> Import? {
+    let parts = n.split(" as ").map(it.trim())
+    let first = parts.first() ?? ""
+    if first == "" { null } else { Import { pkg: pkg, name: first, local: parts.last()! } }
+}
+
+/// Every name a file takes from `@std` — a multi-line list joined, an `as` read for both names.
+export fn imports(text: string) -> List<Import> {
+    flatten_imports(
+        [[i! for i in stripped_braces(u.names).split(",").map(import_of(u.pkg, it)) if i != null] for u in uses(text)],
+    )
+}
+
+fn flatten_imports(xss: List<List<Import>>) -> List<Import> { xss.fold([], (acc, xs) -> acc.concat(xs)) }
+
+fn packages_used(text: string) -> List<string> { joined([], uses(text).map(it.pkg)) }
+
+/// The line indexes a `use` statement stands on — a list may run over several.
+fn use_lines(text: string) -> List<int> {
+    let starts = line_starts(text)
+    flatten_ints(
+        [[j for j in n..n + 1 + newlines_in(text, at, use_end(text, at))] for n, at in starts if stands_at(text, "use", at) && at + 3 < text.length && blank(text.char_code(at + 3))],
+    )
+}
+
+fn flatten_ints(xss: List<List<int>>) -> List<int> { xss.fold([], (acc, xs) -> acc.concat(xs)) }
+
+/// Where a `use` statement at `at` ends: its line, or the brace list that line opens.
+fn use_end(text: string, at: int) -> int {
+    let line_end = index_from(text, "\n", at + 4)
+    let brace = index_from(text, "{", at + 4)
+    let stop = if line_end < 0 { text.length } else { line_end }
+    if brace < 0 || brace > stop { return stop }
+    let close = index_from(text, "}", brace)
+    if close < 0 { brace } else { close + 1 }
+}
+
+fn newlines_in(text: string, a: int, b: int) -> int { [i for i in a..b if text.char_code(i) == 10].length }
+
+// ── calls ────────────────────────────────────────────────────────────
+
+/// A line without its trailing comment; a comment line is nothing.
+export fn code_line(line: string) -> string {
+    if line.trim().starts_with("//") { "" } else { line.split(" // ").first() ?? "" }
+}
+
+/// Whether `name` is called on a line — `name(`, or handed over as a value before `,` or `)` —
+/// never a method, a field, a longer name, or its own definition.
+export fn calls(code: string, name: string) -> bool {
+    mut k = code.index_of(name)
+    while k >= 0 {
+        let before = k == 0 || !(word_char(code.char_code(k - 1)) || code.char_code(k - 1) == 46)
+        let after = k + name.length
+        let paren = after < code.length && code.char_code(after) == 40
+        let next = run_end(code, after, blank)
+        let valued = next < code.length &&
+            (code.char_code(next) == 44 || code.char_code(next) == 41)
+        let defined = paren && k >= 3 && code.substring(k - 3, k) == "fn "
+        if before && (paren && !defined || valued) { return true }
+        k = index_from(code, name, k + 1)
+    }
+    false
+}
+
+/// The verb of a host call at `at` (`verb(` or `verb)(`), or null.
+fn host_verb(code: string, at: int) -> string? {
+    let v? = HOST_VERBS.find(stands_at(code, it, at)) else { return null }
+    let p = at + v.length
+    let q = if p < code.length && code.char_code(p) == 41 { p + 1 } else { p }
+    if q < code.length && code.char_code(q) == 40 { v } else { null }
+}
+
+/// Every `host.<verb>(` on a line.
+fn hosted(code: string) -> List<string> {
+    mut out: List<string> = []
+    mut k = word_from(code, "host", 0)
+    while k >= 0 {
+        if k + 4 < code.length && code.char_code(k + 4) == 46 {
+            let v = host_verb(code, k + 5)
+            if v != null { out.push(v!) }
+        }
+        k = word_from(code, "host", k + 1)
+    }
+    out
+}
+
+/// The verb of a line that continues a chain with `.<verb>(`, or null.
+fn chained(code: string) -> string? {
+    let s = left_trimmed(code)
+    if !s.starts_with(".") { return null }
+    host_verb(s, 1)
+}
+
+fn ends_in_host(code: string) -> bool {
+    let s = code.trim()
+    s.ends_with("host") && (s.length == 4 || !word_char(s.char_code(s.length - 5)))
+}
+
+/// Every `.run()`, `.outcome(` and `.start(` on a line.
+fn spawn_verbs(code: string) -> List<string> {
+    mut out: List<string> = []
+    mut k = code.index_of(".")
+    while k >= 0 {
+        let rest = code.substring(k + 1, code.length)
+        let v = when {
+            rest.starts_with("run()") -> "run"
+            rest.starts_with("outcome(") -> "outcome"
+            rest.starts_with("start(") -> "start"
+            _ -> ""
+        }
+        if v != "" { out.push(".${v}") }
+        k = index_from(code, ".", k + 1)
+    }
+    out
+}
+
+fn extern_line(code: string) -> bool {
+    let s = left_trimmed(code)
+    let e = if s.starts_with("export") && s.length > 6 && blank(s.char_code(6)) { left_trimmed(s.substring(6, s.length)) } else { s }
+    e.starts_with("extern fn ")
+}
+
+// ── licences ─────────────────────────────────────────────────────────
+
+/// What follows an id of `f`'s shape at the start of `s`, or null.
+fn past_id(s: string, f: Family) -> string? {
+    if !s.starts_with(f.prefix) { return null }
+    let rest = s.substring(f.prefix.length, s.length)
+    if f.shape == "snake" {
+        let end = run_end(rest, 0, (c) -> c >= 97 && c <= 122 || c == 95)
+        if end == 0 { null } else { rest.substring(end, rest.length) }
+    } else if rest.starts_with(f.shape) {
+        rest.substring(f.shape.length, rest.length)
+    } else {
+        null
+    }
+}
+
+/// Whether an id is one of a family's, whole.
+export fn cites(families: List<Family>, id: string) -> bool { families.any(past_id(id, it) == "") }
+
+/// A `// LICENSED <prefix><id>: <reason>` line of the family with `prefix`.
+export fn licensed(families: List<Family>, prefix: string, line: string) -> bool {
+    let f? = families.find(it.prefix == prefix) else { return false }
+    let s = left_trimmed(line)
+    if !s.starts_with("//") { return false }
+    let t = left_trimmed(s.substring(2, s.length))
+    if !t.starts_with("LICENSED") { return false }
+    let u = t.substring(8, t.length)
+    let v = left_trimmed(u)
+    if v.length == u.length { return false }
+    let tail? = past_id(v, f) else { return false }
+    tail.starts_with(":") && left_trimmed(tail.substring(1, tail.length)) != ""
+}
+
+// ── sites ────────────────────────────────────────────────────────────
+
+/// The kind a name of a package asks, or null.
+fn kind_in(world: Map<string, Map<string, string>>, i: Import) -> string? {
+    (world.get(i.pkg) ?? {}).get(i.name) ?? (inert_of(i.pkg)?.world ?? {}).get(i.name)
+}
+
+/// A name to watch: what it is called here and what it asks.
+type Watched = { name: string, kind: string }
+
+/// `ws` with `w` watched: a name already there keeps its place and takes the new kind.
+fn watch(ws: List<Watched>, w: Watched) -> List<Watched> {
+    if ws.any(it.name == w.name) { ws.map(if it.name == w.name { w } else { it }) } else { ws.concat([w]) }
+}
+
+fn watched_of(t: Tables, text: string, module_rows: List<string>) -> List<Watched> {
+    let named = [Watched { name: i.local, kind: kind_in(t.world, i)! } for i in imports(text) if COUNTED.contains(kind_in(t.world, i) ?? "")]
+    let rows = [Watched { name: r, kind: ROWS.get(r)! } for r in joined(declared_rows(text), module_rows)]
+    named.concat(rows).fold([], (acc, w) -> watch(acc, w))
+}
+
+/// What a line reads: its kind, its verb, and whether it went through `Host`.
+type WorldRead = { kind: string, verb: string, hosted: bool }
+
+fn reads_on(watched: List<Watched>, spawns: bool, code: string, above: string) -> List<WorldRead> {
+    let named = [WorldRead { kind: w.kind, verb: w.name, hosted: false } for w in watched if calls(code, w.name)]
+    let host = hosted(code).map(WorldRead { kind: "read", verb: "host.${it}", hosted: true })
+    let link = chained(code)
+    let chain = if ends_in_host(above) && link != null { [WorldRead { kind: "read", verb: "host.${link!}", hosted: true }] } else { [] }
+    let spawning = if spawns { spawn_verbs(code).map(WorldRead { kind: "spawn", verb: it, hosted: false }) } else { [] }
+    named.concat(host).concat(chain).concat(spawning)
+}
+
+fn site_state(door: bool, licence: bool) -> string {
+    when {
+        door -> "door"
+        licence -> "licensed"
+        _ -> "outside"
+    }
+}
+
+/// A file's world reads, each with where it stands: through the door, licensed as no input, or
+/// outside.
+export fn sites_in(t: Tables, path: string, text: string, module_rows: List<string>) -> List<Site> {
+    let watched = watched_of(t, text, module_rows)
+    let spawns = imports(text).any((i) -> i.pkg == "process" && SPAWNERS.contains(i.name))
+    let skipped = use_lines(text)
+    let ls = lines_of(text)
+    let door = DOOR.contains(path)
+    flatten_sites(
+        [reads_on(watched, spawns, code_line(line), if i > 0 { code_line(ls[i - 1]) } else { "" })
+            .map(
+                Site {
+                    file: path,
+                    line: i + 1,
+                    text: line.trim(),
+                    kind: it.kind,
+                    verb: it.verb,
+                    state: site_state(door, i > 0 && licensed(t.families, "input.", ls[i - 1])),
+                },
+            ) for i, line in ls if code_line(line) != "" && !skipped.contains(i) && !extern_line(code_line(line))],
+    )
+}
+
+fn flatten_sites(xss: List<List<Site>>) -> List<Site> { xss.fold([], (acc, xs) -> acc.concat(xs)) }
+
+// ── the tables, held to their sources ────────────────────────────────
+
+fn unreadable(path: string, line: string) -> string {
+    "${path}: `${line.trim()}` is an import the keeper cannot read — name what it takes (`use @std.pkg.{name}`)"
+}
+
+/// Each `use @std…` line's offset.
+fn std_use_starts(text: string) -> List<int> {
+    [at for at in line_starts(text) if stands_at(text, "use", at) &&
+        run_end(text, at + 3, blank) > at + 3 &&
+        stands_at(text, "@std", run_end(text, at + 3, blank)) &&
+        !word_after(text, run_end(text, at + 3, blank) + 4)]
+}
+
+fn word_after(text: string, at: int) -> bool { at < text.length && word_char(text.char_code(at)) }
+
+fn line_from(text: string, at: int) -> string { text.substring(at, run_end(text, at, (c) -> c != 10)) }
+
+/// Whether `needle` stands at `at`.
+fn stands_at(text: string, needle: string, at: int) -> bool {
+    at + needle.length <= text.length && text.substring(at, at + needle.length) == needle
+}
+
+/// What a file names that no table places.
+export fn unclassified(t: Tables, path: string, text: string) -> List<string> {
+    let unread = [unreadable(path, line_from(text, at)) for at in std_use_starts(text) if use_at(text, at) == null]
+    let homeless = ["${path}: `@std.${p}` is in neither WORLD nor INERT — say which it is" for p in sorted_distinct(packages_used(text)) if !OWN.contains(p) && !t.world.has(p) && inert_of(p) == null]
+    let names = ["${path}: `${i.name}` of `@std.${i.pkg}` is unclassified — add it to WORLD[\"${i.pkg}\"]" for i in imports(text) if t.world.has(i.pkg) && !t.world.get(i.pkg)!.has(i.name)]
+    let rows = ["${path}: the row `${r}` is unclassified — a world read (ROWS) or inert (INERT_ROWS)" for r in externs(text) if !ROWS.has(r) && !inert_row(r)]
+    flatten_texts([unread, homeless, names, rows])
+}
+
+/// Whether a name of a WORLD package is a value or a type — no read of the world.
+fn valued(t: Tables, pkg: string, name: string) -> bool {
+    let k = (t.world.get(pkg) ?? {}).get(name) ?? ""
+    k == "pure" || k == "type"
+}
+
+/// A source file: its path and its text.
+export type Source = { path: string, text: string }
+
+/// How an INERT package's own source breaks its claim: a row it was not pinned to, or an import of
+/// a package that reads.
+export fn inert_faults(t: Tables, pkg: string, sources: List<Source>) -> List<string> {
+    let pinned = inert_of(pkg)?.rows ?? []
+    flatten_texts(
+        [["${s.path}: `@std.${pkg}` is INERT and declares `${r}` — pin the row, or the package is WORLD" for r in externs(s.text) if !pinned.contains(r)]
+            .concat(
+                ["${s.path}: `@std.${pkg}` is INERT and imports `${i.name}` of `@std.${i.pkg}`, which is not" for i in imports(s.text) if i.pkg != pkg && inert_of(i.pkg) == null && !valued(t, i.pkg, i.name)],
+            ) for s in sources],
+    )
+}
+
+/// Where the brace that closes the first `{` at or after `at` stands — strings skipped, nesting
+/// counted — or -1 when it never closes.
+export fn braced_end(text: string, at: int) -> int {
+    mut depth = 0
+    mut i = at
+    mut quoted = false
+    while i < text.length {
+        let c = text.char_code(i)
+        if c == 92 {
+            i = i + 1
+        } else if c == 34 {
+            quoted = !quoted
+        } else if !quoted && c == 123 {
+            depth = depth + 1
+        } else if !quoted && c == 125 {
+            depth = depth - 1
+            if depth == 0 { return i }
+        }
+        i = i + 1
+    }
+    -1
+}
+
+/// The free fn a line opens (`fn`, `export`, `mut` or `once` led): its name's end, or -1.
+fn free_fn_at(line: string) -> int {
+    let a = if line.starts_with("export") && line.length > 6 && blank(line.char_code(6)) { run_end(line, 6, blank) } else { 0 }
+    let s = line.substring(a, line.length)
+    let m = if s.starts_with("mut") || s.starts_with("once") {
+        let w = if s.starts_with("mut") { 3 } else { 4 }
+        if s.length > w && blank(s.char_code(w)) { run_end(s, w, blank) } else { 0 }
+    } else {
+        0
+    }
+    let f = s.substring(m, s.length)
+    if !f.starts_with("fn") || f.length <= 2 || !blank(f.char_code(2)) { return -1 }
+    let n = run_end(f, 2, blank)
+    if n >= f.length || !ident_start(f.char_code(n)) { return -1 }
+    a + m + run_end(f, n + 1, word_char)
+}
+
+/// A name and the text of every body declared under it.
+type Body = { name: string, text: string }
+
+fn bodies_of(code: string) -> List<Body> {
+    [Body {
+        name: l.substring(name_start_at(l), free_fn_at(l)),
+        text: body_text(code, at + free_fn_at(l)),
+    } for at in line_starts(code) for l in [line_from(code, at)] if free_fn_at(l) >= 0]
+}
+
+/// Where the name of the free fn a line opens starts.
+fn name_start_at(line: string) -> int {
+    let end = free_fn_at(line)
+    mut k = end
+    while k > 0 && word_char(line.char_code(k - 1)) { k = k - 1 }
+    k
+}
+
+fn body_text(code: string, at: int) -> string {
+    let end = braced_end(code, at)
+    if end < 0 { code.substring(at, code.length) } else { code.substring(at, end + 1) }
+}
+
+fn body_named(bodies: List<Body>, name: string) -> string { bodies.filter(it.name == name).map(it.text).join("") }
+
+/// The first of `names`, in byte order, a body calls, never itself.
+fn first_call(body: string, names: List<string>, self_name: string) -> string? {
+    sorted_distinct(names).find(it != self_name && lines_of(body).any((l) -> calls(l, it)))
+}
+
+/// A name and the path by which it reaches the world.
+type Reach = { name: string, path: string }
+
+/// `reach` grown pass by pass: a name that calls one already reaching the world reaches it too.
+fn reached_further(bodies: List<Body>, names: List<string>, world: List<string>, start: List<Reach>) -> List<
+    Reach,
+> {
+    let passed = names.fold(start, (reach, n) -> reached_by(bodies, world, reach, n))
+    if passed.length == start.length { passed } else { reached_further(bodies, names, world, passed) }
+}
+
+/// `reach` with `n` in it when its body calls a name already there.
+fn reached_by(bodies: List<Body>, world: List<string>, reach: List<Reach>, n: string) -> List<Reach> {
+    if reach.any(it.name == n) || world.contains(n) { return reach }
+    let hit? = first_call(body_named(bodies, n), reach.map(it.name), n) else { return reach }
+    reach.concat([Reach { name: n, path: "${hit} -> ${reach.find(it.name == hit)!.path}" }])
+}
+
+/// How a WORLD package's own source breaks a `pure` claim: the fn reaches a world row or a counted
+/// name of its package, itself or through the package's free fns.
+export fn pure_faults(t: Tables, pkg: string, sources: List<Source>) -> List<string> {
+    let names_of = t.world.get(pkg) ?? {}
+    let codes = sources.map(lines_of(it.text).map(code_line(it)).join("\n"))
+    let counted = [n for n, k in names_of if COUNTED.contains(k)]
+    let rows = flatten_texts(codes.map(externs(it))).filter((r) -> ROWS.has(r) || !inert_row(r))
+    let world = joined(counted, rows)
+    let bodies = flatten_bodies(codes.map(bodies_of(it)))
+    let names = joined([], bodies.map(it.name))
+    let direct = [Reach { name: n, path: hit! } for n in names for hit in [first_call(body_named(bodies, n), world, n)] if hit != null]
+    let reach = reached_further(bodies, names, world, direct)
+    ["`${n}` of `@std.${pkg}` is classed pure and reaches the world (${n} -> ${reach.find(it.name == n)!.path}) — class it by what it reads" for n in sorted_distinct([m for m, k in names_of if k == "pure"]) if reach.any(it.name == n)]
+}
+
+fn flatten_bodies(xss: List<List<Body>>) -> List<Body> { xss.fold([], (acc, xs) -> acc.concat(xs)) }
+
+// ── the baseline ─────────────────────────────────────────────────────
+
+/// The subsystem a site is counted under — the design's split.
+export fn site_group(path: string, kind: string, hosted: bool) -> string {
+    let name = path.split("/").last() ?? path
+    when {
+        hosted -> "behind-host"
+        kind == "clock" || path.contains("/compiler/store/") || path.contains("/backend/interp") -> "not-input"
+        path.ends_with("cli/src/commands/shared.av") -> "cli-plumbing"
+        path.starts_with("packages/cli/") -> "commands"
+        name == "build.av" || name == "db.av" || name == "whole.av" -> "build"
+        _ -> "compiler"
+    }
+}
+
+/// A site's baseline row: its group, its file and its text, TAB-separated.
+export fn key(s: Site) -> string { "${site_group(s.file, s.kind, s.verb.starts_with("host."))}\t${s.file}\t${s.text}" }
+
+fn outside_sites(sites: List<Site>) -> List<Site> { sites.filter(it.state == "outside") }
+
+/// `xs` less one of each of `ys` it holds — a multiset difference.
+fn less(xs: List<string>, ys: List<string>) -> List<string> {
+    ys
+        .fold(
+            xs,
+            (acc, y) -> if acc.index_of(y) < 0 { acc } else { acc.take(acc.index_of(y)).concat(acc.drop(acc.index_of(y) + 1)) },
+        )
+}
+
+/// The outside sites the baseline does not list — a line listed twice covers two.
+export fn fresh_sites(sites: List<Site>, held: List<string>) -> List<Site> {
+    let out = outside_sites(sites)
+    [s for i, s in out if out.take(i).filter(key(it) == key(s)).length >= held.filter(it == key(s)).length]
+}
+
+/// Baseline rows no site answers to any more.
+export fn gone(sites: List<Site>, held: List<string>) -> List<string> { sorted_texts(less(held, outside_sites(sites).map(key(it)))) }
+
+/// The baseline rows that still answer a site.
+fn kept(sites: List<Site>, held: List<string>) -> List<string> { less(held, gone(sites, held)) }
+
+fn baseline_rows(text: string) -> List<string> { lines_of(text).filter(it != "" && !it.starts_with("#")) }
+
+const HEADER: string = "# WORLD READS OUTSIDE THE INPUT DOOR, one TAB-separated site per line: the\n# subsystem it is counted under, its file, and its own source line\n# trimmed. This file only ever SHRINKS — `make inputs-accept` prunes what\n# a move through the door made gone, and no path through it ADDS a line:\n# a new read goes through the door, or is licensed at its site.\n"
+
+// ── the tree ─────────────────────────────────────────────────────────
+
+/// Every `.av` file under `root`, tests left out, in path order.
+fn av_files(root: string) -> List<string> {
+    sorted_distinct(
+        [f for f in files_under(root) if f.ends_with(".av") && !"/${f}".contains("/tests/")],
+    )
+}
+
+fn sources_of(files: List<string>) -> List<Source> { files.map(Source { path: it, text: read_text(it) catch "" }) }
+
+/// Every site in the scope, a module's rows read by all of its files.
+fn scope_sites(t: Tables, texts: List<Source>) -> List<Site> {
+    mut rows: Map<string, List<string>> = {}
+    for s in texts { rows.set(dir_of(s.path), joined(rows.get(dir_of(s.path)) ?? [], declared_rows(s.text))) }
+    flatten_sites(texts.map((s) -> sites_in(t, s.path, s.text, rows.get(dir_of(s.path)) ?? [])))
+}
+
+/// The faults of the packages the scope imports, held to their own sources.
+fn package_faults(t: Tables, used: List<string>) -> List<string> {
+    let inert = [p for p in sorted_distinct(used) if inert_of(p) != null]
+    let world = [p for p in sorted_distinct(used) if t.world.has(p)]
+    flatten_texts(
+        [if package_sources(p).length == 0 { ["`@std.${p}` is INERT and has no source under packages/std-${p}/src to hold it to"] } else { [] }
+            .concat(inert_faults(t, p, package_sources(p))) for p in inert]
+            .concat(
+                [if package_sources(p).length == 0 {
+                    [
+                        "`@std.${p}` is WORLD and has no source under packages/std-${p}/src to hold its pure names to",
+                    ]
+                } else {
+                    []
+                }
+                    .concat(
+                        pure_faults(t, p, package_sources(p))
+                            .map("${package_sources(p).first()?.path ?? p}: ${it}"),
+                    ) for p in world],
+            ),
+    )
+}
+
+fn package_sources(pkg: string) -> List<Source> { sources_of(av_files("packages/std-${pkg}/src")) }
+
+/// The families the compiler holds (`avra licences --json`).
+fn families_of(avra: string) -> Result<List<Family>, string> {
+    let said = match cmd(tool_at("avra", avra), ["licences", "--json"]).outcome() {
+        .Ok(o) -> o.out.stdout,
+        .Err(_e) -> "",
+    }
+    let v = parse(said) catch Json.Null
+    match v { .Arr(items) -> .Ok([family_of(i) for i in items]), rest -> .Err(no_licences(avra)) }
+}
+
+fn field(v: Json, name: string) -> string {
+    match v { .Obj(fields) -> text_in(fields.find(it.key == name)?.value ?? Json.Null), rest -> "" }
+}
+
+fn text_in(v: Json) -> string {
+    match v { .Str(s) -> s, rest -> "" }
+}
+
+fn family_of(v: Json) -> Family { Family { prefix: field(v, "prefix"), shape: field(v, "shape") } }
+
+/// One licensed id and one near miss per family, and the verdict of each.
+const LICENCE_CASES: List<string> = [
+    "input.clock",
+    "input.saved_read",
+    "input.Clock",
+    "input.",
+    "input.a1",
+    "inputs.x",
+    "whole.cold",
+    "whole.colder",
+    "whole.",
+    "nonsense.x",
+]
+
+const CITED: List<string> = ["input.clock", "input.saved_read", "whole.cold"]
+
+/// Each case's verdict from the compiler's own `--cites` against the families the keeper reads.
+fn licence_disagreements(avra: string, families: List<Family>) -> List<string> {
+    ["inputs: ${id}: the compiler says ${theirs}, the keeper pattern says ${cites(families, id)}" for id in LICENCE_CASES for theirs in [said_cited(avra, id)] if theirs != cites(families, id) || theirs != CITED.contains(id)]
+}
+
+fn said_cited(avra: string, id: string) -> bool {
+    match cmd(tool_at("avra", avra), ["licences", "--cites", id]).outcome() {
+        .Ok(o) -> o.out.stdout.trim() == "true",
+        .Err(_e) -> false,
+    }
+}
+
+/// The table, by subsystem and kind, of the outside sites.
+fn table_lines(sites: List<Site>) -> List<string> {
+    let out = outside_sites(sites)
+    let group = (s: Site) -> site_group(s.file, s.kind, s.verb.starts_with("host."))
+    let kinds = sorted_distinct(out.map(it.kind))
+    let groups = sorted_distinct(out.map(group(it)))
+    let head = "  ${pad_right("outside, by subsystem", 24)}${kinds.map(pad_left(it, 7)).join("")}${pad_left("all", 7)}"
+    let rows = ["  ${pad_right(g, 24)}${kinds.map((k) -> pad_left("${out.filter(group(it) == g && it.kind == k).length}", 7)).join("")}${pad_left("${out.filter(group(it) == g).length}", 7)}" for g in groups]
+    [head].concat(rows)
+}
+
+/// The keeper's run over the tree: its stdout, its stderr, and its exit.
+export type InputsRun = { out: List<string>, err: List<string>, exit: int }
+
+export fn run_inputs(t: Tables, accept: bool) -> InputsRun {
+    let files = flatten_texts(SCOPE.map(av_files(it)))
+    let texts = sources_of(files)
+    let used = joined([], flatten_texts(texts.map(packages_used(it.text))))
+    let faults = flatten_texts(texts.map(unclassified(t, it.path, it.text)))
+        .concat(package_faults(t, used))
+    let sites = scope_sites(t, texts)
+    if files.length == 0 || !used.contains("io") || sites.length == 0 {
+        return InputsRun {
+            out: [],
+            err: [
+                "inputs: read ${files.length} file(s) and found ${sites.length} site(s) — nothing was examined",
+            ],
+            exit: 1,
+        }
+    }
+    let read = baseline_rows(read_text(BASELINE) catch "")
+    let held = if accept { sorted_texts(kept(sites, read)) } else { read }
+    if accept { let _ = write_text(BASELINE, "${HEADER}${held.map("${it}\n").join("")}") }
+    let new = fresh_sites(sites, held)
+    let count = (state: string) -> sites.filter(it.state == state).length
+    let summary = "inputs: ${files.length} file(s) read, ${sites.length} world read(s): ${count("door")} through the door, ${count("licensed")} licensed, ${count("outside")} outside"
+    let left = gone(sites, held)
+    let pruned = if left.length > 0 && !accept { ["inputs: ${left.length} baseline site(s) are gone — `make inputs-accept` prunes them"] } else { [] }
+    let err = new
+        .map(
+            "${it.file}:${it.line}: a world read outside the input door (${it.verb}, ${it.kind}) — ${it.text}",
+        )
+        .concat(faults.map("inputs: ${it}"))
+    let refused = new.length > 0 || faults.length > 0
+    let verdict = if refused {
+        [
+            "inputs: refused — ${new.length} new site(s), ${faults.length} unclassified; route the read through the door, or license it at the site",
+        ]
+    } else {
+        []
+    }
+    InputsRun {
+        out: [summary].concat(table_lines(sites)).concat(pruned),
+        err: err.concat(verdict),
+        exit: if refused { 1 } else { 0 },
+    }
+}
+
+type InputsCmd = {}
+
+impl Runnable for InputsCmd {
+    fn run(args: CliResult) -> int {
+        let avra = args.option("avra")
+        let families = match families_of(avra) {
+            .Ok(f) -> f,
+            .Err(said) -> {
+                eprintln(said)
+                return 1
+            },
+        }
+        let disagree = licence_disagreements(avra, families)
+        if disagree.length > 0 {
+            eprintln(disagree.join("\n"))
+            return 1
+        }
+        let ran = run_inputs(Tables { world: WORLD, families: families }, args.has_flag("accept"))
+        if ran.out.length > 0 { println(ran.out.join("\n")) }
+        if ran.err.length > 0 { eprintln(ran.err.join("\n")) }
+        ran.exit
+    }
+}
+
+export command inputs {
+    description: "Count the world reads outside the input door; refuse one the baseline does not list"
+    flag accept { description: "prune the baseline's rows no site answers any more" }
+    option avra {
+        description: "the compiler whose licence families the keeper reads"
+        default: "build/avra"
+    }
+    run: InputsCmd {}
+}
+
+// ── voices ───────────────────────────────────────────────────────────
+
+fn no_licences(avra: string) -> string { "inputs: `${avra} licences --json` gave no families — a keeper that reads the licence table needs a compiler (`--avra`)" }

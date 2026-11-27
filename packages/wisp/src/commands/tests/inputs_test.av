@@ -1,0 +1,247 @@
+use commands.{
+    Family,
+    Site,
+    Source,
+    Tables,
+    WORLD,
+    cites,
+    fresh_sites,
+    gone,
+    inert_faults,
+    key,
+    pure_faults,
+    sites_in,
+    unclassified,
+}
+
+/// The families as the compiler holds them (`avra licences --json`).
+fn families() -> List<Family> { [Family { prefix: "input.", shape: "snake" }, Family { prefix: "whole.", shape: "cold" }] }
+
+fn tables() -> Tables { Tables { world: WORLD, families: families() } }
+
+/// The tables with one more WORLD package.
+fn with_world(pkg: string, names: Map<string, string>) -> Tables {
+    mut world: Map<string, Map<string, string>> = {}
+    for k, v in WORLD { world.set(k, v) }
+    world.set(pkg, names)
+    Tables { world: world, families: families() }
+}
+
+const COMPILER: string = "packages/std-avrac/src/compiler/x.av"
+
+const COMMANDS: string = "packages/cli/src/commands/x.av"
+
+const IO: string = "use @std.io.{read_text, env,\n    write_text}\n"
+
+/// A file's sites as `line kind state`, `|`-joined.
+fn found_in(t: Tables, path: string, text: string, rows: List<string>) -> string {
+    sites_in(t, path, text, rows).map("${it.line} ${it.kind} ${it.state}").join("|")
+}
+
+fn found(path: string, text: string) -> string { found_in(tables(), path, text, []) }
+
+fn licensed_env(comment: string) -> string { found(COMPILER, "${IO}${comment}\nfn f() { env(\"AVRA_X\") }\n") }
+
+fn refused_as(text: string, want: string) -> bool { unclassified(tables(), "x.av", text).any(it.contains(want)) }
+
+fn one(path: string, text: string) -> List<Source> { [Source { path: path, text: text }] }
+
+spec "inputs — what a site is" {
+    then "a stray read, an env and a spawn each name their line" {
+        found(COMPILER, "${IO}fn f() -> string { read_text(\"a\") catch \"\" }\n") == "3 read outside" &&
+            found(COMPILER, "${IO}fn f() {\n    let v = env(\"HOME\")\n}\n") == "4 env outside" &&
+            found(
+                COMMANDS,
+                "use @std.process.{tool, cmd}\nfn f() {\n    let t = tool(\"cc\")?\n    cmd(t, []).run()\n}\n",
+            ) == "3 tool outside|4 spawn outside"
+    }
+    then "every spawning spelling, and every name that turns it on" {
+        found(COMMANDS, "use @std.process.{cmd}\nfn f(t: T) { cmd(t, []).outcome() }\n") == "2 spawn outside" &&
+            found(COMMANDS, "use @std.process.{Command}\nfn f(c: Command) { c.start(r, l) }\n") == "2 spawn outside" &&
+            found(COMMANDS, "use @std.process.{Tool}\nfn f(c: C) { c.run() }\n") == "2 spawn outside" &&
+            found(COMMANDS, "use @std.process.{Pipeline}\nfn f(p: Pipeline) { p.outcome() }\n") == "2 spawn outside" &&
+            found(COMMANDS, "use @std.process.{Runner}\nfn f(r: Runner, c: C) { r.outcome(c) }\n") == "2 spawn outside"
+    }
+    then "another type's run, a reader's verbs, and a file that built no command spawn nothing" {
+        found(COMMANDS, "use @std.process.{cmd}\nfn f(b: B) { spawn b.run(1) }\n") == "" &&
+            found(
+                COMMANDS,
+                "use @std.process.{cmd}\nfn f(t: T) { t.lines()\n t.status()\n t.output()\n t.capture()\n t.spawn()\n t.run_in(d) }\n",
+            ) == "" &&
+            found(COMMANDS, "use @std.process.{exit}\nfn f(a: A) { a.run() }\n") == ""
+    }
+    then "an environment a file asks for is an env read" {
+        found(
+            "packages/cli/src/x.av",
+            "use @std.process.{minimal, developer}\nfn f() {\n    minimal()\n    developer()\n}\n",
+        ) == "3 env outside|4 env outside"
+    }
+    then "a package named with a digit is read like any other" {
+        found_in(
+            with_world("io2", {"env": "env"}),
+            COMPILER,
+            "use @std.io2.sub3.{env}\nfn f() { env(\"X\") }\n",
+            [],
+        ) == "2 env outside"
+    }
+    then "a row, a host call, a value handed over and a chain ending in host are reads" {
+        found(
+                COMPILER,
+                "extern fn avra_host_env(n: string) -> string?\nfn f() { avra_host_env(\"X\") }\n",
+            ) == "2 env outside" &&
+            found(COMPILER, "fn f(ws: W) { ws.host.read(p) }\n") == "1 read outside" &&
+            found(COMPILER, "${IO}fn f() { xs.map(read_text) }\n") == "3 read outside" &&
+            found(COMPILER, "fn f(ws: W) { (ws.host.beneath)(root, rel) }\n") == "1 read outside" &&
+            found(COMPILER, "fn f(ws: W) {\n    ws\n        .host\n        .list(dir)\n}\n") == "4 read outside" &&
+            found(COMPILER, "fn f(ws: W) {\n    ws.rows\n        .list(dir)\n}\n") == ""
+    }
+    then "a clock, a renamed import and a module's row are reads" {
+        found(COMPILER, "use @std.time.{now_ms}\nfn f() -> int { now_ms() }\n") == "2 clock outside" &&
+            found(
+                COMPILER,
+                "use @std.io.{env as os_env}\nfn env(k: string) -> string? { os_env(k) }\n",
+            ) == "2 env outside" &&
+            found_in(tables(), COMPILER, "fn f() { avra_now_ns() }\n", ["avra_now_ns"]) == "1 clock outside"
+    }
+}
+
+spec "inputs — the door and the licence" {
+    then "the door's files hold their reads, and a neighbour in their directory does not" {
+        found("packages/cli/src/commands/disk_host.av", "${IO}fn f() { env(\"HOME\") }\n") == "3 env door" &&
+            found("packages/std-avrac/src/compiler/host/host.av", "${IO}fn f() { env(\"HOME\") }\n") == "3 env door" &&
+            found(
+                "packages/cli/src/commands/manifest.av",
+                "${IO}fn f() { read_text(\"/etc/passwd\") catch \"\" }\n",
+            ) == "3 read outside" &&
+            found(
+                "packages/std-avrac/src/compiler/host/manifest.av",
+                "${IO}fn f() { read_text(\"/etc/passwd\") catch \"\" }\n",
+            ) == "3 read outside"
+    }
+    then "a licence on the line above holds a read" {
+        licensed_env("// LICENSED input.debug_flag: read once, changes no answer") == "4 env licensed" &&
+            licensed_env("// LICENSED input.saved_read: read once, changes no answer") == "4 env licensed"
+    }
+    then "a near miss licenses nothing" {
+        licensed_env("// licensed input.clock: a case-miss is not a licence") == "4 env outside" &&
+            licensed_env("// LICENSED input.Clock: a reason is lower-case") == "4 env outside" &&
+            licensed_env("// LICENSED input.: no reason, no licence") == "4 env outside" &&
+            licensed_env("// LICENSED input.clock:") == "4 env outside" &&
+            licensed_env("/* LICENSED input.clock: not a line comment */") == "4 env outside" &&
+            licensed_env("fn g() {} // LICENSED input.clock: not on its own line") == "4 env outside" &&
+            found(
+                COMPILER,
+                "${IO}// LICENSED input.clock: a line above the read\n\nfn f() { env(\"AVRA_X\") }\n",
+            ) == "5 env outside"
+    }
+    then "a write, an import list, a local fn, a method, a comment, a longer name and a field are no reads" {
+        found(COMPILER, "${IO}fn f() { write_text(\"a\", \"b\") }\n") == "" &&
+            found(COMPILER, "use @std.io.{\n    read_text,\n    env,\n}\nfn f() {}\n") == "" &&
+            found(COMPILER, "fn env(n: string) -> string { n }\nfn f() { env(\"HOME\") }\n") == "" &&
+            found(COMPILER, "${IO}fn f(c: Cx) { c.env(\"HOME\") }\n") == "" &&
+            found(COMPILER, "${IO}// env(\"HOME\") is read by the driver\nfn f() {}\n") == "" &&
+            found(COMPILER, "${IO}fn f() { env_or_else(\"HOME\") }\n") == "" &&
+            found(COMPILER, "${IO}fn f(env: string) -> T { T { env: env } }\n") == ""
+    }
+    then "a licence id is the compiler's family shape, whole" {
+        cites(families(), "input.clock") &&
+            cites(families(), "input.saved_read") &&
+            !cites(families(), "input.Clock") &&
+            !cites(families(), "input.") &&
+            !cites(families(), "input.a1") &&
+            !cites(families(), "inputs.x") &&
+            cites(families(), "whole.cold") &&
+            !cites(families(), "whole.colder") &&
+            !cites(families(), "whole.") &&
+            !cites(families(), "nonsense.x")
+    }
+}
+
+spec "inputs — the baseline is a multiset of sites" {
+    then "a line listed once covers one site, twice covers two, and a row no site answers is gone" {
+        let a = sites_in(
+            tables(),
+            COMPILER,
+            "${IO}fn f() {\n    env(\"A\")\n    env(\"A\")\n}\n",
+            [],
+        )
+        let held = [key(a[0])]
+        fresh_sites(a, held).length == 1 &&
+            fresh_sites(a, held.concat(held)).length == 0 &&
+            gone(a.take(1), held.concat(held)).length == 1
+    }
+}
+
+spec "inputs — the tables cannot go stale quietly" {
+    then "an unreadable import, an unplaced package, an unclassified name and row are refused" {
+        refused_as("use @std.sockets.{dial}\n", "neither WORLD nor INERT") &&
+            refused_as(
+                "use @std.sha256.{file_digest}\n",
+                "`@std.sha256` is in neither WORLD nor INERT",
+            ) &&
+            refused_as("use @std.io\n", "is an import the keeper cannot read") &&
+            refused_as("use @std.Io.{env}\n", "is an import the keeper cannot read") &&
+            refused_as("use @std.io.{read_link}\n", "`read_link` of `@std.io` is unclassified") &&
+            refused_as(
+                "extern fn avra_getenv_raw(n: string) -> string\n",
+                "`avra_getenv_raw` is unclassified",
+            )
+    }
+    then "a classified file is not refused" {
+        unclassified(
+            tables(),
+            "x.av",
+            "use @std.io.{read_text}\nuse @std.text.{trim}\nuse @std.avrac.core.x9.{A}\nextern fn avra_llvm_x()\n",
+        )
+            .length == 0
+    }
+    then "an inert package is held to its own source" {
+        inert_faults(
+                tables(),
+                "path",
+                one("p.av", "extern fn avra_host_env(n: string) -> string?\n"),
+            )
+                .length > 0 &&
+            inert_faults(tables(), "path", one("p.av", "use @std.io.{env}\n")).length > 0 &&
+            inert_faults(
+                tables(),
+                "text",
+                one(
+                    "t.av",
+                    "use @std.text.{trim}\nextern fn avra_str_parses_int(s: string) -> bool\n",
+                ),
+            )
+                .length == 0 &&
+            inert_faults(tables(), "path", one("p.av", "use @std.time.{Duration, ms}\n")).length == 0 &&
+            inert_faults(tables(), "path", one("p.av", "use @std.time.{Duration, now_ms}\n")).length > 0
+    }
+    then "a pure name is held to its own source" {
+        let t = with_world(
+            "px",
+            {
+                "quiet": "pure",
+                "one_line": "pure",
+                "loud": "pure",
+                "far": "pure",
+                "named": "pure",
+                "env": "env",
+            },
+        )
+        let px = one(
+            "p.av",
+            [
+                "extern fn avra_host_env(n: string) -> string?",
+                "export fn env(n: string) -> string? { avra_host_env(n) }",
+                "fn held(n: string) -> string? { env(n) }",
+                "export fn one_line() -> int { 1 }",
+                "export fn loud() -> string? { avra_host_env(\"A\") }",
+                "export fn far() -> string? {\n    held(\"A\")\n}",
+                "export fn named() -> string? {\n    let s = \"}\"\n    env(s)\n}",
+                "export fn quiet(c: C) -> string {\n    // env(\"A\") is the caller's\n    c.env(\"A\")\n}",
+                "",
+            ]
+                .join("\n"),
+        )
+        pure_faults(t, "px", px).map(it.split("`")[1]).join(" ") == "far loud named"
+    }
+}

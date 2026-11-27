@@ -9,7 +9,7 @@ named, digested input through one door. Ticket `avra-8sb5.57.173`.
 |---|---|---|
 | the row | `packages/std-avrac/src/compiler/host/input.av` | `Read` — one variant per kind, carrying the name and what was seen; `Read.input()` answers `Input { name, digest }` |
 | its tests | `compiler/tests/input_door_test.av` | 31 cases, nothing-there first |
-| the keeper | `tools/inputs.py`, `tools/inputs.baseline`, `make inputs`, `make inputs-accept` | counts world reads outside the door (`compiler/host/host.av`); a site the baseline does not list is refused |
+| the keeper | `wisp inputs`, `tools/inputs.baseline`, `make inputs`, `make inputs-accept` | counts world reads outside the door (`compiler/host/host.av`); a site the baseline does not list is refused |
 
 No read moved. Nothing calls `Read` yet.
 
