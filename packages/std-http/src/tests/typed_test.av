@@ -43,13 +43,13 @@ fn json_posted(body: string) -> Request<Unrouted> { posted("application/json", b
 fn said(r: Response) -> string { "${r.status} ${r.body.text() ?? ""}" }
 
 fn idea(q: Request<Unrouted>) -> string {
-    let got: Result<Idea, Response> = q.body_as()
+    let got: Result<Idea, Response> = q.json()
     match got { .Ok(i) -> "idea ${i.title} ${i.votes}", .Err(r) -> said(r) }
 }
 
 fn page(target: string) -> string {
     let q? = asked_get(target) else { return "unframed" }
-    let got: Result<Page, Response> = q.query_as()
+    let got: Result<Page, Response> = q.query()
     match got {
         .Ok(p) -> "${p.limit} ${p.after ?? "-"} [${p.tags.join(",")}] ${p.verbose}",
         .Err(r) -> said(r),
@@ -58,7 +58,7 @@ fn page(target: string) -> string {
 
 fn search(target: string) -> string {
     let q? = asked_get(target) else { return "unframed" }
-    let got: Result<Search, Response> = q.query_as()
+    let got: Result<Search, Response> = q.query()
     match got { .Ok(s) -> "q=${s.q}", .Err(r) -> said(r) }
 }
 
@@ -95,7 +95,7 @@ fn added(sent: Result<Idea, Response>) -> Result<Response, Response> {
 }
 
 fn ideas_posted(ct: string, body: string) -> string {
-    let routes = compiled([post "/ideas" { req -> either(added(req.body_as())) }])
+    let routes = compiled([post "/ideas" { req -> either(added(req.json())) }])
     said(dispatch(routes, posted(ct, body.bytes(), target: "/ideas")))
 }
 
@@ -166,7 +166,7 @@ spec "std/http — typed reads and answers" {
         then "a field it does not name is passed by" { page("/p?utm=x") == "50 - [] false" }
         then "a record has no query spelling" {
             let q? = asked_get("/p?inner=1") else { return false }
-            let got: Result<Deep, Response> = q.query_as()
+            let got: Result<Deep, Response> = q.query()
             match got { .Ok(_) -> false, .Err(r) -> r.status == 422 }
         }
         then "a malformed escape is a 400" { page("/p?after=%G1") == "400 the query's `after` is not percent-encoded text" }
@@ -176,7 +176,7 @@ spec "std/http — typed reads and answers" {
         then "a malformed name is a 400" { page("/p?%zz=1") == "400 the query name `%zz` is not percent-encoded text" }
         then "ten thousand values of one list" {
             let q? = long_get("/p?" + ["tags=t${i}" for i in 0..10000].join("&")) else { return false }
-            let got: Result<Page, Response> = q.query_as()
+            let got: Result<Page, Response> = q.query()
             match got {
                 .Ok(p) -> p.tags.length == 10000 && p.tags[9999] == "t9999",
                 .Err(_) -> false,

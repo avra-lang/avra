@@ -2,7 +2,7 @@
 //! the records it declares, a capture as the text it encodes, and answers
 //! through one verb per outcome:
 //!
-//!     post "/ideas" { req -> either(added(req.body_as())) }
+//!     post "/ideas" { req -> either(added(req.json())) }
 //!
 //!     fn added(asked: Result<Idea, Response>) -> Result<Response, Response> {
 //!         let idea = asked?
@@ -38,7 +38,7 @@ use @std.http_message.message.{Header}
 use @std.json.{Field as JsonField, Json, field, to_text}
 use @std.text.{has_nul}
 use @std.url.{decoded}
-use @std.validate.{Coercion, Decode, Issue, Issues, Keyed, from_keyed}
+use @std.validate.{Coercion, Decode, Issue, Issues, Keyed, Limits as DecodeLimits, from_keyed}
 use http.{Request, Response, status, text, body_json}
 use query.{Pair, Query}
 
@@ -46,9 +46,9 @@ impl Request {
     /// THE BODY AS A `T`, or the response refusing it: `json_text`'s 415
     /// and 400, a 400 for text that is not JSON, and a 422 naming every
     /// issue for JSON that is not a `T`.
-    fn body_as<T: Decode>() -> Result<T, Response> {
+    fn json<T: Decode>() -> Result<T, Response> {
         let doc = self.json_text()?
-        match T.from_json(doc) {
+        match T.from_json(doc, Coercion.Strict, DecodeLimits {}) {
             .Ok(v) -> v,
             .Err(issues) -> {
                 let _ = body_json(doc)?
@@ -71,8 +71,8 @@ impl Request {
     /// THE QUERY AS A `Q`, or the response refusing it: a 400 for a name
     /// or value that decodes to no text, a 422 naming every issue for
     /// fields that are not a `Q`.
-    fn query_as<Q: Decode>() -> Result<Q, Response> {
-        let fields = keyed(self.query())?
+    fn query<Q: Decode>() -> Result<Q, Response> {
+        let fields = keyed(self.raw_query())?
         match Q.decode(from_keyed(fields), Coercion.Lax) {
             .Ok(q) -> q,
             .Err(issues) -> { fail problem(issues, Origin.Query) },
