@@ -200,18 +200,47 @@ jobs() {
 failed_names() { grep '^    ✗' "$1" | sed 's/ @ .*//; s/^    ✗ //' | sort -u; }
 trapped_names() { grep '^avra: while running ' "$1" | sed 's/ @ .*//; s/^avra: while running //' | sort -u; }
 
+# the names the pin file `$1` lists, sorted, each once; none where there is no such file. A `.names` line is
+# `<case>\t<file> <owner> <ticket>`, the case before the tab
+listed() { if [ -f "$1" ]; then grep -v '^#' "$1" | cut -f1 | grep . | sort -u; fi; }
+
+# pins_said <package> <failed> <trapped> [<scope>…]: every pin of tools/gate/<package>.names that does not
+# hold, a line each — one with no owner and ticket, one whose file is gone, and, where the row ran
+# `<scope>` whole and ended no case, one whose file the scope holds and whose case did not fail: a pin
+# only shrinks, so a case that passes is a line to strike
+pins_said() {
+    pkg=$1 failed=$2 trapped=$3
+    shift 3
+    pin="tools/gate/$pkg.names"
+    [ -f "$pin" ] || return 0
+    awk -F'\t' -v pkg="$pkg" -v pin="$pin" -v failed_at="$failed" -v ended="$([ -s "$trapped" ] && echo 1 || echo 0)" -v scope="$(printf '%s ' "$@" | sed 's|/ | |g')" '
+        BEGIN { while ((getline c < failed_at) > 0) failed[c] = 1; close(failed_at) }
+        /^#/ || NF == 0 { next }
+        {
+            n = split($2, w, " ")
+            if (n < 3) { print "a pin with no owner and ticket — " pin ": " $1; next }
+            f = "packages/" pkg "/src/" w[1]
+            if ((getline line < f) < 0) { print "a pin whose file is gone — strike its line in " pin ": " $1 " (" w[1] ")"; next }
+            close(f)
+            if (ended || ($1 in failed)) next
+            k = split(scope, s, " ")
+            for (i = 1; i <= k; i++) if (f == s[i] || index(f, s[i] "/") == 1) { print "passes, and " pin " still pins it (" w[2] " " w[3] ") — strike its line: " $1; next }
+        }' "$pin"
+}
+
 # held <package> <log> <status>: whether a suite run of `package` that exited `status` holds as a gate's
 # row holds it — every failed case one tools/gate/<package>.names pins, every ended one its .traps lists,
 # and a run that failed or ended none exited clean. Each case that does not hold is said.
 held() {
     d=$(mktemp -d "${TMPDIR:-/tmp}/avra-held.XXXXXX")
     for k in names traps; do
-        if [ -f "tools/gate/$1.$k" ]; then grep -v '^#' "tools/gate/$1.$k" | sort -u >"$d/$k"; else : >"$d/$k"; fi
+        listed "tools/gate/$1.$k" >"$d/$k"
     done
     failed_names "$2" >"$d/failed"
     trapped_names "$2" >"$d/trapped"
     comm -23 "$d/failed" "$d/names" | sed 's/^/unpinned failure: /' >"$d/said"
     comm -23 "$d/trapped" "$d/traps" | sed 's/^/unlisted trap: /' >>"$d/said"
+    pins_said "$1" "$d/failed" "$d/trapped" >>"$d/said"
     cat "$d/said"
     st=0
     if [ -s "$d/said" ]; then st=1; elif [ "$3" != 0 ] && [ ! -s "$d/failed" ] && [ ! -s "$d/trapped" ]; then st=1; fi
@@ -497,7 +526,8 @@ tested() {
     pkg=$(echo "$1" | cut -d/ -f2)
     t0=$(date +%s)
     echo "$name" >"$out/.running"
-    sh tools/bounded.sh "$ROW_SECS" build/avra test "$@" >"$out/$name.log" 2>&1
+    # every suite of the scope runs on past a red one, so each pin is judged by a run of its file
+    sh tools/bounded.sh "$ROW_SECS" env AVRA_SUITE_ALL=1 build/avra test "$@" >"$out/$name.log" 2>&1
     ran=$?
     took="$(( $(date +%s) - t0 ))s"
     failed_names "$out/$name.log" >"$out/$name.failed"
@@ -529,6 +559,14 @@ tested() {
         took=$kept_took
         sed 's/^/fact /' "$out/$name.unproved-words" >>"$out/rows"
     fi
+    pins_said "$pkg" "$out/$name.failed" "$out/$name.trapped" "$@" >"$out/$name.pins"
+    if [ -s "$out/$name.pins" ]; then
+        kept_took=$took
+        took=
+        judged "$name-pins" "$(wc -l <"$out/$name.pins" | tr -d ' ')"
+        took=$kept_took
+        sed 's/^/fact /' "$out/$name.pins" >>"$out/rows"
+    fi
     if [ -s "$out/$name.untrapped" ]; then judged "$name" "$(wc -l <"$out/$name.untrapped" | tr -d ' ')"; return; fi
     # a scope that holds no proof, where the caller counts that as none here: refused by that voice alone
     if [ "$ran" != 0 ] && [ -n "${EMPTY_SCOPE_PASSES:-}" ] && [ ! -s "$out/$name.failed" ] && [ ! -s "$out/$name.trapped" ] &&
@@ -543,8 +581,6 @@ tested() {
     judged "$name" "$(wc -l <"$out/$name.unpinned" | tr -d ' ')"
 }
 
-# the lines the pin file `$1` lists, sorted, each once; none where there is no such file
-listed() { if [ -f "$1" ]; then grep -v '^#' "$1" | sort -u; fi; }
 
 # one row of a suite share: `tested`, an empty scope counted as no proof here rather than a failure, and
 # the row's seconds said beside its path (`fact path <path> <n>`), which tools/gate/path.seconds keeps
