@@ -698,15 +698,12 @@ impl QueryEngine {
         let suspects? = self.suspects_of(f, reach) else { return self.frontier.set(FrontierState.Unusable) }
         self.reached.set(suspects.filter(it).length)
         if program_settings().user.qtrace {
-            let racing = ContentHash { high_word: -1139123213218158567, low_word: 1925453482113544942 }
-            let asked = self.store.question_known_as(racing)
-            if asked != null { eprintln("Q racing known ${asked!.query_name} args ${asked!.arguments.text_lossy()}") } else { eprintln("Q racing unknown") }
-            let place = f.place_of(racing)
-            if place != null {
-                let a = f.answer_at(place!)
-                eprintln("Q racing held at ${place!} input ${f.input_at(place!)} answer ${a.high_word}_${a.low_word} reads ${f.reads_at(place!)?.length ?? -1}")
-            } else {
-                eprintln("Q racing not held")
+            for at in 0..f.length() {
+                let q = f.question_at(at)
+                let asked = self.store.question_known_as(q)
+                if asked != null && asked!.query_name == "listed" {
+                    eprintln("Q listing at ${at} input ${f.input_at(at)} reads ${f.reads_at(at)?.length ?? -1} reached ${all[at]} ${q.high_word}_${q.low_word} args ${asked!.arguments.text_lossy()}")
+                }
             }
             for at, s in suspects {
                 if s {
