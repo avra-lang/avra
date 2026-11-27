@@ -222,9 +222,11 @@ type Machine = {
     named_types: List<NamedVal> = [],
     // the array and map handles a static's boxes were built as
     frozen: Map<string, bool> = {},
-    // the boxes a site watches, each with the turn it last logged under
-    // (0: not yet), the turn's stamp, and the keys written under it
-    watched: Map<string, int> = {},
+    // the boxes a site watches, each at its key with the turn it last logged
+    // under (0: not yet, -1: not watched), how many are watched, the turn's
+    // stamp, and the keys written under it
+    watched: List<int> = [],
+    watching: int = 0,
     turn: int = 1,
     changed: List<int> = [],
     out: List<string>,
@@ -1802,7 +1804,7 @@ impl Machine {
         let frame? = self.frames.last() else { return }
         for at in self.slots_of(b) {
             match frame[at] ?? Val.N {
-                .C(id) -> { if !self.watched.has("${box_key(Val.C(id))}") { self.idle_cells.push(id) } },
+                .C(id) -> { if self.watch_of(box_key(Val.C(id))) == null { self.idle_cells.push(id) } },
                 rest -> nothing(),
             }
         }
