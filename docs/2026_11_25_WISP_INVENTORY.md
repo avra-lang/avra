@@ -292,8 +292,8 @@ A running list: each entry is gone from the tree, named with the train that remo
 | host_key.sh | ledger_rows.sh, speed_measure.sh, warm_edit_bench.sh +1 | internal | merge: cost |  |
 | idioms.baseline | Makefile, explain_proof.sh, rules_proof.sh +4 | internal | keep: data of idioms |  |
 | impl_held_attack.sh | Makefile | internal | merge: oracle |  |
-| inputs.baseline | inputs.py | internal | merge: cost |  |
-| inputs.py | Makefile, licenses.av | internal | merge: cost |  |
+| inputs.baseline | wisp inputs | internal | merge: cost |  |
+| inputs.py | Makefile, licenses.av | internal | merge: cost | PORTED — `wisp inputs` |
 | ios_sim_witness.sh | none | internal | merge: oracle | new since d7cd84d9 |
 | jspi_node.sh | wasm-check.sh, wasm-host-check.sh, wasm-tasks-mutations.sh | internal | merge: keepers |  |
 | keeper_planted.sh | gate.sh | internal | merge: keepers | new since d7cd84d9 |
@@ -310,7 +310,7 @@ A running list: each entry is gone from the tree, named with the train that remo
 | lib/ | Makefile, manifest.av, avra.toml +214 | internal | merge: (dies with its callers) | shell helpers shared by scripts |
 | libs.py | Makefile, manifest.av, avra.toml +3 | internal | merge: tree |  |
 | libscope.sh | Makefile | internal | merge: tree |  |
-| licence_families.py | none | internal | merge: keepers | NO CALLER |
+| licence_families.py | none | internal | merge: keepers | PORTED — into `wisp inputs` |
 | link_cache_attack.sh | Makefile | internal | merge: oracle |  |
 | llvm_link.py | Makefile, avra.toml, llvm_link.sh | internal | merge: tree |  |
 | llvm_link.sh | Makefile, llvm_link.py | internal | merge: tree |  |

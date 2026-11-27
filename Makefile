@@ -999,7 +999,7 @@ pre-commit-hook:
 # outside the door, counted by subsystem; a site the baseline does
 # not list is refused, and the baseline only falls.
 inputs:
-	@python3 tools/inputs.py
+	@./wisp inputs
 
 # EVERY BLOCKING CALL IN C HOLDS THE WORLD: a virtual clock flows across
 # it, or the call says why it waits on no time (tools/clock_holds.py).
@@ -1007,7 +1007,7 @@ clock-holds:
 	@python3 tools/clock_holds.py
 
 inputs-accept:
-	@python3 tools/inputs.py --accept
+	@./wisp inputs --accept
 
 # A RECORDED READ HAS A BUDGET: retains, releases and list reads and writes
 # per read, counted on the census runtime, never over read_cost.budget.
