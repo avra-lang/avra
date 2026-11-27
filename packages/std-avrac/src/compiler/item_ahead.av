@@ -47,7 +47,7 @@ enum DeclaredBody {
 /// fewer than two or where the last build's frontier saw at most `FEW_MOVED` inputs move; with
 /// `timed`, each process and each phase says where its time went. A file `vouched` names, read off the
 /// first engine, stands on the verdict that vouches for it: no law is asked of it. Every engine
-/// reads and keeps `program`'s frontier.
+/// reads and keeps `program`'s frontier, and `work` says what the last wave works of each file.
 export fn program_worked(
     directory: string,
     package: string,
@@ -56,6 +56,7 @@ export fn program_worked(
     timed: bool,
     vouched: fn(QueryEngine) -> List<string>,
     program: string = "",
+    work: FileWork = FileWork.Built,
 ) -> Worked {
     let at = AheadAt {
         directory: directory,
@@ -90,8 +91,8 @@ export fn program_worked(
     let lowered = ahead(
         at,
         (_engine: QueryEngine) -> parsed.program,
-        (e, f) -> file_worked_is_known(e, f, stands.contains(spelled_file(f))),
-        (e, f) -> file_worked(e, f, stands.contains(spelled_file(f))),
+        (e, f) -> file_work_is_known(e, f, work, stands.contains(spelled_file(f))),
+        (e, f) -> file_work_done(e, f, work, stands.contains(spelled_file(f))),
     )
     clock.closed()
     if at.timed { eprintln(phases_said(clock, filed)) }
@@ -311,6 +312,30 @@ fn bodies_known(engine: QueryEngine, file: SourceFileAddress) -> bool { declared
 
 /// Every body `file` declares lowered: how many lowered.
 fn bodies_lowered(engine: QueryEngine, file: SourceFileAddress) -> int { declared_bodies(engine, file).filter((b) -> body_lowered(engine, b)).length }
+
+/// What a program's last wave works of each of its files: what a build of it reads, or only what
+/// its laws find, which is all a check reads.
+export enum FileWork {
+    Built
+    Checked
+}
+
+/// Whether what `work` asks of `file` is kept, its laws standing where `vouched`.
+fn file_work_is_known(engine: QueryEngine, file: SourceFileAddress, work: FileWork, vouched: bool) -> bool {
+    match work {
+        .Built -> file_worked_is_known(engine, file, vouched),
+        .Checked -> vouched || file_erring_is_known(engine, file),
+    }
+}
+
+/// What `work` asks of `file`, its laws standing where `vouched`: how many bodies it lowered, or
+/// how many findings fail a build.
+fn file_work_done(engine: QueryEngine, file: SourceFileAddress, work: FileWork, vouched: bool) -> int {
+    match work {
+        .Built -> file_worked(engine, file, vouched),
+        .Checked -> if vouched { 0 } else { file_erring(engine, file).errors },
+    }
+}
 
 /// Whether anything is kept about the lowering of every body `file` declares and, unless a verdict
 /// vouches for it, about what its laws find, asking only what its declarations are.
