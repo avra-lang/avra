@@ -366,3 +366,24 @@ jobs:
           else
             echo "::notice title=gate wall::the run's job clocks could not be read — not told"
           fi
+      # THE GATE'S WALL IS JUDGED: its makespan against the record's target for its class, a train whose
+      # compiler source moved `compiler` and any other `plain`, each rung it climbs priced at 300 s apart
+      # (cost/gate/ci-gate.cost). A train past its target fails, unless an `over` line names the row.
+      - if: always() && needs.seed.result == 'success'
+        name: gate wall
+        timeout-minutes: 4
+        run: |
+          [ -s wall.metrics ] || { echo "::error title=gate wall::the run's makespan was not read, so its wall is not judged"; exit 1; }
+          git fetch -q --unshallow origin 2>/dev/null || :
+          git fetch -q origin program:refs/remotes/origin/program
+          base=$(git merge-base origin/program HEAD)
+          rungs=$(sh tools/rungs.sh "$base" HEAD | grep -c . || :)
+          class=plain
+          git diff --quiet "$base" HEAD -- $(sh tools/compiler_paths.sh) || class=compiler
+          ms=$(awk '$1 == "wall" && $2 == "makespan" { print $3 }' wall.metrics)
+          [ -n "$ms" ] || { echo "::error title=gate wall::the run's metrics hold no makespan"; exit 1; }
+          net=$((ms - rungs * 300000))
+          [ "$net" -ge 0 ] || net=0
+          printf 'host ci-gate\ngate makespan_%s %s\n' "$class" "$net" > gate.metrics
+          echo "gate wall: a ${class} train, makespan $((ms / 1000)) s, ${rungs} rung(s) at 300 s each, judged at $((net / 1000)) s"
+          sh tools/ledger_rows.sh gate.metrics gate clock judge
