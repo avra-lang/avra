@@ -73,16 +73,17 @@ export type WorkAhead<T, R> = {
 /// A store and the engine over it.
 export type Worked = { store: LayeredStore, engine: QueryEngine }
 
-/// The store at `directory` and an engine over it, every unknown item answered across processes
-/// first when there are enough to be worth it. With nothing to fork, the engine is the one that
-/// asked what's known, so whatever it read stays read.
+/// The store at `directory` and an engine over it, its frontier the one of `program`'s, every
+/// unknown item answered across processes first when there are enough to be worth it. With nothing
+/// to fork, the engine is the one that asked what's known, so whatever it read stays read.
 export fn engine_worked_ahead<T, R>(
     directory: string,
     definitions: List<QueryDefinition>,
     work: WorkAhead<T, R>,
+    program: string = "",
 ) -> Worked {
     let before = program_store_at(directory)
-    let asking = query_engine(before, definitions)
+    let asking = query_engine(before, definitions, program)
     if work.timed { asking.time_queries() }
     asking.kept_times()?.opened("the frontier opened", TimedSide.Outside, Pass.StoreOpen)
     let _ = asking.inputs_moved()
@@ -93,7 +94,7 @@ export fn engine_worked_ahead<T, R>(
     edited_mid_build(wave)
     asking.kept_times()?.opened("the work merged", TimedSide.Outside, Pass.StoreSave)
     let after = program_store_at(directory)
-    let engine = query_engine(after, definitions)
+    let engine = query_engine(after, definitions, program)
     let merging = merge_begun(after, work.process_count)
     asking.kept_times()?.closed()
     asking.kept_times()?.opened(ANSWERS_TAKEN, TimedSide.Outside, Pass.StoreOpen)

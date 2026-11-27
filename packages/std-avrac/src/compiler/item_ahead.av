@@ -26,8 +26,15 @@ use @std.program.worked_ahead.{
 use @std.io.{env}
 
 /// Where work ahead is kept and how it's done: the store's directory, the queries every process
-/// answers, how many processes, and whether each says where its time went.
-type AheadAt = { directory: string, definitions: List<QueryDefinition>, process_count: int, timed: bool }
+/// answers, how many processes, whether each says where its time went, and the program whose
+/// frontier its engines read.
+type AheadAt = {
+    directory: string,
+    definitions: List<QueryDefinition>,
+    process_count: int,
+    timed: bool,
+    program: string,
+}
 
 /// A body as the walk asks for it: a fn by its file and name, or a method by its impl.
 enum DeclaredBody {
@@ -39,7 +46,8 @@ enum DeclaredBody {
 /// `definitions` to make it with, worked ahead across `process_count` processes, or by none with
 /// fewer than two or where the last build's frontier saw at most `FEW_MOVED` inputs move; with
 /// `timed`, each process and each phase says where its time went. A file `vouched` names, read off the
-/// first engine, stands on the verdict that vouches for it: no law is asked of it.
+/// first engine, stands on the verdict that vouches for it: no law is asked of it. Every engine
+/// reads and keeps `program`'s frontier.
 export fn program_worked(
     directory: string,
     package: string,
@@ -47,12 +55,14 @@ export fn program_worked(
     process_count: int,
     timed: bool,
     vouched: fn(QueryEngine) -> List<string>,
+    program: string = "",
 ) -> Worked {
     let at = AheadAt {
         directory: directory,
         definitions: definitions,
         process_count: process_count,
         timed: timed,
+        program: program,
     }
     wave_gathers(GATHERED)
     let alone = ahead(at, (_engine: QueryEngine) -> [], file_words_is_known, file_parsed)
@@ -197,6 +207,7 @@ fn ahead<T>(
             process_count: at.process_count,
             timed: at.timed,
         },
+        at.program,
     )
 }
 
