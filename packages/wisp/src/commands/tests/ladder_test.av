@@ -123,6 +123,45 @@ spec "wisp ladder — each rung built by the one before" {
             checked(f, ok)
         }
     }
+    given "a cache" {
+        then "a second climb over the same builder and rungs builds none and answers the same bytes" {
+            let f = fixture()
+            let cached = at(f, "c1", "") with { cache: "${f.root}/cache" }
+            let first = climbed(f.start, [f.one, f.two], cached)
+            let again = climbed(f.start, [f.one, f.two], cached with { dir: "${f.root}/c2" })
+            let ok = match first {
+                .Ok(a) -> match again {
+                    .Ok(b) -> a.built == 2 &&
+                        a.kept == 0 &&
+                        b.built == 0 &&
+                        b.kept == 2 &&
+                        (read_text(a.product) catch "a") == (read_text(b.product) catch "b"),
+                    .Err(_) -> false,
+                },
+                .Err(_) -> false,
+            }
+            checked(f, ok)
+        }
+        then "another builder is another key, and builds again" {
+            let f = fixture()
+            let cached = at(f, "c1", "") with { cache: "${f.root}/cache" }
+            let _ = climbed(f.start, [f.one], cached)
+            let _ = shell(f.root, "printf '#!/bin/sh\\nanother\\n' > start2 && chmod +x start2")
+            let ok = match climbed("${f.root}/start2", [f.one], cached with { dir: "${f.root}/c3" }) {
+                .Ok(c) -> c.built == 1 && c.kept == 0,
+                .Err(_) -> false,
+            }
+            checked(f, ok)
+        }
+        then "every key a climb read or wrote is named in the cache's `.used`" {
+            let f = fixture()
+            let cached = at(f, "c1", "") with { cache: "${f.root}/cache" }
+            let _ = climbed(f.start, [f.one], cached)
+            let _ = climbed(f.start, [f.one], cached with { dir: "${f.root}/c2" })
+            let used = [l for l in (read_text("${f.root}/cache/.used") catch "").split("\n") if l != ""]
+            checked(f, used.length == 2 && used[0] == used[1])
+        }
+    }
     given "a bound" {
         then "a ladder with no seconds left builds no rung" {
             let f = fixture()
