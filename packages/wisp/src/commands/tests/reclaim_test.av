@@ -1,20 +1,13 @@
 // Reclaim over repositories of its own: every repository and worktree here is made fresh under
 // `mktemp -d`, never the tree's.
 use @std.io.{exists, make_dirs}
-use @std.process.{Ready, cmd, inherited, tool}
+use @std.process.{Ready, cmd, tool}
 use @std.time.{secs}
 use commands.{Asked, ReclaimFlags, Worktree, inside, reclaimed, worktrees_of}
 
-/// A shell line run in `dir`, its stdout trimmed; "" when it failed.
-fn shell(dir: string, line: string) -> string {
-    let sh = tool("sh") catch { return "" }
-    let o = (cmd(sh, ["-c", line]) with { cwd: dir, env: inherited() }).run() catch { return "" }
-    o.stdout.trim()
-}
-
 /// A repository on `main` with one commit, in a directory of its own; its real path.
 fn repo() -> string {
-    let root = shell("/tmp", "mktemp -d")
+    let root = scratch_dir()
     shell(
         root,
         "git init -q -b main repo && cd repo && git config user.email t@t && git config user.name t && echo base > file && git add -A && git commit -q -m base && pwd -P",
@@ -33,11 +26,28 @@ fn swept(d: string, now: bool, dry: bool, floor: int) -> List<string> {
     ]
 }
 
+/// A repository's check, then its directory gone, with every tree linked beside it: a case passes
+/// only when both hold.
+fn checked(d: string, ok: bool) -> bool { cleared(d.substring(0, d.length - "/repo".length)) && ok }
+
 /// Neither named under `--dry-run` nor removed for real.
 fn kept(d: string, wt: string) -> bool {
     let named = swept(d, true, true, 20).any(it.starts_with("would retire ${wt} "))
     let _ = swept(d, true, false, 20)
     !named && exists(wt)
+}
+
+/// Kept while a process stands inside it; the process is stopped either way.
+fn kept_while_held(d: string, wt: string) -> bool {
+    let sleep = tool("sleep") catch { return false }
+    match (cmd(sleep, ["60"]) with { cwd: "${wt}/deep" }).start(Ready.Started, secs(5)) {
+        .Ok(child) -> {
+            let held = kept(d, wt)
+            let _ = child.stop()
+            held
+        },
+        .Err(_) -> false,
+    }
 }
 
 spec "wisp reclaim — which worktrees retire" {
@@ -46,17 +56,23 @@ spec "wisp reclaim — which worktrees retire" {
             let d = repo()
             let wt = linked(d, "done")
             let lines = swept(d, true, false, 20)
-            !exists(wt) &&
-                lines.contains("retired ${wt} (done)") &&
-                shell(d, "git rev-parse -q --verify refs/heads/done") != ""
+            checked(
+                d,
+                !exists(wt) &&
+                    lines.contains("retired ${wt} (done)") &&
+                    shell(d, "git rev-parse -q --verify refs/heads/done") != "",
+            )
         }
         then "under `--dry-run` it is named and nothing moves" {
             let d = repo()
             let wt = linked(d, "done")
             let lines = swept(d, true, true, 20)
-            exists(wt) &&
-                lines.contains("would retire ${wt} (done)") &&
-                shell(d, "git worktree list | wc -l").trim() == "2"
+            checked(
+                d,
+                exists(wt) &&
+                    lines.contains("would retire ${wt} (done)") &&
+                    shell(d, "git worktree list | wc -l").trim() == "2",
+            )
         }
     }
     given "a tree a rule keeps" {
@@ -64,50 +80,42 @@ spec "wisp reclaim — which worktrees retire" {
             let d = repo()
             let wt = linked(d, "wip")
             let _ = shell(wt, "echo change > file")
-            kept(d, wt)
+            checked(d, kept(d, wt))
         }
         then "an unmerged tree is kept" {
             let d = repo()
             let wt = linked(d, "ahead")
             let _ = shell(wt, "echo own > own && git add -A && git commit -q -m own")
-            kept(d, wt)
+            checked(d, kept(d, wt))
         }
         then "a tree a process stands inside is kept" {
             let d = repo()
             let wt = linked(d, "held")
             let _ = make_dirs("${wt}/deep")
-            let sleep = tool("sleep") catch { return false }
-            match (cmd(sleep, ["60"]) with { cwd: "${wt}/deep" }).start(Ready.Started, secs(5)) {
-                .Ok(child) -> {
-                    let held = kept(d, wt)
-                    let _ = child.stop()
-                    held
-                },
-                .Err(_) -> false,
-            }
+            checked(d, kept_while_held(d, wt))
         }
         then "main's checkout is never touched" {
             let d = repo()
             let _ = shell(d, "git checkout -q -b home && git worktree add -q ${d}-main main")
-            kept(d, "${d}-main")
+            checked(d, kept(d, "${d}-main"))
         }
         then "a detached tree is kept" {
             let d = repo()
             let _ = shell(d, "git worktree add -q --detach ${d}-side main")
-            kept(d, "${d}-side")
+            checked(d, kept(d, "${d}-side"))
         }
     }
     given "the floor" {
         then "free space at or over it retires nothing" {
             let d = repo()
             let wt = linked(d, "done")
-            swept(d, false, false, 0).any(it.contains("nothing to do")) && exists(wt)
+            checked(d, swept(d, false, false, 0).any(it.contains("nothing to do")) && exists(wt))
         }
         then "free space under it retires" {
             let d = repo()
             let wt = linked(d, "done")
             let _ = swept(d, false, false, 1000000)
-            !exists(wt)
+            checked(d, !exists(wt))
         }
     }
     given "git's listing" {
@@ -121,6 +129,25 @@ spec "wisp reclaim — which worktrees retire" {
         }
         then "a path inside a tree is the tree's, a lookalike sibling is not" {
             inside("/r-a/deep", "/r-a") && inside("/r-a", "/r-a") && !inside("/r-ab", "/r-a")
+        }
+    }
+    given "the fixtures' own clearing" {
+        then "a link inside is unlinked and what it points at stands" {
+            let mine = scratch_dir()
+            let other = scratch_dir()
+            let _ = shell(other, "echo kept > kept && mkdir sub && echo deep > sub/deep")
+            let _ = shell(mine, "ln -s '${other}' out && ln -s '${other}/kept' file")
+            let ok = cleared(mine) &&
+                !exists(mine) &&
+                exists("${other}/kept") &&
+                exists("${other}/sub/deep")
+            cleared(other) && ok
+        }
+        then "a directory `mktemp` did not make is left alone" {
+            let root = scratch_dir()
+            let _ = shell(root, "mkdir plain")
+            let ok = !cleared("${root}/plain") && exists("${root}/plain")
+            cleared(root) && ok
         }
     }
 }
