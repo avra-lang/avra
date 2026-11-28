@@ -15,6 +15,8 @@ use commands.{
     check_one_spelling,
     check_ci_image,
     check_keeper_reach,
+    check_path_rows,
+    PathRow,
     tree_verdicts,
     parse_jobs,
 }
@@ -516,6 +518,43 @@ spec "ci_invariants — keeper-reach" {
             "jobs:\n  n:\n    steps:\n      - run: make -s loose\n",
         )
         refuses(reach(night, reach_flows()), "says it runs nightly") && clean(reach(night, kept))
+    }
+}
+
+/// The paths a fake tree holds.
+fn held_paths(entry: string) -> bool { ["tools/a.sh", "runtime/"].contains(entry) }
+
+spec "ci_invariants — path-rows" {
+    then "a row naming a file and a directory the tree holds holds" {
+        clean(
+            check_path_rows(
+                [PathRow { job: "k", reads: ["tools/a.sh", "runtime/"], beside_compiler: false }],
+                held_paths,
+            ),
+        )
+    }
+    then "a row naming a file the tree lacks is refused, naming the row and the path" {
+        refuses(
+            check_path_rows(
+                [
+                    PathRow {
+                        job: "k",
+                        reads: ["tools/a.sh", "tools/gone.sh"],
+                        beside_compiler: true,
+                    },
+                ],
+                held_paths,
+            ),
+            "`k`'s path gate row names `tools/gone.sh`",
+        )
+    }
+    then "a pattern names a kind of file and is never refused" {
+        clean(
+            check_path_rows(
+                [PathRow { job: "k", reads: ["*.sh", "*"], beside_compiler: false }],
+                held_paths,
+            ),
+        )
     }
 }
 
