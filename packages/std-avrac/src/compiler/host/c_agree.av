@@ -1,0 +1,111 @@
+//! WHETHER A WRITTEN EXTERN SEAT AGREES WITH ITS C HEADER. A seat's
+//! written word is held to the canonical type the header declares: a
+//! width word to the width and sign, `float` to a double, a pointer word
+//! to a pointer, and a `mut` seat — an address handed to C — to a
+//! pointer. What the language has no word for (an 8- or 16-bit integer,
+//! a C `float`, an unread type, a callback) is not judged: a check that
+//! cannot name the fix does not pretend to know the seat is wrong.
+use @std.text.{repeat}
+
+/// How a written seat disagrees with its header, and the word that agrees.
+export enum Disagreement {
+    /// An integer of another width or sign: the width word the header's names.
+    Width(fix: string)
+    /// A float where a word rides, or a word where a float does: the word that rides.
+    File(fix: string)
+    /// A value word over a C pointer.
+    Pointer
+    /// A pointer word over a C value: the width word the value's type names, or `float`.
+    Value(fix: string)
+    /// A struct or union by value, which one register cannot carry.
+    Record
+    /// An answer over a C function that answers nothing.
+    Void
+    /// `string` over a pointer to something other than `char`: what it points to.
+    NotText(target: string)
+    /// A `mut` seat over a C value.
+    Address
+}
+
+/// How a written seat disagrees with its C type; none where it agrees or
+/// where the language has no word to judge it by.
+export fn seat_disagrees(word: string, mutable: bool, c: CType) -> Disagreement? {
+    if mutable {
+        return match c {
+            .Pointer(_, _, _) or .Unread(_) -> null,
+            .Void or .Int(_, _) or .Float(_) or .Record(_) -> Disagreement.Address,
+        }
+    }
+    value_disagrees(word, c)
+}
+
+/// How a written answer disagrees with its C answer; `void` is the
+/// unwritten one, and ignoring a C answer is no disagreement.
+export fn answer_disagrees(word: string, c: CType) -> Disagreement? {
+    if word == "void" { return null }
+    if c is .Void { return Disagreement.Void }
+    value_disagrees(word, c)
+}
+
+/// A plain word held to a C type.
+fn value_disagrees(word: string, c: CType) -> Disagreement? {
+    match c {
+        .Int(bits, signed) -> integer_disagrees(word, width_word(bits, signed)),
+        .Float(bits) -> if bits == 64 { float_disagrees(word) } else { null },
+        .Pointer(target, _, _) -> pointer_disagrees(word, target),
+        .Record(_) -> Disagreement.Record,
+        .Void or .Unread(_) -> null,
+    }
+}
+
+/// The width word for an integer of `bits`, none where the language has
+/// none: an 8- or 16-bit integer.
+fn width_word(bits: int, signed: bool) -> string? {
+    if bits == 64 { return "i64" }
+    if bits != 32 { return null }
+    if signed { "i32" } else { "u32" }
+}
+
+fn integer_disagrees(word: string, wanted: string?) -> Disagreement? {
+    let want? = wanted else { return null }
+    if pointer_word(word) { return Disagreement.Value(want) }
+    if float_word(word) { return Disagreement.File(want) }
+    if word == "bool" || word == want || want == "i64" && word == "int" { return null }
+    if integer_word(word) { return Disagreement.Width(want) }
+    null
+}
+
+fn float_disagrees(word: string) -> Disagreement? {
+    if pointer_word(word) { return Disagreement.Value("float") }
+    if integer_word(word) { return Disagreement.File("float") }
+    null
+}
+
+fn pointer_disagrees(word: string, target: string) -> Disagreement? {
+    if word == "string" && target != "char" { return Disagreement.NotText(target) }
+    if integer_word(word) || float_word(word) { return Disagreement.Pointer }
+    null
+}
+
+fn pointer_word(word: string) -> bool {
+    ["string", "Bytes", "ptr"].contains(word)
+}
+
+fn integer_word(word: string) -> bool {
+    ["int", "i32", "u32", "i64"].contains(word)
+}
+
+fn float_word(word: string) -> bool {
+    ["float", "f64"].contains(word)
+}
+
+/// A canonical C type as a refusal spells it.
+export fn c_spelled(c: CType) -> string {
+    match c {
+        .Void -> "void",
+        .Int(bits, signed) -> if signed { "int${bits}" } else { "uint${bits}" },
+        .Float(bits) -> if bits == 64 { "double" } else { "float${bits}" },
+        .Pointer(target, depth, constant) -> "${if constant { "const " } else { "" }}${target}${repeat("*", depth)}",
+        .Record(s) or .Unread(s) -> s,
+    }
+}

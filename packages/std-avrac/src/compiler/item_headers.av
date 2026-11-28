@@ -1,0 +1,96 @@
+//! THE C HEADERS A PACKAGE NAMES, read on the program layer: each header its manifest's `[link]`
+//! row names, read through the engine as a source's text is, and handed to clang on its stdin, so a
+//! header in a world that is not on a disk is read the same way as one that is. A system header
+//! (`<math.h>`) is clang's to find, read by an empty unit that includes it. What clang declares is
+//! read into canonical types (`c_decls`); a header clang refuses, or that no clang reads, is kept
+//! with why, never read as one that declares nothing.
+use compiler.host.{CDecl, c_decls, lp64}
+use core.{flatten}
+use @std.meta.{derive}
+use @std.process.{Tool, cmd, tool_from_env}
+use @std.program.address.{source_file}
+use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.saved_derive.{Saved}
+use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
+use @std.program.source_facts.{source_text}
+
+/// What reading one header found: clang's dump, or why there is none.
+@derive(Saved)
+export enum HeaderRead {
+    Dumped(dump: string)
+    /// No file stands where the manifest says the header does.
+    Missing
+    /// Clang refused it, in its words.
+    Refused(why: string)
+}
+
+/// A header that declared nothing to read: its word as the manifest wrote it, and why.
+@derive(Saved)
+export type UnreadHeader = { header: string, why: string }
+
+/// What a package's headers declare, and the headers that could not be read.
+@derive(Saved)
+export type PackageHeaders = { decls: List<CDecl>, unread: List<UnreadHeader> }
+
+/// Every function the headers `package`'s manifest names declare, in the order the manifest names
+/// them; a package naming no headers declares none.
+@query("laws")
+export fn package_headers(engine: QueryEngine, package: string) -> PackageHeaders {
+    let read = [Named { header: h, read: header_read(engine, package, h) } for h in manifest_judged(engine, package).headers]
+    PackageHeaders {
+        decls: flatten([declared_in(n.read) for n in read]),
+        unread: [UnreadHeader { header: n.header, why: why_unread(n.read) } for n in read if !declares(n.read)],
+    }
+}
+
+/// A header's word beside what reading it found.
+type Named = { header: string, read: HeaderRead }
+
+/// What reading the header `word` of `package` finds: a path in the package read through the
+/// engine, or a system header clang finds itself.
+fn header_read(engine: QueryEngine, package: string, word: string) -> HeaderRead {
+    if word.starts_with("<") { return dumped("", ["-include", word.substring(1, word.length - 1)]) }
+    let text? = source_text(engine, source_file(package, word)) else { return HeaderRead.Missing }
+    dumped(text, [])
+}
+
+/// Clang's dump of a unit whose text is `text`, with `flags` before it.
+fn dumped(text: string, flags: List<string>) -> HeaderRead {
+    let clang? = clang_tool() else { return HeaderRead.Refused("no clang is found") }
+    let args = ["-fsyntax-only", "-Xclang", "-ast-dump=json"].concat(flags).concat(["-x", "c", "-"])
+    // LICENSED input.tool_run: clang reads the header's text, handed on its stdin, and nothing else of the world
+    match (cmd(clang, args) with { stdin: .Text(text) }).outcome() {
+        .Ok(o) -> HeaderRead.Dumped(o.out.stdout),
+        .Err(_) -> HeaderRead.Refused("clang refused the header"),
+    }
+}
+
+/// The C compiler `CC` names, else `clang` on the PATH; none where neither stands.
+fn clang_tool() -> Tool? {
+    // LICENSED input.tool_run: the C compiler a header is read with, found as the link finds its own
+    match tool_from_env("CC", "clang") { .Ok(t) -> t, .Err(_) -> null }
+}
+
+/// What a read declares: a dump's functions, or none.
+fn declared_in(read: HeaderRead) -> List<CDecl> {
+    match read { .Dumped(dump) -> c_decls(dump, lp64()) catch [], .Missing or .Refused(_) -> [] }
+}
+
+/// Whether a read is one a dump answers, so nothing is said of it.
+fn declares(read: HeaderRead) -> bool {
+    match read { .Dumped(dump) -> c_decls(dump, lp64()) is .Ok, .Missing or .Refused(_) -> false }
+}
+
+/// Why a read declares nothing.
+fn why_unread(read: HeaderRead) -> string {
+    match read {
+        .Dumped(_) -> "clang's dump could not be read",
+        .Missing -> "no file stands there",
+        .Refused(why) -> why,
+    }
+}
+
+collect listed_header_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
+
+/// The queries a package's headers are read through, for a process to hand its engine.
+export fn header_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_header_facts) }

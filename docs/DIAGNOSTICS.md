@@ -6176,6 +6176,38 @@ error[type.row_shape]: `avra_array_new` is a runtime row of 0 seat(s), declared 
 help: declare the row's seats, or name a fn the runtime does not carry
 ```
 
+## type.extern_header
+
+an extern its package's C headers declare wears the header's seats and answer — their count, widths, signs and pointers
+
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[link]
+headers = ["c.h"]
+
+// /w/c.h
+int width(int x);
+
+// /w/src/main.av
+extern fn width(x: i32) -> int
+0
+
+```
+
+```
+error[type.extern_header]: `width` answers `int`, and its C header declares `int32`
+  ╭─[/w/src/main.av:1:1]
+1 │ extern fn width(x: i32) -> int
+  · ┬
+  · ╰── this extern
+──╯
+help: write `i32`, the width and sign its header names
+```
+
 ## type.host_absence
 
 a runtime row's seat takes no absence — core's C reads every pointer it is handed

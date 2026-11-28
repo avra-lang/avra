@@ -5,6 +5,7 @@
 //! the crossing law asks it nothing; any other row, and any symbol that is no row, crosses by the
 //! uniform frame. The voices are the old checker's own.
 use core.{
+    ExternParts,
     OwnType,
     Param,
     RtKind,
@@ -20,6 +21,7 @@ use core.{
     width_named,
 }
 use compiler.laws.{Found, law}
+use compiler.host.{Disagreement, answer_disagrees, c_spelled, seat_disagrees}
 use diagnostics.{Voice}
 use features.fns.{
     absence_voice,
@@ -80,6 +82,16 @@ enum ExternLaw {
     HostSeat
     /// A host fn's answer no host takes: the fn, its type.
     HostAnswer
+    /// A seat its C header declares otherwise: the extern, the seat's place, what it wears, what
+    /// the header declares, the remedy's words.
+    HeaderSeat
+    /// An answer its C header declares otherwise: the extern, what it answers, what the header
+    /// declares, the remedy's words.
+    HeaderAnswer
+    /// Another count of seats than its C header's: the extern, the header's count, the declared one.
+    HeaderCount
+    /// A fixed declaration of a function its C header says is variadic: the extern.
+    HeaderVariadic
 }
 
 /// One finding: where its declaration stands, the law it is, and the words its voice is handed.
@@ -134,7 +146,49 @@ fn declaration_findings(engine: QueryEngine, file: SourceFileAddress, item: Read
     }
     let parts? = item.store.extern_parts(s) else { return [] }
     let sig? = fn_signature(engine, file, parts.name) else { return [] }
-    findings_at(at, extern_found(parts.name, parts.params, parts.ret, sig))
+    findings_at(
+        at,
+        extern_found(parts.name, parts.params, parts.ret, sig)
+            .concat(header_found(engine, file.package_name, parts)),
+    )
+}
+
+/// What the header laws find of an `extern fn` its package's C headers declare: a variadic C
+/// function or another count of seats alone, else each seat and the answer the header declares
+/// otherwise. A name no header declares is not judged here.
+fn header_found(engine: QueryEngine, package: string, parts: ExternParts) -> List<ExternSaid> {
+    let decl? = package_headers(engine, package).decls.find(it.name == parts.name) else { return [] }
+    if decl.variadic { return [ExternSaid { kind: ExternLaw.HeaderVariadic, args: [parts.name] }] }
+    if decl.seats.length != parts.params.length {
+        return [
+            ExternSaid {
+                kind: ExternLaw.HeaderCount,
+                args: [parts.name, "${decl.seats.length}", "${parts.params.length}"],
+            },
+        ]
+    }
+    let seats = [ExternSaid {
+        kind: ExternLaw.HeaderSeat,
+        args: [parts.name, "${j}", seat_word(p.ty), c_spelled(decl.seats[j]), remedy_of(d)],
+    } for j, p in parts.params for d in some_disagreement(seat_disagrees(seat_word(p.ty), p.promises.mutable, decl.seats[j]))]
+    let answer = [ExternSaid {
+        kind: ExternLaw.HeaderAnswer,
+        args: [parts.name, seat_word(parts.ret), c_spelled(decl.answer), remedy_of(d)],
+    } for d in some_disagreement(answer_disagrees(seat_word(parts.ret), decl.answer))]
+    seats.concat(answer)
+}
+
+/// A written seat's word: its type's name, `fn` for a callback, `void` where nothing is written.
+fn seat_word(t: TypeRef?) -> string {
+    let written? = t else { return "void" }
+    if written.arrow { return "fn" }
+    written.name
+}
+
+/// A disagreement as a list of none or one, for a comprehension to read.
+fn some_disagreement(d: Disagreement?) -> List<Disagreement> {
+    let held? = d else { return [] }
+    [held]
 }
 
 /// Each of `found` placed at the declaration standing `at`.
@@ -351,6 +405,30 @@ fn row_answer_boxes(view: ItemView) -> List<Found> {
     found_of_viewed(view, ExternLaw.RowAnswerBox)
 }
 
+fn header_seats(view: ItemView) -> List<Found> {
+    found_of_viewed(view, ExternLaw.HeaderSeat)
+}
+
+fn header_answers(view: ItemView) -> List<Found> {
+    found_of_viewed(view, ExternLaw.HeaderAnswer)
+}
+
+fn header_counts(view: ItemView) -> List<Found> {
+    found_of_viewed(view, ExternLaw.HeaderCount)
+}
+
+fn header_variadics(view: ItemView) -> List<Found> {
+    found_of_viewed(view, ExternLaw.HeaderVariadic)
+}
+
+/// A witness package whose manifest names one header, `c.h`, holding `header`.
+fn header_witness(header: string) -> Map<string, string> {
+    {
+        "avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[link]\nheaders = [\"c.h\"]\n",
+        "c.h": header,
+    }
+}
+
 fn host_rows(view: ItemView) -> List<Found> {
     found_of_viewed(view, ExternLaw.HostRow)
 }
@@ -431,6 +509,42 @@ export law extern_row_currency {
     witness: "extern fn avra_array_new() -> bool\n"
 }
 
+/// a seat crosses as its C header declares it
+export law extern_header_seat {
+    kind: "type.extern_header"
+    reads_view: header_seats
+    voice: header_seat_words
+    witness: "extern fn width(x: int) -> int\n"
+    witness_files: header_witness("int width(int x);\n")
+}
+
+/// an extern answers as its C header declares
+export law extern_header_answer {
+    kind: "type.extern_header"
+    reads_view: header_answers
+    voice: header_answer_words
+    witness: "extern fn quiet() -> int\n"
+    witness_files: header_witness("void quiet(void);\n")
+}
+
+/// an extern declares its C header's seats
+export law extern_header_count {
+    kind: "type.extern_header"
+    reads_view: header_counts
+    voice: header_count_words
+    witness: "extern fn pair(a: i32) -> i32\n"
+    witness_files: header_witness("int pair(int a, int b);\n")
+}
+
+/// no fixed extern names a variadic C function
+export law extern_header_variadic {
+    kind: "type.extern_header"
+    reads_view: header_variadics
+    voice: header_variadic_words
+    witness: "extern fn shout(f: string) -> i32\n"
+    witness_files: header_witness("int shout(const char *f, ...);\n")
+}
+
 /// a runtime row answers the box its C body built
 export law extern_row_currency_box {
     kind: "type.row_shape"
@@ -488,6 +602,64 @@ fn seat_box_words(a: List<string>) -> Voice { seat_box_voice(a[0], place(a[1]), 
 fn answer_kind_words(a: List<string>) -> Voice { answer_kind_voice(a[0], a[1], a[2], a[3]) }
 
 fn answer_box_words(a: List<string>) -> Voice { answer_box_voice(a[0], a[1], a[2], a[3]) }
+
+fn header_seat_words(a: List<string>) -> Voice { header_seat_voice(a[0], place(a[1]), a[2], a[3], a[4]) }
+
+fn header_answer_words(a: List<string>) -> Voice { header_answer_voice(a[0], a[1], a[2], a[3]) }
+
+fn header_count_words(a: List<string>) -> Voice { header_count_voice(a[0], place(a[1]), place(a[2])) }
+
+fn header_variadic_words(a: List<string>) -> Voice { header_variadic_voice(a[0]) }
+
+/// The extern `name`'s seat `j`, written `word`, over a header declaring `c`.
+fn header_seat_voice(name: string, j: int, word: string, c: string, remedy: string) -> Voice {
+    Voice {
+        message: "`${name}`'s seat ${j + 1} crosses as `${word}`, and its C header declares `${c}`",
+        label: "this extern",
+        help: remedy,
+    }
+}
+
+/// The extern `name`, answering `word`, over a header answering `c`.
+fn header_answer_voice(name: string, word: string, c: string, remedy: string) -> Voice {
+    Voice {
+        message: "`${name}` answers `${word}`, and its C header declares `${c}`",
+        label: "this extern",
+        help: remedy,
+    }
+}
+
+/// The extern `name` declaring `declared` seats over a header declaring `seats`.
+fn header_count_voice(name: string, seats: int, declared: int) -> Voice {
+    Voice {
+        message: "`${name}`'s C header declares ${seats} seat(s), and it is declared here with ${declared}",
+        label: "this extern",
+        help: "declare the header's seats, in its order",
+    }
+}
+
+/// The extern `name` over a variadic header declaration.
+fn header_variadic_voice(name: string) -> Voice {
+    Voice {
+        message: "`${name}`'s C header declares it variadic, and no fixed extern calls a variadic function",
+        label: "this extern",
+        help: "call it through a C function of fixed seats, and declare that one",
+    }
+}
+
+/// The remedy a disagreement names, in its words.
+fn remedy_of(d: Disagreement) -> string {
+    match d {
+        .Width(fix) -> "write `${fix}`, the width and sign its header names",
+        .File(fix) -> "write `${fix}`: a float and a word ride different registers",
+        .Pointer -> "the header takes a pointer: write `ptr`, `string` or `Bytes`",
+        .Value(fix) -> "the header takes a value: write `${fix}`",
+        .Record -> "a struct passed by value rides no one register: pass it by pointer through a C function of your own",
+        .Void -> "the header answers nothing: declare the extern with no answer",
+        .NotText(target) -> "`string` crosses as a C `char*`: write `ptr` or `Bytes` over a `${target}*`",
+        .Address -> "a `mut` seat hands C an address, and the header takes a value: drop `mut`",
+    }
+}
 
 fn host_row_words(a: List<string>) -> Voice { host_row_voice(a[0]) }
 
