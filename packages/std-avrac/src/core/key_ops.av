@@ -5,6 +5,16 @@
 //! keys the equality calls the same are folded part by part alike, so they hash equal. Both are
 //! lifted once per key type, and the map holds the descriptor that names them.
 
+/// The row a scalar part riding the box `box` hashes by: text by its own, octets by theirs — the
+/// only scalars a key holds in a box; none for any other box.
+fn part_hash_row(box: BoxKind) -> string? {
+    match box {
+        .Text -> "avra_text_key_hash",
+        .Bytes -> "avra_bytes_key_hash",
+        .List or .Map or .Record or .Enum or .Closure or .Cell or .Task or .Dyn or .Union or .Range or .Slot -> null,
+    }
+}
+
 impl Lowering {
     /// The address of the descriptor a map keyed by `key`s holds: its hash, then its equality, each a
     /// unit taking the key as a list's cell holds it.
@@ -92,10 +102,13 @@ impl Lowering {
     /// One part folded into the running hash.
     mut fn mixed(h: Reg, part: Reg, s1: Reg) -> Reg { self.call_row(Layout.Word, rt_sig_of("avra_key_mix")!, [h, part, s1]) }
 
-    /// The word a scalar part of `ty` folds in as: itself, or text's own hash.
+    /// The word a scalar part of `ty` folds in as: itself, or text's or octets' own hash.
     mut fn part_word(v: Reg, ty: SignedType) -> Reg {
         match self.laid_out(ty) {
-            .Boxed(_) -> self.call_row(Layout.Word, rt_sig_of("avra_text_key_hash")!, [v]),
+            .Boxed(box) -> {
+                let row? = part_hash_row(box) else { return self.missed_as(unhashed_part(ty)) }
+                self.call_row(Layout.Word, rt_sig_of(row)!, [v])
+            },
             .Void or .Word or .Truth or .Real or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> v,
         }
     }
@@ -166,3 +179,6 @@ impl Lowering {
             .region(self.present(v, ty), Layout.Word) { cx -> cx.hash_value(cx.carried(v, ty), plain, cx.mixed(h, cx.const_int(1), s1), s1) } else { cx -> cx.mixed(h, cx.const_int(0), s1) }
     }
 }
+
+/// A key part of `ty`, boxed as no scalar a key holds, which typing refuses.
+fn unhashed_part(ty: SignedType) -> string { "a key part of `${ty.spelled()}`, which no key holds, past typing" }

@@ -67,14 +67,14 @@ fn fills(takes: int, spared: int, found: int) -> bool { found <= takes && found 
 /// is its declaration's law, never a signing's.
 fn declared_gathered(engine: QueryEngine, file: SourceFileAddress, name: string) -> bool { declaring_item(engine, file, name, ItemKind.CollectEnum) != null }
 
-/// Whether a map may file `key`s as a signature reads them — text or a word, a declared type or a list
-/// a composite key may be, whose parts the law judges once the program is read — or `key` is a name no
-/// type stands behind, whose own law says it. A signature asks no shape it needn't: a record keyed by
-/// itself would ask its own while it's being signed.
+/// Whether a map may file `key`s as a signature reads them — a type the language owns or a declared
+/// one, whose parts the law judges once the program is read, or a name no type stands behind, whose
+/// own law says it. A signature asks no shape it needn't: a record keyed by itself would ask its own
+/// while it's being signed.
 fn keys_filed(key: SignedType) -> bool {
     match key.head {
-        .Unnamed(_) or .Inferred or .Declared(_, _) -> true,
-        .Owned(_) or .Parameter(_, _) or .Function or .Union or .Never or .Meta -> key.listed() != null || files_as_key(key, (_ty: SignedType) -> null),
+        .Unnamed(_) or .Inferred or .Declared(_, _) or .Owned(_) -> true,
+        .Parameter(_, _) or .Function or .Union or .Never or .Meta -> files_as_key(key, (_ty: SignedType) -> null),
     }
 }
 
@@ -152,7 +152,7 @@ impl AppliedScope {
         if MAP_KEYS.contains(k.name) { return !k.applied.is_empty() }
         if k.name == INFERRED || k.name == self_word { return false }
         let d? = resolved(seen.scope.engine, seen.scope.file, Space.Type, k.name).named() else {
-            if k.name == LIST { return !seen.scope.keyed_by(k) }
+            if type_row(avra().rows.types, k.name) != null || shape_named(k.name) != null { return !seen.scope.keyed_by(k) }
             return seen.scope.takes(k.name) != null
         }
         match d.kind {
@@ -189,9 +189,6 @@ impl AppliedScope {
 
 /// The map type's name, whose first argument keys it.
 const MAP: string = "Map"
-
-/// The list type's name.
-const LIST: string = "List"
 
 /// a type is applied to the type arguments it takes, and a map is keyed by a type of key
 export law type_applied_as_declared {

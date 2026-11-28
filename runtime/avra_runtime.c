@@ -5057,6 +5057,9 @@ int64_t avra_bytes_eq(const char* a, const char* b) {
     return n == bytes_len(b) && memcmp(a, b, n) == 0;
 }
 
+// An octets part's own hash inside a composite key, folded in as one part.
+int64_t avra_bytes_key_hash(const char* b) { return (int64_t)fast_hash(b, bytes_len(b)); }
+
 // One octet, 0..255. A bad index traps: -1 is not a byte.
 
 // The octets from lo up to hi, owned. Bounds are a precondition: a

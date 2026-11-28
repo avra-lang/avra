@@ -1,6 +1,6 @@
 // proves: equal keys hash equal in every layout class — a map grown past its small index files a few
 // hundred keys of each, each found again by an equal key built apart from it, by another expression,
-// and no unequal key is found: a word, text, a flat record, a boxed record holding text, an enum with
+// and no unequal key is found: a word, text, octets, a flat record, a boxed record holding text, an enum with
 // payloads, a list, a record nested in a record, a record with an absent part; two composites whose
 // parts split their text differently are two keys; a removed key is gone and its equal twin added
 // again opens anew at the end; and a map's keys read back as the values they are.
@@ -11,6 +11,8 @@ type Name = { first: string, last: string }
 type Placed = { at: Point, name: Name }
 
 type Tagged = { id: int, label: string? }
+
+type Blob = { at: int, octets: Bytes }
 
 enum Shape {
     Dot(at: int)
@@ -36,6 +38,8 @@ fn tagged(i: int) -> Tagged { Tagged { id: i, label: if i % 3 == 0 { null } else
 
 fn path(i: int) -> List<int> { [i % 7, i / 7, i] }
 
+fn blob(i: int) -> Blob { Blob { at: i % 5, octets: "o${i}".bytes() } }
+
 const N: int = 300
 
 mut words: Map<int, int> = {}
@@ -46,6 +50,8 @@ mut placed: Map<Placed, int> = {}
 mut shapes: Map<Shape, int> = {}
 mut paths: Map<List<int>, int> = {}
 mut tags: Map<Tagged, int> = {}
+mut octets: Map<Bytes, int> = {}
+mut blobs: Map<Blob, int> = {}
 for i in 0..N {
     words.set(i * 7, i)
     texts.set("k${i}", i)
@@ -55,6 +61,8 @@ for i in 0..N {
     shapes.set(shape(i), i)
     paths.set(path(i), i)
     tags.set(tagged(i), i)
+    octets.set("o${i}".bytes(), i)
+    blobs.set(blob(i), i)
 }
 
 fn found(hits: List<bool>) -> int { hits.filter(it).length }
@@ -72,6 +80,8 @@ let again = [
     found(
         [tags.get(Tagged { id: i, label: if i % 3 == 0 { null } else { "t" + "${i}" } }) == i for i in 0..N],
     ),
+    found([octets.get(("o" + "${i}").bytes()) == i for i in 0..N]),
+    found([blobs.get(Blob { octets: ("o" + "${i}").bytes(), at: (i + 5) % 5 }) == i for i in 0..N]),
 ]
 
 let strangers = [
@@ -80,6 +90,7 @@ let strangers = [
     found([shapes.has(Shape.Line(i + 1, i)) for i in 1..N]),
     found([paths.has([i % 7, i / 7]) for i in 0..N]),
     found([tags.has(Tagged { id: i, label: "x" }) for i in 0..N]),
+    found([blobs.has(Blob { at: i % 5 + 1, octets: "o${i}".bytes() }) for i in 0..N]),
 ]
 
 mut split: Map<List<string>, int> = {}
