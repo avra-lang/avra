@@ -60,7 +60,16 @@ fn derived_unread(
     if written.is_empty() { return [] }
     let read? = derive_claims(engine, file, store, s) else { return [] }
     let claimed = distinct(read.words.concat(own))
-    [unread_at(m.span, m.name, "", claimed) for m in written if !claimed.contains(m.name) && !(read.rules && names_a_rule(engine, file, m.name))]
+    [unread_at(m.span, m.name, "", claimed) for m in written if !claimed.contains(m.name) &&
+        !(read.rules && names_a_rule(engine, file, m.name)) &&
+        !names_a_marker(engine, file, m.name)]
+}
+
+/// Whether `word`, read where `file` writes it, names a fn answering `Marker`: a mark the wearer
+/// brought in by name, which some reader beside the declaration reads.
+fn names_a_marker(engine: QueryEngine, file: SourceFileAddress, word: string) -> bool {
+    let d? = named_decl(engine, file, word) else { return false }
+    answers_marker(engine, d)
 }
 
 /// Whether `word`, read where `file` writes it, names a rule: a fn whose first seat takes a value.
