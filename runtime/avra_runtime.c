@@ -4689,9 +4689,13 @@ static int words_of(const AvraArray* a, const AvraArray* b) {
     return avra_packed(a) || avra_packed(b);
 }
 
-// `a`'s slots, then `b`'s: a fresh list, or the empty list when both are empty. Owned.
+// `a`'s slots, then `b`'s: the empty list when both are empty, the other side
+// itself when one is (its row says its answer may be either seat), else a
+// fresh list. Owned.
 void* avra_array_concat(void* a, void* b) {
     if (((AvraArray*)a)->len + ((AvraArray*)b)->len == 0) return words_of((AvraArray*)a, (AvraArray*)b) ? avra_array_empty_words() : empty_list();
+    if (((AvraArray*)b)->len == 0) { avra_rc_retain(a); return a; }
+    if (((AvraArray*)a)->len == 0) { avra_rc_retain(b); return b; }
     CENSUS(g_append_site = g_clone_site ? g_clone_site : AVRA_CALLER());
     CENSUS(note_copy(AVRA_CALLER()));
     void* site = g_clone_site ? g_clone_site : AVRA_CALLER();
@@ -4814,9 +4818,12 @@ void* avra_stride_slice_reusing(void* arr, int64_t lo, int64_t hi, int64_t k) {
     return avra_array_slice_reusing(arr, lo * k, hi * k);
 }
 
-// `a`'s slots then `b`'s, onto `a` when it is held alone.
+// `a`'s slots then `b`'s, onto `a` when it is held alone; `a` itself when `b`
+// is empty, and `b` when `a` is.
 void* avra_array_concat_reusing(void* a, void* b) {
     CENSUS(g_append_site = g_clone_site ? g_clone_site : AVRA_CALLER());
+    if (((AvraArray*)b)->len == 0) return a;
+    if (((AvraArray*)a)->len == 0) { avra_rc_retain(b); avra_rc_release(a); return b; }
     if (a == b || !sole_array(a)) {
         g_clone_site = AVRA_CALLER();
         void* out = avra_array_concat(a, b);
