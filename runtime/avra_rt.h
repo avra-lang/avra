@@ -142,6 +142,8 @@ extern const char avra_rt_held_avra_map_g_set_at __asm__(AVRA_RT_LABEL(avra_map_
 extern const char avra_rt_held_avra_map_g_set_at_maybe __asm__(AVRA_RT_LABEL(avra_map_g_set_at_maybe));
 extern const char avra_rt_held_avra_map_g_set_at_owned __asm__(AVRA_RT_LABEL(avra_map_g_set_at_owned));
 extern const char avra_rt_held_avra_map_g_set_at_maybe_owned __asm__(AVRA_RT_LABEL(avra_map_g_set_at_maybe_owned));
+extern const char avra_rt_held_avra_key_mix __asm__(AVRA_RT_LABEL(avra_key_mix));
+extern const char avra_rt_held_avra_text_key_hash __asm__(AVRA_RT_LABEL(avra_text_key_hash));
 extern const char avra_rt_held_avra_map_value_present __asm__(AVRA_RT_LABEL(avra_map_value_present));
 extern const char avra_rt_held_avra_map_w_value_present __asm__(AVRA_RT_LABEL(avra_map_w_value_present));
 extern const char avra_rt_held_avra_map_slot __asm__(AVRA_RT_LABEL(avra_map_slot));
@@ -468,6 +470,8 @@ __attribute__((used)) static const void* const avra_rt_held[] = {
     &avra_rt_held_avra_map_g_set_at_maybe,
     &avra_rt_held_avra_map_g_set_at_owned,
     &avra_rt_held_avra_map_g_set_at_maybe_owned,
+    &avra_rt_held_avra_key_mix,
+    &avra_rt_held_avra_text_key_hash,
     &avra_rt_held_avra_map_value_present,
     &avra_rt_held_avra_map_w_value_present,
     &avra_rt_held_avra_map_slot,
@@ -875,6 +879,10 @@ _Static_assert(__builtin_types_compatible_p(__typeof__(avra_map_g_set_at_owned(A
     "avra_map_g_set_at_owned: its row answers void, so its C body answers void");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_map_g_set_at_maybe_owned(AVRA_RT_PTR, AVRA_RT_PTR, AVRA_RT_I64, AVRA_RT_I64, AVRA_RT_PTR)), void),
     "avra_map_g_set_at_maybe_owned: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_key_mix(AVRA_RT_I64, AVRA_RT_I64, AVRA_RT_I64)), int64_t),
+    "avra_key_mix: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_text_key_hash(AVRA_RT_PTR)), int64_t),
+    "avra_text_key_hash: its row answers i64, so its C body answers int64_t");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_map_value_present(AVRA_RT_PTR, AVRA_RT_PTR)), int64_t),
     "avra_map_value_present: its row answers i64, so its C body answers int64_t");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_map_w_value_present(AVRA_RT_PTR, AVRA_RT_I64)), int64_t),
