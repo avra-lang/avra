@@ -195,8 +195,10 @@ export trait AnswerStore {
 type QueryRun = { bytes: Bytes, reads: ReadTable }
 
 /// Reads gathered for work remembered outside the engine, begun while `depth` questions were open:
-/// it gathers the reads made while just those are. `reader` is its own serial as a reader.
-type ReadsGathered = { depth: int, reads: ReadTable, reader: int }
+/// it gathers the reads made while just those are. `reader` is its own serial as a reader, and
+/// `unrecorded` how many unrecorded stretches stood when it began: one begun inside a stretch
+/// gathers what is read there, which is the work's whole reading, while its asker records none of it.
+type ReadsGathered = { depth: int, reads: ReadTable, reader: int, unrecorded: int }
 
 /// A question being answered, its query, and the reads it has made so far.
 type OpenQuestion = {
@@ -1375,8 +1377,8 @@ impl QueryEngine {
     /// Whoever is asking now has made this read; with nobody asking, the question is a root, which
     /// the frontier keeps with what it reads.
     fn record_read(read: RecordedRead) {
-        if !self.recording() { return }
         self.gathered(read)
+        if !self.recording() { return }
         let asker? = self.open_top() else { return self.asked_alone.put(read.question, true) }
         asker.reads.put(read)
     }
@@ -1384,14 +1386,14 @@ impl QueryEngine {
     /// A read of the whole answer `answer` to the question known as `question`, recorded as
     /// `record_read` records it: a table that holds this read already is left as it stands.
     fn whole_read(question: ContentHash, answer: ContentHash) {
-        if !self.recording() { return }
         let gathering = self.gathering.get()
         if !gathering.is_empty() {
             let depth = self.open_depth.get()
             for g in gathering {
-                if g.depth == depth { g.reads.whole(question, answer) }
+                if g.depth == depth && self.gathers(g) { g.reads.whole(question, answer) }
             }
         }
+        if !self.recording() { return }
         let asker? = self.open_top() else { return self.asked_alone.put(question, true) }
         asker.reads.whole(question, answer)
     }
@@ -1422,9 +1424,13 @@ impl QueryEngine {
         if gathering.is_empty() { return }
         let depth = self.open_depth.get()
         for g in gathering {
-            if g.depth == depth { g.reads.put(read) }
+            if g.depth == depth && self.gathers(g) { g.reads.put(read) }
         }
     }
+
+    /// Whether `g` gathers a read made now: one its asker records, or one made in an unrecorded
+    /// stretch `g` began inside.
+    fn gathers(g: ReadsGathered) -> bool { self.recording() || g.unrecorded >= self.unrecorded_at.get().length }
 
     /// Reads made from here on with the questions open now, gathered until `reads_gathered`: what
     /// a remembered answer keeps of the work that found it.
@@ -1437,6 +1443,7 @@ impl QueryEngine {
                     depth: self.open_depth.get(),
                     reads: reads,
                     reader: self.next_reader(),
+                    unrecorded: self.unrecorded_at.get().length,
                 },
             )
     }

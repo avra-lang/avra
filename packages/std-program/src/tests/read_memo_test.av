@@ -21,9 +21,18 @@ fn nested(engine: QueryEngine, memo: ReadMemo<string>, outer: ReadMemo<string>) 
     outer.answer(engine, InternId { index: 0 }, () -> remembered(engine, memo)) ?? ""
 }
 
+/// The memo's answer worked out where none of its reads are the asker's, the asker answering a word.
+fn unrecorded_taken(engine: QueryEngine, memo: ReadMemo<string>) -> string {
+    engine.unrecorded_begun()
+    let _ = remembered(engine, memo)
+    engine.recorded_again()
+    "quiet"
+}
+
 /// `source` is an input; `first` and `second` each take the memo's answer, which `first` works out;
 /// `both` reads `first` then `second`; `deep` takes a second memo's answer, worked out by asking
-/// `first`; `nest` takes the memo's answer by `nested`.
+/// `first`; `nest` takes the memo's answer by `nested`; `quiet`
+/// works it out unrecorded, and `hushed` reads `quiet` then `second`.
 fn definitions(world: Cell<string>, memo: ReadMemo<string>, outer: ReadMemo<string>) -> List<
     QueryDefinition,
 > {
@@ -58,6 +67,19 @@ fn definitions(world: Cell<string>, memo: ReadMemo<string>, outer: ReadMemo<stri
             code_hash: "code",
             is_input: false,
             compute: (e, _a) -> (outer.answer(e, InternId { index: 0 }, () -> ask_text(e, "first", "x")) ?? "")
+                .bytes(),
+        },
+        QueryDefinition {
+            query_name: "quiet",
+            code_hash: "code",
+            is_input: false,
+            compute: (e, _a) -> unrecorded_taken(e, memo).bytes(),
+        },
+        QueryDefinition {
+            query_name: "hushed",
+            code_hash: "code",
+            is_input: false,
+            compute: (e, a) -> "${ask_text(e, "quiet", a.text() ?? "")} ${ask_text(e, "second", a.text() ?? "")}"
                 .bytes(),
         },
         QueryDefinition {
@@ -107,6 +129,13 @@ spec "read_memo — a remembered answer is read as its working-out read" {
             let _ = ask_text(taker, "second", "x")
             taker.frontier_kept()
             ask_text(process(store, "new", "second"), "second", "x") == "second new"
+        }
+    }
+    given "a memo worked out where its asker records none of the reads, then taken by another" {
+        then "the other reads what the working-out read, and an edit of it reaches the other" {
+            let store = store_in_memory()
+            let _ = process(store, "old", "hushed")
+            ask_text(process(store, "new", "hushed"), "second", "x") == "second new"
         }
     }
     given "nothing edited" {
