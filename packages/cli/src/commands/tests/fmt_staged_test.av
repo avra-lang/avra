@@ -1,0 +1,86 @@
+//! `avra fmt --check` as every door's one check: the staged text the pre-commit hook asks of, the
+//! fixtures fmt cannot print skipped by name. `fmt_fixture`, `fmt_ran` and `on_disk` are
+//! fmt_bare_test.av's own, `avra_bin` and `scratch_dir` hang_test.av's: this module shares one
+//! namespace.
+use @std.io.{make_dirs, write_text, exists}
+use @std.process.{tool, cmd, Outcome, ProcessError, status_of}
+use commands.{staged_sibling, parse_kinded, fixture_unprintable}
+
+fn staged_messy() -> string { "fn   main( )   ->   int {   0   }\n" }
+
+fn staged_canonical() -> string { "fn main() -> int { 0 }\n" }
+
+/// A scratch git repository holding `a.av` staged as `staged`, its working copy `worked`.
+fn staged_repo(name: string, staged: string, worked: string) -> string {
+    let dir = "${scratch_dir()}/${name}"
+    let _ = make_dirs(dir)
+    let _ = git_in(dir, ["init", "-q"])
+    let _ = write_text("${dir}/a.av", staged)
+    let _ = git_in(dir, ["add", "a.av"])
+    let _ = write_text("${dir}/a.av", worked)
+    dir
+}
+
+fn git_in(dir: string, argv: List<string>) -> int {
+    let git? = match tool("git") { .Ok(g) -> g, .Err(_) -> null } else { return 127 }
+    match (cmd(git, argv) with { cwd: dir }).outcome() {
+        .Ok(o) -> status_of(o.exit),
+        .Err(_) -> 127,
+    }
+}
+
+/// `avra fmt --check --staged` asked from `dir`.
+fn staged_checked(dir: string) -> Result<Outcome, ProcessError> {
+    let t = tool(avra_bin())?
+    (cmd(t, ["fmt", "--check", "--staged"]) with { cwd: dir, timeout: hang_bound() }).outcome()
+}
+
+fn staged_status(dir: string) -> int {
+    match staged_checked(dir) { .Ok(o) -> status_of(o.exit), .Err(_) -> -1 }
+}
+
+fn staged_said(dir: string) -> string {
+    match staged_checked(dir) { .Ok(o) -> o.out.stdout + o.out.stderr, .Err(_) -> "" }
+}
+
+/// A case directory under the scratch holding `expected` as its `refuses.expected`, and the path
+/// of a file beneath it.
+fn case_with(name: string, expected: string) -> string {
+    let dir = "${scratch_dir()}/fmt-case-${name}"
+    let _ = make_dirs("${dir}/src")
+    let _ = write_text("${dir}/refuses.expected", expected)
+    let path = "${dir}/src/main.av"
+    let _ = write_text(path, "fn main( -> int {\n")
+    path
+}
+
+spec "fmt --check --staged — the staged text, never the working copy" {
+    then "a non-canonical staged text is refused though its working copy is canonical" {
+        staged_status(staged_repo("staged-messy", staged_messy(), staged_canonical())) == 1
+    }
+    then "and the refusal names the fix" {
+        staged_said(staged_repo("staged-fix", staged_messy(), staged_canonical()))
+            .contains("fmt --write")
+    }
+    then "a canonical staged text passes though its working copy is not" {
+        staged_status(staged_repo("staged-clean", staged_canonical(), staged_messy())) == 0
+    }
+    then "the hidden sibling it read through is gone after" {
+        let dir = staged_repo("staged-gone", staged_messy(), staged_canonical())
+        let _ = staged_status(dir)
+        !exists("${dir}/.staged-a.av")
+    }
+    then "a staged sibling stands beside the file" { staged_sibling("/r/src/a.av") == "/r/src/.staged-a.av" }
+}
+
+spec "fmt --check — a fixture malformed on purpose" {
+    then "a parse refusal is formatting's to skip" { parse_kinded("error[parse.expected]: expected `}`\n") }
+    then "a lex refusal is formatting's to skip" { parse_kinded("x\nerror[lex.char]: unexpected character\n") }
+    then "a type refusal is not" { !parse_kinded("error[type.method]: no method\n") }
+    then "a file under a case that expects a parse refusal is skipped" {
+        fixture_unprintable(case_with("parse", "error[parse.expected]: expected `}`\n"))
+    }
+    then "a file under a case that expects any other refusal is judged" {
+        !fixture_unprintable(case_with("typed", "error[type.method]: no method\n"))
+    }
+}

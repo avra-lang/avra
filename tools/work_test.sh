@@ -142,6 +142,7 @@ holder() { cat "$(git -C "$1" rev-parse --absolute-git-dir)/avra-sprite" 2>/dev/
 # ══ NEW: a lane and its Sprite ════════════════════════════════════════
 sh "$work" new one > "$scratch/out" 2>&1
 check "$? $(holder "$scratch/avra-one")" "0 A" "work new: the lane stands and holds the first free Sprite" "$scratch/out"
+check "$(git -C "$scratch/avra-one" config --get core.hooksPath)" "tools/hooks" "work new: the lane's commits run the pre-commit hook" "$scratch/out"
 sh "$work" new two > "$scratch/out" 2>&1
 check "$? $(holder "$scratch/avra-two")" "0 B" "work new: the second lane holds the next one" "$scratch/out"
 

@@ -17,7 +17,7 @@
 # it from the branch on the lane's Sprite), it runs:
 #   - the keepers (`make keepers`, the keeper registry — the wasm target's
 #     proof among them)
-#   - `fmt --check` on the changed `.av`
+#   - `fmt --check` on the changed `.av` — the pre-commit hook's own check
 #   - `check <pkg> --baseline tools/idioms.baseline` on each affected package
 # `--no-keepers` is for a caller that already ran them (the gate's own
 # keepers jobs).
@@ -70,6 +70,13 @@ trunk() {
 worked() {
     { git diff --name-only --diff-filter=d "$1" -- '*.av'; git ls-files --others --exclude-standard -- '*.av'; } | sort -u
 }
+# A LANE'S TREE COMMITS THROUGH THE HOOK: run over the tree's own trunk, this is a lane's own worktree,
+# and a worktree whose commits skip `tools/hooks/pre-commit` let unchecked `.av` in — refused, saying
+# how to install it (`tools/work new` and `bind` do)
+if [ "$named" = 0 ] && [ "$(git config --get core.hooksPath 2> /dev/null)" != tools/hooks ]; then
+    echo "gate_changed: this worktree's commits run no pre-commit hook (core.hooksPath is not tools/hooks) — refused; \`git config core.hooksPath tools/hooks\` installs it" >&2
+    exit 1
+fi
 if [ "$named" = 0 ]; then
     read -r line on <<EOF
 $(trunk)
