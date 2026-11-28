@@ -3,6 +3,7 @@
 //! named type's shape; and the annotations its item writes. The crossing's own writer
 //! (`meta_of_type`) lays the value out, so the rows it's held to are the one contract.
 use core.{
+    FieldLack,
     module_path,
     literal_of,
     template_home,
@@ -449,9 +450,32 @@ fn literals_of(store: SyntaxArena, args: List<ExprId>) -> List<Literal>? {
 }
 
 /// The first `@mark` the declaration `d` wears, absent where it wears none.
-fn worn_by(engine: QueryEngine, d: DeclaredName, mark: string) -> WornMark? {
+fn worn_by(engine: QueryEngine, d: DeclaredName, mark: string) -> WornMark? { worn_all(engine, d, mark).first() }
+
+/// Every `@mark` the declaration `d` wears, in the order it wears them.
+fn worn_all(engine: QueryEngine, d: DeclaredName, mark: string) -> List<WornMark> {
     let marks = if item_held(engine, d.file, d.item) { file_marks(engine, d.file) } else { generated_marks(engine, d.file) }
-    marks.worn.find(it.name == d.name && it.item == d.item && it.mark == mark)
+    marks.worn.filter(it.name == d.name && it.item == d.item && it.mark == mark)
+}
+
+/// The mark a record wears for a field it leaves out on purpose.
+const LACKS_MARK: string = "lacks"
+
+/// What the declaration `d` leaves out on purpose: each `@lacks(field, why)` it wears, in order,
+/// where `lacks` names `@std/meta`'s in its file.
+export fn lacked_by(engine: QueryEngine, d: DeclaredName) -> List<FieldLack> {
+    if !meta_fn(engine, d.file, LACKS_MARK, LACKS_MARK) { return [] }
+    [lack! for m in worn_all(engine, d, LACKS_MARK) for lack in [lack_of(m)] if lack != null]
+}
+
+/// The field and the reason `@lacks` is written with, absent where they are no two texts.
+fn lack_of(m: WornMark) -> FieldLack? {
+    let lits? = m.literals else { return null }
+    if lits.length != 2 { return null }
+    match lits[0] {
+        .Text(field) -> match lits[1] { .Text(why) -> FieldLack { field: field, why: why }, rest -> null },
+        rest -> null,
+    }
 }
 
 /// Whether the `const` `d` instances the component `word` names.

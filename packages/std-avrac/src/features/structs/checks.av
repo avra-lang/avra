@@ -62,7 +62,7 @@ impl Checks for StructLit {
                     at < self.values.length &&
                     !cx.store.refused_elsewhere(self.values[at]) {
                     cx
-                        .literal_refused(self.values[at], LiteralFault.Unknown(self.name.of, f.of, fields))
+                        .literal_refused(self.values[at], unknown_field(cx, named, record, self.name.of, f.of))
                 }
             }
             cx.checked_free(self.values)
@@ -263,6 +263,14 @@ fn applied_by(expected: Expected, named: SignedType, params: int) -> SignedType?
     wanted with { nulls: 0 }
 }
 
+/// What a write of `field`, which the record `spelled` doesn't declare, breaks: a field it lacks on
+/// purpose, or one it doesn't have.
+fn unknown_field(cx: Checking, ty: SignedType, record: RecordShape, spelled: string, field: string) -> LiteralFault {
+    let fields = [f.name for f in record.fields]
+    let why? = cx.lacked(ty, field) else { return LiteralFault.Unknown(spelled, field, fields) }
+    LiteralFault.Lacked(spelled, field, why, fields)
+}
+
 /// The value `v` a `with` writes for the field `name` of `subject`, checked against that field: a
 /// field of `@std/meta`'s `Key` as a literal's is; a field its record doesn't have refused at the
 /// value, as a literal's is (`LiteralFault.Unknown`); a value of a subject no field is known of,
@@ -275,8 +283,7 @@ fn written(mut cx: Checking, subject: SignedType?, v: ExprId, name: string) {
     let field? = cx.field_of(held, name) else {
         let record = cx.record_of(held)
         if record != null && !cx.store.refused_elsewhere(v) {
-            cx
-                .literal_refused(v, LiteralFault.Unknown(held.spelled(), name, [f.name for f in record!.fields]))
+            cx.literal_refused(v, unknown_field(cx, held, record!, held.spelled(), name))
         }
         let _ = cx.check(v, Expected.Free)
         return

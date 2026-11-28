@@ -5,6 +5,7 @@ use features.{NodeVariant, meta_moved_from}
 use features.annotations.{meta_foreign}
 use diagnostics.{Diag, said_as}
 use core.{
+    FieldLack,
     MethodParts,
     flatten,
     FieldSeat,
@@ -319,6 +320,16 @@ fn record_shape(engine: QueryEngine, ty: SignedType) -> RecordShape? {
     }
 }
 
+/// What the record `ty` is leaves out on purpose; none for a type that isn't a record the program
+/// declares.
+fn record_lacks(engine: QueryEngine, ty: SignedType) -> List<FieldLack> {
+    let at? = declared_at(ty with { nulls: 0 }) else { return [] }
+    let d? = file_declares_named(engine, at.file, at.name)
+        .names
+        .find(it.name == at.name && it.kind == ItemKind.Record) else { return [] }
+    lacked_by(engine, d)
+}
+
 /// Whether `ty` is a record its package marks `@owns`.
 fn marked_owner(engine: QueryEngine, ty: SignedType) -> bool {
     let at? = declared_at(ty) else { return false }
@@ -402,6 +413,7 @@ fn program_answered(
         declared_defaults: (f: SourceFileAddress, n: string) -> fn_defaults(engine, f, n) ?? [],
         written: (written: TypeRef, home: string?) -> signed_from(signing, home, written),
         type_named: (n: string, home: string?) -> named_from(signing with { writer: null }, home, n),
+        lacked: (ty: SignedType, field: string) -> record_lacks(engine, ty).find(it.field == field)?.why,
         record_of: (ty: SignedType) -> kept_answer(
             memos,
             memos.records,

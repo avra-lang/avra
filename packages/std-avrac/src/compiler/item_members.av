@@ -68,6 +68,7 @@ use features.{
 use features.lists.{list_spreads_absent}
 use features.maps.{map_spreads_absent}
 use features.structs.{
+    lacked_read,
     carried_into,
     field_overwritten,
     carried_otherwise,
@@ -238,6 +239,8 @@ enum Miss {
     ChainMethod(owner: string, name: string, means: string, lo: int, hi: int)
     /// `marks` asked after what names no declared fn.
     MarkedUnnamed
+    /// A field read of `name` on `record`, declaring `fields`, which leaves it out on purpose for `why`.
+    Lacked(record: string, name: string, why: string, fields: List<string>)
 }
 
 impl Miss {
@@ -1348,6 +1351,8 @@ fn field_miss(engine: QueryEngine, subject: SignedType?, name: string, at: Span?
     let s? = declared_value(subject) else { return [] }
     let fields? = fields_of_record(engine, s) else { return [] }
     if fields.contains(name) || property_type(engine, s, name) != null || home_unread(engine, s) { return [] }
+    let why = record_lacks(engine, s).find(it.field == name)?.why
+    if why != null { return [MissPlaced { at: at, miss: Miss.Lacked(s.spelled(), name, why!, fields) }] }
     [MissPlaced { at: at, miss: Miss.Field(s.spelled(), name, fields) }]
 }
 
@@ -2031,6 +2036,16 @@ fn static_arities_missed(view: ItemView) -> List<Found> {
 
 fn withs_missed(view: ItemView) -> List<Found> { misses_seen_in(view, (m: Miss) -> match m { .WithUnstructured(found) -> [found], rest -> [] }) }
 
+fn fields_lacked(view: ItemView) -> List<Found> {
+    misses_seen_in(
+        view,
+        (m: Miss) -> match m {
+            .Lacked(record, name, why, fields) -> [record, name, why].concat(fields),
+            rest -> [],
+        },
+    )
+}
+
 fn chains_missed(view: ItemView) -> List<Found> {
     misses_seen_in(
         view,
@@ -2321,6 +2336,16 @@ export law field_unknown {
     voice: field_words
     witness: "type P = { x: int }\n\nfn g(p: P) -> int { p.y }\n"
 }
+
+/// a field read names a field the record doesn't leave out on purpose
+export law field_lacked {
+    kind: "type.unknown_prop"
+    reads_view: fields_lacked
+    voice: lacked_words
+    witness: "use @std.meta.{lacks}\n\n@lacks(\"y\", \"kept apart\")\ntype P = { x: int }\n\nfn g(p: P) -> int { p.y }\n"
+}
+
+fn lacked_words(a: List<string>) -> Voice { lacked_read(a[0], a[1], a[2], a.drop(3)) }
 
 /// a method call names a method the declared type has
 export law method_unknown {

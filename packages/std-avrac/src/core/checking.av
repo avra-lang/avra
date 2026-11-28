@@ -47,6 +47,9 @@ export type CheckedProgram = {
     /// spells it) before where the body stands.
     type_named: fn(string, string?) -> SignedType,
     record_of: fn(SignedType) -> RecordShape?,
+    /// Why the record a type is leaves the field a name names out on purpose; absent where it
+    /// doesn't. Asked only of a write the record declares no field for.
+    lacked: fn(SignedType, string) -> string?,
     /// The shape a named type stands over, bound to its arguments; absent for any other type.
     named_of: fn(SignedType) -> SignedType?,
     /// The shape a named type is written over, one name down: what a value crossing into it is.
@@ -144,6 +147,10 @@ export type FilledByName = { f: SignedType, values: List<ExprId>, seats: List<in
 /// A record as typing reads it: how many type parameters it has, and its fields, each typed under
 /// them.
 export type RecordShape = { params: int, fields: List<FieldSeat>, defaults: List<SignedType?> = [], names: List<string> = [] }
+
+/// A field a record leaves out on purpose (`@lacks`), and the reason a read or a write of it hears.
+@derive(Saved)
+export type FieldLack = { field: string, why: string }
 
 /// A record's field: its name, its type when it's written, whether it's a `state` field, whose slot
 /// holds the cell its value lives in, whether that cell is the place its writer names — a
@@ -839,6 +846,8 @@ export enum LiteralFault {
     Fieldless(name: string, of: string)
     /// It names `name`, a type the language owns, which no record literal makes.
     Owned(name: string)
+    /// It writes `field`, which `record`, declaring `fields`, leaves out on purpose, for `why`.
+    Lacked(record: string, field: string, why: string, fields: List<string>)
 }
 
 /// Why a `for` walks nothing of its subject.
@@ -3235,6 +3244,9 @@ impl Checking {
 
     /// The record `ty` is, absent when it's none.
     fn record_of(ty: SignedType) -> RecordShape? { (self.program.record_of)(ty) }
+
+    /// Why the record `ty` is leaves `field` out on purpose; absent where it doesn't.
+    fn lacked(ty: SignedType, field: string) -> string? { (self.program.lacked)(ty, field) }
 
     /// Whether the call at `e` of `callee`, a fn of `f` whose first `skip` seats are pinned, names its
     /// seats as no call of it can: an argument naming no seat, a seat written twice, or a seat with no

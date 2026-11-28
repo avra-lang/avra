@@ -9,6 +9,7 @@
 //! naming its index as its element, and a `collect enum` that gathers nothing. Read off a written
 //! item's syntax and what its names declare.
 use core.{
+    FieldLack,
     At,
     CollectEnumParts,
     CompClause,
@@ -94,7 +95,13 @@ use features.fns.{
     rest_not_last,
     rest_unlisted,
 }
-use features.structs.{literal_targs_counted, literal_targs_ungeneric}
+use features.structs.{
+    enum_lacks_said,
+    lacks_declared_said,
+    lacks_twice_said,
+    literal_targs_counted,
+    literal_targs_ungeneric,
+}
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryEngine}
 use @std.text.{parse_int, text_before}
@@ -1198,6 +1205,78 @@ export law case_named_twice {
     voice: again_words
     witness: "spec \"s\" {\n    given \"g\" {\n        then \"t\" { true }\n        then \"t\" { true }\n    }\n}\n"
 }
+
+/// What the declaration named `name`, of `kind`, in `view`'s file leaves out on purpose.
+fn lacks_worn(view: ItemView, name: string, kind: ItemKind) -> List<FieldLack> {
+    let d? = file_declares_named(view.engine, view.file, name)
+        .names
+        .find(it.name == name && it.kind == kind) else { return [] }
+    lacked_by(view.engine, d)
+}
+
+/// A record of a written item that leaves fields out on purpose: where it stands, its name, its
+/// fields, and what it lacks, in the order it wears them.
+type LackingRecord = { at: Span?, name: string, fields: List<string>, lacking: List<FieldLack> }
+
+/// Each record of the written item `view` that wears `@lacks`.
+fn lacking_records(view: ItemView) -> List<LackingRecord> {
+    let item = view.item
+    [LackingRecord {
+        at: item.store.stmt_span(s),
+        name: n!,
+        fields: [f.name for f in sig!.fields],
+        lacking: ls,
+    } for s in item.stmts for n in [item.store.struct_parts(s)?.name] if n != null for sig in [record_signature(view.engine, view.file, n!)] if sig != null for ls in [lacks_worn(view, n!, ItemKind.Record)] if !ls.is_empty()]
+}
+
+/// The lack `l` of the record `r`, found where `r` stands.
+fn lack_found(r: LackingRecord, l: FieldLack) -> Found { Found { at: r.at, args: [r.name, l.field] } }
+
+/// Each field a record of the written item `view` lacks and also declares.
+fn lacks_declared_found(view: ItemView) -> List<Found> {
+    [lack_found(r, l) for r in lacking_records(view) for l in r.lacking if r.fields.contains(l.field)]
+}
+
+/// Each field a record of the written item `view` lacks a second time.
+fn lacks_twice_found(view: ItemView) -> List<Found> {
+    [lack_found(r, l) for r in lacking_records(view) for j, l in r.lacking if r.lacking.take(j).any(it.field == l.field)]
+}
+
+/// Each enum of the written item `view` that wears `@lacks`.
+fn enum_lacks_found(view: ItemView) -> List<Found> {
+    let item = view.item
+    [Found { at: item.store.stmt_span(s), args: [] } for s in item.stmts for n in [item.store.enum_parts(s)?.name] if n != null && !lacks_worn(view, n!, ItemKind.Enum).is_empty()]
+}
+
+/// a record lacks no field it declares
+export law lacks_undeclared {
+    kind: "type.lacks"
+    reads_view: lacks_declared_found
+    voice: lacks_declared_words
+    witness: "use @std.meta.{lacks}\n\n@lacks(\"x\", \"kept apart\")\ntype P = { x: int }\n"
+}
+
+fn lacks_declared_words(a: List<string>) -> Voice { lacks_declared_said(a[0], a[1]) }
+
+/// a record lacks each field once
+export law lacks_once {
+    kind: "type.lacks"
+    reads_view: lacks_twice_found
+    voice: lacks_twice_words
+    witness: "use @std.meta.{lacks}\n\n@lacks(\"y\", \"kept apart\")\n@lacks(\"y\", \"again\")\ntype P = { x: int }\n"
+}
+
+fn lacks_twice_words(a: List<string>) -> Voice { lacks_twice_said(a[0], a[1]) }
+
+/// only a record lacks a field
+export law lacks_a_record {
+    kind: "type.lacks"
+    reads_view: enum_lacks_found
+    voice: enum_lacks_words
+    witness: "use @std.meta.{lacks}\n\n@lacks(\"y\", \"kept apart\")\nenum K { A, B }\n"
+}
+
+fn enum_lacks_words(_a: List<string>) -> Voice { enum_lacks_said() }
 
 /// a record names each field once
 export law field_twice {

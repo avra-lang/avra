@@ -33,6 +33,7 @@ use core.{
 }
 use diagnostics.{refusal, Diag, Voice, said_as, unread_behind}
 use features.fns.{param_typeless}
+use features.structs.{enum_lacks_said, lacks_declared_said, lacks_twice_said}
 use features.{
     TypeCx,
     slot_help,
@@ -364,44 +365,11 @@ impl TypeCx {
         }
     }
 
-    fn enum_lacks(s: StmtId) {
-        self
-            .emit(
-                refusal(
-                    "type.lacks",
-                    self.stmt_loc(s),
-                    "an enum has no fields to lack",
-                    "`@lacks` on an enum",
-                    "`@lacks` marks a record",
-                ),
-            )
-    }
+    fn enum_lacks(s: StmtId) { self.emit(said_as("type.lacks", self.stmt_loc(s), enum_lacks_said())) }
 
-    fn lacks_twice(s: StmtId, owner: string, field: string) {
-        self
-            .emit(
-                refusal(
-                    "type.lacks",
-                    self.stmt_loc(s),
-                    "`${owner}` lacks `${field}` twice",
-                    "a second `@lacks(\"${field}\", …)` here",
-                    "keep one reason",
-                ),
-            )
-    }
+    fn lacks_twice(s: StmtId, owner: string, field: string) { self.emit(said_as("type.lacks", self.stmt_loc(s), lacks_twice_said(owner, field))) }
 
-    fn lacks_declared(s: StmtId, owner: string, field: string) {
-        self
-            .emit(
-                refusal(
-                    "type.lacks",
-                    self.stmt_loc(s),
-                    "`${owner}` cannot lack `${field}` — it declares it",
-                    "`@lacks(\"${field}\", …)` here",
-                    "drop the field, or the `@lacks`",
-                ),
-            )
-    }
+    fn lacks_declared(s: StmtId, owner: string, field: string) { self.emit(said_as("type.lacks", self.stmt_loc(s), lacks_declared_said(owner, field))) }
 
     fn non_identity_field(s: StmtId, field: string, found: TypeId) {
         self

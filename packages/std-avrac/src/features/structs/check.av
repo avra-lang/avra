@@ -333,6 +333,42 @@ fn unknown_field(mut cx: TypeCx, v: ExprId, name: string, f: string, sig: Struct
 }
 
 /// What a record literal is refused for, as `fault` says.
+/// `@lacks` naming `field`, which `owner` declares.
+export fn lacks_declared_said(owner: string, field: string) -> Voice {
+    Voice {
+        message: "`${owner}` cannot lack `${field}` — it declares it",
+        label: "`@lacks(\"${field}\", …)` here",
+        help: "drop the field, or the `@lacks`",
+    }
+}
+
+/// A second `@lacks` naming `field` on `owner`.
+export fn lacks_twice_said(owner: string, field: string) -> Voice {
+    Voice {
+        message: "`${owner}` lacks `${field}` twice",
+        label: "a second `@lacks(\"${field}\", …)` here",
+        help: "keep one reason",
+    }
+}
+
+/// `@lacks` on an enum.
+export fn enum_lacks_said() -> Voice {
+    Voice {
+        message: "an enum has no fields to lack",
+        label: "`@lacks` on an enum",
+        help: "`@lacks` marks a record",
+    }
+}
+
+/// A read of `field`, which `record`, declaring `fields`, leaves out on purpose, for `why`.
+export fn lacked_read(record: string, field: string, why: string, fields: List<string>) -> Voice {
+    Voice {
+        message: lacks_voice(record, field, why),
+        label: "read here",
+        help: fields_named(fields),
+    }
+}
+
 export fn literal_fault(fault: LiteralFault) -> Voice {
     match fault {
         .Unknown(record, field, fields) -> Voice {
@@ -354,6 +390,11 @@ export fn literal_fault(fault: LiteralFault) -> Voice {
             message: "`${name}` is a type the language owns; a record literal can't make one",
             label: "built here",
             help: "write a value of `${name}` as its own literal, or take the one a verb answers",
+        },
+        .Lacked(record, field, why, fields) -> Voice {
+            message: lacks_voice(record, field, why),
+            label: "written here",
+            help: fields_named(fields),
         },
     }
 }
