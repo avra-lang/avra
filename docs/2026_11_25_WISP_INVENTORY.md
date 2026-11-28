@@ -11,8 +11,8 @@
 | Surface | Total | Was (d7cd84d9) | By class | By action |
 |---|---|---|---|---|
 | Make targets | 143 | 160 | internal 138, user 5 | merge 121, keep 14, delete 5, delete, with work 2, delete (S1) 1 |
-| tools/ entries | 270 | 299 | internal 270 | merge 256, delete 5, delete, with work 5, keep 4 |
-| `AVRA_*` names | 285 | 270 | internal 161, not config 80, user 44 | merge 157, — 80, keep 44, delete 4 |
+| tools/ entries | 267 | 299 | internal 267 | merge 253, delete 5, delete, with work 5, keep 4 |
+| `AVRA_*` names | 279 | 270 | internal 155, not config 80, user 44 | merge 151, — 80, keep 44, delete 4 |
 | cli command files | 42 | 42 | user 25, internal 17 | keep 24, merge 18 |
 
 Not counted: the 100 `AVRA_SET_*` macros, which `wisp tree_settings` generates into `runtime/avra_settings.h` from the one declaration (packages/wisp/src/settings/declared.av). They are projections, never names a person sets.
@@ -23,18 +23,18 @@ Not counted: the 100 `AVRA_SET_*` macros, which `wisp tree_settings` generates i
 |---|---|
 | oracle | 138 |
 | keepers | 112 |
-| a flag of its verb | 86 |
+| a flag of its verb | 80 |
 | settings.debug | 68 |
 | cost | 45 |
 | census | 30 |
 | gate | 21 |
 | tree | 14 |
-| seed | 8 |
+| seed | 7 |
 | fixtures | 7 |
 | shim flag | 7 |
 | idioms | 6 |
 | voices | 5 |
-| work | 3 |
+| work | 1 |
 | dies with its callers | 1 |
 | avra | 1 |
 
@@ -45,6 +45,7 @@ A running list: each entry is gone from the tree, named with the train that remo
 - **train41 (f43cefa0): dead Python and its gates:** `tools/cost_ratchet.py`, `tools/digest_diff.py`, `tools/parse_diff.py`, `tools/program_findings.py`, `tools/program_findings_gate.sh`, `tools/term_width.py`, `AVRA_LEAVES`.
 - **train44 (f6ec64b8): keepers pruned, the PR flow retired:** `make cited`, `make http-cites`, `make families-left`, `make speed-note`, `make hooks-released`, `make whole-reads`, `make whole-reads-accept`, `make ci-verdict`, `make pr-watcher`, `make pipeline-doc`, `make tail-status`, `make pipeline-status`, `make codecs`, `make workflows-yaml`, `tools/batch.sh`, `tools/batch_test.sh`, `tools/cited.allow`, `tools/cited.py`, `tools/families.ceiling`, `tools/footprint.baseline`, `tools/http_cites.py`, `tools/pipeline_doc.allow`, `tools/pipeline_doc.py`, `tools/pipeline_status.py`, `tools/pr_watcher.py`, `tools/ratchet_rows.py`, `tools/speed.budget`, `tools/speed_ratchet.py`, `tools/tail_status.sh`, `tools/wasm-size.baseline`, `tools/whole_reads.baseline`, `tools/whole_reads.py`, `tools/witness_work_wait.sh`, `tools/work.budget`, `tools/work_ratchet.py`, `tools/workflows_yaml.py`, `AVRA_QUEUE_TOKEN`, `AVRA_WAIT_POLL`, `AVRA_WAIT_SECONDS`, `AVRA_WATCHER_STATE`.
 - **train46 (7214a623): the store attacks became cli specs:** `make ahead-edit-attack`, `make held-store-attack`, `make heir-save-attack`, `make share-merge-attack`, `make beside-attack`, `make wave-share-attack`, `tools/ahead_edit_attack.sh`, `tools/beside_attack.sh`, `tools/heir_save_attack.sh`, `tools/held_store_attack.sh`, `tools/share_merge_attack.sh`, `tools/wave_share_attack.sh`.
+- **ladder and reclaim as wisp verbs:** `tools/ladder.sh`, `tools/reclaim.sh`, `tools/reclaim_test.sh`, `AVRA_LADDER_BASE`, `AVRA_LADDER_S`, `AVRA_LAND_BATCH_WT`, `AVRA_LAND_LOCK`, `AVRA_RECLAIM_FREE_GB`, `AVRA_RECLAIM_SCRIPT` — now `./wisp ladder`, `ladder_clean` and `reclaim`, their values typed flags.
 - **train48 (d29c9ed2): moved to packages/wisp, ./wisp:** `make tools-suite`, `tools/avra.toml`, `tools/avra_tools.sh`, `tools/src/`, `tools/tools_key.sh`.
 - **wisp defects (ported):** `tools/defects.py`, `tools/defects_previous.py`, `AVRA_DEFECT_STALL`, `AVRA_DEFECT_TIMEOUT`, `AVRA_DEFECT_WARM`, `AVRA_DEFECT_WARM_CLOCK`, `AVRA_DEFECT_WORKERS` (now flags).
 - **wisp release (ported):** `tools/compiler_release.py` — publish is the binary's, the reads are the shim's.
@@ -298,7 +299,6 @@ A running list: each entry is gone from the tree, named with the train that remo
 | jspi_node.sh | wasm-check.sh, wasm-host-check.sh, wasm-tasks-mutations.sh | internal | merge: keepers |  |
 | keeper_planted.sh | gate.sh | internal | merge: keepers | new since d7cd84d9 |
 | keepers_loop.sh | Makefile | internal | merge: gate |  |
-| ladder.sh | action.yml, Makefile, ci_invariants.py +2 | internal | merge: seed |  |
 | layer_sites_attack.sh | gate.sh | internal | merge: oracle |  |
 | layers.py | Makefile | internal | merge: tree |  |
 | layout-oracle/ | checks.yml, Makefile, solve.av +7 | internal | merge: oracle |  |
@@ -343,8 +343,6 @@ A running list: each entry is gone from the tree, named with the train that remo
 | queue-witness/ | gate.sh | internal | merge: oracle |  |
 | read_lists.ceiling | read_lists.py | internal | merge: cost |  |
 | read_lists.py | Makefile, read_lists.ceiling | internal | merge: cost |  |
-| reclaim.sh | reclaim_test.sh | internal | merge: work reclaim |  |
-| reclaim_test.sh | none | internal | merge: work reclaim |  |
 | reformat_lane.sh | none | internal | delete | a one-time layout migration, done |
 | root_listing_attack.sh | gate.sh | internal | merge: oracle |  |
 | run_wasm.mjs | witness_program_refusal.sh | internal | merge: oracle |  |
@@ -582,12 +580,8 @@ A running list: each entry is gone from the tree, named with the train that remo
 | AVRA_KEY | config_adversarial_test.av | internal | merge: wisp flag | new since d7cd84d9 |
 | AVRA_KILL_AFTER_PLACE | avra_settings.h, declared.av, named.av +2 | internal | merge: settings.debug | a switch the compiler reads; an oracle reading sets it |
 | AVRA_KQUEUE | avra_fiber.c | not config | — | a C macro, enum or guard |
-| AVRA_LADDER_BASE | Makefile, ladder.sh | internal | merge: wisp flag | read by tools alone |
-| AVRA_LADDER_DIR | Makefile, ladder.sh, sprite-remote.sh +1 | internal | merge: wisp flag | read by tools alone |
-| AVRA_LADDER_REPO | ladder.sh, sprite-remote.sh, sprite_remote_test.sh | internal | merge: wisp flag | read by tools alone |
-| AVRA_LADDER_S | Makefile, ladder.sh | internal | merge: wisp flag | read by tools alone |
-| AVRA_LAND_BATCH_WT | reclaim.sh, reclaim_test.sh | internal | merge: wisp flag | read by tools alone |
-| AVRA_LAND_LOCK | reclaim.sh, reclaim_test.sh | internal | merge: wisp flag | read by tools alone |
+| AVRA_LADDER_DIR | sprite-remote.sh, sprite_remote_test.sh | internal | merge: wisp flag | read by tools alone |
+| AVRA_LADDER_REPO | sprite-remote.sh, sprite_remote_test.sh | internal | merge: wisp flag | read by tools alone |
 | AVRA_LAND_SPEED_OK | speed.baseline | internal | merge: wisp flag | read by tools alone |
 | AVRA_LEG_PROBE | refuse_eval_test.av | not config | — | a test fixture's name |
 | AVRA_LIGHT | avra, disk_host.av, stage.av | internal | merge: shim flag | the shim and the compiler agree by argv, not ambient env |
@@ -653,8 +647,6 @@ A running list: each entry is gone from the tree, named with the train that remo
 | AVRA_READS_DIR | avra_settings.h, declared.av, named.av +2 | not config | — | a test fixture's name |
 | AVRA_READS_PHASE | avra_settings.h, declared.av, named.av +2 | not config | — | a test fixture's name |
 | AVRA_REATTACH_S | work, work_test.sh | internal | merge: wisp flag | read by tools alone |
-| AVRA_RECLAIM_FREE_GB | reclaim.sh, reclaim_test.sh | internal | merge: wisp flag | read by tools alone |
-| AVRA_RECLAIM_SCRIPT | reclaim_test.sh | internal | merge: wisp flag | read by tools alone |
 | AVRA_RELEASE_API | wisp (shim) | internal | merge: wisp flag | the shim's reads; `wisp release publish --api` |
 | AVRA_REMOTE_SCRIPT | sprite-lib.sh, sprite-remote.sh, sprite_remote_test.sh +2 | internal | merge: wisp flag | read by tools alone |
 | AVRA_RT |  | not config | — | a C macro, enum or guard |

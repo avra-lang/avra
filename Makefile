@@ -596,18 +596,19 @@ compiler-files:
 # standing compiler can do better, and a tree too new for every published one
 # still builds; with rungs named, it is their product too.
 # RUNGS are the tree's `Rung:` commits, oldest first (tools/rungs.sh): each is
-# built by the product of the one before (tools/ladder.sh), starting from the
+# built by the product of the one before (`./wisp ladder`), starting from the
 # standing compiler or the seed as linked, and HEAD by the last; a laddered
 # tree never falls back to the seed, which cannot read a rung. The last rung's
 # product stays at build/avra-ladder. LADDER_BASE is the base each rung is
-# replayed on (tools/ladder.sh's AVRA_LADDER_BASE). GEN_BOUND bounds each build in seconds
-# (tools/bounded.sh names the cause), LADDER_BOUND the whole ladder; STORE_ASIDE
+# replayed on. GEN_BOUND bounds each build in seconds (tools/bounded.sh names
+# the cause), LADDER_BOUND the whole ladder, LADDER_DIR its scratch; STORE_ASIDE
 # is where an older compiler's store goes before the bootstrap, since a store is
 # one compiler's.
 RUNGS ?=
 LADDER_BASE ?=
 GEN_BOUND ?=
 LADDER_BOUND ?= 900
+LADDER_DIR ?= $(or $(RUNNER_TEMP),/tmp)/ladder
 STORE_ASIDE ?=
 GENS ?= 2
 BOUNDED = $(if $(GEN_BOUND),sh tools/bounded.sh $(GEN_BOUND) )
@@ -619,10 +620,10 @@ compiler:
 	  [ -z "$(strip $(RUNGS))" ] || cp build/avra build/avra-ladder; \
 	elif [ -n "$(strip $(RUNGS))" ]; then \
 	  [ -x build/avra ] || $(MAKE) -s recover || { echo "compiler: the ladder has no start — none stands and the seed did not link"; exit 1; }; \
-	  product=$$(AVRA_LADDER_BASE=$(LADDER_BASE) AVRA_LADDER_S=$(LADDER_BOUND) sh tools/ladder.sh build/avra $(RUNGS)) \
+	  product=$$(./wisp ladder build/avra $(RUNGS) --base="$(LADDER_BASE)" --seconds=$(LADDER_BOUND) --dir="$(LADDER_DIR)") \
 	    || { echo "compiler: the ladder failed — a rung did not build with the compiler of the rung before it"; exit 1; }; \
 	  cp "$$product" build/avra-ladder && cp "$$product" build/avra.next && mv -f build/avra.next build/avra; \
-	  sh tools/ladder.sh --clean "$${AVRA_LADDER_DIR:-$${RUNNER_TEMP:-/tmp}/ladder}"; \
+	  ./wisp ladder_clean --dir="$(LADDER_DIR)"; \
 	  gens || { echo "compiler: the ladder's product did not build this tree — no seed can read a rung"; exit 1; }; \
 	elif [ -x build/avra ] && gens; then :; else \
 	  if [ -n "$(STORE_ASIDE)" ] && [ -d .avra-cache ]; then mv .avra-cache "$(STORE_ASIDE)"; fi; \

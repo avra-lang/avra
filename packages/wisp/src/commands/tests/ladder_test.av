@@ -1,0 +1,136 @@
+// The ladder over a repository of its own: every repository, worktree and scratch directory here is
+// made fresh under `mktemp -d`, never the tree's.
+use @std.io.{exists, read_text}
+use @std.process.{cmd, inherited, tool}
+use commands.{LadderFlags, cleaned, climbed}
+
+/// A fixture's repository and the commits it holds: two rungs that copy the compiler they are handed
+/// and stamp it, a rung that does not build, a rung begun before its base moved, and that base.
+type Fixture = { root: string, repo: string, start: string, one: string, two: string, broken: string, stale: string, base: string }
+
+/// A shell line run in `dir`, its stdout trimmed; "" when it failed.
+fn shell(dir: string, line: string) -> string {
+    let sh = tool("sh") catch { return "" }
+    let o = (cmd(sh, ["-c", line]) with { cwd: dir, env: inherited() }).run() catch { return "" }
+    o.stdout.trim()
+}
+
+/// A commit of everything in the fixture's repository, with a `Rung:` trailer when `why` is not
+/// empty: its sha.
+fn committed(repo: string, subject: string, why: string) -> string {
+    let trailer = if why == "" { "" } else { "\n\nRung: ${why}" }
+    shell(
+        repo,
+        "git add -A && git -c user.name=t -c user.email=t@t commit -q -m '${subject}${trailer}' && git rev-parse HEAD",
+    )
+}
+
+fn fixture() -> Fixture {
+    let root = shell("/tmp", "mktemp -d")
+    let repo = "${root}/repo"
+    let _ = shell(
+        root,
+        "git init -q -b main repo && printf '#!/bin/sh\\nstart\\n' > start && chmod +x start",
+    )
+    let _ = shell(
+        repo,
+        "printf 'avra:\\n\\t@mkdir -p build\\n\\t@{ cat build/avra; echo built-by-previous; } > build/avra.next && chmod +x build/avra.next && mv build/avra.next build/avra\\n' > Makefile && echo one > rung",
+    )
+    let one = committed(repo, "rung one", "one")
+    let _ = shell(repo, "echo two > rung")
+    let two = committed(repo, "rung two", "two")
+    let _ = shell(repo, "printf 'avra:\\n\\t@exit 1\\n' > Makefile")
+    let broken = committed(repo, "broken", "broken")
+    let _ = shell(
+        repo,
+        "printf 'avra:\\n\\t@test -f moved && mkdir -p build && { cat build/avra; echo built-on-base; } > build/avra.next && chmod +x build/avra.next && mv build/avra.next build/avra\\n' > Makefile",
+    )
+    let _ = committed(repo, "a build that needs the file the base adds", "")
+    let _ = shell(repo, "git checkout -q -b stale && echo stale > rung")
+    let stale = committed(repo, "a rung begun before the base moved", "stale")
+    let _ = shell(repo, "git checkout -q main && echo here > moved")
+    let base = committed(repo, "the base moves", "")
+    Fixture {
+        root: root,
+        repo: repo,
+        start: "${root}/start",
+        one: one,
+        two: two,
+        broken: broken,
+        stale: stale,
+        base: base,
+    }
+}
+
+fn at(f: Fixture, dir: string, base: string) -> LadderFlags {
+    LadderFlags { base: base, dir: "${f.root}/${dir}", repo: f.repo, seconds: 120 }
+}
+
+/// How many times a product was stamped by a rung's build.
+fn stamps(path: string, word: string) -> int { (read_text(path) catch "").split(word).length - 1 }
+
+fn registered(f: Fixture, dir: string) -> bool { shell(f.repo, "git worktree list").contains("${f.root}/${dir}") }
+
+spec "wisp ladder — each rung built by the one before" {
+    given "two rungs" {
+        then "each product is built by the one before, from the start" {
+            let f = fixture()
+            match climbed(f.start, [f.one, f.two], at(f, "work", "")) {
+                .Ok(product) -> stamps(product, "built-by-previous") == 2,
+                .Err(_) -> false,
+            }
+        }
+        then "a built ladder's scratch stands until its caller cleans it, and then nothing is left" {
+            let f = fixture()
+            let built = climbed(f.start, [f.one], at(f, "work", "")) is .Ok &&
+                exists("${f.root}/work")
+            let gone = cleaned(at(f, "work", "")) is .Ok &&
+                !exists("${f.root}/work") &&
+                !registered(f, "work")
+            built && gone
+        }
+    }
+    given "a rung that does not build" {
+        then "the ladder names the rung and stops" {
+            let f = fixture()
+            match climbed(f.start, [f.broken], at(f, "work", "")) {
+                .Ok(_) -> false,
+                .Err(why) -> why.contains("rung 1 did not build"),
+            }
+        }
+        then "and leaves no scratch behind" {
+            let f = fixture()
+            let _ = climbed(f.start, [f.broken], at(f, "work", ""))
+            !exists("${f.root}/work") && !registered(f, "work")
+        }
+    }
+    given "a base" {
+        then "a rung begun before the base moved does not build on its own tree" {
+            let f = fixture()
+            climbed(f.start, [f.stale], at(f, "work", "")) is .Err
+        }
+        then "and is replayed on the base, where it builds" {
+            let f = fixture()
+            match climbed(f.start, [f.stale], at(f, "work", f.base)) {
+                .Ok(product) -> stamps(product, "built-on-base") == 1,
+                .Err(_) -> false,
+            }
+        }
+        then "a rung the base holds is no rung: the product is the start" {
+            let f = fixture()
+            match climbed(f.start, [f.one], at(f, "work", f.base)) {
+                .Ok(product) -> product.ends_with("/start") && stamps(product, "built") == 0,
+                .Err(_) -> false,
+            }
+        }
+    }
+    given "a bound" {
+        then "a ladder with no seconds left builds no rung" {
+            let f = fixture()
+            match climbed(f.start, [f.one], at(f, "work", "") with { seconds: 0 }) {
+                .Ok(_) -> false,
+                .Err(why) -> why.contains("bound passed before rung 1"),
+            }
+        }
+    }
+}

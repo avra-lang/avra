@@ -393,7 +393,7 @@ compiler() {
     rungs_read
     if [ -n "$rungs" ]; then
         # A RUNG IS A TREE THE STANDING COMPILER CANNOT READ: each is built by the product of the one
-        # before (`make compiler`, tools/ladder.sh), as a pull request's check builds it, and HEAD's
+        # before (`make compiler`, `./wisp ladder`), as a pull request's check builds it, and HEAD's
         # generation 1 by the last
         echo "fact rungs $(echo $rungs | wc -w) over $(printf '%.8s' "$rung_base"): $rungs" >>"$out/rows"
         row compiler-ladder env AVRA_STD_ANSWERS=0 make -s compiler RUNGS="$rungs" LADDER_BASE="$rung_base" LADDER_BOUND=1800 GENS=1 || return 1
