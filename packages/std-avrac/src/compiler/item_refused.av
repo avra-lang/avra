@@ -86,6 +86,7 @@ use features.{
     overshown_seat,
 }
 use features.fns.{
+    provided_unnamed,
     cellless_seat,
     fn_value_pinned,
     name_uncallable,
@@ -2821,9 +2822,39 @@ fn pins_miscounted(view: ItemView) -> List<Found> {
 /// A call leaving a type parameter of its fn filled by nothing: the parameter, the fn.
 fn params_unpinned(view: ItemView) -> List<Found> {
     flatten(
-        [match r.seat { .Unpinned(param, callee) -> found_saying(r, [param, callee]), _ -> [] } for r in refused_seen(view)],
+        [match r.seat {
+            .Unpinned(param, callee) -> if names_provided(view, callee) { [] } else { found_saying(r, [param, callee]) },
+            _ -> [],
+        } for r in refused_seen(view)],
     )
 }
+
+/// A `provided` call its kind pins nothing of: `@std/meta`'s own fn, whose kind is written or named
+/// by the seat.
+fn provided_unnamed_calls(view: ItemView) -> List<Found> {
+    flatten(
+        [match r.seat {
+            .Unpinned(_, callee) -> if names_provided(view, callee) { found_saying(r, []) } else { [] },
+            _ -> [],
+        } for r in refused_seen(view)],
+    )
+}
+
+/// Whether `callee`, read in the file `view` shows, is `@std/meta`'s `provided`.
+fn names_provided(view: ItemView, callee: string) -> bool { meta_fn(view.engine, view.file, callee, PROVIDED) }
+
+/// The fn of `@std/meta` that reads a file of the package into a kind.
+const PROVIDED: string = "provided"
+
+/// `provided` is told the kind it reads a file into
+export law provided_names_its_kind {
+    kind: "type.provided_kind"
+    reads_view: provided_unnamed_calls
+    voice: provided_kind_words
+    witness: "use @std.meta.{provided, Provider}\n\ntype K = { n: int }\n\nimpl Provider for K {\n    static fn provide(path: string, octets: Bytes, digest: string) -> K? { null }\n}\n\nconst A = provided(\"data/side.txt\")\n"
+}
+
+fn provided_kind_words(_a: List<string>) -> Voice { provided_unnamed() }
 
 /// A bare `null` in a seat naming a type parameter nothing fills: the fn, the seat's place, what it wants.
 fn nulls_unpinning(view: ItemView) -> List<Found> {
