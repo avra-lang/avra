@@ -42,6 +42,18 @@ refreshed() {
     age
     [ -n "$why" ] || return 0
     [ "$(uname -s)" = Linux ] && [ -f wisp ] && [ -n "$base" ] || return 1
+    # THE LANDED PROGRAM'S OWN COMPILER, republished at every landing as the release `gate-builder`: taken
+    # when it was built from this tree's base, and laid down only where its compiler source is the tree's
+    if [ -f tools/gate.sh ]; then
+        got=$(mktemp)
+        if curl -fsSL --retry 3 --max-time 120 -o "$got" https://github.com/avra-lang/avra/releases/download/gate-builder/compiler.tar.gz 2> /dev/null &&
+            [ "$(tar -xzOf "$got" build/.avra-built-from 2> /dev/null | cut -d' ' -f2)" = "$base" ]; then
+            sh tools/gate.sh unpack "$got" >&2
+            age
+        fi
+        rm -f "$got"
+        [ -n "$why" ] || return 0
+    fi
     sh wisp release install "$base" >&2 &&
         printf '%s %s\n' "$(sh wisp release key-of "$base")" "$base" > "$stamp" &&
         age
