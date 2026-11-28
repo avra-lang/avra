@@ -108,6 +108,11 @@ export type CheckedProgram = {
     /// What the fn a name reads as declares each of its type parameters is where nothing pins it,
     /// read as `bounds_named` reads; absent for one with no default.
     defaults_named: fn(string, string?) -> List<SignedType?>,
+    /// Whether the fn a name reads as declares keys a map by each of its type parameters, read as
+    /// `bounds_named` reads.
+    keys_named: fn(string, string?) -> List<bool> = keyless,
+    /// Whether a type parameter of the body's own is one its signature keys a map by.
+    keyed: fn(SignedType) -> bool = keyed_anywhere,
     /// What the method a value of a type has under a name declares of each type parameter, its impl's
     /// then its own.
     method_params: fn(SignedType, string) -> ParamsDeclared,
@@ -130,6 +135,12 @@ export type DefaultSeats = { held: SignedType, takes: List<int> }
 /// A program that reads no trait's own body.
 fn no_default_seats(_t: SignedType, _name: string) -> DefaultSeats? { null }
 
+/// A fn read by no name keys nothing.
+fn keyless(_name: string, _home: string?) -> List<bool> { [] }
+
+/// Where no signature is in hand, a type parameter is one its own signature keys by.
+export fn keyed_anywhere(_t: SignedType) -> bool { true }
+
 /// Whether a lambda answering `own` fills a fn seat answering `want` by boxing: `want` is a `dyn`
 /// that a value of `own` stands in.
 fn boxes_into(own: SignedType, want: SignedType?) -> bool {
@@ -143,7 +154,7 @@ export type FilledByName = { f: SignedType, values: List<ExprId>, seats: List<in
 
 /// A record as typing reads it: how many type parameters it has, and its fields, each typed under
 /// them.
-export type RecordShape = { params: int, fields: List<FieldSeat>, defaults: List<SignedType?> = [], names: List<string> = [] }
+export type RecordShape = { params: int, fields: List<FieldSeat>, defaults: List<SignedType?> = [], names: List<string> = [], keys: List<bool> = [] }
 
 /// A record's field: its name, its type when it's written, whether it's a `state` field, whose slot
 /// holds the cell its value lives in, whether that cell is the place its writer names — a
@@ -197,7 +208,7 @@ export type Proof = { names: Map<string, Local>, truth: bool }
 
 /// An enum as typing reads it: how many type parameters it has, and its variants, each payload typed
 /// under them.
-export type EnumShape = { params: int, variants: List<VariantSeat> }
+export type EnumShape = { params: int, variants: List<VariantSeat>, names: List<string> = [], keys: List<bool> = [] }
 
 /// An enum's variant: its name, its payloads, and for a gathered one the member's record it's made of.
 /// An enum's signature saves its variants as these, and typing reads them as saved.
@@ -601,6 +612,9 @@ export enum Seating {
     MapKey
     /// A value of a map literal.
     MapValue
+    /// A type parameter, `param`, that the fn `callee`'s signature keys a map by, filled by a type no
+    /// map files; `own` where that is a type parameter of the body's own.
+    Keyed(callee: string, param: string, own: bool)
     /// A `match` on a value of the enum `owner` that handles none of its arms the variant `variant`.
     Uncovered(owner: string, variant: string)
     /// A `match` on a value of `owner`, no enum, that no arm takes every value of.
@@ -893,6 +907,7 @@ impl CheckedProgram {
             record_of: self.record_of,
             named_of: self.named_of,
             enum_of: (ty: SignedType) -> self.enum_shape(ty),
+            keyed: self.keyed,
         }
     }
 
@@ -3827,6 +3842,31 @@ impl Checking {
         true
     }
 
+    /// Each type parameter `found` fills that `callee`'s signature keys a map by held to a key: whether
+    /// each is, the call refused at the first a map doesn't file — a type parameter of the body's own
+    /// files only where its signature keys by it too.
+    mut fn keys_held(callee: CalleeNamed?, found: Map<string, SignedType>) -> bool {
+        let named? = callee else { return true }
+        if self.meanings || !named.keys.any(it) { return true }
+        let at? = self.site_node() else { return true }
+        for j, keyed in named.keys {
+            let ty? = (if keyed { found.get("${j}") } else { null }) else { continue }
+            if self.program.shapes().map_keyed(ty) { continue }
+            self
+                .refused
+                .push(
+                    Refused {
+                        at: at,
+                        want: ty,
+                        found: ty,
+                        seat: Seating.Keyed(named.name, named.type_params[j], ty.head is .Parameter),
+                    },
+                )
+            return false
+        }
+        true
+    }
+
     /// Whether the `fold` handed `args` is refused before its seats are filled: a count that is no
     /// seed and fn, a seed that is the empty list where no seat says what the fold answers — it
     /// names no type, and takes the seat's where one does —, a lambda taking other than
@@ -4228,7 +4268,7 @@ impl Checking {
             return null
         }
         let found = defaulted(found, declared?.defaults ?? [])
-        if !self.bounds_held(bounds, found) { return null }
+        if !self.bounds_held(bounds, found) || !self.keys_held(declared, found) { return null }
         if self.refused.get().length == before &&
             self
                 .left_unpinned(
@@ -4361,7 +4401,8 @@ impl Checking {
             self.checked_free(args)
             return null
         }
-        let params = shape!.params
+        let declared = shape!
+        let params = declared.params
         let wanted_args = match expected {
             .Exactly(ty) -> if ty.names_as(enum_type) && ty.args.length == params { ty.args } else { [] },
             rest -> [],
@@ -4378,7 +4419,9 @@ impl Checking {
                 (_at: int) -> Seating.Payload(enum_type.spelled(), name),
             ) else { return null }
         let filled = [found.get("${at}") for at in 0..params]
-        if filled.any(it == null) { null } else { enum_type with { args: [a! for a in filled] } }
+        let owner = match enum_type.head { .Declared(_, n) -> n, rest -> name }
+        let keyed = CalleeNamed { name: owner, type_params: declared.names, keys: declared.keys }
+        if filled.any(it == null) || !self.keys_held(keyed, found) { null } else { enum_type with { args: [a! for a in filled] } }
     }
 
     /// Whether an argument among `args`, a variant's payloads, spreads: a variant takes each payload
@@ -4441,7 +4484,7 @@ impl Checking {
             .seats_isolated(seats.drop(1), fill.values, [seat_of(fill.seats[at]) for at in 0..fill.values.length])
         let held? = filled else { return null }
         let found = defaulted(held, declares.defaults)
-        if !self.bounds_held(declares.bounds, found) { return null }
+        if !self.bounds_held(declares.bounds, found) || !self.keys_held(declares.keyed, found) { return null }
         let answer? = method.answer else { return null }
         if answer.fills_all(found) { answer.filled(found) } else { null }
     }
@@ -4499,10 +4542,10 @@ export fn defaulted(found: Map<string, SignedType>, defaults: List<SignedType?>)
 
 /// What a fn declares of each of its type parameters: the bound each carries, and what each is where
 /// nothing pins it, absent for one with none.
-export type ParamsDeclared = { bounds: List<SignedType?> = [], defaults: List<SignedType?> = [] }
+export type ParamsDeclared = { bounds: List<SignedType?> = [], defaults: List<SignedType?> = [], keyed: CalleeNamed? = null }
 
 /// A fn a call names, the type parameters it declares and what each is where nothing pins it.
-export type CalleeNamed = { name: string, type_params: List<string>, defaults: List<SignedType?> = [] }
+export type CalleeNamed = { name: string, type_params: List<string>, defaults: List<SignedType?> = [], keys: List<bool> = [] }
 
 /// Whether two values of `t` compare by value, as the program `cx` checks reads its shapes.
 export fn compares_by_value(cx: Checking, t: SignedType) -> bool { cx.program.shapes().compares_by_value(t) }
@@ -4531,14 +4574,18 @@ fn word_enum(shape: EnumShape?) -> bool {
 }
 
 /// Whether a map files `ty`s — a type already read through its names — as its keys: text, or a word
-/// (an int, a bool, an enum whose variants carry nothing, read by `enum_of`), or a type parameter,
-/// which its instantiations answer for.
-export fn files_as_key(ty: SignedType, enum_of: fn(SignedType) -> EnumShape?) -> bool {
+/// (an int, a bool, an enum whose variants carry nothing, read by `enum_of`), or a type parameter
+/// `keyed` says its signature keys by, whose every instantiation is held to a key.
+export fn files_as_key(
+    ty: SignedType,
+    enum_of: fn(SignedType) -> EnumShape?,
+    keyed: fn(SignedType) -> bool,
+) -> bool {
     if ty.nullable() || ty.dynamic || !ty.args.is_empty() { return false }
     match ty.head {
         .Owned(word) -> MAP_KEYS.contains(word),
         .Declared(_, _) -> word_enum(enum_of(ty)),
-        .Parameter(_, _) -> true,
+        .Parameter(_, _) -> keyed(ty),
         .Unnamed(_) or .Inferred or .Function or .Union or .Never or .Meta -> false,
     }
 }
@@ -4549,6 +4596,8 @@ export type Shapes = {
     record_of: fn(SignedType) -> RecordShape?,
     named_of: fn(SignedType) -> SignedType?,
     enum_of: fn(SignedType) -> EnumShape?,
+    /// Whether a type parameter is one its signature keys a map by.
+    keyed: fn(SignedType) -> bool = keyed_anywhere,
 }
 
 impl Shapes {
@@ -4618,8 +4667,8 @@ impl Shapes {
     /// Whether a map files `t`s as its keys, a declared one seen through its name.
     fn map_keyed(t: SignedType) -> bool {
         match t.head {
-            .Declared(_, _) -> files_as_key(self.unnamed(t), self.enum_of),
-            .Owned(_) or .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Union or .Never or .Meta -> files_as_key(t, self.enum_of),
+            .Declared(_, _) -> files_as_key(self.unnamed(t), self.enum_of, self.keyed),
+            .Owned(_) or .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Union or .Never or .Meta -> files_as_key(t, self.enum_of, self.keyed),
         }
     }
 

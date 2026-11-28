@@ -3,6 +3,7 @@
 //! written under an import's other name — and each method signed under the impl's type parameters.
 use core.{
     Annotation,
+    CalleeNamed,
     ParamsDeclared,
     ComponentParts,
     LandedSeat,
@@ -410,6 +411,7 @@ fn written_signature(signing: Signing, written: WrittenFn) -> FnSignature {
         answer: signing.signed(written.ret),
         answer_width: null,
         bounds: signing.bounds(written),
+        keys: fn_keys(signing.engine, signing.file, written),
     }
 }
 
@@ -458,6 +460,7 @@ fn impl_signed(
         bounds: target_bounds(engine, at).concat(signing.bounds(written)),
         defaults: unbound(at.params.length)
             .concat([if d == null { null } else { signing.signed(d!) } for d in written.defaults]),
+        keys: method_keys(engine, at, written),
     }
 }
 
@@ -468,7 +471,11 @@ export fn method_declares(engine: QueryEngine, subject: SignedType, name: string
     let impls = impls_given(engine, declared.file, declared.name, name, false, reader)
     if impls.length != 1 { return ParamsDeclared {} }
     let s? = method_signature(engine, impls[0], name) else { return ParamsDeclared {} }
-    ParamsDeclared { bounds: s.bounds, defaults: s.defaults }
+    ParamsDeclared {
+        bounds: s.bounds,
+        defaults: s.defaults,
+        keyed: CalleeNamed { name: name, type_params: s.type_params, keys: s.keys },
+    }
 }
 
 /// The bound each type parameter the impl at `at` stands over carries: the one its type declares it

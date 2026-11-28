@@ -1,0 +1,143 @@
+//! WHICH TYPE PARAMETERS A DECLARATION KEYS A MAP BY: a map's key that is one of them, as written,
+//! or a place of a declared type that type keys, filled by one. Read off a declaration's signature
+//! alone — its seats, its answer, its fields, its variants, what an alias names — so a body keys a
+//! map by a type parameter only where its signature says it does, and every filling of a keyed
+//! place is a key.
+use core.{TypeRef, flatten}
+use features.{type_row}
+use @std.program.query_engine.{QueryEngine}
+use @std.program.address.{SourceFileAddress}
+
+/// The type parameters among `params` that the written types `roots` key a map by, their names read
+/// where `file` reads them; `seen` the declarations whose keys are being read, which add nothing to
+/// their own.
+fn keyed_by(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    params: List<string>,
+    roots: List<TypeRef>,
+    seen: List<DeclaredAt>,
+) -> List<string> {
+    if params.is_empty() || !roots.any((t) -> may_key(t)) { return [] }
+    flatten([type_keys(engine, file, params, t, seen) for t in roots])
+}
+
+/// Whether `t`, or a type it holds, is one a type parameter could key a map through: a map, or a
+/// declared type applied to arguments.
+fn may_key(t: TypeRef) -> bool {
+    t.name == MAP ||
+        !t.arrow && !t.applied.is_empty() && type_row(avra().rows.types, t.name) == null ||
+        t.type_args().any((a) -> may_key(a)) ||
+        t.alternatives.any((a) -> may_key(a))
+}
+
+/// The type parameters among `params` that `t`, and each type it holds, key a map by.
+fn type_keys(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    params: List<string>,
+    t: TypeRef,
+    seen: List<DeclaredAt>,
+) -> List<string> {
+    let own = if t.arrow { [] } else { own_keys(engine, file, params, t, seen) }
+    let held = t.type_args().concat(t.alternatives)
+    if held.is_empty() { return own }
+    own.concat(flatten([type_keys(engine, file, params, a, seen) for a in held]))
+}
+
+/// The type parameters among `params` that `t` itself keys a map by: a map's key that is one, and
+/// each place of the declared type `t` names that it keys, filled by one.
+fn own_keys(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    params: List<string>,
+    t: TypeRef,
+    seen: List<DeclaredAt>,
+) -> List<string> {
+    if t.name == MAP {
+        let p? = bare_param(params, t.applied.first()) else { return [] }
+        return [p]
+    }
+    if params.contains(t.name) { return [] }
+    filled_keys(engine, file, params, t.name, t.applied, seen)
+}
+
+/// The type parameters among `params` that fill, among `applied`, a place of the declared type `file`
+/// sees as `name` that it keys a map by.
+fn filled_keys(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    params: List<string>,
+    name: string,
+    applied: List<TypeRef>,
+    seen: List<DeclaredAt>,
+) -> List<string> {
+    if applied.is_empty() { return [] }
+    let places = declared_keys(engine, file, name, seen)
+    [p! for j, a in applied if places.contains(j) for p in [bare_param(params, a)] if p != null]
+}
+
+/// The type parameter among `params` that `t` is, written bare: no arguments, no `?`, no union.
+fn bare_param(params: List<string>, t: TypeRef?) -> string? {
+    let k? = t else { return null }
+    if !params.contains(k.name) ||
+        k.arrow ||
+        k.optional ||
+        !k.applied.is_empty() ||
+        !k.alternatives.is_empty() { return null }
+    k.name
+}
+
+/// The places of the type `file` sees as `name` whose type parameter its declaration keys a map by;
+/// none for a name that names no declared type, or one among `seen`.
+fn declared_keys(engine: QueryEngine, file: SourceFileAddress, name: string, seen: List<DeclaredAt>) -> List<
+    int,
+> {
+    if type_row(avra().rows.types, name) != null { return [] }
+    let d? = resolved(engine, file, Space.Type, name).named() else { return [] }
+    let at = declared_place(d.file, d.name)
+    if seen.contains(at) { return [] }
+    let item? = TYPE_KINDS.find_map((k) -> declaring_item(engine, d.file, d.name, k)) else { return [] }
+    let s? = item.stmts.find((st) -> item.store.type_decl_name(st) == d.name) else { return [] }
+    let params = [p.name.text() for p in item.store.decl_tbounds(s)]
+    let keyed = keyed_by(engine, d.file, params, item.store.type_roots(s), seen.concat([at]))
+    [j for j, p in params if keyed.contains(p)]
+}
+
+/// Which of the `count` places of the type `file` declares as `name` its declaration keys a map by.
+fn declared_places(engine: QueryEngine, file: SourceFileAddress, name: string, count: int) -> List<
+    bool,
+> {
+    if count == 0 { return [] }
+    let places = declared_keys(engine, file, name, [])
+    if places.is_empty() { return [] }
+    [places.contains(j) for j in 0..count]
+}
+
+/// Which of the fn `written`'s type parameters its seats and its answer key a map by, place by place.
+fn fn_keys(engine: QueryEngine, file: SourceFileAddress, written: WrittenFn) -> List<bool> {
+    if written.type_params.is_empty() { return [] }
+    let roots = [p.ty! for p in written.params if p.ty != null].concat([written.ret])
+    let keyed = keyed_by(engine, file, written.type_params, roots, [])
+    if keyed.is_empty() { return [] }
+    [keyed.contains(p) for p in written.type_params]
+}
+
+/// Which of the method `written`'s type parameters, the impl at `at`'s then its own, the impl's
+/// target and the method's seats and answer key a map by, place by place.
+fn method_keys(engine: QueryEngine, at: ImplAt, written: WrittenFn) -> List<bool> {
+    let params = at.params.concat(written.type_params)
+    if params.is_empty() { return [] }
+    let roots = [p.ty! for p in written.params if p.ty != null].concat([written.ret])
+    let keyed = keyed_by(engine, at.file, params, roots, []).concat(target_keys(engine, at, params))
+    if keyed.is_empty() { return [] }
+    [keyed.contains(p) for p in params]
+}
+
+/// The type parameters among `params` that the impl at `at`'s target keys a map by.
+fn target_keys(engine: QueryEngine, at: ImplAt, params: List<string>) -> List<string> {
+    let item = read_item(engine, at.file, at.item)
+    let s? = impl_stmt_at(item, at) else { return [] }
+    let parts? = item.store.impl_parts(s) else { return [] }
+    filled_keys(engine, at.file, params, parts.target, item.store.impl_target_args(s), [])
+}

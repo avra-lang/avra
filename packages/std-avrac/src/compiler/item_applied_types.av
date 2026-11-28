@@ -14,6 +14,7 @@ use core.{
     TypeRef,
     files_as_key,
     flatten,
+    keyed_anywhere,
     headed_type,
     spelled,
 }
@@ -21,7 +22,7 @@ use compiler.laws.{Found, law}
 use compiler.typing.{applied_bare, applied_counted, applied_unappliable, shape_named}
 use diagnostics.{Voice}
 use features.{self_word, type_row}
-use features.maps.{map_unkeyed}
+use features.maps.{map_keyless, map_unkeyed}
 use @std.text.{parse_int}
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryEngine}
@@ -31,11 +32,11 @@ use @std.program.query_engine.{QueryEngine}
 fn applied_refused(view: ItemView) -> List<Found> {
     let item = view.item
     if !item.store.refusals().is_empty() { return [] }
-    let stmts = flatten([stmts_under(item.store, At.Stmt(top)) for top in item.stmts])
-    let params = flatten([item.store.tparams_in_scope(s) for s in stmts])
+    let groups = flatten([keyed_under(view, top) for top in item.stmts])
+    let params = flatten([item.store.tparams_in_scope(s) for g in groups for s in g.stmts])
         .concat(flatten([a.params for a in impls_seen(view)]))
     let scope = AppliedScope { engine: view.engine, file: view.file, params: params }
-    flatten([misapplied_in(scope, item.store, s) for s in stmts])
+    flatten([misapplied_in(scope.judging(g.keyed), item.store, s) for g in groups for s in g.stmts])
 }
 
 /// The statement `s`'s types applied to what they don't take, read where its template wrote it when one
@@ -45,6 +46,50 @@ fn misapplied_in(scope: AppliedScope, store: SyntaxArena, s: StmtId) -> List<Fou
     let read = if writer == null { scope } else { scope with { writer: writer } }
     [Found { at: span_of(kept_at(store.stmt_span(s))), args: words } for words in flatten([read.misapplied(t) for t in store.type_roots(s)])]
 }
+
+/// The statements of one declaration, and the type parameters its signature keys a map by.
+type KeyedStmts = { stmts: List<StmtId>, keyed: List<string> }
+
+/// The statements `top` holds, grouped by the declaration whose signature says what they key a map
+/// by: an impl's methods each under the impl's target's and their own, any other under its own.
+fn keyed_under(view: ItemView, top: StmtId) -> List<KeyedStmts> {
+    let store = view.item.store
+    let outer = store.tparams_in_scope(top)
+    let parts? = store.impl_parts(top) else {
+        let keyed = keyed_by(view.engine, view.file, outer, store.type_roots(top), [])
+        return [judged_under(store, top, keyed)]
+    }
+    let target = filled_keys(
+        view.engine,
+        view.file,
+        outer,
+        parts.target,
+        store.impl_target_args(top),
+        [],
+    )
+    [KeyedStmts { stmts: [top], keyed: target }]
+        .concat([method_under(view, f, outer, target) for f in parts.fns])
+}
+
+/// The statements the method `f` holds, each under what `target` keys of the impl's type parameters
+/// `outer` and what the method's own signature keys.
+fn method_under(view: ItemView, f: StmtId, outer: List<string>, target: List<string>) -> KeyedStmts {
+    let store = view.item.store
+    let keyed = target
+        .concat(
+            keyed_by(
+                view.engine,
+                view.file,
+                outer.concat(store.tparams_in_scope(f)),
+                store.type_roots(f),
+                [],
+            ),
+        )
+    judged_under(store, f, keyed)
+}
+
+/// Every statement under `at`, judged under the type parameters `keyed`.
+fn judged_under(store: SyntaxArena, at: StmtId, keyed: List<string>) -> KeyedStmts { KeyedStmts { stmts: stmts_under(store, At.Stmt(at)), keyed: keyed } }
 
 /// The type `written` a body reads, signed as `signed`: unknown where it is applied to another count of
 /// type arguments than the type it names takes, its refusal said where it's written.
@@ -80,14 +125,24 @@ fn keys_filed(engine: QueryEngine, key: SignedType) -> bool {
     match key.head {
         .Unnamed(_) or .Inferred -> true,
         // only a declared key is read through its declaration: a signature asks nothing it needn't
-        .Declared(_, _) -> files_as_key(named_over(engine, key) ?? key, (ty: SignedType) -> enum_shape(engine, ty)),
-        .Owned(_) or .Parameter(_, _) or .Function or .Union or .Never or .Meta -> files_as_key(key, (_ty: SignedType) -> null),
+        .Declared(_, _) -> files_as_key(
+            named_over(engine, key) ?? key,
+            (ty: SignedType) -> enum_shape(engine, ty),
+            keyed_anywhere,
+        ),
+        .Owned(_) or .Parameter(_, _) or .Function or .Union or .Never or .Meta -> files_as_key(key, (_ty: SignedType) -> null, keyed_anywhere),
     }
 }
 
-/// Where a statement's written types are read: its file, the file whose template wrote it, and the
-/// type parameters its item declares.
-type AppliedScope = { engine: QueryEngine, file: SourceFileAddress, params: List<string>, writer: SourceFileAddress? = null }
+/// Where a statement's written types are read: its file, the file whose template wrote it, the type
+/// parameters its item declares, and those its declaration's signature keys a map by.
+type AppliedScope = {
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    params: List<string>,
+    writer: SourceFileAddress? = null,
+    keyed: List<string> = [],
+}
 
 /// A map's key as a seat reads it, and where its names are read.
 type KeySeen = { scope: AppliedScope, key: TypeRef }
@@ -95,6 +150,9 @@ type KeySeen = { scope: AppliedScope, key: TypeRef }
 impl AppliedScope {
     /// The declaration a type name names where this statement's template wrote it, else where it stands.
     fn named(name: string) -> DeclaredName? { named_where_written(self.engine, self.writer, self.file, name) }
+
+    /// This scope, judging what a declaration's signature keys a map by, `keyed`.
+    fn judging(keyed: List<string>) -> AppliedScope { if keyed.is_empty() { self } else { self with { keyed: keyed } } }
 
     /// The type `t` and each it holds, where applied to what it doesn't take, outermost first.
     fn misapplied(t: TypeRef) -> List<List<string>> {
@@ -126,9 +184,20 @@ impl AppliedScope {
             t.type_args().concat(t.alternatives).any((a) -> self.written_short(a))
     }
 
-    /// Where the map `t` is keyed by what is no text, the words saying so; nothing for any other type.
+    /// Where the map `t`, or a place of the declared type `t` that it keys a map by, is keyed by what
+    /// no map files, the words saying so; nothing for any other type.
     fn keyed_words(t: TypeRef) -> List<List<string>> {
-        if t.name == MAP && self.unkeyed(t.applied[0]) { return [["key", spelled(self.keyed_as(t.applied[0], []).key)]] }
+        if t.name == MAP { return self.key_words(t.applied[0]) }
+        if self.params.contains(t.name) || t.applied.is_empty() { return [] }
+        let places = declared_keys(self.engine, self.file, t.name, [])
+        flatten([self.key_words(a) for j, a in t.applied if places.contains(j)])
+    }
+
+    /// Where `key` keys a map by what no map files, the words saying so: a type parameter the
+    /// declaration's signature doesn't key a map by, or any other type a map doesn't file.
+    fn key_words(key: TypeRef) -> List<List<string>> {
+        if self.params.contains(key.name) && !self.keyed.contains(key.name) && !self.unkeyed(key) { return [["keyless", key.name]] }
+        if self.unkeyed(key) { return [["key", spelled(self.keyed_as(key, []).key)]] }
         []
     }
 
@@ -205,6 +274,7 @@ fn applied_words(a: List<string>) -> Voice {
         "none" -> applied_unappliable(a[1]),
         "bare" -> applied_bare(a[1], parse_int(a[2]) ?? 0),
         "count" -> applied_counted(a[1], parse_int(a[2]) ?? 0, parse_int(a[3]) ?? 0),
+        "keyless" -> map_keyless(a[1]),
         _ -> map_unkeyed(a[1]),
     }
 }

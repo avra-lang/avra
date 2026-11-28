@@ -57,10 +57,10 @@ use @std.program.syntax_tape.{SyntaxTape, tape_read}
 export type SignedParam = { name: string, ty: SignedType?, mutable: bool, settled: bool, width: string?, defaulted: bool = false, state: bool = false, spread: bool = false, rest: bool = false, unshared: bool = false }
 
 /// A fn's signature: its type parameters, its parameters, its answer and the width its answer
-/// crosses from C at, if it names one; and the trait each type parameter is bound by, absent for one
-/// bound by none.
+/// crosses from C at, if it names one; the trait each type parameter is bound by, absent for one
+/// bound by none; and whether its signature keys a map by each.
 @derive(Saved)
-export type FnSignature = { type_params: List<string>, params: List<SignedParam>, answer: SignedType, answer_width: string?, bounds: List<SignedType?> = [], defaults: List<SignedType?> = [] }
+export type FnSignature = { type_params: List<string>, params: List<SignedParam>, answer: SignedType, answer_width: string?, bounds: List<SignedType?> = [], defaults: List<SignedType?> = [], keys: List<bool> = [] }
 
 /// The signature of a body taking nothing and answering `ty`: a value's.
 export fn value_signature(ty: SignedType) -> FnSignature { FnSignature { type_params: [], params: [], answer: ty, answer_width: null } }
@@ -172,6 +172,7 @@ fn declared_signature(
         answer_width: width_of(written.ret),
         bounds: signing.bounds(written),
         defaults: [if d == null { null } else { signing.signed(d!) } for d in written.defaults],
+        keys: fn_keys(engine, file, written),
     }
 }
 
@@ -281,10 +282,10 @@ fn shape_under(engine: QueryEngine, ty: SignedType, depth: int) -> SignedType? {
     if depth == 0 { shape } else { shape_under(engine, shape, depth - 1) ?? shape }
 }
 
-/// A record's signature: its type parameters and its fields, in order, a spread's in its place; and
-/// each parameter's bound, where it writes them (a component does).
+/// A record's signature: its type parameters and its fields, in order, a spread's in its place; each
+/// parameter's bound, where it writes them (a component does); and whether it keys a map by each.
 @derive(Saved)
-export type RecordSignature = { type_params: List<string>, fields: List<FieldSeat>, bounds: List<SignedType?> = [], defaults: List<SignedType?> = [] }
+export type RecordSignature = { type_params: List<string>, fields: List<FieldSeat>, bounds: List<SignedType?> = [], defaults: List<SignedType?> = [], keys: List<bool> = [] }
 
 /// The signature of the record (or component) `file` declares as `name`, absent when it declares
 /// none: a component holding a body carries what its composing trait names past its own fields.
@@ -348,7 +349,7 @@ fn signature_built(engine: QueryEngine, file: SourceFileAddress, name: string, w
     let home = declared_place(file, name)
     let spread = (at: int) -> [g for x in parts.spreads if x.at == at && !spreads_home(engine, file, x.of.name, home) for g in spread_fields(engine, signing.signed(x.of), written)]
     let own = [f for at in 0..fields.length + 1 for f in spread(at).concat(if at < fields.length { [fields[at]] } else { [] })]
-    carrying(engine, file, item, name, parts.tparams, own, written) with { bounds: signing.bounds_written(item.store.decl_tbounds(s)), defaults: signing.defaults_written(item.store.decl_tbounds(s)) }
+    carrying(engine, file, item, name, parts.tparams, own, written) with { bounds: signing.bounds_written(item.store.decl_tbounds(s)), defaults: signing.defaults_written(item.store.decl_tbounds(s)), keys: declared_places(engine, file, name, parts.tparams.length) }
 }
 
 /// A component's signature as a record's: its type parameters with their bounds, and its fields — its head's, then each
@@ -365,7 +366,7 @@ fn component_signature(
     let parts = item.store.component_parts(s)!
     let signing = signing_in(engine, file, parts.tparams) with { written_only: written }
     let own = [field_seat(engine, signing, p) for p in parts.head.concat(parts.holders)]
-    carrying(engine, file, item, name, parts.tparams, own, written) with { bounds: signing.bounds_written(item.store.decl_tbounds(s)), defaults: signing.defaults_written(item.store.decl_tbounds(s)) }
+    carrying(engine, file, item, name, parts.tparams, own, written) with { bounds: signing.bounds_written(item.store.decl_tbounds(s)), defaults: signing.defaults_written(item.store.decl_tbounds(s)), keys: declared_places(engine, file, name, parts.tparams.length) }
 }
 
 /// The signature of `name` over `tparams`: its own fields `own`, then, where `item` declares it a
@@ -648,9 +649,10 @@ fn enum_params(engine: QueryEngine, file: SourceFileAddress, name: string) -> Li
     [p! for s in item.stmts for p in [item.store.enum_parts(s)] if p != null].find(it.name == name)?.tparams
 }
 
-/// An enum's signature: its type parameters and its variants, in order.
+/// An enum's signature: its type parameters and its variants, in order, and whether it keys a map by
+/// each type parameter.
 @derive(Saved)
-export type EnumSignature = { type_params: List<string>, variants: List<VariantSeat> }
+export type EnumSignature = { type_params: List<string>, variants: List<VariantSeat>, keys: List<bool> = [] }
 
 /// The signature of the enum `file` declares as `name`, written or gathered; absent when it declares
 /// none.
@@ -669,6 +671,7 @@ export fn enum_signature(engine: QueryEngine, file: SourceFileAddress, name: str
                 ty: if p.ty == null { null } else { signing.signed(p.ty!) },
             } for p in v.payloads],
         } for v in parts.variants],
+        keys: declared_places(engine, file, name, parts.tparams.length),
     }
 }
 
@@ -1058,6 +1061,8 @@ type Signing = {
     self_type: SignedType? = null,
     writer: SourceFileAddress? = null,
     bounds: List<SignedType?> = [],
+    /// Whether the signature keys a map by each type parameter.
+    keys: List<bool> = [],
     /// The names over a nullable whose shapes are being signed, outermost first: one naming itself
     /// carries no absence.
     naming: List<string> = [],
@@ -1079,6 +1084,12 @@ impl Signing {
 
     /// The trait the type parameter `ty` is bound by, applied as the bound writes it; absent for any
     /// other type, or one bound by none.
+    /// Whether `ty` is a type parameter the signature keys a map by.
+    fn keyed(ty: SignedType) -> bool {
+        let at? = match ty.head { .Parameter(i, _) -> i, rest -> null } else { return false }
+        at < self.keys.length && self.keys[at]
+    }
+
     fn bound_of(ty: SignedType) -> SignedType? {
         if ty.nullable() || ty.dynamic { return null }
         let at? = match ty.head { .Parameter(i, _) -> i, rest -> null } else { return null }
