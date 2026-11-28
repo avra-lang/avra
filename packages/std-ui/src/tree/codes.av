@@ -3,13 +3,27 @@
 //! on the variant, declared ONCE: the serializer asks `code()`, the reader
 //! of an echo asks `coded_as(n)`, and whatever writes a host's copy asks
 //! `coded()` for every variant with its word — so no table is kept twice.
-use @std.meta.{Type, Variant, Directive, Declared, Diagnostic, literal, refuse_as_at, beside}
+use @std.meta.{
+    Type,
+    Variant,
+    Directive,
+    Declared,
+    Diagnostic,
+    Named,
+    Marker,
+    literal,
+    refuse_as_at,
+    beside,
+    marked,
+    reads,
+}
 use @std.text.{parse_int, codepoints, from_codepoints}
 
 /// One variant as a host reads it: its word and its number.
 export type Coded = { word: string, code: int }
 
 /// An enum whose variants name their wire numbers.
+@reads(code)
 export trait Codes {
     fn code() -> int
 
@@ -45,7 +59,6 @@ export trait Codes {
         }
     }
 
-    static fn marks(t: Type) -> List<string> { [code_mark] }
 }
 
 /// What a refused enum is given: the three verbs, answering no number
@@ -66,8 +79,8 @@ fn refused_codes(t: Type) -> Directive {
     )
 }
 
-/// The mark a variant's number is written under.
-const code_mark = "code"
+/// `@code(n)`: the number a variant is coded by.
+export fn code(_d: Named, _n: string) -> Marker { Marker {} }
 
 /// The largest number one octet of the wire spells.
 const widest = 255
@@ -77,7 +90,7 @@ type Wears = { name: string, code: int }
 
 /// What a variant wrote for its number, as text — absent when it wrote
 /// none.
-fn written(v: Variant) -> string? { v.marks.find(it.name == code_mark)?.args?.first() }
+fn written(v: Variant) -> string? { v.marks.find((m) -> marked(m, code))?.args?.first() }
 
 /// The number a variant wears: what it wrote, when that is a number one
 /// octet spells. None otherwise — each reason is `problem`'s to say.

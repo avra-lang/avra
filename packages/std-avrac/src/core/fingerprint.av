@@ -28,6 +28,7 @@
 //! or stop deriving. SKIPPING a field silently is the one thing this
 //! must never do — that is "a hash that forgets a payload", and the
 //! forgetting leaves no mark at the site.
+use core.marks.{local, facet, anchor, hollow, pronoun}
 use @std.meta.{
     Type as MetaType,
     Variant as MetaVariant,
@@ -43,6 +44,8 @@ use @std.meta.{
     type_named,
     beside,
     marks,
+    marked,
+    reads,
 }
 use @std.relation.stable.{indexed_scope}
 use @std.relation.{codec}
@@ -52,13 +55,6 @@ use @std.relation.{codec}
 // the gathered payload for the side table the mark names: no child
 // either, and still part of what the node is. ONE row says each, and a
 // shape derive asks HERE — never the mark's own word. ──
-
-/// The mark that takes a field out of what a value IS.
-export const local_word: string = "local"
-
-/// The mark that takes a field's value out of the payload, for a side
-/// table the mark names.
-export const facet_word: string = "facet"
 
 /// How a field's mark routes it.
 export enum FieldRoute {
@@ -74,8 +70,8 @@ export enum FieldRoute {
 /// The route a field's marks name. A field wears at most one; one
 /// wearing both reads as a facet.
 export fn field_route(f: Field) -> FieldRoute {
-    let facet? = f.marks.find(it.name == facet_word) else {
-        if f.marks.any(it.name == local_word) { return FieldRoute.Local }
+    let facet? = f.marks.find((m) -> marked(m, facet)) else {
+        if f.marks.any((m) -> marked(m, local)) { return FieldRoute.Local }
         return FieldRoute.Plain
     }
     FieldRoute.Facet(facet.args.first() ?? "")
@@ -98,7 +94,9 @@ export fn facet_table(f: Field) -> string? {
 }
 
 /// The side table a WRITTEN field's own marks name — the same question
-/// asked of the store's `Mark`, before the crossing makes a `Field`.
+/// asked of the store's `Mark`, before the crossing makes a `Field`;
+/// `is_facet` answers whether a mark binds `@facet`, which only its
+/// declaration's readers can say.
 export fn facet_on(marks: List<Mark>, is_facet: fn(Mark) -> bool) -> string? {
     let m? = marks.find(is_facet(it)) else { return null }
     m.args.first()
@@ -115,31 +113,21 @@ export const CORE_FACET: Known = Known { package: "@std/avrac", name: "facet" }
 // never in it: an anchored payload is carried and reached like any
 // other, and only the span its rule allocated at changes. ──
 
-/// The mark that anchors a node at the written span of the payload it
-/// names, where the whole rule's branch would otherwise be that span.
-export const anchor_word: string = "anchor"
-
-/// The mark on an expression payload a rule may leave unwritten: absent,
-/// it is an error node no pass walks — a signature's missing body.
-export const hollow_word: string = "hollow"
-
-/// Whether the payload stands hollow where its label is absent.
-export fn is_hollow(f: Field) -> bool { f.marks.any(it.name == hollow_word) }
+/// Whether the payload stands hollow where its label is absent: `@hollow`, on an expression payload
+/// a rule may leave unwritten — absent, it is an error node no pass walks, a signature's missing body.
+export fn is_hollow(f: Field) -> bool { f.marks.any((m) -> marked(m, hollow)) }
 
 /// Whether the payload is its node's anchor. One payload of a node is,
 /// and the assembly refuses a second — a node begins in ONE place.
-export fn has_anchor(f: Field) -> bool { f.marks.any(it.name == anchor_word) }
+export fn has_anchor(f: Field) -> bool { f.marks.any((m) -> marked(m, anchor)) }
 
-/// The mark that lets each expression of a list payload ride the
-/// pronoun: one that reads `it` is built as a one-seat lambda.
-export const pronoun_word: string = "pronoun"
+/// Whether the payload's expressions ride the pronoun, `@pronoun`: one that reads `it` is built as a
+/// one-seat lambda.
+export fn rides_pronoun(f: Field) -> bool { f.marks.any((m) -> marked(m, pronoun)) }
 
-/// Whether the payload's expressions ride the pronoun.
-export fn rides_pronoun(f: Field) -> bool { f.marks.any(it.name == pronoun_word) }
-
+@reads(local)
+@reads(facet)
 export trait Fingerprint {
-    /// `@local` and `@facet` fields are not part of what a value folds.
-    static fn marks(t: MetaType) -> List<string> { [local_word, facet_word] }
 
     static fn derive(t: MetaType) -> List<MetaDirective> {
         [beside(t, quote { impl ${t} { ${body_of(t)} } })]

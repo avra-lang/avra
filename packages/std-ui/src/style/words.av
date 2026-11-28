@@ -4,9 +4,13 @@
 //! variant a word names is read back from the same marks (`worded`), so
 //! no second list of the variants is kept. `every` is that list and
 //! `ordinal` a variant's place in it, for a wire that numbers a closed set.
-use @std.meta.{Type, Variant, Directive, literal, beside}
+use @std.meta.{Type, Variant, Directive, Named, Marker, literal, beside, marked, reads}
 
 /// An enum whose variants name their words.
+/// `@word(w)`: the word a variant is spelled by, where its own name is not it.
+export fn word(_d: Named, _word: string) -> Marker { Marker {} }
+
+@reads(word)
 export trait Words {
     fn word() -> string
 
@@ -36,11 +40,10 @@ export trait Words {
         ]
     }
 
-    static fn marks(t: Type) -> List<string> { ["word"] }
 }
 
 /// The variant's `@word(…)`, or its own name when it carries none.
 fn word_of(v: Variant) -> string {
-    let m? = v.marks.find(it.name == "word") else { return v.name }
+    let m? = v.marks.find((x) -> marked(x, word)) else { return v.name }
     (m.args.first() ?? v.name).replace("_", "-")
 }

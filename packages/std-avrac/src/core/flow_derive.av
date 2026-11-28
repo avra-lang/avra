@@ -9,6 +9,7 @@
 //! A variant wearing none or two is refused, so the next variant
 //! decides as every one before it did. It stands ALONE in this file: a
 //! derive is typed while the annotated file is still registering.
+use core.marks.{apart, branches, clauses, sequence, local, facet}
 use @std.meta.{
     Type as MetaType,
     Variant as MetaVariant,
@@ -21,13 +22,22 @@ use @std.meta.{
     name,
     refuse_as_at,
     beside,
+    marked,
+    reads,
+    Mark as MetaMark,
 }
 use @std.text.{codepoints, from_codepoints}
 
-/// The control words, one of which every variant wears.
-const flow_words: List<string> = ["apart", "sequence", "branches"]
+/// Whether the mark `m` is a control word, one of which every variant wears.
+fn flow_mark(m: MetaMark) -> bool { marked(m, apart) || marked(m, sequence) || marked(m, branches) }
 
 /// The compiler's derive for control flow through a node's children.
+@reads(apart)
+@reads(sequence)
+@reads(branches)
+@reads(clauses)
+@reads(local)
+@reads(facet)
 export trait Flow {
     static fn derive(t: MetaType) -> Declared {
         let problems = flatten([flow_problems(v) for v in t.variants])
@@ -48,8 +58,6 @@ export trait Flow {
             problems: [],
         }
     }
-
-    static fn marks(t: MetaType) -> List<string> { flow_words.concat(["clauses", local_word, facet_word]) }
 }
 
 /// What a refused enum is given: the walk, answering nothing anyone
@@ -73,8 +81,8 @@ fn flow_arm(owner: string, v: MetaVariant) -> Arms {
 }
 
 fn flow_answer(owner: string, v: MetaVariant) -> Code {
-    if marked(v, "apart") != null { return quote { Control.Apart } }
-    if marked(v, "sequence") != null { return quote { Control.Seq(${concatenated(steps_of(v))}) } }
+    if v.marks.any((m) -> marked(m, apart)) { return quote { Control.Apart } }
+    if v.marks.any((m) -> marked(m, sequence)) { return quote { Control.Seq(${concatenated(steps_of(v))}) } }
     let args = [name(f.name) for f in v.fields if carried(f)]
     quote { ${branch_of(owner, v.name)}(${..args}) }
 }
@@ -114,10 +122,10 @@ fn unknown(s: Step) -> bool {
 
 /// What is wrong with a variant's word, when anything is.
 fn flow_problems(v: MetaVariant) -> List<Diagnostic> {
-    let worn = [w for w in flow_words if marked(v, w) != null]
+    let worn = [m.name for m in v.marks if flow_mark(m)]
     if worn.is_empty() { return [wordless(v)] }
     if worn.length > 1 { return [two_words(v, worn)] }
-    if worn[0] != "sequence" { return [] }
+    if !v.marks.any((m) -> marked(m, sequence)) { return [] }
     [unsteppable(v, f) for f in v.fields if reached(f) && unknown(step(f))]
 }
 

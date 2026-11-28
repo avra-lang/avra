@@ -16,6 +16,8 @@ use @std.meta.{
     Variant as MetaVariant,
     name,
     marks,
+    marked,
+    Marker,
 }
 
 /// Marks a dense id: a value of it names one node of `node`, declared in the id's own module, so
@@ -61,7 +63,7 @@ export enum ValueShape {
 }
 
 /// Marks an int field that says where in its file something stands.
-export const OFFSET_MARK: string = "offset"
+export fn offset(_d: Named) -> Marker { Marker {} }
 
 /// What a language does with a field: writes it down, carries it in the value without writing it,
 /// or keeps it apart from the value, as a side table does.
@@ -119,7 +121,7 @@ impl Reading {
         let declared? = self.declaration_of(type_name) else { return null }
         let node = node_indexed(declared)
         if node != null { return .Id(type_name, node!, path_in(declared.module, node!, [])) }
-        let verbs = if self.places { declared.annotations.find(marks(it, placed))?.args ?? [] } else { [] }
+        let verbs = if self.places { declared.annotations.find((a) -> marks(a, placed))?.args ?? [] } else { [] }
         if verbs.length == 2 { return .Placed(verbs[0], verbs[1]) }
         if is_tags(declared) { return .Tags(type_name, path_of(declared, args), [v.name for v in declared.variants]) }
         let over? = declared.shape_over() else { return .Declared(type_name, path_of(declared, args)) }
@@ -137,7 +139,7 @@ impl Reading {
     /// where places stand apart.
     fn field_shape(f: Field) -> ValueShape? {
         let shape? = self.shape_of(f.kind) else { return null }
-        if !self.places || !f.marks.any(it.name == OFFSET_MARK) { return shape }
+        if !self.places || !f.marks.any((m) -> marked(m, offset)) { return shape }
         offset_within(shape)
     }
 
@@ -226,10 +228,7 @@ impl ShapedVariant {
 }
 
 /// The node a dense id names, absent for any other type.
-fn node_indexed(declared: MetaType) -> string? { marked(declared, "indexes") }
-
-/// The first argument of a marker on a declaration, absent when it isn't marked.
-fn marked(declared: MetaType, marker: string) -> string? { declared.annotations.find(it.name == marker)?.args?.first() }
+fn node_indexed(declared: MetaType) -> string? { declared.annotations.find((a) -> marks(a, indexes))?.args?.first() }
 
 /// A declared record's one variant, or an enum's variants.
 export fn declared_variants(t: MetaType) -> List<MetaVariant> {

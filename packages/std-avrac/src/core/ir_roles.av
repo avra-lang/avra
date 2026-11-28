@@ -30,6 +30,7 @@
 //! the file that declares it, and a file that also walked the IR
 //! would be typed while the annotated file's own impls are still
 //! registering (CLAUDE.md).
+use core.marks.{dst, seats, body, code, host, owns, view, lent}
 use @std.meta.{
     Type as MetaType,
     Variant as MetaVariant,
@@ -41,9 +42,20 @@ use @std.meta.{
     Arms,
     name,
     beside,
+    marked,
+    reads,
+    Mark as MetaMark,
 }
 
 /// The compiler's derive for the IR's role projections.
+@reads(dst)
+@reads(seats)
+@reads(body)
+@reads(code)
+@reads(host)
+@reads(owns)
+@reads(view)
+@reads(lent)
 trait Roles {
     static fn derive(t: MetaType) -> List<Directive> {
         // ONE DIRECTIVE PER PROJECTION, NOT ONE QUOTE HOLDING SIX. Two
@@ -57,7 +69,7 @@ trait Roles {
                 t,
                 quote {
             export fn dst_of_role(i: ${t}) -> Reg? {
-                match i { ${[answering(v, holding(v, "dst"), quote { null }) for v in t.variants]} }
+                match i { ${[answering(v, holding(v, (m) -> marked(m, dst)), quote { null }) for v in t.variants]} }
             }
          },
             ),
@@ -73,7 +85,7 @@ trait Roles {
                 t,
                 quote {
             export fn seat_regs_role(i: ${t}) -> List<Reg> {
-                match i { ${[answering(v, holding(v, "seats"), quote { [] }) for v in t.variants]} }
+                match i { ${[answering(v, holding(v, (m) -> marked(m, seats)), quote { [] }) for v in t.variants]} }
             }
          },
             ),
@@ -97,7 +109,7 @@ trait Roles {
                 t,
                 quote {
             export fn owned_dst_role(i: ${t}) -> Reg? {
-                match i { ${[answering(v, holding(v, "owns"), quote { null }) for v in t.variants]} }
+                match i { ${[answering(v, holding(v, (m) -> marked(m, owns)), quote { null }) for v in t.variants]} }
             }
          },
             ),
@@ -105,7 +117,7 @@ trait Roles {
                 t,
                 quote {
             export fn viewed_dst_role(i: ${t}) -> Reg? {
-                match i { ${[answering(v, holding(v, "view"), quote { null }) for v in t.variants]} }
+                match i { ${[answering(v, holding(v, (m) -> marked(m, view)), quote { null }) for v in t.variants]} }
             }
          },
             ),
@@ -113,7 +125,7 @@ trait Roles {
                 t,
                 quote {
             export fn lent_args_role(i: ${t}) -> List<Reg> {
-                match i { ${[answering(v, holding(v, "lent"), quote { [] }) for v in t.variants]} }
+                match i { ${[answering(v, holding(v, (m) -> marked(m, lent)), quote { [] }) for v in t.variants]} }
             }
          },
             ),
@@ -121,7 +133,7 @@ trait Roles {
                 t,
                 quote {
             export fn call_symbol_role(i: ${t}) -> string? {
-                match i { ${[answering(v, holding(v, "body"), quote { null }) for v in t.variants]} }
+                match i { ${[answering(v, holding(v, (m) -> marked(m, body)), quote { null }) for v in t.variants]} }
             }
          },
             ),
@@ -137,15 +149,13 @@ trait Roles {
                 t,
                 quote {
             export fn hosted_symbol_role(i: ${t}) -> string? {
-                match i { ${[answering(v, holding(v, "host"), quote { null }) for v in t.variants]} }
+                match i { ${[answering(v, holding(v, (m) -> marked(m, host)), quote { null }) for v in t.variants]} }
             }
          },
             ),
         ]
     }
 
-    /// The words this derive reads off a payload.
-    static fn marks(t: MetaType) -> List<string> { ["dst", "seats", "body", "code", "host", "owns", "view", "lent"] }
 }
 
 fn made(t: MetaType, code: Decls) -> Directive {
@@ -156,7 +166,7 @@ fn made(t: MetaType, code: Decls) -> Directive {
 /// the ADDRESS of — a call beats an address where a variant declares
 /// both, since entering is the stronger claim.
 fn entered_or_addressed(v: MetaVariant) -> int? {
-    holding(v, "body") ?? holding(v, "code")
+    holding(v, (m) -> marked(m, body)) ?? holding(v, (m) -> marked(m, code))
 }
 
 /// An arm answering the payload in that role, or `otherwise` when the
@@ -187,17 +197,13 @@ fn arm(v: MetaVariant, value: Code) -> Arms {
     quote { .${v}(${binders(v)}) -> ${value} }
 }
 
-/// The payload that HOLDS `word`, or absence when none does — the
+/// The payload whose mark `role` holds, or absence when none does — the
 /// FIRST, because a role is a singleton and the arms above answer one
 /// payload.
-fn holding(v: MetaVariant, word: string) -> int? {
-    let at = [j for j, f in v.fields if carries(f, word)]
+fn holding(v: MetaVariant, role: fn(MetaMark) -> bool) -> int? {
+    let at = [j for j, f in v.fields if f.marks.any(role(it))]
     if at.is_empty() { return null }
     at[0]
-}
-
-fn carries(f: Field, word: string) -> bool {
-    f.marks.any(it.name == word)
 }
 
 /// A step's OPERANDS: every reg-shaped payload but THE ONE `dst_of`
@@ -206,7 +212,7 @@ fn carries(f: Field, word: string) -> bool {
 /// to silence.
 fn operands(v: MetaVariant) -> List<Code> {
     let bs = binders(v)
-    let defines = holding(v, "dst")
+    let defines = holding(v, (m) -> marked(m, dst))
     flatten([some_list(operand(f, bs[j])) for j, f in v.fields if read_at(defines, j)])
 }
 
@@ -276,7 +282,7 @@ fn reg_opt_pred(inner: Kind, b: string) -> Code? {
 /// `operands`' predicate twin.
 fn reg_preds(v: MetaVariant) -> List<Code> {
     let bs = binders(v)
-    let defines = holding(v, "dst")
+    let defines = holding(v, (m) -> marked(m, dst))
     flatten([some_list(reg_pred(f, bs[j])) for j, f in v.fields if read_at(defines, j)])
 }
 

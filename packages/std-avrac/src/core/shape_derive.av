@@ -28,6 +28,7 @@
 //! behind it.
 //!
 //! It stands ALONE in this file on purpose (CLAUDE.md).
+use core.marks.{apart, local, facet}
 use @std.meta.{
     Type as MetaType,
     Variant as MetaVariant,
@@ -44,10 +45,15 @@ use @std.meta.{
     refuse_as_at,
     beside,
     Held,
+    reads,
+    marked,
 }
 use @std.program.names.{text_print_of}
 
 /// The compiler's derive for the structural matcher.
+@reads(local)
+@reads(facet)
+@reads(apart)
 export trait Matchable {
     static fn derive(t: MetaType) -> Declared {
         let problems = collisions(t)
@@ -76,9 +82,6 @@ export trait Matchable {
         }
     }
 
-    /// `@local` and `@facet` fields are not part of what a node IS; a
-    /// payload's type otherwise says everything this derive folds.
-    static fn marks(t: MetaType) -> List<string> { [local_word, facet_word, "apart"] }
 }
 
 /// One variant's shallow arm — its IDENTITY pins the kind, never its
@@ -145,7 +148,7 @@ fn identity_clash(t: MetaType, first: MetaVariant, second: MetaVariant) -> Diagn
 /// the generated code, exactly as Identity's own registry refuses
 /// one.
 fn shallow_part(t: MetaType, v: MetaVariant, f: Field) -> Code {
-    shallow_through(t, f.kind, name(f.name), marked(v, "apart") != null, [])
+    shallow_through(t, f.kind, name(f.name), v.marks.any((m) -> marked(m, apart)), [])
 }
 
 /// A payload folded through its TYPE: a row when it has one; else, for
@@ -264,7 +267,7 @@ fn reach_parts(t: MetaType, v: MetaVariant) -> List<Code> {
 /// HOW A PAYLOAD'S TYPE REACHES ITS `At`s — absence for every ATOM,
 /// which `shallow_part` already folded whole.
 fn reach_shape(t: MetaType, v: MetaVariant, f: Field) -> Code? {
-    kids_through(t, f.kind, name(f.name), marked(v, "apart") != null, [])
+    kids_through(t, f.kind, name(f.name), v.marks.any((m) -> marked(m, apart)), [])
 }
 
 /// A payload's `At`s through its TYPE: a row when it has one, else —

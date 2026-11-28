@@ -5,18 +5,16 @@
 //!
 //! It stands ALONE in this file on purpose (CLAUDE.md): running a derive
 //! TYPES the file that declares it.
-use @std.meta.{Type as MetaType, Directive, literal, beside}
+use @std.meta.{Type as MetaType, Directive, Named, Marker, literal, beside, marked, reads}
 
-/// The mark a computed field wears.
-export const unwritten_mark: string = "unwritten"
+/// The mark a computed field wears: a field computed rather than authored.
+export fn unwritten(_d: Named) -> Marker { Marker {} }
 
 /// The derive for a record's authored field names.
+@reads(unwritten)
 export trait Fielded {
-    /// A field computed rather than authored.
-    static fn marks(t: MetaType) -> List<string> { [unwritten_mark] }
-
     static fn derive(t: MetaType) -> List<Directive> {
-        let names = [literal(f.name) for f in t.fields if f.marks.find(it.name == unwritten_mark) == null]
+        let names = [literal(f.name) for f in t.fields if !f.marks.any((m) -> marked(m, unwritten))]
         [
             beside(
                 t,

@@ -1,8 +1,8 @@
 // A `@derived` field: never written, never folded, never in the saved shape, and rebuilt on every
 // read through its type's own door: from bytes, from bytes already held, and in place inside a
 // bigger answer.
-use @std.meta.{derive, Field, Kind, Mark, Type as MetaType}
-use saved_derive.{DERIVED_MARK, Saved, saved_variants}
+use @std.meta.{derive, Field, Kind, Mark, Type as MetaType, worn_mark}
+use saved_derive.{Saved, derived, saved_variants}
 use saved_layout.{SavedSource, saved_root_record}
 use answer_record.{content_hash}
 use interned.{HIGH_LANE, LOW_LANE}
@@ -91,14 +91,10 @@ spec "saved_derive — a derived field" {
     }
     given "the saved shape" {
         then "leaves a derived field out, so adding one moves no format" {
-            let derived = [Mark { name: DERIVED_MARK, args: ["point"], at: null }]
+            let marks = [worn_mark(derived, ["point"])]
             let marked = declared(
                 "Point",
-                [
-                    field("x", Kind.Int, []),
-                    field("y", Kind.Int, []),
-                    field("sum", Kind.Int, derived),
-                ],
+                [field("x", Kind.Int, []), field("y", Kind.Int, []), field("sum", Kind.Int, marks)],
             )
             let without = declared("Plain", [field("x", Kind.Int, []), field("y", Kind.Int, [])])
             shape_spelled(marked) == "x,y" && shape_spelled(marked) == shape_spelled(without)

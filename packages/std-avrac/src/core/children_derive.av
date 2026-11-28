@@ -37,6 +37,7 @@
 //! the file that declares it, and a file that also walked the nodes
 //! would be typed while the annotated file's own impls are still
 //! registering (CLAUDE.md).
+use core.marks.{apart, branches, clauses, declares, expands, sequence, local, facet}
 use @std.meta.{
     Type as MetaType,
     Variant as MetaVariant,
@@ -54,21 +55,19 @@ use @std.meta.{
     refuse_as_at,
     beside,
     Held,
+    marked,
+    reads,
 }
 
-/// The shape words a variant may wear. Exactly one decides how the
-/// walk reaches its children; a variant wearing none is refused, so a
-/// new node kind cannot arrive with its shape undeclared.
-const shape_words: List<string> = [
-    "declares",
-    "expands",
-    "apart",
-    "sequence",
-    "branches",
-    "clauses",
-]
-
 /// The compiler's derive for the complete child walk.
+@reads(declares)
+@reads(expands)
+@reads(apart)
+@reads(sequence)
+@reads(branches)
+@reads(clauses)
+@reads(local)
+@reads(facet)
 export trait Children {
     static fn derive(t: MetaType) -> Declared {
         let problems = flatten([shape_problems(t, v) for v in t.variants])
@@ -94,7 +93,6 @@ export trait Children {
     /// `@local` and `@facet` — and no others. A derive that claims a
     /// mark it never reads makes the claim law say nothing: the word
     /// stops being refused without anything having started to read it.
-    static fn marks(t: MetaType) -> List<string> { shape_words.concat([local_word, facet_word]) }
 }
 
 /// What a refused enum is given: the walk answers nothing anyone
@@ -112,8 +110,8 @@ fn refused_children(t: MetaType) -> Directive {
 
 /// What is wrong with a variant's shape, when anything is.
 fn shape_problems(t: MetaType, v: MetaVariant) -> List<Diagnostic> {
-    if !shape_words.any(marked(v, it) != null) { return [unshaped(t, v)] }
-    if marked(v, "clauses") != null && !v.fields.any(it.ty == "List<CompClause>") {
+    if !v.marks.any(shape_mark(it)) { return [unshaped(t, v)] }
+    if v.marks.any((m) -> marked(m, clauses)) && !v.fields.any(it.ty == "List<CompClause>") {
         return [clauses_without_clause(t, v)]
     }
     []
@@ -132,8 +130,8 @@ fn child_arm(t: MetaType, v: MetaVariant) -> Arms {
 /// quote's statements and a sublanguage's expansion are reached and
 /// its holes are not walked beside them.
 fn reach_of(t: MetaType, v: MetaVariant) -> Code {
-    if marked(v, "declares") != null { return quote { [] } }
-    if marked(v, "expands") != null { return concatenated(view_parts(t, v)) }
+    if v.marks.any((m) -> marked(m, declares)) { return quote { [] } }
+    if v.marks.any((m) -> marked(m, expands)) { return concatenated(view_parts(t, v)) }
     concatenated(parts_of(t, v))
 }
 
@@ -144,8 +142,14 @@ fn view_parts(t: MetaType, v: MetaVariant) -> List<Code> {
 }
 
 /// The mark of this name the variant carries, or absence.
-fn marked(v: MetaVariant, word: string) -> MetaMark? {
-    v.marks.find(it.name == word)
+/// Whether the mark `m` is one of the shape words a variant wears.
+fn shape_mark(m: MetaMark) -> bool {
+    marked(m, declares) ||
+        marked(m, expands) ||
+        marked(m, apart) ||
+        marked(m, sequence) ||
+        marked(m, branches) ||
+        marked(m, clauses)
 }
 
 /// Each expression-bearing payload's reach, in declaration order. ONE
@@ -171,7 +175,7 @@ fn parts_of(t: MetaType, v: MetaVariant) -> List<Code> {
 /// without a row here breaks that build before it can quietly shrink
 /// this walk.
 fn reach(t: MetaType, v: MetaVariant, f: Field) -> Code? {
-    reach_through(t, f.kind, name(f.name), marked(v, "apart") != null)
+    reach_through(t, f.kind, name(f.name), v.marks.any((m) -> marked(m, apart)))
 }
 
 /// The rows: the payload types a walk of children reaches by name.

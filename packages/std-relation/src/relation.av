@@ -69,6 +69,10 @@ use @std.meta.{
     beside,
     marks,
     dense,
+    marked,
+    reads,
+    Named,
+    Marker,
 }
 use rows.{
     Rows,
@@ -132,41 +136,61 @@ use stable.{
     tagged,
 }
 
+// ── The marks a relation's fields wear: `@key`, `@unique` and `@index` file a field in a lookup;
+// `@local` is a column this process alone can read, never hashed or encoded; `@file` is a text
+// naming a file, which a scope spells as it spells a place's file. ──
+
+/// `@key`: a lookup that answers one row.
+export fn key(_d: Named) -> Marker { Marker {} }
+
+/// `@unique`: a lookup whose value no two rows share.
+export fn unique(_d: Named) -> Marker { Marker {} }
+
+/// `@index(…)`: a lookup over the rows holding a value.
+export fn index(_d: Named) -> Marker { Marker {} }
+
+/// `@local`: a column this process alone reads.
+export fn local(_d: Named) -> Marker { Marker {} }
+
+/// `@file`: a text naming a file.
+export fn file(_d: Named) -> Marker { Marker {} }
+
+@reads(key)
+@reads(unique)
+@reads(index)
+@reads(local)
 export trait RelationRow {
     static fn derive(t: Type) -> List<Directive> {
         [beside(t, generated(t))]
     }
-
-    /// The field marks this derive reads.
-    static fn marks(t: Type) -> List<string> { relation_marks }
 }
 
 /// `@derive(Columns)` — a record carried as a relation's nested column,
 /// hashed and written field by field. It generates nothing: it claims
 /// the marks a stored type's fields read.
+@reads(local)
+@reads(file)
 export trait Columns {
     static fn derive(_t: Type) -> List<Directive> { [] }
-
-    static fn marks(_t: Type) -> List<string> { stored_marks }
 }
 
 /// `@relation` — the generated row members and the shape's contract,
 /// from one reading of the declaration.
+@reads(key)
+@reads(unique)
+@reads(index)
+@reads(local)
 export fn relation(t: Type) -> Declared {
     Declared { made: RelationRow.derive(t), problems: relation_problems(t) }
 }
 
-/// The marks a stored type's fields read: `local`, a field the wire leaves out; `file`, a text
-/// naming a file, which a scope spells as it spells a place's file.
-const stored_marks: List<string> = ["local", "file"]
-
 /// `@derive(Codec)`'s generator — see `codec`.
+@reads(local)
+@reads(file)
 export trait Codec {
     static fn derive(t: Type) -> List<Directive> {
         stored_made(stored(t))
     }
-
-    static fn marks(t: Type) -> List<string> { stored_marks }
 }
 
 /// What `@codec` gives a type, as a bound a generic fn names: `fn kept<T: Storable>(v: T)`.
@@ -196,6 +220,8 @@ export trait Storable {
 /// the scope's spelling, a generic record of one parameter (a `SideTable<T>`) is its fields at
 /// the argument, and a `@local` field is no part of the wire and is rebuilt from its declared
 /// default. A field with no wire form is refused, named.
+@reads(local)
+@reads(file)
 export fn codec(t: Type) -> Declared {
     let s = stored(t)
     Declared { made: stored_made(s), problems: s.problems }
@@ -217,8 +243,8 @@ export fn side(_t: Type) {}
 /// beside `@relation`, that word — `arena`/`side` are OWNED BY THEIR
 /// PARTITION, never a Db; the caller hands the partition's own value in.
 fn storage_mode(t: Type) -> string {
-    if t.annotations.any(marks(it, arena)) { return "arena" }
-    if t.annotations.any(marks(it, side)) { return "side" }
+    if t.annotations.any((a) -> marks(a, arena)) { return "arena" }
+    if t.annotations.any((a) -> marks(a, side)) { return "side" }
     "rows"
 }
 
@@ -273,13 +299,13 @@ export fn problems_under(t: Type, shapes: fn(string) -> NamedShape) -> List<Diag
 /// answering both one row and a list, a lookup over a kind that files,
 /// and an `id` the store can mint.
 fn lookup_problems(t: Type, shapes: fn(string) -> NamedShape) -> List<Diagnostic> {
-    let clashes = [answer_clash(t, f) for f in lookups(t) if marked(f, "unique") && marked(f, "index")]
+    let clashes = [answer_clash(t, f) for f in lookups(t) if unique_marked(f) && indexed(f)]
     let taken = [lookup_collision(t, f) for f in content(t) if takes_key_lookup(t, f)]
     let unfiled = [lookup_kind(t, f) for f in lookups(t) if !files(filed_kind(f.kind), shapes)]
-    let many = [many_valued(t, f) for f in lookups(t) if is_list(f.kind) && (marked(f, "key") || marked(f, "unique") || index_with(f, "grain"))]
+    let many = [many_valued(t, f) for f in lookups(t) if is_list(f.kind) && (keyed(f) || unique_marked(f) || index_with(f, "grain"))]
     let ids = [id_not_int(t, f) for f in t.fields if f.name == "id" && !mints(f.kind, shapes)]
-    let keyed_local = [key_local(t, f) for f in lookups(t) if marked(f, "key") && marked(f, "local")]
-    let null_one = [null_bucket(t, f) for f in lookups(t) if is_opt(f.kind) && (marked(f, "key") || index_with(f, "grain"))]
+    let keyed_local = [key_local(t, f) for f in lookups(t) if keyed(f) && local_marked(f)]
+    let null_one = [null_bucket(t, f) for f in lookups(t) if is_opt(f.kind) && (keyed(f) || index_with(f, "grain"))]
     let grains = [f for f in lookups(t) if index_with(f, "grain")]
     let more_grains = [grain_twice(t, f) for f in grains.slice(1, grains.length)]
     clashes
@@ -310,11 +336,30 @@ fn mints(k: Kind, shapes: fn(string) -> NamedShape) -> bool {
     }
 }
 
-fn marked(f: Field, mark: string) -> bool { f.marks.any(it.name == mark) }
+/// Whether the field wears `@key`.
+fn keyed(f: Field) -> bool { f.marks.any((m) -> marked(m, key)) }
+
+/// Whether the field wears `@unique`.
+fn unique_marked(f: Field) -> bool { f.marks.any((m) -> marked(m, unique)) }
+
+/// Whether the field wears `@index`.
+fn indexed(f: Field) -> bool { f.marks.any((m) -> marked(m, index)) }
+
+/// Whether the field wears `@local`.
+fn local_marked(f: Field) -> bool { f.marks.any((m) -> marked(m, local)) }
+
+/// Whether the field wears `@file`.
+fn file_marked(f: Field) -> bool { f.marks.any((m) -> marked(m, file)) }
+
+/// Whether the mark `m` files its field in a lookup.
+fn lookup_mark(m: Mark) -> bool { marked(m, key) || marked(m, unique) || marked(m, index) }
+
+/// Whether the mark `m` is the vocabulary's: a lookup's, or `@local`.
+fn known_mark(m: Mark) -> bool { lookup_mark(m) || marked(m, local) }
 
 /// The lookup marks a field wears.
 fn lookup_marks(f: Field) -> List<string> {
-    [m.name for m in f.marks if lookup_words.contains(m.name)]
+    [m.name for m in f.marks if lookup_mark(m)]
 }
 
 /// Every field a lookup reads, in declared order; a field whose marks
@@ -324,7 +369,7 @@ fn lookups(t: Type) -> List<Field> {
 }
 
 /// The `@key` fields, in declared order — together, the row's name.
-fn key_fields(t: Type) -> List<Field> { [f for f in lookups(t) if marked(f, "key")] }
+fn key_fields(t: Type) -> List<Field> { [f for f in lookups(t) if keyed(f)] }
 
 /// The fields looked up by their own name — `@unique` or `@index`.
 fn named_lookups(t: Type) -> List<Field> { [f for f in lookups(t) if names_a_lookup(f)] }
@@ -415,7 +460,7 @@ fn carried_under(k: Kind, shapes: fn(string) -> NamedShape, seen: List<string>) 
 }
 
 /// A nested record's columns: its fields but the `@local` ones.
-fn columns(fs: List<Field>) -> List<Field> { [f for f in fs if !marked(f, "local")] }
+fn columns(fs: List<Field>) -> List<Field> { [f for f in fs if !local_marked(f)] }
 
 /// Whether a kind holds a dense id outside a `@local` column, at any depth.
 fn holds_dense(k: Kind, shapes: fn(string) -> NamedShape) -> bool { dense_under(k, shapes, []) }
@@ -460,7 +505,7 @@ fn decodable_in(k: Kind, under_seq: bool, seen: List<string>, scoped: bool) -> b
         .Named(n, _) -> wears_codec(n) ||
             match named_shape(n) {
                 .Tagged(_) -> true,
-                .Record(fs) or .Placed(fs) -> if under_seq || seen.contains(n) || fs.any((f: Field) -> marked(f, "local")) {
+                .Record(fs) or .Placed(fs) -> if under_seq || seen.contains(n) || fs.any((f: Field) -> local_marked(f)) {
                     false
                 } else {
                     fs.all((f: Field) -> decodable_in(f.kind, false, seen.concat([n]), scoped))
@@ -600,7 +645,7 @@ fn helper_decodable_under(k: Kind, seen: List<string>) -> bool {
                 fs
                     .all(
                         (f: Field) -> restorable(f) &&
-                            (marked(f, "local") || helper_decodable_under(f.kind, seen.concat([n]))),
+                            (local_marked(f) || helper_decodable_under(f.kind, seen.concat([n]))),
                     )
             },
             .Over(shape) -> helper_decodable_under(shape, seen),
@@ -664,7 +709,7 @@ fn scope_spelled(ty: Type) -> NamedShape? {
     if one != null &&
         ty.fields.length == 1 &&
         one!.kind is .Int &&
-        ty.annotations.any(marks(it, dense)) {
+        ty.annotations.any((a) -> marks(a, dense)) {
         return NamedShape.Dense(one!.name)
     }
     // LICENSED compiler.foreign_declaration_named: @std/errors sits below @std/meta and carries no mark
@@ -751,17 +796,11 @@ fn tag_reader(r: Code, k: Kind, owner: Owner) -> Code {
     if owner.ordinal { tag_read_code(r, k) } else { tag_read(r, k) }
 }
 
-/// The marks that file a field in a lookup.
-const lookup_words: List<string> = ["key", "unique", "index"]
-
-/// The field marks of the vocabulary: the lookups, and `local` — a
-/// column this process alone can read, never hashed or encoded.
-const relation_marks: List<string> = lookup_words.concat(["local"])
-
 /// Whether a field's marks are the vocabulary's, each worn once.
 fn marks_ok(f: Field) -> bool {
-    let names = [m.name for m in f.marks]
-    names.all(known_mark) && repeated(names).is_empty() && f.marks.all(args_ok)
+    f.marks.all(known_mark) &&
+        repeated([m.name for m in f.marks]).is_empty() &&
+        f.marks.all(args_ok)
 }
 
 /// The arguments an `@index` may carry: `ordered` hashes its buckets in
@@ -770,14 +809,12 @@ const index_args: List<string> = ["ordered", "grain"]
 
 /// Whether a mark's arguments are its own — only `@index` takes any.
 fn args_ok(m: Mark) -> bool {
-    if m.name == "index" { return m.args.all((a: string) -> index_args.contains(a)) && repeated(m.args).is_empty() }
+    if marked(m, index) { return m.args.all((a: string) -> index_args.contains(a)) && repeated(m.args).is_empty() }
     m.args.is_empty()
 }
 
 /// Whether a field's `@index` carries `arg`.
-fn index_with(f: Field, arg: string) -> bool { f.marks.any(it.name == "index" && it.args.contains(arg)) }
-
-fn known_mark(name: string) -> bool { relation_marks.contains(name) }
+fn index_with(f: Field, arg: string) -> bool { f.marks.any((m) -> marked(m, index) && m.args.contains(arg)) }
 
 /// Each name that appears again after its first place.
 fn repeated(names: List<string>) -> List<string> {
@@ -786,9 +823,8 @@ fn repeated(names: List<string>) -> List<string> {
 
 /// A field's first unknown mark, else its first repeated one.
 fn mark_problem(t: Type, f: Field) -> Diagnostic {
-    let names = [m.name for m in f.marks]
-    let unknown? = names.find((n: string) -> !known_mark(n)) else { return known_mark_problem(t, f, names) }
-    unknown_mark(t, f, unknown)
+    let unknown? = f.marks.find(!known_mark(it)) else { return known_mark_problem(t, f, [m.name for m in f.marks]) }
+    unknown_mark(t, f, unknown.name)
 }
 
 /// Every mark known: a repeated one, else one whose arguments are wrong.
@@ -839,7 +875,7 @@ fn content(t: Type) -> List<Field> {
 }
 
 /// The content every process reads alike — all but the `@local` columns.
-fn stable(t: Type) -> List<Field> { [f for f in content(t) if !marked(f, "local")] }
+fn stable(t: Type) -> List<Field> { [f for f in content(t) if !local_marked(f)] }
 
 fn shape_ok(t: Type) -> bool {
     relation_problems(t).is_empty()
@@ -1120,7 +1156,7 @@ fn filing_decl(t: Type) -> List<Decls> {
 /// which check the final set instead — owner: ORM.
 fn unique_checks(t: Type) -> List<Stmts> {
     let base = key_indexes(t)
-    [unique_check(t, f, base + j) for j, f in named_lookups(t) if marked(f, "unique")]
+    [unique_check(t, f, base + j) for j, f in named_lookups(t) if unique_marked(f)]
 }
 
 fn unique_check(t: Type, f: Field, i: int) -> Stmts {
@@ -1169,7 +1205,7 @@ fn key_members(t: Type) -> List<Decls> {
 }
 
 /// Whether the row has a `@local` column.
-fn localized(t: Type) -> bool { content(t).any(marked(it, "local")) }
+fn localized(t: Type) -> bool { content(t).any(local_marked(it)) }
 
 /// The STORED row: the stable columns alone, what a record read back from
 /// disk can honestly hold. A `@local` column is this process's own, so a
@@ -1183,7 +1219,7 @@ fn stored_record(t: Type) -> List<Decls> {
     [
         lacking_all(
             t,
-            [f for f in content(t) if marked(f, "local")],
+            [f for f in content(t) if local_marked(f)],
             if t.exported { quote { export type ${t}Stored = { ..${fields} } } } else { quote { type ${t}Stored = { ..${fields} } } },
         ),
     ]
@@ -1236,11 +1272,11 @@ fn part_of(e: Code, k: Kind) -> Code {
 /// `by_<field>`, over each `@unique` or `@index` field's own index.
 fn field_lookups(t: Type) -> List<Decls> {
     let base = key_indexes(t)
-    [lookup_member(t, f, base + j, "by_${f.name}", marked(f, "unique")) for j, f in named_lookups(t)]
+    [lookup_member(t, f, base + j, "by_${f.name}", unique_marked(f)) for j, f in named_lookups(t)]
 }
 
 /// Whether a field is looked up by its own name — `@unique` or `@index`.
-fn names_a_lookup(f: Field) -> bool { marked(f, "unique") || marked(f, "index") }
+fn names_a_lookup(f: Field) -> bool { unique_marked(f) || indexed(f) }
 
 /// One lookup named `n`: `one` answers the row filed under the value,
 /// otherwise every row. Each member is whole in one template, so its
@@ -1628,7 +1664,7 @@ fn column_writers(ty: string, fs: List<Field>, owner: Owner) -> List<Code> {
 }
 
 /// Whether a field is a text naming a file, spelled by the scope as a place's file is.
-fn names_a_file(f: Field, owner: Owner) -> bool { owner.scoped && f.kind is .Str && marked(f, "file") }
+fn names_a_file(f: Field, owner: Owner) -> bool { owner.scoped && f.kind is .Str && file_marked(f) }
 
 /// One column written: a `@file` text as the scope spells a file.
 fn field_written(f: Field, owner: Owner) -> Code {
@@ -1746,7 +1782,7 @@ fn stored_fields(t: Type) -> List<Field> {
 }
 
 /// The fields the wire carries: all but the `@local` ones.
-fn stored_wire(t: Type) -> List<Field> { [f for f in stored_fields(t) if !marked(f, "local")] }
+fn stored_wire(t: Type) -> List<Field> { [f for f in stored_fields(t) if !local_marked(f)] }
 
 /// One reading of a stored type — its wire, its helpers' owner, its problems and each reached
 /// declaration's spelling by name — asked once, so a generator's cost is one walk of the
@@ -1841,7 +1877,7 @@ fn stored_within(s: Stored) -> List<Kind> {
 /// read and hash its own `impl` holds, so a stored answer needs no second generator.
 fn wears_codec(n: string) -> bool {
     let t? = type_named(n) else { return false }
-    t.annotations.any(marks(it, codec))
+    t.annotations.any((a) -> marks(a, codec))
 }
 
 /// Whether every named type this kind's hash and record reach declares `@codec`. A payload enum
@@ -2084,7 +2120,7 @@ fn stored_read_known(s: Stored) -> Code {
 fn known_value(s: Stored, f: Field) -> Code {
     let read = field_value(f, s.owner)
     let default? = f.default else { return read }
-    if marked(f, "local") { return read }
+    if local_marked(f) { return read }
     quote { if slots > ${[w.name for w in s.wire].index_of(f.name)} { ${read} } else { ${default} } }
 }
 
@@ -2104,7 +2140,7 @@ fn stored_slots(s: Stored) -> List<ShapeSlot> {
 fn variant_slot(v: Variant) -> ShapeSlot {
     ShapeSlot {
         name: v.name,
-        ty: [slot_spelled(f) for f in v.fields if !marked(f, "local")].join(","),
+        ty: [slot_spelled(f) for f in v.fields if !local_marked(f)].join(","),
     }
 }
 
@@ -2231,14 +2267,14 @@ fn carries_payload(t: Type) -> bool { t.variants.any((v: Variant) -> !v.fields.i
 
 /// A field's value in a decoded record: read from the wire, or the default a `@local` one declares.
 fn field_value(f: Field, owner: Owner) -> Code {
-    if !marked(f, "local") { return read_value(f.kind, owner) }
+    if !local_marked(f) { return read_value(f.kind, owner) }
     let default? = f.default else { return quote { a_local_field_with_no_default() } }
     default
 }
 
 /// Whether a decoded value can stand for a field: the wire carries it, or it is `@local` and
 /// declares the default that stands in for it.
-fn restorable(f: Field) -> bool { !marked(f, "local") || f.default != null }
+fn restorable(f: Field) -> bool { !local_marked(f) || f.default != null }
 
 /// Every way a declaration breaks the stored law, each spoken at the field that breaks it.
 export fn stored_problems(t: Type) -> List<Diagnostic> { stored(t).problems }
@@ -2247,8 +2283,8 @@ export fn stored_problems(t: Type) -> List<Diagnostic> { stored(t).problems }
 fn problems_of(t: Type, shapes: Map<string, NamedShape>, coded: List<string>) -> List<Diagnostic> {
     if t.module.is_empty() { return [no_module(t)] }
     let fit = fit_names(shapes, coded)
-    let unfit = [stored_unfit(t, f) for f in stored_fields(t) if !marked(f, "local") && !kind_fits(f.kind, fit)]
-    let defaultless = [stored_defaultless(t, f) for f in stored_fields(t) if marked(f, "local") && f.default == null]
+    let unfit = [stored_unfit(t, f) for f in stored_fields(t) if !local_marked(f) && !kind_fits(f.kind, fit)]
+    let defaultless = [stored_defaultless(t, f) for f in stored_fields(t) if local_marked(f) && f.default == null]
     unfit.concat(defaultless)
 }
 
@@ -2276,7 +2312,7 @@ fn shape_fits(shape: NamedShape, fit: Map<string, bool>) -> bool {
     match shape {
         .Tagged(_) or .Dense(_) -> true,
         .Payload(vs) -> vs.all((v: Variant) -> v.fields.all((f: Field) -> kind_fits(f.kind, fit))),
-        .Record(fs) or .Placed(fs) -> fs.all((f: Field) -> restorable(f) && (marked(f, "local") || kind_fits(f.kind, fit))),
+        .Record(fs) or .Placed(fs) -> fs.all((f: Field) -> restorable(f) && (local_marked(f) || kind_fits(f.kind, fit))),
         .Over(inner) -> kind_fits(inner, fit),
         .Plain -> false,
     }

@@ -69,10 +69,15 @@ use @std.meta.{
     as_code,
     int_node,
     marks,
+    Named,
+    Marker,
+    marked,
+    reads,
 }
 use @std.text.{parse_int}
 use tree.node.{Node, Prim, Attribute, Action, Handler, Stamp}
 use tree.prim.{prim}
+use tree.facets.{facet}
 use tree.seats.{SeatRow, seat, seat_named}
 use tree.viewed.{ViewRow, viewed}
 // LICENSED modules.unused_import: `sighted` is named by GENERATED code (the node a primitive derives).
@@ -93,6 +98,11 @@ use compose.{gathered}
 @composes(Stand)
 @placed
 @seeded_at_need
+@reads(attr)
+@reads(children)
+@reads(style)
+@reads(over)
+@reads(sets)
 export trait View {
     /// What this view says of where it stands among its siblings.
     fn stand() -> Stand
@@ -189,7 +199,6 @@ export trait View {
         }
     }
 
-    static fn marks(t: Type) -> List<string> { [attr_mark, children_mark, style_mark, over_mark, sets_mark] }
 }
 
 /// A view that was refused: the impl that stands in for it, and why.
@@ -488,9 +497,9 @@ impl Vocabulary {
     /// `@over` is what the node shows in its place where it is given, and projects nothing itself.
     fn part(t: Type, f: Field) -> Part {
         if self.kept_state(f) && !set_by_any(t, f.name) { return refused(stateful_primitive(f)) }
-        let over? = marks_of(f, over_mark).first() else {
+        let over? = marks_of(f, (m) -> marked(m, over)).first() else {
             let says? = f.says else { return self.marked(t, f) }
-            let marked? = f.marks.find(it.name != sets_mark) else { return self.event(t, f, says) }
+            let marked? = f.marks.find(!marked(it, sets)) else { return self.event(t, f, says) }
             return refused(marked_event(f, marked))
         }
         over_part(t, f, over)
@@ -499,9 +508,9 @@ impl Vocabulary {
     /// The one thing a member's marks say. Each mark is read by its own
     /// word, so a member saying two things shows as two parts.
     fn marked(t: Type, f: Field) -> Part {
-        let said = [self.attribute(t, f, m) for m in marks_of(f, attr_mark)]
-            .concat([children(f, m) for m in marks_of(f, children_mark)])
-            .concat([self.styled(f, m) for m in marks_of(f, style_mark)])
+        let said = [self.attribute(t, f, m) for m in marks_of(f, (m) -> marked(m, attr))]
+            .concat([children_part(f, m) for m in marks_of(f, (x) -> marked(x, children))])
+            .concat([self.styled(f, m) for m in marks_of(f, (m) -> marked(m, style))])
         if said.length > 1 { return refused(says_twice(f)) }
         let one? = said.first() else {
             // A member that projects nothing stands where another member's default reads it — the
@@ -576,7 +585,7 @@ impl Vocabulary {
     /// runs under the contexts the node is drawn under, wherever its
     /// caller built it.
     fn event(t: Type, f: Field, says: List<Param>) -> Part {
-        let sets? = marks_of(f, sets_mark).first() else { return self.heard(t, f, says) }
+        let sets? = marks_of(f, (m) -> marked(m, sets)).first() else { return self.heard(t, f, says) }
         let into? = sets.args.first() else { return refused(unnamed_mark(sets, "@sets(value)")) }
         let place? = kept_named(t, into) else { return refused(sets_no_place(f, sets, into)) }
         let wrote? = written_by(says, place, sets) else { return refused(sets_misfit(f, sets, place, says)) }
@@ -645,17 +654,29 @@ impl Vocabulary {
     }
 }
 
-/// The marks a member says its projection with.
-const attr_mark = "attr"
-const children_mark = "children"
-const style_mark = "style"
+// ── The marks a primitive's members say its projection with. ──
 
-/// The mark that says an attribute is its node's own words.
-const facet_mark = "facet"
+/// `@attr(.Label)`: the member is its node's attribute of that kind.
+export fn attr(_d: Named, _kind: string) -> Marker { Marker {} }
+
+/// `@children`: the member's elements are the node's children.
+export fn children(_d: Named) -> Marker { Marker {} }
+
+/// `@style(field)`: the member is laid over the box's field of that name.
+export fn style(_d: Named, _field: string = "") -> Marker { Marker {} }
+
+/// `@sets(value)` on an event writes what it says into the `state` member `value` (`@sets(open,
+/// false)` writes `false` for an event that says nothing).
+export fn sets(_d: Named, _place: string = "", _value: string = "") -> Marker { Marker {} }
+
+/// `@over(value)` on a member makes it what the node shows where it is given.
+export fn over(_d: Named, _place: string = "") -> Marker { Marker {} }
+
+/// The facet that says an attribute is its node's own words.
 const content_facet = "content"
 
-/// A member's marks of one word.
-fn marks_of(f: Field, word: string) -> List<Mark> { [m for m in f.marks if m.name == word] }
+/// A member's marks that `is` holds.
+fn marks_of(f: Field, is: fn(Mark) -> bool) -> List<Mark> { [m for m in f.marks if is(m)] }
 
 /// The box's field a styling member is laid over.
 const style_field = "style"
@@ -672,18 +693,12 @@ fn filled_by(k: Kind) -> Kind {
 }
 
 /// `@children items` → each child's own `describe`.
-fn children(f: Field, m: Mark) -> Part {
+fn children_part(f: Field, m: Mark) -> Part {
     match f.kind {
         .List(.Dyn(_)) -> Part { children: [quote { self.${f.name} }] },
         rest -> refused(not_children(m, f)),
     }
 }
-
-/// The marks that tie a primitive's gesture to its place: `@sets(value)` on an event writes what
-/// it says into the `state` member `value` (`@sets(open, false)` writes `false` for an event that
-/// says nothing), and `@over(value)` on a member makes it what the node shows where it is given.
-const sets_mark = "sets"
-const over_mark = "over"
 
 /// Whether some member of `t` reads `name` in its default (`self.name`): what the default makes,
 /// and so what an instance that keeps its own place starts from.
@@ -721,11 +736,11 @@ fn kept_named(t: Type, name: string) -> Field? { t.fields.find(it.name == name &
 /// The place an event writes, as its `@sets` names it; none for a member that is no event.
 fn sets_member(f: Field) -> string? {
     if f.says == null { return null }
-    marks_of(f, sets_mark).first()?.args?.first()
+    marks_of(f, (m) -> marked(m, sets)).first()?.args?.first()
 }
 
 /// The place a member is shown over, as its `@over` names it.
-fn over_member(f: Field) -> string? { marks_of(f, over_mark).first()?.args?.first() }
+fn over_member(f: Field) -> string? { marks_of(f, (m) -> marked(m, over)).first()?.args?.first() }
 
 /// What a gesture writes into `place`: what it says, or the one flag its mark names for an
 /// event that says nothing — absent where that does not fit the place.
@@ -799,7 +814,7 @@ fn over_part(t: Type, f: Field, over: Mark) -> Part {
     if f.state || f.kind.spelled() != Kind.Opt(held_kind(place)).spelled() { return refused(over_misfit(f, over, place)) }
     let first? = shown_over(t, into) else { return refused(over_no_place(f, over, into)) }
     if first.name != f.name { return refused(over_twice(f, over, first, into)) }
-    let other? = f.marks.find(it.name != over_mark) else { return Part {} }
+    let other? = f.marks.find(!marked(it, over)) else { return Part {} }
     refused(over_marked(f, other))
 }
 
@@ -881,7 +896,7 @@ fn spreads(written: string, name: string, module: string) -> bool {
 }
 
 /// Whether an attribute is its node's own words — its `@facet(content)`.
-fn is_content(v: Variant) -> bool { v.marks.any(it.name == facet_mark && it.args.first() == content_facet) }
+fn is_content(v: Variant) -> bool { v.marks.any(marked(it, facet) && it.args.first() == content_facet) }
 
 /// Each thing a second member says again: an attribute, a style field,
 /// or the node's own words — refused where the second one stands.

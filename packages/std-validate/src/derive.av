@@ -73,6 +73,7 @@ use @std.meta.{
     flat_field,
     flat_made,
     stored_scalar,
+    reads_rules,
 }
 use decode.{
     Decoding,
@@ -114,6 +115,7 @@ impl Args for int {
     fn args() -> Value { Value.Map([Entry { key: "id", value: Value.Int(self) }]) }
 }
 
+@reads_rules
 export trait Decode {
     /// The value read as this type: it, or every issue.
     static fn decode(v: Value, coercion: Coercion = Coercion.Strict, limits: Limits = Limits {}) -> Result<
@@ -149,16 +151,13 @@ export trait Decode {
         [beside(t, field_decoder(t, projection))]
     }
 
-    /// Every annotation on a field is a rule this derive calls.
-    static fn marks(t: Type) -> List<string> {
-        [[a.name for a in f.annotations] for f in t.fields].flatten()
-    }
 }
 
 /// `@derive(Checked)` — the type's rules run over a value of it. A
 /// generic type, a named shape and an enum have no value to judge
 /// field by field, so they derive nothing and `checked` refuses them
 /// where it is called.
+@reads_rules
 export trait Checked {
     /// Every issue the value's rules find, each at its field's path.
     fn check() -> Issues
@@ -168,10 +167,6 @@ export trait Checked {
         [beside(t, checker(t))]
     }
 
-    /// Every annotation on a field is a rule this derive calls.
-    static fn marks(t: Type) -> List<string> {
-        [[a.name for a in f.annotations] for f in t.fields].flatten()
-    }
 }
 
 /// The `check` of a record: each field's rules over the field as
@@ -246,10 +241,11 @@ fn shown(f: Field, k: Kind) -> Code {
 fn checking_ruling(rule: Code, call: Code) -> Code { quote { filed(c, ${name(bind().at)}, seen, ${rule}, ${call}) } }
 
 /// The type as another derive reads it: without the annotations that
-/// derive CLAIMS (its `marks`) — a storage constraint like `@unique` is
-/// no rule, and a derive that bundles this one passes what it owns.
-export fn stripped(t: Type, apart: List<string>) -> Type {
-    t with { annotations: [a for a in t.annotations if !apart.contains(a.name)], fields: [f with { annotations: [a for a in f.annotations if !apart.contains(a.name)] } for f in t.fields] }
+/// derive OWNS (`owns`, asked of each by what it is) — a storage
+/// constraint like `@unique` is no rule, and a derive that bundles this
+/// one passes what it owns.
+export fn stripped(t: Type, owns: fn(Annotation) -> bool) -> Type {
+    t with { annotations: [a for a in t.annotations if !owns(a)], fields: [f with { annotations: [a for a in f.annotations if !owns(a)] } for f in t.fields] }
 }
 
 /// The type's `decode`/`decoded` over a `Value` and its
@@ -578,7 +574,7 @@ const judged: string = "judged\$"
 /// Whether a named type answers std-json's protocol: it carries `@json`.
 fn json_typed(n: string) -> bool {
     let t? = type_named(n) else { return false }
-    t.annotations.any(marks(it, json))
+    t.annotations.any((a) -> marks(a, json))
 }
 
 /// The reader for a shape at `at`.
@@ -876,7 +872,7 @@ fn flat_of(k: Kind) -> Flat? {
 /// Whether a named type decodes by its own derive.
 fn own_decoder(n: string) -> bool {
     let t? = type_named(n) else { return false }
-    implements(n, "Decode") || t.annotations.any(marks(it, Decode))
+    implements(n, "Decode") || t.annotations.any((a) -> marks(a, Decode))
 }
 
 /// Whether a named type crosses as one string: it implements `@std/text`'s `TextForm`.

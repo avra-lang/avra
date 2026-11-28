@@ -5,9 +5,11 @@
 //! the variants: a variant the record lacks is a field the match cannot
 //! read, so the enum and its table cannot drift, and no reader falls back to
 //! a default.
-use @std.meta.{Type, Variant, Directive, beside}
+use @std.meta.{Type, Variant, Directive, beside, marked, reads}
+use style.words.{word}
 
 /// An enum whose variants key a record named for it, plural.
+@reads(word)
 export trait Table {
     static fn derive(t: Type) -> List<Directive> {
         let arms = [quote { .${v} -> self.${written_word(v)} } for v in t.variants]
@@ -24,11 +26,10 @@ export trait Table {
         ]
     }
 
-    static fn marks(t: Type) -> List<string> { ["word"] }
 }
 
 /// The variant's `@word(…)` as written, or its own name when it carries none.
 fn written_word(v: Variant) -> string {
-    let m? = v.marks.find(it.name == "word") else { return v.name }
+    let m? = v.marks.find((x) -> marked(x, word)) else { return v.name }
     m.args.first() ?? v.name
 }

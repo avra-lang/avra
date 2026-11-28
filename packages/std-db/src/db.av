@@ -67,6 +67,11 @@ use @std.meta.{
     beside,
     declares,
     marks,
+    marked,
+    reads,
+    worn_on,
+    Named,
+    Marker,
 }
 use @std.errors.{Loc}
 use @std.sqlite.{Db, SqlValue, sql, prepared}
@@ -84,23 +89,84 @@ use error.{ModelError, UniqueField, or_attributed, or_invalid, modeled, parent_o
 /// (`board.cards(db)`), so the field only says which children a parent has.
 export type Many<T> = {}
 
+@reads(unique)
+@reads(index)
+@reads(soft_delete)
+@reads(auto)
+@reads(cascade)
+@reads(set_null)
+@reads(via)
+@reads(renamed_from)
 export trait Model {
     static fn derive(t: Type) -> List<Directive> {
-        let read = stripped(t, claimed(t))
+        let read = stripped(t, claimed)
         [beside(t, generated(t)), beside(t, checks(read)), beside(t, decodes(read))]
             .concat([declares(filter_name(t, f), t.at, filter_enum(t, f)) for f in filtered_fields(t)])
             .concat(drafts(t, read))
     }
-
-    /// The marks this derive reads: `@unique` makes a column unique, and
-    /// `@unique(a, b)` makes it unique within the fields named, `@index`
-    /// and `@index(a, b)` look rows up by the same columns,
-    /// `@soft_delete` makes `remove` keep the row, `@auto` makes a column
-    /// the database's to set, `@cascade` and `@set_null` say what removing a
-    /// parent does to a child, `@via(field)` names a `Many`'s link, and
-    /// `@renamed_from("old")` says a field continues a column of that name.
-    static fn marks(t: Type) -> List<string> { ["unique", "index", "soft_delete", "auto", "cascade", "set_null", "via", "renamed_from"] }
 }
+
+// ── The marks a model's fields wear: `@unique` makes a column unique, and `@unique(a, b)` makes it
+// unique within the fields named, `@index` and `@index(a, b)` look rows up by the same columns,
+// `@soft_delete` makes `remove` keep the row, `@auto` makes a column the database's to set,
+// `@cascade` and `@set_null` say what removing a parent does to a child, `@via(field)` names a
+// `Many`'s link, and `@renamed_from("old")` says a field continues a column of that name. ──
+
+/// `@soft_delete`: `remove` keeps the row, marking this field.
+export fn soft_delete(_d: Named) -> Marker { Marker {} }
+
+/// `@auto`: the database sets this column.
+export fn auto(_d: Named) -> Marker { Marker {} }
+
+/// `@cascade`: removing the parent removes this row.
+export fn cascade(_d: Named) -> Marker { Marker {} }
+
+/// `@set_null`: removing the parent empties this link.
+export fn set_null(_d: Named) -> Marker { Marker {} }
+
+/// `@via(field)`: the child's field a `Many` links back through.
+export fn via(_d: Named, _field: string) -> Marker { Marker {} }
+
+/// `@renamed_from("old")`: this field continues the column of that name.
+export fn renamed_from(_d: Named, _old: string) -> Marker { Marker {} }
+
+/// `@unique(a, b, …)` on a `@model` type: no two rows hold the same values in those fields together —
+/// a key over several columns, declared on the model itself. Its fields are the type's own, named
+/// bare and checked where they're written; each must be a column the model stores, and named once.
+/// A key of one field is that field's own `@unique` mark, refused here. A key declared twice is `@model`'s to refuse, once.
+@worn_on([.Type, .Field])
+export fn unique(t: Type, ..fields: List<Field>) -> List<Diagnostic> { model_index_problems(t, "unique", [f.name for f in fields], (a) -> marks(a, unique)) }
+
+/// `@index(a, b, …)` on a `@model` type: the rows are found by those fields together, in that
+/// order — an index over several columns, declared on the model itself, its fields under
+/// `@unique`'s law.
+@worn_on([.Type, .Field])
+export fn index(t: Type, ..fields: List<Field>) -> List<Diagnostic> { model_index_problems(t, "index", [f.name for f in fields], (a) -> marks(a, index)) }
+
+/// What is wrong with the fields an index the type declares on itself names: none, a name it
+/// stores no column for, one named twice, or only one, which is that field's own mark.
+fn model_index_problems(t: Type, word: string, key: List<string>, by: fn(Annotation) -> bool) -> List<
+    Diagnostic,
+> {
+    let at = key_written(t, by, key)?.at
+    if key.is_empty() { return [model_key_empty(t, word, at)] }
+    let problems = [model_key_unstored(t, word, n, at) for n in key if !stored(t).any(it.name == n)]
+        .concat([model_key_repeats(t, word, n, at) for j, n in key if key.index_of(n) < j])
+    if problems.is_empty() && key.length == 1 { return [model_key_single(t, word, key[0], at)] }
+    problems
+}
+
+/// The annotation `by` holds that the type `t` wears over the fields `key`, in their order.
+fn key_written(t: Type, by: fn(Annotation) -> bool, key: List<string>) -> Annotation? { t.annotations.find((a) -> by(a) && a.args.join(",") == key.join(",")) }
+
+/// The keys a `@model` type declares on itself, `@unique(a, b, …)`, each as the fields it names.
+fn model_keys(t: Type) -> List<List<string>> { [a.args for a in t.annotations if marks(a, unique) && !a.args.is_empty()] }
+
+/// Whether the mark `m` is an index's: `@unique` or `@index`.
+fn indexing(m: FieldMark) -> bool { marked(m, unique) || marked(m, index) }
+
+/// Whether the annotation `a` is an index's: `@unique(…)` or `@index(…)`.
+fn type_indexing(a: Annotation) -> bool { marks(a, unique) || marks(a, index) }
 
 /// `@model` — the library's own name for `@derive(Model)`, so the
 /// declaration reads as what it is rather than a trait a reader has
@@ -109,37 +175,14 @@ export trait Model {
 /// should call, but it never traps the compiler on a shape it was
 /// never built for) — `problems` is what actually stops the build,
 /// spoken as real diagnostics at the declaration itself.
-/// `@unique(a, b, …)` on a `@model` type: no two rows hold the same values in those fields together —
-/// a key over several columns, declared on the model itself. Its fields are the type's own, named
-/// bare and checked where they're written; each must be a column the model stores, and named once.
-/// A key of one field is that field's own `@unique` mark, refused here. A key declared twice is `@model`'s to refuse, once.
-export fn unique(t: Type, ..fields: List<Field>) -> List<Diagnostic> { model_index_problems(t, "unique", [f.name for f in fields]) }
-
-/// `@index(a, b, …)` on a `@model` type: the rows are found by those fields together, in that
-/// order — an index over several columns, declared on the model itself, its fields under
-/// `@unique`'s law.
-export fn index(t: Type, ..fields: List<Field>) -> List<Diagnostic> { model_index_problems(t, "index", [f.name for f in fields]) }
-
-/// What is wrong with the fields an index the type declares on itself names: none, a name it
-/// stores no column for, one named twice, or only one, which is that field's own mark.
-fn model_index_problems(t: Type, word: string, key: List<string>) -> List<Diagnostic> {
-    let at = key_written(t, word, key)?.at
-    if key.is_empty() { return [model_key_empty(t, word, at)] }
-    let problems = [model_key_unstored(t, word, n, at) for n in key if !stored(t).any(it.name == n)]
-        .concat([model_key_repeats(t, word, n, at) for j, n in key if key.index_of(n) < j])
-    if problems.is_empty() && key.length == 1 { return [model_key_single(t, word, key[0], at)] }
-    problems
-}
-
-/// The `@unique` or `@index` the type `t` wears over the fields `key`, in their order.
-fn key_written(t: Type, word: string, key: List<string>) -> Annotation? { t.annotations.find(it.name == word && it.args.join(",") == key.join(",")) }
-
-/// The keys a `@model` type declares on itself, `@unique(a, b, …)`, each as the fields it names.
-fn model_keys(t: Type) -> List<List<string>> { [a.args for a in t.annotations if marks(a, unique) && !a.args.is_empty()] }
-
-/// Whether a word declares an index: `@unique` or `@index`.
-fn indexing(word: string) -> bool { word == "unique" || word == "index" }
-
+@reads(unique)
+@reads(index)
+@reads(soft_delete)
+@reads(auto)
+@reads(cascade)
+@reads(set_null)
+@reads(via)
+@reads(renamed_from)
 export fn model(t: Type) -> Declared {
     Declared { made: Model.derive(t), problems: shape_problems(t) }
 }
@@ -149,11 +192,11 @@ export fn model(t: Type) -> Declared {
 fn shape_problems(t: Type) -> List<Diagnostic> {
     if t.variants.length > 0 { return [enum_not_supported(t)] }
     if !has_id_field(t) { return [no_id_field(t)] }
-    [soft_delete_kind(f) for f in t.fields if is_mark(f, "soft_delete") && !nullable_int(f.kind)]
-        .concat([auto_kind(f) for f in t.fields if is_mark(f, "auto") && !plain_int(f.kind)])
+    [soft_delete_kind(f) for f in t.fields if soft(f) && !nullable_int(f.kind)]
+        .concat([auto_kind(f) for f in t.fields if is_auto(f) && !plain_int(f.kind)])
         .concat([not_stored(f) for f in t.fields if unheld(f)])
         .concat(
-            [p for f in non_id_fields(t) for m in f.marks if indexing(m.name) for p in mark_problems(t, f, m)],
+            [p for f in non_id_fields(t) for m in f.marks if indexing(m) for p in mark_problems(t, f, m)],
         )
         .concat(sites_twice(t, sites(t)))
 }
@@ -169,19 +212,19 @@ type Site = { index: Index, fields: List<string>, word: string, at: Loc?, on: st
 /// Every index a model declares, its fields' marks first in field order, then the type's own.
 fn sites(t: Type) -> List<Site> {
     [field_site(t, f, m) for f in non_id_fields(t) if !is_many(f) for m in f.marks if indexes_alone(m)]
-        .concat([type_site(t, a) for a in t.annotations if indexing(a.name) && !a.args.is_empty()])
+        .concat([type_site(t, a) for a in t.annotations if type_indexing(a) && !a.args.is_empty()])
 }
 
 /// Whether a field's mark declares an index of its own: any `@index`, and a
 /// `@unique` that names fields beside its own.
-fn indexes_alone(m: FieldMark) -> bool { m.name == "index" || m.name == "unique" && !m.args.is_empty() }
+fn indexes_alone(m: FieldMark) -> bool { marked(m, index) || marked(m, unique) && !m.args.is_empty() }
 
 fn field_site(t: Type, f: Field, m: FieldMark) -> Site {
     let fields = key_fields(f, m.args)
     Site {
         index: Index {
             columns: [column_named(t, n) for n in fields],
-            unique: m.name == "unique",
+            unique: marked(m, unique),
             only: only_of(t, m),
         },
         fields: fields,
@@ -226,7 +269,7 @@ fn mark_problems(t: Type, f: Field, m: FieldMark) -> List<Diagnostic> {
 /// What is wrong with the rows a mark says it holds. A key holds every row;
 /// an index holds those one stored, nullable field is null or present in.
 fn partial_problems(t: Type, f: Field, m: FieldMark) -> List<Diagnostic> {
-    if m.name == "unique" { return [unique_partial(f, a.label) for a in m.named] }
+    if marked(m, unique) { return [unique_partial(f, a.label) for a in m.named] }
     if m.named.length > 1 { return [index_partial_twice(f)] }
     [p for a in m.named for p in partial_arg_problems(t, f, a.label, a.value)]
 }
@@ -295,7 +338,7 @@ fn unstored_record(k: Kind) -> bool {
 /// The name of a `@model` record, or null when the name is not one.
 fn link_target_name(n: string) -> string? {
     let t? = type_named(n) else { return null }
-    if t.annotations.any(marks(it, model)) { return n }
+    if t.annotations.any((a) -> marks(a, model)) { return n }
     null
 }
 
@@ -360,7 +403,17 @@ fn shape_ok(t: Type) -> bool { t.variants.is_empty() && has_id_field(t) && shape
 
 /// The annotations a model owns — its marks and its own — which are no
 /// rule of the validation it brings.
-fn claimed(t: Type) -> List<string> { Model.marks(t).concat(["model", "crud"]) }
+fn claimed(a: Annotation) -> bool {
+    marks(a, unique) ||
+        marks(a, index) ||
+        marks(a, soft_delete) ||
+        marks(a, auto) ||
+        marks(a, cascade) ||
+        marks(a, set_null) ||
+        marks(a, via) ||
+        marks(a, renamed_from) ||
+        marks(a, model)
+}
 
 /// The rules the type declares, run over a row before any SQL.
 fn checks(t: Type) -> Decls {
@@ -386,7 +439,7 @@ fn decoded(t: Type) -> bool { shape_ok(t) && !t.fields.any(link_target(it) != nu
 export fn draft_name(t: Type) -> string { "${t.name}Draft" }
 
 /// The fields a create is handed: every column but the key and the ones the store sets.
-fn drafted_fields(t: Type) -> List<Field> { [f for f in written_fields(t) if !is_mark(f, "soft_delete")] }
+fn drafted_fields(t: Type) -> List<Field> { [f for f in written_fields(t) if !soft(f)] }
 
 /// The draft as the validate derive reads it: the drafted fields, each with its own rules. The
 /// model's own rules judge the whole row, so they run where the draft becomes one, at its insert.
@@ -438,7 +491,7 @@ fn drafted_init(f: Field) -> Code { quote { Init { ${f.name}: self.${f.name} } }
 
 /// A field the store sets: the key, and an `@auto` stamp or a `@soft_delete` mark that declares
 /// no default. The insert binds none of them from the row and answers what it stored.
-fn assigned(f: Field) -> bool { f.name == "id" || !f.defaulted && (is_mark(f, "auto") || is_mark(f, "soft_delete")) }
+fn assigned(f: Field) -> bool { f.name == "id" || !f.defaulted && (is_auto(f) || soft(f)) }
 
 /// What an assigned field holds until the insert answers the stored row: nothing it reads.
 fn assigned_init(f: Field) -> Code { quote { Init { ${f.name}: ${unstored(f.kind)} } } }
@@ -471,7 +524,7 @@ fn generated(t: Type) -> Decls {
             /// Answers how many steps it took.
             static fn migrate(db: Db) -> Result<int, MigrateError> {
                 let _ = lifted(${name(t.name)}.create_table(db))?
-                grown(db, ${name(t.name)}.shape(), [..${renamed_to(t)}], [..${renamed_from(t)}])
+                grown(db, ${name(t.name)}.shape(), [..${renamed_to(t)}], [..${old_names(t)}])
             }
 
             fn insert(db: Db) -> Result<${t}, ModelError> {
@@ -538,7 +591,7 @@ fn generated(t: Type) -> Decls {
 
 /// The columns a request writes: every one but the key and the ones the
 /// database sets.
-fn written_fields(t: Type) -> List<Field> { [f for f in non_id_fields(t) if !is_mark(f, "auto") && !is_many(f)] }
+fn written_fields(t: Type) -> List<Field> { [f for f in non_id_fields(t) if !is_auto(f) && !is_many(f)] }
 
 /// The columns an insert writes: the written ones, and each `@auto` column, which
 /// is bound from the program's clock rather than left to a SQL default.
@@ -581,14 +634,18 @@ fn cache_stmt(f: Field) -> Stmts {
     }
 }
 
-fn is_mark(f: Field, word: string) -> bool { f.marks.any(it.name == word) }
+/// Whether the field wears `@soft_delete`.
+fn soft(f: Field) -> bool { f.marks.any((m) -> marked(m, soft_delete)) }
 
-fn soft_field(t: Type) -> Field? { t.fields.find(is_mark(it, "soft_delete")) }
+/// Whether the field wears `@auto`.
+fn is_auto(f: Field) -> bool { f.marks.any((m) -> marked(m, auto)) }
+
+fn soft_field(t: Type) -> Field? { t.fields.find(soft(it)) }
 
 /// The row as the database holds it once written: re-read when it has
 /// columns the database set, else the value written with its new key.
 fn inserted_row(t: Type) -> Code {
-    if t.fields.all(!is_mark(it, "auto")) { return quote { self with { id: db.last_insert_rowid() } } }
+    if t.fields.all(!is_auto(it)) { return quote { self with { id: db.last_insert_rowid() } } }
     quote {
         {
             let key = db.last_insert_rowid()
@@ -750,11 +807,11 @@ fn many_child(f: Field) -> string? {
 /// two lists of one length, a column and its old name at each index.
 fn renamed_to(t: Type) -> List<Code> { [literal(column_of(f)) for f in stored(t) if old_name(f) != null] }
 
-fn renamed_from(t: Type) -> List<Code> { [literal(old_name(f)!) for f in stored(t) if old_name(f) != null] }
+fn old_names(t: Type) -> List<Code> { [literal(old_name(f)!) for f in stored(t) if old_name(f) != null] }
 
 /// The name a field's column had before, as `@renamed_from("name")` says it.
 fn old_name(f: Field) -> string? {
-    let mark? = f.marks.find(it.name == "renamed_from") else { return null }
+    let mark? = f.marks.find((m) -> marked(m, renamed_from)) else { return null }
     let word? = mark.args.first() else { return null }
     if word.starts_with("\"") && word.ends_with("\"") && word.length >= 2 { word.substring(1, word.length - 1) } else { word }
 }
@@ -762,7 +819,7 @@ fn old_name(f: Field) -> string? {
 /// The child's field that links back: `@via(field)` when written, else the
 /// child's one link to this model, read from the child's own declaration.
 fn inverse_link(t: Type, f: Field) -> string? {
-    let via = f.marks.find(it.name == "via")
+    let via = f.marks.find((m) -> marked(m, via))
     if via != null && !via!.args.is_empty() { return via!.args[0] }
     let child? = many_child(f) else { return null }
     let declared? = type_named(child) else { return null }
@@ -797,7 +854,7 @@ fn child_cascades(t: Type, f: Field) -> bool {
     let child? = many_child(f) else { return false }
     let link? = inverse_link(t, f) else { return false }
     let declared? = type_named(child) else { return false }
-    declared.fields.any(it.name == link && is_mark(it, "cascade"))
+    declared.fields.any(it.name == link && it.marks.any((m) -> marked(m, cascade)))
 }
 
 /// A cascading child list, read while the parent is still live: a soft
@@ -1119,7 +1176,7 @@ fn column_facts(f: Field) -> ColumnFacts {
 }
 
 fn plain_facts(f: Field) -> ColumnFacts {
-    if is_mark(f, "auto") {
+    if is_auto(f) {
         return ColumnFacts {
             name: f.name,
             sql_type: "INTEGER",
@@ -1141,8 +1198,8 @@ fn plain_facts(f: Field) -> ColumnFacts {
 /// answer the trigger code 1811, SQLite building it from a trigger).
 fn on_delete(f: Field) -> string {
     when {
-        is_mark(f, "cascade") -> "CASCADE"
-        is_mark(f, "set_null") -> "SET NULL"
+        f.marks.any((m) -> marked(m, cascade)) -> "CASCADE"
+        f.marks.any((m) -> marked(m, set_null)) -> "SET NULL"
         _ -> "NO ACTION"
     }
 }
@@ -1167,7 +1224,7 @@ fn is_unique(f: Field) -> bool { uniques(f).any(it.is_empty()) }
 
 /// A field's `@unique` marks, each as the fields it names: none for the
 /// bare mark.
-fn uniques(f: Field) -> List<List<string>> { [m.args for m in f.marks if m.name == "unique"] }
+fn uniques(f: Field) -> List<List<string>> { [m.args for m in f.marks if marked(m, unique)] }
 
 /// A key's fields: the ones its mark names, then the one it stands on.
 fn key_fields(f: Field, among: List<string>) -> List<string> { among.concat([f.name]) }
@@ -1374,7 +1431,7 @@ fn push_bound(f: Field) -> Code {
 /// An insert's value for a column: an `@auto` column is the program's clock in
 /// nanoseconds, every other column is what the row holds.
 fn push_inserted(f: Field) -> Code {
-    if is_mark(f, "auto") { return quote { args.push(.Int(now().ns)) } }
+    if is_auto(f) { return quote { args.push(.Int(now().ns)) } }
     push_bound(f)
 }
 

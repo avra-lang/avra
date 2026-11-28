@@ -24,6 +24,10 @@ use @std.meta.{
     refuse,
     type_named,
     nothing_made,
+    marked,
+    reads,
+    Named,
+    Marker,
 }
 use saved_layout.{
     SavedBytes,
@@ -87,10 +91,10 @@ export fn saved_variants(t: MetaType) -> List<ShapedVariant> { saved_reading().v
 
 /// The mark on a field a saved value never writes, rebuilt on read: `@derived(door)`, `door`
 /// taking the written fields in the order they're declared and answering the whole value.
-export const DERIVED_MARK: string = "derived"
+export fn derived(_d: Named, _door: string = "") -> Marker { Marker {} }
 
 /// Whether `f` is derived: carried in the value, never in its bytes.
-fn is_derived(f: Field) -> bool { f.marks.any(it.name == DERIVED_MARK) }
+fn is_derived(f: Field) -> bool { f.marks.any((m) -> marked(m, derived)) }
 
 /// The fields a record writes, in order: every field but the derived ones.
 fn written_fields(t: MetaType, derived: bool) -> List<Field> { if derived { t.fields.filter(!is_derived(it)) } else { t.fields } }
@@ -100,13 +104,13 @@ fn written_fields(t: MetaType, derived: bool) -> List<Field> { if derived { t.fi
 fn any_derived(t: MetaType) -> bool { t.fields.any(is_derived(it)) || t.variants.any((v) -> v.fields.any(is_derived(it))) }
 
 /// The door a record with derived fields is rebuilt through; none where no field is derived.
-fn rebuilt_through(t: MetaType) -> string? { t.fields.find(is_derived(it))?.marks?.find(it.name == DERIVED_MARK)?.args?.first() }
+fn rebuilt_through(t: MetaType) -> string? { t.fields.find(is_derived(it))?.marks?.find((m) -> marked(m, derived))?.args?.first() }
 
 /// Why `t`'s derived fields can't be derived: a variant's field marked, a mark naming no door,
 /// or two naming different ones.
 fn derived_problems(t: MetaType) -> List<Diagnostic> {
     let in_variants = [f for v in t.variants for f in v.fields if is_derived(f)]
-    let marks = [m for f in t.fields for m in f.marks if m.name == DERIVED_MARK]
+    let marks = [m for f in t.fields for m in f.marks if marked(m, derived)]
     let doors = [m.args.first() ?? "" for m in marks]
     if !in_variants.is_empty() {
         return [
@@ -138,6 +142,7 @@ fn holds_an_id(shape: ValueShape) -> bool {
     }
 }
 
+@reads(derived)
 export trait Saved {
     /// Generates the type's save and load methods, or says which field can't be saved.
     static fn derive(t: MetaType) -> Declared {
@@ -157,9 +162,6 @@ export trait Saved {
             ],
         }
     }
-
-    /// The field marks `Saved` reads: `@derived`.
-    static fn marks(_t: MetaType) -> List<string> { [DERIVED_MARK] }
 }
 
 /// Every field of a record, and of each variant of an enum.

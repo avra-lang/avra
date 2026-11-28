@@ -51,12 +51,6 @@ fn answers_declarations(engine: QueryEngine, file: SourceFileAddress, answer: Ty
     a.name == "List" && a.applied.length == 1 && names_meta(engine, file, a.applied[0], "Directive")
 }
 
-/// Whether a `marks` answers `List<string>`.
-fn answers_names(answer: TypeRef?) -> bool {
-    let a? = answer else { return false }
-    a.name == "List" && a.applied.length == 1 && a.applied[0].name == "string"
-}
-
 /// Every trait member `name` the written item `at` of `file` declares that takes no one declaration
 /// statically or whose answer `answers` doesn't take.
 fn members_off(
@@ -84,7 +78,7 @@ fn derives_unshaped(engine: QueryEngine, file: SourceFileAddress, at: ItemId) ->
 /// contract.
 fn marks_off_contract(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> List<Found> {
     if members_named(engine, file, at, "derive").is_empty() { return [] }
-    members_off(engine, file, at, "marks", (m: Member) -> answers_names(m.answer))
+    members_off(engine, file, at, "marks", (_m: Member) -> false)
 }
 
 /// a trait's `derive` takes one declaration and answers the declarations it makes
@@ -95,12 +89,12 @@ export law derive_contract {
     witness: "trait T {\n    static fn derive(n: int) -> int { n }\n}\n"
 }
 
-/// a trait's `marks` takes the declaration and answers the mark names
+/// a trait names the marks its derive reads as declarations, never as words
 export law marks_contract {
     kind: "type.derive_contract"
     reads: marks_off_contract
     voice: marks_words
-    witness: "use @std.meta.{Type, Directive}\n\ntrait T {\n    static fn derive(t: Type) -> List<Directive> { [] }\n    static fn marks(n: int) -> int { n }\n}\n"
+    witness: "use @std.meta.{Type, Directive}\n\ntrait T {\n    static fn derive(t: Type) -> List<Directive> { [] }\n    static fn marks(t: Type) -> List<string> { [\"local\"] }\n}\n"
 }
 
 fn derive_words(_a: List<string>) -> Voice { derive_unshaped() }

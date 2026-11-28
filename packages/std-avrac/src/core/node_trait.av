@@ -8,9 +8,11 @@
 //! `@derive(Node)` still registers, so it names nothing that record
 //! declares. `Control` and `At` are this module's own (`control.av`,
 //! `shape.av`), resolved where the generated impl LANDS.
-use @std.meta.{Type as MetaType, Field, Directive, Code, beside}
+use core.marks.{apart}
+use @std.meta.{Type as MetaType, Field, Directive, Code, beside, marks, reads}
 
 /// The control a node's children run, as data a must-analysis reads.
+@reads(apart)
 export trait Node {
     fn control() -> Control
 
@@ -29,12 +31,10 @@ export trait Node {
         ]
     }
 
-    /// The words this derive reads off a record — and no others.
-    static fn marks(t: MetaType) -> List<string> { ["apart"] }
 }
 
 fn control_body(t: MetaType) -> Code {
-    if t.annotations.any(it.name == "apart") { return quote { Control.Apart } }
+    if t.annotations.any((a) -> marks(a, apart)) { return quote { Control.Apart } }
     quote { Control.Seq(${concatenated(steps_of(t))}) }
 }
 
