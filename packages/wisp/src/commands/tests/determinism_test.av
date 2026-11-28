@@ -1,0 +1,25 @@
+use commands.{differing_lines, kept_lines}
+
+spec "determinism — what a leg keeps, and how two legs disagree" {
+    given "a check's output" {
+        then "it keeps every finding, then each count, pass row and read list, never a time" {
+            kept_lines(
+                "warning: a\n\nwarning: b\n",
+                "counts: 3 files\npasses: took 2 s\npass-row\tlower 4\nread-list item_parts 9 2\nchecked in 3.1 s\n",
+            )
+                .join("|") == "warning: a|warning: b|counts: 3 files|pass-row\tlower 4|read-list item_parts 9 2"
+        }
+    }
+    given "two legs" {
+        then "lines alike are no disagreement" { differing_lines(["a", "b"], ["a", "b"]).is_empty() }
+        then "a line one has and the other lacks is named with its side" {
+            differing_lines(["a", "b"], ["a", "c"]).join("|") == "- b|+ c"
+        }
+        then "the same lines in another order are said to be" {
+            differing_lines(["a", "b"], ["b", "a"]).join("|") == "the same lines, in another order"
+        }
+        then "the same lines counted otherwise are said to be" {
+            differing_lines(["a", "a", "b"], ["a", "b"]).join("|") == "the same lines, in another count or order"
+        }
+    }
+}
