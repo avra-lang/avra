@@ -106,20 +106,10 @@ EOF
 # out again kept (its `worked:` line), and the file put back and the findings warmed back, so each edit
 # meets the store the one before it left. The edits and their file are the warm lane's measured
 # table's, so a row reads against its design budget.
-# kind|text|what it becomes, `\n` between lines; a noop edits nothing.
-edited=packages/cli/src/commands/cache.av
-edits() {
-    cat << 'EOF'
-noop||
-inline|//! in, its own verbs. The store is a directory of immutable packs, each the|//! in, its own verbs. The store is a folder of immutable packs, each the
-literal|    println("avra cache clean: ${compacted_said(dir)}")|    println("avra cache cleaned: ${compacted_said(dir)}")
-comment|    let shared? = machine_layer() else { return 0 }|    // a note\n    let shared? = machine_layer() else { return 0 }
-body|    let shared? = machine_layer() else { return 0 }|    let shared? = machine_layer() else { return 0 }\n    let _ = cache_dir().length
-signature|fn octets_of(packs: List<PackListed>) -> int {|fn octets_of(packs: List<PackListed>, most: int = 0) -> int {
-added|fn cache_dir() -> string {|fn cache_unused() -> int { 3 }\n\nfn cache_dir() -> string {
-added_after|fn octets_of(packs: List<PackListed>) -> int { packs.fold(0, (sum, p) -> sum + p.octets) }|fn octets_of(packs: List<PackListed>) -> int { packs.fold(0, (sum, p) -> sum + p.octets) }\n\nfn spare_one() -> int { 1 }
-EOF
-}
+# kind|text|what it becomes, `\n` between lines; a noop edits nothing. ONE TABLE: wisp's (`wisp cost
+# edits`, packages/wisp/src/commands/cost.av's WARM_EDITS), which `wisp determinism` makes its edit from.
+edited=$(sh "$root/wisp" cost edited)
+edits() { sh "$root/wisp" cost edits; }
 
 # this run's share of a list of edits on stdin: COST_EDITS=<k>/<n>, the k-th (from 1) of n dealt in
 # turn, or `--edits <kind…>`, those by name; the noop — the first, which edits nothing — in
