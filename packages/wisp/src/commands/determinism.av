@@ -1,0 +1,257 @@
+//! `wisp determinism [--avra <compiler>] [--plant reverse-deal] [--plant hash-seed]` — A CHECK'S
+//! ANSWER IS NOT ITS SCHEDULE'S. One compiler checks the cli cold, then again after one literal is
+//! edited, in a fresh export of this tree's HEAD standing at one place, as several legs: twice
+//! alike, held to one process, forked across two processes and across four, and as a binary one
+//! byte longer, whose kept answers are keyed apart from the others'. Every leg's counts, pass rows,
+//! read lists and findings agree with the first leg's exactly, or the leg is named with the lines
+//! that differ. A plant varies one more axis on purpose: `reverse-deal` deals every forked leg's
+//! files to its processes last first (`check --deal reversed`), and `hash-seed` runs each leg under
+//! a hash seed of its own (`check --hash-seed`). Exit 0 every leg agrees, 1 one differs, 2 usage.
+use @std.cli.{CliResult, Runnable, command, option}
+use @std.io.{append_bytes, exists, make_dirs, read_text, write_text}
+use @std.path.{joined_path}
+use @std.process.{Env, cmd, inherited, tool, tool_at}
+use @std.time.{mins, secs, sleep}
+
+/// Where every leg stands: the place a path inside the tree is read from is part of what a check
+/// keeps, so every leg stands at the same one.
+const PLACE: string = "/tmp/avra-determinism"
+
+/// The package every leg checks.
+const CHECKED: string = "packages/cli"
+
+/// The file the warm run edits, the literal it finds there and what it becomes: the cost harness's
+/// `literal` edit.
+const EDITED: string = "packages/cli/src/commands/cache.av"
+const LITERAL: string = "    println(\"avra cache clean: \${compacted_said(dir)}\")"
+const BECOMES: string = "    println(\"avra cache cleaned: \${compacted_said(dir)}\")"
+
+/// The longest a leg's one check may take.
+const CHECK_MINUTES: int = 40
+
+/// How many differing lines a leg that disagrees is shown by.
+const SHOWN: int = 20
+
+/// How a leg's check spreads its work: across the processes the machine offers, held to one, or
+/// across a count of them.
+enum Spread {
+    Machine
+    Serial
+    Cores(n: int)
+}
+
+/// What varies a leg on purpose.
+enum Plant {
+    ReverseDeal
+    HashSeed
+}
+
+/// One leg: its name, how its check spreads, and whether its compiler is one byte longer.
+type WitnessLeg = { name: string, spread: Spread, longer: bool }
+
+/// The legs, the first the one every other is held to.
+const LEGS: List<WitnessLeg> = [
+    WitnessLeg { name: "first", spread: Spread.Machine, longer: false },
+    WitnessLeg { name: "again", spread: Spread.Machine, longer: false },
+    WitnessLeg { name: "serial", spread: Spread.Serial, longer: false },
+    WitnessLeg { name: "forked-2", spread: Spread.Cores(2), longer: false },
+    WitnessLeg { name: "forked-4", spread: Spread.Cores(4), longer: false },
+    WitnessLeg { name: "longer", spread: Spread.Machine, longer: true },
+]
+
+/// What a leg said: its name, then the lines its cold check and its warm check kept, or why it said
+/// nothing.
+type LegSaid = { leg: string, lines: List<string>, failed: string }
+
+type DeterminismCmd = {}
+
+impl Runnable for DeterminismCmd {
+    fn run(args: CliResult) -> int {
+        let plants? = plants_named(args.option("plant")) else { return plant_unnamed(args.option("plant")) }
+        let avra = args.option("avra")
+        if !exists(avra) { return no_compiler(avra) }
+        let said = [leg_said(avra, l, at, plants) for at, l in LEGS]
+        let failed = said.filter(!it.failed.is_empty())
+        for f in failed { eprintln(leg_failed(f)) }
+        if !failed.is_empty() { return 1 }
+        let differing = [s for s in said if s.lines != said[0].lines]
+        for s in said { println(leg_line(s, said[0])) }
+        for s in differing { eprintln(leg_differs(s, said[0])) }
+        if differing.is_empty() { 0 } else { 1 }
+    }
+}
+
+export command determinism {
+    description: "Check the cli cold and warm as several legs — twice alike, serial, forked, a longer binary — and refuse any line they disagree on"
+    option avra {
+        description: "the compiler under test"
+        default: "build/avra"
+    }
+    option plant {
+        description: "`reverse-deal`, `hash-seed`, or both comma-separated: an axis every leg varies on purpose"
+    }
+    run: DeterminismCmd {}
+}
+
+/// The plants `word` names, comma-separated; none for an empty word, absent where one names no plant.
+fn plants_named(word: string) -> List<Plant>? {
+    if word.is_empty() { return [] }
+    let named = [plant_named(w.trim()) for w in word.split(",")]
+    if named.any(it == null) { return null }
+    [p! for p in named]
+}
+
+/// The plant `word` names; absent where it names none.
+fn plant_named(word: string) -> Plant? {
+    match word { "reverse-deal" -> Plant.ReverseDeal, "hash-seed" -> Plant.HashSeed, _ -> null }
+}
+
+/// What leg `l`, the `at`th, said: the compiler `avra` checks the cli cold in a fresh export, then
+/// warm after the literal is edited, each check's kept lines in turn.
+fn leg_said(avra: string, l: WitnessLeg, at: int, plants: List<Plant>) -> LegSaid {
+    let src = joined_path(PLACE, "src")
+    let readied = tree_readied(avra, src, l.longer)
+    if !readied.is_empty() { return LegSaid { leg: l.name, lines: [], failed: readied } }
+    let words = check_words(l, at, plants)
+    let cold = leg_checked(src, l, words)
+    if !cold.failed.is_empty() { return LegSaid { leg: l.name, lines: [], failed: "cold: ${cold.failed}" } }
+    let edited_at = joined_path(src, EDITED)
+    match edited(read_text(edited_at) catch "", "literal", LITERAL, BECOMES) {
+        .Ok(text) -> { let _ = write_text(edited_at, text) },
+        .Err(why) -> { return LegSaid { leg: l.name, lines: [], failed: "the edit: ${why}" } },
+    }
+    let warm = leg_checked(src, l, words)
+    if !warm.failed.is_empty() { return LegSaid { leg: l.name, lines: [], failed: "warm: ${warm.failed}" } }
+    LegSaid {
+        leg: l.name,
+        lines: ["cold"].concat(cold.lines).concat(["warm"]).concat(warm.lines),
+        failed: "",
+    }
+}
+
+/// A fresh export of HEAD at `src`, `avra` standing at its `build/avra`, one byte longer where
+/// `longer`; empty where it stands, else why it doesn't.
+fn tree_readied(avra: string, src: string, longer: bool) -> string {
+    if exists(PLACE) {
+        let gone = ran("find", [PLACE, "-delete"])
+        if !gone.is_empty() { return "the last leg's place: ${gone}" }
+    }
+    let _ = make_dirs(joined_path(src, "build"))
+    let _ = make_dirs(joined_path(PLACE, "home"))
+    let tar = joined_path(PLACE, "tree.tar")
+    let archived = ran("git", ["archive", "--output", tar, "HEAD"])
+    if !archived.is_empty() { return "the export: ${archived}" }
+    let unpacked = ran("tar", ["-xf", tar, "-C", src])
+    if !unpacked.is_empty() { return "the export: ${unpacked}" }
+    let compiler = joined_path(src, "build/avra")
+    let copied = ran("cp", [avra, compiler])
+    if !copied.is_empty() { return "the compiler: ${copied}" }
+    if longer {
+        let grown = append_bytes(compiler, "\n".bytes()) catch ""
+        if grown.is_empty() { return "the compiler could not be made a byte longer" }
+    }
+    ""
+}
+
+/// What one check said: the lines it keeps, or why it said nothing.
+type LegChecked = { lines: List<string>, failed: string }
+
+/// `check` of the cli in the tree at `src` as leg `l` runs it, `words` its words: what it found,
+/// then its counts, its pass rows and its read lists.
+fn leg_checked(src: string, l: WitnessLeg, words: List<string>) -> LegChecked {
+    // a file is read only once it's older than the stamp window, so what a check stamps never
+    // depends on how fast it began
+    sleep(secs(3))
+    let c = cmd(tool_at("avra", joined_path(src, "build/avra")), words) with { cwd: src, env: leg_env(l), timeout: mins(CHECK_MINUTES), ok_exits: [0, 1] }
+    match c.outcome() {
+        .Ok(o) -> match o.exit {
+            .Clean or .Code(1) -> LegChecked { lines: kept_lines(o.out.stdout, o.out.stderr), failed: "" },
+            .Code(n) -> LegChecked { lines: [], failed: "exit ${n}: ${tail_of(o.out.stderr)}" },
+            .Signal(_, _) -> LegChecked { lines: [], failed: "a signal: ${tail_of(o.out.stderr)}" },
+        },
+        .Err(e) -> LegChecked { lines: [], failed: e.describe().message },
+    }
+}
+
+/// The words leg `l`, the `at`th, checks the cli with, the plants asking theirs.
+fn check_words(l: WitnessLeg, at: int, plants: List<Plant>) -> List<string> {
+    let dealt = if plants.contains(Plant.ReverseDeal) && l.spread is .Cores { ["--deal", "reversed"] } else { [] }
+    let seeded = if plants.contains(Plant.HashSeed) { ["--hash-seed", "${at + 1}"] } else { [] }
+    ["check", "--counts", "--passes", "--passes-rows", "--read-lists"]
+        .concat(dealt)
+        .concat(seeded)
+        .concat([CHECKED])
+}
+
+/// The environment leg `l` checks in: no store of the machine's, no network, its home and its kept
+/// answers under the place, and its processes as its spread says.
+fn leg_env(l: WitnessLeg) -> Env {
+    let home = joined_path(PLACE, "home")
+    let set = inherited()
+        .with_var("HOME", home)
+        .with_var("AVRA_CACHE_DIR", joined_path(PLACE, "cache"))
+        .with_var("AVRA_MACHINE_STORE", "0")
+        .with_var("AVRA_PROGRAM_NET", "0")
+        .with_var("AVRA_STORE_KEPT_HERE", "1")
+    match l.spread {
+        .Machine -> set,
+        .Serial -> set.with_var("AVRA_WORK_AHEAD_OFF", "1"),
+        .Cores(n) -> set.with_var("AVRA_WORK_AHEAD_CORES", "${n}"),
+    }
+}
+
+/// The lines a check keeps of what it said: every finding it printed, then each count, pass row and
+/// read list from its stderr — never a time.
+export fn kept_lines(stdout: string, stderr: string) -> List<string> {
+    stdout.split("\n").filter(!it.trim().is_empty()).concat(stderr.split("\n").filter(counted_line))
+}
+
+/// Whether a line of a check's stderr is one it counts by.
+fn counted_line(line: string) -> bool {
+    line.starts_with("counts: ") ||
+        line.starts_with("decodes") ||
+        line.starts_with("pass-row\t") ||
+        line.starts_with("read-list ")
+}
+
+/// The lines `a` and `b` disagree on, each marked with the side that has it, at most `SHOWN`.
+export fn differing_lines(a: List<string>, b: List<string>) -> List<string> {
+    let only_a = [x for x in a if !b.contains(x)]
+    let only_b = [x for x in b if !a.contains(x)]
+    let shown = ["- ${x}" for x in only_a].concat(["+ ${x}" for x in only_b])
+    if shown.is_empty() && a.length != b.length { return ["the same lines, in another count or order"] }
+    if shown.is_empty() && a != b { return ["the same lines, in another order"] }
+    shown.take(SHOWN)
+}
+
+/// What the tool `name` run with `args` said when it failed, empty where it ran clean.
+fn ran(name: string, args: List<string>) -> string {
+    let t = match tool(name) { .Ok(t) -> t, .Err(e) -> { return e.describe().message } }
+    match cmd(t, args).run() { .Ok(_) -> "", .Err(e) -> e.describe().message }
+}
+
+/// The last lines of a failed check's stderr.
+fn tail_of(text: string) -> string {
+    let lines = text.trim().split("\n")
+    lines.drop(lines.length - 5).join("\n")
+}
+
+// VOICES
+
+fn plant_unnamed(word: string) -> int {
+    eprintln(
+        "determinism: `--plant` is `reverse-deal`, `hash-seed` or both comma-separated, not `${word}`",
+    )
+    2
+}
+
+fn no_compiler(avra: string) -> int {
+    eprintln("determinism: no compiler at ${avra}")
+    2
+}
+
+fn leg_failed(s: LegSaid) -> string { "determinism: leg ${s.leg} said nothing to hold: ${s.failed}" }
+
+fn leg_line(s: LegSaid, first: LegSaid) -> string { "determinism: ${s.leg}: ${s.lines.length} lines, ${if s.lines == first.lines { "as the first" } else { "DIFFERS" }}" }
+
+fn leg_differs(s: LegSaid, first: LegSaid) -> string { "determinism: leg ${s.leg} disagrees with the first:\n${differing_lines(first.lines, s.lines).join("\n")}" }

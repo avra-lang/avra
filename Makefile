@@ -449,7 +449,7 @@ wasm-archive:
 # `$(shell)` runs on every make, `try` included.
 SUITES = $(shell ./wisp suites 2>/dev/null)
 
-.PHONY: ui-board-native compiler-key pool-check ready dev-server cost cost-accept cost-snapshot trap-marks llvm-libs libs-self-test db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz exact-patches ui-board ui-browser ui-browser-skip host-events layout-oracle wasm-host-check wasm-tasks-mutations h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks test tested clean seed-check gate externs idioms fuzz-http soak-http dogfooding-rules rule-examples idioms-accept bench bench-collections bench-build fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns parser witnesses libs libscope layers pre-commit-hook inputs inputs-accept store-fuzz-regressions read-cost \
+.PHONY: determinism ui-board-native compiler-key pool-check ready dev-server cost cost-accept cost-snapshot trap-marks llvm-libs libs-self-test db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz exact-patches ui-board ui-browser ui-browser-skip host-events layout-oracle wasm-host-check wasm-tasks-mutations h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks test tested clean seed-check gate externs idioms fuzz-http soak-http dogfooding-rules rule-examples idioms-accept bench bench-collections bench-build fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns parser witnesses libs libscope layers pre-commit-hook inputs inputs-accept store-fuzz-regressions read-cost \
         check run ir emit build-native native-check avra suites install sprite sprite-check codecs-static keepers voices voices-accept defects tool-witnesses ci-invariants wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept wasm-routes-size speed-ratchet speed-accept wall-ratchet wall-accept warm-edit warm-accept work-accept
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -842,6 +842,12 @@ cache-attacks-b2: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/file_module_attack.sh
 	@sh tools/store_clean_attack.sh
 	@sh tools/package_swap_attack.sh
+
+# A CHECK'S ANSWER IS NOT ITS SCHEDULE'S: the cli checked cold and warm as several legs — twice
+# alike, serial, forked across two and across four, a binary a byte longer — every count, pass row,
+# read list and finding alike, the forked legs' deal reversed and each leg under a hash seed its own.
+determinism: $(COMPILER_OBJS) $(PACKAGE_OBJS)
+	@./wisp determinism --plant reverse-deal,hash-seed
 
 # A CODE HASH IS STALE WHEN ITS CODE MOVES, AND ONLY THEN: each case edits what a query
 # reaches and must recompute it, edits what it never reaches and must read it back. It
