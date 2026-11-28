@@ -1,23 +1,20 @@
 use @std.io.{env}
 use @std.process.{cmd, inherited, status_of, tool_at}
-use @std.text.{parse_int}
+use @std.text.{parse_int, with_room}
 use @std.time.{ms, sleep}
 
 /// The number an environment variable names, or `fallback`.
 fn env_int(name: string, fallback: int) -> int { parse_int(env(name) ?? "") ?? fallback }
 
-/// How many numbers a list of `mb` megabytes holds.
-fn held_in(mb: int) -> int { 1000000 * mb / 8 }
+/// One buffer of exactly `mib` MiB, in one allocation, however the compiler lays out a collection.
+fn held(mib: int) -> Bytes { with_room(mib * 1048576) }
 
-/// A list of `mb` megabytes made and dropped: how many it held.
-fn peaked(mb: int) -> int {
-    let xs = [i for i in 0..held_in(mb)]
-    xs.length
-}
+/// A buffer of `mib` MiB made and dropped: its size in MiB.
+fn peaked(mib: int) -> int { mib + held(mib).length }
 
-/// This program run again as a child holding `mb` megabytes: its exit status and what it said.
-fn child_said(mb: int) -> string {
-    let c = cmd(tool_at("probe", env("POOL_SELF") ?? ""), []) with { env: inherited().with_var("POOL_MB", "${mb}").with_var("PEAK_MB", "0").with_var("CHILD_MB", "0") }
+/// This program run again as a child holding `mib` MiB: its exit status and what it said.
+fn child_said(mib: int) -> string {
+    let c = cmd(tool_at("probe", env("POOL_SELF") ?? ""), []) with { env: inherited().with_var("POOL_MB", "${mib}").with_var("PEAK_MB", "0").with_var("CHILD_MB", "0") }
     match c.outcome() {
         .Ok(ran) -> "child ${status_of(ran.exit)}: ${ran.out.stdout}${ran.out.stderr}",
         .Err(_) -> "child unstarted",
@@ -25,12 +22,14 @@ fn child_said(mb: int) -> string {
 }
 
 if env_int("PEAK_MB", 0) > 0 {
-    println("peaked ${peaked(env_int("PEAK_MB", 0))}")
+    println("peaked ${peaked(env_int("PEAK_MB", 0))} MiB")
 }
 if env_int("CHILD_MB", 0) > 0 {
     println(child_said(env_int("CHILD_MB", 0)))
 }
-let xs = [i for i in 0..held_in(env_int("POOL_MB", 100))]
-println("allocated ${xs.length}")
+let mib = env_int("POOL_MB", 100)
+let buffer = held(mib)
+println("allocated ${mib} MiB")
 sleep(ms(env_int("HOLD_MS", 0)))
-println("done ${xs[xs.length - 1]}")
+// the buffer is read after the hold, so it stands through it
+println("done ${mib + buffer.length} MiB")

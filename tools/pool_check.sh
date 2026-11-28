@@ -19,35 +19,38 @@ case "$out" in *"needs more than the machine's whole memory pool"*) said "a run 
 
 mkdir "$pools/inside"
 out=$(AVRA_MEM_POOL_DIR="$pools/inside" AVRA_MEM_POOL_MB=2048 POOL_MB=300 "$probe" 2>&1)
-case "$out" in *"done 37499999"*) said "a run inside the pool finishes";; *) said "FAIL: a run inside the pool: $out"; failed=1;; esac
+case "$out" in *"done 300 MiB"*) said "a run inside the pool finishes";; *) said "FAIL: a run inside the pool: $out"; failed=1;; esac
 
+# A run holds a slot for each 256 MiB it uses past its first 256, rounding at half a slot, and the
+# probe holds exactly its POOL_MB MiB in one buffer: in a pool of four slots a 700 MiB run holds three,
+# so a 400 MiB run, needing two, waits for it.
 mkdir "$pools/shared"
-AVRA_MEM_POOL_DIR="$pools/shared" AVRA_MEM_POOL_MB=1024 POOL_MB=400 HOLD_MS=3000 "$probe" >"$pools/first.out" 2>&1 &
+AVRA_MEM_POOL_DIR="$pools/shared" AVRA_MEM_POOL_MB=1024 POOL_MB=700 HOLD_MS=3000 "$probe" >"$pools/first.out" 2>&1 &
 first=$!
 sleep 1
-second=$(AVRA_MEM_POOL_DIR="$pools/shared" AVRA_MEM_POOL_MB=1024 POOL_MB=300 "$probe" 2>&1)
+second=$(AVRA_MEM_POOL_DIR="$pools/shared" AVRA_MEM_POOL_MB=1024 POOL_MB=400 "$probe" 2>&1)
 wait "$first"
-case "$second" in *"waiting for memory"*"done 37499999"*) said "a run finding the pool held waits, then finishes";; *) said "FAIL: a run finding the pool held: $second"; failed=1;; esac
-grep -q "done 49999999" "$pools/first.out" || { said "FAIL: the run holding the pool: $(cat "$pools/first.out")"; failed=1; }
+case "$second" in *"waiting for memory"*"done 400 MiB"*) said "a run finding the pool held waits, then finishes";; *) said "FAIL: a run finding the pool held: $second"; failed=1;; esac
+grep -q "done 700 MiB" "$pools/first.out" || { said "FAIL: the run holding the pool: $(cat "$pools/first.out")"; failed=1; }
 
-# A run past its peak holds what it uses: a 400 MB list made and dropped, in a pool of four slots.
+# A run past its peak holds what it uses: a 700 MiB buffer made and dropped, in a pool of four slots.
 # At its peak it holds three, so a child needing three finds one free and is refused at its wait,
 # unless the dropped list's slots went back.
 mkdir "$pools/peak"
-out=$(AVRA_MEM_POOL_DIR="$pools/peak" AVRA_MEM_POOL_MB=1024 AVRA_MEM_POOL_WAIT_MS=2000 PEAK_MB=400 CHILD_MB=300 POOL_MB=1 POOL_SELF="$PWD/$probe" "$probe" 2>&1)
-case "$out" in *"child 0: allocated 37500000"*"done 37499999"*) said "a run past its peak lets the child it waits on take its slots";; *) said "FAIL: a run past its peak kept its slots from its child: $out"; failed=1;; esac
+out=$(AVRA_MEM_POOL_DIR="$pools/peak" AVRA_MEM_POOL_MB=1024 AVRA_MEM_POOL_WAIT_MS=2000 PEAK_MB=700 CHILD_MB=700 POOL_MB=1 POOL_SELF="$PWD/$probe" "$probe" 2>&1)
+case "$out" in *"child 0: allocated 700 MiB"*"done 700 MiB"*) said "a run past its peak lets the child it waits on take its slots";; *) said "FAIL: a run past its peak kept its slots from its child: $out"; failed=1;; esac
 
 # The same peak, then idle: another run needing three slots finishes while it still lives.
 mkdir "$pools/idle"
-AVRA_MEM_POOL_DIR="$pools/idle" AVRA_MEM_POOL_MB=1024 PEAK_MB=400 POOL_MB=1 HOLD_MS=6000 "$probe" >"$pools/idle.out" 2>&1 &
+AVRA_MEM_POOL_DIR="$pools/idle" AVRA_MEM_POOL_MB=1024 PEAK_MB=700 POOL_MB=1 HOLD_MS=6000 "$probe" >"$pools/idle.out" 2>&1 &
 idle=$!
 n=0
 until grep -q "allocated" "$pools/idle.out" || [ "$n" -ge 50 ]; do sleep 0.1; n=$((n + 1)); done
-other=$(AVRA_MEM_POOL_DIR="$pools/idle" AVRA_MEM_POOL_MB=1024 AVRA_MEM_POOL_WAIT_MS=2000 POOL_MB=300 "$probe" 2>&1)
+other=$(AVRA_MEM_POOL_DIR="$pools/idle" AVRA_MEM_POOL_MB=1024 AVRA_MEM_POOL_WAIT_MS=2000 POOL_MB=700 "$probe" 2>&1)
 alive=0; kill -0 "$idle" 2>/dev/null && alive=1
 wait "$idle"
-case "$alive:$other" in 1:*"done 37499999"*) said "an idle run past its peak lets another run take its slots";; *) said "FAIL: an idle run past its peak kept its slots (idle alive: $alive): $other"; failed=1;; esac
-grep -q "done 124999" "$pools/idle.out" || { said "FAIL: the idle run: $(cat "$pools/idle.out")"; failed=1; }
+case "$alive:$other" in 1:*"done 700 MiB"*) said "an idle run past its peak lets another run take its slots";; *) said "FAIL: an idle run past its peak kept its slots (idle alive: $alive): $other"; failed=1;; esac
+grep -q "done 1 MiB" "$pools/idle.out" || { said "FAIL: the idle run: $(cat "$pools/idle.out")"; failed=1; }
 
 [ "$failed" = 0 ] && said "5 cases held" && exit 0
 exit 1
