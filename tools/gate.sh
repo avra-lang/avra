@@ -50,9 +50,8 @@ build      make try; make avra twice, the second cold, the two binaries one; cli
 avrac-a    test packages/std-avrac — half of src/compiler/tests, dealt in turn, and every dir of src/compiler but tests and soundness
 avrac-g    test packages/std-avrac — the other half of src/compiler/tests, and src/compiler/soundness
 avrac-f    test packages/std-avrac — src/features' own files, and every dir of src/ but compiler and features
-idioms-avrac  check --baseline tools/idioms.baseline on std-avrac, when the diff from <base> touches it
+idioms-avrac  check --baseline tools/idioms.baseline on std-avrac, as tools/gate_changed.sh checks a lane's
 idioms-cli    the same on cli
-idioms     the same on every other package the diff from <base> touches
 store-fuzz the store fuzzer's model self-test, then seeds 1-8 of 12 edits each over build/avra: warm == cold byte for byte, the store clean (`cache check`), the walk held, a fresh copy over the same machine store as the tree, nothing worked where nothing moved
 fmt        fmt --check on every .av the diff from <base> changes (`avra fmt --check --base`, the hook's own check); <base> is the program landed last, never a batch's own base
 sound      AVRA_SOUND_CHECK=1 check packages/cli, the memory pass's proof run over the program, 0 defects; AVRA_VERIFY_LLVM=1 build packages/cli, every emitted fn verified
@@ -115,6 +114,7 @@ program|6|the rows of program_rows — std-program, std-relation, rt-header, rt-
 refusal|8|witness_program_refusal over its cases, dealt in turn
 needs|6|witness_program_needs over every package and refusal witness, dealt in turn
 witness-b|5|the witnesses and attacks of witness_b_rows, dealt in turn
+idioms|4|check --baseline tools/idioms.baseline on every package root the manifests name but std-avrac and cli, dealt in turn; a root tools/gate/checks.owed names is judged by its line
 pkgs|2|test every package's suite no slice above names, of the packages the diff from <base> reaches (tools/affected_packages.sh; every one where there is no <base>), dealt by their measured seconds; an owed one (tools/gate/suites.owed) judged by its line
 cost-warm|7|make cost, COST_PART=warm: the cli's cold check, then the warm edits (COST_EDITS) dealt in turn, the noop in every part
 cost-matrix-build-bare|4|cost.sh --uncounted, COST_PART=matrix-build-bare: the warm-edit matrix met by a warm build, each part the cold build and a share of the edits (COST_EDITS) dealt in turn
@@ -694,13 +694,54 @@ EOF
 # each package the diff from the base sha `$1` touches, whose name the pattern `$3` matches (`$2` keep)
 # or doesn't (`$2` drop), checked against the baseline
 idioms_on() {
-    [ -n "${1:-}" ] || { echo "gate: $slice needs the base sha its diff starts at" >&2; exit 2; }
-    if [ "$2" = drop ]; then pick=-vxE; else pick=-xE; fi
-    for p in $(git diff --name-only "$1" HEAD -- packages | cut -d/ -f2 | sort -u | grep $pick "$3"); do
-        [ -d "packages/$p/src" ] || continue
-        cold "$p"
-        row "idioms-$p" build/avra check "packages/$p" --baseline tools/idioms.baseline
+    cold "$1"
+    row "idioms-$1" build/avra check "packages/$1" --baseline tools/idioms.baseline
+}
+
+# EVERY PACKAGE ROOT THE MANIFESTS NAME, one a line: a tracked `avra.toml` beside a `src/`, not under a `tests/`
+# or `fixtures/` directory and not inside another root — a package compiles in the gate whatever the diff
+package_roots() {
+    git ls-files '*avra.toml' | sed -n 's|/avra.toml$||p' | while read -r d; do
+        [ -d "$d/src" ] || continue
+        case "/$d/" in */tests/* | */fixtures/*) continue ;; esac
+        echo "$d"
+    done | sort | awk '{ for (i = 1; i <= n; i++) if (index($0, r[i] "/") == 1) next; r[++n] = $0; print }'
+}
+
+# the line of tools/gate/checks.owed that covers root `$1` — itself, or a prefix ending `/` above it
+owed_line() {
+    awk -v d="$1" '!/^#/ && NF > 0 { k = $1; if (k == d || (k ~ /\/$/ && index(d "/", k) == 1)) { print; exit } }' "$root/tools/gate/checks.owed"
+}
+
+# the `$1`-th of `$2` shares of every package root but std-avrac and cli, each checked against the baseline;
+# a root tools/gate/checks.owed names is checked too, its failure its line's debt and its pass the line's end;
+# a root under an owed prefix is its owner's to run, and said
+idioms_part() {
+    judged checks-owed-lines "$(awk '!/^#/ && NF > 0 && NF < 3' "$root/tools/gate/checks.owed" | wc -l | tr -d ' ')"
+    roots=$(package_roots)
+    judged checks-owed-covering "$(awk '!/^#/ && NF > 0 { print $1 }' "$root/tools/gate/checks.owed" | while read -r k; do
+        printf '%s\n' "$roots" | awk -v k="$k" 'k ~ /\/$/ { if (index($0 "/", k) == 1) f = 1; next } $0 == k { f = 1 } END { exit !f }' || echo "$k"; done | tee "$out/owed-uncovering" | wc -l | tr -d ' ')"
+    for d in $(printf '%s\n' "$roots" | grep -vxE 'packages/(std-avrac|cli)' | dealt "$(($1 - 1))" "$2"); do
+        line=$(owed_line "$d")
+        name=$(printf '%s' "$d" | tr / +)
+        if [ -z "$line" ]; then
+            find "$d" -name .avra-cache -prune -exec find {} -delete \;
+            row "idioms-$name" build/avra check "$d" --baseline tools/idioms.baseline
+            continue
+        fi
+        # A PREFIX'S ROOTS ARE ITS OWNER'S TO RUN (a witness's fixtures, many refusing on purpose): said, never checked
+        case $(printf '%s' "$line" | cut -d' ' -f1) in */) echo "$d" >>"$out/owed-prefixed"; continue ;; esac
+        rows=$((rows + 1))
+        t0=$(date +%s)
+        if sh tools/bounded.sh "$ROW_SECS" build/avra check "$d" --baseline tools/idioms.baseline >"$out/idioms-$name.log" 2>&1; then
+            failed=$((failed + 1))
+            failures="$failures idioms-$name"
+            echo "row idioms-$name FAIL $(( $(date +%s) - t0 ))s (checks clean, and tools/gate/checks.owed still owes it — strike its line: $line)" >>"$out/rows"
+        else
+            echo "row idioms-$name OWED $(( $(date +%s) - t0 ))s ($line)" >>"$out/rows"
+        fi
     done
+    [ ! -s "$out/owed-prefixed" ] || echo "fact idioms-$1: $(wc -l <"$out/owed-prefixed" | tr -d ' ') root(s) under an owed prefix left to its owner (tools/gate/checks.owed)" >>"$out/rows"
 }
 
 # every `.av` the diff from the base sha `$1` changes, canonical as the tree's own compiler prints it.
@@ -995,6 +1036,7 @@ part_of() {
     case $2 in '' | *[!0-9]*) judged "part-$slice" 1; return ;; esac
     [ -n "$3" ] && [ "$2" -ge 1 ] && [ "$2" -le "$3" ] || { judged "part-$slice" 1; return; }
     case $1 in
+        idioms) idioms_part "$2" "$3" ;;
         avrac-b) avrac $(features '[a-e]*' | dealt "$(($2 - 1))" "$3") ;;
         avrac-c) avrac $(features '[f-m]*' | dealt "$(($2 - 1))" "$3") ;;
         avrac-d) avrac $(features '[n-r]*' | dealt "$(($2 - 1))" "$3") ;;
@@ -1134,9 +1176,8 @@ if compiler; then
         avrac-a) slice_avrac_a ;;
         avrac-g) slice_avrac_g ;;
         avrac-f) slice_avrac_f ;;
-        idioms-avrac) idioms_on "${1:-}" keep std-avrac ;;
-        idioms-cli) idioms_on "${1:-}" keep cli ;;
-        idioms) idioms_on "${1:-}" drop 'std-avrac|cli' ;;
+        idioms-avrac) idioms_on std-avrac ;;
+        idioms-cli) idioms_on cli ;;
         fmt) fmt_on "${1:-}" ;;
         store-fuzz) slice_store_fuzz ;;
         sound) slice_sound ;;

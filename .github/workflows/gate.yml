@@ -1,7 +1,7 @@
 # THE GATE ON A RUNNER: every slice `tools/gate.sh list` names, run from ONE seeded compiler, on a
-# push to `gate/**`. The pushed branch is a one-commit mirror — the batch's tree over its parent, the
-# trunk's — so the workflow is the pushed commit's own and nothing touches main; the idioms, fmt and
-# keepers-alone slices take that parent (HEAD~1) as the base their diff starts at.
+# push to `gate/**`, a train: its commits over program. The workflow is the pushed commit's own and
+# nothing touches main; the fmt and keepers-alone slices take the train's merge-base with program as
+# the base their diff starts at, and the idioms slices check every package root, whatever the diff.
 #
 #   seed    `sh tools/gate.sh seed`: HEAD's compiler of generation 2, packed with its objects
 #   census  `sh tools/gate.sh census`: the census compiler, built once by the seed's, beside the slices
@@ -260,7 +260,12 @@ jobs:
               echo "gate: the tree laid down afresh for $s"
             fi
             first=0
-            case "$s" in idioms*|fmt|keepers-alone-*) base=$(git rev-parse HEAD~1) ;; *) base="" ;; esac
+            # A SLICE THAT JUDGES A DIFF JUDGES THE TRAIN'S: its merge-base with program, never its last commit's parent
+            case "$s" in fmt|keepers-alone-*)
+              git fetch -q --unshallow origin 2> /dev/null || :
+              git fetch -q origin program:refs/remotes/origin/program
+              base=$(git merge-base origin/program HEAD) ;;
+            *) base="" ;; esac
             one=0
             sh tools/gate.sh "$s" $base > gate.out 2>&1 || one=$?
             cat gate.out
