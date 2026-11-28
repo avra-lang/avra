@@ -11,6 +11,9 @@ fn int_finder() -> string {
     "fn find(id: int) -> int? { if id == 7 { 36 } else { null } }\n"
 }
 
+/// A `let v? =` with no `else`.
+fn unelsed() -> string { "${int_finder()}fn f(id: int) -> int {\n    let a? = find(id)\n    a\n}\nf(7)" }
+
 spec "features/nullable/let_else" {
     given "the divergence law, position by position" {
         then "dead code AFTER the return still refuses — the LAST stmt is the law" {
@@ -29,8 +32,8 @@ spec "features/nullable/let_else" {
         }
     }
     given "the parse it shares with plain `let`" {
-        then "a missing else falls to the plain let — refused, count pinned" {
-            refusals("${int_finder()}fn f(id: int) -> int {\n    let a? = find(id)\n    a\n}\nf(7)") == 2
+        then "a missing else falls to the plain let — one refusal, at the `?`" {
+            refusals(unelsed()) == 1 && refused_with(unelsed(), "expected `=`")
         }
         then "a single-line else is the same statement — a body takes one line" {
             shown(

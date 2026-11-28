@@ -38,6 +38,7 @@ use features.select_expr.{guard_reads_binder}
 use compiler.{called_wait_said, cleanup_unbounded, row_wait_said, spawn_wait_said}
 use features.loops.{jump_behind_lambda, jump_in_comprehension, jump_unaimed, jump_unlooped}
 use features.nullable.{
+    cancel_passed,
     coalesce_answers,
     forced_absent,
     forced_present,
@@ -135,6 +136,9 @@ enum Breach {
     /// A payload of the variant `variant`, named `payload` where it is, of `spelled`, which holds no
     /// value.
     PayloadVoid(variant: string, payload: string, spelled: string)
+    /// `?` on an awaited answer of `named`, which carries no absence and no `Result`: its failure is
+    /// a cancel, which passes through the awaiter.
+    PropagatedCancel(named: string)
 }
 
 /// A breach, where it stands.
@@ -500,7 +504,8 @@ fn checked_absence(store: SyntaxArena, typing: ItemTyping, subject: ExprId, prop
         }
     }
     if ty.nullable() || ty.bottom() { return null }
-    if propagates && (ty.owns(OwnType.Result) || store.awaited_task(subject) != null) { return null }
+    if propagates && ty.owns(OwnType.Result) { return null }
+    if propagates && store.awaited_task(subject) != null { return BreachAt { at: place, breach: Breach.PropagatedCancel(ty.spelled()) } }
     if store.ident_name(subject) != null && narrowed(typing, subject) { return null }
     let named = ty.spelled()
     BreachAt {
@@ -1269,6 +1274,18 @@ export law propagate_absent {
 }
 
 fn propagated_absent_words(_a: List<string>) -> Voice { propagated_absent() }
+
+fn propagates_cancel(view: ItemView) -> List<Found> { breaches_seen_in(view, (b) -> match b { .PropagatedCancel(named) -> [named], rest -> null }) }
+
+/// `?` on an awaited answer whose failure is a cancel
+export law propagate_cancel {
+    kind: "type.propagate"
+    reads_view: propagates_cancel
+    voice: cancel_words
+    witness: "fn w() -> int { 5 }\n\nfn f() -> int? {\n    let t = spawn w()\n    t.await?\n}\n\nf()\n"
+}
+
+fn cancel_words(a: List<string>) -> Voice { cancel_passed(a[0]) }
 
 fn fails_unenclosed(view: ItemView) -> List<Found> { breaches_seen_in(view, (b) -> wordless(b is .FailUnenclosed)) }
 
