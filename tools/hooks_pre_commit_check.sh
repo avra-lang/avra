@@ -5,14 +5,13 @@
 # way out) when none does, one at the merge-base or built from its own edits is accepted and reported.
 #
 #   sh tools/hooks_pre_commit_check.sh
+. "$(dirname "$0")/lib/scratch.sh"
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 hook=$here/hooks/pre-commit
 fail() { echo "hooks_pre_commit_check: $1"; exit 1; }
 # every fixture stands under one scratch directory, gone when the check ends
-scratch=$(mktemp -d)
-trap 'find "$scratch" -delete' EXIT
-trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
+scratch_dir scratch
 
 # hook_in <dir>: the hook's status in the repo, its stderr in $err.
 hook_in() {
@@ -21,7 +20,7 @@ hook_in() {
 }
 
 staged() { # staged <name> <text>: a fresh repo with one file staged
-    d=$(mktemp -d "$scratch/repo.XXXXXX")
+    d=$(scratch_under "$scratch")
     (cd "$d" && git init -q && printf '%s' "$2" > "$1" && git add "$1")
     echo "$d"
 }
@@ -37,7 +36,7 @@ hook_in "$d"
 [ "$status" = 0 ] || fail "no .av staged must pass with no compiler, gave $status: $err"
 
 stamped_repo() { # stamped_repo <stamp>: a repo with a compiler stamped as asked and a.av staged
-    d=$(mktemp -d "$scratch/repo.XXXXXX")
+    d=$(scratch_under "$scratch")
     git="git -c user.name=t -c user.email=t@t"
     (
         cd "$d" || exit 1

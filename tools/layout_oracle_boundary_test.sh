@@ -3,12 +3,13 @@
 # engines. WebKit's prop-face seed 2 holds a tree (case 64) whose text fits its 60px box in WebKit by a
 # hair the solver counts over: it agrees with the boundary term and is refused without it. Skips,
 # spoken, where WebKit is absent (a failure on the checks' machine).
+. "$(dirname "$0")/lib/scratch.sh"
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 tree=$(cd "$here/.." && pwd)
 bad() { echo "layout-oracle boundary self-test: $1"; exit 1; }
 . "$here/ui-board/playwright.sh"
-log=$(mktemp "${TMPDIR:-/tmp}/avra-layout-playwright.XXXXXX")
+scratch_dir log; log="$log/file"
 playwright_ready "$tree" "$log" || {
     [ "${CI:-}" = true ] && bad "ran 0 trees — FAILED: Playwright's WebKit did not install: $(tail -1 "$log")"
     echo "layout-oracle boundary self-test: ran 0 trees — SKIPPED: Playwright's WebKit did not install: $(tail -1 "$log")"

@@ -8,12 +8,12 @@
 # declaration shares (its item's id, its face) would be read for it. And the edit then FIXED —
 # the declaration closed, the file balanced again — builds on that store as a fresh one does.
 #   sh tools/witness_store_broken_edit.sh [compiler]
+. "$(dirname "$0")/lib/scratch.sh"
 set -u
 . "$(dirname "$0")/lib/tree.sh"
 [ $# -gt 0 ] && avra=$1
 [ -x "$avra" ] || { echo "store-broken-edit: no compiler at $avra"; exit 1; }
-work=$(mktemp -d "${TMPDIR:-/tmp}/avra-store-edit.XXXXXX")
-trap 'rm -rf "$work"' EXIT INT TERM
+scratch_dir work
 mkdir -p "$work/home"
 # board <name>: a copy of the board, its hydrate main as its main, under $work/<name>
 board() {

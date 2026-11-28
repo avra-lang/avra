@@ -28,6 +28,7 @@
 #
 # A test row runs every suite (AVRA_SUITE_ALL=1), so it names every failing case, never only the first.
 #
+. "$(dirname "$0")/lib/scratch.sh"
 set -u
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root" || exit 1
@@ -232,7 +233,7 @@ pins_said() {
 # row holds it — every failed case one tools/gate/<package>.names pins, every ended one its .traps lists,
 # and a run that failed or ended none exited clean. Each case that does not hold is said.
 held() {
-    d=$(mktemp -d "${TMPDIR:-/tmp}/avra-held.XXXXXX")
+    scratch_dir d
     for k in names traps; do
         listed "tools/gate/$1.$k" >"$d/$k"
     done
@@ -272,7 +273,7 @@ if [ "$slice" = list ]; then slices; exit 0; fi
 if [ "$slice" = jobs ]; then jobs; exit 0; fi
 if [ "$slice" = held ]; then held "$@"; exit $?; fi
 if [ "$slice" = pkgs-suites ]; then
-    out=$(mktemp -d "${TMPDIR:-/tmp}/avra-pkgs.XXXXXX")
+    scratch_dir out
     pkgs_suites "${1:-}" "$out/pkgs" && cat "$out/pkgs"
     st=$?
     find "$out" -delete

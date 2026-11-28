@@ -3,11 +3,11 @@
 # pool refuses in its own words; a run inside it finishes; a run that finds the pool held waits for
 # it and then finishes; a run past its peak holds only what it still uses, for the child it waits on
 # and for any other run. Each case gets a pool of its own, so no real run's slots are touched.
+. "$(dirname "$0")/lib/scratch.sh"
 set -u
 cd "$(dirname "$0")/.."
 probe_dir=tools/pool
-pools=$(mktemp -d "${TMPDIR:-/tmp}/avra-pool-check.XXXXXX")
-trap 'find "$pools" -delete 2>/dev/null' EXIT
+scratch_dir pools
 ./avra build "$PWD/$probe_dir" >/dev/null 2>"$pools/build.log" || { cat "$pools/build.log"; echo "pool: the probe does not build"; exit 1; }
 probe=$probe_dir/src/main
 failed=0

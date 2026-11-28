@@ -8,16 +8,17 @@
 # parses nothing, so the trace would report the absence of the work it
 # exists to measure. The trace is a SEPARATE run from the timed one, over
 # its own fresh edit.
+. "$(dirname "$0")/../../tools/lib/scratch.sh"
 set -u
 cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)"
 A=${AVRA_BIN:-build/avra}
 pkg=${1:-packages/cli}
 file=${2:-packages/cli/src/commands/shared.av}
 lit=${3:-· memo}
-orig=$(mktemp)
+scratch_dir orig; orig="$orig/file"
 cp "$file" "$orig"
 restore() { cp "$orig" "$file"; rm -f "$orig"; }
-trap restore EXIT INT TERM
+scratch_also restore
 
 edit() { # <word>
     cp "$orig" "$file"

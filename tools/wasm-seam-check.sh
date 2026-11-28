@@ -15,10 +15,11 @@
 # The compiler finds the wasm toolchain or says what is missing (`avra build
 # --target wasm` exits 2); this SKIPS, spoken, in its words then, and when
 # wabt is absent.
+. "$(dirname "$0")/lib/scratch.sh"
 set -eu
 
 . "$(dirname "$0")/lib/tree.sh"
-work=${WASM_WORK:-$(mktemp -d "${TMPDIR:-/tmp}/avra-seam.XXXXXX")}
+if [ -n "${WASM_WORK:-}" ]; then work=$WASM_WORK; else scratch_dir work; fi
 # WASM_TARGET names one wasm triple (default `wasm`: the one this machine's toolchain links).
 target=${WASM_TARGET:-wasm}
 

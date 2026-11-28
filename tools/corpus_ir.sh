@@ -6,13 +6,14 @@
 # compile reads the program and never the compiler's package. Prints
 # `IRDIFF <n> of <total>` and `DIAG-SAME` or the diagnostics diff; exits 0
 # only when the IR agrees on every program.
+. "$(dirname "$0")/lib/scratch.sh"
 set -u
 [ $# -ge 2 ] || { echo "usage: sh tools/corpus_ir.sh <base-bin> <head-bin> [out]" >&2; exit 2; }
 abs() { echo "$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"; }
 base=$(abs "$1")
 head=$(abs "$2")
 out=${3:-build/corpus-ir}
-corpus=$(mktemp -d "${TMPDIR:-/tmp}/avra-corpus.XXXXXX")
+scratch_dir corpus
 
 find packages/std-avrac/src -path '*/tests/*' -name '*.expected' | sort | while read -r e; do
     f=${e%.expected}.av

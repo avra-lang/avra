@@ -3,10 +3,10 @@
 # release is absent and leaves no file, a key's asset is fetched whole and executable, a release without
 # the asset says so, the newest release wins and a tie keeps the API's order, and `install`, `probe` and
 # `route` decide as the published asset says. The publish half is `wisp release publish`'s spec tests.
+. "$(dirname "$0")/lib/scratch.sh"
 set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
-d=$(mktemp -d "${TMPDIR:-/tmp}/witness-release.XXXXXX")
-trap 'find "$d" -delete 2>/dev/null || :' EXIT
+scratch_dir d
 fails=0
 check() { if [ "$2" = "$3" ]; then echo "compiler_release: ok $1"; else echo "compiler_release: FAIL $1 — got [$2], want [$3]"; fails=$((fails + 1)); fi; }
 w() { (cd "$root" && env -u GH_TOKEN -u GITHUB_TOKEN AVRA_RELEASE_API="file://$d/api" "$@") }

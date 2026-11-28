@@ -7,6 +7,7 @@
 # not grow past what the two cold builds left (5% slack). Empties the cli's store first, and leaves
 # it holding the two segments.
 #   sh tools/witness_store_prints.sh <compiler A> <compiler B>   (Linux: reads /proc)
+. "$(dirname "$0")/lib/scratch.sh"
 set -eu
 # a store is copied, counted or emptied here between builds, so each build saves its own before it answers
 export AVRA_STORE_KEPT_HERE=1
@@ -17,8 +18,7 @@ b=${2:?usage: witness_store_prints.sh <compiler A> <compiler B>}
 store="$root/packages/cli/.avra-cache"
 tapes="$store/tapes"
 find "$store" -delete 2>/dev/null || :
-tmp=$(mktemp -d)
-trap 'find "$tmp" -delete' EXIT
+scratch_dir tmp
 
 # the pack files of one binary, by the print its names carry, as a list of names
 packs_of() { ls "$tapes" 2>/dev/null | grep "^pack-$1\." || :; }

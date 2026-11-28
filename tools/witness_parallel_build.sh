@@ -33,6 +33,7 @@ memcap="${MEMCAP:?MEMCAP must name the memory-cap wrapper, memcap.sh}"
 first="${1:-packages/std-avrac}"
 second="${2:-packages/cli}"
 tree="$(cd "$(dirname "$0")/.." && pwd)"
+# LICENSED scratch_law: its logs are read after the run, which says where they stand
 logs="$(mktemp -d "${TMPDIR:-/tmp}/avra-witness-parallel.XXXXXX")"
 
 export LLVM_PREFIX="${LLVM_PREFIX:-/opt/homebrew/opt/llvm}"

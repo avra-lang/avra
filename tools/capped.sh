@@ -24,6 +24,7 @@
 #
 # `--last` is what `$(command | tail -n 1)` means, without losing the status:
 # a build's binary path, a run's answer. Stderr passes through untouched.
+. "$(dirname "$0")/lib/scratch.sh"
 set -e
 
 if [ "$1" = "--self-test" ]; then
@@ -39,8 +40,7 @@ if [ "$1" = "--self-test" ]; then
     # down the machine tonight was the other direction — a verb that
     # ran the fixtures, and fixtures that ran the verb. The capture
     # path below runs no fixtures, so the arrow points one way.
-    t="$(mktemp -d)"
-    trap 'rm -rf "$t"' EXIT
+    scratch_dir t
     self="$0"
     sh "$self" "$t/a.out" 1000 printf 'hello\n'
     [ "$(cat "$t/a.out")" = "hello" ] || { echo "capped: content lost"; exit 1; }

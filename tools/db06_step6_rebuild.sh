@@ -16,6 +16,7 @@
 #         one that moves a fn inside it keeps none: per FAMILY, never per query
 #   unit  `own ${print}` — the running compiler's own bytes, so ANY rebuild re-keys every row
 #         of that family at once
+. "$(dirname "$0")/lib/scratch.sh"
 set -u
 . "$(dirname "$0")/lib/attack.sh"
 R=build/db06-step6
@@ -39,7 +40,7 @@ build() {
     cp build/avra $R/avra.$1
 }
 cp $leaf $R/producers.av.kept
-trap 'cp $R/producers.av.kept $leaf' EXIT INT TERM
+scratch_also 'cp $R/producers.av.kept $leaf'
 
 echo "=== compiler A: this tree's, over a store of this tree's"
 if [ -d .avra-cache ]; then find .avra-cache -delete; fi

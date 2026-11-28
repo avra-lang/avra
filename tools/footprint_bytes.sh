@@ -6,6 +6,7 @@
 # ledger holds no row of is measured and told, never gated.
 #   sh tools/footprint_bytes.sh           measure and judge
 #   sh tools/footprint_bytes.sh accept    measure and record: a row falls, a new key is seeded
+. "$(dirname "$0")/lib/scratch.sh"
 set -eu
 . "$(dirname "$0")/lib/tree.sh"
 . "$here/lib/toolchain.sh"
@@ -15,8 +16,7 @@ case $verb in judge | accept) ;; *) echo "footprint-bytes: judge or accept, neve
 out=$tree/build/ledger/footprint
 mkdir -p "$out"
 find "$out" -mindepth 1 -delete
-work=$(mktemp -d "${TMPDIR:-/tmp}/avra-fp.XXXXXX")
-trap 'find "$work" -delete 2>/dev/null || :' EXIT
+scratch_dir work
 key=$(toolchain_key cc "${CC:-clang}")
 echo "footprint-bytes: $key"
 # Bytes of code: ELF's text column, Mach-O's `__text` section.

@@ -7,6 +7,7 @@
 # toolchain is a broken machine on the checks' machine (CI=true); a local machine may stand it down
 # by name, UI_BROWSER_SKIP=<reason>. STORYBOARD_ENGINES names the engines, in order (default
 # `firefox`); `webkit` and `chromium` come from the Playwright PLAYWRIGHT_DIR holds.
+. "$(dirname "$0")/lib/scratch.sh"
 set -eu
 . "$(dirname "$0")/lib/tree.sh"
 
@@ -22,13 +23,13 @@ command -v node >/dev/null 2>&1 || skip "no \`node\` on this machine"
 . "$here/lib/wasm_ready.sh"
 wasm_ready || skip "the wasm runtime archive did not build"
 
-work=$(mktemp -d "${TMPDIR:-/tmp}/avra-storyboard.XXXXXX")
+scratch_dir work
 # A COPY is served, so the run edits no file of the tree's.
 mkdir -p "$work/tools"
 cp -R "$tree/tools/storyboard" "$work/tools/storyboard"
 "$avra" dev --target "${UI_BOARD_TARGET:-wasm}" --port 0 "$work/tools/storyboard" >"$work/dev.out" 2>"$work/dev.err" &
 dev=$!
-trap 'kill "$dev" 2>/dev/null || true' EXIT
+scratch_also 'kill "$dev" 2>/dev/null || true'
 tries=0
 until grep -q '^dev: .* at http' "$work/dev.out" 2>/dev/null; do
     kill -0 "$dev" 2>/dev/null || { cat "$work/dev.err" "$work/dev.out"; echo "storyboard: \`avra dev\` ended before it served"; exit 1; }

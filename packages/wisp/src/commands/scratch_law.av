@@ -1,0 +1,122 @@
+//! `wisp scratch_law` — SCRATCH NEVER OUTLIVES ITS RUN, and one definition says how: tools/lib/scratch.sh
+//! makes every temporary directory and owns the run's exit, its EXIT trap and its HUP, INT and TERM
+//! forwards. sh runs no EXIT trap for a run a signal ends, so a tool's own `mktemp` and EXIT trap leaked
+//! its scratch, and an edit it meant to take back, whenever a bound stopped it; and a tool's own trap
+//! after the helper's replaces it. So every tracked shell file but the helper and vendored code is read,
+//! and a line that spells `mktemp`, or a `trap` on EXIT, HUP, INT or TERM, is refused, unless it ignores
+//! the signal (`trap '' HUP`) or a `# LICENSED scratch_law: <why>` line stands directly above it. It
+//! names how many files it read and every refusal. Exit 0 held, 1 refused.
+use @std.cli.{CliResult, Runnable, command}
+use @std.io.{read_text}
+
+type ScratchLawCmd = {}
+
+impl Runnable for ScratchLawCmd {
+    fn run(_args: CliResult) -> int {
+        let listed = match git("", ["ls-files"]) {
+            .Ok(o) -> o.stdout.split("\n"),
+            .Err(_) -> {
+                eprintln(scratch_no_listing())
+                return 1
+            },
+        }
+        let read = [ScriptRead { path: p, text: read_text(p) catch "" } for p in listed if scratch_judged(p)]
+        let shell = [r for r in read if scratch_shell(r.path, r.text)]
+        let refused = [scratch_refusals(r.path, r.text) for r in shell].flatten()
+        for line in refused { println(line) }
+        println(scratch_counted(shell.length, refused.length))
+        if refused.is_empty() { 0 } else { 1 }
+    }
+}
+
+export command scratch_law {
+    description: "Refuse a tracked shell file's own mktemp or EXIT/HUP/INT/TERM trap: tools/lib/scratch.sh is the one definition"
+    run: ScratchLawCmd {}
+}
+
+/// A file and its text.
+type ScriptRead = { path: string, text: string }
+
+/// The helper itself.
+const HELPER: string = "tools/lib/scratch.sh"
+
+/// Whether the law reads `path` at all: anything tracked but the helper and code vendored from elsewhere.
+export fn scratch_judged(path: string) -> bool { path != "" && path != HELPER && !path.contains("/vendor/") }
+
+/// Whether a file is shell: named `.sh`, or a script whose first line asks for sh or bash.
+export fn scratch_shell(path: string, text: string) -> bool {
+    if path.ends_with(".sh") { return true }
+    let first = text.split("\n").first() ?? ""
+    first.starts_with("#!") &&
+        (first.ends_with("/sh") || first.ends_with(" sh") || first.contains("bash"))
+}
+
+/// Every refused line of a shell file, as `path:line: words`.
+export fn scratch_refusals(path: string, text: string) -> List<string> {
+    let lines = text.split("\n")
+    [scratch_refused(path, i + 1, why!) for i, l in lines for why in [scratch_refusal(l)] if why != null && !scratch_licensed(lines, i)]
+}
+
+/// Why a line breaks the law, null when it keeps it. A comment line says nothing.
+export fn scratch_refusal(line: string) -> string? {
+    let code = line.trim()
+    if code.starts_with("#") { return null }
+    if shell_words(code).contains("mktemp") { return scratch_own_mktemp() }
+    let traps = scratch_traps(code)
+    if traps.is_empty() { return null }
+    scratch_own_trap(traps.join(" "))
+}
+
+/// The signals of the run's exit a `trap` on this line names, unless it only ignores them.
+fn scratch_traps(code: string) -> List<string> {
+    let words = shell_words(code)
+    let at = words.index_of("trap")
+    if at < 0 { return [] }
+    let after = words.slice(at + 1, words.length)
+    if after.first() == "''" || after.first() == "\"\"" { return [] }
+    [w for w in after if EXIT_SIGNALS.contains(w)]
+}
+
+const EXIT_SIGNALS: List<string> = ["EXIT", "HUP", "INT", "TERM", "0", "1", "2", "15"]
+
+/// A line's words, split where the shell would: blanks and the operators that end a command.
+fn shell_words(code: string) -> List<string> {
+    let spaced = code
+        .replace(";", " ")
+        .replace("(", " ")
+        .replace(")", " ")
+        .replace("|", " ")
+        .replace("&", " ")
+        .replace("\$", " ")
+        .replace("\t", " ")
+        .replace("`", " ")
+    [w for w in spaced.split(" ") if w != ""]
+}
+
+/// Whether a `# LICENSED scratch_law:` line stands in the run of comment lines directly above line `i`.
+fn scratch_licensed(lines: List<string>, i: int) -> bool {
+    mut j = i - 1
+    while j >= 0 && lines[j].trim().starts_with("#") {
+        if lines[j].trim().starts_with("# LICENSED scratch_law:") { return true }
+        j = j - 1
+    }
+    false
+}
+
+// voices
+
+fn scratch_refused(path: string, n: int, why: string) -> string { "${path}:${n}: ${why}" }
+
+fn scratch_own_mktemp() -> string {
+    "a tool makes no scratch of its own — `scratch_dir <var>` (tools/lib/scratch.sh) removes it however the run ends"
+}
+
+fn scratch_own_trap(signals: string) -> string {
+    "a trap on ${signals} replaces the run's own exit — hand the cleanup to `scratch_also` (tools/lib/scratch.sh)"
+}
+
+fn scratch_counted(files: int, refused: int) -> string {
+    if refused == 0 { "scratch_law: ${files} shell file(s) read, every scratch and exit is the helper's" } else { "scratch_law: ${files} shell file(s) read, ${refused} line(s) refused" }
+}
+
+fn scratch_no_listing() -> string { "scratch_law: git did not list the tree's files, so nothing was read" }

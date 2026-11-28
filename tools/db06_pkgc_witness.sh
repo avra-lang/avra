@@ -18,6 +18,7 @@
 #    by its NAME (`CodeGraph.hash` -> `digest_of_name`), never by the C body it runs: §6.4's
 #    "each `CallRt` row's C body digest" is not folded. Measured by asking the program for
 #    `code_hash` of a fn that calls a row, with the package's C moved and moved back.
+. "$(dirname "$0")/lib/scratch.sh"
 set -u
 . "$(dirname "$0")/lib/attack.sh"
 R=build/db06-pkgc
@@ -71,7 +72,7 @@ echo "=== 2. the native path: does a package object's byte move the kept answer?
 cp "$src" $R/std_time.c.kept
 cp "$obj" $R/std_time.o.kept
 restore() { cp $R/std_time.c.kept "$src"; cp $R/std_time.o.kept "$obj"; }
-trap restore EXIT INT TERM
+scratch_also restore
 if [ -d .avra-cache ]; then find .avra-cache -delete; fi
 built() { ./avra build --time $R/p/src/main.av >$R/$1.out 2>$R/$1.err; echo "$(reused $R/$1.err)"; }
 bin=$(sed '/^time: \|^host fn: /d' $R/cold.out 2>/dev/null | tail -1)

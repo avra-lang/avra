@@ -5,12 +5,12 @@
 # @std/sqlite through its model's @std/crud and calls no database fn — holds no `sqlite3_` symbol,
 # and its bytes stay within tools/ui-board/term/native.budget, a line per `uname -sm` that is only
 # ever lowered. A machine with no line is said, and holds the symbol claim alone.
+. "$(dirname "$0")/lib/scratch.sh"
 set -eu
 
 . "$(dirname "$0")/lib/tree.sh"
-work=$(mktemp -d "${TMPDIR:-/tmp}/avra-ui-board-native.XXXXXX")
+scratch_dir work
 # The copy of the tree it builds in is this run's alone, and goes when the run ends.
-trap 'find "$work" -delete 2>/dev/null || true' EXIT
 
 [ -x "$avra" ] || { echo "ui-board-native: no compiler at $avra"; exit 1; }
 nm=$(command -v llvm-nm-22 || command -v llvm-nm || command -v nm) || { echo "ui-board-native: no nm on this machine"; exit 1; }

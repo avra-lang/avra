@@ -3,10 +3,10 @@
 # aarch64, and each of the six write leaves shows no push, stp, `sub` of the stack pointer or save
 # of the link register before its first branch. Prints each leaf's prologue up to that branch.
 #   sh tools/witness_frameless_writes.sh
+. "$(dirname "$0")/lib/scratch.sh"
 set -u
 root=$(cd "$(dirname "$0")/.." && pwd)
-tmp=$(mktemp -d)
-trap 'find "$tmp" -delete' EXIT
+scratch_dir tmp
 failed=0
 # the disassembler as this machine names it: unversioned, or the image's llvm-22, or the prefix's
 objdump=$(command -v llvm-objdump || command -v llvm-objdump-22 || { [ -x "${LLVM_PREFIX:-/usr/lib/llvm-22}/bin/llvm-objdump" ] && echo "${LLVM_PREFIX:-/usr/lib/llvm-22}/bin/llvm-objdump"; }) ||

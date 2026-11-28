@@ -33,6 +33,7 @@
 # no lines, and three rows go vacuous in one commit. The refusal
 # protects the spelled rows from a rename by the same stroke, which
 # is the wider prize.
+. "$(dirname "$0")/lib/scratch.sh"
 set -e
 cd "$(dirname "$0")/.."
 
@@ -99,7 +100,7 @@ Origin	packages/std-avrac/src/features/worklist.av	holed	spelled	whether a binde
 # ends the script rather than a subshell the gate never sees.
 # SELF-TEST, both surfaces: a catch-all AFTER a braced arm is refused
 # (the shape that once ended the scan), and its clean twin passes.
-selftest=$(mktemp)
+scratch_dir selftest; selftest="$selftest/file"
 cat > "$selftest" <<'FIX'
 fn probe(i: Ins) -> int {
     match i {

@@ -6,6 +6,7 @@
 #
 # THE BUILDER IS build/avra unless CENSUS_BUILDER names another: a layout rule is the BUILDING
 # compiler's, so a census of a rule builds the census compiler with a compiler that has it.
+. "$(dirname "$0")/lib/scratch.sh"
 set -eu
 cd "$(dirname "$0")/.."
 out=${1:-build/avra.census}
@@ -19,7 +20,7 @@ shipping() {
         echo "census: the shipping runtime did NOT rebuild — run \`make build/libavra_runtime.a\`"
     find packages/cli/src/main packages/cli/src/main.av.ll -maxdepth 0 -delete 2> /dev/null || :
 }
-trap shipping EXIT INT TERM
+scratch_also shipping
 make --no-print-directory CFLAGS_avra_runtime="$counted" CFLAGS_avra_hot="$counted" build/libavra_runtime.a > /dev/null
 # THE COUNTED LEAVES STAY CALLS: the bitcode the compiler inlines was
 # built without the census, so an inlined retain would count nothing.

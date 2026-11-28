@@ -1,14 +1,15 @@
 #!/bin/sh
 # one fresh edit, then WHY the hold breaks, from `explain --why`'s moved parts.
+. "$(dirname "$0")/../../tools/lib/scratch.sh"
 set -u
 cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)"
 A=${AVRA_BIN:-build/avra}
 file=${1:-packages/cli/src/commands/shared.av}
 lit=${2:-· memo}
-orig=$(mktemp); cp "$file" "$orig"
-why=$(mktemp)
+scratch_dir orig; orig="$orig/file"; cp "$file" "$orig"
+scratch_dir why; why="$why/file"
 restore() { cp "$orig" "$file"; rm -f "$orig" "$why"; }
-trap restore EXIT INT TERM
+scratch_also restore
 nonce=$(date +%s)-$$
 python3 - "$file" "$lit" "$nonce" <<'PY'
 import sys

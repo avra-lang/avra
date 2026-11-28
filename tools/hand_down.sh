@@ -14,6 +14,7 @@
 #   sh tools/hand_down.sh --self-test
 
 # A cold run clears the tree's `.avra-cache`; the machine store lives there too, or "cold" would read the machine's rows.
+. "$(dirname "$0")/lib/scratch.sh"
 export AVRA_CACHE_DIR="$(cd "$(dirname "$0")/.." && pwd)/.avra-cache"
 # a store is copied, counted or emptied here between builds, so each build saves its own before it answers
 export AVRA_STORE_KEPT_HERE=1
@@ -56,8 +57,7 @@ room() {
 }
 
 self_test() {
-    t=$(mktemp -d) || exit 1
-    trap 'find "$t" -delete' EXIT
+    scratch_dir t
     fails=0
     bad() { fails=$((fails + 1)); echo "hand-down: FAIL — $1"; }
     mkdir -p "$t/from/build" "$t/from/.avra-cache/store" "$t/from/.avra-cache/obj" "$t/to"

@@ -4,13 +4,13 @@
 # built on the program layer and run under AVRA_MEM_STATS=1, it says exactly one "mem: live" line,
 # and it is the program's: 0 bytes.
 #   sh tools/witness_program_ledger.sh [compiler]   (default build/avra-try)
+. "$(dirname "$0")/lib/scratch.sh"
 set -u
 root=$(cd "$(dirname "$0")/.." && pwd)
 avra=${1:-build/avra-try}
 case $avra in /*) ;; *) avra="$root/$avra" ;; esac
 [ -x "$avra" ] || { echo "witness_program_ledger: no compiler at $avra" >&2; exit 1; }
-tmp=$(mktemp -d)
-trap 'find "$tmp" -delete' EXIT
+scratch_dir tmp
 failed=0
 path=program
 mkdir -p "$tmp/$path"

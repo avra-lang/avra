@@ -10,6 +10,7 @@
 #   sh tools/witness_program_needs.sh [compiler] [--jobs J] [package…]
 #   sh tools/witness_program_needs.sh --cases    (every case, one per line)
 #   (default build/avra-try; J defaults to 3; with no package, every case)
+. "$(dirname "$0")/lib/scratch.sh"
 set -u
 # a store is copied, counted or emptied here between builds, so each build saves its own before it answers
 export AVRA_STORE_KEPT_HERE=1
@@ -24,8 +25,7 @@ if [ "${1:-}" = --jobs ]; then jobs=$2; shift 2; fi
 [ -x "$avra" ] || { echo "witness_program_needs: no compiler at $avra" >&2; exit 1; }
 case "$avra" in /*) ;; *) avra="$root/$avra" ;; esac
 [ $# -gt 0 ] || set -- $(cases)
-tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
+scratch_dir tmp
 held() { # held <package>: one line saying the package's hold, then any items apart
     p=$1
     out=$tmp/$(printf '%s' "$p" | tr '/' '_')

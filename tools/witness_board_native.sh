@@ -5,12 +5,12 @@
 # layer kept from before — must report no body left unlowered (a trap standing in for one), and its
 # binary's page must be the evaluator's, byte for byte. A browser run is a Mac's; this is any host's.
 #   sh tools/witness_board_native.sh [compiler]
+. "$(dirname "$0")/lib/scratch.sh"
 set -u
 . "$(dirname "$0")/lib/tree.sh"
 [ $# -gt 0 ] && avra=$1
 [ -x "$avra" ] || { echo "board-native: no compiler at $avra"; exit 1; }
-work=$(mktemp -d "${TMPDIR:-/tmp}/avra-board-native.XXXXXX")
-trap 'rm -rf "$work"' EXIT INT TERM
+scratch_dir work
 mkdir -p "$work/tools" "$work/cache/home"
 cp -R "$here/ui-board" "$work/tools/ui-board"
 cp "$here/ui-board/hydrate/main.av" "$work/tools/ui-board/src/main.av"

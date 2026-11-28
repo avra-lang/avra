@@ -469,6 +469,7 @@ supervise() {
     keeper=$!
     # The keeper's reason, when it ended this run, is the run's status.
     ended() {
+        # LICENSED scratch_law: the Sprite half, deleted with the Sprites; its run reports its own end
         trap - EXIT TERM
         st=$1
         if [ -f "$rd/stopped" ]; then
@@ -480,10 +481,13 @@ supervise() {
         settle "$id" "$st"
         exit "$st"
     }
+    # LICENSED scratch_law: the Sprite half, deleted with the Sprites; its run reports its own end
     trap 'ended 143' TERM
+    # LICENSED scratch_law: the Sprite half, deleted with the Sprites; its run reports its own end
     trap 'ended $?' EXIT
 
     (
+        # LICENSED scratch_law: the Sprite half, deleted with the Sprites; its run reports its own end
         trap - EXIT TERM
         export LLVM_PREFIX=/usr/lib/llvm-22 CC=/usr/lib/llvm-22/bin/clang AVRA_CXX_RUNTIME=stdc++
         mkdir -p "$remote/build" "$compilers" "$probes"
@@ -686,6 +690,7 @@ attach() {
     fi
     tail -c +$(($2 + 1)) -f -s 1 "$rd/out" &
     tl=$!
+    # LICENSED scratch_law: the Sprite half, deleted with the Sprites; its run reports its own end
     trap 'kill "$tl" 2>/dev/null' EXIT
     n=0
     while [ ! -f "$rd/status" ] && [ "$n" -lt "${AVRA_ATTACH_S:-540}" ]; do

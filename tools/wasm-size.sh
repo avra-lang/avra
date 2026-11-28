@@ -1,9 +1,10 @@
 #!/bin/sh
 # The wasm floor: build the smallest program and count what the target carries.
+. "$(dirname "$0")/lib/scratch.sh"
 set -eu
 . "$(dirname "$0")/lib/tree.sh"
 command -v wasm-opt >/dev/null 2>&1 || { echo "wasm-size: wasm-opt (binaryen) not on PATH — skipped"; exit 0; }
-work=$(mktemp -d "${TMPDIR:-/tmp}/avra-size.XXXXXX")
+scratch_dir work
 cp -R "$here/wasm-min" "$work/min"
 for mode in command reactor; do
     flag=""

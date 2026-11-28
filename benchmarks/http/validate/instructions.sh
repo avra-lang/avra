@@ -4,12 +4,13 @@
 # count no neighbour's load moves. Needs valgrind; run.sh builds the
 # three binaries first.
 #   sh benchmarks/http/validate/instructions.sh [N]
+. "$(dirname "$0")/../../../tools/lib/scratch.sh"
 set -eu
 cd "$(dirname "$0")/../../.."
 n="${1:-2000}"
 here=benchmarks/http/validate
 out="${TMPDIR:-/tmp}/validate-ir.$$"
-trap 'rm -f "$out" "$out.0"' EXIT
+scratch_also 'rm -f "$out" "$out.0"'
 
 count() {
     ROW="$1" N="$n" valgrind --tool=callgrind --callgrind-out-file="$out" "$2" "$3" > /dev/null 2>&1

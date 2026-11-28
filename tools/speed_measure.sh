@@ -12,6 +12,7 @@
 # The store is warmed first: a cold first round is the whole program's
 # price, not the phase's, and a budget must read the phase.
 # A cold run clears the tree's `.avra-cache`; the machine store lives there too, or "cold" would read the machine's rows.
+. "$(dirname "$0")/lib/scratch.sh"
 export AVRA_CACHE_DIR="$(cd "$(dirname "$0")/.." && pwd)/.avra-cache"
 # a store is copied, counted or emptied here between builds, so each build saves its own before it answers
 export AVRA_STORE_KEPT_HERE=1
@@ -50,10 +51,10 @@ if [ ! -f build/libavra_runtime.a ]; then
     make -s -o avra objects libs >&2 || { echo "speed_measure: objects and libs did not build" >&2; exit 1; }
 fi
 
-orig=$(mktemp)
+scratch_dir orig; orig="$orig/file"
 cp "$file" "$orig"
 restore() { cp "$orig" "$file"; rm -f "$orig"; }
-trap restore EXIT INT TERM
+scratch_also restore
 
 # A FRESH EDIT per round: the appended line carries a run nonce and the
 # round's own name, so no round ever lands on a store hit — a repeat of an

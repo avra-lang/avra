@@ -13,6 +13,7 @@
 # costs to prove does not.
 #
 #   sh tools/cutoff_witness.sh [compiler]   (default build/avra)
+. "$(dirname "$0")/lib/scratch.sh"
 set -u
 . "$(dirname "$0")/lib/attack.sh"
 A=${1:-build/avra}
@@ -30,7 +31,7 @@ cp "$F" "$R/orig.av"
 answers=build/answers
 [ ! -d "$answers.cutoff" ] || fail "$answers.cutoff stands from a run that did not finish — move it back first"
 [ ! -d "$answers" ] || mv "$answers" "$answers.cutoff"
-trap 'cp "$R/orig.av" "$F"; [ ! -d "$answers.cutoff" ] || mv "$answers.cutoff" "$answers"' EXIT
+scratch_also 'cp "$R/orig.av" "$F"; [ ! -d "$answers.cutoff" ] || mv "$answers.cutoff" "$answers"'
 
 # The cli built cold over a store of its own, then warm.
 for d in $(find packages -name .avra-cache -type d -prune); do find "$d" -mindepth 1 -delete; done

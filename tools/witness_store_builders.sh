@@ -8,6 +8,7 @@
 # the third evicts the first, whose next build is cold again: its product must still be its own.
 # Empties the cli's store first; restores the edited file on every exit.
 #   sh tools/witness_store_builders.sh <compiler A> <compiler B> <compiler C>   (Linux: reads /proc)
+. "$(dirname "$0")/lib/scratch.sh"
 set -eu
 # a store is copied, counted or emptied here between builds, so each build saves its own before it answers
 export AVRA_STORE_KEPT_HERE=1
@@ -18,9 +19,9 @@ store="$root/packages/cli/.avra-cache"
 tapes="$store/tapes"
 product="$root/packages/cli/src/main"
 edited="$root/packages/cli/src/commands/cache.av"
-tmp=$(mktemp -d)
+scratch_dir tmp
 cp "$edited" "$tmp/edited.av"
-trap 'cp "$tmp/edited.av" "$edited"; find "$tmp" -delete' EXIT
+scratch_also 'cp "$tmp/edited.av" "$edited"; find "$tmp" -delete'
 find "$store" -delete 2>/dev/null || :
 
 prints() { ls "$tapes" 2>/dev/null | sed -n 's/^pack-\([^.]*\)\..*\.pack$/\1/p' | sort -u; }

@@ -10,6 +10,7 @@
 #   CORES=4 sh benchmarks/http/wrk.sh    the server on cores 0-3, wrk on the rest
 #                                    (LISTEN=reuseport: the floor's per-process
 #                                    sockets)
+. "$(dirname "$0")/../../tools/lib/scratch.sh"
 set -eu
 ulimit -n 65536 2>/dev/null || ulimit -n "$(ulimit -Hn)"
 command -v wrk >/dev/null || sudo apt-get install -y wrk >/dev/null 2>&1
@@ -25,12 +26,12 @@ cores=$(nproc)
 serving=${CORES:-1}
 CORES=$serving taskset -c 0-$((serving - 1)) "$server" >/dev/null 2>&1 &
 pid=$!
-trap 'pkill -P $pid 2>/dev/null || true; kill $pid 2>/dev/null || true' EXIT
+scratch_also 'pkill -P $pid 2>/dev/null || true; kill $pid 2>/dev/null || true'
 sleep 1
 # The server's CPU is its whole process tree's: one process per core.
 cpu() { for p in $pid $(pgrep -P $pid); do cat "/proc/$p/stat"; done 2>/dev/null | awk '{s += $14 + $15} END {print s}'; }
 tick=$(getconf CLK_TCK)
-pipeline=$(mktemp)
+scratch_dir pipeline; pipeline="$pipeline/file"
 cat > "$pipeline" <<'EOF'
 init = function(args)
   local r = {}

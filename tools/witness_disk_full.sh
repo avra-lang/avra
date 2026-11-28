@@ -7,11 +7,12 @@
 # The filesystems are tmpfs mounts: made here where the process may mount, else in a mount namespace
 # of its own (`unshare -rm`); a machine that allows neither cannot witness this, and says so.
 #   sh tools/witness_disk_full.sh [compiler]   (default build/avra)
+. "$(dirname "$0")/lib/scratch.sh"
 set -u
 root=$(cd "$(dirname "$0")/.." && pwd)
 avra=$(cd "$(dirname "${1:-$root/build/avra}")" && pwd)/$(basename "${1:-$root/build/avra}")
 if [ "${WITNESS_DISK_FULL_INSIDE:-}" != 1 ]; then
-    probe=$(mktemp -d)
+    scratch_dir probe
     if mount -t tmpfs -o size=64k tmpfs "$probe" 2>/dev/null; then
         umount "$probe"; find "$probe" -delete
         WITNESS_DISK_FULL_INSIDE=1 exec sh "$0" "$avra"
@@ -22,7 +23,7 @@ if [ "${WITNESS_DISK_FULL_INSIDE:-}" != 1 ]; then
     exit 0
 fi
 
-w=$(mktemp -d)
+scratch_dir w
 fail() { echo "witness_disk_full: $*"; for m in "$w/disk" "$w/store/.avra-cache/tapes"; do umount "$m" 2>/dev/null; done; find "$w" -delete 2>/dev/null; exit 1; }
 package() { mkdir -p "$1/src" && printf '[package]\nname = "disk-full"\nversion = "0.1.0"\n' >"$1/avra.toml" && printf 'println("hi")\n' >"$1/src/main.av"; }
 # `$1` the build's words; `$2` what they must name; `$3` the case

@@ -16,6 +16,7 @@
 # Each compiler build is the long part (minutes); the regressions run one after another.
 #
 #   sh tools/store_fuzz_regressions.sh [<n>…]      (default: every patch)
+. "$(dirname "$0")/lib/scratch.sh"
 set -u
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
@@ -36,7 +37,7 @@ missed=""
 for n in $only; do
     patch=$(ls tools/store-fuzz/regress-"$n"-*.patch 2>/dev/null | head -1)
     [ -n "$patch" ] || { echo "store_fuzz_regressions: no patch numbered $n" >&2; exit 2; }
-    work=$(mktemp -d "${TMPDIR:-/tmp}/avra-regress-$n.XXXXXX")
+    scratch_dir work
     git worktree add -q --detach "$work" HEAD || exit 2
     git diff HEAD | (cd "$work" && git apply --allow-empty) || { echo "store_fuzz_regressions: this tree's own edits don't lay on a copy" >&2; exit 2; }
     if ! (cd "$work" && git apply "$root/$patch"); then

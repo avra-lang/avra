@@ -7,6 +7,7 @@
 #
 #   sh tools/pr_body.sh            the body, on stdout
 #   sh tools/pr_body.sh --self-test
+. "$(dirname "$0")/lib/scratch.sh"
 set -u
 
 body() {
@@ -22,9 +23,7 @@ body() {
 }
 
 if [ "${1:-}" = --self-test ]; then
-    d=$(mktemp -d)
-    trap 'find "$d" -delete' EXIT
-    trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
+    scratch_dir d
     printf '{"body": "text\\nSPEED_ACCEPT: now"}' > "$d/pr.json"
     got=$(PR_NUMBER=7 GH_TOKEN=t PR_BODY_API="file://$d/pr.json" PR_BODY='SPEED_ACCEPT: stale' body)
     printf '%s\n' "$got" | grep -qx 'SPEED_ACCEPT: now' || { echo "pr_body: the fresh body was not read: $got"; exit 1; }

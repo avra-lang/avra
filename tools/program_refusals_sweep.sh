@@ -8,13 +8,14 @@
 # With no arguments: every package under packages/, then tools/ui-board. AVRA names the compiler
 # (default: the tree's build/avra-try). Each package's `.avra-cache` is emptied after its row, since a
 # store per package fills the disk.
+. "$(dirname "$0")/lib/scratch.sh"
 set -u
 # a store is copied, counted or emptied here between builds, so each build saves its own before it answers
 export AVRA_STORE_KEPT_HERE=1
 root=$(cd "$(dirname "$0")/.." && pwd)
 avra=${AVRA:-$root/build/avra-try}
 [ $# -gt 0 ] || set -- "$root"/packages/* "$root/tools/ui-board"
-work=$(mktemp -d)
+scratch_dir work
 status=0
 printf '%-22s %5s %6s %5s  %s\n' package find errors type "ran exit: tests/made/eval/native/failing"
 for p in "$@"; do

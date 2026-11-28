@@ -19,6 +19,7 @@
 # EVERY COLD RUN STARTS BARE: an empty store, and no product a run before it left, which a build reads.
 # A FILE IS READ ONLY ONCE IT IS OLDER THAN THE STAMP WINDOW (io.stamp withholds a stamp from a path
 # changed in the last two seconds), so what a run stamps never depends on how fast it began.
+. "$(dirname "$0")/lib/scratch.sh"
 set -eu
 verdict=
 cause=
@@ -48,7 +49,7 @@ git cat-file -e "$snapshot^{commit}" 2> /dev/null || {
 # branch's own sha where origin holds its mirror — passes here and reds every gate. It is asked of
 # origin in a scratch repository, so this clone never turns shallow.
 if [ "${COST_ACCEPTING:-0}" = 1 ]; then
-    probe=$(mktemp -d)
+    scratch_dir probe
     if ! { git init -q "$probe" && git -C "$probe" fetch -q --depth=1 "$(git remote get-url origin)" "$snapshot"; } 2> /dev/null; then
         find "$probe" -delete
         echo "cost: snapshot $snapshot can't be fetched from origin ($(git remote get-url origin 2> /dev/null || echo 'no origin')): the gate's clone could not measure it — name the commit by the sha origin holds"
@@ -155,7 +156,7 @@ if ! mkdir "$place.held" 2> /dev/null; then
     if [ -n "$holder" ] && kill -0 "$holder" 2> /dev/null; then echo "cost: run $holder measures in $place"; exit 1; fi
 fi
 echo $$ > "$place.held/pid"
-trap 'find "$place.held" -delete 2> /dev/null || :' EXIT
+scratch_also 'find "$place.held" -delete 2> /dev/null || :'
 [ ! -e "$place" ] || find "$place" -delete
 src=$place/src
 mkdir -p "$src/build"

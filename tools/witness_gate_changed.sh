@@ -4,11 +4,11 @@
 # the affected packages' idioms, all on the tree's own compiler. Hermetic —
 # stubs for `avra`, `make` and `git` — so the proof is about the WIRING.
 # Run: sh tools/witness_gate_changed.sh
+. "$(dirname "$0")/lib/scratch.sh"
 set -eu
 repo=$(cd "$(dirname "$0")/.." && pwd)
 gate=$repo/tools/gate_changed.sh
-tmp=$(mktemp -d "${TMPDIR:-/tmp}/avra-gate-changed.XXXXXX")
-trap 'rm -rf "$tmp"' EXIT
+scratch_dir tmp
 mkdir -p "$tmp/bin" "$tmp/packages/pkg/bad/src" "$tmp/packages/pkg/good/src"
 : > "$tmp/packages/pkg/bad/src/bad.av"
 printf 'fn a() -> int {\n    1\n}\n' > "$tmp/a.av"

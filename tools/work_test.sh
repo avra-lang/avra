@@ -5,13 +5,13 @@
 # SILENT do not answer) and AVRA_GH for `gh`.
 #
 # `sh tools/work_test.sh` prints a summary; a non-zero exit is a failure.
+. "$(dirname "$0")/lib/scratch.sh"
 set -u
 
 here="$(cd "$(dirname "$0")" && pwd)"
-scratch=$(mktemp -d "${TMPDIR:-/tmp}/avra-work-test.XXXXXX")
+scratch_dir scratch
 scratch=$(cd "$scratch" && pwd -P)
-trap 'rm -rf "$scratch"' EXIT
-trap 'exit 130' INT TERM
+scratch_signals
 
 . "$here/lib/checks.sh"
 

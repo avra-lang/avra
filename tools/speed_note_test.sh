@@ -1,13 +1,14 @@
 #!/bin/sh
 # Fixture test for tools/speed_note.sh: run by hand, not by CI.
+. "$(dirname "$0")/lib/scratch.sh"
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 fx="$here/speed_note_fixtures"
-out=$(mktemp)
+scratch_dir out; out="$out/file"
 fail=0
 check() { if [ "$2" = 0 ]; then echo "ok   $1"; else echo "FAIL $1"; fail=1; fi; }
 
-warn=$(mktemp)
+scratch_dir warn; warn="$warn/file"
 GITHUB_STEP_SUMMARY="$out" sh "$here/speed_note.sh" compare "$fx/pr.metrics" "$fx/main.metrics" > "$warn"
 rc=$?
 check "always exits 0" "$rc"

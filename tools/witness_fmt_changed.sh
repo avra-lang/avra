@@ -5,11 +5,11 @@
 # about the WIRING — which files reach the compiler, which exit status comes
 # back, and that nothing ever fetches or watches `main` — never about a real
 # build. Run: sh tools/witness_fmt_changed.sh
+. "$(dirname "$0")/lib/scratch.sh"
 set -eu
 repo=$(cd "$(dirname "$0")/.." && pwd)
 script=$repo/tools/fmt_changed.sh
-tmp=$(mktemp -d "${TMPDIR:-/tmp}/avra-fmt-changed.XXXXXX")
-trap 'rm -rf "$tmp"' EXIT
+scratch_dir tmp
 mkdir -p "$tmp/bin"
 log="$tmp/avra.log"
 gitlog="$tmp/git.log"

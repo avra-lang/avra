@@ -12,6 +12,7 @@
 #
 #   sh tools/stamps.sh <stamp> <sources> <flags> [<stamp> <sources> <flags>]…
 #   sh tools/stamps.sh --self-test
+. "$(dirname "$0")/lib/scratch.sh"
 set -eu
 
 # sum: the SHA-256 of stdin, as 64 hex digits; sums <file>...: `<hash>  <file>` a line, in ONE process.
@@ -50,7 +51,7 @@ stamped() { settle "$1" "$(digest "$2" "$3")"; }
 # all <stamp> <sources> <flags>…: every stamp at once, answering exactly what `stamped`
 # answers — each source hashed once and every stamp's text hashed, in two processes.
 all() {
-    w=$(mktemp -d)
+    scratch_dir w
     i=0
     : > "$w/list"
     while [ "$#" -ge 3 ]; do
@@ -80,9 +81,7 @@ all() {
 }
 
 if [ "${1:-}" = --self-test ]; then
-    d=$(mktemp -d)
-    trap 'find "$d" -delete' EXIT
-    trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
+    scratch_dir d
     printf 'a' > "$d/a.c"
     stamped "$d/x.sha" "$d/a.c" "-O2"
     first=$(cat "$d/x.sha")

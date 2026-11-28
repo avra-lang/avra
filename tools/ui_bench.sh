@@ -8,13 +8,14 @@
 #
 # The browser half needs Firefox (FIREFOX names one) and a wasm toolchain; it
 # SKIPS, spoken, without them.
+. "$(dirname "$0")/lib/scratch.sh"
 set -eu
 
 . "$(dirname "$0")/lib/tree.sh"
 which=${1:-all}
 sizes=${ROWS:-"1000 10000 100000"}
-work=$(mktemp -d "${TMPDIR:-/tmp}/avra-ui-bench.XXXXXX")
-trap 'kill $(jobs -p) 2>/dev/null || true' EXIT
+scratch_dir work
+scratch_also 'kill $(jobs -p) 2>/dev/null || true'
 
 native() {
     cp -R "$tree/tools/ui-bench" "$work/native"

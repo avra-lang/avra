@@ -7,6 +7,7 @@
 # `differs.why` is known to differ for the reason written there: said, not failed, while it
 # differs, and failed once it holds.
 #   sh tools/witness_program_fixes.sh [compiler] [case…]   (default build/avra, every case)
+. "$(dirname "$0")/lib/scratch.sh"
 set -u
 root=$(cd "$(dirname "$0")/.." && pwd)
 . "$root/tools/lib/cases.sh"
@@ -15,8 +16,7 @@ avra=${1:-build/avra}
 case $avra in /*) ;; *) avra="$root/$avra" ;; esac
 [ -x "$avra" ] || { echo "witness_program_fixes: no compiler at $avra" >&2; exit 1; }
 [ $# -gt 0 ] && shift
-tmp=$(mktemp -d)
-trap 'find "$tmp" -delete' EXIT
+scratch_dir tmp
 # what `fix` says and writes of the case `$1`, its copy's path said as `<case>`
 said() {
     c="$tmp/$1"

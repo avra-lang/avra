@@ -3,6 +3,7 @@
 # it — the signal HTTP/2 ends its connection on (RFC 9113 §9.2.1). The
 # peer is `openssl s_client`; skips, saying so, when openssl is absent.
 # The server is this script's child and is killed when it exits.
+. "$(dirname "$0")/lib/scratch.sh"
 set -u
 if ! command -v openssl > /dev/null 2>&1; then
     echo "renegotiation: openssl not on the PATH — skipped"
@@ -13,7 +14,8 @@ mkdir -p "$out"
 build/avra build tools/tls_renegotiation > "$out/build.log" 2>&1 || { tail -20 "$out/build.log"; exit 1; }
 pid=
 stop() { [ -n "$pid" ] && kill "$pid" 2> /dev/null; }
-trap stop EXIT
+scratch_also stop
+# LICENSED scratch_law: its own words before the exit, which runs the run's own exit
 trap 'stop; exit 1' INT TERM
 port=$((20000 + $$ % 20000))
 RENEG_PORT=$port tools/tls_renegotiation/src/main > "$out/server.log" 2>&1 &

@@ -20,6 +20,7 @@
 #
 # MEMCAP names the memory-cap wrapper each build runs under (cap 4000 MB).
 # A cold run clears the tree's `.avra-cache`; the machine store lives there too, or "cold" would read the machine's rows.
+. "$(dirname "$0")/lib/scratch.sh"
 export AVRA_CACHE_DIR="$(cd "$(dirname "$0")/.." && pwd)/.avra-cache"
 # a store is copied, counted or emptied here between builds, so each build saves its own before it answers
 export AVRA_STORE_KEPT_HERE=1
@@ -28,6 +29,7 @@ set -u
 memcap="${MEMCAP:?MEMCAP must name the memory-cap wrapper, memcap.sh}"
 suite="${1:-packages/std-avrac/src/compiler/tests/publish_test.av}"
 tree="$(cd "$(dirname "$0")/.." && pwd)"
+# LICENSED scratch_law: its logs are read after the run, which says where they stand
 logs="$(mktemp -d "${TMPDIR:-/tmp}/avra-witness-held.XXXXXX")"
 moved=packages/std-avrac/src/compiler/cache_walk.av
 
@@ -43,7 +45,7 @@ back() {
     cp "$logs/moved.av.orig" "$moved"
     cmp -s "$logs/moved.av.orig" "$moved" || echo "witness_held_instance: $moved NOT restored — the original is $logs/moved.av.orig" >&2
 }
-trap back EXIT INT TERM
+scratch_also back
 
 # A cold store is what makes the second build the only one that holds.
 mkdir -p "$logs/caches-aside"

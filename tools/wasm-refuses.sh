@@ -3,10 +3,11 @@
 # core ROW, or a package whose manifest names no `wasm_objects`, is
 # refused BY NAME — never a linker's "undefined symbol", which accuses the
 # innocent. A package that DOES name a wasm object links instead.
+. "$(dirname "$0")/lib/scratch.sh"
 set -eu
 
 . "$(dirname "$0")/lib/tree.sh"
-work=${WASM_WORK:-$(mktemp -d "${TMPDIR:-/tmp}/avra-refuses.XXXXXX")}
+if [ -n "${WASM_WORK:-}" ]; then work=$WASM_WORK; else scratch_dir work; fi
 
 wasm_who=wasm-refuses; . "$here/lib/wasm.sh"
 [ -x "$avra" ] || { say "no compiler at $avra"; exit 1; }

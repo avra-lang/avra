@@ -6,12 +6,13 @@
 # binary and saves; and the edit taken back over that store builds the first cold product. On the
 # cli, with a literal edited, through the program layer.
 #   sh tools/witness_place_kill.sh [compiler]   (default build/avra-try)
+. "$(dirname "$0")/lib/scratch.sh"
 set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
 avra=${1:-build/avra-try}
 [ -x "$avra" ] || { echo "witness_place_kill: no compiler at $avra" >&2; exit 1; }
-tmp=$(mktemp -d)
+scratch_dir tmp
 export AVRA_CACHE_DIR="$tmp/machine"
 export AVRA_PROGRAM=1
 # the stores are copied, emptied and read between builds, so each build saves its own before it answers
@@ -23,8 +24,7 @@ mkdir -p "$AVRA_CACHE_DIR"
 file=packages/cli/src/commands/cache.av
 cp "$file" "$tmp/orig.av"
 restore() { cp "$tmp/orig.av" "$file"; find "$tmp" -delete; }
-trap restore EXIT
-trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
+scratch_also restore
 
 store=packages/cli/.avra-cache
 afresh() { find "$store" -mindepth 1 -delete 2>/dev/null || :; find "$AVRA_CACHE_DIR" -mindepth 1 -delete; }
