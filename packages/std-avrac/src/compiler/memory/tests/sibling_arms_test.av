@@ -48,6 +48,9 @@ fn nested_arms() -> Body {
     )
 }
 
+/// A match whose braced arms each push `held`, one statement beside the push in each.
+const BRACED: string = "enum Shape {\n    Named(string)\n    Plain\n}\nfn braced(n: int) -> int {\n    mut xs: List<string> = []\n    mut ys: List<string> = []\n    let held = \"m\${n}\"\n    let s = if n > 0 { Shape.Named(\"n\") } else { Shape.Plain }\n    match s {\n        .Named(_) -> {\n            xs.push(held)\n            xs.length\n        },\n        .Plain -> {\n            ys.push(held)\n            ys.length\n        },\n    }\n}\nbraced(1)\n"
+
 /// `b`'s instructions strictly between its first `if` and its last region's close: where `filed`'s
 /// pushes stand, past the comprehension that makes `out`.
 fn branch(b: Body) -> List<Ins> {
@@ -85,6 +88,12 @@ spec "compiler/memory — a value moves in each sibling arm" {
         then "every push moves the value" {
             calls_in(branch(nested_arms()), "avra_array_push_moved") == 3 &&
                 calls_in(branch(nested_arms()), "avra_array_push_owned") == 0
+        }
+    }
+    given "a push in each of a match's braced arms" {
+        then "each push moves the value, out through its arm's block" {
+            calls_in(body_of(BRACED, "braced").ins, "avra_array_push_moved") == 2 &&
+                calls_in(body_of(BRACED, "braced").ins, "avra_array_push_owned") == 0
         }
     }
     given "a match whose arm yields its subject's payload" {

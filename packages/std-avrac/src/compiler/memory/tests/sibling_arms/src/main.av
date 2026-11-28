@@ -41,6 +41,46 @@ fn read_after(c: bool, n: int) -> int {
     xs.length + v.length
 }
 
+fn blocked(c: bool, n: int) -> string {
+    mut held = "z"
+    let v = "b${n}"
+    let got = if c {
+        v
+    } else {
+        held = v
+        "kept"
+    }
+    "${got}${held}"
+}
+
+fn braced(n: int) -> int {
+    mut xs: List<string> = []
+    mut ys: List<string> = []
+    let v = "m${n}"
+    let s = made(n)
+    match s {
+        .Named(_) -> {
+            xs.push(v)
+            xs.length
+        },
+        .Tagged(_) -> {
+            ys.push(v)
+            ys.length
+        },
+        .Plain -> 0,
+    }
+}
+
+fn inner_then_after(c: bool, d: bool, n: int) -> int {
+    mut xs: List<string> = []
+    let v = "i${n}"
+    if c {
+        if d { xs.push(v) } else { xs.push("none") }
+        xs.push(v)
+    }
+    xs.length + v.length
+}
+
 fn made(n: int) -> Shape {
     if n % 3 == 0 { Shape.Named("n${n}") } else if n % 3 == 1 { Shape.Tagged(["t${n}", "u${n}"]) } else { Shape.Plain }
 }
@@ -61,4 +101,8 @@ let counts = [both(i % 2 == 0, i) +
     read_after(i % 2 == 0, i) for i in 0..4]
 let labels = [label(i) for i in 0..6].join(" ")
 let taken = [tags(i).join("+") for i in 0..6].join(" ")
-"${counts.map("${it}").join(",")} | ${labels} | ${taken}"
+let blocks = [blocked(i % 2 == 0, i) for i in 0..3].join(" ")
+let bracing = [braced(i) + inner_then_after(i % 2 == 0, i % 3 == 0, i) for i in 0..6]
+    .map("${it}")
+    .join(",")
+"${counts.map("${it}").join(",")} | ${labels} | ${taken} | ${blocks} | ${bracing}"
