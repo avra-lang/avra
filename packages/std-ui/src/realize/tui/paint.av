@@ -16,6 +16,7 @@ use realize.tui.layout.{
     gap_rows,
     closed_node,
     holds_children,
+    selected_item,
     pointer_cells,
 }
 
@@ -140,7 +141,8 @@ fn put(canvas: Canvas, x: int, y: int, line: string) {
 }
 
 /// A node's own lines at its box, then each child's box over them; a list
-/// draws its bullet in the gutter it keeps beside each child.
+/// draws its bullet in the gutter it keeps beside each child, and a selected item its selected
+/// mark before what it holds, its whole box reversed.
 fn paint(grid: Canvas, n: Node, p: Placed, path: string, focus: string) {
     if closed_node(n) { return }
     let r = p.rect
@@ -153,6 +155,10 @@ fn paint(grid: Canvas, n: Node, p: Placed, path: string, focus: string) {
         grid.cursor.set(Pos { x: left + gutter, y: top })
     }
     let inner = r.w - (left - r.x) - pad_cols(pad?.end ?? .None) - gutter - kept_cells(n)
+    if selected_item(n) {
+        put(grid, left + gutter, top, grid.glyphs.selected)
+        for y in r.y..r.y + r.h { grid.looks.push(Look { y: y, from: left, to: r.x + r.w, style: reverse }) }
+    }
     let style = look_of(n, gutter > 0)
     for i, line in own_lines(n, inner, grid.glyphs) {
         put(grid, left + gutter + kept_cells(n), top + i, line)
