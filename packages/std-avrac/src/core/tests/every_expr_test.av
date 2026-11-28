@@ -1,0 +1,38 @@
+// `every_expr`: every expression at and under a root, each once, children before owners in the order
+// they are written — the root last — at any depth.
+use @std.avrac.core.{new_node_store, Expr, ExprId}
+
+/// Each id's place in `order`, or -1.
+fn place(order: List<ExprId>, e: ExprId) -> int { order.index_of(e) ?? -1 }
+
+spec "core/store — every expression under a root" {
+    given "a list of a list and a number" {
+        then "the leaves, then the inner list, then the number, then the root" {
+            mut s = new_node_store()
+            let one = s.alloc_expr(Expr.IntLit(1))
+            let two = s.alloc_expr(Expr.IntLit(2))
+            let inner = s.alloc_expr(Expr.ListLit([one, two]))
+            let three = s.alloc_expr(Expr.IntLit(3))
+            let root = s.alloc_expr(Expr.ListLit([inner, three]))
+            s.every_expr(root) == [one, two, inner, three, root]
+        }
+        then "a leaf alone is itself" {
+            mut s = new_node_store()
+            let one = s.alloc_expr(Expr.IntLit(1))
+            s.every_expr(one) == [one]
+        }
+    }
+    given "a chain two hundred lists deep" {
+        then "each appears once, after the one it holds" {
+            mut s = new_node_store()
+            mut at = s.alloc_expr(Expr.IntLit(0))
+            let leaf = at
+            for _i in 0..200 { at = s.alloc_expr(Expr.ListLit([at])) }
+            let order = s.every_expr(at)
+            order.length == 201 &&
+                order[0] == leaf &&
+                order[200] == at &&
+                place(order, leaf) < place(order, at)
+        }
+    }
+}
