@@ -204,7 +204,12 @@ export type Proof = { names: Map<string, Local>, truth: bool }
 
 /// An enum as typing reads it: how many type parameters it has, and its variants, each payload typed
 /// under them.
-export type EnumShape = { params: int, variants: List<VariantSeat> }
+export type EnumShape = { params: int, variants: List<VariantSeat>, names: List<string> = [] }
+
+impl EnumShape {
+    /// Its type parameter at `at`, as a refusal names it: as declared, else by its place.
+    fn param_named(at: int) -> string { if at < self.names.length { self.names[at] } else { "T${at + 1}" } }
+}
 
 /// An enum's variant: its name, its payloads, and for a gathered one the member's record it's made of.
 /// An enum's signature saves its variants as these, and typing reads them as saved.
@@ -815,6 +820,9 @@ export enum Seating {
     Unnamed
     /// The setting `name` an instance of a component writes.
     Setting(name: string)
+    /// The variant `variant` of `enum_name` built where nothing pins its type parameter `param`: no
+    /// payload carries it, and `carried` where one is written.
+    VariantUnpinned(enum_name: string, variant: string, param: string, carried: bool)
 }
 
 /// Why a `fold` is refused.
@@ -4389,7 +4397,14 @@ impl Checking {
                 (_at: int) -> Seating.Payload(enum_type.spelled(), name),
             ) else { return null }
         let filled = [found.get("${at}") for at in 0..params]
-        if filled.any(it == null) { null } else { enum_type with { args: [a! for a in filled] } }
+        self.refused.set(self.refused.get().filter(!(it.at == e && it.seat is .VariantUnpinned)))
+        let left? = filled.find_index(it == null) else { return enum_type with { args: [a! for a in filled] } }
+        if !self.meanings && pins_nothing_later(expected) {
+            let refusal = Seating
+                .VariantUnpinned(enum_type.spelled(), name, shape!.param_named(left), !args.is_empty())
+            self.refused.push(Refused { at: e, want: enum_type, found: enum_type, seat: refusal })
+        }
+        null
     }
 
     /// Whether an argument among `args`, a variant's payloads, spreads: a variant takes each payload
@@ -4763,6 +4778,12 @@ fn own_params(own: OwnType?) -> int? {
 fn covered(found: SignedType, seat: SignedType) -> bool {
     let members = if found.alternatives.is_empty() { [found] } else { found.alternatives }
     members.all((m) -> m.reaches(seat) || seat.alternatives.any((a) -> m.reaches(a)))
+}
+
+/// Whether nothing past `expected` pins what a node leaves unpinned: a seat known whole, or none,
+/// never one a call still infers.
+fn pins_nothing_later(expected: Expected) -> bool {
+    match expected { .Exactly(_) or .Free or .Dropped -> true, .Unknown or .Partly(_) -> false }
 }
 
 /// The seat a refusal of `found` where `want` stood names: a walk's fn handed a fn taking another

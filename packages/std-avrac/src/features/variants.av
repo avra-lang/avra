@@ -238,15 +238,7 @@ impl TypeCx {
 
     mut fn cannot_pin(e: ExprId, tname: string, variant: string, tparam: string) -> TypeId {
         self
-            .spoken(
-                refusal(
-                    "type.unknown_prop",
-                    self.loc_of(e),
-                    "`${tname}.${variant}` cannot pin `${tparam}` — nothing carries it",
-                    "built here",
-                    "a payload pins the type; the pinned unit surface is recorded",
-                ),
-            )
+            .spoken(said_as("type.unknown_prop", self.loc_of(e), unit_unpinned(tname, variant, tparam)))
     }
 
     mut fn wrong_payload(v: ExprId, tname: string, variant: string, carried: TypeId) -> TypeId {
@@ -276,16 +268,25 @@ impl TypeCx {
     }
 
     mut fn unpinned_by_payload(e: ExprId, tparam: string) -> TypeId {
-        self
-            .spoken(
-                refusal(
-                    "type.unknown_prop",
-                    self.loc_of(e),
-                    "`${tparam}` is not pinned by the payload",
-                    "built here",
-                    "the pinned unit surface is recorded — carry `${tparam}` for now",
-                ),
-            )
+        self.spoken(said_as("type.unknown_prop", self.loc_of(e), payload_unpinned(tparam)))
+    }
+}
+
+/// A unit variant `tname.variant` built where nothing pins `tparam`.
+export fn unit_unpinned(tname: string, variant: string, tparam: string) -> Voice {
+    Voice {
+        message: "`${tname}.${variant}` cannot pin `${tparam}` — nothing carries it",
+        label: "built here",
+        help: "a payload pins the type; the pinned unit surface is recorded",
+    }
+}
+
+/// A variant built whose payloads leave `tparam` unpinned.
+export fn payload_unpinned(tparam: string) -> Voice {
+    Voice {
+        message: "`${tparam}` is not pinned by the payload",
+        label: "built here",
+        help: "the pinned unit surface is recorded — carry `${tparam}` for now",
     }
 }
 
