@@ -64,8 +64,8 @@ export fn cores_online() -> int { avra_cores_online() }
 
 /// What to work out ahead: the items, asked of the engine that works them out, whether an item's
 /// answer is already kept, how to ask for it, how many processes to use, whether each process says
-/// where its time went, and whether the engines that ask count what they work out from the first ask
-/// (`QueryEngine.worked_here`), saying nothing.
+/// where its time went, whether the engines that ask count what they work out from the first ask
+/// (`QueryEngine.worked_here`), saying nothing, and the order the items are dealt in.
 export type WorkAhead<T, R> = {
     items: fn(QueryEngine) -> List<T>,
     is_known: fn(QueryEngine, T) -> bool,
@@ -73,6 +73,25 @@ export type WorkAhead<T, R> = {
     process_count: int,
     timed: bool = false,
     counted: bool = false,
+    deal: Deal = Deal.Listed,
+}
+
+/// THE ORDER A WAVE DEALS ITS ITEMS TO ITS PROCESSES: as they're listed, or the last first. What a
+/// build answers and keeps is the same either way, so a deal reversed is how a run shows it.
+export enum Deal {
+    Listed
+    Reversed
+}
+
+impl WorkAhead<T, R> {
+    /// The items `engine` lists, in the order they're dealt.
+    fn dealt(engine: QueryEngine) -> List<T> {
+        let items = (self.items)(engine)
+        match self.deal {
+            .Listed -> items,
+            .Reversed -> [items[items.length - 1 - at] for at in 0..items.length],
+        }
+    }
 }
 
 /// A store and the engine over it.
@@ -208,7 +227,7 @@ fn forked_for<T, R>(
     work: WorkAhead<T, R>,
 ) -> bool {
     let known_by = work.is_known
-    let items = (work.items)(engine)
+    let items = work.dealt(engine)
     if work.process_count < 2 || !at_least(items, WORTH_FORKING, (item) -> !known_by(engine, item)) { return false }
     engine.kept_times()?.opened("the cores", TimedSide.Outside, Pass.Lower)
     let _ = store.saved()
@@ -279,7 +298,7 @@ fn cores_within<T, R>(
     meanwhile: fn() -> int,
 ) -> bool {
     let known_by = work.is_known
-    let items = (work.items)(engine)
+    let items = work.dealt(engine)
     if work.process_count < 2 || !at_least(items, WORTH_FORKING, (item) -> !known_by(engine, item)) { return false }
     engine.kept_times()?.opened("the cores", TimedSide.Outside, Pass.Lower)
     let _ = store.saved()

@@ -16,6 +16,7 @@ use @std.program.query_times.{QueryTimes, TimedSide, query_times}
 use @std.program.sorted.{sorted_by}
 use @std.program.source_facts.{source_text}
 use @std.program.worked_ahead.{
+    Deal,
     WorkAhead,
     Worked,
     asked_across,
@@ -36,6 +37,7 @@ type AheadAt = {
     timed: bool,
     counted: bool,
     program: string,
+    deal: Deal,
 }
 
 /// A body as the walk asks for it: a fn by its file and name, or a method by its impl.
@@ -50,7 +52,8 @@ enum DeclaredBody {
 /// `timed`, each process and each phase says where its time went. A file `vouched` names, read off the
 /// first engine, stands on the verdict that vouches for it: no law is asked of it. Every engine
 /// reads and keeps `program`'s frontier, counting what it works out from its first ask where
-/// `counted`, and `work` says what the last wave works of each file.
+/// `counted`, `work` says what the last wave works of each file, and `deal` the order every wave deals
+/// its files to its processes in.
 export fn program_worked(
     directory: string,
     package: string,
@@ -61,6 +64,7 @@ export fn program_worked(
     program: string = "",
     work: FileWork = FileWork.Built,
     counted: bool = false,
+    deal: Deal = Deal.Listed,
 ) -> Worked {
     let at = AheadAt {
         directory: directory,
@@ -69,6 +73,7 @@ export fn program_worked(
         timed: timed,
         counted: counted,
         program: program,
+        deal: deal,
     }
     wave_gathers(GATHERED)
     let alone = ahead(at, (_engine: QueryEngine) -> [], file_words_is_known, file_parsed)
@@ -104,6 +109,7 @@ export fn program_worked(
             process_count: at.process_count,
             timed: at.timed,
             counted: at.counted,
+            deal: at.deal,
         },
         at.program,
     )
@@ -221,6 +227,7 @@ fn ahead<T>(
             process_count: at.process_count,
             timed: at.timed,
             counted: at.counted,
+            deal: at.deal,
         },
         at.program,
     )
