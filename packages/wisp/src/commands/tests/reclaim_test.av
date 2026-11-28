@@ -3,7 +3,18 @@
 use @std.io.{exists, make_dirs}
 use @std.process.{Ready, cmd, tool}
 use @std.time.{secs}
-use commands.{Asked, ReclaimFlags, Worktree, cwds, inside, reclaimed_seeing, worktrees_of}
+use commands.{
+    Asked,
+    ReclaimFlags,
+    Seen,
+    Worktree,
+    cwds,
+    inside,
+    lsof_seen,
+    proc_seen,
+    reclaimed_seeing,
+    worktrees_of,
+}
 
 /// A repository on `main` with one commit, in a directory of its own; its real path.
 fn repo() -> string {
@@ -21,20 +32,16 @@ fn linked(d: string, branch: string) -> string {
 }
 
 /// No process stands in any tree.
-fn nothing_seen() -> Result<List<string>, string> { [] }
+fn nothing_seen() -> Result<Seen, string> { Seen { dirs: [] } }
 
 /// A reader that cannot say where processes stand.
-fn unseen() -> Result<List<string>, string> { fail "no process's directory may be read" }
+fn unseen() -> Result<Seen, string> { fail "no process's directory may be read" }
 
 fn swept(d: string, now: bool, dry: bool, floor: int) -> List<string> { swept_seeing(d, now, dry, floor, nothing_seen) }
 
-fn swept_seeing(
-    d: string,
-    now: bool,
-    dry: bool,
-    floor: int,
-    seen: fn() -> Result<List<string>, string>,
-) -> List<string> {
+fn swept_seeing(d: string, now: bool, dry: bool, floor: int, seen: fn() -> Result<Seen, string>) -> List<
+    string,
+> {
     reclaimed_seeing(ReclaimFlags { floor: floor, repo: d }, Asked { now: now, dry: dry }, seen) catch [
         "refused",
     ]
@@ -60,7 +67,7 @@ fn seen_or_refused(wt: string) -> bool {
             let stood = stood_in(child.pid(), "${wt}/deep")
             let read = cwds()
             let told = match read {
-                .Ok(dirs) -> dirs.any((c: string) -> inside(c, wt)),
+                .Ok(s) -> s.dirs.any((c: string) -> inside(c, wt)),
                 .Err(_) -> true,
             }
             if !told { eprintln(unseen_words(child.pid(), stood, wt, read)) }
@@ -78,7 +85,7 @@ fn read_many(wt: string) -> bool {
     match (cmd(sleep, ["60"]) with { cwd: "${wt}/deep" }).start(Ready.Started, secs(5)) {
         .Ok(child) -> {
             let _ = stood_in(child.pid(), "${wt}/deep")
-            let many = match cwds() { .Ok(dirs) -> dirs.length > 1, .Err(_) -> true }
+            let many = match cwds() { .Ok(s) -> s.dirs.length > 1, .Err(_) -> true }
             if !many { eprintln(unseen_words(child.pid(), "", wt, cwds())) }
             let _ = child.stop()
             many
@@ -102,8 +109,8 @@ fn stood_in(pid: int, dir: string) -> string {
 }
 
 /// What the reader read when it missed the process standing in `wt`.
-fn unseen_words(pid: int, stood: string, wt: string, read: Result<List<string>, string>) -> string {
-    let dirs = match read { .Ok(ds) -> ds, .Err(why) -> [why] }
+fn unseen_words(pid: int, stood: string, wt: string, read: Result<Seen, string>) -> string {
+    let dirs = match read { .Ok(s) -> s.dirs, .Err(why) -> [why] }
     let near = [c for c in dirs if c.contains(wt) || wt.contains(c) && c != "/"]
     "reclaim_test: the sleeper (pid ${pid}) stood in `${stood}`; the reader read ${dirs.length} directories, none inside `${wt}`; those near it: [${near.join(", ")}]"
 }
@@ -150,7 +157,7 @@ spec "wisp reclaim — which worktrees retire" {
             let d = repo()
             let wt = linked(d, "held")
             let standing = "${wt}/deep"
-            let seen: fn() -> Result<List<string>, string> = () -> [standing]
+            let seen: fn() -> Result<Seen, string> = () -> Seen { dirs: [standing] }
             let named = swept_seeing(d, true, true, 20, seen)
                 .any(it.starts_with("would retire ${wt} "))
             let _ = swept_seeing(d, true, false, 20, seen)
@@ -165,6 +172,27 @@ spec "wisp reclaim — which worktrees retire" {
                 unseen,
             ) { .Ok(_) -> false, .Err(why) -> why.contains("no process's directory") }
             checked(d, ok && exists(wt))
+        }
+        then "another user's process it may not read is named, and retires nothing less" {
+            let d = repo()
+            let wt = linked(d, "done")
+            let hid: fn() -> Result<Seen, string> = () -> Seen { dirs: [], hidden: 2 }
+            let lines = swept_seeing(d, true, false, 20, hid)
+            checked(
+                d,
+                !exists(wt) &&
+                    lines.any(it.starts_with("reclaim: 2 process(es) of other users not read")),
+            )
+        }
+        then "the kernel's marks: this user's refused read refuses, another's is counted, an ended process is no mark" {
+            (proc_seen("/a\n!other\n/b\n!other\n") catch Seen { dirs: [], hidden: -1 }).hidden == 2 &&
+                proc_seen("/a\n!own\n") is .Err &&
+                (proc_seen("/a\n/b\n") catch Seen { dirs: [] }).dirs.length == 2
+        }
+        then "lsof's records: a refused read is this user's or another's by the process's user" {
+            let text = "p1\nu0\nn/r\np2\nu501\nn/proc/2/cwd (readlink: Permission denied)\n"
+            (lsof_seen(text, "0") catch Seen { dirs: [], hidden: -1 }).hidden == 1 &&
+                lsof_seen(text, "501") is .Err
         }
         then "this machine's reader reads more than one process's directory: this one's and its sleeper's" {
             let d = repo()
