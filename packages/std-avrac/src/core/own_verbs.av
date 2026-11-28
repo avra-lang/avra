@@ -315,8 +315,8 @@ impl Lowering {
     /// reads `get` of this place under this key, the probe is taken before the value, lent to that
     /// read, and the write stores at the word it found.
     mut fn put(subject: ExprId, key: ExprId, value: ExprId) -> Reg {
+        if self.grown_in_place(subject, key, value) { return self.nothing() }
         let read? = self.own_read(subject, key, value) else { return self.put_unlent(subject, key, value) }
-        if self.grown_in_place(subject, key, read, value) { return self.nothing() }
         let map = self.opened_place(subject)
         let k = self.lower(key)
         let probe = self.slot_of(map, k)
@@ -325,7 +325,7 @@ impl Lowering {
             map: map,
             probe: probe,
             root: self.place_root_reg(subject)!,
-            key: self.key_reg(key),
+            key: self.place_root_reg(key),
             taken: Cell.new(false),
         }
         let outer = self.lent
@@ -346,21 +346,29 @@ impl Lowering {
         self.nothing()
     }
 
-    /// `m.set(k, (m.get(k) ?? []).concat([…]))` under a key that is a name, `read` that `get`,
-    /// written: the elements first, then the place opened and its probe, then the slot's list TAKEN —
-    /// its reference handed over, the slot empty until the write fills it — opened and pushed onto, so
-    /// a list only the map holds grows in place. Nothing runs between the probe and the write but the
-    /// pushes. Whether the value had that shape.
-    mut fn grown_in_place(subject: ExprId, key: ExprId, read: ExprId, value: ExprId) -> bool {
+    /// `m.set(k, (m.get(k) ?? []).concat([…]))`, written in the order the source runs it: the place
+    /// opened, the key once, then the elements, and only then the probe — so nothing the elements run
+    /// can move the word — the slot's list TAKEN (its reference handed over, the slot empty until the
+    /// write fills it), opened and pushed onto, and the write at that word. A list only the map holds
+    /// grows in place. The place's root must be named once under the value, by the read, and the place
+    /// stand where nothing else writes it. Whether the write had that shape.
+    mut fn grown_in_place(subject: ExprId, key: ExprId, value: ExprId) -> bool {
         let mc? = self.store.method_parts(value) else { return false }
         let elems? = self.appended_elems(mc.subject, mc.name, mc.args) else { return false }
         let c? = self.store.coalesce_parts(mc.subject) else { return false }
-        if c.left != read || !(self.store.list_lit_values(c.right)?.is_empty() ?? false) { return false }
-        let held? = self.held_of(read) else { return false }
-        if !held.l.boxed() || self.store.ident_name(key) == null { return false }
-        let regs = [self.lower(k) for k in elems]
+        if !self.reads_place_at(c.left, subject, key) ||
+            !(self.store.list_lit_values(c.right)?.is_empty() ?? false) {
+            return false
+        }
+        if self.place_root_reg(subject) == null ||
+            named_under(self.store, self.store.every_expr(value), rooted_name(self.store, subject)!) != 1 {
+            return false
+        }
+        let held? = self.held_of(c.left) else { return false }
+        if !held.l.boxed() { return false }
         let map = self.opened_place(subject)
         let k = self.lower(key)
+        let regs = [self.lower(x) for x in elems]
         let probe = self.slot_of(map, k)
         let present = self.bin(Layout.Truth, BinOp.Ge, probe, self.const_int(0))
         let base = self
@@ -419,8 +427,9 @@ impl Lowering {
 
     /// The `get` the value `value` of a write of the map place `subject` under `key` reads of that place
     /// under that key, where nothing under the value can move either before the write: the place is
-    /// a path of fields from a name the body binds, none a `state` field, and that name and a key
-    /// that is a name are each named once under the value, by the read. Absent for any other value.
+    /// a path of fields from a name the body binds, none a `state` field, and that name and the name a
+    /// key's path starts from are each named once under the value, by the read. Absent for any other
+    /// value.
     fn own_read(subject: ExprId, key: ExprId, value: ExprId) -> ExprId? {
         let under = self.store.every_expr(value)
         let read? = under.find((e) -> self.reads_place_at(e, subject, key)) else { return null }
@@ -435,8 +444,8 @@ impl Lowering {
     fn unlent(subject: ExprId, key: ExprId, under: List<ExprId>) -> ProbeDecline? {
         if self.place_root_reg(subject) == null { return ProbeDecline.PlaceShared }
         if named_under(self.store, under, rooted_name(self.store, subject)!) != 1 { return ProbeDecline.RootNamedAgain }
-        let k? = self.store.ident_name(key) else { return null }
-        if self.key_reg(key) == null { return ProbeDecline.PlaceShared }
+        let k? = rooted_name(self.store, key) else { return null }
+        if self.place_root_reg(key) == null { return ProbeDecline.PlaceShared }
         if named_under(self.store, under, k) != 1 { ProbeDecline.KeyNamedAgain } else { null }
     }
 
@@ -461,12 +470,6 @@ impl Lowering {
         }
     }
 
-    /// The register a key that is a name is bound to, as `place_root_reg` reads a name.
-    fn key_reg(key: ExprId) -> int? {
-        let name? = self.store.ident_name(key) else { return null }
-        held_reg(self.bound(name))
-    }
-
     /// Whether the field `name` of `subject`'s record is a `state` field, whose cell code that never
     /// names it can write.
     fn state_field(subject: ExprId, name: string) -> bool {
@@ -476,12 +479,12 @@ impl Lowering {
     }
 
     /// The probe a write lent the read `e` of `subject` under `key`, taken by it: the read the write
-    /// found, its place's root and its key, if a name, still bound where the write found them.
+    /// found, its place's root and its key's, where a path, still bound where the write found them.
     fn lent_to(e: ExprId, subject: ExprId, key: ExprId) -> LentProbe? {
         let lent? = self.lent else { return null }
         if lent.read != e ||
             self.place_root_reg(subject) != lent.root ||
-            self.key_reg(key) != lent.key { return null }
+            self.place_root_reg(key) != lent.key { return null }
         lent.taken.set(true)
         lent
     }
@@ -576,7 +579,7 @@ fn written_in_place(l: Layout) -> bool {
 }
 
 /// A map write's probe, taken before its value and lent to the read `read` of its value: the map
-/// opened, the probe's word, the register its place's root name is bound to and its key's if a name,
+/// opened, the probe's word, the register its place's root name is bound to and its key's where a path,
 /// and whether the read took it.
 export type LentProbe = { read: ExprId, map: Reg, probe: Reg, root: int, key: int?, taken: Cell<bool> }
 
@@ -603,13 +606,12 @@ fn same_path(store: SyntaxArena, a: ExprId, b: ExprId) -> bool {
     }
 }
 
-/// Two keys that are one: the same text written twice, or one name.
+/// Two keys that are one: the same text written twice, or one path of fields from one name.
 fn same_key(store: SyntaxArena, a: ExprId, b: ExprId) -> bool {
     let ta: string? = store.expr(a).text_of()
     let tb: string? = store.expr(b).text_of()
     if ta != null || tb != null { return ta != null && tb != null && ta! == tb! }
-    let na? = store.ident_name(a) else { return false }
-    na == store.ident_name(b)
+    same_path(store, a, b)
 }
 
 /// The name the place `e`'s path starts from, `self` included; absent where `e` is no place.

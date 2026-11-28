@@ -1,0 +1,60 @@
+// proves: `set(k, f(get(k)))` under a key spelled as a path of fields answers what the two
+// statements answer — a key read from a local, a key whose root a method under the value renames,
+// a key read through `self`, and two keys alike in their field but read from different roots.
+type Item = { name: string, n: int }
+
+type Bag = { m: Map<string, int>, key: string }
+
+impl Item {
+    mut fn renamed(v: int) -> int {
+        self.name = "z"
+        v
+    }
+}
+
+impl Bag {
+    mut fn bumped() { self.m.set(self.key, (self.m.get(self.key) ?? 0) + 1) }
+}
+
+fn counted(m: Map<string, int>) -> string { [k + "=" + "${v}" for k, v in m].join(" ") }
+
+fn from_local() -> string {
+    mut m: Map<string, int> = {}
+    for item in [Item { name: "a", n: 1 }, Item { name: "b", n: 2 }, Item { name: "a", n: 3 }] {
+        m.set(item.name, (m.get(item.name) ?? 0) + item.n)
+    }
+    counted(m)
+}
+
+fn renamed_under() -> string {
+    mut m: Map<string, int> = {"a": 1}
+    mut item = Item { name: "a", n: 0 }
+    m.set(item.name, item.renamed((m.get(item.name) ?? 0) + 10))
+    "${counted(m)} ${item.name}"
+}
+
+fn renamed_apart() -> string {
+    mut m: Map<string, int> = {"a": 1}
+    mut item = Item { name: "a", n: 0 }
+    let k = item.name
+    let v = item.renamed((m.get(item.name) ?? 0) + 10)
+    m.set(k, v)
+    "${counted(m)} ${item.name}"
+}
+
+fn through_self() -> string {
+    mut b = Bag { m: {}, key: "s" }
+    b.bumped()
+    b.bumped()
+    counted(b.m)
+}
+
+fn other_root() -> string {
+    mut m: Map<string, int> = {"a": 1, "b": 5}
+    let p = Item { name: "a", n: 0 }
+    let q = Item { name: "b", n: 0 }
+    m.set(p.name, (m.get(q.name) ?? 0) + 1)
+    counted(m)
+}
+
+"${from_local()} | ${renamed_under() == renamed_apart()} ${renamed_under()} | ${through_self()} | ${other_root()}"
