@@ -4,7 +4,7 @@
 //! carries; the answer is the carried type, never nullable again.
 use core.{ExprId, StmtId, Type, TypeId, ResSides}
 use features.{TypeCx, this_is}
-use diagnostics.{Diag, Severity, Voice, cut_fix, refusal, said_as, warning}
+use diagnostics.{Diag, Severity, Voice, cut_fix, said_as, warning}
 use @std.errors.{Confidence, Edit, Loc, Suggestion}
 
 /// `a?.b` — the member of what the nullable CARRIES, nullable
@@ -261,36 +261,31 @@ export fn propagated_absent() -> Voice { always_absent(PROPAGATE_SO, PROPAGATE_R
 
 /// `?` on a failure view that is not a `Result` — its cancel leaves
 /// by passing through, so there is no failure for `?` to promise.
-fn cancel_passes(mut cx: TypeCx, v: ExprId) -> TypeId {
-    let n = cx.name_at(v)
-    cx
-        .spoken(
-            refusal(
-                "type.propagate",
-                cx.loc_of(v),
-                "`?` cannot promise the failure a `${n}` carries — a cancel passes through the awaiter",
-                this_is(n),
-                "catch it where it is seen — `t.await catch c -> …` — or drop the `?`",
-            ),
-        )
+fn cancel_passes(mut cx: TypeCx, v: ExprId) -> TypeId { cx.spoken(said_as("type.propagate", cx.loc_of(v), cancel_passed(cx.name_at(v)))) }
+
+/// `?` on an awaited answer of `named`, which carries no absence and no `Result`.
+export fn cancel_passed(named: string) -> Voice {
+    Voice {
+        message: "`?` cannot promise the failure a `${named}` carries — a cancel passes through the awaiter",
+        label: this_is(named),
+        help: "catch it where it is seen — `t.await catch c -> …` — or drop the `?`",
+    }
 }
 
 /// `?.` on a guarantee, or on absence itself — the same two
 /// refusals `!` and `??` give, in the chain's words.
 fn not_chainable(mut cx: TypeCx, subject: ExprId, name: string) -> TypeId {
-    if cx.shape_at(subject) is .Null {
-        return cx
-            .spoken(
-                refusal(
-                    "type.chain",
-                    cx.loc_of(subject),
-                    "this is always absent, so `?.${name}` never reaches anything",
-                    "always absent",
-                    "there is nothing here to reach into",
-                ),
-            )
-    }
+    if cx.shape_at(subject) is .Null { return cx.spoken(said_as("type.chain", cx.loc_of(subject), chained_absent(name))) }
     cx.spoken(said_as("type.chain", cx.loc_of(subject), chained_present(cx.name_at(subject), name)))
+}
+
+/// `?.name` on a value always absent.
+export fn chained_absent(name: string) -> Voice {
+    Voice {
+        message: "this is always absent, so `?.${name}` never reaches anything",
+        label: "always absent",
+        help: "there is nothing here to reach into",
+    }
 }
 
 /// `?.name` on a value of `found`, which is never absent.

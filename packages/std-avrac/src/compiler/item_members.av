@@ -81,7 +81,7 @@ use features.structs.{
     with_unstructured,
 }
 use features.maps.{map_unknowable}
-use features.nullable.{chain_called_present, chained_present}
+use features.nullable.{chain_called_present, chained_absent, chained_present}
 use features.when_expr.{arm_waiting, when_total_early, when_total_twice, when_untotal}
 use features.expr_spine.{record_not_enum, text_unindexable, unindexable}
 use features.impls.{
@@ -238,6 +238,8 @@ enum Miss {
     ChainMethod(owner: string, name: string, means: string, lo: int, hi: int)
     /// `marks` asked after what names no declared fn.
     MarkedUnnamed
+    /// `?.name` over a value always absent.
+    ChainedAbsent(name: string)
 }
 
 impl Miss {
@@ -936,9 +938,10 @@ fn with_miss(engine: QueryEngine, subject: SignedType?, at: Span?) -> List<MissP
     [MissPlaced { at: at, miss: Miss.WithUnstructured(s.spelled()) }]
 }
 
-/// `?.name` over a value of `subject`, known whole and never absent.
+/// `?.name` over a value of `subject`, always absent, or known whole and never absent.
 fn chain_miss(subject: SignedType?, name: string, at: Span?) -> List<MissPlaced> {
     let s? = subject else { return [] }
+    if s.absence() { return [MissPlaced { at: at, miss: Miss.ChainedAbsent(name) }] }
     if !plain_known(s) { return [] }
     [MissPlaced { at: at, miss: Miss.ChainedPresent(s.spelled(), name) }]
 }
@@ -2031,6 +2034,10 @@ fn static_arities_missed(view: ItemView) -> List<Found> {
 
 fn withs_missed(view: ItemView) -> List<Found> { misses_seen_in(view, (m: Miss) -> match m { .WithUnstructured(found) -> [found], rest -> [] }) }
 
+fn chains_absent(view: ItemView) -> List<Found> {
+    misses_seen_in(view, (m: Miss) -> match m { .ChainedAbsent(name) -> [name], rest -> [] })
+}
+
 fn chains_missed(view: ItemView) -> List<Found> {
     misses_seen_in(
         view,
@@ -2582,6 +2589,14 @@ export law chain_present {
     witness: "type P = { x: int }\n\nfn g(p: P) -> int { p?.x ?? 0 }\n"
 }
 
+/// `?.` reaches into what may be present
+export law chain_absent {
+    kind: "type.chain"
+    reads_view: chains_absent
+    voice: chain_absent_words
+    witness: "fn g() -> int? { null?.age }\n"
+}
+
 /// a `when` takes every value in its one `_` arm
 export law when_total {
     kind: "type.when_arms"
@@ -2869,6 +2884,8 @@ fn static_arity_words(a: List<string>) -> Voice { static_arity_missed(a[0], a[1]
 fn with_words(a: List<string>) -> Voice { with_unstructured(a[0]) }
 
 fn chain_words(a: List<string>) -> Voice { chained_present(a[0], a[1]) }
+
+fn chain_absent_words(a: List<string>) -> Voice { chained_absent(a[0]) }
 
 fn untotal_words(_a: List<string>) -> Voice { when_untotal() }
 
