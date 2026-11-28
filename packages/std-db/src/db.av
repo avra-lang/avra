@@ -60,6 +60,7 @@ use @std.meta.{
     type_named,
     type_exported,
     stored_scalar as shaped_scalar,
+    is_type,
     flat as shaped_flat,
     flat_field,
     flat_made,
@@ -338,7 +339,10 @@ fn flat_over_nullable(k: Kind) -> bool {
 /// scalar. Any other record has no column to store it in.
 fn unstored_record(k: Kind) -> bool {
     match k {
-        .Named(n, args) -> args.is_empty() && n != "Many" && link_target_name(n) == null && stored_scalar(n) == null,
+        .Named(n, args) -> args.is_empty() &&
+            !is_type(n, Many) &&
+            link_target_name(n) == null &&
+            stored_scalar(n) == null,
         .Opt(inner) -> unstored_record(inner),
         rest -> false,
     }
@@ -613,7 +617,7 @@ fn inserted_fields(t: Type) -> List<Field> { [f for f in non_id_fields(t) if !is
 /// The model a link field points at, null for any other field.
 fn link_target(f: Field) -> string? {
     match f.kind {
-        .Named(n, args) or .Opt(.Named(n, args)) -> if n != "Many" && args.is_empty() { link_target_name(n) } else { null },
+        .Named(n, args) or .Opt(.Named(n, args)) -> if !is_type(n, Many) && args.is_empty() { link_target_name(n) } else { null },
         rest -> null,
     }
 }
@@ -621,7 +625,7 @@ fn link_target(f: Field) -> string? {
 fn links(t: Type) -> List<Field> { [f for f in t.fields if link_target(f) != null] }
 
 fn is_many(f: Field) -> bool {
-    match f.kind { .Named(n, args) -> n == "Many" && args.length == 1, rest -> false }
+    match f.kind { .Named(n, args) -> is_type(n, Many) && args.length == 1, rest -> false }
 }
 
 /// The columns a model stores: its fields but the `Many`s.
@@ -807,7 +811,7 @@ fn nullable_filter(f: Field) -> Stmts {
 /// The child model a `Many` field names.
 fn many_child(f: Field) -> string? {
     match f.kind {
-        .Named(n, args) -> if n == "Many" && args.length == 1 { args[0].spelled() } else { null },
+        .Named(n, args) -> if is_type(n, Many) && args.length == 1 { args[0].spelled() } else { null },
         rest -> null,
     }
 }
