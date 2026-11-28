@@ -24,7 +24,7 @@ human reading code.
 | a box freed in the fn that made it | stack records (escape analysis) |
 | a free at rc 1 followed by an alloc of the same size | reuse in place |
 | a retain whose release is the binding's last use | move at last use |
-| an owned twin read (`avra_slot_get_owned`, `avra_array_get_owned`) and its release, in a fn whose borrow is read across a call handed only scalars (`AVRA_RC_REASONS`: `candidate: a borrow a scalar call makes owned`) | borrows across quiet calls |
+| an owned twin read (`avra_slot_get_owned`, `avra_array_get_owned`) and its release, in a fn whose borrow is read across a call handed nothing that can run code (`AVRA_RC_REASONS`: `candidate: a borrow a call makes owned`) | borrows across quiet calls |
 | `avra_streq`/name compare callers | interned names |
 | an open of the binary's empty literal (`[]`, `{}`) by a first write | fresh empties |
 | a box of flat scalar fields pushed into a list | strided list |
@@ -70,7 +70,7 @@ the classifier reads the other nine shapes.
 | reuse in place (Perceus/FBIP) | proposed | free + alloc pairs |
 | fresh empties: a first write into `[]` makes its buffer, never a clone of the static | proposed | the open of the empty literal (`empty_opens`) |
 | move at last use (borrow inference) | partial (params' consumes) | retain/release pairs |
-| borrows across quiet calls: a borrowed read stands across a call whose callee writes no cell (`writes_no_cell`, read once of its own instructions) and is handed only scalars | done (lowering-quality, to land) | a retain and release per borrowed cell read across an out-of-line scalar fn (`HashKeyedTable.position_at` with its slot arithmetic as a fn: 3 owned reads and 2 release runs a search); the callee's bit rides `BodySeen`, so a callee that comes to write a cell remakes its callers |
+| borrows across quiet calls: a borrowed read stands across a call whose callee writes no cell (`writes_no_cell`, read once of its own instructions) and is handed nothing that can run code | done (lowering-quality, to land) | a retain and release per borrowed cell read across an out-of-line scalar fn (`HashKeyedTable.position_at` with its slot arithmetic as a fn: 3 owned reads and 2 release runs a search); the callee's bit rides `BodySeen`, so a callee that comes to write a cell remakes its callers |
 | devirtualization | proposed | indirect calls with one target |
 | deforestation | partial (walk chains) | intermediate lists |
 | scalar replacement / stack records | proposed | boxes that never escape |

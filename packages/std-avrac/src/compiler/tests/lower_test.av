@@ -218,6 +218,9 @@ spec "compiler/lower" {
         then "a VIEW whose root the SAME call also receives takes its own reference at the read instead" {
             all_ins(ir_of(viewed_seat_with_root())).any(is_owned_get(it))
         }
+        then "and stays a view where that call's callee writes no cell, so it cannot empty the root" {
+            !all_ins(ir_of(viewed_seat_with_root_still())).any(is_owned_get(it))
+        }
         then "a call in a SIBLING branch the value's last use never reaches is no barrier to it" {
             !all_ins(ir_of(cross_branch_call())).any(is_owned_get(it))
         }
@@ -489,6 +492,11 @@ fn viewed_seat() -> string {
 /// root — the one shape a callee could reach back through, so the
 /// read takes its own reference rather than riding `b`'s.
 fn viewed_seat_with_root() -> string {
+    "type B = { xs: List<string> }\nstate hits: int = 0\nfn n(b: B, xs: List<string>) -> int {\n    hits = hits + 1\n    xs.length\n}\nlet b = B { xs: [\"a\" + \"b\"] }\nn(b, b.xs)"
+}
+
+/// The same call, its callee writing no cell.
+fn viewed_seat_with_root_still() -> string {
     "type B = { xs: List<string> }\nfn n(b: B, xs: List<string>) -> int { xs.length }\nlet b = B { xs: [\"a\" + \"b\"] }\nn(b, b.xs)"
 }
 
@@ -684,10 +692,10 @@ spec "a managed read is a borrow" {
 }
 
 spec "a value dies at its last read" {
-    given "a hold taken across a call on `self`, and a write to the same field after it" {
-        then "the hold is released before the write, so the write lands in place" {
+    given "a field read handed to a call on `self`, and a write to the same field after it" {
+        then "no hold of the field stands at the write, so the write lands in place" {
             let open = ir_of(held_then_written()).fns.find(it.name.ends_with("M.open"))
-            open != null && released_before_write(open!.ins)
+            open != null && unheld_at_write(open!.ins)
         }
     }
     given "a payload read out of an enum, used after the enum's own last read" {
@@ -707,8 +715,8 @@ fn payload_read() -> string {
 
 /// The owned read the hold is taken by is released before the first
 /// write that opens the same box.
-fn released_before_write(ins: List<Ins>) -> bool {
-    let got? = [j for j in 0..ins.length].find((j: int) -> is_owned_get(ins[j])) else { return false }
+fn unheld_at_write(ins: List<Ins>) -> bool {
+    let got? = [j for j in 0..ins.length].find((j: int) -> is_owned_get(ins[j])) else { return true }
     let held? = dst_of(ins[got]) else { return false }
     let freed? = [j for j in 0..ins.length].find((j: int) -> releases(ins[j], held)) else { return false }
     let written? = [j for j in 0..ins.length].find((j: int) -> opens_slot(ins[j])) else { return false }

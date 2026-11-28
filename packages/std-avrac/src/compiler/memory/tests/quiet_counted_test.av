@@ -1,0 +1,40 @@
+// A call handed a counted value is quiet where its callee writes no cell, through no seat either, and
+// nothing it is handed can run code: a borrowed cell read stays a borrow across it, and owns across
+// every other.
+use @std.avrac.core.{Ins}
+use @std.avrac.testing.{ir_of}
+use compiler.lower.{Body}
+
+/// The attacks of compiler/memory/tests/quiet_counted_attacks, one method each.
+const ATTACKS: string = "type Holder = { run: fn() -> int, n: int }\ntype Table = { slots: Cell<List<int>> }\n\nstate probes: List<int> = [5, 6]\n\nfn length_of(xs: List<int>) -> int { xs.length }\n\nfn replaced(xs: List<int>) -> int {\n    probes = [9]\n    let junk = [77, 88]\n    xs.length + junk.length\n}\n\nfn held_n(h: Holder, xs: List<int>) -> int { h.n + xs.length }\n\nfn stale_mut(mut xs: List<int>) -> int { xs.length }\n\nfn grows(mut xs: List<int>) -> int {\n    xs.push(9)\n    xs.length\n}\n\nfn runs(h: Holder, xs: List<int>) -> int { (h.run)() + xs.length }\n\nfn wiper() -> int {\n    probes = [0]\n    let junk = [77]\n    junk.length\n}\n\nimpl Table {\n    fn quiet(_k: int) -> int {\n        let xs = self.slots.get()\n        let n = length_of(xs)\n        xs[0] + n\n    }\n    fn writer() -> int {\n        probes = [self.slots.get()[0] + 2, 6]\n        let xs = probes\n        let n = replaced(xs)\n        let after = [n * 11, n * 13]\n        xs[0] + xs[1] + n + after.length\n    }\n    fn closure_beside(h: Holder) -> int {\n        let xs = self.slots.get()\n        let n = held_n(h, xs)\n        xs[0] + n\n    }\n    fn mut_written() -> int {\n        let ys = self.slots.get()\n        mut xs = [ys.length, 1]\n        let n = grows(xs)\n        ys[0] + n + xs.length\n    }\n    fn closure_run(h: Holder) -> int {\n        probes = [self.slots.get()[0] * 3]\n        let xs = probes\n        let n = runs(h, xs)\n        let after = [n * 11]\n        xs[0] + n + after.length\n    }\n    fn mut_seat() -> int {\n        let ys = self.slots.get()\n        mut xs = [ys.length, 1]\n        let n = stale_mut(xs)\n        ys[0] + n\n    }\n}\n\nlet t = Table { slots: Cell.new([3, 4]) }\nlet h = Holder { run: () -> 1, n: 2 }\nlet w = Holder { run: wiper, n: 0 }\n\"\${t.quiet(0)} \${t.writer()} \${t.closure_beside(h)} \${t.mut_seat()} \${t.mut_written()} \${t.closure_run(w)}\"\n"
+
+/// How many owned slot reads the method `name` of `Table` makes.
+fn owned_reads(name: string) -> int {
+    let b = ir_of(ATTACKS).fns.find(it.name.ends_with("Table.${name}"))!
+    b.ins.filter(owned_slot(it)).length
+}
+
+fn owned_slot(i: Ins) -> bool {
+    match i { .CallRt(_, callee, _) -> callee == "avra_slot_get_owned", _ -> false }
+}
+
+spec "compiler/memory — a call handed a counted value" {
+    given "a callee that writes no cell, handed the borrow at a plain seat" {
+        then "the read stays a borrow across it" { owned_reads("quiet") == 0 }
+    }
+    given "a callee that writes no cell, handed a record holding a closure it never runs" {
+        then "the read stays a borrow across it" { owned_reads("closure_beside") == 0 }
+    }
+    given "a callee that writes the cell the borrow rides" {
+        then "the read owns" { owned_reads("writer") == 1 }
+    }
+    given "a callee that runs a closure writing that cell" {
+        then "the read owns" { owned_reads("closure_run") == 1 }
+    }
+    given "a callee that never writes the `mut` seat it is handed another value at" {
+        then "the read stays a borrow across it" { owned_reads("mut_seat") == 0 }
+    }
+    given "a callee that writes the `mut` seat it is handed another value at" {
+        then "the read owns" { owned_reads("mut_written") == 1 }
+    }
+}
