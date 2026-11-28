@@ -1,7 +1,7 @@
 //! WHERE A `let v? = … else { … }` CAN'T STAND: its `else` falls through to the binding it skipped,
 //! or what it binds from is never absent, or always is. The first read off the item's syntax, the
 //! others off its typed nodes — a subject typing doesn't know whole is left alone.
-use core.{At, ExprId, NodeKind, OwnType, SignedType, Span, StmtId, SyntaxArena}
+use core.{At, ExprId, NodeKind, OwnType, SignedType, Span, StmtId, SyntaxArena, TypeHead}
 use compiler.laws.{Found, Reach, law}
 use diagnostics.{Voice}
 use features.nullable.{asked_absent, bound_absent, bound_present, else_stays}
@@ -44,16 +44,25 @@ fn unasked_elses(view: ItemView, at: At) -> List<Found> {
     [Found { at: t.store.expr_span(v!), args: [bind_of(t.store, s)].concat(present_words(ty!)) } for v in [t.store.stmt_value(s)] if v != null && v!.index >= t.lo && v!.index < t.hi for ty in [(t.type_at)(v!.index)] if ty != null && unasked(ty!)]
 }
 
-/// Whether a subject of `ty` makes the null check pointless: always absent, or a type the language
-/// owns, known whole, never absent.
+/// Whether a subject of `ty` makes the null check pointless: always absent, or a type known whole
+/// and never absent.
 fn unasked(ty: SignedType) -> bool {
     if ty.absence() { return true }
-    ty.head is .Owned &&
+    known_whole(ty.head) &&
         !ty.dynamic &&
         !ty.generic() &&
         !ty.inferred() &&
         ty.nulls == 0 &&
         !ty.owns(OwnType.Void)
+}
+
+/// Whether a type headed `head` is known whole where it is asked of: one the language owns, or one a
+/// file declares — a name over a nullable counts its shape's nulls as its own.
+fn known_whole(head: TypeHead) -> bool {
+    match head {
+        .Owned(_) or .Declared(_, _) -> true,
+        .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Union or .Never or .Meta -> false,
+    }
 }
 
 /// The subject's type spelled where it is present, none where it is always absent.
