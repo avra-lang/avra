@@ -33,7 +33,15 @@ use @std.avrac.compiler.{
 }
 use @std.avrac.core.{distinct, flatten}
 use @std.avrac.compiler.memory.{sound_checked}
-use @std.avrac.diagnostics.{Diag, SourceFile, defect_kind, new_source_file, render, rendered_among}
+use @std.avrac.diagnostics.{
+    Diag,
+    SourceFile,
+    defect_kind,
+    new_source_file,
+    render,
+    render_among,
+    rendered_among,
+}
 use @std.io.{env, write_text}
 use @std.path.{joined_path, relative_path, under_dir}
 use @std.program.address.{SourceFileAddress}
@@ -193,8 +201,16 @@ fn entry_strays(engine: QueryEngine, disk: Disk) -> string {
 fn erring_said(engine: QueryEngine, h: ProgramFile) -> string {
     let found = file_law_diags(engine, h)
     if found.all(it.severity is .Warning) { return refusal_unworded(h.full) }
-    let src = new_source_file(h.full, text_at(h.full) ?? "")
-    [render(d, src) for i, d in found if !found.take(i).any((e) -> same_said(e, d))].join("\n\n")
+    let elsewhere = distinct(flatten([files_framed(d) for d in found])).filter(it != h.full)
+    let sources = [new_source_file(h.full, text_at(h.full) ?? "")]
+        .concat([new_source_file(p, t!) for p in elsewhere for t in [text_at(p)] if t != null])
+    [render_among(d, sources) for i, d in found if !found.take(i).any((e) -> same_said(e, d))]
+        .join("\n\n")
+}
+
+/// The files `d`'s frames point into: a refusal behind another file's parse error points there too.
+fn files_framed(d: Diag) -> List<string> {
+    [f.loc!.file! for f in [d.primary].concat(d.secondary) if f.loc?.file != null]
 }
 
 /// Whether two diagnostics say one thing: one kind, in the same words, at one place.

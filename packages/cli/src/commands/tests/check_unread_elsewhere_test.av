@@ -1,0 +1,61 @@
+//! `avra check <pkg>` OVER A NAME UNREAD ELSEWHERE — A FRAME IS RENDERED OVER THE TEXT ITS LOC NAMES.
+//! A file reading a name its module could not parse is refused at its own read, with a second frame
+//! pointing into the sibling where the parse stopped; that frame is windowed over the SIBLING's text,
+//! so an offset past the reader's own length is a line of the sibling, never a trap.
+use @std.io.{make_dirs, write_text}
+use @std.path.{dir_of}
+use @std.time.{stamp}
+use @std.process.{tool, cmd, inherited, Outcome, ProcessError}
+
+/// One directory per run, outside any package, so no earlier run's store answers for this one.
+once fn dir_base() -> string { "/tmp/avra-check-unread-elsewhere-test/${stamp()}" }
+
+/// A file at `path` holding `text`, its directory made.
+fn put(path: string, text: string) {
+    let _ = make_dirs(dir_of(path))
+    let _ = write_text(path, text)
+}
+
+/// A package whose `aa.av` stops parsing at line 121, far past the end of `zz.av`, which reads a
+/// name `aa.av` declares there.
+once fn package_root() -> string {
+    let root = "${dir_base()}/pkg"
+    put("${root}/avra.toml", "[package]\nname = \"pkg\"\nversion = \"0.1.0\"\n")
+    let padding = ["// line ${i}\n" for i in 1..121].join("")
+    put("${root}/src/aa.av", "${padding}fn broken(x: int y: int) -> int {\n    x\n}\n")
+    put("${root}/src/zz.av", "fn zz_read() -> int { broken() }\n")
+    root
+}
+
+once fn checked() -> Result<Outcome, ProcessError> {
+    let t = tool(avra_bin())?
+    (cmd(t, ["check", package_root()]) with { env: inherited().with_var("AVRA_PROGRAM_NET", "0"), timeout: hang_bound() })
+        .outcome()
+}
+
+fn exit_of(o: Result<Outcome, ProcessError>) -> int {
+    match o {
+        .Ok(r) -> match r.exit { .Code(n) -> n, .Clean -> 0, .Signal(_, _) -> -1 },
+        .Err(_) -> -2,
+    }
+}
+
+fn said(o: Result<Outcome, ProcessError>) -> string { match o { .Ok(r) -> r.out.stdout, .Err(_) -> "" } }
+
+spec "avra check — a refusal behind a sibling's parse error renders each frame over its own file" {
+    given "a reader of a name its module could not parse, the parse stopping past the reader's end" {
+        then "the check refuses by 1, never trapping" { exit_of(checked()) == 1 }
+        then "the refusal stands at the reader's call" {
+            said(checked())
+                .contains(
+                    "error[resolve.unresolved]: no `fn broken` is defined\n  ╭─[${package_root()}/src/zz.av:1:23]",
+                )
+        }
+        then "and its second frame is the sibling's line where the parse stopped" {
+            said(checked())
+                .contains(
+                    "╭─[${package_root()}/src/aa.av:121:18]\n121 │ fn broken(x: int y: int) -> int {",
+                )
+        }
+    }
+}
