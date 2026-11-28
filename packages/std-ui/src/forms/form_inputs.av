@@ -65,11 +65,11 @@ component shape_inputs(shapes: List<FieldShape>) {
                 .Typed -> field f.name {
                     shown: self.typed.get(self.at(f)) ?? ""
                     masked: f.secret
-                    invalid: !issued(self.issues, self.at(f)).is_empty()
+                    error: refused_with(issued(self.issues, self.at(f)))
                     on input { t -> self.typed_at(self.at(f), t) }
                 },
             }
-            for i in issued(self.issues, self.at(f)) { error_text { message: i.message } }
+            for i in said_beside(f, issued(self.issues, self.at(f))) { error_text { message: i.message } }
         }
     }
 
@@ -103,6 +103,17 @@ fn drawn(k: FieldKind) -> Drawn {
         .Records(_) -> .Unlisted,
         .Text or .Int or .Float or .Other(_) -> .Typed,
     }
+}
+
+/// The issues said beside a field: a typed field says its own. Every way spelled.
+fn said_beside(f: FieldShape, issues: List<Issue>) -> List<Issue> {
+    match drawn(f.kind) { .Ticked or .Grouped or .Unlisted -> issues, .Typed -> [] }
+}
+
+/// What a field's issues say of it: nothing while it has none, else every issue's words.
+fn refused_with(issues: List<Issue>) -> string? {
+    if issues.is_empty() { return null }
+    [i.message for i in issues].join("; ")
 }
 
 /// The fields a record's kind carries; none for any other kind.

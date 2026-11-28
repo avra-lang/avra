@@ -115,9 +115,10 @@ fn body(n: Node, w: int, g: Glyphs) -> List<string> {
         .Button -> atom("[ ${if said.loading { "${g.busy} " } else { "" }}${own} ]${off}", w),
         .Checkbox or .Switch -> atom("${if said.checked { g.ticked } else { g.unticked }} ${own}${off}", w),
         .Field -> atom(
-            "${if said.invalid { "${g.invalid} " } else { "" }}${own}: ${said.drawn_value()}${repeat("_", field_cells - cells(said.value))}${off}",
+            "${if said.error != null { "${g.invalid} " } else { "" }}${own}: ${said.drawn_value()}${repeat("_", field_cells - cells(said.value))}${off}",
             w,
-        ),
+        )
+            .concat(refusal_lines(said.error, w)),
         .Slider -> atom("${own}: ${said.amount} (${said.min}..${said.max})${off}", w),
         .Progress -> atom("${own}: ${said.amount}/${said.max}", w),
         .Divider -> [repeat("-", w)],
@@ -128,6 +129,16 @@ fn body(n: Node, w: int, g: Glyphs) -> List<string> {
         .Key -> [],
     }
 }
+
+/// A refused field's words, on the lines under it and indented under its label, always words.
+fn refusal_lines(error: string?, w: int) -> List<string> {
+    let words? = error else { return [] }
+    if words == "" { return [] }
+    ["${repeat(" ", refusal_indent)}${l}" for l in wrap(words, at_least_one(w - refusal_indent))]
+}
+
+/// The cells a refused field's words are indented under it.
+const refusal_indent = 2
 
 /// A leaf's text as lines, at its own newlines, each cut at the width.
 fn atom(s: string, w: int) -> List<string> { [piece for line in s.split("\n") for piece in cut(line, w)] }

@@ -150,7 +150,7 @@ fn wrote(a: Attribute) -> List<Wrote> {
         .Checked(on) -> flag(.Checked, on, ""),
         .Selected(on) -> flag(.AriaSelected, on, "true"),
         .Open(on) -> flag(.Open, on, ""),
-        .Invalid(on) -> flag(.AriaInvalid, on, "true"),
+        .Error(_) -> [Wrote { name: .AriaInvalid, value: "true" }],
         .Loading(on) -> flag(.AriaBusy, on, "true"),
         .Urgency(u) -> [Wrote { name: .AriaLive, value: u.word() }],
         .Title(t) -> [Wrote { name: .Title, value: t }],
@@ -329,6 +329,7 @@ fn seat_of(seat: Seat?, step: Step, crowded: bool = false) -> Seat {
 const text_part = Step.Part("text")
 export const control_part = Step.Part("control")
 export const words_part = Step.Part("words")
+export const error_part = Step.Part("error")
 
 fn title_part(j: int) -> Step { Step.Part(if j == 0 { "title" } else { "title~${j}" }) }
 
@@ -398,14 +399,22 @@ fn names_element(a: Attribute) -> bool {
 /// seat, its key and its classes — and the control inside it takes the
 /// node's attributes and hears its events. The control and its words
 /// stand in the order a reader expects of its kind.
-fn labelled(n: Node, at: Seat, kids: List<Element>, scopes: List<string>, laid: Direction) -> Element {
+fn labelled(
+    n: Node,
+    at: Seat,
+    kids: List<Element>,
+    scopes: List<string>,
+    laid: Direction,
+    path: string,
+) -> Element {
     let control = Element
         .Tag(
             Tagged {
                 seat: control_part,
                 tag: tag_of(n),
                 attrs: element_attrs(n)
-                    .concat(if types_words(n.prim) { words_dir(n, laying(n, laid), null) } else { [] }),
+                    .concat(if types_words(n.prim) { words_dir(n, laying(n, laid), null) } else { [] })
+                    .concat(described(n, path)),
                 rests: rests_of(n.attrs),
                 hears: heard(n),
                 crowded: at.crowded,
@@ -436,6 +445,41 @@ fn labelled(n: Node, at: Seat, kids: List<Element>, scopes: List<string>, laid: 
                 crowded: at.crowded,
             },
         )
+}
+
+/// The words a refused value is said with, when there are any.
+fn error_words(n: Node) -> string? {
+    let words? = [w for a in n.attrs for w in refused_words(a)].first() else { return null }
+    if words == "" { null } else { words }
+}
+
+fn refused_words(a: Attribute) -> List<string> { match a { .Error(w) -> [w], rest -> [] } }
+
+/// The id a node's error words stand under, from its path in the tree, so no two share it.
+fn error_id(path: string) -> string { "avra-error-${path}" }
+
+/// A control whose refusal has words names them as what describes it.
+fn described(n: Node, path: string) -> List<HtmlAttr> {
+    if error_words(n) == null { return [] }
+    [HtmlAttr { name: .AriaDescribedby, value: error_id(path) }]
+}
+
+/// A refused control's words, beside its label rather than in it, so they describe the control
+/// and are no part of its name.
+fn error_said(n: Node, at: Seat, path: string, laid: Direction) -> List<Element> {
+    let words? = error_words(n) else { return [] }
+    [
+        Element
+            .Tag(
+                Tagged {
+                    seat: Step.Under(at.matched, error_part),
+                    tag: .Span,
+                    attrs: [HtmlAttr { name: .Id, value: error_id(path) }]
+                        .concat(words_dir(n, laying(n, laid), words)),
+                    kids: said(words),
+                },
+            ),
+    ]
 }
 
 fn unheard() {}
@@ -484,7 +528,7 @@ fn element(
 /// for an element that holds nothing — that one and then its children,
 /// each standing under the node's seat so it is told from the node's own
 /// siblings.
-fn lower(n: Node, at: Seat, scopes: List<string>, laid: Direction) -> List<Element> {
+fn lower(n: Node, at: Seat, scopes: List<string>, laid: Direction, path: string) -> List<Element> {
     let stands = stepped([c.box.stand() for c in n.children])
     let here = laying(n, laid)
     match carries(tag_of(n)) {
@@ -494,15 +538,25 @@ fn lower(n: Node, at: Seat, scopes: List<string>, laid: Direction) -> List<Eleme
                 at,
                 said_of(n)
                     .concat(headings(n, here))
-                    .concat(lower_each(n, stands, null, at.crowded, scopes, here)),
+                    .concat(lower_each(n, stands, null, at.crowded, scopes, here, path)),
                 scopes,
                 laid,
                 n.bears_words(),
             ),
         ],
         .Never -> [element(n, at, [], scopes, laid, false)]
-            .concat(lower_each(n, stands, at, at.crowded, scopes, laid)),
-        .Beside -> [labelled(n, at, lower_each(n, stands, null, at.crowded, scopes, here), scopes, laid)],
+            .concat(lower_each(n, stands, at, at.crowded, scopes, laid, path)),
+        .Beside -> [
+            labelled(
+                n,
+                at,
+                lower_each(n, stands, null, at.crowded, scopes, here, path),
+                scopes,
+                laid,
+                path,
+            ),
+        ]
+            .concat(error_said(n, at, path, laid)),
     }
 }
 
@@ -517,12 +571,14 @@ fn lower_each(
     above: bool,
     scopes: List<string>,
     laid: Direction,
+    path: string,
 ) -> List<Element> {
     [e for i, c in n.children for e in lower(
         c,
         seat_of(seat, stands.steps[i], above || c.drawn_by_order || stands.shared[i]),
         scopes,
         laid,
+        "${path}.${i}",
     )]
 }
 
@@ -533,5 +589,5 @@ export fn lowered(root: Node) -> List<Element> { lowered_on(root, scopes_of(root
 /// beside a page's tree names a scope as the page does.
 /// The page's own direction is the one its document is laid out in before any node says another.
 export fn lowered_on(root: Node, scopes: List<string>) -> List<Element> {
-    lower(root, seat_of(null, root_step(root.box.key)), scopes, Direction.Ltr)
+    lower(root, seat_of(null, root_step(root.box.key)), scopes, Direction.Ltr, "0")
 }

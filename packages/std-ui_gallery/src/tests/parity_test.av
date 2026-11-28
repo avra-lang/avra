@@ -1,6 +1,6 @@
 // The parity check: what each target says of every case, heard as role, name, value, states and
 // direction, held to what the Node says; each reader read on trees that tell its rules apart.
-use @std.ui.components.{button, dialog, icon, spinner, text}
+use @std.ui.components.{button, dialog, field, icon, spinner, text}
 use @std.ui.tree.view.{View, tree_of}
 use @std.ui.tree.node.{Prim}
 use @std.ui.tree.outline.{outline}
@@ -17,7 +17,7 @@ use @std.ui_gallery.{
     spoken,
     heard_as,
     node_heard,
-    html_heard,
+    html_page_heard,
     outline_heard,
     terminal_heard,
     agrees,
@@ -44,7 +44,7 @@ fn terminal_owed() -> int { [o for o in owed if o.target == Target.Terminal].len
 
 fn by_node(v: dyn View) -> string { said(node_heard(tree_of(v))) }
 
-fn by_html(v: dyn View) -> string { said([h for e in lowered(tree_of(v)) for h in html_heard(e)]) }
+fn by_html(v: dyn View) -> string { said(html_page_heard(lowered(tree_of(v)))) }
 
 fn by_outline(v: dyn View) -> string { said(outline_heard(outline(tree_of(v)))) }
 
@@ -74,7 +74,22 @@ spec "@std/ui_gallery parity" {
         then "with no cross, more parts" { parted_without(unicode.invalid) > terminal_owed() }
         then "with no busy mark, more parts" { parted_without(unicode.busy) > terminal_owed() }
         then "with no selected mark, more parts" { parted_without(unicode.selected) > terminal_owed() }
+        then "with the words under a refused field not indented under it, more parts" {
+            parted_without("\n  ") > terminal_owed()
+        }
         then "with no unavailable words, more parts" { parted_without(unicode.unavailable) > terminal_owed() }
+    }
+    given "a refused field" {
+        then "the Node hears it invalid, described by its words" {
+            by_node(field "Email" { error: "an email holds an @" }) == "field \"Email\" invalid described \"an email holds an @\""
+        }
+        then "the html says the same, the words read through `aria-describedby`" {
+            by_html(field "Email" { error: "an email holds an @" }) == by_node(field "Email" { error: "an email holds an @" })
+        }
+        then "the outline says the same" {
+            by_outline(field "Email" { error: "an email holds an @" }) == by_node(field "Email" { error: "an email holds an @" })
+        }
+        then "with no words said, it is invalid and described by nothing" { by_node(field "Name" { error: "" }) == "field \"Name\" invalid" }
     }
     given "the role table" {
         then "an icon is heard as the image it draws" { heard_as(Prim.Icon) == Prim.Image }
