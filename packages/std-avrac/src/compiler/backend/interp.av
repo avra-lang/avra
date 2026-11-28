@@ -2888,12 +2888,29 @@ impl Machine {
         Val.I(0)
     }
 
-    /// The text a map files a key under: a text key's own, a word key's number.
+    /// The text a map files a key under: a text key's own, a word key's number, a composite key's
+    /// parts in order.
     fn key_text(key: Val) -> string {
         match key {
             .I(i) -> "${i}",
             .B(b) -> if b { "1" } else { "0" },
-            .S(_) or .F(_) or .Y(_) or .A(_) or .P(_) or .C(_) or .M(_) or .N or .Gone -> self.text_val(key),
+            .A(id) -> self.parts_text(self.arrays[id]),
+            .P(parts) -> self.parts_text(parts),
+            .S(_) or .F(_) or .Y(_) or .C(_) or .M(_) or .N or .Gone -> self.text_val(key),
+        }
+    }
+
+    /// A composite key's text: each part's own behind its length, an absent one as `-`, which no
+    /// length begins — so two composites file under one text only where every part is the same.
+    fn parts_text(parts: List<Val>) -> string { joined([self.part_text(v) for v in parts], "") }
+
+    fn part_text(v: Val) -> string {
+        match v {
+            .N or .Gone -> "-",
+            .I(_) or .F(_) or .B(_) or .S(_) or .Y(_) or .A(_) or .P(_) or .C(_) or .M(_) -> {
+                let t = self.key_text(v)
+                "${t.length}:${t}"
+            },
         }
     }
 

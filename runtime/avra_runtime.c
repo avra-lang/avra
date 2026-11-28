@@ -3653,6 +3653,18 @@ typedef int64_t MapKey;
 // Whether a map's keys are machine words.
 static inline int map_words(const AvraMap* m) { return m->key_class == AVRA_KEYS_WORDS; }
 
+// The descriptor a map keyed by a composite key type holds as its class; null for text and words.
+static inline const AvraKeyOps* map_described(const AvraMap* m) {
+    return m->key_class > AVRA_KEYS_WORDS ? (const AvraKeyOps*)(uintptr_t)m->key_class : NULL;
+}
+
+// A composite key's hash, its type's own fold under the process's seeds — or, past the probe
+// tripwire, under the SipHash secrets, which the fold takes as its seeds.
+__attribute__((always_inline))
+static inline uint64_t described_hash(const AvraKeyOps* ops, int keyed, MapKey k) {
+    return __builtin_expect(keyed, 0) ? ops->hash(k, g_sip_key[0], g_sip_key[1]) : ops->hash(k, g_text_key[0], g_text_key[1]);
+}
+
 __attribute__((always_inline))
 static inline uint64_t word_hash(int keyed, int64_t k) {
     return __builtin_expect(keyed, 0) ? sip_hash(g_sip_key[0], g_sip_key[1], (const char*)&k, 8)
@@ -3661,12 +3673,19 @@ static inline uint64_t word_hash(int keyed, int64_t k) {
 
 __attribute__((always_inline))
 static inline uint64_t map_key_hash(const AvraMap* m, int keyed, MapKey k) {
-    return map_words(m) ? word_hash(keyed, k) : key_hash(keyed, (const char*)(uintptr_t)k);
+    if (map_words(m)) return word_hash(keyed, k);
+    const AvraKeyOps* ops = map_described(m);
+    if (__builtin_expect(ops != NULL, 0)) return described_hash(ops, keyed, k);
+    return key_hash(keyed, (const char*)(uintptr_t)k);
 }
 
 __attribute__((always_inline))
 static inline int map_key_same(const AvraMap* m, MapKey a, MapKey b) {
-    return a == b || (!map_words(m) && avra_streq((const char*)(uintptr_t)a, (const char*)(uintptr_t)b));
+    if (a == b) return 1;
+    if (map_words(m)) return 0;
+    const AvraKeyOps* ops = map_described(m);
+    if (__builtin_expect(ops != NULL, 0)) return ops->same(a, b) != 0;
+    return avra_streq((const char*)(uintptr_t)a, (const char*)(uintptr_t)b);
 }
 
 // Whether entry `i` stands: a text map's hole is a null key, a word map's
@@ -3836,6 +3855,12 @@ void* avra_map_w_new(void) { return map_made(0, AVRA_KEYS_WORDS); }
 void* avra_map_sized(int64_t n) { return map_made(n, AVRA_KEYS_TEXT); }
 
 void* avra_map_w_sized(int64_t n) { return map_made(n, AVRA_KEYS_WORDS); }
+
+// A map keyed by a composite key type, hashed and compared by the descriptor `ops` its type's
+// derivation laid out.
+void* avra_map_g_new(const void* ops) { return map_made(0, (int64_t)(uintptr_t)ops); }
+
+void* avra_map_g_sized(int64_t n, const void* ops) { return map_made(n, (int64_t)(uintptr_t)ops); }
 
 // Releases both arrays (their owned slots follow), then the map.
 __attribute__((noinline))
@@ -4386,8 +4411,9 @@ static inline void keyed_set_at_maybe_owned(void* map, MapKey key, int64_t token
     else keyed_set_at_maybe(map, key, token, 0, 0);
 }
 
-// THE KEYED ROWS, twice: under a text key, and under a word key for a map
-// made by `avra_map_w_new`.
+// THE KEYED ROWS, three times: under a text key, under a word key for a map
+// made by `avra_map_w_new`, and under a composite key's box for one made by
+// `avra_map_g_new`.
 int64_t avra_map_has(void* map, const char* key) { return keyed_has(map, (MapKey)(uintptr_t)key); }
 int64_t avra_map_w_has(void* map, int64_t key) { return keyed_has(map, key); }
 int64_t avra_map_get(void* map, const char* key) { return keyed_get(map, (MapKey)(uintptr_t)key); }
@@ -4418,6 +4444,22 @@ void avra_map_set_at_owned(void* map, const char* key, int64_t token, void* v) {
 void avra_map_w_set_at_owned(void* map, int64_t key, int64_t token, void* v) { keyed_set_at_owned(map, key, token, v); }
 void avra_map_set_at_maybe_owned(void* map, const char* key, int64_t token, int64_t present, void* v) { keyed_set_at_maybe_owned(map, (MapKey)(uintptr_t)key, token, present, v); }
 void avra_map_w_set_at_maybe_owned(void* map, int64_t key, int64_t token, int64_t present, void* v) { keyed_set_at_maybe_owned(map, key, token, present, v); }
+
+int64_t avra_map_g_has(void* map, void* key) { return keyed_has(map, (MapKey)(uintptr_t)key); }
+int64_t avra_map_g_get(void* map, void* key) { return keyed_get(map, (MapKey)(uintptr_t)key); }
+void* avra_map_g_get_owned(void* map, void* key) { return keyed_get_owned(map, (MapKey)(uintptr_t)key); }
+int64_t avra_map_g_slot(void* map, void* key) { return keyed_slot(map, (MapKey)(uintptr_t)key); }
+void avra_map_g_set(void* map, void* key, int64_t v) { keyed_set(map, (MapKey)(uintptr_t)key, v); }
+void avra_map_g_set_owned(void* map, void* key, void* v) { keyed_set_owned(map, (MapKey)(uintptr_t)key, v); }
+void avra_map_g_set_maybe(void* map, void* key, int64_t present, int64_t v) { keyed_set_maybe(map, (MapKey)(uintptr_t)key, present, v); }
+void avra_map_g_set_maybe_owned(void* map, void* key, int64_t present, void* v) { keyed_set_maybe_owned(map, (MapKey)(uintptr_t)key, present, v); }
+int64_t avra_map_g_value_present(void* map, void* key) { return keyed_value_present(map, (MapKey)(uintptr_t)key); }
+void avra_map_g_remove(void* map, void* key) { keyed_remove(map, (MapKey)(uintptr_t)key); }
+void avra_map_g_remove_at(void* map, void* key, int64_t token) { keyed_remove_at(map, (MapKey)(uintptr_t)key, token); }
+void avra_map_g_set_at(void* map, void* key, int64_t token, int64_t v) { keyed_set_at(map, (MapKey)(uintptr_t)key, token, v); }
+void avra_map_g_set_at_maybe(void* map, void* key, int64_t token, int64_t present, int64_t v) { keyed_set_at_maybe(map, (MapKey)(uintptr_t)key, token, present, v); }
+void avra_map_g_set_at_owned(void* map, void* key, int64_t token, void* v) { keyed_set_at_owned(map, (MapKey)(uintptr_t)key, token, v); }
+void avra_map_g_set_at_maybe_owned(void* map, void* key, int64_t token, int64_t present, void* v) { keyed_set_at_maybe_owned(map, (MapKey)(uintptr_t)key, token, present, v); }
 
 // The index walks so far, counted from the first ask — for the
 // runtime's own tests.

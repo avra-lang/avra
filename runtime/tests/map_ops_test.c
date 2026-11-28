@@ -14,6 +14,7 @@
 #include <string.h>
 
 #include "../avra_runtime.h"
+#include "../avra_box.h"
 
 void* avra_map_new(void);
 void avra_map_set(void* map, const char* key, int64_t v);
@@ -41,6 +42,16 @@ void avra_map_w_remove(void* map, int64_t key);
 int64_t avra_map_w_slot(void* map, int64_t key);
 void avra_map_w_set_at(void* map, int64_t key, int64_t token, int64_t v);
 void avra_map_w_remove_at(void* map, int64_t key, int64_t token);
+void* avra_map_g_new(const void* ops);
+void avra_map_g_set(void* map, void* key, int64_t v);
+int64_t avra_map_g_has(void* map, void* key);
+int64_t avra_map_g_get(void* map, void* key);
+void avra_map_g_remove(void* map, void* key);
+int64_t avra_map_g_slot(void* map, void* key);
+void avra_map_g_set_at(void* map, void* key, int64_t token, int64_t v);
+void avra_map_g_remove_at(void* map, void* key, int64_t token);
+void* avra_array_new_words(void);
+void avra_array_push(void* arr, int64_t v);
 
 static int g_checks = 0, g_fails = 0;
 #define CHECK(cond, what, step) do { g_checks++; if (!(cond)) { if (g_fails++ < 10) fprintf(stderr, "map_ops_test: FAILED %s at step %ld (%s:%d)\n", what, (long)(step), __FILE__, __LINE__); } } while (0)
@@ -48,27 +59,85 @@ static int g_checks = 0, g_fails = 0;
 enum { KEYS = 300, MAPS = 4, STEPS = 60000 };
 static const char* g_keys[KEYS];
 
-// Which class of key the walk writes under: text, or the word `k - 150`.
-static int g_words;
+// A composite key: a box of two words. Each has a twin box holding the same words, which every
+// lookup asks by, so a composite map compares its keys by value, never by address.
+static void* g_boxes[KEYS];
+static void* g_twins[KEYS];
+
+// Which class of key the walk writes under: text, the word `k - 150`, a composite key hashed by
+// its type's fold, or one whose hash ignores its seeds and collides everywhere.
+enum { TEXT, WORDS, COMPOSITE, COLLIDING, CLASSES };
+static int g_class;
 
 static int64_t key_word(int k) { return (int64_t)k - 150; }
 
-// The map's own word for key number `k`: its text's address, or the word itself.
-static int64_t key_of(int k) { return g_words ? key_word(k) : (int64_t)(uintptr_t)g_keys[k]; }
+static int64_t box_word(int64_t key, int i) { return avra_array_get((void*)(uintptr_t)key, i); }
+static uint64_t pair_hash(int64_t key, uint64_t s0, uint64_t s1) {
+    uint64_t h = ((uint64_t)box_word(key, 0) ^ s0) * 0x9e3779b97f4a7c15ull;
+    return (h ^ (h >> 29) ^ (uint64_t)box_word(key, 1) ^ s1) * 0xbf58476d1ce4e5b9ull;
+}
+static uint64_t pair_collides(int64_t key, uint64_t s0, uint64_t s1) { (void)key; (void)s0; (void)s1; return 42; }
+static int64_t pair_same(int64_t a, int64_t b) { return box_word(a, 0) == box_word(b, 0) && box_word(a, 1) == box_word(b, 1); }
+static const AvraKeyOps g_pair_ops = { pair_hash, pair_same };
+static const AvraKeyOps g_colliding_ops = { pair_collides, pair_same };
 
-static void* made(void) { return g_words ? avra_map_w_new() : avra_map_new(); }
-static void set(void* m, int k, int64_t v) { if (g_words) avra_map_w_set(m, key_word(k), v); else avra_map_set(m, g_keys[k], v); }
-static int64_t has(void* m, int k) { return g_words ? avra_map_w_has(m, key_word(k)) : avra_map_has(m, g_keys[k]); }
-static int64_t get(void* m, int k) { return g_words ? avra_map_w_get(m, key_word(k)) : avra_map_get(m, g_keys[k]); }
-static void removed(void* m, int k) { if (g_words) avra_map_w_remove(m, key_word(k)); else avra_map_remove(m, g_keys[k]); }
-static int64_t slot(void* m, int k) { return g_words ? avra_map_w_slot(m, key_word(k)) : avra_map_slot(m, g_keys[k]); }
+static int composite(void) { return g_class == COMPOSITE || g_class == COLLIDING; }
+
+// The map's own word for key number `k`: its text's address, the word itself, or its box's address.
+static int64_t key_of(int k) {
+    if (g_class == WORDS) return key_word(k);
+    if (composite()) return (int64_t)(uintptr_t)g_boxes[k];
+    return (int64_t)(uintptr_t)g_keys[k];
+}
+
+static void* made(void) {
+    if (g_class == WORDS) return avra_map_w_new();
+    if (g_class == COMPOSITE) return avra_map_g_new(&g_pair_ops);
+    if (g_class == COLLIDING) return avra_map_g_new(&g_colliding_ops);
+    return avra_map_new();
+}
+static void set(void* m, int k, int64_t v) {
+    if (g_class == WORDS) avra_map_w_set(m, key_word(k), v);
+    else if (composite()) avra_map_g_set(m, g_boxes[k], v);
+    else avra_map_set(m, g_keys[k], v);
+}
+static int64_t has(void* m, int k) {
+    if (g_class == WORDS) return avra_map_w_has(m, key_word(k));
+    if (composite()) return avra_map_g_has(m, g_twins[k]);
+    return avra_map_has(m, g_keys[k]);
+}
+static int64_t get(void* m, int k) {
+    if (g_class == WORDS) return avra_map_w_get(m, key_word(k));
+    if (composite()) return avra_map_g_get(m, g_twins[k]);
+    return avra_map_get(m, g_keys[k]);
+}
+static void removed(void* m, int k) {
+    if (g_class == WORDS) avra_map_w_remove(m, key_word(k));
+    else if (composite()) avra_map_g_remove(m, g_twins[k]);
+    else avra_map_remove(m, g_keys[k]);
+}
+static int64_t slot(void* m, int k) {
+    if (g_class == WORDS) return avra_map_w_slot(m, key_word(k));
+    if (composite()) return avra_map_g_slot(m, g_twins[k]);
+    return avra_map_slot(m, g_keys[k]);
+}
 static void set_at(void* m, int k, int64_t token, int64_t v) {
-    if (g_words) avra_map_w_set_at(m, key_word(k), token, v);
+    if (g_class == WORDS) avra_map_w_set_at(m, key_word(k), token, v);
+    else if (composite()) avra_map_g_set_at(m, g_boxes[k], token, v);
     else avra_map_set_at(m, g_keys[k], token, v);
 }
 static void removed_at(void* m, int k, int64_t token) {
-    if (g_words) avra_map_w_remove_at(m, key_word(k), token);
+    if (g_class == WORDS) avra_map_w_remove_at(m, key_word(k), token);
+    else if (composite()) avra_map_g_remove_at(m, g_twins[k], token);
     else avra_map_remove_at(m, g_keys[k], token);
+}
+
+// A composite key's box: its two words, `k % 7` and `k`.
+static void* pair_box(int k) {
+    void* p = avra_array_new_words();
+    avra_array_push(p, k % 7);
+    avra_array_push(p, k);
+    return p;
 }
 
 // The model: a map's keys and values in insertion order.
@@ -141,8 +210,16 @@ int main(void) {
         g_keys[i] = avra_str_of_bytes(b);
         avra_rc_release((void*)b);
     }
-    for (g_words = 0; g_words < 2; g_words++) walked();
-    for (int i = 0; i < KEYS; i++) avra_rc_release((void*)g_keys[i]);
+    for (int i = 0; i < KEYS; i++) {
+        g_boxes[i] = pair_box(i);
+        g_twins[i] = pair_box(i);
+    }
+    for (g_class = 0; g_class < CLASSES; g_class++) walked();
+    for (int i = 0; i < KEYS; i++) {
+        avra_rc_release((void*)g_keys[i]);
+        avra_rc_release(g_boxes[i]);
+        avra_rc_release(g_twins[i]);
+    }
     printf("map ops: %d checks, %d failed\n", g_checks, g_fails);
     return g_fails ? 1 : 0;
 }

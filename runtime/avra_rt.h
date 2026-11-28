@@ -125,6 +125,23 @@ extern const char avra_rt_held_avra_map_set_at_maybe __asm__(AVRA_RT_LABEL(avra_
 extern const char avra_rt_held_avra_map_w_set_at_maybe __asm__(AVRA_RT_LABEL(avra_map_w_set_at_maybe));
 extern const char avra_rt_held_avra_map_set_at_maybe_owned __asm__(AVRA_RT_LABEL(avra_map_set_at_maybe_owned));
 extern const char avra_rt_held_avra_map_w_set_at_maybe_owned __asm__(AVRA_RT_LABEL(avra_map_w_set_at_maybe_owned));
+extern const char avra_rt_held_avra_map_g_new __asm__(AVRA_RT_LABEL(avra_map_g_new));
+extern const char avra_rt_held_avra_map_g_sized __asm__(AVRA_RT_LABEL(avra_map_g_sized));
+extern const char avra_rt_held_avra_map_g_has __asm__(AVRA_RT_LABEL(avra_map_g_has));
+extern const char avra_rt_held_avra_map_g_get __asm__(AVRA_RT_LABEL(avra_map_g_get));
+extern const char avra_rt_held_avra_map_g_get_owned __asm__(AVRA_RT_LABEL(avra_map_g_get_owned));
+extern const char avra_rt_held_avra_map_g_slot __asm__(AVRA_RT_LABEL(avra_map_g_slot));
+extern const char avra_rt_held_avra_map_g_set __asm__(AVRA_RT_LABEL(avra_map_g_set));
+extern const char avra_rt_held_avra_map_g_set_owned __asm__(AVRA_RT_LABEL(avra_map_g_set_owned));
+extern const char avra_rt_held_avra_map_g_set_maybe __asm__(AVRA_RT_LABEL(avra_map_g_set_maybe));
+extern const char avra_rt_held_avra_map_g_set_maybe_owned __asm__(AVRA_RT_LABEL(avra_map_g_set_maybe_owned));
+extern const char avra_rt_held_avra_map_g_value_present __asm__(AVRA_RT_LABEL(avra_map_g_value_present));
+extern const char avra_rt_held_avra_map_g_remove __asm__(AVRA_RT_LABEL(avra_map_g_remove));
+extern const char avra_rt_held_avra_map_g_remove_at __asm__(AVRA_RT_LABEL(avra_map_g_remove_at));
+extern const char avra_rt_held_avra_map_g_set_at __asm__(AVRA_RT_LABEL(avra_map_g_set_at));
+extern const char avra_rt_held_avra_map_g_set_at_maybe __asm__(AVRA_RT_LABEL(avra_map_g_set_at_maybe));
+extern const char avra_rt_held_avra_map_g_set_at_owned __asm__(AVRA_RT_LABEL(avra_map_g_set_at_owned));
+extern const char avra_rt_held_avra_map_g_set_at_maybe_owned __asm__(AVRA_RT_LABEL(avra_map_g_set_at_maybe_owned));
 extern const char avra_rt_held_avra_map_value_present __asm__(AVRA_RT_LABEL(avra_map_value_present));
 extern const char avra_rt_held_avra_map_w_value_present __asm__(AVRA_RT_LABEL(avra_map_w_value_present));
 extern const char avra_rt_held_avra_map_slot __asm__(AVRA_RT_LABEL(avra_map_slot));
@@ -434,6 +451,23 @@ __attribute__((used)) static const void* const avra_rt_held[] = {
     &avra_rt_held_avra_map_w_set_at_maybe,
     &avra_rt_held_avra_map_set_at_maybe_owned,
     &avra_rt_held_avra_map_w_set_at_maybe_owned,
+    &avra_rt_held_avra_map_g_new,
+    &avra_rt_held_avra_map_g_sized,
+    &avra_rt_held_avra_map_g_has,
+    &avra_rt_held_avra_map_g_get,
+    &avra_rt_held_avra_map_g_get_owned,
+    &avra_rt_held_avra_map_g_slot,
+    &avra_rt_held_avra_map_g_set,
+    &avra_rt_held_avra_map_g_set_owned,
+    &avra_rt_held_avra_map_g_set_maybe,
+    &avra_rt_held_avra_map_g_set_maybe_owned,
+    &avra_rt_held_avra_map_g_value_present,
+    &avra_rt_held_avra_map_g_remove,
+    &avra_rt_held_avra_map_g_remove_at,
+    &avra_rt_held_avra_map_g_set_at,
+    &avra_rt_held_avra_map_g_set_at_maybe,
+    &avra_rt_held_avra_map_g_set_at_owned,
+    &avra_rt_held_avra_map_g_set_at_maybe_owned,
     &avra_rt_held_avra_map_value_present,
     &avra_rt_held_avra_map_w_value_present,
     &avra_rt_held_avra_map_slot,
@@ -807,6 +841,40 @@ _Static_assert(__builtin_types_compatible_p(__typeof__(avra_map_set_at_maybe_own
     "avra_map_set_at_maybe_owned: its row answers void, so its C body answers void");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_map_w_set_at_maybe_owned(AVRA_RT_PTR, AVRA_RT_I64, AVRA_RT_I64, AVRA_RT_I64, AVRA_RT_PTR)), void),
     "avra_map_w_set_at_maybe_owned: its row answers void, so its C body answers void");
+_Static_assert(__builtin_classify_type(avra_map_g_new(AVRA_RT_PTR)) == AVRA_RT_POINTER,
+    "avra_map_g_new: its row answers ptr, so its C body answers a pointer");
+_Static_assert(__builtin_classify_type(avra_map_g_sized(AVRA_RT_I64, AVRA_RT_PTR)) == AVRA_RT_POINTER,
+    "avra_map_g_sized: its row answers ptr, so its C body answers a pointer");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_map_g_has(AVRA_RT_PTR, AVRA_RT_PTR)), int64_t),
+    "avra_map_g_has: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_map_g_get(AVRA_RT_PTR, AVRA_RT_PTR)), int64_t),
+    "avra_map_g_get: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_classify_type(avra_map_g_get_owned(AVRA_RT_PTR, AVRA_RT_PTR)) == AVRA_RT_POINTER,
+    "avra_map_g_get_owned: its row answers ptr, so its C body answers a pointer");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_map_g_slot(AVRA_RT_PTR, AVRA_RT_PTR)), int64_t),
+    "avra_map_g_slot: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_map_g_set(AVRA_RT_PTR, AVRA_RT_PTR, AVRA_RT_I64)), void),
+    "avra_map_g_set: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_map_g_set_owned(AVRA_RT_PTR, AVRA_RT_PTR, AVRA_RT_PTR)), void),
+    "avra_map_g_set_owned: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_map_g_set_maybe(AVRA_RT_PTR, AVRA_RT_PTR, AVRA_RT_I64, AVRA_RT_I64)), void),
+    "avra_map_g_set_maybe: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_map_g_set_maybe_owned(AVRA_RT_PTR, AVRA_RT_PTR, AVRA_RT_I64, AVRA_RT_PTR)), void),
+    "avra_map_g_set_maybe_owned: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_map_g_value_present(AVRA_RT_PTR, AVRA_RT_PTR)), int64_t),
+    "avra_map_g_value_present: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_map_g_remove(AVRA_RT_PTR, AVRA_RT_PTR)), void),
+    "avra_map_g_remove: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_map_g_remove_at(AVRA_RT_PTR, AVRA_RT_PTR, AVRA_RT_I64)), void),
+    "avra_map_g_remove_at: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_map_g_set_at(AVRA_RT_PTR, AVRA_RT_PTR, AVRA_RT_I64, AVRA_RT_I64)), void),
+    "avra_map_g_set_at: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_map_g_set_at_maybe(AVRA_RT_PTR, AVRA_RT_PTR, AVRA_RT_I64, AVRA_RT_I64, AVRA_RT_I64)), void),
+    "avra_map_g_set_at_maybe: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_map_g_set_at_owned(AVRA_RT_PTR, AVRA_RT_PTR, AVRA_RT_I64, AVRA_RT_PTR)), void),
+    "avra_map_g_set_at_owned: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_map_g_set_at_maybe_owned(AVRA_RT_PTR, AVRA_RT_PTR, AVRA_RT_I64, AVRA_RT_I64, AVRA_RT_PTR)), void),
+    "avra_map_g_set_at_maybe_owned: its row answers void, so its C body answers void");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_map_value_present(AVRA_RT_PTR, AVRA_RT_PTR)), int64_t),
     "avra_map_value_present: its row answers i64, so its C body answers int64_t");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_map_w_value_present(AVRA_RT_PTR, AVRA_RT_I64)), int64_t),
