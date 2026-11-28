@@ -396,7 +396,7 @@ available_mb() {
         if [ -n "$level" ] && [ -n "$total" ]; then echo $((level * (total / 1048576) / 100)); else echo 0; fi
     fi
 }
-mtime_s() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0; }
+mtime_s() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0; }
 # how many held slots are younger than the ramp
 ramping() {
     now=$(date +%s)
