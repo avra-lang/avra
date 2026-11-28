@@ -18,6 +18,9 @@ unsigned long long avra_number(const char* s, unsigned base);
 void avra_rc_retain(void* p);
 void avra_rc_release(void* p);
 void* avra_array_sized(int64_t n);
+void* avra_array_reserved(int64_t n);
+void* avra_array_reserved_words(int64_t n);
+void avra_array_fit(void* arr);
 void avra_array_push(void* arr, int64_t v);
 // Told when a read found a descriptor drained — a short read or none;
 // set by the scheduler when it opens its poller, NULL until then.
