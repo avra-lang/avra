@@ -4,15 +4,22 @@
 //! (`<math.h>`) is clang's to find, read by an empty unit that includes it. What clang declares is
 //! read into canonical types (`c_decls`); a header clang refuses, or that no clang reads, is kept
 //! with why, never read as one that declares nothing.
+//!
+//! A DUMP IS HELD BY EVERYTHING CLANG READ TO MAKE IT: the header's text (its argument), clang's
+//! own binary, and every header the unit includes, as clang names them (`-H`) — so an edit to a
+//! header three includes down, or another clang, reads the header again. An included header is read
+//! whole, so where its stamp cannot tell (a file written a moment ago) its text decides.
 use compiler.host.{CDecl, c_decls, lp64}
 use core.{flatten}
 use @std.meta.{derive}
-use @std.process.{Tool, cmd, tool_from_env}
+use @std.io.{read_text}
+use @std.path.{dir_of, is_absolute, joined_path, normalized}
+use @std.process.{Exit, Tool, cmd, tool_from_env}
 use @std.program.address.{source_file}
-use @std.program.query_engine.{QueryDefinition, QueryEngine}
+use @std.program.query_engine.{QueryDefinition, QueryEngine, read_stamped}
 use @std.program.saved_derive.{Saved}
-use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
-use @std.program.source_facts.{source_text}
+use @std.program.saved_query.{ListedQuery, definitions_of, input, query, query_definition}
+use @std.program.source_facts.{package_lies, source_text}
 
 /// What reading one header found: clang's dump, or why there is none.
 @derive(Saved)
@@ -49,20 +56,91 @@ type Named = { header: string, read: HeaderRead }
 /// What reading the header `word` of `package` finds: a path in the package read through the
 /// engine, or a system header clang finds itself.
 fn header_read(engine: QueryEngine, package: string, word: string) -> HeaderRead {
-    if word.starts_with("<") { return dumped("", ["-include", word.substring(1, word.length - 1)]) }
+    let root = package_lies(package) ?? ""
+    let dirs = searched(root, manifest_judged(engine, package).include)
+    if word.starts_with("<") {
+        return clang_dump(
+            engine,
+            "",
+            root,
+            dirs.concat(["-include", word.substring(1, word.length - 1)]),
+        )
+    }
     let text? = source_text(engine, source_file(package, word)) else { return HeaderRead.Missing }
-    dumped(text, [])
+    let beside = if root.is_empty() { [] } else { ["-I", dir_of(joined_path(root, word))] }
+    named_as(clang_dump(engine, text, root, beside.concat(dirs)), word)
 }
 
-/// Clang's dump of a unit whose text is `text`, with `flags` before it.
-fn dumped(text: string, flags: List<string>) -> HeaderRead {
-    let clang? = clang_tool() else { return HeaderRead.Refused("no clang is found") }
-    let args = ["-fsyntax-only", "-Xclang", "-ast-dump=json"].concat(flags).concat(["-x", "c", "-"])
-    // LICENSED input.tool_run: clang reads the header's text, handed on its stdin, and nothing else of the world
-    match (cmd(clang, args) with { stdin: .Text(text) }).outcome() {
-        .Ok(o) -> HeaderRead.Dumped(o.out.stdout),
-        .Err(_) -> HeaderRead.Refused("clang refused the header"),
+/// A read whose refusal names the header as the manifest does, where clang names its stdin.
+fn named_as(read: HeaderRead, word: string) -> HeaderRead {
+    match read {
+        .Refused(why) -> HeaderRead.Refused(why.replace("<stdin>", word)),
+        .Dumped(_) or .Missing -> read,
     }
+}
+
+/// The `-I` flags for a package's `include` rows, each rooted at the package where it lies; none for
+/// a package that lies on no disk.
+fn searched(root: string, include: List<string>) -> List<string> {
+    if root.is_empty() { return [] }
+    flatten([["-I", joined_path(root, dir)] for dir in include])
+}
+
+/// Clang's dump of a unit whose text is `text`, read from `cwd` with `flags` before it: held by
+/// clang's own stamp and by each header the unit includes.
+@input("laws")
+fn clang_dump(engine: QueryEngine, text: string, cwd: string, flags: List<string>) -> HeaderRead {
+    let clang? = clang_tool() else { return HeaderRead.Refused("no clang is found") }
+    let ran = read_stamped(engine, clang.path, () -> clang_ran(clang, text, cwd, flags))
+    for path in ran.included {
+        let at = included_at(cwd, path)
+        // LICENSED input.tool_run: a header clang included, read whole under its stamp so its text decides where the stamp cannot
+        let _ = read_stamped(engine, at, () -> read_text(at) catch "")
+    }
+    ran.read
+}
+
+/// What one run of clang found: its dump or why there is none, and the headers it included.
+type ClangRun = { read: HeaderRead, included: List<string> }
+
+/// Clang run once over `text` on its stdin.
+fn clang_ran(clang: Tool, text: string, cwd: string, flags: List<string>) -> ClangRun {
+    let args = ["-H", "-fsyntax-only", "-Xclang", "-ast-dump=json"]
+        .concat(flags)
+        .concat(["-x", "c", "-"])
+    let at: string? = if cwd.is_empty() { null } else { cwd }
+    // LICENSED input.tool_run: clang reads the header's text on its stdin, and each header it includes is held by its stamp
+    match (cmd(clang, args) with { stdin: .Text(text), cwd: at }).outcome() {
+        .Ok(o) -> ClangRun {
+            read: judged(o.exit, o.out.stdout, o.out.stderr),
+            included: included_by(o.out.stderr),
+        },
+        .Err(_) -> ClangRun { read: HeaderRead.Refused("clang did not run"), included: [] },
+    }
+}
+
+/// A run's read: its dump where clang exited clean, else clang's first error in its words.
+fn judged(exit: Exit, dump: string, said: string) -> HeaderRead {
+    match exit {
+        .Clean or .Code(0) -> HeaderRead.Dumped(dump),
+        .Code(_) or .Signal(_, _) -> HeaderRead.Refused(first_error(said)),
+    }
+}
+
+/// The first line clang says is an error, or that it refused, where it says none.
+fn first_error(said: string) -> string {
+    said.split("\n").find(it.contains("error:"))?.trim() ?? "clang refused the header"
+}
+
+/// The headers `-H` names on stderr: a line of dots, a space, then the path.
+fn included_by(said: string) -> List<string> {
+    [line.substring(line.index_of(" ") + 1, line.length) for line in said.split("\n") if line.starts_with(".") && line.contains(" ")]
+}
+
+/// A path `-H` names, rooted where clang ran.
+fn included_at(cwd: string, path: string) -> string {
+    if is_absolute(path) || cwd.is_empty() { return path }
+    normalized(joined_path(cwd, path))
 }
 
 /// The C compiler `CC` names, else `clang` on the PATH; none where neither stands.
