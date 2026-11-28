@@ -389,14 +389,31 @@ jobs:
       # THE GATE'S WALL IS JUDGED: its makespan against the record's target for its class, a train whose
       # compiler source moved `compiler` and any other `plain`, each rung it climbs priced at 300 s apart
       # (cost/gate/ci-gate.cost). A train past its target fails, unless an `over` line names the row.
+      # A WALL NOT READ IS SAID, beside the judged rows: the API not answering once is GitHub's, so it is
+      # unjudged and recorded (`gate wall unread`, which `tools/ci_wall.sh landed` reads back); a train
+      # whose wall and program's landing's wall are both unread fails, so no regression stands behind it.
       - if: always() && needs.seed.result == 'success'
+        id: wall_judged
         name: gate wall
-        timeout-minutes: 4
+        timeout-minutes: 6
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # A WALL NOT READ IS NO WALL FAILURE: the API not answering is GitHub's, and the run is said unjudged
-          [ -s wall.metrics ] || { echo "::warning title=gate wall::the run's makespan was not read (the jobs API did not answer), so its wall is not judged this run"; exit 0; }
           git fetch -q --unshallow origin 2>/dev/null || :
           git fetch -q origin program:refs/remotes/origin/program
+          if [ ! -s wall.metrics ]; then
+            echo "unread=1" >> "$GITHUB_OUTPUT"
+            landing=$(git rev-parse origin/program)
+            { echo "#### gate wall"; echo "\`gate:ci-gate:gate makespan\` — UNREAD: the jobs API did not answer, so this run's wall is not judged"; } >> "$GITHUB_STEP_SUMMARY"
+            if ! last=$(sh tools/ci_wall.sh landed "$landing"); then
+              echo "::warning title=gate wall::the run's makespan was not read, and the wall record of program's landing (${landing}) could not be read either — unjudged"
+              exit 0
+            fi
+            echo "program's landing (${landing}): its wall ${last}" >> "$GITHUB_STEP_SUMMARY"
+            [ "$last" != unread ] || { echo "::error title=gate wall::the run's makespan was not read, and program's landing (${landing}) was unread too — two walls in a row unjudged"; exit 1; }
+            echo "::warning title=gate wall::the run's makespan was not read (the jobs API did not answer), so its wall is not judged this run; program's landing's was ${last}"
+            exit 0
+          fi
           base=$(git merge-base origin/program HEAD)
           rungs=$(sh tools/rungs.sh "$base" HEAD | grep -c . || :)
           class=plain
@@ -406,5 +423,12 @@ jobs:
           net=$((ms - rungs * 300000))
           [ "$net" -ge 0 ] || net=0
           printf 'host ci-gate\ngate makespan_%s %s\n' "$class" "$net" > gate.metrics
-          echo "gate wall: a ${class} train, makespan $((ms / 1000)) s, ${rungs} rung(s) at 300 s each, judged at $((net / 1000)) s"
+          said="a ${class} train, makespan $((ms / 1000)) s, ${rungs} rung(s) at 300 s each, judged at $((net / 1000)) s"
+          echo "gate wall: $said"
+          { echo "#### gate wall"; echo "\`gate:ci-gate:gate makespan_${class}\` — $said"; } >> "$GITHUB_STEP_SUMMARY"
           sh tools/ledger_rows.sh gate.metrics gate clock judge
+      # THE RECORD OF AN UNREAD WALL: a step that runs only then, so a later train reads it from the jobs
+      - if: always() && steps.wall_judged.outputs.unread == '1'
+        name: gate wall unread
+        run: |
+          echo "gate wall: this run's makespan was not read — recorded unread"
