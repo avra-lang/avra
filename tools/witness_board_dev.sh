@@ -7,13 +7,14 @@
 # under CI that is a failure naming what is missing, since a check that examined nothing passed
 # nothing; elsewhere the witness says it skipped.
 #   sh tools/witness_board_dev.sh [compiler]
+. "$(dirname "$0")/lib/scratch.sh"
 set -u
 . "$(dirname "$0")/lib/tree.sh"
 [ $# -gt 0 ] && avra=$1
 [ -x "$avra" ] || { echo "board-dev: no compiler at $avra"; exit 1; }
-work=$(mktemp -d "${TMPDIR:-/tmp}/avra-board-dev.XXXXXX")
+scratch_dir work
 dev=""
-trap 'kill $dev 2>/dev/null; pkill -P "${dev:-0}" 2>/dev/null; rm -rf "$work"' EXIT INT TERM
+scratch_also 'kill $dev 2>/dev/null; pkill -P "${dev:-0}" 2>/dev/null; rm -rf "$work"'
 mkdir -p "$work/tools" "$work/cache/home"
 cp -R "$here/ui-board" "$work/tools/ui-board"
 find "$work/tools/ui-board" -name '.avra-cache' -prune -exec rm -rf {} + 2> /dev/null

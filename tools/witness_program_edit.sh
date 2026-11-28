@@ -35,19 +35,19 @@
 #   a collect gathered in closure, which a const folds.
 #   WITNESS_ONLY=lawed a law's edit alone; WITNESS_ONLY=modes the cli built in each mode over a store
 #   the other left, working ahead and alone (modes-whole, modes-layered: one mode's).
+. "$(dirname "$0")/lib/scratch.sh"
 set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
 avra=${1:-build/avra-try}
 [ -x "$avra" ] || { echo "witness_program_edit: no compiler at $avra" >&2; exit 1; }
-tmp=$(mktemp -d)
+scratch_dir tmp
 # every edited source is put back and the scratch removed however the run ends, a signal included
 restore() {
     for p in "$tmp"/orig/*.path; do [ -e "$p" ] && cp "${p%.path}.av" "$(cat "$p")"; done
     find "$tmp" -delete
 }
-trap restore EXIT
-trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
+scratch_also restore
 export AVRA_CACHE_DIR="$tmp/machine"
 export AVRA_PROGRAM=1
 # the stores are copied, emptied and read between builds, so each build saves its own before it answers

@@ -4,11 +4,12 @@
 # byte of either checkout's cache — a row, a key or a kept read's name — may carry an absolute
 # path of the checkout or of what stands beside it, the property a machine-wide shared cache
 # needs. Each file that does is named with the count of its leaks.
+. "$(dirname "$0")/lib/scratch.sh"
 set -u
 . "$(dirname "$0")/lib/attack.sh"
 AVRA=${AVRA:-./avra}
 # outside the tree: a package under it is cached at the tree's root, not its own
-R=$(cd "$(mktemp -d)" && pwd -P)
+scratch_dir R; R=$(cd "$R" && pwd -P)
 mkdir -p "$R/one/app/src" "$R/two/deeper/app/src" "$R/one/lib/src" "$R/two/deeper/lib/src"
 for d in "$R/one/app" "$R/two/deeper/app"; do
     printf '[package]\nname = "@leak/lib"\nversion = "0.1.0"\n' > "$d/../lib/avra.toml"

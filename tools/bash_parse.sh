@@ -6,6 +6,7 @@
 #
 #   sh tools/bash_parse.sh              the tree
 #   sh tools/bash_parse.sh --self-test  a known-bad script is refused and a clean one passes
+. "$(dirname "$0")/lib/scratch.sh"
 set -u
 root=$(cd "$(dirname "$0")/.." && pwd)
 bash_=/bin/bash
@@ -46,7 +47,7 @@ parsed() {
 }
 
 if [ "${1:-}" = --self-test ]; then
-    d=$(mktemp -d "${TMPDIR:-/tmp}/bash-parse.XXXXXX")
+    scratch_dir d
     # an apostrophe in `${v:+…}` inside double quotes opens a quote to bash and to no other sh
     printf '#!/bin/sh\necho "x${v:+ (the hour'"'"'s limit)}"\ncase $1 in (a) echo a ;; esac\n' > "$d/bad.sh"
     printf '#!/bin/sh\necho "x${v:+ (the hourly limit)}"\ncase $1 in (a) echo a ;; esac\n' > "$d/good.sh"

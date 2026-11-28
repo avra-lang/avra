@@ -24,6 +24,7 @@
 # A standalone run, never a gate step: a compiler build and two whole-package runs.
 # MEMCAP names the memory-cap wrapper (cap 4000 MB).
 # A cold run clears the tree's `.avra-cache`; the machine store lives there too, or "cold" would read the machine's rows.
+. "$(dirname "$0")/lib/scratch.sh"
 export AVRA_CACHE_DIR="$(cd "$(dirname "$0")/.." && pwd)/.avra-cache"
 # a store is copied, counted or emptied here between builds, so each build saves its own before it answers
 export AVRA_STORE_KEPT_HERE=1
@@ -32,6 +33,7 @@ set -u
 memcap="${MEMCAP:?MEMCAP must name the memory-cap wrapper, memcap.sh}"
 which="${1:-both}"
 tree="$(cd "$(dirname "$0")/.." && pwd)"
+# LICENSED scratch_law: its logs are read after the run, which says where they stand
 logs="$(mktemp -d "${TMPDIR:-/tmp}/avra-dep-audit.XXXXXX")"
 package=packages/std-avrac
 
@@ -67,8 +69,7 @@ open(path, "w").write(text.replace(had, now))
 PY
 }
 restore() { set_audit_build false; }
-trap restore EXIT
-trap 'exit 1' INT TERM
+scratch_also restore
 
 set_audit_build true || exit 1
 cold

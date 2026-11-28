@@ -10,6 +10,7 @@
 #
 # permessage-deflate (cases 12 and 13) is not implemented, so those
 # cases are excluded rather than reported as failures.
+. "$(dirname "$0")/../../../tools/lib/scratch.sh"
 set -eu
 image=crossbario/autobahn-testsuite
 out="$PWD/build/autobahn"
@@ -30,7 +31,7 @@ JSON
 
 AUTOBAHN_PORT=9001 benchmarks/http/autobahn/server/src/main >"$out/server.log" 2>&1 &
 server=$!
-trap 'kill $server 2>/dev/null || true; docker rm -f avra-fuzzingserver >/dev/null 2>&1 || true' EXIT
+scratch_also 'kill $server 2>/dev/null || true; docker rm -f avra-fuzzingserver >/dev/null 2>&1 || true'
 sleep 1
 docker run --rm -v "$out:/reports" "$image" wstest -m fuzzingclient -s /reports/config/fuzzingclient.json >"$out/fuzzingclient.log" 2>&1
 kill $server 2>/dev/null || true

@@ -10,13 +10,13 @@
 # SKIPS, spoken, in the compiler's own words — a machine without them is not
 # falsely green. UI_BOARD_TARGET names one wasm triple (default `wasm`: the
 # one this machine's toolchain links).
+. "$(dirname "$0")/lib/scratch.sh"
 set -eu
 
 . "$(dirname "$0")/lib/tree.sh"
 target=${UI_BOARD_TARGET:-wasm}
-work=$(mktemp -d "${TMPDIR:-/tmp}/avra-ui-board.XXXXXX")
+scratch_dir work
 # The copy of the tree it builds in is this run's alone, and goes when the run ends.
-trap 'find "$work" -delete 2>/dev/null || true' EXIT
 
 skip() { echo "ui-board: SKIPPED — $* ; the board did not run on a page"; exit 0; }
 

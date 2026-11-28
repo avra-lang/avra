@@ -10,6 +10,7 @@
 # stand aside for the build and come back on every exit, with the
 # shipping runtime library rebuilt.
 # A cold run clears the tree's `.avra-cache`; the machine store lives there too, or "cold" would read the machine's rows.
+. "$(dirname "$0")/lib/scratch.sh"
 export AVRA_CACHE_DIR="$(cd "$(dirname "$0")/.." && pwd)/.avra-cache"
 # a store is copied, counted or emptied here between builds, so each build saves its own before it answers
 export AVRA_STORE_KEPT_HERE=1
@@ -25,7 +26,7 @@ restore() {
         echo "census-types: the shipping runtime did NOT rebuild — run \`make build/libavra_runtime.a\`"
     if [ -d "$stores" ]; then rm -rf .avra-cache; mv "$stores" .avra-cache; fi
 }
-trap restore EXIT INT TERM
+scratch_also restore
 
 # shellcheck disable=SC2086
 make --no-print-directory $flags build/libavra_runtime.a > /dev/null

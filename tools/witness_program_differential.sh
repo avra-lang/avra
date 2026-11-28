@@ -23,6 +23,7 @@
 # SAME, else 0.
 #   sh tools/witness_program_differential.sh [compiler] [--bar N] [--jobs J] [code…]
 #   (default build/avra-try; J defaults to 3; naming codes judges only those)
+. "$(dirname "$0")/lib/scratch.sh"
 set -u
 # a store is copied, counted or emptied here between builds, so each build saves its own before it answers
 export AVRA_STORE_KEPT_HERE=1
@@ -40,8 +41,7 @@ while [ $# -gt 0 ]; do
         *) break ;;
     esac
 done
-tmp=$(mktemp -d)
-trap 'find "$tmp" -delete' EXIT
+scratch_dir tmp
 cp -R "$root/tools/witness-files" "$tmp/dump"
 find "$tmp/dump" -name .avra-cache -prune -exec find {} -delete \;
 (cd "$tmp/dump" && "$avra" run . >"$tmp/witnesses.jsonl" 2>"$tmp/dump.err") || {

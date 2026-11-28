@@ -6,9 +6,10 @@
 # built again, with no restart of `avra dev`. The server writes no port: a
 # `server` with none listens on `PORT` (how dev hands it one), else 8080, and a
 # written `port` wins over `PORT`.
+. "$(dirname "$0")/lib/scratch.sh"
 set -eu
 . "$(dirname "$0")/lib/tree.sh"
-work=$(mktemp -d "${TMPDIR:-/tmp}/avra-dev-server.XXXXXX")
+scratch_dir work
 who=dev-server
 . "$tree/tools/lib/steps.sh"
 
@@ -41,7 +42,7 @@ rebuilt() { [ "$(grep -c '^dev: server .* runs on' "$work/dev.out")" -gt "$runs"
 
 "$avra" dev --port 0 "$work/page" > "$work/dev.out" 2> "$work/dev.err" &
 dev=$!
-trap 'kill "$dev" 2>/dev/null || true' EXIT
+scratch_also 'kill "$dev" 2>/dev/null || true'
 waits 90 "served the page" logged '^dev: .* at http'
 url=$(sed -n 's/^dev: .* at \(http[^ ]*\).*$/\1/p' "$work/dev.out" | head -1)
 waits 90 "ran the server the page names" logged '^dev: server .* runs on'

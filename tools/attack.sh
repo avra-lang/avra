@@ -6,12 +6,13 @@
 # and THIS holds the accepted set against tools/attack.baseline: a NEW
 # survivor is refused (a decision must be made), and a baseline entry
 # that now REFUSES is stale. The baseline lists sites, never counts.
+. "$(dirname "$0")/lib/scratch.sh"
 set -eu
 . "$(dirname "$0")/lib/attack.sh"
-now=$(mktemp)
-base=$(mktemp)
-diffout=$(mktemp)
-trap 'rm -f "$now" "$base" "$diffout"' EXIT
+scratch_dir now; now="$now/file"; : > "$now"
+scratch_dir base; base="$base/file"; : > "$base"
+scratch_dir diffout; diffout="$diffout/file"; : > "$diffout"
+scratch_also 'rm -f "$now" "$base" "$diffout"'
 for f in $(find packages/std-avrac/src/features -name '*_mechanical_test.av' | LC_ALL=C sort); do
     n=$(echo "$f" | sed 's|.*/features/||; s|/tests/.*||')
     ./avra attack "$n" 2>>"$now" >/dev/null || true

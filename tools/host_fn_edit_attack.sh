@@ -9,6 +9,7 @@
 # so each edit shape (a comment, a body line, a local's name) is built warm and
 # must pass as the cold build of the same edit does. The file is restored on
 # every exit. It CLEARS the store, as the attacks beside it do.
+. "$(dirname "$0")/lib/scratch.sh"
 set -u
 . "$(dirname "$0")/lib/attack.sh"
 . tools/lib/failed_tail.sh
@@ -43,7 +44,7 @@ fi
 find "$R" -type f -delete 2>/dev/null
 mkdir -p $R
 cp $W $R/web.orig
-trap 'cp $R/web.orig $W' EXIT INT TERM
+scratch_also 'cp $R/web.orig $W'
 edit() { # edit <label> <sed script>: from the original, one edit shape
     cp $R/web.orig $W
     case "$2" in

@@ -1276,12 +1276,17 @@ vendored-fixture:
 	@python3 tools/vendored_fixture.py --self-test
 	@python3 tools/vendored_fixture.py
 
+# SCRATCH NEVER OUTLIVES ITS RUN: tools/lib/scratch.sh makes every temporary directory and owns the
+# run's exit, and no other shell file spells a mktemp or an EXIT, HUP, INT or TERM trap of its own.
+scratch-law:
+	@./wisp scratch_law
+
 # EVERY SHELL SCRIPT PARSES UNDER BASH, macOS's 3.2 where it stands (tools/bash_parse.sh)
 bash-parse:
 	@sh tools/bash_parse.sh --self-test
 	@sh tools/bash_parse.sh
 
-.PHONY: compiler compiler-files store-witnesses cache-attacks-w keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b keepers-wasm keepers-static keepers-pr bash-parse ci-invariants pkgs-witness
+.PHONY: scratch-law compiler compiler-files store-witnesses cache-attacks-w keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b keepers-wasm keepers-static keepers-pr bash-parse ci-invariants pkgs-witness
 # THE CODEC SCAN: every encoder/decoder-shaped pair in the tree is one
 # compiler/codecs.av's registry names (tools/codecs.py). It needs no
 # compiler, so a pull request reaching the compiler's source hears an

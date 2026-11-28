@@ -33,6 +33,7 @@
 # it cost three sessions rather than one. The shape is the fix, never
 # a depth counter: a self-test that cannot re-enter the entry point
 # cannot recurse, and the fixtures still exercise the real verbs.
+. "$(dirname "$0")/lib/scratch.sh"
 set -e
 
 # The receipt for a worktree's own tree, written only when the working
@@ -84,8 +85,7 @@ receipt_trusts() {
 # skip at all: the matching tree is trusted, and ONE BYTE anywhere is
 # not. The fixtures call the verbs above directly.
 self_test() {
-    tmp="$(mktemp -d)"
-    trap 'rm -rf "$tmp"' EXIT
+    scratch_dir tmp
     lane="$tmp/lane"
     mkdir -p "$lane"
     git init -q "$lane"

@@ -13,6 +13,7 @@ set -u
 
 here="$(cd "$(dirname "$0")" && pwd)"
 script=$(cat "$here/sprite-remote.sh")
+# LICENSED scratch_law: the Sprite half, deleted with the Sprites
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/avra-remote-test.XXXXXX")
 export AVRA_SPRITE_HOME="$scratch/home"
 mkdir -p "$scratch/tree"
@@ -55,6 +56,7 @@ swept() {
     done
     rm -rf "$scratch"
 }
+# LICENSED scratch_law: the Sprite half, deleted with the Sprites
 trap swept EXIT
 pid_of() { cat "$AVRA_SPRITE_HOME/avra-runs/$1/pid"; }
 # The run's keeper: the supervisor's child that is the script's `keeper`.

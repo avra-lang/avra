@@ -10,14 +10,13 @@
 # cold one, one `lowered_under` answer is worked out (counted with no work ahead on other cores),
 # and taken back the first product again.
 #   sh tools/witness_body_consts.sh [compiler]   (default build/avra-try)
+. "$(dirname "$0")/lib/scratch.sh"
 set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
 avra=${1:-build/avra-try}
 case $avra in /*) ;; *) avra="$root/$avra" ;; esac
 [ -x "$avra" ] || { echo "witness_body_consts: no compiler at $avra" >&2; exit 1; }
-tmp=$(mktemp -d)
-trap 'find "$tmp" -delete' EXIT
-trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
+scratch_dir tmp
 pkg="$tmp/consts"
 mkdir -p "$pkg/src"
 export AVRA_CACHE_DIR="$tmp/machine"

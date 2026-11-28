@@ -45,7 +45,10 @@ set -eu
 tools=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$tools/.." && pwd)
 here=$tools
+. "$tools/lib/scratch.sh"
 . "$tools/sprite-lib.sh"
+# a scratch every command may make its own under, gone however the run ends
+scratch_dir work_tmp
 gh_=${AVRA_GH:-gh}
 
 die() { echo "work: $*" >&2; exit 1; }
@@ -107,7 +110,7 @@ mac_compiler_url=https://github.com/avra-lang/avra/releases/download/gate-builde
 deposit_mac() {
     case ${AVRA_MAC_COMPILER:-$(uname -s)-$(uname -m)} in Darwin-arm64 | 1) ;; *) return 0 ;; esac
     url=${AVRA_MAC_COMPILER_URL:-$mac_compiler_url}
-    md=$(mktemp -d "${TMPDIR:-/tmp}/avra-mac.XXXXXX")
+    scratch_dir md
     if ! curl -fsSL --retry 2 -m 300 -o "$md/pack.tar.gz" "$url" || ! gzip -t "$md/pack.tar.gz" 2>/dev/null ||
         ! tar -xzf "$md/pack.tar.gz" -C "$md" build/avra build/.avra-built-from; then
         echo "work: the Mac's published compiler did not download whole ($url) — the depot is as it was"
@@ -200,7 +203,7 @@ main_compiler() {
         waited=$((waited + 5))
     done
     echo $$ > "$lock/pid"
-    trap 'find "$lock" -delete 2>/dev/null' EXIT INT TERM
+    scratch_also 'find "$lock" -delete 2>/dev/null'
     [ -e "$mt/.git" ] || git -C "$repo" worktree add -q --detach "$mt" "$sha" || die "main-compiler: no tree at $mt"
     git -C "$mt" checkout -q --detach "$sha" || die "main-compiler: $mt cannot stand at $sha"
     h=$(compiler_hash "$mt")
@@ -298,7 +301,7 @@ bind_locked() {
     free=$(for s in ${1:-$(pool)}; do echo "$held" | grep -q "^$s " || printf '%s ' "$s"; done)
     [ -n "$free" ] || { echo "work: ${1:-every Sprite} is bound:" >&2; echo "$held" | sed 's/^/  /' >&2; return 1; }
     # The first free one that answers; a silent one is left for later.
-    d=$(mktemp -d "${TMPDIR:-/tmp}/avra-bind.XXXXXX")
+    scratch_dir d
     for s in $free; do (sx "$s" 20 true >/dev/null 2>&1 && : > "$d/$s") & done
     wait
     pick=
@@ -350,7 +353,7 @@ ladder_ship() {
     ls_dest=${AVRA_SPRITE_HOME:-/home/sprite}/avra-ladder/$ls_key
     if ! sx "$ls_sprite" 20 git -C "$ls_dest/repo" rev-parse -q --verify "${ls_plan%%:*}^{commit}" >/dev/null 2>&1; then
         ls_mb=${ls_plan%%:*}
-        ls_tmp=$(mktemp -d "${TMPDIR:-/tmp}/avra-ladder.XXXXXX")
+        ls_tmp=$(scratch_under "$work_tmp")
         git init -q "$ls_tmp/repo"
         # background maintenance would repack the objects while they are being archived
         git -C "$ls_tmp/repo" config gc.auto 0
@@ -525,7 +528,7 @@ exit \$s"
 # Sprite bootstraps after all, so a seed costs time and never
 # correctness. $1 Sprite, $2 its tree there, $3 this tree, $4 its hash.
 seed() {
-    sd=$(mktemp -d "${TMPDIR:-/tmp}/avra-seed.XXXXXX")
+    scratch_dir sd
     put="cat > '$2/build/avra' && chmod +x '$2/build/avra'"
     from=
     ci=$(timeout -k 2 30 $gh_ run list --workflow checks --branch main --event push --status success --limit 1 \
@@ -731,7 +734,7 @@ since() { echo $(($(date +%s) - t0)); }
 manifest_at() { sh -c 'AVRA_REMOTE_SCRIPT=$1; shift; eval "$AVRA_REMOTE_SCRIPT"' avra-remote "$remote_script" manifest "$@"; }
 sync_tree() {
     echo "work: $sprite — sync ($(since)s)" >&2
-    skipped=$(mktemp "${TMPDIR:-/tmp}/avra-skip.XXXXXX")
+    skipped="$(scratch_under "$work_tmp")/skipped"; : > "$skipped"
     paths=$(cd "$tree" && {
         git ls-tree --name-only HEAD
         git ls-files --others --exclude-standard | cut -d/ -f1 | sort -u
@@ -749,7 +752,7 @@ sync_tree() {
     done)
     [ ! -s "$skipped" ] || echo "work: sync skipped $(wc -l < "$skipped" | tr -d ' ') untracked top-level path(s) over ${AVRA_SYNC_UNTRACKED_KB:-65536} KB" >&2
     rm -f "$skipped"
-    held=$(mktemp -d "${TMPDIR:-/tmp}/avra-sync.XXXXXX")
+    scratch_dir held
     manifest_at "$tree" $paths > "$held/mine"
     # A second pass compares contents: a file of the same size and time is not always the same file.
     by=
@@ -845,7 +848,7 @@ run_github() {
     ref=run/$lane
     wf=lane-run.yml
     t0=$(date +%s)
-    gh_calls=$(mktemp)
+    gh_calls="$(scratch_under "$work_tmp")/calls"; : > "$gh_calls"
     gh_left=$(gh_counted api rate_limit -q .resources.core.remaining 2>/dev/null) || gh_left=
     case $gh_left in ("" | *[!0-9]*) gh_left= ;; esac
     live=$(gh_counted run list --workflow "$wf" --branch "$ref" --json databaseId,status \
@@ -873,9 +876,11 @@ run_github() {
     [ -n "$id" ] || { git push -q origin ":refs/heads/$ref" 2>/dev/null || :; echo "work: CONNECTION — no run started for $ref within 90s" >&2; exit 74; }
     url=$(gh_counted run view "$id" --json url -q .url 2>/dev/null || :)
     echo "work: github — run $id $url" >&2
+    # LICENSED scratch_law: a Ctrl-C while the run is followed cancels it on GitHub first; its exit runs
+    # the run's own exit
     trap '$gh_ run cancel "$id" >/dev/null 2>&1 || :; echo "work: COMMAND — stopped (run $id cancelled), $(gh_since)s" >&2; exit 130' INT
     follow_github "$id" $(( (minutes + 60) * 60 )) || exit $?
-    trap - INT
+    scratch_signals
     github_status "$id"
     git push -q origin ":refs/heads/$ref" 2>/dev/null || :
     echo "work: github — $(wc -l < "$gh_calls" | tr -d " ") GitHub API call(s) this run${gh_left:+ ($gh_left left of the hourly limit at its start)}" >&2
@@ -894,7 +899,7 @@ gh_since() { echo $(($(date +%s) - t0)); }
 # snapshot <tree> <message>: the worktree as it stands — tracked edits and untracked files git does
 # not ignore — as one commit over HEAD, through a scratch index, so the lane's own index is untouched.
 snapshot() {
-    idx=$(mktemp)
+    idx="$(scratch_under "$work_tmp")/index"; : > "$idx"
     (
         export GIT_INDEX_FILE="$idx"
         cd "$1" && git read-tree HEAD && git add -A . && git commit-tree "$(git write-tree)" -p HEAD -m "$2"
@@ -995,9 +1000,13 @@ run() {
     fi
     echo "$$ $(born $$)" > "$lockfile"
     runlock=$lockfile
-    trap leave EXIT
+    scratch_also leave
+    # LICENSED scratch_law: a run followed here says whether it was detached or interrupted, and each
+    # word's verb exits with the signal's status, which runs the run's own exit
     trap 'detached 129 "hung up"' HUP
+    # LICENSED scratch_law: as the line above
     trap 'interrupted 130' INT
+    # LICENSED scratch_law: as the line above
     trap 'detached 143 terminated' TERM
     hash=$(compiler_hash "$tree")
     remote_tree=${AVRA_SPRITE_HOME:-/home/sprite}/avra-build/$slug/tree
@@ -1136,11 +1145,10 @@ attach() {
     }
     found=$(last_run "$sprite")
     [ -n "$found" ] || { echo "work: nothing has run on $sprite for this lane to follow" >&2; exit 1; }
-    log=$(mktemp "${TMPDIR:-/tmp}/avra-attach.XXXXXX")
-    trap 'leave; rm -f "$log"' EXIT
-    trap 'exit 129' HUP
+    log="$(scratch_under "$work_tmp")/attach"; : > "$log"
+    scratch_also leave
+    # LICENSED scratch_law: a Ctrl-C detaches and says the run goes on; its exit runs the run's own exit
     trap 'echo "work: detached — the run goes on; \`sh tools/work stop\` ends it" >&2; exit 130' INT
-    trap 'exit 143' TERM
     echo "work: $sprite — following ${found% *} (${found#* })" >&2
     run_id=${found% *}
     st=0
@@ -1253,7 +1261,7 @@ fix() {
 # Every Sprite, asked once, all at once.
 sprites() {
     [ "${1:-}" != --fix ] || { shift; fix "$@"; }
-    d=$(mktemp -d "${TMPDIR:-/tmp}/avra-sprites.XXXXXX")
+    scratch_dir d
     held=$(lanes)
     states=$(api_state)
     health_list=$(health_packages_list)

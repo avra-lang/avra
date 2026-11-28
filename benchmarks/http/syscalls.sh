@@ -7,13 +7,14 @@
 #
 #   sh benchmarks/http/syscalls.sh          (`make libs` first)
 #   PORT=18090 SECS=10 sh benchmarks/http/syscalls.sh
+. "$(dirname "$0")/../../tools/lib/scratch.sh"
 set -eu
 command -v wrk >/dev/null || { echo "syscalls.sh: wrk is not installed" >&2; exit 1; }
 port=${PORT:-18090}
 secs=${SECS:-5}
-work=$(mktemp -d)
+scratch_dir work
 pid=
-trap '[ -z "$pid" ] || kill "$pid" 2>/dev/null; rm -rf "$work"' EXIT INT TERM
+scratch_also '[ -z "$pid" ] || kill "$pid" 2>/dev/null; rm -rf "$work"'
 
 if [ "$(uname)" = Darwin ]; then
     cc -O2 -shared -fPIC -o "$work/syscount.so" benchmarks/http/syscount.c

@@ -5,7 +5,10 @@
 # for a minute is tried again. Call it in the caller's own shell, never in a
 # `$(…)`, whose exit would remove what it unpacked.
 fetch_pinned() {
+    # LICENSED scratch_law: this runs inside the CI image's build, whose context is .github/ci alone,
+    # so tools/lib/scratch.sh is not there to source
     work=$(mktemp -d)
+    # LICENSED scratch_law: the image's build, as above — nothing bounds it by a signal
     trap 'find "$work" -delete' EXIT
     archive="$work/archive"
     curl -fsSL --connect-timeout 20 --speed-limit 10000 --speed-time 60 --retry 3 -o "$archive" "$2"

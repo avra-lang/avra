@@ -1,0 +1,69 @@
+// The scratch law: what it refuses and what it lets stand, and the helper it points at, ended by a signal.
+use @std.io.{exists, read_text}
+use commands.{scratch_judged, scratch_refusal, scratch_refusals, scratch_shell}
+
+fn refused(line: string) -> bool { scratch_refusal(line) != null }
+
+/// The tree this suite stands in.
+fn tree() -> string { shell(".", "git rev-parse --show-toplevel") }
+
+spec "wisp scratch_law — scratch and the run's exit are the helper's" {
+    given "a tool's own scratch or exit" {
+        then "a mktemp is refused, wherever it stands on the line" {
+            refused("d=\$(mktemp -d)") &&
+                refused("    t=\$(mktemp \"\$TMPDIR/x.XXXX\")") &&
+                refused("f=`mktemp`; g=1")
+        }
+        then "a trap on the run's exit or its signals is refused" {
+            refused("trap 'find \"\$d\" -delete' EXIT") &&
+                refused("trap cleanup INT TERM") &&
+                refused("    x=1; trap stop HUP") &&
+                refused("trap 'exit 143' 15")
+        }
+    }
+    given "what keeps the law" {
+        then "the helper's own verbs stand" {
+            !refused(". \"\$(dirname \"\$0\")/lib/scratch.sh\"") &&
+                !refused("scratch_dir d") &&
+                !refused("scratch_also 'kill \$pid'")
+        }
+        then "a comment naming either stands" { !refused("# mktemp makes the scratch") && !refused("  # trap 'x' EXIT") }
+        then "a trap that only ignores a signal stands" { !refused("trap '' HUP") && !refused("trap \"\" INT TERM") }
+        then "a word that only contains mktemp stands" { !refused("echo \"mktemp: none\"") && !refused("mktemps=3") }
+        then "a licensed line stands, with the licence anywhere in the comment run above it" {
+            scratch_refusals(
+                "t.sh",
+                "# LICENSED scratch_law: a child's own trap\n# its words\ntrap stop TERM\ntrap stop TERM\n",
+            ) == [
+                "t.sh:4: a trap on TERM replaces the run's own exit — hand the cleanup to `scratch_also` (tools/lib/scratch.sh)",
+            ]
+        }
+    }
+    given "the files the law reads" {
+        then "a shell file is named `.sh` or asks for sh or bash on its first line" {
+            scratch_shell("tools/x.sh", "") &&
+                scratch_shell("wisp", "#!/bin/sh\n") &&
+                scratch_shell("t", "#!/usr/bin/env bash\n") &&
+                !scratch_shell("t.py", "#!/usr/bin/env python3\n")
+        }
+        then "the helper and vendored code are not judged" {
+            !scratch_judged("tools/lib/scratch.sh") &&
+                !scratch_judged("packages/std-tls/vendor/x/y.sh") &&
+                scratch_judged("tools/gate.sh")
+        }
+    }
+    given "the helper, ended by a signal" {
+        then "a TERM leaves no directory it made and runs every cleanup it was handed" {
+            let mine = scratch_dir()
+            let _ = shell(
+                mine,
+                ". '${tree()}/tools/lib/scratch.sh'; scratch_dir d; echo \"\$d\" > made; scratch_also 'echo ran > said'; kill -TERM \$\$",
+            )
+            let made = (read_text("${mine}/made") catch "").trim()
+            let ok = made != "" &&
+                !exists(made) &&
+                (read_text("${mine}/said") catch "").trim() == "ran"
+            cleared(mine) && ok
+        }
+    }
+}

@@ -4,11 +4,12 @@
 # (std-http's own is doors-b's). Over a worktree of HEAD with that commit made, this tree's own
 # `gate.sh pkgs-suites` and the closure it reads — so what it judges is the selection the tree holds now.
 #   sh tools/witness_gate_pkgs.sh
+. "$(dirname "$0")/lib/scratch.sh"
 set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
-work=$(mktemp -d "${TMPDIR:-/tmp}/avra-pkgs-witness.XXXXXX")
-trap 'git worktree remove --force "$work/tree" >/dev/null 2>&1 || :; find "$work" -delete 2>/dev/null || :' EXIT
+scratch_dir work
+scratch_also 'git worktree remove --force "$work/tree" >/dev/null 2>&1 || :; find "$work" -delete 2>/dev/null || :'
 git worktree add -q --detach "$work/tree" HEAD
 mkdir -p "$work/tree/build"
 [ ! -d build/wisp ] || cp -R build/wisp "$work/tree/build/"

@@ -4,11 +4,11 @@
 # reads the model's route data (served) adds the descriptor and nothing else. The IR of that page defines no
 # handler, router, database or decoder. The caps are absolute byte counts, never ratios: a rise past one means
 # something of the server rode the model, or the descriptor, onto the page.
+. "$(dirname "$0")/lib/scratch.sh"
 set -eu
 . "$(dirname "$0")/lib/tree.sh"
-work=$(mktemp -d "${TMPDIR:-/tmp}/avra-wr.XXXXXX")
+scratch_dir work
 target=${WASM_TARGET:-wasm}
-trap 'find "$work" -delete 2>/dev/null || true' EXIT
 wasm_who=wasm-routes-size; . "$here/lib/wasm.sh"
 
 needs_compiler

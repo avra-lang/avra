@@ -16,6 +16,7 @@
 # place). Where one is absent the run FAILS, naming what is missing: a run that
 # compared nothing has not passed. LAYOUT_ORACLE_SKIP=<reason> stands it down by
 # name off the checks' machine (CI=true), where a missing browser is a broken machine.
+. "$(dirname "$0")/lib/scratch.sh"
 set -eu
 
 . "$(dirname "$0")/lib/tree.sh"
@@ -52,7 +53,7 @@ licensed_total=0
 # evidence.
 for browser in $browsers; do
     if [ "$browser" = webkit ]; then
-        log=$(mktemp "${TMPDIR:-/tmp}/avra-layout-playwright.XXXXXX")
+        scratch_dir log; log="$log/file"; : > "$log"
         playwright_ready "$tree" "$log" || skip "Playwright's WebKit did not install: $(tail -1 "$log")"
     fi
     for face in $faces; do

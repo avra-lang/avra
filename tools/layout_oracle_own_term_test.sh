@@ -2,12 +2,13 @@
 # A box owes half a solver unit plus half the engine's quantum on every number, even one that
 # shares nothing. WebKit's cell-face seed 3 holds a tree whose widths stand 0.009 px
 # apart: it agrees with the term and is refused without it. Skips where WebKit is absent.
+. "$(dirname "$0")/lib/scratch.sh"
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 tree=$(cd "$here/.." && pwd)
 bad() { echo "layout-oracle own-term self-test: $1"; exit 1; }
 . "$here/ui-board/playwright.sh"
-log=$(mktemp "${TMPDIR:-/tmp}/avra-layout-playwright.XXXXXX")
+scratch_dir log; log="$log/file"; : > "$log"
 playwright_ready "$tree" "$log" || {
     # a checks' machine without WebKit is broken, and a gate that skips there runs nothing
     [ "${CI:-}" = true ] && bad "ran 0 trees — FAILED: Playwright's WebKit did not install: $(tail -1 "$log")"

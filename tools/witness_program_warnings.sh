@@ -8,6 +8,7 @@
 #   WITNESS_ONLY names its parts, each alone or several: `cold` (the cli built cold and again with no
 #   change), `edit` (the cli edited, built warm over its cold build), `builds` (both), `cases`
 #   (tools/program-warnings/).
+. "$(dirname "$0")/lib/scratch.sh"
 set -eu
 # a store is copied, counted or emptied here between builds, so each build saves its own before it answers
 export AVRA_STORE_KEPT_HERE=1
@@ -15,13 +16,13 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
 avra=${1:-build/avra-try}
 [ -x "$avra" ] || { echo "witness_program_warnings: no compiler at $avra" >&2; exit 1; }
-tmp=$(mktemp -d)
+scratch_dir tmp
 file=packages/cli/src/commands/fmt.av
 line='type FmtCmd = {}'
 becomes='type FmtCmd = {}\nenum Quarter { North, East, South, West }\nfn quartered(q: Quarter) -> int { match q { .North -> 1, .East -> 2, _ -> 0 } }'
 cp "$file" "$tmp/orig.av"
 restore() { cp "$tmp/orig.av" "$file"; find "$tmp" -delete; }
-trap restore EXIT
+scratch_also restore
 [ "$(grep -cxF "$line" "$file")" = 1 ] || { echo "witness_program_warnings: \`$line\` is not one line of $file" >&2; exit 1; }
 
 cold() {

@@ -5,6 +5,7 @@
 # of one code and two identities — the compiler, and a copy one byte longer, whose print and so
 # every key differ — swapped in place of build/avra: flow-trace run ONCE after each swap names
 # every spawn at its file and line (0 refused), the swap made back and forth.
+. "$(dirname "$0")/lib/scratch.sh"
 set -u
 . "$(dirname "$0")/lib/attack.sh"
 who=flow-trace-swap-attack
@@ -13,7 +14,7 @@ here=build/avra
 keep=build/.flow-trace-swap-own
 other=build/.flow-trace-swap-other
 cp "$here" "$keep" && cp "$here" "$other" && printf 'x' >> "$other"
-trap 'cp "$keep" "$here.swap" && mv "$here.swap" "$here"; find "$keep" "$other" build/..flow-trace-swap-own.print build/..flow-trace-swap-other.print -delete 2>/dev/null' EXIT
+scratch_also 'cp "$keep" "$here.swap" && mv "$here.swap" "$here"; find "$keep" "$other" build/..flow-trace-swap-own.print build/..flow-trace-swap-other.print -delete 2>/dev/null'
 for c in "$other" "$keep" "$other"; do
     cp "$c" "$here.swap" && mv "$here.swap" "$here"
     said=$(make -s -o avra flow-trace 2>&1)

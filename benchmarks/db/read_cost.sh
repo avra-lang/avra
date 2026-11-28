@@ -18,6 +18,7 @@
 # Instructions per read are printed too where the machine can count them
 # (macOS `/usr/bin/time -l`) — published, never gated: they are this
 # machine's.
+. "$(dirname "$0")/../../tools/lib/scratch.sh"
 set -eu
 cd "$(dirname "$0")/../.."
 : "${LLVM_PREFIX:=/opt/homebrew/opt/llvm}"
@@ -28,7 +29,7 @@ bench=benchmarks/db/readcost
 budget=benchmarks/db/read_cost.budget
 modes="kernel.last kernel.earlier kernel.new row.unheard row.repeat row.new ask.int ask.text write.unowned write.owned write.replaced write.over write.given write.heard"
 census=build/census
-trap 'rm -f "$bench/src/main" "$bench/src/main.av.ll"' EXIT INT TERM
+scratch_also 'rm -f "$bench/src/main" "$bench/src/main.av.ll"'
 mkdir -p "$census/build" "$census/obj"
 # what a compiler reads from the tree it stands in: its packages and its own sources
 for p in packages backend runtime Makefile; do

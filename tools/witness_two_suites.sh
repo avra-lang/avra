@@ -6,13 +6,13 @@
 # second suite's disk is the last one made. Each must print its `.expected`, cold, in one run over
 # both, as it does alone.
 #   sh tools/witness_two_suites.sh [compiler]   (default build/avra-try)
+. "$(dirname "$0")/lib/scratch.sh"
 set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
 avra=${1:-build/avra-try}
 case $avra in /*) ;; *) avra="$root/$avra" ;; esac
 [ -x "$avra" ] || { echo "witness_two_suites: no compiler at $avra" >&2; exit 1; }
-tmp=$(mktemp -d)
-trap 'find "$tmp" -delete' EXIT
+scratch_dir tmp
 export AVRA_CACHE_DIR="$tmp/machine"
 # a store is copied, counted or emptied here between builds, so each build saves its own before it answers
 export AVRA_STORE_KEPT_HERE=1

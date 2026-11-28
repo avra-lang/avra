@@ -21,11 +21,11 @@
 #   (9) the answers are the same however the writer's jobs meet: written with its jobs one at a time
 #       and all at once, the check over each works out the same.
 #   sh tools/std_answers_checkout_witness.sh [compiler]     (default build/avra)
+. "$(dirname "$0")/lib/scratch.sh"
 set -u
 root=$(cd "$(dirname "$0")/.." && pwd)
 avra=$(cd "$(dirname "${1:-$root/build/avra}")" && pwd)/$(basename "${1:-$root/build/avra}")
-w=$(mktemp -d "${TMPDIR:-/tmp}/avra-checkout-answers.XXXXXX")
-trap 'find "$w" -delete 2>/dev/null || :' EXIT
+scratch_dir w
 export AVRA_PROGRAM_NET=0
 unset AVRA_MACHINE_STORE AVRA_MACHINE_STORE_DIR
 fail() { echo "std_answers_checkout_witness: $*"; exit 1; }

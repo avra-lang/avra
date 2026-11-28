@@ -5,13 +5,13 @@
 # one of them — values the validator refuses and passes, by turns — the warm build says and exits
 # what a cold build of the same source does.
 #   sh tools/witness_validator_upstream_const.sh [compiler]   (default build/avra-try)
+. "$(dirname "$0")/lib/scratch.sh"
 set -u
 root=$(cd "$(dirname "$0")/.." && pwd)
 avra=${1:-build/avra-try}
 case $avra in /*) ;; *) avra="$root/$avra" ;; esac
 [ -x "$avra" ] || { echo "witness_validator_upstream_const: no compiler at $avra" >&2; exit 1; }
-tmp=$(mktemp -d)
-trap 'find "$tmp" -delete' EXIT
+scratch_dir tmp
 # a store is copied, counted or emptied here between builds, so each build saves its own before it answers
 export AVRA_STORE_KEPT_HERE=1
 pkg="$tmp/warm"

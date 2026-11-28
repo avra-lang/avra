@@ -27,6 +27,7 @@
 # vacuously:
 #   one store · one open · kill mid-append · two writers · compaction contended ·
 #   a flipped byte · another compiler · a claim conflict
+. "$(dirname "$0")/lib/scratch.sh"
 set -u
 . "$(dirname "$0")/lib/attack.sh"
 # THE HARNESS HOLDS THE SLOT: two writers and a contended compaction need two
@@ -160,7 +161,7 @@ segs=$(ls "$(the_store)"/seg-*.log 2>/dev/null | wc -l | tr -d ' ')
 # into ONE machine store; both seal it. A third checkout's first check reads only
 # that store: it answers the oracle, derives nothing and sees nothing torn.
 say "machine store: two checkouts sealing one machine store at once leave it whole for a third"
-T=$(cd "$(mktemp -d)" && pwd -P)
+scratch_dir T; T=$(cd "$T" && pwd -P)
 for d in one/p two/deeper/p three/p; do mkdir -p "$T/$d" && cp -R $R/p/. "$T/$d/"; done
 # a run's words with its checkout spelled P, so two checkouts' answers compare
 as_p() { sed -e "s|$2|P|g" "$1"; }
@@ -411,7 +412,7 @@ done
 # hello at the same path in another tree, and the server's own tree edited down to that hello.
 # A file's kept use lines and its record's imports speak for the text they were read from, so
 # neither hello carries the scheduler the server's packages bring.
-adm=$(cd "$(mktemp -d)" && pwd -P)/admits # outside any checkout, as a fixture copied to a temp dir is
+scratch_dir adm; adm=$(cd "$adm" && pwd -P)/admits # outside any checkout, as a fixture copied to a temp dir is
 for side in srv hello edited; do
     mkdir -p $adm/$side/src
     printf '[package]\nname = "app-%s"\nversion = "0.1.0"\n' $side > $adm/$side/avra.toml

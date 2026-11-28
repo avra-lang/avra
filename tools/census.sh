@@ -19,6 +19,7 @@
 # is not a check that passed: no `rc:` line means the binary carried no
 # census, and the run exits 1 saying so.
 # A cold run clears the tree's `.avra-cache`; the machine store lives there too, or "cold" would read the machine's rows.
+. "$(dirname "$0")/lib/scratch.sh"
 export AVRA_CACHE_DIR="$(cd "$(dirname "$0")/.." && pwd)/.avra-cache"
 # a store is copied, counted or emptied here between builds, so each build saves its own before it answers
 export AVRA_STORE_KEPT_HERE=1
@@ -45,7 +46,7 @@ restore() {
         if [ -d "$d/.avra-cache$suffix" ]; then rm -rf "$d/.avra-cache"; mv "$d/.avra-cache$suffix" "$d/.avra-cache"; fi
     done
 }
-trap restore EXIT INT TERM
+scratch_also restore
 
 rm -rf "$stores"
 [ -d .avra-cache ] && mv .avra-cache "$stores"

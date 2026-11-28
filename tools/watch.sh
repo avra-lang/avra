@@ -47,6 +47,7 @@
 # walk matching on ppid attributes the reused pid's whole subtree to
 # the wrong root. `tree_pids` takes a `ps -eo pid=,pgid=` snapshot on
 # stdin so a hand-built one can prove this by construction.
+. "$(dirname "$0")/lib/scratch.sh"
 tree_pids() {
     awk -v root="$1" '$2 == root { print $1 }'
 }
@@ -155,8 +156,7 @@ self_test() {
     unset AVRA_WATCH_HELD
     here="$(cd "$(dirname "$0")" && pwd)"
     watch="$here/$(basename "$0")"
-    tmp="$(mktemp -d)"
-    trap 'rm -rf "$tmp"' EXIT
+    scratch_dir tmp
 
     lock1="$tmp/lock1"
     mkdir -p "$lock1"
@@ -428,7 +428,8 @@ echo $$ > "$qdir/$mine/pid"
 # `sleep`-loop orphan survived its own TERM). EXIT gets its own
 # cleanup-only trap; INT and TERM get the same cleanup AND an exit,
 # so a queued wait actually stops when told to.
-trap 'rm -rf "$qdir/$mine"' EXIT
+scratch_also 'rm -rf "$qdir/$mine"'
+# LICENSED scratch_law: the machine lock's own release and words before the exit
 trap 'rm -rf "$qdir/$mine"; echo "watch: signalled while queued (ticket $mine) — ticket dropped, exiting" >&2; exit 143' INT TERM
 # WHO HOLDS WHAT, so a caller told to wait sees the cost rather than
 # a bare ticket number. Scans every held slot that exists, not only
@@ -499,7 +500,8 @@ rm -rf "$qdir/$mine"
 # and unwatched — ONE HEAVY PROCESS AT A TIME held only as long as
 # nobody presses Ctrl-C. `pid` is unset until `"$@" &` runs below, so
 # the INT/TERM handler kills the tree only once there is one.
-trap 'rm -rf "$lock"' EXIT
+scratch_also 'rm -rf "$lock"'
+# LICENSED scratch_law: the machine lock's own release and words before the exit
 trap '[ -n "$pid" ] && tree_kill "$pid"; rm -rf "$lock"; echo "watch: signalled — the guarded tree was killed, the lock released" >&2; exit 143' INT TERM
 echo $$ > "$lock/pid"
 printf '%s\n' "$*" > "$lock/cmd"

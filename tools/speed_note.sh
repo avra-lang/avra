@@ -11,6 +11,7 @@
 #   sh tools/speed_note.sh compare <current> <main>  a markdown table; ::warning:: over 25%
 # A metric is `keeper.<name>` from `keepers: <name> Ns`, `suite.<pkg>` from
 # `<pkg> Ns` (the suites step), or `speed <name> <seconds>` written around a step.
+. "$(dirname "$0")/lib/scratch.sh"
 set -u
 FAIL=0
 ACCEPT=$(sh "$(dirname "$0")/pr_body.sh" | sed -n 's/^SPEED_ACCEPT: *//p' | head -n 1)
@@ -212,9 +213,7 @@ case "${1:-}" in
     --self-test)
         # hermetic: the fixtures name their own PR_BODY, never the run's PR
         PR_NUMBER=; export PR_NUMBER
-        d=$(mktemp -d)
-        trap 'find "$d" -delete' EXIT
-        trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
+        scratch_dir d
         printf 'speed.cpu-cli 100\nspeed.compiler 50\n' > "$d/cur"
         printf 'speed.cpu-cli 40\nspeed.compiler 49\n' > "$d/base"
         [ "$(PR_BODY= GITHUB_STEP_SUMMARY=/dev/null sh "$0" compare "$d/cur" "$d/base" >/dev/null 2>&1; echo $?)" = 1 ] || { echo "speed_note: a 2.5x slowdown did not fail"; exit 1; }

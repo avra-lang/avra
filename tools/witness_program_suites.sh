@@ -8,6 +8,7 @@
 #   then one `then` body edited and the suite tested warm: exactly one case lowered again, and the
 #     same stdout as the edited tree tested cold.
 #   sh tools/witness_program_suites.sh [compiler]   (default build/avra-try)
+. "$(dirname "$0")/lib/scratch.sh"
 set -u
 # a store is copied, counted or emptied here between builds, so each build saves its own before it answers
 export AVRA_STORE_KEPT_HERE=1
@@ -18,8 +19,7 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 avra=${1:-build/avra-try}
 case $avra in /*) ;; *) avra="$root/$avra" ;; esac
 [ -x "$avra" ] || { echo "witness_program_suites: no compiler at $avra" >&2; exit 1; }
-tmp=$(mktemp -d)
-trap 'find "$tmp" -delete' EXIT
+scratch_dir tmp
 failed=0
 missed() { echo "witness_program_suites: $1" >&2; failed=$((failed + 1)); }
 

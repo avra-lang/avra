@@ -13,6 +13,7 @@
 # FUZZ_HTTP_SECONDS (default 180) bounds the whole run; FUZZ_HTTP_SEED
 # (default: the day of the year) picks the mutants, and is printed so
 # a run is repeatable. A status is a verdict: 0 clean, 1 anything found.
+. "$(dirname "$0")/lib/scratch.sh"
 set -u
 cd "$(dirname "$0")/.."
 secs="${FUZZ_HTTP_SECONDS:-180}"
@@ -28,9 +29,8 @@ kept_n=0
 
 # A bounded child and its watchdog die with this driver, on any exit.
 pid= dog=
-trap 'for p in $pid $dog; do kill -9 "$p" 2> /dev/null; done' EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
+scratch_also 'for p in $pid $dog; do kill -9 "$p" 2> /dev/null; done'
+scratch_signals
 
 # A command under a wall-clock bound; a kill answers 137.
 bounded() {

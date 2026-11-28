@@ -4,12 +4,13 @@
 # process, interleaved round by round so load drift lands on all three
 # alike; the table is the median of the rounds, ns per payload.
 #   sh benchmarks/http/validate/run.sh [rounds]
+. "$(dirname "$0")/../../../tools/lib/scratch.sh"
 set -eu
 cd "$(dirname "$0")/../../.."
 rounds="${1:-5}"
 here=benchmarks/http/validate
 out="${TMPDIR:-/tmp}/validate-bench.$$"
-trap 'rm -f "$out"' EXIT
+scratch_also 'rm -f "$out"'
 
 build/avra build "$here" > /dev/null
 (cd "$here/rust" && cargo build --release --quiet)

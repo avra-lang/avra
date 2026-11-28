@@ -16,6 +16,7 @@
 #   sh tools/tool_witnesses.sh --self-test
 # A root other than the tree is `WITNESS_ROOT=<dir>`.
 
+. "$(dirname "$0")/lib/scratch.sh"
 root="${WITNESS_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 
 # The shapes that ANSWER --self-test (a tool that only calls another's is no witness).
@@ -87,8 +88,7 @@ run() {
 self_test() {
     # the fixtures prove the whole list, whatever share the caller asked for
     unset TOOL_WITNESS_SHARD TOOL_WITNESS_ELSEWHERE
-    t=$(mktemp -d) || exit 1
-    trap 'find "$t" -delete' EXIT
+    scratch_dir t
     mkdir -p "$t/tools"
     printf '# tool-witness: --self-test\n[ "$1" = --self-test ]\n' > "$t/tools/a.sh"
     printf 'exit 0\n' > "$t/tools/witness_b.sh"
