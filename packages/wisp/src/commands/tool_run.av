@@ -1,0 +1,32 @@
+//! A tool run from a verb: in a directory, over the invoker's environment, judged by its exit — and
+//! the words a run said, for the refusal that stands for it.
+use @std.process.{Output, ProcessError, cmd, inherited, tool}
+
+export fn git(dir: string, words: List<string>) -> Result<Output, ProcessError> { run_in(dir, "git", words) }
+
+/// A tool run in `dir` (the invoker's when empty), judged by its exit.
+export fn run_in(dir: string, name: string, words: List<string>) -> Result<Output, ProcessError> {
+    (cmd(tool(name)?, words) with { cwd: if dir == "" { null } else { dir }, env: inherited() })
+        .run()
+}
+
+export fn ran_clean(o: Result<Output, ProcessError>) -> bool {
+    match o { .Ok(_) -> true, .Err(_) -> false }
+}
+
+/// A run's words, or the refusal that stands for it.
+export fn run_said(o: Result<Output, ProcessError>) -> Result<Output, string> {
+    match o { .Ok(out) -> out, .Err(_) -> { fail run_words(o) } }
+}
+
+/// What a run said, both streams, whether it ran clean or not.
+export fn run_words(o: Result<Output, ProcessError>) -> string {
+    match o {
+        .Ok(out) -> out.stdout + out.stderr,
+        .Err(e) -> match e {
+            .Failed(_, out) -> out.stdout + out.stderr,
+            .TimedOut(_, out) or .TooMuch(_, _, out) -> out.stdout + out.stderr + e.describe().message,
+            rest -> e.describe().message,
+        },
+    }
+}

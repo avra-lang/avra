@@ -285,7 +285,7 @@ export fn check_ladder(workflow: string, make: string?, others: Map<string, stri
     let read = if action.contains("steps.rungs.outputs.list") && action.contains("tools/rungs.sh") { [] } else { ["the compiler action does not read the run's rungs (tools/rungs.sh)"] }
     let handed = if (compiler_step(action) ?? "").contains("make -s compiler RUNGS=") { [] } else { ["the compiler step does not hand the run's rungs to `make compiler RUNGS=…`"] }
     let laddered = if make == null ||
-        (make_targets(make!).get("compiler") ?? "").contains("tools/ladder.sh") { [] } else { ["`make compiler` does not build RUNGS through tools/ladder.sh"] }
+        (make_targets(make!).get("compiler") ?? "").contains("./wisp --compiler build/avra ladder ") { [] } else { [unnamed_ladder()] }
     let others_rungless = flatten_texts(
         [rungless(n, others.get(n) ?? "") for n in sorted_distinct(others.keys())],
     )
@@ -294,7 +294,7 @@ export fn check_ladder(workflow: string, make: string?, others: Map<string, stri
     let exposed = if (outputs_of(prepare) ?? "").contains("rungs:") { [] } else { ["`prepare` does not expose `rungs` as an output"] }
     held(
         flatten_texts([called, read, handed, laddered, others_rungless, spoken, exposed]),
-        "ladder: rungs are read, built through tools/ladder.sh before HEAD, and the seed check says it skipped",
+        "ladder: rungs are read, built through ./wisp ladder before HEAD, and the seed check says it skipped",
     )
 }
 
@@ -753,6 +753,8 @@ fn builds_before_published() -> string { "the Sprite's prep builds before it tri
 fn merge_base_unseeded() -> string {
     "a merge-base compiler is not built through `make compiler`, whose seed fallback is the one that reads a tree it cannot"
 }
+
+fn unnamed_ladder() -> string { "`make compiler` does not build RUNGS through `./wisp --compiler build/avra ladder` — a bootstrap tool names its compiler" }
 
 fn rungless_build(name: string, n: int) -> string { "${name}:${n} builds the compiler with no RUNGS — a laddered tree fails there" }
 

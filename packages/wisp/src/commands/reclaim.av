@@ -1,0 +1,200 @@
+//! `wisp reclaim [--now] [--dry-run] [--floor=<gigabytes>] [--repo=<repo>]` — retires worktrees when
+//! the disk runs low. The branch is always kept; only the checkout goes.
+//!
+//! A worktree is retired only when ALL hold: its branch is merged into main; `git status --porcelain`
+//! is empty; no process has its directory inside it (`lsof`, or the kernel's `/proc`); and it is not
+//! main's checkout or the repository's own tree. A detached worktree has no branch to keep, so it is
+//! never retired. Runs when free space is under `--floor` gigabytes, or always with `--now`;
+//! `--dry-run` says what it would retire and moves nothing.
+use @std.cli.{CliResult, Runnable, argv, command, flag}
+use @std.config.{flags}
+use @std.config.cli.{options_of, settings_of}
+use @std.io.{is_dir, list_dir}
+use @std.text.{parse_int}
+use @std.meta.{derive}
+use @std.validate.{Decode}
+
+/// Reclaim's options, each spelled `--name=value`.
+@derive(Decode)
+export component ReclaimFlags {
+    /// Free gigabytes on the repository's volume under which worktrees are retired.
+    floor: int = 20
+    /// The repository whose worktrees are judged. Empty is the one this runs in.
+    repo: string = ""
+    flags argv()
+}
+
+/// What the line asked beside its options: retire at any free space, and only say what would go.
+export type Asked = { now: bool = false, dry: bool = false }
+
+/// A linked tree as git lists it: its path, and its branch ("" when detached).
+export type Worktree = { path: string, branch: string }
+
+/// What a judgement reads beside the tree: the repository's own tree, main's checkout, and every
+/// process's directory.
+type Around = { own: string, main: string, cwds: List<string> }
+
+type ReclaimCmd = {}
+
+impl Runnable for ReclaimCmd {
+    fn run(args: CliResult) -> int {
+        let at = match settings_of<ReclaimFlags>() {
+            .Ok(l) -> l.value,
+            .Err(u) -> {
+                eprintln(u.report())
+                return 2
+            },
+        }
+        match reclaimed(at, Asked { now: args.has_flag("now"), dry: args.has_flag("dry_run") }) {
+            .Ok(lines) -> {
+                for l in lines { println(l) }
+                0
+            },
+            .Err(why) -> {
+                eprintln(why)
+                1
+            },
+        }
+    }
+}
+
+export command reclaim {
+    description: "Retire merged, clean, idle worktrees when the disk runs low; the branch is always kept"
+    flag now { description: "retire at any free space" }
+    flag dry_run { description: "say what would be retired and retire nothing" }
+    options: options_of<ReclaimFlags>()
+    run: ReclaimCmd {}
+}
+
+/// Every line reclaim says, each tree retired or named on the way.
+export fn reclaimed(at: ReclaimFlags, asked: Asked) -> Result<List<string>, string> {
+    if !ran_clean(git(at.repo, ["rev-parse", "--git-dir"])) { fail reclaim_no_repo() }
+    if asked.now { return swept(at.repo, asked.dry) }
+    let free = free_gb(at.repo)?
+    if free >= at.floor { return [reclaim_enough(free, at.floor)] }
+    [reclaim_low(free, at.floor)].concat(swept(at.repo, asked.dry)?)
+}
+
+/// Each tree the rules let go, retired or named, and the count.
+fn swept(repo: string, dry: bool) -> Result<List<string>, string> {
+    let listed = worktrees_of((run_said(git(repo, ["worktree", "list", "--porcelain"]))?).stdout)
+    let trees = [w with { path: real(w.path) } for w in listed]
+    let around = Around {
+        own: trees.first()?.path ?? "",
+        main: trees.find(it.branch == "main")?.path ?? "",
+        cwds: cwds()?,
+    }
+    let told = [retire(repo, w, dry) for w in trees if w.path != "" && kept_because(repo, w, around) == null]
+    let lines = [t! for t in told if t != null]
+    lines
+        .concat(
+            [
+                reclaim_looked(
+                    trees.length,
+                    if dry { "would retire" } else { "retired" },
+                    lines.length,
+                ),
+            ],
+        )
+}
+
+/// A tree retired, or named under `--dry-run`: the line said, null when git refused the removal.
+fn retire(repo: string, w: Worktree, dry: bool) -> string? {
+    if dry { return "would retire ${w.path} (${w.branch})" }
+    if ran_clean(git(repo, ["worktree", "remove", w.path])) { "retired ${w.path} (${w.branch})" } else { null }
+}
+
+/// Why `w` stays, or null when it may go.
+fn kept_because(repo: string, w: Worktree, s: Around) -> string? {
+    if w.branch == "" { return "detached" }
+    if w.path == s.own { return "the repo's own tree" }
+    if w.path == s.main { return "main's checkout" }
+    if !ran_clean(
+        git(repo, ["merge-base", "--is-ancestor", "refs/heads/${w.branch}", "refs/heads/main"]),
+    ) { return "unmerged" }
+    let status = match git(w.path, ["status", "--porcelain"]) {
+        .Ok(o) -> o.stdout,
+        .Err(_) -> "unreadable",
+    }
+    if status != "" { return "dirty" }
+    if s.cwds.any((c: string) -> inside(c, w.path)) { return "busy" }
+    null
+}
+
+/// One tree per stanza of `git worktree list --porcelain`, each path once; a detached tree's branch
+/// is "".
+export fn worktrees_of(porcelain: string) -> List<Worktree> {
+    let trees = [tree_of(stanza.trim().split("\n")) for stanza in porcelain.split("\n\n") if stanza.trim() != ""]
+    [w for i, w in trees if !trees.slice(0, i).any(it.path == w.path)]
+}
+
+fn tree_of(lines: List<string>) -> Worktree { Worktree { path: after(lines, "worktree "), branch: after(lines, "branch refs/heads/") } }
+
+/// The text after `prefix` on the first line that begins with it, "" when none does.
+fn after(lines: List<string>, prefix: string) -> string {
+    [l.substring(prefix.length, l.length) for l in lines if l.starts_with(prefix)].first() ?? ""
+}
+
+/// Whether `path` is `tree` or lies below it.
+export fn inside(path: string, tree: string) -> bool { path == tree || path.starts_with("${tree}/") }
+
+/// Free gigabytes on the volume holding the repository.
+fn free_gb(repo: string) -> Result<int, string> {
+    let rows = (run_said(run_in(repo, "df", ["-k", "."]))?).stdout.trim().split("\n")
+    let cells = [c for c in (rows.last() ?? "").split(" ") if c != ""]
+    let kb? = parse_int(cells.slice(3, 4).first() ?? "") else { fail reclaim_no_df() }
+    kb / 1048576
+}
+
+/// Every process's directory: `lsof` where it stands, the kernel's own table where it does not. A
+/// machine with neither retires nothing. `lsof` exits 1 when some process could not be read, and what
+/// it did read stands.
+fn cwds() -> Result<List<string>, string> {
+    match run_in("", "lsof", ["-d", "cwd", "-Fn"]) {
+        .Ok(o) -> named_lines(o.stdout),
+        .Err(e) -> match e {
+            .NotFound(_, _) -> proc_cwds(),
+            .Failed(_, o) -> named_lines(o.stdout),
+            rest -> { fail reclaim_no_cwds() },
+        },
+    }
+}
+
+/// `lsof -Fn`'s name lines, each path once.
+fn named_lines(text: string) -> List<string> { [l.substring(1, l.length) for l in text.split("\n") if l.starts_with("n")] }
+
+/// A process may end mid-walk or stand unreadable: neither is a failure.
+fn proc_cwds() -> Result<List<string>, string> {
+    if !is_dir("/proc/self") { fail reclaim_no_cwds() }
+    let pids = [n for n in list_dir("/proc") catch [] if parse_int(n) != null]
+    let links? = run_out("readlink", ["/proc/${p}/cwd" for p in pids]) else { fail reclaim_no_cwds() }
+    [l for l in links.split("\n") if l != ""]
+}
+
+/// What a tool printed whatever its exit, null when it never ran.
+fn run_out(name: string, words: List<string>) -> string? {
+    match run_in("", name, words) {
+        .Ok(o) -> o.stdout,
+        .Err(e) -> match e { .Failed(_, o) -> o.stdout, rest -> null },
+    }
+}
+
+/// `path` as the host resolves it, "" when it is not there.
+fn real(path: string) -> string {
+    if path == "" { return "" }
+    match run_in("", "realpath", ["--", path]) { .Ok(o) -> o.stdout.trim(), .Err(_) -> "" }
+}
+
+// voices
+
+fn reclaim_no_repo() -> string { "reclaim: not inside a git repo" }
+
+fn reclaim_enough(free: int, floor: int) -> string { "reclaim: ${free} GB free, threshold ${floor} GB — nothing to do" }
+
+fn reclaim_low(free: int, floor: int) -> string { "reclaim: ${free} GB free, under ${floor} GB" }
+
+fn reclaim_looked(n: int, verb: string, gone: int) -> string { "reclaim: looked at ${n} worktree(s), ${verb} ${gone}" }
+
+fn reclaim_no_df() -> string { "reclaim: `df` did not say how much is free here" }
+
+fn reclaim_no_cwds() -> string { "reclaim: no way to read a process's directory here — retiring nothing" }

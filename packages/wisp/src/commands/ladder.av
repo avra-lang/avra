@@ -1,0 +1,290 @@
+//! `wisp ladder <compiler> <rung>… [--base=<ref>] [--dir=<dir>] [--repo=<repo>] [--seconds=<n>]` —
+//! BUILDS A LADDER: each rung's tree, in a worktree of its own, with the compiler of the rung before
+//! it, and prints the last product's path. The one definition CI's `make compiler` calls.
+//! `wisp ladder_clean [--dir=<dir>] [--repo=<repo>]` removes a ladder's scratch, which its caller does
+//! once it has copied the product.
+//!
+//! A rung's compiler is a REAL generation (`make avra` run by the previous rung's product), so a
+//! compiler is never asked to read what only a newer one can. A rung that does not build names itself
+//! and its log; nothing falls back to the seed, which cannot read a rung either. The whole ladder is
+//! bounded by `--seconds`, each rung by what is left. A ladder that FAILS removes its own scratch; one
+//! that builds leaves it for its caller. A rung's tree links its own runtime, so a climb holds only
+//! while that runtime defines every symbol the compiler before it calls: a slice that removes a runtime
+//! symbol owes a seed refresh (its receipt is `make bootstrap`), and no ladder climbs across it.
+//!
+//! A RUNG IS REPLAYED ON THE TREE UNDER BUILD, NEVER ON ITS OWN. With `--base` (origin/main for a pull
+//! request, the commit before for main's own push), the rung's tree is that base with the rung merged
+//! in, so a rung whose branch began before the base moved is read with the base's sources. A rung the
+//! base already holds is no rung: the starting compiler, built from the base, already reads it.
+use @std.cli.{CliResult, Runnable, arg, argv, command}
+use @std.config.{flags}
+use @std.config.cli.{options_of, settings_of}
+use @std.io.{append_bytes, is_dir, is_file, list_dir, make_dirs, remove, write_text}
+use @std.meta.{derive}
+use @std.process.{Exit, Output, ProcessError, cmd, inherited, tool}
+use @std.time.{now_ms, secs}
+use @std.validate.{Decode}
+
+/// A ladder's options, each spelled `--name=value`.
+@derive(Decode)
+export component LadderFlags {
+    /// The base each rung is merged onto; a rung it holds is skipped. Empty builds each rung's own tree.
+    base: string = ""
+    /// Where the rungs' worktrees and logs stand.
+    dir: string = "/tmp/avra-ladder"
+    /// The repository holding the rungs and the base, for a tree with no `.git`. Empty is this one.
+    repo: string = ""
+    /// The whole ladder's bound in seconds; each rung is bounded by what is left.
+    seconds: int = 900
+    /// Where each rung built is kept under its builder, its tree and the toolchain, and taken up again
+    /// instead of built. Empty keeps nothing.
+    cache: string = ""
+    flags argv()
+}
+
+type LadderCmd = {}
+
+impl Runnable for LadderCmd {
+    fn run(args: CliResult) -> int {
+        let at? = flags_read() else { return 2 }
+        match climbed(args.arg("compiler"), args.args_of("rungs"), at) {
+            .Ok(c) -> {
+                println(c.product)
+                0
+            },
+            .Err(why) -> {
+                eprintln(why)
+                1
+            },
+        }
+    }
+}
+
+type LadderCleanCmd = {}
+
+impl Runnable for LadderCleanCmd {
+    fn run(_args: CliResult) -> int {
+        let at? = flags_read() else { return 2 }
+        match cleaned(at) {
+            .Ok(_) -> 0,
+            .Err(why) -> {
+                eprintln(why)
+                1
+            },
+        }
+    }
+}
+
+export command ladder {
+    description: "Build each rung with the compiler of the rung before it and print the last product's path"
+    arg compiler {
+        description: "the compiler the first rung is built with"
+        required: true
+    }
+    arg rungs {
+        description: "the rung commits, oldest first"
+        variadic: true
+    }
+    options: options_of<LadderFlags>()
+    run: LadderCmd {}
+}
+
+export command ladder_clean {
+    description: "Remove a ladder's scratch: each rung's worktree and its logs"
+    options: options_of<LadderFlags>()
+    run: LadderCleanCmd {}
+}
+
+/// The line's options, or null once their issues are said.
+fn flags_read() -> LadderFlags? {
+    match settings_of<LadderFlags>() {
+        .Ok(l) -> l.value,
+        .Err(u) -> {
+            eprintln(u.report())
+            null
+        },
+    }
+}
+
+/// The last rung's compiler, each rung built by the one before, starting from `start`.
+/// A ladder that fails leaves no scratch behind.
+export fn climbed(start: string, rungs: List<string>, at: LadderFlags) -> Result<Climb, string> {
+    match climb(start, rungs, at) {
+        .Ok(c) -> c,
+        .Err(why) -> {
+            let _ = cleaned(at)
+            fail why
+        },
+    }
+}
+
+fn climb(start: string, rungs: List<string>, at: LadderFlags) -> Result<Climb, string> {
+    make_dirs(at.dir) catch { fail ladder_no_dir(at.dir) }
+    let dir = absolute(at.dir)?
+    let began = now_ms()
+    mut c = Climb { product: absolute(start)? }
+    for i, r in rungs {
+        let left = at.seconds - (now_ms() - began) / 1000
+        if left <= 0 { fail ladder_capped(at.seconds, i + 1) }
+        c = c.after(rung_built(i + 1, r, c.product, left, dir, at)?)
+    }
+    c
+}
+
+/// A ladder's product, and how many of its rungs were built and how many taken up from the cache.
+export type Climb = { product: string, built: int = 0, kept: int = 0 }
+
+impl Climb {
+    /// The climb once one more rung ended so.
+    fn after(e: RungEnd) -> Climb {
+        match e {
+            .Held -> self,
+            .Kept(at) -> self with { product: at, kept: self.kept + 1 },
+            .Built(at) -> self with { product: at, built: self.built + 1 },
+        }
+    }
+}
+
+/// How a rung ended: the base already held it, its product was taken up from the cache, or it was built.
+enum RungEnd {
+    Held
+    Kept(at: string)
+    Built(at: string)
+}
+
+/// One rung built with `cur`: its product, null when the base already holds it.
+fn rung_built(n: int, r: string, cur: string, left: int, dir: string, at: LadderFlags) -> Result<
+    RungEnd,
+    string,
+> {
+    let wt = "${dir}/rung-${n}"
+    if at.base != "" {
+        if !ran_clean(git(at.repo, ["merge-base", at.base, r])) { let _ = ran_clean(git(at.repo, ["fetch", "-q", "--deepen=300", "origin"])) }
+        if ran_clean(git(at.repo, ["merge-base", "--is-ancestor", r, at.base])) {
+            eprintln(ladder_held(n, short(at.repo, r)))
+            return RungEnd.Held
+        }
+        run_said(git(at.repo, ["worktree", "add", "-q", "--detach", wt, at.base]))?
+        let merged = git(
+            wt,
+            [
+                "-c",
+                "user.name=ladder",
+                "-c",
+                "user.email=ladder@avra.invalid",
+                "merge",
+                "-q",
+                "--no-edit",
+                r,
+            ],
+        )
+        if !ran_clean(merged) {
+            eprintln(run_words(merged))
+            fail ladder_no_merge(n, short(at.repo, at.base))
+        }
+    } else {
+        run_said(git(at.repo, ["worktree", "add", "-q", "--detach", wt, r]))?
+    }
+    make_dirs("${wt}/build") catch { fail ladder_no_dir("${wt}/build") }
+    run_said(run_in("", "cp", ["--", cur, "${wt}/build/avra"]))?
+    eprintln(ladder_rung(n, short(at.repo, r), why_of(at.repo, r)))
+    let key = if at.cache == "" { "" } else { rung_key(cur, wt)? }
+    if key != "" && is_file("${at.cache}/${key}/avra") {
+        run_said(run_in("", "cp", ["--", "${at.cache}/${key}/avra", "${wt}/build/avra"]))?
+        used(at.cache, key)
+        eprintln(ladder_kept(n, key))
+        return RungEnd.Kept("${wt}/build/avra")
+    }
+    let s = now_ms()
+    let make = tool("make") catch { fail ladder_no_make() }
+    let o = (cmd(make, ["-s", "avra"]) with { cwd: wt, env: inherited().with_var("AVRA_STORE_KEPT_HERE", "1"), timeout: secs(left) })
+        .run()
+    let _ = write_text("${wt}/ladder.log", run_words(o))
+    if !ran_clean(o) {
+        eprintln(run_words(o))
+        fail ladder_unbuilt(n)
+    }
+    eprintln(ladder_took(n, (now_ms() - s) / 1000))
+    if key != "" { kept_rung(at.cache, key, "${wt}/build/avra")? }
+    RungEnd.Built("${wt}/build/avra")
+}
+
+/// A RUNG'S PRODUCT IS ITS BUILDER'S BYTES, ITS TREE AND THE TOOLCHAIN, and nothing else: the key it is
+/// kept under, spelled as every ladder before spelled it, so what they kept is taken up.
+fn rung_key(builder: string, wt: string) -> Result<string, string> {
+    let line = "printf '%s\\n%s\\n%s\\n' \"\$(sha256sum < \"\$1\" | cut -d' ' -f1)\" \"\$(git -C \"\$2\" rev-parse 'HEAD^{tree}')\" \"\$(uname -m) \${LLVM_PREFIX:-} \$(cc --version 2>/dev/null | head -n 1)\" | sha256sum | cut -c1-32"
+    (run_said(run_in("", "sh", ["-c", line, "key", builder, wt]))?).stdout.trim()
+}
+
+/// A rung's product kept under its key, whole or not at all.
+fn kept_rung(cache: string, key: string, product: string) -> Result<bool, string> {
+    make_dirs("${cache}/${key}") catch { fail ladder_no_dir("${cache}/${key}") }
+    run_said(run_in("", "cp", ["--", product, "${cache}/${key}/avra.next"]))?
+    run_said(run_in("", "mv", ["--", "${cache}/${key}/avra.next", "${cache}/${key}/avra"]))?
+    used(cache, key)
+    true
+}
+
+/// A key this ladder read or wrote, named in the cache's `.used`, so the cache's keeper keeps it.
+fn used(cache: string, key: string) { let _ = append_bytes("${cache}/.used", "${key}\n".bytes()) }
+
+/// A ladder's scratch gone: each rung's worktree, its logs, the directory.
+export fn cleaned(at: LadderFlags) -> Result<bool, string> {
+    if !is_dir(at.dir) { return false }
+    let names = list_dir(at.dir) catch { fail ladder_no_dir(at.dir) }
+    for name in names {
+        let path = "${at.dir}/${name}"
+        if is_dir(path) { let _ = git(at.repo, ["worktree", "remove", "--force", path]) } else { let _ = remove(path) }
+    }
+    let _ = git(at.repo, ["worktree", "prune"])
+    let gone = remove(at.dir)
+    if gone is .Err { fail ladder_left(at.dir) }
+    true
+}
+
+/// A rung's reason: its `Rung:` trailer.
+fn why_of(repo: string, r: string) -> string {
+    let body = (git(repo, ["log", "-1", "--format=%B", r]) catch Output {
+        stdout: "",
+        stderr: "",
+        truncated: false,
+    })
+        .stdout
+    let lines = [l.substring(6, l.length) for l in body.split("\n") if l.starts_with("Rung: ")]
+    lines.first() ?? ""
+}
+
+fn short(repo: string, r: string) -> string {
+    (git(repo, ["log", "-1", "--format=%h", r]) catch Output {
+        stdout: r,
+        stderr: "",
+        truncated: false,
+    })
+        .stdout
+        .trim()
+}
+
+/// `path` as the host resolves it.
+fn absolute(path: string) -> Result<string, string> { (run_said(run_in("", "realpath", ["--", path]))?).stdout.trim() }
+
+// voices
+
+fn ladder_no_dir(dir: string) -> string { "ladder: ${dir} cannot be made or read" }
+
+fn ladder_capped(seconds: int, n: int) -> string { "ladder: the ${seconds} s bound passed before rung ${n}" }
+
+fn ladder_held(n: int, at: string) -> string { "ladder: rung ${n} at ${at} is already in the base — no replay" }
+
+fn ladder_no_merge(n: int, base: string) -> string { "ladder: rung ${n} does not merge onto the base ${base}" }
+
+fn ladder_rung(n: int, at: string, why: string) -> string { "ladder: rung ${n} at ${at} — ${why}" }
+
+fn ladder_no_make() -> string { "ladder: no `make` stands on this machine's PATH" }
+
+fn ladder_unbuilt(n: int) -> string { "ladder: rung ${n} did not build with the compiler of the rung before it (see its log above)" }
+
+fn ladder_kept(n: int, key: string) -> string { "ladder: rung ${n} kept — its builder and its tree are the ones a ladder built before (${key})" }
+
+fn ladder_took(n: int, s: int) -> string { "ladder: rung ${n} built in ${s} s" }
+
+fn ladder_left(dir: string) -> string { "ladder: ${dir} still holds what a worktree removal left" }
