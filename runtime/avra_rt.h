@@ -147,6 +147,7 @@ extern const char avra_rt_held_avra_map_w_remove_at __asm__(AVRA_RT_LABEL(avra_m
 extern const char avra_rt_held_avra_slot_unique __asm__(AVRA_RT_LABEL(avra_slot_unique));
 extern const char avra_rt_held_avra_owned_slot_unique __asm__(AVRA_RT_LABEL(avra_owned_slot_unique));
 extern const char avra_rt_held_avra_owned_slot_unshared __asm__(AVRA_RT_LABEL(avra_owned_slot_unshared));
+extern const char avra_rt_held_avra_slot_taken __asm__(AVRA_RT_LABEL(avra_slot_taken));
 extern const char avra_rt_held_avra_slot_set __asm__(AVRA_RT_LABEL(avra_slot_set));
 extern const char avra_rt_held_avra_slot_put __asm__(AVRA_RT_LABEL(avra_slot_put));
 extern const char avra_rt_held_avra_slot_put_owned __asm__(AVRA_RT_LABEL(avra_slot_put_owned));
@@ -468,6 +469,7 @@ __attribute__((used)) static const void* const avra_rt_held[] = {
     &avra_rt_held_avra_slot_unique,
     &avra_rt_held_avra_owned_slot_unique,
     &avra_rt_held_avra_owned_slot_unshared,
+    &avra_rt_held_avra_slot_taken,
     &avra_rt_held_avra_slot_set,
     &avra_rt_held_avra_slot_put,
     &avra_rt_held_avra_slot_put_owned,
@@ -875,6 +877,8 @@ _Static_assert(__builtin_classify_type(avra_owned_slot_unique(AVRA_RT_PTR, AVRA_
     "avra_owned_slot_unique: its row answers ptr, so its C body answers a pointer");
 _Static_assert(__builtin_classify_type(avra_owned_slot_unshared(AVRA_RT_PTR, AVRA_RT_I64)) == AVRA_RT_POINTER,
     "avra_owned_slot_unshared: its row answers ptr, so its C body answers a pointer");
+_Static_assert(__builtin_classify_type(avra_slot_taken(AVRA_RT_PTR, AVRA_RT_I64)) == AVRA_RT_POINTER,
+    "avra_slot_taken: its row answers ptr, so its C body answers a pointer");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_slot_set(AVRA_RT_PTR, AVRA_RT_I64, AVRA_RT_I64)), void),
     "avra_slot_set: its row answers void, so its C body answers void");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_slot_put(AVRA_RT_PTR, AVRA_RT_I64, AVRA_RT_I64)), void),
