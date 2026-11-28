@@ -85,8 +85,12 @@ export enum PackDecline {
 /// Why a value took a count of its own where a move at its last use would take none.
 @derive(Saved)
 export enum MoveDecline {
-    /// Its last reads stand in sibling arms of one region, so each arm's read leaves another standing.
-    SiblingArms
+    /// Its last reads stand in sibling arms of a region a loop runs again, and the next turn reads it.
+    LoopCarried
+    /// It is a parameter, borrowed from the caller: the arm that keeps it takes a count of its own.
+    Borrowed
+    /// An arm yields it, or a view riding it, so the scope holds it past the region.
+    YieldedView
 }
 
 /// Why a borrowed read took its owned twin.
@@ -169,7 +173,9 @@ impl Declined {
                 .CarryingEnum -> "the element is an enum whose variants carry payloads",
             },
             .Move(why) -> match why {
-                .SiblingArms -> "the value's last reads stand in sibling arms, so each arm's read leaves another standing",
+                .LoopCarried -> "a loop runs the region again, and its next turn reads the value",
+                .Borrowed -> "the value is a parameter, borrowed from the caller, so the arm that keeps it takes a count of its own",
+                .YieldedView -> "an arm yields the value or a view riding it, so the scope holds it past the region",
             },
             .Borrow(why) -> match why {
                 .CalleeMayWrite -> "a call the borrow is read across may write a cell, though it is handed only scalars",

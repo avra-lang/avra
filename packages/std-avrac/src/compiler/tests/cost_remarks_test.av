@@ -101,6 +101,30 @@ spec "the cost remarks of a body" {
             )
                 .is_empty()
         }
+        then "a value a loop carries into two arms' pushes declines as the loop's" {
+            let said = said_by(
+                "fn spread(names: List<string>, name: string) -> int {\n    mut out: List<string> = []\n    mut aside: List<string> = []\n    let held = name + \"!\"\n    for n in names {\n        if n == name { out.push(held) } else { aside.push(held) }\n    }\n    out.length + aside.length\n}\nspread([\"x\"], \"y\")",
+                "spread",
+                "move at last use",
+            )
+            said.length == 2 && said.all(it.contains("a loop runs the region again"))
+        }
+        then "a parameter pushed in two arms declines as borrowed" {
+            let said = said_by(
+                "fn split(held: string, early: bool) -> int {\n    mut out: List<string> = []\n    mut aside: List<string> = []\n    if early { out.push(held) } else { aside.push(held) }\n    out.length + aside.length\n}\nsplit(\"y\", true)",
+                "split",
+                "move at last use",
+            )
+            said.length == 2 && said.all(it.contains("borrowed from the caller"))
+        }
+        then "a subject one arm yields a view of and another stores declines as yielded" {
+            let said = said_by(
+                "enum Shape {\n    Named(string)\n    Plain(string)\n}\nfn kept(n: int) -> string {\n    mut held = Shape.Plain(\"z\")\n    let s = if n > 0 { Shape.Named(\"n\${n}\") } else { Shape.Plain(\"p\") }\n    let got = match s {\n        .Named(name) -> name,\n        .Plain(_) -> {\n            held = s\n            \"plain\"\n        },\n    }\n    match held { .Named(x) -> x, .Plain(y) -> \"\${got}\${y}\" }\n}\nkept(1)\n",
+                "kept",
+                "move at last use",
+            )
+            said.length == 1 && said.all(it.contains("an arm yields the value or a view riding it"))
+        }
         then "a push in an arm that returns moves, so nothing declines" {
             said_by(
                 filing(

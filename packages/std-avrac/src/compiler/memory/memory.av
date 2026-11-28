@@ -11,6 +11,7 @@
 //! lands here later as a strategy, touching neither lowering nor the
 //! backend.
 use core.settings.{avrac_settings}
+use core.debug.{qtrace}
 use core.{
     Ins,
     Layout,
@@ -1507,19 +1508,56 @@ impl Lives {
     fn ends_within(r: Reg, at: int, close: int, taken: bool) -> bool {
         if taken {
             return (at + 1..close).any(reads_any(self.ins[it], [r])) &&
-                self.arm_closes(self.path_end(r, close))
+                self.arm_closes(self.arm_path_end(r, close))
         }
         let dies = self.death[r.index]
         dies > at && dies < close && level_span(self.ins, self.defs[r.index], at)
     }
 
     /// Whether `r`, taken by an open region and owned by the arm `at` stands in, is read there for the
-    /// last time on that path: read once at `at`, and unread from there to the arm's close.
+    /// last time on that path: read once at `at`, and unread from there, out through the blocks it
+    /// stands in, to the close of the very arm whose scope holds it.
     fn dies_in_arm(open_scopes: Stack<Scope>, r: Reg, at: int) -> bool {
-        owned_top(open_scopes, r) &&
+        let stop? = self.path_from(r, at, true) else { return false }
+        self.arm_closes(stop.at) &&
+            holder_of(open_scopes, r) == open_scopes.depth() - 1 - stop.out &&
             self.taking.get().any((took: List<Reg>) -> took.any(same_reg(it, r))) &&
-            [x for x in reads_of(self.ins[at]) if same_reg(x, r)].length == 1 &&
-            self.arm_closes(self.path_end(r, at))
+            [x for x in reads_of(self.ins[at]) if same_reg(x, r)].length == 1
+    }
+
+    /// Why no region takes `r`, whose last reads stand in sibling arms past `at`: it is a parameter, a
+    /// loop open at `at` runs again past its definition, or a region holding `at` yields it or a view
+    /// riding it.
+    fn sibling_decline(r: Reg, at: int) -> MoveDecline? {
+        let def = self.defs[r.index]
+        if def < 0 { return MoveDecline.Borrowed }
+        if loops_between(self.ins, def, at) > 0 { return MoveDecline.LoopCarried }
+        if self
+            .openers(def, at)
+            .any(
+                (k: int) -> self
+                    .yields_ride(self.region_gives(k, region_exit(self.ins, k)), r, region_exit(self.ins, k)),
+            ) {
+            return MoveDecline.YieldedView
+        }
+        null
+    }
+
+    /// The regions holding `at` that open past `from`, each by its opening.
+    fn openers(from: int, at: int) -> List<int> {
+        mut out: List<int> = []
+        mut depth = 0
+        mut k = at - 1
+        while k > from {
+            let i = self.ins[k]
+            if closes(i) { depth = depth + 1 }
+            if opens(i) {
+                if depth == 0 && opens_region(i) { out.push(k) }
+                if depth > 0 { depth = depth - 1 }
+            }
+            k = k - 1
+        }
+        out
     }
 
     /// Whether a path's stop `k` is an arm's close.
@@ -1586,7 +1624,7 @@ impl Lives {
     /// Whether `r`'s last reads at and past `at` stand in sibling arms of one region: the arm `at`
     /// stands in closes with no read of it, and nothing past the region's close reads it.
     fn last_in_siblings(r: Reg, at: int) -> bool {
-        let k? = self.path_end(r, at) else { return false }
+        let k? = self.arm_path_end(r, at) else { return false }
         let close = match self.ins[k] {
             .RegionEnd(_, _) -> k,
             .ArmEnd(_) -> region_exit(self.ins, k),
@@ -1599,19 +1637,31 @@ impl Lives {
     /// the first `FnExit`, close or turn there. Absent when a read comes first, when a view is read at
     /// `at` itself, when a jump nested on the way leaves a loop the path stood in, or when nothing
     /// stops it.
-    fn path_end(r: Reg, at: int) -> int? {
+    fn path_end(r: Reg, at: int) -> int? { self.path_from(r, at, false)?.at }
+
+    /// Where the path from `at` stops, as `path_end` says, past the close of every block it stands in
+    /// that yields nothing riding `r`: the path to the close of the arm holding those blocks.
+    fn arm_path_end(r: Reg, at: int) -> int? { self.path_from(r, at, true)?.at }
+
+    /// `path_end`, walking out through the blocks it stands in where `blocks` says so, and how many.
+    fn path_from(r: Reg, at: int, blocks: bool) -> PathStop? {
         let views = self.views(r, at)
         if reads_any(self.ins[at], views) { return null }
         let family = [r].concat(views)
         mut depth = 0
         mut loops = 0
+        mut out = 0
         mut k = at + 1
         while k < self.ins.length {
             let i = self.ins[k]
             if reads_any(i, family) || leaves_loops(i, loops) { return null }
-            if depth == 0 && (closes(i) || turns(i) || i is .LoopJump || i is .FnExit) { return k }
+            let walks_out = blocks && depth == 0 && i is .ScopeExit
+            if walks_out { out = out + 1 }
+            if !walks_out && depth == 0 && (closes(i) || turns(i) || i is .LoopJump || i is .FnExit) {
+                return PathStop { at: k, out: out }
+            }
             if opens(i) { depth = depth + 1 }
-            if closes(i) { depth = depth - 1 }
+            if closes(i) && !walks_out { depth = depth - 1 }
             if i is .LoopStart { loops = loops + 1 }
             if i is .LoopEnd { loops = loops - 1 }
             k = k + 1
@@ -1860,6 +1910,9 @@ fn leaves_loops(i: Ins, opened: int) -> bool {
     match i { .LoopJump(outward, _) -> outward >= opened, rest -> false }
 }
 
+/// Where a path stops, and how many blocks it walked out of on the way.
+type PathStop = { at: int, out: int }
+
 /// A reference a scope gave up on one path alone: `r`, the depth of the scope that held it, and the
 /// `FnExit` that path leaves by.
 type Parted = { r: Reg, depth: int, exit: int }
@@ -1867,7 +1920,11 @@ type Parted = { r: Reg, depth: int, exit: int }
 /// The scope holding `r` gives up its reference, moved at `at`: kept in `parted` where only the
 /// path through `at` gave it up, until that path's exit.
 fn moves_on(mut open_scopes: Stack<Scope>, parted: Cell<List<Parted>>, life: Lives, r: Reg, at: int) {
-    if !life.parts_at(r, at) || life.dies_in_arm(open_scopes, r, at) {
+    if life.dies_in_arm(open_scopes, r, at) {
+        disowns_held(open_scopes, r)
+        return
+    }
+    if !life.parts_at(r, at) {
         disowns(open_scopes, r)
         return
     }
@@ -1876,6 +1933,14 @@ fn moves_on(mut open_scopes: Stack<Scope>, parted: Cell<List<Parted>>, life: Liv
     let held = open_scopes.at(depth)
     open_scopes.rewrite_at(depth, held with { managed: kept_out(held.managed, r) })
     parted.push(Parted { r: r, depth: depth, exit: exit })
+}
+
+/// The innermost open scope holding `r` gives up one reference to it: an arm's move inside a block
+/// gives up its arm's.
+fn disowns_held(mut open_scopes: Stack<Scope>, r: Reg) {
+    let depth? = holder_of(open_scopes, r) else { return }
+    let held = open_scopes.at(depth)
+    open_scopes.rewrite_at(depth, held with { managed: kept_out(held.managed, r) })
 }
 
 /// The depth of the innermost open scope holding `r`.
@@ -1920,10 +1985,16 @@ fn noted(reason: string, n: int) {
 }
 
 /// A retain at `at` of a value whose last reads stand in sibling arms, filed where declines are asked
-/// for: a move in every arm would remove it.
+/// for under the reason no region could take it.
 fn declined_siblings(declines: Cell<List<InsDeclined>>?, life: Lives, r: Reg, at: int) {
     if declines == null || !life.last_in_siblings(r, at) { return }
-    declines!.push(InsDeclined { at: at, declined: Declined.Move(MoveDecline.SiblingArms) })
+    let why? = life.sibling_decline(r, at) else {
+        qtrace(
+            "SIBTRACE unplaced r${r.index} at ${at} def ${life.defs[r.index]} len ${life.ins.length}",
+        )
+        return
+    }
+    declines!.push(InsDeclined { at: at, declined: Declined.Move(why) })
 }
 
 /// `placed`, each retain and release tallied as placed at `site`.
@@ -2010,4 +2081,14 @@ export fn rc_reasons_said() -> string? {
         (a: string, b: string) -> tally.get(a) ?? 0 > tally.get(b) ?? 0,
     )
     "rc reasons (placed):\n${["  ${tally.get(r) ?? 0}  ${r}" for r in reasons].join("\n")}"
+}
+
+/// How many loops open at `to` opened past `from`.
+fn loops_between(ins: List<Ins>, from: int, to: int) -> int {
+    mut open = 0
+    for k in from + 1..to {
+        if ins[k] is .LoopStart { open = open + 1 }
+        if ins[k] is .LoopEnd && open > 0 { open = open - 1 }
+    }
+    open
 }
