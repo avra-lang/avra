@@ -94,4 +94,41 @@ spec "features/nullable/let_else" {
             ) == "quiet"
         }
     }
+    given "a subject of a type a file declares" {
+        then "a record is never absent — refused in the bind's words" {
+            refused_with(
+                "type P = { r: int, depth: int }\nfn f(p0: P) -> int {\n    let p? = p0 else { return 0 }\n    p.r\n}\nf(P { r: 1, depth: 2 })",
+                "`p?` asks a nullable, this is `P`",
+            )
+        }
+        then "a list's own `pop` answers its element, never absent" {
+            refused_with(
+                "type P = { r: int }\nfn f(xs: List<P>) -> int {\n    mut all = [x for x in xs]\n    let p? = all.pop() else { return 0 }\n    p.r\n}\nf([P { r: 1 }])",
+                "`p?` asks a nullable, this is `P`",
+            )
+        }
+        then "an enum is never absent" {
+            refused_with(
+                "enum K { A, B }\nfn f(k0: K) -> int {\n    let k? = k0 else { return 0 }\n    1\n}\nf(K.A)",
+                "`k?` asks a nullable, this is `K`",
+            )
+        }
+        then "a named type over a scalar is never absent" {
+            refused_with(
+                "type U = int\nfn f(u0: U) -> int {\n    let u? = u0 else { return 0 }\n    1\n}\nf(U(3))",
+                "`u?` asks a nullable, this is `U`",
+            )
+        }
+        then "a named type over a nullable binds what it carries" {
+            shown(
+                "type M = int?\nfn f(m: M) -> int {\n    let v? = m else { return 0 }\n    v + 1\n}\n\"\${f(M(3))} \${f(M(null))}\"",
+            ) == "4 0"
+        }
+        then "a present arm over a record is refused too" {
+            refused_with(
+                "type P = { r: int }\nfn f(p0: P) -> int {\n    match p0 {\n        p? -> p.r\n        null -> 0\n    }\n}\nf(P { r: 1 })",
+                "this is `P`",
+            )
+        }
+    }
 }
