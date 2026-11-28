@@ -1,7 +1,8 @@
 // proves: `m.set(k, (m.get(k) ?? []).concat([…]))` answers what the two statements
 // `let was = m.get(k) ?? []` then `m.set(k, was.concat([…]))` answer — for words and for boxes, a
 // key's first write and its later ones, a list another binding also holds, a map at the end of a
-// field path, and an element that is a call.
+// field path, an element that is a call, a key read from a field, a key built by interpolation and an
+// element that names the key.
 type Rec = { by: Map<string, List<string>>, n: int }
 
 fn grouped(xs: List<int>) -> Map<string, List<int>> {
@@ -66,7 +67,23 @@ fn element_called() -> string {
     ["${n}" for n in by.get("a")!].join(",")
 }
 
+type Item = { name: string, n: int }
+
+/// Keys read from a field and built by interpolation, an element naming its own key.
+fn keyed_apart() -> string {
+    mut by: Map<string, List<string>> = {}
+    for item in [Item { name: "a", n: 1 }, Item { name: "b", n: 2 }, Item { name: "a", n: 3 }] {
+        by.set(item.name, (by.get(item.name) ?? []).concat(["${item.n}"]))
+        by
+            .set(
+                "${item.name}${item.n % 2}",
+                (by.get("${item.name}${item.n % 2}") ?? []).concat([item.name]),
+            )
+    }
+    texts(by)
+}
+
 let xs = [5, 1, 2, 8, 4, 3, 0, 7]
 let fused = words(grouped(xs))
 let apart = words(grouped_apart(xs))
-"${fused} | ${fused == apart} | ${texts(named(["ab", "b", "ac", "bc", "c"]))} | ${held_apart()} | ${in_field()} | ${element_called()}"
+"${fused} | ${fused == apart} | ${texts(named(["ab", "b", "ac", "bc", "c"]))} | ${held_apart()} | ${in_field()} | ${element_called()} | ${keyed_apart()}"
