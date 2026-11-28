@@ -262,6 +262,7 @@ fn memory_ins(
         twins: twins,
         viewed: viewed_regs(layouts, ins),
         death: death_points(twins, ins, last),
+        exits: next_exits(ins),
     }
     for at, raw in ins {
         let i = owned_form(twins, layouts, immortal, at, raw)
@@ -1429,6 +1430,8 @@ type Lives = {
     twins: List<bool>,
     viewed: List<bool>,
     death: List<int>,
+    /// Each instruction's next `FnExit` at or after it, at any depth; the body's length past the last.
+    exits: List<int>,
 }
 
 impl Lives {
@@ -1498,8 +1501,13 @@ impl Lives {
     /// Whether the scope that would give `r` up at `at` may: the innermost one, or on a path that
     /// leaves, any one holding it once — the exit settles every open scope.
     fn owns_moving(open_scopes: Stack<Scope>, r: Reg, at: int) -> bool {
-        owned_top(open_scopes, r) || self.parts_at(r, at) && owned_once(open_scopes, r)
+        owned_top(open_scopes, r) ||
+            self.parts_at(r, at) && self.may_leave(r, at) && owned_once(open_scopes, r)
     }
+
+    /// Whether a read of `r` at `at` may stand on a path that leaves before `r` is read again: some
+    /// `FnExit` comes after `at` and before `r`'s last read.
+    fn may_leave(r: Reg, at: int) -> bool { self.exits[at] < self.last[r.index] }
 
     /// WHETHER `r` DIES AT `at`: read there once, and on every path from there either never
     /// read again with no view taken from it read there or after, or leaving the fn first.
@@ -1513,6 +1521,7 @@ impl Lives {
     /// Whether `r` is read at `at` on a path that leaves the fn: the arm `at` stands in reaches its
     /// own `FnExit` before any read of `r` or of a view riding it.
     fn leaves_after(r: Reg, at: int) -> bool {
+        if !self.may_leave(r, at) { return false }
         let k? = self.path_end(r, at) else { return false }
         self.ins[k] is .FnExit
     }
@@ -1731,6 +1740,20 @@ fn viewed_regs(layouts: List<Layout>, ins: List<Ins>) -> List<bool> {
         if d != null && layouts[d!.index].counted() {
             for r in reads_of(i) { out.set(r.index, true) }
         }
+    }
+    out
+}
+
+/// Each instruction's next `FnExit` at or after it; the body's length past the last.
+fn next_exits(ins: List<Ins>) -> List<int> {
+    mut out = [ins.length for j in 0..ins.length]
+    mut next = ins.length
+    // LICENSED loops.index_walk: a REVERSE walk — an instruction's answer is the one after it
+    mut j = ins.length - 1
+    while j >= 0 {
+        if ins[j] is .FnExit { next = j }
+        out.set(j, next)
+        j = j - 1
     }
     out
 }
