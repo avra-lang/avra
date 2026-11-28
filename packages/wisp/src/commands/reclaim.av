@@ -66,23 +66,35 @@ export command reclaim {
     run: ReclaimCmd {}
 }
 
-/// Every line reclaim says, each tree retired or named on the way.
-export fn reclaimed(at: ReclaimFlags, asked: Asked) -> Result<List<string>, string> {
+/// Every line reclaim says, each tree retired or named on the way, judged by every process's directory
+/// as this machine reads them.
+export fn reclaimed(at: ReclaimFlags, asked: Asked) -> Result<List<string>, string> { reclaimed_seeing(at, asked, cwds) }
+
+/// `reclaimed`, with what every process's directory is read from named: a reader that cannot say
+/// refuses the sweep, so no busy tree is retired for being unseen.
+export fn reclaimed_seeing(
+    at: ReclaimFlags,
+    asked: Asked,
+    seen: fn() -> Result<List<string>, string>,
+) -> Result<List<string>, string> {
     if !ran_clean(git(at.repo, ["rev-parse", "--git-dir"])) { fail reclaim_no_repo() }
-    if asked.now { return swept(at.repo, asked.dry) }
+    if asked.now { return swept(at.repo, asked.dry, seen) }
     let free = free_gb(at.repo)?
     if free >= at.floor { return [reclaim_enough(free, at.floor)] }
-    [reclaim_low(free, at.floor)].concat(swept(at.repo, asked.dry)?)
+    [reclaim_low(free, at.floor)].concat(swept(at.repo, asked.dry, seen)?)
 }
 
 /// Each tree the rules let go, retired or named, and the count.
-fn swept(repo: string, dry: bool) -> Result<List<string>, string> {
+fn swept(repo: string, dry: bool, seen: fn() -> Result<List<string>, string>) -> Result<
+    List<string>,
+    string,
+> {
     let listed = worktrees_of((run_said(git(repo, ["worktree", "list", "--porcelain"]))?).stdout)
     let trees = [w with { path: real(w.path) } for w in listed]
     let around = Around {
         own: trees.first()?.path ?? "",
         main: trees.find(it.branch == "main")?.path ?? "",
-        cwds: cwds()?,
+        cwds: seen()?,
     }
     let told = [retire(repo, w, dry) for w in trees if w.path != "" && kept_because(repo, w, around) == null]
     let lines = [t! for t in told if t != null]
@@ -147,9 +159,9 @@ fn free_gb(repo: string) -> Result<int, string> {
 }
 
 /// Every process's directory: `lsof` where it stands, the kernel's own table where it does not. A
-/// machine with neither retires nothing. `lsof` exits 1 when some process could not be read, and what
-/// it did read stands.
-fn cwds() -> Result<List<string>, string> {
+/// process that ended while it was read is no failure; one whose directory may not be read is, since a
+/// tree it stands in would read as idle — so a machine that cannot say retires nothing.
+export fn cwds() -> Result<List<string>, string> {
     match run_in("", "lsof", ["-d", "cwd", "-Fn"]) {
         .Ok(o) -> named_lines(o.stdout),
         .Err(e) -> match e {
@@ -160,23 +172,24 @@ fn cwds() -> Result<List<string>, string> {
     }
 }
 
-/// `lsof -Fn`'s name lines, each path once.
-fn named_lines(text: string) -> List<string> { [l.substring(1, l.length) for l in text.split("\n") if l.starts_with("n")] }
+/// `lsof -Fn`'s name lines; a directory it could not read refuses, as the kernel's does.
+fn named_lines(text: string) -> Result<List<string>, string> {
+    let names = [l.substring(1, l.length) for l in text.split("\n") if l.starts_with("n")]
+    if names.any(it.contains("Permission denied")) { fail reclaim_unseen() }
+    names
+}
 
-/// A process may end mid-walk or stand unreadable: neither is a failure.
+/// Each process's directory from the kernel's own table: one that ended mid-walk is gone and says so
+/// as a missing file; one the machine will not show this process refuses.
 fn proc_cwds() -> Result<List<string>, string> {
     if !is_dir("/proc/self") { fail reclaim_no_cwds() }
     let pids = [n for n in list_dir("/proc") catch [] if parse_int(n) != null]
-    let links? = run_out("readlink", ["/proc/${p}/cwd" for p in pids]) else { fail reclaim_no_cwds() }
-    [l for l in links.split("\n") if l != ""]
-}
-
-/// What a tool printed whatever its exit, null when it never ran.
-fn run_out(name: string, words: List<string>) -> string? {
-    match run_in("", name, words) {
-        .Ok(o) -> o.stdout,
-        .Err(e) -> match e { .Failed(_, o) -> o.stdout, rest -> null },
+    let out = match run_in("", "readlink", ["/proc/${p}/cwd" for p in pids]) {
+        .Ok(o) -> o,
+        .Err(e) -> match e { .Failed(_, o) -> o, rest -> { fail reclaim_no_cwds() } },
     }
+    if out.stderr.contains("Permission denied") { fail reclaim_unseen() }
+    [l for l in out.stdout.split("\n") if l != ""]
 }
 
 /// `path` as the host resolves it, "" when it is not there.
@@ -196,5 +209,9 @@ fn reclaim_low(free: int, floor: int) -> string { "reclaim: ${free} GB free, und
 fn reclaim_looked(n: int, verb: string, gone: int) -> string { "reclaim: looked at ${n} worktree(s), ${verb} ${gone}" }
 
 fn reclaim_no_df() -> string { "reclaim: `df` did not say how much is free here" }
+
+fn reclaim_unseen() -> string {
+    "reclaim: a process's directory may not be read here, so a tree it stands in would read as idle — retiring nothing"
+}
 
 fn reclaim_no_cwds() -> string { "reclaim: no way to read a process's directory here — retiring nothing" }

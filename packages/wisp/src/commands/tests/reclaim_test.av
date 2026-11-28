@@ -3,7 +3,7 @@
 use @std.io.{exists, make_dirs}
 use @std.process.{Ready, cmd, tool}
 use @std.time.{secs}
-use commands.{Asked, ReclaimFlags, Worktree, inside, reclaimed, worktrees_of}
+use commands.{Asked, ReclaimFlags, Worktree, cwds, inside, reclaimed_seeing, worktrees_of}
 
 /// A repository on `main` with one commit, in a directory of its own; its real path.
 fn repo() -> string {
@@ -20,8 +20,22 @@ fn linked(d: string, branch: string) -> string {
     "${d}-${branch}"
 }
 
-fn swept(d: string, now: bool, dry: bool, floor: int) -> List<string> {
-    reclaimed(ReclaimFlags { floor: floor, repo: d }, Asked { now: now, dry: dry }) catch [
+/// No process stands in any tree.
+fn nothing_seen() -> Result<List<string>, string> { [] }
+
+/// A reader that cannot say where processes stand.
+fn unseen() -> Result<List<string>, string> { fail "no process's directory may be read" }
+
+fn swept(d: string, now: bool, dry: bool, floor: int) -> List<string> { swept_seeing(d, now, dry, floor, nothing_seen) }
+
+fn swept_seeing(
+    d: string,
+    now: bool,
+    dry: bool,
+    floor: int,
+    seen: fn() -> Result<List<string>, string>,
+) -> List<string> {
+    reclaimed_seeing(ReclaimFlags { floor: floor, repo: d }, Asked { now: now, dry: dry }, seen) catch [
         "refused",
     ]
 }
@@ -37,14 +51,18 @@ fn kept(d: string, wt: string) -> bool {
     !named && exists(wt)
 }
 
-/// Kept while a process stands inside it; the process is stopped either way.
-fn kept_while_held(d: string, wt: string) -> bool {
+/// Whether the machine's own reader, while a process stands in `wt/deep`, sees it there or refuses to
+/// say: never neither. The process is stopped either way.
+fn seen_or_refused(wt: string) -> bool {
     let sleep = tool("sleep") catch { return false }
     match (cmd(sleep, ["60"]) with { cwd: "${wt}/deep" }).start(Ready.Started, secs(5)) {
         .Ok(child) -> {
-            let held = kept(d, wt)
+            let told = match cwds() {
+                .Ok(dirs) -> dirs.any((c: string) -> inside(c, wt)),
+                .Err(_) -> true,
+            }
             let _ = child.stop()
-            held
+            told
         },
         .Err(_) -> false,
     }
@@ -91,8 +109,28 @@ spec "wisp reclaim — which worktrees retire" {
         then "a tree a process stands inside is kept" {
             let d = repo()
             let wt = linked(d, "held")
+            let standing = "${wt}/deep"
+            let seen: fn() -> Result<List<string>, string> = () -> [standing]
+            let named = swept_seeing(d, true, true, 20, seen)
+                .any(it.starts_with("would retire ${wt} "))
+            let _ = swept_seeing(d, true, false, 20, seen)
+            checked(d, !named && exists(wt))
+        }
+        then "where no process's directory may be read, nothing is retired and the sweep says why" {
+            let d = repo()
+            let wt = linked(d, "done")
+            let ok = match reclaimed_seeing(
+                ReclaimFlags { floor: 20, repo: d },
+                Asked { now: true },
+                unseen,
+            ) { .Ok(_) -> false, .Err(why) -> why.contains("no process's directory") }
+            checked(d, ok && exists(wt))
+        }
+        then "this machine's reader sees a process standing in a tree, or refuses to say" {
+            let d = repo()
+            let wt = linked(d, "held")
             let _ = make_dirs("${wt}/deep")
-            checked(d, kept_while_held(d, wt))
+            checked(d, seen_or_refused(wt))
         }
         then "main's checkout is never touched" {
             let d = repo()
