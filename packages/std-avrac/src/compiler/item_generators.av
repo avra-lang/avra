@@ -253,11 +253,22 @@ export fn generator_print(engine: QueryEngine, g: GeneratorAt) -> GeneratorPrint
 }
 
 /// The program the generator `g` is made of, by the hash its print answered: the one this process
-/// keeps under it, or made again; absent when made again it prints otherwise.
+/// keeps under it, or made again; absent when made again it prints otherwise. The print tells all
+/// making it again could, so those reads are none of the asker's, kept or made alike; where it
+/// prints otherwise, the answer rests on the print.
 fn generator_program(engine: QueryEngine, g: GeneratorAt, print: ContentHash) -> Lowered? {
     let kept = made_programs().get().get(print_key(print))
     if kept != null { return kept }
-    let m? = made_generator(engine, g) else { return null }
+    engine.unrecorded_begun()
+    let m = made_generator(engine, g)
+    engine.recorded_again()
+    let made = if m == null { null } else { made_again(m!, print) }
+    if made == null { let _ = generator_print(engine, g) }
+    made
+}
+
+/// `m`'s program where it prints as `print`.
+fn made_again(m: MadeProgram, print: ContentHash) -> Lowered? {
     match m {
         .Made(l) -> if kept_program(l).same_as(print) { l } else { null },
         .Unmade(_, _) or .Refused(_) -> null,
