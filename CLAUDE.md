@@ -2059,8 +2059,8 @@ Runtime facts, ours to ratify:
   with its C body and whatever keeper table names it, is ONE commit,
   marked with a `Rung: <why>` trailer; the declaration, the `RtHost`
   variant and its arm, and the callers are the next. CI builds the tree
-  at each mark with the product of the one before it (tools/ladder.sh,
-  the one definition CI and a Sprite share), never with a compiler that
+  at each mark with the product of the one before it (`./wisp ladder`,
+  the one definition CI calls), never with a compiler that
   cannot read it, and HEAD last, twice, as for any tree; the whole
   ladder is capped at fifteen minutes and costs about one generation
   per rung. A rung's product is cached per PR, so a re-push that leaves
