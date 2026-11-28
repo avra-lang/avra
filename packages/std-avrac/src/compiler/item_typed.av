@@ -50,7 +50,6 @@ use @std.meta.{derive}
 use @std.program.address.{SourceFileAddress}
 use @std.program.answer_record.{content_hash}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
-use @std.program.answer_record.{RecordedRead}
 use @std.program.saved_derive.{Saved}
 use @std.program.saved_query.{ListedQuery, cut_query, definitions_of, query, query_definition}
 
@@ -161,9 +160,7 @@ export fn item_trait_bodies(engine: QueryEngine, file: SourceFileAddress, item: 
 
 /// `signed`'s body in `file`, typed under its signature, with the bounds its type parameters carry.
 fn typed_under(engine: QueryEngine, file: SourceFileAddress, signed: SignedBody) -> TypedBody {
-    engine.reads_begun()
     let cx = body_checked(engine, file, signed, false)
-    let reads = engine.reads_gathered()
     seats_left()
         .set(
             [
@@ -173,7 +170,7 @@ fn typed_under(engine: QueryEngine, file: SourceFileAddress, signed: SignedBody)
                     body: signed.body.index,
                     under: signed_under(signed),
                     owner: seats_owner(signed),
-                    seats: SeatsHeld { seats: cx.seats.get(), reads: reads },
+                    seats: cx.seats.get(),
                 },
             ],
         )
@@ -184,11 +181,7 @@ fn typed_under(engine: QueryEngine, file: SourceFileAddress, signed: SignedBody)
 /// typed last in this process, and what it was typed under. A typed answer keeps no seats — they
 /// would double it — so a lowering that asks for a body's typing and finds it made here takes
 /// them from where the check left them, and one that finds the answer kept checks again.
-type SeatsLeft = { file: string, stmt: int, body: int, under: string, owner: string, seats: SeatsHeld }
-
-/// A check's seats and the reads the check made: a lowering that takes the seats in place of checking
-/// again makes those reads, so it reads what checking again would, wherever the check was made.
-type SeatsHeld = { seats: List<SignedType?>, reads: List<RecordedRead> }
+type SeatsLeft = { file: string, stmt: int, body: int, under: string, owner: string, seats: List<SignedType?> }
 
 /// The seats of the surface check made last in this process, until they're taken.
 once fn seats_left() -> Cell<List<SeatsLeft>> {
@@ -208,7 +201,7 @@ fn signed_under(signed: SignedBody) -> string {
 
 /// The seats the surface check of `signed`'s body in `file` left, where it was the check made last
 /// in this process and stood under what `signed` stands under now; taken, so held no longer.
-fn seats_taken(file: SourceFileAddress, signed: SignedBody) -> SeatsHeld? {
+fn seats_taken(file: SourceFileAddress, signed: SignedBody) -> List<SignedType?>? {
     let left? = seats_left().get().first() else { return null }
     seats_left().set([])
     if left.file != spelled_file(file) ||
@@ -241,7 +234,7 @@ type SignedBody = {
     /// Its surface typing, where a saved answer already holds it.
     typed: TypedBody? = null,
     /// The seats its surface check left, where that check was made in this process.
-    seats: SeatsHeld? = null,
+    seats: List<SignedType?>? = null,
     /// The consts a body declared before it that it reads, where it is one such const's value, each
     /// as it settled.
     consts: List<ConstSeed> = [],
