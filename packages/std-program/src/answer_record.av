@@ -198,6 +198,9 @@ const WHOLE_READ_WORDS: int = 4
 /// The words of a part read.
 const PART_READ_WORDS: int = 8
 
+/// The places of a record that made no part read: one column every such record shares, never opened.
+once fn no_places() -> RecordWords { RecordWords.Held([]) }
+
 /// The record of an answer, what was read to get there, the print of the packages those reads read,
 /// and, for a shared record, their names.
 export fn answer_record(
@@ -297,11 +300,12 @@ export type KeptRecord = {
 
 /// The record saved at `record` in `source`, read where it lies.
 export fn kept_in_place(source: SavedSource, record: SavedRecord) -> KeptRecord {
+    let parts = AnswerRecord.part_reads_in_place(source, record)
     KeptRecord {
         answer: ContentHash.read_from(source, AnswerRecord.answer_in_place(source, record)),
         whole_reads: RecordWords.Laid(source, AnswerRecord.whole_reads_in_place(source, record)),
-        part_reads: RecordWords.Laid(source, AnswerRecord.part_reads_in_place(source, record)),
-        part_places: RecordWords.Laid(source, AnswerRecord.part_places_in_place(source, record)),
+        part_reads: RecordWords.Laid(source, parts),
+        part_places: if parts.length == 0 { no_places() } else { RecordWords.Laid(source, AnswerRecord.part_places_in_place(source, record)) },
         read_set: AnswerRecord.read_set_in(source, record),
         packages: RecordTexts.Laid(source, AnswerRecord.packages_in_place(source, record)),
     }
