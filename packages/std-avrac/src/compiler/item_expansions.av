@@ -6,6 +6,9 @@
 //! instances and reads no file again.
 use core.{
     CopiedNodes,
+    Instancing,
+    TypeRef,
+    STD_META,
     some_list,
     template_file,
     template_home,
@@ -192,7 +195,34 @@ fn component_at(engine: QueryEngine, shape: WordShape, entered: List<string>) ->
     }
     let declares = [w.shape.declared for w in file_words(engine, shape.home).components]
     let whole? = word_among(store, declaring, template_home(shape.home), declares) else { return null }
-    whole with { word: shape.word, own: shape.own }
+    let fields = store.component_parts(declaring)?.fields() ?? []
+    let uses = file_words(engine, shape.home).uses
+    let says = fields.any((p) -> wears_words(uses, p.ty))
+    whole with { word: shape.word, own: shape.own, form: worded(whole.form, says) }
+}
+
+/// `@std/meta`'s type of a closure that says a text again, as its package exports it.
+const WORDS: string = "Words"
+
+/// Whether the written type `t` names `@std/meta`'s `Words` under the name a `use` of `uses`
+/// imports it as.
+fn wears_words(uses: List<UseLine>, t: TypeRef?) -> bool {
+    let written? = t else { return false }
+    uses.any((u) -> STD_META.is(u.path.join(".")) && imports_as(u, WORDS, written.name))
+}
+
+/// Whether the `use` line `u` imports its item `item` under the name `bound`.
+fn imports_as(u: UseLine, item: string, bound: string) -> bool {
+    (0..u.items.length).any((j: int) -> u.items[j] == item && u.bound_as(j) == bound)
+}
+
+/// The form `form`, its record told it takes a closure that says its head's text again where
+/// `says`: a field wears `@std/meta`'s `Words`, asked where the component is declared.
+fn worded(form: Instancing, says: bool) -> Instancing {
+    match form {
+        .Record(r) -> Instancing.Record(r with { words: r.words || says }),
+        .Template(_) or .Refused(_) or .Spoken or .Unread or .Shaped(_, _) -> form,
+    }
 }
 
 /// One item read back, and the run of nodes it made.
