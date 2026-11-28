@@ -557,6 +557,24 @@ nothing apart, nothing owed. Snapshots: 28 terminal digests moved, every one a c
 **The cost.** A few cells per stateful control; nothing per frame. The terminal reader adds ~0.3 s to
 the parity pass.
 
-**Not yet** (ROADMAP, owed by the storyboard): the braille frames (no timer repaints a busy screen),
-and an invalid field's message under it.
+Its two owed rows are paid by slice 9.
+
+### Slice 9 — the busy mark turns, and a refused field says why
+
+| Part | Done |
+|---|---|
+| the frame | the busy mark on a live screen is drawn at the clock's frame (`turned`: ten braille frames, each 80 ms), so nothing keeps it |
+| the chain | a paint that shows a busy mark asks one repaint a frame later (`later`, the app loop's one-shot turn), which paints and asks the next; the first paint that shows nothing busy asks none, so the chain stops itself. A screen painted before the app's loop stands asks again once it does (`started`) |
+| reduced motion | a typed `@std/config` setting, one declaration (`terminal/settings.av`): the key `reduced_motion` of `ui.toml` and the flag `--reduced_motion=true`. A terminal states no platform preference, so unset, the mark moves; a setting that cannot be read is said on stderr. `render`, a non-TTY and reduced motion draw the still `…` |
+| one field, one truth | `field`'s `invalid: bool` is gone: `error: string? = null` says it, and `Attribute.Error(words)` carries it. Present is invalid, and its words, even `""`, are what is said; no second seat can disagree |
+| every target says the words | the terminal on the lines under the field, indented under its label; the HTML through `aria-describedby` to a span beside the label, so the words describe the control and are no part of its name; native facts `Invalid` and `ErrorWords`; the outline `invalid error="…"`. A form's typed field says its own issues; the rest still say them beside |
+| parity | `Heard` gains `description`. The HTML reader reads the described element by its id and never hears it alone; the terminal's hears the indented lines under a cross. 119 cases, five rows, nothing apart |
+
+The witnesses: `tests/terminal_turning` on the virtual clock, `eval == native == expected` (a busy
+screen draws five frames in 400 ms, none once idle, the still mark where motion is reduced) and
+witnessed failing without the chain; `field/error unsaid` (refused, no words); the mutant that
+un-indents the words under a refused field parts a case.
+
+**The cost.** One turn per 80 ms while a busy mark is on a live screen, none otherwise. A refused
+field's words, once per target; an id per refused field with words.
 

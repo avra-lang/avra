@@ -3878,13 +3878,6 @@ its own ticket. The wanting site of both is the storyboard (`docs/2026_11_24_STO
   breaks at none of them. `Callsite:` `@std/ui_gallery`'s storyboard frames (`frame`,
   `storyboard.av`); the interim is one frame a row, a reader's checkbox.
 
-- **OWED (storyboard): the terminal's states the ruling names and nothing draws yet.** Two, each
-  witnessed as absent: (1) the busy mark's braille frames on a TTY — the terminal app has no timer
-  that repaints while a control is busy, so it draws the still `…`; (2) an invalid field's message on
-  the line under it — no attribute carries a field's error words, so a view says them in its own text
-  beside the field. ◉/○ arrive with `choice`, which owns one-of-N; an `item` says only that it is
-  selected.
-
 ### Interim record — the tasks server was unreachable at landing
 
 The two asks of `docs/2026_10_01_FIRST_OF_AND_IS_BINDING.md`

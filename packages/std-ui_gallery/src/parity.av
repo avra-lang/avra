@@ -15,7 +15,7 @@ use @std.ui.realize.native.element.{Native, lowered as native_lowered}
 use @std.ui.realize.native.fact.{Fact, What, Scalar}
 use @std.ui.realize.html.element.{Element, Tagged, lowered as html_lowered}
 use @std.ui.realize.html.tags.{HtmlTag, HtmlAttrName}
-use @std.text.{chars}
+use @std.text.{chars, cells, repeat}
 use @std.ui.realize.tui.glyphs.{unicode}
 
 /// A state an element is heard in.
@@ -30,7 +30,7 @@ export enum State {
 }
 
 /// What a reader hears of one element.
-export type Heard = { role: Prim, name: string, value: string, states: List<State>, direction: Direction? }
+export type Heard = { role: Prim, name: string, value: string, states: List<State>, direction: Direction?, description: string = "" }
 
 /// The target a reader hears; the Node is the reference every one is held to.
 @Words
@@ -67,26 +67,36 @@ export fn heard_as(p: Prim) -> Prim? {
 /// What a target's reader says: every element whole (its role, name, value, states and direction),
 /// or only the states it marks. A reader of the second kind cannot line its elements up with the
 /// Node's, so it is held to the Node as the count of each state it says over the whole case.
-type Says = { elements: bool, states: List<State> }
+type Says = { elements: bool, states: List<State>, descriptions: bool }
 
 /// What each target's reader says. The terminal draws a picture, so it says the states its marks
 /// draw; an open dialog says it is open by standing on the screen. Every target spelled.
 fn says(t: Target) -> Says {
     match t {
-        .Html or .Native or .Outline -> Says { elements: true, states: State.every() },
-        .Terminal -> Says { elements: false, states: [.Checked, .Disabled, .Invalid, .Loading, .Selected] },
+        .Html or .Native or .Outline -> Says { elements: true, states: State.every(), descriptions: true },
+        .Terminal -> Says {
+            elements: false,
+            states: [.Checked, .Disabled, .Invalid, .Loading, .Selected],
+            descriptions: true,
+        },
     }
 }
 
-/// What a case's hearing says, as `s` says it: an element a line, or each state's count.
+/// What a case's hearing says, as `s` says it: an element a line, or each state's count and
+/// every description, in order.
 fn said_as(heard: List<Heard>, s: Says) -> List<string> {
     if s.elements { return [spoken(h) for h in heard] }
     [tally(st, [h for h in heard if h.states.any(it == st)].length) for st in s.states if heard.any(it.states.any(it == st))]
+        .concat(
+            if s.descriptions { [described_line(h.description) for h in heard if h.description != ""] } else { [] },
+        )
 }
+
+fn described_line(words: string) -> string { "described \"${words}\"" }
 
 fn tally(st: State, count: int) -> string { "${st.word()} ${count}" }
 
-/// A hearing as one line: role, quoted name, value, states, direction.
+/// A hearing as one line: role, quoted name, value, states, direction, description.
 export fn spoken(h: Heard) -> string {
     let value: List<string> = if h.value == "" { [] } else { ["value=\"${h.value}\""] }
     let dir: List<string> = match h.direction {
@@ -97,6 +107,7 @@ export fn spoken(h: Heard) -> string {
         .concat(value)
         .concat([s.word() for s in h.states])
         .concat(dir)
+        .concat(if h.description == "" { [] } else { [described_line(h.description)] })
         .join(" ")
 }
 
@@ -106,26 +117,56 @@ enum Part {
     Named(rank: int, words: string)
     Valued(words: string)
     Stated(state: State)
+    Described(words: string)
+    Refused(words: string)
     Hidden
     Nothing
 }
 
 // ── Reading parts ──────────────────────────────────────────────
 
-fn rank_of(p: Part) -> List<int> { match p { .Named(r, _) -> [r], .Valued(_) or .Stated(_) or .Hidden or .Nothing -> [] } }
+fn rank_of(p: Part) -> List<int> {
+    match p {
+        .Named(r, _) -> [r],
+        .Valued(_) or .Stated(_) or .Described(_) or .Refused(_) or .Hidden or .Nothing -> [],
+    }
+}
 
 fn words_at(p: Part, rank: int) -> List<string> {
     match p {
         .Named(r, w) -> if r == rank { [w] } else { [] },
-        .Valued(_) or .Stated(_) or .Hidden or .Nothing -> [],
+        .Valued(_) or .Stated(_) or .Described(_) or .Refused(_) or .Hidden or .Nothing -> [],
     }
 }
 
-fn value_of(p: Part) -> List<string> { match p { .Valued(w) -> [w], .Named(_, _) or .Stated(_) or .Hidden or .Nothing -> [] } }
+fn value_of(p: Part) -> List<string> {
+    match p {
+        .Valued(w) -> [w],
+        .Named(_, _) or .Stated(_) or .Described(_) or .Refused(_) or .Hidden or .Nothing -> [],
+    }
+}
 
-fn state_of(p: Part) -> List<State> { match p { .Stated(s) -> [s], .Named(_, _) or .Valued(_) or .Hidden or .Nothing -> [] } }
+fn state_of(p: Part) -> List<State> {
+    match p {
+        .Stated(s) -> [s],
+        .Refused(_) -> [State.Invalid],
+        .Named(_, _) or .Valued(_) or .Described(_) or .Hidden or .Nothing -> [],
+    }
+}
 
-fn hides(p: Part) -> bool { match p { .Hidden -> true, .Named(_, _) or .Valued(_) or .Stated(_) or .Nothing -> false } }
+fn description_of(p: Part) -> List<string> {
+    match p {
+        .Described(w) or .Refused(w) -> [w],
+        .Named(_, _) or .Valued(_) or .Stated(_) or .Hidden or .Nothing -> [],
+    }
+}
+
+fn hides(p: Part) -> bool {
+    match p {
+        .Hidden -> true,
+        .Named(_, _) or .Valued(_) or .Stated(_) or .Described(_) or .Refused(_) or .Nothing -> false,
+    }
+}
 
 /// The name the parts give, the element's own words standing last.
 fn name_from(parts: List<Part>, words: string) -> string {
@@ -148,6 +189,7 @@ fn heard_from(p: Prim, parts: List<Part>, words: string, direction: Direction?) 
             value: value,
             states: ordered([s for q in parts for s in state_of(q)]),
             direction: direction,
+            description: [w for q in parts for w in description_of(q)].first() ?? "",
         },
     ]
 }
@@ -188,7 +230,7 @@ fn attr_part(a: Attribute) -> Part {
         .Checked(on) -> flagged(on, .Checked),
         .Selected(on) -> flagged(on, .Selected),
         .Open(on) -> flagged(on, .Open),
-        .Invalid(on) -> flagged(on, .Invalid),
+        .Error(words) -> .Refused(words),
         .Loading(on) -> flagged(on, .Loading),
         .Text(_) or .Level(_) or .Placeholder(_) or .Source(_) or .Href(_) or .Min(_) or .Max(_) or .Urgency(_) or .Submits(_) or .Masked(_) or .SubmitLabel(_) or .Skipped(_, _, _) or .Placed(_, _, _) -> .Nothing,
     }
@@ -233,41 +275,69 @@ fn fact_part(f: Fact) -> Part {
         .Open -> flagged(scalar_on(f.holds), .Open),
         .Invalid -> flagged(scalar_on(f.holds), .Invalid),
         .Loading -> flagged(scalar_on(f.holds), .Loading),
+        .ErrorWords -> .Described(scalar_words(f.holds)),
         .Words or .Rank or .Placeholder or .Source or .SourceWidth or .SourceHeight or .Href or .Min or .Max or .Urgency or .Submits or .Masked or .SkippedPath or .SkippedRows or .SkippedExtent or .PlacedAt or .PlacedOf or .Reveal or .SubmitLabel or .Radius or .Fill or .Ink or .Elevation or .Face or .TextSize or .LineHeight or .Tracking or .Direction or .Wrap or .Gap or .PadStart or .PadEnd or .PadTop or .PadBottom or .MarginStart or .MarginEnd or .MarginTop or .MarginBottom or .Align or .Distribute or .Width or .Height or .Grow or .Aspect or .InsetStart or .InsetEnd or .InsetTop or .InsetBottom or .Order or .Mode or .Contrast or .Writing or .WordsWriting -> .Nothing,
     }
 }
 
 // ── HTML ───────────────────────────────────────────────────────
 
-/// What a reader hears of a tree, read from the HTML a page is handed.
-export fn html_heard(e: Element) -> List<Heard> {
+/// What a reader hears of a page, read from the HTML it is handed.
+export fn html_page_heard(page: List<Element>) -> List<Heard> {
+    let ids = described_by_id(page)
+    [h for e in page for h in html_heard(e, ids)]
+}
+
+/// An element a page names by its id, and the words it says.
+type Named = { id: string, words: string }
+
+/// The words each element with an id says: what a control's `aria-describedby` reads.
+fn described_by_id(page: List<Element>) -> List<Named> {
+    [Named { id: id, words: own_text(el) } for e in page for el in tags_within(e) for id in id_of(el)]
+}
+
+/// An element's id, as a run of none or one.
+fn id_of(el: Tagged) -> List<string> {
+    match attr(el, .Id) {
+        id? -> [id]
+        null -> []
+    }
+}
+
+/// Every element in `e`, itself first.
+fn tags_within(e: Element) -> List<Tagged> { [t for el in tag_in(e) for t in [el].concat([k for c in el.kids for k in tags_within(c)])] }
+
+/// What a reader hears of one element and what it holds; `ids` is the page's described words.
+/// An element a control is described by is heard as that description, never on its own.
+fn html_heard(e: Element, ids: List<Named>) -> List<Heard> {
     let el? = tag_in(e).first() else { return [] }
-    if attr(el, .Hidden) != null || attr(el, .AriaHidden) == "true" { return [] }
+    if attr(el, .Hidden) != null || attr(el, .AriaHidden) == "true" || attr(el, .Id) != null { return [] }
     match el.tag {
-        .Label -> labelled(el),
-        .Article -> heard_from(Prim.Card, html_parts(el), attr(el, .Title) ?? "", null)
-            .concat(read_on(el, (k) -> !heads(k))),
-        rest -> html_own(el),
+        .Label -> labelled(el, ids),
+        .Article -> heard_from(Prim.Card, html_parts(el, ids), attr(el, .Title) ?? "", null)
+            .concat(read_on(el, ids, (k) -> !heads(k))),
+        rest -> html_own(el, ids),
     }
 }
 
 /// A label names the control it holds by its words beside it: one element heard, the rest read on.
-fn labelled(el: Tagged) -> List<Heard> {
-    let control? = [k for c in el.kids for k in tag_in(c) if controls(k)].first() else { return read_on(el, (k) -> true) }
+fn labelled(el: Tagged, ids: List<Named>) -> List<Heard> {
+    let control? = [k for c in el.kids for k in tag_in(c) if controls(k)].first() else { return read_on(el, ids, (k) -> true) }
     let words = [k for c in el.kids for k in tag_in(c) if k.tag == HtmlTag.Span].first()
     let p? = html_prim(control) else { return [] }
-    heard_from(p, html_parts(control), own_text(words), dir_in(words))
-        .concat(read_on(el, (k) -> !controls(k) && k.tag != HtmlTag.Span))
+    heard_from(p, html_parts(control, ids), own_text(words), dir_in(words))
+        .concat(read_on(el, ids, (k) -> !controls(k) && k.tag != HtmlTag.Span))
 }
 
-fn html_own(el: Tagged) -> List<Heard> {
-    let p? = html_prim(el) else { return read_on(el, (k) -> true) }
-    if unheard(p, html_parts(el)) { return [] }
-    heard_from(p, html_parts(el), own_text(el), dir_in(el)).concat(read_on(el, (k) -> true))
+fn html_own(el: Tagged, ids: List<Named>) -> List<Heard> {
+    let p? = html_prim(el) else { return read_on(el, ids, (k) -> true) }
+    if unheard(p, html_parts(el, ids)) { return [] }
+    heard_from(p, html_parts(el, ids), own_text(el), dir_in(el))
+        .concat(read_on(el, ids, (k) -> true))
 }
 
-fn read_on(el: Tagged, keeps: fn(Tagged) -> bool) -> List<Heard> {
-    [h for c in el.kids for k in tag_in(c) if keeps(k) for h in html_heard(c)]
+fn read_on(el: Tagged, ids: List<Named>, keeps: fn(Tagged) -> bool) -> List<Heard> {
+    [h for c in el.kids for k in tag_in(c) if keeps(k) for h in html_heard(c, ids)]
 }
 
 /// The element an element is, as a run of none or one.
@@ -290,8 +360,9 @@ fn dir_in(el: Tagged?) -> Direction? {
 }
 
 /// What an element's attributes tell a reader.
-fn html_parts(el: Tagged) -> List<Part> {
+fn html_parts(el: Tagged, ids: List<Named>) -> List<Part> {
     [
+        described_by(ids.find(it.id == attr(el, .AriaDescribedby))?.words),
         named_by(attr(el, .AriaLabel), 0),
         named_by(attr(el, .Alt), 3),
         named_by(attr(el, .Title), 2),
@@ -308,6 +379,13 @@ fn html_parts(el: Tagged) -> List<Part> {
 fn named_by(words: string?, rank: int) -> Part {
     match words {
         w? -> .Named(rank, w)
+        null -> .Nothing
+    }
+}
+
+fn described_by(words: string?) -> Part {
+    match words {
+        w? -> .Described(w)
         null -> .Nothing
     }
 }
@@ -383,6 +461,7 @@ fn token_part(t: Token) -> Part {
         "title" -> .Named(2, t.text),
         "alt" -> .Named(3, t.text),
         "value" or "amount" -> .Valued(t.text),
+        "error" -> .Described(t.text),
         "" -> if t.quoted { Part.Nothing } else { bare_part(t.text) },
         _ -> .Nothing,
     }
@@ -452,16 +531,37 @@ fn unescaped(c: string) -> string {
 // ── The terminal ───────────────────────────────────────────────
 
 /// What a reader hears of a tree, read from the terminal's text alone, colour stripped: each line
-/// heard as the states its marks draw. A row may draw several controls, so a line is no element;
-/// a reader of it hears the marks and their count.
+/// heard as the states its marks draw, and a refused field as the words on the lines under it. A
+/// row may draw several controls, so a line is no element; a reader of it hears the marks and
+/// their count.
 export fn terminal_heard(text: string) -> List<Heard> {
-    [h for l in text.split("\n") for h in terminal_line(l)]
+    let lines = text.split("\n")
+    [h for i, l in lines for h in terminal_line(l, refusal_under(lines, i))]
 }
 
-fn terminal_line(line: string) -> List<Heard> {
+fn terminal_line(line: string, description: string) -> List<Heard> {
     let states = [st for st in State.every() for _k in 0..marks(line, st)]
     if states.is_empty() { return [] }
-    [Heard { role: Prim.Text, name: line, value: "", states: states, direction: null }]
+    [
+        Heard {
+            role: Prim.Text,
+            name: line,
+            value: "",
+            states: states,
+            direction: null,
+            description: description,
+        },
+    ]
+}
+
+/// The words under a refused field drawn on line `at`: the lines after it indented past where its
+/// cross stands, joined; none where the line draws no cross.
+fn refusal_under(lines: List<string>, at: int) -> string {
+    let mark = "${unicode.invalid} "
+    if !lines[at].contains(mark) { return "" }
+    let under = repeat(" ", cells(lines[at].split(mark)[0]) + 2)
+    [l.substring(under.length, l.length) for l in lines.drop(at + 1).take_while(it.starts_with(under) && !it.starts_with("${under} "))]
+        .join(" ")
 }
 
 /// How many times a line draws the mark of `st`. A busy button draws its mark inside its
@@ -485,7 +585,7 @@ fn count(line: string, mark: string) -> int { (line.length - line.replace(mark, 
 /// What each target's reader hears of a tree.
 fn hears(t: Target, n: Node) -> List<Heard> {
     match t {
-        .Html -> [h for e in html_lowered(n) for h in html_heard(e)],
+        .Html -> html_page_heard(html_lowered(n)),
         .Native -> [h for e in native_lowered(n) for h in native_heard(e)],
         .Outline -> outline_heard(outline(n)),
         .Terminal -> terminal_heard(render(n, Env {}, 80)),
