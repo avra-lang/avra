@@ -5,7 +5,7 @@
 use answer_record.{ContentHash, RecordedRead}
 use hash_keyed_table.{HashKeyedTable, hash_keyed_table}
 use interned.{IdMemo, InternId, id_memo}
-use query_engine.{QueryEngine}
+use query_engine.{QueryEngine, ReaderAt}
 use @std.meta.{identity}
 
 /// Answers kept per id, each with the reads that found it. An identity: every holder sees one memo.
@@ -16,13 +16,13 @@ export type ReadMemo<V> = {
     /// The reads each kept answer's working-out made.
     reads: IdMemo<List<RecordedRead>>,
     /// The reader each kept answer's reads last reached: one asking again under it has them.
-    reached: IdMemo<int>,
+    reached: IdMemo<ReaderAt>,
 }
 
 export fn read_memo<V>() -> ReadMemo<V> {
     let answers: IdMemo<V> = id_memo()
     let reads: IdMemo<List<RecordedRead>> = id_memo()
-    let reached: IdMemo<int> = id_memo()
+    let reached: IdMemo<ReaderAt> = id_memo()
     ReadMemo { answers: answers, reads: reads, reached: reached }
 }
 
@@ -33,7 +33,7 @@ impl ReadMemo<V> {
     /// The answer kept for `id`, its working-out's reads made again in `engine` by whoever asks
     /// unless they reached that reader already.
     fn held(engine: QueryEngine, id: InternId) -> V? {
-        let reader = engine.reader()
+        let reader = engine.reader_at()
         if self.reached.held(id) != reader {
             engine.reads_made_again(self.reads.held(id) ?? [])
             self.reached.keep(id, reader)
@@ -48,7 +48,7 @@ impl ReadMemo<V> {
         let answer = compute()
         let reads = engine.reads_gathered()
         self.reads.keep(id, reads)
-        self.reached.keep(id, engine.reader())
+        self.reached.keep(id, engine.reader_at())
         self.answers.keep(id, answer)
         answer
     }
@@ -70,7 +70,7 @@ export type AskedMemo<V> = { answers: HashKeyedTable<MemoAnswer<V>> }
 
 /// A kept answer, the reads its working-out made, the reader those reads last reached, and the
 /// serial of the engine in which it last stood.
-type MemoAnswer<V> = { value: V, reads: List<RecordedRead>, reached: Cell<int>, stood_in: Cell<int> }
+type MemoAnswer<V> = { value: V, reads: List<RecordedRead>, reached: Cell<ReaderAt>, stood_in: Cell<int> }
 
 export fn asked_memo<V>() -> AskedMemo<V> {
     let answers: HashKeyedTable<MemoAnswer<V>> = hash_keyed_table()
@@ -83,7 +83,7 @@ impl AskedMemo<V> {
     fn answer(engine: QueryEngine, asked: ContentHash, compute: fn() -> V) -> V {
         let kept? = self.answers.get(asked) else { return self.worked_out(engine, asked, compute) }
         if !stands_in(engine, kept) { return self.worked_out(engine, asked, compute) }
-        let reader = engine.reader()
+        let reader = engine.reader_at()
         if kept.reached.get() != reader {
             engine.reads_made_again(kept.reads)
             kept.reached.set(reader)
@@ -104,7 +104,7 @@ impl AskedMemo<V> {
                 MemoAnswer {
                     value: value,
                     reads: reads,
-                    reached: Cell.new(engine.reader()),
+                    reached: Cell.new(engine.reader_at()),
                     stood_in: Cell.new(engine.serial),
                 },
             )
