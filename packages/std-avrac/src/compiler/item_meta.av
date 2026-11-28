@@ -292,8 +292,9 @@ fn declared_meta(engine: QueryEngine, d: DeclaredName) -> MetaType? {
 /// gathering never reads, since generators read the enum's shape. A gathering `in closure` reads the
 /// files the package of the `program` it's read for reaches through imports — the owner's package's,
 /// where none is named — another package's exported members alone, the program's own every one.
-/// Absent for a key that isn't a member's name, its module or a literal its mark carries, and where
-/// a generator in a file it reads isn't made.
+/// Unanswered for a scope no gathering has or a key that isn't a member's name, its module or a
+/// literal its mark carries, each its own law's to say; unmade where a generator in a file it reads
+/// isn't made.
 fn gathered(
     engine: QueryEngine,
     owner: SourceFileAddress,
@@ -302,15 +303,30 @@ fn gathered(
     order: List<Plain>,
     made: bool,
     program: string,
-) -> List<DeclaredName>? {
-    let files? = gathered_files(engine, owner, scope, program) else { return null }
+) -> Gathered {
+    let files? = gathered_files(engine, owner, scope, program) else { return Gathered.Unanswered }
     let keys = [k.of for k in order]
     let declared = [declared_in(engine, f, made) for f in files]
-    if declared.any(it == null) { return null }
+    if declared.any(it == null) { return Gathered.Unmade }
     let found = [d for ds in declared for d in ds! if seen_from(d, owner, program) && takes_member(engine, kind, d)]
     let keyed = [KeyedMember { d: d, values: [member_key(engine, kind, d, k) for k in keys] } for d in found]
-    if keyed.any((m) -> m.values.any(it == null)) { return null }
-    [m.d for m in sorted_by(keyed, member_before)]
+    if keyed.any((m) -> m.values.any(it == null)) { return Gathered.Unanswered }
+    Gathered.Taken([m.d for m in sorted_by(keyed, member_before)])
+}
+
+/// What a gathering takes: its members in order; or why they aren't known — a scope or a key its own
+/// law refuses, or a file it reads whose generators aren't made.
+enum Gathered {
+    Taken(members: List<DeclaredName>)
+    Unanswered
+    Unmade
+}
+
+impl Gathered {
+    /// The members a gathering takes, none where they aren't known.
+    fn members() -> List<DeclaredName> {
+        match self { .Taken(found) -> found, .Unanswered or .Unmade -> [] }
+    }
 }
 
 /// The files a gathering written in `owner` over `scope`, read for the package `program` (none: the
