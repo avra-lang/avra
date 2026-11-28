@@ -898,7 +898,7 @@ _Static_assert(offsetof(AvraArray, cap) == 0 && offsetof(AvraArray, len) == 8 &&
                offsetof(AvraArray, marks) == 24 && offsetof(AvraArray, site) == 32 && sizeof(AvraArray) == 40,
                "the static array layout mirrors AvraArray");
 _Static_assert(offsetof(AvraMap, keys) == 0 && offsetof(AvraMap, vals) == 8 && offsetof(AvraMap, index) == 16 &&
-               offsetof(AvraMap, icap) == 24 && offsetof(AvraMap, words) == 32 && sizeof(AvraMap) == 40,
+               offsetof(AvraMap, icap) == 24 && offsetof(AvraMap, key_class) == 32 && sizeof(AvraMap) == 40,
                "the static map layout mirrors AvraMap");
 
 // The header as constant fields: tag, kind, count, length.
@@ -1066,7 +1066,7 @@ LLVMValueRef avra_llvm_static_map(LLVMModuleRef m, const char* name, LLVMValueRe
     LLVMContextRef ctx = LLVMGetModuleContext(m);
     LLVMTypeRef i64 = LLVMInt64TypeInContext(ctx);
     LLVMTypeRef ptr = LLVMPointerTypeInContext(ctx, 0);
-    LLVMValueRef map_fields[5] = { keys, vals, LLVMConstPointerNull(ptr), LLVMConstInt(i64, 0, 0), LLVMConstInt(i64, 0, 0) };
+    LLVMValueRef map_fields[5] = { keys, vals, LLVMConstPointerNull(ptr), LLVMConstInt(i64, 0, 0), LLVMConstInt(i64, AVRA_KEYS_TEXT, 0) };
     // the target's own size, not the compiler's: a wasm32 AvraMap is smaller
     LLVMTypeRef map_ty = LLVMStructTypeInContext(ctx, (LLVMTypeRef[]){ ptr, ptr, ptr, i64, i64 }, 5, 0);
     LLVMTargetDataRef td = LLVMGetModuleDataLayout(m);

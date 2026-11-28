@@ -3650,6 +3650,9 @@ static inline uint64_t key_hash(int keyed, const char* key) {
 // the map holds words. These three read it by the map's class.
 typedef int64_t MapKey;
 
+// Whether a map's keys are machine words.
+static inline int map_words(const AvraMap* m) { return m->key_class == AVRA_KEYS_WORDS; }
+
 __attribute__((always_inline))
 static inline uint64_t word_hash(int keyed, int64_t k) {
     return __builtin_expect(keyed, 0) ? sip_hash(g_sip_key[0], g_sip_key[1], (const char*)&k, 8)
@@ -3658,18 +3661,18 @@ static inline uint64_t word_hash(int keyed, int64_t k) {
 
 __attribute__((always_inline))
 static inline uint64_t map_key_hash(const AvraMap* m, int keyed, MapKey k) {
-    return m->words ? word_hash(keyed, k) : key_hash(keyed, (const char*)(uintptr_t)k);
+    return map_words(m) ? word_hash(keyed, k) : key_hash(keyed, (const char*)(uintptr_t)k);
 }
 
 __attribute__((always_inline))
 static inline int map_key_same(const AvraMap* m, MapKey a, MapKey b) {
-    return a == b || (!m->words && avra_streq((const char*)(uintptr_t)a, (const char*)(uintptr_t)b));
+    return a == b || (!map_words(m) && avra_streq((const char*)(uintptr_t)a, (const char*)(uintptr_t)b));
 }
 
 // Whether entry `i` stands: a text map's hole is a null key, a word map's
 // a key marked absent, since every word is some key.
 static inline int map_entry_live(const AvraMap* m, const AvraArray* keys, int64_t i) {
-    return m->words ? !(avra_mark_at(keys, i) & MARK_ABSENT) : keys->data[i] != 0;
+    return map_words(m) ? !(avra_mark_at(keys, i) & MARK_ABSENT) : keys->data[i] != 0;
 }
 
 static inline int64_t index_word(uint32_t h32, int64_t slot) {
@@ -3811,28 +3814,28 @@ static void index_grown(AvraMap* m, uint32_t h32, int64_t s) {
     index_filed(m, h32, s);
 }
 
-static AvraMap* map_made(int64_t n, int64_t words) {
+static AvraMap* map_made(int64_t n, int64_t key_class) {
     AvraMap* m = (AvraMap*)box_alloc(sizeof(AvraMap), KIND_MAP);
     m->keys = (AvraArray*)(n > 0 ? avra_array_sized(n) : avra_array_new());
     m->vals = (AvraArray*)(n > 0 ? avra_array_sized(n) : avra_array_new());
     m->index = NULL;
     m->icap = 0;
-    m->words = words;
+    m->key_class = key_class;
     if (n > SMALL) index_made(m, table_for(n), 0);
     return m;
 }
 
-void* avra_map_new(void) { return map_made(0, 0); }
+void* avra_map_new(void) { return map_made(0, AVRA_KEYS_TEXT); }
 
 // A map keyed by machine words: an int, a bool, a payload-free enum.
-void* avra_map_w_new(void) { return map_made(0, 1); }
+void* avra_map_w_new(void) { return map_made(0, AVRA_KEYS_WORDS); }
 
 // A map that will hold `n` keys — a literal of `n` pairs: its arrays reserved for them, and past
 // a SMALL map's count its table made at the size they need, so the writes that fill it grow
 // nothing.
-void* avra_map_sized(int64_t n) { return map_made(n, 0); }
+void* avra_map_sized(int64_t n) { return map_made(n, AVRA_KEYS_TEXT); }
 
-void* avra_map_w_sized(int64_t n) { return map_made(n, 1); }
+void* avra_map_w_sized(int64_t n) { return map_made(n, AVRA_KEYS_WORDS); }
 
 // Releases both arrays (their owned slots follow), then the map.
 __attribute__((noinline))
@@ -4003,7 +4006,7 @@ static int64_t chunk_placed(AvraMap* m, uint32_t h32, uint64_t at, int64_t walke
 // must. The fresh slot's value is the caller's to push.
 __attribute__((always_inline))
 static inline int64_t map_filed(AvraMap* m, MapKey key, Probe p) {
-    if (m->words) avra_array_push(map_keys_owned(m), key);
+    if (map_words(m)) avra_array_push(map_keys_owned(m), key);
     else avra_array_push_owned(map_keys_owned(m), (void*)(uintptr_t)key);
     int64_t s = m->keys->len - 1;
     if (m->icap < 0) {
@@ -4223,7 +4226,7 @@ static void map_removed(AvraMap* m, int64_t s, uint64_t h, uint64_t at, int64_t 
     }
     index_head(m)->filed--;
     hole_left(map_keys_owned(m), s);
-    if (m->words) mark_put(m->keys, s, MARK_ABSENT);
+    if (map_words(m)) mark_put(m->keys, s, MARK_ABSENT);
     hole_left(map_vals_owned(m), s);
     IndexHead* hd = index_head(m);
     hd->holes++;
@@ -4471,7 +4474,7 @@ static void* map_clone(AvraMap* m) {
     c->vals = m->vals;
     c->index = NULL;
     c->icap = 0;
-    c->words = m->words;
+    c->key_class = m->key_class;
     if (m->index) {
         int64_t bytes = index_bytes(m);
         void* block = index_block(m->icap, (size_t)bytes);
