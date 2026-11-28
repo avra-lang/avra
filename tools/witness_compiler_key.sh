@@ -6,12 +6,13 @@
 # sources, must make it; then A, built again, takes its own objects again and links the binary
 # its first build linked, so a key that only ever misses proves nothing.
 #   sh tools/witness_compiler_key.sh [compiler]   (default build/avra)
+. "$(dirname "$0")/lib/scratch.sh"
 set -u
 root=$(cd "$(dirname "$0")/.." && pwd)
 src=${1:-$root/build/avra}
 a="$root/build/avra-witness-key-a"
 b="$root/build/avra-witness-key-b"
-w=$(mktemp -d)
+scratch_dir w
 cleared() { find "$w" "$a" "$b" "$root/build/.avra-witness-key-a.print" "$root/build/.avra-witness-key-b.print" -delete 2>/dev/null; }
 fail() { echo "witness_compiler_key: $*"; cleared; exit 1; }
 cp "$src" "$a" && cp "$src" "$b" && printf '\n' >> "$b" || fail "the two compilers were not made"

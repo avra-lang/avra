@@ -29,6 +29,7 @@
 #   sh tools/witness_program_refusal.sh --cases   (each case's name, one a line, as the gate deals them)
 # A case is a directory holding its `avra.toml` (tools/lib/cases.sh); one that holds none is no case.
 # Every case run, each such directory is named; one named on the command line is refused.
+. "$(dirname "$0")/lib/scratch.sh"
 set -u
 # a store is copied, counted or emptied here between builds, so each build saves its own before it answers
 export AVRA_STORE_KEPT_HERE=1
@@ -60,8 +61,7 @@ avra=${1:-build/avra-try}
 case $avra in /*) ;; *) avra="$root/$avra" ;; esac
 [ -x "$avra" ] || { echo "witness_program_refusal: no compiler at $avra" >&2; exit 1; }
 [ $# -gt 0 ] && shift
-tmp=$(mktemp -d)
-trap 'find "$tmp" -delete' EXIT
+scratch_dir tmp
 
 # what one run of the case `$1` said, its warnings aside, its copy's path said as `<case>`: a blank
 # line is said only before what is kept, so a warning goes with the line that parts it from the rest

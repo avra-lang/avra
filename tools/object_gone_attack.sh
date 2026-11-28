@@ -5,6 +5,7 @@
 # same compiler read the list and refused with "a held object disappeared". It CLEARS the
 # tree's cache, as the attacks beside it do.
 #   AVRA=build/avra-try sh tools/object_gone_attack.sh
+. "$(dirname "$0")/lib/scratch.sh"
 set -eu
 # a store is copied, counted or emptied here between builds, so each build saves its own before it answers
 export AVRA_STORE_KEPT_HERE=1
@@ -13,8 +14,7 @@ cd "$(dirname "$0")/.."
 export LLVM_PREFIX
 avra="${AVRA:-build/avra}"
 prog=packages/std-avrac/src/features/fns/tests/contained_task
-out="$(mktemp)"
-trap 'find "$out" -delete' EXIT
+scratch_dir out; out="$out/file"; : > "$out"
 find .avra-cache -mindepth 1 -delete 2>/dev/null || true
 "$avra" test "$prog" > "$out" 2>&1 || { tail -5 "$out"; echo "object_gone_attack: the first build failed"; exit 1; }
 find .avra-cache -mindepth 1 -delete

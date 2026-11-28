@@ -3,6 +3,7 @@
 # in the clear and over TLS, after the TLS renegotiation probe. Skips,
 # saying so, when h2spec is not on the PATH. The server is this script's
 # child and is killed when it exits, whatever ends it.
+. "$(dirname "$0")/lib/scratch.sh"
 set -u
 sh tools/tls_renegotiation.sh || exit 1
 if ! command -v h2spec > /dev/null 2>&1; then
@@ -21,7 +22,8 @@ only_preface() {
 
 pid=
 stop() { [ -n "$pid" ] && kill "$pid" 2> /dev/null; }
-trap stop EXIT
+scratch_also stop
+# LICENSED scratch_law: its own words before the exit, which runs the run's own exit
 trap 'stop; exit 1' INT TERM
 failed=0
 port=$((20000 + $$ % 20000))

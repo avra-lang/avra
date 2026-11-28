@@ -27,6 +27,7 @@
 #
 # A class's count is a DIFF of the same awk over input and output, so a
 # misread line (a `//` inside a string) appears on both sides and cancels.
+. "$(dirname "$0")/lib/scratch.sh"
 set -u
 avra=${AVRA:-build/avra}
 root=${1:-.}
@@ -43,8 +44,7 @@ lost_files=0
 own=0
 doc=0
 trail=0
-work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
+scratch_dir work
 
 counts() {
     # `\n` inside a string literal is a line break the lexer sees as

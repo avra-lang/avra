@@ -23,6 +23,7 @@
 # EVERY COLD RUN STARTS BARE: an empty store, and no product a run before it left, which a build reads.
 # A FILE IS READ ONLY ONCE IT IS OLDER THAN THE STAMP WINDOW (io.stamp withholds a stamp from a path
 # changed in the last two seconds), so what a run stamps never depends on how fast it began.
+. "$(dirname "$0")/lib/scratch.sh"
 set -eu
 verdict=
 cause=
@@ -65,7 +66,7 @@ git cat-file -e "$snapshot^{commit}" 2> /dev/null || {
 # gate the day the branch goes. It is asked of origin in a scratch repository, so this clone never
 # turns shallow.
 if [ "${COST_ACCEPTING:-0}" = 1 ]; then
-    probe=$(mktemp -d)
+    scratch_dir probe
     if ! { git init -q "$probe" && git -C "$probe" fetch -q --depth=1 "$(git remote get-url origin)" "refs/tags/$tag:refs/tags/$tag"; } 2> /dev/null; then
         find "$probe" -delete
         echo "cost: snapshot $snapshot has no tag $tag on origin, so a gate's clone loses it the day its branch goes — tag it first (git push origin $snapshot:refs/tags/$tag)"
@@ -179,7 +180,7 @@ if ! mkdir "$place.held" 2> /dev/null; then
     if [ -n "$holder" ] && kill -0 "$holder" 2> /dev/null; then echo "cost: run $holder measures in $place"; exit 1; fi
 fi
 echo $$ > "$place.held/pid"
-trap 'find "$place.held" -delete 2> /dev/null || :' EXIT
+scratch_also 'find "$place.held" -delete 2> /dev/null || :'
 [ ! -e "$place" ] || find "$place" -delete
 src=$place/src
 mkdir -p "$src/build"

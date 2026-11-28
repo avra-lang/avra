@@ -9,6 +9,7 @@
 #   sh tools/keeper_planted.sh <plant>        a plant of PLANTS, named for its keeper
 #   sh tools/keeper_planted.sh --list         each plant, one a line
 #   sh tools/keeper_planted.sh --pick <k>…    the first of the keepers `k` that has a plant, else nothing
+. "$(dirname "$0")/lib/scratch.sh"
 set -u
 root=$(cd "$(dirname "$0")/.." && pwd)
 PLANTS="fmt-lossless traps clock-holds wasm-refuses tool-witnesses runtime-tests witness-place-kill witness-machine-store inputs externs layers bash-parse dogfooding-rules rt-header pkgs-witness"
@@ -24,14 +25,14 @@ case ${1:-} in
 esac
 plant=${1:?a plant: one of $PLANTS}
 case " $PLANTS " in *" $plant "*) ;; *) echo "keeper_planted: no plant named $plant — one of $PLANTS"; exit 1 ;; esac
-tmp=$(mktemp -d "${TMPDIR:-/tmp}/avra-keeper-planted.XXXXXX")
+scratch_dir tmp
 tree="$tmp/tree"
 ended() {
     git -C "$root" worktree remove --force "$tree" >/dev/null 2>&1 || :
     rmdir "$tmp" 2>/dev/null || :
     git -C "$root" worktree prune >/dev/null 2>&1 || :
 }
-trap ended EXIT
+scratch_also ended
 git -C "$root" worktree add -q --detach "$tree" HEAD || { echo "keeper_planted: no worktree of HEAD at $tree"; exit 1; }
 ln -s "$root/build" "$tree/build"
 cd "$tree" || exit 1

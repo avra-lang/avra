@@ -12,12 +12,13 @@
 #   (5) the install's verdict stands only for the std it judged: an installed std file edited to a
 #       type error is judged again, and the program's check refuses it.
 #   sh tools/std_answers_attack.sh [compiler]     (default build/avra-try)
+. "$(dirname "$0")/lib/scratch.sh"
 set -u
 root=$(cd "$(dirname "$0")/.." && pwd)
 avra=$(cd "$(dirname "${1:-$root/build/avra-try}")" && pwd)/$(basename "${1:-$root/build/avra-try}")
-w=$(mktemp -d "${TMPDIR:-/tmp}/avra-std-answers.XXXXXX")
+scratch_dir w
 mounted=""
-trap '[ -n "$mounted" ] && umount "$mounted" 2>/dev/null; find "$w" -delete 2>/dev/null || :' EXIT
+scratch_also '[ -n "$mounted" ] && umount "$mounted" 2>/dev/null; find "$w" -delete 2>/dev/null || :'
 export AVRA_PROGRAM_NET=0
 unset AVRA_MACHINE_STORE AVRA_MACHINE_STORE_DIR
 fail() { echo "std_answers_attack: $*"; exit 1; }

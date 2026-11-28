@@ -7,13 +7,13 @@
 # anywhere, and the ratchet is handed a skip stream the way the bench
 # writes one.
 # A cold run clears the tree's `.avra-cache`; the machine store lives there too, or "cold" would read the machine's rows.
+. "$(dirname "$0")/lib/scratch.sh"
 export AVRA_CACHE_DIR="$(cd "$(dirname "$0")/.." && pwd)/.avra-cache"
 # a store is copied, counted or emptied here between builds, so each build saves its own before it answers
 export AVRA_STORE_KEPT_HERE=1
 set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
-tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
+scratch_dir tmp
 unset WARM_EDIT_SKIP
 mkdir -p "$tmp/tools"
 cp "$root/tools/warm_edit_bench.sh" "$root/tools/host_key.sh" "$tmp/tools/"

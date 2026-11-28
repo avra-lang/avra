@@ -8,6 +8,7 @@
 #   sh tools/witness_program_waits.sh [compiler] [package…]
 #   (default build/avra-try; with no package, the packages whose code defers, spawns or waits, and
 #   the refusal witnesses that do)
+. "$(dirname "$0")/lib/scratch.sh"
 set -u
 # a store is copied, counted or emptied here between builds, so each build saves its own before it answers
 export AVRA_STORE_KEPT_HERE=1
@@ -21,8 +22,7 @@ if [ $# -eq 0 ]; then
         packages/std-io packages/std-http packages/std-db packages/std-queue packages/std-queue_store \
         $(ls -d tools/program-refusals/* | grep -E 'defer|task|wait|spawn|select|cancel|produce|within|channel|await')
 fi
-tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
+scratch_dir tmp
 failed=0
 for p in "$@"; do
     [ -d "$p" ] || { echo "witness_program_waits: no package at $p" >&2; failed=1; continue; }

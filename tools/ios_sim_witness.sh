@@ -8,6 +8,7 @@
 #   foundation — an extern reaches Foundation (NSLog) and CoreFoundation
 # Exits 1 on the first failure, naming it. Boots a simulator only when
 # none is booted, and shuts down only the one it booted.
+. "$(dirname "$0")/lib/scratch.sh"
 set -u
 
 tree=$(cd "$(dirname "$0")/.." && pwd)
@@ -33,7 +34,7 @@ if [ -z "$udid" ]; then
     xcrun simctl bootstatus "$udid" >/dev/null 2>&1 || :
 fi
 said "simulator $udid"
-trap '[ -z "$booted_here" ] || xcrun simctl shutdown "$booted_here" >/dev/null 2>&1' EXIT
+scratch_also '[ -z "$booted_here" ] || xcrun simctl shutdown "$booted_here" >/dev/null 2>&1'
 
 write_programs() {
     cat > "$work/hello.av" <<'EOF'

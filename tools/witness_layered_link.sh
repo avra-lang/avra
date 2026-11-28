@@ -10,16 +10,17 @@
 # the overlay. Each step says its link commands (AVRA_LINK_TRACE) and what the
 # product printed; the last line is PASS or FAIL.
 #   sh tools/witness_layered_link.sh [compiler]   (default build/avra-try)
+. "$(dirname "$0")/lib/scratch.sh"
 set -eu
 # a store is copied, counted or emptied here between builds, so each build saves its own before it answers
 export AVRA_STORE_KEPT_HERE=1
 root=$(cd "$(dirname "$0")/.." && pwd)
 avra=${1:-build/avra-try}
 case $avra in /*) ;; *) avra="$root/$avra" ;; esac
-tmp=$(mktemp -d)
+scratch_dir tmp
 verdict=FAIL
 finish() { find "$tmp" -delete; echo "witness_layered_link: $verdict"; }
-trap finish EXIT
+scratch_also finish
 [ -x "$avra" ] || { echo "witness_layered_link: no compiler at $avra" >&2; exit 1; }
 export AVRA_PROGRAM=1 AVRA_PROGRAM_MODE=dev AVRA_LINK_TRACE=1 AVRA_CACHE_DIR="$tmp/machine"
 mkdir -p "$tmp/machine" "$tmp/p/src"

@@ -6,6 +6,7 @@
 # down whole, the compiler beside it, so its std is the snapshot's — and a refusal is named with its
 # two remedies.
 #   sh tools/cost_snapshot.sh
+. "$(dirname "$0")/lib/scratch.sh"
 set -eu
 . "$(dirname "$0")/lib/tree.sh"
 cd "$tree"
@@ -17,8 +18,7 @@ tag=cost-snapshot-$(printf '%.8s' "$snapshot")
 git cat-file -e "$snapshot^{commit}" 2> /dev/null || git fetch -q --depth=1 origin "refs/tags/$tag:refs/tags/$tag" 2> /dev/null ||
     git fetch -q --depth=1 origin "$snapshot" 2> /dev/null || :
 git cat-file -e "$snapshot^{commit}" 2> /dev/null || { echo "cost-snapshot: the snapshot $snapshot is not in this clone and did not fetch" >&2; exit 1; }
-work=$(mktemp -d "${TMPDIR:-/tmp}/avra-snap.XXXXXX")
-trap 'find "$work" -delete 2> /dev/null || :' EXIT
+scratch_dir work
 git archive "$snapshot" | tar -x -C "$work"
 mkdir -p "$work/build" "$work/cache/home"
 cp "$avra" "$work/build/avra"

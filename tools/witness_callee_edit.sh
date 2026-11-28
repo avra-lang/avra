@@ -21,6 +21,7 @@ set -u
 
 memcap="${MEMCAP:?MEMCAP must name the memory-cap wrapper, memcap.sh}"
 tree="$(cd "$(dirname "$0")/.." && pwd)"
+# LICENSED scratch_law: its logs are read after the run, which says where they stand
 logs="$(mktemp -d "${TMPDIR:-/tmp}/avra-witness-callee.XXXXXX")"
 pkg="$logs/pkg"
 

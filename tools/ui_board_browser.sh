@@ -14,6 +14,7 @@
 # UI_BROWSER_SHOTS names a directory the run leaves screenshots in. UI_BROWSER_ENGINES names the engines
 # to run, in order (default `firefox`; the checks name `firefox webkit`); UI_BROWSER_DEVICE names a Playwright device
 # ("iPhone 15") for the WebKit run: a touch screen and a phone's window.
+. "$(dirname "$0")/lib/scratch.sh"
 set -eu
 
 # Whether a browser stands at the path `$1`.
@@ -40,7 +41,7 @@ if [ "${1:-}" = --self-test ]; then
     # with none is read as missing — the case a restored cache used to pass at
     # once, and the reason a cache is validated rather than assumed.
     command -v node >/dev/null 2>&1 || { echo "ui-browser self-test: no \`node\` to ask Playwright's module"; exit 1; }
-    d=$(mktemp -d "${TMPDIR:-/tmp}/avra-webkit-guard.XXXXXX")
+    scratch_dir d
     mkdir -p "$d/module/node_modules/playwright" "$d/standing"
     printf '%s\n' 'export const webkit = { executablePath: () => process.env.PW_ANSWER };' >"$d/module/node_modules/playwright/index.mjs"
     : >"$d/standing/pw_run.sh"
@@ -61,7 +62,7 @@ fi
 
 . "$(dirname "$0")/lib/tree.sh"
 target=${UI_BOARD_TARGET:-wasm}
-work=$(mktemp -d "${TMPDIR:-/tmp}/avra-ui-browser.XXXXXX")
+scratch_dir work
 
 # A RUN THAT CANNOT JUDGE FAILS. On the checks' machine (CI=true) a missing browser,
 # node or toolchain is a broken machine. A local machine may stand the keeper
@@ -94,7 +95,7 @@ export BOARD_DB="$work/board.db"
 "$avra" dev --target "$target" --port 0 "$work/tools/ui-board" >"$work/dev.out" 2>"$work/dev.err" &
 dev=$!
 servers=""
-trap 'kill "$dev" 2>/dev/null || true' EXIT
+scratch_also 'kill "$dev" 2>/dev/null || true'
 tries=0
 until grep -q '^dev: .* at http' "$work/dev.out" 2>/dev/null; do
     if ! kill -0 "$dev" 2>/dev/null; then
@@ -123,7 +124,7 @@ for mode in "" "--tampered"; do
     node "$here/ui-board/serve_hydrated.mjs" "$work/document.html" "$served" "$tree/runtime/dom" $mode --hold --backend "$url" >"$work/serve$mode.out" 2>&1 &
     servers="$servers $!"
 done
-trap 'kill "$dev" $servers 2>/dev/null || true' EXIT
+scratch_also 'kill "$dev" $servers 2>/dev/null || true'
 for mode in "" "--tampered"; do
     tries=0
     until grep -q '^serving http' "$work/serve$mode.out" 2>/dev/null; do
@@ -155,7 +156,7 @@ esac
 cp -R "$tree/tools/ui-warns" "$work/ui-warns"
 "$avra" dev --target "$target" --port 0 "$work/ui-warns" >"$work/warns.out" 2>"$work/warns.err" &
 warns=$!
-trap 'kill "$dev" "$warns" $servers 2>/dev/null || true' EXIT
+scratch_also 'kill "$dev" "$warns" $servers 2>/dev/null || true'
 tries=0
 until grep -q '^dev: .* at http' "$work/warns.out" 2>/dev/null; do
     kill -0 "$warns" 2>/dev/null || { cat "$work/warns.err" "$work/warns.out"; echo "ui-browser: \`avra dev\` ended before it served the warning page"; exit 1; }
@@ -176,7 +177,7 @@ echo "ui-browser: a page whose walk warns is told in \`avra dev\`'s output, once
 cp -R "$tree/tools/ui-observed" "$work/ui-observed"
 "$avra" dev --target "$target" --port 0 "$work/ui-observed" >"$work/observed.out" 2>"$work/observed.err" &
 observed=$!
-trap 'kill "$dev" "$warns" "$observed" $servers 2>/dev/null || true' EXIT
+scratch_also 'kill "$dev" "$warns" "$observed" $servers 2>/dev/null || true'
 tries=0
 until grep -q '^dev: .* at http' "$work/observed.out" 2>/dev/null; do
     kill -0 "$observed" 2>/dev/null || { cat "$work/observed.err" "$work/observed.out"; echo "ui-browser: \`avra dev\` ended before it served the observation page"; exit 1; }
@@ -195,7 +196,7 @@ sed 's/^/ui-browser: observation page: /' "$work/observed.node"
 cp -R "$tree/tools/ui-shown" "$work/ui-shown"
 "$avra" dev --target "$target" --port 0 "$work/ui-shown" >"$work/shown.out" 2>"$work/shown.err" &
 shown=$!
-trap 'kill "$dev" "$warns" "$observed" "$shown" $servers 2>/dev/null || true' EXIT
+scratch_also 'kill "$dev" "$warns" "$observed" "$shown" $servers 2>/dev/null || true'
 tries=0
 until grep -q '^dev: .* at http' "$work/shown.out" 2>/dev/null; do
     kill -0 "$shown" 2>/dev/null || { cat "$work/shown.err" "$work/shown.out"; echo "ui-browser: \`avra dev\` ended before it served the shown page"; exit 1; }

@@ -16,6 +16,7 @@ export AVRA_MEM_CEILING_MB=${AVRA_MEM_CEILING_MB:-5000}
 out=${TMPDIR:-/tmp}/dbm_sweep.$$
 f=
 restored() { [ -z "$f" ] || [ ! -f "$out.orig" ] || cp "$out.orig" "$f"; }
+# LICENSED scratch_law: its own words before the exit, which runs the run's own exit
 trap 'restored; rm -f "$out" "$out.orig"; exit 130' HUP INT TERM
 lit=
 named=

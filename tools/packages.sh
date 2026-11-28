@@ -8,6 +8,7 @@
 #   sh tools/packages.sh --self-test
 # A root other than the tree is `PACKAGES_ROOT=<dir>`.
 
+. "$(dirname "$0")/lib/scratch.sh"
 root="${PACKAGES_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 
 packages() {
@@ -18,8 +19,7 @@ packages() {
 }
 
 self_test() {
-    t=$(mktemp -d) || exit 1
-    trap 'find "$t" -delete' EXIT
+    scratch_dir t
     fails=0
     mkdir -p "$t/packages/a/src" "$t/packages/b/src"
     got=$(PACKAGES_ROOT=$t sh "$0" | tr '\n' ' ')

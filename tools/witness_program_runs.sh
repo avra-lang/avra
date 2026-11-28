@@ -15,6 +15,7 @@
 #     of the test it names) fails, named with the trap's words, and the run goes on to the next,
 #     which passes.
 #   sh tools/witness_program_runs.sh [compiler]   (default build/avra-try)
+. "$(dirname "$0")/lib/scratch.sh"
 set -u
 # a store is copied, counted or emptied here between builds, so each build saves its own before it answers
 export AVRA_STORE_KEPT_HERE=1
@@ -22,8 +23,7 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 avra=${1:-build/avra-try}
 case $avra in /*) ;; *) avra="$root/$avra" ;; esac
 [ -x "$avra" ] || { echo "witness_program_runs: no compiler at $avra" >&2; exit 1; }
-tmp=$(mktemp -d)
-trap 'find "$tmp" -delete' EXIT
+scratch_dir tmp
 cp -R "$root/tools/program-runs/." "$tmp/"
 find "$tmp" -name .avra-cache -prune -exec find {} -delete \;
 failed=0

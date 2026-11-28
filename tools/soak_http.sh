@@ -15,6 +15,7 @@
 #     and after it drains — equal, or one leaked;
 #   - the reset law: how many attempts came back `net.read`.
 # A status is a verdict: 0 when all four hold.
+. "$(dirname "$0")/lib/scratch.sh"
 set -u
 cd "$(dirname "$0")/.."
 secs="${SOAK_HTTP_SECONDS:-600}"
@@ -40,10 +41,8 @@ reaped() {
     pkill -P "$server" 2> /dev/null
     kill "$server" 2> /dev/null
 }
-trap reaped EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
-trap 'exit 129' HUP
+scratch_also reaped
+scratch_signals
 
 AVRA_MEM_STATS=1 SOAK_SECS=$((secs + 60)) SOAK_PORT="$port" "$bin" > "$out/server.log" 2>&1 &
 server=$!

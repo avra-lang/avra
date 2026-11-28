@@ -6,10 +6,11 @@
 # The wasm toolchain is a BUILD dependency, not a source one: when `clang`
 # cannot target wasm32 or `node` is absent the check SKIPS with a spoken
 # reason — never silently green (CLAUDE.md, a check that examined nothing).
+. "$(dirname "$0")/lib/scratch.sh"
 set -eu
 
 . "$(dirname "$0")/lib/tree.sh"
-work=${WASM_WORK:-$(mktemp -d "${TMPDIR:-/tmp}/avra-wasm.XXXXXX")}
+if [ -n "${WASM_WORK:-}" ]; then work=$WASM_WORK; else scratch_dir work; fi
 fixtures=$here/wasm-fixtures
 
 wasm_who=wasm-check; . "$here/lib/wasm.sh"

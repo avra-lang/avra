@@ -4,11 +4,11 @@
 # is added inside the quoted impl, and the test calling it is run again over the same machine cache:
 # the program layer sees `second`.
 #   sh tools/derive_members_witness.sh [compiler]     (default build/avra)
+. "$(dirname "$0")/lib/scratch.sh"
 set -u
 root=$(cd "$(dirname "$0")/.." && pwd)
 avra=$(cd "$(dirname "${1:-$root/build/avra}")" && pwd)/$(basename "${1:-$root/build/avra}")
-w=$(mktemp -d "${TMPDIR:-/tmp}/avra-derive-members.XXXXXX")
-trap 'find "$w" -delete 2>/dev/null || :' EXIT
+scratch_dir w
 fail() { echo "derive_members_witness: $*"; exit 1; }
 held() { echo "derive_members_witness: $*"; }
 

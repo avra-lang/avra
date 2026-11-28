@@ -14,6 +14,7 @@
 # Answers one line per run: label, wall ms, status, and the compiler's own
 # `time:` line where it printed one. `AVRA_BIN` names the binary (default
 # ./avra, so the shim's lock and watchdog apply).
+. "$(dirname "$0")/../../tools/lib/scratch.sh"
 set -u
 # a store is copied, counted or emptied here between builds, so each build saves its own before it answers
 export AVRA_STORE_KEPT_HERE=1
@@ -24,10 +25,10 @@ here=$(cd "$(dirname "$0")/../.." && pwd)
 root=${TMPDIR:-/tmp}/avra_gen_types.$$
 out=$root.out
 if [ -n "${AVRA_KEEP:-}" ]; then
-    trap 'find "$out" "$out.orig" "$out.err" -delete 2>/dev/null' EXIT INT TERM
+    scratch_also 'find "$out" "$out.orig" "$out.err" -delete 2>/dev/null'
     echo "kept	$root"
 else
-    trap 'find "$root" -depth -delete 2>/dev/null; find "$out" "$out.orig" "$out.err" -delete 2>/dev/null' EXIT INT TERM
+    scratch_also 'find "$root" -depth -delete 2>/dev/null; find "$out" "$out.orig" "$out.err" -delete 2>/dev/null'
 fi
 now() { date +%s%N; }
 ms() { echo $((($(now) - $1) / 1000000)); }

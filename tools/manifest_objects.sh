@@ -14,6 +14,7 @@
 #   sh tools/manifest_objects.sh --self-test
 # A root other than the tree is `MANIFEST_ROOT=<dir>`.
 
+. "$(dirname "$0")/lib/scratch.sh"
 root="${MANIFEST_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 
 # rows <key> <manifest>...: each entry of a `key = [...]` row, as written
@@ -76,8 +77,7 @@ closure() {
 manifests() { for d in "$@"; do [ ! -f "$root/$d/avra.toml" ] || echo "$root/$d/avra.toml"; done; }
 
 self_test() {
-    t=$(mktemp -d) || exit 1
-    trap 'find "$t" -delete' EXIT
+    scratch_dir t
     fails=0
     bad() { fails=$((fails + 1)); echo "manifest_objects: FAIL — $1"; }
     mk() { mkdir -p "$t/packages/$1/src/tests"; printf '[package]\nname = "%s"\n%b' "$1" "$2" > "$t/packages/$1/avra.toml"; }

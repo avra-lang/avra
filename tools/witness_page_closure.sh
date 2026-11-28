@@ -8,12 +8,12 @@
 #   ui-board                   the board's page: reaches none
 #   page-closure/hashes        a page hashing through @std/hash's C: caught, naming std-hash
 #   sh tools/witness_page_closure.sh [compiler]
+. "$(dirname "$0")/lib/scratch.sh"
 set -u
 . "$(dirname "$0")/lib/tree.sh"
 [ $# -gt 0 ] && avra=$1
 [ -x "$avra" ] || { echo "page-closure: no compiler at $avra"; exit 1; }
-work=$(mktemp -d "${TMPDIR:-/tmp}/avra-page-closure.XXXXXX")
-trap 'rm -rf "$work"' EXIT INT TERM
+scratch_dir work
 export LC_ALL=C
 
 # `<symbol> <package>` for each symbol a package without a wasm body defines in its own objects.

@@ -29,6 +29,7 @@
 # packs are compacted into one at the end: the kept files name every question in them, so the
 # compaction drops nothing, and a reader maps one pack.
 #   sh tools/std_answers.sh <avra> <std> <out> [package…]   (default every std package but those)
+. "$(dirname "$0")/lib/scratch.sh"
 set -u
 export AVRA_WORK_AHEAD_OFF=1
 # one package's verdict and answers, a job of the run below: `--one <avra> <package> <out> <scratch>`
@@ -87,8 +88,7 @@ if [ "$(cat "$out/inputs" 2> /dev/null)" = "$key" ]; then
     echo "std answers: unchanged, $(ls "$out" | grep -c '^pack-') packs, $(du -sk "$out" | cut -f1) KB in $out"
     exit 0
 fi
-scratch=$(mktemp -d)
-trap 'find "$scratch" -delete' EXIT
+scratch_dir scratch
 mkdir -p "$out"
 find "$out" -mindepth 1 -delete
 jobs=${STD_ANSWERS_JOBS:-$(nproc 2> /dev/null || echo 2)}

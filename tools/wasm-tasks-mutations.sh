@@ -31,10 +31,11 @@
 # the day to add the break here. The scheduler's own cancel and `within`
 # logic is shared with native and mutation-tested by the C runtime tests
 # (`make runtime-mutations`); what these breaks reach is the port under it.
+. "$(dirname "$0")/lib/scratch.sh"
 set -eu
 
 . "$(dirname "$0")/lib/tree.sh"
-work=${WASM_WORK:-$(mktemp -d "${TMPDIR:-/tmp}/avra-wmut.XXXXXX")}
+if [ -n "${WASM_WORK:-}" ]; then work=$WASM_WORK; else scratch_dir work; fi
 lib=$tree/build/wasm32/libavra_runtime.a
 wasm_who=wasm-tasks-mutations; . "$here/lib/wasm.sh"
 . "$here/jspi_node.sh"
@@ -47,7 +48,7 @@ if "$node" --experimental-wasm-jspi -e 0 >/dev/null 2>&1; then jspi="--experimen
 
 cp "$lib" "$work/clean.a"
 restore() { cp "$work/clean.a" "$lib"; wasm_ready || true; }
-trap restore EXIT
+scratch_also restore
 
 # Build and run every fixture with the archive as it stands, under the host
 # in `$1` (a directory holding tools/wasm-node.mjs and runtime/dom/tasks.js).

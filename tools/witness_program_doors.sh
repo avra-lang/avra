@@ -15,6 +15,7 @@
 #     to another directory, refused in the old path's words.
 #   sh tools/witness_program_doors.sh [compiler [case…]]   (default build/avra-try; every case)
 #   sh tools/witness_program_doors.sh --cases               its cases, one a line, for the gate to deal
+. "$(dirname "$0")/lib/scratch.sh"
 set -u
 # a store is copied, counted or emptied here between builds, so each build saves its own before it answers
 export AVRA_STORE_KEPT_HERE=1
@@ -37,8 +38,7 @@ for c in $only; do cases | grep -qx "$c" || { echo "witness_program_doors: no ca
 wanted() { [ -z "$only" ] || case " $only " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 case $avra in /*) ;; *) avra="$root/$avra" ;; esac
 [ -x "$avra" ] || { echo "witness_program_doors: no compiler at $avra" >&2; exit 1; }
-tmp=$(mktemp -d)
-trap 'find "$tmp" -delete' EXIT
+scratch_dir tmp
 # a machine store of the witness's own, whatever store the caller names
 export AVRA_CACHE_DIR="$tmp/machine"
 failed=0

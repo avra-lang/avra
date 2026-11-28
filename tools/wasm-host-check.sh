@@ -4,10 +4,11 @@
 # refused in the scheduler's words, an entered one runs, and the artifact a page
 # fetches follows what the host can suspend. SKIPS, spoken, where the toolchain
 # or a JSPI Node is absent.
+. "$(dirname "$0")/lib/scratch.sh"
 set -eu
 
 . "$(dirname "$0")/lib/tree.sh"
-work=${WASM_WORK:-$(mktemp -d "${TMPDIR:-/tmp}/avra-whost.XXXXXX")}
+if [ -n "${WASM_WORK:-}" ]; then work=$WASM_WORK; else scratch_dir work; fi
 wasm_who=wasm-host-check; . "$here/lib/wasm.sh"
 . "$here/jspi_node.sh"
 

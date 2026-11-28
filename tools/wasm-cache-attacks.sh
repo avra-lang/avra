@@ -6,11 +6,12 @@
 # The wasm toolchain is a BUILD dependency: where `clang` has no wasm32 target
 # the attacks SKIP with a spoken reason. `wasm-opt` is stood in for, so the
 # shrunk module is told from the link's own answer by one appended byte.
+. "$(dirname "$0")/lib/scratch.sh"
 set -eu
 
 . "$(dirname "$0")/lib/tree.sh"
 target=${WASM_TARGET:-wasm32}
-work=${WASM_WORK:-$(mktemp -d "${TMPDIR:-/tmp}/avra-wasm-cache.XXXXXX")}
+if [ -n "${WASM_WORK:-}" ]; then work=$WASM_WORK; else scratch_dir work; fi
 pkg=$work/app
 wasm=$pkg/src/main.wasm
 

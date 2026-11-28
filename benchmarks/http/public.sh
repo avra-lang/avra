@@ -19,6 +19,7 @@
 # places both. A row whose responses were not all 2xx says so in its
 # own column, and so do wrk's socket errors: a count of fast refusals
 # is not throughput.
+. "$(dirname "$0")/../../tools/lib/scratch.sh"
 set -eu
 ulimit -n 65536 2>/dev/null || ulimit -n "$(ulimit -Hn)"
 command -v wrk >/dev/null || { echo "public.sh: wrk is not installed" >&2; exit 1; }
@@ -29,8 +30,8 @@ secs=${SECS:-5}
 servers=${SERVERS:-avra floor nginx h2o}
 conns=${CONNS:-256}
 port=${PORT:-18080}
-work=$(mktemp -d)
-trap 'stop; [ -n "${KEEP:-}" ] && echo "public.sh: kept $work" >&2 || rm -rf "$work"' EXIT INT TERM
+scratch_dir work
+scratch_also 'stop; [ -n "${KEEP:-}" ] && echo "public.sh: kept $work" >&2 || rm -rf "$work"'
 
 if [ "$(uname)" = Darwin ]; then
     ncpu=$(sysctl -n hw.ncpu)

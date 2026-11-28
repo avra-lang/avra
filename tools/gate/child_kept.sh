@@ -16,6 +16,7 @@ printf '%s\n' "$@" >"$at.args"
 child=$!
 # a signal to the child's group reaches the compiler once, as it would unwrapped; this script's own
 # copy is absorbed, and its wait, interrupted, is waited again, so the status is the compiler's own
+# LICENSED scratch_law: a fixture child that must outlive the signals its parent's kill sends
 trap ':' TERM INT HUP
 while kill -0 "$child" 2>/dev/null; do wait "$child"; done
 wait "$child"

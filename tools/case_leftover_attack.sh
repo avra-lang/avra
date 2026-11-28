@@ -5,6 +5,7 @@
 # with such a directory and one holding a case's sources but no manifest planted among the cases,
 # `--cases` (what the gate deals) lists neither and every real case; a run over every case names
 # each as a leftover and judges neither; and naming one is refused as no case, in those words.
+. "$(dirname "$0")/lib/scratch.sh"
 set -u
 . "$(dirname "$0")/lib/attack.sh"
 who=case-leftover-attack
@@ -12,7 +13,7 @@ who=case-leftover-attack
 C=tools/program-refusals
 stale=$C/zz-leftover-cache
 bare=$C/zz-leftover-bare
-trap 'find "$stale" "$bare" -delete 2>/dev/null' EXIT
+scratch_also 'find "$stale" "$bare" -delete 2>/dev/null'
 mkdir -p "$stale/.avra-cache/tapes" "$bare/src"
 : > "$stale/.avra-cache/tapes/inputs.stamps"
 printf 'println("x")\n' > "$bare/src/main.av"

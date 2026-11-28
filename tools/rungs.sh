@@ -8,10 +8,11 @@
 #   sh tools/rungs.sh <base> <head>     one commit per line, oldest first
 #   sh tools/rungs.sh --pr <number>     the same for a landed PR: its head ref against main's parent
 #   sh tools/rungs.sh --self-test
+. "$(dirname "$0")/lib/scratch.sh"
 set -eu
 if [ "${1:-}" = --self-test ]; then
     me=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")
-    d=$(mktemp -d "${TMPDIR:-/tmp}/avra-rungs.XXXXXX")
+    scratch_dir d
     git init -q -b main "$d"
     g() { git -C "$d" -c user.name=t -c user.email=t@t "$@"; }
     echo 0 > "$d/f"; g add -A; g commit -q -m base

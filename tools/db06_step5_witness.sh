@@ -5,6 +5,7 @@
 # whose answers are otherwise identical, reads that store. The witness is what the second
 # one finds there: every module record it would have produced itself (a MISS, so it
 # recomputes), never the first one's rows.
+. "$(dirname "$0")/lib/scratch.sh"
 set -u
 . "$(dirname "$0")/lib/attack.sh"
 R=build/db06-step5
@@ -27,7 +28,7 @@ cp $c $R/avra_runtime.c.kept
 cp build/avra $R/avra.kept
 cp build/libavra_runtime.a $R/libavra_runtime.a.kept
 restore() { cp $R/avra_runtime.c.kept $c; cp $R/avra.kept build/avra; cp $R/libavra_runtime.a.kept build/libavra_runtime.a; }
-trap restore EXIT INT TERM
+scratch_also restore
 
 echo "=== compiler A: this tree's, against this tree's runtime C"
 wipe

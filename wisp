@@ -24,6 +24,7 @@
 #      the standing build/avra (any other machine);
 #   4. the Python tool of the same name (tools/<command with _>.py), while no
 #      binary answers — said on stderr, so a fallback is never silent.
+. "$(dirname "$0")/tools/lib/scratch.sh"
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 cd "$here"
@@ -120,7 +121,7 @@ rel_place() {
 }
 
 rel_fetch() {
-    t=$(mktemp "${TMPDIR:-/tmp}/wisp-release.XXXXXX")
+    scratch_dir t; t="$t/file"; : > "$t"
     code=$(rel_get "$rel_api/releases/tags/$1" "$t")
     case $code in
         (2*) ;;
@@ -138,7 +139,7 @@ rel_fetch() {
 # The newest published release carrying the compiler, by its creation time: the data decides, the API's
 # order only among releases created in the same second. Only main publishes, so it is main's latest — a starting point a build reads, never the tree's.
 rel_latest() {
-    t=$(mktemp "${TMPDIR:-/tmp}/wisp-release.XXXXXX")
+    scratch_dir t; t="$t/file"; : > "$t"
     code=$(rel_get "$rel_api/releases?per_page=100" "$t")
     case $code in
         (2*) ;;
@@ -289,7 +290,7 @@ bin=$dir/wisp
 # that refuses it. Where neither gives one, it says so here and runs nothing older instead.
 if [ ! -x "$bin" ] && pb=$(sh tools/work program-base . 2>/dev/null); then
     mkdir -p "$dir"
-    t=$(mktemp -d "${TMPDIR:-/tmp}/wisp.XXXXXX")
+    scratch_dir t
     # ONE ASSET A PLATFORM, both keyed alike: Linux x86-64's ELF (tools-release.yml) and Darwin arm64's Mach-O
     # (compiler-macos.yml); any other machine builds its own with its standing compiler
     case $(uname -s)-$(uname -m) in

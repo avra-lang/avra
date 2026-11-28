@@ -6,6 +6,7 @@
 # its census counted within a tenth of the gate's tolerance. A row that moves past that is ordered by
 # hash, not by work: no row the gate may hold to yet.
 #   sh tools/cost_stable.sh        (CENSUS_BUILDER as tools/census_compiler.sh takes it)
+. "$(dirname "$0")/lib/scratch.sh"
 set -eu
 cd "$(dirname "$0")/.."
 help=packages/std-avrac/src/features/consts/check.av
@@ -17,11 +18,10 @@ mkdir -p "$out"
 sh tools/census_compiler.sh "$out/avra.a"
 cp "$help" "$out/help.orig"
 restore() { cp "$out/help.orig" "$help"; }
-trap restore EXIT INT TERM
+scratch_also restore
 sed "s|$said|$said (every one)|" "$out/help.orig" > "$help"
 sh tools/census_compiler.sh "$out/avra.b"
 restore
-trap - EXIT INT TERM
 ! cmp -s "$out/avra.a" "$out/avra.b" || { echo "cost_stable: the two compilers are one binary — the help string moved nothing"; exit 1; }
 for c in a b; do
     COST_PART=warm COST_COMPILER="$out/avra.$c" sh tools/cost.sh > "$out/$c.log" 2>&1 || { tail -5 "$out/$c.log"; echo "cost_stable: the warm run of compiler $c failed"; exit 1; }

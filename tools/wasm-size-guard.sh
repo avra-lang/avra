@@ -9,9 +9,10 @@
 #   grow with every component; its row is a `grows` row, TOLD with its move
 #   against the last accepted value and NEVER judged — a cap there would train a
 #   re-baseline on every feature, which is how a guard dies.
+. "$(dirname "$0")/lib/scratch.sh"
 set -eu
 . "$(dirname "$0")/lib/tree.sh"
-work=$(mktemp -d "${TMPDIR:-/tmp}/avra-sz.XXXXXX")
+scratch_dir work
 # WASM_TARGET names another wasm triple, for a machine whose sysroot is not the default's.
 target=${WASM_TARGET:-wasm}
 wasm_who=wasm-size-guard; . "$here/lib/wasm.sh"

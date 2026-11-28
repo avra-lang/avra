@@ -30,6 +30,7 @@
 # (`tools/work run`), as `speed-ratchet` does — a loaded Mac supplies no
 # number, and a worktree with no Sprite refuses rather than passing.
 # A cold run clears the tree's `.avra-cache`; the machine store lives there too, or "cold" would read the machine's rows.
+. "$(dirname "$0")/lib/scratch.sh"
 export AVRA_CACHE_DIR="$(cd "$(dirname "$0")/.." && pwd)/.avra-cache"
 # a store is copied, counted or emptied here between builds, so each build saves its own before it answers
 export AVRA_STORE_KEPT_HERE=1
@@ -102,8 +103,8 @@ wall() { # [net] -> "<ms> <status>"; an answer that never came reads as 0 ms and
 # (CI's cache, another compiler's run) holds answers this compiler did not make, and an edit over
 # it prices their holds, not this compiler's edit path. The tree's own store is set aside, warmed
 # here by one unchanged check, and put back when the run ends, so what follows still has it.
-held=$(mktemp -d)
-orig=$(mktemp)
+scratch_dir held
+scratch_dir orig; orig="$orig/file"; : > "$orig"
 cp "$file" "$orig"
 restore() {
     cp "$orig" "$file"
@@ -112,7 +113,7 @@ restore() {
     [ ! -d "$held/kept" ] || mv "$held/kept" .avra-cache
     find "$held" -delete
 }
-trap restore EXIT INT TERM
+scratch_also restore
 [ ! -d .avra-cache ] || mv .avra-cache "$held/kept"
 # warmed with the net on, so its old check's store is as warm as the layer's for `net_wall`
 set -- $(wall 1)
@@ -137,7 +138,7 @@ open(path, "w", encoding="utf-8").write(text.replace(lit, lit + " " + word, 1))
 PY
 }
 
-raw=$(mktemp)
+scratch_dir raw; raw="$raw/file"; : > "$raw"
 printf 'host %s\n' "$host" > "$raw"
 
 # UNCHANGED rounds first and contiguous: the store is already holding this
