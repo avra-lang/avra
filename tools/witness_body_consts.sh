@@ -17,6 +17,7 @@ case $avra in /*) ;; *) avra="$root/$avra" ;; esac
 [ -x "$avra" ] || { echo "witness_body_consts: no compiler at $avra" >&2; exit 1; }
 tmp=$(mktemp -d)
 trap 'find "$tmp" -delete' EXIT
+trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
 pkg="$tmp/consts"
 mkdir -p "$pkg/src"
 export AVRA_CACHE_DIR="$tmp/machine"

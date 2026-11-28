@@ -12,6 +12,7 @@ fail() { echo "hooks_pre_commit_check: $1"; exit 1; }
 # every fixture stands under one scratch directory, gone when the check ends
 scratch=$(mktemp -d)
 trap 'find "$scratch" -delete' EXIT
+trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
 
 # hook_in <dir>: the hook's status in the repo, its stderr in $err.
 hook_in() {
