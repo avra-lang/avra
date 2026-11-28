@@ -2359,16 +2359,37 @@ export law assignment_mismatch {
 fn assignment_refused(a: List<string>) -> Voice { refused_voice("assignment changes ${a[0]}: `${a[1]}` to `${a[2]}`", a[1], a[2]) }
 
 /// An arm its construct's seat refused, where the construct is one `spoken` names: whose arms.
-fn arms_apart(view: ItemView, spoken: fn(Meeting) -> string) -> List<Found> {
+fn arms_apart(view: ItemView, spoken: fn(Meeting) -> string?) -> List<Found> {
     [found_in(r, [whose!]) for r in refused_seen(view) for whose in [match r.seat { .ArmApart(of) -> spoken(of), _ -> null }] if whose != null]
 }
 
 fn branches_disagreeing(view: ItemView) -> List<Found> {
     arms_apart(
         view,
-        (of: Meeting) -> match of { .If -> "an `if`'s branches", .When -> "a `when`'s arms" },
+        (of: Meeting) -> match of {
+            .If -> "an `if`'s branches",
+            .When -> "a `when`'s arms",
+            .Select -> null,
+        },
     )
 }
+
+fn selects_disagreeing(view: ItemView) -> List<Found> {
+    arms_apart(
+        view,
+        (of: Meeting) -> match of { .Select -> "a `select`'s arms", .If or .When -> null },
+    )
+}
+
+/// the arms of a `select` under no seat answer what its first arm answers
+export law select_arms_meet {
+    kind: "type.mismatch"
+    reads_view: selects_disagreeing
+    voice: select_apart_refused
+    witness: "fn one() -> int {\n    1\n}\n\nfn g() -> int {\n    let job = spawn one()\n    let v = select {\n        r in job -> r\n        else -> \"none\"\n    }\n    1\n}\n"
+}
+
+fn select_apart_refused(a: List<string>) -> Voice { refused_voice(arms_disagreement(a[0], a[2], "the first arm", a[1]), a[1], a[2]) }
 
 /// the branches of an `if` and the arms of a `when` answer what their seat wants
 export law branches_answer_the_seat {

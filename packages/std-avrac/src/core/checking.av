@@ -910,6 +910,7 @@ export enum CatchFault {
 export enum Meeting {
     If
     When
+    Select
 }
 
 impl CheckedProgram {
@@ -1703,15 +1704,17 @@ impl Checking {
     /// turn can't join, refused as an arm. An arm that leaves, one typing doesn't know whole and one
     /// of a type the language doesn't own are left alone, as is every arm where the anchor is absent
     /// or no type of the language's own.
-    mut fn arms_apart(arms: List<ExprId>, types: List<SignedType?>) {
+    mut fn arms_apart(
+        arms: List<ExprId>,
+        types: List<SignedType?>,
+        seat: Seating = Seating.Arm(false),
+    ) {
         let settled = [settled_arm(t) for t in types]
         let anchor? = arms_anchor(settled) else { return }
         if !(anchor.head is .Owned) || anchor.nullable() { return }
         for at, ty in settled {
             if ty != null && arm_apart(ty!, anchor) {
-                self
-                    .refused
-                    .push(Refused { at: arms[at], want: anchor, found: ty!, seat: Seating.Arm(false) })
+                self.refused.push(Refused { at: arms[at], want: anchor, found: ty!, seat: seat })
             }
         }
     }

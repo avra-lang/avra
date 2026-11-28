@@ -5,6 +5,7 @@
 //! A shape no lowering stands for — `@fair`, an `AnyOf` or an `Every` arm — is refused by what it is.
 use core.{
     Checking,
+    Meeting,
     Checks,
     ExprId,
     Expected,
@@ -21,11 +22,16 @@ impl Checks for Select {
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
         let arm = if expected is .Dropped { Expected.Free } else { expected }
         if self.fair { cx.unwaited(e, "`@fair`") }
+        let before = cx.refused.get().length
         arms_held(cx, e, self.arms)
         let types = [cx.check(a, arm) for a in self.arms]
         arms_together(cx, self.arms)
+        // a head no lowering waits on is said only where the arms' own laws said nothing
+        if cx.refused.get().length == before { for a in self.arms { head_unlowered(cx, a) } }
         let values = [arm_value(cx, a) for a in self.arms]
         if values.any(it == null) { return null }
+        // under no seat, every arm is judged against the first, as a `match`'s are
+        if expected is .Free { cx.arms_apart(self.arms, types, Seating.ArmApart(Meeting.Select)) }
         cx.arms_met([v! for v in values], types, expected)
     }
 }
@@ -33,8 +39,6 @@ impl Checks for Select {
 impl Checks for WaitArm {
     fn checked(mut cx: Checking, e: ExprId, expected: Expected) -> SignedType? {
         let head = cx.check(self.head, Expected.Free)
-        let unwaited = unlowered_head(head)
-        if unwaited != null { cx.unwaited(self.head, unwaited!) }
         arm_head_judged(cx, e, self, head)
         cx.opened()
         if !self.index.text().is_empty() { cx.bind(self.index.text(), owned_type("int")) }
@@ -64,6 +68,13 @@ fn arms_held(mut cx: Checking, e: ExprId, arms: List<ExprId>) {
 }
 
 /// The value an arm answers with.
+/// The waiting arm `arm`'s head refused where no lowering waits on what it names.
+fn head_unlowered(mut cx: Checking, arm: ExprId) {
+    let head? = match cx.store.expr(arm) { .WaitArm(_, _, head, _, _) -> head, rest -> null } else { return }
+    let unwaited? = unlowered_head(cx.type_of(head)) else { return }
+    cx.unwaited(head, unwaited)
+}
+
 fn arm_value(cx: Checking, arm: ExprId) -> ExprId? {
     // a feature cannot enumerate OTHER features' variants
     match cx.store.expr(arm) {
