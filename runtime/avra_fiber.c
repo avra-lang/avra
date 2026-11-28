@@ -3017,6 +3017,31 @@ int64_t avra_fiber_park_fd(int64_t fd, int64_t writable, int64_t timeout_ms) {
     return self->timed_out ? 0 : 1;
 }
 
+#if !defined(__wasm32__)
+// A DESCRIPTOR THAT NEVER BECOMES READY: a pipe's read end whose write end
+// stays open, so a park on it ends by its timeout alone. A park on a
+// descriptor is a wait over the world, which a virtual clock neither jumps
+// past nor fires early, so its timeout lasts on the host's clock.
+static int quiet_fd(void) {
+    static int quiet = -1;
+    if (quiet >= 0) return quiet;
+    int ends[2];
+    if (pipe(ends) != 0) avra_trap("the host refused the pipe a host-timed sleep parks on");
+    fcntl(ends[0], F_SETFD, FD_CLOEXEC);
+    fcntl(ends[1], F_SETFD, FD_CLOEXEC);
+    quiet = ends[0];
+    return quiet;
+}
+
+void avra_fiber_sleep_host(int64_t ms) {
+    if (ms < 1) { avra_fiber_yield(); return; }
+    (void)avra_fiber_park_fd(quiet_fd(), 0, ms);
+}
+#else
+// A wasm program runs no virtual clock, so its task clock is the host's.
+void avra_fiber_sleep_host(int64_t ms) { avra_fiber_sleep(ms); }
+#endif
+
 int64_t avra_fiber_interrupted(void) { return g_current->interrupted; }
 
 int64_t avra_fiber_within(int64_t ms) { return within_opened(g_current, ms); }
@@ -3211,6 +3236,13 @@ int64_t avra_vtask_park_fd(int64_t t, int64_t fd, int64_t writable, int64_t time
     if (park_fd_filed(f, fd, writable, timeout_ms)) return host_waited(1);
     if (!f->timed_out) ready_push(f);
     return 0;
+}
+
+void avra_vtask_sleep_host(int64_t t, int64_t ms) {
+#if !defined(__wasm32__)
+    if (ms >= 1) { (void)avra_vtask_park_fd(t, quiet_fd(), 0, ms); return; }
+#endif
+    avra_vtask_sleep(t, ms);
 }
 
 int64_t avra_vtask_timed_out(int64_t t) { return virtual_at(t)->timed_out; }
