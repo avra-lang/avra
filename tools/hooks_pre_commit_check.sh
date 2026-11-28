@@ -93,9 +93,16 @@ err=$(cd "$d" && PATH="$d/fakebin:$PATH" sh "$hook" 2>&1 >/dev/null)
 status=$?
 { [ "$status" = 0 ] && printf '%s' "$err" | grep -q "replaced it" && [ "$(cut -d' ' -f1 "$d/build/.avra-built-from")" = key123 ]; } ||
     fail "a stale compiler with a published door gave $status: $err"
+# A BRANCH'S OWN COMPILER COMMIT PAST THE STAMP: built at the merge-base, the tree past it — refused, as an
+# older one is, since the branch may have taught its hook a verb that compiler lacks
+d=$(stamped_repo current)
+(cd "$d" && echo three > Makefile && git -c user.name=t -c user.email=t@t commit -q -m three -- Makefile)
+hook_in "$d"
+{ [ "$status" = 1 ] && printf '%s' "$err" | grep -q "1 compiler commit(s) older than this tree"; } ||
+    fail "a compiler built before the branch's own compiler commit gave $status: $err"
 for kind in current edited; do
     hook_in "$(stamped_repo $kind)"
     { [ "$status" = 0 ] && printf '%s' "$err" | grep -q "formatting with"; } ||
         fail "a $kind compiler gave $status: $err"
 done
-echo "hooks_pre_commit_check: refusal and accept witnessed — 8 fixtures"
+echo "hooks_pre_commit_check: refusal and accept witnessed — 9 fixtures"

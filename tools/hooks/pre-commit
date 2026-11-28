@@ -9,11 +9,14 @@ if [ ! -x build/avra ]; then
     echo "pre-commit: get a compiler — \`sh tools/work run\` fetches main's published one, or \`make try\` / \`make bootstrap\` builds one" >&2
     exit 1
 fi
-base=$(git merge-base origin/main HEAD 2>/dev/null || :)
-# THE COMPILER SAYS WHAT IT WAS BUILT FROM, AND IT IS NOT OLDER THAN THE MERGE-BASE: a binary copied in by
-# hand has no stamp and an unknown age, so its `fmt` may disagree with main's. The stamp (`make avra` writes
-# build/.avra-built-from: source hash, then the commit) is read and reported; a compiler built from a commit
-# with compiler-source commits between it and the merge-base is stale. `age` says so in $why (empty: usable).
+# THE TRUNK THE TREE LEAVES: program where its merge-base with program holds a commit main lacks, else main
+base=$(git merge-base origin/program HEAD 2>/dev/null || :)
+if [ -z "$base" ] || git merge-base --is-ancestor "$base" origin/main 2>/dev/null; then base=$(git merge-base origin/main HEAD 2>/dev/null || :); fi
+# THE COMPILER SAYS WHAT IT WAS BUILT FROM, AND IT HOLDS EVERY COMPILER COMMIT THIS TREE HOLDS: a binary copied
+# in by hand has no stamp and an unknown age, so its `fmt` may disagree with the tree's. The stamp (`make avra`
+# writes build/.avra-built-from: source hash, then the commit) is read and reported; a compiler built from a
+# commit HEAD holds compiler-source commits past is stale — the branch's own among them, so a verb the tree's
+# hook asks of its compiler is never asked of one built before it. `age` says so in $why (empty: usable).
 stamp=build/.avra-built-from
 age() {
     why=
@@ -26,10 +29,10 @@ age() {
     read -r built_hash built_at _built_gen < "$stamp"
     [ "$built_at" != edited ] || return 0
     behind=0
-    if [ -n "$base" ] && git merge-base --is-ancestor "$built_at" "$base" 2>/dev/null; then
-        behind=$(git rev-list --count "$built_at..$base" -- $(sh tools/compiler_paths.sh . 2>/dev/null) ':(exclude,glob)**/tests/**' 2>/dev/null || echo 0)
+    if git cat-file -e "$built_at^{commit}" 2>/dev/null; then
+        behind=$(git rev-list --count "$built_at..HEAD" -- $(sh tools/compiler_paths.sh . 2>/dev/null) ':(exclude,glob)**/tests/**' 2>/dev/null || echo 0)
     fi
-    [ "$behind" = 0 ] || why="build/avra was built at $(printf '%.8s' "$built_at"), $behind compiler commit(s) older than this branch's merge-base — its fmt may disagree with main's"
+    [ "$behind" = 0 ] || why="build/avra was built at $(printf '%.8s' "$built_at"), $behind compiler commit(s) older than this tree — its fmt may disagree with the tree's"
 }
 # A STALE COMPILER IS REPLACED, NEVER WORKED AROUND: the one the depot or a worktree holds (`work compiler`),
 # else, on Linux, the compiler published for the merge-base's source. Formatting is never skipped — what
