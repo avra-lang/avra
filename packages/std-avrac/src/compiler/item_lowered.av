@@ -11,6 +11,7 @@ use core.{
     CostRemarks,
     ConsumeDecline,
     Declined,
+    NodeMet,
     remark_of,
     SettledSeat,
     settled_seat_key,
@@ -78,6 +79,7 @@ use core.{
     rt_sig_of,
     owned_type,
 }
+use compiler.memory.{memory_declines}
 use features.collects.{collected_list}
 use features.specs.{case_lowered}
 use @std.program.address.{SourceFileAddress}
@@ -125,6 +127,8 @@ export type LoweredFn = {
     /// Each seat it consumes, by its place among its seats: one it keeps whole on every path to its
     /// answer, which a caller hands its own reference to. Empty where it consumes none.
     consumed: List<bool> = [],
+    /// The written node each instruction was emitted for, by its place, where notes were asked for.
+    nodes: List<int> = [],
 }
 
 /// An entry's answer whose type has no text projection: the type, spelled, and where the statement
@@ -421,7 +425,7 @@ export fn cost_remarks(engine: QueryEngine, file: SourceFileAddress, name: strin
     let signed? = signed_body(engine, file, name) else { return CostRemarks { remarks: [] } }
     if !signed.signature.type_params.is_empty() { return CostRemarks { remarks: [] } }
     let notes = node_notes(signed.item.written)
-    let _ = signed_lowered(
+    let lowered = signed_lowered(
         engine,
         file,
         answered_fn(engine, file, name, signed),
@@ -432,9 +436,17 @@ export fn cost_remarks(engine: QueryEngine, file: SourceFileAddress, name: strin
         notes,
     )
     let store = signed.item.store
+    let met = notes.met.get().concat(counted_declines(lowered))
     CostRemarks {
-        remarks: [CostRemark { declined: r!.declined, lo: placed.lo, hi: placed.hi } for m in notes.met.get() for r in [remark_of(store, m)] if r != null for placed in [span_in_file(engine, file, signed.item, Span { lo: r!.lo, hi: r!.hi })]],
+        remarks: [CostRemark { declined: r!.declined, lo: placed.lo, hi: placed.hi } for m in met for r in [remark_of(store, m)] if r != null for placed in [span_in_file(engine, file, signed.item, Span { lo: r!.lo, hi: r!.hi })]],
     }
+}
+
+/// What the memory pass declined over `lowered`'s body, each at the written node its instruction was
+/// emitted for.
+fn counted_declines(lowered: LoweredFn) -> List<NodeMet> {
+    if lowered.nodes.length != lowered.ins.length { return [] }
+    [NodeMet.Declined(lowered.nodes[d.at], d.declined) for d in memory_declines(lowered.layouts, lowered.ins, lowered.params.length, []) if lowered.nodes[d.at] >= 0]
 }
 
 /// The register of the seat a bare name read at `e` reads, by `places`; absent for a capture and a
@@ -617,6 +629,7 @@ fn unit_lowered(cx: Lowering, seats: int, answer: Layout) -> LoweredFn {
         params: cx.layouts.get().take(seats),
         answer: answer,
         ins: cx.ins.get(),
+        nodes: cx.nodes.get(),
         layouts: cx.layouts.get(),
         callees: cx.callees.get(),
         missing: cx.missing.get(),
