@@ -1,16 +1,11 @@
 // `@derive(Flow)`: every node variant wears exactly one control word,
 // and the walk it generates answers as the hand-written one did.
 use @std.avrac.core.{scoped, new_node_store, Flow, Control, At, Expr, Stmt, named_ref}
-use @std.meta.{Type, Variant, Field, Mark}
+use @std.meta.{Type, Variant, Field, Mark, worn_mark}
+use @std.avrac.core.marks.{apart, branches, sequence}
 
-fn variant(name: string, words: List<string>, fields: List<Field>) -> Variant {
-    Variant {
-        name: name,
-        payload: [f.ty for f in fields],
-        at: null,
-        fields: fields,
-        marks: [Mark { name: w, args: [], at: null } for w in words],
-    }
+fn variant(name: string, marks: List<Mark>, fields: List<Field>) -> Variant {
+    Variant { name: name, payload: [f.ty for f in fields], at: null, fields: fields, marks: marks }
 }
 
 fn field(name: string, ty: string) -> Field { Field { name: name, ty: ty, at: null } }
@@ -38,20 +33,20 @@ fn expr_at(a: At) -> int {
 spec "core/flow — one control word per variant" {
     given "the law a variant is held to" {
         then "a variant wearing no word is refused, named" {
-            said([variant("A", ["apart"], []), variant("B", [], [])]).join("|") == "a node variant wears exactly one control word — `B` wears none"
+            said([variant("A", [worn_mark(apart, [])], []), variant("B", [], [])]).join("|") == "a node variant wears exactly one control word — `B` wears none"
         }
         then "a variant wearing two words is refused, with the count" {
-            said([variant("A", ["apart", "sequence"], [])]).join("|") == "a node variant wears exactly one control word — `A` wears 2"
+            said([variant("A", [worn_mark(apart, []), worn_mark(sequence, [])], [])]).join("|") == "a node variant wears exactly one control word — `A` wears 2"
         }
         then "a `@sequence` variant whose field no step reads is refused" {
-            said([variant("A", ["sequence"], [field("arms", "List<Arm>")])]).length == 1
+            said([variant("A", [worn_mark(sequence, [])], [field("arms", "List<Arm>")])]).length == 1
         }
         then "every variant wearing one word is accepted" {
             said(
                 [
-                    variant("A", ["apart"], []),
-                    variant("B", ["sequence"], [field("v", "ExprId")]),
-                    variant("C", ["branches"], []),
+                    variant("A", [worn_mark(apart, [])], []),
+                    variant("B", [worn_mark(sequence, [])], [field("v", "ExprId")]),
+                    variant("C", [worn_mark(branches, [])], []),
                 ],
             )
                 .is_empty()

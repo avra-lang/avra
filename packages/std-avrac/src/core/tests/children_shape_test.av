@@ -1,16 +1,11 @@
 // `@derive(Children)`: a variant's shape is the mark it wears, and a
 // variant wearing none is refused naming the missing mark.
 use @std.avrac.core.{scoped, Children, CompClause, Expr, new_node_store}
-use @std.meta.{Type, Variant, Field, Mark}
+use @std.meta.{Type, Variant, Field, Mark, worn_mark}
+use @std.avrac.core.marks.{apart, branches, clauses, declares, expands, sequence}
 
-fn variant(name: string, words: List<string>, fields: List<Field>) -> Variant {
-    Variant {
-        name: name,
-        payload: [f.ty for f in fields],
-        at: null,
-        fields: fields,
-        marks: [Mark { name: w, args: [], at: null } for w in words],
-    }
+fn variant(name: string, marks: List<Mark>, fields: List<Field>) -> Variant {
+    Variant { name: name, payload: [f.ty for f in fields], at: null, fields: fields, marks: marks }
 }
 
 fn field(name: string, ty: string) -> Field { Field { name: name, ty: ty, at: null } }
@@ -22,17 +17,17 @@ fn said(vs: List<Variant>) -> List<string> { [d.message for d in Children.derive
 spec "core/children — a variant's shape is its mark" {
     given "the law a variant is held to" {
         then "a variant wearing no shape word is refused, named" {
-            said([variant("A", ["apart"], []), variant("B", [], [])]).join("|") == "a node's children follow the mark its variant wears — `Expr.B` wears none"
+            said([variant("A", [worn_mark(apart, [])], []), variant("B", [], [])]).join("|") == "a node's children follow the mark its variant wears — `Expr.B` wears none"
         }
         then "`@clauses` without a clause list is refused, named" {
-            said([variant("A", ["clauses"], [field("elem", "ExprId")])]).length == 1
+            said([variant("A", [worn_mark(clauses, [])], [field("elem", "ExprId")])]).length == 1
         }
         then "`@clauses` with a clause list is accepted" {
             said(
                 [
                     variant(
                         "A",
-                        ["clauses"],
+                        [worn_mark(clauses, [])],
                         [field("elem", "ExprId"), field("clauses", "List<CompClause>")],
                     ),
                 ],
@@ -42,11 +37,11 @@ spec "core/children — a variant's shape is its mark" {
         then "every shape word is accepted on its own" {
             said(
                 [
-                    variant("A", ["apart"], []),
-                    variant("B", ["sequence"], [field("v", "ExprId")]),
-                    variant("C", ["branches"], []),
-                    variant("D", ["declares"], []),
-                    variant("E", ["expands"], [field("view", "BodyView")]),
+                    variant("A", [worn_mark(apart, [])], []),
+                    variant("B", [worn_mark(sequence, [])], [field("v", "ExprId")]),
+                    variant("C", [worn_mark(branches, [])], []),
+                    variant("D", [worn_mark(declares, [])], []),
+                    variant("E", [worn_mark(expands, [])], [field("view", "BodyView")]),
                 ],
             )
                 .is_empty()

@@ -1,7 +1,8 @@
 // RED TEAM — `@facet`. The attacks a field mark and its side table must
 // survive: every field position, the payload/record split, and the side
 // table's presence for `once` and absence for a plain `fn`.
-use @std.meta.{Field, Mark}
+use @std.meta.{Field, Mark, worn_mark}
+use @std.avrac.core.marks.{facet, local}
 use @std.avrac.compiler.{Parsed, parse_source}
 use @std.avrac.core.{StmtId, node_payload_rows, row_for, facet_table, reached, carried}
 
@@ -11,8 +12,6 @@ fn seed_of(p: Parsed) -> StmtId? {
 
 fn ids(marks: List<Mark>) -> Field { Field { name: "x", ty: "int", at: null, marks: marks } }
 
-fn id_mark(word: string, args: List<string>) -> Mark { Mark { name: word, args: args, at: null } }
-
 spec "facet adversarial" {
     given "every field position" {
         then "an unmarked field is reached and carried" {
@@ -20,15 +19,15 @@ spec "facet adversarial" {
             reached(f) && carried(f) && facet_table(f) == null
         }
         then "a `@local` field is no child, stays on the node" {
-            let f = ids([id_mark("local", [])])
+            let f = ids([worn_mark(local, [])])
             !reached(f) && carried(f) && facet_table(f) == null
         }
         then "a `@facet` field is no child and names its table" {
-            let f = ids([id_mark("facet", ["once"])])
+            let f = ids([worn_mark(facet, ["once"])])
             !reached(f) && !carried(f) && facet_table(f) == "once"
         }
         then "a facet with no argument names no table — refused where the write lands" {
-            let f = ids([id_mark("facet", [])])
+            let f = ids([worn_mark(facet, [])])
             !reached(f) && !carried(f) && facet_table(f) == ""
         }
     }

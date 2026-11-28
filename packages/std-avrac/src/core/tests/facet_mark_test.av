@@ -3,7 +3,8 @@
 // write is part of what the node is. `@local` is the sibling: out of
 // identity, the value stays on the node. Both are read through the ONE
 // registry, never the mark's own word.
-use @std.meta.{Field, Mark}
+use @std.meta.{Field, Mark, worn_mark}
+use @std.avrac.core.marks.{facet, local}
 use @std.avrac.compiler.{Parsed, parse_source}
 use @std.avrac.core.{StmtId, node_payload_rows, row_for, facet_table, reached, carried}
 
@@ -15,19 +16,17 @@ fn field(name: string, marks: List<Mark>) -> Field {
     Field { name: name, ty: "int", at: null, marks: marks }
 }
 
-fn mark_of(word: string, args: List<string>) -> Mark { Mark { name: word, args: args, at: null } }
-
 spec "core/facet — a field's mark" {
     given "the registry" {
         then "a plain field is reached and carried" {
             reached(field("x", [])) && carried(field("x", []))
         }
         then "a `@local` field is reached from neither fold, but stays on the node" {
-            !reached(field("x", [mark_of("local", [])])) &&
-                carried(field("x", [mark_of("local", [])]))
+            !reached(field("x", [worn_mark(local, [])])) &&
+                carried(field("x", [worn_mark(local, [])]))
         }
         then "a `@facet(table)` field is carried by neither, and names its table" {
-            let f = field("x", [mark_of("facet", ["once"])])
+            let f = field("x", [worn_mark(facet, ["once"])])
             !reached(f) && !carried(f) && facet_table(f) == "once"
         }
     }
