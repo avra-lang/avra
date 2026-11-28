@@ -25,21 +25,15 @@
 //! below them is read.
 use validate.{Refusal, nearest}
 use issue.{Issue, Issues, root}
-use value.{Value, Entry}
+use value.{Coercion, Value, Entry}
 use @std.text.{parse_float, parse_int}
 use @std.json.typed.{Path, Reader, no_reader}
-
-/// How a value may be read as another kind.
-export enum Coercion {
-    Strict
-    Lax
-}
 
 /// The bounds a decode refuses past, before reading further.
 export type Limits = { depth: int = 128, items: int = 100000 }
 
 /// A value at a place — absent when the input holds nothing there.
-export type Slot = { value: Value?, at: Path, required: bool = true, hidden: bool = false }
+export type Slot = { value: Value?, at: Path, required: bool = true, hidden: bool = false, coercion: Coercion? = null }
 
 impl Slot {
     /// Absence and null are a value here, never an issue.
@@ -52,16 +46,18 @@ impl Slot {
 /// An object being read: its entries in order, where it sits,
 /// whether it is secret, and how many issues stood before it was
 /// opened.
-export type Obj = { entries: List<Entry>, at: Path, hidden: bool, before: int }
+export type Obj = { entries: List<Entry>, at: Path, hidden: bool, before: int, coercion: Coercion? = null }
 
 impl Obj {
     /// The field `name`, absent when the object has none; secret
     /// when the object is.
     fn field(name: string) -> Slot {
+        let e = self.entries.find(it.key == name)
         Slot {
-            value: self.entries.find(it.key == name)?.value,
+            value: e?.value,
             at: self.at.field(name),
             hidden: self.hidden,
+            coercion: e?.coercion ?? self.coercion,
         }
     }
 }
@@ -187,7 +183,13 @@ impl Decoding {
     mut fn object(s: Slot) -> Obj? {
         let entries? = scalar(self, s, "an object", as_entries) else { return null }
         if !self.shallow(s) { return null }
-        Obj { entries: entries, at: s.at, hidden: s.hidden, before: self.count() }
+        Obj {
+            entries: entries,
+            at: s.at,
+            hidden: s.hidden,
+            before: self.count(),
+            coercion: s.coercion,
+        }
     }
 
     /// The object read cleanly: no issue since it was opened, no
@@ -199,7 +201,7 @@ impl Decoding {
         for e in o.entries {
             let k = names.index_of(e.key)
             when {
-                k < 0 -> self.strayed(o.at.field(e.key), e.key, names, 0)
+                k < 0 -> self.strayed(o.at.field(e.key), e.key, names, 0, o.coercion)
                 seen[k] -> self.repeated(o.at.field(e.key), 0)
                 _ -> seen.set(k, true)
             }
@@ -209,8 +211,8 @@ impl Decoding {
 
     /// A field the record does not name: an issue under `Strict`,
     /// naming the field it may have meant; filed at `order`.
-    mut fn strayed(at: Path, key: string, names: List<string>, order: int) {
-        if self.coercion is .Strict { self.noted(stray(at, key, names), order) }
+    mut fn strayed(at: Path, key: string, names: List<string>, order: int, under: Coercion? = null) {
+        if under ?? self.coercion is .Strict { self.noted(stray(at, key, names), order) }
     }
 
     /// A field written twice; filed at `order`.
@@ -262,8 +264,9 @@ impl Decoding {
 /// The slot's value read as one kind, or the wrong kind named.
 fn scalar<T>(mut d: Decoding, s: Slot, want: string, read: fn(Coercion, Value) -> T?) -> T? {
     let v? = d.present(s) else { return null }
-    let x? = read(d.coercion, v) else {
-        if blank(d.coercion, v) {
+    let c = s.coercion ?? d.coercion
+    let x? = read(c, v) else {
+        if blank(c, v) {
             let _ = d.present(s with { value: null })
         } else {
             d.mistyped(s, v, want)
@@ -394,7 +397,7 @@ fn stray(at: Path, key: string, names: List<string>) -> Issue {
 export fn list<T>(mut d: Decoding, s: Slot, each: Decoder<T>) -> List<T>? {
     let items? = d.items(s) else { return null }
     let before = d.count()
-    let read = [each(d, Slot { value: x, at: s.at.index(i), hidden: s.hidden }) for i, x in items]
+    let read = [each(d, Slot { value: x, at: s.at.index(i), hidden: s.hidden, coercion: s.coercion }) for i, x in items]
     if d.count() > before { return null }
     [x! for x in read]
 }
