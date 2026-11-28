@@ -85,6 +85,10 @@ void avra_fiber_yield(void);
 // Parks the caller for `ms` milliseconds; below one, a yield.
 void avra_fiber_sleep(int64_t ms);
 
+// Parks the caller for `ms` milliseconds of the host's time, which a
+// virtual clock neither jumps past nor fires early; below one, a yield.
+void avra_fiber_sleep_host(int64_t ms);
+
 // Parks the caller until `fd` is readable (`writable` 0) or writable
 // (`writable` 1), or `timeout_ms` passes (below zero: never). 1 when
 // the descriptor may be ready — a caller retries its read or write —
@@ -244,6 +248,7 @@ void avra_vtask_joins(int64_t t, int64_t on);
 // wait. A sleep asks for itself.
 int64_t avra_vtask_cut(int64_t t);
 void avra_vtask_sleep(int64_t t, int64_t ms);
+void avra_vtask_sleep_host(int64_t t, int64_t ms);
 // 1 when parked; 0 when it did not wait: the descriptor cannot be
 // watched (ready at once, so its read or write reports the error), or
 // the task's deadline has passed (`avra_vtask_timed_out` says 1).
