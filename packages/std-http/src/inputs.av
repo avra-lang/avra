@@ -24,13 +24,20 @@ use @std.meta.{
     literal,
     name,
     refuse_as_at,
+    reads,
+    reads_rules,
 }
 use http.{Request, Response, Unrouted}
 use @std.json.reading.{own, mine}
 use typed.{Captures, FieldPart, Origin, input_read, path_entry}
 use @std.validate.{decoder as decode_impl}
 
-/// A record read from a request, each field from the part its mark names.
+/// A record read from a request, each field from the part its mark names, and judged by every rule
+/// its fields wear.
+@reads(path)
+@reads(body)
+@reads(query)
+@reads_rules
 export trait Input {
     /// The record, or the one refusal naming every part that refused.
     static fn read(at: dyn Captures, q: Request<Unrouted>) -> Result<Self, Response>
@@ -44,9 +51,6 @@ export trait Input {
         if !loose.is_empty() { return Declared { made: [], problems: loose } }
         Declared { made: [beside(t, input_reader(t)), beside(t, decode_impl(t))] }
     }
-
-    /// Every mark a field wears: its part, or a rule its decode judges.
-    static fn marks(t: Type) -> List<string> { [a.name for f in t.fields for a in f.annotations] }
 }
 
 /// `@path`: the field is the route's capture of its own name.
