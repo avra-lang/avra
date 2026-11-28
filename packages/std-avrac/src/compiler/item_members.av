@@ -37,7 +37,7 @@ use compiler.typing.{builtin_type_name}
 use features.floats.{to_int_unseen}
 use diagnostics.{Voice}
 use compiler.resolve.{type_param_as_value}
-use features.fns.{hashed_unnamed, marked_unnamed}
+use features.fns.{hashed_unnamed, marked_unnamed, implemented_unnamed}
 use features.lists.{walk_unknowable, enumerate_unpaired, scan_unvalued}
 use features.closures.{uncallable_value}
 use features.enums.{variant_unbuilt, variant_unenumed, variant_unwanted}
@@ -241,6 +241,8 @@ enum Miss {
     MarkedUnnamed
     /// `?.name` over a value always absent.
     ChainedAbsent(name: string)
+    /// `implements` asked after what names no declared trait.
+    ImplementsUnnamed
 }
 
 impl Miss {
@@ -1130,13 +1132,15 @@ fn meta_named_miss(engine: QueryEngine, t: TypedNodes, e: ExprId) -> List<MissPl
         !call.callee.spells(MARKS) &&
         !call.callee.spells(MARKED) &&
         !call.callee.spells(WORN) &&
-        !call.callee.spells(WORN_MARK) { return [] }
+        !call.callee.spells(WORN_MARK) &&
+        !call.callee.spells(IMPLEMENTS) { return [] }
     if call.args.length != 1 && call.args.length != 2 { return [] }
     let d? = resolved(engine, t.file, Space.Value, call.callee.text()).named() else { return [] }
     if d.kind != ItemKind.Fn { return [] }
     if META_CODE_HASH.is_in(d.file, d.name) && call.args.length == 1 { return hash_miss(engine, t, t.store.unnamed(call.args[0])) }
     if (META_MARKS.is_in(d.file, d.name) || META_MARKED.is_in(d.file, d.name)) &&
         call.args.length == 2 { return marks_miss(engine, t, t.store.unnamed(call.args[1])) }
+    if META_IMPLEMENTS.is_in(d.file, d.name) && call.args.length == 2 { return implements_miss(engine, t, t.store.unnamed(call.args[1])) }
     if (META_WORN.is_in(d.file, d.name) || META_WORN_MARK.is_in(d.file, d.name)) &&
         call.args.length == 2 { return marks_miss(engine, t, t.store.unnamed(call.args[0])) }
     []
@@ -1147,6 +1151,12 @@ const MARKS: string = "marks"
 
 /// `@std/meta`'s other fn a call of two is asked after by.
 const WORN: string = "worn"
+
+/// `@std/meta`'s fn a call of two asks after a trait by.
+const IMPLEMENTS: string = "implements"
+
+/// `@std/meta`'s test of a type against a trait's identity.
+const META_IMPLEMENTS: Known = Known { package: "@std/meta", name: IMPLEMENTS }
 
 /// `@std/meta`'s fn whose answer is a fn's code hash.
 const META_CODE_HASH: Known = Known { package: "@std/meta", name: "code_hash" }
@@ -1186,6 +1196,24 @@ fn marks_miss(engine: QueryEngine, t: TypedNodes, arg: ExprId) -> List<MissPlace
     let named = if name == null { null } else { resolved(engine, t.file, Space.Value, name!).named() }
     if name != null && (named == null || named!.kind == ItemKind.Fn) { return [] }
     [MissPlaced { at: t.store.expr_span(arg), miss: Miss.MarkedUnnamed }]
+}
+
+/// `implements`'s trait argument `arg`, where it names no trait the file sees declared; a name
+/// nothing declares is the resolver's to say.
+fn implements_miss(engine: QueryEngine, t: TypedNodes, arg: ExprId) -> List<MissPlaced> {
+    let name = t.store.ident_name(arg)
+    if name != null && hole_name(name!) != null { return [] }
+    let named = if name == null { null } else {
+        resolved(engine, t.file, Space.Type, name!).named() ?? resolved(
+            engine,
+            t.file,
+            Space.Value,
+            name!,
+        )
+            .named()
+    }
+    if name != null && (named == null || named!.kind == ItemKind.Trait) { return [] }
+    [MissPlaced { at: t.store.expr_span(arg), miss: Miss.ImplementsUnnamed }]
 }
 
 /// A call of the fn `callee` whose arguments, each written by position, are a count its seats don't
@@ -2044,6 +2072,8 @@ fn hashes_unnamed(view: ItemView) -> List<Found> { misses_seen_in(view, (m: Miss
 
 fn marks_unnamed(view: ItemView) -> List<Found> { misses_seen_in(view, (m: Miss) -> match m { .MarkedUnnamed -> ["marked"], rest -> [] }) }
 
+fn implements_unnamed(view: ItemView) -> List<Found> { misses_seen_in(view, (m: Miss) -> match m { .ImplementsUnnamed -> ["implemented"], rest -> [] }) }
+
 fn method_arities_missed(view: ItemView) -> List<Found> {
     misses_seen_in(
         view,
@@ -2592,6 +2622,16 @@ export law marks_names_a_fn {
 }
 
 fn mark_words(_a: List<string>) -> Voice { marked_unnamed() }
+
+/// `implements` asks after a trait named where it is called
+export law implements_names_a_trait {
+    kind: "type.implements_named"
+    reads_view: implements_unnamed
+    voice: implemented_words
+    witness: "use @std.meta.{implements}\n\nfn f() -> bool { implements(\"T\", \"Decode\") }\n"
+}
+
+fn implemented_words(_a: List<string>) -> Voice { implemented_unnamed() }
 
 /// a record literal's spread carrying a field the record lacks, or at another type
 export law spread_carries_otherwise {

@@ -36,7 +36,7 @@
 //! A field of a FLAT record — one field, a scalar — that decodes by no
 //! derive of its own is its scalar on the wire: `type Ratio = { r: float }`
 //! reads and writes as a number, wrapped as `Ratio { r: … }` once read.
-use @std.text.{admits}
+use @std.text.{admits, TextForm}
 use @std.json.reading.{
     bind,
     FieldPlan,
@@ -103,7 +103,7 @@ use value.{Coercion, Value, Entry}
 use issue.{Issues}
 use @std.json.typed.{Path}
 use check.{Checking, filed}
-use shape.{FieldShape, FieldKind}
+use shape.{FieldShape, FieldKind, Hidden}
 
 /// What a route's args are: the tree that fills a path's holes and fills out a query or a body. A record that
 /// derives `Decode` is its own tree; `int` is the key a `{id}` hole takes.
@@ -542,7 +542,7 @@ fn is_secret(a: Annotation) -> bool { marks(a, secret) }
 fn secret_field(f: Field) -> bool { f.annotations.any(is_secret(it)) || secret_type(inner(f.kind)) }
 
 fn secret_type(k: Kind) -> bool {
-    match k { .Named(n, _) -> implements(n, "Hidden"), _ -> false }
+    match k { .Named(n, _) -> implements(n, Hidden), _ -> false }
 }
 
 /// One rule over the value read so far, recorded where it refuses.
@@ -872,11 +872,11 @@ fn flat_of(k: Kind) -> Flat? {
 /// Whether a named type decodes by its own derive.
 fn own_decoder(n: string) -> bool {
     let t? = type_named(n) else { return false }
-    implements(n, "Decode") || t.annotations.any((a) -> marks(a, Decode))
+    implements(n, Decode) || t.annotations.any((a) -> marks(a, Decode))
 }
 
 /// Whether a named type crosses as one string: it implements `@std/text`'s `TextForm`.
-fn texted(n: string) -> bool { implements(n, "TextForm") }
+fn texted(n: string) -> bool { implements(n, TextForm) }
 
 /// What a refused text-form value should have been.
 fn reads_as(n: string) -> Code { literal("a text that reads as " + n) }
