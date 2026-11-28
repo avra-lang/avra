@@ -15,7 +15,7 @@
 //! `long` is 32 bits and aarch64 Linux's `char` is unsigned.
 use compiler.host.{CDecl, DataModel, c_decls, lp64}
 use core.{flatten}
-use @std.io.{read_text}
+use @std.io.{env, exists, read_text}
 use @std.meta.{derive}
 use @std.path.{dir_of, is_absolute, joined_path, normalized}
 use @std.process.{Exit, Tool, cmd, tool_from_env}
@@ -60,7 +60,8 @@ type Named = { header: string, read: HeaderDecls }
 @query("laws")
 export fn header_decls(engine: QueryEngine, package: string, word: string) -> HeaderDecls {
     let root = package_lies(package) ?? ""
-    let dirs = searched(root, manifest_judged(engine, package).include)
+    let judged = manifest_judged(engine, package)
+    let dirs = searched(engine, root, judged.include).concat(["-D${d}" for d in judged.defines])
     if word.starts_with("<") {
         return dumped(
             engine,
@@ -75,11 +76,37 @@ export fn header_decls(engine: QueryEngine, package: string, word: string) -> He
     dumped(engine, text, root, beside.concat(dirs), word)
 }
 
-/// The `-I` flags for a package's `include` rows, each rooted at the package where it lies; none for
-/// a package that lies on no disk.
-fn searched(root: string, include: List<string>) -> List<string> {
+/// The `-I` flags for a package's `include` rows, their `${NAME}` holes filled as a link word's are:
+/// an absolute directory as it stands, a relative one rooted at the package where it lies, and none
+/// of those for a package that lies on no disk.
+fn searched(engine: QueryEngine, root: string, include: List<string>) -> List<string> {
+    let world = LinkWorld {
+        env: (name: string) -> link_variable(engine, name),
+        there: (path: string) -> link_there(engine, path),
+    }
+    flatten([["-I", d] for dir in link_filled(include, world) for d in rooted_dir(root, dir)])
+}
+
+/// An include directory where clang finds it: as it stands when absolute, else under the package's
+/// root, and none for a relative one of a package on no disk.
+fn rooted_dir(root: string, dir: string) -> List<string> {
+    if is_absolute(dir) { return [dir] }
     if root.is_empty() { return [] }
-    flatten([["-I", joined_path(root, dir)] for dir in include])
+    [joined_path(root, dir)]
+}
+
+/// A variable of the environment a link word's hole reads, as an input.
+@input("laws")
+fn link_variable(_engine: QueryEngine, name: string) -> string? {
+    // LICENSED input.asked: a hole in an include row, filled as a link word's is from the environment
+    env(name)
+}
+
+/// Whether anything stands at `path`, which a link word's hole may ask, as an input.
+@input("laws")
+fn link_there(_engine: QueryEngine, path: string) -> bool {
+    // LICENSED input.asked: a hole in an include row, filled as a link word's is
+    exists(path)
 }
 
 /// What clang declares of a unit whose text is `text`, read from `cwd` with `flags` before it, under
@@ -115,7 +142,14 @@ type ClangRun = { read: ClangSaid, included: List<string> }
 
 /// Clang run once over `text` on its stdin.
 fn clang_ran(clang: Tool, text: string, cwd: string, flags: List<string>) -> ClangRun {
-    let args = ["-H", "-fsyntax-only", "-Xclang", "-skip-function-bodies", "-Xclang", "-ast-dump=json"]
+    let args = [
+        "-H",
+        "-fsyntax-only",
+        "-Xclang",
+        "-skip-function-bodies",
+        "-Xclang",
+        "-ast-dump=json",
+    ]
         .concat(flags)
         .concat(["-x", "c", "-"])
     let at: string? = if cwd.is_empty() { null } else { cwd }

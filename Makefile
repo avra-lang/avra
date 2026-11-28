@@ -1401,23 +1401,9 @@ trap-marks:
 # through `sqlite3_compileoption_used`, so the document, this rule and
 # the object cannot drift without a red test. `vendor/FLAGS.md` carries
 # the REASON for each; this carries the flag.
-SQLITE_FLAGS := \
-  -DSQLITE_ENABLE_COLUMN_METADATA=1 -DSQLITE_ENABLE_PREUPDATE_HOOK=1 \
-  -DSQLITE_ENABLE_SESSION=1 -DSQLITE_ENABLE_SNAPSHOT=1 \
-  -DSQLITE_ENABLE_NORMALIZE=1 -DSQLITE_ENABLE_STMT_SCANSTATUS=1 \
-  -DSQLITE_ENABLE_UNLOCK_NOTIFY=1 -DSQLITE_ENABLE_FTS5=1 \
-  -DSQLITE_ENABLE_RTREE=1 -DSQLITE_ENABLE_GEOPOLY=1 \
-  -DSQLITE_ENABLE_MATH_FUNCTIONS=1 -DSQLITE_ENABLE_DBSTAT_VTAB=1 \
-  -DSQLITE_ENABLE_DBPAGE_VTAB=1 -DSQLITE_ENABLE_BYTECODE_VTAB=1 \
-  -DSQLITE_ENABLE_STAT4=1 -DSQLITE_ENABLE_EXPLAIN_COMMENTS=1 \
-  -DSQLITE_ENABLE_OFFSET_SQL_FUNC=1 -DSQLITE_DQS=0 \
-  -DSQLITE_ENABLE_API_ARMOR=1 -DSQLITE_LIKE_DOESNT_MATCH_BLOBS=1 \
-  -DSQLITE_STRICT_SUBTYPE=1 -DSQLITE_DEFAULT_FOREIGN_KEYS=1 \
-  -DSQLITE_THREADSAFE=1 -DSQLITE_MAX_EXPR_DEPTH=1000 \
-  -DSQLITE_DEFAULT_MEMSTATUS=0 \
-  -DSQLITE_DEFAULT_MMAP_SIZE=268435456 -DSQLITE_MAX_MMAP_SIZE=1099511627776 \
-  -DSQLITE_DEFAULT_CACHE_SIZE=-8000 -DSQLITE_DEFAULT_WORKER_THREADS=0 \
-  -DNDEBUG=1
+# THE SQLITE COMPILE FLAGS are the manifest's `[link] defines` row, which the compiler reads its
+# header under too: one list, read by both (packages/std-sqlite/vendor/FLAGS.md says why each is on).
+SQLITE_FLAGS := $(addprefix -D,$(shell sh tools/manifest_objects.sh --rows defines packages/std-sqlite/avra.toml))
 
 
 # THE WIDTH WITNESS: the Avra reader and a C reader of the same object agree

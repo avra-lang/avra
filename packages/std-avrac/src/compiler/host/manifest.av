@@ -41,7 +41,7 @@ export type ToolRow = { name: string, from: Provenance, var: string?, default: s
 /// instructions and `memory` in MiB of the compiler's heap, resolved
 /// to the measured defaults where the manifest writes none.
 @codec
-export type Manifest = { name: string, version: string, bin: string?, lib: string?, deps: List<Dependency>, deps_at: Span?, excludes: List<string>, objects: List<string>, wasm_objects: List<string>, search: List<string>, libs: List<string>, headers: List<string> = [], include: List<string> = [], shared: string = "", dynamic_symbols: bool = false, instruments: bool = false, raw: List<string>, tools: List<ToolRow> = [], budgets: Budgets, dev_server: string? = null }
+export type Manifest = { name: string, version: string, bin: string?, lib: string?, deps: List<Dependency>, deps_at: Span?, excludes: List<string>, objects: List<string>, wasm_objects: List<string>, search: List<string>, libs: List<string>, headers: List<string> = [], include: List<string> = [], defines: List<string> = [], shared: string = "", dynamic_symbols: bool = false, instruments: bool = false, raw: List<string>, tools: List<ToolRow> = [], budgets: Budgets, dev_server: string? = null }
 
 /// A reader over one document: the source for positions, the
 /// document, and what it has said so far.
@@ -121,6 +121,7 @@ export fn manifest_read(src: SourceFile) -> ManifestRead {
         libs: r.linked("libs"),
         headers: r.headers(),
         include: r.linked("include"),
+        defines: r.linked("defines"),
         shared: r.link_name("shared"),
         dynamic_symbols: r.link_flag("dynamic_symbols"),
         instruments: r.build_flag("instruments"),
@@ -218,6 +219,7 @@ fn known_key(section: string, key: string) -> bool {
             "libs",
             "headers",
             "include",
+            "defines",
             "shared",
             "dynamic_symbols",
         ]
@@ -248,6 +250,7 @@ fn link_shape(key: string) -> string {
         "search" -> "directories",
         "headers" -> "C headers, by path from the package root or as `<name.h>`",
         "include" -> "header directories, by path from the package root",
+        "defines" -> "the macros its headers are read under, `NAME` or `NAME=VALUE`",
         "libs" -> "library names",
         rest -> "words",
     }
@@ -259,6 +262,7 @@ fn link_help(key: string) -> string {
         "wasm_objects" -> "write the path alone, as `objects`",
         "search" -> "write the directory alone — the `-L` is ours to add",
         "include" -> "write the directory alone — the `-I` is ours to add",
+        "defines" -> "write the macro alone — `NAME=1`, the `-D` is ours to add",
         "libs" -> "write the name alone — `m`, not `-lm`",
         rest -> "write the word alone",
     }
