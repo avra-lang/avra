@@ -1,0 +1,46 @@
+//! `avra dev`'s wait for its server: five seconds of the host's time, whatever clock the case keeps.
+use commands.dev_backend.{Backend}
+use @std.net.{listen}
+use @std.process.{Child, tool_at}
+use @std.time.{host_ms}
+
+/// A port nobody listens on: one the system gave, let go at once.
+fn closed_port() -> int {
+    match listen("127.0.0.1", 0) {
+        .Ok(l) -> {
+            let p = l.port
+            let _ = l.close()
+            p
+        },
+        .Err(_) -> 0,
+    }
+}
+
+/// A backend at `port` with nothing built and nothing running.
+fn idle_at(port: int) -> Backend {
+    let idle: Child? = null
+    Backend {
+        root: "",
+        compiler: tool_at("true", "/bin/true"),
+        port: port,
+        child: Cell.new(idle),
+        watched: Cell.new([]),
+        binary: Cell.new(""),
+        page: Cell.new([]),
+    }
+}
+
+/// How long, in the host's milliseconds, `listening` took to give up on a closed port.
+fn gave_up_after() -> int {
+    let began = host_ms()
+    if idle_at(closed_port()).listening() { return 0 - 1 }
+    host_ms() - began
+}
+
+spec "avra dev — the server's wait" {
+    given "a port that refuses every connection" {
+        // A refused connect fails at once, so the wait between attempts is the whole of the
+        // five seconds — and a case's virtual clock jumps a task sleep with nothing else parked.
+        then "it gives up after five seconds of the host's time, not of the case's" { gave_up_after() >= 4900 }
+    }
+}
