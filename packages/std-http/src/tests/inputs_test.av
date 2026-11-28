@@ -60,6 +60,21 @@ spec "a handler's input as one record" {
             read("7", "/b/7/ideas", "application/x-www-form-urlencoded", "title=hi") == "7 hi 20"
         }
     }
+    given "each part read by its own rule" {
+        then "a JSON body is strict: a key the record does not name is refused" {
+            read("7", "/b/7/ideas", "application/json", "{\"title\":\"hi\",\"extra\":1}")
+                    .starts_with("422 ") &&
+                read("7", "/b/7/ideas", "application/json", "{\"title\":\"hi\",\"extra\":1}")
+                    .contains("\"in\":\"body\",\"path\":\"extra\"")
+        }
+        then "a query is keyed text: a key the record does not name is passed by, a number read from text" {
+            read("7", "/b/7/ideas?limit=5&other=x", "application/json", "{\"title\":\"hi\"}") == "7 hi 5"
+        }
+        then "a JSON body never reads a number from text" {
+            read("7", "/b/7/ideas", "application/json", "{\"title\":7}")
+                .contains("\"in\":\"body\",\"path\":\"title\",\"rule\":\"type\"")
+        }
+    }
     given "every part refused at once" {
         then "a rule on the input's own field is judged in its part" {
             read("700", "/b/700/ideas", "application/json", "{\"title\":\"hi\"}") == "422 {\"title\":\"the request does not validate\",\"status\":422,\"issues\":[{\"in\":\"path\",\"path\":\"board\",\"rule\":\"range\",\"message\":\"must be between 1 and 99\"}]}"

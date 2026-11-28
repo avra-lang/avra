@@ -4,17 +4,18 @@
 //!     @Input
 //!     type NewIdea = { @path board: string, @body draft: IdeaDraft, @query page: Page }
 //!
-//! Every part is read and every issue kept, so a request wrong in its
-//! body and its query is ONE 422 naming both, each issue with its `in`.
-//! A part that ends the request first — a body that is not JSON, an
-//! escape that decodes to no text — answers alone, as its reader does.
+//! THE INPUT IS DECODED ONCE, WHOLE: each part read under its own rule
+//! (a JSON body strictly, a form, a query and a capture as keyed text), and
+//! the record judged by one law, so a request wrong anywhere is ONE 422
+//! naming every issue, each at its path within its part, with its `in`.
+//! A part that cannot be read at all — a body that is not JSON, an escape
+//! that decodes to no text — answers alone, as its reader does.
 use @std.meta.{
     Type,
     Field as MetaField,
     Declared,
     Diagnostic,
     Decls,
-    Stmts,
     Code,
     Marker as Unrun,
     Named as Marked,
@@ -26,34 +27,25 @@ use @std.meta.{
 }
 use http.{Request, Response, Unrouted}
 use @std.json.reading.{own, mine}
-use typed.{
-    Captures,
-    FieldPart,
-    Origin,
-    Reading,
-    Placed,
-    every_placed,
-    placed_by_field,
-    problem_placed,
-    path_part,
-}
-use @std.validate.{checker}
+use typed.{Captures, FieldPart, Origin, input_read, path_entry}
+use @std.validate.{decoder}
 
 /// A record read from a request, each field from the part its mark names.
 export trait Input {
     /// The record, or the one refusal naming every part that refused.
     static fn read(at: dyn Captures, q: Request<Unrouted>) -> Result<Self, Response>
 
-    /// `@Input`: `read`, each field from the part its mark names, and the
-    /// record's own rules. A field naming no part is refused here.
+    /// `@Input`: `read`, and the type's `Decode` — an input is decoded once,
+    /// whole, so it wears no `@Decode` of its own. A field naming no part is
+    /// refused here.
     static fn derive(t: Type) -> Declared {
         let loose = [unsourced(f) for f in t.fields if source_of(f) == null]
         if !t.variants.is_empty() { return Declared { made: [], problems: [not_a_record(t)] } }
         if !loose.is_empty() { return Declared { made: [], problems: loose } }
-        Declared { made: [beside(t, input_reader(t)), beside(t, checker(t))] }
+        Declared { made: [beside(t, input_reader(t)), beside(t, decoder(t))] }
     }
 
-    /// Every mark a field wears: its part, or a rule `Checked` judges.
+    /// Every mark a field wears: its part, or a rule its decode judges.
     static fn marks(t: Type) -> List<string> { [a.name for f in t.fields for a in f.annotations] }
 }
 
@@ -77,27 +69,13 @@ fn source_of(f: MetaField) -> InputSource? {
 }
 
 fn input_reader(t: Type) -> Decls {
-    let reads: List<Stmts> = [part_read(f) for f in t.fields]
-    let ends = [quote { ${mine("read_${f.name}")}.ended() } for f in t.fields]
-    let issues = [quote { ${mine("read_${f.name}")}.issues() } for f in t.fields]
+    let fields = [field_entry(f) for f in t.fields]
     let parts = [quote { FieldPart { name: ${literal(f.name)}, part: ${part_word(f)} } } for f in t.fields]
-    let inits = [quote { Init { ${f.name}: ${mine("read_${f.name}")}.value()! } } for f in t.fields]
-    let judged: List<Stmts> = [
-        quote {
-            let ${own("ended")} = [..${ends}].find(it != null)
-            if ${mine("ended")} != null { fail ${mine("ended")}! }
-            let ${own("refused")} = every_placed([..${issues}])
-            if !${mine("refused")}.is_empty() { fail problem_placed(${mine("refused")}) }
-            let ${own("made")} = ${t} { ..${inits} }
-            let ${own("checked")} = placed_by_field(${mine("made")}.check(), [..${parts}])
-            if !${mine("checked")}.is_empty() { fail problem_placed(${mine("checked")}) }
-            ${mine("made")}
-        },
-    ]
-    let steps = reads.concat(judged)
     quote {
         impl Input for ${t} {
-            static fn read(${own("captures")}: dyn Captures, ${own("request")}: Request<Unrouted>) -> Result<${t}, Response> { ${steps} }
+            static fn read(${own("captures")}: dyn Captures, ${own("request")}: Request<Unrouted>) -> Result<${t}, Response> {
+                input_read([..${fields}], [..${parts}])
+            }
         }
     }
 }
@@ -111,12 +89,12 @@ fn part_word(f: MetaField) -> Code {
     }
 }
 
-/// One field's read, bound under a name no program spells.
-fn part_read(f: MetaField) -> Stmts {
+/// One field's value, read from its part under its part's rule.
+fn field_entry(f: MetaField) -> Code {
     match source_of(f)! {
-        .Path -> quote { let ${own("read_${f.name}")}: Reading<${f.ty}> = path_part(${mine("captures")}, ${literal(f.name)}) },
-        .Body -> quote { let ${own("read_${f.name}")}: Reading<${f.ty}> = ${mine("request")}.body_part() },
-        .Query -> quote { let ${own("read_${f.name}")}: Reading<${f.ty}> = ${mine("request")}.query_part() },
+        .Path -> quote { path_entry(${mine("captures")}, ${literal(f.name)})? },
+        .Body -> quote { ${mine("request")}.body_entry(${literal(f.name)})? },
+        .Query -> quote { ${mine("request")}.query_entry(${literal(f.name)})? },
     }
 }
 
