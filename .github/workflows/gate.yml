@@ -43,6 +43,8 @@ jobs:
       costs: ${{ steps.slices.outputs.costs }}
       browser: ${{ steps.slices.outputs.browser }}
       lays: ${{ steps.slices.outputs.lays }}
+      frees: ${{ steps.slices.outputs.frees }}
+      frees_laid: ${{ steps.slices.outputs.frees_laid }}
       sha8: ${{ steps.slices.outputs.sha8 }}
     steps:
       - uses: actions/checkout@v4
@@ -105,8 +107,12 @@ jobs:
           # after the census
           echo "jobs=$(sh tools/gate.sh jobs | awk '$1 !~ /^cost-/ { print $1 }' | json)" >> "$GITHUB_OUTPUT"
           # THE SLICES THAT LAY THE SNAPSHOT'S STD ANSWERS wait for the one slice that makes them (cost-answers)
-          echo "costs=$(sh tools/gate.sh jobs | awk '$1 ~ /^cost-/ && $1 != "cost-answers" && $1 !~ /laid/ { print $1 }' | json)" >> "$GITHUB_OUTPUT"
-          echo "lays=$(sh tools/gate.sh jobs | awk '$1 ~ /^cost-/ && $1 ~ /laid/ { print $1 }' | json)" >> "$GITHUB_OUTPUT"
+          echo "costs=$(sh tools/gate.sh jobs | awk '$1 ~ /^cost-/ && $1 !~ /^cost-answers/ && $1 !~ /laid/ && $1 !~ /^cost-matrix-/ { print $1 }' | json)" >> "$GITHUB_OUTPUT"
+          echo "lays=$(sh tools/gate.sh jobs | awk '$1 ~ /^cost-/ && $1 ~ /laid/ && $1 !~ /^cost-matrix-/ { print $1 }' | json)" >> "$GITHUB_OUTPUT"
+          # THE MATRIX RUNS UNCOUNTED, by the seed's compiler of generation 2 (cost.sh --uncounted): it waits for no
+          # census, and its laid parts for generation 2's own answers (cost-answers-gen2)
+          echo "frees=$(sh tools/gate.sh jobs | awk '$1 ~ /^cost-matrix-/ && $1 !~ /laid/ { print $1 }' | json)" >> "$GITHUB_OUTPUT"
+          echo "frees_laid=$(sh tools/gate.sh jobs | awk '$1 ~ /^cost-matrix-/ && $1 ~ /laid/ { print $1 }' | json)" >> "$GITHUB_OUTPUT"
           # THE JOBS THAT CARRY THE BROWSER LEG (a keeper of KEEPERS_B, KEEPERS_WASM or the tool witnesses), which
           # run on the browser leg's machine
           echo "browser=$(sh tools/gate.sh jobs | { grep -E ' keepers-(b|wasm|tw)' || :; } | awk '{ print $1 }' | json)" >> "$GITHUB_OUTPUT"
@@ -174,12 +180,13 @@ jobs:
         with: { name: gate-pack, path: pack }
       - name: unpack
         run: sh tools/gate.sh unpack pack/compiler-${{ needs.seed.outputs.sha8 }}.tar.gz
-      # A COST SLICE COUNTS WITH THE SEED'S CENSUS COMPILER, held to this tree's source as one built here is
-      - if: startsWith(matrix.slice, 'cost-')
+      # A COST SLICE COUNTS WITH THE SEED'S CENSUS COMPILER, held to this tree's source as one built here is;
+      # the matrix and generation 2's answers count nothing and run the seed's own
+      - if: startsWith(matrix.slice, 'cost-') && !startsWith(matrix.slice, 'cost-matrix-') && matrix.slice != 'cost-answers-gen2'
         uses: actions/download-artifact@v4
         with: { name: gate-census, path: census }
       - name: census compiler
-        if: startsWith(matrix.slice, 'cost-')
+        if: startsWith(matrix.slice, 'cost-') && !startsWith(matrix.slice, 'cost-matrix-') && matrix.slice != 'cost-answers-gen2'
         run: tar -xzf census/census-${{ needs.seed.outputs.sha8 }}.tar.gz
       # THE BROWSER LEG'S MACHINE, for a job holding a keeper of KEEPERS_B or KEEPERS_WASM, as checks.yml's
       # keepers-b job carries it: the browser's host libraries, the pinned Node, Playwright's WebKit (its
@@ -218,13 +225,20 @@ jobs:
             echo "cost answers: the release holds none this gate can read — the slice writes them"
           fi
       # A SLICE THAT LAYS THEM LAYS THIS GATE'S: the writer's key is every one of them theirs, so none is written again
-      - if: contains(matrix.slice, 'laid')
+      - if: contains(matrix.slice, 'laid') && !startsWith(matrix.slice, 'cost-matrix-')
         uses: actions/download-artifact@v4
         with: { name: gate-cost-answers, path: answers }
-      - if: contains(matrix.slice, 'laid')
+      - if: contains(matrix.slice, 'laid') && !startsWith(matrix.slice, 'cost-matrix-')
         name: this gate's answers
         run: |
           mkdir -p build && tar -xzf answers/cost-answers.tar.gz -C build && echo "cost answers: this gate's, laid down"
+      - if: contains(matrix.slice, 'laid') && startsWith(matrix.slice, 'cost-matrix-')
+        uses: actions/download-artifact@v4
+        with: { name: gate-cost-answers-gen2, path: answers }
+      - if: contains(matrix.slice, 'laid') && startsWith(matrix.slice, 'cost-matrix-')
+        name: this gate's answers of generation 2
+        run: |
+          mkdir -p build && tar -xzf answers/cost-answers-gen2.tar.gz -C build && echo "cost answers: this gate's, of generation 2, laid down"
       # EACH SLICE OF A JOB RUNS ALONE, IN A TREE OF ITS OWN: the tree as unpacked is kept aside, and laid
       # down afresh before every slice after the first. Verdicts and a failing slice's words are kept in
       # gate-kept/, which no slice's tree holds.
@@ -292,6 +306,15 @@ jobs:
           path: cost-answers.tar.gz
           retention-days: 7
           if-no-files-found: ignore
+      - if: success() && matrix.slice == 'cost-answers-gen2'
+        run: tar -czf cost-answers-gen2.tar.gz -C build cost-answers-gen2
+      - if: success() && matrix.slice == 'cost-answers-gen2'
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-cost-answers-gen2
+          path: cost-answers-gen2.tar.gz
+          retention-days: 3
+          if-no-files-found: error
       - if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -328,6 +351,39 @@ jobs:
         slice: [cost-answers]
     steps: *slice-steps
 
+  # THE MATRIX, UNCOUNTED: after the seed alone, beside the census (cost.sh --uncounted)
+  cost-free:
+    needs: [seed]
+    runs-on: ubuntu-latest
+    container: *gate-image
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        slice: ${{ fromJSON(needs.seed.outputs.frees) }}
+    steps: *slice-steps
+
+  answers-gen2:
+    needs: [seed]
+    runs-on: ubuntu-latest
+    container: *gate-image
+    timeout-minutes: 20
+    strategy:
+      matrix:
+        slice: [cost-answers-gen2]
+    steps: *slice-steps
+
+  cost-free-laid:
+    needs: [seed, answers-gen2]
+    runs-on: ubuntu-latest
+    container: *gate-image
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        slice: ${{ fromJSON(needs.seed.outputs.frees_laid) }}
+    steps: *slice-steps
+
   cost-laid:
     needs: [seed, census, answers]
     runs-on: ubuntu-latest
@@ -340,7 +396,7 @@ jobs:
     steps: *slice-steps
 
   verdict:
-    needs: [seed, census, slice, cost, answers, cost-laid]
+    needs: [seed, census, slice, cost, answers, cost-laid, cost-free, answers-gen2, cost-free-laid]
     if: always()
     runs-on: ubuntu-latest
     container: *gate-image
