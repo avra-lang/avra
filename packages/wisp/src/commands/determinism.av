@@ -1,16 +1,18 @@
-//! `wisp determinism [--avra <compiler>] [--plant reverse-deal] [--plant hash-seed]` — A CHECK'S
-//! ANSWER IS NOT ITS SCHEDULE'S. One compiler checks the cli cold, then again after one literal is
-//! edited, in a fresh export of this tree's HEAD standing at one place, as several legs: twice
-//! alike, held to one process, forked across two processes and across four, and as a binary one
-//! byte longer, whose kept answers are keyed apart from the others'. Every leg's counts, pass rows,
-//! read lists and findings agree with the first leg's exactly, or the leg is named with the lines
-//! that differ. A plant varies one more axis on purpose: `reverse-deal` deals every forked leg's
-//! files to its processes last first (`check --deal reversed`), and `hash-seed` runs each leg under
-//! a hash seed of its own (`check --hash-seed`). Exit 0 every leg agrees, 1 one differs, 2 usage.
+//! `wisp determinism [--avra <compiler>] [--plant reverse-deal,hash-seed] [--kept <dir>]` — A
+//! CHECK'S ANSWER IS NOT ITS SCHEDULE'S. One compiler checks the cli cold, then again after the cost
+//! harness's `literal` edit, in a fresh export of this tree's HEAD standing at one place, as several
+//! legs: twice alike, held to one process, forked across two processes and across four, and as a
+//! binary one byte longer, whose kept answers are keyed apart from the others'. Every leg's counts,
+//! pass rows, read lists and findings agree with the first leg's exactly; what a process decodes is
+//! the work its own schedule does, so that line agrees with the first leg of the same spread. A leg
+//! that disagrees is named with the lines that differ. A plant varies one more axis on purpose:
+//! `reverse-deal` deals every forked leg's files to its processes last first (`check --deal
+//! reversed`), and `hash-seed` runs each leg under a hash seed of its own (`check --hash-seed`).
+//! Exit 0 every leg agrees, 1 one differs, 2 usage.
 use @std.cli.{CliResult, Runnable, command, option}
 use @std.io.{append_bytes, exists, make_dirs, read_text, write_text}
 use @std.path.{joined_path}
-use @std.process.{Env, cmd, inherited, tool, tool_at}
+use @std.process.{Env, cmd, minimal, tool, tool_at}
 use @std.time.{mins, secs, sleep}
 
 /// Where every leg stands: the place a path inside the tree is read from is part of what a check
@@ -20,14 +22,12 @@ const PLACE: string = "/tmp/avra-determinism"
 /// The package every leg checks.
 const CHECKED: string = "packages/cli"
 
-/// The file the warm run edits, the literal it finds there and what it becomes: the cost harness's
-/// `literal` edit.
-const EDITED: string = "packages/cli/src/commands/cache.av"
-const LITERAL: string = "    println(\"avra cache clean: \${compacted_said(dir)}\")"
-const BECOMES: string = "    println(\"avra cache cleaned: \${compacted_said(dir)}\")"
-
 /// The longest a leg's one check may take.
 const CHECK_MINUTES: int = 40
+
+/// The invoker's variables a leg's check reads: where the toolchain's libraries stand, which a
+/// manifest's link rows name.
+const PASSED: List<string> = ["LLVM_PREFIX", "AVRA_SYS_SEARCH"]
 
 /// How many differing lines a leg that disagrees is shown by.
 const SHOWN: int = 20
@@ -61,7 +61,7 @@ const LEGS: List<WitnessLeg> = [
 
 /// What a leg said: its name, then the lines its cold check and its warm check kept, or why it said
 /// nothing.
-type LegSaid = { leg: string, lines: List<string>, failed: string }
+type LegSaid = { leg: string, spread: Spread, lines: List<string>, failed: string }
 
 type DeterminismCmd = {}
 
@@ -71,12 +71,14 @@ impl Runnable for DeterminismCmd {
         let avra = args.option("avra")
         if !exists(avra) { return no_compiler(avra) }
         let said = [leg_said(avra, l, at, plants) for at, l in LEGS]
+        let kept = args.option("kept")
+        if !kept.is_empty() { legs_kept(kept, said) }
         let failed = said.filter(!it.failed.is_empty())
         for f in failed { eprintln(leg_failed(f)) }
         if !failed.is_empty() { return 1 }
-        let differing = [s for s in said if s.lines != said[0].lines]
-        for s in said { println(leg_line(s, said[0])) }
-        for s in differing { eprintln(leg_differs(s, said[0])) }
+        let differing = [s for s in said if !leg_agrees(s, said)]
+        for s in said { println(leg_line(s, leg_agrees(s, said))) }
+        for s in differing { eprintln(leg_differs(s, said)) }
         if differing.is_empty() { 0 } else { 1 }
     }
 }
@@ -86,6 +88,9 @@ export command determinism {
     option avra {
         description: "the compiler under test"
         default: "build/avra"
+    }
+    option kept {
+        description: "a directory each leg's lines are written to, one file a leg, to read a disagreement whole"
     }
     option plant {
         description: "`reverse-deal`, `hash-seed`, or both comma-separated: an axis every leg varies on purpose"
@@ -111,19 +116,28 @@ fn plant_named(word: string) -> Plant? {
 fn leg_said(avra: string, l: WitnessLeg, at: int, plants: List<Plant>) -> LegSaid {
     let src = joined_path(PLACE, "src")
     let readied = tree_readied(avra, src, l.longer)
-    if !readied.is_empty() { return LegSaid { leg: l.name, lines: [], failed: readied } }
-    let words = check_words(l, at, plants)
+    if !readied.is_empty() { return LegSaid { leg: l.name, spread: l.spread, lines: [], failed: readied } }
+    let words = check_words(l, at, plants, src)
     let cold = leg_checked(src, l, words)
-    if !cold.failed.is_empty() { return LegSaid { leg: l.name, lines: [], failed: "cold: ${cold.failed}" } }
-    let edited_at = joined_path(src, EDITED)
-    match edited(read_text(edited_at) catch "", "literal", LITERAL, BECOMES) {
+    if !cold.failed.is_empty() { return LegSaid { leg: l.name, spread: l.spread, lines: [], failed: "cold: ${cold.failed}" } }
+    let edited_at = joined_path(src, WARM_EDITED)
+    let literal? = warm_edit("literal") else {
+        return LegSaid {
+            leg: l.name,
+            spread: l.spread,
+            lines: [],
+            failed: "the cost harness holds no literal edit",
+        }
+    }
+    match edited(read_text(edited_at) catch "", literal.kind, literal.text, literal.becomes) {
         .Ok(text) -> { let _ = write_text(edited_at, text) },
-        .Err(why) -> { return LegSaid { leg: l.name, lines: [], failed: "the edit: ${why}" } },
+        .Err(why) -> { return LegSaid { leg: l.name, spread: l.spread, lines: [], failed: "the edit: ${why}" } },
     }
     let warm = leg_checked(src, l, words)
-    if !warm.failed.is_empty() { return LegSaid { leg: l.name, lines: [], failed: "warm: ${warm.failed}" } }
+    if !warm.failed.is_empty() { return LegSaid { leg: l.name, spread: l.spread, lines: [], failed: "warm: ${warm.failed}" } }
     LegSaid {
         leg: l.name,
+        spread: l.spread,
         lines: ["cold"].concat(cold.lines).concat(["warm"]).concat(warm.lines),
         failed: "",
     }
@@ -162,10 +176,10 @@ fn leg_checked(src: string, l: WitnessLeg, words: List<string>) -> LegChecked {
     // a file is read only once it's older than the stamp window, so what a check stamps never
     // depends on how fast it began
     sleep(secs(3))
-    let c = cmd(tool_at("avra", joined_path(src, "build/avra")), words) with { cwd: src, env: leg_env(l), timeout: mins(CHECK_MINUTES), ok_exits: [0, 1] }
+    let c = cmd(tool_at("avra", joined_path(src, "build/avra")), words) with { cwd: src, env: leg_env(l, src), timeout: mins(CHECK_MINUTES), ok_exits: [0, 1] }
     match c.outcome() {
         .Ok(o) -> match o.exit {
-            .Clean or .Code(1) -> LegChecked { lines: kept_lines(o.out.stdout, o.out.stderr), failed: "" },
+            .Clean or .Code(1) -> examined(kept_lines(o.out.stdout, o.out.stderr), o.out.stdout),
             .Code(n) -> LegChecked { lines: [], failed: "exit ${n}: ${tail_of(o.out.stderr)}" },
             .Signal(_, _) -> LegChecked { lines: [], failed: "a signal: ${tail_of(o.out.stderr)}" },
         },
@@ -173,22 +187,31 @@ fn leg_checked(src: string, l: WitnessLeg, words: List<string>) -> LegChecked {
     }
 }
 
+/// What a check that ran said: the lines it kept, where it counted the work it did; a check that
+/// printed no count examined nothing, and nothing it said is held to another leg.
+fn examined(lines: List<string>, stdout: string) -> LegChecked {
+    if !lines.any(it.starts_with("counts: ")) { return LegChecked { lines: [], failed: "it examined nothing: ${tail_of(stdout)}" } }
+    LegChecked { lines: lines, failed: "" }
+}
+
 /// The words leg `l`, the `at`th, checks the cli with, the plants asking theirs.
-fn check_words(l: WitnessLeg, at: int, plants: List<Plant>) -> List<string> {
+fn check_words(l: WitnessLeg, at: int, plants: List<Plant>, src: string) -> List<string> {
     let dealt = if plants.contains(Plant.ReverseDeal) && l.spread is .Cores { ["--deal", "reversed"] } else { [] }
     let seeded = if plants.contains(Plant.HashSeed) { ["--hash-seed", "${at + 1}"] } else { [] }
     ["check", "--counts", "--passes", "--passes-rows", "--read-lists"]
         .concat(dealt)
         .concat(seeded)
-        .concat([CHECKED])
+        .concat([joined_path(src, CHECKED)])
 }
 
-/// The environment leg `l` checks in: no store of the machine's, no network, its home and its kept
-/// answers under the place, and its processes as its spread says.
-fn leg_env(l: WitnessLeg) -> Env {
-    let home = joined_path(PLACE, "home")
-    let set = inherited()
-        .with_var("HOME", home)
+/// The environment leg `l` checks the tree at `src` in: none of the invoker's settings, so no knob a
+/// shell or a runner set reaches a leg; no store of the machine's, no network, its home and its kept
+/// answers under the place, the tree its own directory, and its processes as its spread says.
+fn leg_env(l: WitnessLeg, src: string) -> Env {
+    let set = minimal()
+        .passing(PASSED)
+        .with_var("HOME", joined_path(PLACE, "home"))
+        .with_var("AVRA_CWD", src)
         .with_var("AVRA_CACHE_DIR", joined_path(PLACE, "cache"))
         .with_var("AVRA_MACHINE_STORE", "0")
         .with_var("AVRA_PROGRAM_NET", "0")
@@ -206,6 +229,25 @@ export fn kept_lines(stdout: string, stderr: string) -> List<string> {
     stdout.split("\n").filter(!it.trim().is_empty()).concat(stderr.split("\n").filter(counted_line))
 }
 
+/// Whether leg `s` agrees with the legs `said`: every line with the first leg's, but what a process
+/// decodes, which agrees with the first leg of its spread.
+fn leg_agrees(s: LegSaid, said: List<LegSaid>) -> bool {
+    shared_lines(s.lines) == shared_lines(said[0].lines) &&
+        spread_lines(s.lines) == spread_lines(peer_of(s, said).lines)
+}
+
+/// The first leg of `s`'s spread among `said`.
+fn peer_of(s: LegSaid, said: List<LegSaid>) -> LegSaid { said.find(it.spread == s.spread) ?? s }
+
+/// The lines every leg agrees on.
+export fn shared_lines(lines: List<string>) -> List<string> { lines.filter(!spread_line(it)) }
+
+/// The lines legs of one spread agree on.
+export fn spread_lines(lines: List<string>) -> List<string> { lines.filter(spread_line) }
+
+/// Whether a kept line counts work its process's own schedule does: what it decoded.
+fn spread_line(line: string) -> bool { line.starts_with("decodes") }
+
 /// Whether a line of a check's stderr is one it counts by.
 fn counted_line(line: string) -> bool {
     line.starts_with("counts: ") ||
@@ -222,6 +264,12 @@ export fn differing_lines(a: List<string>, b: List<string>) -> List<string> {
     if shown.is_empty() && a.length != b.length { return ["the same lines, in another count or order"] }
     if shown.is_empty() && a != b { return ["the same lines, in another order"] }
     shown.take(SHOWN)
+}
+
+/// Each leg's lines, one file a leg under `dir`.
+fn legs_kept(dir: string, said: List<LegSaid>) {
+    let _ = make_dirs(dir)
+    for s in said { let _ = write_text(joined_path(dir, "${s.leg}.lines"), s.lines.join("\n") + "\n") }
 }
 
 /// What the tool `name` run with `args` said when it failed, empty where it ran clean.
@@ -252,6 +300,8 @@ fn no_compiler(avra: string) -> int {
 
 fn leg_failed(s: LegSaid) -> string { "determinism: leg ${s.leg} said nothing to hold: ${s.failed}" }
 
-fn leg_line(s: LegSaid, first: LegSaid) -> string { "determinism: ${s.leg}: ${s.lines.length} lines, ${if s.lines == first.lines { "as the first" } else { "DIFFERS" }}" }
+fn leg_line(s: LegSaid, agrees: bool) -> string { "determinism: ${s.leg}: ${s.lines.length} lines, ${if agrees { "as the first" } else { "DIFFERS" }}" }
 
-fn leg_differs(s: LegSaid, first: LegSaid) -> string { "determinism: leg ${s.leg} disagrees with the first:\n${differing_lines(first.lines, s.lines).join("\n")}" }
+fn leg_differs(s: LegSaid, said: List<LegSaid>) -> string {
+    "determinism: leg ${s.leg} disagrees with the first:\n${differing_lines(shared_lines(said[0].lines), shared_lines(s.lines)).concat(differing_lines(spread_lines(peer_of(s, said).lines), spread_lines(s.lines))).join("\n")}"
+}

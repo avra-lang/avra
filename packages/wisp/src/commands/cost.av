@@ -13,6 +13,9 @@
 //!                            file once, becomes what follows (`\n` a line break); a `rename`
 //!                            renames the word through the file
 //!     cost same <a> <b>      two warm runs of compilers that differ in nothing the work reads
+//!     cost edits             the warm edits, one `kind|text|becomes` a line: the one table
+//!                            tools/cost.sh and `wisp determinism` make their edits from
+//!     cost edited            the file the warm edits are made in
 //!
 //! `tools/cost.sh` runs the census compiler of the tree cold over workloads whose sources are ONE
 //! pinned commit (the baseline's `snapshot` row), so a count moves only when the compiler's work
@@ -97,6 +100,8 @@ impl Runnable for CostCmd {
             "tell" -> if rest.length == 1 { told_run(rest[0]) } else { usage() },
             "rows" -> if rest.length == 1 { rows_said(rest[0]) } else { usage() },
             "edit" -> if rest.length == 4 { edit_made(rest[0], rest[1], rest[2], rest[3]) } else { usage() },
+            "edits" -> if rest.is_empty() { warm_edits_said() } else { usage() },
+            "edited" -> if rest.is_empty() { warm_edited_said() } else { usage() },
             "same" -> if rest.length == 2 { same_warm(rest[0], rest[1]) } else { usage() },
             "show" -> if rest.length <= 1 { surface_shown(rest.first() ?? "") } else { usage() },
 
@@ -108,7 +113,7 @@ impl Runnable for CostCmd {
 export command cost {
     description: "The exact-count gate: judge, accept or read a tools/cost.sh run; make one of its edits; hold two warm runs alike"
     arg verb {
-        description: "`judge`, `accept <run> <cause>`, `tell`, `rows`, `edit`, `same`, or `show [family]` — the record under `cost/` as a table"
+        description: "`judge`, `accept <run> <cause>`, `tell`, `rows`, `edit`, `edits`, `edited`, `same`, or `show [family]` — the record under `cost/` as a table"
         required: true
     }
     arg rest {
@@ -946,6 +951,70 @@ fn is_told(kinds: Map<string, Kind>, key: string) -> bool {
 
 /// The rows of one group, as the ledger writes them.
 fn rows_in(rows: Map<string, int>, group: string) -> string { row_lines(rows.filter((e) -> group_of(e.key) == group)) }
+
+// THE WARM EDITS
+
+/// The file the cost harness's warm edits are made in.
+export const WARM_EDITED: string = "packages/cli/src/commands/cache.av"
+
+/// One warm edit: its kind, the text that stands once in the file and what it becomes (`\n` a line
+/// break); the noop's text is empty, and it edits nothing.
+export type WarmEdit = { kind: string, text: string, becomes: string }
+
+/// The warm edits of `WARM_EDITED`, the noop first: what `tools/cost.sh` and `wisp determinism` make.
+export const WARM_EDITS: List<WarmEdit> = [
+    WarmEdit { kind: "noop", text: "", becomes: "" },
+    WarmEdit {
+        kind: "inline",
+        text: "//! in, its own verbs. The store is a directory of immutable packs, each the",
+        becomes: "//! in, its own verbs. The store is a folder of immutable packs, each the",
+    },
+    WarmEdit {
+        kind: "literal",
+        text: "    println(\"avra cache clean: \${compacted_said(dir)}\")",
+        becomes: "    println(\"avra cache cleaned: \${compacted_said(dir)}\")",
+    },
+    WarmEdit {
+        kind: "comment",
+        text: "    let shared? = machine_layer() else { return 0 }",
+        becomes: "    // a note\\n    let shared? = machine_layer() else { return 0 }",
+    },
+    WarmEdit {
+        kind: "body",
+        text: "    let shared? = machine_layer() else { return 0 }",
+        becomes: "    let shared? = machine_layer() else { return 0 }\\n    let _ = cache_dir().length",
+    },
+    WarmEdit {
+        kind: "signature",
+        text: "fn octets_of(packs: List<PackListed>) -> int {",
+        becomes: "fn octets_of(packs: List<PackListed>, most: int = 0) -> int {",
+    },
+    WarmEdit {
+        kind: "added",
+        text: "fn cache_dir() -> string {",
+        becomes: "fn cache_unused() -> int { 3 }\\n\\nfn cache_dir() -> string {",
+    },
+    WarmEdit {
+        kind: "added_after",
+        text: "fn octets_of(packs: List<PackListed>) -> int { packs.fold(0, (sum, p) -> sum + p.octets) }",
+        becomes: "fn octets_of(packs: List<PackListed>) -> int { packs.fold(0, (sum, p) -> sum + p.octets) }\\n\\nfn spare_one() -> int { 1 }",
+    },
+]
+
+/// The warm edit of `kind`; absent where there's none.
+export fn warm_edit(kind: string) -> WarmEdit? { WARM_EDITS.find(it.kind == kind) }
+
+/// The file the warm edits are made in, as `tools/cost.sh` reads it.
+fn warm_edited_said() -> int {
+    println(WARM_EDITED)
+    0
+}
+
+/// The warm edits as `tools/cost.sh` reads them, one `kind|text|becomes` a line.
+fn warm_edits_said() -> int {
+    for e in WARM_EDITS { println("${e.kind}|${e.text}|${e.becomes}") }
+    0
+}
 
 // THE EDITS
 
