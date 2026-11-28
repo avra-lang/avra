@@ -1,25 +1,46 @@
 //! WHERE AN IDENTITY'S FIELD COULD FORK: every copy of an `@identity` type shares its tables, so
 //! each field is a `Cell`, another `@identity` type, a `state` field, or one the type licenses plain
 //! with `@plain_field`. Read off the record's signature and the marks its file's declarations wear.
-use core.{Literal, SignedType, Span}
+use core.{Literal, SignedType, Span, Known, STD_META}
 use compiler.laws.{Found, law}
 use compiler.typing.{identity_field_plain}
 use diagnostics.{Voice}
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryEngine}
 
-/// The mark an identity type wears, and the one licensing a plain field.
-const IDENTITY: string = "identity"
+/// `@std/meta`'s mark an identity type wears.
+const META_IDENTITY: Known = Known { package: STD_META.name, name: "identity" }
 
-const PLAIN_FIELD: string = "plain_field"
+/// `@std/meta`'s mark licensing an identity's plain field.
+const META_PLAIN_FIELD: Known = Known { package: STD_META.name, name: "plain_field" }
+
+/// Whether the declaration `name` of `file` wears a mark whose word binds there the `@std/meta` fn
+/// `known` names, its literals answering `holds`.
+fn wears(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    name: string,
+    known: Known,
+    holds: fn(List<Literal>) -> bool,
+) -> bool {
+    file_marks(engine, file)
+        .worn
+        .any(
+            (w) -> w.name == name &&
+                binds_fn(engine, file, w.mark, known) &&
+                holds(w.literals ?? []),
+        )
+}
+
+/// Any literals at all.
+fn any_literals(_ls: List<Literal>) -> bool { true }
 
 /// Every field of an `@identity` record the written item `view` shows declares that a copy's
 /// write could fork: where the record stands, the field, and its type.
 fn plain_identity_fields(view: ItemView) -> List<Found> {
-    let worn = file_marks(view.engine, view.file).worn
     let records = [d for d in file_declares_at(view.engine, view.file, view.at).names if d.item == view.at &&
         d.kind == ItemKind.Record &&
-        worn.any(it.name == d.name && it.mark == IDENTITY)]
+        wears(view.engine, view.file, d.name, META_IDENTITY, any_literals)]
     if records.is_empty() { return [] }
     let item = view.item
     [Found { at: record_place(item, r.name), args: [f.name, f.ty!.spelled()] } for r in records for f in record_signature(view.engine, view.file, r.name)?.fields ?? [] if f.ty != null &&
@@ -36,13 +57,13 @@ fn record_place(item: ReadItem, name: string) -> Span? {
 
 /// Whether the record `record` of `file` licenses its field `field` plain.
 fn licensed(engine: QueryEngine, file: SourceFileAddress, record: string, field: string) -> bool {
-    file_marks(engine, file)
-        .worn
-        .any(
-            it.name == record &&
-                it.mark == PLAIN_FIELD &&
-                (it.literals ?? []).any((l: Literal) -> names_text(l, field)),
-        )
+    wears(
+        engine,
+        file,
+        record,
+        META_PLAIN_FIELD,
+        (ls: List<Literal>) -> ls.any(names_text(it, field)),
+    )
 }
 
 /// Whether the literal `l` is the text `text`.
@@ -55,7 +76,7 @@ fn names_text(l: Literal, text: string) -> bool {
 fn shared(engine: QueryEngine, ty: SignedType) -> bool {
     match ty.head {
         .Owned(word) -> word == "Cell",
-        .Declared(file, name) -> file_marks(engine, file).worn.any(it.name == name && it.mark == IDENTITY),
+        .Declared(file, name) -> wears(engine, file, name, META_IDENTITY, any_literals),
         rest -> false,
     }
 }
