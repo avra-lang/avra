@@ -220,6 +220,8 @@ fn memory_ins(
     mut floors: List<int> = []
     // each open region's HANDED yields: what its arms give the merge on the enclosing scope's count
     mut handing: List<List<Reg>> = []
+    // what moved on a path that leaves, owned again past that path's exit
+    mut parted: List<Parted> = []
     let last = last_reads(layouts.length, ins)
     let defs = def_sites(layouts.length, ins)
     let next_barrier = Barriers { next: barrier_positions(ins), still: still, layouts: layouts }
@@ -327,9 +329,10 @@ fn memory_ins(
                     if consumed_mark(marks, j) && layouts[ar.index].counted() {
                         if life.moves(open_scopes, ar, at) {
                             noted("moved: into a consuming seat", 1)
-                            disowns(open_scopes, ar)
+                            moves_on(open_scopes, parted, life, ar, at)
                         } else {
                             noted("retain: a consuming seat", 1)
+                            noted_siblings(life, ar, at)
                             out.push(Ins.Retain(ar))
                         }
                     }
@@ -350,6 +353,7 @@ fn memory_ins(
                 // LICENSED loops.push_loop: the pass's OUTPUT accumulates
                 for s in noted_all("an early exit", owed_from(open_scopes, 0, gives)) { out.push(s) }
                 out.push(i)
+                owns_again(open_scopes, parted)
             },
             // AN EARLY END OF A TURN settles what the turn's own close
             // would: every scope opened since its loop's `LoopCond`.
@@ -381,9 +385,10 @@ fn memory_ins(
                     if layouts[src.index].counted() {
                         if life.moves(open_scopes, src, at) {
                             noted("moved: into a cell", 1)
-                            disowns(open_scopes, src)
+                            moves_on(open_scopes, parted, life, src, at)
                         } else {
                             noted("retain: a value stored in a cell", 1)
+                            noted_siblings(life, src, at)
                             out.push(Ins.Retain(src))
                         }
                     }
@@ -469,7 +474,7 @@ fn memory_ins(
                 match life.handover(open_scopes, at) {
                     .Kept -> out.push(i),
                     .Owned -> {
-                        disowns(open_scopes, args[0])
+                        moves_on(open_scopes, parted, life, args[0], at)
                         out.push(Ins.CallRt(dst, rt_reusing_twin(callee) ?? callee, args))
                     },
                     .Emptied(slot) -> {
@@ -484,11 +489,14 @@ fn memory_ins(
             .CallRtVoid(callee, args) -> {
                 let moving: string? = life.moved_into(open_scopes, at)
                 if moving == null {
-                    if tallying() && !args.is_empty() && rt_keeps(callee, args.length - 1) { noted("retain: a value a row keeps", 1) }
+                    if tallying() && !args.is_empty() && rt_keeps(callee, args.length - 1) {
+                        noted("retain: a value a row keeps", 1)
+                        noted_siblings(life, args.last()!, at)
+                    }
                     out.push(i)
                 } else {
                     noted("moved: into a row that keeps it", 1)
-                    disowns(open_scopes, args.last()!)
+                    moves_on(open_scopes, parted, life, args.last()!, at)
                     out.push(Ins.CallRtVoid(moving!, args))
                 }
             },
@@ -1426,7 +1434,7 @@ impl Lives {
     fn handover(open_scopes: Stack<Scope>, at: int) -> Handover {
         let r? = handed_seat(self.ins[at]) else { return Handover.Kept }
         if !self.layouts[r.index].counted() || !self.dies_at(r, at) { return Handover.Kept }
-        if owned_top(open_scopes, r) { return Handover.Owned }
+        if self.owns_moving(open_scopes, r, at) { return Handover.Owned }
         let slot? = self.refilled_cell(r, at) else { return Handover.Kept }
         Handover.Emptied(slot)
     }
@@ -1435,7 +1443,6 @@ impl Lives {
     /// value is managed, dies there, and the innermost scope owns it.
     fn moved_into(open_scopes: Stack<Scope>, at: int) -> string? {
         let v? = stored_value(self.ins[at]) else { return null }
-        if self.last[v.index] != at { return null }
         let callee? = moving_callee(self.ins[at]) else { return null }
         if !self.layouts[v.index].counted() || !self.moves(open_scopes, v, at) { return null }
         rt_moving_twin(callee)
@@ -1444,17 +1451,63 @@ impl Lives {
     /// Whether a store's value MOVES into the cell: it dies at the store,
     /// and the innermost scope owns it.
     fn moves(open_scopes: Stack<Scope>, r: Reg, at: int) -> bool {
-        // the cheap tests first: the view walk runs for a last read only
-        self.last[r.index] == at && owned_top(open_scopes, r) && self.dies_at(r, at)
+        self.owns_moving(open_scopes, r, at) && self.dies_at(r, at)
     }
 
-    /// WHETHER `r` DIES AT `at`: read there once and never after, and
-    /// no view taken from it read there or after.
-    fn dies_at(r: Reg, at: int) -> bool {
-        self.last[r.index] == at &&
-            [x for x in reads_of(self.ins[at]) if same_reg(x, r)].length == 1 &&
-            self.views(r, at).all(self.last[it.index] < at)
+    /// Whether the scope that would give `r` up at `at` may: the innermost one, or on a path that
+    /// leaves, any one holding it once — the exit settles every open scope.
+    fn owns_moving(open_scopes: Stack<Scope>, r: Reg, at: int) -> bool {
+        owned_top(open_scopes, r) || self.parts_at(r, at) && owned_once(open_scopes, r)
     }
+
+    /// WHETHER `r` DIES AT `at`: read there once, and on every path from there either never
+    /// read again with no view taken from it read there or after, or leaving the fn first.
+    fn dies_at(r: Reg, at: int) -> bool {
+        if self.last[r.index] < at { return false }
+        if [x for x in reads_of(self.ins[at]) if same_reg(x, r)].length != 1 { return false }
+        if self.last[r.index] == at && self.views(r, at).all(self.last[it.index] < at) { return true }
+        self.leaves_after(r, at)
+    }
+
+    /// Whether `r` is read at `at` on a path that leaves the fn: the arm `at` stands in reaches its
+    /// own `FnExit` before any read of `r` or of a view riding it.
+    fn leaves_after(r: Reg, at: int) -> bool {
+        let k? = self.path_end(r, at) else { return false }
+        self.ins[k] is .FnExit
+    }
+
+    /// Whether `r`'s last reads at and past `at` stand in sibling arms of one region: the arm `at`
+    /// stands in closes with no read of it, and nothing past the region's close reads it.
+    fn last_in_siblings(r: Reg, at: int) -> bool {
+        let k? = self.path_end(r, at) else { return false }
+        let close = match self.ins[k] {
+            .RegionEnd(_, _) -> k,
+            .ArmEnd(_) -> region_exit(self.ins, k),
+            rest -> { return false },
+        }
+        self.death[r.index] < close
+    }
+
+    /// Where the path from `at` stops at its own level, past no read of `r` or of a view riding it:
+    /// the first `FnExit`, close or turn there. Absent when a read comes first, or nothing stops it.
+    fn path_end(r: Reg, at: int) -> int? {
+        let family = [r].concat(self.views(r, at))
+        mut depth = 0
+        mut k = at + 1
+        while k < self.ins.length {
+            let i = self.ins[k]
+            if reads_any(i, family) { return null }
+            if depth == 0 && (closes(i) || turns(i) || i is .LoopJump || i is .FnExit) { return k }
+            if opens(i) { depth = depth + 1 }
+            if closes(i) { depth = depth - 1 }
+            k = k + 1
+        }
+        null
+    }
+
+    /// Whether `r`'s death at `at` is a path's, not its last read's: the scope that gives it up there
+    /// owns it again past that path's exit.
+    fn parts_at(r: Reg, at: int) -> bool { self.last[r.index] != at }
 
     /// The views taken from `r` before `at`, and the views of those —
     /// every register that rides `r`'s reference. A read that takes its
@@ -1688,6 +1741,36 @@ fn owned_once(open_scopes: Stack<Scope>, r: Reg) -> bool {
         .length == 1
 }
 
+/// A reference a scope gave up on one path alone: `r`, and the depth of the scope that held it.
+type Parted = { r: Reg, depth: int }
+
+/// The scope holding `r` gives up its reference, moved at `at`: kept in `parted` where only the
+/// path through `at` gave it up.
+fn moves_on(mut open_scopes: Stack<Scope>, mut parted: List<Parted>, life: Lives, r: Reg, at: int) {
+    if !life.parts_at(r, at) {
+        disowns(open_scopes, r)
+        return
+    }
+    let depth? = holder_of(open_scopes, r) else { return }
+    let held = open_scopes.at(depth)
+    open_scopes.rewrite_at(depth, held with { managed: kept_out(held.managed, r) })
+    parted.push(Parted { r: r, depth: depth })
+}
+
+/// The depth of the innermost open scope holding `r`.
+fn holder_of(open_scopes: Stack<Scope>, r: Reg) -> int? {
+    [j for j in 0..open_scopes.depth() if open_scopes.at(j).managed.contains(r)].last()
+}
+
+/// Each scope owns again what it gave up on a path that has just left.
+fn owns_again(mut open_scopes: Stack<Scope>, mut parted: List<Parted>) {
+    for p in parted {
+        let held = open_scopes.at(p.depth)
+        open_scopes.rewrite_at(p.depth, held with { managed: held.managed.concat([p.r]) })
+    }
+    while !parted.is_empty() { let _ = parted.pop() }
+}
+
 /// The innermost scope GIVES UP one reference to `r`: it moved on.
 fn disowns(mut open_scopes: Stack<Scope>, r: Reg) {
     let top? = open_scopes.top() else { return }
@@ -1710,6 +1793,12 @@ const YIELD_NOT_OWNED = "a yield its scope does not own"
 fn noted(reason: string, n: int) {
     if n == 0 || !tallying() { return }
     rc_reasons().put(reason, (rc_reasons().get().get(reason) ?? 0) + n)
+}
+
+/// A retain at `at` of a value whose last reads stand in sibling arms: a move in every arm would
+/// remove it.
+fn noted_siblings(life: Lives, r: Reg, at: int) {
+    if tallying() && life.last_in_siblings(r, at) { noted("candidate: a value read last in sibling arms", 1) }
 }
 
 /// `placed`, each retain and release tallied as placed at `site`.
