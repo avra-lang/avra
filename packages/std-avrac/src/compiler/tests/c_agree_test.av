@@ -1,0 +1,65 @@
+// A written extern seat held to the canonical C type its header declares:
+// each disagreement with the word that agrees, and each seat the language
+// has no word to judge left alone.
+use compiler.host.{CType, Disagreement, answer_disagrees, seat_disagrees}
+
+/// A disagreement, spelled for comparison; `agrees` where there is none.
+fn said(d: Disagreement?) -> string {
+    let held? = d else { return "agrees" }
+    match held {
+        .Width(fix) -> "width ${fix}",
+        .File(fix) -> "file ${fix}",
+        .Pointer -> "pointer",
+        .Value(fix) -> "value ${fix}",
+        .Record -> "record",
+        .Void -> "void",
+        .NotText(target) -> "not text ${target}",
+        .Address -> "address",
+    }
+}
+
+fn seat(word: string, c: CType) -> string { said(seat_disagrees(word, false, c)) }
+
+spec "compiler/c_agree" {
+    given "an integer seat is held to the header's width and sign" {
+        then "int over a 64-bit integer agrees" { seat("int", CType.Int(64, true)) == "agrees" }
+        then "i64 over an unsigned 64-bit integer agrees" { seat("i64", CType.Int(64, false)) == "agrees" }
+        then "int over a 32-bit int is i32's width" { seat("int", CType.Int(32, true)) == "width i32" }
+        then "i32 over unsigned int is u32's sign" { seat("i32", CType.Int(32, false)) == "width u32" }
+        then "u32 over unsigned int agrees" { seat("u32", CType.Int(32, false)) == "agrees" }
+        then "i32 over a 64-bit long is i64's width" { seat("i32", CType.Int(64, true)) == "width i64" }
+        then "bool over any integer agrees" { seat("bool", CType.Int(8, false)) == "agrees" }
+        then "an 8- or 16-bit integer, which no word names, is not judged" {
+            seat("int", CType.Int(8, true)) == "agrees" &&
+                seat("i32", CType.Int(16, false)) == "agrees"
+        }
+        then "float over an int is the word's register" { seat("float", CType.Int(32, true)) == "file i32" }
+        then "a pointer word over an int is a value's" { seat("ptr", CType.Int(32, true)) == "value i32" }
+    }
+    given "a float seat is held to a double" {
+        then "float over double agrees" { seat("float", CType.Float(64)) == "agrees" }
+        then "int over double is the float's register" { seat("int", CType.Float(64)) == "file float" }
+        then "a C float, which no word names, is not judged" { seat("int", CType.Float(32)) == "agrees" }
+    }
+    given "a pointer seat is held to a pointer" {
+        then "string over char* agrees" { seat("string", CType.Pointer("char", 1, true)) == "agrees" }
+        then "string over void* is no text" { seat("string", CType.Pointer("void", 1, false)) == "not text void" }
+        then "ptr and Bytes over any pointer agree" {
+            seat("ptr", CType.Pointer("struct db", 2, false)) == "agrees" &&
+                seat("Bytes", CType.Pointer("void", 1, true)) == "agrees"
+        }
+        then "a width word over a pointer is a pointer's" { seat("i64", CType.Pointer("void", 1, false)) == "pointer" }
+        then "a mut seat over a pointer agrees" { said(seat_disagrees("i32", true, CType.Pointer("int", 1, false))) == "agrees" }
+        then "a mut seat over a value is an address" { said(seat_disagrees("i32", true, CType.Int(32, true))) == "address" }
+    }
+    given "what one register cannot carry, and what is not read" {
+        then "any word over a struct by value is a record" { seat("ptr", CType.Record("struct pair")) == "record" }
+        then "an unread type is not judged" { seat("int", CType.Unread("long double")) == "agrees" }
+        then "a callback is not judged" { seat("fn", CType.Unread("int (*)(int)")) == "agrees" }
+    }
+    given "an answer is held as a seat is, and an unwritten one asks nothing" {
+        then "an answer over a void function is void" { said(answer_disagrees("int", CType.Void)) == "void" }
+        then "no answer over an int-answering function agrees" { said(answer_disagrees("void", CType.Int(32, true))) == "agrees" }
+        then "int answering a 32-bit int is i32's width" { said(answer_disagrees("int", CType.Int(32, true))) == "width i32" }
+    }
+}
