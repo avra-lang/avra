@@ -1,0 +1,128 @@
+//! Live queries over one model, measured: a subscription is an equality key, a
+//! residual filter and an optional top-N window; the server holds subscriptions,
+//! never rows. A write arrives as a change-log entry with its before and after
+//! images and reaches only the subscriptions filed under either image's key.
+extern fn avra_now_ns() -> int
+
+/// A card's columns a subscription can read.
+type Image = { board: int, done: int, rank: int }
+
+/// One entry of the store's change log: the row and its images; a board of -1 is no row.
+type Change = { row: int, before: Image, after: Image }
+
+/// `Card.where(board: k, done: d).ordered(by: rank).first(n)`; `done` of -1 is no filter,
+/// `limit` of 0 is no window. `boundary` is the window's last rank, the one value it keeps.
+type Sub = { board: int, done: int, limit: int }
+
+/// What a write did to the subscriptions it reached.
+type Tally = { looked: int, told: int, refills: int }
+
+fn matches(s: Sub, i: Image, boundary: int) -> bool {
+    i.board == s.board && (s.done < 0 || i.done == s.done) && (s.limit == 0 || i.rank <= boundary)
+}
+
+fn key(board: int) -> string { "b${board}" }
+
+/// Subscriptions by their equality key: the only index a write consults.
+fn indexed(subs: List<Sub>) -> Map<string, List<int>> {
+    mut m: Map<string, List<int>> = {}
+    // LICENSED loops.push_loop: a probe files each subscription under its key
+    for i, s in subs { m.set(key(s.board), (m.get(key(s.board)) ?? []).concat([i])) }
+    m
+}
+
+/// One subscription's verdict on one change: 0 nothing, 1 told the client (enter, leave or
+/// update), 2 told and the window must refill or tighten from the store.
+fn verdict(s: Sub, c: Change, boundary: int) -> int {
+    let was = matches(s, c.before, boundary)
+    let now = matches(s, c.after, boundary)
+    if !was && !now { return 0 }
+    if s.limit > 0 && was != now { return 2 }
+    1
+}
+
+fn reached(index: Map<string, List<int>>, c: Change) -> List<int> {
+    let at = index.get(key(c.before.board)) ?? []
+    if c.after.board == c.before.board { return at }
+    at.concat(index.get(key(c.after.board)) ?? [])
+}
+
+fn applied(
+    subs: List<Sub>,
+    bounds: Cell<List<int>>,
+    index: Map<string, List<int>>,
+    log: List<Change>,
+) -> Tally {
+    mut looked = 0
+    mut told = 0
+    mut refills = 0
+    // LICENSED loops.push_loop: a timed fold over the log counts, it builds no list
+    for c in log {
+        // LICENSED loops.push_loop: a timed fold over one write's subscriptions counts
+        for i in reached(index, c) {
+            looked = looked + 1
+            let v = verdict(subs[i], c, bounds.get()[i])
+            if v > 0 { told = told + 1 }
+            if v == 2 {
+                refills = refills + 1
+                bounds.set_at(i, bounds.get()[i] + 1)
+            }
+        }
+    }
+    Tally { looked: looked, told: told, refills: refills }
+}
+
+/// The same work with no index: every subscription judges every write.
+fn scanned(subs: List<Sub>, bounds: Cell<List<int>>, log: List<Change>) -> int {
+    mut told = 0
+    // LICENSED loops.push_loop: a timed fold counts, it builds no list
+    for c in log {
+        // LICENSED loops.push_loop: the scan judges every subscription
+        for i, s in subs { if verdict(s, c, bounds.get()[i]) > 0 { told = told + 1 } }
+    }
+    told
+}
+
+fn sub_at(i: int, boards: int) -> Sub {
+    Sub { board: i * 7 % boards, done: i % 3 - 1, limit: if i % 4 == 0 { 50 } else { 0 } }
+}
+
+fn image(row: int, boards: int, turn: int) -> Image {
+    Image { board: row * 13 % boards, done: (row + turn) % 2, rank: (row * 31 + turn) % 1000 }
+}
+
+/// A write: a tick of `done` and a new rank, and one in twenty moves the card to another board.
+fn change_at(i: int, rows: int, boards: int) -> Change {
+    let row = i * 7919 % rows
+    let before = image(row, boards, i)
+    let moved = if i % 20 == 0 { (before.board + 1) % boards } else { before.board }
+    Change {
+        row: row,
+        before: before,
+        after: Image { board: moved, done: (before.done + 1) % 2, rank: (before.rank + 17) % 1000 },
+    }
+}
+
+fn round(n_subs: int, boards: int, writes: int) {
+    let subs = [sub_at(i, boards) for i in 0..n_subs]
+    let bounds = Cell.new([500 for _i in 0..n_subs])
+    let t0 = avra_now_ns()
+    let index = indexed(subs)
+    let t1 = avra_now_ns()
+    let log = [change_at(i, 100000, boards) for i in 0..writes]
+    let t2 = avra_now_ns()
+    let t = applied(subs, bounds, index, log)
+    let t3 = avra_now_ns()
+    let scan_told = scanned(subs, bounds, [log[i] for i in 0..writes / 10])
+    let t4 = avra_now_ns()
+    println(
+        "${n_subs} subs over ${boards} keys, ${writes} writes: index ${(t1 - t0) / 1000} us  indexed ${(t3 - t2) / writes} ns/write  looked ${t.looked * 100 / writes / 100}.${t.looked * 100 / writes % 100}/write  told ${t.told * 100 / writes / 100}.${t.told * 100 / writes % 100}/write  refills ${t.refills * 1000 / writes} per 1000 writes  |  scan ${(t4 - t3) / (writes / 10)} ns/write (told ${scan_told})",
+    )
+}
+
+// LICENSED loops.push_loop: rounds print, they build nothing
+for _r in 0..3 { round(10000, 2000, 100000) }
+// LICENSED loops.push_loop: rounds print, they build nothing
+for _r in 0..2 { round(10000, 100, 100000) }
+// LICENSED loops.push_loop: rounds print, they build nothing
+for _r in 0..2 { round(100000, 20000, 100000) }
