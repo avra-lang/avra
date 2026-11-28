@@ -1,7 +1,8 @@
 //! `avra check <pkg>` OVER A NAME UNREAD ELSEWHERE — A FRAME IS RENDERED OVER THE TEXT ITS LOC NAMES.
 //! A file reading a name its module could not parse is refused at its own read, with a second frame
 //! pointing into the sibling where the parse stopped; that frame is windowed over the SIBLING's text,
-//! so an offset past the reader's own length is a line of the sibling, never a trap.
+//! so an offset past the reader's own length is a line of the sibling, never a trap — in `check` and
+//! wherever a law's finding is rendered.
 use @std.io.{make_dirs, write_text}
 use @std.path.{dir_of}
 use @std.time.{stamp}
@@ -33,6 +34,13 @@ once fn checked() -> Result<Outcome, ProcessError> {
         .outcome()
 }
 
+/// `tapes --findings` over the same package: every law's finding in each file, rendered.
+once fn found() -> Result<Outcome, ProcessError> {
+    let t = tool(avra_bin())?
+    (cmd(t, ["tapes", "--findings", package_root()]) with { env: inherited().with_var("AVRA_PROGRAM_NET", "0"), timeout: hang_bound() })
+        .outcome()
+}
+
 fn exit_of(o: Result<Outcome, ProcessError>) -> int {
     match o {
         .Ok(r) -> match r.exit { .Code(n) -> n, .Clean -> 0, .Signal(_, _) -> -1 },
@@ -53,6 +61,15 @@ spec "avra check — a refusal behind a sibling's parse error renders each frame
         }
         then "and its second frame is the sibling's line where the parse stopped" {
             said(checked())
+                .contains(
+                    "╭─[${package_root()}/src/aa.av:121:18]\n121 │ fn broken(x: int y: int) -> int {",
+                )
+        }
+    }
+    given "every law's finding over the same package, as `tapes --findings` renders them" {
+        then "it answers by 0, never trapping" { exit_of(found()) == 0 }
+        then "and the reader's refusal points into the sibling's line" {
+            said(found())
                 .contains(
                     "╭─[${package_root()}/src/aa.av:121:18]\n121 │ fn broken(x: int y: int) -> int {",
                 )

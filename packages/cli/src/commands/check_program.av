@@ -201,14 +201,26 @@ fn entry_strays(engine: QueryEngine, disk: Disk) -> string {
 fn erring_said(engine: QueryEngine, h: ProgramFile) -> string {
     let found = file_law_diags(engine, h)
     if found.all(it.severity is .Warning) { return refusal_unworded(h.full) }
-    let elsewhere = distinct(flatten([files_framed(d) for d in found])).filter(it != h.full)
-    let sources = [new_source_file(h.full, text_at(h.full) ?? "")]
-        .concat([new_source_file(p, t!) for p in elsewhere for t in [text_at(p)] if t != null])
-    [render_among(d, sources) for i, d in found if !found.take(i).any((e) -> same_said(e, d))]
+    rendered_home([d for i, d in found if !found.take(i).any((e) -> same_said(e, d))], h.full)
         .join("\n\n")
 }
 
-/// The files `d`'s frames point into: a refusal behind another file's parse error points there too.
+/// Each of `found`, said of the file `full`, rendered over the files its frames name.
+fn rendered_home(found: List<Diag>, full: string) -> List<string> {
+    let sources = sources_framed(found, full)
+    [render_among(d, sources) for d in found]
+}
+
+/// The text of `full`, first, and of every other file a frame of `found` names that can be read: a
+/// refusal behind another file's parse error points there too, and a file no text answers for
+/// renders its frame by its label alone.
+fn sources_framed(found: List<Diag>, full: string) -> List<SourceFile> {
+    let elsewhere = distinct(flatten([files_framed(d) for d in found])).filter(it != full)
+    [new_source_file(full, text_at(full) ?? "")]
+        .concat([new_source_file(p, t!) for p in elsewhere for t in [text_at(p)] if t != null])
+}
+
+/// The files `d`'s frames point into.
 fn files_framed(d: Diag) -> List<string> {
     [f.loc!.file! for f in [d.primary].concat(d.secondary) if f.loc?.file != null]
 }
@@ -319,13 +331,12 @@ fn file_found(engine: QueryEngine, program: string, h: ProgramFile) -> FileFound
     }
 }
 
-/// The warnings among `found`, rendered over the text of the file `full` — "" when none spoke, and
+/// The warnings among `found`, rendered over the text of the file `full` and the files they point into — "" when none spoke, and
 /// the file then never read.
 fn warned_among(found: List<Diag>, full: string) -> string {
     let warned = found.filter(!(it.severity is .Error))
     if warned.is_empty() { return "" }
-    let src = new_source_file(full, text_at(full) ?? "")
-    [render(d, src) for d in warned].join("\n\n")
+    rendered_home(warned, full).join("\n\n")
 }
 
 /// What a clean program's files say, in their order.
