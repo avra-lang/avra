@@ -844,19 +844,15 @@ fn barrier_kind(i: Ins) -> bool {
 }
 
 /// WHETHER `i` IS A CALL NO CELL CHANGES ACROSS: a `.Call` by name of a body that writes no cell
-/// (`writes_no_cell`, asked of `still`), handed only scalars. A counted argument keeps it a barrier:
-/// what the callee does with a box it is handed is not asked here. A `.CallPtr` is never quiet: a fn
+/// (`writes_no_cell`, asked of `still`), handed no value that can run code. A body that writes no
+/// cell writes through no seat either, so what it is handed is unchanged past it; `any_callee` sets
+/// the callee's law aside, the detector's question (`twin_table`). A `.CallPtr` is never quiet: a fn
 /// value's body is not known.
-fn quiet_call(still: StillNames, layouts: List<Layout>, i: Ins) -> bool {
+fn quiet_call(b: Barriers, i: Ins) -> bool {
     match i {
-        .Call(_, callee, _) -> handed_scalars(layouts, i) && still.has(callee),
+        .Call(_, callee, args) -> (b.any_callee || b.still.has(callee)) && !args.any(may_run(b.layouts[it.index])),
         rest -> false,
     }
-}
-
-/// Whether `i` is a `.Call` by name handed only scalars, whatever its callee does.
-fn handed_scalars(layouts: List<Layout>, i: Ins) -> bool {
-    match i { .Call(_, _, args) -> !args.any(layouts[it.index].counted()), rest -> false }
 }
 
 /// WHETHER A BODY WRITES NO CELL, read of its own instructions once, asking no callee: it calls no
@@ -1239,8 +1235,8 @@ fn owned_form(twins: List<bool>, layouts: List<Layout>, immortal: List<bool>, at
 /// every answer it needs in hand.
 ///
 /// THE DETECTOR OF A BORROW A CALL MAKES OWNED: where declines are asked for,
-/// a read that owns is asked again with every call handed only scalars read
-/// as quiet; one that would then stay a borrow owns only because a callee it
+/// a read that owns is asked again with every call read as quiet whatever its
+/// callee; one that would then stay a borrow owns only because a callee it
 /// calls may write a cell — a candidate for `writes_no_cell` to say more of.
 fn twin_table(
     defs: List<int>,
@@ -1250,13 +1246,13 @@ fn twin_table(
     declines: Cell<List<InsDeclined>>?,
 ) -> List<bool> {
     mut out = [false for j in 0..ins.length]
-    let scalar_calls = next_barrier with { every_scalar: true }
+    let any_callee = next_barrier with { any_callee: true }
     // LICENSED loops.index_walk: a REVERSE walk — a read's answer reads the answers after it
     mut k = ins.length - 1
     while k >= 0 {
         if takes_twin(out, defs, next_barrier, layouts, ins, k, ins[k]) {
             out.set(k, true)
-            if declines != null && !takes_twin(out, defs, scalar_calls, layouts, ins, k, ins[k]) {
+            if declines != null && !takes_twin(out, defs, any_callee, layouts, ins, k, ins[k]) {
                 declines!
                     .push(
                         InsDeclined {
@@ -1408,15 +1404,13 @@ enum Handover {
 
 /// WHERE A SCAN MAY STOP: the next barrier at or after each position (`barrier_positions`), and what
 /// says whether a call there is QUIET — the names of the bodies that write no cell (`still_by_name`)
-/// and the registers' layouts. `every_scalar` reads every call handed only scalars as quiet, whatever
-/// its callee: the detector's question (`twin_table`).
-type Barriers = { next: List<int>, still: StillNames, layouts: List<Layout>, every_scalar: bool = false }
+/// and the registers' layouts. `any_callee` reads a call quiet whatever its callee does: the
+/// detector's question (`twin_table`).
+type Barriers = { next: List<int>, still: StillNames, layouts: List<Layout>, any_callee: bool = false }
 
 impl Barriers {
     /// Whether `i` is a call no cell changes across, as these barriers read it.
-    fn quiet(i: Ins) -> bool {
-        if self.every_scalar { handed_scalars(self.layouts, i) } else { quiet_call(self.still, self.layouts, i) }
-    }
+    fn quiet(i: Ins) -> bool { quiet_call(self, i) }
 }
 
 /// ONE BODY'S LIVES: where each register is defined and last read.

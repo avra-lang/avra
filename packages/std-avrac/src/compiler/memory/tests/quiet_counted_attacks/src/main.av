@@ -1,0 +1,78 @@
+// proves: a call handed a counted value is quiet only where its callee writes no cell, through no
+// seat either, and nothing it is handed can run code. Each hostile case stores a computed list first, so the box a
+// borrow would ride is really freed by the write, and a list made after the call reuses it: a borrow
+// held across `replaced` (writes the state) or `runs` (runs a closure that writes it) would read
+// another list's numbers. `quiet`, `closure_beside` and `mut_seat` (a `mut` seat never written) borrow; `mut_written` owns.
+type Holder = { run: fn() -> int, n: int }
+type Table = { slots: Cell<List<int>> }
+
+state probes: List<int> = [5, 6]
+
+fn length_of(xs: List<int>) -> int { xs.length }
+
+fn replaced(xs: List<int>) -> int {
+    probes = [9]
+    let junk = [77, 88]
+    xs.length + junk.length
+}
+
+fn held_n(h: Holder, xs: List<int>) -> int { h.n + xs.length }
+
+fn stale_mut(mut xs: List<int>) -> int { xs.length }
+
+fn grows(mut xs: List<int>) -> int {
+    xs.push(9)
+    xs.length
+}
+
+fn runs(h: Holder, xs: List<int>) -> int { (h.run)() + xs.length }
+
+fn wiper() -> int {
+    probes = [0]
+    let junk = [77]
+    junk.length
+}
+
+impl Table {
+    fn quiet(_k: int) -> int {
+        let xs = self.slots.get()
+        let n = length_of(xs)
+        xs[0] + n
+    }
+    fn writer() -> int {
+        probes = [self.slots.get()[0] + 2, 6]
+        let xs = probes
+        let n = replaced(xs)
+        let after = [n * 11, n * 13]
+        xs[0] + xs[1] + n + after.length
+    }
+    fn closure_beside(h: Holder) -> int {
+        let xs = self.slots.get()
+        let n = held_n(h, xs)
+        xs[0] + n
+    }
+    fn mut_written() -> int {
+        let ys = self.slots.get()
+        mut xs = [ys.length, 1]
+        let n = grows(xs)
+        ys[0] + n + xs.length
+    }
+    fn closure_run(h: Holder) -> int {
+        probes = [self.slots.get()[0] * 3]
+        let xs = probes
+        let n = runs(h, xs)
+        let after = [n * 11]
+        xs[0] + n + after.length
+    }
+    fn mut_seat() -> int {
+        let ys = self.slots.get()
+        mut xs = [ys.length, 1]
+        let n = stale_mut(xs)
+        ys[0] + n
+    }
+}
+
+let t = Table { slots: Cell.new([3, 4]) }
+let h = Holder { run: () -> 1, n: 2 }
+let w = Holder { run: wiper, n: 0 }
+"${t.quiet(0)} ${t.writer()} ${t.closure_beside(h)} ${t.mut_seat()} ${t.mut_written()} ${t.closure_run(w)}"
