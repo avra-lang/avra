@@ -22,7 +22,7 @@ use frontier.{
     NOT_CUT,
     place_key,
 }
-use package_sets.{NO_NAMES, NameSets, name_sets}
+use package_sets.{NO_NAMES, NameSets, SET_UNWORKED, name_sets}
 use input_stamps.{InputStamp, KeptStamps, places_held}
 use defect.{defect}
 use hash_keyed_table.{HashKeyedTable, ReadTable, hash_keyed_table, read_table}
@@ -266,6 +266,8 @@ type OpenFrontier = {
 /// What this process has learned so far. An identity: every holder asks through the one engine.
 export type QueryEngine = {
     store: dyn AnswerStore,
+    /// Whether the store shares any package, asked once: its places stand while it does.
+    sharing: bool,
     definitions: Cell<Map<string, QueryDefinition>>,
     /// The answer to each question settled in this process.
     settled_answers: HashKeyedTable<SettledAnswer>,
@@ -290,8 +292,6 @@ export type QueryEngine = {
     folded: Cell<List<string>>,
     /// The kept records this process checked to reuse an answer: what an edit's cost is counted in.
     records_checked: Cell<int>,
-    /// The answers whose read set this process walked the frontier for, its kept record carrying none.
-    read_sets_walked: Cell<int>,
     /// The answers this engine checked against a kept record and kept, by the pass of their family,
     /// as `pass_index` numbers the passes: what a warm run verified rather than worked out.
     rechecked: Cell<List<int>>,
@@ -329,8 +329,9 @@ export type QueryEngine = {
     meets_asked: Cell<int>,
     reader_records_read: Cell<int>,
     sets: NameSets,
-    /// Whether each set's every package is one the store shares, by the set's id.
-    sets_shared: HashKeyedTable<bool>,
+    /// Whether each set's every package is one the store shares, by the set's id: made the first time
+    /// a store that shares a package is asked.
+    sets_shared: Cell<HashKeyedTable<bool>?>,
     /// Which engine of this process it is: no two engines a process makes share one. What a table
     /// a caller keeps per engine, outside it, is keyed by.
     serial: int,
@@ -375,6 +376,7 @@ export fn query_engine(
     let reads_checked: Cell<int> = Cell.new(0)
     let engine = QueryEngine {
         store: store,
+        sharing: store.shares_any(),
         definitions: Cell.new(by_name),
         settled_answers: settled_answers,
         adopted: Cell.new(false),
@@ -387,7 +389,6 @@ export fn query_engine(
         computed: computed,
         folded: folded,
         records_checked: Cell.new(0),
-        read_sets_walked: Cell.new(0),
         rechecked: Cell.new([0 for _p in 0..every_pass().length]),
         frontier: Cell.new(FrontierState.Unread),
         asked_alone: asked_alone,
@@ -403,7 +404,7 @@ export fn query_engine(
         meets_asked: Cell.new(0),
         reader_records_read: Cell.new(0),
         sets: name_sets(),
-        sets_shared: hash_keyed_table(),
+        sets_shared: Cell.new(null),
         serial: next_serial(),
         program: program,
     }
@@ -825,7 +826,12 @@ impl QueryEngine {
             .store
             .keep_frontier(
                 self.frontier_print(),
-                FrontierLearned { on: open?.frontier, entries: entries, stale: stale },
+                FrontierLearned {
+                    on: open?.frontier,
+                    entries: entries,
+                    stale: stale,
+                    sets: if self.sharing { self.sets.kept_sets() } else { [] },
+                },
             )
     }
 
@@ -963,7 +969,7 @@ impl QueryEngine {
     fn records_checked_count() -> int { self.records_checked.get() }
 
     /// How many answers' read sets this process walked the frontier for.
-    fn read_sets_walked_count() -> int { self.read_sets_walked.get() }
+    fn read_sets_walked_count() -> int { self.sets.walks() }
 
     /// How many times opening the frontier asked whether a change meets a reader.
     fn meets_asked_count() -> int { self.meets_asked.get() }
@@ -1046,10 +1052,16 @@ impl QueryEngine {
         let reads = run.reads.question_words()
         let read = if self.definition_of(asked).is_input { self.read_sets.get(asked.known_as) ?? NO_NAMES } else { self.set_of_reads(reads) }
         self.read_sets.put(asked.known_as, read)
-        let is_shared = self.set_shared(if self.store.shares_any() { read } else { NO_NAMES })
+        let is_shared = self.set_shared(if self.sharing { read } else { NO_NAMES })
         let kept = if is_shared { self.store.shared_answer_kept(answer) } else { self.store.answer_kept(answer) }
         if !kept { self.keep_or_hold(asked, answer, bytes, is_shared) }
-        let record = run.reads.record_of(answer, self.sets.members_of(read))
+        let record = run
+            .reads
+            .record_of(
+                answer,
+                if self.sharing { self.sets.print_of(read) } else { SET_UNWORKED },
+                if self.sharing && is_shared { self.sets.members_of(read) } else { [] },
+            )
         if !self.store.records_of(asked.known_as).any(it.same_as(record)) { self.record_kept(asked, record, is_shared) }
         self.learned(asked, answer, reads)
     }
@@ -1068,8 +1080,12 @@ impl QueryEngine {
         if is_shared { self.store.keep_shared_record(asked, record) } else { self.store.keep_record(asked, record) }
     }
 
-    /// The set of packages every question `reads`' words name read.
-    fn set_of_reads(reads: List<int>) -> int { hashes_in(reads).fold(NO_NAMES, (set, q) -> self.sets.union(set, self.read_set_of(q))) }
+    /// The set of packages every question `reads`' words name read; none asked where the store shares
+    /// no package, since then no set decides where anything is kept.
+    fn set_of_reads(reads: List<int>) -> int {
+        if !self.sharing { return NO_NAMES }
+        hashes_in(reads).fold(NO_NAMES, (set, q) -> self.sets.union(set, self.read_set_of(q)))
+    }
 
     /// The set of packages the question known as `question` read: as settled here, else as the kept
     /// record of an answer held here unread says, else as its kept record of the answer the frontier
@@ -1091,7 +1107,8 @@ impl QueryEngine {
     }
 
     /// The set the kept record of the frontier's answer at `at` carries; absent for an input, whose
-    /// set is its stamp's, and where no kept record holds that answer.
+    /// set is its stamp's, where no kept record holds that answer, and where its record's set was
+    /// never worked out or names a print no table here holds.
     fn kept_read_set(f: Frontier, at: int) -> int? {
         if f.input_at(at) { return null }
         self.record_read_set(f.question_at(at), f.answer_at(at))
@@ -1108,16 +1125,31 @@ impl QueryEngine {
         }
     }
 
-    /// The set of packages the kept record of `answer` to `question` names; absent where no kept
-    /// record holds that answer.
+    /// The set of packages the kept record of `answer` to `question` names, as the layer that holds
+    /// it answers: a shared record by the names it carries, an own record by its print, from this
+    /// process's sets or the own store's frontier. Absent where no kept record holds that answer, where
+    /// its set was never worked out, and where its print names a set neither holds.
     fn record_read_set(question: ContentHash, answer: ContentHash) -> int? {
         let record? = self.store.records_of(question).find(it.answer.same_as(answer)) else { return null }
-        self.sets.of(record.packages.texts())
+        if record.read_set == SET_UNWORKED { return null }
+        let names = record.packages.texts()
+        if !names.is_empty() { return self.sets.of(names) }
+        self.sets.printed_as(record.read_set) ?? self.frontier_sets_printed(record.read_set)
+    }
+
+    /// The set kept under `print`, the open frontier's name sets read into `sets` the first time one
+    /// is asked; absent where no frontier is open or none of its sets prints so.
+    fn frontier_sets_printed(print: int) -> int? {
+        let open? = self.frontier_open() else { return null }
+        if !self.sets.frontier_read_before() {
+            for kept in open.frontier.name_sets() { let _ = self.sets.of_kept(kept) }
+        }
+        self.sets.printed_as(print)
     }
 
     /// The set of the frontier's answer at `at`, walked from its reads.
     fn walked_read_set(f: Frontier, at: int) -> int {
-        if !f.input_at(at) { self.read_sets_walked.set(self.read_sets_walked.get() + 1) }
+        if !f.input_at(at) { self.sets.walk_counted() }
         self.read_set_at(f, at)
     }
 
@@ -1138,13 +1170,25 @@ impl QueryEngine {
     /// The set holding only the package no store knows.
     fn unplaced() -> int { self.sets.of([UNPLACED]) }
 
-    /// Whether every package of the set `id` is one the store shares.
+    /// Whether every package of the set `id` is one the store shares: where it shares none, only the
+    /// empty set's are.
     fn set_shared(id: int) -> bool {
-        let known = self.sets_shared.get_at(id, id)
+        if !self.sharing { return id == NO_NAMES }
+        let shared_by = self.shared_sets()
+        let known = shared_by.get_at(id, id)
         if known != null { return known! }
         let shared = self.sets.members_of(id).all((name) -> self.store.shares_package(name))
-        self.sets_shared.put_at(id, id, shared)
+        shared_by.put_at(id, id, shared)
         shared
+    }
+
+    /// Whether each set is shared, by its id, the table made the first time it's asked.
+    fn shared_sets() -> HashKeyedTable<bool> {
+        let made = self.sets_shared.get()
+        if made != null { return made! }
+        let held: HashKeyedTable<bool> = hash_keyed_table()
+        self.sets_shared.set(held)
+        held
     }
 
     /// The packages the question known as `question` read, sorted: what decides which store keeps it

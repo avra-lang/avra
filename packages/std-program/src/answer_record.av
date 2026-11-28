@@ -176,11 +176,19 @@ export type PartSeen = { part_name: ContentHash, part_hash: ContentHash }
 export type RecordedRead = { question: ContentHash, whole_answer: ContentHash, part: PartSeen? }
 
 /// One way a question was answered: the hash that finds the answer's bytes, everything read to get
-/// there, as words, so a record is checked where it lies, and the packages those reads read, sorted.
+/// there, as words, so a record is checked where it lies, the print of the set of packages those
+/// reads read (`set_print`), or `SET_UNWORKED` where nobody worked it out, and, for a record a shared
+/// store keeps, that set's names, sorted: a shared record is read by stores that hold no set it names.
 /// A whole read is four words, its question then the whole answer it saw; a part read is eight,
 /// those then the part's name and the part's hash.
 @derive(Saved)
-export type AnswerRecord = { answer: ContentHash, whole_reads: List<int>, part_reads: List<int>, packages: List<string> }
+export type AnswerRecord = {
+    answer: ContentHash,
+    whole_reads: List<int>,
+    part_reads: List<int>,
+    read_set: int,
+    packages: List<string>,
+}
 
 /// The words of a whole read.
 const WHOLE_READ_WORDS: int = 4
@@ -188,12 +196,19 @@ const WHOLE_READ_WORDS: int = 4
 /// The words of a part read.
 const PART_READ_WORDS: int = 8
 
-/// The record of an answer, what was read to get there, and the packages those reads read.
-export fn answer_record(answer: ContentHash, reads: List<RecordedRead>, packages: List<string>) -> AnswerRecord {
+/// The record of an answer, what was read to get there, the print of the packages those reads read,
+/// and, for a shared record, their names.
+export fn answer_record(
+    answer: ContentHash,
+    reads: List<RecordedRead>,
+    read_set: int,
+    packages: List<string> = [],
+) -> AnswerRecord {
     AnswerRecord {
         answer: answer,
         whole_reads: [word for read in reads.filter(it.part == null) for word in read.words()],
         part_reads: [word for read in reads.filter(it.part != null) for word in read.words()],
+        read_set: read_set,
         packages: packages,
     }
 }
@@ -204,6 +219,7 @@ impl AnswerRecord {
             answer: self.answer,
             whole_reads: RecordWords.Held(self.whole_reads),
             part_reads: RecordWords.Held(self.part_reads),
+            read_set: self.read_set,
             packages: RecordTexts.Held(self.packages),
         }
     }
@@ -266,7 +282,13 @@ impl RecordTexts {
 }
 
 /// A record as the engine checks it, its reads never decoded.
-export type KeptRecord = { answer: ContentHash, whole_reads: RecordWords, part_reads: RecordWords, packages: RecordTexts }
+export type KeptRecord = {
+    answer: ContentHash,
+    whole_reads: RecordWords,
+    part_reads: RecordWords,
+    read_set: int,
+    packages: RecordTexts,
+}
 
 /// The record saved at `record` in `source`, read where it lies.
 export fn kept_in_place(source: SavedSource, record: SavedRecord) -> KeptRecord {
@@ -274,6 +296,7 @@ export fn kept_in_place(source: SavedSource, record: SavedRecord) -> KeptRecord 
         answer: ContentHash.read_from(source, AnswerRecord.answer_in_place(source, record)),
         whole_reads: RecordWords.Laid(source, AnswerRecord.whole_reads_in_place(source, record)),
         part_reads: RecordWords.Laid(source, AnswerRecord.part_reads_in_place(source, record)),
+        read_set: AnswerRecord.read_set_in(source, record),
         packages: RecordTexts.Laid(source, AnswerRecord.packages_in_place(source, record)),
     }
 }
@@ -283,6 +306,7 @@ impl KeptRecord {
         self.answer.same_as(other.answer) &&
             self.whole_reads.same_as(other.whole_reads) &&
             self.part_reads.same_as(other.part_reads) &&
+            self.read_set == other.read_set &&
             self.packages.same_as(other.packages)
     }
 
@@ -292,6 +316,7 @@ impl KeptRecord {
             answer: self.answer,
             whole_reads: self.whole_reads.words(),
             part_reads: self.part_reads.words(),
+            read_set: self.read_set,
             packages: self.packages.texts(),
         }
     }
