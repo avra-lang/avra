@@ -92,6 +92,23 @@ spec "read_memo — a remembered answer is read as its working-out read" {
             process(store, "new", "both").computed_queries().any(it == "second")
         }
     }
+    given "a memo kept by one engine and taken by another engine's reader of the same serial" {
+        then "the reads are that reader's, and an edit of them reaches it" {
+            let memo: ReadMemo<string> = read_memo()
+            let outer: ReadMemo<string> = read_memo()
+            let world = Cell.new("old")
+            let _ = ask_text(
+                query_engine(store_in_memory(), definitions(world, memo, outer)),
+                "first",
+                "x",
+            )
+            let store = store_in_memory()
+            let taker = query_engine(store, definitions(world, memo, outer))
+            let _ = ask_text(taker, "second", "x")
+            taker.frontier_kept()
+            ask_text(process(store, "new", "second"), "second", "x") == "second new"
+        }
+    }
     given "nothing edited" {
         then "the later process works nothing out" {
             let store = store_in_memory()
