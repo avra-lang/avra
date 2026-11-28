@@ -1,0 +1,59 @@
+//! A directory's store answers the program in it as a fresh one does, whatever stood there before:
+//! what an earlier program left is kept under the same file, so a kept record may read a question
+//! the program now standing is still answering — and a question being answered vouches for no read.
+use @std.io.{make_dirs, write_text}
+use @std.time.{stamp}
+
+/// A package named `probe` at a fresh directory under `name`, its program `main`.
+fn sp_package(name: string, main: string) -> string {
+    let root = "/tmp/avra-store-programs-test/${name}-${stamp()}"
+    let _ = make_dirs("${root}/src")
+    let _ = write_text(
+        "${root}/avra.toml",
+        "[package]\nname = \"probe\"\nversion = \"0.1.0\"\n\n[bin]\npath = \"src/main.av\"\n",
+    )
+    let _ = write_text("${root}/src/main.av", main)
+    root
+}
+
+/// A trait delegated over a collect enum whose members are ranked by `rank`.
+fn delegated(rank: string) -> string {
+    "use @std.meta.{Named, delegates}\n\nfn node(_t: Named, _rank: int) {}\n\n@delegates(Shape)\ntrait Size {\n    fn size() -> int\n    fn scaled(by: int) -> int\n}\n\n@node(0)\ntype Dot = { at: int }\n\nimpl Size for Dot {\n    fn size() -> int { 1 }\n    fn scaled(by: int) -> int { by }\n}\n\n@node(1)\ntype Line = { from: int, to: int }\n\nimpl Size for Line {\n    fn size() -> int { self.to - self.from }\n    fn scaled(by: int) -> int { (self.to - self.from) * by }\n}\n\ncollect enum Shape = @node in self by ${rank} dense\n\nlet d = Shape.Dot(4)\nlet l = Shape.Line(2, 9)\nd.size() + l.size() + d.scaled(3) + l.scaled(3)\n"
+}
+
+fn relation() -> string { "use @std.relation.{relation}\n\n@relation\ntype Icon = { @key name: string }\n\n1\n" }
+
+/// What a check of the package at `root` says, its root spelled out of it.
+fn sp_said(root: string) -> string {
+    match layer_checked(root) {
+        .Ok(c) -> "ok ${c.warnings.replace(root, "<root>")}",
+        .Err(report) -> "refused ${report.replace(root, "<root>")}",
+    }
+}
+
+/// What a check of the package at `root` says once its program is rewritten as `main`.
+fn sp_rewritten(root: string, main: string) -> string {
+    let _ = write_text("${root}/src/main.av", main)
+    sp_said(root)
+}
+
+/// Each program of `programs` checked in turn in one directory, what each check said.
+fn sp_in_turn(programs: List<string>) -> List<string> {
+    let root = sp_package("shared", programs[0])
+    [sp_said(root)].concat([sp_rewritten(root, p) for p in programs.drop(1)])
+}
+
+spec "commands/check of a program in a directory another program was checked in" {
+    given "a trait delegated over a field nobody declares, then a relation, then the trait delegated right" {
+        then "the last check answers as a check of the last program alone does" {
+            let said = sp_in_turn(
+                [delegated("it.mark.in[0]"), relation(), delegated("it.mark.args[0]")],
+            )
+            let alone = sp_said(sp_package("alone", delegated("it.mark.args[0]")))
+            said[0].starts_with("refused") &&
+                said[1].starts_with("ok") &&
+                alone.starts_with("ok") &&
+                said[2] == alone
+        }
+    }
+}
