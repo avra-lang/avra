@@ -1,0 +1,72 @@
+// proves: `m.set(k, (m.get(k) ?? []).concat([…]))` answers what the two statements
+// `let was = m.get(k) ?? []` then `m.set(k, was.concat([…]))` answer — for words and for boxes, a
+// key's first write and its later ones, a list another binding also holds, a map at the end of a
+// field path, and an element that is a call.
+type Rec = { by: Map<string, List<string>>, n: int }
+
+fn grouped(xs: List<int>) -> Map<string, List<int>> {
+    mut by: Map<string, List<int>> = {}
+    for i, x in xs {
+        let k = "${x % 3}"
+        by.set(k, (by.get(k) ?? []).concat([i, x]))
+    }
+    by
+}
+
+fn grouped_apart(xs: List<int>) -> Map<string, List<int>> {
+    mut by: Map<string, List<int>> = {}
+    for i, x in xs {
+        let k = "${x % 3}"
+        let was = by.get(k) ?? []
+        by.set(k, was.concat([i, x]))
+    }
+    by
+}
+
+fn words(m: Map<string, List<int>>) -> string { [k + ":" + ["${n}" for n in v].join(",") for k, v in m].join(" ") }
+
+fn texts(m: Map<string, List<string>>) -> string { [k + ":" + v.join(",") for k, v in m].join(" ") }
+
+fn named(xs: List<string>) -> Map<string, List<string>> {
+    mut by: Map<string, List<string>> = {}
+    for s in xs {
+        let k = s.substring(0, 1)
+        by.set(k, (by.get(k) ?? []).concat([s]))
+    }
+    by
+}
+
+/// A list the map holds read out first: the append leaves the reader's list as it was.
+fn held_apart() -> string {
+    mut by: Map<string, List<int>> = {}
+    by.set("a", [1])
+    let before = by.get("a")!
+    let k = "a"
+    by.set(k, (by.get(k) ?? []).concat([2]))
+    "${before.length} ${by.get("a")!.length}"
+}
+
+/// The map at the end of a field path.
+fn in_field() -> string {
+    mut r = Rec { by: {}, n: 0 }
+    for s in ["ab", "ac", "bd"] {
+        let k = s.substring(0, 1)
+        r.by.set(k, (r.by.get(k) ?? []).concat([s, k]))
+    }
+    texts(r.by)
+}
+
+/// An element that is a call, run before the append.
+fn element_called() -> string {
+    mut by: Map<string, List<int>> = {}
+    by.set("a", [1])
+    let k = "a"
+    let side = (n: int) -> n * 10
+    by.set(k, (by.get(k) ?? []).concat([side(4)]))
+    ["${n}" for n in by.get("a")!].join(",")
+}
+
+let xs = [5, 1, 2, 8, 4, 3, 0, 7]
+let fused = words(grouped(xs))
+let apart = words(grouped_apart(xs))
+"${fused} | ${fused == apart} | ${texts(named(["ab", "b", "ac", "bc", "c"]))} | ${held_apart()} | ${in_field()} | ${element_called()}"

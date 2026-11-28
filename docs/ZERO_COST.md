@@ -33,6 +33,7 @@ human reading code.
 | an indirect call whose target set is one fn | devirtualization |
 | a `dyn` box laid with N code pointers | static method tables |
 | a number's text minted in an Avra fn (`box text by avra_int_text`) | content keys |
+| a list copied to append to (`box list by avra_array_concat…`, `box list by avra_array_opened…`) | appended in place |
 
 `avra census --candidates` prints the top sites per technique with their counts and the source
 line, so a ranked work list is one command. Run per batch on the gate's workloads, its output
@@ -43,7 +44,7 @@ writes `build/cost/candidates.txt` (`avra census --candidates [--root <tree>] <r
 ten per technique). A `(technique, fn)` that `tools/cost.candidates` lacks is NAMED, never failed;
 `make cost-accept` rewrites that record. Deforestation and devirtualization have no census hook
 yet, and borrows across quiet calls are found by the memory pass's own tally (`AVRA_RC_REASONS`), so
-the classifier reads the other nine shapes.
+the classifier reads the other ten shapes.
 
 ## How work is assessed
 
@@ -67,6 +68,7 @@ the classifier reads the other nine shapes.
 | interned names | proposed | string compares in lookups |
 | interpolation in one buffer: a string's runs and holes appended to the thread's scratch between `avra_text_begin` and `avra_text_end`, builds nesting, the text minted once | landed (str_lit's `text_lowered`) | a box per number's spelling, the pieces' list and the join — one box per interpolation instead (`box text by avra_text_end` in the census) |
 | content keys: a table keyed by a value folds it to a `ContentHash` over both lanes and probes a `HashKeyedTable` (or interns it), never a text built per lookup | landed for the cancel survey (`BodyAt.print`); the general form waits on maps keyed by any hashable value, and `compiler.text_keyed_probe` (lane/replay-defects/text-keyed-rule) turns on with it | a text, and a box per number in it, on every probe — `BodyAt.key()` minted 2.32 M of them on a cold build-cli |
+| appended in place: `xs.concat([…])` of plain values pushes onto `xs` opened (`avra_array_opened`, itself where `xs` is held alone), never a list made of the literal; and `m.set(k, (m.get(k) ?? []).concat([…]))` under a key that is a name TAKES the slot's list for the write at the probe's word (`avra_map_value_taken_at`), so a list only the map holds grows in place | landed for the language's own `concat` and `Map` (`RowUse.Appends`, `grown_in_place`); a group-by over a table a program declares (`HashKeyedTable.put`) still copies once per append — `reads_by_question` and `readers_beside`, 1.18 M on a cold `check` of the cli | a literal's box and a copy of the list on every append — on a cold `check` of the cli, 136.64 M boxes became 134.22 M and the peak 4753 MB became 4437 MB |
 | reuse in place (Perceus/FBIP) | proposed | free + alloc pairs |
 | fresh empties: a first write into `[]` makes its buffer, never a clone of the static | proposed | the open of the empty literal (`empty_opens`) |
 | move at last use (borrow inference) | partial (params' consumes) | retain/release pairs |

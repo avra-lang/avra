@@ -1965,6 +1965,7 @@ impl Machine {
             .ArrayPop -> self.array_pop_val(vals),
             .ArrayConcat -> self.consuming(row, vals, self.array_concat_val(vals)),
             .ArrayExtend -> self.array_extend_val(vals),
+            .ArrayOpened -> self.consuming(row, vals, self.array_opened_val(vals)),
             .ArraySlice -> self.consuming(row, vals, self.array_slice_val(vals)),
             .StrContains -> verdict(self.text_val(vals[0]).contains(self.text_val(vals[1]))),
             .StrStartsWith -> verdict(self.text_val(vals[0]).starts_with(self.text_val(vals[1]))),
@@ -2601,6 +2602,12 @@ impl Machine {
     }
 
     /// The slots from lo up to hi, clamped — worded like the runtime's.
+    /// A copy of the list, the room its row reserves being the machine's to keep.
+    fn array_opened_val(vals: List<Val>) -> Val {
+        let id? = array_id(vals[0]) else { return self.defect_val("an opening of a non-array") }
+        self.shared_array(self.arrays[id])
+    }
+
     fn array_slice_val(vals: List<Val>) -> Val {
         let id? = array_id(vals[0]) else { return self.defect_val("a slice of a non-array") }
         self.sliced(id, self.whole(vals[1]), self.whole(vals[2]))

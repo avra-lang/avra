@@ -315,16 +315,13 @@ impl Lowering {
     /// reads `get` of this place under this key, the probe is taken before the value, lent to that
     /// read, and the write stores at the word it found.
     mut fn put(subject: ExprId, key: ExprId, value: ExprId) -> Reg {
+        let read? = self.own_read(subject, key, value) else { return self.put_unlent(subject, key, value) }
+        if self.grown_in_place(subject, key, read, value) { return self.nothing() }
         let map = self.opened_place(subject)
         let k = self.lower(key)
-        let read = self.own_read(subject, key, value)
-        if read == null {
-            self.map_written(map, k, self.stored_value(OwnVerb.Put, subject, value))
-            return self.nothing()
-        }
         let probe = self.slot_of(map, k)
         let lent = LentProbe {
-            read: read!,
+            read: read,
             map: map,
             probe: probe,
             root: self.place_root_reg(subject)!,
@@ -335,9 +332,71 @@ impl Lowering {
         self.lent = lent
         let x = self.stored_value(OwnVerb.Put, subject, value)
         self.lent = outer
-        if !lent.taken.get() { self.declined(read!, Declined.Probe(ProbeDecline.ReadRebound)) }
+        if !lent.taken.get() { self.declined(read, Declined.Probe(ProbeDecline.ReadRebound)) }
         if lent.taken.get() { self.map_written_at(map, k, probe, x) } else { self.map_written(map, k, x) }
         self.nothing()
+    }
+
+    /// `m.set(k, x)` whose value reads no `get` of its place under its key: the place opened, then the
+    /// key and the value, then the write.
+    mut fn put_unlent(subject: ExprId, key: ExprId, value: ExprId) -> Reg {
+        let map = self.opened_place(subject)
+        let k = self.lower(key)
+        self.map_written(map, k, self.stored_value(OwnVerb.Put, subject, value))
+        self.nothing()
+    }
+
+    /// `m.set(k, (m.get(k) ?? []).concat([…]))` under a key that is a name, `read` that `get`,
+    /// written: the elements first, then the place opened and its probe, then the slot's list TAKEN —
+    /// its reference handed over, the slot empty until the write fills it — opened and pushed onto, so
+    /// a list only the map holds grows in place. Nothing runs between the probe and the write but the
+    /// pushes. Whether the value had that shape.
+    mut fn grown_in_place(subject: ExprId, key: ExprId, read: ExprId, value: ExprId) -> bool {
+        let mc? = self.store.method_parts(value) else { return false }
+        let elems? = self.appended_elems(mc.subject, mc.name, mc.args) else { return false }
+        let c? = self.store.coalesce_parts(mc.subject) else { return false }
+        if c.left != read || !(self.store.list_lit_values(c.right)?.is_empty() ?? false) { return false }
+        let held? = self.held_of(read) else { return false }
+        if !held.l.boxed() || self.store.ident_name(key) == null { return false }
+        let regs = [self.lower(k) for k in elems]
+        let map = self.opened_place(subject)
+        let k = self.lower(key)
+        let probe = self.slot_of(map, k)
+        let present = self.bin(Layout.Truth, BinOp.Ge, probe, self.const_int(0))
+        let base = self
+            .region(present, held.l) { cx ->
+                cx.call_row(held.l, rt_sig_of("avra_map_value_taken_at")!, [map, probe])
+            } else { cx -> cx.lower(c.right) }
+        self.map_written_at(map, k, probe, self.appended(held.l, base, regs))
+        true
+    }
+
+    /// `subject` handed to a verb whose row appends a literal, the literal's elements pushed onto it
+    /// opened — in place where nothing else holds it, and no list made of the literal. Absent where the
+    /// argument is no list literal of plain values.
+    mut fn literal_appended(subject: ExprId, verb: string, args: List<ExprId>, l: Layout) -> Reg? {
+        let elems? = self.appended_elems(subject, verb, args) else { return null }
+        let xs = self.lower(subject)
+        self.appended(l, xs, [self.lower(k) for k in elems])
+    }
+
+    /// The elements a call of `verb` on `subject` appends: the one argument's, where the verb's row
+    /// appends a literal and that argument is a list literal none of whose elements spreads.
+    fn appended_elems(subject: ExprId, verb: string, args: List<ExprId>) -> List<ExprId>? {
+        let ty? = self.type_at(subject) else { return null }
+        let own? = own_row_of(ty, verb) else { return null }
+        if !own.answer.appends() || args.length != 1 { return null }
+        let elems? = self.store.list_lit_values(args[0]) else { return null }
+        if elems.any((k) -> self.store.spread_operand(k) != null) { null } else { elems }
+    }
+
+    /// The list `xs` opened with room for `regs` — itself where nothing else holds it, else a copy —
+    /// and each of `regs` pushed.
+    mut fn appended(l: Layout, xs: Reg, regs: List<Reg>) -> Reg {
+        let opened = self
+            .call_row(l, rt_sig_of("avra_array_opened")!, [xs, self.const_int(regs.length)])
+        for r in regs { self.push_slot(opened, r) }
+        opened
     }
 
     /// `x` written into the map `map` under the key `k` at the word `probe` its probe found.

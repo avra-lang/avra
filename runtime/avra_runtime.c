@@ -4308,6 +4308,19 @@ void* avra_map_value_at_owned(void* map, int64_t slot) {
     return v;
 }
 
+// The value in a slot `avra_map_slot` named, owned: the slot's own reference
+// handed out and the slot left empty, for a write at that slot that follows
+// with nothing between that reads it. A slot that holds no reference of its
+// own — a word, or a box whose writes are logged — answers a retained read.
+void* avra_map_value_taken_at(void* map, int64_t slot) {
+    AvraArray* vals = map_vals_owned((AvraMap*)map);
+    if (avra_box_flags(vals) != 0 || avra_packed(vals) || !(vals->marks[slot] & MARK_OWNED)) return avra_map_value_at_owned(map, slot);
+    void* v = (void*)(uintptr_t)vals->data[slot];
+    vals->data[slot] = 0;
+    vals->marks[slot] = 0;
+    return v;
+}
+
 // Whether the value in a slot `avra_map_slot` named is there.
 int64_t avra_map_present_at(void* map, int64_t slot) {
     return avra_slot_present(((AvraMap*)map)->vals, slot);
@@ -4767,6 +4780,29 @@ void* avra_array_concat_reusing(void* a, void* b) {
     AvraArray* src = (AvraArray*)b;
     avra_array_reserve(a, src->len);
     array_append(a, src, 0, src->len);
+    return a;
+}
+
+// `a`'s slots in a fresh list laid as `a` is, with room for `n` more. Owned.
+void* avra_array_opened(void* a, int64_t n) {
+    CENSUS(g_append_site = g_clone_site ? g_clone_site : AVRA_CALLER());
+    AvraArray* src = (AvraArray*)a;
+    void* out = array_made(src->len + (n > 0 ? n : 0), g_clone_site ? g_clone_site : AVRA_CALLER(), avra_packed(src));
+    array_append(out, src, 0, src->len);
+    return out;
+}
+
+// `a` with room for `n` more, itself when it is held alone. Never the
+// runtime's shared empty list, so what is pushed after lands in this box.
+void* avra_array_opened_reusing(void* a, int64_t n) {
+    if (!sole_array(a)) {
+        g_clone_site = AVRA_CALLER();
+        void* out = avra_array_opened(a, n);
+        g_clone_site = NULL;
+        avra_rc_release(a);
+        return out;
+    }
+    if (n > 0) avra_array_reserve(a, n);
     return a;
 }
 

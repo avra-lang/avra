@@ -1,0 +1,56 @@
+//! `avra census --candidates` names a box's technique by its census label: a record of scalars
+//! pushed into a list, a slot box, a `dyn` box, a number's text, a list copied to append to — and
+//! nothing for any other box. `avra_ran` and `scratch_dir` are the neighbouring tests' own.
+use @std.io.{make_dirs, write_text}
+use @std.time.{stamp}
+
+/// A report of one typed site line per label, each at its own fn and count.
+fn report() -> string {
+    let dir = "${scratch_dir()}/census_labels_${stamp()}"
+    let _ = make_dirs(dir)
+    let path = "${dir}/run.sites"
+    let lines = [
+        "typed: site av_pkg\$2Fsrc\$2Fa\$2Eav\$2Eflat 11 0B box list flat-pushed",
+        "typed: site av_pkg\$2Fsrc\$2Fa\$2Eav\$2Eslot 12 0B box slot of P",
+        "typed: site av_pkg\$2Fsrc\$2Fa\$2Eav\$2Edynned 13 0B box dyn Show",
+        "typed: site av_pkg\$2Fsrc\$2Fa\$2Eav\$2Enumbered 14 0B box text by avra_int_text",
+        "typed: site av_pkg\$2Fsrc\$2Fa\$2Eav\$2Egrouped 15 0B box list by avra_array_concat_reusing",
+        "typed: site av_pkg\$2Fsrc\$2Fa\$2Eav\$2Ecopied 16 0B box list by avra_array_concat",
+        "typed: site av_pkg\$2Fsrc\$2Fa\$2Eav\$2Eopened 17 0B box list by avra_array_opened",
+        "typed: site av_pkg\$2Fsrc\$2Fa\$2Eav\$2Emade 18 0B box list by avra_array_sized",
+    ]
+    let _ = write_text(path, lines.join("\n"))
+    path
+}
+
+/// What the candidate census of the report prints.
+once fn candidates_said() -> string {
+    match avra_ran(["census", "--candidates", report()]) { .Ok(o) -> o.out.stdout, .Err(_) -> "" }
+}
+
+spec "avra census — a box's label names its technique" {
+    given "the candidates" {
+        then "a record of scalars pushed into a list is a strided list" {
+            candidates_said().contains("candidate: strided-list 11 pkg/src/a.av.flat")
+        }
+        then "a slot box is a nullable flat record" {
+            candidates_said().contains("candidate: nullable-flat-record 12 pkg/src/a.av.slot")
+        }
+        then "a dyn box is a static method table" {
+            candidates_said().contains("candidate: static-method-tables 13 pkg/src/a.av.dynned")
+        }
+        then "a number's text is a content key" {
+            candidates_said().contains("candidate: content-keys 14 pkg/src/a.av.numbered")
+        }
+        then "a list a reusing concat copied is appended in place" {
+            candidates_said().contains("candidate: appended-in-place 15 pkg/src/a.av.grouped")
+        }
+        then "a list a concat copied is appended in place" {
+            candidates_said().contains("candidate: appended-in-place 16 pkg/src/a.av.copied")
+        }
+        then "a list an opening copied is appended in place" {
+            candidates_said().contains("candidate: appended-in-place 17 pkg/src/a.av.opened")
+        }
+        then "a list made at its size names no technique" { !candidates_said().contains("a.av.made") }
+    }
+}

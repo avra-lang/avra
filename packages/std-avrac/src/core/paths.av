@@ -243,11 +243,7 @@ impl Lowering {
         let fields? = self.fields_of(ty) else { return v }
         if !fields.any(it.needed) { return v }
         let laid? = self.seat_layouts(fields) else { return v }
-        let boxed = match self.laid_out(ty) {
-            .Boxed(_) -> true,
-            .Void or .Word or .Truth or .Real or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> false,
-        }
-        if !boxed { return v }
+        if !self.laid_out(ty).boxed() { return v }
         let ranks = [f.rank for f in fields if f.needed]
         for rank in 0..fields.length + 1 {
             if ranks.contains(rank) {
@@ -293,11 +289,7 @@ impl Lowering {
     /// other way, a field that isn't known, and a `state` field, whose cell holds its value.
     mut fn field_at(subject: ExprId, name: string) -> FieldAt? {
         let ty? = self.type_at(subject) else { return null }
-        let boxed = match self.laid_out(ty) {
-            .Boxed(_) -> true,
-            .Void or .Word or .Truth or .Real or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> false,
-        }
-        if !boxed { return null }
+        if !self.laid_out(ty).boxed() { return null }
         let fields? = self.fields_of(ty) else { return null }
         let n? = fields.find_index(it.name == name) else { return null }
         if fields[n].state { return null }

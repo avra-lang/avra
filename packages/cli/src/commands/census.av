@@ -74,6 +74,7 @@ enum Technique {
     FreshEmpty
     MoveAtLastUse
     ContentKeys
+    AppendedInPlace
 }
 
 /// Every technique, in the registry's order.
@@ -87,6 +88,7 @@ const TECHNIQUES: List<Technique> = [
     Technique.FreshEmpty,
     Technique.MoveAtLastUse,
     Technique.ContentKeys,
+    Technique.AppendedInPlace,
 ]
 
 /// The technique as a candidate line names it.
@@ -101,6 +103,7 @@ fn technique_word(t: Technique) -> string {
         .FreshEmpty -> "fresh-empty",
         .MoveAtLastUse -> "move-at-last-use",
         .ContentKeys -> "content-keys",
+        .AppendedInPlace -> "appended-in-place",
     }
 }
 
@@ -145,13 +148,15 @@ fn candidates_of(words: List<string>) -> List<Candidate> {
 }
 
 /// The technique a box's census label names: a record of scalars pushed into a list, a slot box, a
-/// `dyn` box, a number's text; absent for any other.
+/// `dyn` box, a number's text, a list copied to append to; absent for any other.
 fn labelled(label: string) -> Technique? {
     when {
         label.contains("flat-pushed") -> Technique.StridedList
         label.starts_with("box slot") -> Technique.NullableFlatRecord
         label.starts_with("box dyn") -> Technique.StaticMethodTables
         label == "box text by avra_int_text" -> Technique.ContentKeys
+        label.starts_with("box list by avra_array_concat") ||
+            label.starts_with("box list by avra_array_opened") -> Technique.AppendedInPlace
         _ -> null
     }
 }
