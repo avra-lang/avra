@@ -1143,20 +1143,33 @@ impl Signing {
         if at < 0 && name == NEVER { return TypeHead.Never }
         if at >= 0 { return TypeHead.Parameter(at, name) }
         if builtin_type_name(avra().rows.types, name) || name == RANGE { return TypeHead.Owned(name) }
-        let homed = if self.writer == null { null } else { self.type_named(self.writer!, name) }
-        let d? = homed ?? self.type_named(self.file, name) else { return TypeHead.Unnamed(name) }
+        let d? = named_where_written(self.engine, self.writer, self.file, name, self.written_only) else { return TypeHead.Unnamed(name) }
         TypeHead.Declared(d.file, d.name)
-    }
-
-    /// The declaration the type name `name` names from the top level of `at`.
-    fn type_named(at: SourceFileAddress, name: string) -> DeclaredName? {
-        if self.written_only { return written_resolution(self.engine, at, Space.Type, name).named() }
-        resolved(self.engine, at, Space.Type, name).named()
     }
 }
 
 /// The type of a range (`(lo..hi)`): the language's own, as the prelude's verbs name it.
 const RANGE: string = "Range"
+
+/// The declaration the type name `name` names in a statement whose template `writer` wrote, standing
+/// in `file`: what the writer's file names first, then what `file` names. `written` reads only what
+/// each file writes.
+fn named_where_written(
+    engine: QueryEngine,
+    writer: SourceFileAddress?,
+    file: SourceFileAddress,
+    name: string,
+    written: bool = false,
+) -> DeclaredName? {
+    let homed = if writer == null { null } else { type_named_at(engine, writer!, name, written) }
+    homed ?? type_named_at(engine, file, name, written)
+}
+
+/// The declaration the type name `name` names from the top level of `at`.
+fn type_named_at(engine: QueryEngine, at: SourceFileAddress, name: string, written: bool) -> DeclaredName? {
+    if written { return written_resolution(engine, at, Space.Type, name).named() }
+    resolved(engine, at, Space.Type, name).named()
+}
 
 /// The file whose template wrote the statement `s` of `store`; absent for one its own file wrote.
 fn written_by(store: SyntaxArena, s: StmtId) -> SourceFileAddress? {

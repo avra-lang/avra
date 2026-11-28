@@ -3839,15 +3839,6 @@ left is ceremony and one silent hole.
   `Route:` a generic fn bounded by the trait, called with the type in type position —
   `options_of<LadderFlags>()`, `settings_of<LadderFlags>()` (`@std.config.cli`) — resolves
   across packages, so a command names a component declared anywhere with no wrapper.
-- **A8 — a derive's own names bind where the derive is declared.**
-  `Example:` a module whose one file declares a private `type Loaded = { … }` and whose other file
-  declares a `@derive(Decode) component … { flags argv() }`.
-  Today: `type.applied: Loaded takes no type arguments`, at the annotation: the `Configured` impl
-  the derive writes names `Loaded`, `Unloaded`, `loaded` and `sourced` bare, and they resolve in the
-  module the code lands in, where the private `Loaded` wins.
-  `Callsite:` `packages/wisp/src/commands/bench.av`'s suite record, renamed `BenchSuite` so
-  `ladder.av`'s and `reclaim.av`'s flag components could derive.
-  `Ticket:` owed — no tracker reaches this lane; the lead files it.
 
 ### Interim record — the storyboard's asks
 

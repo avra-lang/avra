@@ -81,6 +81,7 @@ all() {
 
 if [ "${1:-}" = --self-test ]; then
     d=$(mktemp -d)
+    trap 'find "$d" -delete' EXIT
     printf 'a' > "$d/a.c"
     stamped "$d/x.sha" "$d/a.c" "-O2"
     first=$(cat "$d/x.sha")
