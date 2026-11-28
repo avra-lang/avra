@@ -12,7 +12,10 @@ cd "$tree"
 snapshot=$(cat "$tree/cost/SNAPSHOT" 2> /dev/null)
 [ -n "$snapshot" ] || { echo "cost-snapshot: cost/SNAPSHOT pins no snapshot" >&2; exit 1; }
 [ -x "$avra" ] || { echo "cost-snapshot: no compiler at $avra — build it first" >&2; exit 1; }
-git cat-file -e "$snapshot^{commit}" 2> /dev/null || git fetch -q --depth=1 origin "$snapshot" 2> /dev/null || :
+# by its tag, as tools/cost.sh fetches it; a pin from before the tags by its sha
+tag=cost-snapshot-$(printf '%.8s' "$snapshot")
+git cat-file -e "$snapshot^{commit}" 2> /dev/null || git fetch -q --depth=1 origin "refs/tags/$tag:refs/tags/$tag" 2> /dev/null ||
+    git fetch -q --depth=1 origin "$snapshot" 2> /dev/null || :
 git cat-file -e "$snapshot^{commit}" 2> /dev/null || { echo "cost-snapshot: the snapshot $snapshot is not in this clone and did not fetch" >&2; exit 1; }
 work=$(mktemp -d "${TMPDIR:-/tmp}/avra-snap.XXXXXX")
 trap 'find "$work" -delete 2> /dev/null || :' EXIT
