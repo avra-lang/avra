@@ -1,0 +1,47 @@
+// proves: std-http's `@input` is its own annotation, read by binding,
+// never by its word — beside a fn and a type whose fields wear `@query`,
+// the handler's input reads end to end, evaluated and native alike.
+use @std.http.frame.{framed, limits}
+use @std.http.body.{Body, whole}
+use @std.http.http.{Request, Unrouted, Response}
+use @std.http.inputs.{Input, input, path, body, query}
+use @std.http.typed.{Captures}
+use @std.meta.{derive}
+use @std.validate.{Decode, range}
+
+@derive(Decode)
+type Draft = { title: string }
+
+@derive(Decode)
+type Window = { @range(1, 100) limit: int = 20 }
+
+@input
+type NewIdea = { @path @range(1, 99) board: int, @body draft: Draft, @query page: Window }
+
+type Board = { board: string }
+
+impl Captures for Board {
+    fn at(name: string) -> string? { if name == "board" { self.board } else { null } }
+}
+
+fn sent(target: string, body: string) -> Request<Unrouted> {
+    let raw = "POST ${target} HTTP/1.1\r\nHost: h\r\nContent-Type: application/json\r\nContent-Length: ${body.length}\r\n\r\n"
+        .bytes()
+    let head = match framed(raw, 0, 0, limits()) {
+        .Complete(h) -> h,
+        .Partial or .Refused(_) -> null,
+    }
+    Request { raw: raw, head: head!, body: whole(body.bytes()), peer: "t", params: Unrouted {} }
+}
+
+/// A handler over its one input record.
+fn handled(board: string, target: string, body: string) -> string {
+    let got: Result<NewIdea, Response> = NewIdea.read(Board { board: board }, sent(target, body))
+    match got {
+        .Ok(i) -> "idea ${i.board} ${i.draft.title} ${i.page.limit}",
+        .Err(r) -> "${r.status} ${r.body.text() ?? "?"}",
+    }
+}
+
+println(handled("7", "/b/7?limit=5", "{\"title\":\"hi\"}"))
+println(handled("700", "/b/700?limit=500", "{\"title\":\"hi\"}"))
