@@ -180,12 +180,14 @@ export type RecordedRead = { question: ContentHash, whole_answer: ContentHash, p
 /// reads read (`set_print`), or `SET_UNWORKED` where nobody worked it out, and, for a record a shared
 /// store keeps, that set's names, sorted: a shared record is read by stores that hold no set it names.
 /// A whole read is four words, its question then the whole answer it saw; a part read is eight,
-/// those then the part's name and the part's hash.
+/// those then the part's name and the part's hash. Each part read's place is how many whole reads
+/// were made before it, so the reads are checked in the order they were made.
 @derive(Saved)
 export type AnswerRecord = {
     answer: ContentHash,
     whole_reads: List<int>,
     part_reads: List<int>,
+    part_places: List<int>,
     read_set: int,
     packages: List<string>,
 }
@@ -208,6 +210,7 @@ export fn answer_record(
         answer: answer,
         whole_reads: [word for read in reads.filter(it.part == null) for word in read.words()],
         part_reads: [word for read in reads.filter(it.part != null) for word in read.words()],
+        part_places: [reads.take(i).filter(it.part == null).length for i in 0..reads.length if reads[i].part != null],
         read_set: read_set,
         packages: packages,
     }
@@ -219,6 +222,7 @@ impl AnswerRecord {
             answer: self.answer,
             whole_reads: RecordWords.Held(self.whole_reads),
             part_reads: RecordWords.Held(self.part_reads),
+            part_places: RecordWords.Held(self.part_places),
             read_set: self.read_set,
             packages: RecordTexts.Held(self.packages),
         }
@@ -286,6 +290,7 @@ export type KeptRecord = {
     answer: ContentHash,
     whole_reads: RecordWords,
     part_reads: RecordWords,
+    part_places: RecordWords,
     read_set: int,
     packages: RecordTexts,
 }
@@ -296,6 +301,7 @@ export fn kept_in_place(source: SavedSource, record: SavedRecord) -> KeptRecord 
         answer: ContentHash.read_from(source, AnswerRecord.answer_in_place(source, record)),
         whole_reads: RecordWords.Laid(source, AnswerRecord.whole_reads_in_place(source, record)),
         part_reads: RecordWords.Laid(source, AnswerRecord.part_reads_in_place(source, record)),
+        part_places: RecordWords.Laid(source, AnswerRecord.part_places_in_place(source, record)),
         read_set: AnswerRecord.read_set_in(source, record),
         packages: RecordTexts.Laid(source, AnswerRecord.packages_in_place(source, record)),
     }
@@ -306,6 +312,7 @@ impl KeptRecord {
         self.answer.same_as(other.answer) &&
             self.whole_reads.same_as(other.whole_reads) &&
             self.part_reads.same_as(other.part_reads) &&
+            self.part_places.same_as(other.part_places) &&
             self.read_set == other.read_set &&
             self.packages.same_as(other.packages)
     }
@@ -316,20 +323,33 @@ impl KeptRecord {
             answer: self.answer,
             whole_reads: self.whole_reads.words(),
             part_reads: self.part_reads.words(),
+            part_places: self.part_places.words(),
             read_set: self.read_set,
             packages: self.packages.texts(),
         }
     }
 
-    /// Whether every read holds, in the order kept: each whole read asked of its question and the
-    /// answer it saw, then each part read of those, the part's name and the part's hash.
+    /// WHETHER EVERY READ HOLDS, IN THE ORDER IT WAS MADE: a whole read asked of its question and
+    /// the answer it saw, a part read of those, the part's name and the part's hash. A read is asked
+    /// only once every read made before it holds, since what it asks may rest on them.
     fn every_read(
         whole: fn(ContentHash, ContentHash) -> bool,
         part: fn(ContentHash, ContentHash, ContentHash, ContentHash) -> bool,
     ) -> bool {
-        (0..self.whole_read_count()).all((i) -> self.whole_read_holds(i, whole)) &&
-            (0..self.part_read_count()).all((i) -> self.part_read_holds(i, part))
+        let parts = self.part_read_count()
+        (0..parts)
+                .all(
+                    (p) -> self.wholes_hold(self.wholes_before(p - 1), self.wholes_before(p), whole) &&
+                        self.part_read_holds(p, part),
+                ) &&
+            self.wholes_hold(self.wholes_before(parts - 1), self.whole_read_count(), whole)
     }
+
+    /// How many whole reads were made before part read `p`; none before the first.
+    fn wholes_before(p: int) -> int { if p < 0 { 0 } else { self.part_places.at(p) } }
+
+    /// Whether whole reads `from` up to `to` hold.
+    fn wholes_hold(from: int, to: int, whole: fn(ContentHash, ContentHash) -> bool) -> bool { (from..to).all((i) -> self.whole_read_holds(i, whole)) }
 
     fn whole_read_count() -> int { self.whole_reads.length() / WHOLE_READ_WORDS }
 

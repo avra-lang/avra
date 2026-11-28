@@ -28,6 +28,40 @@ fn record_reading(reads: List<RecordedRead>) -> AnswerRecord {
     answer_record(hash_of("an int"), reads, SET_UNWORKED)
 }
 
+/// A whole read of the question `q`.
+fn whole_of(q: string) -> RecordedRead { RecordedRead { question: hash_of(q), whole_answer: hash_of("seen"), part: null } }
+
+/// A part read of the question `q`.
+fn part_of(q: string) -> RecordedRead {
+    RecordedRead {
+        question: hash_of(q),
+        whole_answer: hash_of("seen"),
+        part: PartSeen { part_name: hash_of("name"), part_hash: hash_of("seen") },
+    }
+}
+
+/// The questions `record`'s check asks, in the order it asks them, each read holding but those
+/// whose question is one of `moved`.
+fn asked_by(record: KeptRecord, moved: List<string>) -> List<int> {
+    let asked: Cell<List<int>> = Cell.new([])
+    let gone = [hash_of(m) for m in moved]
+    let _ = record
+        .every_read(
+            (q, _seen) -> {
+                asked.push(q.high_word)
+                !gone.any(it.same_as(q))
+            },
+            (q, _seen, _name, _hash) -> {
+                asked.push(q.high_word)
+                !gone.any(it.same_as(q))
+            },
+        )
+    asked.get()
+}
+
+/// The high words of the questions `qs`.
+fn words_named(qs: List<string>) -> List<int> { [hash_of(q).high_word for q in qs] }
+
 spec "answer_record — what's remembered about an answer" {
     given "hashes" {
         then "the same bytes hash alike and different bytes don't" {
@@ -168,6 +202,24 @@ spec "answer_record — what's remembered about an answer" {
             let shared = answer_record(hash_of("an int"), [], set_print(names), names)
             let own = answer_record(hash_of("an int"), [], set_print(names))
             !shared.kept().same_as(own) && shared.kept().same_as(shared)
+        }
+    }
+    given "a record whose whole and part reads were made interleaved" {
+        then "its check asks them in the order they were made" {
+            let record = record_reading(
+                [part_of("p1"), whole_of("w1"), part_of("p2"), whole_of("w2")],
+            )
+            asked_by(record.kept(), []) == words_named(["p1", "w1", "p2", "w2"])
+        }
+        then "a part read that moved is the last read asked, and a whole read after it is never asked" {
+            let record = record_reading([whole_of("w1"), part_of("p1"), whole_of("w2")])
+            asked_by(record.kept(), ["p1"]) == words_named(["w1", "p1"])
+        }
+        then "read where it lies, it asks them in the same order" {
+            let record = record_reading(
+                [part_of("p1"), whole_of("w1"), whole_of("w2"), part_of("p2")],
+            )
+            asked_by(kept_at(record.saved_bytes()), ["w1"]) == words_named(["p1", "w1"])
         }
     }
     given "a record saved and read back" {
