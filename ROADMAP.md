@@ -3878,11 +3878,12 @@ its own ticket. The wanting site of both is the storyboard (`docs/2026_11_24_STO
   breaks at none of them. `Callsite:` `@std/ui_gallery`'s storyboard frames (`frame`,
   `storyboard.av`); the interim is one frame a row, a reader's checkbox.
 
-- **OWED (storyboard): the terminal's parity reader.** `@std/ui_gallery`'s `parity` holds the
-  HTML, native facts and the outline to the Node, but not the terminal, which draws no disabled,
-  busy, invalid or selected state today. The UI lead's terminal-state ruling (no state by colour
-  alone: a glyph or words that survive `NO_COLOR`) sets what the terminal draws; the reader lands
-  with those states, as `Target.Terminal`, with a mutant per glyph.
+- **OWED (storyboard): the terminal's states the ruling names and nothing draws yet.** Three,
+  each witnessed as absent: (1) a chosen item's ◉/○ — `item/selected` is owed in `@std/ui_gallery`'s
+  `parity` until the UI lead answers how an item is chosen before a `choice` primitive exists;
+  (2) the busy mark's braille frames on a TTY — the terminal app has no timer that repaints while a
+  control is busy, so it draws the still `…`; (3) an invalid field's message on the line under it —
+  no attribute carries a field's error words, so a view says them in its own text beside the field.
 
 ### Interim record — the tasks server was unreachable at landing
 

@@ -535,7 +535,29 @@ The survey (118 cases, program `13c2fd4a`), each fixed or owed:
 | a spinner is a `div` with an `aria-label` and no role, so a reader passes it by (4 cases) | fixed: it says `role="status"` |
 | the outline drops a stated words direction (`text/stated`) | fixed: the line says `dir=rtl`/`dir=ltr` where `Style.writing` states one |
 | native facts carry no stated words direction (`text/stated`) | fixed by slice 6: the native reader reads its `WordsWriting` fact, and `owed` is empty |
-| the terminal draws no disabled, busy, invalid or selected state | owed (`storyboard`, ROADMAP): the UI lead's ruling — no state by colour alone, a glyph or words that survive `NO_COLOR` — is slice 8, and the terminal's reader lands with it |
+| the terminal draws no disabled, busy, invalid or selected state | paid by slice 8, but for the chosen mark |
 
 **The cost.** The four readers over 118 cases run in ~1.6 s and 330 MB in the evaluator, beside the
 snapshot pass. `role="status"` is 14 bytes per spinner.
+
+### Slice 8 — the terminal's states, heard (the UI lead's ruling, the owner's confirmation)
+
+| Part | Done |
+|---|---|
+| the law | no state by colour alone: each is a glyph or words in the text (`realize/tui/glyphs.av`), so it reads under `NO_COLOR`, on a monochrome terminal and to a screen reader; colour is laid over the marks on the live grid, never in their place |
+| the marks | a tick ☑/☐, an invalid field's ✗, a busy button's `[ … Save ]` and a spinner's `… Loading`, a disabled control's `(unavailable)`, and focus `❯`. A locale without UTF-8 (`utf8_named`: the first of `LC_ALL`, `LC_CTYPE`, `LANG`; none named keeps Unicode) draws `[x] [ ] x ... >` |
+| the looks | on the grid an unavailable control is dim (SGR 2), an invalid field red, and the control that holds the keys reversed (SGR 7), its mark included |
+| the keys | a disabled control is skipped by focus; a busy one holds the focus and hears nothing (witnessed failing without the guard) |
+| the reader | `Target.Terminal` hears the text alone. A row may draw several controls, so the reader says only the states its marks draw, and is held to the Node as each state's count over the case (`Says`) |
+| the mutants | a tick, a cross, the busy mark and the unavailable words, each taken out of the text: every one makes more cases part than the owed line |
+
+Parity over 118 cases: nothing apart that no line owes; `item/selected` on the terminal is owed (the
+UI lead's answer for an item before `choice`). Snapshots: 27 terminal digests moved, every one a case
+with a state.
+
+**The cost.** A few cells per stateful control; nothing per frame. The terminal reader adds ~0.3 s to
+the parity pass.
+
+**Not yet** (ROADMAP, owed by the storyboard): the chosen mark, the braille frames (no timer repaints
+a busy screen), and an invalid field's message under it.
+
