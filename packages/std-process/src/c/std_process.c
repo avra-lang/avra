@@ -258,6 +258,7 @@ static int exit_fd_of(pid_t pid) {
     if (kq < 0) return -1;
     struct kevent ev;
     EV_SET(&ev, (uintptr_t)pid, EVFILT_PROC, EV_ADD | EV_ONESHOT, NOTE_EXIT, 0, NULL);
+    // the clock: not a wait on time — a kevent that asks for no event answers at once
     if (kevent(kq, &ev, 1, NULL, 0, NULL) != 0) { close(kq); return -1; }
     return raised(kq);
 #else

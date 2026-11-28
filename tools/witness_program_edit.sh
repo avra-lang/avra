@@ -59,7 +59,7 @@ mkdir -p "$AVRA_CACHE_DIR"
 edits='packages/cli/src/commands/cache.av|        println("avra cache log: no pack")|        println("avra cache log: no packs")
 packages/std-avrac/src/compiler/item_program.av|fn runs_nothing() -> string { "a file that runs no statement" }|fn runs_nothing() -> string { "a file that runs no statements" }
 packages/cli/src/commands/cache.av|    let before = packs_listed(dir)|    let before = packs_listed(dir)\n    let _ = packs_listed(dir).length
-packages/std-time/src/time.av|    avra_fiber_sleep(d.ms())|    avra_fiber_sleep(d.ms())\n    parked_until(avra_now_ns())
+packages/std-time/src/time.av|    match clock { .Task -> avra_fiber_sleep(d.ms()), .Host -> avra_fiber_sleep_host(d.ms()) }|    match clock { .Task -> avra_fiber_sleep(d.ms()), .Host -> avra_fiber_sleep_host(d.ms()) }\n    parked_until(avra_now_ns())
 packages/cli/src/commands/fmt.av|enum Walk { Check, Write }|enum Walk { Check, Write, Listed }
 packages/cli/src/commands/fmt.av|type Tally = { examined: int, differing: int, refused: int, diffs: List<string> }|type Tally = { examined: int, differing: int, refused: int, diffs: List<string>, skipped: int = 0 }
 packages/cli/src/commands/idiom_baseline.av|    fn news(findings: List<Finding>) -> List<Finding> {|    fn news(findings: List<Finding>, most: int = 0) -> List<Finding> {
