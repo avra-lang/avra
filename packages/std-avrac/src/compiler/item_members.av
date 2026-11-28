@@ -1227,21 +1227,17 @@ fn named_miss(
     fits: fn(ItemKind) -> bool,
     miss: Miss,
 ) -> List<MissPlaced> {
-    let name = t.store.ident_name(arg)
-    if name != null && hole_name(name!) != null { return [] }
-    let named = if name == null {
-        null
-    } else {
-        resolved(engine, t.file, Space.Type, name!).named() ?? resolved(
-            engine,
-            t.file,
-            Space.Value,
-            name!,
-        )
-            .named()
-    }
-    if name != null && (named == null || fits(named!.kind)) { return [] }
-    [MissPlaced { at: t.store.expr_span(arg), miss: miss }]
+    let missed = [MissPlaced { at: t.store.expr_span(arg), miss: miss }]
+    let name? = t.store.ident_name(arg) else { return missed }
+    if hole_name(name) != null { return [] }
+    let named? = resolved(engine, t.file, Space.Type, name).named() ?? resolved(
+        engine,
+        t.file,
+        Space.Value,
+        name,
+    )
+        .named() else { return [] }
+    if fits(named.kind) { [] } else { missed }
 }
 
 /// Whether a declaration of the kind is a trait.

@@ -163,7 +163,7 @@ impl RuleFacts {
     }
 
     /// Whether the statement `s` of `store` wears an annotation by the fn `known` names.
-    fn wears(store: SyntaxArena, s: StmtId, known: Known) -> bool {
+    fn wears(s: StmtId, known: Known) -> bool {
         match self { .Analysed(a) -> analysed_wears(a, s, known), .Typed(t) -> (t.wears)(s, known) }
     }
 
@@ -171,7 +171,7 @@ impl RuleFacts {
     /// names: the declaration its word binds among the type's readers, never the word.
     fn field_wears(t: RuleType, field: string, known: Known) -> bool {
         match t {
-            .Interned(ty, decls) -> interned_field_wears(decls, ty, field, known),
+            .Interned(ty, decls) -> decls.field_wears(ty.id, field, known),
             .Signed(ty) -> match self { .Typed(f) -> (f.field_wears)(ty, field, known), .Analysed(_) -> false },
         }
     }
@@ -570,7 +570,7 @@ impl Code {
     /// resolves to, never the word. False for every other seat.
     fn wears(known: Known) -> bool {
         match self.at {
-            .Stmt(id) -> self.of.facts.wears(self.of.view.store, id, known),
+            .Stmt(id) -> self.of.facts.wears(id, known),
             .Expr(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> false,
         }
     }
@@ -1524,30 +1524,10 @@ fn method_could_be_pure(of: RuleFile, id: ExprId) -> bool {
 /// seats.
 fn analysed_seat_fns(a: Analysed) -> List<string> {
     let decls = a.view.decls
-    [arg.text for q in decls.decls_of_file(a.view.file) for m in decls.annotations_of(q) if seat_marked(decls, m, a.view.file) for arg in m.args]
-}
-
-/// Whether the annotation `m`, read in `file`, is one of the query marks that name a seat fn.
-fn seat_marked(decls: Decls, m: AnnotationFact, file: FileId) -> bool {
-    let callee? = decls.annotation_callee(m, file) else { return false }
-    SEAT_FN_MARKS.any((k) -> decls.is_known(callee, k))
+    [arg.text for q in decls.decls_of_file(a.view.file) for m in decls.annotations_of(q) if decls.seat_marked(m, a.view.file) for arg in m.args]
 }
 
 /// Whether the statement `s` the analysis `a` holds wears an annotation by the fn `known` names.
-/// Whether the declared type `ty` has the field `field` wearing a mark that binds `known` among the
-/// declaration's readers.
-fn interned_field_wears(decls: Decls, ty: Ty, field: string, known: Known) -> bool {
-    let d: DeclId? = match ty.types.shape_of(ty.id) {
-        .Struct(d, _) or .Enum(d, _) -> d,
-        rest -> null,
-    }
-    let held? = d else { return false }
-    let x = decls.decl(held)
-    let f? = decls.store_of(x.file).declared_fields(x.stmt).find(it.name.spells(field)) else { return false }
-    let readers = decls.mark_readers(held)
-    f.marks.any((m) -> decls.mark_binds(readers, decls.annotation_home(held), m, known))
-}
-
 fn analysed_wears(a: Analysed, s: StmtId, known: Known) -> bool {
     let decls = a.view.decls
     let d? = decls.decl_of(a.view.file, s) else { return false }

@@ -1935,6 +1935,30 @@ impl Decls {
         (self.namespace_of.get())(home).fn_decl(word)
     }
 
+    /// Whether the annotation `m`, read in `file`, is one of the query marks that name a seat fn.
+    fn seat_marked(m: AnnotationFact, file: FileId) -> bool {
+        let callee? = self.annotation_callee(m, file) else { return false }
+        SEAT_FN_MARKS.any((k) -> self.is_known(callee, k))
+    }
+
+    /// Whether the declared type `ty` has the field `field` wearing a mark that binds `known` among
+    /// the declaration's readers.
+    fn field_wears(ty: TypeId, field: string, known: Known) -> bool {
+        let d: DeclId? = match self.types.shape_of(ty) {
+            .Struct(d, _) or .Enum(d, _) -> d,
+            rest -> null,
+        }
+        let held? = d else { return false }
+        let x = self.decl(held)
+        let f? = self.store_of(x.file).declared_fields(x.stmt).find(it.name.spells(field)) else { return false }
+        f
+            .marks
+            .any(
+                (m) -> self
+                    .mark_binds(self.mark_readers(held), self.annotation_home(held), m, known),
+            )
+    }
+
     /// Whether the written mark `mark`, worn in `home`, binds among `readers` the fn `known` names.
     fn mark_binds(readers: List<DeclId>, home: FileId, mark: Mark, known: Known) -> bool {
         self.is_known(self.mark_binding_among(readers, home, mark.name), known)
