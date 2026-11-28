@@ -1,0 +1,53 @@
+// A value read on a path that leaves the fn dies there: the read is its last on that path, so a
+// push there moves it, and the counts a body pays do not depend on where the push is written.
+use @std.avrac.core.{Ins}
+use @std.avrac.testing.{ir_of}
+use compiler.backend.{render_ir}
+use compiler.lower.{Body}
+
+/// A fn that files `held` and answers early or late, its two pushes standing as `early` and
+/// `late` say, called both ways.
+fn filed(early: string, late: string) -> string {
+    "fn filed(names: List<string>, name: string, early: bool) -> List<string> {\n" +
+        "    mut out = names\n" +
+        "    let held = name + \"!\"\n" +
+        "    ${early}\n" +
+        "    ${late}\n" +
+        "    out\n" +
+        "}\n" +
+        "filed([\"x\"], \"y\", true).length + filed([\"x\"], \"y\", false).length\n"
+}
+
+/// The push inside the arm that returns, and again past it.
+fn inside() -> string {
+    filed("if early {\n        out.push(held)\n        return out\n    }", "out.push(held)")
+}
+
+/// The push hoisted above the arm that returns.
+fn hoisted() -> string { filed("out.push(held)", "if early { return out }") }
+
+/// `filed`'s body as the memory pass leaves it.
+fn body_of(source: string) -> Body { ir_of(source).fns.find(it.name.ends_with(".filed"))! }
+
+/// The counts `b` places: each retain, each register a release settles, and each push that takes
+/// a reference of its own.
+fn counts(b: Body) -> int { b.ins.map(count_of(it)).fold(0, (n: int, c: int) -> n + c) }
+
+fn count_of(i: Ins) -> int {
+    match i {
+        .Retain(_) -> 1,
+        .Release(rs) -> rs.length,
+        .CallRtVoid(callee, _) -> if callee == "avra_array_push_owned" { 1 } else { 0 },
+        _ -> 0,
+    }
+}
+
+spec "compiler/memory — a value dies on a path that leaves" {
+    given "a push inside an arm that returns" {
+        then "the push moves the value" {
+            render_ir(ir_of(inside())).contains("avra_array_push_moved") &&
+                !render_ir(ir_of(inside())).contains("avra_array_push_owned")
+        }
+        then "the body pays what the hoisted push pays" { counts(body_of(inside())) == counts(body_of(hoisted())) }
+    }
+}
