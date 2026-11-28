@@ -277,6 +277,7 @@ fn entry_item_facts(
                     callers: (_s: StmtId) -> [],
                     entry: entry,
                     wears: (s: StmtId, k: Known) -> wears_known(engine, file, read.store, s, k),
+                    field_wears: (ty: SignedType, f: string, k: Known) -> field_wears_known(engine, ty, f, k),
                 },
             ),
     }
@@ -400,6 +401,7 @@ export fn item_rule_file(engine: QueryEngine, program: string, file: SourceFileA
                     } for b in stated],
                     callers: (s: StmtId) -> callers_of(engine, program, file, item.store.fn_parts(s)?.name),
                     wears: (s: StmtId, k: Known) -> wears_known(engine, file, item.store, s, k),
+                    field_wears: (ty: SignedType, f: string, k: Known) -> field_wears_known(engine, ty, f, k),
                 },
             ),
     }
@@ -443,6 +445,31 @@ fn wears_known(
     known: Known,
 ) -> bool {
     store.annotations_of(s).any((a) -> binds_fn(engine, file, a.name, known))
+}
+
+/// Whether the declared type `ty` has the field `field` wearing a mark that binds the fn `known`
+/// names, among the readers of the type's declaration.
+fn field_wears_known(engine: QueryEngine, ty: SignedType, field: string, known: Known) -> bool {
+    match ty.head {
+        .Declared(file, name) -> declared_field_wears(engine, file, name, field, known),
+        rest -> false,
+    }
+}
+
+/// Whether the type `file` declares as `name` has the field `field` wearing a mark that binds `known`.
+fn declared_field_wears(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    name: string,
+    field: string,
+    known: Known,
+) -> bool {
+    let d? = file_declares(engine, file).names.find(it.name == name) else { return false }
+    let item = read_item(engine, file, d.item)
+    let s? = item.stmts.find((x) -> item.store.declared_name(x) == name) else { return false }
+    let f? = item.store.declared_fields(s).find(it.name.spells(field)) else { return false }
+    let traits = declaration_traits(engine, file, item, s)
+    f.marks.any((m) -> mark_binds(engine, file, traits, m, known))
 }
 
 /// The body each `impl Trait for` method of the item `at` of `file` overrides, where its trait gives

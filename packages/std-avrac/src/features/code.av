@@ -99,6 +99,8 @@ export type TypedFacts = {
     /// Whether the statement wears an annotation by the fn `known` names, its word resolved where
     /// it is written.
     wears: fn(StmtId, Known) -> bool,
+    /// Whether the type declares the field named, wearing a mark that binds the fn `known` names.
+    field_wears: fn(SignedType, string, Known) -> bool,
 }
 
 /// One call of a declaration: the file whose code makes it.
@@ -163,6 +165,15 @@ impl RuleFacts {
     /// Whether the statement `s` of `store` wears an annotation by the fn `known` names.
     fn wears(store: SyntaxArena, s: StmtId, known: Known) -> bool {
         match self { .Analysed(a) -> analysed_wears(a, s, known), .Typed(t) -> (t.wears)(s, known) }
+    }
+
+    /// Whether the type `t` declares the field `field` wearing a mark that binds the fn `known`
+    /// names: the declaration its word binds among the type's readers, never the word.
+    fn field_wears(t: RuleType, field: string, known: Known) -> bool {
+        match t {
+            .Interned(ty, decls) -> interned_field_wears(decls, ty, field, known),
+            .Signed(ty) -> match self { .Typed(f) -> (f.field_wears)(ty, field, known), .Analysed(_) -> false },
+        }
     }
 
     /// The body the trait gives the member the `impl Trait for` method `m` declares overrides; absent
@@ -550,6 +561,10 @@ impl Code {
             .Expr(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> [],
         }
     }
+
+    /// Whether the type `t` declares the field `field` wearing a mark that binds the fn `known`
+    /// names.
+    fn field_wears(t: RuleType, field: string, known: Known) -> bool { self.of.facts.field_wears(t, field, known) }
 
     /// Whether this statement wears an annotation by the fn `known` names: the declaration its word
     /// resolves to, never the word. False for every other seat.
@@ -1519,6 +1534,20 @@ fn seat_marked(decls: Decls, m: AnnotationFact, file: FileId) -> bool {
 }
 
 /// Whether the statement `s` the analysis `a` holds wears an annotation by the fn `known` names.
+/// Whether the declared type `ty` has the field `field` wearing a mark that binds `known` among the
+/// declaration's readers.
+fn interned_field_wears(decls: Decls, ty: Ty, field: string, known: Known) -> bool {
+    let d: DeclId? = match ty.types.shape_of(ty.id) {
+        .Struct(d, _) or .Enum(d, _) -> d,
+        rest -> null,
+    }
+    let held? = d else { return false }
+    let x = decls.decl(held)
+    let f? = decls.store_of(x.file).declared_fields(x.stmt).find(it.name.spells(field)) else { return false }
+    let readers = decls.mark_readers(held)
+    f.marks.any((m) -> decls.mark_binds(readers, decls.annotation_home(held), m, known))
+}
+
 fn analysed_wears(a: Analysed, s: StmtId, known: Known) -> bool {
     let decls = a.view.decls
     let d? = decls.decl_of(a.view.file, s) else { return false }
