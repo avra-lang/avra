@@ -44,6 +44,7 @@ impl Lowers for Call {
         if self.args.length == 1 && metas(cx, named, GUARDED) { return guarded_run(cx, e, self.args[0]) }
         if self.args.length == 1 && metas(cx, named, CODE_HASH) { return code_hash_read(cx, e, self.args[0]) }
         if self.args.length == 2 && metas(cx, named, MARKS) { return marks_read(cx, e, self.args) }
+        if self.args.length == 2 && metas(cx, named, WORN) { return worn_read(cx, e, self.args) }
         if self.args.length == 1 && metas(cx, named, EMBED) { return embed_read(cx, e, named, self.args[0]) }
         if self.args.length == 1 && metas(cx, named, PROVIDED) { return provided_read(cx, e, self.args[0]) }
         if self.args.length == 1 && metas(cx, named, REHOMED) { return rehomed_value(cx, self.args[0]) }
@@ -137,6 +138,12 @@ const MARKS: string = "marks"
 /// `@std/meta`'s fn that answers `marks`, handed the identity.
 const MARKED_BY: string = "marked_by"
 
+/// `@std/meta`'s fn whose answer is an annotation by a named fn, carrying its identity.
+const WORN: string = "worn"
+
+/// `@std/meta`'s fn that answers `worn`, handed the written name and the identity.
+const WORN_BY: string = "worn_by"
+
 /// `@std/meta`'s fn whose fn value runs under the frame of contexts in force where it is called.
 const REHOMED: string = "rehomed"
 
@@ -222,6 +229,24 @@ fn marks_read(mut cx: Lowering, e: ExprId, args: List<ExprId>) -> Reg {
     let mark = cx.handing_mark()
     let r = cx
         .call_fn(cx.layout_at(e), by, [cx.lower(cx.store.unnamed(args[0])), cx.const_str(key)])
+    cx.handed_back(mark)
+    r
+}
+
+/// `worn(f, args)` over a fn the program declares: `@std/meta`'s `worn_by` of `f`'s written name, its
+/// identity and `args`, so the annotation it answers names the declaration and never only a word.
+fn worn_read(mut cx: Lowering, e: ExprId, args: List<ExprId>) -> Reg {
+    let target = cx.store.unnamed(args[0])
+    let name? = cx.store.ident_name(target) else { return cx.missed_as(unmarked()) }
+    let key? = marked_key(cx, target, name) else { return cx.missed_as(unmarked()) }
+    let by? = (cx.program.toolchain_fn)(META_MODULE, WORN_BY) else { return cx.missed_as(unmarked()) }
+    let mark = cx.handing_mark()
+    let r = cx
+        .call_fn(
+            cx.layout_at(e),
+            by,
+            [cx.const_str(name), cx.const_str(key), cx.lower(cx.store.unnamed(args[1]))],
+        )
     cx.handed_back(mark)
     r
 }

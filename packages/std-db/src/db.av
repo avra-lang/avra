@@ -66,6 +66,7 @@ use @std.meta.{
     refuse_as_at,
     beside,
     declares,
+    marks,
 }
 use @std.errors.{Loc}
 use @std.sqlite.{Db, SqlValue, sql, prepared}
@@ -134,7 +135,7 @@ fn model_index_problems(t: Type, word: string, key: List<string>) -> List<Diagno
 fn key_written(t: Type, word: string, key: List<string>) -> Annotation? { t.annotations.find(it.name == word && it.args.join(",") == key.join(",")) }
 
 /// The keys a `@model` type declares on itself, `@unique(a, b, …)`, each as the fields it names.
-fn model_keys(t: Type) -> List<List<string>> { [a.args for a in t.annotations if a.name == "unique" && !a.args.is_empty()] }
+fn model_keys(t: Type) -> List<List<string>> { [a.args for a in t.annotations if marks(a, unique) && !a.args.is_empty()] }
 
 /// Whether a word declares an index: `@unique` or `@index`.
 fn indexing(word: string) -> bool { word == "unique" || word == "index" }
@@ -192,7 +193,7 @@ fn field_site(t: Type, f: Field, m: FieldMark) -> Site {
 
 fn type_site(t: Type, a: Annotation) -> Site {
     Site {
-        index: Index { columns: [column_named(t, n) for n in a.args], unique: a.name == "unique" },
+        index: Index { columns: [column_named(t, n) for n in a.args], unique: marks(a, unique) },
         fields: a.args,
         word: a.name,
         at: a.at,
@@ -294,7 +295,7 @@ fn unstored_record(k: Kind) -> bool {
 /// The name of a `@model` record, or null when the name is not one.
 fn link_target_name(n: string) -> string? {
     let t? = type_named(n) else { return null }
-    if t.annotations.any(it.name == "model") { return n }
+    if t.annotations.any(marks(it, model)) { return n }
     null
 }
 

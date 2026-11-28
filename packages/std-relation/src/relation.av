@@ -67,6 +67,8 @@ use @std.meta.{
     name,
     refuse_as_at,
     beside,
+    marks,
+    dense,
 }
 use rows.{
     Rows,
@@ -215,8 +217,8 @@ export fn side(_t: Type) {}
 /// beside `@relation`, that word — `arena`/`side` are OWNED BY THEIR
 /// PARTITION, never a Db; the caller hands the partition's own value in.
 fn storage_mode(t: Type) -> string {
-    if t.annotations.any((a: Annotation) -> a.name == "arena") { return "arena" }
-    if t.annotations.any((a: Annotation) -> a.name == "side") { return "side" }
+    if t.annotations.any(marks(it, arena)) { return "arena" }
+    if t.annotations.any(marks(it, side)) { return "side" }
     "rows"
 }
 
@@ -662,7 +664,7 @@ fn scope_spelled(ty: Type) -> NamedShape? {
     if one != null &&
         ty.fields.length == 1 &&
         one!.kind is .Int &&
-        ty.annotations.any(it.name == "dense") {
+        ty.annotations.any(marks(it, dense)) {
         return NamedShape.Dense(one!.name)
     }
     // LICENSED compiler.foreign_declaration_named: @std/errors sits below @std/meta and carries no mark
@@ -1839,7 +1841,7 @@ fn stored_within(s: Stored) -> List<Kind> {
 /// read and hash its own `impl` holds, so a stored answer needs no second generator.
 fn wears_codec(n: string) -> bool {
     let t? = type_named(n) else { return false }
-    t.annotations.any((a: Annotation) -> a.name == "codec")
+    t.annotations.any(marks(it, codec))
 }
 
 /// Whether every named type this kind's hash and record reach declares `@codec`. A payload enum

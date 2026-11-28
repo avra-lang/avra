@@ -6,7 +6,17 @@
 //! entries, a result's sides. A declared record or enum writes itself. An id marked
 //! `@indexes(Node)` stands for the node it names. A value with no bytes, as a fn or a pointer has
 //! none, has no shape.
-use @std.meta.{Arms, Code, Field, Kind, Named, Type as MetaType, Variant as MetaVariant, name}
+use @std.meta.{
+    Arms,
+    Code,
+    Field,
+    Kind,
+    Named,
+    Type as MetaType,
+    Variant as MetaVariant,
+    name,
+    marks,
+}
 
 /// Marks a dense id: a value of it names one node of `node`, declared in the id's own module, so
 /// whatever writes the id down writes that node.
@@ -109,7 +119,7 @@ impl Reading {
         let declared? = self.declaration_of(type_name) else { return null }
         let node = node_indexed(declared)
         if node != null { return .Id(type_name, node!, path_in(declared.module, node!, [])) }
-        let verbs = if self.places { declared.annotations.find(it.name == "placed")?.args ?? [] } else { [] }
+        let verbs = if self.places { declared.annotations.find(marks(it, placed))?.args ?? [] } else { [] }
         if verbs.length == 2 { return .Placed(verbs[0], verbs[1]) }
         if is_tags(declared) { return .Tags(type_name, path_of(declared, args), [v.name for v in declared.variants]) }
         let over? = declared.shape_over() else { return .Declared(type_name, path_of(declared, args)) }

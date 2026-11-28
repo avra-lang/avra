@@ -1125,17 +1125,21 @@ fn meta_named_miss(engine: QueryEngine, t: TypedNodes, e: ExprId) -> List<MissPl
     let call? = t.store.call_parts(e) else { return [] }
     // a call of two is asked after only where it writes `marks`, so no other call of two resolves
     // its callee here; one under another name its `use` gave is refused where it is lowered
-    if call.args.length == 2 && !call.callee.spells(MARKS) { return [] }
+    if call.args.length == 2 && !call.callee.spells(MARKS) && !call.callee.spells(WORN) { return [] }
     if call.args.length != 1 && call.args.length != 2 { return [] }
     let d? = resolved(engine, t.file, Space.Value, call.callee.text()).named() else { return [] }
     if d.kind != ItemKind.Fn || d.file.package_name != "@std/meta" { return [] }
     if d.name == "code_hash" && call.args.length == 1 { return hash_miss(engine, t, t.store.unnamed(call.args[0])) }
     if d.name == "marks" && call.args.length == 2 { return marks_miss(engine, t, t.store.unnamed(call.args[1])) }
+    if d.name == "worn" && call.args.length == 2 { return marks_miss(engine, t, t.store.unnamed(call.args[0])) }
     []
 }
 
 /// `@std/meta`'s fn a call of two is asked after by.
 const MARKS: string = "marks"
+
+/// `@std/meta`'s other fn a call of two is asked after by.
+const WORN: string = "worn"
 
 /// `code_hash`'s argument `arg`, where it names no fn the file sees declared, by name or as the fn a
 /// call of it calls.

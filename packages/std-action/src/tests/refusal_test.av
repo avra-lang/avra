@@ -2,13 +2,13 @@
 // annotation would be handed, without a file to annotate.
 use @std.action.derive.{action, impact}
 use @std.action.{routine, faults}
-use @std.meta.{Fn, Param, Kind, Annotation, Diagnostic}
+use @std.meta.{Fn, Param, Kind, Annotation, Diagnostic, worn}
 
 fn seat(name: string, kind: Kind) -> Param {
     Param { name: name, ty: kind.spelled(), mutable: false, settled: false, at: null, kind: kind }
 }
 
-fn impact_mark(args: List<string>) -> Annotation { Annotation { name: "impact", args: args, at: null } }
+fn impact_mark(args: List<string>) -> Annotation { worn(impact, args) }
 
 fn card(params: List<Param>, answers: Kind, marks: List<Annotation>) -> Fn {
     Fn {
@@ -56,8 +56,8 @@ spec "@action's refusals" {
                 card([], Kind.Int, [impact_mark(["routine"]), impact_mark(["destructive"])]),
             ) == "repeated_impact"
         }
-        then "another annotation is not an impact" {
-            let other = Annotation { name: "traced", args: ["routine"], at: null }
+        then "an annotation that only spells `impact` is not one" {
+            let other = Annotation { name: "impact", args: ["routine"], at: null }
             problems_of(card([], Kind.Int, [other])) == "missing_impact"
         }
         then "a sound profile has no fault" {
