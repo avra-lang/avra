@@ -57,15 +57,39 @@ fn seen_or_refused(wt: string) -> bool {
     let sleep = tool("sleep") catch { return false }
     match (cmd(sleep, ["60"]) with { cwd: "${wt}/deep" }).start(Ready.Started, secs(5)) {
         .Ok(child) -> {
-            let told = match cwds() {
+            let stood = stood_in(child.pid(), "${wt}/deep")
+            let read = cwds()
+            let told = match read {
                 .Ok(dirs) -> dirs.any((c: string) -> inside(c, wt)),
                 .Err(_) -> true,
             }
+            if !told { eprintln(unseen_words(child.pid(), stood, wt, read)) }
             let _ = child.stop()
             told
         },
         .Err(_) -> false,
     }
+}
+
+/// Where the process `pid` stands once it stands in `dir`, asked of the kernel every tenth of a second
+/// for ten seconds: a child is started before it has moved into the directory it was given.
+fn stood_in(pid: int, dir: string) -> string {
+    mut at = ""
+    mut tries = 0
+    while tries < 100 {
+        at = shell("/", "readlink -v /proc/${pid}/cwd 2>&1")
+        if at == dir { return at }
+        let _ = shell("/", "sleep 0.1")
+        tries = tries + 1
+    }
+    at
+}
+
+/// What the reader read when it missed the process standing in `wt`.
+fn unseen_words(pid: int, stood: string, wt: string, read: Result<List<string>, string>) -> string {
+    let dirs = match read { .Ok(ds) -> ds, .Err(why) -> [why] }
+    let near = [c for c in dirs if c.contains(wt) || wt.contains(c) && c != "/"]
+    "reclaim_test: the sleeper (pid ${pid}) stood in `${stood}`; the reader read ${dirs.length} directories, none inside `${wt}`; those near it: [${near.join(", ")}]"
 }
 
 spec "wisp reclaim — which worktrees retire" {
