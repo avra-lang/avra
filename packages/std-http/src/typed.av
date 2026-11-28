@@ -133,7 +133,7 @@ export fn input_read<T: Decode>(fields: List<Entry>, parts: List<FieldPart>) -> 
 /// body or a query from its own root.
 fn in_part(i: Issue, parts: List<FieldPart>) -> Placed {
     let part? = parts.find(it.name == top_field(i))?.part else { return Placed { issue: i, part: null } }
-    if part is .Path { return Placed { issue: i, part: part } }
+    if part is .Path { return placed(i, part) }
     Placed { issue: i with { path: Path { up: i.path.up.take(i.path.up.length - 1) } }, part: part }
 }
 
@@ -154,6 +154,9 @@ fn lax_read<T: Decode>(v: Value, part: Origin) -> Result<T, Response> {
 
 /// An issue and the part of the request it was found in.
 export type Placed = { issue: Issue, part: Origin? }
+
+/// The issue `i`, as the part `part` reads it.
+fn placed(i: Issue, part: Origin?) -> Placed { Placed { issue: i, part: part } }
 
 /// A capture as the text it encodes, decoded once, or the 400 refusing
 /// it: an escape that is malformed, decodes to no text, or to a NUL.
@@ -186,7 +189,7 @@ export fn created(j: Json, at: string) -> Response {
 /// issue at its path, the rule that refused and its words. What an issue
 /// received is never echoed: a refusal can be read by whoever is shown it.
 /// `part`, when the issues were read from a request, names where.
-export fn problem(issues: Issues, part: Origin? = null) -> Response { problem_placed([Placed { issue: i, part: part } for i in issues.all]) }
+export fn problem(issues: Issues, part: Origin? = null) -> Response { problem_placed([placed(i, part) for i in issues.all]) }
 
 /// The one refusal over issues found in several parts, each naming its own.
 export fn problem_placed(all: List<Placed>) -> Response {
