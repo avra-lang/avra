@@ -41,7 +41,16 @@ impl TypeCx {
 
     mut fn task_dropped(at: Loc?) { self.emit(said_as("type.task_escape", at, task_overwritten())) }
 
-    mut fn task_unowned(at: Loc?, ty: TypeId) { self.emit(said_as("type.task_escape", at, task_unheld(self.view.types.name_of(ty)))) }
+    mut fn task_unowned(at: Loc?, ty: TypeId) {
+        self
+            .emit(
+                said_as(
+                    "type.task_escape",
+                    at,
+                    task_unheld(self.view.types.name_of(ty), "held here"),
+                ),
+            )
+    }
 }
 
 /// A value of a task's, said by `label`, that reaches past the block that spawned it.
@@ -62,11 +71,11 @@ export fn task_overwritten() -> Voice {
     }
 }
 
-/// A value of `spelled` holding a task, which no block can join.
-export fn task_unheld(spelled: string) -> Voice {
+/// A value of `spelled` holding a task, which no block can join, as `label` says where.
+export fn task_unheld(spelled: string, label: string) -> Voice {
     Voice {
         message: "a `${spelled}` cannot own a task — nothing joins it where the block ends",
-        label: "held here",
+        label: label,
         help: "hold each task in a binding, a nullable binding, or a `List<Task<…>>`",
     }
 }

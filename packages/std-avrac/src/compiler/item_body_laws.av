@@ -83,8 +83,8 @@ enum Breach {
     Escaping(label: string)
     /// A write over a place holding a task, which it leaves unjoined.
     Overwritten
-    /// A value of `spelled` holding a task, which nothing joins.
-    Unheld(spelled: string)
+    /// A value of `spelled` holding a task, which nothing joins, as `label` says where.
+    Unheld(spelled: string, label: string)
     /// A select arm's guard reading a name its own arm binds.
     GuardReadsBinder
     /// A `word` — `defer` or `errdefer` — whose body waits as `wait` says, unbounded.
@@ -791,7 +791,40 @@ fn unowned_breach(engine: QueryEngine, store: SyntaxArena, typing: ItemTyping, s
     let value? = store.owned_value(s) else { return null }
     let ty? = typing.declared_at(s, value) ?? typing.type_at(value) else { return null }
     if !holds_tasks(ty) || owns_tasks(ty) || marked_owner(engine, ty) { return null }
-    BreachAt { at: kept_at(store.expr_span(value)), breach: Breach.Unheld(ty.spelled()) }
+    BreachAt {
+        at: kept_at(store.expr_span(value)),
+        breach: Breach.Unheld(ty.spelled(), unheld_label(engine, ty)),
+    }
+}
+
+/// Where a value of `ty` holds its task: the slot its declaration makes of a task, applied as `ty`
+/// applies it; `held here` for any other.
+fn unheld_label(engine: QueryEngine, ty: SignedType) -> string {
+    match ty.head {
+        .Declared(file, name, _) -> slot_label(
+            name,
+            declared_slots(engine, file, name).map(it.bound(ty.args)).find(holds_tasks(it)),
+        ),
+        rest -> HELD,
+    }
+}
+
+/// The label of a value of the declared `name` whose slot `slot` holds a task; `held here` where none does.
+fn slot_label(name: string, slot: SignedType?) -> string {
+    let held? = slot else { return HELD }
+    "`${name}<...>` makes a slot `${held.spelled()}`"
+}
+
+/// The label of a value that holds a task where no slot of its declaration says more.
+const HELD = "held here"
+
+/// The slot types the record or the enum `name` of `file` declares: a record's fields, each variant's payloads.
+fn declared_slots(engine: QueryEngine, file: SourceFileAddress, name: string) -> List<SignedType> {
+    let fields = [f.ty! for f in record_signature(engine, file, name)?.fields ?? [] if f.ty != null]
+    fields
+        .concat(
+            [p.ty! for v in enum_signature(engine, file, name)?.variants ?? [] for p in v.payloads if p.ty != null],
+        )
 }
 
 /// Whether a value of `ty` owns the tasks it holds: a task, a nullable task, or a list of tasks.
@@ -1497,7 +1530,12 @@ export law task_overwritten_law {
 
 fn overwritten_words(_a: List<string>) -> Voice { task_overwritten() }
 
-fn tasks_unheld(view: ItemView) -> List<Found> { breaches_seen_in(view, (b) -> match b { .Unheld(spelled) -> [spelled], rest -> null }) }
+fn tasks_unheld(view: ItemView) -> List<Found> {
+    breaches_seen_in(
+        view,
+        (b) -> match b { .Unheld(spelled, label) -> [spelled, label], rest -> null },
+    )
+}
 
 /// a value holding a task that its type can't own
 export law task_unheld_law {
@@ -1507,7 +1545,7 @@ export law task_unheld_law {
     witness: "fn one() -> int { 1 }\n\nfn f() -> int {\n    let m = {\"a\": spawn one()}\n    m.length\n}\n"
 }
 
-fn unheld_words(a: List<string>) -> Voice { task_unheld(a[0]) }
+fn unheld_words(a: List<string>) -> Voice { task_unheld(a[0], a[1]) }
 
 fn jumps_unlooped(view: ItemView) -> List<Found> { breaches_seen_in(view, (b) -> match b { .Unlooped(word) -> [word], rest -> null }) }
 
