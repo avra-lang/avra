@@ -17,6 +17,8 @@
 //! `framed_dropping(w, slot)` writes a record without its field at `slot`:
 //! the mutant a reader must refuse, built from the same declaration.
 use @std.meta.{
+    Annotation,
+    marks,
     Arms,
     Code,
     Decls,
@@ -37,7 +39,8 @@ use @std.meta.{
     type_named,
 }
 use @std.text.{parse_int}
-use tree.codes.{snake}
+use tree.codes.{Codes, snake}
+use style.words.{Words}
 use frame.kinds.{FrameWriter, FrameReader, FrameFault, frame_known, frame_nth}
 use frame.rows.{FrameKind, FrameField, FrameRow, FrameType, distinct_types}
 
@@ -89,16 +92,22 @@ enum Carried {
     Told(of: string)
 }
 
-/// Whether the type named `n` carries `@derive(<tr>)`.
-fn derived(n: string, tr: string) -> bool {
-    let t? = type_named(n) else { return false }
-    t.annotations.any(it.name == "derive" && it.args.contains(tr))
-}
+/// The annotations the type named `n` wears; none where `n` names no type.
+fn worn(n: string) -> List<Annotation> { type_named(n)?.annotations ?? [] }
+
+/// Whether the type named `n` derives `Codes`.
+fn coded(n: string) -> bool { worn(n).any(marks(it, Codes)) }
+
+/// Whether the type named `n` derives `Words`.
+fn placed(n: string) -> bool { worn(n).any(marks(it, Words)) }
+
+/// Whether the type named `n` derives `Frame`.
+fn frames(n: string) -> bool { worn(n).any(marks(it, Frame)) }
 
 /// How a value of the type named `n` is one word, when it is.
 fn worded(n: string) -> Worded? {
-    if derived(n, "Codes") { return Worded.Coded(n) }
-    if derived(n, "Words") { return Worded.Placed(n) }
+    if coded(n) { return Worded.Coded(n) }
+    if placed(n) { return Worded.Placed(n) }
     let k? = stored_scalar(n) else { return null }
     match k { .Int -> Worded.Flat(n), rest -> null }
 }
@@ -122,7 +131,7 @@ fn carried(f: Field) -> Carried? {
 
 /// A list of framed values, or of words: its count, then each.
 fn list_carried(n: string) -> Carried? {
-    if derived(n, "Frame") { return Carried.Many(n) }
+    if frames(n) { return Carried.Many(n) }
     let w? = worded(n) else { return null }
     Carried.Words(w)
 }
@@ -130,13 +139,13 @@ fn list_carried(n: string) -> Carried? {
 /// A field that may be absent: a word, zero for none; or a framed value, behind
 /// a word saying whether it stands.
 fn opt_carried(n: string) -> Carried? {
-    if derived(n, "Frame") { return Carried.NestedOrNone(n) }
+    if frames(n) { return Carried.NestedOrNone(n) }
     let w? = worded(n) else { return null }
     Carried.WordOrNone(w)
 }
 
 fn named_carried(n: string, told: bool) -> Carried? {
-    if derived(n, "Frame") { return if told { Carried.Told(n) } else { Carried.Nested(n) } }
+    if frames(n) { return if told { Carried.Told(n) } else { Carried.Nested(n) } }
     let w? = worded(n) else { return null }
     if told { null } else { Carried.Word(w) }
 }
