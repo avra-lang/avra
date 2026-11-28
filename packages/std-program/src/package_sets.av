@@ -1,7 +1,9 @@
 //! SETS OF NAMES, EACH KEPT ONCE: a set is an id, the same id for the same members whatever order
 //! they came in, so a question's set is one number and the union of two sets is looked up once. Id
 //! zero is the empty set. An identity: every holder sees one table.
-use @std.meta.{identity}
+use @std.meta.{derive, identity}
+use saved_derive.{Saved}
+use answer_record.{content_hash}
 use hash_keyed_table.{HashKeyedTable, hash_keyed_table}
 use sorted.{sorted_by}
 use @std.text.{text_before}
@@ -14,6 +16,33 @@ export type NameSets = {
     ids: Cell<Map<string, int>>,
     /// Each union asked, by its two ids.
     unions: HashKeyedTable<int>,
+    /// What printing the sets keeps, made the first time a set is printed: a table no print is asked
+    /// of pays for none.
+    printing: Cell<Printing?>,
+}
+
+/// What a table's prints keep: each set's print by its id, `SET_UNWORKED` until it is first asked or
+/// past the list's end; each printed set's id by its print spelled; how many sets from id zero
+/// `printed` holds every one of; whether a frontier's sets were read in; and how many read sets were
+/// walked from a frontier's reads, their records naming none.
+type Printing = {
+    prints: Cell<List<int>>,
+    printed: Cell<Map<string, int>>,
+    through: Cell<int>,
+    frontier_read: Cell<bool>,
+    walked: Cell<int>,
+}
+
+/// The printing of a table holding only the empty set.
+fn printing_begun() -> Printing {
+    let printed: Cell<Map<string, int>> = Cell.new({"${EMPTY_SET_PRINT}": 0})
+    Printing {
+        prints: Cell.new([EMPTY_SET_PRINT]),
+        printed: printed,
+        through: Cell.new(1),
+        frontier_read: Cell.new(false),
+        walked: Cell.new(0),
+    }
 }
 
 /// A table holding only the empty set.
@@ -21,11 +50,32 @@ export fn name_sets() -> NameSets {
     let empty: List<string> = []
     let members: Cell<List<List<string>>> = Cell.new([empty])
     let ids: Cell<Map<string, int>> = Cell.new({"": 0})
-    NameSets { members: members, ids: ids, unions: hash_keyed_table() }
+    NameSets { members: members, ids: ids, unions: hash_keyed_table(), printing: Cell.new(null) }
 }
 
 /// The id of the empty set.
 export const NO_NAMES: int = 0
+
+/// One set of package names a store keeps, sorted.
+@derive(Saved)
+export type KeptNameSet = { print: int, names: List<string> }
+
+/// What a kept record says of a read set nobody worked out: no set's print is ever it.
+export const SET_UNWORKED: int = 0
+
+/// The empty set's print: a fixed word, never `SET_UNWORKED`.
+export const EMPTY_SET_PRINT: int = 1
+
+/// The print a set of `names` is kept under across processes: the same for the same members in any
+/// order, `EMPTY_SET_PRINT` for none, and for any other set a word carrying its second bit, so it is
+/// never `SET_UNWORKED` and never the empty set's.
+export fn set_print(names: List<string>) -> int { sorted_print(distinct_sorted(names)) }
+
+/// The print of `sorted`, its names in text order and each once.
+fn sorted_print(sorted: List<string>) -> int {
+    if sorted.is_empty() { return EMPTY_SET_PRINT }
+    content_hash(spelled_set(sorted).bytes()).high_word | 2
+}
 
 impl NameSets {
     /// The id of the set holding `names`, kept now if it's new.
@@ -34,10 +84,78 @@ impl NameSets {
         let spelled = spelled_set(sorted)
         let known = self.ids.get().get(spelled)
         if known != null { return known! }
-        let id = self.members.get().length
         self.members.push(sorted)
+        self.indexed(spelled)
+    }
+
+    /// The id of the set kept last, indexed by its spelling `spelled`.
+    fn indexed(spelled: string) -> int {
+        let id = self.members.get().length - 1
         self.ids.put(spelled, id)
         id
+    }
+
+    /// The table's printing, begun the first time it's asked.
+    fn printed() -> Printing {
+        let begun = self.printing.get()
+        if begun != null { return begun! }
+        let p = printing_begun()
+        self.printing.set(p)
+        p
+    }
+
+    /// The print the set `id` is kept under, worked out the first time it is asked.
+    fn print_of(id: int) -> int {
+        let p = self.printed()
+        let known = print_known(p, id)
+        if known != SET_UNWORKED { return known }
+        let print = sorted_print(self.members_of(id))
+        print_noted(p, id, print)
+        print
+    }
+
+    /// The id of the set `kept` names, its print taken as kept, never worked out again.
+    fn of_kept(kept: KeptNameSet) -> int {
+        let id = self.of(kept.names)
+        let p = self.printed()
+        if print_known(p, id) == SET_UNWORKED { print_noted(p, id, kept.print) }
+        id
+    }
+
+    /// Every set this table holds whose print was asked, the empty one aside: each a record may name.
+    fn kept_sets() -> List<KeptNameSet> {
+        let p? = self.printing.get() else { return [] }
+        [KeptNameSet { print: print, names: self.members_of(id) } for id in 1..self.members.get().length for print in [print_known(p, id)] if print != SET_UNWORKED]
+    }
+
+    /// The id of the set kept under `print`, where this table holds it: every set it holds printed
+    /// first.
+    fn printed_as(print: int) -> int? {
+        let p = self.printed()
+        let held = self.members.get().length
+        for id in p.through.get()..held { let _ = self.print_of(id) }
+        p.through.set(held)
+        p.printed.get().get("${print}")
+    }
+
+    /// Whether a frontier's sets were read into this table before, marked read now.
+    fn frontier_read_before() -> bool {
+        let p = self.printed()
+        let before = p.frontier_read.get()
+        p.frontier_read.set(true)
+        before
+    }
+
+    /// A read set walked from a frontier's reads, counted.
+    fn walk_counted() {
+        let p = self.printed()
+        p.walked.set(p.walked.get() + 1)
+    }
+
+    /// How many read sets were walked from a frontier's reads.
+    fn walks() -> int {
+        let p? = self.printing.get() else { return 0 }
+        p.walked.get()
     }
 
     /// The id of the set holding every member of `a` and of `b`.
@@ -48,7 +166,16 @@ impl NameSets {
         let spread = joined_word(low, if a < b { b } else { a })
         let known = self.unions.get_at(low, spread)
         if known != null { return known! }
-        let id = self.of(self.members_of(a).concat(self.members_of(b)))
+        let both = merged(self.members_of(a), self.members_of(b))
+        let spelled = spelled_set(both)
+        let held = self.ids.get().get(spelled)
+        if held != null { return self.unioned(low, spread, held!) }
+        self.members.push(both)
+        self.unioned(low, spread, self.indexed(spelled))
+    }
+
+    /// `id`, kept as the union of the two sets `low` and `spread` name.
+    fn unioned(low: int, spread: int, id: int) -> int {
         self.unions.put_at(low, spread, id)
         id
     }
@@ -61,6 +188,29 @@ impl NameSets {
 /// `low`, spread so the table's slots stay apart.
 fn joined_word(low: int, high: int) -> int { high ^ low.wrapping_mul(0 - 7046029254386353131) }
 
+/// The names of two sorted sets, each once, in text order.
+fn merged(a: List<string>, b: List<string>) -> List<string> {
+    mut out: List<string> = []
+    mut i = 0
+    mut j = 0
+    while i < a.length && j < b.length {
+        let x = a[i]
+        let y = b[j]
+        if x == y {
+            out.push(x)
+            i = i + 1
+            j = j + 1
+        } else if text_before(x, y) {
+            out.push(x)
+            i = i + 1
+        } else {
+            out.push(y)
+            j = j + 1
+        }
+    }
+    out.concat(a.drop(i)).concat(b.drop(j))
+}
+
 /// `names` with each kept once, in text order.
 fn distinct_sorted(names: List<string>) -> List<string> {
     let sorted = sorted_by(names, text_before)
@@ -69,3 +219,16 @@ fn distinct_sorted(names: List<string>) -> List<string> {
 
 /// A sorted set's members as one text, each counted so no two sets spell alike.
 fn spelled_set(sorted: List<string>) -> string { ["${n.length}:${n}" for n in sorted].join("") }
+
+/// The print `p` keeps for the set `id`: `SET_UNWORKED` where none is kept.
+fn print_known(p: Printing, id: int) -> int {
+    let prints = p.prints.get()
+    if id < prints.length { prints[id] } else { SET_UNWORKED }
+}
+
+/// `print` kept for the set `id` in `p`.
+fn print_noted(p: Printing, id: int, print: int) {
+    while p.prints.get().length <= id { p.prints.push(SET_UNWORKED) }
+    p.prints.set_at(id, print)
+    p.printed.put("${print}", id)
+}

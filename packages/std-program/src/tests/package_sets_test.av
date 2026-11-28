@@ -1,5 +1,59 @@
 // The empty set first, then sets made in different orders, with repeats, and their unions.
-use package_sets.{NO_NAMES, name_sets}
+use package_sets.{EMPTY_SET_PRINT, KeptNameSet, NO_NAMES, SET_UNWORKED, name_sets, set_print}
+
+spec "package_sets — a set's print, kept across processes" {
+    given "the empty set" {
+        then "its print is a word of its own, never the one nobody worked out" {
+            set_print([]) == EMPTY_SET_PRINT && EMPTY_SET_PRINT != SET_UNWORKED
+        }
+        then "no other set prints as it, or as the one nobody worked out" {
+            [["a"], ["a", "b"], [""], ["@std/x", "proj"]]
+                .all(
+                    (names) -> set_print(names) != EMPTY_SET_PRINT &&
+                        set_print(names) != SET_UNWORKED,
+                )
+        }
+    }
+    given "one set in two orders, with a repeat" {
+        then "it prints alike, and another set prints apart" {
+            set_print(["b", "a", "b"]) == set_print(["a", "b"]) &&
+                set_print(["a", "b"]) != set_print(["a"])
+        }
+    }
+    given "two tables, as two processes hold" {
+        then "a set's print names it in either, whatever id each gave it" {
+            let first = name_sets()
+            let second = name_sets()
+            let _ = second.of(["z"])
+            let a = first.of(["a", "b"])
+            let b = second.of(["b", "a"])
+            first.print_of(a) == second.print_of(b) &&
+                second.printed_as(first.print_of(a)) == b &&
+                a != b
+        }
+    }
+}
+
+spec "package_sets — a kept set read back" {
+    given "a set a store kept with its print" {
+        then "the table answers that print for it, never working it out again" {
+            let sets = name_sets()
+            let id = sets.of_kept(KeptNameSet { print: 6, names: ["@std/x", "proj"] })
+            sets.print_of(id) == 6 && sets.printed_as(6) == id && sets.of(["proj", "@std/x"]) == id
+        }
+        then "every set whose print was asked is kept with it, the empty one and the unasked aside" {
+            let sets = name_sets()
+            let a = sets.of(["a"])
+            let _ = sets.of(["b"])
+            let _ = sets.print_of(a)
+            let kept = sets.kept_sets()
+            kept.length == 1 &&
+                kept[0].print == set_print(["a"]) &&
+                kept[0].names.join(",") == "a" &&
+                a != NO_NAMES
+        }
+    }
+}
 
 spec "package_sets — sets of names, each kept once" {
     given "a table" {
