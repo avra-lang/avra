@@ -1948,6 +1948,7 @@ impl Machine {
             .EnumTag -> self.enum_part_val(vals, 0, -1),
             .EnumWord -> self.enum_part_val(vals, 1, 0),
             .SlotUnique -> self.slot_unique_val(vals),
+            .SlotTaken -> self.slot_taken_val(vals),
             .SlotSet -> self.slot_set_val(vals),
             .MapNew -> self.map_new_val(),
             .MapLen -> self.map_len_val(vals),
@@ -2777,6 +2778,19 @@ impl Machine {
         let fresh = self.cloned_val(held)
         let _ = self.slot_set_val([vals[0], vals[1], fresh])
         fresh
+    }
+
+    /// The value in a slot, its reference handed over and the slot left empty.
+    mut fn slot_taken_val(vals: List<Val>) -> Val {
+        let id? = array_id(vals[0]) else { return self.defect_val("a non-array slot taken") }
+        if self.freed(id) { return self.read_freed() }
+        let at = self.whole(vals[1])
+        let n = self.arrays[id].length
+        if at < 0 || at >= n { return self.out_of_bounds(at, n) }
+        let v = self.arrays[id][at]
+        self.touched(Val.A(id))
+        self.arrays[id].set(at, Val.N)
+        read_out(v)
     }
 
     fn slot_set_val(vals: List<Val>) -> Val {

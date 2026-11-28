@@ -3306,6 +3306,19 @@ void avra_slot_put_flagged(void* arr, int64_t i, int64_t v) {
 // RETAIN-AT-PACK for a slot write: the incoming value is retained
 // FIRST (a self-store must not free what it keeps), then the old
 // content goes.
+// The box in slot `i`, its reference handed to the caller and the slot left empty, for a write at
+// that slot that follows with nothing between that reads it. A slot holding no reference of its own,
+// or one in a box whose writes are logged or guarded, answers a retained read and stands.
+void* avra_slot_taken(void* arr, int64_t i) {
+    AvraArray* a = (AvraArray*)arr;
+    if (__builtin_expect(i < 0 || i >= a->len, 0)) avra_trap_bounds(i, a->len);
+    if (avra_rc_guard_on || avra_box_flags(arr) != 0 || avra_packed(a) || !(a->marks[i] & MARK_OWNED)) return avra_array_get_owned(arr, i);
+    void* v = (void*)(uintptr_t)a->data[i];
+    a->data[i] = 0;
+    a->marks[i] = 0;
+    return v;
+}
+
 void avra_slot_set_owned(void* arr, int64_t i, void* v) {
     if (avra_packed((AvraArray*)arr)) packed_marked();
     avra_rc_retain(v);

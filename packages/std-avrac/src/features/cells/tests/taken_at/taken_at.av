@@ -1,0 +1,44 @@
+// proves: `c.taken_at(i)` hands out the element the cell's list holds at `i`, and a write at `i` that
+// follows leaves every other holder its own value — a boxed element taken and written back grown, a
+// word element read, a list another value held before the take, and a cell two records share.
+type Two = { a: Cell<List<List<int>>>, tag: string }
+
+fn grown() -> string {
+    let c: Cell<List<List<int>>> = Cell.new([[1], [2, 3]])
+    let taken = c.taken_at(1)
+    c.set_at(1, taken.concat([4]))
+    "${c.get()[0].length} ${c.get()[1].length} ${c.get()[1][2]}"
+}
+
+fn words() -> string {
+    let c: Cell<List<int>> = Cell.new([5, 6])
+    let x = c.taken_at(0)
+    c.set_at(0, x + 1)
+    "${c.get()[0]} ${c.get()[1]}"
+}
+
+fn held_before() -> string {
+    let c: Cell<List<List<int>>> = Cell.new([[1, 2]])
+    let before = c.get()
+    let inner = before[0]
+    let taken = c.taken_at(0)
+    c.set_at(0, taken.concat([3]))
+    "${before[0].length} ${inner.length} ${c.get()[0].length}"
+}
+
+fn shared() -> string {
+    let one = Two { a: Cell.new([[7]]), tag: "one" }
+    let two = one with { tag: "two" }
+    let taken = one.a.taken_at(0)
+    one.a.set_at(0, taken.concat([8]))
+    "${one.a.get()[0].length} ${two.a.get()[0].length} ${two.tag}"
+}
+
+fn emptied() -> string {
+    let c: Cell<List<List<int>>> = Cell.new([[]])
+    let taken = c.taken_at(0)
+    c.set_at(0, taken.concat([9]))
+    "${taken.length} ${c.get()[0].length}"
+}
+
+"${grown()} | ${words()} | ${held_before()} | ${shared()} | ${emptied()}"

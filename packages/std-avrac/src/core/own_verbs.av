@@ -34,6 +34,8 @@ export enum OwnVerb {
     CellPushed
     /// An element of the list a cell holds written.
     CellSetAt
+    /// An element of the list a cell holds handed out, its slot left empty for a write that follows.
+    CellTaken
     /// A value written under a key of the map a cell holds.
     CellPut
     /// What a task answered, once it has: its end joined, then its one cell read.
@@ -65,6 +67,7 @@ export once fn own_shapes() -> List<OwnShape> {
         OwnType.Cell  | "set"       | OwnVerb.CellSet
         OwnType.Cell  | "push"      | OwnVerb.CellPushed
         OwnType.Cell  | "set_at"    | OwnVerb.CellSetAt
+        OwnType.Cell  | "taken_at"  | OwnVerb.CellTaken
         OwnType.Cell  | "put"       | OwnVerb.CellPut
         OwnType.Task  | "await"     | OwnVerb.Awaited
         OwnType.Tasks | "new"       | OwnVerb.TasksNew
@@ -88,7 +91,7 @@ impl OwnVerb {
             .CellSet -> receiver.args.first(),
             .CellPushed or .CellSetAt -> receiver.args.first()?.listed(),
             .CellPut -> receiver.args.first()?.mapped(),
-            .First or .Last or .Popped or .Got or .GotAt or .Removed or .Enumerated or .CellNew or .CellGet or .Awaited or .TasksNew -> null,
+            .First or .Last or .Popped or .Got or .GotAt or .Removed or .Enumerated or .CellNew or .CellGet or .CellTaken or .Awaited or .TasksNew -> null,
         }
     }
 
@@ -96,7 +99,7 @@ impl OwnVerb {
     fn arguments() -> int {
         match self {
             .First or .Last or .Enumerated or .Popped or .CellGet or .Awaited or .TasksNew -> 0,
-            .Got or .GotAt or .Removed or .Pushed or .CellNew or .CellSet or .CellPushed -> 1,
+            .Got or .GotAt or .Removed or .Pushed or .CellNew or .CellSet or .CellPushed or .CellTaken -> 1,
             .SetAt or .Put or .CellSetAt or .CellPut -> 2,
         }
     }
@@ -105,7 +108,7 @@ impl OwnVerb {
     fn on_the_type() -> bool {
         match self {
             .CellNew or .TasksNew -> true,
-            .First or .Last or .Got or .GotAt or .Removed or .Enumerated or .Pushed or .SetAt or .Popped or .Put or .CellGet or .CellSet or .CellPushed or .CellSetAt or .CellPut or .Awaited -> false,
+            .First or .Last or .Got or .GotAt or .Removed or .Enumerated or .Pushed or .SetAt or .Popped or .Put or .CellGet or .CellSet or .CellPushed or .CellSetAt or .CellTaken or .CellPut or .Awaited -> false,
         }
     }
 }
@@ -158,6 +161,7 @@ impl Lowering {
                 self.slot_written(list, at, self.stored_value(v, subject, args[1]), false)
                 self.nothing()
             },
+            .CellTaken -> self.taken_at(e, subject, args[0]),
             .CellPut -> {
                 let map = self.held_opened(subject)
                 let k = self.lower(args[0])
@@ -167,6 +171,16 @@ impl Lowering {
             .Awaited -> self.awaited(e, subject),
             .TasksNew -> self.call_row(self.layout_at(e), rt_sig_of("avra_array_sized")!, [self.const_int(4)]),
         }
+    }
+
+    /// The element at `at` of the list the cell `subject` holds, opened in place: one that rides a box
+    /// of its own handed out, its slot left empty for the write that follows; any other read, its slot
+    /// standing.
+    mut fn taken_at(e: ExprId, subject: ExprId, at: ExprId) -> Reg {
+        let list = self.held_opened(subject)
+        let i = self.lower(at)
+        let l = self.layout_at(e)
+        if l.boxed() { self.call_row(l, rt_sig_of("avra_slot_taken")!, [list, i]) } else { self.element_at(l, list, i) }
     }
 
     /// What the task `subject` answered: its end joined, its one cell then read; a task answering
