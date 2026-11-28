@@ -34,6 +34,11 @@ export type Worktree = { path: string, branch: string }
 /// process's directory.
 type Around = { own: string, main: string, cwds: List<string> }
 
+/// Every process's directory this machine let be read, and how many processes of other users it did
+/// not: only a process of this user's can stand in this user's trees, so another's hidden one is
+/// named and never blocks.
+export type Seen = { dirs: List<string>, hidden: int = 0 }
+
 type ReclaimCmd = {}
 
 impl Runnable for ReclaimCmd {
@@ -72,11 +77,10 @@ export fn reclaimed(at: ReclaimFlags, asked: Asked) -> Result<List<string>, stri
 
 /// `reclaimed`, with what every process's directory is read from named: a reader that cannot say
 /// refuses the sweep, so no busy tree is retired for being unseen.
-export fn reclaimed_seeing(
-    at: ReclaimFlags,
-    asked: Asked,
-    seen: fn() -> Result<List<string>, string>,
-) -> Result<List<string>, string> {
+export fn reclaimed_seeing(at: ReclaimFlags, asked: Asked, seen: fn() -> Result<Seen, string>) -> Result<
+    List<string>,
+    string,
+> {
     if !ran_clean(git(at.repo, ["rev-parse", "--git-dir"])) { fail reclaim_no_repo() }
     if asked.now { return swept(at.repo, asked.dry, seen) }
     let free = free_gb(at.repo)?
@@ -85,20 +89,23 @@ export fn reclaimed_seeing(
 }
 
 /// Each tree the rules let go, retired or named, and the count.
-fn swept(repo: string, dry: bool, seen: fn() -> Result<List<string>, string>) -> Result<
+fn swept(repo: string, dry: bool, seen: fn() -> Result<Seen, string>) -> Result<
     List<string>,
     string,
 > {
     let listed = worktrees_of((run_said(git(repo, ["worktree", "list", "--porcelain"]))?).stdout)
     let trees = [w with { path: real(w.path) } for w in listed]
+    let read = seen()?
     let around = Around {
         own: trees.first()?.path ?? "",
         main: trees.find(it.branch == "main")?.path ?? "",
-        cwds: seen()?,
+        cwds: read.dirs,
     }
     let told = [retire(repo, w, dry) for w in trees if w.path != "" && kept_because(repo, w, around) == null]
     let lines = [t! for t in told if t != null]
+    let hidden = if read.hidden == 0 { [] } else { [reclaim_hidden(read.hidden)] }
     lines
+        .concat(hidden)
         .concat(
             [
                 reclaim_looked(
@@ -159,40 +166,72 @@ fn free_gb(repo: string) -> Result<int, string> {
 }
 
 /// Every process's directory: the kernel's own table where there is one, `lsof` where there is not. A
-/// process that ended while it was read is no failure; one whose directory may not be read is, since a
-/// tree it stands in would read as idle — so a machine that cannot say retires nothing.
-export fn cwds() -> Result<List<string>, string> {
+/// process that ended while it was read is no failure; one of this user's whose directory may not be
+/// read is, since a tree it stands in would read as idle — so a machine that cannot say retires
+/// nothing. Another user's is counted, and blocks nothing.
+export fn cwds() -> Result<Seen, string> {
     if is_dir("/proc/self") { return proc_cwds() }
-    match in_c_locale("lsof", ["-d", "cwd", "-Fn"]) {
-        .Ok(o) -> named_lines(o.stdout),
-        .Err(e) -> match e { .Failed(_, o) -> named_lines(o.stdout), rest -> { fail reclaim_no_cwds() } },
+    let me = (in_c_locale("id", ["-u"]) catch { fail reclaim_no_cwds() }).stdout.trim()
+    match in_c_locale("lsof", ["-d", "cwd", "-Fun"]) {
+        .Ok(o) -> lsof_seen(o.stdout, me),
+        .Err(e) -> match e { .Failed(_, o) -> lsof_seen(o.stdout, me), rest -> { fail reclaim_no_cwds() } },
     }
 }
 
-/// `lsof -Fn`'s name lines; a directory it could not read refuses, as the kernel's does.
-fn named_lines(text: string) -> Result<List<string>, string> {
-    let names = [l.substring(1, l.length) for l in text.split("\n") if l.starts_with("n")]
-    if names.any(it.contains("Permission denied")) { fail reclaim_unseen() }
-    names
+/// `lsof -Fun`'s records, each a process's user (`u`) then its directory (`n`): a directory it could
+/// not read refuses when the process is `me`'s, and is counted when it is another user's.
+export fn lsof_seen(text: string, me: string) -> Result<Seen, string> {
+    mut user = ""
+    mut dirs: List<string> = []
+    mut hidden = 0
+    for l in text.split("\n") {
+        if l.starts_with("u") { user = l.substring(1, l.length) }
+        if l.starts_with("n") {
+            let name = l.substring(1, l.length)
+            if !name.contains("Permission denied") {
+                dirs.push(name)
+            } else if user == me {
+                fail reclaim_unseen()
+            } else {
+                hidden = hidden + 1
+            }
+        }
+    }
+    Seen { dirs: dirs, hidden: hidden }
 }
 
 /// Each process's directory from the kernel's own table: one that ended mid-walk is gone and says so
 /// as a missing file; one the machine will not show this process refuses. `readlink` names a read it
 /// could not make only when asked (`-v`), and in the C locale's words: quiet, a refused read is
 /// silence, and silence read as "no process here" retires a busy tree.
-fn proc_cwds() -> Result<List<string>, string> {
+fn proc_cwds() -> Result<Seen, string> {
     let pids = [n for n in list_dir("/proc") catch [] if parse_int(n) != null]
     let out = match in_c_locale(
         "sh",
         ["-c", ONE_BY_ONE, "cwds"].concat(["/proc/${p}/cwd" for p in pids]),
     ) { .Ok(o) -> o, .Err(e) -> match e { .Failed(_, o) -> o, rest -> { fail reclaim_no_cwds() } } }
-    if out.stderr.contains("Permission denied") { fail reclaim_unseen() }
-    [l for l in out.stdout.split("\n") if l != ""]
+    proc_seen(out.stdout)
+}
+
+/// The kernel's answers, a directory a line or a mark for a read refused: one of this user's refuses,
+/// another user's is counted.
+export fn proc_seen(text: string) -> Result<Seen, string> {
+    let lines = text.split("\n")
+    if lines.contains(OWN_HIDDEN) { fail reclaim_unseen() }
+    Seen {
+        dirs: [l for l in lines if l.starts_with("/")],
+        hidden: [l for l in lines if l == OTHER_HIDDEN].length,
+    }
 }
 
 /// Each link named read by a `readlink` of its own, so the reader never rests on how many names one
-/// `readlink` answers for.
-const ONE_BY_ONE: string = "for l; do readlink -v \"\$l\"; done"
+/// `readlink` answers for; a read refused is marked by whose process it was: this user's (`!own`) or
+/// another's (`!other`). A process that ended is no mark.
+const ONE_BY_ONE: string = "me=\$(id -u); for l; do if d=\$(readlink -v \"\$l\" 2>&1); then echo \"\$d\"; else case \$d in *'Permission denied'*) if [ \"\$(stat -c %u \"\${l%/cwd}\" 2>/dev/null)\" = \"\$me\" ]; then echo '!own'; else echo '!other'; fi ;; esac; fi; done"
+
+const OWN_HIDDEN: string = "!own"
+
+const OTHER_HIDDEN: string = "!other"
 
 /// A reader run with the C locale's words, which its refusals are recognized by.
 fn in_c_locale(name: string, words: List<string>) -> Result<Output, ProcessError> {
@@ -218,7 +257,9 @@ fn reclaim_looked(n: int, verb: string, gone: int) -> string { "reclaim: looked 
 fn reclaim_no_df() -> string { "reclaim: `df` did not say how much is free here" }
 
 fn reclaim_unseen() -> string {
-    "reclaim: a process's directory may not be read here, so a tree it stands in would read as idle — retiring nothing"
+    "reclaim: a process of this user's may not be read here, so a tree it stands in would read as idle — retiring nothing"
 }
+
+fn reclaim_hidden(n: int) -> string { "reclaim: ${n} process(es) of other users not read — none of theirs can stand in this user's trees" }
 
 fn reclaim_no_cwds() -> string { "reclaim: no way to read a process's directory here — retiring nothing" }
