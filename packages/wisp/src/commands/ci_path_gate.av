@@ -29,44 +29,82 @@ export command ci_path_gate {
     run: PathGateCmd {}
 }
 
-/// What each job or keeper reads, where that is narrower than the tree: a trailing slash is a
+/// WHAT EACH JOB OR KEEPER READS, where that is narrower than the tree: a trailing slash is a
 /// directory, `*.<ext>` every file of that extension, a bare `*` every file whose name has no dot, any
-/// other entry one file. A keeper that drives the compiler reads the compiler's sources,
-/// which is nearly every path, and has no row; null is every path.
-fn reads_of(job: string) -> List<string>? {
-    match job {
-        "runtime-keep" -> ["runtime/", "Makefile", "tools/memcap.sh"],
-        "layout-oracle" -> ["packages/std-ui/", "packages/std-text/", "tools/layout-oracle/", "tools/layout_oracle.sh"],
-        // each break is a line of runtime/ killed by runtime/tests, listed in mutation_rows.av
-        "runtime-mutations" -> [
+/// other entry one file. A row `beside_compiler` reads those beside the compiler's own source
+/// (tools/compiler_paths.sh), for a check whose input is otherwise fixed. A keeper that drives the
+/// compiler over the tree reads nearly every path and has no row; a name with no row reads every
+/// path. Every entry names something the tree holds (`wisp ci_invariants`, path-rows): a row naming
+/// nothing is a gate that examines nothing.
+export type PathRow = { job: string, reads: List<string>, beside_compiler: bool }
+
+export const PATH_ROWS: List<PathRow> = [
+    PathRow {
+        job: "runtime-keep",
+        reads: ["runtime/", "Makefile", "tools/memcap.sh"],
+        beside_compiler: false,
+    },
+    PathRow {
+        job: "layout-oracle",
+        reads: ["packages/std-ui/", "packages/std-text/", "tools/layout-oracle/", "tools/layout_oracle.sh"],
+        beside_compiler: false,
+    },
+    // each break is a line of runtime/ killed by runtime/tests, listed in mutation_rows.av
+    PathRow {
+        job: "runtime-mutations",
+        reads: [
             "runtime/",
             "packages/wisp/src/commands/mutation_rows.av",
             "packages/wisp/src/commands/mutations.av",
         ],
-        "runtime-tests" -> ["runtime/", "Makefile"],
-        "tick-object" or "no-threads" -> ["runtime/", "tools/tick.py", "Makefile"],
-        "hash-door" -> ["packages/std-hash/", "Makefile"],
-        // every tracked `.sh` file and every script a first line names sh or bash, which has no extension
-        "bash-parse" -> ["*.sh", "*", "tools/bash_parse.sh"],
-        "ci-invariants" -> [".github/", "tools/", "Makefile"],
-        rest -> null,
-    }
-}
-
-/// What a check reads beside the compiler's own source (tools/compiler_paths.sh), for one whose
-/// input is otherwise fixed: null for every other.
-export fn reads_compiler(job: string) -> List<string>? {
-    match job {
-        // the pinned snapshot is fixed: only the compiler that checks it, and the pin, move the answer
-        "cost-snapshot" -> ["cost/SNAPSHOT", "tools/cost_snapshot.sh"],
-        // the generated runtime header and row namespace are the compiler's own rows printed, and
-        // both what they print and what they are compared with are compiler source
-        "rt-header" or "rt-ns" -> [],
-        // every keeper below drives the compiler over the tree, so its row is the compiler's source and,
-        // beside it, the scripts, fixtures, baselines and documents it reads or compares with
-        "clock-holds" -> ["tools/clock_holds.py"],
-        "speed-ratchet" -> ["cost/", "tools/speed_ratchet.sh", "tools/speed_measure.sh", "tools/ledger_rows.sh"],
-        "cost" -> [
+        beside_compiler: false,
+    },
+    PathRow { job: "runtime-tests", reads: ["runtime/", "Makefile"], beside_compiler: false },
+    PathRow {
+        job: "tick-object",
+        reads: ["runtime/", "tools/tick.py", "Makefile"],
+        beside_compiler: false,
+    },
+    PathRow {
+        job: "no-threads",
+        reads: ["runtime/", "tools/tick.py", "Makefile"],
+        beside_compiler: false,
+    },
+    PathRow { job: "hash-door", reads: ["packages/std-hash/", "Makefile"], beside_compiler: false },
+    // every tracked `.sh` file and every script a first line names sh or bash, which has no extension
+    PathRow {
+        job: "bash-parse",
+        reads: ["*.sh", "*", "tools/bash_parse.sh"],
+        beside_compiler: false,
+    },
+    PathRow {
+        job: "ci-invariants",
+        reads: [".github/", "tools/", "Makefile"],
+        beside_compiler: false,
+    },
+    // the pinned snapshot is fixed: only the compiler that checks it, and the pin, move the answer
+    PathRow {
+        job: "cost-snapshot",
+        reads: ["cost/SNAPSHOT", "tools/cost_snapshot.sh"],
+        beside_compiler: true,
+    },
+    // the generated runtime header and row namespace are the compiler's own rows printed, and
+    // both what they print and what they are compared with are compiler source
+    PathRow { job: "rt-header", reads: [], beside_compiler: true },
+    // the generated runtime header and row namespace are the compiler's own rows printed, and
+    // both what they print and what they are compared with are compiler source
+    PathRow { job: "rt-ns", reads: [], beside_compiler: true },
+    // every keeper below drives the compiler over the tree, so its row is the compiler's source and,
+    // beside it, the scripts, fixtures, baselines and documents it reads or compares with
+    PathRow { job: "clock-holds", reads: ["tools/clock_holds.py"], beside_compiler: true },
+    PathRow {
+        job: "speed-ratchet",
+        reads: ["cost/", "tools/speed_ratchet.sh", "tools/speed_measure.sh", "tools/ledger_rows.sh"],
+        beside_compiler: true,
+    },
+    PathRow {
+        job: "cost",
+        reads: [
             "cost/",
             "packages/wisp/",
             "tools/cost.sh",
@@ -75,42 +113,96 @@ export fn reads_compiler(job: string) -> List<string>? {
             "tools/memcap.sh",
             "tools/std_answers.sh",
         ],
-        "fmt-lossless" -> ["*.av", "tools/fmt_lossless.sh", "tools/fmt_roundtrip.sh"],
-        "stems" -> ["tools/stems.sh", "tools/libs.py", "tools/manifest_objects.sh"],
-        "read-cost" -> ["benchmarks/db/"],
-        "read-lists" -> ["tools/read_lists.py", "tools/read_lists.ceiling"],
-        "warm-edit" -> [
+        beside_compiler: true,
+    },
+    PathRow {
+        job: "fmt-lossless",
+        reads: ["*.av", "tools/fmt_lossless.sh", "tools/fmt_roundtrip.sh"],
+        beside_compiler: true,
+    },
+    PathRow {
+        job: "stems",
+        reads: ["tools/stems.sh", "tools/libs.py", "tools/manifest_objects.sh"],
+        beside_compiler: true,
+    },
+    PathRow { job: "read-cost", reads: ["benchmarks/db/"], beside_compiler: true },
+    PathRow {
+        job: "warm-edit",
+        reads: [
             "cost/",
             "benchmarks/db/",
             "tools/warm_edit_bench.sh",
             "tools/host_key.sh",
             "tools/ledger_rows.sh",
         ],
-        "traps" -> ["tools/traps.sh"],
-        "compile-slots" -> ["tools/compile_slots.sh"],
-        "witness" -> ["packages/wisp/"],
-        "flow-trace" -> ["tools/flow_trace/", "tools/flow_trace_engines.sh"],
-        "libscope" -> ["tools/libscope.sh", "tools/libs.py"],
-        "cutoff-witness" -> ["tools/cutoff_witness.sh", "tools/cutoff.ceiling"],
-        "determinism" -> ["packages/wisp/"],
-        "h2spec" -> ["tools/h2spec/", "tools/h2spec.sh", "tools/tls_renegotiation.sh"],
-        "pool-check" -> ["tools/pool/", "tools/pool_check.sh"],
-        "inputs" -> ["packages/wisp/", "tools/inputs.baseline"],
-        "trap-marks" -> ["tools/traps.py"],
-        "parser" -> ["packages/wisp/"],
-        "witnesses" -> ["docs/DIAGNOSTICS.md"],
-        "dogfooding-rules" -> ["DOGFOODING.md"],
-        "rule-examples" -> [],
-        "attack" -> ["tools/attack.sh", "tools/attack.baseline"],
-        "voices" -> ["docs/VOICES.md", "docs/DIAGNOSTICS.md", "tools/voices.baseline", "tools/voices_spoken.py"],
-        "defects" -> ["packages/wisp/", "tools/watch.sh"],
-        "bench-build" -> ["packages/wisp/", "benchmarks/"],
-        "ui-host" -> ["tools/ui_host.sh"],
-        "ui-host-test" -> ["tools/ui_host_test.sh"],
-        "ui-board" -> ["tools/ui-board/", "tools/ui_board.sh"],
-        "exact-patches" -> ["tools/exact-patches/", "tools/ui-board/"],
-        "dev-server" -> ["tools/lib/", "tools/dev_server_check.sh", "tools/bounded.sh"],
-        "ui-browser" -> [
+        beside_compiler: true,
+    },
+    PathRow { job: "traps", reads: ["tools/traps.sh"], beside_compiler: true },
+    PathRow { job: "compile-slots", reads: ["tools/compile_slots.sh"], beside_compiler: true },
+    PathRow { job: "witness", reads: ["packages/wisp/"], beside_compiler: true },
+    PathRow {
+        job: "flow-trace",
+        reads: ["tools/flow_trace/", "tools/flow_trace_engines.sh"],
+        beside_compiler: true,
+    },
+    PathRow {
+        job: "libscope",
+        reads: ["tools/libscope.sh", "tools/libs.py"],
+        beside_compiler: true,
+    },
+    PathRow { job: "determinism", reads: ["packages/wisp/"], beside_compiler: true },
+    PathRow {
+        job: "h2spec",
+        reads: ["tools/h2spec/", "tools/h2spec.sh", "tools/tls_renegotiation.sh"],
+        beside_compiler: true,
+    },
+    PathRow {
+        job: "pool-check",
+        reads: ["tools/pool/", "tools/pool_check.sh"],
+        beside_compiler: true,
+    },
+    PathRow {
+        job: "inputs",
+        reads: ["packages/wisp/", "tools/inputs.baseline"],
+        beside_compiler: true,
+    },
+    PathRow { job: "trap-marks", reads: ["tools/traps.py"], beside_compiler: true },
+    PathRow { job: "parser", reads: ["packages/wisp/"], beside_compiler: true },
+    PathRow { job: "witnesses", reads: ["docs/DIAGNOSTICS.md"], beside_compiler: true },
+    PathRow { job: "dogfooding-rules", reads: ["DOGFOODING.md"], beside_compiler: true },
+    PathRow { job: "rule-examples", reads: [], beside_compiler: true },
+    PathRow {
+        job: "attack",
+        reads: ["tools/attack.sh", "tools/attack.baseline"],
+        beside_compiler: true,
+    },
+    PathRow {
+        job: "voices",
+        reads: ["docs/VOICES.md", "docs/DIAGNOSTICS.md", "tools/voices.baseline", "tools/voices_spoken.py"],
+        beside_compiler: true,
+    },
+    PathRow { job: "defects", reads: ["packages/wisp/", "tools/watch.sh"], beside_compiler: true },
+    PathRow { job: "bench-build", reads: ["packages/wisp/", "benchmarks/"], beside_compiler: true },
+    PathRow { job: "ui-host", reads: ["tools/ui_host.sh"], beside_compiler: true },
+    PathRow { job: "ui-host-test", reads: ["tools/ui_host_test.sh"], beside_compiler: true },
+    PathRow {
+        job: "ui-board",
+        reads: ["tools/ui-board/", "tools/ui_board.sh"],
+        beside_compiler: true,
+    },
+    PathRow {
+        job: "exact-patches",
+        reads: ["tools/exact-patches/", "tools/ui-board/"],
+        beside_compiler: true,
+    },
+    PathRow {
+        job: "dev-server",
+        reads: ["tools/lib/", "tools/dev_server_check.sh", "tools/bounded.sh"],
+        beside_compiler: true,
+    },
+    PathRow {
+        job: "ui-browser",
+        reads: [
             "tools/ui-board/",
             "tools/ui-observed/",
             "tools/ui-shown/",
@@ -118,28 +210,59 @@ export fn reads_compiler(job: string) -> List<string>? {
             "tools/ui_board_browser.sh",
             "tools/bounded.sh",
         ],
-        "tool-witnesses" -> ["tools/"],
-        "footprint" -> [
+        beside_compiler: true,
+    },
+    PathRow { job: "tool-witnesses", reads: ["tools/"], beside_compiler: true },
+    PathRow {
+        job: "footprint",
+        reads: [
             "cost/",
             "tools/footprint/",
             "tools/lib/",
             "tools/footprint.py",
             "tools/footprint_bytes.sh",
         ],
-        "seed-check" -> ["tools/seed_guard.sh"],
-        "pkgs-witness" -> ["packages/", "tools/witness_gate_pkgs.sh", "tools/gate.sh", "tools/affected_packages.sh"],
-        "wasm-host-check" -> ["tools/wasm-host/", "tools/wasm-host-check.sh"],
-        "wasm-check" -> ["tools/wasm-check.sh"],
-        "wasm-seam" -> ["tools/wasm-seam-check.sh"],
-        "wasm-refuses" -> ["tools/wasm-refuses.sh"],
-        "wasm-tasks-mutations" -> ["tools/wasm-tasks-mutations.sh", "tools/wasm-node.mjs"],
-        "wasm-cache" -> ["tools/wasm-cache-attacks.sh"],
-        "wasm-archive" -> ["tools/wasm-archive.sh"],
-        "wasm-size-guard" -> ["tools/ui-board/", "tools/wasm-size-guard.sh"],
-        "wasm-routes-size" -> ["tools/wasm-routes/", "tools/wasm-routes-size.sh"],
-        rest -> null,
-    }
-}
+        beside_compiler: true,
+    },
+    PathRow { job: "seed-check", reads: ["tools/seed_guard.sh"], beside_compiler: true },
+    PathRow {
+        job: "pkgs-witness",
+        reads: ["packages/", "tools/witness_gate_pkgs.sh", "tools/gate.sh", "tools/affected_packages.sh"],
+        beside_compiler: true,
+    },
+    PathRow {
+        job: "wasm-host-check",
+        reads: ["tools/wasm-host/", "tools/wasm-host-check.sh"],
+        beside_compiler: true,
+    },
+    PathRow { job: "wasm-check", reads: ["tools/wasm-check.sh"], beside_compiler: true },
+    PathRow { job: "wasm-seam", reads: ["tools/wasm-seam-check.sh"], beside_compiler: true },
+    PathRow { job: "wasm-refuses", reads: ["tools/wasm-refuses.sh"], beside_compiler: true },
+    PathRow {
+        job: "wasm-tasks-mutations",
+        reads: ["tools/wasm-tasks-mutations.sh", "tools/wasm-node.mjs"],
+        beside_compiler: true,
+    },
+    PathRow { job: "wasm-cache", reads: ["tools/wasm-cache-attacks.sh"], beside_compiler: true },
+    PathRow { job: "wasm-archive", reads: ["tools/wasm-archive.sh"], beside_compiler: true },
+    PathRow {
+        job: "wasm-size-guard",
+        reads: ["tools/ui-board/", "tools/wasm-size-guard.sh"],
+        beside_compiler: true,
+    },
+    PathRow {
+        job: "wasm-routes-size",
+        reads: ["tools/wasm-routes/", "tools/wasm-routes-size.sh"],
+        beside_compiler: true,
+    },
+]
+
+/// The paths `job` reads where they're narrower than the tree; null is every path.
+fn reads_of(job: string) -> List<string>? { PATH_ROWS.find(it.job == job && !it.beside_compiler)?.reads }
+
+/// What a check reads beside the compiler's own source, for one whose input is otherwise fixed: null
+/// for every other.
+export fn reads_compiler(job: string) -> List<string>? { PATH_ROWS.find(it.job == job && it.beside_compiler)?.reads }
 
 fn reads(path: string, entry: string) -> bool {
     let name = path.split("/").last() ?? path

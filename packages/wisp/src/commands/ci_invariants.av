@@ -19,6 +19,8 @@
 //!                    merge-base compiler too old to read the tree falls back to the seed.
 //!   path-gate        `runtime-keep` and `layout-oracle` run on a PR only when `wisp ci_path_gate`
 //!                    says a path they read changed.
+//!   path-rows        every path a `wisp ci_path_gate` row names is in the tree: a row naming nothing
+//!                    owes its job to no change, a gate that examines nothing.
 //!   dup-run          a `labeled` run mirrors the full run on its head, never a second gate.
 //!   ready-race       a readied PR's run is full whichever event started it.
 //!   warm-edit        where `warm-edit` is a target it is a keeper, and a run that cannot judge FAILS.
@@ -29,7 +31,7 @@
 //!
 //! It holds the STRUCTURE, never a keeper's inputs. Exit 0 clean, 1 refused.
 use @std.cli.{CliResult, Runnable, command}
-use @std.io.{read_text, list_dir, is_file}
+use @std.io.{read_text, list_dir, is_dir, is_file}
 
 /// A check's answer: its refusals, or the words it holds by.
 export type Holding = { refusals: List<string>, words: List<string> }
@@ -86,6 +88,21 @@ export fn check_release_order(jobs: Map<string, string>, action: string) -> Hold
     if !(step_if(steps[build]) ?? "").contains("steps.release.outputs.hit") { return refusing(build_unconditional()) }
     held([], "release-order: fetch before build, build conditional on the fetch miss")
 }
+
+// ── path-rows ────────────────────────────────────────────────────────
+
+/// Every path entry of `rows` names something the tree holds, as `exists` says: a pattern (`*`,
+/// `*.<ext>`) names a kind of file, never one, and is left to the row.
+export fn check_path_rows(rows: List<PathRow>, exists: fn(string) -> bool) -> Holding {
+    let named = [PathNamed { job: r.job, entry: e } for r in rows for e in r.reads if !e.starts_with("*")]
+    held(
+        [names_nothing(n) for n in named if !exists(n.entry)],
+        "path-rows: ${named.length} path(s) the ${rows.length} gate row(s) name, each in the tree",
+    )
+}
+
+/// One path a gate row names, and the row's job.
+type PathNamed = { job: string, entry: string }
 
 // ── path-gate ────────────────────────────────────────────────────────
 
@@ -679,6 +696,10 @@ export fn tree_verdicts(root: string) -> List<Holding> {
             tree_file(root, "tools/sprite-remote.sh"),
         ),
         check_path_gate(workflow),
+        check_path_rows(
+            PATH_ROWS,
+            (entry) -> if entry.ends_with("/") { is_dir("${root}/${entry}") } else { is_file("${root}/${entry}") },
+        ),
         check_dup_run(workflow),
         check_ready_race(),
         check_warm_edit(make, "${root}/tools/warm_edit_bench.sh", "${root}/tools/ledger_rows.sh"),
@@ -731,6 +752,8 @@ fn built_first(build: int, fetch: int) -> string { "the compiler is built (step 
 fn build_unconditional() -> string { "the compiler-build step is not conditional on the release fetch having MISSED" }
 
 fn not_path_gated(g: Gated) -> string { "`${g.job}` is not gated on `needs.prepare.outputs.${g.output}`" }
+
+fn names_nothing(n: PathNamed) -> string { "`${n.job}`'s path gate row names `${n.entry}`, which the tree does not hold: no change to it can owe the job a run" }
 
 fn path_gate_unasked(j: string) -> string { "`prepare` does not ask `wisp ci_path_gate` whether ${j} is owed" }
 
