@@ -9,12 +9,15 @@
 //! told shows none of it.
 use style.theme.{Theme}
 use @std.text.{ascii_lower, codepoints, from_codepoints}
-use app.{Act, Shown, Want, running, shown, stood, notice_node}
+use app.{Act, Shown, Want, running, shown, stood, notice_node, later}
+use @std.time.{ms, now_ms}
 use tree.controls.{Control, said_by_control}
-use tree.node.{Said, Node, Attribute}
+use tree.node.{Said, Node, Attribute, Prim}
 use realize.tui.said.{said_of}
 use realize.tui.tui.{focused, placed, raster}
-use realize.tui.glyphs.{Glyphs, unicode, utf8_named, glyphs_for}
+use realize.tui.glyphs.{Glyphs, unicode, utf8_named, glyphs_for, turned, frame_ms}
+use realize.tui.layout.{closed_node}
+use terminal.settings.{moving}
 use env.{Env}
 use @std.io.{env}
 use realize.tui.hit.{hit, list_at, list_nodes, places}
@@ -78,6 +81,8 @@ export type Terminal = {
     input: Cell<Heard> = Cell.new(Heard { keys: [], held: "".bytes() }),
     reads: Cell<int> = Cell.new(0),
     glyphs: Glyphs = unicode,
+    motion: bool = true,
+    turning: Cell<bool> = Cell.new(false),
 }
 
 /// `view` in a terminal `width` cells wide and `height` lines tall. The
@@ -89,6 +94,7 @@ export fn terminal<V: View>(
     height: int = 24,
     paste_limit: int = paste_cap,
     glyphs: Glyphs = unicode,
+    motion: bool = true,
 ) -> Terminal {
     let nowhere: Screen? = null
     let made = Terminal {
@@ -100,6 +106,7 @@ export fn terminal<V: View>(
         moded: moded_nothing,
         paste_limit: paste_limit,
         glyphs: glyphs,
+        motion: motion,
     }
     let _ = made.fit()
     made
@@ -119,6 +126,7 @@ export fn terminal_in_place<V: View>(
     moded: fn(int) -> void,
     paste_limit: int = paste_cap,
     glyphs: Glyphs = unicode,
+    motion: bool = true,
 ) -> Terminal {
     let made = Terminal {
         shown: shown(view, rows: height, spaced: true),
@@ -129,6 +137,7 @@ export fn terminal_in_place<V: View>(
         moded: moded,
         paste_limit: paste_limit,
         glyphs: glyphs,
+        motion: motion,
     }
     let _ = made.fit()
     leaves(screen.parts())
@@ -191,6 +200,12 @@ fn interrupt_bound(root: Node, seat: int?) -> bool {
 }
 
 fn stopped() {}
+
+/// Whether a tree shows a busy mark: a spinner, or a busy control, on the screen.
+fn busy_in(n: Node) -> bool {
+    if closed_node(n) { return false }
+    n.prim == Prim.Spinner || said_of(n.attrs).loading || n.children.any(busy_in(it))
+}
 
 fn unspoken(_s: string) {}
 
@@ -401,24 +416,38 @@ impl Terminal {
 
     /// The grid the screen shows, drawn on the screen in place: only what
     /// changed since the last. A failed turn's words stand under the view.
+    /// A busy mark is drawn at the clock's frame, and a screen that shows
+    /// one asks to be painted again a frame later.
     fn paint_grid() {
         let screen? = self.on_screen else { return }
         let root? = self.shown.tree.get() else { return }
-        let said? = self.shown.app.failed.get() else {
-            screen
-                .paint(raster(root, self.width(), self.height(), self.focused()?.seat, self.glyphs))
-            return
+        let drawn = match self.shown.app.failed.get() {
+            said? -> rooted([root, notice_node(said)])
+            null -> root
         }
-        screen
-            .paint(
-                raster(
-                    rooted([root, notice_node(said)]),
-                    self.width(),
-                    self.height(),
-                    self.focused()?.seat,
-                    self.glyphs,
-                ),
-            )
+        let marks = if self.motion { turned(self.glyphs, now_ms()) } else { self.glyphs }
+        screen.paint(raster(drawn, self.width(), self.height(), self.focused()?.seat, marks))
+        self.turns_on(drawn)
+    }
+
+    /// One repaint asked a frame from now while `drawn` shows a busy mark
+    /// and none is asked yet: the chain ends at the first paint that shows
+    /// none, and stands still where motion is reduced.
+    fn turns_on(drawn: Node) {
+        if !self.motion || self.turning.get() || !busy_in(drawn) { return }
+        self.turning.set(later(ms(frame_ms), () -> self.turned()))
+    }
+
+    /// The app's loop stands and its inbox is open: a screen painted before
+    /// could ask for no frame, so it is painted again now that it can.
+    fn started() { self.paint_grid() }
+
+    /// The asked frame came: the screen is painted at it, which asks the
+    /// next. The view did not change, so the app has nothing to paint.
+    fn turned() -> bool {
+        self.turning.set(false)
+        self.paint_grid()
+        false
     }
 
     /// The terminal changed size: the screen is cleared, the window refitted
@@ -746,12 +775,13 @@ export fn mount<V: View>(view: fn() -> V, width: int = 80, height: int = 24, inp
     let columns = if size > 0 { size / 65536 } else { width }
     let lines = if size > 0 { size % 65536 } else { height }
     let glyphs = glyphs_for(Env { utf8: utf8_named([env("LC_ALL"), env("LC_CTYPE"), env("LANG")]) })
-    let on = if live { taken_over(view, columns, lines, glyphs) } else { terminal(view, width, height, glyphs: glyphs) }
+    let on = if live { taken_over(view, columns, lines, glyphs, moving()) } else { terminal(view, width, height, glyphs: glyphs) }
     if !live { println(on.screen()) }
     on.shown.app.warn()
     let before = running()
     stood(on.shown.app)
     let inbox = opened(on.shown.app, over_http)
+    on.started()
     let _ = spawn read(on)
     let resizing = spawn resizes(on, live)
     served(on.shown.app, inbox, () -> on.printed())
@@ -764,7 +794,7 @@ export fn mount<V: View>(view: fn() -> V, width: int = 80, height: int = 24, inp
 /// The terminal taken over: the input unechoed and unbuffered with its signals
 /// kept, the screen written in place on the output, and the process told what
 /// to leave the terminal as before the first byte.
-fn taken_over<V: View>(view: fn() -> V, columns: int, lines: int, glyphs: Glyphs) -> Terminal {
+fn taken_over<V: View>(view: fn() -> V, columns: int, lines: int, glyphs: Glyphs, motion: bool) -> Terminal {
     let _ = avra_fd_tty_raw(input, 1)
     let sent = (s: string) -> write_all(output, s.bytes())
     let leaves = (s: string) -> avra_fd_exit_writes(output, s.bytes())
@@ -780,6 +810,7 @@ fn taken_over<V: View>(view: fn() -> V, columns: int, lines: int, glyphs: Glyphs
         () -> avra_sig_raise(sigint),
         moded,
         glyphs: glyphs,
+        motion: motion,
     )
 }
 

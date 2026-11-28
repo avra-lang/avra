@@ -1,0 +1,31 @@
+//! `terminal/settings.av` — WHAT A PERSON SETS FOR A TERMINAL APP, one declaration: each setting a
+//! key of `ui.toml` and a flag (`--reduced_motion=true`), read once as the app starts. A flag that
+//! names no setting here is the program's own and is left alone.
+use @std.validate.{Decode}
+use @std.config.{Configured, file, flags}
+use @std.cli.{argv}
+
+/// A terminal app's settings.
+@Decode
+export component TerminalSettings {
+    /// Whether a moving mark stands still. Absent, the platform's preference decides, and a
+    /// terminal states none, so the mark moves.
+    reduced_motion: bool? = null
+
+    file "ui.toml"
+    flags argv()
+}
+
+/// Whether a terminal app's marks may move, as its settings say; a setting that cannot be read is
+/// said, and the marks move.
+export fn moving() -> bool {
+    match TerminalSettings.load() {
+        .Ok(l) -> !(l.value.reduced_motion ?? false),
+        .Err(e) -> unread(e.report()),
+    }
+}
+
+fn unread(report: string) -> bool {
+    eprintln("avra: the terminal's settings were not read, so its marks move:\n${report}")
+    true
+}

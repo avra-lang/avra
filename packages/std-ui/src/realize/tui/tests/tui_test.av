@@ -3,7 +3,8 @@
 use @std.ui.tree.url.{local}
 use @std.ui.tree.node.{Node, Prim}
 use @std.ui.realize.tui.tui.{render}
-use @std.ui.realize.tui.glyphs.{utf8_named}
+use @std.ui.realize.tui.glyphs.{utf8_named, turned, unicode, ascii, frame_ms}
+use @std.ui.terminal.settings.{moving}
 use @std.ui.env.{Env}
 use @std.ui.style.box.{Box}
 use @std.ui.style.layout.{Layout, Edge, around}
@@ -93,6 +94,18 @@ spec "std/ui tui — primitives" {
                 40,
             ) == "• ▸ Milk\n• Eggs"
         }
+    }
+    given "the busy mark on a clock" {
+        then "each frame stands a frame's length, and the tenth turns back to the first" {
+            turned(unicode, 0).busy == "⠋" &&
+                turned(unicode, frame_ms - 1).busy == "⠋" &&
+                turned(unicode, frame_ms).busy == "⠙" &&
+                turned(unicode, 10 * frame_ms).busy == "⠋"
+        }
+        then "a locale without UTF-8 has one frame, so its mark stands still" { turned(ascii, 3 * frame_ms).busy == "..." }
+    }
+    given "the terminal's settings" {
+        then "nothing set leaves the marks moving" { moving() }
     }
     given "the locale the environment names" {
         then "a UTF-8 locale draws the Unicode marks, in either spelling" {
