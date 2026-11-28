@@ -2762,15 +2762,8 @@ fn bucket_kept(
             engine,
             "emit",
             Pass.Codegen,
-            () -> written_across(
-                (i: int) -> bucket_made_whole(engine, asked, shape, hashes, owed[i], seen),
-                owed,
-                bucket_weights(shape, owed),
-                opt_level(asked.opt),
-                asked.target,
-            ),
+            () -> emitted_across(engine, asked, shape, hashes, owed, seen),
         )
-        // LICENSED input.unrecorded_read: the cores spread the emit, never what it emits
         if emitted != null {
             if owed.any((o) -> !owed_lowers(engine, asked, shape, hashes, o, seen)) { return BuiltBinary.Unmade(lowering_moved(), spelled_file(asked.entry)) }
             return BuiltBinary.Unlinked(emitted!)
@@ -2973,12 +2966,14 @@ fn placed_note(kept: string, worn: int) -> string { "${file_name(kept)}\n${worn}
 fn holds_binary(stem: string, kept: string) -> bool {
     let held? = octets_at(stem) else { return false }
     let made? = octets_at(kept) else { return false }
+    // LICENSED input.staged_output: the build's own output, written and read back by the build
     held == made && (mode_of(stem) catch 0) & OWNER_RUNS != 0
 }
 
 /// Whether the file `from` is copied to the new path `to`, its octets and its mode both.
 fn copied(from: string, to: string) -> bool {
     let octets? = octets_at(from) else { return false }
+    // LICENSED input.staged_output: the build's own output, written and read back by the build
     let mode = match mode_of(from) { .Ok(m) -> m, .Err(_) -> { return false } }
     match write_bytes(to, octets) {
         .Ok(_) -> match with_mode(to, mode) { .Ok(_) -> true, .Err(_) -> false },
@@ -3007,8 +3002,28 @@ fn product_names(path: string) -> List<string>? {
     match list_dir(path) { .Ok(names) -> names, .Err(_) -> null }
 }
 
+/// Why the buckets `owed` didn't emit, each across the machine's cores; absent when they did.
+fn emitted_across(
+    engine: QueryEngine,
+    asked: BinaryAsked,
+    shape: ShapeAt,
+    hashes: List<HashAnswer>,
+    owed: List<Made>,
+    seen: SeenBodies,
+) -> string? {
+    // LICENSED input.unrecorded_read: the cores spread the emit, never what it emits
+    written_across(
+        (i: int) -> bucket_made_whole(engine, asked, shape, hashes, owed[i], seen),
+        owed,
+        bucket_weights(shape, owed),
+        opt_level(asked.opt),
+        asked.target,
+    )
+}
+
 /// The octets of the file at `path`; absent where none can be read.
 fn octets_at(path: string) -> Bytes? {
+    // LICENSED input.staged_output: the build's own output, written and read back by the build
     match read_bytes(path) { .Ok(b) -> b, .Err(_) -> null }
 }
 

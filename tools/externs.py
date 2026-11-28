@@ -1419,6 +1419,7 @@ def wrong_boxes(sigs):
 TERMINATES = re.compile(
     r"\b(getenv|setenv|unsetenv|putenv|fopen|freopen|open|openat|creat|stat|lstat|access"
     r"|mkdir|rmdir|remove|unlink|rename|opendir|execvp|execv|execve|system|popen|realpath"
+    r"|link|symlink|readlink|chdir|chmod|chown|truncate|utimes"
     r"|dlopen|dlsym|strdup|sqlite3_open|sqlite3_open_v2|sqlite3_bind_text)\s*\(")
 
 
