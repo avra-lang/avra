@@ -697,8 +697,11 @@ fn collect_members(
     ) else { return unknown }
     let shape? = [g! for s in item.stmts for g in [gathering_shape(item.store, s)] if g != null]
         .find(it.name == name) else { return unknown }
-    let found? = gathered(engine, file, shape.kind, shape.scope, shape.order, made, program) else { return unknown with { why: gathering_unmade(engine, file, shape.scope, program) } }
-    Members { known: true, members: found }
+    match gathered(engine, file, shape.kind, shape.scope, shape.order, made, program) {
+        .Taken(found) -> Members { known: true, members: found },
+        .Unanswered -> unknown,
+        .Unmade -> unknown with { why: gathering_unmade(engine, file, shape.scope, program) },
+    }
 }
 
 /// The members a gathering `file` declares as `name` takes, read for the package `program` (empty: its
