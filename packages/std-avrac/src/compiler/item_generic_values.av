@@ -5,7 +5,7 @@
 use core.{ExprId, NameRead, SyntaxArena, flatten}
 use compiler.laws.{Found, law}
 use diagnostics.{Voice}
-use features.{generic_no_value}
+use features.{generic_no_value, guard_handed_on}
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryEngine}
 use @std.text.{parse_int}
@@ -68,3 +68,51 @@ export law generic_fn_is_no_value {
 }
 
 fn generic_words(a: List<string>) -> Voice { generic_no_value(a[0], parse_int(a[1]) ?? 0) }
+
+/// Every read of `@std/meta`'s `guarded` as a value in the written item `view` shows, where it is read.
+fn guards_read(view: ItemView) -> List<Found> {
+    let item = view.item
+    if !item.store.refusals().is_empty() { return [] }
+    let own = flatten(
+        [guards_in(view.engine, view.file, item.store, b.reads) for b in bodies_seen(view)],
+    )
+    if !runs_in(view.engine, view.file, view.at) { return own }
+    let read = entry_read(view.engine, view.file)
+    let signed? = entry_signed(read) else { return own }
+    let entry = kept_body(body_checked(view.engine, view.file, signed, false))
+    own
+        .concat(
+            guards_in(
+                view.engine,
+                view.file,
+                read.store,
+                [r for r in entry.reads if item_holding(read, r.at) == view.at],
+            ),
+        )
+}
+
+/// Each of `reads`, standing in `store`, that is a bare name naming `@std/meta`'s `guarded`.
+fn guards_in(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    store: SyntaxArena,
+    reads: List<NameRead>,
+) -> List<Found> {
+    [Found { at: store.expr_span(ExprId { index: r.at }), args: [] } for r in reads if r.binder == null &&
+        r.home == null &&
+        store.ident_name(ExprId { index: r.at }) != null &&
+        meta_fn(engine, file, r.name, GUARDED)]
+}
+
+/// The fn of `@std/meta` that runs a body under a guard.
+const GUARDED: string = "guarded"
+
+/// `guarded` is called, never read as a value
+export law guarded_is_no_value {
+    kind: "type.guard_value"
+    reads_view: guards_read
+    voice: guard_words
+    witness: "use @std.meta.{guarded}\n\nfn f() -> int {\n    let g = guarded\n    1\n}\n"
+}
+
+fn guard_words(_a: List<string>) -> Voice { guard_handed_on() }
