@@ -7,21 +7,8 @@
 //! before the language grew able to say them; a sibling shape not
 //! yet landed is noted at its rule, not silently dropped
 //! (avra-8sb5.25.16).
-use core.{TypeRef, flatten}
-use features.{
-    ArmBind,
-    ArmInfo,
-    Code,
-    Syntax,
-    Fix,
-    Scan,
-    DeclaredType,
-    FnHead,
-    RuleType,
-    fact_rule,
-    rule,
-    said,
-}
+use core.{TypeRef, flatten, Known}
+use features.{ArmBind, ArmInfo, Code, Syntax, Fix, Scan, FnHead, RuleType, fact_rule, rule, said}
 use @std.meta.{name}
 
 /// A refusal assembled from `pointed`/`error_at` by hand — the one
@@ -790,7 +777,10 @@ const state_types: List<string> = [
 /// seat is that context by the engine's law, never a verb astray from its state's impl. A fn a
 /// `@cycled_by` or `@scoped_by` names wears its query's seats by the same law
 /// (`Code.shaped_by_a_query`).
-const query_marks: List<string> = ["query", "over"]
+const query_marks: List<Known> = [
+    Known { package: "@std/relation", name: "query" },
+    Known { package: "@std/relation", name: "over" },
+]
 
 /// `lit`'s first param, when `lit` is a TOP-LEVEL free `fn` declared
 /// directly under `features/` or `compiler/` and that param's own
@@ -807,7 +797,7 @@ fn free_state_param(lit: Code) -> Code? {
     let params? = lit.fn_params() else { return null }
     if !is_pass_file(lit.of.view.source.file) { return null }
     if !is_top_level(lit) { return null }
-    if lit.annotations().any((a) -> query_marks.contains(a.name)) || lit.shaped_by_a_query() { return null }
+    if query_marks.any((k) -> lit.wears(k)) || lit.shaped_by_a_query() { return null }
     let p0? = params.first() else { return null }
     if !is_state_type(p0.decl_type()) { return null }
     p0
@@ -965,7 +955,7 @@ fn asks_a_host(h: Code) -> bool {
 const host_packages: List<string> = ["@std.avrac", "cli"]
 
 /// The host every file read of the compiler goes through.
-const compiler_host: DeclaredType = DeclaredType { package: "@std.avrac", name: "Host" }
+const compiler_host: Known = Known { package: "@std.avrac", name: "Host" }
 
 fn host_asked_found(h: Code, question: string) -> Fix {
     Fix
@@ -1755,26 +1745,26 @@ fn call_scan(lit: Code) -> Scan? {
 const scan_methods: List<string> = ["find", "any", "all"]
 
 /// The store a relation's rows are read from.
-const relation_store: DeclaredType = DeclaredType { package: "@std.relation", name: "Db" }
+const relation_store: Known = Known { package: "@std.relation", name: "Db" }
 
 /// The ids an arena mints per file.
-const file_id_types: List<DeclaredType> = [
-    DeclaredType { package: "@std.avrac", name: "ExprId" },
-    DeclaredType { package: "@std.avrac", name: "StmtId" },
-    DeclaredType { package: "@std.avrac", name: "PatId" },
-    DeclaredType { package: "@std.avrac", name: "At" },
+const file_id_types: List<Known> = [
+    Known { package: "@std.avrac", name: "ExprId" },
+    Known { package: "@std.avrac", name: "StmtId" },
+    Known { package: "@std.avrac", name: "PatId" },
+    Known { package: "@std.avrac", name: "At" },
 ]
 
 /// The ids that name one thing across the workspace.
-const global_id_types: List<DeclaredType> = [
-    DeclaredType { package: "@std.avrac", name: "DeclId" },
-    DeclaredType { package: "@std.avrac", name: "FileId" },
+const global_id_types: List<Known> = [
+    Known { package: "@std.avrac", name: "DeclId" },
+    Known { package: "@std.avrac", name: "FileId" },
 ]
 
 /// The holders whose stores are built from one file.
-const per_file_holders: List<DeclaredType> = [
-    DeclaredType { package: "@std.avrac", name: "FileView" },
-    DeclaredType { package: "@std.avrac", name: "SyntaxArena" },
+const per_file_holders: List<Known> = [
+    Known { package: "@std.avrac", name: "FileView" },
+    Known { package: "@std.avrac", name: "SyntaxArena" },
 ]
 
 fn nodes_under(c: Syntax) -> List<Syntax> { [c].concat(flatten([nodes_under(k) for k in c.kids()])) }
@@ -1794,7 +1784,7 @@ fn column_of(c: Code, row: RuleType) -> bool {
 }
 
 /// Whether `c`'s type, through one nullable, is one of `types`.
-fn column_typed(c: Code, types: List<DeclaredType>) -> bool {
+fn column_typed(c: Code, types: List<Known>) -> bool {
     let t? = c.type() else { return false }
     let held = t.carried() ?? t
     types.any((d) -> held.is_declared(d))
@@ -1924,6 +1914,82 @@ fn setting_read_by_hand_found(n: Syntax) -> Fix {
                 "${n.text()} is read by hand — a setting is declared once and read through its projection",
                 "this variable",
                 "declare it in packages/wisp/src/settings/declared.av, write its projection with `wisp tree settings --write`, and read the field; a read that is no setting carries `// LICENSED compiler.setting_read_by_hand: <why>` above it",
+            ),
+        )
+}
+
+/// AN IDENTITY IS A DECLARATION, NEVER A WORD: a law that asks whether an annotation, a mark or a
+/// declaration is one it knows compares the declaration the name resolves to, and never the name
+/// it read to a word. A word is what a `use` renames and another package declares again, so a fn
+/// wearing another package's `@query` reads as ours, and our own under another name reads as
+/// nothing. The subject is a carrier's `name` or `package_name`, held to a word the source spells:
+/// a text literal, a top-level const, or a list of them. A name compared to a name the program wrote
+/// is a lookup in its own namespace, and no finding.
+@keeps("known.is(d.file.package_name, d.name)")
+@keeps("written.contains(f.name)")
+@says("which declaration the word must name is the law's own, so the rewrite is the author's")
+export fact_rule identity_by_word {
+    quote { ${s} == ${w} } if worded(s, w) -> identity_by_word_found(s),
+    quote { ${s} != ${w} } if worded(s, w) -> identity_by_word_found(s),
+    quote { ${w} == ${s} } if worded(s, w) -> identity_by_word_found(s),
+    quote { ${w} != ${s} } if worded(s, w) -> identity_by_word_found(s),
+    quote { ${xs}.contains(${s}) } if words_held(xs, s) -> identity_by_word_found(s),
+}
+
+/// Whether `s` reads a carrier's identifying word and `w` is a word the law knows.
+fn worded(s: Code, w: Code) -> bool { names_by_word(s) && known_word(w) }
+
+/// Whether `s` reads a carrier's identifying word and `xs` holds words the law knows.
+fn words_held(xs: Code, s: Code) -> bool {
+    names_by_word(s) &&
+        xs.type()?.element()?.is_text() ?? false &&
+        (xs.names_top_level() || is_word_list(xs))
+}
+
+/// Whether `w` is a word the source spells: a text literal, or a top-level const's name.
+fn known_word(w: Code) -> bool { w.is_str_lit() || w.names_top_level() && w.type()?.is_text() ?? false }
+
+/// Whether `xs` is a list literal of text literals.
+fn is_word_list(xs: Code) -> bool {
+    let kids = xs.kids()
+    !kids.is_empty() && kids.all(it.is_str_lit()) && xs.text().starts_with("[")
+}
+
+/// Whether `s` reads the word an annotation, a mark or a declaration is known by.
+fn names_by_word(s: Code) -> bool {
+    let read? = s.prop_name() else { return false }
+    if !identity_words.contains(read) { return false }
+    let subject? = s.kids().first()?.type() else { return false }
+    let held = subject.carried() ?? subject
+    word_carriers.any((k) -> held.is_declared(k))
+}
+
+/// The fields a carrier is known by.
+const identity_words: List<string> = ["name", "package_name"]
+
+/// The values whose word names a declaration: an annotation, a mark, a fn, a declaration, a file's
+/// package.
+const word_carriers: List<Known> = [
+    Known { package: "@std.meta", name: "Annotation" },
+    Known { package: "@std.meta", name: "Mark" },
+    Known { package: "@std.meta", name: "Fn" },
+    Known { package: "@std.avrac", name: "AnnotationFact" },
+    Known { package: "@std.avrac", name: "Annotation" },
+    Known { package: "@std.avrac", name: "Mark" },
+    Known { package: "@std.avrac", name: "DeclaredName" },
+    Known { package: "@std.avrac", name: "Decl" },
+    Known { package: "@std.avrac", name: "FnParts" },
+    Known { package: "@std.program", name: "SourceFileAddress" },
+]
+
+fn identity_by_word_found(s: Code) -> Fix {
+    Fix
+        .Say(
+            said(
+                s.loc(),
+                "`${s.text()}` is held to a word — a law knows a declaration by what it is, never by what it is called",
+                "a word",
+                "ask the declaration: `marks(a, f)` over `@std/meta`'s values, `binds_fn(engine, file, word, known)` or a `Known`'s `is`/`is_in`/`heads` in the compiler",
             ),
         )
 }

@@ -17,6 +17,7 @@ use core.{
     no_marks,
     rt_waits,
     BinOp,
+    Known,
 }
 use features.{LowerCx, bound_decl_of}
 
@@ -93,15 +94,19 @@ fn provided_call(mut cx: LowerCx, e: ExprId, rel: string, path: string) -> Reg {
         }
 }
 
-/// The `provide` a kind's `Provider` impl declares.
+/// The `provide` a kind's `Provider` impl declares: the static filling the trait's one member.
 fn provider_of(cx: LowerCx, kind: TypeId) -> DeclId? {
     let owner? = type_decl_of(cx, kind) else { return null }
-    cx
-        .view
-        .decls
+    let decls = cx.view.decls
+    let provider? = decls.package_decl(PROVIDER.package, PROVIDER.name) else { return null }
+    let member? = decls.trait_fns(provider).first() else { return null }
+    decls
         .declared_methods(owner)
-        .find((m) -> cx.view.decls.decl(m).name == "provide" && cx.view.decls.is_static_of(m))
+        .find((m) -> decls.decl(m).name == decls.decl(member).name && decls.is_static_of(m))
 }
+
+/// `@std/meta`'s trait a kind read from a file implements.
+const PROVIDER: Known = Known { package: "@std.meta", name: "Provider" }
 
 fn type_decl_of(cx: LowerCx, kind: TypeId) -> DeclId? {
     match cx.view.types.shape_of(kind) { .Struct(d, _) or .Enum(d, _) -> d, rest -> null }

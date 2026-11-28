@@ -17,6 +17,7 @@ use core.{
     key_spelled,
     some_list,
     sorted_by,
+    Known,
 }
 use features.{
     BodyNames,
@@ -30,7 +31,7 @@ use features.{
     TypedFacts,
     UnusedImport,
     arg_lit,
-    seat_fns_of,
+    SEAT_FN_MARKS,
 }
 use diagnostics.{Diag, Severity, SourceFile, new_source_file}
 use @std.errors.{Confidence, Edit, Frame, Loc, Suggestion}
@@ -275,6 +276,7 @@ fn entry_item_facts(
                     bodies: [],
                     callers: (_s: StmtId) -> [],
                     entry: entry,
+                    wears: (s: StmtId, k: Known) -> wears_known(engine, file, read.store, s, k),
                 },
             ),
     }
@@ -397,6 +399,7 @@ export fn item_rule_file(engine: QueryEngine, program: string, file: SourceFileA
                         names: written_reads(engine, file, item.store, b.typed),
                     } for b in stated],
                     callers: (s: StmtId) -> callers_of(engine, program, file, item.store.fn_parts(s)?.name),
+                    wears: (s: StmtId, k: Known) -> wears_known(engine, file, item.store, s, k),
                 },
             ),
     }
@@ -421,9 +424,25 @@ export type SeatFns = { names: List<string> }
 export fn file_seat_fns(engine: QueryEngine, file: SourceFileAddress) -> SeatFns {
     SeatFns {
         names: flatten(
-            [seat_fns_of(item.store, item.stmts) for at in item_ids(engine, file) for item in [read_item(engine, file, at)]],
+            [seat_fns_in(engine, file, read_item(engine, file, at)) for at in item_ids(engine, file)],
         ),
     }
+}
+
+/// Each fn the statements of `item` name in a query mark that names a seat fn.
+fn seat_fns_in(engine: QueryEngine, file: SourceFileAddress, item: ReadItem) -> List<string> {
+    [arg_lit(item.store, e).text for s in item.stmts for m in item.store.annotations_of(s) if SEAT_FN_MARKS.any((k) -> binds_fn(engine, file, m.name, k)) for e in m.args]
+}
+
+/// Whether the statement `s` of `store`, read in `file`, wears an annotation by the fn `known` names.
+fn wears_known(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    store: SyntaxArena,
+    s: StmtId,
+    known: Known,
+) -> bool {
+    store.annotations_of(s).any((a) -> binds_fn(engine, file, a.name, known))
 }
 
 /// The body each `impl Trait for` method of the item `at` of `file` overrides, where its trait gives
@@ -653,7 +672,7 @@ fn names_meta_bracket(
         a.name,
     )
         .named() else { return false }
-    d.name == "bracket" && d.file.package_name == "@std/meta"
+    META_BRACKET.is_in(d.file, d.name)
 }
 
 /// The text of `file`, under the name the program gives it.
@@ -687,3 +706,6 @@ collect listed_rule_facts: List<ListedQuery> = @query_definition in self as List
 
 /// The queries the rules are read through, for a process to hand its engine.
 export fn rule_fact_definitions() -> List<QueryDefinition> { definitions_of(listed_rule_facts) }
+
+/// `@std/meta`'s bracket a rule's pattern wears.
+const META_BRACKET: Known = Known { package: "@std/meta", name: "bracket" }

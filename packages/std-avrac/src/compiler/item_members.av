@@ -30,6 +30,7 @@ use core.{
     some_list,
     spread_entry,
     map_spreads,
+    Known,
 }
 use compiler.laws.{Aside, Found, FoundFix, law}
 use compiler.typing.{builtin_type_name}
@@ -1128,10 +1129,10 @@ fn meta_named_miss(engine: QueryEngine, t: TypedNodes, e: ExprId) -> List<MissPl
     if call.args.length == 2 && !call.callee.spells(MARKS) && !call.callee.spells(WORN) { return [] }
     if call.args.length != 1 && call.args.length != 2 { return [] }
     let d? = resolved(engine, t.file, Space.Value, call.callee.text()).named() else { return [] }
-    if d.kind != ItemKind.Fn || d.file.package_name != "@std/meta" { return [] }
-    if d.name == "code_hash" && call.args.length == 1 { return hash_miss(engine, t, t.store.unnamed(call.args[0])) }
-    if d.name == "marks" && call.args.length == 2 { return marks_miss(engine, t, t.store.unnamed(call.args[1])) }
-    if d.name == "worn" && call.args.length == 2 { return marks_miss(engine, t, t.store.unnamed(call.args[0])) }
+    if d.kind != ItemKind.Fn { return [] }
+    if META_CODE_HASH.is_in(d.file, d.name) && call.args.length == 1 { return hash_miss(engine, t, t.store.unnamed(call.args[0])) }
+    if META_MARKS.is_in(d.file, d.name) && call.args.length == 2 { return marks_miss(engine, t, t.store.unnamed(call.args[1])) }
+    if META_WORN.is_in(d.file, d.name) && call.args.length == 2 { return marks_miss(engine, t, t.store.unnamed(call.args[0])) }
     []
 }
 
@@ -1140,6 +1141,15 @@ const MARKS: string = "marks"
 
 /// `@std/meta`'s other fn a call of two is asked after by.
 const WORN: string = "worn"
+
+/// `@std/meta`'s fn whose answer is a fn's code hash.
+const META_CODE_HASH: Known = Known { package: "@std/meta", name: "code_hash" }
+
+/// `@std/meta`'s identity test of an annotation.
+const META_MARKS: Known = Known { package: "@std/meta", name: MARKS }
+
+/// `@std/meta`'s annotation by a fn's identity.
+const META_WORN: Known = Known { package: "@std/meta", name: WORN }
 
 /// `code_hash`'s argument `arg`, where it names no fn the file sees declared, by name or as the fn a
 /// call of it calls.

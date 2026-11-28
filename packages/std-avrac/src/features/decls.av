@@ -53,6 +53,8 @@ use core.{
     Annotation,
     At,
     decl_window,
+    Known,
+    STD_META,
 }
 use core.{
     EmbedKind,
@@ -1843,18 +1845,18 @@ impl Decls {
     /// `meta_type`'s door, generalized past `.Struct` to `.Enum` too,
     /// so `@std/avrac`'s `Fix` (an enum) answers through the same
     /// check `Code` (a struct) does.
-    fn declared_as(ty: TypeId, pkg: string, name: string) -> bool {
+    fn declared_as(ty: TypeId, known: Known) -> bool {
         let d: DeclId? = match self.types.shape_of(ty) {
             .Struct(d, _) or .Enum(d, _) -> d,
             rest -> null,
         }
-        d != null && self.decl(d!).name == name && self.package_of(d!) == pkg
+        d != null && known.is(self.package_of(d!), self.decl(d!).name)
     }
 
     /// A type IS `@std/avrac`'s declaration of this name — the same
     /// door `avrac_named` opens for a value, read back over a type.
     fn avrac_type(ty: TypeId, name: string) -> bool {
-        self.declared_as(ty, "@std.avrac", name)
+        self.declared_as(ty, Known { package: "@std.avrac", name: name })
     }
 
     /// A declaration a PACKAGE exports, by name — the door to a
@@ -1906,12 +1908,18 @@ impl Decls {
             .find((x) -> x.home != null && x.exported && self.qualified_module(x.id) == module)?.id
     }
 
-    /// Whether a declaration IS `@std/meta`'s export of `name` — by
-    /// DECLARATION, never the word it happens to answer to: the
-    /// package and the export name locate the identity without
-    /// accepting an equal-shaped user declaration.
+    /// Whether a declaration IS the one `known` names — by DECLARATION,
+    /// never the word it happens to answer to: the package and the
+    /// name locate the identity without accepting an equal-shaped user
+    /// declaration. False where there is none.
+    fn is_known(d: DeclId?, known: Known) -> bool {
+        let at? = d else { return false }
+        known.is(self.package_of(at), self.decl(at).name)
+    }
+
+    /// Whether a declaration IS `@std/meta`'s export of `name`.
     fn is_meta_fn(d: DeclId, name: string) -> bool {
-        self.decl(d).name == name && self.package_of(d) == "@std.meta"
+        Known { package: STD_META.name, name: name }.is(self.package_of(d), self.decl(d).name)
     }
 
     /// What an `@std/meta` embedding fn reads its file as; null for any other fn.

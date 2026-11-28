@@ -5,7 +5,7 @@
 //! its module's winners, then the prelude's exports where nothing else took the name. Values, types
 //! and sublanguages are spaces apart. A file's scope holds only what is its own; the rest is read
 //! by name where it stands.
-use core.{distinct}
+use core.{distinct, Known, STD_PRELUDE}
 use compiler.typing.{builtin_type_name}
 use @std.meta.{derive}
 use @std.program.address.{SourceFileAddress}
@@ -367,7 +367,7 @@ fn claimed(engine: QueryEngine, file: SourceFileAddress, space: Space, name: str
 /// The prelude's export `file` sees as `name` in `space` where nothing else took it; a file of
 /// the prelude sees none.
 fn lent(engine: QueryEngine, file: SourceFileAddress, space: Space, name: string) -> DeclaredName? {
-    if file.package_name == PRELUDE { return null }
+    if of_prelude(file) { return null }
     declarations_of(engine, PRELUDE, [], false, name).find(lends(it, space))
 }
 
@@ -387,10 +387,10 @@ fn tests_of(file: SourceFileAddress, at: ModuleAt) -> bool {
 const TESTS: string = "tests"
 
 /// The package every file sees without a `use`.
-const PRELUDE: string = "@std/prelude"
+const PRELUDE: string = STD_PRELUDE.name
 
 /// Whether `file` is one of the prelude's own.
-export fn of_prelude(file: SourceFileAddress) -> bool { file.package_name == PRELUDE }
+export fn of_prelude(file: SourceFileAddress) -> bool { STD_PRELUDE.is(file.package_name) }
 
 /// Whether a program `file` is a file of sees the prelude's own types: a file of a package does; a
 /// file that stands in no package can't name what the prelude declares.
@@ -446,15 +446,9 @@ export fn resolved_written(engine: QueryEngine, file: SourceFileAddress, space: 
 /// Whether `name`, read in `file`, binds the fn `declared` that the package `package` declares — by
 /// the declaration it binds, never the word: a fn of the same name declared anywhere else answers
 /// false.
-export fn binds_fn(
-    engine: QueryEngine,
-    file: SourceFileAddress,
-    name: string,
-    package: string,
-    declared: string,
-) -> bool {
+export fn binds_fn(engine: QueryEngine, file: SourceFileAddress, name: string, known: Known) -> bool {
     let d? = resolved(engine, file, Space.Value, name).named() else { return false }
-    d.file.package_name == package && d.name == declared && d.kind == ItemKind.Fn
+    d.kind == ItemKind.Fn && known.is_in(d.file, d.name)
 }
 
 /// Whether `name` is the language's own type, or written names bind it in a space but `space`: a
@@ -572,7 +566,7 @@ export fn seen_names(engine: QueryEngine, scope: FileScope, file: SourceFileAddr
     string,
 > {
     let shared = module_bindings(engine, file.package_name, module_segments(file), true).shared
-    let prelude = if file.package_name == PRELUDE { [] } else { module_names(engine, module_files(engine, PRELUDE, [], false)) }
+    let prelude = if of_prelude(file) { [] } else { module_names(engine, module_files(engine, PRELUDE, [], false)) }
     let apart = scope.apart_in(space)
     distinct(
         scope

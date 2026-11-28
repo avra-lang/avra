@@ -310,7 +310,7 @@ export fn site_generated(engine: QueryEngine, file: SourceFileAddress, site: Gen
 /// What a site's generator made and said, each item and problem kept beside the site: the written
 /// item, the declaration, the annotation naming the generator.
 fn sited(kept: GeneratedItems, site: GeneratorSite) -> GeneratedItems {
-    kept with { items: [g with { site: site.item, owner: site.name, by: annotation_named(site.generator), from: site.generator.file } for g in kept.items], problems: [p with { item: site.item, owner: site.name, by: annotation_named(site.generator), generator: site.generator.name, from: site.generator.file.package_name } for p in kept.problems] }
+    kept with { items: [g with { site: site.item, owner: site.name, by: site_word(site), from: site.generator.file } for g in kept.items], problems: [p with { item: site.item, owner: site.name, by: site_word(site), generator: site.generator.name, from: site.generator.file.package_name } for p in kept.problems] }
 }
 
 /// The names the items a generator made over `file` declare that the file already declares in
@@ -553,8 +553,11 @@ fn annotated_body(engine: QueryEngine, file: SourceFileAddress, name: string) ->
 
 fn said_only(words: List<string>) -> GeneratedItems { GeneratedItems { items: [], said: words } }
 
-/// The annotation a generator's site wears: `derive` for a trait's own, else the generator's name.
-fn annotation_named(g: GeneratorAt) -> string { if g.kind is .Derive { "derive" } else { g.name } }
+/// The word a generator answers to where no written annotation says: its own name, a trait's or a fn's.
+fn annotation_named(g: GeneratorAt) -> string { g.name }
+
+/// The word a site's annotation is written as, else its generator's name.
+fn site_word(site: GeneratorSite) -> string { if site.word.is_empty() { annotation_named(site.generator) } else { site.word } }
 
 /// A generator's problem, kept whole.
 fn kept_problem(d: Diagnostic) -> KeptProblem {

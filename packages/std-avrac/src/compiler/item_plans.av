@@ -5,16 +5,13 @@
 //! whole over a relation its `@census(n)` counts past the floor, compared on a field no index
 //! answers, is warned of. Read over a written item's comprehensions; a row is its head's binder, by
 //! its name.
-use core.{BinOp, CompClause, ExprId, SignedType, Span, SyntaxArena, flatten, some_list}
+use core.{BinOp, CompClause, ExprId, SignedType, Span, SyntaxArena, flatten, some_list, STD_META}
 use compiler.laws.{Found, law}
 use diagnostics.{Voice}
 use features.lists.{relation_scanned, rows_unnarrowed, scan_floor}
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryEngine}
 use @std.text.{parse_int}
-
-/// The package whose annotations mark a relation's accessors and its census.
-const PLAN_META: string = "@std/meta"
 
 /// A relation a head scans whole: its name, where it is declared, the head's clause, its row's
 /// binder, and each name its own head and the heads after it bind.
@@ -101,18 +98,20 @@ const LOOKUPS: List<string> = ["plans", "looks_up"]
 /// The marker a relation's type wears, its census row count the argument.
 const CENSUS: string = "census"
 
-/// A static of a relation wearing one of `@std/meta`'s markers: its name, the marker, and the
-/// marker's one argument as text, empty where it takes none.
+/// A static of a relation wearing one of `@std/meta`'s markers: its name, the marker's declared
+/// name, and the marker's one argument as text, empty where it takes none.
 type StaticMark = { name: string, word: string, field: string }
 
 /// Every marker of `@std/meta` the statics of the type `home` declares as `relation` wear.
 fn static_marks(engine: QueryEngine, home: SourceFileAddress, relation: string) -> List<StaticMark> {
-    [StaticMark { name: parts!.name, word: a.name, field: marked_text(item.store, a.args) } for i in impls_of(engine, home, relation) for item in [read_item(engine, i.at.file, i.at.item)] for s in some_list(impl_stmt_at(item, i.at)) for f in item.store.impl_parts(s)!.fns for parts in [item.store.fn_parts(f)] if parts != null for a in item.store.annotations_of(f) if meta_marker(engine, i.at.file, a.name)]
+    [StaticMark { name: parts!.name, word: marker!, field: marked_text(item.store, a.args) } for i in impls_of(engine, home, relation) for item in [read_item(engine, i.at.file, i.at.item)] for s in some_list(impl_stmt_at(item, i.at)) for f in item.store.impl_parts(s)!.fns for parts in [item.store.fn_parts(f)] if parts != null for a in item.store.annotations_of(f) for marker in [meta_marker(engine, i.at.file, a.name)] if marker != null]
 }
 
-/// Whether `word` names, where `file` reads it, an annotation `@std/meta` declares.
-fn meta_marker(engine: QueryEngine, file: SourceFileAddress, word: string) -> bool {
-    resolved(engine, file, Space.Value, word).named()?.file?.package_name == PLAN_META
+/// The name `@std/meta` declares the annotation `word` names under, where `file` reads it; absent
+/// where it names none of `@std/meta`'s.
+fn meta_marker(engine: QueryEngine, file: SourceFileAddress, word: string) -> string? {
+    let d? = resolved(engine, file, Space.Value, word).named() else { return null }
+    if STD_META.is(d.file.package_name) { d.name } else { null }
 }
 
 /// A marker's one argument as the text it writes; empty for any other count or form.
@@ -136,7 +135,7 @@ fn census_rows(engine: QueryEngine, scan: RelationScan) -> int? {
     let a? = item
         .store
         .annotations_of(s)
-        .find((a) -> a.name == CENSUS && meta_marker(engine, scan.home, a.name)) else { return null }
+        .find((a) -> meta_marker(engine, scan.home, a.name) == CENSUS) else { return null }
     parse_int(marked_text(item.store, a.args))
 }
 

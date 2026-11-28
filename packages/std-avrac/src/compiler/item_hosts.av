@@ -2,7 +2,7 @@
 //! program reads, judged by the one decision the old path makes (`host_fn_owed`) — its name no
 //! symbol the link already has; a dependency's naming its host, answering no other package's extern,
 //! and standing in a package the program's own sources import.
-use core.{CalledFn, flatten, some_list, sorted_texts}
+use core.{CalledFn, flatten, some_list, sorted_texts, Known}
 use compiler.hosts.{BuildHost, HostFnOwed, host_fn_line, host_fn_owed, host_named, hosts_of}
 use @std.meta.{derive}
 use @std.program.address.{SourceFileAddress, source_file}
@@ -92,7 +92,7 @@ fn owed_at(
     let owed? = host_fn_owed(
         host_fn_shadowing(r.called.name),
         from == package,
-        host_named(host_mark(item, r.called.name) ?? "") != null,
+        host_named(host_mark(engine, r.declared.file, item, r.called.name) ?? "") != null,
         theirs?.declared?.file?.package_name,
         asked.contains(from),
     ) else { return null }
@@ -227,22 +227,26 @@ fn file_bound_fns(engine: QueryEngine, file: SourceFileAddress) -> BoundFns {
 @cut_query("summary")
 fn file_host_fns(engine: QueryEngine, file: SourceFileAddress) -> HostFns {
     HostFns {
-        fns: [HostFn { called: c!, host: host_mark(read_item(engine, d.file, d.item), d.name) } for d in file_declares(engine, file).names if d.kind == ItemKind.Fn for c in [callee_of(engine, d)] if c?.hosted ?? false],
+        fns: [HostFn {
+            called: c!,
+            host: host_mark(engine, d.file, read_item(engine, d.file, d.item), d.name),
+        } for d in file_declares(engine, file).names if d.kind == ItemKind.Fn for c in [callee_of(engine, d)] if c?.hosted ?? false],
     }
 }
 
-/// The word the `@host(…)` on the host fn `name` of `item` ends in, absent where it names none.
-fn host_mark(item: ReadItem, name: string) -> string? {
+/// The word the `@host(…)` on the host fn `name` of `item`, read in `file`, ends in, absent where it
+/// names none.
+fn host_mark(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, name: string) -> string? {
     let s? = item
         .stmts
         .find((s) -> item.store.is_host_fn(s) && item.store.fn_parts(s)?.name == name) else { return null }
-    let mark? = item.store.annotations_of(s).find(it.name == HOST_MARK) else { return null }
+    let mark? = item.store.annotations_of(s).find((a) -> binds_fn(engine, file, a.name, HOST_MARK)) else { return null }
     let arg? = mark.args.first() else { return null }
     item.store.prop_parts(arg)?.name ?? item.store.ident_name(arg)
 }
 
 /// The mark a host fn names its host by.
-const HOST_MARK: string = "host"
+const HOST_MARK: Known = Known { package: "@std/meta", name: "host" }
 
 /// Whether the package path `path` stands in a directory named `tests`, at any depth under its sources:
 /// a test's own, never the package's.

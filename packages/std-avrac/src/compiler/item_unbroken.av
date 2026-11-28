@@ -19,6 +19,9 @@ use core.{
     WaitProbe,
     flatten,
     node_notes,
+    Known,
+    STD_META,
+    STD_PRELUDE,
 }
 use compiler.laws.{Found, law}
 use diagnostics.{Voice}
@@ -88,7 +91,7 @@ fn marks_unbroken(engine: QueryEngine, file: SourceFileAddress, store: SyntaxAre
 /// Whether `d` is `@std/meta`'s `unbroken`.
 fn meta_unbroken(d: DeclaredName?) -> bool {
     let named? = d else { return false }
-    named.file.package_name == META && named.name == UNBROKEN
+    Known { package: STD_META.name, name: UNBROKEN }.is_in(named.file, named.name)
 }
 
 /// Every way the fn `file` declares as `name` lets another task run, by its nodes and what lowering
@@ -190,7 +193,7 @@ fn call_broken(
     c: CalledFn,
     at: FindingAt?,
 ) -> BrokenAt? {
-    if c.external || c.file.package_name == PRELUDE_ROWS { return null }
+    if c.external || STD_PRELUDE.is(c.file.package_name) { return null }
     if !(c.defaulted is .Not) {
         return if default_may_wait(engine, file, c) { BrokenAt { at: at, words: [DEFAULT, owner, c.name] } } else { null }
     }
@@ -285,9 +288,6 @@ const WAIT: string = "wait"
 
 /// The mark's own name, in `@std/meta`.
 const UNBROKEN: string = "unbroken"
-
-/// The package whose verbs are the language's own rows.
-const PRELUDE_ROWS: string = "@std/prelude"
 
 /// Every way the `@unbroken` fns of the written item `view` shows break.
 fn unbroken_broken(view: ItemView) -> List<Found> {

@@ -42,8 +42,10 @@ use @std.meta.{
     int_node,
     type_named,
     beside,
+    marks,
 }
 use @std.relation.stable.{indexed_scope}
+use @std.relation.{codec}
 
 // ── The field-mark registry. `@local` is this process's own: no child,
 // out of identity, its value stays on the node. `@facet(table)` leaves
@@ -145,7 +147,7 @@ export trait Fingerprint {
 /// variant's payload. A type that is neither has nothing to fold and
 /// answers its name alone, which is still an identity.
 fn body_of(t: MetaType) -> MetaDecls {
-    if t.annotations.any(it.name == "codec") {
+    if t.annotations.any(marks(it, codec)) {
         return quote {
             fn fingerprint() -> int { ${name(t.name)}.digest_in(indexed_scope(), self) }
             fn fingerprint_in(ids: Ids) -> int { ${name(t.name)}.digest_in(ids.as_scope(), self) }
@@ -306,7 +308,7 @@ fn folded(k: Kind, e: Code, leaf: Folds) -> Code {
 /// key and its fold alike.
 fn wears_codec(n: string) -> bool {
     let t? = type_named(n) else { return false }
-    t.annotations.any(it.name == "codec")
+    t.annotations.any(marks(it, codec))
 }
 
 /// A GENERIC RECORD OF ONE PARAMETER folds through its own `fingerprint_with`, handed the

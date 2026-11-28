@@ -14,6 +14,8 @@ use core.{
     SyntaxArena,
     flatten,
     some_list,
+    Known,
+    STD_META,
 }
 use compiler.laws.{Found, FoundFix, law}
 use diagnostics.{Voice}
@@ -464,7 +466,6 @@ fn derives_spelled(view: ItemView) -> List<Found> {
     if !item.store.refusals().is_empty() { return [] }
     let scope? = written_file_scope(view.engine, view.file) else { return [] }
     let worn = [a for s in item.stmts if source_wrote_stmt(item.store, s) for a in item.store.annotations_of(s) if source_wrote_annotation(item.store, a) &&
-        a.name == DERIVING &&
         !a.args.is_empty() &&
         derives_by_meta(view.engine, view.file, a.name) for kind in some_list(stmt_kind(view.engine, view.file, view.at, item.store, s)) if derives_soundly(view, scope, a, kind)]
     [derive_spelled_found(item.store, a) for a in worn]
@@ -553,12 +554,12 @@ export fn wears_meta(
 }
 
 /// Whether the name `name`, read in `file`, is `@std/meta`'s fn `meta`.
-fn meta_fn(engine: QueryEngine, file: SourceFileAddress, name: string, meta: string) -> bool { binds_fn(engine, file, name, META, meta) }
+fn meta_fn(engine: QueryEngine, file: SourceFileAddress, name: string, meta: string) -> bool { binds_fn(engine, file, name, Known { package: STD_META.name, name: meta }) }
 
 fn derives_by_meta(engine: QueryEngine, file: SourceFileAddress, name: string) -> bool { meta_fn(engine, file, name, DERIVING) }
 
 /// Whether the declared name `d` is `@std/meta`'s `derive`, the fn whose arguments name traits.
-export fn derive_fn(d: DeclaredName) -> bool { d.file.package_name == META && d.name == DERIVING && d.kind == ItemKind.Fn }
+export fn derive_fn(d: DeclaredName) -> bool { d.kind == ItemKind.Fn && Known { package: STD_META.name, name: DERIVING }.is_in(d.file, d.name) }
 
 /// The traits the annotation `a`, written in `file`, derives: the one its own word names, or each
 /// trait a `@derive(…)` names; none for any other annotation.
@@ -875,7 +876,7 @@ fn counterfeit_seat(engine: QueryEngine, d: DeclaredName?) -> List<string> {
     if named.kind != ItemKind.Fn { return [] }
     let t? = fn_signature(engine, named.file, named.name)?.params?.first()?.ty else { return [] }
     match t.head {
-        .Declared(home, n) -> if home.package_name != META && ["Fn", "Type", "Named", "Trait"].contains(n) { [n] } else { [] },
+        .Declared(home, n) -> if !STD_META.is(home.package_name) && ["Fn", "Type", "Named", "Trait"].contains(n) { [n] } else { [] },
         rest -> [],
     }
 }

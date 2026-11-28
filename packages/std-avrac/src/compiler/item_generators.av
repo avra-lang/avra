@@ -16,6 +16,8 @@ use core.{
     literal_of,
     new_node_store,
     template_home,
+    Known,
+    STD_META,
 }
 use features.{
     Budgets,
@@ -522,7 +524,15 @@ fn fn_slots(engine: QueryEngine) -> int {
 
 /// A declaration a generator runs over: the name its file declares it as, the item declaring it, the
 /// generator, each argument the site hands it past this one, and, for a method, the impl writing it.
-export type GeneratorSite = { name: string, item: ItemId, generator: GeneratorAt, handed: List<HandedArg> = [], method: MethodSite? = null }
+export type GeneratorSite = {
+    name: string,
+    item: ItemId,
+    generator: GeneratorAt,
+    handed: List<HandedArg> = [],
+    method: MethodSite? = null,
+    /// The word the annotation summoning the generator is written as; empty where none is written.
+    word: string = "",
+}
 
 /// A method an annotation stands on: the impl writing it, and whether it's a static.
 @derive(Saved)
@@ -775,10 +785,10 @@ fn annotation_sites(
     let store = read.store
     let meant = annotation_meant(engine, scope, file, a.name)
     let derived = meant_trait(meant)
-    if derived != null { return [derive_site(name, item, derived!)] }
+    if derived != null { return [derive_site(name, item, derived!) with { word: a.name }] }
     let named? = meant_fn(meant) else { return [] }
     if derive_fn(named) {
-        return [derive_site(name, item, t!) for e in a.args for t in [trait_named(engine, scope, file, arg_lit(store, e).text)] if t != null]
+        return [derive_site(name, item, t!) with { word: a.name } for e in a.args for t in [trait_named(engine, scope, file, arg_lit(store, e).text)] if t != null]
     }
     if named.kind != ItemKind.Fn { return [] }
     let made_as? = annotation_kind(engine, named.file, named.name) else { return [] }
@@ -790,6 +800,7 @@ fn annotation_sites(
             item: item,
             generator: generator,
             handed: uncomputed(engine, generator, handed_args(engine, scope, file, read, a, named, name)),
+            word: a.name,
         },
     ]
 }
@@ -1161,7 +1172,7 @@ fn directives_listed(ty: SignedType) -> bool {
 /// Whether `ty` is `@std/meta`'s `name`, present.
 fn meta_named(ty: SignedType, name: string) -> bool {
     if ty.nulls > 0 { return false }
-    match ty.head { .Declared(file, n) -> file.package_name == META && n == name, _ -> false }
+    Known { package: STD_META.name, name: name }.heads(ty.head)
 }
 
 /// What the `@derive`s the statement `s` of `file` wears claim of the marks written on the

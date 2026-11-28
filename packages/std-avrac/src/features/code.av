@@ -16,8 +16,7 @@ use core.{
     NamesRead,
     OwnType,
     SignedType,
-    TypeHead,
-    key_spelled,
+    Known,
     At,
     ExprId,
     StmtId,
@@ -39,6 +38,7 @@ use core.{
     some_list,
     hole_name,
     CompClause,
+    FileId,
 }
 use features.{
     Decls,
@@ -96,6 +96,9 @@ export type TypedFacts = {
     bodies: List<BodyNames>,
     callers: fn(StmtId) -> List<CallSite>,
     entry: NamesRead? = null,
+    /// Whether the statement wears an annotation by the fn `known` names, its word resolved where
+    /// it is written.
+    wears: fn(StmtId, Known) -> bool,
 }
 
 /// One call of a declaration: the file whose code makes it.
@@ -157,6 +160,11 @@ impl RuleFacts {
         match self { .Analysed(a) -> analysed_seat_fns(a), .Typed(t) -> t.seat_fns }
     }
 
+    /// Whether the statement `s` of `store` wears an annotation by the fn `known` names.
+    fn wears(store: SyntaxArena, s: StmtId, known: Known) -> bool {
+        match self { .Analysed(a) -> analysed_wears(a, s, known), .Typed(t) -> (t.wears)(s, known) }
+    }
+
     /// The body the trait gives the member the `impl Trait for` method `m` declares overrides; absent
     /// for an inherent method, a trait's own member without a body, and a trait not resolved.
     fn default_of(m: StmtId) -> HeldBody? {
@@ -209,10 +217,6 @@ export enum RuleType {
     Signed(ty: SignedType)
 }
 
-/// A type a program declares, known by its package (as source spells it, `@std.relation`) and its
-/// name.
-export type DeclaredType = { package: string, name: string }
-
 /// A free `fn` declaration's own name and its written answer, spelled (`void` where it writes none).
 export type FnHead = { name: string, answer: string }
 
@@ -236,10 +240,10 @@ impl RuleType {
     }
 
     /// Whether this is the type `d` declares, held directly.
-    fn is_declared(d: DeclaredType) -> bool {
+    fn is_declared(d: Known) -> bool {
         match self {
-            .Interned(t, decls) -> decls.declared_as(t.id, d.package, d.name),
-            .Signed(t) -> t.nulls == 0 && !t.dynamic && declares(t.head, d),
+            .Interned(t, decls) -> decls.declared_as(t.id, d),
+            .Signed(t) -> t.nulls == 0 && !t.dynamic && d.heads(t.head),
         }
     }
 
@@ -265,14 +269,6 @@ impl RuleType {
             .Interned(t, _) -> match other { .Interned(o, _) -> t.same(o), .Signed(_) -> false },
             .Signed(t) -> match other { .Signed(o) -> t.same_type(o), .Interned(_, _) -> false },
         }
-    }
-}
-
-/// Whether `head` names the type `d` declares: its file in `d`'s package, under `d`'s name.
-fn declares(head: TypeHead, d: DeclaredType) -> bool {
-    match head {
-        .Declared(file, name) -> name == d.name && key_spelled(file.package_name) == d.package,
-        rest -> false,
     }
 }
 
@@ -555,6 +551,15 @@ impl Code {
         }
     }
 
+    /// Whether this statement wears an annotation by the fn `known` names: the declaration its word
+    /// resolves to, never the word. False for every other seat.
+    fn wears(known: Known) -> bool {
+        match self.at {
+            .Stmt(id) -> self.of.facts.wears(self.of.view.store, id, known),
+            .Expr(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> false,
+        }
+    }
+
     /// Whether a declaration of this file names this fn in `@cycled_by` or `@scoped_by`: the engine
     /// shapes it with that query's own seats.
     fn shaped_by_a_query() -> bool {
@@ -729,6 +734,20 @@ impl Code {
         match self.analysed().names.binding(e) {
             x? -> root_binding(self.analysed().names, x) == b
             null -> false
+        }
+    }
+
+    /// Whether this node is a name that binds no local, a parameter or a pattern's: a top-level
+    /// declaration read by its name. False for every other seat, and where no analysis says.
+    fn names_top_level() -> bool {
+        let e? = match self.at {
+            .Expr(e) -> e,
+            .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> null,
+        } else { return false }
+        if self.of.view.store.ident_name(e) == null { return false }
+        match self.of.facts {
+            .Analysed(a) -> declared_read(a.names.binding(e)),
+            .Typed(t) -> t.names_around(self.of.view.store, self.at)?.at(e)?.binder == null,
         }
     }
 
@@ -1490,13 +1509,33 @@ fn method_could_be_pure(of: RuleFile, id: ExprId) -> bool {
 /// seats.
 fn analysed_seat_fns(a: Analysed) -> List<string> {
     let decls = a.view.decls
-    [arg.text for q in decls.decls_of_file(a.view.file) for m in decls.annotations_of(q) if seat_fn_marks.contains(m.name) for arg in m.args]
+    [arg.text for q in decls.decls_of_file(a.view.file) for m in decls.annotations_of(q) if seat_marked(decls, m, a.view.file) for arg in m.args]
 }
 
-/// Each fn the statements `stmts` of `store` name in a mark the engine calls with a query's seats.
-export fn seat_fns_of(store: SyntaxArena, stmts: List<StmtId>) -> List<string> {
-    [arg_lit(store, e).text for s in stmts for m in store.annotations_of(s) if seat_fn_marks.contains(m.name) for e in m.args]
+/// Whether the annotation `m`, read in `file`, is one of the query marks that name a seat fn.
+fn seat_marked(decls: Decls, m: AnnotationFact, file: FileId) -> bool {
+    let callee? = decls.annotation_callee(m, file) else { return false }
+    SEAT_FN_MARKS.any((k) -> decls.is_known(callee, k))
+}
+
+/// Whether the statement `s` the analysis `a` holds wears an annotation by the fn `known` names.
+fn analysed_wears(a: Analysed, s: StmtId, known: Known) -> bool {
+    let decls = a.view.decls
+    let d? = decls.decl_of(a.view.file, s) else { return false }
+    decls
+        .annotations_of(d)
+        .any((m) -> decls.is_known(decls.annotation_callee(m, a.view.file), known))
 }
 
 /// The query marks that name a fn the engine calls with the query's own seats.
-const seat_fn_marks: List<string> = ["cycled_by", "scoped_by"]
+export const SEAT_FN_MARKS: List<Known> = [
+    Known { package: "@std/relation", name: "cycled_by" },
+    Known { package: "@std/relation", name: "scoped_by" },
+]
+
+/// Whether a read bound `b` reads a declaration rather than a local: bound to one, or to nothing the
+/// file's resolve recorded.
+fn declared_read(b: Binding?) -> bool {
+    let bound? = b else { return true }
+    bound is .Decl
+}

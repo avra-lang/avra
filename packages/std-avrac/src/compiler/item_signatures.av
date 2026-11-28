@@ -35,6 +35,7 @@ use core.{
     seat_spelled,
     width_named,
     widthless,
+    Known,
 }
 use compiler.typing.{builtin_type_name}
 use @std.meta.{derive}
@@ -467,10 +468,10 @@ fn named_files(engine: QueryEngine, g: SourceFileAddress) -> List<SourceFileAddr
 fn composes_mark(engine: QueryEngine, t: TraitAt) -> Annotation? {
     let item? = read_trait(engine, t) else { return null }
     let s? = item.stmts.find((s) -> item.store.declared_name(s) == t.name) else { return null }
-    let scope? = file_scope(engine, t.file) else { return null }
-    let meta = resolved_in(engine, scope, t.file, Space.Value, COMPOSES).named()?.file?.package_name == META
-    if !meta { return null }
-    item.store.annotations_of(s).find(it.name == COMPOSES && it.args.length == 1)
+    item
+        .store
+        .annotations_of(s)
+        .find((a) -> a.args.length == 1 && binds_fn(engine, t.file, a.name, META_COMPOSES))
 }
 
 /// Whether the component `s` of `item` in `file` is `@std/meta`'s `@seeded_at_need`: it wears the
@@ -510,7 +511,7 @@ fn read_trait(engine: QueryEngine, t: TraitAt) -> ReadItem? { declaring_item(eng
 fn file_key(f: SourceFileAddress) -> string { "${f.package_name}/${f.path_in_package}" }
 
 /// The annotation a trait wears to name what every component it composes carries.
-const COMPOSES: string = "composes"
+const META_COMPOSES: Known = Known { package: "@std/meta", name: "composes" }
 
 /// Whether the expression `e` reads the instance it stands in (`self`).
 export fn reads_self(store: SyntaxArena, e: ExprId?) -> bool {
