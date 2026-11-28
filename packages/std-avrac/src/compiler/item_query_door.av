@@ -130,7 +130,7 @@ fn query_findings(view: ItemView, s: StmtId, name: string) -> List<Found> {
     let keyed = walk.platformed_of(view.engine, start)
     let sites = walk
         .sites_of(view.engine, start)
-        .filter((x) -> (!x.row || x.package == view.file.package_name) && !(x.platform && keyed))
+        .filter((!it.row || it.package == view.file.package_name) && !(it.platform && keyed))
     let places = [place_key(x.at) for x in sites]
     [Found { at: view.item.store.stmt_span(s), args: [name, x.read, place_said(view.engine, x.at)] } for i, x in sites if places.index_of(place_key(x.at)) == i && !walk.licensed(view.engine, x.at)]
 }
@@ -194,11 +194,16 @@ fn body_world(engine: QueryEngine, c: DoorBody) -> BodyWorld {
     let calls = named.concat(methods)
     let mets = [body_met(engine, x.callee) for x in calls]
     BodyWorld {
-        reads: [ReadAt { read: read_words(x.callee), at: x.at } for i, x in calls if mets[i] is .Read && !licensed_at(engine, x.at)],
-        platform_reads: [ReadAt { read: read_words(x.callee), at: x.at } for i, x in calls if mets[i] is .PlatformRead && !licensed_at(engine, x.at)],
+        reads: met_reads(engine, calls, mets, Met.Read),
+        platform_reads: met_reads(engine, calls, mets, Met.PlatformRead),
         calls: [x for i, x in calls if mets[i] is .Walked],
         platformed: mets.any(it is .PlatformDoor),
     }
+}
+
+/// The reads among `calls` met as `met`, each where its call stands, the licensed ones gone.
+fn met_reads(engine: QueryEngine, calls: List<CallAt>, mets: List<Met>, met: Met) -> List<ReadAt> {
+    [ReadAt { read: read_words(x.callee), at: x.at } for i, x in calls if mets[i] == met && !licensed_at(engine, x.at)]
 }
 
 /// What a body no declaration here gives says of the world: nothing.
@@ -457,11 +462,7 @@ impl ReachWalk {
                 )
             self.platformed.put(m, world.platformed)
         }
-        mut moved = true
-        while moved {
-            moved = false
-            for m in members { if self.grew(engine, m) { moved = true } }
-        }
+        while members.any((m) -> self.grew(engine, m)) {}
     }
 
     /// Whether the body `m` holds more once it takes what each body it calls holds — each call but a
