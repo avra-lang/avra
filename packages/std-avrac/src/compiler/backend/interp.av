@@ -440,8 +440,8 @@ fn fresh_machine(l: Lowered, named: fn(string) -> Lifted = no_named_type, plan: 
     }
 }
 
-/// The words a body made late says where it reaches the world, as `world_reached` says it.
-fn late_world(b: Body) -> string { "`${as_symbolled(b.name)}` reaches the world" }
+/// The words a body made late says where its call `hit` reaches the world, as `world_reached` says it.
+fn late_world(b: Body, hit: Ins) -> string { world_words(hit, " in `${as_symbolled(b.name)}`") }
 
 /// What a run left behind: the boxes and maps `held` — still counted
 /// when it ended, where a run that frees what it lets go leaves none —
@@ -743,14 +743,19 @@ export fn world_reached(
     spelled: fn(string) -> string = as_symbolled,
 ) -> string? {
     let hit? = world_hit(l, permits_embed) else { return null }
-    let row = hosted_symbol(hit.row) ?? ""
-    let reach: Reach = rt_index().get(row)?.reach ?? Reach.World
     let stands_in = if hit.body.name == l.entry.name { "" } else { " in `${spelled(hit.body.name)}`" }
-    let said = if reach is .Embed { "embeds a file${stands_in}, but this compile-time call cannot return build inputs" } else { "reaches `${row}`${stands_in}" }
+    let said = world_words(hit.row, stands_in)
     // The refusal names each CALL LINK, not only the body the
     // world row stands in: `f` called from `g` called from the
     // const's entry reads as the chain the reader wrote.
     "${said}${callers_from(l, hit.body.name, spelled)}"
+}
+
+/// What the call `hit` reaches of the world, worded, the body it stands in as `stands_in` says.
+fn world_words(hit: Ins, stands_in: string) -> string {
+    let row = hosted_symbol(hit) ?? ""
+    let reach: Reach = rt_index().get(row)?.reach ?? Reach.World
+    if reach is .Embed { "embeds a file${stands_in}, but this compile-time call cannot return build inputs" } else { "reaches `${row}`${stands_in}" }
 }
 
 /// A body named as its symbol.
@@ -1650,7 +1655,7 @@ impl Machine {
         }
         let world = piece.fns.find((b) -> world_in(self.rt, b, self.embeddable) != null)
         if world != null {
-            self.unmade = late_world(world!)
+            self.unmade = late_world(world!, world_in(self.rt, world!, self.embeddable)!)
             self.failures.push(self.unmade!)
             return false
         }
