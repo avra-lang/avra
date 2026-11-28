@@ -769,6 +769,7 @@ fn item_asked(engine: QueryEngine, file: SourceFileAddress, at: ItemId, read: Re
         return read
     }
     let _ = item_under(engine, file, at)
+    if read.meaning != null { let _ = meaning_stands(engine, file, read.meaning!) }
     read
 }
 
@@ -785,7 +786,10 @@ fn item_read(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> ReadIt
 }
 
 /// The written item `item` of `file` read back at `start`, held under `key`: a held read stands only
-/// while what its meaning was read under answers as it did, each of those queries asked again.
+/// while what its meaning was read under answers as it did, each of those queries asked again. A
+/// fresh read reads alike: its tape is a function of the item's text and context, which its asker
+/// reads already, and of its meaning's inputs, so it's worked out for nobody and the meaning's
+/// standing asked — held or fresh, the asker reads the same.
 fn held_meant(
     engine: QueryEngine,
     file: SourceFileAddress,
@@ -796,14 +800,13 @@ fn held_meant(
 ) -> ReadItem {
     let kept = held_standing(engine, file, key)
     if kept != null { return kept! }
+    engine.unrecorded_begun()
     let written = item_tape_saved(engine, item.text, item.context)
     let asked = meaning_asked(engine, file, item, written)
-    held_put(
-        key,
-        PlacedTape { start: start, tape: tape_read(tape_meant(engine, item, written, asked)) },
-        at,
-        asked,
-    )
+    let tape = tape_read(tape_meant(engine, item, written, asked))
+    engine.recorded_again()
+    if asked != null { let _ = meaning_stands(engine, file, asked!) }
+    held_put(key, PlacedTape { start: start, tape: tape }, at, asked)
 }
 
 /// What a written item read back is held under: its file, its place, and its text's print.

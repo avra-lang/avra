@@ -371,16 +371,24 @@ fn expansion_inputs(
 }
 
 /// Whether what `asked` names still gives the inputs it printed, each query asked again: the engine
-/// that read them answers each alike, so it asks them where they lie and compares nothing.
+/// that read them answers each alike, so it asks them where they lie and compares nothing; another
+/// engine works the inputs out again for nobody and compares them. Either way, where it stands, the
+/// asker reads what the meaning stands on and nothing else.
 fn meaning_stands(engine: QueryEngine, file: SourceFileAddress, asked: MeaningAsked) -> bool {
-    if asked.engine != engine.serial {
-        return content_hash(expansion_inputs(engine, file, asked.components, asked.blocks))
-            .same_as(content_hash(asked.inputs))
-    }
+    if asked.engine != engine.serial && !inputs_alike(engine, file, asked) { return false }
     for c in asked.components { let _ = component_key(engine, c.home, c.declared) }
     if !asked.blocks.is_empty() { let _ = file_grammars_saved(engine, file) }
     let _ = file_instances_saved(engine, file)
     true
+}
+
+/// Whether `asked`'s inputs, worked out again in `engine` for nobody, print as they printed.
+fn inputs_alike(engine: QueryEngine, file: SourceFileAddress, asked: MeaningAsked) -> bool {
+    engine.unrecorded_begun()
+    let alike = content_hash(expansion_inputs(engine, file, asked.components, asked.blocks))
+        .same_as(content_hash(asked.inputs))
+    engine.recorded_again()
+    alike
 }
 
 collect listed_expansion_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
