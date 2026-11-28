@@ -1,0 +1,45 @@
+// An extern judged by its package's C header under the build's target: the data model is the
+// target's as clang defines it, so one declaration agrees on one target and not on another. Each
+// case sets the target it judges under; the process holds one.
+use @std.avrac.testing.{refused_in}
+use @std.avrac.testing.held.{Judged, held_at}
+use compiler.{use_build_target}
+
+/// The package at `/hdr` whose manifest names `c.h`, holding `header`, and whose entry is `main`,
+/// judged under the build target `target`.
+fn judged_for(target: string, header: string, main: string) -> Judged {
+    use_build_target(target)
+    let judged = held_at(
+        {
+            "/hdr/avra.toml": "[package]\nname = \"hdr\"\nversion = \"0.1.0\"\n\n[link]\nheaders = [\"c.h\"]\n",
+            "/hdr/c.h": header,
+            "/hdr/src/main.av": main,
+        },
+        "/hdr",
+    )
+        .judged_at("/hdr/src/main.av")
+    use_build_target("")
+    judged
+}
+
+const LONG: string = "long width(long x);\n"
+
+/// A `long` crossing in as `i32` and back as `i64`: one of the two disagrees on each target.
+const MIXED: string = "extern fn width(x: i32) -> i64\n0\n"
+
+spec "compiler/headers — the target's data model" {
+    given "a C `long` crossing in as i32 and back as i64" {
+        then "wasm32 refuses the answer alone, naming i32" {
+            refused_in(
+                judged_for("wasm32-wasip1", LONG, MIXED),
+                "`width` answers `i64`, and its C header declares `int32`",
+            )
+        }
+        then "the host refuses the seat alone, naming i64" {
+            refused_in(
+                judged_for("", LONG, MIXED),
+                "`width`'s seat 1 crosses as `i32`, and its C header declares `int64`",
+            )
+        }
+    }
+}
