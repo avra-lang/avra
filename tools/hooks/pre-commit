@@ -1,6 +1,6 @@
 #!/bin/sh
 # Refuses a commit whose staged Avra files are not canonical.
-# The fix is printed: `build/avra fmt --write <files>`.
+# The fix is printed by `avra fmt --check --staged`: `build/avra fmt --write <files>`.
 files=$(git diff --cached --name-only --diff-filter=ACMR -- '*.av')
 [ -n "$files" ] || exit 0
 # NO COMPILER, NO COMMIT: a check that examined nothing is not a pass. There is no bypass.
@@ -60,26 +60,6 @@ if [ "$built_at" = edited ]; then
 else
     echo "pre-commit: formatting with the compiler built at $(printf '%.8s' "$built_at") ($(printf '%.8s' "$built_hash"))" >&2
 fi
-# What is checked is the STAGED text, read where the file stands, so its
-# package and every sublanguage it uses resolve as they do for the real file.
-# A file whose working copy differs from the index is checked through a hidden
-# sibling holding the staged text.
-checked=""
-siblings=""
-trap 'for s in $siblings; do rm -f "$s"; done' EXIT
-for f in $files; do
-    if git diff --quiet -- "$f"; then
-        checked="$checked $f"
-    else
-        s="$(dirname "$f")/.staged-$(basename "$f")"
-        git show ":$f" > "$s"
-        siblings="$siblings $s"
-        checked="$checked $s"
-    fi
-done
-out=$(build/avra fmt --check $checked 2>&1)
-status=$?
-[ "$status" -eq 0 ] && exit 0
-echo "$out" >&2
-echo "pre-commit: staged Avra is not canonical — run: build/avra fmt --write $(echo $files)" >&2
-exit 1
+# THE fmt CHECK IS THE COMPILER'S ONE VERB (`avra fmt --check`), the one a lane's gate_changed,
+# `work test`, preflight and the gate's fmt slice ask: here over the STAGED text of every staged `.av`.
+exec build/avra fmt --check --staged

@@ -23,8 +23,21 @@
 //! is an answer its package's store keeps with what it read — the
 //! file's text and its words' shapes — so a warm re-run parses and
 //! prints only a file that moved, or one whose provider did.
-use @std.cli.{CliResult, Runnable, command, flag, arg}
-use @std.io.{write_text}
+//!
+//! `--check` IS EVERY DOOR'S ONE CHECK: the pre-commit hook asks it
+//! of the STAGED text (`--staged`), the gate of every `.av` changed
+//! since a ref (`--base <ref>`), and a lane of the files it names. A
+//! staged file whose working copy differs from the index is checked
+//! through a hidden sibling holding the staged text, read where the
+//! file stands so its package resolves as the real file's does. A
+//! FIXTURE MALFORMED ON PURPOSE IS NOT FORMATTING'S TO JUDGE: a named
+//! file whose case (the nearest directory above it holding a
+//! `refuses.expected`) expects a parse or lex refusal is skipped, by
+//! name.
+use @std.cli.{CliResult, Runnable, command, flag, option, arg}
+use @std.io.{write_text, remove}
+use @std.process.{cmd, status_of}
+use @std.path.{dir_of, file_name}
 use @std.avrac.compiler.{
     Canonical,
     ProgramFile,
@@ -91,8 +104,20 @@ type Group = { root: string, explicit: List<string>? }
 /// receipt-checked canonical text on disk. Both walk every file in ONE
 /// process, one engine per package.
 fn walked(args: CliResult, walk: Walk) -> int {
+    let named = fmt_asked(args)
+    for p in named.filter(fixture_unprintable) { println(fixture_skipped_said(p)) }
+    let judged = named.filter(!fixture_unprintable(it))
+    let staged = args.has_flag("staged")
+    let seats = [if staged { staged_seat(p) } else { p } for p in judged]
+    let outcome = walked_over(args, walk, seats)
+    for s in seats.filter((s) -> !judged.contains(s)) { let _ = remove(s) }
+    if staged && outcome != 0 { println(staged_fix_said(judged)) }
+    outcome
+}
+
+/// The walk over `asked`, every file or directory the run examines.
+fn walked_over(args: CliResult, walk: Walk, asked: List<string>) -> int {
     let write = walk == Walk.Write
-    let asked = [rooted(p) for p in args.args_of("file")]
     mut t = Tally { examined: 0, differing: 0, refused: 0, diffs: [] }
     for g in expanded_groups(asked) {
         let read? = reading(g) else { return std_unfound() }
@@ -114,6 +139,77 @@ fn walked(args: CliResult, walk: Walk) -> int {
     for p in t.diffs { println(p) }
     println(walk_summary(t, write))
     if t.refused > 0 || !write && t.differing > 0 { 1 } else { 0 }
+}
+
+// ── what --check is asked of ──
+
+/// The paths a run examines, each absolute: the staged `.av` (`--staged`), every `.av` changed from
+/// `--base` to HEAD that stands in the tree, or the files and directories named.
+fn fmt_asked(args: CliResult) -> List<string> {
+    if args.has_flag("staged") { return git_paths(["diff", "--cached", "--name-only", "--diff-filter=ACMR", "--", "*.av"]) }
+    let base = args.option("base")
+    if base != "" {
+        return git_paths(["diff", "--name-only", "--diff-filter=d", base, "HEAD", "--", "*.av"])
+            .filter((p) -> text_at(p) != null)
+    }
+    [rooted(p) for p in args.args_of("file")]
+}
+
+/// What git names, each rooted at the repository's top.
+fn git_paths(argv: List<string>) -> List<string> {
+    let top = git_said(["rev-parse", "--show-toplevel"]).trim()
+    [joined_path(top, l) for l in git_said(argv).split("\n") if l.trim() != ""]
+}
+
+/// git's words, asked where the run was asked; empty where it could not answer.
+fn git_said(argv: List<string>) -> string {
+    let git? = match tool("git") { .Ok(g) -> g, .Err(_) -> null } else { return "" }
+    match cmd(git, ["-C", here()].concat(argv)).outcome() { .Ok(o) -> o.out.stdout, .Err(_) -> "" }
+}
+
+/// Where a staged file's text is read: the file itself when its working copy is the index's, else a
+/// hidden sibling written with the staged text.
+fn staged_seat(path: string) -> string {
+    let git? = match tool("git") { .Ok(g) -> g, .Err(_) -> null } else { return path }
+    let same = match cmd(git, ["-C", dir_of(path), "diff", "--quiet", "--", file_name(path)])
+        .outcome() { .Ok(o) -> status_of(o.exit) == 0, .Err(_) -> false }
+    if same { return path }
+    let seat = staged_sibling(path)
+    let shown = match cmd(git, ["-C", dir_of(path), "show", ":./${file_name(path)}"]).outcome() {
+        .Ok(o) -> o.out.stdout,
+        .Err(_) -> "",
+    }
+    let _ = write_text(seat, shown)
+    seat
+}
+
+/// The hidden sibling that holds a staged file's text: `.staged-` before its name, beside it.
+export fn staged_sibling(path: string) -> string { joined_path(dir_of(path), ".staged-${file_name(path)}") }
+
+/// Whether a named file's case expects a parse or lex refusal, which fmt cannot print: the nearest
+/// `refuses.expected` above it names a `parse.` or `lex.` kind.
+export fn fixture_unprintable(path: string) -> bool {
+    if is_a_dir(path) { return false }
+    let expected? = case_expected(dir_of(path)) else { return false }
+    parse_kinded(expected)
+}
+
+/// The text of the nearest `refuses.expected` at or above `dir`, or null.
+fn case_expected(dir: string) -> string? {
+    mut at = dir
+    while at != "" && at != "/" {
+        let here_text = text_at(joined_path(at, "refuses.expected"))
+        if here_text != null { return here_text }
+        let up = dir_of(at)
+        if up == at { return null }
+        at = up
+    }
+    null
+}
+
+/// Whether a case's expected refusals name a parse or lex kind.
+export fn parse_kinded(expected: string) -> bool {
+    expected.split("\n").any(it.starts_with("error[parse.") || it.starts_with("error[lex."))
 }
 
 fn differs(c: Canonical) -> bool { match c { .Differs -> true, .Stands or .Refused(_) -> false } }
@@ -200,6 +296,14 @@ fn refused_said(why: string) -> Canonical {
 
 /// A bare run only SAYS the canonical text, so its stdout reads the same
 /// whether the file changed or not; stderr names the flags that act.
+fn fixture_skipped_said(path: string) -> string {
+    "avra fmt: skipped ${path} — its case expects a parse/lex refusal, which fmt cannot print"
+}
+
+fn staged_fix_said(paths: List<string>) -> string {
+    "avra fmt: staged Avra is not canonical — run: build/avra fmt --write ${paths.join(" ")}"
+}
+
 fn printed_only_note() -> string {
     "avra fmt: printed the canonical text and wrote nothing — --write updates the file, --check compares it"
 }
@@ -209,9 +313,10 @@ export command fmt {
     flags: [time]
     flag write { description: "rewrite every file under a directory, or the files given, refusing any whose receipt is not lossless" }
     flag check { description: "one pass over every file under a directory, or the files given; reports what differs from canonical" }
+    flag staged { description: "(--check) the staged text of every staged `.av` — the pre-commit hook's check" }
+    option base { description: "(--check) every `.av` changed from this ref to HEAD — the gate's check" }
     arg file {
         description: "the source file, or (--check) files/directories to examine"
-        required: true
         variadic: true
     }
     run: FmtCmd {}

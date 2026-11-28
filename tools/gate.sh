@@ -54,7 +54,7 @@ idioms-avrac  check --baseline tools/idioms.baseline on std-avrac, when the diff
 idioms-cli    the same on cli
 idioms     the same on every other package the diff from <base> touches
 store-fuzz the store fuzzer's model self-test, then seeds 1-8 of 12 edits each over build/avra: warm == cold byte for byte, the store clean (`cache check`), the walk held, a fresh copy over the same machine store as the tree, nothing worked where nothing moved
-fmt        fmt --check on every .av the diff from <base> changes (tools/fmt_changed.sh); <base> is the program landed last, never a batch's own base
+fmt        fmt --check on every .av the diff from <base> changes (`avra fmt --check --base`, the hook's own check); <base> is the program landed last, never a batch's own base
 sound      AVRA_SOUND_CHECK=1 check packages/cli, the memory pass's proof run over the program, 0 defects; AVRA_VERIFY_LLVM=1 build packages/cli, every emitted fn verified
 cost-reads make cost, COST_PART=reads: the longest read list each query of the cli's cold check stands on, as keyed rows (reads)
 cost-proofs make cost, COST_PART=proofs: what one literal of the cli edited and built warm proves, as keyed rows (proofs)
@@ -705,7 +705,7 @@ idioms_on() {
 # its lanes wrote to the printer's word
 fmt_on() {
     [ -n "${1:-}" ] || { echo "gate: $slice needs the base sha its diff starts at — the program landed last" >&2; exit 2; }
-    row fmt-changed env AVRA=build/avra sh tools/fmt_changed.sh "$1" HEAD
+    row fmt-changed build/avra fmt --check --base "$1"
 }
 
 # THE STORE FUZZED BY A MODEL, on a bounded budget: a failing seed is shrunk and said as a line that

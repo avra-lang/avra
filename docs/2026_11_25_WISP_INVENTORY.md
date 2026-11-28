@@ -268,7 +268,6 @@ A running list: each entry is gone from the tree, named with the train that remo
 | flow_trace/ | Makefile, traced_answer.av, traced_generic.av +5 | internal | merge: oracle |  |
 | flow_trace_engines.sh | Makefile, traced_answer.av, traced_generic.av +3 | internal | merge: oracle |  |
 | flow_trace_swap_attack.sh | gate.sh | internal | merge: oracle |  |
-| fmt_changed.sh | gate.sh, witness_fmt_changed.sh | internal | merge: keepers |  |
 | fmt_lossless.sh | Makefile | internal | merge: keepers |  |
 | fmt_roundtrip.sh | fmt_lossless.sh | internal | merge: keepers |  |
 | footprint.py | Makefile | internal | merge: cost |  |
@@ -441,7 +440,6 @@ A running list: each entry is gone from the tree, named with the train that remo
 | witness_compiler_key.sh | Makefile, gate.sh | internal | merge: oracle | run by tool_witnesses (derived) |
 | witness_compiler_release.sh | wisp | internal | merge: oracle | the shim's release reads, against local files; run by tool_witnesses (derived) |
 | witness_disk_full.sh | none | internal | merge: oracle | run by tool_witnesses (derived) |
-| witness_fmt_changed.sh | none | internal | merge: oracle | run by tool_witnesses (derived) |
 | witness_frameless_writes.sh | none | internal | merge: oracle | run by tool_witnesses (derived) |
 | witness_free_leaf.sh | none | internal | merge: oracle | run by tool_witnesses (derived) |
 | witness_gate_changed.sh | none | internal | merge: oracle | run by tool_witnesses (derived) |
@@ -593,7 +591,7 @@ A running list: each entry is gone from the tree, named with the train that remo
 | AVRA_LIGHT | avra, disk_host.av, stage.av | internal | merge: shim flag | the shim and the compiler agree by argv, not ambient env |
 | AVRA_LINK_TRACE | avra_settings.h, declared.av, named.av +3 | internal | merge: settings.debug | a switch the compiler reads; an oracle reading sets it |
 | AVRA_LLVM_MAJOR | sprite-provision.sh | internal | merge: wisp flag | read by tools alone |
-| AVRA_LOG | witness_fmt_changed.sh, witness_gate_changed.sh | internal | merge: wisp flag | read by tools alone |
+| AVRA_LOG | witness_gate_changed.sh | internal | merge: wisp flag | read by tools alone |
 | AVRA_MACHINE_STORE | avra_settings.h, cost.sh, declared.av +8 | internal | merge: settings.debug | a switch the compiler reads; an oracle reading sets it |
 | AVRA_MACHINE_STORE_DIR | avra_settings.h, cost.sh, declared.av +7 | internal | merge: settings.debug | a switch the compiler reads; an oracle reading sets it |
 | AVRA_MAC_COMPILER | work, work_test.sh | internal | merge: wisp flag | new since d7cd84d9 |

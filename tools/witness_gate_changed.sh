@@ -88,5 +88,9 @@ run --files a.av --packages pkg/good --no-keepers >/dev/null 2>&1 || say "(d) a 
 run --files --packages >/dev/null 2>&1 || say "(f) an empty change answered failure"
 [ -s "$avralog" ] && say "(f) the compiler ran with nothing changed"
 
-[ "$fail" -eq 0 ] && echo "witness_gate_changed: 6 proved — keepers, fmt and idioms, inputs named, no git, nothing changed"
+# (g) a lane's own tree whose commits run no pre-commit hook: refused, naming how to install it.
+out=$(run 2>&1) && say "(g) a lane's tree with no hook answered success"
+printf '%s' "$out" | grep -q "core.hooksPath tools/hooks" || say "(g) the refusal does not say how to install the hook: $out"
+
+[ "$fail" -eq 0 ] && echo "witness_gate_changed: 7 proved — keepers, fmt and idioms, inputs named, no git, nothing changed, the hook installed"
 exit "$fail"
