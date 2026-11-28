@@ -6,6 +6,7 @@ use core.settings.{avrac_settings}
 use core.{
     Annotation,
     At,
+    Checking,
     Expansion,
     Expr,
     ExprId,
@@ -65,9 +66,18 @@ export fn elaborated_fn(engine: QueryEngine, file: SourceFileAddress, name: stri
     elaborated(engine, file, signed)
 }
 
-/// `signed`'s body as its surface check left it, `held` the seats and reads that check left: no
-/// node elaboration makes, so its core is its surface, and the reads the check made are made again
-/// as checking again would make them.
+/// The core check of `signed`'s body, which means itself: its core is its surface, so what the check
+/// reads the surface typing it answers alike already reads, and none of it is the asker's — whether
+/// the surface check's seats were left in this process or not, its asker reads the same.
+fn core_covered(engine: QueryEngine, file: SourceFileAddress, signed: SignedBody) -> Checking {
+    engine.unrecorded_begun()
+    let core = body_checked(engine, file, signed, true)
+    engine.recorded_again()
+    core
+}
+
+/// `signed`'s body as its surface check left it, `seats` the seats that check left: no node
+/// elaboration makes, so its core is its surface.
 fn seated(
     engine: QueryEngine,
     file: SourceFileAddress,
@@ -75,10 +85,9 @@ fn seated(
     surface: TypedBody,
     sugars: List<ExprId>,
     statements: List<StmtId>,
-    held: SeatsHeld,
+    seats: List<SignedType?>,
 ) -> ElaboratedBody {
-    engine.reads_made_again(held.reads)
-    if core_from_surface() == "checked" { core_alike(engine, file, signed, surface, held.seats) }
+    if core_from_surface() == "checked" { core_alike(engine, file, signed, surface, seats) }
     ElaboratedBody {
         store: signed.item.store,
         body: signed.body,
@@ -86,7 +95,7 @@ fn seated(
         statements: statements,
         surface: surface.types,
         core: surface.types,
-        seats: held.seats,
+        seats: seats,
         refused: surface.refused.length,
         unread: surface.unread,
         reads: surface.reads,
@@ -104,13 +113,14 @@ fn elaborated(engine: QueryEngine, file: SourceFileAddress, read: SignedBody) ->
     let filled = [e for e in store.every_expr(signed.body) if instance_filled(engine, typed, e, owner_of(signed, e))]
     let statements = [s for s in every_stmt(store, At.Expr(signed.body)) if stmt_meant_beside(typed, s)]
     let sugars = [e for e in store.every_expr(signed.body) if meant_beside(typed, e)]
-    let left = if filled.is_empty() &&
+    let itself = filled.is_empty() &&
         statements.is_empty() &&
         sugars.is_empty() &&
         means_itself(store, signed.body) &&
-        core_from_surface() != "off" { read.seats } else { null }
+        core_from_surface() != "off"
+    let left = if itself { read.seats } else { null }
     if left != null { return seated(engine, file, signed, surface, sugars, statements, left!) }
-    let core = body_checked(engine, file, signed, true)
+    let core = if itself { core_covered(engine, file, signed) } else { body_checked(engine, file, signed, true) }
     ElaboratedBody {
         store: store,
         body: signed.body,
