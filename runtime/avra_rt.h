@@ -456,6 +456,25 @@ extern const char avra_rt_held_avra_vtask_wait_until __asm__(AVRA_RT_LABEL(avra_
 extern const char avra_rt_held_avra_vtask_within __asm__(AVRA_RT_LABEL(avra_vtask_within));
 extern const char avra_rt_held_avra_vtask_within_end __asm__(AVRA_RT_LABEL(avra_vtask_within_end));
 extern const char avra_rt_held_avra_vtask_yield_met __asm__(AVRA_RT_LABEL(avra_vtask_yield_met));
+extern const char avra_rt_held_avra_cores_claimed __asm__(AVRA_RT_LABEL(avra_cores_claimed));
+extern const char avra_rt_held_avra_cores_finished __asm__(AVRA_RT_LABEL(avra_cores_finished));
+extern const char avra_rt_held_avra_cores_heir __asm__(AVRA_RT_LABEL(avra_cores_heir));
+extern const char avra_rt_held_avra_cores_heir_gone __asm__(AVRA_RT_LABEL(avra_cores_heir_gone));
+extern const char avra_rt_held_avra_cores_killed __asm__(AVRA_RT_LABEL(avra_cores_killed));
+extern const char avra_rt_held_avra_cores_stderr_to __asm__(AVRA_RT_LABEL(avra_cores_stderr_to));
+extern const char avra_rt_held_avra_shared_apart_view __asm__(AVRA_RT_LABEL(avra_shared_apart_view));
+extern const char avra_rt_held_avra_shared_awaited __asm__(AVRA_RT_LABEL(avra_shared_awaited));
+extern const char avra_rt_held_avra_shared_claimed __asm__(AVRA_RT_LABEL(avra_shared_claimed));
+extern const char avra_rt_held_avra_shared_end __asm__(AVRA_RT_LABEL(avra_shared_end));
+extern const char avra_rt_held_avra_shared_ended __asm__(AVRA_RT_LABEL(avra_shared_ended));
+extern const char avra_rt_held_avra_shared_kept __asm__(AVRA_RT_LABEL(avra_shared_kept));
+extern const char avra_rt_held_avra_shared_let_go __asm__(AVRA_RT_LABEL(avra_shared_let_go));
+extern const char avra_rt_held_avra_shared_logged __asm__(AVRA_RT_LABEL(avra_shared_logged));
+extern const char avra_rt_held_avra_shared_logged_end __asm__(AVRA_RT_LABEL(avra_shared_logged_end));
+extern const char avra_rt_held_avra_shared_logged_start __asm__(AVRA_RT_LABEL(avra_shared_logged_start));
+extern const char avra_rt_held_avra_shared_made __asm__(AVRA_RT_LABEL(avra_shared_made));
+extern const char avra_rt_held_avra_shared_start __asm__(AVRA_RT_LABEL(avra_shared_start));
+extern const char avra_rt_held_avra_shared_view __asm__(AVRA_RT_LABEL(avra_shared_view));
 __attribute__((used)) static const void* const avra_rt_held[] = {
     &avra_rt_held_avra_qtrace,
     &avra_rt_held_avra_puts,
@@ -851,6 +870,25 @@ __attribute__((used)) static const void* const avra_rt_held[] = {
     &avra_rt_held_avra_vtask_within,
     &avra_rt_held_avra_vtask_within_end,
     &avra_rt_held_avra_vtask_yield_met,
+    &avra_rt_held_avra_cores_claimed,
+    &avra_rt_held_avra_cores_finished,
+    &avra_rt_held_avra_cores_heir,
+    &avra_rt_held_avra_cores_heir_gone,
+    &avra_rt_held_avra_cores_killed,
+    &avra_rt_held_avra_cores_stderr_to,
+    &avra_rt_held_avra_shared_apart_view,
+    &avra_rt_held_avra_shared_awaited,
+    &avra_rt_held_avra_shared_claimed,
+    &avra_rt_held_avra_shared_end,
+    &avra_rt_held_avra_shared_ended,
+    &avra_rt_held_avra_shared_kept,
+    &avra_rt_held_avra_shared_let_go,
+    &avra_rt_held_avra_shared_logged,
+    &avra_rt_held_avra_shared_logged_end,
+    &avra_rt_held_avra_shared_logged_start,
+    &avra_rt_held_avra_shared_made,
+    &avra_rt_held_avra_shared_start,
+    &avra_rt_held_avra_shared_view,
 };
 #else
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_qtrace(AVRA_RT_PTR)), void),
@@ -1641,6 +1679,44 @@ _Static_assert(__builtin_types_compatible_p(__typeof__(avra_vtask_within_end(AVR
     "avra_vtask_within_end: its row answers i64, so its C body answers int64_t");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_vtask_yield_met(AVRA_RT_I64)), void),
     "avra_vtask_yield_met: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_cores_claimed(AVRA_RT_I64)), int64_t),
+    "avra_cores_claimed: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_cores_finished(AVRA_RT_I64)), int64_t),
+    "avra_cores_finished: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_cores_heir(AVRA_RT_I64)), int64_t),
+    "avra_cores_heir: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_cores_heir_gone()), int64_t),
+    "avra_cores_heir_gone: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_cores_killed(AVRA_RT_I64, AVRA_RT_I64)), int64_t),
+    "avra_cores_killed: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_cores_stderr_to(AVRA_RT_PTR)), int64_t),
+    "avra_cores_stderr_to: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_classify_type(avra_shared_apart_view(AVRA_RT_PTR)) == AVRA_RT_POINTER,
+    "avra_shared_apart_view: its row answers ptr, so its C body answers a pointer");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_shared_awaited(AVRA_RT_PTR, AVRA_RT_I64, AVRA_RT_I64, AVRA_RT_I64)), int64_t),
+    "avra_shared_awaited: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_shared_claimed(AVRA_RT_PTR, AVRA_RT_I64, AVRA_RT_I64)), int64_t),
+    "avra_shared_claimed: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_shared_end(AVRA_RT_PTR, AVRA_RT_I64, AVRA_RT_I64, AVRA_RT_I64)), int64_t),
+    "avra_shared_end: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_shared_ended(AVRA_RT_PTR)), void),
+    "avra_shared_ended: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_shared_kept(AVRA_RT_PTR, AVRA_RT_I64, AVRA_RT_I64, AVRA_RT_I64, AVRA_RT_PTR, AVRA_RT_I64)), int64_t),
+    "avra_shared_kept: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_shared_let_go(AVRA_RT_PTR, AVRA_RT_I64, AVRA_RT_I64)), int64_t),
+    "avra_shared_let_go: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_shared_logged(AVRA_RT_PTR, AVRA_RT_I64)), int64_t),
+    "avra_shared_logged: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_shared_logged_end(AVRA_RT_PTR, AVRA_RT_I64, AVRA_RT_I64)), int64_t),
+    "avra_shared_logged_end: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_shared_logged_start(AVRA_RT_PTR, AVRA_RT_I64, AVRA_RT_I64)), int64_t),
+    "avra_shared_logged_start: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_classify_type(avra_shared_made(AVRA_RT_I64, AVRA_RT_I64)) == AVRA_RT_POINTER,
+    "avra_shared_made: its row answers ptr, so its C body answers a pointer");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_shared_start(AVRA_RT_PTR, AVRA_RT_I64, AVRA_RT_I64, AVRA_RT_I64)), int64_t),
+    "avra_shared_start: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_classify_type(avra_shared_view(AVRA_RT_PTR)) == AVRA_RT_POINTER,
+    "avra_shared_view: its row answers ptr, so its C body answers a pointer");
 _Static_assert(MARK_OWNED == 1,
     "MARK_OWNED: the compiler reads a cell's mark as bit 1, so runtime/avra_box.h gives it that bit");
 _Static_assert(MARK_ABSENT == 2,

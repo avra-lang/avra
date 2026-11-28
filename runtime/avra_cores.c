@@ -381,7 +381,7 @@ int64_t avra_cores_heir(int64_t quiet) {
     }
     setsid();
     pid_t heir = fork();
-    if (heir != 0) _exit(heir < 0);
+    if (heir != 0) _exit(heir < 0); // LICENSED traps.ended: the process between ends once the heir is forked
     avra_pool_forked();
     avra_descriptors_forgotten();
     avra_fiber_forked();
@@ -746,7 +746,9 @@ int64_t avra_shared_awaited(void* h, int64_t hi, int64_t lo, int64_t holder) {
 }
 
 // The heir ends, its work done. Never returns.
-int64_t avra_cores_heir_gone(void) { exit(0); }
+int64_t avra_cores_heir_gone(void) {
+    exit(0); // LICENSED traps.ended: the heir asked its process to end
+}
 
 // A forked process's own words, written to `path` in place of the stderr it shares with the process
 // that forked it: 0, or -1 where the file would not open or take fd 2.
