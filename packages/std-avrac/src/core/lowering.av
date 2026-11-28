@@ -402,6 +402,8 @@ export type Lowering = {
     answer: SignedType,
     /// The instructions, in order.
     ins: Cell<List<Ins>>,
+    /// The written node each instruction was emitted for, by its place: kept only where notes are.
+    nodes: Cell<List<int>>,
     /// Each register's layout, by its index: a register mints with the instruction that defines it.
     layouts: Cell<List<Layout>>,
     /// The names in scope, innermost last.
@@ -513,6 +515,7 @@ export fn lowering(
     answer: SignedType,
 ) -> Lowering {
     let ins: Cell<List<Ins>> = Cell.new([])
+    let nodes: Cell<List<int>> = Cell.new([])
     let layouts: Cell<List<Layout>> = Cell.new([])
     let scopes: Cell<List<Map<string, Bound>>> = Cell.new([no_names()])
     let missing: Cell<List<string>> = Cell.new([])
@@ -542,6 +545,7 @@ export fn lowering(
         seats: seats,
         answer: answer,
         ins: ins,
+        nodes: nodes,
         layouts: layouts,
         scopes: scopes,
         missing: missing,
@@ -955,7 +959,10 @@ impl Lowering {
 
     /// `i`, emitted.
     mut fn emit(i: Ins) {
-        if self.program.notes != null { self.noted_ins(i) }
+        if self.program.notes != null {
+            self.noted_ins(i)
+            self.nodes.push(self.program.notes!.at.get())
+        }
         self.ins.push(i)
     }
 
@@ -1155,9 +1162,11 @@ impl Lowering {
             return
         }
         let ins = self.ins
+        let nodes = self.nodes
         let missing = self.missing
         let first = self.layouts.get().length
         self.ins = Cell.new([])
+        self.nodes = Cell.new([])
         self.missing = Cell.new([])
         self.holding = true
         body(self)
@@ -1172,6 +1181,7 @@ impl Lowering {
             missing: self.missing.get(),
         }
         self.ins = ins
+        self.nodes = nodes
         self.missing = missing
         self.tests.push(held)
     }

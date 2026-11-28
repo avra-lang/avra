@@ -13,7 +13,7 @@ human reading code.
 | detector | reads | finds | where |
 |---|---|---|---|
 | **census sites** | the runtime's exact per-site counters (boxes, retains, releases, clones, opens of an empty literal, string compares, list writes) over the fixed workloads | the hottest sites, each CLASSIFIED to the technique that would remove its cost (below) | `avra census --candidates` |
-| **missed-optimization remarks** | the compiler at the moment a technique declines to fire | WHY a site paid, as a TYPED reason per technique (`Declined`: `DeferDecline`, `ProbeDecline`, `SettleDecline`, `ConsumeDecline`, `DynDecline`, `PackDecline`), its words rendered by one voice fn | `avra explain --cost @fn`, grouped by reason and counted; `cost_remarks` is a query, so the remarks are facts in the DB. A build never notes them: zero cost unless asked |
+| **missed-optimization remarks** | the compiler at the moment a technique declines to fire | WHY a site paid, as a TYPED reason per technique (`Declined`: `DeferDecline`, `ProbeDecline`, `SettleDecline`, `ConsumeDecline`, `DynDecline`, `PackDecline`, and the memory pass's own `MoveDecline` and `BorrowDecline`, each filed at the instruction it met and placed at the node that emitted it), its words rendered by one voice fn | `avra explain --cost @fn`, grouped by reason and counted; `cost_remarks` is a query, so the remarks are facts in the DB. A build never notes them: zero cost unless asked |
 | **shape rules** | the source, as `rule` declarations `avra check` finds | the patterns that cost by construction | `avra check`, ratcheted like idioms |
 | **exact-count gate** | the census totals per cold workload, and the answers a warm run works out again after each fixed edit, over one pinned snapshot, against `tools/cost.baseline` | regressions: any counter that rose past tolerance, cold or warm | a gate slice (`make cost`); lowering a counter needs `make cost-accept` |
 
@@ -24,7 +24,7 @@ human reading code.
 | a box freed in the fn that made it | stack records (escape analysis) |
 | a free at rc 1 followed by an alloc of the same size | reuse in place |
 | a retain whose release is the binding's last use | move at last use |
-| an owned twin read (`avra_slot_get_owned`, `avra_array_get_owned`) and its release, in a fn whose borrow is read across a call handed nothing that can run code (`AVRA_RC_REASONS`: `candidate: a borrow a call makes owned`) | borrows across quiet calls |
+| an owned twin read (`avra_slot_get_owned`, `avra_array_get_owned`) and its release, in a fn whose borrow is read across a call handed nothing that can run code (`avra explain --cost`: `BorrowDecline.CalleeMayWrite`) | borrows across quiet calls |
 | `avra_streq`/name compare callers | interned names |
 | an open of the binary's empty literal (`[]`, `{}`) by a first write | fresh empties |
 | a box of flat scalar fields pushed into a list | strided list |
@@ -43,7 +43,7 @@ diffed against the last run is how a NEW candidate appears without anyone lookin
 writes `build/cost/candidates.txt` (`avra census --candidates [--root <tree>] <report>…`, the top
 ten per technique). A `(technique, fn)` that `tools/cost.candidates` lacks is NAMED, never failed;
 `make cost-accept` rewrites that record. Deforestation and devirtualization have no census hook
-yet, and borrows across quiet calls are found by the memory pass's own tally (`AVRA_RC_REASONS`), so
+yet, and borrows across quiet calls and moves at last use are found by the memory pass's own remarks (`avra explain --cost`), so
 the classifier reads the other ten shapes.
 
 ## How work is assessed
@@ -71,7 +71,7 @@ the classifier reads the other ten shapes.
 | appended in place: `xs.concat([…])` of plain values pushes onto `xs` opened (`avra_array_opened`, itself where `xs` is held alone), never a list made of the literal; and `m.set(k, (m.get(k) ?? []).concat([…]))` under a key that is a name TAKES the slot's list for the write at the probe's word (`avra_map_value_taken_at`), so a list only the map holds grows in place | landed for the language's own `concat` and `Map` (`RowUse.Appends`, `grown_in_place`); a group-by over a table a program declares (`HashKeyedTable.put`) still copies once per append — `reads_by_question` and `readers_beside`, 1.18 M on a cold `check` of the cli | a literal's box and a copy of the list on every append — on a cold `check` of the cli, 136.64 M boxes became 134.22 M and the peak 4753 MB became 4437 MB |
 | reuse in place (Perceus/FBIP) | proposed | free + alloc pairs |
 | fresh empties: a first write into `[]` makes its buffer, never a clone of the static | proposed | the open of the empty literal (`empty_opens`) |
-| move at last use (borrow inference) | partial (params' consumes) | retain/release pairs |
+| move at last use (borrow inference) | partial (params' consumes; a value read on a path that leaves the fn dies there — `Lives.leaves_after`, lowering-quality, to land). Detector: `avra explain --cost`, `MoveDecline.SiblingArms` — a retain of a value whose last reads stand in sibling arms of one region, the shape a move in every arm would remove | retain/release pairs |
 | borrows across quiet calls: a borrowed read stands across a call whose callee writes no cell (`writes_no_cell`, read once of its own instructions) and is handed nothing that can run code | done (lowering-quality, to land) | a retain and release per borrowed cell read across an out-of-line scalar fn (`HashKeyedTable.position_at` with its slot arithmetic as a fn: 3 owned reads and 2 release runs a search); the callee's bit rides `BodySeen`, so a callee that comes to write a cell remakes its callers |
 | devirtualization | proposed | indirect calls with one target |
 | deforestation | partial (walk chains) | intermediate lists |

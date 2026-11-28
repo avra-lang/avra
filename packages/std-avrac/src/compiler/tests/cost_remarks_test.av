@@ -18,6 +18,19 @@ fn declines(source: string, name: string, technique: string, phrase: string) -> 
     rs.length == 1 && rs[0].starts_with("${technique}: ") && rs[0].contains(phrase)
 }
 
+/// The remarks of `name` in `source` the technique `technique` says.
+fn said_by(source: string, name: string, technique: string) -> List<string> {
+    remarked(source, name).filter(it.starts_with("${technique}: "))
+}
+
+/// A fn that files `held` into `out`, its pushes standing as `pushes` writes them.
+fn filing(pushes: string) -> string {
+    "fn filed(names: List<string>, name: string, early: bool) -> List<string> {\n    mut out = [n for n in names]\n    let held = name + \"!\"\n    ${pushes}\n    out\n}\nfiled([\"x\"], \"y\", true).length"
+}
+
+/// A borrow read across a call handed only a scalar, whose callee writes the cell the borrow rides.
+const ACROSS_WRITER: string = "fn joined(n: int) -> string { [\"name\", \"\${n}\"].join(\"-\") }\nstate names: List<string> = [joined(1), joined(2)]\nfn emptied(n: int) -> int {\n    names = [joined(n)]\n    n\n}\nfn across(n: int) -> string {\n    let held = names\n    let seen = emptied(n)\n    \"\${held[0]} \${seen}\"\n}\nacross(7)"
+
 spec "the cost remarks of a body" {
     given "a body each technique is a candidate for, and declines" {
         then "a deferred call whose operand holds a counted reference is not run in place" {
@@ -75,6 +88,32 @@ spec "the cost remarks of a body" {
                 "devirtualization",
                 "table",
             )
+        }
+    }
+    given "a value whose last reads the memory pass places" {
+        then "a push in each of two arms is no move, at each arm's push" {
+            let said = said_by(
+                filing(
+                    "if early {\n        out.push(held)\n    } else {\n        out.push(held)\n    }",
+                ),
+                "filed",
+                "move at last use",
+            )
+            said.length == 2 && said.all(it.contains("sibling arms"))
+        }
+        then "a push in an arm that returns moves, so nothing declines" {
+            said_by(
+                filing(
+                    "if early {\n        out.push(held)\n        return out\n    }\n    out.push(held)",
+                ),
+                "filed",
+                "move at last use",
+            )
+                .is_empty()
+        }
+        then "a borrow read across a call that may write its cell owns, at the read" {
+            let said = said_by(ACROSS_WRITER, "across", "borrows across quiet calls")
+            !said.is_empty() && said.all(it.contains("may write a cell"))
         }
     }
     given "a body that declines nothing" {
