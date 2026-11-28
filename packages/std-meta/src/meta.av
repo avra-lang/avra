@@ -170,7 +170,12 @@ export type Fn = { name: string, params: List<Param>, answer: string, at: Loc?, 
 /// words its `derive` reads, and a mark no reader on the declaration
 /// claims is refused where it was written — so a misspelled mark
 /// cannot sit there doing nothing.
-export type Mark = { name: string, args: List<string>, at: Loc?, named: List<MarkArg> = [] }
+///
+/// `key` is the identity of the `Marker` fn the mark's word binds: one of
+/// the traits the declaration derives or implements declares it, so a
+/// mark is asked after by `marked(m, f)`, never by its word. Empty where
+/// the word binds no such fn.
+export type Mark = { name: string, args: List<string>, at: Loc?, named: List<MarkArg> = [], key: string = "" }
 
 /// An argument a mark names — `web: .Click` is `{ label: "web", value: "Click" }`.
 /// A mark's `args` hold its positional arguments only.
@@ -211,12 +216,71 @@ export fn marks<F>(_a: Annotation, _f: F) -> bool { false }
 /// identity `key`.
 fn marked_by(a: Annotation, key: string) -> bool { !a.key.is_empty() && a.key == key }
 
+/// WHETHER THE MARK `m` IS THE `Marker` FN `f`, by the declaration's
+/// identity, as `marks` asks of an annotation: `marked(m, local)` holds
+/// for `@local` bound to that fn and for nothing else. The compiler
+/// answers it; this body, reached only where no compiler did, answers
+/// false.
+export fn marked<F>(_m: Mark, _f: F) -> bool { false }
+
+/// `marked`'s answer, as the compiler lowers it: `m`'s fn has the identity `key`.
+fn mark_marked_by(m: Mark, key: string) -> bool { !m.key.is_empty() && m.key == key }
+
+/// THE MARKS A READER READS: `@reads(local)` on a trait, or on an
+/// annotation's fn, names a fn it reads on a member, one `@reads` a fn: a
+/// declaration resolved where the reader is written, and one a member may
+/// wear. A member
+/// of a declaration deriving or implementing the trait binds its mark's
+/// word among them, so the wearer writes `@local` with no `use`; two
+/// traits reading two different fns of one word on one declaration is
+/// refused. The compiler reads it; it runs nothing.
+export fn reads(_d: Named, _marker: Fn) {}
+
+/// A READER OF EVERY RULE: `@reads_rules` on a trait says its `derive`
+/// reads each rule its declarations' members wear — a fn whose first seat
+/// takes a value, resolved where it is worn — so no rule is unread there.
+/// The compiler reads it; it runs nothing.
+export fn reads_rules(_d: Named) {}
+
+/// Where an annotation's fn may be worn.
+export enum Wear {
+    /// On a record, an enum or a named type.
+    Type
+    /// On a record's field.
+    Field
+    /// On an enum's variant.
+    Variant
+    /// On a fn's parameter.
+    Param
+    /// On a fn.
+    Fn
+    /// On a trait.
+    Trait
+}
+
+/// WHERE A FN MAY BE WORN, said where it is declared: `@worn_on([.Type,
+/// .Field])` lets one declaration be one word in each place, so a type's
+/// `@unique(a, b)` and a field's `@unique` are one identity. Absent, a fn
+/// is worn where its first seat says, and a `Marker` on a member. Worn
+/// anywhere else is refused, naming where it may be. The compiler reads
+/// it; it runs nothing.
+export fn worn_on(_f: Fn, _wears: List<Wear>) {}
+
 /// THE ANNOTATION BY THE FN `f`, written with `args`: what `@f(…)` hands a
 /// derive, carrying `f`'s identity, so `marks(worn(f, args), f)` holds.
 /// `f` is a declared fn, named where it is called. The compiler answers
 /// it; this body, reached only where no compiler did, answers one that
 /// marks nothing.
 export fn worn<F>(_f: F, args: List<string>) -> Annotation { Annotation { name: "", args: args, at: null } }
+
+/// THE MARK BY THE FN `f`, written with `args`: what `@f(…)` on a member
+/// hands a derive, carrying `f`'s identity, so `marked(worn_mark(f, args),
+/// f)` holds. The compiler answers it; this body, reached only where no
+/// compiler did, answers one that marks nothing.
+export fn worn_mark<F>(_f: F, args: List<string>) -> Mark { Mark { name: "", args: args, at: null } }
+
+/// `worn_mark`'s answer, as the compiler lowers it.
+fn mark_worn_by(name: string, key: string, args: List<string>) -> Mark { Mark { name: name, args: args, at: null, key: key } }
 
 /// `worn`'s answer, as the compiler lowers it: the annotation `name` writes, by the fn of identity
 /// `key`.
@@ -928,15 +992,16 @@ export type Derived = { made: List<Directive> }
 /// THE CONTRACT a derivable trait keeps, held where the trait is
 /// declared (F2134) and again at each `@derive` (F2072, F2066):
 ///
+///     @reads(local)
 ///     trait Show {
 ///         static fn derive(t: Type) -> List<Directive> { … }
-///         static fn marks(t: Type) -> List<string> { … }   // optional
 ///     }
 ///
 /// `derive` takes the declaration (`Type` for a record or enum, `Fn`
 /// for a fn, `Named` for any) and answers the code to splice beside
-/// it, or `Declared` to also refuse a shape it can't generate for. `marks` names the field and variant marks it reads, and a mark
-/// no derive claims is refused (F2092). The trait stands in its own
+/// it, or `Declared` to also refuse a shape it can't generate for. Each
+/// `@reads` names a fn its derive reads on a member, and a mark no
+/// reader reads is refused (F2092). The trait stands in its own
 /// file: its `derive` is typed while the annotated file is still
 /// being made.
 // LICENSED fns.dead_parameter: an annotation's decoder wears the annotation's argument list

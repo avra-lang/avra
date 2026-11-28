@@ -128,7 +128,7 @@ fn scope_bound(f: Fn) -> List<Stmts> {
         if coded(f).is_empty() { return [] }
         return [scope_let(quote { indexed_scope() })]
     }
-    let by? = f.annotations.find(marks(it, scoped_by))?.args?.first() else { return [scope_let(quote { ${name(f.params[0].name)}.query_scope() })] }
+    let by? = f.annotations.find((a) -> marks(a, scoped_by))?.args?.first() else { return [scope_let(quote { ${name(f.params[0].name)}.query_scope() })] }
     [scope_let(quote { ${by}(..${[name(p.name) for p in f.params]}) })]
 }
 
@@ -263,7 +263,7 @@ fn named_by(f: Fn) -> List<Stmts> {
 /// Whether a call of several plain seats is asked by its spelling: one that outlives the process
 /// over the `Db`, or through a context that wears `@lasting`.
 fn spelled_by_name(f: Fn) -> bool {
-    outlives(f) && (is_db(f.params[0].kind) || f.annotations.any(marks(it, lasting)))
+    outlives(f) && (is_db(f.params[0].kind) || f.annotations.any((a) -> marks(a, lasting)))
 }
 
 /// A call of several plain seats asked by its spelling: the tab-joined spelling cut back into
@@ -357,7 +357,7 @@ export fn over(f: Fn, lister: Fn) -> Declared {
 /// key, a lister that is no query over the Db alone, a lister whose
 /// answer is not the producer's keys.
 export fn over_problems(f: Fn, lister: Fn) -> List<Diagnostic> {
-    if f.annotations.any(marks(it, query)) { return [over_beside_query(f)] }
+    if f.annotations.any((a) -> marks(a, query)) { return [over_beside_query(f)] }
     let first? = f.params.first() else { return [over_no_db(f)] }
     if !is_db(first.kind) { return [over_no_db(f)] }
     if f.params.length != 2 { return [over_one_key(f)] }
@@ -453,7 +453,7 @@ export fn recursive(f: Fn) -> List<Diagnostic> { if queried(f) { [] } else { [ma
 /// seats in, its answer out.
 export fn cycled_by(f: Fn, by: Fn) -> List<Diagnostic> {
     if !queried(f) { return [mark_alone(f, "cycled_by")] }
-    if f.annotations.any(marks(it, recursive)) { return [cycle_twice(f)] }
+    if f.annotations.any((a) -> marks(a, recursive)) { return [cycle_twice(f)] }
     let same = by.params.length == f.params.length &&
         [p.ty == f.params[i].ty for i, p in by.params].all(it)
     if !same || by.answer != f.answer { return [cycle_shape(f, by)] }
@@ -465,7 +465,7 @@ export fn cycled_by(f: Fn, by: Fn) -> List<Diagnostic> {
 /// every member's seats in, its answer out.
 export fn fixpoint(f: Fn, bottom: Fn, join: Fn) -> List<Diagnostic> {
     if !queried(f) { return [mark_alone(f, "fixpoint")] }
-    if f.annotations.any(marks(it, recursive) || marks(it, cycled_by)) { return [fixpoint_twice(f)] }
+    if f.annotations.any((a) -> marks(a, recursive) || marks(a, cycled_by)) { return [fixpoint_twice(f)] }
     if !bottom.params.is_empty() || bottom.answer != f.answer { return [bottom_shape(f, bottom)] }
     let joins = join.params.length == 2 && join.params.all((p: Param) -> p.ty == f.answer)
     if !joins || join.answer != f.answer { return [join_shape(f, join)] }
@@ -474,12 +474,12 @@ export fn fixpoint(f: Fn, bottom: Fn, join: Fn) -> List<Diagnostic> {
 
 /// The `@fixpoint` mark's two fns, when the query wears it.
 fn fixpoint_words(f: Fn) -> List<string>? {
-    let mark? = f.annotations.find(marks(it, fixpoint)) else { return null }
+    let mark? = f.annotations.find((a) -> marks(a, fixpoint)) else { return null }
     if mark.args.length == 2 { mark.args } else { null }
 }
 
 /// Whether a fn is a query.
-fn queried(f: Fn) -> bool { f.annotations.any(marks(it, query) || marks(it, over)) }
+fn queried(f: Fn) -> bool { f.annotations.any((a) -> marks(a, query) || marks(a, over)) }
 
 /// The answer's digest, picked by its type: an answer the stable encoding folds (every answer
 /// that is saved is one, and its codec's bytes are the digest) digests by that fold; an answer
@@ -498,8 +498,8 @@ fn folds_stably(f: Fn) -> bool { carried(f.answers, in_process) }
 /// How a call opens: a recursive query computes again on re-entry, a cycled one answers
 /// what its mark names.
 fn opened(f: Fn) -> Code {
-    if f.annotations.any(marks(it, recursive)) { return quote { held.memo.start_recursive(arg) } }
-    let mark? = f.annotations.find(marks(it, cycled_by)) else { return quote { held.memo.start(arg) } }
+    if f.annotations.any((a) -> marks(a, recursive)) { return quote { held.memo.start_recursive(arg) } }
+    let mark? = f.annotations.find((a) -> marks(a, cycled_by)) else { return quote { held.memo.start(arg) } }
     let args = [name(p.name) for p in f.params]
     let by = mark.args.first() ?? ""
     quote { held.memo.start_cycled(arg, () -> ${by}(${..args})) }
@@ -513,7 +513,7 @@ fn opened(f: Fn) -> Code {
 /// unless it wears `@lasting`.
 fn saved(f: Fn) -> bool {
     let ctx = !is_db(f.params[0].kind)
-    (!ctx || scoped(f) || !coded(f).is_empty() || f.annotations.any(marks(it, lasting))) &&
+    (!ctx || scoped(f) || !coded(f).is_empty() || f.annotations.any((a) -> marks(a, lasting))) &&
         f
             .params
             .slice(1, f.params.length)

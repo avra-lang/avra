@@ -692,6 +692,13 @@ fn derive_site(name: string, item: ItemId, t: TraitAt) -> GeneratorSite {
     }
 }
 
+/// `@std/meta`'s annotations the compiler reads itself, which run nothing.
+const COMPILER_READ: List<Known> = [
+    Known { package: "@std/meta", name: "reads" },
+    Known { package: "@std/meta", name: "reads_rules" },
+    Known { package: "@std/meta", name: "worn_on" },
+]
+
 /// Whether a site is a `@derive` of the trait `t`.
 fn derives_trait(site: GeneratorSite, t: TraitAt) -> bool {
     match site.generator.kind {
@@ -700,10 +707,11 @@ fn derives_trait(site: GeneratorSite, t: TraitAt) -> bool {
     }
 }
 
-/// A `collect enum` with traits: the members it gathers and each of its traits that writes a
-/// `derive`, which a member writing no impl of it takes.
+/// A `collect enum` with traits: the members it gathers, each of its traits that writes a `derive`,
+/// which a member writing no impl of it takes, and every reader of its members' marks — those traits
+/// and what the enum's own annotations derive.
 @derive(Saved)
-type DerivedGathering = { members: List<DeclaredName>, derived: List<TraitAt> }
+type DerivedGathering = { members: List<DeclaredName>, derived: List<TraitAt>, readers: List<TraitAt> = [] }
 
 /// Each `collect enum` a package writes with a trait that derives, and what it gathers; and what the
 /// members its enums gather over a trait that derives nothing owe of impls, kept by the path of the
@@ -767,7 +775,18 @@ fn gathering(engine: QueryEngine, d: DeclaredName) -> DerivedGathering? {
     let derived = [t for t in gathered_traits(engine, d.file, d.name, true) if derives(engine, t)]
     if derived.is_empty() { return null }
     let members? = members_of(engine, d.file, d.name, false, "") else { return null }
-    DerivedGathering { members: members, derived: derived }
+    DerivedGathering {
+        members: members,
+        derived: derived,
+        readers: derived.concat(enum_readers(engine, d)),
+    }
+}
+
+/// What the annotations the `collect enum` `d` wears derive: readers of its members' marks too.
+export fn enum_readers(engine: QueryEngine, d: DeclaredName) -> List<TraitAt> {
+    let item = read_item(engine, d.file, d.item)
+    let s? = item.stmts.find((x) -> item.store.declared_name(x) == d.name) else { return [] }
+    derived_traits(engine, d.file, item, s)
 }
 
 /// The generators one annotation on `d` names, its name read among written names alone: each trait
@@ -790,7 +809,7 @@ fn annotation_sites(
     if derive_fn(named) {
         return [derive_site(name, item, t!) with { word: a.name } for e in a.args for t in [trait_named(engine, scope, file, arg_lit(store, e).text)] if t != null]
     }
-    if named.kind != ItemKind.Fn { return [] }
+    if named.kind != ItemKind.Fn || COMPILER_READ.any((k) -> k.is_in(named.file, named.name)) { return [] }
     let made_as? = annotation_kind(engine, named.file, named.name) else { return [] }
     if !made_as.first_seat().takes(kind) { return [] }
     let generator = GeneratorAt { file: named.file, name: named.name, kind: made_as }
@@ -1175,89 +1194,37 @@ fn meta_named(ty: SignedType, name: string) -> bool {
     Known { package: STD_META.name, name: name }.heads(ty.head)
 }
 
-/// What the `@derive`s the statement `s` of `file` wears claim of the marks written on the
-/// declaration `name` it makes: the union of each derived trait's own `marks` run over it. Absent
-/// where that can't be known — it wears an annotation that is no `@derive`, a derived trait is
-/// written in this file or its `marks` doesn't run; a trait that declares no `marks` claims nothing.
-export fn derive_claims(
-    engine: QueryEngine,
-    file: SourceFileAddress,
-    store: SyntaxArena,
-    s: StmtId,
-    name: string,
-) -> List<string>? {
+/// What the readers the statement `s` of `file` wears read of the marks written on the declaration
+/// it makes: each fn a trait it derives names in its `@reads`, and whether one of them reads every
+/// rule its members wear (`@reads_rules`). Absent where that can't be known — it wears an annotation
+/// that is no reader.
+export fn derive_claims(engine: QueryEngine, file: SourceFileAddress, store: SyntaxArena, s: StmtId) -> Claims? {
     let scope? = written_file_scope(engine, file) else { return null }
     let worn = store.annotations_of(s)
     if worn.is_empty() { return null }
-    mut claims: List<string> = []
+    mut traits: List<TraitAt> = []
     for a in worn {
         let meant = annotation_meant(engine, scope, file, a.name)
         let derived = meant_trait(meant)
-        let traits: List<TraitAt?> = if derived != null {
-            [derived]
+        if derived != null {
+            traits = traits.concat([derived!])
         } else {
             let d? = meant_fn(meant) else { return null }
             if !derive_fn(d) { return null }
-            [trait_named(engine, scope, file, arg_lit(store, e).text) for e in a.args]
-        }
-        for named in traits {
-            let t? = named else { return null }
-            if t.file == file { return null }
-            let held? = trait_claims(engine, t, file, name).claims else { return null }
-            claims = claims.concat(held)
+            let named = [trait_named(engine, scope, file, arg_lit(store, e).text) for e in a.args]
+            if named.any(it == null) { return null }
+            traits = traits.concat([t! for t in named])
         }
     }
-    claims
-}
-
-/// What one trait claims of the marks on a declaration: the names its `marks` answers, or absent
-/// where they can't be known.
-@derive(Saved)
-export type TraitClaims = { claims: List<string>? }
-
-/// The trait `t`'s own `static fn marks` run over the declaration `file` writes as `name`, as its
-/// `derive` is run: the marks it claims; none where it declares no `marks`, absent where it doesn't
-/// run.
-@query("generate")
-export fn trait_claims(engine: QueryEngine, t: TraitAt, file: SourceFileAddress, name: string) -> TraitClaims {
-    let unknown = TraitClaims { claims: null }
-    let body? = trait_static_body(engine, t, CLAIMS) else { return TraitClaims { claims: [] } }
-    let unit = "${t.name}.${CLAIMS}"
-    let root = lowered_signed(engine, t.file, body, unit, null)
-    if !root.whole() { return unknown }
-    let symbol = declared_symbol(t.file, unit)
-    let made = match made_reaching(
-        task_survey(engine),
-        root,
-        symbol,
-        root.params,
-        TaskChecks.Tested,
-        lazy: true,
-        unhashed_absent: true,
-    ) { .Made(l) -> l, .Unmade(_, _) or .Refused(_) -> { return unknown } }
-    mut heap = new_meta_heap()
-    let arg? = meta_handed(engine, DeclSeat.Type, file, name, heap) else { return unknown }
-    match run_lifted(
-        made,
-        symbol,
-        [arg],
-        heap,
-        lifted_budgets(engine, file.package_name),
-        (n: string) -> named_lifted(engine, file, n),
-        null,
-        null,
-        spelled: reader_spelled(file.package_name),
-        late: late_door(task_survey(engine), TaskChecks.Tested),
-    ) {
-        .Ok(ran) -> TraitClaims {
-            claims: [w for v in ran.heap.slots(ran.answer) for w in some_list(match v { .Text(x) -> x, rest -> null })],
-        },
-        .Err(_) -> unknown,
+    Claims {
+        words: [d.name for t in traits for d in trait_reads(engine, t).read],
+        rules: traits.any((t) -> reads_rules(engine, t)),
     }
 }
 
-/// The static fn a trait claims the marks on a declaration through.
-const CLAIMS: string = "marks"
+/// What a declaration's readers read of its members' marks: the words of the fns they name, and
+/// whether one reads every rule.
+export type Claims = { words: List<string>, rules: bool }
 
 /// The trait `name` names from `file`, absent for a name naming none.
 /// The fn an annotation's word names, where it names one.

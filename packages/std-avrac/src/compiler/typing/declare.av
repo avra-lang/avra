@@ -30,6 +30,7 @@ use core.{
     FileId,
     Scoped,
     faceted,
+    CORE_FACET,
 }
 use diagnostics.{refusal, Diag, Voice, said_as, unread_behind}
 use features.fns.{param_typeless}
@@ -167,7 +168,22 @@ impl TypeCx {
         // the member's signature is this table's recorded input: its answer is
         // not read, so a member in flight costs nothing but the edge
         let _ = self.view.decls.sig(m.id)
-        [self.gathered_slot(s, m, f) for f in self.view.decls.store_of(m.file).declared_fields(m.stmt) if !faceted(f.marks)]
+        let gathering = self.view.decls.decl_of(self.view.file, s)
+        let readers = self
+            .gathering_readers(s)
+            .concat(self.view.decls.mark_readers(m.id))
+            .concat(if gathering == null { [] } else { self.view.decls.mark_readers(gathering!) })
+        let decls = self.view.decls
+        [self.gathered_slot(s, m, f) for f in decls.store_of(m.file).declared_fields(m.stmt) if !faceted(
+            f.marks,
+            (mk) -> decls.is_known(decls.mark_binding_among(readers, m.file, mk.name), CORE_FACET),
+        )]
+    }
+
+    /// The traits the `collect enum` `s` derives over its members, each resolved where it is written.
+    fn gathering_readers(s: StmtId) -> List<DeclId> {
+        let ns = (self.view.decls.namespace_of.get())(self.view.file)
+        [d! for e in self.view.store.collect_enum_parts(s)?.traits ?? [] for n in [self.view.store.ident_name(e)] if n != null for d in [ns.type_decl(n!)] if d != null]
     }
 
     /// One written field of a member as a payload's type, read in the

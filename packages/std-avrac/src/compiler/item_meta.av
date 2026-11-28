@@ -33,6 +33,8 @@ use core.{
     spelled,
     decl_key,
     decl_keyed,
+    CORE_FACET,
+    Known,
 }
 use features.{
     Lifted,
@@ -263,12 +265,21 @@ fn declared_meta(engine: QueryEngine, d: DeclaredName) -> MetaType? {
                 written_default(engine, d.file, item, p),
                 field_cell(engine, signed, p),
                 docs[i],
+                member_traits(engine, d, item, s),
             ) for i, p in parts.fields], spreads: [spelled(x.of) for x in parts.spreads], body: body_meta(engine, d.file, item, s) }
         },
         .Enum -> {
             let parts? = item.store.enum_parts(s) else { return null }
             let signed = enum_signature(engine, d.file, d.name)?.variants ?? []
-            base with { variants: [variant_meta(engine, d.file, item, v, signed.find(it.name == v.name.of)?.payloads ?? []) for v in parts.variants] }
+            let traits = member_traits(engine, d, item, s)
+            base with { variants: [variant_meta(
+                engine,
+                d.file,
+                item,
+                v,
+                signed.find(it.name == v.name.of)?.payloads ?? [],
+                traits,
+            ) for v in parts.variants] }
         },
         .Named -> {
             let parts? = item.store.named_parts(s) else { return null }
@@ -279,8 +290,9 @@ fn declared_meta(engine: QueryEngine, d: DeclaredName) -> MetaType? {
         },
         .CollectEnum -> {
             let members? = members_of(engine, d.file, d.name, false, "") else { return null }
-            let derived = [t.name for t in gathered_traits(engine, d.file, d.name) if derives(engine, t)]
-            base with { variants: [gathered_variant(engine, m, derived) for m in members] }
+            let derived = [t for t in gathered_traits(engine, d.file, d.name) if derives(engine, t)]
+            let readers = derived.concat(enum_readers(engine, d))
+            base with { variants: [gathered_variant(engine, m, derived, readers) for m in members] }
         },
         .Fn or .Alias or .Trait or .Syntax or .Collect or .Const or .State or .Ctx -> null,
     }
@@ -535,8 +547,13 @@ const TESTS_DIR: string = "tests"
 
 /// A gathered member as a `Variant`: its name, its record's fields as the payload, each typed where
 /// the member stands, the marks it wears, every annotation it wears, and the traits it implements: its written impls', and each
-/// of `derived`, which its enum derives for a member that writes none.
-fn gathered_variant(engine: QueryEngine, m: DeclaredName, derived: List<string>) -> MetaVariant {
+/// of `derived`, which its enum derives for a member that writes none; its marks bind among `readers`.
+fn gathered_variant(
+    engine: QueryEngine,
+    m: DeclaredName,
+    derived: List<TraitAt>,
+    readers: List<TraitAt>,
+) -> MetaVariant {
     let item = read_item(engine, m.file, m.item)
     let declaring = [s for s in item.stmts if item.store.declared_name(s) == m.name]
     let fields = [p for s in declaring for p in item.store.struct_parts(s)?.fields ?? []]
@@ -546,9 +563,10 @@ fn gathered_variant(engine: QueryEngine, m: DeclaredName, derived: List<string>)
         item.store.struct_parts(s)?.fields ?? [],
     )]
     let signed = record_signature_written(engine, m.file, m.name)?.fields ?? []
+    let member_readers = readers
     MetaVariant {
         name: m.name,
-        payload: [if p.ty == null { "" } else { spelled(p.ty!) } for p in fields if !faceted(p.marks)],
+        payload: [if p.ty == null { "" } else { spelled(p.ty!) } for p in fields if !faceted(p.marks, (mk) -> mark_binds(engine, m.file, member_readers, mk.name, CORE_FACET))],
         at: null,
         fields: [field_meta(
             engine,
@@ -559,12 +577,13 @@ fn gathered_variant(engine: QueryEngine, m: DeclaredName, derived: List<string>)
             written_default(engine, m.file, item, p),
             field_cell(engine, signed, p),
             docs[i],
+            readers,
         ) for i, p in fields],
         marks: [annotated_mark(engine, m.file, item, a) for s in declaring for a in item.store.annotations_of(s) if marks_a_member(engine, m.file, a.name)],
         annotations: flatten(
             [annotation_metas(engine, m.file, item, a) for s in declaring for a in item.store.annotations_of(s)],
         ),
-        impls: distinct(written_traits(engine, m.file, m.name).concat(derived)),
+        impls: distinct(written_traits(engine, m.file, m.name).concat([t.name for t in derived])),
     }
 }
 
@@ -572,7 +591,13 @@ fn gathered_variant(engine: QueryEngine, m: DeclaredName, derived: List<string>)
 /// write.
 fn annotated_mark(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, a: Annotation) -> MetaMark {
     let written = annotation_meta(engine, file, item, a)
-    MetaMark { name: written.name, args: written.args, at: written.at, named: written.named }
+    MetaMark {
+        name: written.name,
+        args: written.args,
+        at: written.at,
+        named: written.named,
+        key: written.key,
+    }
 }
 
 /// Whether the annotation `name`, read where `file` writes it, is a mark: its fn answers
@@ -588,9 +613,10 @@ const MARKER: string = "Marker"
 
 /// A gathered member's payload: its record's fields that are no facet, each typed where the member
 /// stands.
-fn member_payloads(engine: QueryEngine, m: DeclaredName) -> List<FieldSeat> {
+fn member_payloads(engine: QueryEngine, m: DeclaredName, derived: List<TraitAt>) -> List<FieldSeat> {
     let item = read_item(engine, m.file, m.item)
-    let carried = [p.name.text() for s in item.stmts if item.store.declared_name(s) == m.name for p in item.store.struct_parts(s)?.fields ?? [] if !faceted(p.marks)]
+    let readers = derived
+    let carried = [p.name.text() for s in item.stmts if item.store.declared_name(s) == m.name for p in item.store.struct_parts(s)?.fields ?? [] if !faceted(p.marks, (mk) -> mark_binds(engine, m.file, readers, mk.name, CORE_FACET))]
     [f for f in record_signature_written(engine, m.file, m.name)?.fields ?? [] if carried.contains(f.name)]
 }
 
@@ -606,6 +632,7 @@ fn field_meta(
     default: MetaCode?,
     cell: bool,
     doc: string?,
+    traits: List<TraitAt>,
 ) -> MetaField {
     MetaField {
         name: p.name.text(),
@@ -613,8 +640,8 @@ fn field_meta(
         ty: if p.ty == null { "" } else { spelled(p.ty!) },
         at: meta_place(engine, file, item, item.store.param_id_span(p.id)),
         kind: if cell { Kind.Cell(kind) } else { kind },
-        marks: [mark_meta(engine, file, item, m) for m in p.marks],
-        annotations: [mark_as_annotation(engine, file, item, m) for m in p.marks],
+        marks: [mark_meta(engine, file, item, m, traits) for m in p.marks],
+        annotations: [mark_as_annotation(engine, file, item, m, traits) for m in p.marks],
         defaulted: p.default != null,
         says: says_meta(engine, file, item, p, kind),
         default: default,
@@ -717,14 +744,25 @@ fn variant_meta(
     item: ReadItem,
     v: VariantDecl,
     signed: List<FieldSeat>,
+    traits: List<TraitAt>,
 ) -> MetaVariant {
     let docs = field_docs(item.store, v.span?.lo ?? 0, v.payloads)
     MetaVariant {
         name: v.name.of,
         payload: [if p.ty == null { "" } else { spelled(p.ty!) } for p in v.payloads],
         at: meta_place(engine, file, item, v.span),
-        fields: [field_meta(engine, file, item, p, field_kind(signed, p.name.text()), null, false, docs[i]) for i, p in v.payloads],
-        marks: [mark_meta(engine, file, item, m) for m in v.marks],
+        fields: [field_meta(
+            engine,
+            file,
+            item,
+            p,
+            field_kind(signed, p.name.text()),
+            null,
+            false,
+            docs[i],
+            traits,
+        ) for i, p in v.payloads],
+        marks: [mark_meta(engine, file, item, m, traits) for m in v.marks],
     }
 }
 
@@ -734,29 +772,79 @@ fn field_kind(signed: List<FieldSeat>, name: string) -> Kind {
     signed_kind(ty)
 }
 
-/// A mark as a `Mark`.
-fn mark_meta(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, m: Mark) -> MetaMark {
+/// A mark as a `Mark`, with the identity of the `Marker` fn its word binds among `traits`'.
+fn mark_meta(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    item: ReadItem,
+    m: Mark,
+    traits: List<TraitAt>,
+) -> MetaMark {
     MetaMark {
         name: m.name,
         args: m.args,
         at: meta_place(engine, file, item, m.span),
         named: named_args(m),
+        key: member_mark_key(engine, file, traits, m.name),
     }
 }
+
+/// The identity of the one `Marker` fn the mark word `word` binds among `traits`'; empty where it
+/// binds none, or two, which the declaration's own law refuses.
+fn mark_key(engine: QueryEngine, traits: List<TraitAt>, word: string) -> string {
+    let bound = trait_markers(engine, traits, word)
+    if bound.length == 1 { key_of(bound[0]) } else { "" }
+}
+
+/// The identity of the fn a member's mark `word`, written in `file`, binds: the one a reader of its
+/// declaration reads, else the fn the word names where it is written.
+fn member_mark_key(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    traits: List<TraitAt>,
+    word: string,
+) -> string {
+    let bound = mark_key(engine, traits, word)
+    if bound.is_empty() { key_of(named_decl(engine, file, word)) } else { bound }
+}
+
+/// Whether the mark `word`, written in `file` on a member whose declaration's readers are `traits`,
+/// binds the fn `known` names.
+fn mark_binds(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    traits: List<TraitAt>,
+    word: string,
+    known: Known,
+) -> bool {
+    let bound = trait_markers(engine, traits, word)
+    if bound.length > 1 { return false }
+    let d? = bound.first() ?? named_decl(engine, file, word) else { return false }
+    known.is_in(d.file, d.name)
+}
+
+/// The traits a declaration's members' marks bind among.
+fn member_traits(engine: QueryEngine, d: DeclaredName, item: ReadItem, s: StmtId) -> List<TraitAt> { declaration_traits(engine, d.file, item, s) }
 
 /// A mark's named arguments, each as its label and literal.
 fn named_args(m: Mark) -> List<MetaMarkArg> { [MetaMarkArg { label: n.label, value: n.value } for n in m.named] }
 
 /// A member's mark `file` writes as its own `Annotation`, with the call a rule splices and the
 /// identity of the fn its name resolves to.
-fn mark_as_annotation(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, m: Mark) -> MetaAnnotation {
+fn mark_as_annotation(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    item: ReadItem,
+    m: Mark,
+    traits: List<TraitAt>,
+) -> MetaAnnotation {
     MetaAnnotation {
         name: m.name,
         args: m.args,
         at: meta_place(engine, file, item, m.span),
         call: call_written(engine, file, item, m.name, m.span),
         named: named_args(m),
-        key: key_of(named_decl(engine, file, m.name)),
+        key: member_mark_key(engine, file, traits, m.name),
     }
 }
 

@@ -99,13 +99,16 @@ export fn facet_table(f: Field) -> string? {
 
 /// The side table a WRITTEN field's own marks name — the same question
 /// asked of the store's `Mark`, before the crossing makes a `Field`.
-export fn facet_on(marks: List<Mark>) -> string? {
-    let m? = marks.find(it.name == facet_word) else { return null }
+export fn facet_on(marks: List<Mark>, is_facet: fn(Mark) -> bool) -> string? {
+    let m? = marks.find(is_facet(it)) else { return null }
     m.args.first()
 }
 
 /// Whether a written field's marks name a facet.
-export fn faceted(marks: List<Mark>) -> bool { facet_on(marks) != null }
+export fn faceted(marks: List<Mark>, is_facet: fn(Mark) -> bool) -> bool { facet_on(marks, is_facet) != null }
+
+/// core's `facet`, as a law knows it.
+export const CORE_FACET: Known = Known { package: "@std/avrac", name: "facet" }
 
 // ── The ANCHOR. A route says what a payload CARRIES; an anchor says
 // where the node it belongs to BEGINS. It rides beside the route and
@@ -147,7 +150,7 @@ export trait Fingerprint {
 /// variant's payload. A type that is neither has nothing to fold and
 /// answers its name alone, which is still an identity.
 fn body_of(t: MetaType) -> MetaDecls {
-    if t.annotations.any(marks(it, codec)) {
+    if t.annotations.any((a) -> marks(a, codec)) {
         return quote {
             fn fingerprint() -> int { ${name(t.name)}.digest_in(indexed_scope(), self) }
             fn fingerprint_in(ids: Ids) -> int { ${name(t.name)}.digest_in(ids.as_scope(), self) }
@@ -308,7 +311,7 @@ fn folded(k: Kind, e: Code, leaf: Folds) -> Code {
 /// key and its fold alike.
 fn wears_codec(n: string) -> bool {
     let t? = type_named(n) else { return false }
-    t.annotations.any(marks(it, codec))
+    t.annotations.any((a) -> marks(a, codec))
 }
 
 /// A GENERIC RECORD OF ONE PARAMETER folds through its own `fingerprint_with`, handed the

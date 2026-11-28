@@ -505,7 +505,7 @@ fn derived_traits(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, 
 const SEEDED_AT_NEED: string = "seeded_at_need"
 
 /// The item declaring the trait `t`.
-fn read_trait(engine: QueryEngine, t: TraitAt) -> ReadItem? { declaring_item(engine, t.file, t.name, ItemKind.Trait) }
+export fn read_trait(engine: QueryEngine, t: TraitAt) -> ReadItem? { declaring_item(engine, t.file, t.name, ItemKind.Trait) }
 
 /// A file as one key.
 fn file_key(f: SourceFileAddress) -> string { "${f.package_name}/${f.path_in_package}" }
@@ -739,11 +739,17 @@ fn gathering_shape(store: SyntaxArena, s: StmtId) -> GatheringShape? {
 fn gathered_signature(engine: QueryEngine, file: SourceFileAddress, name: string) -> EnumSignature? {
     if declaring_item(engine, file, name, ItemKind.CollectEnum) == null { return null }
     let members? = members_of(engine, file, name, false, "") else { return null }
+    let derived = gathered_traits(engine, file, name)
+        .concat(
+            some_list(file_declares_named(engine, file, name).names.first())
+                .map((e) -> enum_readers(engine, e))
+                .flatten(),
+        )
     EnumSignature {
         type_params: [],
         variants: [VariantSeat {
             name: m.name,
-            payloads: member_payloads(engine, m),
+            payloads: member_payloads(engine, m, derived),
             member: headed_type(TypeHead.Declared(m.file, m.name)),
         } for m in members],
     }

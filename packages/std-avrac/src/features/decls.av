@@ -1917,6 +1917,42 @@ impl Decls {
         known.is(self.package_of(at), self.decl(at).name)
     }
 
+    /// THE FN A MEMBER'S MARK BINDS: the mark `word` worn on a member of
+    /// the declaration `owner` binds among the fns its readers name in their
+    /// `@reads` — the traits it implements or derives, the annotation fns it
+    /// wears — else the fn the word names where `owner` is written. One
+    /// binding, the one the meta crossing writes as the mark's `key`; absent
+    /// where it binds none, or two.
+    fn mark_binding(owner: DeclId, word: string) -> DeclId? { self.mark_binding_among(self.mark_readers(owner), self.annotation_home(owner), word) }
+
+    /// The fn the mark `word`, worn in `home`, binds among what `readers` name in their `@reads`, else
+    /// the fn the word names in `home`; absent where it binds none, or two.
+    fn mark_binding_among(readers: List<DeclId>, home: FileId, word: string) -> DeclId? {
+        let read = [r for reader in readers for r in self.reads_of(reader) if self.decl(r).name == word]
+        let each = [r for j, r in read if read.find_index(same_decl(it, r)) == j]
+        if each.length == 1 { return each[0] }
+        if each.length > 1 { return null }
+        (self.namespace_of.get())(home).fn_decl(word)
+    }
+
+    /// Whether the mark `word` on a member of `owner` binds the fn `known` names.
+    fn mark_is(owner: DeclId, word: string, known: Known) -> bool { self.is_known(self.mark_binding(owner, word), known) }
+
+    /// The readers of `owner`'s members' marks: each annotation's fn it wears and each trait those
+    /// annotations name.
+    fn mark_readers(owner: DeclId) -> List<DeclId> {
+        let ns = (self.namespace_of.get())(self.annotation_home(owner))
+        let worn = [d! for a in self.annotations_of(owner) for d in [ns.fn_decl(a.name) ?? ns.type_decl(a.name)] if d != null]
+        let named = [d! for a in self.annotations_of(owner) for x in a.args for d in [ns.type_decl(x.text)] if d != null]
+        worn.concat(named)
+    }
+
+    /// The fns the reader `r` names in its `@reads`, each resolved where `r` is written.
+    fn reads_of(r: DeclId) -> List<DeclId> {
+        let ns = (self.namespace_of.get())(self.annotation_home(r))
+        [d! for a in self.meta_annotations(r, "reads") for x in a.args for d in [ns.fn_decl(x.text)] if d != null]
+    }
+
     /// Whether a declaration IS `@std/meta`'s export of `name`.
     fn is_meta_fn(d: DeclId, name: string) -> bool {
         Known { package: STD_META.name, name: name }.is(self.package_of(d), self.decl(d).name)

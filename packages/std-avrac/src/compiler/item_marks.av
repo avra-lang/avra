@@ -3,6 +3,7 @@
 //! claims only the marks the compiler reads itself; one wearing only `@derive`s claims those and what
 //! each derived trait's `marks` answers, run over it. One another annotation stands on, and a
 //! `collect enum`, whose members' marks its readers hold, are left alone. Read off the item's syntax.
+use features.{arg_lit}
 use core.{
     Annotation,
     CollectKind,
@@ -17,6 +18,7 @@ use core.{
     STD_META,
 }
 use compiler.laws.{Found, law}
+use features.annotations.check.{miscounted}
 use diagnostics.{Voice}
 use @std.program.address.{SourceFileAddress}
 use @std.meta.{derive}
@@ -56,11 +58,23 @@ fn derived_unread(
 ) -> List<Found> {
     let written = store.marks_written(s)
     if written.is_empty() { return [] }
-    let name? = decl_word(store, s) else { return [] }
-    let read? = derive_claims(engine, file, store, s, name) else { return [] }
-    let claimed = distinct(read.concat(own))
-    [unread_at(m.span, m.name, "", claimed) for m in written if !claimed.contains(m.name)]
+    let read? = derive_claims(engine, file, store, s) else { return [] }
+    let claimed = distinct(read.words.concat(own))
+    [unread_at(m.span, m.name, "", claimed) for m in written if !claimed.contains(m.name) && !(read.rules && names_a_rule(engine, file, m.name))]
 }
+
+/// Whether `word`, read where `file` writes it, names a rule: a fn whose first seat takes a value.
+fn names_a_rule(engine: QueryEngine, file: SourceFileAddress, word: string) -> bool { rule_of(engine, named_decl(engine, file, word)) }
+
+/// Whether the reader `t` reads every rule its declarations' members wear: it wears `@reads_rules`.
+export fn reads_rules(engine: QueryEngine, t: TraitAt) -> bool {
+    let item? = read_trait(engine, t) else { return false }
+    let s? = item.stmts.find((x) -> item.store.declared_name(x) == t.name) else { return false }
+    item.store.annotations_of(s).any((a) -> binds_fn(engine, t.file, a.name, META_READS_RULES))
+}
+
+/// `@std/meta`'s annotation a reader of every rule wears.
+const META_READS_RULES: Known = Known { package: "@std/meta", name: "reads_rules" }
 
 /// Whether the statement `s` is its source's own and wears annotations, no `collect enum`: one whose
 /// claims its `@derive`s may say.
@@ -99,10 +113,169 @@ fn marks_alone(engine: QueryEngine, file: SourceFileAddress, store: SyntaxArena,
 /// Whether the annotation `name` read from `file` is a mark: a fn answering `@std/meta`'s `Marker`.
 fn marks(engine: QueryEngine, file: SourceFileAddress, name: string) -> bool {
     let d? = resolved(engine, file, Space.Value, name).named() else { return false }
+    answers_marker(engine, d)
+}
+
+/// Whether the declaration `d` is a mark's fn: a fn answering `@std/meta`'s `Marker`.
+export fn answers_marker(engine: QueryEngine, d: DeclaredName) -> bool {
     if d.kind != ItemKind.Fn { return false }
     let answer? = declared_signature_of(engine, d)?.answer else { return false }
     Known { package: STD_META.name, name: MARK_ANSWER }.heads(answer.head)
 }
+
+/// Every `Marker` fn named `word` one of `traits` reads, once each: what a member's mark of that
+/// word binds where its declaration derives or implements them.
+export fn trait_markers(engine: QueryEngine, traits: List<TraitAt>, word: string) -> List<
+    DeclaredName,
+> {
+    let found = [d for t in traits for d in trait_reads(engine, t).read if d.name == word]
+    [d for j, d in found if found.find_index((x) -> x.file == d.file && x.item == d.item) == j]
+}
+
+/// The readers whose `@reads` the members of the declaration `s` of `item` bind their marks among:
+/// the traits its annotations derive, the annotation fns it wears, and the traits each `collect
+/// enum` gathering it derives — what is written, never what impls are filed for it, which generators
+/// may still be making. None for a statement declaring no name.
+export fn declaration_traits(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    item: ReadItem,
+    s: StmtId,
+) -> List<TraitAt> {
+    let name? = decl_word(item.store, s) else { return [] }
+    let gathering = [t for d in file_declares_named(engine, file, name).names for g in package_gatherings(engine, file.package_name).each if g.members.any(it.is(d)) for t in g.readers]
+    let worn = [TraitAt { file: d!.file, name: d!.name } for a in item.store.annotations_of(s) for d in [written_resolution(engine, file, Space.Value, a.name).named()] if d != null && d!.kind == ItemKind.Fn]
+    derived_traits(engine, file, item, s).concat(worn).concat(gathering)
+}
+
+/// The `Marker` fns a trait names in its `@reads`.
+@derive(Saved)
+export type TraitReads = { read: List<DeclaredName> }
+
+/// The fns the trait `t` names in its `@reads` that a member may wear, each resolved where the trait
+/// is written.
+@query("generate")
+export fn trait_reads(engine: QueryEngine, t: TraitAt) -> TraitReads {
+    let item? = read_trait(engine, t) ?? declaring_item(engine, t.file, t.name, ItemKind.Fn) else { return TraitReads { read: [] } }
+    TraitReads {
+        read: [d for r in reads_named(engine, t.file, item, t.name) if member_wearable(engine, r.d) for d in [r.d]],
+    }
+}
+
+/// A name a trait's `@reads` writes, where it stands, and the declaration it resolves to.
+type ReadNamed = { name: string, at: Span?, d: DeclaredName }
+
+/// Each name the `@reads` on the trait `name` of `item`, in `file`, writes that resolves to a
+/// declaration, resolved where the trait is written.
+fn reads_named(engine: QueryEngine, file: SourceFileAddress, item: ReadItem, name: string) -> List<
+    ReadNamed,
+> {
+    let store = item.store
+    let s? = item.stmts.find((x) -> store.declared_name(x) == name) else { return [] }
+    [ReadNamed { name: n!, at: store.expr_span(e), d: d! } for a in store.annotations_of(s) if binds_fn(engine, file, a.name, META_READS) for e in a.args for n in [store.ident_name(e)] if n != null for d in [written_resolution(engine, file, Space.Value, n!).named()] if d != null]
+}
+
+/// Where the fn `d` may be worn, as its `@worn_on` says, each place by its `Wear` variant; absent where
+/// it says nothing, so its first seat says.
+export fn declared_wears(engine: QueryEngine, d: DeclaredName) -> List<string>? {
+    if d.kind != ItemKind.Fn { return null }
+    let item = read_item(engine, d.file, d.item)
+    let s? = item.stmts.find((x) -> item.store.fn_parts(x)?.name == d.name) else { return null }
+    let worn = [a for a in item.store.annotations_of(s) if binds_fn(engine, d.file, a.name, META_WORN_ON)]
+    if worn.is_empty() { return null }
+    [wear_of(arg_lit(item.store, x).text) for a in worn for e in a.args for x in item.store.expr(e).elems_of() ?? [e]]
+}
+
+/// The `Wear` variant a written place names: `.Field` or `Wear.Field` alike.
+fn wear_of(text: string) -> string { text.split(".").last() ?? text }
+
+/// Whether a member may wear the fn `d`: a `Marker`, or one its `@worn_on` lets a field, a variant
+/// or a parameter wear.
+export fn member_wearable(engine: QueryEngine, d: DeclaredName) -> bool {
+    let wears? = declared_wears(engine, d) else { return answers_marker(engine, d) || first_seat_a_member(engine, d) }
+    wears.any((w) -> MEMBER_WEARS.contains(w))
+}
+
+/// Whether the fn `d`'s first seat takes a member: `@std/meta`'s `Field`, `Variant` or `Param`.
+fn first_seat_a_member(engine: QueryEngine, d: DeclaredName) -> bool {
+    let ty? = fn_signature(engine, d.file, d.name)?.params?.first()?.ty else { return false }
+    MEMBER_SEATS.any(it.heads(ty.head))
+}
+
+/// The `@std/meta` declarations a member is crossed as.
+const MEMBER_SEATS: List<Known> = [
+    Known { package: "@std/meta", name: "Field" },
+    Known { package: "@std/meta", name: "Variant" },
+    Known { package: "@std/meta", name: "Param" },
+]
+
+/// The places a member is: a `Wear` variant each.
+const MEMBER_WEARS: List<string> = ["Field", "Variant", "Param"]
+
+/// `@std/meta`'s annotation a fn says where it may be worn by.
+const META_WORN_ON: Known = Known { package: "@std/meta", name: "worn_on" }
+
+/// a trait reads fns a member may wear
+export law reads_wearable {
+    kind: "annotation.reads_marker"
+    reads_view: reads_unwearable
+    voice: reads_unwearable_words
+    witness: "use @std.meta.{Type, Directive, reads}\n\nfn plain() -> int { 1 }\n\n@reads(plain)\ntrait T {\n    static fn derive(t: Type) -> List<Directive> { [] }\n}\n0\n"
+}
+
+/// Every name the `@reads` on a trait of `view`'s item writes whose fn no member may wear.
+fn reads_unwearable(view: ItemView) -> List<Found> {
+    let item = view.item
+    [Found { at: r.at, args: [r.name] } for s in item.stmts if item.store.trait_parts(s) != null for n in [item.store.declared_name(s)] if n != null for r in reads_named(view.engine, view.file, item, n!) if !member_wearable(view.engine, r.d)]
+}
+
+fn reads_unwearable_words(a: List<string>) -> Voice { reads_unwearable_said(a[0]) }
+
+/// a member's mark fills its fn's seats
+export law mark_fills_seats {
+    kind: "annotation.seats"
+    reads_view: marks_misfilled
+    voice: marks_misfilled_words
+    witness: "use kit.{A}\n\n@A\ntype R = { @named n: int }\n0\n"
+    witness_files: {
+        "src/kit/kit.av": "use @std.meta.{Named, Marker, Type, Directive, reads}\n\nexport fn named(_d: Named, word: string) -> Marker { Marker {} }\n\n@reads(named)\nexport trait A {\n    static fn derive(t: Type) -> List<Directive> { [] }\n}\n",
+    }
+}
+
+/// Every member's mark of `view`'s item that binds one fn and writes a count of arguments its seats
+/// past the first don't take: handed the word, the least and most it takes, and the count written.
+fn marks_misfilled(view: ItemView) -> List<Found> {
+    let item = view.item
+    flatten([misfilled(view, s) for s in item.stmts if !item.store.marks_written(s).is_empty()])
+}
+
+/// The marks the declaration `s` writes whose arguments don't fill the seats of the fn they bind.
+fn misfilled(view: ItemView, s: StmtId) -> List<Found> {
+    let traits = declaration_traits(view.engine, view.file, view.item, s)
+    if traits.is_empty() { return [] }
+    [Found {
+        at: m.span,
+        args: [m.name, "${t.least}", if t.rest { "" } else { "${t.most}" }, "${m.args.length}"],
+    } for m in view.item.store.marks_written(s) for bound in [trait_markers(view.engine, traits, m.name)] if bound.length == 1 for t in [mark_seats(view.engine, bound[0])] if m.args.length < t.least || !t.rest && m.args.length > t.most]
+}
+
+/// How many arguments a fn takes past its first seat: at least, at most, and whether a seat takes the
+/// rest.
+type SeatsTaken = { least: int, most: int, rest: bool }
+
+fn mark_seats(engine: QueryEngine, d: DeclaredName) -> SeatsTaken {
+    let params = (fn_signature(engine, d.file, d.name)?.params ?? []).drop(1)
+    SeatsTaken {
+        least: [p for p in params if !p.defaulted && !p.rest].length,
+        most: params.length,
+        rest: params.any(it.rest),
+    }
+}
+
+fn marks_misfilled_words(a: List<string>) -> Voice { miscounted(a[0], a[1], if a[2].is_empty() { "…" } else { a[2] }, a[3]) }
+
+/// `@std/meta`'s annotation a trait names the marks it reads by.
+const META_READS: Known = Known { package: "@std/meta", name: "reads" }
 
 /// The name the statement `s` declares, a fn's or a type's; absent for any other statement.
 fn decl_word(store: SyntaxArena, s: StmtId) -> string? { store.fn_parts(s)?.name ?? store.type_decl_name(s) }
@@ -218,6 +391,35 @@ export law mark_has_a_reader {
     voice: unread_words
     witness: "enum E {\n    @nobody A\n}\n"
 }
+
+/// a member's mark binds one marker
+export law mark_bound_once {
+    kind: "annotation.mark_twice"
+    reads_view: twice_bound_marks
+    voice: twice_bound_words
+    witness: "use kit.{A}\nuse other.{B}\n\n@A\n@B\ntype R = { @flag n: int }\n0\n"
+    witness_files: {
+        "src/kit/kit.av": "use @std.meta.{Named, Marker, Type, Directive, reads}\n\nexport fn flag(_d: Named) -> Marker { Marker {} }\n\n@reads(flag)\nexport trait A {\n    static fn derive(t: Type) -> List<Directive> { [] }\n}\n",
+        "src/other/other.av": "use @std.meta.{Named, Marker, Type, Directive, reads}\n\nexport fn flag(_d: Named) -> Marker { Marker {} }\n\n@reads(flag)\nexport trait B {\n    static fn derive(t: Type) -> List<Directive> { [] }\n}\n",
+    }
+}
+
+/// Every mark the written item `view` shows on a member whose word binds two different `Marker` fns
+/// among those its declaration's traits read: handed the word, then each fn's module.
+fn twice_bound_marks(view: ItemView) -> List<Found> {
+    let item = view.item
+    if !item.store.refusals().all(lexed_past(it)) { return [] }
+    flatten([twice_bound(view, s) for s in item.stmts if !item.store.marks_written(s).is_empty()])
+}
+
+/// The marks the declaration `s` of `view`'s item writes whose word binds two markers.
+fn twice_bound(view: ItemView, s: StmtId) -> List<Found> {
+    let traits = declaration_traits(view.engine, view.file, view.item, s)
+    if traits.is_empty() { return [] }
+    [Found { at: m.span, args: [m.name].concat([module_written("", b.file) for b in bound]) } for m in view.item.store.marks_written(s) for bound in [trait_markers(view.engine, traits, m.name)] if bound.length > 1]
+}
+
+fn twice_bound_words(a: List<string>) -> Voice { mark_bound_twice(a[0], a.drop(1)) }
 
 fn unread_words(a: List<string>) -> Voice { unread_mark_said(a[0], a.drop(2), if a[1].is_empty() { null } else { a[1] }) }
 

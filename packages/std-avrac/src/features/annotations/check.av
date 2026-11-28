@@ -51,6 +51,11 @@ export fn check_annotation(mut cx: TypeCx, s: StmtId, a: Annotation) {
         return
     }
     let kind: DeclKind? = declared_kind(cx, s)
+    let wears = [p for w in cx.view.decls.meta_annotations(d, "worn_on") for x in w.args for p in wears_written(x.text)]
+    if !wears.is_empty() && !wears.contains(wear_of_kind(kind)) {
+        worn_elsewhere(cx, a, wears)
+        return
+    }
     if !receiver_fits(cx, seats.first()!, kind) {
         wrong_receiver(cx, a, seats.first()!, kind)
         return
@@ -154,6 +159,36 @@ fn is_rule(cx: TypeCx, seats: List<TypeId>, s: StmtId) -> bool {
 fn counterfeit_meta(cx: TypeCx, seat: TypeId) -> bool {
     let took = cx.view.types.name_of(seat)
     ["Fn", "Type", "Named"].contains(took) && !cx.view.decls.meta_type(seat, took)
+}
+
+/// The `Wear` variant each place a written list names: `[.Type, Wear.Field]` is `Type`, `Field`.
+fn wears_written(text: string) -> List<string> {
+    [p.split(".").last() ?? p for piece in text.replace("[", "").replace("]", "").split(",") for p in [piece.trim()] if !p.is_empty()]
+}
+
+/// The `Wear` variant a declaration of `kind` stands in; empty where none says.
+fn wear_of_kind(kind: DeclKind?) -> string {
+    let k? = kind else { return "" }
+    match k {
+        .Record or .Enum or .Named or .Builtin or .Alias -> "Type",
+        .Fn or .Method -> "Fn",
+        .Trait -> "Trait",
+        .Syntax or .Default or .Impl or .Main or .Case or .Const or .Collect or .CollectEnum or .State -> "",
+    }
+}
+
+fn worn_elsewhere(mut cx: TypeCx, a: Annotation, wears: List<string>) {
+    let _ = cx
+        .spoken(said_as("annotation.worn_on", at_annotation(cx, a), worn_only_on(a.name, wears)))
+}
+
+/// `@${name}`, whose fn says it is worn only on `wears`, worn on another declaration.
+export fn worn_only_on(name: string, wears: List<string>) -> Voice {
+    Voice {
+        message: "an annotation is worn where its fn says it may be",
+        label: "`${name}` is worn on ${wears.map("`.${it}`").join(", ")} alone",
+        help: "wear it where its `@worn_on` says, or have its fn say this place too",
+    }
 }
 
 /// `Fn` takes a fn; `Type` takes a record or an enum; `Named` takes

@@ -1126,13 +1126,19 @@ fn meta_named_miss(engine: QueryEngine, t: TypedNodes, e: ExprId) -> List<MissPl
     let call? = t.store.call_parts(e) else { return [] }
     // a call of two is asked after only where it writes `marks`, so no other call of two resolves
     // its callee here; one under another name its `use` gave is refused where it is lowered
-    if call.args.length == 2 && !call.callee.spells(MARKS) && !call.callee.spells(WORN) { return [] }
+    if call.args.length == 2 &&
+        !call.callee.spells(MARKS) &&
+        !call.callee.spells(MARKED) &&
+        !call.callee.spells(WORN) &&
+        !call.callee.spells(WORN_MARK) { return [] }
     if call.args.length != 1 && call.args.length != 2 { return [] }
     let d? = resolved(engine, t.file, Space.Value, call.callee.text()).named() else { return [] }
     if d.kind != ItemKind.Fn { return [] }
     if META_CODE_HASH.is_in(d.file, d.name) && call.args.length == 1 { return hash_miss(engine, t, t.store.unnamed(call.args[0])) }
-    if META_MARKS.is_in(d.file, d.name) && call.args.length == 2 { return marks_miss(engine, t, t.store.unnamed(call.args[1])) }
-    if META_WORN.is_in(d.file, d.name) && call.args.length == 2 { return marks_miss(engine, t, t.store.unnamed(call.args[0])) }
+    if (META_MARKS.is_in(d.file, d.name) || META_MARKED.is_in(d.file, d.name)) &&
+        call.args.length == 2 { return marks_miss(engine, t, t.store.unnamed(call.args[1])) }
+    if (META_WORN.is_in(d.file, d.name) || META_WORN_MARK.is_in(d.file, d.name)) &&
+        call.args.length == 2 { return marks_miss(engine, t, t.store.unnamed(call.args[0])) }
     []
 }
 
@@ -1148,8 +1154,20 @@ const META_CODE_HASH: Known = Known { package: "@std/meta", name: "code_hash" }
 /// `@std/meta`'s identity test of an annotation.
 const META_MARKS: Known = Known { package: "@std/meta", name: MARKS }
 
+/// `@std/meta`'s fn a call of two asks after a mark by.
+const MARKED: string = "marked"
+
+/// `@std/meta`'s identity test of a member's mark.
+const META_MARKED: Known = Known { package: "@std/meta", name: MARKED }
+
 /// `@std/meta`'s annotation by a fn's identity.
 const META_WORN: Known = Known { package: "@std/meta", name: WORN }
+
+/// `@std/meta`'s other fn a call of two names a fn first in.
+const WORN_MARK: string = "worn_mark"
+
+/// `@std/meta`'s member mark by a fn's identity.
+const META_WORN_MARK: Known = Known { package: "@std/meta", name: WORN_MARK }
 
 /// `code_hash`'s argument `arg`, where it names no fn the file sees declared, by name or as the fn a
 /// call of it calls.

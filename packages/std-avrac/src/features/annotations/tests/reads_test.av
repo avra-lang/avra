@@ -1,0 +1,82 @@
+// A trait names the fns its derive reads on a member, `@reads(…)`, as declarations: a member's mark
+// binds its word among them, with no `use` where it is worn, and is asked after by `marked`.
+use @std.avrac.testing.{provided, refused_in, answered, Module}
+
+/// `@x/c`: a trait reading its own `tag`, its derive counting the fields whose mark is that `tag`.
+fn tagging() -> string {
+    "use @std.meta.{Named, Marker, Type, Directive, reads, marked}\nexport fn tag(_d: Named) -> Marker { Marker {} }\n@reads(tag)\nexport trait Tagged {\n    static fn derive(t: Type) -> List<Directive> {\n        let n = t.fields.filter((f) -> f.marks.any((m) -> marked(m, tag))).length\n        [Directive { twin: \"\", name: t.name, at: t.at, source: quote { fn tagged() -> int { \${n} } } }]\n    }\n}\n"
+}
+
+/// An app module whose trait reads a `tag` of its own.
+fn other_tag() -> Module {
+    Module {
+        name: "other",
+        text: "use @std.meta.{Named, Marker, Type, Directive, reads}\nexport fn tag(_d: Named) -> Marker { Marker {} }\n@reads(tag)\nexport trait Other {\n    static fn derive(t: Type) -> List<Directive> { [] }\n}\n",
+    }
+}
+
+spec "features/annotations — the marks a trait reads" {
+    given "a member's mark of a word its trait reads" {
+        then "it binds the trait's marker with no `use`, and `marked` finds it" {
+            answered(
+                provided(
+                    "use @x.c.{Tagged}\n@Tagged\ntype R = { @tag a: int, b: int, @tag c: int }\n\"\${tagged()}\"",
+                    tagging(),
+                ),
+            ) == "2"
+        }
+        then "a fn of the same word the file declares is not the trait's" {
+            answered(
+                provided(
+                    "use @std.meta.{Named, Marker}\nuse @x.c.{Tagged}\nfn tag(_d: Named) -> Marker { Marker {} }\n@Tagged\ntype R = { @tag a: int }\n\"\${tagged()}\"",
+                    tagging(),
+                ),
+            ) == "1"
+        }
+    }
+    given "two traits reading two markers of one word" {
+        then "the mark is refused, naming both" {
+            refused_in(
+                provided(
+                    "use @x.c.{Tagged}\nuse other.{Other}\n@Tagged\n@Other\ntype R = { @tag a: int }\n0",
+                    tagging(),
+                    [other_tag()],
+                ),
+                "`@tag` binds",
+            )
+        }
+    }
+    given "a trait reading a fn no member wears" {
+        then "the `@reads` is refused at the name" {
+            refused_in(
+                provided(
+                    "use @std.meta.{Type, Directive, reads}\nfn plain() -> int { 1 }\n@reads(plain)\ntrait T {\n    static fn derive(t: Type) -> List<Directive> { [] }\n}\n0",
+                    tagging(),
+                ),
+                "no member wears `plain`",
+            )
+        }
+    }
+    given "a mark whose fn takes an argument it does not write" {
+        then "the mark is refused, counting what the fn takes" {
+            refused_in(
+                provided(
+                    "use @x.c.{Named}\n@Named\ntype R = { @called n: int }\n0",
+                    "use @std.meta.{Named as Meta, Marker, Type, Directive, reads}\nexport fn called(_d: Meta, word: string) -> Marker { Marker {} }\n@reads(called)\nexport trait Named {\n    static fn derive(t: Type) -> List<Directive> { [] }\n}\n",
+                ),
+                "`called` takes 1 after the declaration, this writes 0",
+            )
+        }
+    }
+    given "a fn that says where it is worn" {
+        then "worn elsewhere it is refused, naming where it may be" {
+            refused_in(
+                provided(
+                    "use @std.meta.{Type, Diagnostic, worn_on}\n@worn_on([.Type])\nfn checked(_t: Type) -> List<Diagnostic> { [] }\n@checked\nfn f() -> int { 1 }\n0",
+                    tagging(),
+                ),
+                "`checked` is worn on `.Type` alone",
+            )
+        }
+    }
+}

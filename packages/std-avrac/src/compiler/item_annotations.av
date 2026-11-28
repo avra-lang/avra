@@ -29,6 +29,7 @@ use features.annotations.{
     names_fn_and_trait,
     derive_spelled,
     mark_unimported,
+    worn_only_on,
     takes_another_kind,
     takes_nothing,
     field_not_bare,
@@ -147,7 +148,7 @@ fn marks_unimported(view: ItemView) -> List<Found> {
     if !read_cleanly(view) || !wears_a_word(view.item) { return [] }
     let engine = view.engine
     let file = view.file
-    let worn = [w for w in worn_words(view.item) if resolved(engine, file, Space.Value, w.name).named() == null]
+    let worn = [w for w in worn_words(view.item) if resolved(engine, file, Space.Value, w.name).named() == null && !read_by_traits(view, w)]
     if worn.is_empty() { return [] }
     let homed = [Homed { word: w, home: home!, first: worn.find_index(it.name == w.name) == j } for j, w in worn for home in [mark_home(engine, file, w.name)] if home != null]
     if homed.is_empty() { return [] }
@@ -180,12 +181,19 @@ fn worn_words(item: ReadItem) -> List<WornWord> {
     let store = item.store
     [WornWord { name: a.name, at: a.span } for s in item.stmts if source_wrote_stmt(store, s) for a in store.annotations_of(s) if source_wrote_annotation(store, a)]
         .concat(
-            [WornWord { name: m.name, at: m.span } for s in item.stmts if source_wrote_stmt(store, s) for p in store.struct_parts(s)?.fields ?? [] for m in p.marks],
+            [WornWord { name: m.name, at: m.span, member_of: s } for s in item.stmts if source_wrote_stmt(store, s) for p in store.struct_parts(s)?.fields ?? [] for m in p.marks],
         )
 }
 
-/// A word an annotation or a mark wears, and where.
-type WornWord = { name: string, at: Span? }
+/// A word an annotation or a mark wears, and where; a mark's, the declaration whose member wears it.
+type WornWord = { name: string, at: Span?, member_of: StmtId? = null }
+
+/// Whether the word `w` is a member's mark a trait of its declaration reads, which binds with no `use`.
+fn read_by_traits(view: ItemView, w: WornWord) -> bool {
+    let s? = w.member_of else { return false }
+    !trait_markers(view.engine, declaration_traits(view.engine, view.file, view.item, s), w.name)
+        .is_empty()
+}
 
 /// The module in reach of `file` that exports a fn answering `@std/meta`'s `Marker` named `word`, as a
 /// `use` line spells it; absent where none does. Each package the file names is asked by the word,
@@ -274,7 +282,43 @@ fn misplaced_annotations(view: ItemView) -> List<Found> {
     let at = view.at
     let kinds = [d.kind for d in file_declares_at(engine, file, at).names if d.item == at]
     if kinds.length != 1 { return [] }
-    [Found { at: w.at, args: [w.name, seat.spelled(), stood_on(kinds[0])] } for w in worn_in_viewed(view) for seat in first_seat_of(engine, w.named) if !seat.takes(kinds[0])]
+    [Found { at: w.at, args: [w.name, seat.spelled(), stood_on(kinds[0])] } for w in worn_in_viewed(view) if !says_its_wears(engine, w.named) for seat in first_seat_of(engine, w.named) if !seat.takes(kinds[0])]
+}
+
+/// Whether the fn `d` says where it is worn, which decides where in place of its first seat.
+fn says_its_wears(engine: QueryEngine, d: DeclaredName?) -> bool {
+    let named? = d else { return false }
+    declared_wears(engine, named) != null
+}
+
+/// an annotation is worn where its fn says it may be
+export law annotation_worn_where_said {
+    kind: "annotation.worn_on"
+    reads_view: worn_elsewhere
+    voice: worn_elsewhere_words
+    witness: "use @std.meta.{Type, Diagnostic, worn_on}\n@worn_on([.Type])\nfn checked(_t: Type) -> List<Diagnostic> { [] }\n@checked\nfn f() -> int { 1 }\n"
+}
+
+/// Every annotation the written item `view` shows on a declaration of a kind its fn's `@worn_on` does
+/// not name: handed the annotation, then each place it may be worn.
+fn worn_elsewhere(view: ItemView) -> List<Found> {
+    let engine = view.engine
+    let kinds = [d.kind for d in file_declares_at(engine, view.file, view.at).names if d.item == view.at]
+    if kinds.length != 1 { return [] }
+    let here = wear_of_item(kinds[0])
+    [Found { at: w.at, args: [w.name].concat(wears) } for w in worn_in_viewed(view) for named in some_list(w.named) for wears in some_list(declared_wears(engine, named)) if !wears.contains(here)]
+}
+
+fn worn_elsewhere_words(a: List<string>) -> Voice { worn_only_on(a[0], a.drop(1)) }
+
+/// The `Wear` variant a declaration of `kind` stands in; empty where none says.
+fn wear_of_item(kind: ItemKind) -> string {
+    match kind {
+        .Record or .Enum or .Named or .Alias or .Component -> "Type",
+        .Fn -> "Fn",
+        .Trait -> "Trait",
+        .Syntax or .Collect or .CollectEnum or .Const or .State or .Ctx -> "",
+    }
 }
 
 /// The declaration the first seat of the fn `d` names takes, as a list: none for a name that names
