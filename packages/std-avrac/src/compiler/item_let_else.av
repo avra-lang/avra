@@ -41,7 +41,15 @@ fn leaves(store: SyntaxArena, stmts: List<StmtId>) -> bool {
 fn unasked_elses(view: ItemView, at: At) -> List<Found> {
     let t? = typed_of(view) else { return [] }
     let s? = let_else_written(t.store, at) else { return [] }
-    [Found { at: t.store.expr_span(v!), args: [bind_of(t.store, s)].concat(present_words(ty!)) } for v in [t.store.stmt_value(s)] if v != null && v!.index >= t.lo && v!.index < t.hi for ty in [(t.type_at)(v!.index)] if ty != null && unasked(ty!)]
+    let refused = [r.at! for r in refused_seen(view) if r.at != null]
+    [Found { at: t.store.expr_span(v!), args: [bind_of(t.store, s)].concat(present_words(ty!)) } for v in [t.store.stmt_value(s)] if v != null && v!.index >= t.lo && v!.index < t.hi for ty in [(t.type_at)(v!.index)] if ty != null && unasked(ty!) && !refused_within(refused, t.store.expr_span(v!))]
+}
+
+/// Whether a refusal already stands inside `span`: a subject refused for its own mistake is said
+/// once, never again as the null check over what it was taken to be.
+fn refused_within(refused: List<FindingAt>, span: Span?) -> bool {
+    let s? = span else { return false }
+    refused.any(it.lo >= s.lo && it.hi <= s.hi)
 }
 
 /// Whether a subject of `ty` makes the null check pointless: always absent, or a type known whole
