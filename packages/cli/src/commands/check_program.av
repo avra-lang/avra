@@ -54,7 +54,8 @@ type SiteAt = { finding: Finding, line: int }
 /// refuses it, and the package's own warnings are said, exit 0. A dependency's warnings, rule sites
 /// and stale citations are its own check's, and said to be. `pruning`, the baseline is
 /// pruned to the sites still found instead, as `accepted` prunes it. Where the net accepted the
-/// program (`net`), a refusal is said as the program layer's defect.
+/// program (`net`), a refusal is said as the program layer's defect. Where `worked_to` names a file,
+/// each question this process worked out is written to it (`QueryEngine.worked_questions`).
 fn disk_checked(
     disk: Disk,
     baseline: string,
@@ -63,11 +64,15 @@ fn disk_checked(
     counted: bool = false,
     read_listed: bool = false,
     ledger: LedgerSaid = LedgerSaid.Unsaid,
+    worked_to: string = "",
 ) -> int {
     // LICENSED input.clock: a check's duration is timing, never an input of what is found
     let t0 = now_ns()
     let root = disk.root
-    let timing = timed || avrac_settings().debug.query_times || !(ledger is .Unsaid)
+    let timing = timed ||
+        avrac_settings().debug.query_times ||
+        !(ledger is .Unsaid) ||
+        !worked_to.is_empty()
     let worked = program_worked(
         joined_path(root, checks_kept_at()),
         disk.name,
@@ -122,6 +127,7 @@ fn disk_checked(
         eprintln(program_time_line(files.length, t0, engine.worked_count() == 0))
         eprintln(time_rows_said(engine, CHECK_ROWS))
     }
+    if !worked_to.is_empty() { let _ = write_text(worked_to, engine.worked_questions().map("${it}\n").join("")) }
     if counted {
         eprintln(counts_said(layer_counts(engine, files)))
         eprintln(decodes_said())

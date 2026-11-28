@@ -22,7 +22,7 @@ use @std.program.disk_store.{
     packs_listed,
 }
 use @std.program.sorted.{sorted_by}
-use @std.program.store_check.{store_faults_over}
+use @std.program.store_check.{frontier_records, store_faults_over}
 use @std.program.layered_store.{program_store_at, use_machine_store}
 use @std.avrac.core.{distinct}
 use @std.text.{parse_int}
@@ -38,9 +38,10 @@ impl Runnable for CacheCmd {
         if action == "show" { return cache_show(dir, args.arg("rev")) }
         if action == "dependents" { return dependents_worked(rooted(args.arg("rev"))) }
         if action == "check" { return cache_check(if args.arg("rev") == "" { dir } else { rooted(args.arg("rev")) }) }
+        if action == "frontier" { return cache_frontier(if args.arg("rev") == "" { dir } else { rooted(args.arg("rev")) }) }
         if action == "families" { return cache_families(if args.arg("rev") == "" { dir } else { rooted(args.arg("rev")) }) }
         eprintln(
-            "avra cache: `clean`, `log`, `show <n>`, `families [<store>]`, `check [<store>]` or `dependents <store>`",
+            "avra cache: `clean`, `log`, `show <n>`, `families [<store>]`, `check [<store>]`, `frontier [<store>]` or `dependents <store>`",
         )
         2
     }
@@ -49,11 +50,11 @@ impl Runnable for CacheCmd {
 export command cache {
     description: "The program layer's store of this package: compact it (`clean`), list its packs (`log`), name the questions one answers (`show <n>`), weigh what each query keeps (`families [<store>]`)"
     arg action {
-        description: "`clean`, `log`, `show`, `families`, `check` or `dependents`"
+        description: "`clean`, `log`, `show`, `families`, `check`, `frontier` or `dependents`"
         required: true
     }
     arg rev {
-        description: "the pack `show` reads, by the number `log` lists it under; the store `families` weighs or `check` holds, or the package `dependents` works out, by its directory"
+        description: "the pack `show` reads, by the number `log` lists it under; the store `families` weighs, `check` holds or `frontier` says, or the package `dependents` works out, by its directory"
     }
     run: CacheCmd {}
 }
@@ -130,6 +131,15 @@ fn cache_check(dir: string) -> int {
         return 1
     }
     println("avra cache check: ${dir} holds nothing a write may not leave")
+    0
+}
+
+/// `frontier` says the frontiers the store at `dir` keeps, a record a line in question order, read as
+/// a build reads them, over the machine's store where one stands: two stores keeping one frontier say
+/// it alike (docs/2026_11_28_WARM_COLD.md).
+fn cache_frontier(dir: string) -> int {
+    use_machine_store(machine_layer())
+    for line in frontier_records(dir, program_store_at(dir)) { println(line) }
     0
 }
 

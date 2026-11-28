@@ -17,6 +17,8 @@ use disk_store.{disk_store_at, frontier_prints}
 use frontier.{Frontier, frontier_folded, reached_at_rest}
 use hash_keyed_table.{HashKeyedTable, hash_keyed_table}
 use query_engine.{AnswerStore}
+use sorted.{sorted_by}
+use @std.text.{text_before}
 
 /// One thing a store holds that no write may leave: the print of the frontier it's in, the place,
 /// none for the frontier as a whole, and what's wrong there.
@@ -213,3 +215,62 @@ fn fold_faults(f: Frontier, reached: List<bool>) -> List<PlaceFault> {
     }
     faults
 }
+
+/// THE FRONTIERS KEPT AT `directory`, A RECORD A LINE (`avra cache frontier`), their records read
+/// through `store` as a build reads them: each place that stands, as its question, its answer, its
+/// query and whether an input, then the whole reads its record made with the answer each saw, then its part
+/// reads with the part each saw — a part read's whole answer left out, since a part that held is
+/// proved, never worked out again. In question order, so two stores that keep one frontier say it
+/// alike, whatever order their places came in.
+export fn frontier_records(directory: string, store: dyn AnswerStore) -> List<string> {
+    sorted_by(
+        [line for print in frontier_prints(directory) for line in print_records(store, print)],
+        text_before,
+    )
+}
+
+/// The lines of the frontier the binary printed `print` keeps in `store`: none where it reads none.
+fn print_records(store: dyn AnswerStore, print: string) -> List<string> {
+    store.answering_for(binary_of(print))
+    let f? = store.frontier_of(print) else { return [] }
+    [place_record(store, f, at) for at in 0..f.length() if f.stands(at)]
+}
+
+/// The place `at` of `f` as a line: its question, answer and kind, and what its record read.
+fn place_record(store: dyn AnswerStore, f: Frontier, at: int) -> string {
+    let question = f.question_at(at)
+    let answer = f.answer_at(at)
+    let kind = "${store.question_known_as(question)?.query_name ?? "?"} ${if f.input_at(at) { "input" } else { "answer" }}"
+    let kept? = standing_record(store, f, at) else { return "${spelled(question)} ${spelled(answer)} ${kind} unrecorded" }
+    "${spelled(question)} ${spelled(answer)} ${kind} whole ${whole_seen(kept)} parts ${parts_seen(kept)}"
+}
+
+/// The record the place `at` of `f` stands on: of its answer, reading what the frontier says it read,
+/// every read still holding — an answer worked out again the same keeps a record beside the one
+/// before, and stands on the one that holds. Absent where none does.
+fn standing_record(store: dyn AnswerStore, f: Frontier, at: int) -> KeptRecord? {
+    let answer = f.answer_at(at)
+    let read = [f.question_at(r) for r in f.reads_at(at) ?? []]
+    store
+        .records_of(f.question_at(at))
+        .find(
+            (r) -> r.answer.same_as(answer) &&
+                same_questions(r.read_questions(), read) &&
+                reads_hold(store, f, r),
+        )
+}
+
+/// A record's whole reads, each as its question and the answer it saw.
+fn whole_seen(kept: KeptRecord) -> string {
+    ["${spelled(kept.whole_read_question(i))}=${spelled(kept.whole_read_seen(i))}" for i in 0..kept.whole_read_count()]
+        .join(",")
+}
+
+/// A record's part reads, each as its question, the part's name and the part's hash.
+fn parts_seen(kept: KeptRecord) -> string {
+    ["${spelled(kept.part_read_question(i))}:${spelled(kept.part_read_name(i))}=${spelled(kept.part_read_hash(i))}" for i in 0..kept.part_read_count()]
+        .join(",")
+}
+
+/// A hash as one word of text.
+fn spelled(h: ContentHash) -> string { "${h.high_word}_${h.low_word}" }

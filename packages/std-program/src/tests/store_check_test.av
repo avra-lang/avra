@@ -7,7 +7,7 @@ use disk_store.{disk_store_at, frontier_file_path, frontier_prints}
 use frontier.{FrontierEntry, FrontierWrite, base_file, delta_file}
 use query_engine.{QueryDefinition, QueryEngine, query_engine}
 use saved_query.{ListedQuery, definitions_of, input, query, query_definition}
-use store_check.{StoreFault, store_faults}
+use store_check.{StoreFault, frontier_records, store_faults}
 
 once fn checked_world() -> Cell<Map<string, string>> {
     let world: Map<string, string> = {}
@@ -215,6 +215,37 @@ spec "store_check — what no write may leave, found at rest" {
                 ),
             )
             found(store_faults(directory), reader, "a read went unrecorded")
+        }
+    }
+}
+
+/// The frontier the store at `directory` keeps, a record a line.
+fn records_at(directory: string) -> List<string> { frontier_records(directory, disk_store_at(directory)) }
+
+spec "store_check — the frontier at rest, a record a line" {
+    given "two stores whole processes wrote over one world" {
+        then "they say one frontier" {
+            let one = fresh_directory("said-one")
+            let two = fresh_directory("said-two")
+            checked_world().put("said-a", "four")
+            checked_world().put("said-b", "five")
+            process_summing(one, "said-a", "said-b")
+            process_summing(two, "said-a", "said-b")
+            let lines = records_at(one)
+            !lines.is_empty() && lines == records_at(two)
+        }
+    }
+    given "a store an edit's warm process wrote, its question worked out again the same" {
+        then "it says what a cold store of the edited world says" {
+            let warm = fresh_directory("said-warm")
+            let cold = fresh_directory("said-cold")
+            checked_world().put("said-c", "four")
+            checked_world().put("said-d", "five")
+            process_summing(warm, "said-c", "said-d")
+            checked_world().put("said-c", "nine")
+            process_summing(warm, "said-c", "said-d")
+            process_summing(cold, "said-c", "said-d")
+            records_at(warm) == records_at(cold)
         }
     }
 }
