@@ -844,8 +844,9 @@ cache-attacks-b2: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/package_swap_attack.sh
 
 # A CHECK'S ANSWER IS NOT ITS SCHEDULE'S: the cli checked cold and warm as several legs — twice
-# alike, serial, forked across two and across four, a binary a byte longer — every count, pass row,
-# read list and finding alike, the forked legs' deal reversed and each leg under a hash seed its own.
+# alike, twice serial, forked across two and across four, a binary a byte longer — every finding
+# alike, and every count, pass row and read list alike between legs that fork alike; the forked
+# legs' deal reversed and each leg under a hash seed of its own.
 determinism: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@./wisp determinism --plant reverse-deal,hash-seed
 

@@ -87,7 +87,7 @@ keepers-wasm the same of KEEPERS_WASM, the browser's libraries beside it
 keepers-clock clock-holds, the keeper that reads a stopwatch, alone on its runner
 keepers-heavy-1 witness_place_kill, a tools witness too long to share (892 s on train35), alone, its budget 1500 s
 keepers-heavy-2 witness_machine_store, a tools witness too long to share (412-712 s), alone
-keepers-determinism determinism, the cli checked cold and warm as six legs that must agree to the line, alone
+keepers-determinism determinism, the cli checked cold and warm as seven legs that must agree to the line, alone
 EOF
     splits | while IFS='|' read -r family parts what; do
         n=1
