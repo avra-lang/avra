@@ -183,6 +183,18 @@ int64_t avra_io_mkdir(const char* path) {
 }
 
 /* A file, or an empty directory, gone. */
+/* The permission bits of the file at `path` (its mode below the type), or -errno. */
+int64_t avra_io_mode(const char* path) {
+    struct stat st;
+    if (stat(path, &st) != 0) return -errno;
+    return (int64_t)(st.st_mode & 07777);
+}
+
+/* The file at `path` given the permission bits `mode`: 0, or -errno. */
+int64_t avra_io_with_mode(const char* path, int64_t mode) {
+    return chmod(path, (mode_t)(mode & 07777)) == 0 ? 0 : -errno;
+}
+
 int64_t avra_io_remove(const char* path) {
     return remove(path) == 0 ? 0 : -errno;
 }

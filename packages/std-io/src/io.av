@@ -11,6 +11,7 @@
 //! answers the path it wrote, so one feeds the next —
 //! `remove(write_text(p, t)?)`. That answer is a `Result`, so reading
 //! it parenthesises the propagation: `(write_text(p, t)?).length`.
+use @std.meta.{Reach, reach}
 use @std.errors.{Error, ErrorInfo, info}
 use @std.text.{nul_at, parse_int}
 
@@ -18,33 +19,51 @@ use @std.text.{nul_at, parse_int}
 // status, a descriptor, a handle, a kind, or a negative errno. No text
 // and no bytes cross here.
 extern fn avra_io_kind(path: string) -> int
+extern fn avra_io_mode(path: string) -> int
+@reach(Reach.Writes)
+extern fn avra_io_with_mode(path: string, mode: int) -> int
 extern fn avra_io_open(path: string) -> int
 extern fn avra_io_regular_size(fd: int) -> int
 extern fn avra_io_offset(fd: int) -> int
+@reach(Reach.Writes)
 extern fn avra_trap(message: string)
 extern fn avra_io_stamp(path: string) -> int
+@reach(Reach.Writes)
 extern fn avra_io_close(fd: int) -> int
+@reach(Reach.Writes)
 extern fn avra_io_mkdir(path: string) -> int
+@reach(Reach.Writes)
 extern fn avra_io_remove(path: string) -> int
+@reach(Reach.Writes)
 extern fn avra_io_link(from: string, to: string) -> int
+@reach(Reach.Writes)
 extern fn avra_file_touch(path: string) -> int
+@reach(Reach.Writes)
 extern fn avra_io_temp(path: string) -> int
+@reach(Reach.Pure)
 extern fn avra_io_temp_fd(h: int) -> int
+@reach(Reach.Writes)
 extern fn avra_io_commit(h: int) -> int
+@reach(Reach.Writes)
 extern fn avra_io_drop(h: int) -> int
+@reach(Reach.Writes)
 extern fn avra_io_draft(path: string) -> int
+@reach(Reach.Writes)
 extern fn avra_io_commit_to(h: int, path: string) -> int
 extern fn avra_io_pid() -> int
 extern fn avra_io_serial() -> int
 extern fn avra_pid_alive(pid: int) -> int
 extern fn avra_io_env_set(name: string) -> int
+@reach(Reach.Writes)
 extern fn avra_io_open_append(path: string) -> int
+@reach(Reach.Writes)
 extern fn avra_fd_sync(fd: int) -> int
 extern fn avra_fd_try_lock(fd: int) -> int
 extern fn avra_fd_lock_shared(fd: int, waiting: int) -> int
 extern fn avra_io_temps_leaving() -> int
 extern fn avra_io_temps_left(gone: int) -> int
 extern fn avra_io_heir_of() -> int
+@reach(Reach.Writes)
 extern fn avra_io_truncate(path: string, len: int) -> int
 extern fn avra_io_open_beneath(root: string, rel: string) -> int
 extern fn avra_io_fd_kind(fd: int) -> int
@@ -53,8 +72,10 @@ extern fn avra_io_fd_mtime(fd: int) -> int
 extern fn avra_io_seek(fd: int, at: int) -> int
 extern fn avra_io_own_dir(path: string) -> int
 extern fn avra_io_user_dir() -> int
+@reach(Reach.Writes)
 extern fn avra_io_put_new(dir: int, name: string) -> int
 extern fn avra_io_open_own(dir: int, name: string) -> int
+@reach(Reach.Writes)
 extern fn avra_io_unlink_at(dir: int, name: string) -> int
 extern fn avra_io_compile_slot() -> int
 
@@ -64,8 +85,10 @@ extern fn avra_io_compile_slot() -> int
 // descriptor; it leaves the day the adoption row lands.
 extern fn avra_io_list(path: string) -> int
 extern fn avra_fd_read(fd: int, max: int) -> int
+@reach(Reach.Pure)
 extern fn avra_fd_taken(token: int) -> Bytes
 extern fn avra_fd_write(fd: int, bytes: Bytes, from: int) -> int
+@reach(Reach.Pure)
 extern fn avra_utf8_bad_at(b: Bytes) -> int
 extern fn avra_host_env(name: string) -> string
 extern fn avra_errno_text(err: int) -> string
@@ -519,6 +542,15 @@ const DRAFT_SUFFIX: string = ".draft"
 /// never ends up between two valid ones. Answers the path.
 export fn truncate_to(path: string, len: int) -> Result<string, IoError> {
     done(path, avra_io_truncate(one_path(path)?, len))?
+    path
+}
+
+/// The permission bits of the file at `path`: its mode below the file's type, `0o755` read as 493.
+export fn mode_of(path: string) -> Result<int, IoError> { done(path, avra_io_mode(one_path(path)?)) }
+
+/// The file at `path` given the permission bits `mode`. Answers the path.
+export fn with_mode(path: string, mode: int) -> Result<string, IoError> {
+    done(path, avra_io_with_mode(one_path(path)?, mode))?
     path
 }
 

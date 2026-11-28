@@ -14,7 +14,7 @@
 //! `// LICENSED input.unrecorded_read: <why>` on the line above it. At the read's own call the
 //! licence says the call reads nothing of the world that varies — what it reads is what the call
 //! was handed — so the read is gone for every way; at an entering call it says the query's key
-//! covers what lies past it.
+//! covers what lies past it, so nothing past that call is a site of that way.
 //!
 //! WHAT TYPING CAN'T NAME IS NOT FOLLOWED: a call through a fn value made off the way (a seat, a
 //! field, a cell, a call's answer), and a method of a type parameter, reached through its bound.
@@ -49,6 +49,9 @@ const REACH_MARK: string = "reach"
 
 /// The annotation that marks a fn running a program its reach law holds before it starts.
 const HELD_MARK: string = "reach_held"
+
+/// The annotation that marks the `@input` whose answer is the machine's platform.
+const PLATFORM_MARK: string = "platform"
 
 /// The annotation that marks a type whose methods read through the records it keeps.
 const RECORDS_MARK: string = "records"
@@ -94,12 +97,19 @@ enum Met {
     Read
     /// A body the walk goes into.
     Walked
+    /// A call of it reads what the machine's platform answers: an extern whose row reaches
+    /// `Platform`, read through the platform's door where the query's walk meets it.
+    PlatformRead
+    /// The platform's door: an `@input` marked `@platform`, whose answer keys the query by the
+    /// platform. Nothing past it is followed.
+    PlatformDoor
 }
 
-/// What one body says of the world as its typing reads it: the reads it makes itself, and the
-/// calls it makes of bodies the walk goes into.
+/// What one body says of the world as its typing reads it: the reads it makes itself, the reads of
+/// the platform it makes itself, the calls it makes of bodies the walk goes into, and whether it
+/// calls the platform's door.
 @derive(Saved)
-type BodyWorld = { reads: List<ReadAt>, calls: List<CallAt> }
+type BodyWorld = { reads: List<ReadAt>, platform_reads: List<ReadAt>, calls: List<CallAt>, platformed: bool }
 
 /// Each query body `view`'s item holds, one finding a site it reaches unlicensed.
 fn queries_reading_world(view: ItemView) -> List<Found> {
@@ -117,9 +127,10 @@ fn query_findings(view: ItemView, s: StmtId, name: string) -> List<Found> {
     let walk = reach_walk(view.engine)
     let wrapped = DoorBody { file: view.file, owner: "", name: "${name}${WRAPPED_BODY}" }
     let start = if declared_body(view.engine, wrapped) == null { DoorBody { file: view.file, owner: "", name: name } } else { wrapped }
+    let keyed = walk.platformed_of(view.engine, start)
     let sites = walk
         .sites_of(view.engine, start)
-        .filter((x) -> !x.row || x.package == view.file.package_name)
+        .filter((x) -> (!x.row || x.package == view.file.package_name) && !(x.platform && keyed))
     let places = [place_key(x.at) for x in sites]
     [Found { at: view.item.store.stmt_span(s), args: [name, x.read, place_said(view.engine, x.at)] } for i, x in sites if places.index_of(place_key(x.at)) == i && !walk.licensed(view.engine, x.at)]
 }
@@ -130,10 +141,11 @@ fn body_met(engine: QueryEngine, c: DoorBody) -> Met {
     let d? = declared_body(engine, c) else { return Met.Door }
     let marks = [a.name for a in d.item.store.annotations_of(d.stmt)]
     if marks.contains(UNRECORDED_MARK) { return Met.Read }
+    if marks.contains(PLATFORM_MARK) { return Met.PlatformDoor }
     if marks.contains(DOOR_MARK) || marks.contains(HELD_MARK) || records_asked(engine, c) { return Met.Door }
     if query_made(engine, c) { return Met.Door }
     if d.item.store.extern_parts(d.stmt) == null { return Met.Walked }
-    if reads_world(row_reach(c.name, d)) { Met.Read } else { Met.Door }
+    met_row(row_reach(c.name, d))
 }
 
 /// What the extern `name` reaches: its registry row's reach, else the reach its declaration
@@ -155,30 +167,46 @@ fn reach_named(word: string) -> Reach? {
         "Lookup" -> Reach.Lookup,
         "World" -> Reach.World,
         "Writes" -> Reach.Writes,
+        "Platform" -> Reach.Platform,
         _ -> null,
     }
 }
 
-/// Whether a call of a row reaching `r` reads the world: a write reads nothing there, and a lookup
-/// reads the compiler's own table.
-fn reads_world(r: Reach) -> bool {
-    match r { .Embed or .World -> true, .Pure or .Lookup or .Writes -> false }
+/// How a call of a row reaching `r` is met: a read of the world, a read of the platform, or a door —
+/// a write reads nothing there, and a lookup reads the compiler's own table.
+fn met_row(r: Reach) -> Met {
+    match r {
+        .Embed or .World -> Met.Read,
+        .Platform -> Met.PlatformRead,
+        .Pure or .Lookup or .Writes -> Met.Door,
+    }
 }
 
 /// What the body `c` says of the world as its typing reads it.
 @query("laws")
 fn body_world(engine: QueryEngine, c: DoorBody) -> BodyWorld {
-    let d? = declared_body(engine, c) else { return BodyWorld { reads: [], calls: [] } }
-    let parts? = d.item.store.fn_parts(d.stmt) else { return BodyWorld { reads: [], calls: [] } }
+    let d? = declared_body(engine, c) else { return NO_WORLD }
+    let parts? = d.item.store.fn_parts(d.stmt) else { return NO_WORLD }
     let typed = typed_body(engine, c, d)
     let store = d.item.store
     let named = [CallAt { callee: n!, at: place_at(d, store, r.at) } for r in typed.reads if r.binder == null for n in [named_callee(engine, d.file, r.home, r.name)] if n != null]
     let methods = [CallAt { callee: m!, at: place_at(d, store, e.index) } for e in store.every_expr(parts.body) for m in [method_callee(store, typed.types, e)] if m != null]
     let calls = named.concat(methods)
+    let mets = [body_met(engine, x.callee) for x in calls]
     BodyWorld {
-        reads: [ReadAt { read: read_words(x.callee), at: x.at } for x in calls if read_met(body_met(engine, x.callee)) && !licensed_at(engine, x.at)],
-        calls: [x for x in calls if walked_met(body_met(engine, x.callee))],
+        reads: [ReadAt { read: read_words(x.callee), at: x.at } for i, x in calls if mets[i] is .Read && !licensed_at(engine, x.at)],
+        platform_reads: [ReadAt { read: read_words(x.callee), at: x.at } for i, x in calls if mets[i] is .PlatformRead && !licensed_at(engine, x.at)],
+        calls: [x for i, x in calls if mets[i] is .Walked],
+        platformed: mets.any(it is .PlatformDoor),
     }
+}
+
+/// What a body no declaration here gives says of the world: nothing.
+const NO_WORLD: BodyWorld = BodyWorld {
+    reads: [],
+    platform_reads: [],
+    calls: [],
+    platformed: false,
 }
 
 /// The body `c`'s typing.
@@ -216,14 +244,6 @@ fn place_at(d: BodyDeclared, store: SyntaxArena, index: int) -> ItemPlace {
     let e = ExprId { index: index }
     let lo = if store.spanned_elsewhere(e) { store.stmt_span(d.stmt)?.lo } else { store.expr_span(e)?.lo }
     ItemPlace { file: d.file, item: d.at, lo: lo ?? 0, from_item: d.item.at != null }
-}
-
-fn read_met(m: Met) -> bool {
-    match m { .Read -> true, .Door or .Walked -> false }
-}
-
-fn walked_met(m: Met) -> bool {
-    match m { .Walked -> true, .Door or .Read -> false }
 }
 
 /// A body's declaration read back: its file and item, the item's syntax, its statement, and the
@@ -283,11 +303,12 @@ fn query_made(engine: QueryEngine, c: DoorBody) -> bool {
 }
 
 /// A read a body reaches: what it reads, where the call making it stands, and that call's package.
-type ReadBelow = { read: string, at: ItemPlace, package: string }
+type ReadBelow = { read: string, at: ItemPlace, package: string, platform: bool }
 
 /// A site: what it reads, where the call stands, the package of the body it enters — of the body
-/// that reads, for the read's own call — and whether it is the read's own call.
-type Site = { read: string, at: ItemPlace, package: string, row: bool }
+/// that reads, for the read's own call — whether it is the read's own call, and whether what it reads
+/// is the platform's.
+type Site = { read: string, at: ItemPlace, package: string, row: bool, platform: bool }
 
 /// THE BODIES QUERIES REACH, WALKED ONCE A PROCESS: for each body, what it reaches of the world and
 /// the sites on the way to it, read off the bodies' summaries. A body is walked once, the bodies that
@@ -306,6 +327,7 @@ type ReachWalk = {
     callees: Cell<Map<string, DoorBody>>,
     count: Cell<int>,
     granted: Cell<Map<string, bool>>,
+    platformed: Cell<Map<string, bool>>,
 }
 
 /// Each engine's walk, by its serial.
@@ -326,6 +348,7 @@ fn reach_walk(engine: QueryEngine) -> ReachWalk {
             callees: Cell.new({}),
             count: Cell.new(0),
             granted: Cell.new({}),
+            platformed: Cell.new({}),
         }
         reach_walks().put("${engine.serial}", made)
         return made
@@ -345,6 +368,14 @@ impl ReachWalk {
         let key = callee_key(c)
         if !self.order.get().has(key) { self.visit(engine, c) }
         self.sites.get().get(key) ?? []
+    }
+
+    /// Whether a way from the body `c` meets the platform's door, so its answer is keyed by the
+    /// platform.
+    fn platformed_of(engine: QueryEngine, c: DoorBody) -> bool {
+        let key = callee_key(c)
+        if !self.order.get().has(key) { self.visit(engine, c) }
+        self.platformed.get().get(key) ?? false
     }
 
     /// Walks the body `c`, and every body below it the walk hasn't met.
@@ -368,7 +399,7 @@ impl ReachWalk {
                 self.lowered(key, self.order.get().get(at)!)
             }
         }
-        if self.low.get().get(key) == self.order.get().get(key) { self.settle(key) }
+        if self.low.get().get(key) == self.order.get().get(key) { self.settle(engine, key) }
     }
 
     /// `key` on the stack of bodies walked and not settled.
@@ -391,7 +422,7 @@ impl ReachWalk {
     /// The bodies that reach each other with `root`, settled together: each holds its own reads and
     /// sites, then those below each body it calls and each call it makes that enters the package of
     /// a read below it, until none holds more.
-    fn settle(root: string) {
+    fn settle(engine: QueryEngine, root: string) {
         mut members: List<string> = []
         mut at = ""
         while at != root {
@@ -401,46 +432,70 @@ impl ReachWalk {
         }
         for m in members {
             let c = self.callees.get().get(m)!
-            let own = self.worlds.get().get(m)!.reads
-            self
-                .reads
-                .put(
-                    m,
-                    [ReadBelow { read: r.read, at: r.at, package: c.file.package_name } for r in own],
+            let world = self.worlds.get().get(m)!
+            let own = [ReadBelow { read: r.read, at: r.at, package: c.file.package_name, platform: false } for r in world.reads]
+                .concat(
+                    [ReadBelow {
+                        read: r.read,
+                        at: r.at,
+                        package: c.file.package_name,
+                        platform: true,
+                    } for r in world.platform_reads],
                 )
+            self.reads.put(m, own)
             self
                 .sites
                 .put(
                     m,
-                    [Site { read: r.read, at: r.at, package: c.file.package_name, row: true } for r in own],
+                    [Site {
+                        read: r.read,
+                        at: r.at,
+                        package: r.package,
+                        row: true,
+                        platform: r.platform,
+                    } for r in own],
                 )
+            self.platformed.put(m, world.platformed)
         }
         mut moved = true
         while moved {
             moved = false
-            for m in members { if self.grew(m) { moved = true } }
+            for m in members { if self.grew(engine, m) { moved = true } }
         }
     }
 
-    /// Whether the body `m` holds more once it takes what each body it calls holds.
-    fn grew(m: string) -> bool {
+    /// Whether the body `m` holds more once it takes what each body it calls holds — each call but a
+    /// licensed one, whose licence says the query's key covers what lies past it.
+    fn grew(engine: QueryEngine, m: string) -> bool {
         let c = self.callees.get().get(m)!
-        let calls = self.worlds.get().get(m)!.calls
+        let calls = self.worlds.get().get(m)!.calls.filter((x) -> !self.licensed(engine, x.at))
         let had_reads = self.reads.get().get(m) ?? []
         let had_sites = self.sites.get().get(m) ?? []
         let reads = reads_joined(
             had_reads,
             flatten([self.reads.get().get(callee_key(x.callee)) ?? [] for x in calls]),
         )
-        let entering = [Site { read: r.read, at: x.at, package: x.callee.file.package_name, row: false } for x in calls if x.callee.file.package_name != c.file.package_name for r in self.reads.get().get(callee_key(x.callee)) ?? [] if r.package == x.callee.file.package_name]
+        let entering = [Site {
+            read: r.read,
+            at: x.at,
+            package: x.callee.file.package_name,
+            row: false,
+            platform: r.platform,
+        } for x in calls if x.callee.file.package_name != c.file.package_name for r in self.reads.get().get(callee_key(x.callee)) ?? [] if r.package == x.callee.file.package_name]
         let sites = sites_joined(
             had_sites,
             entering
                 .concat(flatten([self.sites.get().get(callee_key(x.callee)) ?? [] for x in calls])),
         )
+        let had_platform = self.platformed.get().get(m) ?? false
+        let platformed = had_platform ||
+            calls.any((x) -> self.platformed.get().get(callee_key(x.callee)) ?? false)
         self.reads.put(m, reads)
         self.sites.put(m, sites)
-        reads.length != had_reads.length || sites.length != had_sites.length
+        self.platformed.put(m, platformed)
+        reads.length != had_reads.length ||
+            sites.length != had_sites.length ||
+            platformed != had_platform
     }
 
     /// Whether the call at `p` carries the read's licence, read once.
