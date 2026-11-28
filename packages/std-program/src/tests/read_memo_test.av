@@ -29,10 +29,17 @@ fn unrecorded_taken(engine: QueryEngine, memo: ReadMemo<string>) -> string {
     "quiet"
 }
 
+/// The memo's answer taken where none of its reads are the asker's, then again where they are.
+fn heard_after_muted(engine: QueryEngine, memo: ReadMemo<string>) -> string {
+    let _ = unrecorded_taken(engine, memo)
+    remembered(engine, memo)
+}
+
 /// `source` is an input; `first` and `second` each take the memo's answer, which `first` works out;
 /// `both` reads `first` then `second`; `deep` takes a second memo's answer, worked out by asking
 /// `first`; `nest` takes the memo's answer by `nested`; `quiet`
-/// works it out unrecorded, and `hushed` reads `quiet` then `second`.
+/// works it out unrecorded, `hushed` reads `quiet` then `second`, and `muted` takes it unrecorded
+/// then recorded.
 fn definitions(world: Cell<string>, memo: ReadMemo<string>, outer: ReadMemo<string>) -> List<
     QueryDefinition,
 > {
@@ -81,6 +88,12 @@ fn definitions(world: Cell<string>, memo: ReadMemo<string>, outer: ReadMemo<stri
             is_input: false,
             compute: (e, a) -> "${ask_text(e, "quiet", a.text() ?? "")} ${ask_text(e, "second", a.text() ?? "")}"
                 .bytes(),
+        },
+        QueryDefinition {
+            query_name: "muted",
+            code_hash: "code",
+            is_input: false,
+            compute: (e, _a) -> heard_after_muted(e, memo).bytes(),
         },
         QueryDefinition {
             query_name: "nest",
@@ -136,6 +149,13 @@ spec "read_memo — a remembered answer is read as its working-out read" {
             let store = store_in_memory()
             let _ = process(store, "old", "hushed")
             ask_text(process(store, "new", "hushed"), "second", "x") == "second new"
+        }
+    }
+    given "a memo its asker takes where it records none of the reads, then where it does" {
+        then "the asker reads what the working-out read, and an edit of it reaches the asker" {
+            let store = store_in_memory()
+            let _ = process(store, "old", "muted")
+            ask_text(process(store, "new", "muted"), "muted", "x") == "new"
         }
     }
     given "nothing edited" {

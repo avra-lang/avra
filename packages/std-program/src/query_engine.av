@@ -350,6 +350,9 @@ once fn engines_made() -> Cell<int> { Cell.new(0) }
 /// A reader of one engine of this process: the engine's serial and the reader's.
 export type ReaderAt = { engine: int, reader: int }
 
+/// The reader of a read no one is recording: none has that serial.
+export const UNREACHED: int = -1
+
 /// A serial no engine of this process has had.
 fn next_serial() -> int {
     let made = engines_made()
@@ -1456,7 +1459,17 @@ impl QueryEngine {
 
     /// Who a read made now reaches, in this process: the reader, in this engine. A reader's serial
     /// alone is this engine's, and another engine's reader may wear it.
-    fn reader_at() -> ReaderAt { ReaderAt { engine: self.serial, reader: self.reader() } }
+    fn reader_at() -> ReaderAt { ReaderAt { engine: self.serial, reader: self.reached_reader() } }
+
+    /// The reader a read made now reaches, `UNREACHED` where it reaches none: in an unrecorded stretch
+    /// the asker makes no read, so what is read there reaches only a gathering begun inside it. Work
+    /// remembered as having reached a reader is never made again for it, so work done for nobody is
+    /// remembered as done for nobody.
+    fn reached_reader() -> int {
+        if self.recording() { return self.reader() }
+        let inner? = self.gathering.get().last() else { return UNREACHED }
+        if inner.depth == self.open_depth.get() && self.gathers(inner) { inner.reader } else { UNREACHED }
+    }
 
     /// Who a read made now reaches, as one serial: the innermost gathering begun with the questions
     /// open now, else the innermost question, else zero for none. Two reads under one serial reach
