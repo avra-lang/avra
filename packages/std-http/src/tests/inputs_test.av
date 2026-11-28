@@ -1,0 +1,99 @@
+// A handler's input as one record: every part read, every issue kept,
+// one 422 naming each with its `in`.
+use @std.http.body.{whole}
+use @std.http.http.{Request, Unrouted, Response}
+use @std.http.inputs.{Input, path, body, query}
+use @std.http.typed.{Captures}
+use @std.meta.{derive}
+use @std.validate.{Decode, length, range}
+
+@derive(Decode)
+type Draft = { @length(1, 20) title: string }
+
+@derive(Decode)
+type Window = { @range(1, 100) limit: int = 20 }
+
+@derive(Input)
+type NewIdea = { @path board: int, @body draft: Draft, @query page: Window }
+
+/// Fields named as the reader's own locals.
+@derive(Input)
+type Clash = { @path at: string, @query q: Window, @body ended: Draft }
+
+/// A field that names no part.
+@derive(Input)
+type Loose = { @query page: Window, stray: int = 0 }
+
+/// Captures named by hand, as a route's record answers them.
+type Held = { board: string? }
+
+impl Captures for Held {
+    fn at(name: string) -> string? {
+        if name == "board" { return self.board }
+        null
+    }
+}
+
+type Spot = { at: string }
+
+impl Captures for Spot {
+    fn at(name: string) -> string? { if name == "at" { self.at } else { null } }
+}
+
+fn sent(target: string, ct: string, body: string) -> Request<Unrouted> {
+    let q = framed_from(
+        "POST ${target} HTTP/1.1\r\nHost: h\r\nContent-Type: ${ct}\r\nContent-Length: ${body.length}\r\n\r\n"
+            .bytes(),
+    )!
+    q with { body: whole(body.bytes()) }
+}
+
+fn read(board: string?, target: string, ct: string, body: string) -> string {
+    let got: Result<NewIdea, Response> = NewIdea.read(Held { board: board }, sent(target, ct, body))
+    match got {
+        .Ok(i) -> "${i.board} ${i.draft.title} ${i.page.limit}",
+        .Err(r) -> "${r.status} ${r.body.text() ?? ""}",
+    }
+}
+
+spec "a handler's input as one record" {
+    given "every part well formed" {
+        then "each field is read from its own part" {
+            read("7", "/b/7/ideas?limit=5", "application/json", "{\"title\":\"hi\"}") == "7 hi 5"
+        }
+        then "a form body reads as the body" {
+            read("7", "/b/7/ideas", "application/x-www-form-urlencoded", "title=hi") == "7 hi 20"
+        }
+    }
+    given "every part refused at once" {
+        then "one 422 names each issue with its part" {
+            read("x", "/b/x/ideas?limit=500", "application/json", "{\"title\":\"\"}") == "422 {\"title\":\"the request does not validate\",\"status\":422,\"issues\":[{\"in\":\"path\",\"path\":\"board\",\"rule\":\"type\",\"message\":\"must be an integer, not text\"},{\"in\":\"body\",\"path\":\"title\",\"rule\":\"length\",\"message\":\"must be between 1 and 20 characters\"},{\"in\":\"query\",\"path\":\"limit\",\"rule\":\"range\",\"message\":\"must be between 1 and 100\"}]}"
+        }
+    }
+    given "fields named as the reader's own locals" {
+        then "each still reads its own part" {
+            let got: Result<Clash, Response> = Clash
+                .read(Spot { at: "a" }, sent("/a?limit=3", "application/json", "{\"title\":\"t\"}"))
+            match got {
+                .Ok(c) -> "${c.at} ${c.q.limit} ${c.ended.title}" == "a 3 t",
+                .Err(_) -> false,
+            }
+        }
+    }
+    given "a part that ends the request" {
+        then "a body that is not JSON answers alone, before any record is judged" {
+            read("x", "/b/x/ideas?limit=500", "application/json", "{").split(" ")[0] == "400"
+        }
+        then "a field with no mark ends the request, naming the field" {
+            let got: Result<Loose, Response> = Loose
+                .read(Spot { at: "" }, sent("/", "application/json", "{}"))
+            match got {
+                .Ok(_) -> false,
+                .Err(r) -> r.status == 500 && (r.body.text() ?? "").contains("`stray`"),
+            }
+        }
+        then "a capture the route does not hold is the server's fault" {
+            read(null, "/b/ideas", "application/json", "{\"title\":\"hi\"}").split(" ")[0] == "500"
+        }
+    }
+}

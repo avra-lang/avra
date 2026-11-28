@@ -38,7 +38,17 @@ use @std.http_message.message.{Header}
 use @std.json.{Field as JsonField, Json, field, to_text}
 use @std.text.{has_nul}
 use @std.url.{decoded}
-use @std.validate.{Coercion, Decode, Issue, Issues, Keyed, Limits as DecodeLimits, from_keyed}
+use @std.validate.{
+    Coercion,
+    Decode,
+    Issue,
+    Issues,
+    Keyed,
+    Limits as DecodeLimits,
+    Value,
+    from_keyed,
+    root,
+}
 use http.{Request, Response, status, text, body_json}
 use query.{Pair, Query}
 
@@ -46,37 +56,114 @@ impl Request {
     /// THE BODY AS A `T`, or the response refusing it: `json_text`'s 415
     /// and 400, a 400 for text that is not JSON, and a 422 naming every
     /// issue for JSON that is not a `T`.
-    fn json<T: Decode>() -> Result<T, Response> {
-        let doc = self.json_text()?
-        match T.from_json(doc, Coercion.Strict, DecodeLimits {}) {
-            .Ok(v) -> v,
-            .Err(issues) -> {
-                let _ = body_json(doc)?
-                fail problem(issues, Origin.Body)
-            },
-        }
-    }
+    fn json<T: Decode>() -> Result<T, Response> { self.json_part<T>().answer() }
 
     /// THE FORM AS A `T`, or the response refusing it: the form's own
     /// refusal (`form_body`), or a 422 naming every issue for fields that are
     /// not a `T` — read as a query's fields are, by `T`'s own rules.
-    fn form<T: Decode>() -> Result<T, Response> {
-        let posted = self.form_body()?
-        match T.decode(from_keyed(posted.keyed()), Coercion.Lax) {
-            .Ok(v) -> v,
-            .Err(issues) -> { fail problem(issues, Origin.Body) },
-        }
-    }
+    fn form<T: Decode>() -> Result<T, Response> { self.form_part<T>().answer() }
 
     /// THE QUERY AS A `Q`, or the response refusing it: a 400 for a name
     /// or value that decodes to no text, a 422 naming every issue for
     /// fields that are not a `Q`.
-    fn query<Q: Decode>() -> Result<Q, Response> {
-        let fields = keyed(self.raw_query())?
-        match Q.decode(from_keyed(fields), Coercion.Lax) {
-            .Ok(q) -> q,
-            .Err(issues) -> { fail problem(issues, Origin.Query) },
+    fn query<Q: Decode>() -> Result<Q, Response> { self.query_part<Q>().answer() }
+
+    /// The JSON body read as a `T`, its issues kept for a refusal that
+    /// names every part.
+    fn json_part<T: Decode>() -> Reading<T> {
+        let doc = match self.json_text() { .Ok(d) -> d, .Err(r) -> { return Reading.Ended(r) } }
+        match T.from_json(doc, Coercion.Strict, DecodeLimits {}) {
+            .Ok(v) -> Reading.Read(v),
+            .Err(issues) -> match body_json(doc) {
+                .Ok(_) -> placed(issues, Origin.Body),
+                .Err(r) -> Reading.Ended(r),
+            },
         }
+    }
+
+    /// The posted form read as a `T`, its issues kept.
+    fn form_part<T: Decode>() -> Reading<T> {
+        match self.form_body() {
+            .Ok(posted) -> decoded_part(from_keyed(posted.keyed()), Origin.Body),
+            .Err(r) -> Reading.Ended(r),
+        }
+    }
+
+    /// The body read as a `T` by what it says it is: a form as a form,
+    /// anything else as JSON.
+    fn body_part<T: Decode>() -> Reading<T> {
+        if self.form_posted() { return self.form_part<T>() }
+        self.json_part<T>()
+    }
+
+    /// The query read as a `Q`, its issues kept.
+    fn query_part<Q: Decode>() -> Reading<Q> {
+        match keyed(self.raw_query()) {
+            .Ok(fields) -> decoded_part(from_keyed(fields), Origin.Query),
+            .Err(r) -> Reading.Ended(r),
+        }
+    }
+}
+
+/// One capture read as a `T`: decoded once as `captured` reads it, then
+/// judged by `T`'s rules as a query's text is.
+export fn path_part<T: Decode>(at: dyn Captures, name: string) -> Reading<T> {
+    let raw? = at.at(name) else { return Reading.Ended(text(500, no_capture(name))) }
+    match captured(raw) {
+        .Ok(s) -> match T.decode(Value.Text(s), Coercion.Lax, DecodeLimits {}) {
+            .Ok(x) -> Reading.Read(x),
+            .Err(issues) -> Reading
+                .Refused(
+                    [Placed { issue: i with { path: root().field(name) }, part: Origin.Path } for i in issues.all],
+                ),
+        },
+        .Err(r) -> Reading.Ended(r),
+    }
+}
+
+/// A route's captures by name.
+export trait Captures {
+    fn at(name: string) -> string?
+}
+
+/// ONE SOURCE OF A REQUEST, READ: its value, the issues it refused with
+/// (kept, so one refusal names every part), or the response that ends
+/// the request before any record is judged.
+export enum Reading<T> {
+    Read(v: T)
+    Refused(issues: List<Placed>)
+    Ended(r: Response)
+}
+
+/// An issue and the part of the request it was found in.
+export type Placed = { issue: Issue, part: Origin? }
+
+impl Reading {
+    /// The value, or the refusal standing for this part alone.
+    fn answer() -> Result<T, Response> {
+        match self {
+            .Read(v) -> v,
+            .Refused(p) -> { fail problem_placed(p) },
+            .Ended(r) -> { fail r },
+        }
+    }
+
+    fn value() -> T? { match self { .Read(v) -> v, .Refused(_) or .Ended(_) -> null } }
+
+    fn issues() -> List<Placed> { match self { .Refused(p) -> p, .Read(_) or .Ended(_) -> [] } }
+
+    fn ended() -> Response? { match self { .Ended(r) -> r, .Read(_) or .Refused(_) -> null } }
+}
+
+/// Every part's issues, in the order the parts were read.
+export fn every_placed(parts: List<List<Placed>>) -> List<Placed> { [p for ps in parts for p in ps] }
+
+fn placed<T>(issues: Issues, part: Origin) -> Reading<T> { Reading.Refused([Placed { issue: i, part: part } for i in issues.all]) }
+
+fn decoded_part<T: Decode>(v: Value, part: Origin) -> Reading<T> {
+    match T.decode(v, Coercion.Lax, DecodeLimits {}) {
+        .Ok(x) -> Reading.Read(x),
+        .Err(issues) -> placed(issues, part),
     }
 }
 
@@ -111,27 +198,30 @@ export fn created(j: Json, at: string) -> Response {
 /// issue at its path, the rule that refused and its words. What an issue
 /// received is never echoed: a refusal can be read by whoever is shown it.
 /// `part`, when the issues were read from a request, names where.
-export fn problem(issues: Issues, part: Origin? = null) -> Response {
+export fn problem(issues: Issues, part: Origin? = null) -> Response { problem_placed([Placed { issue: i, part: part } for i in issues.all]) }
+
+/// The one refusal over issues found in several parts, each naming its own.
+export fn problem_placed(all: List<Placed>) -> Response {
     Response {
         status: 422,
         headers: [Header { name: "content-type", value: "application/problem+json" }],
-        body: to_text(problem_json(issues, part)).bytes(),
+        body: to_text(problem_json(all)).bytes(),
     }
 }
 
-fn problem_json(issues: Issues, part: Origin?) -> Json {
+fn problem_json(all: List<Placed>) -> Json {
     Json
         .Obj(
             [
                 field("title", Json.Str(unvalidated())),
                 field("status", Json.Int(422)),
-                field("issues", Json.Arr([issue_json(i, part) for i in issues.all])),
+                field("issues", Json.Arr([issue_json(p.issue, p.part) for p in all])),
             ],
         )
 }
 
 /// The part of a request a record was read from.
-export enum Origin { Body, Query }
+export enum Origin { Body, Query, Path }
 
 fn issue_json(i: Issue, part: Origin?) -> Json {
     Json
@@ -179,9 +269,10 @@ fn plain_text(b: Bytes) -> string? {
 
 // ── voices ──────────────────────────────────────────────────────
 
-fn origin_word(o: Origin) -> string { match o { .Body -> "body", .Query -> "query" } }
+fn origin_word(o: Origin) -> string { match o { .Body -> "body", .Query -> "query", .Path -> "path" } }
 
 fn unvalidated() -> string { "the request does not validate" }
 fn not_a_segment(raw: string) -> string { "the segment `${raw}` is not percent-encoded text" }
 fn not_a_name(raw: string) -> string { "the query name `${raw}` is not percent-encoded text" }
 fn not_a_value(key: string) -> string { "the query's `${key}` is not percent-encoded text" }
+fn no_capture(name: string) -> string { "the route captures no `${name}`" }
