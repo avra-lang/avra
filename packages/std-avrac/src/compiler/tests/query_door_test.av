@@ -1,0 +1,181 @@
+// A query body reads the world only through its door: each rule of the law, refused where it is
+// broken and quiet where it is kept.
+use @std.avrac.testing.{refused_in, refused_n, said, vendored_meta, held_at, Judged}
+
+/// The source `main` as a package's entry, `@std/meta` beside it.
+fn packaged(main: string) -> Judged {
+    held_at(
+        vendored_meta(
+            {
+                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n",
+                "/w/src/main.av": main,
+            },
+        ),
+        "/w",
+    )
+        .judged_at("/w/src/main.av")
+}
+
+/// The source `main` as a package's entry over a dependency `@f/lib`, whose `src/lib.av` is `lib`,
+/// over `@f/base`, whose `listing` reads the world.
+fn beside_lib(main: string, lib: string) -> Judged {
+    held_at(
+        vendored_meta(
+            {
+                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@f/lib\" = { path = \"lib\" }\n",
+                "/w/src/main.av": main,
+                "/w/lib/avra.toml": "[package]\nname = \"@f/lib\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../vendor/meta\" }\n\"@f/base\" = { path = \"../base\" }\n",
+                "/w/lib/src/lib.av": lib,
+                "/w/base/avra.toml": "[package]\nname = \"@f/base\"\nversion = \"0.1.0\"\n",
+                "/w/base/src/base.av": "extern fn avra_io_list(path: string) -> int\nexport fn listing(dir: string) -> int { avra_io_list(dir) }\n",
+            },
+        ),
+        "/w",
+    )
+        .judged_at("/w/src/main.av")
+}
+
+/// The dependency's one fn: a listing it asks of `@f/base`.
+fn lister() -> string { "use @f.base.{listing}\nexport fn names(dir: string) -> int { listing(dir) }\n" }
+
+/// The head every fixture shares: the query and input marks, and the rows its bodies call.
+fn marks() -> string {
+    "use @std.meta.{Fn, Reach, reach, platform}\nfn query(_f: Fn) {}\nfn input(_f: Fn) {}\nextern fn avra_io_list(path: string) -> int\n@reach(Reach.Writes)\nextern fn avra_io_mkdir(path: string) -> int\n@reach(Reach.Platform)\nextern fn avra_llvm_drops_by_atom() -> int\n"
+}
+
+/// The words the law says of a query reaching a read.
+const READS: string = "a query's answer is kept under the reads its record holds"
+
+/// How many times the law spoke over `p`.
+fn spoken(p: Judged) -> int { said(p).filter(it.message.starts_with(READS)).length }
+
+spec "query door — what a query reads" {
+    then "a query calling a row that reaches the world is refused, at the call" {
+        refused_in(
+            packaged(
+                marks() +
+                    "@query\nfn listed(dir: string) -> int { avra_io_list(dir) }\nlisted(\"/\")\n",
+            ),
+            "reaches `avra_io_list`",
+        )
+    }
+    then "a read below a helper is refused for the query that reaches it" {
+        refused_in(
+            packaged(
+                marks() +
+                    "fn names(dir: string) -> int { avra_io_list(dir) }\n@query\nfn listed(dir: string) -> int { names(dir) + 1 }\nlisted(\"/\")\n",
+            ),
+            "reaches `avra_io_list`",
+        )
+    }
+    then "a row that only writes is no read" {
+        spoken(
+            packaged(
+                marks() +
+                    "@query\nfn made(dir: string) -> int { avra_io_mkdir(dir) }\nmade(\"/\")\n",
+            ),
+        ) == 0
+    }
+    then "a read behind an `@input` is the door's, never the query's" {
+        spoken(
+            packaged(
+                marks() +
+                    "@input\nfn names(dir: string) -> int { avra_io_list(dir) }\n@query\nfn listed(dir: string) -> int { names(dir) }\nlisted(\"/\")\n",
+            ),
+        ) == 0
+    }
+    then "a fn no query reaches reads as it likes" {
+        spoken(
+            packaged(
+                marks() + "fn listed(dir: string) -> int { avra_io_list(dir) }\nlisted(\"/\")\n",
+            ),
+        ) == 0
+    }
+}
+
+spec "query door — a licence says what lies past it" {
+    then "a licensed read's own call is gone" {
+        spoken(
+            packaged(
+                marks() +
+                    "@query\nfn listed(dir: string) -> int {\n    // LICENSED input.unrecorded_read: a listing the key's dir names\n    avra_io_list(dir)\n}\nlisted(\"/\")\n",
+            ),
+        ) == 0
+    }
+    then "a licence with no reason is no licence" {
+        refused_in(
+            packaged(
+                marks() +
+                    "@query\nfn listed(dir: string) -> int {\n    // LICENSED input.unrecorded_read:\n    avra_io_list(dir)\n}\nlisted(\"/\")\n",
+            ),
+            "reaches `avra_io_list`",
+        )
+    }
+    then "a licence names its own law: another law's licence covers nothing" {
+        refused_in(
+            packaged(
+                marks() +
+                    "@query\nfn listed(dir: string) -> int {\n    // LICENSED input.asked: a listing the key's dir names\n    avra_io_list(dir)\n}\nlisted(\"/\")\n",
+            ),
+            "reaches `avra_io_list`",
+        )
+    }
+}
+
+spec "query door — the platform" {
+    then "a platform row a query reaches with no platform door is refused" {
+        refused_in(
+            packaged(
+                marks() + "@query\nfn linker() -> int { avra_llvm_drops_by_atom() }\nlinker()\n",
+            ),
+            "reaches `avra_llvm_drops_by_atom`",
+        )
+    }
+    then "a platform row is read through the platform's door where the query meets it" {
+        spoken(
+            packaged(
+                marks() +
+                    "@input\n@platform\nfn machine() -> int { avra_llvm_drops_by_atom() }\n@query\nfn linker() -> int {\n    let _ = machine()\n    avra_llvm_drops_by_atom()\n}\nlinker()\n",
+            ),
+        ) == 0
+    }
+    then "a plain `@input` keys nothing by the platform" {
+        refused_in(
+            packaged(
+                marks() +
+                    "@input\nfn names(dir: string) -> int { 1 }\n@query\nfn linker() -> int {\n    let _ = names(\"/\")\n    avra_llvm_drops_by_atom()\n}\nlinker()\n",
+            ),
+            "reaches `avra_llvm_drops_by_atom`",
+        )
+    }
+    then "the platform's door keys a platform read only: a world read beside it is still refused" {
+        refused_n(
+            packaged(
+                marks() +
+                    "@input\n@platform\nfn machine() -> int { 1 }\n@query\nfn both(dir: string) -> int {\n    let _ = machine()\n    avra_llvm_drops_by_atom() + avra_io_list(dir)\n}\nboth(\"/\")\n",
+            ),
+            "reaches `avra_io_list`",
+            1,
+        )
+    }
+}
+
+spec "query door — a call entering the reading package" {
+    then "is the site, named where the read's package is entered" {
+        refused_in(
+            beside_lib(
+                "use @std.meta.{Fn}\nuse @f.lib.{names}\nfn query(_f: Fn) {}\n@query\nfn listed(dir: string) -> int { names(dir) }\nlisted(\"/\")\n",
+                lister(),
+            ),
+            "through the call at @f/lib/src/lib.av:2",
+        )
+    }
+    then "a licensed call above it says the key covers what lies past it, and nothing past it is a site" {
+        spoken(
+            beside_lib(
+                "use @std.meta.{Fn}\nuse @f.lib.{names}\nfn query(_f: Fn) {}\n@query\nfn listed(dir: string) -> int {\n    // LICENSED input.unrecorded_read: the key's dir names the listing\n    names(dir)\n}\nlisted(\"/\")\n",
+                lister(),
+            ),
+        ) == 0
+    }
+}

@@ -17,6 +17,8 @@ use @std.io.{
     renamed,
     env,
     env_or,
+    mode_of,
+    with_mode,
 }
 
 /// The scratch directory, made.
@@ -187,6 +189,29 @@ spec "std/io" {
             let _ = make_dirs(d)
             let _ = write_text("${d}/x", "")
             match remove(d) { .Ok(_) -> false, .Err(e) -> e is .Failed }
+        }
+    }
+    given "a file's mode" {
+        then "is what it was given, `rwxr-xr-x` read as 493" {
+            let p = fresh("m.txt")
+            let _ = write_text(p, "x")
+            let _ = with_mode(p, 493)
+            (mode_of(p) catch 0) == 493
+        }
+        then "given again, is the new one" {
+            let p = fresh("m2.txt")
+            let _ = write_text(p, "x")
+            let _ = with_mode(p, 493)
+            let _ = with_mode(p, 416)
+            (mode_of(p) catch 0) == 416
+        }
+        then "of nothing is refused, naming the path" {
+            let p = fresh("no-mode")
+            match mode_of(p) { .Ok(_) -> false, .Err(e) -> e.describe().message.contains(p) }
+        }
+        then "given to nothing is refused, naming the path" {
+            let p = fresh("no-mode-given")
+            message(with_mode(p, 493)).contains(p)
         }
     }
     given "the environment" {

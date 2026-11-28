@@ -1,0 +1,92 @@
+//! A built binary is placed by the build's own verbs, never a child: its octets and its mode copied,
+//! and a stem that already holds it left as it stands. `scratch_dir` is the neighbouring tests' own:
+//! this module shares one namespace.
+use commands.{binary_placed, copied, holds_binary}
+use @std.io.{append_bytes, make_dirs, mode_of, read_text, with_mode, write_text}
+use @std.time.{stamp as now_stamp}
+
+/// A fresh directory for one case, a `build` directory inside it.
+fn case_dir(name: string) -> string {
+    let at = "${scratch_dir()}/publish_${name}_${now_stamp()}"
+    let _ = make_dirs("${at}/build")
+    at
+}
+
+/// A file at `path` holding `text`, given the mode `mode`; its path.
+fn made(path: string, text: string, mode: int) -> string {
+    let _ = write_text(path, text)
+    let _ = with_mode(path, mode)
+    path
+}
+
+/// The mode `rwxr-xr-x`.
+const RUNS: int = 493
+
+/// The mode `rw-r-----`.
+const READS: int = 416
+
+spec "publish — a binary placed by the build's own verbs" {
+    given "a copy" {
+        then "keeps a mode that runs" {
+            let d = case_dir("runs")
+            copied(made("${d}/kept", "binary", RUNS), "${d}/copy") &&
+                (mode_of("${d}/copy") catch 0) == RUNS
+        }
+        then "keeps a mode that does not run" {
+            let d = case_dir("reads")
+            copied(made("${d}/kept", "binary", READS), "${d}/copy") &&
+                (mode_of("${d}/copy") catch 0) == READS
+        }
+        then "holds the octets it was copied from" {
+            let d = case_dir("octets")
+            copied(made("${d}/kept", "the binary's octets", RUNS), "${d}/copy") &&
+                (read_text("${d}/copy") catch "") == "the binary's octets"
+        }
+        then "of a file that is not there is refused" {
+            let d = case_dir("missing")
+            !copied("${d}/kept", "${d}/copy")
+        }
+    }
+    given "a stem" {
+        then "holding the kept octets, runnable, holds the binary" {
+            let d = case_dir("holds")
+            holds_binary(made("${d}/stem", "binary", RUNS), made("${d}/kept", "binary", RUNS))
+        }
+        then "holding other octets does not" {
+            let d = case_dir("other")
+            !holds_binary(made("${d}/stem", "older", RUNS), made("${d}/kept", "binary", RUNS))
+        }
+        then "holding the kept octets that cannot run does not" {
+            let d = case_dir("unrunnable")
+            !holds_binary(made("${d}/stem", "binary", READS), made("${d}/kept", "binary", RUNS))
+        }
+    }
+    given "a placement" {
+        then "places the kept binary where no stem stands, runnable" {
+            let d = case_dir("place")
+            let kept = made("${d}/build/app.bin", "binary", RUNS)
+            binary_placed(kept, "${d}/app") == null && holds_binary("${d}/app", kept)
+        }
+        then "leaves a stem that already holds the binary as it stands: never linked onto the kept file" {
+            let d = case_dir("untouched")
+            let kept = made("${d}/build/app.bin", "binary", RUNS)
+            let stem = made("${d}/app", "binary", RUNS)
+            let placed = binary_placed(kept, stem) == null
+            let _ = append_bytes(kept, "!".bytes())
+            placed && (read_text(stem) catch "") == "binary"
+        }
+        then "a stem it replaced is the kept file itself, as the fixture above tells them apart" {
+            let d = case_dir("linked")
+            let kept = made("${d}/build/app.bin", "binary", RUNS)
+            let placed = binary_placed(kept, made("${d}/app", "older", RUNS)) == null
+            let _ = append_bytes(kept, "!".bytes())
+            placed && (read_text("${d}/app") catch "") == "binary!"
+        }
+        then "replaces a stem holding another binary" {
+            let d = case_dir("replace")
+            let kept = made("${d}/build/app.bin", "binary", RUNS)
+            binary_placed(kept, made("${d}/app", "older", RUNS)) == null &&
+                (read_text("${d}/app") catch "") == "binary"
+        }
+    }
+}

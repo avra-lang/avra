@@ -4,11 +4,20 @@
 //! and standing in a package the program's own sources import.
 use core.{CalledFn, flatten, some_list, sorted_texts}
 use compiler.hosts.{BuildHost, HostFnOwed, host_fn_line, host_fn_owed, host_named, hosts_of}
-use @std.meta.{derive}
+use @std.meta.{derive, platform}
+use @std.io.{IoError}
+use compiler.backend.{links_with_ld64}
 use @std.program.address.{SourceFileAddress, source_file}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
 use @std.program.saved_derive.{Saved}
-use @std.program.saved_query.{cut_query, definitions_of, ListedQuery, query, query_definition}
+use @std.program.saved_query.{
+    cut_query,
+    definitions_of,
+    input,
+    ListedQuery,
+    query,
+    query_definition,
+}
 
 /// A host fn that owes the program what it doesn't pay: where it's declared, its name, its package,
 /// and what it owes.
@@ -36,10 +45,32 @@ type ReadFn = { declared: DeclaredName, called: CalledFn }
 @derive(Saved)
 type BoundFns = { fns: List<ReadFn> }
 
+/// THE PLATFORM A BUILD IS KEYED BY, as the build reads it: whether the host links with ld64, and
+/// the words its C library says each failure in. A query that reads it is keyed by the platform, so
+/// what the rows reaching `Reach.Platform` below it answer is answered only where this stands. It
+/// names the C library by the words it speaks, so two libraries that speak alike and define
+/// different symbols are one platform here.
+@derive(Saved)
+export type BuildPlatform = { ld64: bool, failures: string }
+
+/// The platform this process builds on.
+@input("link")
+@platform
+export fn build_platform(_engine: QueryEngine) -> BuildPlatform {
+    BuildPlatform {
+        ld64: links_with_ld64(),
+        failures: [IoError.Failed("", e).describe().message for e in 1..FAILURE_CODES].join("\n"),
+    }
+}
+
+/// One past the last failure code a C library names.
+const FAILURE_CODES: int = 134
+
 /// Every host fn of the files a build of the package `package` reads, its own tests aside, that owes
 /// the program what it doesn't pay.
 @query("link")
 export fn program_hosts_owed(engine: QueryEngine, package: string) -> HostsOwed {
+    let _ = build_platform(engine)
     let read = [f for f in package_closure(engine, package).files if !(f.package_name == package && in_tests(f.path_in_package))]
     let fns = flatten([file_bound_fns(engine, f).fns for f in read])
     let asked = [m.package for f in read if f.package_name == package for u in file_words(engine, f).uses for m in some_list(imported_module(engine, f, u))]
