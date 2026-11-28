@@ -1,7 +1,7 @@
 //! A HANDLER'S INPUT IS ONE RECORD, each field read from the part of the
 //! request its mark names:
 //!
-//!     @input
+//!     @Input
 //!     type NewIdea = { @path board: string, @body draft: IdeaDraft, @query page: Page }
 //!
 //! Every part is read and every issue kept, so a request wrong in its
@@ -44,15 +44,17 @@ export trait Input {
     /// The record, or the one refusal naming every part that refused.
     static fn read(at: dyn Captures, q: Request<Unrouted>) -> Result<Self, Response>
 
-}
+    /// `@Input`: `read`, each field from the part its mark names, and the
+    /// record's own rules. A field naming no part is refused here.
+    static fn derive(t: Type) -> Declared {
+        let loose = [unsourced(f) for f in t.fields if source_of(f) == null]
+        if !t.variants.is_empty() { return Declared { made: [], problems: [not_a_record(t)] } }
+        if !loose.is_empty() { return Declared { made: [], problems: loose } }
+        Declared { made: [beside(t, input_reader(t)), beside(t, checker(t))] }
+    }
 
-/// `@input` — the type is a handler's input: `Input`'s `read`, each field
-/// from the part its mark names. A field naming no part is refused here.
-export fn input(t: Type) -> Declared {
-    let loose = [unsourced(f) for f in t.fields if source_of(f) == null]
-    if !t.variants.is_empty() { return Declared { made: [], problems: [not_a_record(t)] } }
-    if !loose.is_empty() { return Declared { made: [], problems: loose } }
-    Declared { made: [beside(t, input_reader(t)), beside(t, checker(t))] }
+    /// The marks that name a field's part.
+    static fn marks(_t: Type) -> List<string> { ["path", "body", "query"] }
 }
 
 /// `@path`: the field is the route's capture of its own name.
