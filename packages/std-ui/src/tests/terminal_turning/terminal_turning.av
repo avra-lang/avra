@@ -1,0 +1,65 @@
+// proves: a terminal written in place draws a busy mark at the clock's frame and asks to be painted
+// again a frame later, so the mark turns; the chain ends at the first paint that shows nothing busy,
+// and where motion is reduced the still mark stands and nothing is asked. The clock is virtual, so
+// no real time passes and both engines see the same frames.
+use @std.ui.components.{button, column}
+use @std.ui.native.net.{unwired}
+use @std.ui.app.{later, running, stood}
+use @std.ui.native.sources.{opened, served}
+use @std.ui.terminal.{Terminal, terminal_in_place}
+use @std.ui.terminal.screen.{screen}
+use @std.ui.realize.tui.glyphs.{unicode}
+use @std.time.{ms, sleep}
+
+extern fn avra_clock_virtual(on: int)
+
+/// A busy button in place, every byte it writes kept.
+fn busy_in_place(busy: Cell<bool>, wrote: Cell<List<string>>, motion: bool) -> Terminal {
+    terminal_in_place(
+        () -> column { button "Save" { loading: busy.get() } },
+        30,
+        4,
+        screen((bytes: string) -> wrote.push(bytes)),
+        (_s: string) -> {},
+        () -> {},
+        (_m: int) -> {},
+        motion: motion,
+    )
+}
+
+/// How many of the braille frames the bytes draw.
+fn frames_in(bytes: string) -> int { [f for f in unicode.frames if bytes.contains(f)].length }
+
+/// A view served for `span` after it starts, then `busy` cleared and `rest` more: what it drew.
+fn served_for(motion: bool, span: int, rest: int) -> string {
+    let busy = Cell.new(true)
+    let wrote: Cell<List<string>> = Cell.new([])
+    let on = busy_in_place(busy, wrote, motion)
+    let before = running()
+    stood(on.shown.app)
+    let inbox = opened(on.shown.app, unwired)
+    on.started()
+    let loop = spawn served(on.shown.app, inbox, () -> on.printed())
+    sleep(ms(span))
+    let turning = frames_in(wrote.get().join(""))
+    let _ = later(
+        ms(0),
+        () -> {
+            busy.set(false)
+            true
+        },
+    )
+    sleep(ms(10))
+    let settled = wrote.get().length
+    sleep(ms(rest))
+    let after = wrote.get().length - settled
+    let still = wrote.get().join("").contains(unicode.busy)
+    on.shown.app.close()
+    let _ = loop.await
+    stood(before)
+    "${turning} frames, still mark ${still}, writes once idle ${after}"
+}
+
+avra_clock_virtual(1)
+println("moving:  ${served_for(true, 400, 400)}")
+"reduced: ${served_for(false, 400, 400)}"
