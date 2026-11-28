@@ -84,9 +84,14 @@ it as a writer loop; the row is removed.
 
 ## 4. `@std/process`
 
-Its pump blocks in its own `poll()` on a 20 ms turn
-(`std_process.c:472`). CLAUDE.md's "ORDER, NOT GRANULARITY" law
-records what that cost.
+A single stage's wait parks in the scheduler on its watched
+descriptors — the pipes and the child's end (a pidfd, a kqueue) — and
+its deadline, so its turns are its events (`heard_within`). A cleanup's
+wait holds the thread in the row with the same events (`held`); a sweep
+over several stages still paces one stage's wait by `turn_ms`, since one
+stage's park cannot hear another's — the `select` over `any(stages)`
+below is what removes it. CLAUDE.md's "ORDER, NOT GRANULARITY" law
+records what the 20 ms turn cost.
 
 | site | today | becomes | deletes | risk | slice |
 |---|---|---|---|---|---|

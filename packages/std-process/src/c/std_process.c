@@ -149,6 +149,11 @@ int64_t avra_proc_executable(const char* path) {
 #include <sys/wait.h>
 #include <sys/resource.h>
 #include <time.h>
+#if defined(__APPLE__)
+#include <sys/event.h>
+#elif defined(__linux__)
+#include <sys/syscall.h>
+#endif
 
 /* A child's cwd bound through a file action: POSIX-2024's name where
    the SDK has it (macOS 26), the `_np` spelling before (Darwin 10.15,
@@ -172,6 +177,9 @@ extern char** environ;
 // clock flows at wall rate across it.
 void avra_clock_hold(int64_t by);
 void avra_mem_settle(void);
+// A descriptor about to close: whoever the scheduler has parked on it
+// is woken, and its watch is forgotten before the number is reused.
+void avra_fiber_fd_closing(int64_t fd);
 
 enum {
     PROC_PIPE_IN = 0x1, PROC_PIPE_OUT = 0x2, PROC_PIPE_ERR = 0x4, PROC_MERGE_ERR = 0x8,
@@ -196,6 +204,7 @@ typedef struct {
     int group_gone;         /* the group has been observed EMPTY once */
     int in_fd, out_fd, err_fd;
     int in_gone, out_gone, err_gone; /* observed HUP/ERR with nothing left to drain */
+    int exit_fd;            /* readable once the child has ended; -1 where none could be opened */
     int64_t status;         /* the tagged word; 0 while running */
 } Proc;
 
@@ -220,7 +229,7 @@ static int64_t proc_slot(void) {
 }
 
 static void close_fd(int* fd) {
-    if (*fd >= 0) close(*fd);
+    if (*fd >= 0) { avra_fiber_fd_closing(*fd); close(*fd); }
     *fd = -1;
 }
 
@@ -234,6 +243,27 @@ static int raised(int fd) {
     }
     if (fd >= 0) fcntl(fd, F_SETFD, FD_CLOEXEC);
     return fd;
+}
+
+/* A DESCRIPTOR THAT TURNS READABLE WHEN THE CHILD ENDS, so its exit is
+   an event a poll hears beside its pipes: a pidfd on Linux, a kqueue
+   watching NOTE_EXIT on Darwin. -1 where neither opens (an older
+   kernel, a child already gone); a wait then turns on `exit_turn_ms`. */
+static int exit_fd_of(pid_t pid) {
+#if defined(__linux__) && defined(SYS_pidfd_open)
+    int fd = (int)syscall(SYS_pidfd_open, pid, 0);
+    return fd >= 0 ? raised(fd) : -1;
+#elif defined(__APPLE__)
+    int kq = kqueue();
+    if (kq < 0) return -1;
+    struct kevent ev;
+    EV_SET(&ev, (uintptr_t)pid, EVFILT_PROC, EV_ADD | EV_ONESHOT, NOTE_EXIT, 0, NULL);
+    if (kevent(kq, &ev, 1, NULL, 0, NULL) != 0) { close(kq); return -1; }
+    return raised(kq);
+#else
+    (void)pid;
+    return -1;
+#endif
 }
 
 static int make_pipe(int p[2]) {
@@ -402,6 +432,7 @@ int64_t avra_proc_spawn(int64_t token, const char* file, const char* cwd, int64_
     p->in_fd = in[1];
     p->out_fd = out[0];
     p->err_fd = err[0];
+    p->exit_fd = exit_fd_of(pid);
     return (gen << 32) | idx;
 
 fail:
@@ -439,14 +470,6 @@ int64_t avra_proc_shut(int64_t h, int64_t stream) {
     return 0;
 }
 
-/* WHAT IS READY, waiting at most timeout_ms — a negative waits until
-   something is. The answer is BITS, because more than one can be
-   true at once, and 0 means the wait expired with nothing ready.
-
-   THE CHILD'S EXIT IS A BIT LIKE ANY OTHER (READY_GONE), so a pump
-   never has to reap to find out whether to keep going. An interrupted
-   wait answers 0 rather than an error: the caller's own deadline is
-   the authority on whether to wait again. */
 /* THIS PROCESS'S CONSUMED CPU, in milliseconds — user plus system, the
    whole tree of it. A WAIT AND A SPIN TAKE THE SAME WALL TIME, so only
    this tells them apart: the pump's own suite asserts that a grace
@@ -483,11 +506,57 @@ static int read_end_gone(int fd, short revents) {
 }
 static int write_end_gone(short revents) { return (revents & (POLLERR | POLLHUP)) != 0; }
 
+/* HOW LONG A WAIT MAY RUN WHILE THE CHILD'S END CANNOT BE HEARD — no
+   exit descriptor opened, so only a reap notices it. Every other wait
+   ends at an event or at the caller's deadline. */
+enum { exit_turn_ms = 20 };
+
+/* The waits this process has taken: what a wait costs is counted in
+   these, and a child asleep for a second costs a handful, never one per
+   slice of the clock. */
+static int64_t g_turns = 0;
+int64_t avra_proc_turns(void) { return g_turns; }
+
+/* A DESCRIPTOR WHOSE EVENT CAN END A WAIT, for a task to park on in
+   the scheduler: 0 the child's stdin (an event when writable), 1 its
+   stdout, 2 its stderr, 3 its end (readable once it has ended). -1 for
+   one that is not watched — never a pipe, let go, or done for good. */
+int64_t avra_proc_watched(int64_t h, int64_t which) {
+    Proc* p = proc_at(h);
+    if (!p) return -1;
+    int fd = which == 0 ? (p->in_gone ? -1 : p->in_fd)
+           : which == 1 ? (p->out_gone ? -1 : p->out_fd)
+           : which == 2 ? (p->err_gone ? -1 : p->err_fd)
+           : which == 3 ? (p->pid >= 0 ? p->exit_fd : -1)
+           : -1;
+    return fd >= 0 ? fd : -1;
+}
+
+/* 1 while the child lives and its end is no event — no exit descriptor
+   opened — so only a reap can notice it; 0 otherwise. */
+int64_t avra_proc_unheard(int64_t h) {
+    Proc* p = proc_at(h);
+    return p && p->pid >= 0 && p->exit_fd < 0 ? 1 : 0;
+}
+
+/* WHAT IS READY, waiting at most timeout_ms — a negative waits until
+   something is. The answer is BITS, because more than one can be
+   true at once, and 0 means the wait expired with nothing ready.
+
+   THE CHILD'S EXIT IS A BIT LIKE ANY OTHER (READY_GONE), so a pump
+   never has to reap to find out whether to keep going — and its ending
+   WAKES the wait as a pipe does (`exit_fd`), so a wait asked to run to
+   a deadline ends at the first event, never at a slice. An interrupted
+   wait answers 0 rather than an error: the caller's own deadline is
+   the authority on whether to wait again. */
 int64_t avra_proc_ready(int64_t h, int64_t timeout_ms) {
     Proc* p = proc_at(h);
     if (!p) return -EBADF;
-    struct pollfd fds[3];
+    g_turns++;
+    if (p->pid >= 0 && p->exit_fd < 0 && (timeout_ms < 0 || timeout_ms > exit_turn_ms)) timeout_ms = exit_turn_ms;
+    struct pollfd fds[4];
     int n = 0, slot_out = -1, slot_err = -1, slot_in = -1;
+    if (p->pid >= 0 && p->exit_fd >= 0) { fds[n].fd = p->exit_fd; fds[n].events = POLLIN; n++; }
     if (p->out_fd >= 0 && !p->out_gone) { fds[n].fd = p->out_fd; fds[n].events = POLLIN; slot_out = n++; }
     if (p->err_fd >= 0 && !p->err_gone) { fds[n].fd = p->err_fd; fds[n].events = POLLIN; slot_err = n++; }
     if (p->in_fd >= 0 && !p->in_gone) { fds[n].fd = p->in_fd; fds[n].events = POLLOUT; slot_in = n++; }
@@ -546,6 +615,7 @@ int64_t avra_proc_reap(int64_t h) {
     if (r == 0) return 0;
     if (r < 0) return -errno;
     p->pid = -1;
+    close_fd(&p->exit_fd);
     if (WIFEXITED(st)) p->status = ((int64_t)EXIT_CODE << 32) | (int64_t)WEXITSTATUS(st);
     else {
         int64_t payload = WTERMSIG(st);
@@ -607,6 +677,7 @@ int64_t avra_proc_close(int64_t h) {
     close_fd(&p->in_fd);
     close_fd(&p->out_fd);
     close_fd(&p->err_fd);
+    close_fd(&p->exit_fd);
     if (p->pid >= 0) {
         int st = 0;
         // the clock: not a wait on time — WNOHANG answers at once

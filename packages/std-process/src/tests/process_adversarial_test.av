@@ -392,6 +392,34 @@ fn cpu_of_hup_alive(secs: int) -> Result<int, ProcessError> {
     avra_proc_cpu_ms() - cpu
 }
 
+/// THE WAITS THIS PROCESS HAS TAKEN, each one call of the pump's poll.
+/// Declared here and nowhere else, as `avra_proc_cpu_ms` is: the law it
+/// witnesses — a wait's turns are its events, never its clock — needs a
+/// count no program reads.
+extern fn avra_proc_turns() -> i64
+
+/// The turns a quiet child costs a run, start to collected outcome.
+fn turns_of_quiet_run(secs: int) -> Result<int, ProcessError> {
+    let before = avra_proc_turns()
+    let _ = (shell("sleep ${secs}")?).run()?
+    avra_proc_turns() - before
+}
+
+/// The turns a quiet child costs a `Child` seen out with no deadline.
+fn turns_of_quiet_wait(n: int) -> Result<int, ProcessError> {
+    let before = avra_proc_turns()
+    mut child = (shell("sleep ${n}")?).start(Ready.Started, secs(5))?
+    let _ = child.wait(null)?
+    avra_proc_turns() - before
+}
+
+/// The turns a child costs that hangs up a stream at once and lives on.
+fn turns_of_hup_alive(secs: int) -> Result<int, ProcessError> {
+    let before = avra_proc_turns()
+    let _ = (shell("exec 2>&- ; sleep ${secs}")?).outcome()?
+    avra_proc_turns() - before
+}
+
 /// A GRANDCHILD HOLDING THE PIPE UNDER `parallel`: one stage's direct
 /// child exits at once, and a sibling it left behind writes into the
 /// inherited pipe a beat later, inside the drain grace. A collector
@@ -730,6 +758,23 @@ spec "std/process adversarial" {
         }
         then "and it costs almost no CPU" {
             (cpu_of_hup_alive(1) catch 9999) < 100
+        }
+    }
+    given "a child quiet for seconds — a wait's turns are its events, never its clock" {
+
+        // The pump once polled in 20 ms slices, so a child asleep for two
+        // seconds cost a hundred turns — each a retain, a release and a
+        // list read, counted by the cost ledger as the child's own wall
+        // time. Its end is an event now (a pidfd, a kqueue), so the wait
+        // runs to that event or to the nearest deadline.
+        then "a run of a two-second sleeper takes a handful of turns" {
+            (turns_of_quiet_run(2) catch 9999) < 10
+        }
+        then "a Child seen out with no deadline takes a handful too" {
+            (turns_of_quiet_wait(1) catch 9999) < 10
+        }
+        then "a hung-up stream beside a living child takes a handful too" {
+            (turns_of_hup_alive(1) catch 9999) < 10
         }
     }
     given "a grandchild holding the pipe, one door out — a collector that declares on stop" {
