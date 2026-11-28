@@ -246,6 +246,8 @@ fn memory_ins(
     mut floors: List<int> = []
     // each open region's HANDED yields: what its arms give the merge on the enclosing scope's count
     mut handing: List<List<Reg>> = []
+    // each open region's TAKEN values: what its arms own in turn, the enclosing scope having let go
+    mut taking: List<List<Reg>> = []
     // what moved on a path that leaves, owned again past that path's exit
     let parted: Cell<List<Parted>> = Cell.new([])
     let last = last_reads(layouts.length, ins)
@@ -295,8 +297,11 @@ fn memory_ins(
             // the enclosing scope owns `dst`, the merge of both.
             .IfStart(_) or .SwitchStart(_, _) -> {
                 handing.push(life.handed_yields(open_scopes, at))
+                let took = life.arm_owned(open_scopes, at, taking.last() ?? [])
+                for r in took { disowns(open_scopes, r) }
+                taking.push(took)
                 // LICENSED compiler.bracket_ritual: a scope STACK walked by the pass, not a bracket body
-                open_scopes.push(nested_scope(open_scopes))
+                open_scopes.push(nested_scope(open_scopes) with { managed: took })
                 out.push(i)
             },
             .Cleanup(_) -> {
@@ -311,12 +316,13 @@ fn memory_ins(
                 // LICENSED loops.push_loop: the pass's OUTPUT accumulates
                 for s in arm_handed(layouts, scope, gives, handing.last() ?? []) { out.push(s) }
                 // LICENSED compiler.bracket_ritual: a scope STACK walked by the pass, not a bracket body
-                open_scopes.push(nested_scope(open_scopes))
+                open_scopes.push(nested_scope(open_scopes) with { managed: taking.last() ?? [] })
                 out.push(i)
             },
             .RegionEnd(_, gives) -> {
                 let scope = open_scopes.pop() ?? empty_scope()
                 let handed = handing.pop()
+                let _ = taking.pop()
                 // LICENSED loops.push_loop: the pass's OUTPUT is written by one verb, `push`, at every site
                 for s in noted_all("a region's close", scope.settled(gives)) { out.push(s) }
                 // LICENSED loops.push_loop: the pass's OUTPUT accumulates
@@ -1455,14 +1461,61 @@ impl Lives {
         let close = region_exit(self.ins, at)
         let merged? = region_dst(self.ins[close]) else { return [] }
         if !self.layouts[merged.index].counted() { return [] }
+        let gives = self.region_gives(at, close)
+        [r for j, r in gives if !gives.take(j).any(same_reg(it, r)) && self.hands(open_scopes, r, close)]
+    }
+
+    /// What each arm of the region opening at `at` and closing at `close` yields, in arm order.
+    fn region_gives(at: int, close: int) -> List<Reg> {
         mut out: List<Reg> = []
         mut k = at
         while k < close {
             k = arm_exit(self.ins, k + 1).boundary
-            let r = arm_gives(self.ins[k])
-            if !out.any(same_reg(it, r)) && self.hands(open_scopes, r, close) { out.push(r) }
+            out.push(arm_gives(self.ins[k]))
         }
         out
+    }
+
+    /// THE VALUES THE REGION OPENING AT `at` TAKES from the scope it opens in: each owned there once,
+    /// yielded by no arm, and read for the last time inside the region on every path through it. Each
+    /// arm owns it in turn — it moves at its last read there, or its arm's close releases it — so every
+    /// path settles one reference and none is retained. `inherited` is what the region whose arm it
+    /// opens in took.
+    fn arm_owned(open_scopes: Stack<Scope>, at: int, inherited: List<Reg>) -> List<Reg> {
+        let top? = open_scopes.top() else { return [] }
+        if !counts(top.tier) { return [] }
+        let close = region_exit(self.ins, at)
+        let gives = self.region_gives(at, close)
+        [r for r in top.managed if self.layouts[r.index].counted() &&
+            self.ends_within(r, at, close, inherited.any(same_reg(it, r))) &&
+            owned_once(open_scopes, r) &&
+            !gives.any(same_reg(it, r))]
+    }
+
+    /// Whether `r` is read inside the region from `at` to `close` and never past it: defined at the
+    /// region's level and dead before its close, or — taken by the region it opens in an arm of — read
+    /// inside and unread from the close to that arm's own end.
+    fn ends_within(r: Reg, at: int, close: int, taken: bool) -> bool {
+        if taken {
+            return (at + 1..close).any(reads_any(self.ins[it], [r])) &&
+                self.arm_closes(self.path_end(r, close))
+        }
+        let dies = self.death[r.index]
+        dies > at && dies < close && level_span(self.ins, self.defs[r.index], at)
+    }
+
+    /// Whether `r`, owned by the arm `at` stands in, is read there for the last time on that path:
+    /// read once at `at`, and unread from there to the arm's close.
+    fn dies_in_arm(open_scopes: Stack<Scope>, r: Reg, at: int) -> bool {
+        owned_top(open_scopes, r) &&
+            [x for x in reads_of(self.ins[at]) if same_reg(x, r)].length == 1 &&
+            self.arm_closes(self.path_end(r, at))
+    }
+
+    /// Whether a path's stop `k` is an arm's close.
+    fn arm_closes(k: int?) -> bool {
+        let at? = k else { return false }
+        self.ins[at] is .ArmEnd || self.ins[at] is .RegionEnd
     }
 
     /// Whether `r`, yielded by an arm of the region closing at `close`, is the enclosing scope's
@@ -1474,7 +1527,9 @@ impl Lives {
     /// Whether the call at `at` hands its first seat over, and how.
     fn handover(open_scopes: Stack<Scope>, at: int) -> Handover {
         let r? = handed_seat(self.ins[at]) else { return Handover.Kept }
-        if !self.layouts[r.index].counted() || !self.dies_at(r, at) { return Handover.Kept }
+        if !self.layouts[r.index].counted() { return Handover.Kept }
+        if self.dies_in_arm(open_scopes, r, at) { return Handover.Owned }
+        if !self.dies_at(r, at) { return Handover.Kept }
         if self.owns_moving(open_scopes, r, at) { return Handover.Owned }
         let slot? = self.refilled_cell(r, at) else { return Handover.Kept }
         Handover.Emptied(slot)
@@ -1489,10 +1544,11 @@ impl Lives {
         rt_moving_twin(callee)
     }
 
-    /// Whether a store's value MOVES into the cell: it dies at the store,
-    /// and the innermost scope owns it.
+    /// Whether a store's value MOVES into the cell: it dies at the store and the innermost scope owns
+    /// it, or the arm owning it reads it there for the last time.
     fn moves(open_scopes: Stack<Scope>, r: Reg, at: int) -> bool {
-        self.owns_moving(open_scopes, r, at) && self.dies_at(r, at)
+        self.owns_moving(open_scopes, r, at) && self.dies_at(r, at) ||
+            self.dies_in_arm(open_scopes, r, at)
     }
 
     /// Whether the scope that would give `r` up at `at` may: the innermost one, or on a path that
@@ -1801,7 +1857,7 @@ type Parted = { r: Reg, depth: int, exit: int }
 /// The scope holding `r` gives up its reference, moved at `at`: kept in `parted` where only the
 /// path through `at` gave it up, until that path's exit.
 fn moves_on(mut open_scopes: Stack<Scope>, parted: Cell<List<Parted>>, life: Lives, r: Reg, at: int) {
-    if !life.parts_at(r, at) {
+    if !life.parts_at(r, at) || life.dies_in_arm(open_scopes, r, at) {
         disowns(open_scopes, r)
         return
     }
