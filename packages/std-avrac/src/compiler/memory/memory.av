@@ -247,7 +247,7 @@ fn memory_ins(
     // each open region's HANDED yields: what its arms give the merge on the enclosing scope's count
     mut handing: List<List<Reg>> = []
     // what moved on a path that leaves, owned again past that path's exit
-    mut parted: List<Parted> = []
+    let parted: Cell<List<Parted>> = Cell.new([])
     let last = last_reads(layouts.length, ins)
     let defs = def_sites(layouts.length, ins)
     let next_barrier = Barriers { next: barrier_positions(ins), still: still, layouts: layouts }
@@ -379,7 +379,7 @@ fn memory_ins(
                 // LICENSED loops.push_loop: the pass's OUTPUT accumulates
                 for s in noted_all("an early exit", owed_from(open_scopes, 0, gives)) { out.push(s) }
                 out.push(i)
-                owns_again(open_scopes, parted)
+                owns_again(open_scopes, parted, at)
             },
             // AN EARLY END OF A TURN settles what the turn's own close
             // would: every scope opened since its loop's `LoopCond`.
@@ -1527,17 +1527,24 @@ impl Lives {
     }
 
     /// Where the path from `at` stops at its own level, past no read of `r` or of a view riding it:
-    /// the first `FnExit`, close or turn there. Absent when a read comes first, or nothing stops it.
+    /// the first `FnExit`, close or turn there. Absent when a read comes first, when a view is read at
+    /// `at` itself, when a jump nested on the way leaves a loop the path stood in, or when nothing
+    /// stops it.
     fn path_end(r: Reg, at: int) -> int? {
-        let family = [r].concat(self.views(r, at))
+        let views = self.views(r, at)
+        if reads_any(self.ins[at], views) { return null }
+        let family = [r].concat(views)
         mut depth = 0
+        mut loops = 0
         mut k = at + 1
         while k < self.ins.length {
             let i = self.ins[k]
-            if reads_any(i, family) { return null }
+            if reads_any(i, family) || leaves_loops(i, loops) { return null }
             if depth == 0 && (closes(i) || turns(i) || i is .LoopJump || i is .FnExit) { return k }
             if opens(i) { depth = depth + 1 }
             if closes(i) { depth = depth - 1 }
+            if i is .LoopStart { loops = loops + 1 }
+            if i is .LoopEnd { loops = loops - 1 }
             k = k + 1
         }
         null
@@ -1779,20 +1786,27 @@ fn owned_once(open_scopes: Stack<Scope>, r: Reg) -> bool {
         .length == 1
 }
 
-/// A reference a scope gave up on one path alone: `r`, and the depth of the scope that held it.
-type Parted = { r: Reg, depth: int }
+/// Whether `i` jumps out of more loops than the `opened` ones a scan has entered.
+fn leaves_loops(i: Ins, opened: int) -> bool {
+    match i { .LoopJump(outward, _) -> outward >= opened, rest -> false }
+}
+
+/// A reference a scope gave up on one path alone: `r`, the depth of the scope that held it, and the
+/// `FnExit` that path leaves by.
+type Parted = { r: Reg, depth: int, exit: int }
 
 /// The scope holding `r` gives up its reference, moved at `at`: kept in `parted` where only the
-/// path through `at` gave it up.
-fn moves_on(mut open_scopes: Stack<Scope>, mut parted: List<Parted>, life: Lives, r: Reg, at: int) {
+/// path through `at` gave it up, until that path's exit.
+fn moves_on(mut open_scopes: Stack<Scope>, parted: Cell<List<Parted>>, life: Lives, r: Reg, at: int) {
     if !life.parts_at(r, at) {
         disowns(open_scopes, r)
         return
     }
+    let exit? = life.path_end(r, at) else { return }
     let depth? = holder_of(open_scopes, r) else { return }
     let held = open_scopes.at(depth)
     open_scopes.rewrite_at(depth, held with { managed: kept_out(held.managed, r) })
-    parted.push(Parted { r: r, depth: depth })
+    parted.push(Parted { r: r, depth: depth, exit: exit })
 }
 
 /// The depth of the innermost open scope holding `r`.
@@ -1800,13 +1814,16 @@ fn holder_of(open_scopes: Stack<Scope>, r: Reg) -> int? {
     [j for j in 0..open_scopes.depth() if open_scopes.at(j).managed.contains(r)].last()
 }
 
-/// Each scope owns again what it gave up on a path that has just left.
-fn owns_again(mut open_scopes: Stack<Scope>, mut parted: List<Parted>) {
-    for p in parted {
+/// Each scope owns again what it gave up on the path that leaves by the `FnExit` at `at`.
+fn owns_again(mut open_scopes: Stack<Scope>, parted: Cell<List<Parted>>, at: int) {
+    let all = parted.get()
+    if !all.any(it.exit == at) { return }
+    for p in all {
+        if p.exit != at { continue }
         let held = open_scopes.at(p.depth)
         open_scopes.rewrite_at(p.depth, held with { managed: held.managed.concat([p.r]) })
     }
-    while !parted.is_empty() { let _ = parted.pop() }
+    parted.set(all.filter(it.exit != at))
 }
 
 /// The innermost scope GIVES UP one reference to `r`: it moved on.
