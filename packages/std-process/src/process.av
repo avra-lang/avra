@@ -32,6 +32,7 @@ extern fn avra_proc_fd(h: int, stream: int) -> int
 extern fn avra_proc_shut(h: int, stream: int) -> int
 extern fn avra_proc_ready(h: int, timeout_ms: int) -> int
 extern fn avra_proc_reap(h: int) -> int
+extern fn avra_time_wall_ns() -> int
 extern fn avra_proc_signal(h: int, sig: int, to_group: int) -> int
 extern fn avra_proc_pid(h: int) -> int
 extern fn avra_proc_close(h: int) -> int
@@ -877,8 +878,11 @@ impl Child {
     fn stop() -> Exit {
         if self.ended != null { return self.ended!.exit }
         let began = now_ms()
+        let probe_host = avra_time_wall_ns() / 1000000
         let _ = avra_proc_signal(self.stage.h, sigterm, 1)
         self.until_gone(self.command.stop_grace.ms())
+        let probe_killed = avra_proc_reap(self.stage.h) == 0
+        eprintln("PROBE stop pid=" + "${self.pid()}" + " killed=" + "${probe_killed}" + " virtual_ms=" + "${now_ms() - began}" + " host_ms=" + "${avra_time_wall_ns() / 1000000 - probe_host}")
         if avra_proc_reap(self.stage.h) == 0 {
             let _ = avra_proc_signal(self.stage.h, sigkill, 1)
             self.until_gone(self.command.stop_grace.ms())
