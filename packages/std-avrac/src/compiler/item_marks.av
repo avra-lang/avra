@@ -154,8 +154,17 @@ export fn declaration_traits(
     let name? = decl_word(item.store, s) else { return [] }
     let gathering = [t for d in file_declares_named(engine, file, name).names for g in package_gatherings(engine, file.package_name).each if g.members.any(it.is(d)) for t in g.readers]
     let worn = [TraitAt { file: d!.file, name: d!.name } for a in item.store.annotations_of(s) for d in [written_resolution(engine, file, Space.Value, a.name).named()] if d != null && d!.kind == ItemKind.Fn]
-    derived_traits(engine, file, item, s).concat(worn).concat(gathering)
+    let members = if item.store.component_parts(s) == null { [] } else { component_members_reader(engine) }
+    derived_traits(engine, file, item, s).concat(worn).concat(gathering).concat(members)
 }
+
+/// `@std/meta`'s reader of every component's members, as a reader; none where the package is out of reach.
+fn component_members_reader(engine: QueryEngine) -> List<TraitAt> {
+    [TraitAt { file: d.file, name: d.name } for d in declarations_of(engine, STD_META.name, [], false, COMPONENT_MEMBERS_READER) if d.kind == ItemKind.Trait]
+}
+
+/// The name `@std/meta` declares its reader of every component's members under.
+const COMPONENT_MEMBERS_READER: string = "ComponentMembers"
 
 /// The `Marker` fns a trait names in its `@reads`.
 @derive(Saved)

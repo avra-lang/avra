@@ -14,8 +14,24 @@ use core.{
     some_list,
 }
 
-/// The mark that makes an event the one bare statements in an instance fill.
-export const default_mark: string = "default"
+/// `@std/meta`'s `default`: the one member an instance's bare statements fill.
+export const META_DEFAULT: Known = Known { package: "@std/meta", name: "default" }
+
+/// `@std/meta`'s `over`: the place a member is shown over.
+export const META_OVER: Known = Known { package: "@std/meta", name: "over" }
+
+/// What `@std/meta`'s `ComponentMembers`, the reader of every component's members, reads.
+const COMPONENT_MEMBERS: List<Known> = [META_DEFAULT, META_OVER]
+
+/// The language's mark a component member's written mark `m` binds: the one `ComponentMembers`
+/// reads under its word, a lookup in that reader's namespace; absent where it reads none.
+export fn component_mark(m: Mark) -> Known? { COMPONENT_MEMBERS.find(it.name == m.name) }
+
+/// Whether a component member's marks bind `known`.
+export fn wears_component_mark(marks: List<Mark>, known: Known) -> bool { marks.any((m) -> component_mark(m) == known) }
+
+/// The words `ComponentMembers` reads, for the law that says what is read.
+export fn component_member_words() -> List<string> { [k.name for k in COMPONENT_MEMBERS] }
 
 /// The record an instance of the component is a literal of — absent for one
 /// that expands, whose instance is its template copied in place.
@@ -39,7 +55,7 @@ export fn record_of(store: SyntaxArena, c: ComponentParts, components: List<stri
             name: p.name.text(),
             of: element_name(p),
             gathers: !components.contains(element_name(p)),
-            default: p.marks.any(it.name == default_mark),
+            default: wears_component_mark(p.marks, META_DEFAULT),
         } for p in fields if lists(p) && !p.state],
         named: fields.any(it.name.spells("name")),
         checks: member(store, c, "check") != null,
@@ -48,7 +64,7 @@ export fn record_of(store: SyntaxArena, c: ComponentParts, components: List<stri
         events: [Event {
             name: e.name,
             says: [s.name.text() for s in e.says],
-            default: e.holder.marks.any(it.name == default_mark),
+            default: wears_component_mark(e.holder.marks, META_DEFAULT),
         } for e in c.events()],
         words: fields.any(says_words(it)) || !c.spreads.is_empty(),
     }

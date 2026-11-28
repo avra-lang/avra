@@ -566,7 +566,7 @@ fn gathered_variant(
     let member_readers = readers
     MetaVariant {
         name: m.name,
-        payload: [if p.ty == null { "" } else { spelled(p.ty!) } for p in fields if !faceted(p.marks, (mk) -> mark_binds(engine, m.file, member_readers, mk.name, CORE_FACET))],
+        payload: [if p.ty == null { "" } else { spelled(p.ty!) } for p in fields if !faceted(p.marks, (mk) -> mark_binds(engine, m.file, member_readers, mk, CORE_FACET))],
         at: null,
         fields: [field_meta(
             engine,
@@ -616,7 +616,7 @@ const MARKER: string = "Marker"
 fn member_payloads(engine: QueryEngine, m: DeclaredName, derived: List<TraitAt>) -> List<FieldSeat> {
     let item = read_item(engine, m.file, m.item)
     let readers = derived
-    let carried = [p.name.text() for s in item.stmts if item.store.declared_name(s) == m.name for p in item.store.struct_parts(s)?.fields ?? [] if !faceted(p.marks, (mk) -> mark_binds(engine, m.file, readers, mk.name, CORE_FACET))]
+    let carried = [p.name.text() for s in item.stmts if item.store.declared_name(s) == m.name for p in item.store.struct_parts(s)?.fields ?? [] if !faceted(p.marks, (mk) -> mark_binds(engine, m.file, readers, mk, CORE_FACET))]
     [f for f in record_signature_written(engine, m.file, m.name)?.fields ?? [] if carried.contains(f.name)]
 }
 
@@ -808,18 +808,18 @@ fn member_mark_key(
     if bound.is_empty() { key_of(named_decl(engine, file, word)) } else { bound }
 }
 
-/// Whether the mark `word`, written in `file` on a member whose declaration's readers are `traits`,
-/// binds the fn `known` names.
+/// Whether the written mark `mark`, worn in `file` on a member whose declaration's readers are
+/// `traits`, binds the fn `known` names.
 fn mark_binds(
     engine: QueryEngine,
     file: SourceFileAddress,
     traits: List<TraitAt>,
-    word: string,
+    mark: Mark,
     known: Known,
 ) -> bool {
-    let bound = trait_markers(engine, traits, word)
+    let bound = trait_markers(engine, traits, mark.name)
     if bound.length > 1 { return false }
-    let d? = bound.first() ?? named_decl(engine, file, word) else { return false }
+    let d? = bound.first() ?? named_decl(engine, file, mark.name) else { return false }
     known.is_in(d.file, d.name)
 }
 

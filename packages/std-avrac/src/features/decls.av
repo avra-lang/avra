@@ -1935,8 +1935,10 @@ impl Decls {
         (self.namespace_of.get())(home).fn_decl(word)
     }
 
-    /// Whether the mark `word` on a member of `owner` binds the fn `known` names.
-    fn mark_is(owner: DeclId, word: string, known: Known) -> bool { self.is_known(self.mark_binding(owner, word), known) }
+    /// Whether the written mark `mark`, worn in `home`, binds among `readers` the fn `known` names.
+    fn mark_binds(readers: List<DeclId>, home: FileId, mark: Mark, known: Known) -> bool {
+        self.is_known(self.mark_binding_among(readers, home, mark.name), known)
+    }
 
     /// The readers of `owner`'s members' marks: each annotation's fn it wears and each trait those
     /// annotations name.
@@ -1944,7 +1946,8 @@ impl Decls {
         let ns = (self.namespace_of.get())(self.annotation_home(owner))
         let worn = [d! for a in self.annotations_of(owner) for d in [ns.fn_decl(a.name) ?? ns.type_decl(a.name)] if d != null]
         let named = [d! for a in self.annotations_of(owner) for x in a.args for d in [ns.type_decl(x.text)] if d != null]
-        worn.concat(named)
+        let members = if self.facts_of(owner)?.is_component ?? false { some_list(self.package_decl(STD_META_DOTTED, COMPONENT_MEMBERS_READER)) } else { [] }
+        worn.concat(named).concat(members)
     }
 
     /// The fns the reader `r` names in its `@reads`, each resolved where `r` is written.
@@ -3727,3 +3730,9 @@ fn gone_decl(d: DeclId) {
 fn enum_decl(t: Type) -> DeclId? {
     match t { .Enum(d, _) -> d, _ -> null }
 }
+
+/// `@std/meta`, as a declaration's package is spelled in this table.
+const STD_META_DOTTED: string = "@std.meta"
+
+/// The name `@std/meta` declares its reader of every component's members under.
+const COMPONENT_MEMBERS_READER: string = "ComponentMembers"

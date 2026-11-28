@@ -59,8 +59,8 @@ use @std.meta.{
     literal,
     type_named,
     type_exported,
-    stored_scalar,
-    flat,
+    stored_scalar as shaped_scalar,
+    flat as shaped_flat,
     flat_field,
     flat_made,
     refuse_as_at,
@@ -167,6 +167,15 @@ fn indexing(m: FieldMark) -> bool { marked(m, unique) || marked(m, index) }
 
 /// Whether the annotation `a` is an index's: `@unique(…)` or `@index(…)`.
 fn type_indexing(a: Annotation) -> bool { marks(a, unique) || marks(a, index) }
+
+/// The scalar a named type stores as: a model is a row of its own, never its one field.
+fn stored_scalar(name: string) -> Kind? {
+    let t? = type_named(name) else { return null }
+    if t.annotations.any(marks(it, model)) { null } else { shaped_scalar(name) }
+}
+
+/// Whether a named type stores as one scalar, a model never.
+fn flat(name: string) -> bool { stored_scalar(name) != null && shaped_flat(name) }
 
 /// `@model` — the library's own name for `@derive(Model)`, so the
 /// declaration reads as what it is rather than a trait a reader has

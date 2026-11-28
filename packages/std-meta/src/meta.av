@@ -236,6 +236,21 @@ fn mark_marked_by(m: Mark, key: string) -> bool { !m.key.is_empty() && m.key == 
 /// refused. The compiler reads it; it runs nothing.
 export fn reads(_d: Named, _marker: Fn) {}
 
+/// `@default` on a component's member: the one an instance's bare
+/// statements fill.
+export fn default(_d: Named) -> Marker { Marker {} }
+
+/// `@over(place)` on a component's member: what the component shows
+/// over that place where it is given.
+export fn over(_d: Named, _place: string = "") -> Marker { Marker {} }
+
+/// THE READER OF EVERY COMPONENT'S MEMBERS: the language reads
+/// `@default` and `@over` on any component, so each binds there with no
+/// `use`, beside whatever else the component's readers read.
+@reads(default)
+@reads(over)
+export trait ComponentMembers {}
+
 /// A READER OF EVERY RULE: `@reads_rules` on a trait says its `derive`
 /// reads each rule its declarations' members wear — a fn whose first seat
 /// takes a value, resolved where it is worn — so no rule is unread there.
@@ -730,7 +745,7 @@ export fn flat_made(named: string, v: Code) -> Code {
 export fn stored_scalar(name: string) -> Kind? {
     let t? = type_named(name) else { return null }
     if t.shape_over() != null { return t.shape_over() }
-    if t.annotations.any(it.name == "model") || t.fields.length != 1 { return null }
+    if t.fields.length != 1 { return null }
     t.fields[0].kind
 }
 

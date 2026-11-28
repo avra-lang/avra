@@ -73,6 +73,8 @@ use @std.meta.{
     Marker,
     marked,
     reads,
+    default,
+    over,
 }
 use @std.text.{parse_int}
 use tree.node.{Node, Prim, Attribute, Action, Handler, Stamp}
@@ -103,6 +105,7 @@ use compose.{gathered}
 @reads(style)
 @reads(over)
 @reads(sets)
+@reads(default)
 export trait View {
     /// What this view says of where it stands among its siblings.
     fn stand() -> Stand
@@ -419,12 +422,8 @@ impl Vocabulary {
 fn composition_problems(t: Type) -> List<Diagnostic> {
     let boxed = if t.spreads.any(is_box(it)) { [boxed_composition(t)] } else { [] }
     boxed
-        .concat([marked_composition(f, m) for f in t.fields for m in f.marks if m.name != slot_mark])
+        .concat([marked_composition(f, m) for f in t.fields for m in f.marks if !marked(m, default)])
 }
-
-/// The language's mark for the field an instance's bare statements fill: the component's, never a
-/// projection.
-const slot_mark = "default"
 
 /// The library's own declarations a member's words are checked against.
 type Vocabulary = {
@@ -668,9 +667,6 @@ export fn style(_d: Named, _field: string = "") -> Marker { Marker {} }
 /// `@sets(value)` on an event writes what it says into the `state` member `value` (`@sets(open,
 /// false)` writes `false` for an event that says nothing).
 export fn sets(_d: Named, _place: string = "", _value: string = "") -> Marker { Marker {} }
-
-/// `@over(value)` on a member makes it what the node shows where it is given.
-export fn over(_d: Named, _place: string = "") -> Marker { Marker {} }
 
 /// The facet that says an attribute is its node's own words.
 const content_facet = "content"
