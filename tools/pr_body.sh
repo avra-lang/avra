@@ -23,6 +23,7 @@ body() {
 
 if [ "${1:-}" = --self-test ]; then
     d=$(mktemp -d)
+    trap 'find "$d" -delete' EXIT
     printf '{"body": "text\\nSPEED_ACCEPT: now"}' > "$d/pr.json"
     got=$(PR_NUMBER=7 GH_TOKEN=t PR_BODY_API="file://$d/pr.json" PR_BODY='SPEED_ACCEPT: stale' body)
     printf '%s\n' "$got" | grep -qx 'SPEED_ACCEPT: now' || { echo "pr_body: the fresh body was not read: $got"; exit 1; }

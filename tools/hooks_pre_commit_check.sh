@@ -9,6 +9,9 @@ set -u
 here=$(cd "$(dirname "$0")" && pwd)
 hook=$here/hooks/pre-commit
 fail() { echo "hooks_pre_commit_check: $1"; exit 1; }
+# every fixture stands under one scratch directory, gone when the check ends
+scratch=$(mktemp -d)
+trap 'find "$scratch" -delete' EXIT
 
 # hook_in <dir>: the hook's status in the repo, its stderr in $err.
 hook_in() {
@@ -17,7 +20,7 @@ hook_in() {
 }
 
 staged() { # staged <name> <text>: a fresh repo with one file staged
-    d=$(mktemp -d)
+    d=$(mktemp -d "$scratch/repo.XXXXXX")
     (cd "$d" && git init -q && printf '%s' "$2" > "$1" && git add "$1")
     echo "$d"
 }
@@ -33,7 +36,7 @@ hook_in "$d"
 [ "$status" = 0 ] || fail "no .av staged must pass with no compiler, gave $status: $err"
 
 stamped_repo() { # stamped_repo <stamp>: a repo with a compiler stamped as asked and a.av staged
-    d=$(mktemp -d)
+    d=$(mktemp -d "$scratch/repo.XXXXXX")
     git="git -c user.name=t -c user.email=t@t"
     (
         cd "$d" || exit 1
@@ -43,17 +46,17 @@ stamped_repo() { # stamped_repo <stamp>: a repo with a compiler stamped as asked
         echo one > Makefile
         $git add -A
         $git commit -q -m one
-        git rev-parse HEAD > /tmp/hpc_first.$$
+        git rev-parse HEAD > "$scratch/first"
         echo two > Makefile
         $git commit -q -am two
-        git rev-parse HEAD > /tmp/hpc_second.$$
+        git rev-parse HEAD > "$scratch/second"
         $git update-ref refs/remotes/origin/main HEAD
         printf '#!/bin/sh\nexit 0\n' > build/avra
         chmod 755 build/avra
         case "$1" in
             none) ;;
-            old) printf 'hash000 %s\n' "$(cat /tmp/hpc_first.$$)" > build/.avra-built-from ;;
-            current) printf 'hash000 %s\n' "$(cat /tmp/hpc_second.$$)" > build/.avra-built-from ;;
+            old) printf 'hash000 %s\n' "$(cat "$scratch/first")" > build/.avra-built-from ;;
+            current) printf 'hash000 %s\n' "$(cat "$scratch/second")" > build/.avra-built-from ;;
             edited) printf 'hash000 edited\n' > build/.avra-built-from ;;
         esac
         printf 'let x = 1\n' > a.av
