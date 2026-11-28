@@ -1,7 +1,7 @@
 //! A HANDLER'S INPUT IS ONE RECORD, each field read from the part of the
 //! request its mark names:
 //!
-//!     @derive(Input)
+//!     @input
 //!     type NewIdea = { @path board: string, @body draft: IdeaDraft, @query page: Page }
 //!
 //! Every part is read and every issue kept, so a request wrong in its
@@ -11,32 +11,48 @@
 use @std.meta.{
     Type,
     Field as MetaField,
-    Directive,
+    Declared,
+    Diagnostic,
     Decls,
     Stmts,
+    Code,
     Marker as Unrun,
     Named as Marked,
     marks,
     beside,
     literal,
     name,
+    refuse_as_at,
 }
-use http.{Request, Response, Unrouted, text}
+use http.{Request, Response, Unrouted}
 use @std.json.reading.{own, mine}
-use typed.{Captures, Reading, Placed, every_placed, problem_placed, path_part}
+use typed.{
+    Captures,
+    FieldPart,
+    Origin,
+    Reading,
+    Placed,
+    every_placed,
+    placed_by_field,
+    problem_placed,
+    path_part,
+}
+use @std.validate.{checker}
 
 /// A record read from a request, each field from the part its mark names.
 export trait Input {
     /// The record, or the one refusal naming every part that refused.
     static fn read(at: dyn Captures, q: Request<Unrouted>) -> Result<Self, Response>
 
-    static fn derive(t: Type) -> List<Directive> {
-        if !t.variants.is_empty() || t.fields.is_empty() { return [] }
-        [beside(t, input_reader(t))]
-    }
+}
 
-    /// The marks that name a field's part.
-    static fn marks(_t: Type) -> List<string> { ["path", "body", "query"] }
+/// `@input` — the type is a handler's input: `Input`'s `read`, each field
+/// from the part its mark names. A field naming no part is refused here.
+export fn input(t: Type) -> Declared {
+    let loose = [unsourced(f) for f in t.fields if source_of(f) == null]
+    if !t.variants.is_empty() { return Declared { made: [], problems: [not_a_record(t)] } }
+    if !loose.is_empty() { return Declared { made: [], problems: loose } }
+    Declared { made: [beside(t, input_reader(t)), beside(t, checker(t))] }
 }
 
 /// `@path`: the field is the route's capture of its own name.
@@ -49,19 +65,20 @@ export fn body(_d: Marked) -> Unrun { Unrun {} }
 export fn query(_d: Marked) -> Unrun { Unrun {} }
 
 /// The part of a request a field is read from.
-enum InputSource { Path, Body, Query, None }
+enum InputSource { Path, Body, Query }
 
-fn source_of(f: MetaField) -> InputSource {
+fn source_of(f: MetaField) -> InputSource? {
     if f.annotations.any(marks(it, path)) { return InputSource.Path }
     if f.annotations.any(marks(it, body)) { return InputSource.Body }
     if f.annotations.any(marks(it, query)) { return InputSource.Query }
-    InputSource.None
+    null
 }
 
 fn input_reader(t: Type) -> Decls {
     let reads: List<Stmts> = [part_read(f) for f in t.fields]
     let ends = [quote { ${mine("read_${f.name}")}.ended() } for f in t.fields]
     let issues = [quote { ${mine("read_${f.name}")}.issues() } for f in t.fields]
+    let parts = [quote { FieldPart { name: ${literal(f.name)}, part: ${part_word(f)} } } for f in t.fields]
     let inits = [quote { Init { ${f.name}: ${mine("read_${f.name}")}.value()! } } for f in t.fields]
     let judged: List<Stmts> = [
         quote {
@@ -69,7 +86,10 @@ fn input_reader(t: Type) -> Decls {
             if ${mine("ended")} != null { fail ${mine("ended")}! }
             let ${own("refused")} = every_placed([..${issues}])
             if !${mine("refused")}.is_empty() { fail problem_placed(${mine("refused")}) }
-            ${t} { ..${inits} }
+            let ${own("made")} = ${t} { ..${inits} }
+            let ${own("checked")} = placed_by_field(${mine("made")}.check(), [..${parts}])
+            if !${mine("checked")}.is_empty() { fail problem_placed(${mine("checked")}) }
+            ${mine("made")}
         },
     ]
     let steps = reads.concat(judged)
@@ -80,17 +100,34 @@ fn input_reader(t: Type) -> Decls {
     }
 }
 
-/// One field's read, bound under a name no program spells.
-fn part_read(f: MetaField) -> Stmts {
-    match source_of(f) {
-        .Path -> quote { let ${own("read_${f.name}")}: Reading<${f.ty}> = path_part(${mine("captures")}, ${literal(f.name)}) },
-        .Body -> quote { let ${own("read_${f.name}")}: Reading<${f.ty}> = ${mine("request")}.body_part() },
-        .Query -> quote { let ${own("read_${f.name}")}: Reading<${f.ty}> = ${mine("request")}.query_part() },
-        .None -> quote { let ${own("read_${f.name}")}: Reading<${f.ty}> = Reading.Ended(unsourced(${literal(f.name)})) },
+/// The part a field is read from, as the reader names it.
+fn part_word(f: MetaField) -> Code {
+    match source_of(f)! {
+        .Path -> quote { Origin.Path },
+        .Body -> quote { Origin.Body },
+        .Query -> quote { Origin.Query },
     }
 }
 
-/// What a field with no mark answers: the request ends, naming it.
-fn unsourced(name: string) -> Response { text(500, no_source(name)) }
+/// One field's read, bound under a name no program spells.
+fn part_read(f: MetaField) -> Stmts {
+    match source_of(f)! {
+        .Path -> quote { let ${own("read_${f.name}")}: Reading<${f.ty}> = path_part(${mine("captures")}, ${literal(f.name)}) },
+        .Body -> quote { let ${own("read_${f.name}")}: Reading<${f.ty}> = ${mine("request")}.body_part() },
+        .Query -> quote { let ${own("read_${f.name}")}: Reading<${f.ty}> = ${mine("request")}.query_part() },
+    }
+}
 
-fn no_source(name: string) -> string { "the input's `${name}` names no part of the request — mark it `@path`, `@body` or `@query`" }
+fn unsourced(f: MetaField) -> Diagnostic {
+    refuse_as_at("input_unsourced", f.at, no_source(f.name), "mark it `@path`, `@body` or `@query`")
+}
+
+fn not_a_record(t: Type) -> Diagnostic {
+    refuse_as_at("input_not_a_record", t.at, enum_input(t.name), "declare `${t.name}` as a record")
+}
+
+// ── voices ──────────────────────────────────────────────────────
+
+fn enum_input(name: string) -> string { "an input is a record, one field per part of the request, and `${name}` is an enum" }
+
+fn no_source(name: string) -> string { "an input's field names the part of the request it is read from, and `${name}` names none" }

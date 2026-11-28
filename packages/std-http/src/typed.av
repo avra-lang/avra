@@ -155,6 +155,20 @@ impl Reading {
     fn ended() -> Response? { match self { .Ended(r) -> r, .Read(_) or .Refused(_) -> null } }
 }
 
+/// A field of an input and the part it is read from.
+export type FieldPart = { name: string, part: Origin }
+
+/// A record's own issues, each in the part its field is read from.
+export fn placed_by_field(issues: Issues, parts: List<FieldPart>) -> List<Placed> {
+    [Placed { issue: i, part: parts.find(it.name == top_field(i))?.part } for i in issues.all]
+}
+
+/// The field an issue's path starts at, or "" at the root.
+fn top_field(i: Issue) -> string {
+    let first? = i.path.steps().first() else { return "" }
+    match first { .Field(n) -> n, .Index(_) or .Key(_) or .Variant(_) -> "" }
+}
+
 /// Every part's issues, in the order the parts were read.
 export fn every_placed(parts: List<List<Placed>>) -> List<Placed> { [p for ps in parts for p in ps] }
 
