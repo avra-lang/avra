@@ -6841,7 +6841,7 @@ void avra_clock_run_ends(void) {
 int64_t avra_clock_jumps(void) { return g_clock_jumps; }
 
 void avra_process_exit(int64_t code) {
-    exit((int)code);
+    exit((int)code); // LICENSED traps.ended: the program asked its process to end
 }
 
 int64_t avra_selfhost_file_exists(const char* path) {

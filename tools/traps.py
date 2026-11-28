@@ -26,14 +26,14 @@ never a trap the language raises — carries its decision where the call is:
     avra_trap("..."); // LICENSED traps.process_limit: <why>
 
 (`traps.process_limit`: memory, a ceiling; `traps.defect`: the runtime's own
-layout found corrupt.) A marker on a line with no sink is refused, so one
+layout found corrupt; `traps.ended`: the program asked its process to end.) A marker on a line with no sink is refused, so one
 cannot outlive the call it excuses.
 """
 import re, sys, glob, os
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SINKS = re.compile(r"^(avra_trap\w*|abort|exit|_exit)$")
-LICENSE = re.compile(r"LICENSED\s+traps\.(process_limit|defect)\b")
+LICENSE = re.compile(r"LICENSED\s+traps\.(process_limit|defect|ended)\b")
 KEYWORDS = {"if", "while", "for", "switch", "return", "sizeof", "defined", "__builtin_expect",
             "__builtin_unreachable", "__builtin_offsetof", "_Static_assert", "typeof", "__typeof__"}
 # Callees that run no Avra code and raise no language trap: the C library, the
@@ -51,7 +51,7 @@ __atomic_add_fetch __atomic_compare_exchange_n __atomic_load_n __atomic_store_n 
 __builtin_mul_overflow __builtin_return_address __builtin_sub_overflow _dyld_get_image_header _dyld_image_count
 _dyld_get_image_vmaddr_slide atoi atoll calloc clock_gettime close closedir confstr dirfd
 dl_iterate_phdr epoll_wait fclose fcntl fflush flock fopen fork fprintf fputc fputs fread free fseek
-fstat fstatat ftell ftruncate fwrite getenv geteuid getpid getsectiondata isfinite kevent kill longjmp
+fstat fstatat ftell stat ftruncate fwrite getenv geteuid getpid getsectiondata isfinite kevent kill longjmp
 madvise mallinfo2 malloc malloc_size malloc_trim malloc_usable_size malloc_zone_pressure_relief
 malloc_zone_statistics memchr memcmp memcpy memmem memmove memset mkdir mmap munmap nanosleep open
 opendir pipe pread proc_pidinfo pwrite qsort raise read readdir realloc sched_getaffinity sched_yield setjmp snprintf strchr
