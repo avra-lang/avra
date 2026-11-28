@@ -82,5 +82,23 @@ fi
 token=${GH_TOKEN:-${GITHUB_TOKEN:-}}
 auth=
 [ -z "$token" ] || auth="Authorization: Bearer $token"
-jobs=$(curl -fsS --max-time 60 -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" -H "User-Agent: avra-ci-wall" ${auth:+-H "$auth"} "$base/actions/runs/$run_id/jobs?per_page=100") || exit 1
+# A RUN'S JOBS IN PAGES OF 30, each asked up to four times: the API answers a wide page of a large
+# run with a 5xx that a narrow one never meets, and a hiccup is no measurement
+asked() { # <page>: that page's jobs, or nothing after four tries
+    for try in 1 2 3 4; do
+        curl -fsS --max-time 60 -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" -H "User-Agent: avra-ci-wall" \
+            ${auth:+-H "$auth"} "$base/actions/runs/$run_id/jobs?per_page=30&page=$1" && return 0
+        sleep $((try * 3))
+    done
+    return 1
+}
+pages=""
+page=1
+while :; do
+    got=$(asked "$page") || { echo "ci_wall: page $page of the run's jobs did not answer in four tries" >&2; exit 1; }
+    pages="$pages$got"
+    [ "$(printf '%s' "$got" | jq '.jobs | length')" -ge 30 ] || break
+    page=$((page + 1))
+done
+jobs=$(printf '%s' "$pages" | jq -s '{jobs: (map(.jobs) | add)}')
 lines "$jobs" "$(jq -n 'now | floor')"
