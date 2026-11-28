@@ -9,6 +9,10 @@
 #                                         and every count it makes is said to be its
 #   COST_SNAPSHOT=<sha> sh tools/cost.sh  another snapshot (what `make cost-accept` records)
 #   COST_COMPILER=<file> sh tools/cost.sh a census compiler already built from this tree
+#     --uncounted                         the matrix and its answers by this tree's own compiler of
+#                                         generation 2 (build/avra), never the census's: a cell prints
+#                                         pass rows alone, which no runtime build moves (the `agree`
+#                                         part holds them alike), and gen2 runs them in half the time
 #
 # A FIXED INPUT MEASURES THE COMPILER: the snapshot is exported whole, std included, and the census
 # compiler stands at its build/avra beside the objects a build links, so every package it reads is
@@ -24,13 +28,15 @@ verdict=
 cause=
 edits_named=
 builder_gen1=
+uncounted=
 while [ "$#" -gt 0 ]; do
     case $1 in
         judge | accept) verdict=$1 ;;
         --cause) cause=${2:?cost: --cause names what moved the rows}; shift ;;
         --edits) edits_named=${2:?cost: --edits names the warm edits}; shift ;;
         --builder-gen1) builder_gen1=1 ;;
-        *) echo "cost: \`sh tools/cost.sh\` takes judge, accept --cause <what moved the rows>, --edits <kinds> and --builder-gen1, never $1"; exit 2 ;;
+        --uncounted) uncounted=1 ;;
+        *) echo "cost: \`sh tools/cost.sh\` takes judge, accept --cause <what moved the rows>, --edits <kinds>, --builder-gen1 and --uncounted, never $1"; exit 2 ;;
     esac
     shift
 done
@@ -149,13 +155,18 @@ held_builder() { # <what it is> <its record>
     fi
 }
 builder=${CENSUS_BUILDER:-build/avra}
-if [ -z "${COST_COMPILER:-}" ]; then
+if [ -n "$uncounted" ]; then
+    # AN UNCOUNTED PART'S COMPILER IS THIS TREE'S OWN, of generation 2, held as a census builder is
+    compiler=build/avra
+    held_builder "the uncounted compiler $compiler" build/.avra-built-from
+    [ -z "$builder_gen1" ] || { echo "cost: --uncounted runs generation 2 alone, never beside --builder-gen1"; exit 2; }
+elif [ -z "${COST_COMPILER:-}" ]; then
     held_builder "the census builder $builder" "$(dirname "$builder")/.$(basename "$builder")-built-from"
     sh tools/census_compiler.sh "$compiler"
 else
     held_builder "the census compiler $compiler's builder" "$(dirname "$compiler")/.$(basename "$compiler")-built-from"
 fi
-[ -x "$compiler" ] || { echo "cost: no census compiler at $compiler"; exit 1; }
+[ -x "$compiler" ] || { echo "cost: no compiler at $compiler"; exit 1; }
 
 # THE SNAPSHOT IS MEASURED WHERE NO CHECKOUT DECIDES: its sources, its stores and its HOME stand
 # under one absolute directory, whatever path this tree was cloned to. Paths are text the compiler
@@ -174,6 +185,8 @@ src=$place/src
 mkdir -p "$src/build"
 git archive "$snapshot" | tar -x -C "$src"
 cp "$compiler" "$src/build/avra"
+# THE AGREEMENT'S OTHER COMPILER: this tree's own of generation 2, beside the census one
+[ ! -x build/avra ] || [ -n "$uncounted" ] || cp build/avra "$src/build/avra.gen2"
 find build -maxdepth 1 -type f \( -name '*.o' -o -name '*.a' -o -name '*.so' -o -name 'avra_hot.bc' -o -name 'avra_hot.inc' \) \
     -exec cp {} "$src/build/" \;
 printf '%s\n' "$snapshot" > "$out/snapshot"
@@ -391,7 +404,7 @@ bare() {
 # `<kept>.fresh` beside them saying so.
 laid() {
     [ ! -f "$src/build/answers/inputs" ] || return 0
-    kept=${COST_ANSWERS_KEPT:-$root/build/cost-answers}
+    kept=${COST_ANSWERS_KEPT:-$root/build/cost-answers${uncounted:+-gen2}}
     if [ -f "$kept/inputs" ]; then mkdir -p "$src/build/answers" && cp -R "$kept/." "$src/build/answers/"; fi
     started=$(date +%s)
     # shellcheck disable=SC2046
@@ -472,6 +485,31 @@ cell() {
     rm -f "${out:?}/${ran:?}.ledger"
 }
 
+# THE MATRIX'S ROWS ARE EVERY COMPILER'S ALIKE, which is what lets it run uncounted: the cold cell a
+# matrix part starts from, run by the census compiler and by this tree's own of generation 2, and
+# every pass row the one prints the other prints — a row a runtime build moves is said, by name
+agreed() {
+    bare
+    unlaid
+    store=off
+    cell agree-census check --passes --passes-rows packages/cli
+    census_ms=$cell_ms
+    mv "$src/build/avra" "$src/build/avra.census"
+    cp "$src/build/avra.gen2" "$src/build/avra"
+    bare
+    cell agree-gen2 check --passes --passes-rows packages/cli
+    mv "$src/build/avra.census" "$src/build/avra"
+    sed -i '/^agree-/d' "$out/workloads"
+    rows_c=$(grep -c . "$out/agree-census.out" 2> /dev/null || echo 0)
+    if ! cmp -s "$out/agree-census.out" "$out/agree-gen2.out" || [ "$rows_c" = 0 ]; then
+        echo "cost: the matrix's pass rows are not every compiler's alike — census against generation 2:"
+        diff "$out/agree-census.out" "$out/agree-gen2.out" | head -20
+        exit 1
+    fi
+    echo "cost: the matrix's $rows_c pass rows alike, census ${census_ms} ms, generation 2 ${cell_ms} ms"
+    rm -f "$out/agree-census.out" "$out/agree-gen2.out"
+}
+
 # `<ms>` with the flag a wall over WARM_FLAG_MS wears
 walled() { if [ "$1" -gt "$WARM_FLAG_MS" ]; then printf '**%s ms ⚠**' "$1"; else printf '%s ms' "$1"; fi; }
 
@@ -517,8 +555,12 @@ matrix() {
 # measurement as the whole run's do, so a run that depends on another before it shows.
 part=${COST_PART:-all}
 for p in $part; do
-    case $p in all | answers | cheap | cold-a | cold-b | laid | warm | reads | proofs | ledger-cold | ledger-cold-a | ledger-cold-b | ledger-warm | matrix-check-bare | matrix-check-laid | matrix-build-bare | matrix-build-laid) ;;
-        *) echo "cost: COST_PART names all, answers, cheap, cold-a, cold-b, laid, warm, reads, proofs, ledger-cold, ledger-cold-a, ledger-cold-b, ledger-warm or a matrix-<check|build>-<laid|bare>, never $p"; exit 2 ;; esac
+    case $p in all | answers | cheap | cold-a | cold-b | laid | warm | reads | proofs | agree | ledger-cold | ledger-cold-a | ledger-cold-b | ledger-warm | matrix-check-bare | matrix-check-laid | matrix-build-bare | matrix-build-laid) ;;
+        *) echo "cost: COST_PART names all, answers, cheap, cold-a, cold-b, laid, warm, reads, proofs, agree, ledger-cold, ledger-cold-a, ledger-cold-b, ledger-warm or a matrix-<check|build>-<laid|bare>, never $p"; exit 2 ;; esac
+    # AN UNCOUNTED RUN MEASURES WHAT PRINTS PASS ROWS ALONE: the matrix and the answers it lays
+    [ -z "$uncounted" ] || case $p in answers | matrix-*) ;;
+        *) echo "cost: --uncounted runs the matrix and its answers alone — $p is counted by the census compiler"; exit 2 ;; esac
+    [ "$p" != agree ] || [ -x "$src/build/avra.gen2" ] || { echo "cost: COST_PART=agree holds the census compiler to this tree's own, and no build/avra stands"; exit 1; }
 done
 if [ -n "${COST_EDITS:-}" ]; then printf '%s edits %s\n' "$part" "$COST_EDITS"; else printf '%s\n' "$part"; fi > "$out/part"
 : > "$out/workloads"
@@ -589,6 +631,7 @@ for p in $part; do
         # workload, nothing counted
         answers) laid ;;
         reads) reads_rows ;;
+        agree) agreed ;;
         proofs) proofs_rows ;;
         all)
             measure counted all
