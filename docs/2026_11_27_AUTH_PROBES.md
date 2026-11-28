@@ -428,3 +428,402 @@ impl Card {
 }
 println("${Card { author: 1 }.writes(Seat { who: 2, role: BoardRole.Viewer })}")
 ```
+
+## v2: the policy table
+
+### `policy_table_generic.av`
+
+```avra
+enum BoardRole { Owner, Editor, Commenter, Viewer }
+
+/// What a cell grants: every row, no row, or the rows the seat's principal owns.
+enum Allow { Yes, No, Own }
+
+type Permit<R> = { role: R, reads: Allow, creates: Allow, writes: Allow, removes: Allow }
+
+type Seat<R> = { who: int, role: R }
+
+type Card = { id: int = 0, board: int, author: int, title: string }
+
+const card_policy: List<Permit<BoardRole>> = table<Permit<BoardRole>> {
+    role       | reads | creates | writes | removes
+    .Owner     | .Yes  | .Yes    | .Yes   | .Yes
+    .Editor    | .Yes  | .Yes    | .Yes   | .Own
+    .Commenter | .Yes  | .Own    | .Own   | .Own
+    .Viewer    | .Yes  | .No     | .No    | .No
+}
+
+fn allows(a: Allow, owner: int, who: int) -> bool {
+    match a {
+        .Yes -> true
+        .No -> false
+        .Own -> owner == who
+    }
+}
+
+fn permit_of(m: Seat<BoardRole>) -> Permit<BoardRole>? { card_policy.find(it.role == m.role) }
+
+impl Card {
+    fn removes(m: Seat<BoardRole>) -> bool {
+        let p? = permit_of(m) else { return false }
+        allows(p.removes, self.author, m.who)
+    }
+}
+
+let c = Card { board: 1, author: 7, title: "a" }
+println("editor removes own: ${c.removes(Seat { who: 7, role: BoardRole.Editor })}, editor removes other's: ${c.removes(Seat { who: 8, role: BoardRole.Editor })}, viewer: ${c.removes(Seat { who: 7, role: BoardRole.Viewer })}")
+println("rows: ${card_policy.length}")
+```
+
+### `policy_table.av`
+
+```avra
+enum BoardRole { Owner, Editor, Commenter, Viewer }
+
+/// What a cell grants: every row, no row, or the rows the seat's principal owns.
+enum Allow { Yes, No, Own }
+
+type Permit<R> = { role: R, reads: Allow, creates: Allow, writes: Allow, removes: Allow }
+
+type Seat<R> = { who: int, role: R }
+
+type Card = { id: int = 0, board: int, author: int, title: string }
+
+alias BoardPermit = Permit<BoardRole>
+
+const card_policy: List<BoardPermit> = table<BoardPermit> {
+    role       | reads | creates | writes | removes
+    .Owner     | .Yes  | .Yes    | .Yes   | .Yes
+    .Editor    | .Yes  | .Yes    | .Yes   | .Own
+    .Commenter | .Yes  | .Own    | .Own   | .Own
+    .Viewer    | .Yes  | .No     | .No    | .No
+}
+
+fn allows(a: Allow, owner: int, who: int) -> bool {
+    match a {
+        .Yes -> true
+        .No -> false
+        .Own -> owner == who
+    }
+}
+
+fn permit_of(m: Seat<BoardRole>) -> Permit<BoardRole>? { card_policy.find(it.role == m.role) }
+
+impl Card {
+    fn removes(m: Seat<BoardRole>) -> bool {
+        let p? = permit_of(m) else { return false }
+        allows(p.removes, self.author, m.who)
+    }
+}
+
+let c = Card { board: 1, author: 7, title: "a" }
+println("editor removes own: ${c.removes(Seat { who: 7, role: BoardRole.Editor })}, editor removes other's: ${c.removes(Seat { who: 8, role: BoardRole.Editor })}, viewer: ${c.removes(Seat { who: 7, role: BoardRole.Viewer })}")
+println("rows: ${card_policy.length}")
+```
+
+### `policy_table_holes.av`
+
+```avra
+enum BoardRole { Owner, Editor, Commenter, Viewer }
+
+/// What a cell grants: every row, no row, or the rows the seat's principal owns.
+enum Allow { Yes, No, Own }
+
+type Permit<R> = { role: R, reads: Allow, creates: Allow, writes: Allow, removes: Allow }
+
+type Seat<R> = { who: int, role: R }
+
+type Card = { id: int = 0, board: int, author: int, title: string }
+
+alias BoardPermit = Permit<BoardRole>
+
+const card_policy: List<BoardPermit> = table<BoardPermit> {
+    role       | reads | creates | writes | removes
+    .Owner     | .Yes  | .Yes    | .Yes   | .Yes
+    .Editor    | .Yes  | .Yes    | .Yes   | .Own
+    .Editor    | .No   | .No     | .No    | .No
+}
+
+fn allows(a: Allow, owner: int, who: int) -> bool {
+    match a {
+        .Yes -> true
+        .No -> false
+        .Own -> owner == who
+    }
+}
+
+fn permit_of(m: Seat<BoardRole>) -> Permit<BoardRole>? { card_policy.find(it.role == m.role) }
+
+impl Card {
+    fn removes(m: Seat<BoardRole>) -> bool {
+        let p? = permit_of(m) else { return false }
+        allows(p.removes, self.author, m.who)
+    }
+}
+
+let c = Card { board: 1, author: 7, title: "a" }
+println("editor removes own: ${c.removes(Seat { who: 7, role: BoardRole.Editor })}, editor removes other's: ${c.removes(Seat { who: 8, role: BoardRole.Editor })}, viewer: ${c.removes(Seat { who: 7, role: BoardRole.Viewer })}")
+println("rows: ${card_policy.length}")
+```
+
+### `table_by.av`
+
+```avra
+enum R { A, B }
+type Row = { role: R, ok: bool }
+const rows: List<Row> = table<Row> by role {
+    role | ok
+    .A   | true
+}
+println("${rows.length}")
+```
+
+### `policy_match.av`
+
+```avra
+enum BoardRole { Owner, Editor, Commenter, Viewer }
+enum Allow { Yes, No, Own }
+type Permit = { reads: Allow, creates: Allow, writes: Allow, removes: Allow }
+type Seat<R> = { who: int, role: R }
+type Card = { id: int = 0, author: int }
+
+fn card_policy(r: BoardRole) -> Permit {
+    match r {
+        .Owner -> Permit { reads: .Yes, creates: .Yes, writes: .Yes, removes: .Yes }
+        .Editor -> Permit { reads: .Yes, creates: .Yes, writes: .Yes, removes: .Own }
+        .Commenter -> Permit { reads: .Yes, creates: .Own, writes: .Own, removes: .Own }
+        .Viewer -> Permit { reads: .Yes, creates: .No, writes: .No, removes: .No }
+    }
+}
+println("${card_policy(.Editor).removes == Allow.Own}")
+```
+
+### `policy_match_missing.av`
+
+```avra
+enum BoardRole { Owner, Editor, Commenter, Viewer }
+enum Allow { Yes, No, Own }
+type Permit = { reads: Allow, creates: Allow, writes: Allow, removes: Allow }
+type Seat<R> = { who: int, role: R }
+type Card = { id: int = 0, author: int }
+
+fn card_policy(r: BoardRole) -> Permit {
+    match r {
+        .Owner -> Permit { reads: .Yes, creates: .Yes, writes: .Yes, removes: .Yes }
+        .Editor -> Permit { reads: .Yes, creates: .Yes, writes: .Yes, removes: .Own }
+        .Commenter -> Permit { reads: .Yes, creates: .Own, writes: .Own, removes: .Own }
+
+    }
+}
+println("${card_policy(.Editor).removes == Allow.Own}")
+```
+
+### `policy_match_dup.av`
+
+```avra
+enum BoardRole { Owner, Editor, Commenter, Viewer }
+enum Allow { Yes, No, Own }
+type Permit = { reads: Allow, creates: Allow, writes: Allow, removes: Allow }
+type Seat<R> = { who: int, role: R }
+type Card = { id: int = 0, author: int }
+
+fn card_policy(r: BoardRole) -> Permit {
+    match r {
+        .Owner -> Permit { reads: .Yes, creates: .Yes, writes: .Yes, removes: .Yes }
+        .Editor -> Permit { reads: .Yes, creates: .Yes, writes: .Yes, removes: .Own }
+        .Commenter -> Permit { reads: .Yes, creates: .Own, writes: .Own, removes: .Own }
+        .Editor -> Permit { reads: .Yes, creates: .No, writes: .No, removes: .No }
+    }
+}
+println("${card_policy(.Editor).removes == Allow.Own}")
+```
+
+### `policy_lib.av`
+
+```avra
+// the library half: generic, plain Avra
+enum Allow { Yes, No, Own, Ask }
+type Permit<R> = { role: R, reads: Allow, creates: Allow, writes: Allow, removes: Allow }
+type Seat<R> = { who: int, role: R }
+
+trait Policy<R> {
+    fn permit(r: R) -> Permit<R>?
+    fn owner() -> int
+    fn writes_asked(m: Seat<R>, next: Self) -> bool
+}
+
+fn allows(a: Allow, owner: int, who: int, asked: fn() -> bool) -> bool {
+    match a {
+        .Yes -> true
+        .No -> false
+        .Own -> owner == who
+        .Ask -> asked()
+    }
+}
+
+fn may_write<R, T: Policy<R>>(row: T, m: Seat<R>, next: T) -> bool {
+    let p? = row.permit(m.role) else { return false }
+    allows(p.writes, row.owner(), m.who, () -> row.writes_asked(m, next)) && (p.writes != Allow.Own || next.owner() == row.owner())
+}
+
+// the author's half
+enum BoardRole { Owner, Editor, Commenter, Viewer }
+alias BoardPermit = Permit<BoardRole>
+
+const card_policy: List<BoardPermit> = table<BoardPermit> {
+    role       | reads | creates | writes | removes
+    .Owner     | .Yes  | .Yes    | .Yes   | .Yes
+    .Editor    | .Yes  | .Yes    | .Yes   | .Own
+    .Commenter | .Yes  | .Own    | .Ask   | .Own
+    .Viewer    | .Yes  | .No     | .No    | .No
+}
+
+type Card = { id: int = 0, author: int, title: string, done: bool = false }
+
+// what `@policy(card_policy)` and `@owner` would generate
+impl Policy<BoardRole> for Card {
+    fn permit(r: BoardRole) -> BoardPermit? { card_policy.find(it.role == r) }
+    fn owner() -> int { self.author }
+    // the escape hatch, written by hand: a commenter edits their own card while it is open
+    fn writes_asked(m: Seat<BoardRole>, next: Card) -> bool { self.author == m.who && !self.done }
+}
+
+let open = Card { author: 7, title: "a" }
+let shut = open with { done: true }
+let commenter = Seat { who: 7, role: BoardRole.Commenter }
+println("commenter edits own open card: ${may_write(open, commenter, open with { title: "b" })}, own done card: ${may_write(shut, commenter, shut with { title: "b" })}")
+println("editor edits any: ${may_write(open, Seat { who: 9, role: BoardRole.Editor }, open with { title: "b" })}, viewer: ${may_write(open, Seat { who: 7, role: BoardRole.Viewer }, open with { title: "b" })}")
+```
+
+### `policy_fold.av`
+
+```avra
+use @std.db.scope.{Where, scope_text}
+use @std.sqlite.{SqlValue}
+
+enum Allow { Yes, No, Own }
+
+/// What a `reads` cell becomes in the query, for one seat.
+enum Folded {
+    Every
+    Nothing
+    Held(w: Where)
+}
+
+fn folded(a: Allow, owner_column: string, who: int) -> Folded {
+    match a {
+        .Yes -> .Every
+        .No -> .Nothing
+        .Own -> .Held(Where { column: owner_column, op: .Eq, value: SqlValue.Int(who) })
+    }
+}
+
+fn sql(f: Folded) -> string {
+    match f {
+        .Every -> "SELECT * FROM card WHERE board = ?"
+        .Nothing -> "(no query: the seat reads no row)"
+        .Held(w) -> "SELECT * FROM card WHERE board = ?${scope_text(w)}"
+    }
+}
+
+println(sql(folded(.Yes, "author", 7)))
+println(sql(folded(.Own, "author", 7)))
+println(sql(folded(.No, "author", 7)))
+```
+
+### `bench_table.av`
+
+```avra
+use @std.time.{now_ns}
+
+enum BoardRole { Owner, Editor, Commenter, Viewer }
+enum Allow { Yes, No, Own }
+type Permit<R> = { role: R, reads: Allow, creates: Allow, writes: Allow, removes: Allow }
+alias BoardPermit = Permit<BoardRole>
+type Seat = { who: int, role: BoardRole }
+type Card = { id: int = 0, author: int }
+
+const card_policy: List<BoardPermit> = table<BoardPermit> {
+    role       | reads | creates | writes | removes
+    .Owner     | .Yes  | .Yes    | .Yes   | .Yes
+    .Editor    | .Yes  | .Yes    | .Yes   | .Own
+    .Commenter | .Yes  | .Own    | .Own   | .Own
+    .Viewer    | .Yes  | .No     | .No    | .No
+}
+
+fn allows(a: Allow, owner: int, who: int) -> bool {
+    match a {
+        .Yes -> true
+        .No -> false
+        .Own -> owner == who
+    }
+}
+
+impl Card {
+    fn removes_by_match(m: Seat) -> bool {
+        match m.role {
+            .Owner -> true
+            .Editor or .Commenter -> self.author == m.who
+            .Viewer -> false
+        }
+    }
+    fn removes_by_table(m: Seat) -> bool {
+        let p? = card_policy.find(it.role == m.role) else { return false }
+        allows(p.removes, self.author, m.who)
+    }
+}
+
+let rows = [Card { id: i, author: i % 97 } for i in 0..1000]
+let seats = [Seat { who: 5, role: .Commenter }, Seat { who: 5, role: .Viewer }]
+let reps = 2000
+let n = reps * 1000
+let t0 = now_ns()
+mut a = 0
+for r in 0..reps { for c in rows { if c.removes_by_match(seats[r % 2]) { a = a + 1 } } }
+let t1 = now_ns()
+mut b = 0
+for r in 0..reps { for c in rows { if c.removes_by_table(seats[r % 2]) { b = b + 1 } } }
+let t2 = now_ns()
+let m = seats[0]
+let held = card_policy.find(it.role == m.role)!.removes
+mut d = 0
+for r in 0..reps { for c in rows { if allows(held, c.author, m.who) { d = d + 1 } } }
+let t3 = now_ns()
+println("hot, ${n} checks: match ${(t1 - t0) * 10 / n} dns (${a}), table per check ${(t2 - t1) * 10 / n} dns (${b}), table cell hoisted ${(t3 - t2) * 10 / n} dns (${d})")
+```
+
+### `policy_derive` (a two-file package: `src/policy/policy.av`, then `src/main.av`)
+
+```avra
+use @std.meta.{Type, Diagnostic, refuse_as_at, type_named}
+
+export enum Allow { Yes, No, Own }
+
+export type Permit<R> = { role: R, reads: Allow, creates: Allow, writes: Allow, removes: Allow }
+
+/// `@policy(rows)` on a row type: every role of the rows' enum appears exactly once.
+export fn policy<R>(t: Type, rows: List<Permit<R>>) -> List<Diagnostic> {
+    let named = ["${r.role}" for r in rows]
+    [refuse_as_at("share.policy_role", t.at, "`${t.name}`'s policy has ${rows.length} rows", null) for _x in [1] if rows.length != 4]
+}
+```
+
+```avra
+use policy.{Allow, Permit, policy}
+
+enum BoardRole { Owner, Editor, Commenter, Viewer }
+
+alias BoardPermit = Permit<BoardRole>
+
+const card_policy: List<BoardPermit> = table<BoardPermit> {
+    role       | reads | creates | writes | removes
+    .Owner     | .Yes  | .Yes    | .Yes   | .Yes
+    .Editor    | .Yes  | .Yes    | .Yes   | .Own
+    .Viewer    | .Yes  | .No     | .No    | .No
+}
+
+@policy(card_policy)
+type Card = { id: int = 0, author: int }
+
+println("${card_policy.length}")
+```
