@@ -3,7 +3,8 @@
 // case sets the target it judges under; the process holds one.
 use @std.avrac.testing.{refused_in}
 use @std.avrac.testing.held.{Judged, held_at}
-use compiler.{use_build_target}
+use @std.process.{Output, ProcessError, Stream}
+use compiler.{dump_unread, use_build_target}
 
 /// The package at `/hdr` whose manifest names `c.h`, holding `header`, and whose entry is `main`,
 /// judged under the build target `target`.
@@ -40,6 +41,14 @@ spec "compiler/headers — the target's data model" {
                 judged_for("", LONG, MIXED),
                 "`width`'s seat 1 crosses as `i32`, and its C header declares `int64`",
             )
+        }
+    }
+    given "a dump past the cap a header's read holds" {
+        then "the read is refused whole, naming the cap" {
+            dump_unread(
+                ProcessError
+                    .TooMuch(Stream.Stdout, 268435456, Output { stdout: "", stderr: "", truncated: true }),
+            ) == "its declarations pass the 268435456 bytes a header's read holds, and a part of them is no answer"
         }
     }
 }
