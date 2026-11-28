@@ -76,6 +76,9 @@ extern const char avra_rt_held_avra_array_new __asm__(AVRA_RT_LABEL(avra_array_n
 extern const char avra_rt_held_avra_array_sized __asm__(AVRA_RT_LABEL(avra_array_sized));
 extern const char avra_rt_held_avra_array_new_words __asm__(AVRA_RT_LABEL(avra_array_new_words));
 extern const char avra_rt_held_avra_array_sized_words __asm__(AVRA_RT_LABEL(avra_array_sized_words));
+extern const char avra_rt_held_avra_array_reserved __asm__(AVRA_RT_LABEL(avra_array_reserved));
+extern const char avra_rt_held_avra_array_reserved_words __asm__(AVRA_RT_LABEL(avra_array_reserved_words));
+extern const char avra_rt_held_avra_array_fit __asm__(AVRA_RT_LABEL(avra_array_fit));
 extern const char avra_rt_held_avra_array_filled_words __asm__(AVRA_RT_LABEL(avra_array_filled_words));
 extern const char avra_rt_held_avra_array_empty_words __asm__(AVRA_RT_LABEL(avra_array_empty_words));
 extern const char avra_rt_held_avra_array_push __asm__(AVRA_RT_LABEL(avra_array_push));
@@ -394,6 +397,9 @@ __attribute__((used)) static const void* const avra_rt_held[] = {
     &avra_rt_held_avra_array_sized,
     &avra_rt_held_avra_array_new_words,
     &avra_rt_held_avra_array_sized_words,
+    &avra_rt_held_avra_array_reserved,
+    &avra_rt_held_avra_array_reserved_words,
+    &avra_rt_held_avra_array_fit,
     &avra_rt_held_avra_array_filled_words,
     &avra_rt_held_avra_array_empty_words,
     &avra_rt_held_avra_array_push,
@@ -727,6 +733,12 @@ _Static_assert(__builtin_classify_type(avra_array_new_words()) == AVRA_RT_POINTE
     "avra_array_new_words: its row answers ptr, so its C body answers a pointer");
 _Static_assert(__builtin_classify_type(avra_array_sized_words(AVRA_RT_I64)) == AVRA_RT_POINTER,
     "avra_array_sized_words: its row answers ptr, so its C body answers a pointer");
+_Static_assert(__builtin_classify_type(avra_array_reserved(AVRA_RT_I64)) == AVRA_RT_POINTER,
+    "avra_array_reserved: its row answers ptr, so its C body answers a pointer");
+_Static_assert(__builtin_classify_type(avra_array_reserved_words(AVRA_RT_I64)) == AVRA_RT_POINTER,
+    "avra_array_reserved_words: its row answers ptr, so its C body answers a pointer");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_array_fit(AVRA_RT_PTR)), void),
+    "avra_array_fit: its row answers void, so its C body answers void");
 _Static_assert(__builtin_classify_type(avra_array_filled_words(AVRA_RT_I64, AVRA_RT_I64)) == AVRA_RT_POINTER,
     "avra_array_filled_words: its row answers ptr, so its C body answers a pointer");
 _Static_assert(__builtin_classify_type(avra_array_empty_words()) == AVRA_RT_POINTER,

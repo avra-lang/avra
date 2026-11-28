@@ -2326,13 +2326,13 @@ static AvraArray* array_made(int64_t cap, void* ra, int words) {
     return a;
 }
 
-void* avra_array_sized(int64_t n) { return array_made(n, AVRA_CALLER(), 0); }
+void* avra_array_sized(int64_t n) { return array_made(n < 0 ? 0 : n, AVRA_CALLER(), 0); }
 
 void* avra_array_new(void) { return array_made(0, AVRA_CALLER(), 0); }
 
 // THE PACKED LIST'S CONSTRUCTIONS, for a list of plain scalars: the
 // same shapes, with no marks.
-void* avra_array_sized_words(int64_t n) { return array_made(n, AVRA_CALLER(), 1); }
+void* avra_array_sized_words(int64_t n) { return array_made(n < 0 ? 0 : n, AVRA_CALLER(), 1); }
 
 void* avra_array_new_words(void) { return array_made(0, AVRA_CALLER(), 1); }
 
@@ -2346,6 +2346,53 @@ void* avra_array_filled_words(int64_t n, int64_t w) {
     else for (int64_t i = 0; i < n; i++) a->data[i] = w;
     a->len = n;
     return a;
+}
+
+// An empty list with room for `n` cells in a buffer beside its box, so
+// `avra_array_fit` can give back the room its cells never took. A count
+// below zero makes the empty list.
+static void* array_reserved(int64_t n, void* ra, int words) {
+    if (n <= 0) return array_made(0, ra, words);
+    if (n >= CELL_CEILING) avra_trap(WORDS("a list grew past any possible size — a corrupted box")); // LICENSED traps.defect: no list holds more cells than this
+    AvraArray* a = (AvraArray*)box_alloc(sizeof(AvraArray), KIND_ARRAY);
+    a->data = buf_alloc(n, words);
+    a->cap = n;
+    a->len = 0;
+    array_marks(a, words);
+    if (!words) memset(a->marks, 0, (size_t)n);
+    a->site = NULL;
+    if (__builtin_expect(g_acc_on > 0, 0)) sized_noted(a, ra);
+    return a;
+}
+
+void* avra_array_reserved(int64_t n) { return array_reserved(n, AVRA_CALLER(), 0); }
+
+void* avra_array_reserved_words(int64_t n) { return array_reserved(n, AVRA_CALLER(), 1); }
+
+// A list holding fewer cells than half its room, its cells moved to a
+// buffer of exactly their count and the old one freed; an empty one
+// keeps no buffer at all. A list whose cells lie in its box, or one at
+// least half full, is left as it is.
+void avra_array_fit(void* p) {
+    AvraArray* a = (AvraArray*)p;
+    if (laid_out(a) || a->len * 2 >= a->cap) return;
+    int words = avra_packed(a);
+    int64_t before = a->site ? array_bytes(a) : 0;
+    int64_t* old = a->data;
+    int64_t old_cap = a->cap;
+    if (a->len == 0) {
+        a->data = (int64_t*)(a + 1);
+        a->cap = 0;
+    } else {
+        int64_t* buf = buf_alloc(a->len, words);
+        memcpy(buf, old, (size_t)a->len * sizeof(int64_t));
+        if (!words) memcpy((uint8_t*)(buf + a->len), a->marks, (size_t)a->len);
+        a->data = buf;
+        a->cap = a->len;
+    }
+    buf_free(old, old_cap, words);
+    array_marks(a, words);
+    if (a->site) acc_site(a->site, array_bytes(a) - before, 0);
 }
 
 // The guard's reclaim: children released as usual, the box kept and
