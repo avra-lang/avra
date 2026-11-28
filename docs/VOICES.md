@@ -17,18 +17,18 @@ which only shrinks.
 | block | 1 | 1 | 1 | 0 |
 | resolve | 34 | 33 | 33 | 3 |
 | lower | 9 | 8 | 8 | 0 |
-| type | 146 | 132 | 132 | 7 |
+| type | 147 | 133 | 133 | 7 |
 | flow | 16 | 12 | 12 | 0 |
 | annotation | 20 | 15 | 15 | 2 |
 | source | 4 | 4 | 4 | 0 |
-| manifest | 34 | 31 | 31 | 0 |
+| manifest | 35 | 32 | 32 | 0 |
 | collect | 13 | 13 | 13 | 0 |
 | collect_enum | 7 | 7 | 7 | 0 |
 | ctx | 5 | 0 | 0 | 0 |
 | const | 6 | 6 | 6 | 0 |
 | shape | 1 | 0 | 0 | 0 |
 | loop | 2 | 2 | 2 | 0 |
-| **all** | 307 | 272 | 271 | 12 |
+| **all** | 309 | 274 | 273 | 12 |
 
 ## Rules
 

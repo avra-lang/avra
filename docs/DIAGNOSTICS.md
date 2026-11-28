@@ -2745,6 +2745,37 @@ error[manifest.link_name]: `shared` under `[link]` is one library's name
 help: write `shared = "LLVM"`
 ```
 
+## manifest.header_unread
+
+a header a manifest names is one clang reads
+
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[link]
+headers = ["c.h"]
+
+// /w/c.h
+int broken(;
+
+// /w/src/main.av
+0
+
+```
+
+```
+error[manifest.header_unread]: a header the manifest names is one clang reads — `c.h` is not: c.h:1:12: error: expected parameter declarator
+  ╭─[/w/avra.toml:6:1]
+6 │ headers = ["c.h"]
+  · ┬
+  · ╰── here
+──╯
+help: make `c.h` a header clang reads on its own, or take it off `headers`
+```
+
 ## manifest.header_word
 
 a `[link]` header is a path from the package root, or a system header `<name.h>`
@@ -6174,6 +6205,38 @@ error[type.row_shape]: `avra_array_new` is a runtime row of 0 seat(s), declared 
   · ╰── this extern
 ──╯
 help: declare the row's seats, or name a fn the runtime does not carry
+```
+
+## type.extern_unheaded
+
+an extern of a package that names C headers is one they declare, or a runtime row
+
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[link]
+headers = ["c.h"]
+
+// /w/c.h
+int other(void);
+
+// /w/src/main.av
+extern fn width(x: i32) -> i32
+0
+
+```
+
+```
+error[type.extern_unheaded]: an extern of a package that names C headers is one they declare — none of c.h declares `width`
+  ╭─[/w/src/main.av:1:1]
+1 │ extern fn width(x: i32) -> i32
+  · ┬
+  · ╰── this extern
+──╯
+help: name the header that declares `width` under `[link] headers`, or give the extern a body
 ```
 
 ## type.extern_header

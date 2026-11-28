@@ -92,6 +92,9 @@ enum ExternLaw {
     HeaderCount
     /// A fixed declaration of a function its C header says is variadic: the extern.
     HeaderVariadic
+    /// A name none of its package's C headers declares: the extern, the headers, as the manifest
+    /// writes them.
+    HeaderMissing
 }
 
 /// One finding: where its declaration stands, the law it is, and the words its voice is handed.
@@ -157,7 +160,8 @@ fn declaration_findings(engine: QueryEngine, file: SourceFileAddress, item: Read
 /// function or another count of seats alone, else each seat and the answer the header declares
 /// otherwise. A name no header declares is not judged here.
 fn header_found(engine: QueryEngine, package: string, parts: ExternParts) -> List<ExternSaid> {
-    let decl? = package_headers(engine, package).decls.find(it.name == parts.name) else { return [] }
+    let headers = package_headers(engine, package)
+    let decl? = headers.decls.find(it.name == parts.name) else { return unheaded(engine, package, parts.name, headers) }
     if decl.variadic { return [ExternSaid { kind: ExternLaw.HeaderVariadic, args: [parts.name] }] }
     if decl.seats.length != parts.params.length {
         return [
@@ -176,6 +180,16 @@ fn header_found(engine: QueryEngine, package: string, parts: ExternParts) -> Lis
         args: [parts.name, seat_word(parts.ret), c_spelled(decl.answer), remedy_of(d)],
     } for d in some_disagreement(answer_disagrees(seat_word(parts.ret), decl.answer))]
     seats.concat(answer)
+}
+
+/// What a package naming headers says of an extern none of them declares: a finding, unless the
+/// name is a runtime row, or a header the package names could not be read, which its manifest says.
+fn unheaded(engine: QueryEngine, package: string, name: string, headers: PackageHeaders) -> List<
+    ExternSaid,
+> {
+    let named = manifest_judged(engine, package).headers
+    if named.is_empty() || !headers.unread.is_empty() || rt_sig_of(name) != null { return [] }
+    [ExternSaid { kind: ExternLaw.HeaderMissing, args: [name, named.join(", ")] }]
 }
 
 /// A written seat's word: its type's name, `fn` for a callback, `void` where nothing is written.
@@ -417,6 +431,10 @@ fn header_counts(view: ItemView) -> List<Found> {
     found_of_viewed(view, ExternLaw.HeaderCount)
 }
 
+fn headers_missing(view: ItemView) -> List<Found> {
+    found_of_viewed(view, ExternLaw.HeaderMissing)
+}
+
 fn header_variadics(view: ItemView) -> List<Found> {
     found_of_viewed(view, ExternLaw.HeaderVariadic)
 }
@@ -536,6 +554,15 @@ export law extern_header_count {
     witness_files: header_witness("int pair(int a, int b);\n")
 }
 
+/// an extern of a package naming C headers is one they declare
+export law extern_header_missing {
+    kind: "type.extern_unheaded"
+    reads_view: headers_missing
+    voice: header_missing_words
+    witness: "extern fn width(x: i32) -> i32\n"
+    witness_files: header_witness("int other(void);\n")
+}
+
 /// no fixed extern names a variadic C function
 export law extern_header_variadic {
     kind: "type.extern_header"
@@ -610,6 +637,17 @@ fn header_answer_words(a: List<string>) -> Voice { header_answer_voice(a[0], a[1
 fn header_count_words(a: List<string>) -> Voice { header_count_voice(a[0], place(a[1]), place(a[2])) }
 
 fn header_variadic_words(a: List<string>) -> Voice { header_variadic_voice(a[0]) }
+
+fn header_missing_words(a: List<string>) -> Voice { header_missing_voice(a[0], a[1]) }
+
+/// The extern `name`, which none of `headers` declares.
+fn header_missing_voice(name: string, headers: string) -> Voice {
+    Voice {
+        message: "an extern of a package that names C headers is one they declare — none of ${headers} declares `${name}`",
+        label: "this extern",
+        help: "name the header that declares `${name}` under `[link] headers`, or give the extern a body",
+    }
+}
 
 /// The extern `name`'s seat `j`, written `word`, over a header declaring `c`.
 fn header_seat_voice(name: string, j: int, word: string, c: string, remedy: string) -> Voice {

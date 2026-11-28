@@ -1,7 +1,8 @@
 //! WHAT A BUILD SAYS OF A FILE, as diagnostics: each refusal its laws or its manifest find, and
 //! what only the program's entry may hold.
 use core.{some_list}
-use diagnostics.{Diag, Voice, has_errors, said_as}
+use diagnostics.{Diag, Voice, has_errors, new_source_file, refusal, said_as}
+use compiler.host.{row_at}
 use compiler.lower.{entry_only_refused, no_projection_refused}
 use @std.errors.{Loc}
 use @std.program.address.{SourceFileAddress}
@@ -16,7 +17,7 @@ export type ProgramFile = { file: SourceFileAddress, full: string, program: stri
 /// or its manifest's, find, then — said only of a file its laws refuse nothing in, as lowering is
 /// reached — each statement it runs where it isn't the entry, or where it is, an answer no text spells.
 export fn file_refusals(engine: QueryEngine, h: ProgramFile, entry: ProgramFile) -> List<Diag> {
-    let found = if is_manifest(h.file) { manifest_diags(engine, h) } else { file_law_diags(engine, h) }
+    let found = if is_manifest(h.file) { manifest_refusals(engine, h) } else { file_law_diags(engine, h) }
     let own = !is_manifest(h.file) && h.full == entry.full
     let strays = if is_manifest(h.file) || own || has_errors(found) { [] } else { strays_of(engine, h.file) }
     let unspelled = if own && !has_errors(found) { entry_lowered(engine, h.file)?.unprojected } else { null }
@@ -92,7 +93,25 @@ fn dangling_voice(path: string) -> Voice {
     }
 }
 
-/// What the manifest `h` says of itself.
-fn manifest_diags(engine: QueryEngine, h: ProgramFile) -> List<Diag> {
-    manifest_voices(h.full, source_text(engine, h.file) ?? "")
+/// What the manifest `h` says of itself, and of each header it names that clang could not read.
+export fn manifest_refusals(engine: QueryEngine, h: ProgramFile) -> List<Diag> {
+    let text = source_text(engine, h.file) ?? ""
+    manifest_voices(h.full, text).concat(unread_headers(engine, h, text))
+}
+
+/// Each header the manifest `h` names that clang read nothing from, said at its `headers` row.
+fn unread_headers(engine: QueryEngine, h: ProgramFile, text: string) -> List<Diag> {
+    let at = row_at(new_source_file(h.full, text), "link", "headers")
+    [header_unread(at, u.header, u.why) for u in package_headers(engine, h.file.package_name).unread]
+}
+
+/// The header `header` a manifest names at `at`, which clang read nothing from, for `why`.
+fn header_unread(at: Loc?, header: string, why: string) -> Diag {
+    refusal(
+        "manifest.header_unread",
+        at,
+        "a header the manifest names is one clang reads — `${header}` is not: ${why}",
+        "here",
+        "make `${header}` a header clang reads on its own, or take it off `headers`",
+    )
 }

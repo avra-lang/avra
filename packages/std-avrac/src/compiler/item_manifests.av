@@ -28,6 +28,8 @@ export type ManifestJudged = {
     rows: List<ManifestRow>,
     /// The C headers its `[link]` row names, as written.
     headers: List<string>,
+    /// The directories its `[link]` row names for headers to be found in, as written.
+    include: List<string>,
     /// What a compile-time run in the package is held to: its `[lifted]` rows, the defaults where
     /// it writes none.
     steps: int,
@@ -44,6 +46,7 @@ export fn manifest_judged(engine: QueryEngine, package: string) -> ManifestJudge
             warns: false,
             rows: [],
             headers: [],
+            include: [],
             steps: budgets_of().steps,
             bytes: budgets_of().bytes,
         }
@@ -54,6 +57,7 @@ export fn manifest_judged(engine: QueryEngine, package: string) -> ManifestJudge
         warns: read.voices.any((d) -> !refuses(d)),
         rows: [ManifestRow { key: d.key, dev: d.dev } for d in read.manifest.deps],
         headers: read.manifest.headers,
+        include: read.manifest.include,
         steps: read.manifest.budgets.steps,
         bytes: read.manifest.budgets.bytes,
     }
@@ -66,19 +70,20 @@ export fn lifted_budgets(engine: QueryEngine, package: string) -> Budgets {
     Budgets { steps: judged.steps, bytes: judged.bytes }
 }
 
-/// THE MANIFESTS OF THE PROGRAM ROOTED AT `package` THAT REFUSE IT: its own, then each package its
+/// THE MANIFESTS OF THE PROGRAM ROOTED AT `package` THAT REFUSE IT — by their own text, or by a
+/// header they name that clang could not read: its own, then each package its
 /// rows reach, in the order the old path admits them — depth first, each key once, a row serving
 /// tests followed from the root alone, since tests' dependencies never travel.
 @query("laws")
 export fn manifests_refused(engine: QueryEngine, package: string) -> List<SourceFileAddress> {
-    [manifest_file(p) for p in manifests_reached(engine, package) if manifest_judged(engine, p).refuses]
+    [manifest_file(p) for p in manifests_reached(engine, package) if manifest_judged(engine, p).refuses || !package_headers(engine, p).unread.is_empty()]
 }
 
 /// The manifests of the program rooted at `package` that say anything, warning or refusing, in the
 /// order `manifests_refused` reads them.
 @query("laws")
 export fn manifests_voiced(engine: QueryEngine, package: string) -> List<SourceFileAddress> {
-    [manifest_file(p) for p in manifests_reached(engine, package) for j in [manifest_judged(engine, p)] if j.refuses || j.warns]
+    [manifest_file(p) for p in manifests_reached(engine, package) for j in [manifest_judged(engine, p)] if j.refuses || j.warns || !package_headers(engine, p).unread.is_empty()]
 }
 
 /// The packages whose manifests the program rooted at `package` stands on, root first.

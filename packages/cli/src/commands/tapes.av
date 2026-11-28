@@ -27,6 +27,7 @@ use @std.avrac.compiler.{
     file_law_diags,
     case_law_diags,
     file_refusals,
+    manifest_refusals,
     in_scope,
     proofs_said,
     made_suite,
@@ -43,7 +44,6 @@ use @std.avrac.compiler.{
     every_item_id,
     file_found,
     findings_in_file,
-    manifest_voices,
     manifests_refused,
     meta_door,
     manifests_voiced,
@@ -3499,7 +3499,6 @@ fn disk_full(dir: string, needed: int, free: int) -> string {
 }
 
 /// What the manifest `h` says, in the old path's voices.
-fn manifest_diags(h: ProgramFile) -> List<Diag> { manifest_voices(h.full, text_at(h.full) ?? "") }
 
 /// THE MANIFESTS' DOOR, which every command reading the program on `disk` passes first: what each
 /// manifest it stands on says, warnings and refusals, then what its package graph says, as the old
@@ -3517,7 +3516,7 @@ fn manifests_door(engine: QueryEngine, disk: Disk) -> int? {
     let graph = reached with { voices: reached.voices.concat(unset), sources: reached
         .sources
         .concat([manifest_source(disk.package_root(p)) for p in reached_packages(engine, disk)]) }
-    let said = [manifest_said(program_file(disk, f)) for f in manifests_voiced(engine, disk.name)]
+    let said = [manifest_said(engine, program_file(disk, f)) for f in manifests_voiced(engine, disk.name)]
         .concat(if graph.voices.is_empty() { [] } else { [rendered_among(graph.voices, graph.sources)] })
     if !said.is_empty() { println(said.join("\n\n")) }
     if !manifests_refused(engine, disk.name).is_empty() || !graph.voices.is_empty() { return 1 }
@@ -3549,9 +3548,9 @@ fn graph_said(engine: QueryEngine, disk: Disk) -> AdmittedSaid {
 }
 
 /// What the manifest `h` says, rendered over its text.
-fn manifest_said(h: ProgramFile) -> string {
+fn manifest_said(engine: QueryEngine, h: ProgramFile) -> string {
     let src = new_source_file(h.full, text_at(h.full) ?? "")
-    [render(d, src) for d in manifest_diags(h)].join("\n\n")
+    [render(d, src) for d in manifest_refusals(engine, h)].join("\n\n")
 }
 
 /// Whether each link says its command line on stderr: `AVRA_LINK_TRACE=1`.
