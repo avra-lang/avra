@@ -13,7 +13,7 @@
 //! An exit is a VERDICT, never a count: `run()` judges it by
 //! `ok_exits`, `outcome()` reads it. No verb here takes a command
 //! string, so there is no shell to inject.
-use @std.time.{Duration, secs, now_ms}
+use @std.time.{Duration, host_ms, secs}
 use @std.errors.{Error, ErrorInfo, info}
 use @std.text.{nul_at}
 use @std.io.{env}
@@ -619,7 +619,7 @@ impl Command {
     /// Run to the end and READ: the exit is the caller's to match. Fails
     /// only when the child never ran, timed out, or outgrew its cap.
     fn outcome() -> Result<Outcome, ProcessError> {
-        let began = now_ms()
+        let began = host_ms()
         let s = launched(self, 0 - 1)?
         errdefer abandoned([s])
         let done = pumped(s, self.drain_grace.ms())
@@ -628,7 +628,7 @@ impl Command {
         if done.timed { fail ProcessError.TimedOut(timeout_ms(self.timeout), gathered(done)) }
         if done.capped_out { fail ProcessError.TooMuch(Stream.Stdout, self.max_capture, gathered(done)) }
         if done.capped_err { fail ProcessError.TooMuch(Stream.Stderr, self.max_capture, gathered(done)) }
-        Outcome { exit: exit_of(word), out: gathered(done), took_ms: now_ms() - began }
+        Outcome { exit: exit_of(word), out: gathered(done), took_ms: host_ms() - began }
     }
 
     /// Whether `ok_exits` accepts an exit; a signal death never is.
@@ -776,7 +776,7 @@ impl Child {
         let o = Outcome {
             exit: if word <= 0 { Exit.Signal(sigkill, false) } else { exit_of(word) },
             out: Output { stdout: self.out, stderr: self.err, truncated: self.stage.truncated },
-            took_ms: now_ms() - began,
+            took_ms: host_ms() - began,
         }
         self.out = ""
         self.err = ""
@@ -788,14 +788,14 @@ impl Child {
     /// closes — the last two stop the child and refuse.
     fn until_ready(ready: Ready, limit: Duration) -> Result<int, ProcessError> {
         if ready is .Started { return 0 }
-        let began = now_ms()
+        let began = host_ms()
         let deadline = began + limit.ms()
         mut waited = 0
         while true {
             let gone = self.pump(100)
-            if self.satisfied(ready) { return now_ms() - began }
-            waited = now_ms() - began
-            if gone && !(ready is .Exit) || now_ms() >= deadline {
+            if self.satisfied(ready) { return host_ms() - began }
+            waited = host_ms() - began
+            if gone && !(ready is .Exit) || host_ms() >= deadline {
                 let partial = Output { stdout: self.out, stderr: self.err, truncated: false }
                 self.stop()
                 fail ProcessError.NotReady(waited, partial)
@@ -834,7 +834,7 @@ impl Child {
     /// answered once the child is gone.
     fn read_line(limit: Duration) -> string? {
         if self.ended != null { return null }
-        let deadline = now_ms() + limit.ms()
+        let deadline = host_ms() + limit.ms()
         while true {
             let cut = self.out.index_of("\n")
             if cut >= 0 {
@@ -848,7 +848,7 @@ impl Child {
                 self.out = ""
                 return rest
             }
-            if now_ms() >= deadline { return null }
+            if host_ms() >= deadline { return null }
         }
         null
     }
@@ -858,10 +858,10 @@ impl Child {
     fn wait(limit: Duration?) -> Result<Outcome, ProcessError> {
         if self.ended != null { return self.ended! }
         errdefer stopped(self)
-        let began = now_ms()
+        let began = host_ms()
         let deadline = timeout_ms(limit)
         mut gone = self.pump(0)
-        while !gone && (deadline < 0 || now_ms() - began < deadline) {
+        while !gone && (deadline < 0 || host_ms() - began < deadline) {
             gone = self.pump(100)
         }
         if !gone {
@@ -876,7 +876,7 @@ impl Child {
     /// the exit it met. The handle is released.
     fn stop() -> Exit {
         if self.ended != null { return self.ended!.exit }
-        let began = now_ms()
+        let began = host_ms()
         let _ = avra_proc_signal(self.stage.h, sigterm, 1)
         self.until_gone(self.command.stop_grace.ms())
         if avra_proc_reap(self.stage.h) == 0 {
@@ -888,9 +888,9 @@ impl Child {
 
     /// Ticks until the child is reaped or `ms` pass.
     fn until_gone(ms: int) {
-        let deadline = now_ms() + ms
+        let deadline = host_ms() + ms
         let _ = self.pump(0)
-        while avra_proc_reap(self.stage.h) == 0 && now_ms() < deadline {
+        while avra_proc_reap(self.stage.h) == 0 && host_ms() < deadline {
             let _ = self.pump(50)
         }
     }
@@ -1022,7 +1022,7 @@ fn launched(c: Command, upstream: int) -> Result<Stage, ProcessError> {
     fed_first(
         Stage {
             h: h,
-            deadline: if t < 0 { 0 - 1 } else { now_ms() + t },
+            deadline: if t < 0 { 0 - 1 } else { host_ms() + t },
             expired: t == 0,
             feed: stdin_bytes(c.stdin),
             cap: c.max_capture,
@@ -1172,7 +1172,7 @@ fn pumped(start: Stage, grace_ms: int) -> Stage {
 
 /// Past its deadline, which is asked BEFORE any poll.
 fn past(s: Stage) -> bool {
-    s.deadline >= 0 && now_ms() >= s.deadline
+    s.deadline >= 0 && host_ms() >= s.deadline
 }
 
 /// A child that broke a bound is ended with its tree and swept once
@@ -1194,7 +1194,7 @@ fn heard(s: Stage) -> Stage {
 /// hold the pipes open, and whatever it says inside the floor is
 /// captured. What is still open when the floor expires is truncation.
 fn grace(s: Stage, grace_ms: int) -> Stage {
-    let until = now_ms() + grace_ms
+    let until = host_ms() + grace_ms
     mut g = s
     // THE FLOOR BOUNDS A HOLDER'S TIME, IT DOES NOT MANUFACTURE ONE.
     // The window exists because a GRANDCHILD may still hold a pipe and
@@ -1203,7 +1203,7 @@ fn grace(s: Stage, grace_ms: int) -> Stage {
     // the whole floor for every command that had no holder at all.
     // Both questions, in the order they answer: is there time left,
     // and is anyone left to use it.
-    while now_ms() < until && still_held(g) {
+    while host_ms() < until && still_held(g) {
         g = swept(ticked(g, turn_ms))
     }
     let last = swept(g)
@@ -1262,7 +1262,7 @@ fn collected(s: Stage, began: int) -> Outcome {
     Outcome {
         exit: if word <= 0 { Exit.Signal(sigkill, false) } else { exit_of(word) },
         out: gathered(s),
-        took_ms: now_ms() - began,
+        took_ms: host_ms() - began,
     }
 }
 
@@ -1318,7 +1318,7 @@ impl Pipeline {
     /// deadline or its cap is stopped and fails the whole.
     fn outcome() -> Result<PipeOutcome, ProcessError> {
         if self.stages.is_empty() { fail ProcessError.Empty("the pipeline") }
-        let began = now_ms()
+        let began = host_ms()
         mut live: List<Stage> = []
         mut upstream = 0 - 1
         for c in self.stages {
@@ -1373,7 +1373,7 @@ const nothing_yet: Outcome? = null
 /// cap stops every sibling and fails the whole.
 export fn parallel(cs: List<Command>, limit: int) -> Result<List<Outcome>, ProcessError> {
     let width = if limit < 1 { 1 } else { limit }
-    let began = now_ms()
+    let began = host_ms()
     mut outs: List<Outcome?> = [nothing_yet for c in cs]
     mut live: List<Stage> = []
     mut owners: List<int> = []
@@ -1415,7 +1415,7 @@ export fn parallel(cs: List<Command>, limit: int) -> Result<List<Outcome>, Proce
 /// never left behind. An empty race is refused as `Empty`.
 export fn race(cs: List<Command>, stagger: Duration) -> Result<Outcome, ProcessError> {
     if cs.is_empty() { fail ProcessError.Empty("the race") }
-    let began = now_ms()
+    let began = host_ms()
     mut live: List<Stage> = []
     mut owners: List<int> = []
     mut next = 0
@@ -1428,13 +1428,13 @@ export fn race(cs: List<Command>, stagger: Duration) -> Result<Outcome, ProcessE
         // START of the last command wait for a sweep of all the
         // others — quadratic in the field, and `stagger: ms(0)`,
         // which asks for all of them AT ONCE, paid the most.
-        while next < cs.length && now_ms() >= next_at {
+        while next < cs.length && host_ms() >= next_at {
             let s = launched(cs[next], 0 - 1)?
             begun.push(s)
             live.push(s)
             owners.push(next)
             next = next + 1
-            next_at = now_ms() + stagger.ms()
+            next_at = host_ms() + stagger.ms()
         }
         mut winner: Outcome? = null
         mut grown: List<Stage> = []
