@@ -3630,11 +3630,12 @@ impl Checking {
         promise.resulted() && carried(promise.args[1])
     }
 
-    /// Whether `value`, read as `read` since `before`, answers nothing where a binding names it:
-    /// refused so, in place of what its seat said of it.
+    /// Whether `value`, read as `read` since `before`, answers nothing where a binding names it — a
+    /// chain into a call that answers nothing answers nothing too: refused so, in place of what its
+    /// seat said of it.
     mut fn nothing_bound(value: ExprId, read: SignedType?, before: int) -> bool {
         let found? = read else { return false }
-        if self.meanings || !found.owns(OwnType.Void) || found.nullable() { return false }
+        if self.meanings || !(found with { nulls: 0 }).owns(OwnType.Void) { return false }
         let all = self.refused.get()
         self.refused.set(all.take(before).concat([r for r in all.drop(before) if r.at != value]))
         self.refused.push(Refused { at: value, want: found, found: found, seat: Seating.Voided })
