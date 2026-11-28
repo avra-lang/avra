@@ -43,6 +43,7 @@ use features.fns.{hashed_unnamed, marked_unnamed}
 use features.lists.{walk_unknowable, enumerate_unpaired, scan_unvalued}
 use features.closures.{uncallable_value}
 use features.enums.{variant_unbuilt, variant_unenumed, variant_unwanted}
+use features.{static_bodiless}
 use features.let_stmt.{let_unblocked}
 use features.{
     lacked_read,
@@ -249,6 +250,8 @@ enum Miss {
     Lacked(record: string, name: string, why: string, fields: List<string>)
     /// A `.of` read on the named type `found`, which stands over no shape it reads.
     Shapeless(found: string)
+    /// A call of the associated fn `name` through the trait `owner` itself, which writes no body for it.
+    Bodiless(owner: string, name: string)
 }
 
 impl Miss {
@@ -464,6 +467,7 @@ fn miss_at(engine: QueryEngine, t: TypedNodes, e: ExprId, scope: MissScope) -> L
         .concat(prelude_verb_miss(engine, t, e))
         .concat(literal_param_miss(t.store, e, scope.generic))
         .concat(variant_read_miss(engine, t, e))
+        .concat(bodiless_miss(engine, t, e))
     let listed = list_verb_miss(engine, t, e)
     if !listed.is_empty() { return listed }
     if (t.type_at)(e.index) != null { return literal_miss(engine, t, e).concat(variadic_miss(engine, t, e)).concat(landed) }
@@ -1210,6 +1214,32 @@ fn method_arity(
             miss: if described != null { Miss.StaticArity(target, name, wants, args.length) } else { Miss.MethodArity(target, name, wants, args.length) },
         },
     ]
+}
+
+/// A call a dot makes of a member of its subject.
+type DotCall = { subject: ExprId, name: string }
+
+/// The call `e` of an associated fn through the trait its subject names, where the trait writes no
+/// body for it: each type that implements it answers its own. Nothing for any other node.
+fn bodiless_miss(engine: QueryEngine, t: TypedNodes, e: ExprId) -> List<MissPlaced> {
+    let call? = match t.store.expr(e) {
+        .MethodCall(subject, name, _) -> DotCall { subject: subject, name: name.of },
+        rest -> null,
+    } else { return [] }
+    let name = call.name
+    let owner? = match t.store.expr(call.subject) { .Ident(n) -> n.of.text(), rest -> null } else { return [] }
+    let typed = (t.type_at)(call.subject.index)
+    if typed != null && !(typed!.head is .Meta) { return [] }
+    if resolved(engine, t.file, Space.Value, owner).named() != null { return [] }
+    let d? = resolved(engine, t.file, Space.Type, owner).named() else { return [] }
+    let item? = declaring_item(engine, d.file, d.name, ItemKind.Trait) else { return [] }
+    let abstract = trait_fns(item)
+        .any(
+            (f) -> item.store.fn_parts(f)?.name == name &&
+                item.store.is_static(f) &&
+                !written_body(item, f),
+        )
+    if abstract { [MissPlaced { at: t.store.expr_span(e), miss: Miss.Bodiless(owner, name) }] } else { [] }
 }
 
 /// Whether `ty` names a declared enum, whose `all` lists its variants.
@@ -2055,6 +2085,13 @@ fn static_arities_missed(view: ItemView) -> List<Found> {
     )
 }
 
+fn statics_bodiless(view: ItemView) -> List<Found> {
+    misses_seen_in(
+        view,
+        (m: Miss) -> match m { .Bodiless(owner, name) -> [owner, name], rest -> [] },
+    )
+}
+
 fn withs_missed(view: ItemView) -> List<Found> { misses_seen_in(view, (m: Miss) -> match m { .WithUnstructured(found) -> [found], rest -> [] }) }
 
 fn chains_absent(view: ItemView) -> List<Found> {
@@ -2504,6 +2541,16 @@ export law static_arity_mismatch {
     voice: static_arity_words
     witness: "type P = { n: int }\n\nimpl P {\n    static fn make(n: int) -> P { P { n: n } }\n}\n\nfn g() -> int { P.make().n }\n"
 }
+
+/// a trait's associated fn is called through the trait only where the trait writes its one body
+export law static_called_bodiless {
+    kind: "type.unknown_prop"
+    reads_view: statics_bodiless
+    voice: bodiless_words
+    witness: "trait Show {\n    static fn lifted(t: int) -> int\n}\n\nfn g() -> int { Show.lifted(3) }\n"
+}
+
+fn bodiless_words(a: List<string>) -> Voice { static_bodiless(a[0], a[1]) }
 
 /// a record literal's field a spread after it overwrites
 export law spread_overwrites_field {

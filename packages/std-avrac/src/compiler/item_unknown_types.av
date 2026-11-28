@@ -54,6 +54,9 @@ type TypeScope = {
     writer: SourceFileAddress?,
     params: List<string>,
     refused: List<string>,
+    /// Whether `Self` names no type here: a trait's own associated fn, whose one body answers for no
+    /// type.
+    selfless: bool = false,
 }
 
 /// Every type name a statement of the written item `at` of `file` writes in its signature that names
@@ -85,12 +88,14 @@ fn unknown_types_made(view: ItemView) -> ItemUnnamed {
     let params = flatten([item.store.tparams_in_scope(s) for s in stmts])
         .concat(flatten([a.params for a in impls_seen(view)]))
     let refused = imports_refused(engine, file)
+    let selfless = [f for top in item.stmts for p in [item.store.trait_parts(top)] if p != null for f in p!.fns if item.store.is_static(f) && written_body(item, f)]
     let scoped = (s: StmtId) -> TypeScope {
         engine: engine,
         file: file,
         writer: written_by(item.store, s),
         params: params,
         refused: refused,
+        selfless: selfless.contains(s),
     }
     ItemUnnamed {
         rows: flatten([unnamed_in(scoped(s), item.store, s) for s in stmts])
@@ -247,7 +252,7 @@ impl TypeScope {
         if name.is_empty() ||
             name == INFERRED ||
             name == NEVER ||
-            name == self_word ||
+            name == self_word && !self.selfless ||
             self.params.contains(name) ||
             self.refused.contains(name) { return true }
         if builtin_type_name(avra().rows.types, name) || name == RANGE { return true }

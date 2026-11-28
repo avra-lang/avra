@@ -144,15 +144,7 @@ impl TypeCx {
     mut fn no_trait_static(e: ExprId, decl: DeclId, tname: string, name: string) -> TypeId {
         if self.view.decls.trait_member(decl, name) != null {
             return self
-                .spoken(
-                    refusal(
-                        "type.unknown_prop",
-                        self.loc_of(e),
-                        "`${tname}.${name}` has no one body — each signatory answers its own",
-                        "built here",
-                        "call it through the implementing type: `<Type>.${name}(…)`",
-                    ),
-                )
+                .spoken(said_as("type.unknown_prop", self.loc_of(e), static_bodiless(tname, name)))
         }
         self
             .spoken(
@@ -336,6 +328,15 @@ export fn static_unknown(owner: string, name: string, statics: List<string>) -> 
         message: "`${owner}` has no static fn `${name}`",
         label: "called here",
         help: if statics.is_empty() { build_a_record(owner) } else { "its static fns are ${["`${s}`" for s in statics].join(", ")}" },
+    }
+}
+
+/// A call of the associated fn `name` through the trait `owner` itself, which writes no body for it.
+export fn static_bodiless(owner: string, name: string) -> Voice {
+    Voice {
+        message: "`${owner}.${name}` has no one body — each signatory answers its own",
+        label: "built here",
+        help: "call it through the implementing type: `<Type>.${name}(…)`",
     }
 }
 

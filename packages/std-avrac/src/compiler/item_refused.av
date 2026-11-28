@@ -549,9 +549,9 @@ fn fields_named_once(engine: QueryEngine, file: SourceFileAddress, name: string)
     [n for j, n in names if names.index_of(n) == j]
 }
 
-/// The bodies a written item holds beside its fns' and methods': each seat's default a fn or a
-/// method writes, each record's and component's field default, each const's value and each state's start, and each
-/// body a trait's own members write.
+/// The bodies a written item holds beside its fns' and methods': each seat's default a fn, a method
+/// or a trait's member writes, each record's and component's field default, each const's value and
+/// each state's start, and each body a trait's own members write.
 fn default_bodies(
     engine: QueryEngine,
     file: SourceFileAddress,
@@ -563,7 +563,8 @@ fn default_bodies(
     let fns = [s! for d in names if d.kind == ItemKind.Fn &&
         item.stmts.any((s) -> item.store.fn_parts(s)?.name == d.name && defaults_a_seat(item, s)) for s in [signed_body(engine, file, d.name)] if s != null]
     let methods = [m!.signed for a in impls for s in impl_fns(item, a) if defaults_a_seat(item, s) for m in [signed_method(engine, a, item.store.fn_parts(s)!.name, item.store.is_static(s))] if m != null]
-    let seats = [b! for s in fns.concat(methods) for p in s.signature.params for b in [seat_default_body(s, p.name)] if b != null]
+    let members = [m for st in item.stmts for p in [item.store.trait_parts(st)] if p != null for f in p!.fns if !item.store.is_static(f) && defaults_a_seat(item, f) for m in some_list(member_signed(engine, TraitAt { file: file, name: p!.name }, item, f))]
+    let seats = [b! for s in fns.concat(methods).concat(members) for p in s.signature.params for b in [seat_default_body(s, p.name)] if b != null]
     let fields = [b! for d in names if d.kind == ItemKind.Record || d.kind == ItemKind.Component for n in fields_named_once(engine, file, d.name) for b in [field_default_body(engine, file, d.name, n)] if b != null]
     let consts = [b for d in names if d.kind == ItemKind.Const for b in some_list(const_body_of(engine, d))]
     let states = [b for d in names if d.kind == ItemKind.State for b in some_list(state_body(engine, d))]
@@ -691,31 +692,43 @@ fn impl_fns(item: ReadItem, at: ImplAt) -> List<StmtId> {
 fn trait_bodies(engine: QueryEngine, t: TraitAt) -> List<SignedBody> {
     let item? = trait_item(engine, t) else { return [] }
     let written = [s for s in trait_fns(item) if item.store.fn_parts(s) != null && written_body(item, s)]
-    let heirs = if written.any((s) -> !item.store.is_static(s)) { heirs_of(engine, t) } else { [] }
-    [b for s in written for b in some_list(given_signed(engine, t, heirs, item.store.fn_parts(s)!.name, item.store.is_static(s)))]
+    [b for s in written for b in some_list(given_signed(engine, t, item, item.store.fn_parts(s)!.name, item.store.is_static(s)))]
 }
 
-/// The body the trait `t` writes for its member `name`, signed: a static's with no `Self`, a
-/// method's as the first type of its package that leaves it to the trait answers it, the trait's own
-/// parameters what that type's impl applies it to. Absent where no type there does.
-fn given_signed(engine: QueryEngine, t: TraitAt, heirs: List<Heir>, name: string, statics: bool) -> SignedBody? {
+/// The body the trait `t`, declared by `item`, writes for its member `name`, signed: a static's with
+/// no `Self`, a method's under an abstract `Self` the trait bounds, standing past the trait's own
+/// type parameters, so one typing answers for every type that leaves the body to the trait.
+fn given_signed(engine: QueryEngine, t: TraitAt, item: ReadItem, name: string, statics: bool) -> SignedBody? {
     if statics { return trait_static_body(engine, t, name) }
-    let heir? = heirs.find(!it.writes.contains(name)) else { return null }
     let written? = given_body(engine, t, name) else { return null }
-    let receiver = headed_type(declared_head(heir.file, heir.name))
-    let giver = default_givers(engine, heir.file, heir.name, name)
-        .find(it.giver.file == t.file && it.giver.name == t.name)
-    let signature? = (if giver == null { trait_method_signature(engine, t, name, receiver) } else { given_signature(engine, giver!, name, receiver) }) else {
-        return null
-    }
+    member_signed(engine, t, written.item, written.stmt)
+}
+
+/// The method the trait `t` declares as `s` of `item`, signed under an abstract `Self` the trait
+/// bounds, standing past the trait's own type parameters; its body the one written, if any.
+fn member_signed(engine: QueryEngine, t: TraitAt, item: ReadItem, s: StmtId) -> SignedBody? {
+    let parts? = item.store.fn_parts(s) else { return null }
+    let own = trait_tparams(item, t.name)
+    let receiver = headed_type(TypeHead.Parameter(own.length, SELF))
+    let signature? = trait_method_signature(engine, t, parts.name, receiver) else { return null }
+    let bound = headed_type(declared_head(t.file, t.name)) with { args: [headed_type(TypeHead.Parameter(j, p)) for j, p in own] }
     SignedBody {
-        signature: signature,
-        item: written.item,
-        body: written.item.store.fn_parts(written.stmt)!.body,
-        stmt: written.stmt,
+        signature: signature with { type_params: own.concat([SELF]), bounds: [UNBOUND for _p in own].concat([bound]) },
+        item: item,
+        body: parts.body,
+        stmt: s,
         receiver: receiver,
-        receiver_written: receiver_use(engine, heir.file, heir.name, name, t.file.package_name).written(),
+        receiver_written: item.store.is_mutating(s),
     }
+}
+
+/// The bound of a type parameter bound by none.
+const UNBOUND: SignedType? = null
+
+/// The type parameters the trait `name` its declaring item `item` declares.
+fn trait_tparams(item: ReadItem, name: string) -> List<string> {
+    let s? = item.stmts.find((x) -> item.store.trait_parts(x)?.name == name) else { return [] }
+    item.store.decl_tparams(s)
 }
 
 /// A type an impl over no parameters makes implement a trait: the trait, where the type is declared
