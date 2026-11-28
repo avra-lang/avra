@@ -143,7 +143,7 @@ fn body_met(engine: QueryEngine, c: DoorBody) -> Met {
     if marks.contains(UNRECORDED_MARK) { return Met.Read }
     if marks.contains(PLATFORM_MARK) { return Met.PlatformDoor }
     if marks.contains(DOOR_MARK) || marks.contains(HELD_MARK) || records_asked(engine, c) { return Met.Door }
-    if query_made(engine, c) { return Met.Door }
+    if c.owner == "" && d.item.stmts.any((s) -> is_query(d.item, s)) { return Met.Door }
     if d.item.store.extern_parts(d.stmt) == null { return Met.Walked }
     met_row(row_reach(c.name, d))
 }
@@ -192,13 +192,23 @@ fn body_world(engine: QueryEngine, c: DoorBody) -> BodyWorld {
     let named = [CallAt { callee: n!, at: place_at(d, store, r.at) } for r in typed.reads if r.binder == null for n in [named_callee(engine, d.file, r.home, r.name)] if n != null]
     let methods = [CallAt { callee: m!, at: place_at(d, store, e.index) } for e in store.every_expr(parts.body) for m in [method_callee(store, typed.types, e)] if m != null]
     let calls = named.concat(methods)
-    let mets = [body_met(engine, x.callee) for x in calls]
+    let mets = mets_of(engine, calls)
     BodyWorld {
         reads: met_reads(engine, calls, mets, Met.Read),
         platform_reads: met_reads(engine, calls, mets, Met.PlatformRead),
         calls: [x for i, x in calls if mets[i] is .Walked],
         platformed: mets.any(it is .PlatformDoor),
     }
+}
+
+/// How each of `calls` is met, each callee's declaration read once however often it is called.
+fn mets_of(engine: QueryEngine, calls: List<CallAt>) -> List<Met> {
+    mut met: Map<string, Met> = {}
+    for x in calls {
+        let key = callee_key(x.callee)
+        if !met.has(key) { met.set(key, body_met(engine, x.callee)) }
+    }
+    [met.get(callee_key(x.callee))! for x in calls]
 }
 
 /// The reads among `calls` met as `met`, each where its call stands, the licensed ones gone.
@@ -259,7 +269,7 @@ type BodyDeclared = { file: SourceFileAddress, at: ItemId, item: ReadItem, stmt:
 /// or a method of the impl that gives it; absent where none does.
 fn declared_body(engine: QueryEngine, c: DoorBody) -> BodyDeclared? {
     if c.owner == "" {
-        let d? = file_declares(engine, c.file).names.find(it.name == c.name) ?? generated_declares(
+        let d? = file_declares_named(engine, c.file, c.name).names.first() ?? generated_declares(
             engine,
             c.file,
         )
@@ -289,22 +299,8 @@ fn declares_fn(store: SyntaxArena, s: StmtId, name: string) -> bool { store.fn_p
 /// Whether `c` is a method of a type wearing `@records`.
 fn records_asked(engine: QueryEngine, c: DoorBody) -> bool {
     if c.owner == "" { return false }
-    let d? = file_declares(engine, c.file).names.find(it.name == c.owner) else { return false }
+    let d? = file_declares_named(engine, c.file, c.owner).names.first() else { return false }
     wears_mark(engine, d, RECORDS_MARK)
-}
-
-/// Whether `c` is a query's body, or a fn its annotation makes: declared at an item whose fn wears a
-/// query's annotation.
-fn query_made(engine: QueryEngine, c: DoorBody) -> bool {
-    if c.owner != "" { return false }
-    let d? = file_declares(engine, c.file).names.find(it.name == c.name) ?? generated_declares(
-        engine,
-        c.file,
-    )
-        .names
-        .find(it.name == c.name) else { return false }
-    let item = read_item(engine, d.file, d.item)
-    item.stmts.any((s) -> is_query(item, s))
 }
 
 /// A read a body reaches: what it reads, where the call making it stands, and that call's package.
