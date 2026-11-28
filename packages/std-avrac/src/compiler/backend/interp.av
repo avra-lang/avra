@@ -2155,7 +2155,8 @@ impl Machine {
     /// a frame that is never called does not care what is in it.
     fn staged_seats(sig: RtSig, vals: List<Val>) -> bool {
         let slots = file_slots(sig.params)
-        [self.stage_seat(k, cell_at(sig, i), slots[i], vals[i]) for i, k in sig.params].all(it)
+        [self.stage_seat(k, cell_at(sig, i), sig.inert, slots[i], vals[i]) for i, k in sig.params]
+            .all(it)
     }
 
     /// EVERY `mut` SEAT READ BACK, AT ITS DECLARED WIDTH, after the
@@ -2186,11 +2187,11 @@ impl Machine {
 
     /// HOW ONE ARGUMENT CROSSES — the evaluator's twin of the
     /// backend's `rt_arg`, over the same column.
-    fn stage_seat(k: RtKind, cell: RtKind, at: int, v: Val) -> bool {
+    fn stage_seat(k: RtKind, cell: RtKind, inert: bool, at: int, v: Val) -> bool {
         if carries_cell(cell) { return self.staged_cell(at, v) }
         match k {
             .F64 -> self.staged_f64(at, v),
-            .Ptr -> self.stage_pointer(at, v),
+            .Ptr -> self.stage_pointer(inert, at, v),
             .I64 or .I32 or .U32 -> self.staged_word(at, v),
             .Void -> self.void_seat(),
         }
@@ -2200,9 +2201,12 @@ impl Machine {
     /// number; absence is the null pointer, which is what a C
     /// sentinel of zero means. Spelled over every `Val`: a handle
     /// into the machine's own tables is NOT an address, and a
-    /// catch-all here would forget the next variant that is.
-    fn stage_pointer(at: int, v: Val) -> bool {
+    /// catch-all here would forget the next variant that is. An INERT
+    /// row reads its text by the header's length, so the text stages
+    /// as octets: a NUL inside is data there, and nothing crosses.
+    fn stage_pointer(inert: bool, at: int, v: Val) -> bool {
         match v {
+            .S(_) if inert -> self.stage_bytes(at, v),
             .S(t) -> self.staged_text(at, t),
             .Y(_) -> self.stage_bytes(at, v),
             .N or .Gone -> self.staged_at(at, 0),

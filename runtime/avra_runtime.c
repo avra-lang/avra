@@ -4887,19 +4887,19 @@ const char* avra_float_text(double d) { return float_text(d); }
 const char* avra_float_text_bits(int64_t bits) { return float_text(as_double(bits)); }
 
 // ── A text built in one box ─────────────────────────────────────
-// AN INTERPOLATION PAYS ONE BOX: its pieces are appended to the calling
-// thread's scratch and the text is minted once, at its own length.
+// AN INTERPOLATION PAYS ONE BOX: its pieces are appended to the runtime's
+// one scratch and the text is minted once, at its own length.
 // BUILDS NEST: a begin marks where its text starts and its end mints
 // from that mark and gives the scratch back to it, so a build begun and
 // ended between another's steps — an evaluator spelling its own text
 // while it runs a program's — leaves the outer one whole.
 
-static _Thread_local char* g_built = NULL;
-static _Thread_local size_t g_built_len = 0;
-static _Thread_local size_t g_built_cap = 0;
-static _Thread_local size_t* g_built_starts = NULL;
-static _Thread_local size_t g_built_depth = 0;
-static _Thread_local size_t g_built_starts_cap = 0;
+static char* g_built = NULL;
+static size_t g_built_len = 0;
+static size_t g_built_cap = 0;
+static size_t* g_built_starts = NULL;
+static size_t g_built_depth = 0;
+static size_t g_built_starts_cap = 0;
 
 static void built_appended(const char* s, size_t n) {
     if (n == 0) return;
