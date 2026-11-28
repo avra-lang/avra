@@ -37,8 +37,8 @@ export type Grid = { width: int, height: int, cells: List<Tile>, cursor: Pos? }
 /// drawn its mark.
 type Canvas = { width: int, rows: List<Cell<List<string>>>, looks: Cell<List<Look>>, cursor: Cell<Pos?>, glyphs: Glyphs }
 
-/// A look laid over the cells of row `y` from column `from` up to `to`.
-type Look = { y: int, from: int, to: int, style: int }
+/// A look laid over `rows` rows from row `y`, each from column `from` up to `to`.
+type Look = { y: int, rows: int = 1, from: int, to: int, style: int }
 
 /// A tree drawn: its rows (each only as long as it is written), the looks
 /// laid over them, and the caret.
@@ -110,7 +110,8 @@ export fn gridded(p: Painted, width: int, height: int?) -> Grid {
 /// The tile at a cell: its glyph, and the look of the last laid over it.
 fn cell_at(p: Painted, x: int, y: int) -> Tile {
     let text = if y < p.rows.length && x < p.rows[y].length { p.rows[y][x] } else { " " }
-    let style = [l.style for l in p.looks if l.y == y && x >= l.from && x < l.to].last() ?? 0
+    let style = [l.style for l in p.looks if y >= l.y && y < l.y + l.rows && x >= l.from && x < l.to]
+        .last() ?? 0
     Tile { text: text, wide: cells(text) == 2, style: style }
 }
 
@@ -157,7 +158,7 @@ fn paint(grid: Canvas, n: Node, p: Placed, path: string, focus: string) {
     let inner = r.w - (left - r.x) - pad_cols(pad?.end ?? .None) - gutter - kept_cells(n)
     if selected_item(n) {
         put(grid, left + gutter, top, grid.glyphs.selected)
-        for y in r.y..r.y + r.h { grid.looks.push(Look { y: y, from: left, to: r.x + r.w, style: reverse }) }
+        grid.looks.push(Look { y: r.y, rows: r.h, from: left, to: r.x + r.w, style: reverse })
     }
     let style = look_of(n, gutter > 0)
     for i, line in own_lines(n, inner, grid.glyphs) {
