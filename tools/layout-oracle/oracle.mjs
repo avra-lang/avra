@@ -372,6 +372,7 @@ use @std.ui.place.lines.{lines_in}
 use @std.ui.place.text.{Text}
 use @std.ui.place.solve.{place_fine, whole, Placed}
 use @std.ui.realize.tui.layout.{own_lines}
+use @std.ui.realize.tui.glyphs.{unicode}
 use @std.ui.realize.html.html.{render}
 use @std.ui.realize.tests.support.{boxed, placed, text_node}
 
@@ -422,7 +423,7 @@ fn typeface() -> Text { Text { metrics: face_metrics(), theme: default_theme, re
 fn count_lines(n: Node, avail: int) -> int {
     lines_in(n.words(), (avail * ${Q} + fine / 2) / fine, (s: string) -> run_width_in(face_metrics(), s, ${Q})).length
 }
-` : `fn count_lines(n: Node, avail: int) -> int { own_lines(n, avail / fine).length }
+` : `fn count_lines(n: Node, avail: int) -> int { own_lines(n, avail / fine, unicode).length }
 `}
 fn rows_of(p: Placed) -> List<string> {
     ["\${p.rect.x} \${p.rect.y} \${p.rect.w} \${p.rect.h}"].concat([l for k in p.kids for l in rows_of(k)])
