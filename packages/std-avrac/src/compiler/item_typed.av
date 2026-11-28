@@ -274,6 +274,7 @@ fn body_checked(
         self_type: signed.receiver,
         writer: written_by(signed.item.store, signed.stmt),
         bounds: signed.signature.bounds,
+        keys: signed.signature.keys,
     }
     mut cx = checking(
         signed.item.store,
@@ -303,7 +304,12 @@ fn body_checked(
 fn enum_shape(engine: QueryEngine, ty: SignedType) -> EnumShape? {
     let at? = declared_at(ty) else { return null }
     let declared? = enum_signature(engine, at.file, at.name) else { return null }
-    EnumShape { params: declared.type_params.length, variants: declared.variants }
+    EnumShape {
+        params: declared.type_params.length,
+        variants: declared.variants,
+        names: declared.type_params,
+        keys: declared.keys,
+    }
 }
 
 /// The record `ty` is: its type parameters and its fields, typed where it's declared. Absent for a
@@ -316,6 +322,7 @@ fn record_shape(engine: QueryEngine, ty: SignedType) -> RecordShape? {
         fields: record.fields,
         defaults: record.defaults,
         names: record.type_params,
+        keys: record.keys,
     }
 }
 
@@ -458,6 +465,7 @@ fn program_answered(
         kept: (n: string, home: string?) -> read_from(engine, file, home)
             .any((f) -> names_state(engine, f, n)),
         bound_of: (t: SignedType) -> signing.bound_of(t),
+        keyed: (t: SignedType) -> signing.keyed(t),
         default_seats: (t: SignedType, name: string) -> match t.head {
             .Declared(f, owner) -> default_seats(engine, f, owner, name),
             rest -> null,
@@ -477,6 +485,8 @@ fn program_answered(
             .find_map((f) -> fn_bounds(engine, f, n)) ?? [],
         defaults_named: (n: string, home: string?) -> read_from(engine, file, home)
             .find_map((f) -> fn_defaults(engine, f, n)) ?? [],
+        keys_named: (n: string, home: string?) -> read_from(engine, file, home)
+            .find_map((f) -> fn_keyed(engine, f, n)) ?? [],
         method_params: (subject: SignedType, method: string) -> method_declares(
             engine,
             subject,
@@ -537,6 +547,14 @@ fn fn_defaults(engine: QueryEngine, file: SourceFileAddress, name: string) -> Li
     let d? = resolved(engine, file, Space.Value, name).named() else { return null }
     if d.kind != ItemKind.Fn { return null }
     declared_signature_of(engine, d)?.defaults
+}
+
+/// Whether the fn `file` reads as `name` keys a map by each of its type parameters; absent where it
+/// reads no fn so.
+fn fn_keyed(engine: QueryEngine, file: SourceFileAddress, name: string) -> List<bool>? {
+    let d? = resolved(engine, file, Space.Value, name).named() else { return null }
+    if d.kind != ItemKind.Fn { return null }
+    declared_signature_of(engine, d)?.keys
 }
 
 /// The bounds the fn `file` reads as `name` declares for its type parameters, one for each; absent

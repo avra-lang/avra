@@ -2,6 +2,7 @@
 //! is the record. A generic record's arguments come from the type arguments the literal writes, else
 //! from the seat it fills when that names the record, else from what its values fill.
 use core.{
+    CalleeNamed,
     Refused,
     makes_key,
     meta_key,
@@ -101,7 +102,14 @@ impl Checks for StructLit {
         let filled = defaulted(found, record.defaults)
         let args = [filled.get("${at}") for at in 0..record.params]
         let open = args.find_index(it == null)
-        if open == null { return named with { args: [a! for a in args] } }
+        if open == null {
+            let keyed = CalleeNamed {
+                name: self.name.of,
+                type_params: record.names,
+                keys: record.keys,
+            }
+            return if cx.keys_held(keyed, filled) { named with { args: [a! for a in args] } } else { null }
+        }
         if (!written.is_empty() || phantom(record, open!)) && cx.refused.get().length == before { unpinned_literal(cx, e, self, record, open!, written) }
         null
     }

@@ -75,18 +75,22 @@ impl Checks for Call {
                 seat_of,
                 pinned,
                 (cx.program.bounds_named)(callee_text, cx.home_of(e)),
-                if declares == null {
-                    null
-                } else {
-                    CalleeNamed {
-                        name: callee_text,
-                        type_params: declares!,
-                        defaults: (cx.program.defaults_named)(callee_text, cx.home_of(e)),
-                    }
-                },
+                callee_named(cx, e, callee_text, declares),
             )
         if !named_into_extern(cx, e, self) { seats_written(cx, e, self, written) }
         answer
+    }
+}
+
+/// The declared fn `name` a call at `e` names, `declares` its type parameters; none for a callee that
+/// declares none, and no keys asked of one with no type parameter to key by.
+fn callee_named(cx: Checking, e: ExprId, name: string, declares: List<string>?) -> CalleeNamed? {
+    let params? = declares else { return null }
+    CalleeNamed {
+        name: name,
+        type_params: params,
+        defaults: (cx.program.defaults_named)(name, cx.home_of(e)),
+        keys: if params.is_empty() { [] } else { (cx.program.keys_named)(name, cx.home_of(e)) },
     }
 }
 
