@@ -1,14 +1,14 @@
 //! `wisp determinism [--avra <compiler>] [--plant reverse-deal,hash-seed] [--kept <dir>]` — A
 //! CHECK'S ANSWER IS NOT ITS SCHEDULE'S. One compiler checks the cli cold, then again after the cost
 //! harness's `literal` edit, in a fresh export of this tree's HEAD standing at one place, as several
-//! legs: twice alike, held to one process, forked across two processes and across four, and as a
-//! binary one byte longer, whose kept answers are keyed apart from the others'. Every leg's counts,
-//! pass rows, read lists and findings agree with the first leg's exactly; what a process decodes is
-//! the work its own schedule does, so that line agrees with the first leg of the same spread. A leg
-//! that disagrees is named with the lines that differ. A plant varies one more axis on purpose:
-//! `reverse-deal` deals every forked leg's files to its processes last first (`check --deal
-//! reversed`), and `hash-seed` runs each leg under a hash seed of its own (`check --hash-seed`).
-//! Exit 0 every leg agrees, 1 one differs, 2 usage.
+//! legs: twice alike, twice held to one process, forked across two processes and across four, and
+//! as a binary one byte longer, whose kept answers are keyed apart from the others'. Every leg's
+//! findings agree with the first leg's exactly; its counts, pass rows, read lists and what it
+//! decoded are the work this process did, which forking decides, so those agree exactly with the
+//! first leg that forks as it does, whatever its width. A leg that disagrees is named with the lines
+//! that differ. A plant varies one more axis on purpose: `reverse-deal` deals every forked leg's
+//! files to its processes last first (`check --deal reversed`), and `hash-seed` runs each leg under
+//! a hash seed of its own (`check --hash-seed`). Exit 0 every leg agrees, 1 one differs, 2 usage.
 use @std.cli.{CliResult, Runnable, command, option}
 use @std.io.{append_bytes, exists, make_dirs, read_text, write_text}
 use @std.path.{joined_path}
@@ -54,6 +54,7 @@ const LEGS: List<WitnessLeg> = [
     WitnessLeg { name: "first", spread: Spread.Machine, longer: false },
     WitnessLeg { name: "again", spread: Spread.Machine, longer: false },
     WitnessLeg { name: "serial", spread: Spread.Serial, longer: false },
+    WitnessLeg { name: "serial-again", spread: Spread.Serial, longer: false },
     WitnessLeg { name: "forked-2", spread: Spread.Cores(2), longer: false },
     WitnessLeg { name: "forked-4", spread: Spread.Cores(4), longer: false },
     WitnessLeg { name: "longer", spread: Spread.Machine, longer: true },
@@ -226,32 +227,34 @@ fn leg_env(l: WitnessLeg, src: string) -> Env {
 /// The lines a check keeps of what it said: every finding it printed, then each count, pass row and
 /// read list from its stderr — never a time.
 export fn kept_lines(stdout: string, stderr: string) -> List<string> {
-    stdout.split("\n").filter(!it.trim().is_empty()).concat(stderr.split("\n").filter(counted_line))
+    stdout.split("\n").filter(!it.trim().is_empty()).concat(stderr.split("\n").filter(spread_line))
 }
 
-/// Whether leg `s` agrees with the legs `said`: every line with the first leg's, but what a process
-/// decodes, which agrees with the first leg of its spread.
+/// Whether leg `s` agrees with the legs `said`: its findings with the first leg's, the work its
+/// process did with the first leg that forks as it does.
 fn leg_agrees(s: LegSaid, said: List<LegSaid>) -> bool {
     shared_lines(s.lines) == shared_lines(said[0].lines) &&
         spread_lines(s.lines) == spread_lines(peer_of(s, said).lines)
 }
 
-/// The first leg of `s`'s spread among `said`.
-fn peer_of(s: LegSaid, said: List<LegSaid>) -> LegSaid { said.find(it.spread == s.spread) ?? s }
+/// The first leg among `said` whose check forks as `s`'s does.
+fn peer_of(s: LegSaid, said: List<LegSaid>) -> LegSaid { said.find(forks(it.spread) == forks(s.spread)) ?? s }
 
-/// The lines every leg agrees on.
+/// Whether a check spread so forks: the work one process does is the same at any width it forks to.
+fn forks(spread: Spread) -> bool {
+    match spread { .Machine or .Cores(_) -> true, .Serial -> false }
+}
+
+/// The lines every leg agrees on: what it found.
 export fn shared_lines(lines: List<string>) -> List<string> { lines.filter(!spread_line(it)) }
 
-/// The lines legs of one spread agree on.
+/// The lines legs of one spread agree on: the work the check's own process did.
 export fn spread_lines(lines: List<string>) -> List<string> { lines.filter(spread_line) }
 
-/// Whether a kept line counts work its process's own schedule does: what it decoded.
-fn spread_line(line: string) -> bool { line.starts_with("decodes") }
-
-/// Whether a line of a check's stderr is one it counts by.
-fn counted_line(line: string) -> bool {
+/// Whether a kept line counts the work the check's own process did, which its spread decides.
+fn spread_line(line: string) -> bool {
     line.starts_with("counts: ") ||
-        line.starts_with("decodes") ||
+        line.starts_with("decoded: ") ||
         line.starts_with("pass-row\t") ||
         line.starts_with("read-list ")
 }
