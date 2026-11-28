@@ -410,6 +410,52 @@ extern const char avra_rt_held_avra_self_path __asm__(AVRA_RT_LABEL(avra_self_pa
 extern const char avra_rt_held_avra_selfhost_argc __asm__(AVRA_RT_LABEL(avra_selfhost_argc));
 extern const char avra_rt_held_avra_selfhost_get_arg_cstr __asm__(AVRA_RT_LABEL(avra_selfhost_get_arg_cstr));
 extern const char avra_rt_held_avra_process_exit __asm__(AVRA_RT_LABEL(avra_process_exit));
+extern const char avra_rt_held_avra_case_clock_virtual __asm__(AVRA_RT_LABEL(avra_case_clock_virtual));
+extern const char avra_rt_held_avra_sched_guest_waits __asm__(AVRA_RT_LABEL(avra_sched_guest_waits));
+extern const char avra_rt_held_avra_sched_pick_links __asm__(AVRA_RT_LABEL(avra_sched_pick_links));
+extern const char avra_rt_held_avra_sched_run_begins __asm__(AVRA_RT_LABEL(avra_sched_run_begins));
+extern const char avra_rt_held_avra_sched_run_ends __asm__(AVRA_RT_LABEL(avra_sched_run_ends));
+extern const char avra_rt_held_avra_sched_runs_wanted __asm__(AVRA_RT_LABEL(avra_sched_runs_wanted));
+extern const char avra_rt_held_avra_sched_schedule_at __asm__(AVRA_RT_LABEL(avra_sched_schedule_at));
+extern const char avra_rt_held_avra_sched_timers __asm__(AVRA_RT_LABEL(avra_sched_timers));
+extern const char avra_rt_held_avra_vgate_claim __asm__(AVRA_RT_LABEL(avra_vgate_claim));
+extern const char avra_rt_held_avra_vgate_ended __asm__(AVRA_RT_LABEL(avra_vgate_ended));
+extern const char avra_rt_held_avra_vgate_open __asm__(AVRA_RT_LABEL(avra_vgate_open));
+extern const char avra_rt_held_avra_vtask_asked __asm__(AVRA_RT_LABEL(avra_vtask_asked));
+extern const char avra_rt_held_avra_vtask_asker __asm__(AVRA_RT_LABEL(avra_vtask_asker));
+extern const char avra_rt_held_avra_vtask_cancel __asm__(AVRA_RT_LABEL(avra_vtask_cancel));
+extern const char avra_rt_held_avra_vtask_claim __asm__(AVRA_RT_LABEL(avra_vtask_claim));
+extern const char avra_rt_held_avra_vtask_cut __asm__(AVRA_RT_LABEL(avra_vtask_cut));
+extern const char avra_rt_held_avra_vtask_end __asm__(AVRA_RT_LABEL(avra_vtask_end));
+extern const char avra_rt_held_avra_vtask_enter __asm__(AVRA_RT_LABEL(avra_vtask_enter));
+extern const char avra_rt_held_avra_vtask_free __asm__(AVRA_RT_LABEL(avra_vtask_free));
+extern const char avra_rt_held_avra_vtask_inherits __asm__(AVRA_RT_LABEL(avra_vtask_inherits));
+extern const char avra_rt_held_avra_vtask_interrupted __asm__(AVRA_RT_LABEL(avra_vtask_interrupted));
+extern const char avra_rt_held_avra_vtask_join __asm__(AVRA_RT_LABEL(avra_vtask_join));
+extern const char avra_rt_held_avra_vtask_joins __asm__(AVRA_RT_LABEL(avra_vtask_joins));
+extern const char avra_rt_held_avra_vtask_new_at __asm__(AVRA_RT_LABEL(avra_vtask_new_at));
+extern const char avra_rt_held_avra_vtask_next __asm__(AVRA_RT_LABEL(avra_vtask_next));
+extern const char avra_rt_held_avra_vtask_park __asm__(AVRA_RT_LABEL(avra_vtask_park));
+extern const char avra_rt_held_avra_vtask_park_fd __asm__(AVRA_RT_LABEL(avra_vtask_park_fd));
+extern const char avra_rt_held_avra_vtask_passed __asm__(AVRA_RT_LABEL(avra_vtask_passed));
+extern const char avra_rt_held_avra_vtask_ready __asm__(AVRA_RT_LABEL(avra_vtask_ready));
+extern const char avra_rt_held_avra_vtask_rest __asm__(AVRA_RT_LABEL(avra_vtask_rest));
+extern const char avra_rt_held_avra_vtask_settle __asm__(AVRA_RT_LABEL(avra_vtask_settle));
+extern const char avra_rt_held_avra_vtask_shield_enter __asm__(AVRA_RT_LABEL(avra_vtask_shield_enter));
+extern const char avra_rt_held_avra_vtask_shield_leave __asm__(AVRA_RT_LABEL(avra_vtask_shield_leave));
+extern const char avra_rt_held_avra_vtask_shielded __asm__(AVRA_RT_LABEL(avra_vtask_shielded));
+extern const char avra_rt_held_avra_vtask_sited __asm__(AVRA_RT_LABEL(avra_vtask_sited));
+extern const char avra_rt_held_avra_vtask_sleep __asm__(AVRA_RT_LABEL(avra_vtask_sleep));
+extern const char avra_rt_held_avra_vtask_tick_cold __asm__(AVRA_RT_LABEL(avra_vtask_tick_cold));
+extern const char avra_rt_held_avra_vtask_timed_out __asm__(AVRA_RT_LABEL(avra_vtask_timed_out));
+extern const char avra_rt_held_avra_vtask_unwinding __asm__(AVRA_RT_LABEL(avra_vtask_unwinding));
+extern const char avra_rt_held_avra_vtask_wait_fd __asm__(AVRA_RT_LABEL(avra_vtask_wait_fd));
+extern const char avra_rt_held_avra_vtask_wait_gate __asm__(AVRA_RT_LABEL(avra_vtask_wait_gate));
+extern const char avra_rt_held_avra_vtask_wait_sig __asm__(AVRA_RT_LABEL(avra_vtask_wait_sig));
+extern const char avra_rt_held_avra_vtask_wait_until __asm__(AVRA_RT_LABEL(avra_vtask_wait_until));
+extern const char avra_rt_held_avra_vtask_within __asm__(AVRA_RT_LABEL(avra_vtask_within));
+extern const char avra_rt_held_avra_vtask_within_end __asm__(AVRA_RT_LABEL(avra_vtask_within_end));
+extern const char avra_rt_held_avra_vtask_yield_met __asm__(AVRA_RT_LABEL(avra_vtask_yield_met));
 __attribute__((used)) static const void* const avra_rt_held[] = {
     &avra_rt_held_avra_qtrace,
     &avra_rt_held_avra_puts,
@@ -759,6 +805,52 @@ __attribute__((used)) static const void* const avra_rt_held[] = {
     &avra_rt_held_avra_selfhost_argc,
     &avra_rt_held_avra_selfhost_get_arg_cstr,
     &avra_rt_held_avra_process_exit,
+    &avra_rt_held_avra_case_clock_virtual,
+    &avra_rt_held_avra_sched_guest_waits,
+    &avra_rt_held_avra_sched_pick_links,
+    &avra_rt_held_avra_sched_run_begins,
+    &avra_rt_held_avra_sched_run_ends,
+    &avra_rt_held_avra_sched_runs_wanted,
+    &avra_rt_held_avra_sched_schedule_at,
+    &avra_rt_held_avra_sched_timers,
+    &avra_rt_held_avra_vgate_claim,
+    &avra_rt_held_avra_vgate_ended,
+    &avra_rt_held_avra_vgate_open,
+    &avra_rt_held_avra_vtask_asked,
+    &avra_rt_held_avra_vtask_asker,
+    &avra_rt_held_avra_vtask_cancel,
+    &avra_rt_held_avra_vtask_claim,
+    &avra_rt_held_avra_vtask_cut,
+    &avra_rt_held_avra_vtask_end,
+    &avra_rt_held_avra_vtask_enter,
+    &avra_rt_held_avra_vtask_free,
+    &avra_rt_held_avra_vtask_inherits,
+    &avra_rt_held_avra_vtask_interrupted,
+    &avra_rt_held_avra_vtask_join,
+    &avra_rt_held_avra_vtask_joins,
+    &avra_rt_held_avra_vtask_new_at,
+    &avra_rt_held_avra_vtask_next,
+    &avra_rt_held_avra_vtask_park,
+    &avra_rt_held_avra_vtask_park_fd,
+    &avra_rt_held_avra_vtask_passed,
+    &avra_rt_held_avra_vtask_ready,
+    &avra_rt_held_avra_vtask_rest,
+    &avra_rt_held_avra_vtask_settle,
+    &avra_rt_held_avra_vtask_shield_enter,
+    &avra_rt_held_avra_vtask_shield_leave,
+    &avra_rt_held_avra_vtask_shielded,
+    &avra_rt_held_avra_vtask_sited,
+    &avra_rt_held_avra_vtask_sleep,
+    &avra_rt_held_avra_vtask_tick_cold,
+    &avra_rt_held_avra_vtask_timed_out,
+    &avra_rt_held_avra_vtask_unwinding,
+    &avra_rt_held_avra_vtask_wait_fd,
+    &avra_rt_held_avra_vtask_wait_gate,
+    &avra_rt_held_avra_vtask_wait_sig,
+    &avra_rt_held_avra_vtask_wait_until,
+    &avra_rt_held_avra_vtask_within,
+    &avra_rt_held_avra_vtask_within_end,
+    &avra_rt_held_avra_vtask_yield_met,
 };
 #else
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_qtrace(AVRA_RT_PTR)), void),
@@ -1457,6 +1549,98 @@ _Static_assert(__builtin_classify_type(avra_selfhost_get_arg_cstr(AVRA_RT_I64)) 
     "avra_selfhost_get_arg_cstr: its row answers ptr, so its C body answers a pointer");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_process_exit(AVRA_RT_I64)), void),
     "avra_process_exit: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_case_clock_virtual()), int64_t),
+    "avra_case_clock_virtual: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_sched_guest_waits()), void),
+    "avra_sched_guest_waits: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_sched_pick_links()), int64_t),
+    "avra_sched_pick_links: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_sched_run_begins()), void),
+    "avra_sched_run_begins: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_sched_run_ends()), void),
+    "avra_sched_run_ends: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_sched_runs_wanted()), int64_t),
+    "avra_sched_runs_wanted: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_sched_schedule_at(AVRA_RT_I64)), int64_t),
+    "avra_sched_schedule_at: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_sched_timers()), int64_t),
+    "avra_sched_timers: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_vgate_claim(AVRA_RT_I64, AVRA_RT_PTR)), int64_t),
+    "avra_vgate_claim: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_vgate_ended(AVRA_RT_PTR, AVRA_RT_I64)), void),
+    "avra_vgate_ended: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_vgate_open(AVRA_RT_PTR)), void),
+    "avra_vgate_open: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_vtask_asked(AVRA_RT_I64)), int64_t),
+    "avra_vtask_asked: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_vtask_asker(AVRA_RT_I64)), int64_t),
+    "avra_vtask_asker: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_vtask_cancel(AVRA_RT_I64, AVRA_RT_I64)), void),
+    "avra_vtask_cancel: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_vtask_claim(AVRA_RT_I64)), int64_t),
+    "avra_vtask_claim: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_vtask_cut(AVRA_RT_I64)), int64_t),
+    "avra_vtask_cut: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_vtask_end(AVRA_RT_I64)), void),
+    "avra_vtask_end: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_vtask_enter(AVRA_RT_I64, AVRA_RT_PTR)), int64_t),
+    "avra_vtask_enter: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_vtask_free(AVRA_RT_I64)), void),
+    "avra_vtask_free: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_vtask_inherits(AVRA_RT_I64, AVRA_RT_I64)), void),
+    "avra_vtask_inherits: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_vtask_interrupted(AVRA_RT_I64)), int64_t),
+    "avra_vtask_interrupted: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_vtask_join(AVRA_RT_I64, AVRA_RT_PTR)), int64_t),
+    "avra_vtask_join: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_vtask_joins(AVRA_RT_I64, AVRA_RT_I64)), void),
+    "avra_vtask_joins: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_vtask_new_at(AVRA_RT_I64, AVRA_RT_I64)), int64_t),
+    "avra_vtask_new_at: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_vtask_next()), int64_t),
+    "avra_vtask_next: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_vtask_park(AVRA_RT_I64)), int64_t),
+    "avra_vtask_park: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_vtask_park_fd(AVRA_RT_I64, AVRA_RT_I64, AVRA_RT_I64, AVRA_RT_I64)), int64_t),
+    "avra_vtask_park_fd: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_vtask_passed(AVRA_RT_I64, AVRA_RT_I64)), void),
+    "avra_vtask_passed: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_vtask_ready(AVRA_RT_I64)), void),
+    "avra_vtask_ready: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_vtask_rest(AVRA_RT_I64)), int64_t),
+    "avra_vtask_rest: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_vtask_settle(AVRA_RT_I64, AVRA_RT_PTR)), int64_t),
+    "avra_vtask_settle: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_vtask_shield_enter(AVRA_RT_I64)), void),
+    "avra_vtask_shield_enter: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_vtask_shield_leave(AVRA_RT_I64)), void),
+    "avra_vtask_shield_leave: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_vtask_shielded(AVRA_RT_I64)), int64_t),
+    "avra_vtask_shielded: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_vtask_sited(AVRA_RT_I64, AVRA_RT_PTR)), void),
+    "avra_vtask_sited: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_vtask_sleep(AVRA_RT_I64, AVRA_RT_I64)), void),
+    "avra_vtask_sleep: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_vtask_tick_cold(AVRA_RT_I64)), int64_t),
+    "avra_vtask_tick_cold: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_vtask_timed_out(AVRA_RT_I64)), int64_t),
+    "avra_vtask_timed_out: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_vtask_unwinding(AVRA_RT_I64)), int64_t),
+    "avra_vtask_unwinding: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_vtask_wait_fd(AVRA_RT_I64, AVRA_RT_I64, AVRA_RT_I64, AVRA_RT_I64, AVRA_RT_I64)), void),
+    "avra_vtask_wait_fd: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_vtask_wait_gate(AVRA_RT_I64, AVRA_RT_PTR, AVRA_RT_I64, AVRA_RT_I64)), void),
+    "avra_vtask_wait_gate: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_vtask_wait_sig(AVRA_RT_I64, AVRA_RT_I64, AVRA_RT_I64, AVRA_RT_I64)), void),
+    "avra_vtask_wait_sig: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_vtask_wait_until(AVRA_RT_I64, AVRA_RT_I64, AVRA_RT_I64, AVRA_RT_I64)), void),
+    "avra_vtask_wait_until: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_vtask_within(AVRA_RT_I64, AVRA_RT_I64)), int64_t),
+    "avra_vtask_within: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_vtask_within_end(AVRA_RT_I64, AVRA_RT_I64)), int64_t),
+    "avra_vtask_within_end: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_vtask_yield_met(AVRA_RT_I64)), void),
+    "avra_vtask_yield_met: its row answers void, so its C body answers void");
 _Static_assert(MARK_OWNED == 1,
     "MARK_OWNED: the compiler reads a cell's mark as bit 1, so runtime/avra_box.h gives it that bit");
 _Static_assert(MARK_ABSENT == 2,
