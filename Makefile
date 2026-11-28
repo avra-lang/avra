@@ -169,18 +169,11 @@ CFLAGS_sqlite_sentinel := -Ipackages/std-sqlite/vendor
 # that only signs links no handshake. The two config headers in src/c
 # are the whole mechanism list; @std/tls's own C reads mbedTLS's
 # structs, so it compiles under the same words.
-MBEDTLS_DIR := packages/std-tls/vendor/mbedtls
+# The include and defines rows are the manifest's, read as a header read reads them.
+TLS_MANIFEST := packages/std-tls/avra.toml
 MBEDTLS_OBJS := $(patsubst packages/std-tls/vendor/%.c,build/%.o,$(wildcard packages/std-tls/vendor/mbedtls_*.c))
-MBEDTLS_FLAGS := -I$(MBEDTLS_DIR)/include -I$(MBEDTLS_DIR)/tf-psa-crypto/include \
-  -I$(MBEDTLS_DIR)/tf-psa-crypto/drivers/builtin/include -I$(MBEDTLS_DIR)/library \
-  -I$(MBEDTLS_DIR)/tf-psa-crypto/core -I$(MBEDTLS_DIR)/tf-psa-crypto/dispatch \
-  -I$(MBEDTLS_DIR)/tf-psa-crypto/drivers/builtin/src -I$(MBEDTLS_DIR)/tf-psa-crypto/extras \
-  -I$(MBEDTLS_DIR)/tf-psa-crypto/platform -I$(MBEDTLS_DIR)/tf-psa-crypto/utilities \
-  -I$(MBEDTLS_DIR)/tf-psa-crypto/drivers/everest/include \
-  -I$(MBEDTLS_DIR)/tf-psa-crypto/drivers/everest/include/tf-psa-crypto/private/everest \
-  -I$(MBEDTLS_DIR)/tf-psa-crypto/drivers/everest/include/tf-psa-crypto/private/everest/kremlib \
-  -Ipackages/std-tls/src/c '-DTF_PSA_CRYPTO_CONFIG_FILE="std_tls_crypto_config.h"' \
-  '-DMBEDTLS_CONFIG_FILE="std_tls_ssl_config.h"'
+MBEDTLS_FLAGS := $(addprefix -Ipackages/std-tls/,$(shell sh tools/manifest_objects.sh --rows include $(TLS_MANIFEST))) \
+  $(foreach d,$(shell sh tools/manifest_objects.sh --rows defines $(TLS_MANIFEST)),'-D$(d)')
 TLS_OBJS := $(patsubst packages/std-tls/src/c/%.c,build/%.o,$(wildcard packages/std-tls/src/c/*.c)) $(MBEDTLS_OBJS)
 $(foreach o,$(TLS_OBJS),$(eval CFLAGS_$(basename $(notdir $(o))) := $(MBEDTLS_FLAGS)))
 

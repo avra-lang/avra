@@ -153,8 +153,9 @@ fn clang_ran(clang: Tool, text: string, cwd: string, flags: List<string>) -> Cla
         .concat(flags)
         .concat(["-x", "c", "-"])
     let at: string? = if cwd.is_empty() { null } else { cwd }
+    // a dump grows with every header its unit includes, so it is captured far past a command's default
     // LICENSED input.tool_run: clang reads the header's text on its stdin; every file it reads besides is an input of its own
-    match (cmd(clang, args) with { stdin: .Text(text), cwd: at }).outcome() {
+    match (cmd(clang, args) with { stdin: .Text(text), cwd: at, max_capture: 268435456 }).outcome() {
         .Ok(o) -> ClangRun {
             read: judged(o.exit, o.out.stdout, o.out.stderr),
             included: included_by(o.out.stderr),
