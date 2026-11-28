@@ -36,7 +36,7 @@
 //! name.
 use @std.cli.{CliResult, Runnable, command, flag, option, arg}
 use @std.io.{write_text, remove}
-use @std.process.{cmd, status_of}
+use @std.process.{cmd, status_of, Outcome}
 use @std.path.{dir_of, file_name}
 use @std.avrac.compiler.{
     Canonical,
@@ -163,22 +163,24 @@ fn git_paths(argv: List<string>) -> List<string> {
 
 /// git's words, asked where the run was asked; empty where it could not answer.
 fn git_said(argv: List<string>) -> string {
-    let git? = match tool("git") { .Ok(g) -> g, .Err(_) -> null } else { return "" }
-    match cmd(git, ["-C", here()].concat(argv)).outcome() { .Ok(o) -> o.out.stdout, .Err(_) -> "" }
+    let o? = git_in(here(), argv) else { return "" }
+    o.out.stdout
+}
+
+/// git asked in `dir`: what it answered, or null where it could not run.
+fn git_in(dir: string, argv: List<string>) -> Outcome? {
+    let git? = match tool("git") { .Ok(g) -> g, .Err(_) -> null } else { return null }
+    // LICENSED input.command_subject: git names the files a check examines and the staged text it reads, never an input of what is built
+    match cmd(git, ["-C", dir].concat(argv)).outcome() { .Ok(o) -> o, .Err(_) -> null }
 }
 
 /// Where a staged file's text is read: the file itself when its working copy is the index's, else a
 /// hidden sibling written with the staged text.
 fn staged_seat(path: string) -> string {
-    let git? = match tool("git") { .Ok(g) -> g, .Err(_) -> null } else { return path }
-    let same = match cmd(git, ["-C", dir_of(path), "diff", "--quiet", "--", file_name(path)])
-        .outcome() { .Ok(o) -> status_of(o.exit) == 0, .Err(_) -> false }
-    if same { return path }
+    let diffed? = git_in(dir_of(path), ["diff", "--quiet", "--", file_name(path)]) else { return path }
+    if status_of(diffed.exit) == 0 { return path }
     let seat = staged_sibling(path)
-    let shown = match cmd(git, ["-C", dir_of(path), "show", ":./${file_name(path)}"]).outcome() {
-        .Ok(o) -> o.out.stdout,
-        .Err(_) -> "",
-    }
+    let shown = git_in(dir_of(path), ["show", ":./${file_name(path)}"])?.out?.stdout ?? ""
     let _ = write_text(seat, shown)
     seat
 }
