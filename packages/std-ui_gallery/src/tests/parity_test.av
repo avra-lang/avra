@@ -19,9 +19,28 @@ use @std.ui_gallery.{
     node_heard,
     html_heard,
     outline_heard,
+    terminal_heard,
+    agrees,
 }
+use @std.ui.realize.tui.tui.{render}
+use @std.ui.realize.tui.glyphs.{unicode}
+use @std.ui.env.{Env}
+use @std.text.{from_codepoint}
+use @std.ui.tree.node.{Node}
 
 fn said(hs: List<Heard>) -> string { [spoken(h) for h in hs].join(" | ") }
+
+/// Every tree std-ui's stories draw.
+fn trees() -> List<Node> { [tree_of(c.view) for s in shelves(views, stories) for c in s.cases] }
+
+/// How many cases the terminal's text, with `mark` taken out of it, says otherwise than the Node.
+fn parted_without(mark: string) -> int {
+    [n for n in trees() if !agrees(.Terminal, n, terminal_heard(render(n, Env {}, 80).replace(mark, "")))]
+        .length
+}
+
+/// The cases the terminal is owed on.
+fn terminal_owed() -> int { [o for o in owed if o.target == Target.Terminal].length }
 
 fn by_node(v: dyn View) -> string { said(node_heard(tree_of(v))) }
 
@@ -48,6 +67,13 @@ spec "@std/ui_gallery parity" {
                 .struck
                 .length == 1
         }
+    }
+    given "the terminal's text, a mark taken out of it" {
+        then "the drawing untouched parts only where a line owes it" { parted_without(from_codepoint(0)) == terminal_owed() }
+        then "with no tick, more parts" { parted_without(unicode.ticked) > terminal_owed() }
+        then "with no cross, more parts" { parted_without(unicode.invalid) > terminal_owed() }
+        then "with no busy mark, more parts" { parted_without(unicode.busy) > terminal_owed() }
+        then "with no unavailable words, more parts" { parted_without(unicode.unavailable) > terminal_owed() }
     }
     given "the role table" {
         then "an icon is heard as the image it draws" { heard_as(Prim.Icon) == Prim.Image }

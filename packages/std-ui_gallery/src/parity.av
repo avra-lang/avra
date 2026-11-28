@@ -3,21 +3,23 @@
 //! projection every target's reader answers into. The Node's own reading is the reference row; a
 //! target whose hearing of a case differs from it is APART, and an apart case is either fixed or
 //! owed by name (`Owed`), never held by a baseline. A new target adds a reader, never a comparison.
-use @std.meta.{derive}
 use @std.ui.style.words.{Words}
 use @std.ui.env.{Direction}
 use @std.ui.tree.node.{Node, Prim, Attribute}
 use @std.ui.tree.controls.{shows_content}
 use @std.ui.tree.view.{tree_of}
 use @std.ui.tree.outline.{outline}
+use @std.ui.realize.tui.tui.{render}
+use @std.ui.env.{Env}
 use @std.ui.realize.native.element.{Native, lowered as native_lowered}
 use @std.ui.realize.native.fact.{Fact, What, Scalar}
 use @std.ui.realize.html.element.{Element, Tagged, lowered as html_lowered}
 use @std.ui.realize.html.tags.{HtmlTag, HtmlAttrName}
 use @std.text.{chars}
+use @std.ui.realize.tui.glyphs.{unicode}
 
 /// A state an element is heard in.
-@derive(Words)
+@Words
 export enum State {
     @word(checked) Checked
     @word(disabled) Disabled
@@ -31,11 +33,12 @@ export enum State {
 export type Heard = { role: Prim, name: string, value: string, states: List<State>, direction: Direction? }
 
 /// The target a reader hears; the Node is the reference every one is held to.
-@derive(Words)
+@Words
 export enum Target {
     @word(html) Html
     @word(native) Native
     @word(outline) Outline
+    @word(terminal) Terminal
 }
 
 /// A case whose hearing on `target` differs from the Node's: the first line where they part.
@@ -46,7 +49,10 @@ export type Owed = { view: string, case: string, target: Target, owner: string, 
 
 /// The disagreements known and owed. A line whose case agrees is struck, and an apart case no line
 /// names fails the parity test, so the list only shrinks.
-export const owed: List<Owed> = []
+export const owed = table<Owed> {
+    view   | case       | target          | owner        | why
+    "item" | "selected" | Target.Terminal | "storyboard" | "the terminal's chosen mark waits on the UI lead's answer for an item before `choice`"
+}
 
 /// The disagreements no line owes, and the owed lines whose case now agrees — each to strike.
 export type Parity = { apart: List<Apart>, struck: List<Owed>, cases: int }
@@ -60,6 +66,28 @@ export fn heard_as(p: Prim) -> Prim? {
         .Text or .Heading or .Button or .Link or .Image or .Field or .Checkbox or .Dialog or .Divider or .List or .Item or .Card or .Progress or .Alert or .Spinner or .Form or .Fieldset or .Switch or .Slider -> p,
     }
 }
+
+/// What a target's reader says: every element whole (its role, name, value, states and direction),
+/// or only the states it marks. A reader of the second kind cannot line its elements up with the
+/// Node's, so it is held to the Node as the count of each state it says over the whole case.
+type Says = { elements: bool, states: List<State> }
+
+/// What each target's reader says. The terminal draws a picture, so it says the states its marks
+/// draw; an open dialog says it is open by standing on the screen. Every target spelled.
+fn says(t: Target) -> Says {
+    match t {
+        .Html or .Native or .Outline -> Says { elements: true, states: State.every() },
+        .Terminal -> Says { elements: false, states: [.Checked, .Disabled, .Invalid, .Loading, .Selected] },
+    }
+}
+
+/// What a case's hearing says, as `s` says it: an element a line, or each state's count.
+fn said_as(heard: List<Heard>, s: Says) -> List<string> {
+    if s.elements { return [spoken(h) for h in heard] }
+    [tally(st, [h for h in heard if h.states.any(it == st)].length) for st in s.states if heard.any(it.states.any(it == st))]
+}
+
+fn tally(st: State, count: int) -> string { "${st.word()} ${count}" }
 
 /// A hearing as one line: role, quoted name, value, states, direction.
 export fn spoken(h: Heard) -> string {
@@ -424,6 +452,36 @@ fn unescaped(c: string) -> string {
     match c { "n" -> "\n", "r" -> "\r", _ -> c }
 }
 
+// ── The terminal ───────────────────────────────────────────────
+
+/// What a reader hears of a tree, read from the terminal's text alone, colour stripped: each line
+/// heard as the states its marks draw. A row may draw several controls, so a line is no element;
+/// a reader of it hears the marks and their count.
+export fn terminal_heard(text: string) -> List<Heard> {
+    [h for l in text.split("\n") for h in terminal_line(l)]
+}
+
+fn terminal_line(line: string) -> List<Heard> {
+    let states = [st for st in State.every() for _k in 0..marks(line, st)]
+    if states.is_empty() { return [] }
+    [Heard { role: Prim.Text, name: line, value: "", states: states, direction: null }]
+}
+
+/// How many times a line draws the mark of `st`. A busy button draws its mark inside its
+/// brackets; a spinner's mark before its words is the spinner itself.
+fn marks(line: string, st: State) -> int {
+    match st {
+        .Checked -> count(line, unicode.ticked),
+        .Disabled -> count(line, unicode.unavailable),
+        .Invalid -> count(line, "${unicode.invalid} "),
+        .Loading -> count(line, "[ ${unicode.busy} "),
+        .Selected or .Open -> 0,
+    }
+}
+
+/// How many times `mark` stands in `line`, one at its end included.
+fn count(line: string, mark: string) -> int { (line.length - line.replace(mark, "").length) / mark.length }
+
 // ── Parity ─────────────────────────────────────────────────────
 
 /// What each target's reader hears of a tree.
@@ -432,13 +490,19 @@ fn hears(t: Target, n: Node) -> List<Heard> {
         .Html -> [h for e in html_lowered(n) for h in html_heard(e)],
         .Native -> [h for e in native_lowered(n) for h in native_heard(e)],
         .Outline -> outline_heard(outline(n)),
+        .Terminal -> terminal_heard(render(n, Env {}, 80)),
     }
+}
+
+/// Whether `theirs`, a hearing of `n` on `t`, says what the Node says, as `t`'s reader says it.
+export fn agrees(t: Target, n: Node, theirs: List<Heard>) -> bool {
+    said_as(node_heard(n), says(t)).join("\n") == said_as(theirs, says(t)).join("\n")
 }
 
 /// Where a target's hearing of a tree first parts from the Node's, if it does.
 fn parted(view: string, case: string, t: Target, n: Node) -> List<Apart> {
-    let ours = [spoken(h) for h in node_heard(n)]
-    let theirs = [spoken(h) for h in hears(t, n)]
+    let ours = said_as(node_heard(n), says(t))
+    let theirs = said_as(hears(t, n), says(t))
     if ours.join("\n") == theirs.join("\n") { return [] }
     let at = [j for j in 0..ours.length if j >= theirs.length || ours[j] != theirs[j]].first() ?? ours
         .length
