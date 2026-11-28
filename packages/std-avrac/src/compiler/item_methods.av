@@ -859,8 +859,15 @@ fn contract_method(engine: QueryEngine, subject: SignedType, name: string) -> Si
 /// implements over its members. A generic type's trait methods aren't claimed yet.
 fn trait_method(engine: QueryEngine, file: SourceFileAddress, declared: string, name: string) -> SignedType? {
     let receiver = headed_type(TypeHead.Declared(file, declared))
-    let givers = default_givers(engine, file, declared, name)
-    if givers.length == 1 { return given_typed(engine, givers[0], name, receiver) }
+    let givers = default_givers(engine, file, declared, name, true)
+    if givers.length == 1 {
+        return given_typed(
+            engine,
+            givers[0],
+            name,
+            receiver_over(file, declared, givers[0].at.params),
+        )
+    }
     if givers.length > 1 { return null }
     let traits = [i.implements! for i in impls_of(engine, file, declared) if i.at.params.is_empty() && i.implements != null]
         .concat(gathered_traits(engine, file, declared))
