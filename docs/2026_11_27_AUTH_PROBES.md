@@ -372,3 +372,59 @@ match Db.memory() {
     .Err(_) -> println("no db"),
 }
 ```
+
+## `principals.av`
+
+```avra
+export enum PrincipalKind { User, Service, Agent, Anonymous }
+export type Principal = { id: int, kind: PrincipalKind }
+enum BoardRole { Owner, Editor, Commenter, Viewer }
+type Seat<R> = { who: int, role: R }
+type BoardMember = { share: int, who: int, role: BoardRole }
+type Card = { id: int = 0, author: int }
+
+impl Card {
+    fn writes(m: Seat<BoardRole>) -> bool {
+        match m.role {
+            .Owner or .Editor -> true
+            .Commenter or .Viewer -> self.author == m.who
+        }
+    }
+}
+
+fn seat(rows: List<BoardMember>, p: Principal, share: int) -> Seat<BoardRole>? {
+    let row? = rows.find(it.share == share && it.who == p.id) else { return null }
+    Seat { who: p.id, role: row.role }
+}
+
+let alice = Principal { id: 1, kind: .User }
+let ingest = Principal { id: 2, kind: .Service }
+let triage = Principal { id: 3, kind: .Agent }
+mut rows = [BoardMember { share: 9, who: 1, role: .Owner }]
+let before = seat(rows, ingest, 9) == null
+rows.push(BoardMember { share: 9, who: 2, role: .Editor })
+rows.push(BoardMember { share: 9, who: 3, role: .Commenter })
+let c = Card { author: 1 }
+println("ingest before grant: ${if before { "none" } else { "seat" }}")
+println("ingest writes: ${c.writes(seat(rows, ingest, 9)!)}, triage writes alice's card: ${c.writes(seat(rows, triage, 9)!)}")
+rows = rows.filter(it.who != 2)
+println("ingest after revoke: ${if seat(rows, ingest, 9) == null { "none" } else { "seat" }}")
+```
+
+## `named_in_rule.av`
+
+```avra
+enum BoardRole { Owner, Viewer }
+type Seat<R> = { who: int, role: R }
+const ingest_service: int = 2
+type Card = { id: int = 0, author: int }
+impl Card {
+    fn writes(m: Seat<BoardRole>) -> bool {
+        match m.role {
+            .Owner -> true
+            .Viewer -> m.who == ingest_service
+        }
+    }
+}
+println("${Card { author: 1 }.writes(Seat { who: 2, role: BoardRole.Viewer })}")
+```
