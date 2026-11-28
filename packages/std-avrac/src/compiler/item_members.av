@@ -384,17 +384,13 @@ fn entry_nodes(engine: QueryEngine, file: SourceFileAddress, at: ItemId) -> Type
 }
 
 /// Every miss among the nodes `t` reads that its file wrote — neither a sugar's minting nor an
-/// annotation's call — outside a lambda whose seats its call infers, and but a call another node's
-/// checking makes of it — a trailing block's subject, a pipe's
-/// stage: such a node is typed as what holds it settles it, not here. A record literal a sugar
+/// annotation's call — but a call another node's checking makes of it — a trailing block's subject,
+/// a pipe's stage: such a node is typed as what holds it settles it, not here. A record literal a sugar
 /// minted is read for its fields and for a name the language owns, which a `table<int>` writes.
 fn misses_in(engine: QueryEngine, t: TypedNodes) -> List<MissAt> {
     let inferred = indexed(
         t.store.expr_count(),
-        flatten(
-            [flatten([t.store.every_expr(b) for b in inferred_body(t.store, ExprId { index: i })])
-                .concat(held_call(t.store, ExprId { index: i })) for i in t.lo..t.hi],
-        )
+        flatten([held_call(t.store, ExprId { index: i }) for i in t.lo..t.hi])
             .concat(annotation_calls(t.store)),
     )
     let scope = MissScope {
@@ -421,16 +417,6 @@ fn annotation_calls(store: SyntaxArena) -> List<ExprId> {
         .concat([x for s in stmts for a in store.annotations_of(s) for x in a.args])
     let seats = [m.call! for s in stmts for p in store.declared_fields(s).concat(store.declared_params(s)) for m in p.marks if m.call != null]
     flatten([store.every_expr(c) for c in written.concat(seats)])
-}
-
-/// The body of the lambda `e` where a seat of it is written without a type; nothing for any other
-/// node.
-fn inferred_body(store: SyntaxArena, e: ExprId) -> List<ExprId> {
-    match store.expr(e) {
-        .Lambda(params, body) -> if params.any(it.ty == null) { [body] } else { [] },
-        .BlockLambda(seats, body) -> if seats.any(it.ty == null) { [body] } else { [] },
-        rest -> [],
-    }
 }
 
 /// The call a trailing block makes of the node it holds, that node, and what a pipe's stage holds,
