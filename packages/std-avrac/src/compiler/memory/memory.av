@@ -38,6 +38,10 @@ use core.{
     rt_owned_twin,
     rt_reusing_twin,
     rt_moving_twin,
+    BorrowDecline,
+    Declined,
+    InsDeclined,
+    MoveDecline,
     reversed,
     flatten,
     opens_region,
@@ -123,9 +127,30 @@ fn body_ins(
                 consuming_seats(seats, marks),
                 by_name,
                 still,
+                null,
             ) if !immortal_rc_op(i, immortal)],
         ),
     )
+}
+
+/// THE COUNTS A BODY PAYS WHERE A TECHNIQUE DECLINED, by instruction: the memory pass run over
+/// `ins` as `body_ins` runs it, each decline filed at the instruction it met — what a reader of cost
+/// remarks asks, never a build.
+export fn memory_declines(layouts: List<Layout>, ins: List<Ins>, seats: int, marks: List<SeatMark>) -> List<
+    InsDeclined,
+> {
+    let declines: Cell<List<InsDeclined>> = Cell.new([])
+    let immortal = immortal_regs(layouts.length, ins)
+    let _ = memory_ins(
+        layouts,
+        ins,
+        standing_regs(immortal, ins, seats, marks),
+        consuming_seats(seats, marks),
+        {},
+        still_names([]),
+        declines,
+    )
+    declines.get()
 }
 
 /// THE REGISTERS THAT STAND FOR ANY CALL THEY ARE HANDED TO, whoever owns them: a
@@ -212,6 +237,7 @@ fn memory_ins(
     consuming: List<Reg>,
     by_name: Map<string, List<SeatMark>>,
     still: StillNames,
+    declines: Cell<List<InsDeclined>>?,
 ) -> List<Ins> {
     mut out: List<Ins> = []
     mut open_scopes: Stack<Scope> = new_stack()
@@ -225,7 +251,7 @@ fn memory_ins(
     let last = last_reads(layouts.length, ins)
     let defs = def_sites(layouts.length, ins)
     let next_barrier = Barriers { next: barrier_positions(ins), still: still, layouts: layouts }
-    let twins = twin_table(defs, next_barrier, layouts, ins)
+    let twins = twin_table(defs, next_barrier, layouts, ins, declines)
     let immortal = immortal_regs(layouts.length, ins)
     let life = Lives {
         layouts: layouts,
@@ -332,7 +358,7 @@ fn memory_ins(
                             moves_on(open_scopes, parted, life, ar, at)
                         } else {
                             noted("retain: a consuming seat", 1)
-                            noted_siblings(life, ar, at)
+                            declined_siblings(declines, life, ar, at)
                             out.push(Ins.Retain(ar))
                         }
                     }
@@ -388,7 +414,7 @@ fn memory_ins(
                             moves_on(open_scopes, parted, life, src, at)
                         } else {
                             noted("retain: a value stored in a cell", 1)
-                            noted_siblings(life, src, at)
+                            declined_siblings(declines, life, src, at)
                             out.push(Ins.Retain(src))
                         }
                     }
@@ -489,9 +515,11 @@ fn memory_ins(
             .CallRtVoid(callee, args) -> {
                 let moving: string? = life.moved_into(open_scopes, at)
                 if moving == null {
-                    if tallying() && !args.is_empty() && rt_keeps(callee, args.length - 1) {
+                    if (declines != null || tallying()) &&
+                        !args.is_empty() &&
+                        rt_keeps(callee, args.length - 1) {
                         noted("retain: a value a row keeps", 1)
-                        noted_siblings(life, args.last()!, at)
+                        declined_siblings(declines, life, args.last()!, at)
                     }
                     out.push(i)
                 } else {
@@ -1210,13 +1238,17 @@ fn owned_form(twins: List<bool>, layouts: List<Layout>, immortal: List<bool>, at
 /// read's answer asks only about the reads AFTER it, so a reverse walk has
 /// every answer it needs in hand.
 ///
-/// THE DETECTOR OF A BORROW A CALL MAKES OWNED: tallying (`AVRA_RC_REASONS`),
+/// THE DETECTOR OF A BORROW A CALL MAKES OWNED: where declines are asked for,
 /// a read that owns is asked again with every call handed only scalars read
 /// as quiet; one that would then stay a borrow owns only because a callee it
 /// calls may write a cell — a candidate for `writes_no_cell` to say more of.
-fn twin_table(defs: List<int>, next_barrier: Barriers, layouts: List<Layout>, ins: List<Ins>) -> List<
-    bool,
-> {
+fn twin_table(
+    defs: List<int>,
+    next_barrier: Barriers,
+    layouts: List<Layout>,
+    ins: List<Ins>,
+    declines: Cell<List<InsDeclined>>?,
+) -> List<bool> {
     mut out = [false for j in 0..ins.length]
     let scalar_calls = next_barrier with { every_scalar: true }
     // LICENSED loops.index_walk: a REVERSE walk — a read's answer reads the answers after it
@@ -1224,11 +1256,14 @@ fn twin_table(defs: List<int>, next_barrier: Barriers, layouts: List<Layout>, in
     while k >= 0 {
         if takes_twin(out, defs, next_barrier, layouts, ins, k, ins[k]) {
             out.set(k, true)
-            if tallying() && !takes_twin(out, defs, scalar_calls, layouts, ins, k, ins[k]) {
-                noted(
-                    "candidate: a borrow a scalar call makes owned, its callee may write a cell",
-                    1,
-                )
+            if declines != null && !takes_twin(out, defs, scalar_calls, layouts, ins, k, ins[k]) {
+                declines!
+                    .push(
+                        InsDeclined {
+                            at: k,
+                            declined: Declined.Borrow(BorrowDecline.CalleeMayWrite),
+                        },
+                    )
             }
         }
         k = k - 1
@@ -1801,10 +1836,11 @@ fn noted(reason: string, n: int) {
     rc_reasons().put(reason, (rc_reasons().get().get(reason) ?? 0) + n)
 }
 
-/// A retain at `at` of a value whose last reads stand in sibling arms: a move in every arm would
-/// remove it.
-fn noted_siblings(life: Lives, r: Reg, at: int) {
-    if tallying() && life.last_in_siblings(r, at) { noted("candidate: a value read last in sibling arms", 1) }
+/// A retain at `at` of a value whose last reads stand in sibling arms, filed where declines are asked
+/// for: a move in every arm would remove it.
+fn declined_siblings(declines: Cell<List<InsDeclined>>?, life: Lives, r: Reg, at: int) {
+    if declines == null || !life.last_in_siblings(r, at) { return }
+    declines!.push(InsDeclined { at: at, declined: Declined.Move(MoveDecline.SiblingArms) })
 }
 
 /// `placed`, each retain and release tallied as placed at `site`.
