@@ -65,6 +65,34 @@ export fn elaborated_fn(engine: QueryEngine, file: SourceFileAddress, name: stri
     elaborated(engine, file, signed)
 }
 
+/// `signed`'s body as its surface check left it, `held` the seats and reads that check left: no
+/// node elaboration makes, so its core is its surface, and the reads the check made are made again
+/// as checking again would make them.
+fn seated(
+    engine: QueryEngine,
+    file: SourceFileAddress,
+    signed: SignedBody,
+    surface: TypedBody,
+    sugars: List<ExprId>,
+    statements: List<StmtId>,
+    held: SeatsHeld,
+) -> ElaboratedBody {
+    engine.reads_made_again(held.reads)
+    if core_from_surface() == "checked" { core_alike(engine, file, signed, surface, held.seats) }
+    ElaboratedBody {
+        store: signed.item.store,
+        body: signed.body,
+        sugars: sugars,
+        statements: statements,
+        surface: surface.types,
+        core: surface.types,
+        seats: held.seats,
+        refused: surface.refused.length,
+        unread: surface.unread,
+        reads: surface.reads,
+    }
+}
+
 /// A signed body, elaborated in a store of its own over the one it was read into, which keeps every
 /// node and mark the elaboration makes: the item's store stays as it was read, its indices and
 /// sites the source's alone, whichever bodies of it were elaborated before.
@@ -79,23 +107,9 @@ fn elaborated(engine: QueryEngine, file: SourceFileAddress, read: SignedBody) ->
     let left = if filled.is_empty() &&
         statements.is_empty() &&
         sugars.is_empty() &&
-        means_itself(store, signed.body) { read.seats } else { null }
-    if left != null && core_from_surface() != "off" {
-        engine.reads_made_again(left!.reads)
-        if core_from_surface() == "checked" { core_alike(engine, file, signed, surface, left!.seats) }
-        return ElaboratedBody {
-            store: store,
-            body: signed.body,
-            sugars: sugars,
-            statements: statements,
-            surface: typed.types,
-            core: surface.types,
-            seats: left!.seats,
-            refused: surface.refused.length,
-            unread: surface.unread,
-            reads: surface.reads,
-        }
-    }
+        means_itself(store, signed.body) &&
+        core_from_surface() != "off" { read.seats } else { null }
+    if left != null { return seated(engine, file, signed, surface, sugars, statements, left!) }
     let core = body_checked(engine, file, signed, true)
     ElaboratedBody {
         store: store,
