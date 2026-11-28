@@ -17,7 +17,7 @@ use @std.net.{listen, connect}
 use @std.path.{joined_path, normalized}
 use @std.process.{Tool, Child, Env, EnvPair, Ready, cmd, tool_at, inherited}
 use @std.text.{ascii_lower, parse_int}
-use @std.time.{ms, secs, sleep, now_ms}
+use @std.time.{Clock, ms, secs, sleep, host_ms}
 
 /// The server child of one page: its package, the build it runs, the port it
 /// is told, the child running now, and what its build read when it last ran.
@@ -142,19 +142,20 @@ impl Backend {
         r
     }
 
-    /// Whether the server's port takes a connection within five seconds.
+    /// Whether the server's port takes a connection within five seconds of
+    /// the host's time — a server's start is the host's, whatever clock runs.
     fn listening() -> bool {
         // LICENSED input.clock: how long dev waits for its server is timing, never an input of what is built
-        let deadline = now_ms() + 5000
+        let deadline = host_ms() + 5000
         // LICENSED input.clock: how long dev waits for its server is timing, never an input of what is built
-        while now_ms() < deadline {
+        while host_ms() < deadline {
             // LICENSED input.live_process: whether dev's server listens yet, which no compile answer reads
             match connect("127.0.0.1", self.port, ms(200)) {
                 .Ok(c) -> {
                     let _ = c.close()
                     return true
                 },
-                .Err(_) -> sleep(ms(50)),
+                .Err(_) -> sleep(ms(50), clock: Clock.Host),
             }
         }
         false
