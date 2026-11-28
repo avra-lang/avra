@@ -5,6 +5,7 @@ use core.{
     Expr,
     Stmt,
     ExprId,
+    StmtId,
     Span,
     Annotation,
     Mark,
@@ -35,8 +36,25 @@ fn annotated_written(s: dyn Slots) -> Result<Built, string> {
     let callee = store.alloc_expr(Expr.Ident(scoped(word)), named_at)
     let _ = applied(store, word, args, s.built_at() ?? named_at)
     store
-        .annotate_before(d, Annotation { name: word, callee: callee, args: args, span: s.built_at() })
+        .annotate_before(
+            d,
+            Annotation {
+                name: word,
+                callee: callee,
+                args: args,
+                span: s.built_at(),
+                fills: fills_field(s, d, word),
+            },
+        )
     .Ok(Built.Stmt(d))
+}
+
+/// Whether the annotation `word` on `d` fills a `List` field of the component `d` instances.
+fn fills_field(s: dyn Slots, d: StmtId, word: string) -> bool {
+    let e? = s.arena().stmt_value(d) else { return false }
+    let inst? = s.arena().instance_parts(e) else { return false }
+    let w? = s.component_word(inst.word) else { return false }
+    w.form.filled().contains(word)
 }
 
 /// A MARK on a declared member: the word behind the `@`, each

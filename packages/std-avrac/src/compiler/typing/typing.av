@@ -22,7 +22,7 @@ use core.{
     mut_mark,
     Annotation,
 }
-use core.{SeatMark, FileId, same_type, example_marks}
+use core.{SeatMark, FileId, same_type}
 use diagnostics.{refusal}
 use features.{
     TypeCx,
@@ -189,16 +189,14 @@ impl TypeCx {
     /// a declaration's own context passes it by.
     mut fn type_annotations(s: StmtId) {
         for a in self.view.store.annotations_of(s) {
-            // A rule's `@fixes`/`@keeps` are recognised by NAME, like
-            // `@derive` — but unlike it, neither resolves to a
-            // declared fn at all, so the general call law never
-            // reaches them; `rule`'s own `check()` judges their
-            // presence. Their ARGS type separately, under MAIN's own
+            // An annotation that fills a component's field resolves to no
+            // declared fn, so the general call law never reaches it; the
+            // component's own `check()` judges what it filled. Its ARGS type separately, under MAIN's own
             // wide window (`type_example_args`) — they sit ABOVE the
             // declaration, same as the callee this door already
             // skips, so a declaration's own narrow window passes
             // them by too.
-            if !example_marks(a.name) && self.facts.owns(a.callee) {
+            if !a.fills && self.facts.owns(a.callee) {
                 self.walk_annotation(a)
                 check_annotation(self, s, a)
             }
@@ -210,7 +208,7 @@ impl TypeCx {
     /// their callee already reads from here.
     mut fn type_example_args(s: StmtId) {
         for a in self.view.store.annotations_of(s) {
-            if example_marks(a.name) { for e in a.args { let _ = self.walk_type(e) } }
+            if a.fills { for e in a.args { let _ = self.walk_type(e) } }
         }
     }
 

@@ -52,7 +52,7 @@ use @std.program.saved_query.{
 
 /// A component word as a parse needs it.
 @derive(Saved)
-export type WordShape = { word: string, declared: string, home: SourceFileAddress, own: bool, binds_name: bool }
+export type WordShape = { word: string, declared: string, home: SourceFileAddress, own: bool, binds_name: bool, fills: List<string> = [] }
 
 /// A named instance a body may list by its name alone, and the component it instances.
 @derive(Saved)
@@ -275,7 +275,7 @@ fn shaped_word(w: WordShape) -> ComponentWord {
     ComponentWord {
         word: w.word,
         declared: w.declared,
-        form: Instancing.Shaped(w.binds_name),
+        form: Instancing.Shaped(w.binds_name, w.fills),
         origin: template_home(w.home),
         own: w.own,
     }
@@ -377,9 +377,10 @@ fn worn_in_item(engine: QueryEngine, d: DeclaredName) -> NameWorn? {
 @derive(Saved)
 export type ItemImpl = { target: string, params: List<string>, methods: List<string>, statics: List<string>, implements: string?, target_in: string? = null, trait_in: string? = null }
 
-/// A component an item declares: its name, whether its instance binds a name, whether it's exported.
+/// A component an item declares: its name, whether its instance binds a name, the fields its
+/// instance's annotations fill, whether it's exported.
 @derive(Saved)
-type ItemComponent = { declared: string, binds_name: bool, exported: bool }
+type ItemComponent = { declared: string, binds_name: bool, fills: List<string> = [], exported: bool }
 
 /// A sublanguage an item exports: its word and its grammar's notation.
 @derive(Saved)
@@ -400,6 +401,7 @@ export fn item_about(store: SyntaxArena, stmts: List<StmtId>) -> Bytes {
         components: [ItemComponent {
             declared: w!.declared,
             binds_name: binds_name(w!),
+            fills: w!.form.filled(),
             exported: store.is_exported(s),
         } for s in stmts for w in [word_of(store, s, "")] if w != null],
         grammars: [ItemGrammar { word: g!.name, notation: g!.text } for s in stmts if store.is_exported(s) for g in [store.syntax_parts(s)] if g != null],
@@ -912,6 +914,7 @@ fn file_words(engine: QueryEngine, file: SourceFileAddress) -> FileWords {
                 home: file,
                 own: false,
                 binds_name: c.binds_name,
+                fills: c.fills,
             },
             exported: c.exported,
             item: a.id,

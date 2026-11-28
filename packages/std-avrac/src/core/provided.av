@@ -29,14 +29,27 @@ export type ComponentWord = { word: string, declared: string, form: Instancing, 
 /// module's, in the parse its form is read off: the instance parses
 /// as one and stands as a hole, with nothing said. SHAPED is a word known by its
 /// shape alone, as a tape's reading knows it: its instance parses as one, binding
-/// its name when its record has no head, and means once its component is at hand.
+/// its name when its record has no head, its annotations filling the `List` fields named
+/// in `fills`, and means once its component is at hand.
 export enum Instancing {
     Template(template: Template)
     Record(record: Record)
     Refused(why: string)
     Spoken
     Unread
-    Shaped(binds_name: bool)
+    Shaped(binds_name: bool, fills: List<string>)
+}
+
+impl Instancing {
+    /// The fields an instance's annotations fill, each named by the annotation's word: a record's
+    /// `List` fields, as a shape keeps them.
+    fn filled() -> List<string> {
+        match self {
+            .Record(r) -> [c.name for c in r.slots],
+            .Shaped(_, fills) -> fills,
+            .Template(_) or .Refused(_) or .Spoken or .Unread -> [],
+        }
+    }
 }
 
 /// A component with no `expand`: its instance is a literal of the

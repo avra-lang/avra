@@ -35,14 +35,14 @@ fn unread_marks(view: ItemView) -> List<Found> {
     let item = view.item
     let store = item.store
     if !store.refusals().all(lexed_past(it)) { return [] }
-    let claimed = compiler_marks()
-    let written = [unread_at(m.span, m.name, "", claimed) for s in item.stmts if claims_known(store, s) for m in store.marks_written(s) if !claimed.contains(m.name)]
+    let members = component_member_reads(view.engine)
+    let written = [unread_at(m.span, m.name, "", claimed) for s in item.stmts if claims_known(store, s) for claimed in [own_claims(store, s, members)] for m in store.marks_written(s) if !claimed.contains(m.name)]
     let derived = flatten(
-        [derived_unread(view.engine, view.file, store, s, claimed) for s in item.stmts if derived_alone(store, s)],
+        [derived_unread(view.engine, view.file, store, s, own_claims(store, s, members)) for s in item.stmts if derived_alone(store, s)],
     )
-    let own = [unread_at(a.span, a.name, "", claimed) for s in item.stmts if !declared_exported(view.engine, view.file, store, s) for a in marks_alone(view.engine, view.file, store, s) if !claimed.contains(a.name)]
+    let own = [unread_at(a.span, a.name, "", []) for s in item.stmts if !declared_exported(view.engine, view.file, store, s) for a in marks_alone(view.engine, view.file, store, s)]
     let gathered = flatten(
-        [members_unread(view.engine, view.file, c!.name, c!.kind, c!.scope, claimed) for s in item.stmts for c in [store.collect_enum_parts(s)] if c != null && store.annotations_of(s).is_empty()],
+        [members_unread(view.engine, view.file, c!.name, c!.kind, c!.scope, []) for s in item.stmts for c in [store.collect_enum_parts(s)] if c != null && store.annotations_of(s).is_empty()],
     )
     written.concat(derived).concat(own).concat(gathered)
 }
@@ -156,6 +156,16 @@ export fn declaration_traits(
     let worn = [TraitAt { file: d!.file, name: d!.name } for a in item.store.annotations_of(s) for d in [written_resolution(engine, file, Space.Value, a.name).named()] if d != null && d!.kind == ItemKind.Fn]
     let members = if item.store.component_parts(s) == null { [] } else { component_members_reader(engine) }
     derived_traits(engine, file, item, s).concat(worn).concat(gathering).concat(members)
+}
+
+/// The marks a component's members wear that `ComponentMembers` reads, by the words they are worn
+/// by.
+fn component_member_reads(engine: QueryEngine) -> List<string> { [d.name for t in component_members_reader(engine) for d in trait_reads(engine, t).read] }
+
+/// What the declaration `s` claims of its members' marks with no annotation to read them: a
+/// component's, what `ComponentMembers` reads; nothing elsewhere.
+fn own_claims(store: SyntaxArena, s: StmtId, members: List<string>) -> List<string> {
+    if store.component_parts(s) == null { [] } else { members }
 }
 
 /// `@std/meta`'s reader of every component's members, as a reader; none where the package is out of reach.
