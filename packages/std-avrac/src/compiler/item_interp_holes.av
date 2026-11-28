@@ -24,11 +24,14 @@ fn text_holes(t: TypedNodes, e: ExprId) -> List<ExprId> {
     if body_behavior(body.word) is .Text { body.holes } else { [] }
 }
 
-/// Whether a hole of type `ty` prints as no text: a type the language owns, never absent, that is no
-/// number, truth or text, or a declared type that is no name standing over one that prints. One
-/// that may be absent is left alone: a read narrowed past its absence prints.
+/// Whether a hole of type `ty` prints as no text: a type parameter, a type the language owns, never
+/// absent, that is no number, truth or text, or a declared type that is no name standing over one
+/// that prints. One that may be absent is left alone: a read narrowed past its absence prints.
 fn unprintable(engine: QueryEngine, ty: SignedType) -> bool {
-    if ty.dynamic || ty.generic() || ty.inferred() || ty.nulls > 0 { return false }
+    if ty.dynamic || ty.inferred() || ty.nulls > 0 { return false }
+    // a type parameter names no way to print what fills it
+    if ty.head is .Parameter { return true }
+    if ty.generic() { return false }
     if ty.head is .Declared {
         let shape? = named_over(engine, ty) else { return true }
         return unprintable(engine, shape)
