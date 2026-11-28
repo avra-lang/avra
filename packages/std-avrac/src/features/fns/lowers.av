@@ -47,6 +47,9 @@ impl Lowers for Call {
         if self.args.length == 2 && metas(cx, named, MARKED) { return marks_read(cx, e, self.args, MARK_MARKED_BY) }
         if self.args.length == 2 && metas(cx, named, WORN) { return worn_read(cx, e, self.args, WORN_BY) }
         if self.args.length == 2 && metas(cx, named, WORN_MARK) { return worn_read(cx, e, self.args, MARK_WORN_BY) }
+        if self.args.length == 2 && metas(cx, named, IMPLEMENTS) && names_a_trait(cx, self.args[1]) {
+            return implements_read(cx, e, self.args)
+        }
         if self.args.length == 1 && metas(cx, named, EMBED) { return embed_read(cx, e, named, self.args[0]) }
         if self.args.length == 1 && metas(cx, named, PROVIDED) { return provided_read(cx, e, self.args[0]) }
         if self.args.length == 1 && metas(cx, named, REHOMED) { return rehomed_value(cx, self.args[0]) }
@@ -158,6 +161,12 @@ const WORN_MARK: string = "worn_mark"
 /// `@std/meta`'s fn that answers `worn_mark`.
 const MARK_WORN_BY: string = "mark_worn_by"
 
+/// `@std/meta`'s fn whose answer is whether a named type implements a trait named as a value.
+const IMPLEMENTS: string = "implements"
+
+/// `@std/meta`'s fn that answers `implements`, handed the trait's identity.
+const IMPLEMENTS_BY: string = "implements_by"
+
 /// `@std/meta`'s fn whose fn value runs under the frame of contexts in force where it is called.
 const REHOMED: string = "rehomed"
 
@@ -261,6 +270,27 @@ fn worn_read(mut cx: Lowering, e: ExprId, args: List<ExprId>, answer: string) ->
             by,
             [cx.const_str(name), cx.const_str(key), cx.lower(cx.store.unnamed(args[1]))],
         )
+    cx.handed_back(mark)
+    r
+}
+
+/// Whether the argument `a` names a trait as a value.
+fn names_a_trait(cx: Lowering, a: ExprId) -> bool {
+    let target = cx.store.unnamed(a)
+    let name? = cx.store.ident_name(target) else { return false }
+    (cx.program.trait_key)(name, cx.store.home_of(target)) != null
+}
+
+/// `implements(name, Trait)`: `@std/meta`'s `implements_by` of the type's name and the trait's
+/// identity, so the trait is the declaration and never only a word.
+fn implements_read(mut cx: Lowering, e: ExprId, args: List<ExprId>) -> Reg {
+    let target = cx.store.unnamed(args[1])
+    let name? = cx.store.ident_name(target) else { return cx.missed_as(unmarked()) }
+    let key? = (cx.program.trait_key)(name, cx.store.home_of(target)) else { return cx.missed_as(unmarked()) }
+    let by? = (cx.program.toolchain_fn)(META_MODULE, IMPLEMENTS_BY) else { return cx.missed_as(unmarked()) }
+    let mark = cx.handing_mark()
+    let r = cx
+        .call_fn(cx.layout_at(e), by, [cx.lower(cx.store.unnamed(args[0])), cx.const_str(key)])
     cx.handed_back(mark)
     r
 }
