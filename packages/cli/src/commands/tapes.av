@@ -54,7 +54,15 @@ use @std.avrac.compiler.{
 }
 use @std.avrac.compiler.host.{Manifest, read_manifest}
 use @std.avrac.compiler.store.{machine_cache}
-use @std.avrac.diagnostics.{Diag, SourceFile, loc_at, new_source_file, render, rendered_among}
+use @std.avrac.diagnostics.{
+    Diag,
+    SourceFile,
+    loc_at,
+    new_source_file,
+    render,
+    render_among,
+    rendered_among,
+}
 use @std.avrac.compiler.hosts.{host_fn_owed_diag}
 use @std.avrac.core.{
     CalledFn,
@@ -636,10 +644,12 @@ fn warnings_said(disk: Disk, warned: List<FileWarned>) -> string {
 /// The warnings of one file the program reads, beside where it lies.
 type WarnedFile = { h: ProgramFile, findings: List<LawFinding> }
 
-/// The warnings of one file, rendered over its text.
+/// The warnings of one file, rendered over its text and the files they point into.
 fn file_warnings_said(w: WarnedFile) -> string {
-    let src = new_source_file(w.h.full, text_at(w.h.full) ?? "")
-    [render(d!, src) for f in w.findings for d in [finding_diag(f, w.h.full)] if d != null]
+    rendered_home(
+        [d! for f in w.findings for d in [finding_diag(f, w.h.full)] if d != null],
+        w.h.full,
+    )
         .join("\n\n")
 }
 
@@ -1646,15 +1656,16 @@ fn program_file(disk: Disk, f: SourceFileAddress) -> ProgramFile {
 /// What every law finds in the file `h`, item by item, then every rule that reads syntax alone, each rendered; absent for one whose law this
 /// compiler doesn't hold.
 fn file_findings(engine: QueryEngine, h: ProgramFile) -> List<string?> {
-    let src = new_source_file(h.full, text_at(h.full) ?? "")
-    [rendered_finding(finding_diag(f, h.full), src) for f in file_found(engine, h.file).findings]
-        .concat([render(d, src) for d in file_rule_findings(engine, h.file, src)])
+    let laws = [finding_diag(f, h.full) for f in file_found(engine, h.file).findings]
+    let sources = sources_framed([d! for d in laws if d != null], h.full)
+    [rendered_finding(d, sources) for d in laws]
+        .concat([render(d, sources[0]) for d in file_rule_findings(engine, h.file, sources[0])])
 }
 
-/// A finding's diagnostic rendered, absent with it.
-fn rendered_finding(d: Diag?, src: SourceFile) -> string? {
+/// A finding's diagnostic rendered over `sources`, absent with it.
+fn rendered_finding(d: Diag?, sources: List<SourceFile>) -> string? {
     let held? = d else { return null }
-    render(held, src)
+    render_among(held, sources)
 }
 
 /// Each law's witness written under `dir` as a package of its own, named by the law, for `check` and
