@@ -213,6 +213,7 @@ case "${1:-}" in
         # hermetic: the fixtures name their own PR_BODY, never the run's PR
         PR_NUMBER=; export PR_NUMBER
         d=$(mktemp -d)
+        trap 'find "$d" -delete' EXIT
         printf 'speed.cpu-cli 100\nspeed.compiler 50\n' > "$d/cur"
         printf 'speed.cpu-cli 40\nspeed.compiler 49\n' > "$d/base"
         [ "$(PR_BODY= GITHUB_STEP_SUMMARY=/dev/null sh "$0" compare "$d/cur" "$d/base" >/dev/null 2>&1; echo $?)" = 1 ] || { echo "speed_note: a 2.5x slowdown did not fail"; exit 1; }
