@@ -1,0 +1,19 @@
+//! proves: `sleep` on the host's clock parks the calling task and the others run — a host
+//! sleep and a task-clock sleep overlap, the shorter wakes first, and the block that holds
+//! them waits out the host's span
+use @std.time.{Clock, sleep, ms, now_ms}
+let heard: Cell<List<string>> = Cell.new([])
+let t0 = now_ms()
+if true {
+    let _host = spawn {
+        sleep(ms(60), clock: Clock.Host)
+        heard.set(heard.get().concat(["host"]))
+        0
+    }
+    let _task = spawn {
+        sleep(ms(10))
+        heard.set(heard.get().concat(["task"]))
+        0
+    }
+}
+"${heard.get().join(",")} ${now_ms() - t0 >= 60}"

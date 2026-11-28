@@ -23,6 +23,7 @@ extern fn avra_time_wall_s() -> int
 extern fn avra_time_wall_ns() -> int
 extern fn avra_time_host_ns() -> int
 extern fn avra_fiber_sleep(ms: int)
+extern fn avra_fiber_sleep_host(ms: int)
 extern fn avra_wait_until(at_ns: int, arm: int, member: int)
 extern fn avra_wait_park() -> int
 extern fn avra_trap(message: string)
@@ -108,11 +109,21 @@ export fn wall_secs() -> int {
     avra_time_wall_s()
 }
 
-/// The calling task parked for `d` while the others run; a program
-/// with none simply waits. Under a millisecond it lets every other
-/// ready task run once, then goes on.
-export fn sleep(d: Duration) {
-    avra_fiber_sleep(d.ms())
+/// Which clock a wait is counted on.
+export enum Clock {
+    /// The clock the program's tasks share, which a case may run
+    /// virtually: it moves only when every task waits.
+    Task
+    /// The host's clock, which no virtual clock moves: what a wait for
+    /// a process, a socket or a server keeps.
+    Host
+}
+
+/// The calling task parked for `d` on `clock` while the others run; a
+/// program with none simply waits. Under a millisecond it lets every
+/// other ready task run once, then goes on.
+export fn sleep(d: Duration, clock: Clock = Clock.Task) {
+    match clock { .Task -> avra_fiber_sleep(d.ms()), .Host -> avra_fiber_sleep_host(d.ms()) }
 }
 
 impl Duration {
