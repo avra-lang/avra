@@ -1,0 +1,64 @@
+// A value whose last reads stand in sibling arms moves at each: every arm owns it in turn, and an arm
+// that never reads it releases it at its close. A value an arm yields, or yields a view riding it, is
+// the enclosing scope's still.
+enum Shape {
+    Named(string)
+    Tagged(List<string>)
+    Plain
+}
+
+fn both(c: bool, n: int) -> int {
+    mut xs: List<string> = []
+    mut ys: List<string> = []
+    let v = "v${n}"
+    if c { xs.push(v) } else { ys.push(v) }
+    xs.length * 10 + ys.length
+}
+
+fn one(c: bool, n: int) -> int {
+    mut xs: List<string> = []
+    let v = "w${n}"
+    if c { xs.push(v) }
+    xs.length
+}
+
+fn nested(c: bool, d: bool, n: int) -> int {
+    mut xs: List<string> = []
+    mut ys: List<string> = []
+    let v = "u${n}"
+    if c {
+        if d { xs.push(v) } else { ys.push(v) }
+    } else {
+        ys.push(v)
+    }
+    xs.length * 10 + ys.length
+}
+
+fn read_after(c: bool, n: int) -> int {
+    mut xs: List<string> = []
+    let v = "t${n}"
+    if c { xs.push(v) }
+    xs.length + v.length
+}
+
+fn made(n: int) -> Shape {
+    if n % 3 == 0 { Shape.Named("n${n}") } else if n % 3 == 1 { Shape.Tagged(["t${n}", "u${n}"]) } else { Shape.Plain }
+}
+
+fn label(n: int) -> string {
+    let s = made(n)
+    match s { .Named(name) -> name, .Tagged(tags) -> tags[1], .Plain -> "plain" }
+}
+
+fn tags(n: int) -> List<string> {
+    let s = made(n)
+    match s { .Tagged(ts) -> ts, .Named(name) -> [name], .Plain -> [] }
+}
+
+let counts = [both(i % 2 == 0, i) +
+    one(i % 2 == 0, i) +
+    nested(i % 2 == 0, i % 3 == 0, i) +
+    read_after(i % 2 == 0, i) for i in 0..4]
+let labels = [label(i) for i in 0..6].join(" ")
+let taken = [tags(i).join("+") for i in 0..6].join(" ")
+"${counts.map("${it}").join(",")} | ${labels} | ${taken}"

@@ -246,8 +246,6 @@ fn memory_ins(
     mut floors: List<int> = []
     // each open region's HANDED yields: what its arms give the merge on the enclosing scope's count
     mut handing: List<List<Reg>> = []
-    // each open region's TAKEN values: what its arms own in turn, the enclosing scope having let go
-    mut taking: List<List<Reg>> = []
     // what moved on a path that leaves, owned again past that path's exit
     let parted: Cell<List<Parted>> = Cell.new([])
     let last = last_reads(layouts.length, ins)
@@ -264,6 +262,7 @@ fn memory_ins(
         twins: twins,
         viewed: viewed_regs(layouts, ins),
         death: death_points(twins, ins, last),
+        taking: Cell.new([]),
     }
     for at, raw in ins {
         let i = owned_form(twins, layouts, immortal, at, raw)
@@ -297,9 +296,9 @@ fn memory_ins(
             // the enclosing scope owns `dst`, the merge of both.
             .IfStart(_) or .SwitchStart(_, _) -> {
                 handing.push(life.handed_yields(open_scopes, at))
-                let took = life.arm_owned(open_scopes, at, taking.last() ?? [])
+                let took = life.arm_owned(open_scopes, at, life.taking.get().last() ?? [])
                 for r in took { disowns(open_scopes, r) }
-                taking.push(took)
+                life.taking.push(took)
                 // LICENSED compiler.bracket_ritual: a scope STACK walked by the pass, not a bracket body
                 open_scopes.push(nested_scope(open_scopes) with { managed: took })
                 out.push(i)
@@ -316,13 +315,14 @@ fn memory_ins(
                 // LICENSED loops.push_loop: the pass's OUTPUT accumulates
                 for s in arm_handed(layouts, scope, gives, handing.last() ?? []) { out.push(s) }
                 // LICENSED compiler.bracket_ritual: a scope STACK walked by the pass, not a bracket body
-                open_scopes.push(nested_scope(open_scopes) with { managed: taking.last() ?? [] })
+                open_scopes
+                    .push(nested_scope(open_scopes) with { managed: life.taking.get().last() ?? [] })
                 out.push(i)
             },
             .RegionEnd(_, gives) -> {
                 let scope = open_scopes.pop() ?? empty_scope()
                 let handed = handing.pop()
-                let _ = taking.pop()
+                life.taking.set(life.taking.get().take(life.taking.get().length - 1))
                 // LICENSED loops.push_loop: the pass's OUTPUT is written by one verb, `push`, at every site
                 for s in noted_all("a region's close", scope.settled(gives)) { out.push(s) }
                 // LICENSED loops.push_loop: the pass's OUTPUT accumulates
@@ -1435,6 +1435,8 @@ type Lives = {
     twins: List<bool>,
     viewed: List<bool>,
     death: List<int>,
+    // each open region's TAKEN values: what its arms own in turn, the enclosing scope having let go
+    taking: Cell<List<List<Reg>>>,
 }
 
 impl Lives {
@@ -1477,7 +1479,7 @@ impl Lives {
     }
 
     /// THE VALUES THE REGION OPENING AT `at` TAKES from the scope it opens in: each owned there once,
-    /// yielded by no arm, and read for the last time inside the region on every path through it. Each
+    /// yielded by no arm, itself or through a view, and read for the last time inside the region on every path through it. Each
     /// arm owns it in turn — it moves at its last read there, or its arm's close releases it — so every
     /// path settles one reference and none is retained. `inherited` is what the region whose arm it
     /// opens in took.
@@ -1489,7 +1491,14 @@ impl Lives {
         [r for r in top.managed if self.layouts[r.index].counted() &&
             self.ends_within(r, at, close, inherited.any(same_reg(it, r))) &&
             owned_once(open_scopes, r) &&
-            !gives.any(same_reg(it, r))]
+            !self.yields_ride(gives, r, close)]
+    }
+
+    /// Whether one of `gives` is `r` or a view riding it, taken before `close`: a yield that carries
+    /// the box past its arm.
+    fn yields_ride(gives: List<Reg>, r: Reg, close: int) -> bool {
+        let family = [r].concat(self.views(r, close))
+        gives.any((g: Reg) -> family.any(same_reg(it, g)))
     }
 
     /// Whether `r` is read inside the region from `at` to `close` and never past it: defined at the
@@ -1504,10 +1513,11 @@ impl Lives {
         dies > at && dies < close && level_span(self.ins, self.defs[r.index], at)
     }
 
-    /// Whether `r`, owned by the arm `at` stands in, is read there for the last time on that path:
-    /// read once at `at`, and unread from there to the arm's close.
+    /// Whether `r`, taken by an open region and owned by the arm `at` stands in, is read there for the
+    /// last time on that path: read once at `at`, and unread from there to the arm's close.
     fn dies_in_arm(open_scopes: Stack<Scope>, r: Reg, at: int) -> bool {
         owned_top(open_scopes, r) &&
+            self.taking.get().any((took: List<Reg>) -> took.any(same_reg(it, r))) &&
             [x for x in reads_of(self.ins[at]) if same_reg(x, r)].length == 1 &&
             self.arm_closes(self.path_end(r, at))
     }

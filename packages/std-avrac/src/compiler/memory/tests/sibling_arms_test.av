@@ -1,0 +1,95 @@
+// A value whose last reads stand in sibling arms of one region moves at each arm's read: the region
+// takes it from the scope it opens in, each arm owns it in turn, and an arm that never reads it
+// releases it at its close. A value an arm yields, or yields a view riding it, stays the scope's.
+use @std.avrac.core.{Ins}
+use @std.avrac.testing.{ir_of}
+use compiler.lower.{Body}
+
+/// A fn that files `held` into `out` or `aside` as `pushes` say, called once.
+fn filed(pushes: string) -> string {
+    "fn filed(names: List<string>, name: string, early: bool) -> int {\n" +
+        "    mut out = [n for n in names]\n" +
+        "    mut aside: List<string> = []\n" +
+        "    let held = name + \"!\"\n" +
+        "    ${pushes}\n" +
+        "    out.length + aside.length\n" +
+        "}\n" +
+        "filed([\"x\"], \"y\", true)\n"
+}
+
+/// A fn whose match yields its subject's payload.
+const YIELDED: string = "enum Shape {\n    Named(string)\n    Plain\n}\nfn label(n: int) -> string {\n    let s = if n > 0 { Shape.Named(\"n\${n}\") } else { Shape.Plain }\n    match s {\n        .Named(name) -> name,\n        .Plain -> \"plain\",\n    }\n}\nlabel(1)\n"
+
+/// `name`'s body in `source` as the memory pass leaves it.
+fn body_of(source: string, name: string) -> Body { ir_of(source).fns.find(it.name.ends_with(".${name}"))! }
+
+fn called(i: Ins, callee: string) -> bool {
+    match i { .CallRtVoid(c, _) -> c == callee, .CallRt(_, c, _) -> c == callee, _ -> false }
+}
+
+fn release_count(i: Ins) -> int { match i { .Release(rs) -> rs.length, _ -> 0 } }
+
+/// How many retains `ins` holds.
+fn retained(ins: List<Ins>) -> int { ins.filter(it is .Retain).length }
+
+/// Two arms, a push in each.
+fn two_arms() -> Body { body_of(filed("if early { out.push(held) } else { aside.push(held) }"), "filed") }
+
+/// Two arms, a push in the first alone.
+fn one_arm() -> Body { body_of(filed("if early { out.push(held) }"), "filed") }
+
+/// A push in each arm of a region standing in the first arm, and one in the second.
+fn nested_arms() -> Body {
+    body_of(
+        filed(
+            "if early {\n        if name == \"y\" { out.push(held) } else { aside.push(held) }\n    } else {\n        aside.push(held)\n    }",
+        ),
+        "filed",
+    )
+}
+
+/// `b`'s instructions strictly between its first `if` and its last region's close: where `filed`'s
+/// pushes stand, past the comprehension that makes `out`.
+fn branch(b: Body) -> List<Ins> {
+    let open = [k for k, i in b.ins if i is .IfStart].first() ?? 0
+    let close = [k for k, i in b.ins if i is .RegionEnd].last() ?? 0
+    [i for k, i in b.ins if k > open && k < close]
+}
+
+/// The registers `b` releases inside its last region: from its last opening to its last close.
+fn released_in_last_region(b: Body) -> int {
+    let open = [k for k, i in b.ins if i is .IfStart || i is .SwitchStart].last() ?? 0
+    let close = [k for k, i in b.ins if i is .RegionEnd].last() ?? 0
+    [release_count(i) for k, i in b.ins if k > open && k < close].fold(0, (n: int, c: int) -> n + c)
+}
+
+/// How many of `ins` call `callee`.
+fn calls_in(ins: List<Ins>, callee: string) -> int { ins.filter(called(it, callee)).length }
+
+spec "compiler/memory — a value moves in each sibling arm" {
+    given "a push in each of two arms" {
+        then "each push moves the value" {
+            calls_in(branch(two_arms()), "avra_array_push_moved") == 2 &&
+                calls_in(branch(two_arms()), "avra_array_push_owned") == 0
+        }
+    }
+    given "a push in one arm of two" {
+        then "the push moves the value, retaining nothing" {
+            calls_in(branch(one_arm()), "avra_array_push_moved") == 1 &&
+                calls_in(branch(one_arm()), "avra_array_push_owned") == 0 &&
+                retained(branch(one_arm())) == 0
+        }
+        then "and the arm that never reads it releases it" { released_in_last_region(one_arm()) == 1 }
+    }
+    given "a push in each arm of a region nested in an arm" {
+        then "every push moves the value" {
+            calls_in(branch(nested_arms()), "avra_array_push_moved") == 3 &&
+                calls_in(branch(nested_arms()), "avra_array_push_owned") == 0
+        }
+    }
+    given "a match whose arm yields its subject's payload" {
+        then "no arm releases the subject: it stands past the merge" {
+            released_in_last_region(body_of(YIELDED, "label")) == 0
+        }
+    }
+}
