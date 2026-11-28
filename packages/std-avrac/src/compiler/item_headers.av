@@ -2,17 +2,21 @@
 //! row names, read through the engine as a source's text is, and handed to clang on its stdin, so a
 //! header in a world that is not on a disk is read the same way as one that is. A system header
 //! (`<math.h>`) is clang's to find, read by an empty unit that includes it. What clang declares is
-//! read into canonical types (`c_decls`); a header clang refuses, or that no clang reads, is kept
-//! with why, never read as one that declares nothing.
+//! read into canonical types (`c_decls`) under the build target's data model; a header clang
+//! refuses, or that no clang reads, is kept with why, never read as one that declares nothing.
 //!
-//! A DUMP IS HELD BY EVERYTHING CLANG READ TO MAKE IT: the header's text (its argument), clang's
-//! own binary, and every header the unit includes, as clang names them (`-H`) — so an edit to a
-//! header three includes down, or another clang, reads the header again. An included header is read
-//! whole, so where its stamp cannot tell (a file written a moment ago) its text decides.
-use compiler.host.{CDecl, c_decls, lp64}
+//! ONE HEADER, ONE QUESTION, AND ONE INPUT PER FILE IT READ. Each header is its own question, so an
+//! edit re-reads only the header whose files moved. That question reads the header's text, clang
+//! (by its stamp and its version), the build target, and every header the unit includes — each its
+//! own input, held by its own stamp and answering its text, since an input is held by one stamp.
+//!
+//! THE DATA MODEL IS THE TARGET'S, AS CLANG SAYS IT: `long`'s width and `char`'s sign are read
+//! from clang's own definitions for the build's target (`-dM -E`), never from a table — wasm32's
+//! `long` is 32 bits and aarch64 Linux's `char` is unsigned.
+use compiler.host.{CDecl, DataModel, c_decls, lp64}
 use core.{flatten}
-use @std.meta.{derive}
 use @std.io.{read_text}
+use @std.meta.{derive}
 use @std.path.{dir_of, is_absolute, joined_path, normalized}
 use @std.process.{Exit, Tool, cmd, tool_from_env}
 use @std.program.address.{source_file}
@@ -20,15 +24,13 @@ use @std.program.query_engine.{QueryDefinition, QueryEngine, read_stamped}
 use @std.program.saved_derive.{Saved}
 use @std.program.saved_query.{ListedQuery, definitions_of, input, query, query_definition}
 use @std.program.source_facts.{package_lies, source_text}
+use @std.text.{parse_int}
 
-/// What reading one header found: clang's dump, or why there is none.
+/// What one header declares, or why it declares nothing to read.
 @derive(Saved)
-export enum HeaderRead {
-    Dumped(dump: string)
-    /// No file stands where the manifest says the header does.
-    Missing
-    /// Clang refused it, in its words.
-    Refused(why: string)
+export enum HeaderDecls {
+    Declared(decls: List<CDecl>)
+    Unread(why: string)
 }
 
 /// A header that declared nothing to read: its word as the manifest wrote it, and why.
@@ -43,40 +45,34 @@ export type PackageHeaders = { decls: List<CDecl>, unread: List<UnreadHeader> }
 /// them; a package naming no headers declares none.
 @query("laws")
 export fn package_headers(engine: QueryEngine, package: string) -> PackageHeaders {
-    let read = [Named { header: h, read: header_read(engine, package, h) } for h in manifest_judged(engine, package).headers]
+    let read = [Named { header: h, read: header_decls(engine, package, h) } for h in manifest_judged(engine, package).headers]
     PackageHeaders {
         decls: flatten([declared_in(n.read) for n in read]),
-        unread: [UnreadHeader { header: n.header, why: why_unread(n.read) } for n in read if !declares(n.read)],
+        unread: [UnreadHeader { header: n.header, why: w } for n in read for w in unread_why(n.read)],
     }
 }
 
 /// A header's word beside what reading it found.
-type Named = { header: string, read: HeaderRead }
+type Named = { header: string, read: HeaderDecls }
 
-/// What reading the header `word` of `package` finds: a path in the package read through the
-/// engine, or a system header clang finds itself.
-fn header_read(engine: QueryEngine, package: string, word: string) -> HeaderRead {
+/// What the header `word` of `package` declares under the build target: a path in the package read
+/// through the engine, or a system header clang finds itself.
+@query("laws")
+export fn header_decls(engine: QueryEngine, package: string, word: string) -> HeaderDecls {
     let root = package_lies(package) ?? ""
     let dirs = searched(root, manifest_judged(engine, package).include)
     if word.starts_with("<") {
-        return clang_dump(
+        return dumped(
             engine,
             "",
             root,
             dirs.concat(["-include", word.substring(1, word.length - 1)]),
+            word,
         )
     }
-    let text? = source_text(engine, source_file(package, word)) else { return HeaderRead.Missing }
+    let text? = source_text(engine, source_file(package, word)) else { return HeaderDecls.Unread("no file stands there") }
     let beside = if root.is_empty() { [] } else { ["-I", dir_of(joined_path(root, word))] }
-    named_as(clang_dump(engine, text, root, beside.concat(dirs)), word)
-}
-
-/// A read whose refusal names the header as the manifest does, where clang names its stdin.
-fn named_as(read: HeaderRead, word: string) -> HeaderRead {
-    match read {
-        .Refused(why) -> HeaderRead.Refused(why.replace("<stdin>", word)),
-        .Dumped(_) or .Missing -> read,
-    }
+    dumped(engine, text, root, beside.concat(dirs), word)
 }
 
 /// The `-I` flags for a package's `include` rows, each rooted at the package where it lies; none for
@@ -86,22 +82,36 @@ fn searched(root: string, include: List<string>) -> List<string> {
     flatten([["-I", joined_path(root, dir)] for dir in include])
 }
 
-/// Clang's dump of a unit whose text is `text`, read from `cwd` with `flags` before it: held by
-/// clang's own stamp and by each header the unit includes.
-@input("laws")
-fn clang_dump(engine: QueryEngine, text: string, cwd: string, flags: List<string>) -> HeaderRead {
-    let clang? = clang_tool() else { return HeaderRead.Refused("no clang is found") }
-    let ran = read_stamped(engine, clang.path, () -> clang_ran(clang, text, cwd, flags))
+/// What clang declares of a unit whose text is `text`, read from `cwd` with `flags` before it, under
+/// the build target; its refusal names the header `word` where clang names its stdin. Each header
+/// the unit includes is read as an input of its own.
+fn dumped(engine: QueryEngine, text: string, cwd: string, flags: List<string>, word: string) -> HeaderDecls {
+    if clang_seen(engine).is_empty() { return HeaderDecls.Unread("no clang is found") }
+    let clang? = clang_tool() else { return HeaderDecls.Unread("no clang is found") }
+    let ran = clang_ran(clang, text, cwd, targeted(build_target(engine)).concat(flags))
     for path in ran.included {
-        let at = included_at(cwd, path)
-        // LICENSED input.tool_run: a header clang included, read whole under its stamp so its text decides where the stamp cannot
-        let _ = read_stamped(engine, at, () -> read_text(at) catch "")
+        let _ = included_text(engine, included_at(cwd, path))
     }
-    ran.read
+    match ran.read {
+        .Dumped(dump) -> match c_decls(dump, target_model(engine)) {
+            .Ok(decls) -> HeaderDecls.Declared(decls),
+            .Err(why) -> HeaderDecls.Unread(why),
+        },
+        .Refused(why) -> HeaderDecls.Unread(why.replace("<stdin>", word)),
+    }
 }
 
-/// What one run of clang found: its dump or why there is none, and the headers it included.
-type ClangRun = { read: HeaderRead, included: List<string> }
+/// The flag that names the build's target to clang; none for the host's.
+fn targeted(target: string) -> List<string> {
+    if target.is_empty() { return [] }
+    ["--target=${target}"]
+}
+
+/// What a run of clang said: its dump, or its first error.
+enum ClangSaid { Dumped(dump: string), Refused(why: string) }
+
+/// What one run of clang found, and the headers it included.
+type ClangRun = { read: ClangSaid, included: List<string> }
 
 /// Clang run once over `text` on its stdin.
 fn clang_ran(clang: Tool, text: string, cwd: string, flags: List<string>) -> ClangRun {
@@ -109,21 +119,21 @@ fn clang_ran(clang: Tool, text: string, cwd: string, flags: List<string>) -> Cla
         .concat(flags)
         .concat(["-x", "c", "-"])
     let at: string? = if cwd.is_empty() { null } else { cwd }
-    // LICENSED input.tool_run: clang reads the header's text on its stdin, and each header it includes is held by its stamp
+    // LICENSED input.tool_run: clang reads the header's text on its stdin; every file it reads besides is an input of its own
     match (cmd(clang, args) with { stdin: .Text(text), cwd: at }).outcome() {
         .Ok(o) -> ClangRun {
             read: judged(o.exit, o.out.stdout, o.out.stderr),
             included: included_by(o.out.stderr),
         },
-        .Err(_) -> ClangRun { read: HeaderRead.Refused("clang did not run"), included: [] },
+        .Err(_) -> ClangRun { read: ClangSaid.Refused("clang did not run"), included: [] },
     }
 }
 
 /// A run's read: its dump where clang exited clean, else clang's first error in its words.
-fn judged(exit: Exit, dump: string, said: string) -> HeaderRead {
+fn judged(exit: Exit, dump: string, said: string) -> ClangSaid {
     match exit {
-        .Clean or .Code(0) -> HeaderRead.Dumped(dump),
-        .Code(_) or .Signal(_, _) -> HeaderRead.Refused(first_error(said)),
+        .Clean or .Code(0) -> ClangSaid.Dumped(dump),
+        .Code(_) or .Signal(_, _) -> ClangSaid.Refused(first_error(said)),
     }
 }
 
@@ -143,29 +153,81 @@ fn included_at(cwd: string, path: string) -> string {
     normalized(joined_path(cwd, path))
 }
 
+/// A header clang included, by its path on the host: its text, held by its stamp, so it decides
+/// where the stamp cannot.
+@input("laws")
+fn included_text(engine: QueryEngine, path: string) -> string {
+    // LICENSED input.tool_run: a header clang included, read whole under its stamp
+    read_stamped(engine, path, () -> read_text(path) catch "")
+}
+
+/// The clang a header is read with, as it says its version, held by the stamp of its binary; empty
+/// where none is found.
+@input("laws")
+fn clang_seen(engine: QueryEngine) -> string {
+    let clang? = clang_tool() else { return "" }
+    read_stamped(engine, clang.path, () -> clang_version(clang))
+}
+
+/// What `clang --version` says.
+fn clang_version(clang: Tool) -> string {
+    // LICENSED input.tool_run: clang's own version, read under the stamp of its binary
+    match cmd(clang, ["--version"]).outcome() { .Ok(o) -> o.out.stdout, .Err(_) -> "" }
+}
+
 /// The C compiler `CC` names, else `clang` on the PATH; none where neither stands.
 fn clang_tool() -> Tool? {
     // LICENSED input.tool_run: the C compiler a header is read with, found as the link finds its own
     match tool_from_env("CC", "clang") { .Ok(t) -> t, .Err(_) -> null }
 }
 
-/// What a read declares: a dump's functions, or none.
-fn declared_in(read: HeaderRead) -> List<CDecl> {
-    match read { .Dumped(dump) -> c_decls(dump, lp64()) catch [], .Missing or .Refused(_) -> [] }
-}
+/// The target a build of this process compiles for, as its triple; empty for the host's.
+once fn target_cell() -> Cell<string> { Cell.new("") }
 
-/// Whether a read is one a dump answers, so nothing is said of it.
-fn declares(read: HeaderRead) -> bool {
-    match read { .Dumped(dump) -> c_decls(dump, lp64()) is .Ok, .Missing or .Refused(_) -> false }
-}
+/// Sets the target this process builds for — empty for the host's — before its engine works.
+export fn use_build_target(triple: string) { target_cell().set(triple) }
 
-/// Why a read declares nothing.
-fn why_unread(read: HeaderRead) -> string {
-    match read {
-        .Dumped(_) -> "clang's dump could not be read",
-        .Missing -> "no file stands there",
-        .Refused(why) -> why,
+/// The build's target, as an input: a build for another target reads every header again.
+@input("laws")
+fn build_target(_engine: QueryEngine) -> string { target_cell().get() }
+
+/// The data model of the build's target, as clang defines it; LP64 where clang says nothing.
+@query("laws")
+fn target_model(engine: QueryEngine) -> DataModel {
+    if clang_seen(engine).is_empty() { return lp64() }
+    let clang? = clang_tool() else { return lp64() }
+    let args = targeted(build_target(engine)).concat(["-dM", "-E", "-x", "c", "-"])
+    // LICENSED input.tool_run: clang's own definitions for the target, read under its stamp
+    match (cmd(clang, args) with { stdin: .Text("") }).outcome() {
+        .Ok(o) -> modelled(o.out.stdout),
+        .Err(_) -> lp64(),
     }
+}
+
+/// A data model from clang's definitions: `__SIZEOF_LONG__` in octets, `__CHAR_UNSIGNED__` where
+/// a plain `char` has no sign.
+fn modelled(defined: string) -> DataModel {
+    let lines = defined.split("\n")
+    DataModel {
+        long_bits: long_octets(lines) * 8,
+        char_signed: !lines.any(it.starts_with("#define __CHAR_UNSIGNED__")),
+    }
+}
+
+/// The octets clang says a `long` holds, eight where it says none.
+fn long_octets(lines: List<string>) -> int {
+    let line? = lines.find(it.starts_with("#define __SIZEOF_LONG__ ")) else { return 8 }
+    parse_int(line.substring(24, line.length).trim()) ?? 8
+}
+
+/// What a header's read declares: its functions, or none.
+fn declared_in(read: HeaderDecls) -> List<CDecl> {
+    match read { .Declared(decls) -> decls, .Unread(_) -> [] }
+}
+
+/// Why a header's read declares nothing, as a list of none or one.
+fn unread_why(read: HeaderDecls) -> List<string> {
+    match read { .Declared(_) -> [], .Unread(why) -> [why] }
 }
 
 collect listed_header_facts: List<ListedQuery> = @query_definition in self as ListedQuery { definition: it } by it.name
