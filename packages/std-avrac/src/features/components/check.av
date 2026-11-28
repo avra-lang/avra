@@ -17,9 +17,18 @@ use core.{
     same_decl,
     some_list,
     user_kind,
+    same_type,
 }
-use features.{ResolveCx, TypeCx, type_named, nested_types}
-use core.{wears_component_mark, META_DEFAULT, expand_of}
+use features.{ResolveCx, TypeCx, FnSig, type_named, nested_types}
+use core.{
+    wears_component_mark,
+    META_DEFAULT,
+    expand_of,
+    ComponentVerb,
+    META_CHECKS,
+    META_EXPANDS,
+    META_DECLARES,
+}
 use @std.meta.{Diagnostic}
 use diagnostics.{Diag, Voice, refusal, said_as, warning, note}
 use @std.errors.{Loc, Frame}
@@ -93,6 +102,22 @@ fn default_law(mut cx: TypeCx, s: StmtId, c: ComponentParts) {
     }
 }
 
+/// The statement of the member of `c` that is the verb `v`.
+fn verb_stmt(cx: TypeCx, c: ComponentParts, v: ComponentVerb) -> StmtId? { c.fns.find((f: StmtId) -> cx.view.store.fn_parts(f)?.name == v.member) }
+
+/// Whether a member signed `sig` is the verb `v`: it answers what the member `v`'s trait declares
+/// answers, and takes what it takes.
+fn conforms(cx: TypeCx, sig: FnSig, v: ComponentVerb) -> bool {
+    let tr? = cx.view.decls.package_decl("@std.meta", v.of.name) else { return false }
+    let wanted? = cx
+        .view
+        .decls
+        .trait_fns(tr)
+        .find((m: DeclId) -> cx.view.decls.fn_name(m) == v.member) else { return false }
+    let want? = cx.view.decls.sig(wanted)?.fn_sig() else { return false }
+    same_type(sig.ret, want.ret) && sig.params.length == want.params.length
+}
+
 /// AN EVENT A COMPOSITION DECLARES IS FIRED OR HANDED ON: its body or one
 /// of its methods (a declaring statement reaches no child, so each
 /// method's body is a root of its own) reads `self.<event>` — to call it, or to pass it to a
@@ -102,7 +127,7 @@ fn default_law(mut cx: TypeCx, s: StmtId, c: ComponentParts) {
 /// with no body is fired from outside it.
 fn unfired_law(mut cx: TypeCx, s: StmtId, c: ComponentParts) {
     if cx.view.store.component_body(s) == null { return }
-    if c.fns.any((m: StmtId) -> cx.view.store.fn_parts(m)?.name == "expand") { return }
+    if expand_of(cx.view.store, c) != null { return }
     let stmts = [st for m in c.fns for st in cx.view.store.member_stmts(m)]
     let methods = [f.body for st in stmts for f in some_list(cx.view.store.fn_parts(st))]
     let roots = cx.view.store.stmts_exprs(stmts).concat(methods)
@@ -133,20 +158,19 @@ fn method_read(cx: TypeCx, e: ExprId) -> List<string> {
 /// A `check` takes nothing and answers `List<Diagnostic>` — what the
 /// compiler speaks at each instance.
 fn check_law(mut cx: TypeCx, c: ComponentParts) {
-    let m? = c.fns.find((f: StmtId) -> cx.view.store.fn_parts(f)?.name == "check") else { return }
+    let m? = verb_stmt(cx, c, META_CHECKS) else { return }
     let d? = cx.view.decls.decl_of(cx.view.file, m) else { return }
     let sig? = cx.view.decls.sig(d)?.fn_sig() else { return }
-    let elem: TypeId? = cx.view.types.element(sig.ret)
-    if sig.params.length <= 1 && elem != null && cx.view.decls.meta_type(elem!, "Diagnostic") { return }
+    if conforms(cx, sig, META_CHECKS) { return }
     cx.emit(no_diagnostics(cx.stmt_loc(m), cx.view.types.name_of(sig.ret)))
 }
 
 fn expand_law(mut cx: TypeCx, c: ComponentParts) {
-    let expand? = c.fns.find((m: StmtId) -> cx.view.store.fn_parts(m)?.name == "expand") else { return }
+    let expand? = verb_stmt(cx, c, META_EXPANDS) else { return }
     let d? = cx.view.decls.decl_of(cx.view.file, expand) else { return }
-    let answer? = cx.view.decls.sig(d)?.fn_sig()?.ret else { return }
-    if !cx.view.decls.meta_type(answer, "Code") && !cx.view.decls.meta_type(answer, "Decls") {
-        return cx.emit(no_code(cx.stmt_loc(expand), cx.view.types.name_of(answer)))
+    let sig? = cx.view.decls.sig(d)?.fn_sig() else { return }
+    if !conforms(cx, sig, META_EXPANDS) && !conforms(cx, sig, META_DECLARES) {
+        return cx.emit(no_code(cx.stmt_loc(expand), cx.view.types.name_of(sig.ret)))
     }
     let parts? = expand_of(cx.view.store, c) else { return }
     let body? = template_body(cx.view.store, parts) else { return }

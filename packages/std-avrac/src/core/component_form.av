@@ -58,7 +58,7 @@ export fn record_of(store: SyntaxArena, c: ComponentParts, components: List<stri
             default: wears_component_mark(p.marks, META_DEFAULT),
         } for p in fields if lists(p) && !p.state],
         named: fields.any(wears_component_mark(it.marks, META_NAMES)),
-        checks: member(store, c, "check") != null,
+        checks: component_verb(store, c, META_CHECKS) != null,
         fn_field: if arrow_fields.length == 1 { arrow_fields[0].name.text() } else { null },
         fn_optional: arrow_fields.length == 1 && answers_nullable(arrow_fields[0].ty),
         events: [Event {
@@ -90,10 +90,33 @@ fn lists(p: Param) -> bool {
     p.ty?.name == "List"
 }
 
-/// A component's `expand`, when it declares one.
-export fn expand_of(store: SyntaxArena, c: ComponentParts) -> FnParts? {
-    member(store, c, "expand")
+/// A verb a component declares as a member: the member `@std/meta`'s trait `of` declares as
+/// `member`, judged against that trait's signature.
+export type ComponentVerb = { of: Known, member: string }
+
+/// `@std/meta`'s `Checks.check`.
+export const META_CHECKS: ComponentVerb = ComponentVerb {
+    of: Known { package: "@std/meta", name: "Checks" },
+    member: "check",
 }
+
+/// `@std/meta`'s `Expands.expand`.
+export const META_EXPANDS: ComponentVerb = ComponentVerb {
+    of: Known { package: "@std/meta", name: "Expands" },
+    member: "expand",
+}
+
+/// `@std/meta`'s `Declares.expand`.
+export const META_DECLARES: ComponentVerb = ComponentVerb {
+    of: Known { package: "@std/meta", name: "Declares" },
+    member: "expand",
+}
+
+/// The member of `c` that is the verb `v`, when it declares one.
+export fn component_verb(store: SyntaxArena, c: ComponentParts, v: ComponentVerb) -> FnParts? { member(store, c, v.member) }
+
+/// A component's `expand`, when it declares one: the member `Expands` and `Declares` both name.
+export fn expand_of(store: SyntaxArena, c: ComponentParts) -> FnParts? { component_verb(store, c, META_EXPANDS) }
 
 /// A component's method of this name, when it declares one.
 export fn member(store: SyntaxArena, c: ComponentParts, name: string) -> FnParts? {

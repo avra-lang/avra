@@ -1,7 +1,20 @@
 //! WHERE A COMPONENT'S SHAPE BREAKS ITS CONTRACT WITH THE COMPILER: its `check` answering other than
 //! `@std/meta`'s `List<Diagnostic>`, or taking a seat; a head spelled `Format` that names another type
 //! than `@std/meta`'s pattern. Read off the component's signature and its `check`'s.
-use core.{ComponentParts, ExprId, SignedType, StmtId, SyntaxArena, flatten, some_list}
+use core.{
+    ComponentParts,
+    ExprId,
+    SignedType,
+    StmtId,
+    SyntaxArena,
+    flatten,
+    some_list,
+    ComponentVerb,
+    META_CHECKS,
+    STD_META,
+    TypeHead,
+    headed_type,
+}
 use compiler.laws.{Found, law}
 use diagnostics.{Voice}
 use features.components.{
@@ -16,12 +29,6 @@ use features.{row_unkeyed}
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryEngine}
 
-/// The fn a component writes that the compiler speaks at each instance.
-const CHECK: string = "check"
-
-/// What `@std/meta` names the type a component's `check` answers a list of, and a `Format` head is.
-const CHECK_ANSWERS: string = "Diagnostic"
-
 const FORMAT: string = "Format"
 
 /// Every component of the written item `view` shows whose `check` isn't shaped as one: where the
@@ -34,17 +41,27 @@ fn checks_unshaped(view: ItemView) -> List<Found> {
 
 /// The `check` among a component's `fns`, refused where it isn't shaped as one.
 fn check_found(engine: QueryEngine, store: SyntaxArena, a: ImplAt, fns: List<StmtId>) -> Found? {
-    let m? = fns.find((f: StmtId) -> store.fn_parts(f)?.name == CHECK) else { return null }
-    let sig? = method_signature(engine, a, CHECK) else { return null }
-    if sig.params.length <= 1 && diagnostics_answered(sig.answer) { return null }
+    let m? = fns.find((f: StmtId) -> store.fn_parts(f)?.name == META_CHECKS.member) else { return null }
+    let sig? = method_signature(engine, a, META_CHECKS.member) else { return null }
+    let want = verb_signature(engine, META_CHECKS)
+    if want != null &&
+        sig.params.length == want!.params.length &&
+        sig.answer.same_type(want!.answer) { return null }
     if sig.answer.inferred() || sig.answer.generic() || sig.answer.head is .Unnamed { return null }
     Found { at: store.stmt_span(m), args: [sig.answer.spelled()] }
 }
 
-/// Whether `ty` is a list of `@std/meta`'s `Diagnostic`s.
-fn diagnostics_answered(ty: SignedType) -> bool {
-    let element? = ty.listed() else { return false }
-    meta_named(element, CHECK_ANSWERS)
+/// The signature `@std/meta`'s trait declares for the verb `v`, its `Self` the trait's own; absent
+/// where `@std/meta` is out of reach.
+fn verb_signature(engine: QueryEngine, v: ComponentVerb) -> FnSignature? {
+    let d? = declarations_of(engine, STD_META.name, [], false, v.of.name)
+        .find(it.kind == ItemKind.Trait) else { return null }
+    trait_method_signature(
+        engine,
+        TraitAt { file: d.file, name: d.name },
+        v.member,
+        headed_type(TypeHead.Parameter(0, SELF)),
+    )
 }
 
 /// Every head spelled `Format` of a component the written item `view` shows declares that names
