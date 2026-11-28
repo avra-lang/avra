@@ -13,7 +13,7 @@
 //! An exit is a VERDICT, never a count: `run()` judges it by
 //! `ok_exits`, `outcome()` reads it. No verb here takes a command
 //! string, so there is no shell to inject.
-use @std.time.{Duration, host_ms, secs}
+use @std.time.{Duration, host_ms, now_ns, secs}
 use @std.errors.{Error, ErrorInfo, info}
 use @std.text.{nul_at}
 use @std.io.{env}
@@ -31,6 +31,11 @@ extern fn avra_proc_spawn(token: int, file: string, cwd: string, flags: int, fro
 extern fn avra_proc_fd(h: int, stream: int) -> int
 extern fn avra_proc_shut(h: int, stream: int) -> int
 extern fn avra_proc_ready(h: int, timeout_ms: int) -> int
+extern fn avra_proc_watched(h: int, which: int) -> int
+extern fn avra_proc_unheard(h: int) -> int
+extern fn avra_wait_fd(fd: int, writable: int, arm: int, member: int)
+extern fn avra_wait_until(at_ns: int, arm: int, member: int)
+extern fn avra_wait_park() -> int
 extern fn avra_proc_reap(h: int) -> int
 extern fn avra_proc_signal(h: int, sig: int, to_group: int) -> int
 extern fn avra_proc_pid(h: int) -> int
@@ -66,11 +71,14 @@ const ready_out: int = 1
 const ready_err: int = 2
 const ready_in: int = 4
 
-/// The pump's turn. Short enough that a deadline is not overshot by
-/// much, long enough that a quiet child is not spun on — and its size
-/// is not a correctness question, because the three invariants the
-/// pump holds are about ORDER (`pumped`).
+/// A SWEEP'S turn, and only a sweep's: one stage's wait cannot hear
+/// another stage, so a sweep over several waits a slice on one of them.
+/// A single stage's wait has no slice — it runs to its first event or
+/// its deadline (`left`).
 const turn_ms: int = 20
+/// How often a `Ready.Exec` probe is asked again: a probe's answer is
+/// no event a wait can hear, so asking it is paced by the clock.
+const probe_ms: int = 100
 
 /// The read's bite, the descriptor scratch's own size.
 const chunk: int = 1048576
@@ -755,8 +763,16 @@ impl Child {
     /// and the stage's landings are spent. Answers whether the child
     /// is gone AND both ends are at EOF, which is what every caller
     /// here asked the old event word.
-    fn pump(ms: int) -> bool {
-        let t = ticked(self.stage, ms)
+    fn pump(ms: int) -> bool { self.took(ticked(self.stage, ms)) }
+
+    /// The pump's turn for a CLEANUP: the wait held in the row, which no
+    /// `within` the cleanup writes may cut short of the child's end — a
+    /// cut between TERM and KILL leaves the child running.
+    fn pump_held(ms: int) -> bool { self.took(held(self.stage, ms)) }
+
+    /// A turn's landings joined to this child's text and spent; whether
+    /// the child is done.
+    fn took(t: Stage) -> bool {
         self.out = self.out + (t.out.bytes().text() ?? "")
         self.err = self.err + (t.err.bytes().text() ?? "")
         self.stage = t with { out: [], err: [] }
@@ -792,7 +808,7 @@ impl Child {
         let deadline = began + limit.ms()
         mut waited = 0
         while true {
-            let gone = self.pump(100)
+            let gone = self.pump(asked_within(ready, left(deadline)))
             if self.satisfied(ready) { return host_ms() - began }
             waited = host_ms() - began
             if gone && !(ready is .Exit) || host_ms() >= deadline {
@@ -842,7 +858,7 @@ impl Child {
                 self.out = self.out.substring(cut + 1, self.out.length)
                 return line
             }
-            if self.pump(50) {
+            if self.pump(left(deadline)) {
                 if self.out.length == 0 { return null }
                 let rest = self.out
                 self.out = ""
@@ -860,9 +876,10 @@ impl Child {
         errdefer stopped(self)
         let began = host_ms()
         let deadline = timeout_ms(limit)
+        let until = if deadline < 0 { deadline } else { began + deadline }
         mut gone = self.pump(0)
         while !gone && (deadline < 0 || host_ms() - began < deadline) {
-            gone = self.pump(100)
+            gone = self.pump(left(until))
         }
         if !gone {
             let partial = Output { stdout: self.out, stderr: self.err, truncated: true }
@@ -889,9 +906,9 @@ impl Child {
     /// Ticks until the child is reaped or `ms` pass.
     fn until_gone(ms: int) {
         let deadline = host_ms() + ms
-        let _ = self.pump(0)
+        let _ = self.pump_held(0)
         while avra_proc_reap(self.stage.h) == 0 && host_ms() < deadline {
-            let _ = self.pump(50)
+            let _ = self.pump_held(left(deadline))
         }
     }
 
@@ -1102,11 +1119,48 @@ fn graced(s: Stage, waited: bool, grace_ms: int) -> Stage {
 /// drain happened to land. Everything readable is swept here, once,
 /// before `stopped` can be answered; a caller only ever sees a gone
 /// child whose streams are dry.
-fn ticked(s: Stage, ms: int) -> Stage {
-    let ready = avra_proc_ready(s.h, ms)
+fn ticked(s: Stage, ms: int) -> Stage { turned(s, heard_within(s.h, ms)) }
+
+/// A turn whose wait holds the thread in the row: a cleanup's.
+fn held(s: Stage, ms: int) -> Stage { turned(s, avra_proc_ready(s.h, ms)) }
+
+/// What `ready` says is drawn and fed, then a reap.
+fn turned(s: Stage, ready: int) -> Stage {
     let after = fed_on(drawn(s, ready), ready)
     if avra_proc_reap(after.h) == 0 { return after }
     swept(after) with { stopped: true }
+}
+
+/// WHAT IS READY, heard within `ms` (-1: until something is). Asked at
+/// once; when nothing is, the task PARKS in the scheduler on the
+/// stage's watched descriptors and its deadline, so the wait ends at
+/// its first event and every other task runs while it lasts. A stage
+/// whose end no descriptor announces waits in the row, which bounds
+/// that wait itself.
+fn heard_within(h: int, ms: int) -> int {
+    let now = avra_proc_ready(h, 0)
+    if stirred(now) || ms == 0 { return now }
+    let fds = [avra_proc_watched(h, w) for w in 0..4]
+    if avra_proc_unheard(h) != 0 || fds.all(it < 0) { return avra_proc_ready(h, ms) }
+    parked_on(fds, ms)
+    avra_proc_ready(h, 0)
+}
+
+/// Whether a stream is ready — a child already gone stirs nothing, so
+/// its standing bit never ends a wait.
+fn stirred(ready: int) -> bool {
+    has_bit(ready, ready_out) || has_bit(ready, ready_err) || has_bit(ready, ready_in)
+}
+
+/// The task parked until a watched descriptor turns ready or `ms`
+/// pass. The claim is a hint — the caller asks the row again — and a
+/// cancel unwinds the park itself.
+fn parked_on(fds: List<int>, ms: int) {
+    for w in 0..4 {
+        if fds[w] >= 0 { avra_wait_fd(fds[w], if w == 0 { 1 } else { 0 }, 0, w) }
+    }
+    if ms > 0 { avra_wait_until(now_ns() + ms * 1000000, 1, 0) }
+    let _ = avra_wait_park()
 }
 
 fn drawn(s: Stage, ready: int) -> Stage {
@@ -1163,11 +1217,30 @@ fn pumped(start: Stage, grace_ms: int) -> Stage {
         if past(s) {
             s = heard(s) with { timed: true }
         } else {
-            s = ticked(s, turn_ms)
+            s = ticked(s, left(s.deadline))
         }
     }
     if s.timed || s.capped_out || s.capped_err { return stopped_tree(s) }
     grace(s, grace_ms)
+}
+
+/// THE WAIT OWED UNTIL `deadline`: to the first event when there is
+/// none (-1), nothing once it has passed. A wait's turns are its
+/// events, never its clock, so this is the only length a single
+/// stage's wait is given.
+fn left(deadline: int) -> int {
+    if deadline < 0 { return 0 - 1 }
+    let now = host_ms()
+    if now >= deadline { 0 } else { deadline - now }
+}
+
+/// A wait for a sign, as long as the sign lets it be: a probe is asked
+/// again every `probe_ms`, every other sign is an event the wait hears.
+fn asked_within(ready: Ready, ms: int) -> int {
+    match ready {
+        .Started or .Exit or .Line(_) -> ms,
+        .Exec(_) -> if ms < 0 || ms > probe_ms { probe_ms } else { ms },
+    }
 }
 
 /// Past its deadline, which is asked BEFORE any poll.
@@ -1204,7 +1277,7 @@ fn grace(s: Stage, grace_ms: int) -> Stage {
     // Both questions, in the order they answer: is there time left,
     // and is anyone left to use it.
     while host_ms() < until && still_held(g) {
-        g = swept(ticked(g, turn_ms))
+        g = swept(ticked(g, left(until)))
     }
     let last = swept(g)
     if avra_proc_fd(last.h, 1) < 0 && avra_proc_fd(last.h, 2) < 0 { return last }
