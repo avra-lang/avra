@@ -24,6 +24,7 @@ file=packages/cli/src/commands/cache.av
 cp "$file" "$tmp/orig.av"
 restore() { cp "$tmp/orig.av" "$file"; find "$tmp" -delete; }
 trap restore EXIT
+trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
 
 store=packages/cli/.avra-cache
 afresh() { find "$store" -mindepth 1 -delete 2>/dev/null || :; find "$AVRA_CACHE_DIR" -mindepth 1 -delete; }

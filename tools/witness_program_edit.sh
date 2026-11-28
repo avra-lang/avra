@@ -41,6 +41,13 @@ cd "$root"
 avra=${1:-build/avra-try}
 [ -x "$avra" ] || { echo "witness_program_edit: no compiler at $avra" >&2; exit 1; }
 tmp=$(mktemp -d)
+# every edited source is put back and the scratch removed however the run ends, a signal included
+restore() {
+    for p in "$tmp"/orig/*.path; do [ -e "$p" ] && cp "${p%.path}.av" "$(cat "$p")"; done
+    find "$tmp" -delete
+}
+trap restore EXIT
+trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
 export AVRA_CACHE_DIR="$tmp/machine"
 export AVRA_PROGRAM=1
 # the stores are copied, emptied and read between builds, so each build saves its own before it answers
@@ -63,11 +70,6 @@ packages/cli/src/commands/cache.av|    let shared? = machine_layer() else { retu
 packages/cli/src/commands/cache.av|            "packs ${before.length} → ${after.length} · bytes ${octets_of(before)} → ${octets_of(after)} · ${distinct([p.print for p in after]).length} compiler(s) kept"|            "packs ${before.length} → ${after.length} · ${distinct([p.print for p in after]).length} compiler(s) kept"
 packages/cli/src/commands/cache.av|fn octets_of(packs: List<PackListed>) -> int { packs.fold(0, (sum, p) -> sum + p.octets) }|fn cycle_a(n: int) -> int { if n > 0 { cycle_b(n - 1) } else { 0 } }\n\nfn cycle_b(n: int) -> int { if n > 0 { cycle_a(n - 1) } else { 0 } }\n\nfn octets_of(packs: List<PackListed>) -> int { packs.fold(cycle_a(2), (sum, p) -> sum + p.octets) }'
 
-restore() {
-    for p in "$tmp"/orig/*.path; do [ -e "$p" ] && cp "${p%.path}.av" "$(cat "$p")"; done
-    find "$tmp" -delete
-}
-trap restore EXIT
 mkdir -p "$tmp/orig"
 
 # The embedded file's edit, over a package of its own.
