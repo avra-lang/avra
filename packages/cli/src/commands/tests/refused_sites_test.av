@@ -1,0 +1,19 @@
+// A new site is listed as `file\t[rule]\ttext` with every control character shown as its escape,
+// and a finding that names no rule is the maker's defect, never a site.
+use @std.avrac.compiler.{Finding}
+use @std.text.{from_codepoint}
+use commands.{ruleless_finding, site_lines, visible}
+
+spec "check (the refused sites)" {
+    then "a site lists its file, its rule and its text" {
+        site_lines([Finding { rule: "r.x", file: "a.av", text: "fn f()" }])[1] == "  a.av\t[r.x]\tfn f()"
+    }
+    then "a control character in a path prints as its escape" {
+        visible("a${from_codepoint(13)}b${from_codepoint(27)}") == "a\\u{d}b\\u{1b}" &&
+            visible("plain") == "plain"
+    }
+    then "a finding with no rule is said as a defect, naming its place" {
+        ruleless_finding(Finding { rule: "", file: "a.av", text: "fn f()" })
+            .contains("a finding at a.av carries no rule")
+    }
+}

@@ -10,7 +10,7 @@ use @std.path.{dir_of, joined_path, relative_path, under_dir}
 use @std.avrac.compiler.host.{no_manifest, no_source}
 use @std.avrac.diagnostics.{render_among}
 use @std.program.sorted.{sorted_by}
-use @std.text.{text_before}
+use @std.text.{codepoints, from_codepoints, hex_digit, text_before}
 
 use @std.avrac.compiler.{Finding}
 
@@ -96,9 +96,41 @@ fn joined_lines(lines: List<string>) -> string {
 /// A new site is a REFUSAL, the same shape `make idioms` always gave:
 /// named, with what it names, never silently absorbed.
 fn refused_sites(bad: List<Finding>) -> int {
-    println("idioms: ${bad.length} NEW violation(s) — the baseline never grows:")
-    for s in bad { println("  ${s.file}\t[${s.rule}]\t${s.text}") }
+    let ruleless = bad.filter(it.rule == "")
+    if !ruleless.is_empty() {
+        for s in ruleless { eprintln(ruleless_finding(s)) }
+        return 2
+    }
+    for line in site_lines(bad) { println(line) }
     1
+}
+
+/// The refusal's lines: its count, then each new site as `file\t[rule]\ttext`, every control
+/// character in a field shown as its escape so no byte of a path or a line moves the cursor.
+export fn site_lines(bad: List<Finding>) -> List<string> {
+    ["idioms: ${bad.length} NEW violation(s) — the baseline never grows:"]
+        .concat(bad.map("  ${visible(it.file)}\t[${visible(it.rule)}]\t${visible(it.text)}"))
+}
+
+/// `s` with each control character written as its escape (`\u{d}`), the rest as it stands.
+export fn visible(s: string) -> string {
+    if !(0..s.length).any((i) -> control(s.char_code(i))) { return s }
+    from_codepoints(
+        flatten_ints(
+            codepoints(s).map((c) -> if control(c) { codepoints("\\u{${hex_of(c)}}") } else { [c] }),
+        ),
+    )
+}
+
+fn control(c: int) -> bool { c < 32 || c == 127 }
+
+fn hex_of(n: int) -> string { if n < 16 { hex_digit(n) } else { "${hex_of(n / 16)}${hex_digit(n % 16)}" } }
+
+fn flatten_ints(xss: List<List<int>>) -> List<int> { xss.fold([], (acc, xs) -> acc.concat(xs)) }
+
+/// A finding that names no rule: the maker's defect, never a site to list.
+export fn ruleless_finding(s: Finding) -> string {
+    "avra: a finding at ${visible(s.file)} carries no rule (`${visible(s.text)}`) — the finding's maker dropped its kind, a defect in the compiler"
 }
 
 export flag read_lists {
