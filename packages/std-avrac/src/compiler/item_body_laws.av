@@ -809,17 +809,21 @@ fn write_breach(store: SyntaxArena, typing: ItemTyping, s: StmtId) -> BreachAt? 
     BreachAt { at: kept_at(store.stmt_span(s)), breach: Breach.Overwritten }
 }
 
-/// What the lambda `l` breaks where it isn't a task's own body, which is joined where its task is: a
-/// task it captures, the first its body reads, then one its body answers.
+/// What the lambda `l` breaks: a task it captures, the first its body reads, where it isn't a task's
+/// own body, which is joined where its task is; then one its body answers, which leaves the block
+/// that made it whoever runs the body.
 fn lambda_breaches(engine: QueryEngine, store: SyntaxArena, typing: ItemTyping, l: ExprId) -> List<
     BreachAt,
 > {
-    if spawned_body(store, l) { return [] }
     let body? = store.lambda_parts(l)?.body else { return [] }
-    let captured = [BreachAt {
-        at: kept_at(store.expr_span(l)),
-        breach: Breach.Escaping(captured_label(capture_named(r.name))),
-    } for r in some_list(task_capture(engine, typing, l))]
+    let captured = if spawned_body(store, l) {
+        []
+    } else {
+        [BreachAt {
+            at: kept_at(store.expr_span(l)),
+            breach: Breach.Escaping(captured_label(capture_named(r.name))),
+        } for r in some_list(task_capture(engine, typing, l))]
+    }
     let answer = typing.type_at(l)?.answer
     let answered = [BreachAt {
         at: kept_at(store.expr_span(body)),
