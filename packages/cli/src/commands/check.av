@@ -4,13 +4,15 @@
 //! `--baseline <file>` turns the rule findings (warnings) into a ratchet:
 //! a site the file does not list refuses the check, and `--baseline_accept`
 //! prunes it down to sites still found — never grows it (idiom_baseline.av).
-use @std.cli.{CliResult, Runnable, command, flag, option}
+use @std.cli.{CliResult, Runnable, argv, command, flag, option}
+use @std.process.{Stdin, Streams, cmd, inherited, status_of, this_program}
 use @std.io.{write_text}
 use @std.path.{dir_of, joined_path, relative_path, under_dir}
 use @std.avrac.compiler.host.{no_manifest, no_source}
 use @std.avrac.diagnostics.{render_among}
 use @std.program.sorted.{sorted_by}
-use @std.text.{text_before}
+use @std.program.worked_ahead.{Deal}
+use @std.text.{parse_int, text_before}
 
 use @std.avrac.compiler.{Finding}
 
@@ -18,6 +20,8 @@ type CheckCmd = {}
 
 impl Runnable for CheckCmd {
     fn run(args: CliResult) -> int {
+        let seed = args.option("hash_seed")
+        if !seed.is_empty() { return seeded_again(seed) }
         let path? = slotted_path(args) else { return 2 }
         program_door_checked(args, path)
     }
@@ -35,6 +39,7 @@ fn program_door_checked(args: CliResult, path: string) -> int {
         }
         if !is_a_dir(joined_path(dir, "src")) { return root_programs_checked(args, dir) }
     }
+    let deal? = deal_named(args.option("deal")) else { return deal_unnamed(args.option("deal")) }
     let disk? = checked_disk(path) else { return std_unfound() }
     disk_checked(
         disk,
@@ -44,6 +49,7 @@ fn program_door_checked(args: CliResult, path: string) -> int {
         args.has_flag("counts"),
         args.has_flag("read_lists"),
         if args.has_flag("passes_shown") { if args.has_flag("passes_rows") { LedgerSaid.Rows } else { LedgerSaid.Table } } else { LedgerSaid.Unsaid },
+        deal,
     )
 }
 
@@ -112,11 +118,54 @@ export flag baseline_accept {
 export option baseline {
     description: "an idiom baseline file: refuse any rule finding it does not already list"
 }
+export option deal {
+    description: "the order a forked check deals its files to its processes: `listed` (the default) or `reversed` — what it finds and keeps is the same either way"
+}
+
+export option hash_seed {
+    description: "the hash seed a check runs under, so a run's map hashing is replayed: the check runs again, the seed handed down as the runtime takes it before any map exists"
+    aliases: ["--hash-seed"]
+}
+
+/// This check run again by this program under the hash seed `seed`, its words but the seed's: the
+/// runtime reads its seed once, as the process starts, so a seed named later is handed down.
+fn seeded_again(seed: string) -> int {
+    if (parse_int(seed) ?? -1) < 0 { return seed_unnamed(seed) }
+    let words = argv()
+    let again = cmd(this_program(), [words[at] for at in 0..words.length if !seed_word(words, at)]) with { env: inherited().with_var("AVRA_HASH_SEED", seed), streams: Streams.Inherited, stdin: Stdin.Inherit, own_group: false }
+    match again.outcome() { .Ok(o) -> status_of(o.exit), .Err(e) -> refused_by_host(e) }
+}
+
+/// Whether the word at `at` of `words` names the hash seed or is its value.
+fn seed_word(words: List<string>, at: int) -> bool {
+    words[at] == "--hash-seed" ||
+        words[at] == "--hash_seed" ||
+        words[at].starts_with("--hash-seed=") ||
+        words[at].starts_with("--hash_seed=") ||
+        at > 0 && (words[at - 1] == "--hash-seed" || words[at - 1] == "--hash_seed")
+}
+
+/// `--hash-seed` naming no number: exit 2, nothing checked.
+fn seed_unnamed(seed: string) -> int {
+    eprintln("avra: `--hash-seed` is a whole number, not `${seed}`")
+    2
+}
+
+/// The deal `--deal` names: listed where it names none; absent where it names no deal.
+fn deal_named(word: string) -> Deal? {
+    match word { "" or "listed" -> Deal.Listed, "reversed" -> Deal.Reversed, _ -> null }
+}
+
+/// `--deal` naming no deal: exit 2, nothing checked.
+fn deal_unnamed(word: string) -> int {
+    eprintln("avra: `--deal` is `listed` or `reversed`, not `${word}`")
+    2
+}
 
 export command check {
     description: "Report everything wrong with a source file or a package root"
     flags: [time, counts, passes_shown, passes_rows, read_lists, baseline_accept]
-    options: [baseline]
+    options: [baseline, deal, hash_seed]
     args: [file]
     run: CheckCmd {}
 }
