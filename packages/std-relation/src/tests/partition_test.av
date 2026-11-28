@@ -2,8 +2,8 @@
 // M5b's arena/column relations use. No lookups land in this slice.
 // `marked_field`/`refusals` are this module's own — relation_adversarial_test.av
 // declares them, `tests/` being one namespace.
-use @std.meta.{Type, Field, Annotation, Variant, worn}
-use @std.relation.{arena, side}
+use @std.meta.{Type, Field, Annotation, Variant, worn, worn_mark}
+use @std.relation.{arena, side, key as key_mark, unique as unique_mark, index as index_mark}
 
 fn partitioned(mode: Annotation, fields: List<Field>) -> Type {
     Type {
@@ -30,9 +30,13 @@ spec "a partitioned relation (@arena/@side)" {
         }
     }
     given "a lookup mark, not yet landed over a partition" {
-        then "@key is refused" { refusals(partitioned(worn(arena, []), [marked_field("k", ["key"])])) == "partition_lookup_unsupported" }
-        then "@unique is refused" { refusals(partitioned(worn(arena, []), [marked_field("k", ["unique"])])) == "partition_lookup_unsupported" }
-        then "@index is refused" { refusals(partitioned(worn(side, []), [marked_field("k", ["index"])])) == "partition_lookup_unsupported" }
+        then "@key is refused" { refusals(partitioned(worn(arena, []), [marked_field("k", [worn_mark(key_mark, [])])])) == "partition_lookup_unsupported" }
+        then "@unique is refused" {
+            refusals(
+                partitioned(worn(arena, []), [marked_field("k", [worn_mark(unique_mark, [])])]),
+            ) == "partition_lookup_unsupported"
+        }
+        then "@index is refused" { refusals(partitioned(worn(side, []), [marked_field("k", [worn_mark(index_mark, [])])])) == "partition_lookup_unsupported" }
     }
     given "an enum — a tagged node's own arena, dense storage over its value" {
         then "arena is sound over an enum: a slot reads the value, never a field" {

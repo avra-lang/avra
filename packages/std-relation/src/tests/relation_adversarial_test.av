@@ -4,16 +4,11 @@ use @std.relation.{relation_problems, problems_under, NamedShape}
 use tests.twins_a.{a_name, a_hash}
 use tests.twins_b.{b_name, b_hash}
 use @std.relation.stable.{reader}
-use @std.meta.{Type, Field, Kind, Mark}
+use @std.meta.{Type, Field, Kind, Mark, worn_mark}
+use @std.relation.{key as key_mark, unique as unique_mark, index as index_mark, local as local_mark}
 
-fn marked_field(name: string, marks: List<string>) -> Field {
-    Field {
-        name: name,
-        ty: "int",
-        at: null,
-        kind: Kind.Int,
-        marks: [Mark { name: m, args: [], at: null } for m in marks],
-    }
+fn marked_field(name: string, marks: List<Mark>) -> Field {
+    Field { name: name, ty: "int", at: null, kind: Kind.Int, marks: marks }
 }
 
 fn one_row(fields: List<Field>) -> Type {
@@ -33,14 +28,8 @@ fn refusals(t: Type) -> string {
 }
 
 /// A field of kind `k` spelled `ty`, wearing `marks`.
-fn kinded(name: string, ty: string, k: Kind, marks: List<string>) -> Field {
-    Field {
-        name: name,
-        ty: ty,
-        at: null,
-        kind: k,
-        marks: [Mark { name: m, args: [], at: null } for m in marks],
-    }
+fn kinded(name: string, ty: string, k: Kind, marks: List<Mark>) -> Field {
+    Field { name: name, ty: ty, at: null, kind: k, marks: marks }
 }
 
 /// The shapes a declaration table would answer: `NodeId` a dense id,
@@ -54,7 +43,7 @@ fn shapes(n: string) -> NamedShape {
         "Kept" -> NamedShape
             .Record(
                 [
-                    kinded("at", "NodeId", Kind.Named("NodeId", []), ["local"]),
+                    kinded("at", "NodeId", Kind.Named("NodeId", []), [worn_mark(local_mark, [])]),
                     kinded("n", "int", Kind.Int, []),
                 ],
             ),
@@ -62,7 +51,7 @@ fn shapes(n: string) -> NamedShape {
     }
 }
 
-fn id_field(marks: List<string>) -> Field { kinded("at", "NodeId", Kind.Named("NodeId", []), marks) }
+fn id_field(marks: List<Mark>) -> Field { kinded("at", "NodeId", Kind.Named("NodeId", []), marks) }
 
 fn shaped(fields: List<Field>) -> string {
     [d.kind ?? "?" for d in problems_under(one_row(fields), shapes)].join(",")
@@ -99,23 +88,42 @@ spec "std/relation — adversarial" {
             refusals(one_row([Field { name: "rows_in", ty: "int", at: null, kind: Kind.Int }])) == "name_collision"
         }
         then "a field named `key` is free while no field wears `@key`" {
-            refusals(one_row([marked_field("key", ["index"])])) == ""
+            refusals(one_row([marked_field("key", [worn_mark(index_mark, [])])])) == ""
         }
         then "a field named `key` collides with `key()` once another field wears `@key`" {
-            refusals(one_row([marked_field("handle", ["key"]), marked_field("key", [])])) == "name_collision"
+            refusals(
+                one_row(
+                    [marked_field("handle", [worn_mark(key_mark, [])]), marked_field("key", [])],
+                ),
+            ) == "name_collision"
         }
         then "a `key` lookup beside a `@key` field wears `by_key` twice, and speaks once" {
-            refusals(one_row([marked_field("handle", ["key"]), marked_field("key", ["unique"])])) == "lookup_collision"
+            refusals(
+                one_row(
+                    [
+                        marked_field("handle", [worn_mark(key_mark, [])]),
+                        marked_field("key", [worn_mark(unique_mark, [])]),
+                    ],
+                ),
+            ) == "lookup_collision"
         }
         then "a field named after another field's lookup collides with it" {
-            refusals(one_row([marked_field("ann", ["unique"]), marked_field("by_ann", [])])) == "name_collision"
+            refusals(
+                one_row(
+                    [marked_field("ann", [worn_mark(unique_mark, [])]), marked_field("by_ann", [])],
+                ),
+            ) == "name_collision"
         }
         then "a field named `db` collides with `insert`'s own Db seat" {
             refusals(one_row([marked_field("db", [])])) == "seat_collision"
         }
         then "a field named `by_key` collides only when a key exists" {
             refusals(one_row([marked_field("by_key", [])])) == "" &&
-                refusals(one_row([marked_field("a", ["key"]), marked_field("by_key", [])])) == "name_collision"
+                refusals(
+                    one_row(
+                        [marked_field("a", [worn_mark(key_mark, [])]), marked_field("by_key", [])],
+                    ),
+                ) == "name_collision"
         }
     }
     given "dense ids and tagged enums (decision 10)" {
@@ -125,7 +133,8 @@ spec "std/relation — adversarial" {
                 shaped([kinded("kids", "List<NodeId>", Kind.List(Kind.Named("NodeId", [])), [])]) == "dense_unmarked"
         }
         then "a dense id marked `@local` is accepted, and may be indexed" {
-            shaped([id_field(["local"])]) == "" && shaped([id_field(["local", "index"])]) == ""
+            shaped([id_field([worn_mark(local_mark, [])])]) == "" &&
+                shaped([id_field([worn_mark(local_mark, []), worn_mark(index_mark, [])])]) == ""
         }
         then "a `@dense` type may be the row's own `id`; any other named type may not" {
             shaped([kinded("id", "NodeId", Kind.Named("NodeId", []), [])]) == "" &&
@@ -134,43 +143,88 @@ spec "std/relation — adversarial" {
         then "`@index` takes `ordered` and `grain`; any other argument, or one on another mark, is refused" {
             shaped(
                     [
-                        kinded("f", "int", Kind.Int, ["index"]) with { marks: [Mark { name: "index", args: ["ordered", "grain"], at: null }] },
+                        kinded("f", "int", Kind.Int, [worn_mark(index_mark, [])]) with { marks: [worn_mark(index_mark, ["ordered", "grain"])] },
                     ],
                 ) == "" &&
                 shaped(
                     [
-                        kinded("f", "int", Kind.Int, []) with { marks: [Mark { name: "index", args: ["sorted"], at: null }] },
+                        kinded("f", "int", Kind.Int, []) with { marks: [worn_mark(index_mark, ["sorted"])] },
                     ],
                 ) == "mark_args" &&
                 shaped(
                     [
-                        kinded("f", "int", Kind.Int, []) with { marks: [Mark { name: "key", args: ["ordered"], at: null }] },
+                        kinded("f", "int", Kind.Int, []) with { marks: [worn_mark(key_mark, ["ordered"])] },
                     ],
                 ) == "mark_args"
         }
         then "a list `@index` files by its element; a list key, unique or grain is refused" {
-            shaped([kinded("tags", "List<string>", Kind.List(Kind.Str), ["index"])]) == "" &&
-                shaped([kinded("tags", "List<string>", Kind.List(Kind.Str), ["unique"])]) == "many_valued" &&
-                shaped([kinded("tags", "List<string>", Kind.List(Kind.Str), ["key"])]) == "many_valued" &&
+            shaped(
+                    [
+                        kinded(
+                            "tags",
+                            "List<string>",
+                            Kind.List(Kind.Str),
+                            [worn_mark(index_mark, [])],
+                        ),
+                    ],
+                ) == "" &&
                 shaped(
                     [
-                        kinded("tags", "List<string>", Kind.List(Kind.Str), []) with { marks: [Mark { name: "index", args: ["grain"], at: null }] },
+                        kinded(
+                            "tags",
+                            "List<string>",
+                            Kind.List(Kind.Str),
+                            [worn_mark(unique_mark, [])],
+                        ),
+                    ],
+                ) == "many_valued" &&
+                shaped(
+                    [
+                        kinded(
+                            "tags",
+                            "List<string>",
+                            Kind.List(Kind.Str),
+                            [worn_mark(key_mark, [])],
+                        ),
+                    ],
+                ) == "many_valued" &&
+                shaped(
+                    [
+                        kinded("tags", "List<string>", Kind.List(Kind.Str), []) with { marks: [worn_mark(index_mark, ["grain"])] },
                     ],
                 ) == "many_valued"
         }
         then "a second `@index(grain)` is refused — `get` records through one bucket" {
             shaped(
                 [
-                    kinded("f", "int", Kind.Int, []) with { marks: [Mark { name: "index", args: ["grain"], at: null }] },
-                    kinded("g", "int", Kind.Int, []) with { marks: [Mark { name: "index", args: ["grain"], at: null }] },
+                    kinded("f", "int", Kind.Int, []) with { marks: [worn_mark(index_mark, ["grain"])] },
+                    kinded("g", "int", Kind.Int, []) with { marks: [worn_mark(index_mark, ["grain"])] },
                 ],
             ) == "grain_twice"
         }
         then "`@key` with `@local` is refused — a key is the stable name" {
-            shaped([kinded("n", "int", Kind.Int, ["key", "local"])]) == "key_local"
+            shaped(
+                [
+                    kinded(
+                        "n",
+                        "int",
+                        Kind.Int,
+                        [worn_mark(key_mark, []), worn_mark(local_mark, [])],
+                    ),
+                ],
+            ) == "key_local"
         }
         then "a tagged enum is carried, and files in a lookup" {
-            shaped([kinded("shade", "Shade", Kind.Named("Shade", []), ["index"])]) == "" &&
+            shaped(
+                    [
+                        kinded(
+                            "shade",
+                            "Shade",
+                            Kind.Named("Shade", []),
+                            [worn_mark(index_mark, [])],
+                        ),
+                    ],
+                ) == "" &&
                 shaped([kinded("shades", "List<Shade>", Kind.List(Kind.Named("Shade", [])), [])]) == ""
         }
         then "a nested record is carried when its columns are, and a recursive one is carried too" {
@@ -182,30 +236,62 @@ spec "std/relation — adversarial" {
         }
         then "any other named type is still not carried, unless it is `@local`" {
             shaped([kinded("p", "Point", Kind.Named("Point", []), [])]) == "kind_not_carried" &&
-                shaped([kinded("p", "Point", Kind.Named("Point", []), ["local"])]) == ""
+                shaped([kinded("p", "Point", Kind.Named("Point", []), [worn_mark(local_mark, [])])]) == ""
         }
     }
     given "names against names: the marks" {
         then "a misspelled mark is refused rather than ignored" {
-            refusals(one_row([marked_field("a", ["indx"])])) == "unknown_mark"
+            refusals(one_row([marked_field("a", [Mark { name: "indx", args: [], at: null }])])) == "unknown_mark"
         }
         then "a mark written twice on one field is refused" {
-            refusals(one_row([marked_field("a", ["key", "key"])])) == "duplicate_mark"
+            refusals(
+                one_row([marked_field("a", [worn_mark(key_mark, []), worn_mark(key_mark, [])])]),
+            ) == "duplicate_mark"
         }
         then "a key that is also an index is accepted — marks stack" {
-            refusals(one_row([marked_field("a", ["key", "index"])])) == ""
+            refusals(
+                one_row([marked_field("a", [worn_mark(key_mark, []), worn_mark(index_mark, [])])]),
+            ) == ""
         }
         then "a key that is also unique is accepted" {
-            refusals(one_row([marked_field("a", ["key", "unique"])])) == ""
+            refusals(
+                one_row([marked_field("a", [worn_mark(key_mark, []), worn_mark(unique_mark, [])])]),
+            ) == ""
         }
         then "`@unique` with `@index` is refused — one row or every row, never both" {
-            refusals(one_row([marked_field("a", ["key", "unique", "index"])])) == "answer_clash"
+            refusals(
+                one_row(
+                    [
+                        marked_field(
+                            "a",
+                            [
+                                worn_mark(key_mark, []),
+                                worn_mark(unique_mark, []),
+                                worn_mark(index_mark, []),
+                            ],
+                        ),
+                    ],
+                ),
+            ) == "answer_clash"
         }
         then "a doubled mark speaks alone — no lookup law judges the field" {
-            refusals(one_row([marked_field("a", ["unique", "index", "unique"])])) == "duplicate_mark"
+            refusals(
+                one_row(
+                    [
+                        marked_field(
+                            "a",
+                            [
+                                worn_mark(unique_mark, []),
+                                worn_mark(index_mark, []),
+                                worn_mark(unique_mark, []),
+                            ],
+                        ),
+                    ],
+                ),
+            ) == "duplicate_mark"
         }
         then "a mark on the store's `id` is judged like any other" {
-            refusals(one_row([marked_field("id", ["indx"])])) == "unknown_mark"
+            refusals(one_row([marked_field("id", [Mark { name: "indx", args: [], at: null }])])) == "unknown_mark"
         }
     }
 }
@@ -223,13 +309,15 @@ spec "std/relation — the stable name" {
     }
     given "a nullable field under a lookup" {
         then "a nullable @key is refused: a null names no row" {
-            refusals(one_row([kinded("k", "string?", Kind.Opt(Kind.Str), ["key"])])) == "null_bucket"
+            refusals(
+                one_row([kinded("k", "string?", Kind.Opt(Kind.Str), [worn_mark(key_mark, [])])]),
+            ) == "null_bucket"
         }
         then "a nullable grain is refused: get reads a row through one bucket" {
             refusals(
                 one_row(
                     [
-                        kinded("g", "int?", Kind.Opt(Kind.Int), []) with { marks: [Mark { name: "index", args: ["grain"], at: null }] },
+                        kinded("g", "int?", Kind.Opt(Kind.Int), []) with { marks: [worn_mark(index_mark, ["grain"])] },
                     ],
                 ),
             ) == "null_bucket"
@@ -238,15 +326,24 @@ spec "std/relation — the stable name" {
             refusals(
                 one_row(
                     [
-                        kinded("a", "int?", Kind.Opt(Kind.Int), ["index"]),
-                        kinded("b", "string?", Kind.Opt(Kind.Str), ["unique"]),
+                        kinded("a", "int?", Kind.Opt(Kind.Int), [worn_mark(index_mark, [])]),
+                        kinded("b", "string?", Kind.Opt(Kind.Str), [worn_mark(unique_mark, [])]),
                     ],
                 ),
             ) == ""
         }
         then "a nullable list under @index files under nothing" {
             refusals(
-                one_row([kinded("xs", "List<int>?", Kind.Opt(Kind.List(Kind.Int)), ["index"])]),
+                one_row(
+                    [
+                        kinded(
+                            "xs",
+                            "List<int>?",
+                            Kind.Opt(Kind.List(Kind.Int)),
+                            [worn_mark(index_mark, [])],
+                        ),
+                    ],
+                ),
             ) == "lookup_kind"
         }
     }

@@ -798,10 +798,13 @@ fn tag_reader(r: Code, k: Kind, owner: Owner) -> Code {
 
 /// Whether a field's marks are the vocabulary's, each worn once.
 fn marks_ok(f: Field) -> bool {
-    f.marks.all(known_mark) &&
-        repeated([m.name for m in f.marks]).is_empty() &&
-        f.marks.all(args_ok)
+    let judged = judged_marks(f)
+    judged.all(known_mark) && repeated([m.name for m in judged]).is_empty() && judged.all(args_ok)
 }
+
+/// The marks a field wears that this derive judges: every one but a mark binding a fn no relation
+/// reads, which is another reader's.
+fn judged_marks(f: Field) -> List<Mark> { [m for m in f.marks if m.key.is_empty() || known_mark(m)] }
 
 /// The arguments an `@index` may carry: `ordered` hashes its buckets in
 /// id order, `grain` is the bucket `get` records a row's read through.
@@ -823,13 +826,14 @@ fn repeated(names: List<string>) -> List<string> {
 
 /// A field's first unknown mark, else its first repeated one.
 fn mark_problem(t: Type, f: Field) -> Diagnostic {
-    let unknown? = f.marks.find(!known_mark(it)) else { return known_mark_problem(t, f, [m.name for m in f.marks]) }
+    let judged = judged_marks(f)
+    let unknown? = judged.find(!known_mark(it)) else { return known_mark_problem(t, f, [m.name for m in judged]) }
     unknown_mark(t, f, unknown.name)
 }
 
 /// Every mark known: a repeated one, else one whose arguments are wrong.
 fn known_mark_problem(t: Type, f: Field, names: List<string>) -> Diagnostic {
-    let twice? = repeated(names).first() else { return mark_args(t, f, f.marks.find(!args_ok(it))?.name ?? "") }
+    let twice? = repeated(names).first() else { return mark_args(t, f, judged_marks(f).find(!args_ok(it))?.name ?? "") }
     duplicate_mark(t, f, twice)
 }
 

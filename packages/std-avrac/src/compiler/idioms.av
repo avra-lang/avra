@@ -1922,8 +1922,8 @@ fn setting_read_by_hand_found(n: Syntax) -> Fix {
 /// declaration is one it knows compares the declaration the name resolves to, and never the name
 /// it read to a word. A word is what a `use` renames and another package declares again, so a fn
 /// wearing another package's `@query` reads as ours, and our own under another name reads as
-/// nothing. The subject is a carrier's `name` or `package_name`, held to a word the source spells:
-/// a text literal, a top-level const, or a list of them. A name compared to a name the program wrote
+/// nothing. The subject is a field its type declares `@names_identity`, held to a word the source
+/// spells: a text literal, a top-level const, or a list of them. A name compared to a name the program wrote
 /// is a lookup in its own namespace, and no finding.
 @keeps("known.is(d.file.package_name, d.name)")
 @keeps("written.contains(f.name)")
@@ -1955,33 +1955,16 @@ fn is_word_list(xs: Code) -> bool {
     !kids.is_empty() && kids.all(it.is_str_lit()) && xs.text().starts_with("[")
 }
 
-/// Whether `s` reads the word an annotation, a mark or a declaration is known by.
+/// Whether `s` reads a field whose type says it names its value's identity: the field wears
+/// `@std/meta`'s `@names_identity` where the type is declared.
 fn names_by_word(s: Code) -> bool {
     let read? = s.prop_name() else { return false }
-    if !identity_words.contains(read) { return false }
     let subject? = s.kids().first()?.type() else { return false }
-    let held = subject.carried() ?? subject
-    word_carriers.any((k) -> held.is_declared(k))
+    s.field_wears(subject.carried() ?? subject, read, META_NAMES_IDENTITY)
 }
 
-/// The fields a carrier is known by.
-const identity_words: List<string> = ["name", "package_name", "mark"]
-
-/// The values whose word names a declaration: an annotation, a mark, a fn, a declaration, a file's
-/// package.
-const word_carriers: List<Known> = [
-    Known { package: "@std.meta", name: "Annotation" },
-    Known { package: "@std.meta", name: "Mark" },
-    Known { package: "@std.meta", name: "Fn" },
-    Known { package: "@std.avrac", name: "AnnotationFact" },
-    Known { package: "@std.avrac", name: "Annotation" },
-    Known { package: "@std.avrac", name: "Mark" },
-    Known { package: "@std.avrac", name: "DeclaredName" },
-    Known { package: "@std.avrac", name: "Decl" },
-    Known { package: "@std.avrac", name: "FnParts" },
-    Known { package: "@std.program", name: "SourceFileAddress" },
-    Known { package: "@std.avrac", name: "WornMark" },
-]
+/// `@std/meta`'s mark on a field whose text names its value's identity.
+const META_NAMES_IDENTITY: Known = Known { package: "@std.meta", name: "names_identity" }
 
 fn identity_by_word_found(s: Code) -> Fix {
     Fix

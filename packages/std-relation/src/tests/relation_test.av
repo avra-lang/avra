@@ -1,14 +1,15 @@
 // `@relation`'s contract over hand-built declarations: which shapes it
 // refuses, in which words, and what its shape fingerprint moves with.
 use @std.relation.{relation_problems, problems_under, NamedShape, shape_hash}
-use @std.meta.{Type, Field, Kind, Mark, Variant}
+use @std.meta.{Type, Field, Kind, Mark, Variant, worn_mark}
+use @std.relation.{key as key_mark, unique as unique_mark, index as index_mark, local as local_mark}
 
 fn field(name: string, ty: string, kind: Kind) -> Field {
     Field { name: name, ty: ty, at: null, kind: kind }
 }
 
-fn marked(f: Field, mark: string) -> Field {
-    f with { marks: f.marks.concat([Mark { name: mark, args: [], at: null }]) }
+fn marked(f: Field, mark: Mark) -> Field {
+    f with { marks: f.marks.concat([mark]) }
 }
 
 fn row(name: string, fields: List<Field>) -> Type {
@@ -68,8 +69,8 @@ spec "std/relation — the law" {
                 row(
                     "Member",
                     [
-                        marked(field("a", "string", Kind.Str), "key"),
-                        marked(field("b", "string", Kind.Str), "index"),
+                        marked(field("a", "string", Kind.Str), worn_mark(key_mark, [])),
+                        marked(field("b", "string", Kind.Str), worn_mark(index_mark, [])),
                     ],
                 ),
             ) == ""
@@ -79,14 +80,24 @@ spec "std/relation — the law" {
                 row(
                     "Pair",
                     [
-                        marked(field("a", "string", Kind.Str), "key"),
-                        marked(field("b", "string", Kind.Str), "key"),
+                        marked(field("a", "string", Kind.Str), worn_mark(key_mark, [])),
+                        marked(field("b", "string", Kind.Str), worn_mark(key_mark, [])),
                     ],
                 ),
             ) == ""
         }
         then "a list key is refused — a key names one bucket, a list files under many" {
-            kinds(row("K", [marked(field("xs", "List<int>", Kind.List(Kind.Int)), "key")])) == "many_valued"
+            kinds(
+                row(
+                    "K",
+                    [
+                        marked(
+                            field("xs", "List<int>", Kind.List(Kind.Int)),
+                            worn_mark(key_mark, []),
+                        ),
+                    ],
+                ),
+            ) == "many_valued"
         }
         then "a relation with no fields at all is a relation" {
             kinds(row("Empty", [])) == ""
@@ -100,7 +111,7 @@ spec "std/relation — the law" {
                     [
                         marked(
                             field("xss", "List<List<int>>", Kind.List(Kind.List(Kind.Int))),
-                            "index",
+                            worn_mark(index_mark, []),
                         ),
                     ],
                 ),
@@ -166,7 +177,10 @@ spec "std/relation — the law" {
             shape_hash(base()) != shape_hash(
                 row(
                     "R",
-                    [marked(field("a", "int", Kind.Int), "key"), field("b", "string", Kind.Str)],
+                    [
+                        marked(field("a", "int", Kind.Int), worn_mark(key_mark, [])),
+                        field("b", "string", Kind.Str),
+                    ],
                 ),
             )
         }
