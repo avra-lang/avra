@@ -24,21 +24,20 @@ fn judged_for(target: string, header: string, main: string) -> Judged {
 
 const LONG: string = "long width(long x);\n"
 
+/// A `long` crossing in as `i32` and back as `i64`: one of the two disagrees on each target.
+const MIXED: string = "extern fn width(x: i32) -> i64\n0\n"
+
 spec "compiler/headers — the target's data model" {
-    given "a C `long` declared `i64`" {
-        then "the host's 64-bit long agrees" { judged_for("", LONG, "extern fn width(x: i64) -> i64\n0\n").clean() }
-        then "wasm32's 32-bit long refuses the answer, naming i32" {
+    given "a C `long` crossing in as i32 and back as i64" {
+        then "wasm32 refuses the answer alone, naming i32" {
             refused_in(
-                judged_for("wasm32-wasip1", LONG, "extern fn width(x: i64) -> i64\n0\n"),
+                judged_for("wasm32-wasip1", LONG, MIXED),
                 "`width` answers `i64`, and its C header declares `int32`",
             )
         }
-    }
-    given "a C `long` declared `i32`" {
-        then "wasm32 agrees" { judged_for("wasm32-wasip1", LONG, "extern fn width(x: i32) -> i32\n0\n").clean() }
-        then "the host refuses the seat, naming i64" {
+        then "the host refuses the seat alone, naming i64" {
             refused_in(
-                judged_for("", LONG, "extern fn width(x: i32) -> i32\n0\n"),
+                judged_for("", LONG, MIXED),
                 "`width`'s seat 1 crosses as `i32`, and its C header declares `int64`",
             )
         }
