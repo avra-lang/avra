@@ -2,7 +2,7 @@
 // one 422 naming each with its `in`.
 use @std.http.body.{whole}
 use @std.http.http.{Request, Unrouted, Response}
-use @std.http.inputs.{Input, path, body, query}
+use @std.http.inputs.{Input, input, path, body, query}
 use @std.http.typed.{Captures}
 use @std.meta.{derive}
 use @std.validate.{Decode, length, range}
@@ -13,16 +13,12 @@ type Draft = { @length(1, 20) title: string }
 @derive(Decode)
 type Window = { @range(1, 100) limit: int = 20 }
 
-@derive(Input)
-type NewIdea = { @path board: int, @body draft: Draft, @query page: Window }
+@input
+type NewIdea = { @path @range(1, 99) board: int, @body draft: Draft, @query page: Window }
 
 /// Fields named as the reader's own locals.
-@derive(Input)
+@input
 type Clash = { @path at: string, @query q: Window, @body ended: Draft }
-
-/// A field that names no part.
-@derive(Input)
-type Loose = { @query page: Window, stray: int = 0 }
 
 /// Captures named by hand, as a route's record answers them.
 type Held = { board: string? }
@@ -66,6 +62,9 @@ spec "a handler's input as one record" {
         }
     }
     given "every part refused at once" {
+        then "a rule on the input's own field is judged in its part" {
+            read("700", "/b/700/ideas", "application/json", "{\"title\":\"hi\"}") == "422 {\"title\":\"the request does not validate\",\"status\":422,\"issues\":[{\"in\":\"path\",\"path\":\"board\",\"rule\":\"range\",\"message\":\"must be between 1 and 99\"}]}"
+        }
         then "one 422 names each issue with its part" {
             read("x", "/b/x/ideas?limit=500", "application/json", "{\"title\":\"\"}") == "422 {\"title\":\"the request does not validate\",\"status\":422,\"issues\":[{\"in\":\"path\",\"path\":\"board\",\"rule\":\"type\",\"message\":\"must be an integer, not text\"},{\"in\":\"body\",\"path\":\"title\",\"rule\":\"length\",\"message\":\"must be between 1 and 20 characters\"},{\"in\":\"query\",\"path\":\"limit\",\"rule\":\"range\",\"message\":\"must be between 1 and 100\"}]}"
         }
@@ -83,14 +82,6 @@ spec "a handler's input as one record" {
     given "a part that ends the request" {
         then "a body that is not JSON answers alone, before any record is judged" {
             read("x", "/b/x/ideas?limit=500", "application/json", "{").split(" ")[0] == "400"
-        }
-        then "a field with no mark ends the request, naming the field" {
-            let got: Result<Loose, Response> = Loose
-                .read(Spot { at: "" }, sent("/", "application/json", "{}"))
-            match got {
-                .Ok(_) -> false,
-                .Err(r) -> r.status == 500 && (r.body.text() ?? "").contains("`stray`"),
-            }
         }
         then "a capture the route does not hold is the server's fault" {
             read(null, "/b/ideas", "application/json", "{\"title\":\"hi\"}").split(" ")[0] == "500"
