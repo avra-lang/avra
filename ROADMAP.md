@@ -3246,6 +3246,20 @@ queries and moves 118: 482 call sites go through a box the lowering notes no typ
 lambdas are taken into boxes typed by the generic seat rather than the instantiated type. Noting the
 instantiated type at those sites brings an editor's rebuild down to the true dependents.
 
+### A stop's grace is kept in host time, and its witness is owed (measured 2026-11-28)
+
+A deadline that bounds a child reads `@std/time`'s `host_ms`, the host's monotonic clock, never the
+tasks' clock a case may run virtually. Measured on af8cf8d4, eight rounds of `tools/gate.sh cli-5`
+with every `Child.stop` timed on both clocks (run 46136714199): the virtual clock never ran ahead of
+the host's in 35 stops, and once it lagged it — a 5 s grace KILLed after 15.6 s of host time, since
+the clock stands frozen while the stopping task works between its polls. THE WITNESS IS A DEADLINE,
+NOT A CASE: a stop whose virtual clock lags its host's cannot yet be built on demand, because the lag
+needs the scheduler's frozen windows to fall between the poll's holds. The day a case can freeze the
+clock across a stop's poll loop, the case is a child slow to leave after TERM, stopped under that
+freeze, and KILLed by its host grace. Still open beside it, gate-speed's: `dev_test.av:176`'s
+"by signal 9" did not reproduce in those eight rounds, and every full-grace KILL there measured 5 s
+on both clocks; what is owed is the dev child's own shutdown time at each such KILL.
+
 ### A noop check pays the item-grained reads a moved file needs (measured 2026-11-26)
 
 A `check packages/cli` where nothing moved costs 688,268 boxes and 1,690,916 list writes (the cost
