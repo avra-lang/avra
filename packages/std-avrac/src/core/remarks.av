@@ -82,6 +82,20 @@ export enum PackDecline {
     CarryingEnum
 }
 
+/// Why a value took a count of its own where a move at its last use would take none.
+@derive(Saved)
+export enum MoveDecline {
+    /// Its last reads stand in sibling arms of one region, so each arm's read leaves another standing.
+    SiblingArms
+}
+
+/// Why a borrowed read took its owned twin.
+@derive(Saved)
+export enum BorrowDecline {
+    /// A call it is read across is handed only scalars, and its callee may write a cell.
+    CalleeMayWrite
+}
+
 /// A technique declined, and why.
 @derive(Saved)
 export enum Declined {
@@ -91,7 +105,12 @@ export enum Declined {
     Consume(why: ConsumeDecline)
     Dyn(why: DynDecline)
     Pack(why: PackDecline)
+    Move(why: MoveDecline)
+    Borrow(why: BorrowDecline)
 }
+
+/// A technique declined at the instruction `at` of a body, by its place.
+export type InsDeclined = { at: int, declined: Declined }
 
 /// A site where a technique declined, as `cost_remarks` answers it: why, and where in the body's file
 /// it stands.
@@ -108,6 +127,8 @@ impl Declined {
             .Consume(_) -> "move at last use (consumed seats)",
             .Dyn(_) -> "devirtualization",
             .Pack(_) -> "packed lists",
+            .Move(_) -> "move at last use",
+            .Borrow(_) -> "borrows across quiet calls",
         }
     }
 
@@ -146,6 +167,12 @@ impl Declined {
                 .NullableScalar -> "the element is a nullable scalar, a presence beside its word",
                 .FlatRecord -> "the element is a flat record, a box a slot until strided lists land",
                 .CarryingEnum -> "the element is an enum whose variants carry payloads",
+            },
+            .Move(why) -> match why {
+                .SiblingArms -> "the value's last reads stand in sibling arms, so each arm's read leaves another standing",
+            },
+            .Borrow(why) -> match why {
+                .CalleeMayWrite -> "a call the borrow is read across may write a cell, though it is handed only scalars",
             },
         }
     }
