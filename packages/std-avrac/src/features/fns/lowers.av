@@ -47,7 +47,12 @@ impl Lowers for Call {
         if self.args.length == 2 && metas(cx, named, MARKED) { return marks_read(cx, e, self.args, MARK_MARKED_BY) }
         if self.args.length == 2 && metas(cx, named, WORN) { return worn_read(cx, e, self.args, WORN_BY) }
         if self.args.length == 2 && metas(cx, named, WORN_MARK) { return worn_read(cx, e, self.args, MARK_WORN_BY) }
-        if self.args.length == 2 && metas(cx, named, IMPLEMENTS) { return implements_read(cx, e, self.args) }
+        if self.args.length == 2 && metas(cx, named, IMPLEMENTS) {
+            return keyed_read(cx, e, self.args, cx.program.trait_key, IMPLEMENTS_BY)
+        }
+        if self.args.length == 2 && metas(cx, named, IS_TYPE) && names_a_type(cx, self.args[1]) {
+            return keyed_read(cx, e, self.args, cx.program.type_key, TYPE_IS_BY)
+        }
         if self.args.length == 1 && metas(cx, named, EMBED) { return embed_read(cx, e, named, self.args[0]) }
         if self.args.length == 1 && metas(cx, named, PROVIDED) { return provided_read(cx, e, self.args[0]) }
         if self.args.length == 1 && metas(cx, named, REHOMED) { return rehomed_value(cx, self.args[0]) }
@@ -165,6 +170,12 @@ const IMPLEMENTS: string = "implements"
 /// `@std/meta`'s fn that answers `implements`, handed the trait's identity.
 const IMPLEMENTS_BY: string = "implements_by"
 
+/// `@std/meta`'s fn whose answer is whether a type's name names a type named as a value.
+const IS_TYPE: string = "is_type"
+
+/// `@std/meta`'s fn that answers `is_type`, handed the type's identity.
+const TYPE_IS_BY: string = "type_is_by"
+
 /// `@std/meta`'s fn whose fn value runs under the frame of contexts in force where it is called.
 const REHOMED: string = "rehomed"
 
@@ -272,13 +283,26 @@ fn worn_read(mut cx: Lowering, e: ExprId, args: List<ExprId>, answer: string) ->
     r
 }
 
-/// `implements(name, Trait)`: `@std/meta`'s `implements_by` of the type's name and the trait's
-/// identity, so the trait is the declaration and never only a word.
-fn implements_read(mut cx: Lowering, e: ExprId, args: List<ExprId>) -> Reg {
+/// Whether the argument `a` names a type as a value.
+fn names_a_type(cx: Lowering, a: ExprId) -> bool {
+    let target = cx.store.unnamed(a)
+    let name? = cx.store.ident_name(target) else { return false }
+    (cx.program.type_key)(name, cx.store.home_of(target)) != null
+}
+
+/// A call over a name and a declaration named as a value: `@std/meta`'s `answer` of the name and
+/// the identity `key_of` reads for the declaration.
+fn keyed_read(
+    mut cx: Lowering,
+    e: ExprId,
+    args: List<ExprId>,
+    key_of: fn(string, string?) -> string?,
+    answer: string,
+) -> Reg {
     let target = cx.store.unnamed(args[1])
     let name? = cx.store.ident_name(target) else { return cx.missed_as(unmarked()) }
-    let key? = (cx.program.trait_key)(name, cx.store.home_of(target)) else { return cx.missed_as(unmarked()) }
-    let by? = (cx.program.toolchain_fn)(META_MODULE, IMPLEMENTS_BY) else { return cx.missed_as(unmarked()) }
+    let key? = key_of(name, cx.store.home_of(target)) else { return cx.missed_as(unmarked()) }
+    let by? = (cx.program.toolchain_fn)(META_MODULE, answer) else { return cx.missed_as(unmarked()) }
     let mark = cx.handing_mark()
     let r = cx
         .call_fn(cx.layout_at(e), by, [cx.lower(cx.store.unnamed(args[0])), cx.const_str(key)])

@@ -124,7 +124,12 @@ export fn meta_of_trait_decl(engine: QueryEngine, file: SourceFileAddress, name:
     let methods = [f for f in trait_fns(item) if !item.store.is_static(f) && item.store.fn_parts(f) != null]
     let fns = [fn_meta(engine, file, item, f, s!) for f in methods for s in [trait_method_signature(engine, held, item.store.fn_parts(f)!.name, receiver)] if s != null]
     if fns.length != methods.length { return null }
-    MetaTrait { name: name, at: trait_place(engine, file, item, name), fns: fns }
+    MetaTrait {
+        name: name,
+        at: trait_place(engine, file, item, name),
+        fns: fns,
+        key: decl_key(file, name),
+    }
 }
 
 /// Where the trait `name` stands, as `@std/meta` hands a place: counted from its item's start, as every
@@ -252,6 +257,7 @@ fn declared_meta(engine: QueryEngine, d: DeclaredName) -> MetaType? {
         impls: written_traits(engine, d.file, d.name),
         exported: d.exported,
         impl_keys: written_trait_keys(engine, d.file, d.name),
+        key: decl_key(d.file, d.name),
     }
     match d.kind {
         .Record or .Component -> {

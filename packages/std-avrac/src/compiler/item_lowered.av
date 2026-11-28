@@ -522,6 +522,8 @@ fn lowered_program(
         ),
         trait_key: (n: string, home: string?) -> read_from(engine, file, home)
             .find_map((f) -> trait_key_in(engine, f, n)),
+        type_key: (n: string, home: string?) -> read_from(engine, file, home)
+            .find_map((f) -> type_key_in(engine, f, n)),
         method: (ty: SignedType, m: string) -> kept_by_key(
             memos,
             memos.methods,
@@ -672,6 +674,11 @@ fn lowering_refused(signed: SignedBody, parameters: List<ParameterLayout>?) -> s
 
 /// The identity of the trait `file` writes as `name`, among written names alone, so asking it of a
 /// file whose generators are being made never asks what they make; absent where it writes no trait.
+fn type_key_in(engine: QueryEngine, file: SourceFileAddress, name: string) -> string? {
+    let d? = written_resolution(engine, file, Space.Type, name).named() else { return null }
+    if d.kind == ItemKind.Trait { null } else { decl_key(d.file, d.name) }
+}
+
 fn trait_key_in(engine: QueryEngine, file: SourceFileAddress, name: string) -> string? {
     let d? = written_resolution(engine, file, Space.Type, name).named() else { return null }
     if d.kind == ItemKind.Trait { decl_key(d.file, d.name) } else { null }
