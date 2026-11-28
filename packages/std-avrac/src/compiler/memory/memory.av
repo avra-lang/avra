@@ -34,7 +34,7 @@ use core.{
     rt_sig_of,
     rt_lends,
     rt_writes,
-    rt_aliases_arg0,
+    rt_aliased_seats,
     rt_owned_twin,
     rt_reusing_twin,
     rt_moving_twin,
@@ -700,10 +700,10 @@ fn region_exit(ins: List<Ins>, k: int) -> int {
 /// instead — is the write's own box the SAME STABLE IDENTITY `slot`
 /// traces back to, asked whether or not `slot` ITSELF could be
 /// re-minted: `slot` may be a param (`self`), stable and never
-/// re-derived, while the WRITE still lands through a register `cell_root`
+/// re-derived, while the WRITE still lands through a register `cell_roots`
 /// must trace back to it — `avra_box_thawed(self)` answers the SAME
 /// box `self`'s own field read did, under a different register, and
-/// only `aliases_arg0` says so (`owns_result` alone stops the trace,
+/// only `aliases` says so (`owns_result` alone stops the trace,
 /// right for an ordinary allocator and wrong for a thaw).
 ///
 /// A user call changes an IDENTITY `slot` (one on a cell's chain,
@@ -740,8 +740,9 @@ fn writes_arg(callee: string, args: List<Reg>, slot: Reg) -> bool {
 /// cycle — and the chain above `slot` still holds it then.
 fn aliased_write(defs: List<int>, ins: List<Ins>, callee: string, args: List<Reg>, slot: Reg) -> bool {
     let box? = args.first() else { return false }
+    let boxes = cell_roots(defs, ins, box)
     rt_writes(callee, 0) &&
-        same_reg(cell_root(defs, ins, slot), cell_root(defs, ins, box)) &&
+        cell_roots(defs, ins, slot).any((s) -> boxes.any((b) -> same_reg(s, b))) &&
         !held_below(defs, ins, box, slot)
 }
 
@@ -756,36 +757,37 @@ fn held_below(defs: List<int>, ins: List<Ins>, r: Reg, from: Reg) -> bool {
 fn below_from(defs: List<int>, ins: List<Ins>, r: Reg, from: Reg, deeper: bool) -> bool {
     let d = defs[r.index]
     if d < 0 { return false }
-    let src? = view_source(ins[d]) else { return false }
     let lower = deeper || reads_part(ins[d])
-    if same_reg(src, from) { return lower }
-    below_from(defs, ins, src, from, lower)
+    view_sources(ins[d])
+        .any((src) -> if same_reg(src, from) { lower } else { below_from(defs, ins, src, from, lower) })
 }
 
 /// Whether `i` answers a part of its subject's box, never the box itself.
 fn reads_part(i: Ins) -> bool {
     match i {
         .Extract(_, _, _) -> true,
-        .CallRt(_, callee, _) -> rt_lends(callee) && !rt_aliases_arg0(callee),
+        .CallRt(_, callee, _) -> rt_lends(callee) && rt_aliased_seats(callee).is_empty(),
         rest -> false,
     }
 }
 
-/// THE STABLE IDENTITY `r` WAS ULTIMATELY READ FROM: walked through a
-/// `.Load` to the `Alloca` it reads (two loads of one `mut` cell are
-/// two registers for the one slot) and through a VIEW to ITS source (a
-/// field read run twice is two registers for the one box) — down to a
-/// param or an `Alloca`, which name themselves. Unlike `Lives.root_of`,
-/// never absent: this walk exists to COMPARE two provenances, so it
-/// must land somewhere, itself when there is nowhere further to go.
-fn cell_root(defs: List<int>, ins: List<Ins>, r: Reg) -> Reg {
+/// THE STABLE IDENTITIES `r` MAY ULTIMATELY BE READ FROM: walked through
+/// a `.Load` to the `Alloca` it reads (two loads of one `mut` cell are
+/// two registers for the one slot) and through a VIEW to EACH of its
+/// sources (a field read run twice is two registers for the one box; an
+/// answer that may be either of two seats has both) — down to a param or
+/// an `Alloca`, which name themselves. Unlike `Lives.roots_of`, never
+/// empty: this walk exists to COMPARE two provenances, so it must land
+/// somewhere, itself when there is nowhere further to go.
+fn cell_roots(defs: List<int>, ins: List<Ins>, r: Reg) -> List<Reg> {
     let d = defs[r.index]
-    if d < 0 { return r }
+    if d < 0 { return [r] }
     let loaded? = loaded_slot(ins[d]) else {
-        let src? = view_source(ins[d]) else { return r }
-        return cell_root(defs, ins, src)
+        let sources = view_sources(ins[d])
+        if sources.is_empty() { return [r] }
+        return flatten([cell_roots(defs, ins, s) for s in sources])
     }
-    cell_root(defs, ins, loaded)
+    cell_roots(defs, ins, loaded)
 }
 
 /// THE BRACKETS, by what each does to the nesting: one OPENS a region, one
@@ -988,39 +990,38 @@ fn view_of(i: Ins) -> Reg? {
     }
 }
 
-/// THE INVERSE OF `view_of`: the register a view was taken FROM —
-/// Extract's subject, a lending row's first seat, or an ALIASING
-/// owned row's first seat (`avra_box_thawed`: owned, yet its answer
-/// may be the same box `writes` compares `slot` against) — the same
-/// subject `read_outlives` judges by.
-fn view_source(i: Ins) -> Reg? {
-    extract_source(i) ?? lending_source(i)
-}
-
-fn extract_source(i: Ins) -> Reg? {
-    match i { .Extract(_, src, _) -> src, rest -> null }
-}
-
-fn lending_source(i: Ins) -> Reg? {
+/// THE INVERSE OF `view_of`: every register a view may have been taken
+/// FROM — Extract's subject, a lending row's first seat, or each seat an
+/// ALIASING owned row's answer may be (`avra_box_thawed`: owned, yet its
+/// answer may be the same box `writes` compares `slot` against; a concat
+/// with one side empty, either side) — the subjects `read_outlives` judges
+/// by. None for a register that is no view.
+fn view_sources(i: Ins) -> List<Reg> {
     match i {
-        .CallRt(_, callee, args) if !rt_owns(callee) || rt_aliases_arg0(callee) -> args.first(),
-        rest -> null,
+        .Extract(_, src, _) -> [src],
+        .CallRt(_, callee, args) -> if rt_owns(callee) {
+            [args[j] for j in rt_aliased_seats(callee) if j < args.length]
+        } else {
+            args.slice(0, 1)
+        },
+        rest -> [],
     }
 }
 
-/// WHETHER THIS CALL IS HANDED `ar`'s ROOT: a write only ever lands
+/// WHETHER THIS CALL IS HANDED ONE OF `ar`'s ROOTS: a write only ever lands
 /// through a seat the call itself receives (THE ROOT OF A PATH
 /// DECIDES WHERE A WRITE LANDS), so a view whose root never reaches
 /// this call cannot be written through here, let alone emptied — no
 /// defensive retain is owed. Conservative at the root itself: `ar`
 /// with no view behind it roots at `ar`, which is always among its
 /// own call's seats, so it keeps its guard — and conservative at a
-/// LOAD too, where `root_of` answers absent and this call is read as
+/// LOAD too, where `roots_of` answers absent and this call is read as
 /// reaching it whether or not that is literally the register it was
 /// handed.
 fn root_handed(life: Lives, i: Ins, ar: Reg) -> bool {
-    let root? = life.root_of(ar) else { return true }
-    lent_args(i).contains(root)
+    let roots? = life.roots_of(ar) else { return true }
+    let lent = lent_args(i)
+    roots.any((r) -> lent.contains(r))
 }
 
 /// What each open scope from `floor` in owes at an early exit: its
@@ -1291,8 +1292,7 @@ fn crosses_cell(defs: List<int>, ins: List<Ins>, layouts: List<Layout>, r: Reg) 
     if layouts[r.index].carries_cell() { return true }
     let d = defs[r.index]
     if d < 0 { return false }
-    let src? = view_source(ins[d]) else { return false }
-    crosses_cell(defs, ins, layouts, src)
+    view_sources(ins[d]).any((src) -> crosses_cell(defs, ins, layouts, src))
 }
 
 /// Whether a store's VALUE seat (its last) is an immortal register.
@@ -1477,21 +1477,22 @@ impl Lives {
         [v for v in family if !same_reg(v, r)]
     }
 
-    /// `views`' inverse: the register `r`'s view chain was ultimately
-    /// taken from, walked back through Extract and a lending row's own
-    /// view to whatever defines its reference outright — `r` itself
-    /// when it does. ABSENT AT A LOAD, ON PURPOSE: a `mut` cell may be
+    /// `views`' inverse: the registers `r`'s view chain may ultimately be
+    /// taken from, walked back through Extract and a lending or aliasing
+    /// row to whatever defines its reference outright — `r` itself when
+    /// it does. ABSENT AT A LOAD, ON PURPOSE: a `mut` cell may be
     /// loaded more than once, each load its own register for the SAME
     /// box, so register identity alone cannot say the call already
     /// holds it — `emptied`'s own witness (features/fns/tests/
     /// borrowed_params) is a second load, thawed for the `mut` seat,
     /// naming the box a first load's view already rides.
-    fn root_of(r: Reg) -> Reg? {
+    fn roots_of(r: Reg) -> List<Reg>? {
         let d = self.defs[r.index]
-        if d < 0 { return r }
+        if d < 0 { return [r] }
         if self.ins[d] is .Load { return null }
-        let src? = view_source(self.ins[d]) else { return r }
-        self.root_of(src)
+        let sources = view_sources(self.ins[d])
+        if sources.is_empty() { return [r] }
+        [root for s in sources for root in self.roots_of(s)?]
     }
 
     /// THE CELL `r` WAS BORROWED FROM, when handing its reference over is

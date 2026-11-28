@@ -1,0 +1,90 @@
+// proves: a concat with one side empty answers the other side's own box, and every holder keeps
+// its own value — for each seat: an element read out of that seat before, then a write through the
+// answer, the seat rewritten between them or left standing, through a local, a `mut` seat and a
+// method's `self`.
+type S = { xs: List<string>, ys: List<string> }
+
+impl S {
+    mut fn grown_left() -> string {
+        let first = self.xs[0]
+        mut c = self.xs.concat(self.ys)
+        self.xs = ["z"]
+        c.set(0, "q")
+        "${first} ${c.join("")} ${self.xs.join("")}"
+    }
+
+    mut fn grown_right() -> string {
+        let first = self.ys[0]
+        mut c = self.xs.concat(self.ys)
+        self.ys = ["z"]
+        c.set(0, "q")
+        "${first} ${c.join("")} ${self.ys.join("")}"
+    }
+}
+
+fn left_rewritten() -> string {
+    mut s = S { xs: ["a", "b"], ys: [] }
+    let first = s.xs[0]
+    mut c = s.xs.concat(s.ys)
+    s.xs = ["z"]
+    c.set(0, "q")
+    "${first} ${c.join("")} ${s.xs.join("")}"
+}
+
+fn right_rewritten() -> string {
+    mut s = S { xs: [], ys: ["a", "b"] }
+    let first = s.ys[0]
+    mut c = s.xs.concat(s.ys)
+    s.ys = ["z"]
+    c.set(0, "q")
+    "${first} ${c.join("")} ${s.ys.join("")}"
+}
+
+fn left_standing() -> string {
+    let s = S { xs: ["a", "b"], ys: [] }
+    let first = s.xs[0]
+    mut c = s.xs.concat(s.ys)
+    c.set(0, "q")
+    c.push("c")
+    "${first} ${c.join("")} ${s.xs.join("")}"
+}
+
+fn right_standing() -> string {
+    let s = S { xs: [], ys: ["a", "b"] }
+    let first = s.ys[0]
+    mut c = s.xs.concat(s.ys)
+    c.set(0, "q")
+    c.push("c")
+    "${first} ${c.join("")} ${s.ys.join("")}"
+}
+
+fn through_seat(mut s: S) -> string {
+    let first = s.xs[0]
+    mut c = s.xs.concat(s.ys)
+    s.xs = ["z"]
+    c.set(0, "q")
+    "${first} ${c.join("")} ${s.xs.join("")}"
+}
+
+fn seated() -> string {
+    mut s = S { xs: ["a", "b"], ys: [] }
+    let said = through_seat(s)
+    "${said} ${s.xs.join("")}"
+}
+
+fn by_self() -> string {
+    mut l = S { xs: ["a", "b"], ys: [] }
+    mut r = S { xs: [], ys: ["a", "b"] }
+    "${l.grown_left()} / ${r.grown_right()}"
+}
+
+fn chained() -> string {
+    let a = ["a"]
+    let none: List<string> = []
+    let b = none.concat(a).concat(none).concat(none)
+    mut c = b.concat(none)
+    c.push("b")
+    "${a.join("")} ${b.join("")} ${c.join("")}"
+}
+
+"${left_rewritten()} | ${right_rewritten()} | ${left_standing()} | ${right_standing()} | ${seated()} | ${by_self()} | ${chained()}"

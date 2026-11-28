@@ -305,7 +305,7 @@ export once fn rt_sigs() -> List<RtSig> {
             has_owned_twin: false,
             host: RtHost.BoxThawed,
             inert: true,
-            aliases_arg0: true,
+            aliases: [true],
         },
         // A write through `self` or a `mut` seat: the box its caller opened, riding the seat's
         // reference — a seat stands for the whole body, so the opened box never outlives it.
@@ -318,7 +318,7 @@ export once fn rt_sigs() -> List<RtSig> {
             has_owned_twin: false,
             host: RtHost.SeatOpened,
             inert: true,
-            aliases_arg0: true,
+            aliases: [true],
         },
         RtSig {
             name: "avra_enum_boxed",
@@ -1247,7 +1247,7 @@ export once fn rt_sigs() -> List<RtSig> {
             host: RtHost.Insist,
             lends: true,
             inert: true,
-            aliases_arg0: true,
+            aliases: [true],
         },
         RtSig {
             name: "avra_unwrap_owned",
@@ -1259,7 +1259,7 @@ export once fn rt_sigs() -> List<RtSig> {
             has_owned_twin: false,
             host: RtHost.Insist,
             inert: true,
-            aliases_arg0: true,
+            aliases: [true],
         },
         RtSig {
             name: "avra_insist_scalar",
@@ -1600,6 +1600,7 @@ export once fn rt_sigs() -> List<RtSig> {
             inert: true,
             has_reusing_twin: true,
             boxes: [Box.List, Box.List],
+            aliases: [true, true],
         },
         RtSig {
             name: "avra_array_concat_reusing",
@@ -1613,6 +1614,7 @@ export once fn rt_sigs() -> List<RtSig> {
             host: RtHost.ArrayConcat,
             inert: true,
             boxes: [Box.List, Box.List],
+            aliases: [true, true],
         },
         RtSig {
             name: "avra_array_extend",
@@ -3133,7 +3135,7 @@ export once fn rt_sigs() -> List<RtSig> {
             inert: true,
             owns_result: true,
             keeps: [false, false, true],
-            aliases_arg0: true,
+            aliases: [true],
         },
         // The frame entry a context's read reads, as a word: the cell a set gave it, 0 at its default.
         RtSig {
@@ -3985,14 +3987,14 @@ export fn rt_writes(name: string, j: int) -> bool {
     sig != null && j < sig!.writes.length && sig!.writes[j]
 }
 
-/// True when an OWNED answer may be the SAME box as seat 0 rather
-/// than a fresh one — `avra_box_thawed`'s fast path. A row nobody has
-/// marked here answers false, on the SAME side as `owns_result`
-/// stopping a root trace: an ordinary allocator's answer never
-/// aliases its argument, so the trace is right not to continue.
-export fn rt_aliases_arg0(name: string) -> bool {
-    let sig: RtSig? = rt_index().get(name)
-    sig != null && sig!.aliases_arg0
+/// The seats whose box an OWNED answer may be, rather than a fresh one —
+/// `avra_box_thawed`'s fast path, a concat's other side. A row nobody has
+/// marked answers none, on the SAME side as `owns_result` stopping a root
+/// trace: an ordinary allocator's answer never aliases its argument, so the
+/// trace is right not to continue.
+export fn rt_aliased_seats(name: string) -> List<int> {
+    let sig? = rt_index().get(name) else { return [] }
+    [j for j, a in sig.aliases if a]
 }
 
 /// True when the callee's result is a FRESH allocation the memory

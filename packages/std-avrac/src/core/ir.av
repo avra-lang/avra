@@ -1088,10 +1088,13 @@ export enum RtHost {
 /// OPERAND, since that also matches an ordinary read. Empty means
 /// the row writes through nothing.
 ///
-/// `aliases_arg0` says an answer MAY BE THE SAME BOX as seat 0 — a
+/// `aliases[j]` says an answer MAY BE THE SAME BOX as seat `j` — a
 /// lending row's answer too, which is then the box itself and never a
-/// part of it (`avra_seat_opened`, `avra_unwrap`) — not a fresh one — `avra_box_thawed`'s fast path is a retain of `p`
-/// itself, answering `p`; only the rare immortal-data case clones.
+/// part of it (`avra_seat_opened`, `avra_unwrap`) — not a fresh one: `avra_box_thawed`'s fast path
+/// is a retain of `p` itself, answering `p`, and a concat with one side
+/// empty answers the other side. Every seat that may be the answer says so,
+/// since a trace that follows one of them answers "another box" when the
+/// answer is the one it did not follow.
 /// `owns_result` alone stops `cell_root`'s trace at a row like this
 /// (an ordinary allocator's answer never aliases its argument, so the
 /// trace is right to stop there), which lost the identity a later
@@ -1147,7 +1150,7 @@ export enum RtHost {
 /// every caller that may reach the row tests for one after the call.
 export enum Reach { Pure, Embed, Lookup, World }
 
-export type RtSig = { name: string, ret: RtKind, params: List<RtKind>, owns_result: bool, has_owned_twin: bool, host: RtHost, lends: bool = false, keeps: List<bool> = [], writes: List<bool> = [], aliases_arg0: bool = false, cells: List<RtKind> = [], reach: Reach = Reach.Pure, boxes: List<Box> = [], answer: Box = Box.Any, inert: bool = false, has_reusing_twin: bool = false, has_moving_twin: bool = false, wasm: bool = true, takes: Takes = Takes.Never, stood: bool = false, waits: bool = false, traps: bool = false }
+export type RtSig = { name: string, ret: RtKind, params: List<RtKind>, owns_result: bool, has_owned_twin: bool, host: RtHost, lends: bool = false, keeps: List<bool> = [], writes: List<bool> = [], aliases: List<bool> = [], cells: List<RtKind> = [], reach: Reach = Reach.Pure, boxes: List<Box> = [], answer: Box = Box.Any, inert: bool = false, has_reusing_twin: bool = false, has_moving_twin: bool = false, wasm: bool = true, takes: Takes = Takes.Never, stood: bool = false, waits: bool = false, traps: bool = false }
 
 /// WHEN A ROW'S BODY TAKES ITS OWN REFERENCE to a seat it keeps — the
 /// `avra_rc_retain` the C makes, as data. `keeps` says a seat escapes;
