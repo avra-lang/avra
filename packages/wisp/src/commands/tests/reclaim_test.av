@@ -71,6 +71,22 @@ fn seen_or_refused(wt: string) -> bool {
     }
 }
 
+/// Whether the machine's reader, while a sleeper stands in `wt/deep`, reads more than one directory, or
+/// refuses to say; what it read is said when it reads one or none.
+fn read_many(wt: string) -> bool {
+    let sleep = tool("sleep") catch { return false }
+    match (cmd(sleep, ["60"]) with { cwd: "${wt}/deep" }).start(Ready.Started, secs(5)) {
+        .Ok(child) -> {
+            let _ = stood_in(child.pid(), "${wt}/deep")
+            let many = match cwds() { .Ok(dirs) -> dirs.length > 1, .Err(_) -> true }
+            if !many { eprintln(unseen_words(child.pid(), "", wt, cwds())) }
+            let _ = child.stop()
+            many
+        },
+        .Err(_) -> false,
+    }
+}
+
 /// Where the process `pid` stands once it stands in `dir`, asked of the kernel every tenth of a second
 /// for ten seconds: a child is started before it has moved into the directory it was given.
 fn stood_in(pid: int, dir: string) -> string {
@@ -149,6 +165,12 @@ spec "wisp reclaim — which worktrees retire" {
                 unseen,
             ) { .Ok(_) -> false, .Err(why) -> why.contains("no process's directory") }
             checked(d, ok && exists(wt))
+        }
+        then "this machine's reader reads more than one process's directory: this one's and its sleeper's" {
+            let d = repo()
+            let wt = linked(d, "held")
+            let _ = make_dirs("${wt}/deep")
+            checked(d, read_many(wt))
         }
         then "this machine's reader sees a process standing in a tree, or refuses to say" {
             let d = repo()

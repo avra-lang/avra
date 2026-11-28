@@ -159,17 +159,14 @@ fn free_gb(repo: string) -> Result<int, string> {
     kb / 1048576
 }
 
-/// Every process's directory: `lsof` where it stands, the kernel's own table where it does not. A
+/// Every process's directory: the kernel's own table where there is one, `lsof` where there is not. A
 /// process that ended while it was read is no failure; one whose directory may not be read is, since a
 /// tree it stands in would read as idle — so a machine that cannot say retires nothing.
 export fn cwds() -> Result<List<string>, string> {
+    if is_dir("/proc/self") { return proc_cwds() }
     match in_c_locale("lsof", ["-d", "cwd", "-Fn"]) {
         .Ok(o) -> named_lines(o.stdout),
-        .Err(e) -> match e {
-            .NotFound(_, _) -> proc_cwds(),
-            .Failed(_, o) -> named_lines(o.stdout),
-            rest -> { fail reclaim_no_cwds() },
-        },
+        .Err(e) -> match e { .Failed(_, o) -> named_lines(o.stdout), rest -> { fail reclaim_no_cwds() } },
     }
 }
 
@@ -185,15 +182,18 @@ fn named_lines(text: string) -> Result<List<string>, string> {
 /// could not make only when asked (`-v`), and in the C locale's words: quiet, a refused read is
 /// silence, and silence read as "no process here" retires a busy tree.
 fn proc_cwds() -> Result<List<string>, string> {
-    if !is_dir("/proc/self") { fail reclaim_no_cwds() }
     let pids = [n for n in list_dir("/proc") catch [] if parse_int(n) != null]
-    let out = match in_c_locale("readlink", ["-v"].concat(["/proc/${p}/cwd" for p in pids])) {
-        .Ok(o) -> o,
-        .Err(e) -> match e { .Failed(_, o) -> o, rest -> { fail reclaim_no_cwds() } },
-    }
+    let out = match in_c_locale(
+        "sh",
+        ["-c", ONE_BY_ONE, "cwds"].concat(["/proc/${p}/cwd" for p in pids]),
+    ) { .Ok(o) -> o, .Err(e) -> match e { .Failed(_, o) -> o, rest -> { fail reclaim_no_cwds() } } }
     if out.stderr.contains("Permission denied") { fail reclaim_unseen() }
     [l for l in out.stdout.split("\n") if l != ""]
 }
+
+/// Each link named read by a `readlink` of its own, so the reader never rests on how many names one
+/// `readlink` answers for.
+const ONE_BY_ONE: string = "for l; do readlink -v \"\$l\"; done"
 
 /// A reader run with the C locale's words, which its refusals are recognized by.
 fn in_c_locale(name: string, words: List<string>) -> Result<Output, ProcessError> {
