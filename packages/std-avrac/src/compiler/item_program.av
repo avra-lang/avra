@@ -3202,7 +3202,13 @@ enum BodyAsked {
         name: string,
         statics: bool,
     )
-    Default(of: SourceFileAddress, owner: string, name: string, written_as: string?)
+    Default(
+        of: SourceFileAddress,
+        owner: string,
+        name: string,
+        written_as: string?,
+        under: List<ParameterLayout>?,
+    )
     TraitStatic(of: SourceFileAddress, owner: string, name: string)
     Method(at: ImplAt, name: string, statics: bool, under: List<ParameterLayout>?)
     EveryVariant(of: SourceFileAddress, owner: string, name: string)
@@ -3241,7 +3247,7 @@ fn body_asked(engine: QueryEngine, c: CalledFn) -> BodyAsked {
 fn declared_asked(engine: QueryEngine, c: CalledFn) -> BodyAsked {
     let under = if c.parameters.is_empty() { null } else { c.parameters }
     let of? = c.of else { return if c.settled.is_empty() { BodyAsked.Under(c.file, c.name, under) } else { BodyAsked.Settled(c.file, c.name, under, c.settled) } }
-    if c.given_by != null { return BodyAsked.Default(of, c.owner!, c.name, c.given_in) }
+    if c.given_by != null { return BodyAsked.Default(of, c.owner!, c.name, c.given_in, under) }
     if c.statics && lowered_trait_static(engine, of, c.owner!, c.name) != null { return BodyAsked.TraitStatic(of, c.owner!, c.name) }
     let at? = impls_given(engine, of, c.owner!, c.name, c.statics, c.file.package_name)
         .find((i) -> c.given_in == null || impl_given(engine, i) == c.given_in) else {
@@ -3258,7 +3264,7 @@ fn asked_body(engine: QueryEngine, asked: BodyAsked) -> LoweredFn? {
         .FieldDefault(file, owner, name, under) -> lowered_field_default(engine, file, owner, name, under),
         .SeatDefault(file, owner, name) -> lowered_seat_default(engine, file, owner, name),
         .MethodSeatDefault(of, owner, method, name, statics) -> lowered_method_seat_default(engine, of, owner, method, name, statics),
-        .Default(of, owner, name, written_as) -> lowered_default(engine, of, owner, name, written_as),
+        .Default(of, owner, name, written_as, under) -> lowered_default(engine, of, owner, name, written_as, under),
         .TraitStatic(of, owner, name) -> lowered_trait_static(engine, of, owner, name),
         .Method(at, name, statics, under) -> lowered_method_under(engine, at, name, statics, under, []),
         .EveryVariant(of, owner, name) -> lowered_every_variant(engine, of, owner, name),
@@ -3298,7 +3304,7 @@ fn asked_question(engine: QueryEngine, asked: BodyAsked) -> Question? {
         .FieldDefault(file, owner, name, under) -> lowered_field_default_question(engine, file, owner, name, under),
         .SeatDefault(file, owner, name) -> lowered_seat_default_question(engine, file, owner, name),
         .MethodSeatDefault(of, owner, method, name, statics) -> lowered_method_seat_default_question(engine, of, owner, method, name, statics),
-        .Default(of, owner, name, written_as) -> lowered_default_question(engine, of, owner, name, written_as),
+        .Default(of, owner, name, written_as, under) -> lowered_default_question(engine, of, owner, name, written_as, under),
         .TraitStatic(of, owner, name) -> lowered_trait_static_question(engine, of, owner, name),
         .Method(at, name, statics, under) -> lowered_method_under_question(engine, at, name, statics, under, []),
         .EveryVariant(of, owner, name) -> lowered_every_variant_question(engine, of, owner, name),

@@ -1,7 +1,16 @@
 //! WHAT A TRAIT'S OWN BODY GIVES: a method a type never writes, answered by the one trait it
 //! implements that writes a body for it. That body is lowered once per type it answers for, `Self`
 //! and the receiver that type, its unit named for the trait, the method and the type.
-use core.{CalledFn, DefaultSeats, SignedType, StmtId, TypeHead, TypeRef, headed_type}
+use core.{
+    CalledFn,
+    DefaultSeats,
+    ParameterLayout,
+    SignedType,
+    StmtId,
+    TypeHead,
+    TypeRef,
+    headed_type,
+}
 use @std.program.address.{SourceFileAddress}
 use @std.program.query_engine.{QueryDefinition, QueryEngine}
 use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definition}
@@ -10,47 +19,54 @@ use @std.program.saved_query.{ListedQuery, definitions_of, query, query_definiti
 /// the arguments the impl applies it to, and the trait as the impl writes it (`Realize<Text>`).
 export type DefaultGiver = { at: ImplAt, giver: TraitAt, args: List<SignedType>, written: string }
 
-/// Each impl applied to nothing that makes the type `file` declares as `owner` implement a trait
-/// whose own body gives the method `method`.
+/// Each impl that makes the type `file` declares as `owner` implement a trait whose own body gives the
+/// method `method`: those applied to nothing, and with `generic` those over type parameters too.
 export fn default_givers(
     engine: QueryEngine,
     file: SourceFileAddress,
     owner: string,
     method: string,
+    generic: bool = false,
 ) -> List<DefaultGiver> {
     [DefaultGiver {
         at: i.at,
         giver: i.implements!,
         args: impl_trait_args(engine, i.at),
         written: impl_given(engine, i.at) ?? i.implements!.name,
-    } for i in impls_of(engine, file, owner) if i.at.params.is_empty() &&
+    } for i in impls_of(engine, file, owner) if (generic || i.at.params.is_empty()) &&
         i.implements != null &&
         given_body(engine, i.implements!, method) != null]
 }
 
 /// The one giver of the method `method` to the type `file` declares as `owner`, or among several the
-/// one whose trait is written `written_as`; absent where none is.
+/// one whose trait is written `written_as`, with `generic` one over type parameters too; absent where
+/// none is.
 export fn default_giver(
     engine: QueryEngine,
     file: SourceFileAddress,
     owner: string,
     method: string,
     written_as: string? = null,
+    generic: bool = false,
 ) -> DefaultGiver? {
-    let all = default_givers(engine, file, owner, method)
+    let all = default_givers(engine, file, owner, method, generic)
     if written_as != null { return all.find(it.written == written_as) }
     if all.length == 1 { all[0] } else { null }
 }
 
 /// The method `method` the giver `g` gives, signed with `Self` `receiver` and the trait's own type
-/// parameters the arguments the impl applies it to.
+/// parameters the arguments the impl applies it to; over an impl's type parameters, those are the
+/// signature's, and a method declaring type parameters of its own there has none.
 export fn given_signature(
     engine: QueryEngine,
     g: DefaultGiver,
     method: string,
     receiver: SignedType,
 ) -> FnSignature? {
-    if g.args.is_empty() { trait_method_signature(engine, g.giver, method, receiver) } else { applied_trait_fn(engine, g.giver, method, false, receiver, g.args) }
+    let s? = (if g.args.is_empty() { trait_method_signature(engine, g.giver, method, receiver) } else { applied_trait_fn(engine, g.giver, method, false, receiver, g.args) }) else { return null }
+    if g.at.params.is_empty() { return s }
+    if !s.type_params.is_empty() { return null }
+    s with { type_params: g.at.params }
 }
 
 /// What the one impl that makes the type `file` declares as `owner` implement a generic trait whose
@@ -113,12 +129,12 @@ fn given_callee(
     method: string,
     written_as: string? = null,
 ) -> CalledFn? {
-    let g? = default_giver(engine, file, owner, method, written_as) else { return null }
+    let g? = default_giver(engine, file, owner, method, written_as, true) else { return null }
     let giver = g.giver
     let written? = given_body(engine, giver, method) else { return null }
     let parts = written.item.store.fn_parts(written.stmt)!
     let used = receiver_use(engine, file, owner, method, giver.file.package_name)
-    let receiver = headed_type(TypeHead.Declared(file, owner))
+    let receiver = receiver_over(file, owner, g.at.params)
     CalledFn {
         file: giver.file,
         name: method,
@@ -131,13 +147,15 @@ fn given_callee(
         writes: used.written(),
         unproved: used.unproved(),
         given_by: giver.name,
+        type_params: g.at.params.length,
         params: signed_seats(given_signature(engine, g, method, receiver)?.params ?? []),
     }
 }
 
 /// The body the one trait the type `file` declares as `owner` implements gives the method `method`,
-/// or among several the one written `written_as`, lowered with `Self` and the receiver that type and the
-/// trait's parameters what its impl applies it to. Absent when no such trait gives it a body.
+/// or among several the one written `written_as`, lowered with `Self` and the receiver that type over
+/// its impl's type parameters, laid as `parameters` says, and the trait's parameters what its impl
+/// applies it to. Absent when no such trait gives it a body.
 @query("lower")
 export fn lowered_default(
     engine: QueryEngine,
@@ -145,11 +163,12 @@ export fn lowered_default(
     owner: string,
     method: string,
     written_as: string?,
+    parameters: List<ParameterLayout>?,
 ) -> LoweredFn? {
-    let g? = default_giver(engine, file, owner, method, written_as) else { return null }
+    let g? = default_giver(engine, file, owner, method, written_as, true) else { return null }
     let giver = g.giver
     let written? = given_body(engine, giver, method) else { return null }
-    let receiver = headed_type(TypeHead.Declared(file, owner))
+    let receiver = receiver_over(file, owner, g.at.params)
     let signature? = given_signature(engine, g, method, receiver) else { return null }
     lowered_signed(
         engine,
@@ -163,7 +182,7 @@ export fn lowered_default(
             receiver_written: receiver_use(engine, file, owner, method, giver.file.package_name).written(),
         },
         given_unit(giver, method, file, owner, written_as),
-        null,
+        parameters,
     )
 }
 

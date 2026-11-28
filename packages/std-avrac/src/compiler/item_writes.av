@@ -303,13 +303,15 @@ fn trait_marked(engine: QueryEngine, t: TraitAt, name: string) -> bool? {
 /// The evidence of the method `m` as the one trait its type implements that gives it a body writes it:
 /// one body, however many impls apply the trait to arguments.
 fn defaulted(engine: QueryEngine, m: MethodAt) -> Evidence {
-    let traits = [i.implements! for i in impls_of(engine, m.file, m.owner) if i.at.params.is_empty() && i.implements != null]
+    let impls = [i for i in impls_of(engine, m.file, m.owner) if i.implements != null]
+    let traits = [i.implements! for i in impls]
     let giving = [t for j, t in traits if gives(engine, t, m.name) && !traits.take(j).any(it == t)]
     if giving.length != 1 { return unread(not_one_impl(m)) }
+    let at? = impls.find(it.implements == giving[0]) else { return unread(not_one_impl(m)) }
     let item? = trait_item(engine, giving[0]) else { return unread(not_one_impl(m)) }
     let s? = trait_fns(item)
         .find((f) -> item.store.fn_parts(f)?.name == m.name && !item.store.is_static(f)) else { return unread(not_one_impl(m)) }
-    let receiver = headed_type(TypeHead.Declared(m.file, m.owner))
+    let receiver = receiver_over(m.file, m.owner, at.at.params)
     fns_evidence(
         engine,
         giving[0].file,

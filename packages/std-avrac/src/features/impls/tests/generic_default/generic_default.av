@@ -1,0 +1,49 @@
+// proves: a trait's own body reaches a type over parameters as it reaches one applied to nothing —
+// a default answering the impl's parameter, one default at two arguments, an argument that is itself
+// the generic type, a `mut` default writing through its receiver, and a default calling another.
+trait Stack<V> {
+    fn items() -> List<V>
+    mut fn pushed(v: V)
+    fn top() -> V? { self.items().last() }
+    fn depth() -> int { self.items().length }
+    fn deep() -> bool { self.depth() > 1 }
+    mut fn twice(v: V) {
+        self.pushed(v)
+        self.pushed(v)
+    }
+}
+
+type Pile<V> = { held: Cell<List<V>> }
+
+impl Stack<V> for Pile<V> {
+    fn items() -> List<V> { self.held.get() }
+    mut fn pushed(v: V) { self.held.push(v) }
+}
+
+fn pile<V>(xs: List<V>) -> Pile<V> { Pile { held: Cell.new(xs) } }
+
+fn words() -> string {
+    mut p = pile([1, 2])
+    p.twice(7)
+    "${p.top() ?? -1} ${p.depth()} ${p.deep()}"
+}
+
+fn texts() -> string {
+    mut p = pile(["a"])
+    let before = p.deep()
+    p.twice("b")
+    "${p.top() ?? "none"} ${p.depth()} ${before} ${p.deep()}"
+}
+
+fn piles() -> string {
+    mut outer = pile([pile([1]), pile([2, 3])])
+    outer.pushed(pile([4, 5, 6]))
+    "${outer.depth()} ${outer.top()?.depth() ?? -1} ${outer.top()?.top() ?? -1}"
+}
+
+fn empty() -> string {
+    let p: Pile<int> = pile([])
+    "${p.top() == null} ${p.depth()} ${p.deep()}"
+}
+
+"${words()} | ${texts()} | ${piles()} | ${empty()}"
