@@ -2,7 +2,18 @@
 //! arguments; else the method's first seat takes the subject and each argument its own seat, as a
 //! call's do, and the call is what the method answers; else a static fn of the subject's type is
 //! called through it.
-use core.{Checking, Checks, ExprId, Expected, FOLD, GRAMMAR_PARSE, Refused, Seating, SignedType}
+use core.{
+    OwnType,
+    Checking,
+    Checks,
+    ExprId,
+    Expected,
+    FOLD,
+    GRAMMAR_PARSE,
+    Refused,
+    Seating,
+    SignedType,
+}
 use core.expr.{MethodCall}
 
 impl Checks for MethodCall {
@@ -38,9 +49,9 @@ impl Checks for MethodCall {
 /// value that takes its type from its seat checked in it — and the call is the cell the seat wants.
 /// Absent for any other call.
 fn cell_made(mut cx: Checking, m: MethodCall, described: SignedType, expected: Expected) -> SignedType? {
-    if described.owned() != "Cell" || m.name.of != "new" || m.args.length != 1 { return null }
+    if !described.owns(OwnType.Cell) || m.name.of != "new" || m.args.length != 1 { return null }
     let want? = match expected { .Exactly(t) -> t, rest -> null } else { return null }
-    if want.owned() != "Cell" { return null }
+    if !want.owns(OwnType.Cell) { return null }
     let held? = want.args.first() else { return null }
     let v = m.args[0]
     if takes_its_seat(cx, v) {
@@ -130,7 +141,7 @@ fn method_called(
             declares,
             [cx.written(p) for p in pins],
         )
-    if subject.owned() == "List" { cx.list_verb_seated(e, m.name.of, m.args, subject, applying) }
+    if subject.owns(OwnType.List) { cx.list_verb_seated(e, m.name.of, m.args, subject, applying) }
     if subject.head is .Declared { cx.default_seated(e, m.name.of, m.args, subject, applying) }
     answer
 }
@@ -246,7 +257,7 @@ fn parameter_place(p: SignedType) -> int { match p.head { .Parameter(at, _) -> a
 
 /// Whether `method` on a value of `subject` is a walk: a list's own verb handed one fn of the element.
 fn walk_verb(subject: SignedType, method: SignedType) -> bool {
-    if subject.owned() != "List" || method.seats.length != 2 { return false }
+    if !subject.owns(OwnType.List) || method.seats.length != 2 { return false }
     let f = method.seats[1].ty
     f.head is .Function && f.seats.length == 1
 }

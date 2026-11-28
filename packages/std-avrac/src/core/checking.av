@@ -901,7 +901,7 @@ impl CheckedProgram {
     fn enum_shape(ty: SignedType) -> EnumShape? {
         if ty.nullable() || ty.dynamic { return null }
         match ty.head {
-            .Owned(name) -> if name == "Result" { result_shape() } else { null },
+            .Owned(name) -> if own_among(name, [OwnType.Result]) { result_shape() } else { null },
             rest -> (self.enum_of)(ty),
         }
     }
@@ -961,8 +961,8 @@ export fn walk_binds(subject: SignedType?) -> WalkBinds {
     if element != null { return WalkBinds { index: owned_type("int"), element: element } }
     let value = s.mapped()
     if value != null { return WalkBinds { index: s.args[0], element: value } }
-    if s.word() == "Bytes" && !s.nullable() { return WalkBinds { index: owned_type("int"), element: owned_type("int") } }
-    if s.word() == "Range" && !s.nullable() { return WalkBinds { element: owned_type("int") } }
+    if s.owns(OwnType.Bytes) { return WalkBinds { index: owned_type("int"), element: owned_type("int") } }
+    if s.owns(OwnType.Range) { return WalkBinds { element: owned_type("int") } }
     let item? = supplied(s) else { return WalkBinds {} }
     WalkBinds { element: item }
 }
@@ -1849,8 +1849,7 @@ impl Checking {
         if self.store.expr(v).bits_of() != null { return null }
         let got? = self.check(v, Expected.Free) else { return null }
         let seen = self.named_over(s) ?? s
-        if got.absence() && seen.nullable() ||
-            got.spelled() == "string" && seen.spelled() == "Bytes" { return null }
+        if got.absence() && seen.nullable() || got.owns(OwnType.Str) && seen.owns(OwnType.Bytes) { return null }
         if got.spelled() == seen.spelled() { null } else { got }
     }
 
@@ -4516,10 +4515,23 @@ export fn makes_key(cx: Checking, ty: SignedType) -> bool {
 }
 
 /// The types of the language's own that compare by value: a `ptr` by its address, which is its value.
-const COMPARED: List<string> = ["int", "float", "bool", "string", "Bytes", "ptr"]
+/// Whether the word a language-owned head carries spells one of `xs`.
+fn own_among(word: string, xs: List<OwnType>) -> bool {
+    let o? = own_type_named(word) else { return false }
+    xs.contains(o)
+}
+
+const COMPARED: List<OwnType> = [
+    OwnType.Int,
+    OwnType.Float,
+    OwnType.Bool,
+    OwnType.Str,
+    OwnType.Bytes,
+    OwnType.Ptr,
+]
 
 /// The language's own types a map files as its keys: text, and the words.
-export const MAP_KEYS: List<string> = ["string", "int", "bool"]
+export const MAP_KEYS: List<OwnType> = [OwnType.Str, OwnType.Int, OwnType.Bool]
 
 /// Whether `shape` is an enum whose variants carry nothing.
 fn word_enum(shape: EnumShape?) -> bool {
@@ -4533,7 +4545,7 @@ fn word_enum(shape: EnumShape?) -> bool {
 export fn files_as_key(ty: SignedType, enum_of: fn(SignedType) -> EnumShape?) -> bool {
     if ty.nullable() || ty.dynamic || !ty.args.is_empty() { return false }
     match ty.head {
-        .Owned(word) -> MAP_KEYS.contains(word),
+        .Owned(word) -> own_among(word, MAP_KEYS),
         .Declared(_, _) -> word_enum(enum_of(ty)),
         .Parameter(_, _) -> true,
         .Unnamed(_) or .Inferred or .Function or .Union or .Never or .Meta -> false,
@@ -4565,8 +4577,10 @@ impl Shapes {
         if ty.dynamic { return false }
         match ty.head {
             .Owned(word) -> when {
-                ty.args.is_empty() -> COMPARED.contains(word) && !(part && word == "float")
-                word == "List" -> ty.args.length == 1 && self.compared(ty.args[0], seen, true)
+                ty.args.is_empty() -> own_among(word, COMPARED) &&
+                    !(part && own_among(word, [OwnType.Float]))
+                own_among(word, [OwnType.List]) -> ty.args.length == 1 &&
+                    self.compared(ty.args[0], seen, true)
                 _ -> false
             },
             .Declared(_, _) -> {
@@ -4606,7 +4620,7 @@ impl Shapes {
         if ty.nullable() { return self.compares_flat(ty.unwrapped()) }
         if ty.dynamic || !ty.args.is_empty() { return false }
         match ty.head {
-            .Owned(word) -> COMPARED.contains(word),
+            .Owned(word) -> own_among(word, COMPARED),
             .Declared(_, _) -> self.unit_enum(ty) || self.one_flat_field(ty),
             .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Union or .Never or .Meta -> false,
         }
@@ -4768,7 +4782,7 @@ fn walk_named(owner: string, name: string, at: int, call: int, want: SignedType,
     let element = taken_apart(want, found)
     if element != null { return Seating.Unwalked(name, element!, call) }
     let got = found.answer
-    if want.answer?.owned() == "bool" && got != null && got!.spelled() != "bool" { return Seating.Unpredicated(name, got!.spelled(), call) }
+    if want.answer?.owns(OwnType.Bool) ?? false && got != null && !got!.owns(OwnType.Bool) { return Seating.Unpredicated(name, got!.spelled(), call) }
     Seating.Method(owner, name, at)
 }
 

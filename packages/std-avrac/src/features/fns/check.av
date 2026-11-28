@@ -7,6 +7,7 @@
 //! fully-bound param falls back to the ordinary assignment law, and
 //! the representation laws re-judge every substituted slot.
 use core.{
+    OwnType,
     void_ref,
     EmbedKind,
     EmbedBase,
@@ -263,12 +264,12 @@ export fn written_ret(hret: TypeRef) -> TypeRef? {
 /// both, and the program tests beside `features/bytes` pin it.
 export fn fits_box(t: TypeRef?, b: Box) -> bool {
     let written? = t else { return false }
-    if written.name == "ptr" { return true }
+    if written.names_builtin(OwnType.Ptr) { return true }
     match b {
         .Any -> true,
-        .Text or .Bytes -> headered_text(written.name),
-        .List -> written.name == "List",
-        .Map -> written.name == "Map",
+        .Text or .Bytes -> written.names_builtin(OwnType.Str) || written.names_builtin(OwnType.Bytes),
+        .List -> written.names_builtin(OwnType.List),
+        .Map -> written.names_builtin(OwnType.Map),
     }
 }
 
@@ -1067,10 +1068,6 @@ fn seat_not_the_box(mut cx: TypeCx, s: StmtId, row: RtSig, j: int, pp: Param) {
 }
 
 /// The two names a headered text or octet box wears at a seat.
-fn headered_text(name: string) -> bool {
-    name == "string" || name == "Bytes"
-}
-
 export fn box_word(b: Box) -> string {
     match b {
         .Any -> "any box",

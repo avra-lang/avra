@@ -3,6 +3,7 @@
 //! text is what its expansion is, the calls its grammar's actions name, its holes among their
 //! arguments; one its grammar didn't expand has only its holes, and what it is isn't named here.
 use core.{
+    Known,
     BodyBehavior,
     HoleFault,
     Checking,
@@ -96,7 +97,14 @@ fn holes_judged(mut cx: Checking, e: ExprId, holes: List<ExprId>, types: List<Si
 
 /// Whether a hole fills with a node of the tree being rewritten: an `ExprId`, a `PatId`, or a
 /// meaning's handle on one.
-fn names_a_node(ty: SignedType) -> bool { ty.nulls == 0 && (ty.word() == "ExprId" || ty.word() == "PatId" || ty.word() == "TypedCode") }
+fn names_a_node(ty: SignedType) -> bool { ty.nulls == 0 && NODE_HANDLES.any(it.heads(ty.head)) }
+
+/// The compiler's handles on a node of the tree a hole fills.
+const NODE_HANDLES: List<Known> = [
+    Known { package: "@std/avrac", name: "ExprId" },
+    Known { package: "@std/avrac", name: "PatId" },
+    Known { package: "@std/avrac", name: "TypedCode" },
+]
 
 /// An expression quoted over no node: `Code`, or `Stmts` where its seat wants statements.
 fn expression_quoted(cx: Checking, expected: Expected) -> SignedType? {
