@@ -34,6 +34,13 @@ component Miscounted {
     flags ["--secs=x"]
 }
 
+/// A value written apart from its flag, as a shell habit spells it.
+@derive(Decode)
+component Spaced {
+    secs: int = 0
+    flags ["--secs", "4"]
+}
+
 type Ladder = {}
 
 impl Runnable for Ladder {
@@ -70,7 +77,7 @@ spec "std/config — a command's options are one config" {
         }
         then "the help names each leaf as its option, with its doc" {
             let help = command_help(app(), ladder())
-            ["--base <value>", "--secs <value>", "--cold <value>", "--tree.dir <value>"]
+            ["--base=<value>", "--secs=<value>", "--cold=<value>", "--tree.dir=<value>"]
                     .all((o) -> help.contains(o)) &&
                 help.contains("The bound of one rung, in seconds.") &&
                 help.contains("The directory the tree stands in.")
@@ -85,6 +92,14 @@ spec "std/config — a command's options are one config" {
             match settings_of<Rungs>() {
                 .Ok(l) -> l.value.base == "q" && l.value.secs == 3 && l.value.cold && l.value.tree.dir == "/x",
                 .Err(_) -> false,
+            }
+        }
+        then "a flag spelled apart from its value is refused in the words the help prints" {
+            match settings_of<Spaced>() {
+                .Ok(_) -> false,
+                .Err(u) -> u.report().contains("config.flag_unset") &&
+                    u.report().contains("--secs=<value>") &&
+                    command_help(app(), ladder()).contains("--secs=<value>"),
             }
         }
         then "a value its type cannot read is the config's issue" {

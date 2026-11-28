@@ -39,12 +39,15 @@ export component flag {
 }
 
 /// A named value: `--name v`, `--name=v` or `-s v`; `default` stands
-/// when the line omits it.
+/// when the line omits it. `form` is how the help writes it when another
+/// reader owns its grammar (a config's `--name=<value>`); empty is
+/// `--name <value>`.
 export component option {
     name: string
     short: string = ""
     description: string = ""
     default: string = ""
+    form: string = ""
 }
 
 /// A positional. A variadic one absorbs every remaining positional;
@@ -314,7 +317,7 @@ export fn command_help(app: cli, meta: command) -> string {
 
 fn usage_of(app: cli, meta: command) -> string {
     let flags = [" [${spelled(f.name)}]" for f in meta.flags].join("")
-    let options = [" [${spelled(o.name)} <value>]" for o in meta.options].join("")
+    let options = [" [${option_written(o)}]" for o in meta.options].join("")
     let args = [" ${arg_word(a)}" for a in meta.args].join("")
     "usage: ${app.name} ${meta.name}${flags}${options}${args}"
 }
@@ -345,10 +348,12 @@ fn options_help(meta: command) -> List<string> {
 }
 
 fn option_spelling(o: option) -> string {
-    let name = "${spelled(o.name)} <value>"
-    if o.short.length == 0 { return name }
-    "${spelled(o.short)}, ${name}"
+    if o.short.length == 0 { return option_written(o) }
+    "${spelled(o.short)}, ${option_written(o)}"
 }
+
+/// An option as the help writes it: its `form`, or `--name <value>`.
+fn option_written(o: option) -> string { if o.form == "" { "${spelled(o.name)} <value>" } else { o.form } }
 
 fn option_words(o: option) -> string {
     if o.default.length == 0 { return o.description }

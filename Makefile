@@ -620,10 +620,10 @@ compiler:
 	  [ -z "$(strip $(RUNGS))" ] || cp build/avra build/avra-ladder; \
 	elif [ -n "$(strip $(RUNGS))" ]; then \
 	  [ -x build/avra ] || $(MAKE) -s recover || { echo "compiler: the ladder has no start — none stands and the seed did not link"; exit 1; }; \
-	  product=$$(./wisp ladder build/avra $(RUNGS) --base="$(LADDER_BASE)" --seconds=$(LADDER_BOUND) --dir="$(LADDER_DIR)") \
+	  product=$$(./wisp --compiler build/avra ladder build/avra $(RUNGS) --base="$(LADDER_BASE)" --seconds=$(LADDER_BOUND) --dir="$(LADDER_DIR)") \
 	    || { echo "compiler: the ladder failed — a rung did not build with the compiler of the rung before it"; exit 1; }; \
 	  cp "$$product" build/avra-ladder && cp "$$product" build/avra.next && mv -f build/avra.next build/avra; \
-	  ./wisp ladder_clean --dir="$(LADDER_DIR)"; \
+	  ./wisp --compiler build/avra ladder_clean --dir="$(LADDER_DIR)"; \
 	  gens || { echo "compiler: the ladder's product did not build this tree — no seed can read a rung"; exit 1; }; \
 	elif [ -x build/avra ] && gens; then :; else \
 	  if [ -n "$(STORE_ASIDE)" ] && [ -d .avra-cache ]; then mv .avra-cache "$(STORE_ASIDE)"; fi; \

@@ -1,0 +1,33 @@
+// The fixtures the wisp suites share: a shell line, a scratch directory under the system's temporary
+// one, and that directory gone again.
+use @std.io.{is_dir, list_dir, remove}
+use @std.process.{cmd, inherited, tool}
+
+/// A shell line run in `dir`, its stdout trimmed; "" when it failed.
+fn shell(dir: string, line: string) -> string {
+    let sh = tool("sh") catch { return "" }
+    let o = (cmd(sh, ["-c", line]) with { cwd: dir, env: inherited() }).run() catch { return "" }
+    o.stdout.trim()
+}
+
+/// A fresh directory `mktemp -d` makes: its real path.
+fn scratch_dir() -> string { shell("/tmp", "cd \"\$(mktemp -d)\" && pwd -P") }
+
+/// A directory `scratch_dir` made, and everything under it, gone. Only a `mktemp` directory is
+/// removed, and a link is removed as a link, never followed.
+fn cleared(root: string) -> bool {
+    let name = root.split("/").last() ?? ""
+    name.starts_with("tmp.") && resolved(root) == root && gone(root)
+}
+
+/// A path and everything under it gone: a directory is entered only where its real path is the
+/// path itself, so a link to one elsewhere is unlinked and nothing behind it is touched.
+fn gone(path: string) -> bool {
+    if is_dir(path) && resolved(path) == path {
+        for name in list_dir(path) catch [] { let _ = gone("${path}/${name}") }
+    }
+    remove(path) is .Ok
+}
+
+/// `path` as the host resolves it, "" when it is not there.
+fn resolved(path: string) -> string { shell("/", "realpath -- '${path}'") }

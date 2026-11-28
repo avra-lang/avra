@@ -106,6 +106,19 @@ fn sweep_spec() -> command {
     }
 }
 
+/// An option whose grammar another reader owns, written in that reader's form.
+fn formed_spec() -> command {
+    command {
+        name: "climb"
+        option {
+            name: "base"
+            description: "the base"
+            form: "--base=<value>"
+        }
+        run: Answers { code: 0 }
+    }
+}
+
 /// A line read against `sweep` alone.
 fn swept(words: List<string>) -> CliResult {
     let tool = cli {
@@ -151,6 +164,11 @@ spec "std/cli" {
                     .starts_with("usage: tool sweep [--dry-run] [--max-depth <value>]") &&
                 command_help(app(), sweep_spec()).contains("\n  --dry-run  say what would go") &&
                 !command_help(app(), sweep_spec()).contains("_")
+        }
+        then "an option with a form is written by it, in the usage and the help alike" {
+            command_help(app(), formed_spec()).starts_with("usage: tool climb [--base=<value>]") &&
+                command_help(app(), formed_spec()).contains("\n  --base=<value>  the base") &&
+                !command_help(app(), formed_spec()).contains("--base <value>")
         }
         then "a flag asked for with its dashes answers the same" {
             parsed(["check", "--time", "m.av"]).has_flag("--time")

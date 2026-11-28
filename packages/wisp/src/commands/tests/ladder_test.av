@@ -1,19 +1,11 @@
 // The ladder over a repository of its own: every repository, worktree and scratch directory here is
 // made fresh under `mktemp -d`, never the tree's.
 use @std.io.{exists, read_text}
-use @std.process.{cmd, inherited, tool}
 use commands.{LadderFlags, cleaned, climbed}
 
 /// A fixture's repository and the commits it holds: two rungs that copy the compiler they are handed
 /// and stamp it, a rung that does not build, a rung begun before its base moved, and that base.
 type Fixture = { root: string, repo: string, start: string, one: string, two: string, broken: string, stale: string, base: string }
-
-/// A shell line run in `dir`, its stdout trimmed; "" when it failed.
-fn shell(dir: string, line: string) -> string {
-    let sh = tool("sh") catch { return "" }
-    let o = (cmd(sh, ["-c", line]) with { cwd: dir, env: inherited() }).run() catch { return "" }
-    o.stdout.trim()
-}
 
 /// A commit of everything in the fixture's repository, with a `Rung:` trailer when `why` is not
 /// empty: its sha.
@@ -26,7 +18,7 @@ fn committed(repo: string, subject: string, why: string) -> string {
 }
 
 fn fixture() -> Fixture {
-    let root = shell("/tmp", "mktemp -d")
+    let root = scratch_dir()
     let repo = "${root}/repo"
     let _ = shell(
         root,
@@ -71,14 +63,18 @@ fn stamps(path: string, word: string) -> int { (read_text(path) catch "").split(
 
 fn registered(f: Fixture, dir: string) -> bool { shell(f.repo, "git worktree list").contains("${f.root}/${dir}") }
 
+/// A fixture's check, then the fixture gone: a case passes only when both hold.
+fn checked(f: Fixture, ok: bool) -> bool { cleared(f.root) && ok }
+
 spec "wisp ladder — each rung built by the one before" {
     given "two rungs" {
         then "each product is built by the one before, from the start" {
             let f = fixture()
-            match climbed(f.start, [f.one, f.two], at(f, "work", "")) {
+            let ok = match climbed(f.start, [f.one, f.two], at(f, "work", "")) {
                 .Ok(product) -> stamps(product, "built-by-previous") == 2,
                 .Err(_) -> false,
             }
+            checked(f, ok)
         }
         then "a built ladder's scratch stands until its caller cleans it, and then nothing is left" {
             let f = fixture()
@@ -87,50 +83,54 @@ spec "wisp ladder — each rung built by the one before" {
             let gone = cleaned(at(f, "work", "")) is .Ok &&
                 !exists("${f.root}/work") &&
                 !registered(f, "work")
-            built && gone
+            checked(f, built && gone)
         }
     }
     given "a rung that does not build" {
         then "the ladder names the rung and stops" {
             let f = fixture()
-            match climbed(f.start, [f.broken], at(f, "work", "")) {
+            let ok = match climbed(f.start, [f.broken], at(f, "work", "")) {
                 .Ok(_) -> false,
                 .Err(why) -> why.contains("rung 1 did not build"),
             }
+            checked(f, ok)
         }
         then "and leaves no scratch behind" {
             let f = fixture()
             let _ = climbed(f.start, [f.broken], at(f, "work", ""))
-            !exists("${f.root}/work") && !registered(f, "work")
+            checked(f, !exists("${f.root}/work") && !registered(f, "work"))
         }
     }
     given "a base" {
         then "a rung begun before the base moved does not build on its own tree" {
             let f = fixture()
-            climbed(f.start, [f.stale], at(f, "work", "")) is .Err
+            checked(f, climbed(f.start, [f.stale], at(f, "work", "")) is .Err)
         }
         then "and is replayed on the base, where it builds" {
             let f = fixture()
-            match climbed(f.start, [f.stale], at(f, "work", f.base)) {
+            let ok = match climbed(f.start, [f.stale], at(f, "work", f.base)) {
                 .Ok(product) -> stamps(product, "built-on-base") == 1,
                 .Err(_) -> false,
             }
+            checked(f, ok)
         }
         then "a rung the base holds is no rung: the product is the start" {
             let f = fixture()
-            match climbed(f.start, [f.one], at(f, "work", f.base)) {
+            let ok = match climbed(f.start, [f.one], at(f, "work", f.base)) {
                 .Ok(product) -> product.ends_with("/start") && stamps(product, "built") == 0,
                 .Err(_) -> false,
             }
+            checked(f, ok)
         }
     }
     given "a bound" {
         then "a ladder with no seconds left builds no rung" {
             let f = fixture()
-            match climbed(f.start, [f.one], at(f, "work", "") with { seconds: 0 }) {
+            let ok = match climbed(f.start, [f.one], at(f, "work", "") with { seconds: 0 }) {
                 .Ok(_) -> false,
                 .Err(why) -> why.contains("bound passed before rung 1"),
             }
+            checked(f, ok)
         }
     }
 }
