@@ -71,8 +71,16 @@ if [ -n "${CENSUS_EDIT:-}" ]; then
     sh tools/memcap.sh "${CENSUS_CAP_MB:-4000}" "$census" "$@" > build/census-cold.out 2>&1 || { tail -5 build/census-cold.out; echo "census: the cold run failed"; exit 1; }
     sh -c "$CENSUS_EDIT"
 fi
-out="$(AVRA_MEM_STATS=1 AVRA_CENSUS_SITES=1 sh tools/memcap.sh "${CENSUS_CAP_MB:-4000}" "$census" "$@" 2>&1 >/dev/null \
-    | tee build/census-raw.out | grep -Ev '^(mem:|memcap:)' || true)"
+# A RUN THAT DID NOT FINISH COUNTS NOTHING: its status is kept beside its words, and a run the cap killed —
+# or that failed — is refused by name, never read for the counts it printed before it stopped
+out="$( { AVRA_MEM_STATS=1 AVRA_CENSUS_SITES=1 sh tools/memcap.sh "${CENSUS_CAP_MB:-4000}" "$census" "$@" 2>&1 >/dev/null; echo "census-status $?"; } \
+    | tee build/census-raw.out | grep -Ev '^(mem:|memcap:|census-status )' || true)"
+ran=$(sed -n 's/^census-status //p' build/census-raw.out)
+if [ "${ran:-1}" != 0 ]; then
+    grep '^memcap: KILLED' build/census-raw.out || printf '%s\n' "$out" | tail -5
+    echo "census: the run did not finish (status ${ran:-unknown}), so none of its counts are read — a cap kill is raised with CENSUS_CAP_MB=<MB>"
+    exit 1
+fi
 printf '%s\n' "$out" | grep -q '^rc:' || { printf '%s\n' "$out" | tail -5; echo "census: the run printed no counts"; exit 1; }
 
 # THE STORE'S BYTES, read while the census run's own store stands (the exit trap puts the tree's
