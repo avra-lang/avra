@@ -44,22 +44,30 @@ export AVRA_HASH_SEED=1
 out=build/cost
 snapshot=${COST_SNAPSHOT:-$(cat cost/SNAPSHOT 2> /dev/null)}
 [ -n "$snapshot" ] || { echo "cost: cost/SNAPSHOT names no snapshot"; exit 1; }
-# A SHALLOW CLONE FETCHES THE ONE COMMIT IT PINS.
-git cat-file -e "$snapshot^{commit}" 2> /dev/null || git fetch -q --depth=1 origin "$snapshot" 2> /dev/null || :
+# A SNAPSHOT OUTLIVES ITS BRANCH: every pin is tagged `cost-snapshot-<sha8>` on origin, so a pin to a
+# lane's commit stands after the train squashes it away. A shallow clone fetches the one commit by its
+# tag; a pin from before the tags fetches by its sha, said.
+tag=cost-snapshot-$(printf '%.8s' "$snapshot")
+if ! git cat-file -e "$snapshot^{commit}" 2> /dev/null; then
+    git fetch -q --depth=1 origin "refs/tags/$tag:refs/tags/$tag" 2> /dev/null ||
+        { echo "cost: snapshot $snapshot has no tag $tag on origin — fetched by its sha"; git fetch -q --depth=1 origin "$snapshot" 2> /dev/null; } || :
+fi
 git cat-file -e "$snapshot^{commit}" 2> /dev/null || {
-    echo "cost: snapshot $snapshot is not in this clone and could not be fetched"; exit 1; }
-# AN ACCEPT PINS ONLY WHAT THE GATE CAN FETCH (`make cost-accept` sets COST_ACCEPTING): the gate's clone
-# fetches the snapshot from origin by its sha, so a commit only this clone holds — a local one, or a
-# branch's own sha where origin holds its mirror — passes here and reds every gate. It is asked of
-# origin in a scratch repository, so this clone never turns shallow.
+    echo "cost: snapshot $snapshot is not in this clone and could not be fetched by $tag or its sha"; exit 1; }
+# AN ACCEPT PINS ONLY WHAT THE GATE CAN FETCH FOR GOOD (`make cost-accept` sets COST_ACCEPTING): the
+# snapshot's tag must stand on origin and name the snapshot, or a pin to a branch's commit reds every
+# gate the day the branch goes. It is asked of origin in a scratch repository, so this clone never
+# turns shallow.
 if [ "${COST_ACCEPTING:-0}" = 1 ]; then
     probe=$(mktemp -d)
-    if ! { git init -q "$probe" && git -C "$probe" fetch -q --depth=1 "$(git remote get-url origin)" "$snapshot"; } 2> /dev/null; then
+    if ! { git init -q "$probe" && git -C "$probe" fetch -q --depth=1 "$(git remote get-url origin)" "refs/tags/$tag:refs/tags/$tag"; } 2> /dev/null; then
         find "$probe" -delete
-        echo "cost: snapshot $snapshot can't be fetched from origin ($(git remote get-url origin 2> /dev/null || echo 'no origin')): the gate's clone could not measure it — name the commit by the sha origin holds"
+        echo "cost: snapshot $snapshot has no tag $tag on origin, so a gate's clone loses it the day its branch goes — tag it first (git push origin $snapshot:refs/tags/$tag)"
         exit 1
     fi
+    named=$(git -C "$probe" rev-parse "$tag^{commit}" 2> /dev/null)
     find "$probe" -delete
+    [ "$named" = "$snapshot" ] || { echo "cost: the tag $tag names $named, not the snapshot $snapshot"; exit 1; }
 fi
 command -v taskset > /dev/null || { echo "cost: no taskset to hold the run to one core"; exit 1; }
 
