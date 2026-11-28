@@ -1,0 +1,168 @@
+//! A COMPOSITE KEY'S HASH AND EQUALITY, AS ITS MAP READS THEM: the derived equality's own walk
+//! (core/equality.av), and its twin, which folds each part the walk compares into a running word —
+//! a list by its length, then each element; an enum by its tag, then what its variant carries; a
+//! record field by field; a nullable by its presence, then what it carries; a name as its shape. Two
+//! keys the equality calls the same are folded part by part alike, so they hash equal. Both are
+//! lifted once per key type, and the map holds the descriptor that names them.
+
+impl Lowering {
+    /// The address of the descriptor a map keyed by `key`s holds: its hash, then its equality, each a
+    /// unit taking the key as a list's cell holds it.
+    mut fn key_ops(key: SignedType) -> Reg? {
+        let identity? = self.key_identity(key) else { return null }
+        let hash = self.key_hash_unit(key, "${identity}\$key_hash")
+        let same = self.key_same_unit(key, "${identity}\$key_same")
+        self
+            .laid_static(
+                Layout.Boxed(BoxKind.List),
+                "key_ops\$${identity}",
+                [StaticBox.Slots([Slot.Code(hash), Slot.Code(same)])],
+            )
+    }
+
+    /// The name a key type's descriptor is laid out under: a declared type's identity, a type the
+    /// language owns by its name over its arguments' — never a spelling two declarations could share.
+    fn key_identity(t: SignedType) -> string? {
+        let mark = if t.nullable() { "?" } else { "" }
+        let plain = t.unwrapped()
+        let named = self.type_identity(plain)
+        if named != null { return named! + mark }
+        let word? = plain.owned() else { return null }
+        if plain.args.is_empty() { return word + mark }
+        let args = [self.key_identity(a) for a in plain.args]
+        if args.any(it == null) { return null }
+        "${word}<${[a! for a in args].join(",")}>${mark}"
+    }
+
+    /// The unit that hashes a key of `key` under the seeds it's handed, named `symbol`.
+    mut fn key_hash_unit(key: SignedType, symbol: string) -> string {
+        if self.program.lifts.get().any(it.symbol == symbol) { return symbol }
+        mut shim = lowering(self.store, self.program, self.types, self.seats, owned_type("int"))
+        let cell = shim.mint(shim.key_cell(key))
+        let s0 = shim.mint(Layout.Word)
+        let s1 = shim.mint(Layout.Word)
+        shim.scope_enter()
+        let r = shim.hash_value(shim.cell_key(cell, key), key, s0, s1)
+        self.shim_kept(shim, symbol, 2, r, owned_type("int"))
+    }
+
+    /// The unit that answers whether two keys of `key` are the same, as a word: C reads it so.
+    mut fn key_same_unit(key: SignedType, symbol: string) -> string {
+        if self.program.lifts.get().any(it.symbol == symbol) { return symbol }
+        mut shim = lowering(self.store, self.program, self.types, self.seats, owned_type("int"))
+        let a = shim.mint(shim.key_cell(key))
+        let b = shim.mint(shim.key_cell(key))
+        shim.scope_enter()
+        let same = shim.same_value(shim.cell_key(a, key), shim.cell_key(b, key), key)
+        let r = shim
+            .region(same, Layout.Word) { cx -> cx.const_int(1) } else { cx -> cx.const_int(0) }
+        self.shim_kept(shim, symbol, 1, r, owned_type("int"))
+    }
+
+    /// The layout a key of `key` has where a map's keys hold it: a list's cell — itself where it rides
+    /// one word, else the box it crosses into.
+    fn key_cell(key: SignedType) -> Layout {
+        let l = self.laid_out(key)
+        if l.one_word() { l } else { Layout.Boxed(BoxKind.List) }
+    }
+
+    /// The key a map's cell `cell` holds, as a value of `key`.
+    mut fn cell_key(cell: Reg, key: SignedType) -> Reg {
+        let l = self.laid_out(key)
+        if l.one_word() { cell } else { self.uncrossed(cell, l) }
+    }
+
+    /// The running hash `h` with `v`, a value of `ty`, folded in, part by part as `same_value` compares.
+    mut fn hash_value(v: Reg, ty: SignedType, h: Reg, s1: Reg) -> Reg {
+        let shape = self.program.checked.named_shape(ty)
+        if shape != null { return self.hash_value(v, shape!, h, s1) }
+        if ty.nullable() { return self.hash_held(v, ty, h, s1) }
+        if ty.owned() != null {
+            let listed = ty.listed()
+            if listed != null { return self.hash_list(v, listed!, h, s1) }
+            return self.mixed(h, self.part_word(v, ty), s1)
+        }
+        let variants = self.variants_of(ty)
+        if variants != null { return self.hash_variant(v, variants!, h, s1) }
+        let fields = self.fields_of(ty) ?? []
+        let laids = [self.laid_out(f.ty!) for f in fields]
+        self.hash_fields(v, ty, fields, laids, 0, h, s1)
+    }
+
+    /// One part folded into the running hash.
+    mut fn mixed(h: Reg, part: Reg, s1: Reg) -> Reg { self.call_row(Layout.Word, rt_sig_of("avra_key_mix")!, [h, part, s1]) }
+
+    /// The word a scalar part of `ty` folds in as: itself, or text's own hash.
+    mut fn part_word(v: Reg, ty: SignedType) -> Reg {
+        match self.laid_out(ty) {
+            .Boxed(_) -> self.call_row(Layout.Word, rt_sig_of("avra_text_key_hash")!, [v]),
+            .Void or .Word or .Truth or .Real or .Bare or .Fields(_) or .Tagged(_) or .Maybe(_) -> v,
+        }
+    }
+
+    /// A list of `elem`s folded in: its length, then each element in order.
+    mut fn hash_list(v: Reg, elem: SignedType, h: Reg, s1: Reg) -> Reg {
+        let w = self.walk_list(v, elem)
+        let held = self.seeded_cell(Layout.Word, self.mixed(h, w.len, s1))
+        let here = self.walk_turn(w)
+        self.labelled([])
+        let mine = self.walked_element(w, here)
+        self.stored(held, self.hash_value(mine, w.elem, self.loaded(Layout.Word, held), s1))
+        self.loop_end()
+        self.loaded(Layout.Word, held)
+    }
+
+    /// An enum folded in: its tag, then what the variant of that tag carries.
+    mut fn hash_variant(v: Reg, variants: List<VariantSeat>, h: Reg, s1: Reg) -> Reg {
+        let tag = self.tag_of(v)
+        let tagged = self.mixed(h, tag, s1)
+        if variants.all(it.payloads.is_empty()) { return tagged }
+        self.hash_payloads_of(v, tag, variants, 0, tagged, s1)
+    }
+
+    /// The payloads of the variant of tag `tag` folded in, from variant `k` on: each variant asked in turn.
+    mut fn hash_payloads_of(v: Reg, tag: Reg, variants: List<VariantSeat>, k: int, h: Reg, s1: Reg) -> Reg {
+        if k >= variants.length { return h }
+        let payloads = variants[k].payloads
+        if payloads.is_empty() { return self.hash_payloads_of(v, tag, variants, k + 1, h, s1) }
+        let carried = [self.laid_out(p.ty!) for p in payloads]
+        self
+            .region(self.bin(Layout.Truth, BinOp.Eq, tag, self.const_int(k)), Layout.Word) { cx -> cx.hash_payloads(v, payloads, carried, 0, h, s1) } else { cx -> cx.hash_payloads_of(v, tag, variants, k + 1, h, s1) }
+    }
+
+    /// Payloads `j` on of one variant, folded in order.
+    mut fn hash_payloads(
+        v: Reg,
+        payloads: List<FieldSeat>,
+        carried: List<Layout>,
+        j: int,
+        h: Reg,
+        s1: Reg,
+    ) -> Reg {
+        if j >= payloads.length { return h }
+        let folded = self.hash_value(self.payload_at(v, j, carried), payloads[j].ty!, h, s1)
+        self.hash_payloads(v, payloads, carried, j + 1, folded, s1)
+    }
+
+    /// Fields `n` on of the record `v` of `ty`, folded in order.
+    mut fn hash_fields(
+        v: Reg,
+        ty: SignedType,
+        fields: List<FieldSeat>,
+        laids: List<Layout>,
+        n: int,
+        h: Reg,
+        s1: Reg,
+    ) -> Reg {
+        if n >= fields.length { return h }
+        let folded = self.hash_value(self.field_read(v, ty, laids, n), fields[n].ty!, h, s1)
+        self.hash_fields(v, ty, fields, laids, n + 1, folded, s1)
+    }
+
+    /// A nullable folded in: its presence, then what it carries where it's present.
+    mut fn hash_held(v: Reg, ty: SignedType, h: Reg, s1: Reg) -> Reg {
+        let plain = ty.unwrapped()
+        self
+            .region(self.present(v, ty), Layout.Word) { cx -> cx.hash_value(cx.carried(v, ty), plain, cx.mixed(h, cx.const_int(1), s1), s1) } else { cx -> cx.mixed(h, cx.const_int(0), s1) }
+    }
+}

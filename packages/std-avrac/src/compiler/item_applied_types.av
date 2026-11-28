@@ -67,14 +67,14 @@ fn fills(takes: int, spared: int, found: int) -> bool { found <= takes && found 
 /// is its declaration's law, never a signing's.
 fn declared_gathered(engine: QueryEngine, file: SourceFileAddress, name: string) -> bool { declaring_item(engine, file, name, ItemKind.CollectEnum) != null }
 
-/// Whether a map files `key`s — text or a word, read through its names — or `key` is a name no type
-/// stands behind, whose own law says it.
+/// Whether a map may file `key`s as a signature reads them — text or a word, a declared type or a list
+/// a composite key may be, whose parts the law judges once the program is read — or `key` is a name no
+/// type stands behind, whose own law says it. A signature asks no shape it needn't: a record keyed by
+/// itself would ask its own while it's being signed.
 fn keys_filed(engine: QueryEngine, key: SignedType) -> bool {
     match key.head {
-        .Unnamed(_) or .Inferred -> true,
-        // only a declared key is read through its declaration: a signature asks nothing it needn't
-        .Declared(_, _) -> files_as_key(named_over(engine, key) ?? key, (ty: SignedType) -> enum_shape(engine, ty)),
-        .Owned(_) or .Parameter(_, _) or .Function or .Union or .Never or .Meta -> files_as_key(key, (_ty: SignedType) -> null),
+        .Unnamed(_) or .Inferred or .Declared(_, _) -> true,
+        .Owned(_) or .Parameter(_, _) or .Function or .Union or .Never or .Meta -> key.listed() != null || files_as_key(key, (_ty: SignedType) -> null),
     }
 }
 
@@ -151,12 +151,22 @@ impl AppliedScope {
         if k.arrow || k.optional || !k.alternatives.is_empty() { return true }
         if MAP_KEYS.contains(k.name) { return !k.applied.is_empty() }
         if k.name == INFERRED || k.name == self_word { return false }
-        let d? = resolved(seen.scope.engine, seen.scope.file, Space.Type, k.name).named() else { return seen.scope.takes(k.name) != null }
+        let d? = resolved(seen.scope.engine, seen.scope.file, Space.Type, k.name).named() else {
+            if k.name == LIST { return !seen.scope.keyed_by(k) }
+            return seen.scope.takes(k.name) != null
+        }
         match d.kind {
             .Alias -> false,
-            .Enum or .Named -> !keys_filed(seen.scope.engine, headed_type(TypeHead.Declared(d.file, d.name))),
-            .Record or .Fn or .Const or .State or .Trait or .Component or .Syntax or .Collect or .CollectEnum or .Ctx -> true,
+            .Enum or .Named or .Record -> !seen.scope.keyed_by(k),
+            .Fn or .Const or .State or .Trait or .Component or .Syntax or .Collect or .CollectEnum or .Ctx -> true,
         }
+    }
+
+    /// Whether a map files `key`s, the key signed where its scope reads it: text, a word, or a
+    /// composite key.
+    fn keyed_by(key: TypeRef) -> bool {
+        let signed = signing_in(self.engine, self.file, self.params).signed(key)
+        declared_shapes(self.engine).map_keyed(named_over(self.engine, signed) ?? signed)
     }
 
     /// `key` as a seat reads it: an alias taking no type arguments read as what it names, alias by
@@ -180,7 +190,10 @@ impl AppliedScope {
 /// The map type's name, whose first argument keys it.
 const MAP: string = "Map"
 
-/// a type is applied to the type arguments it takes, and a map is keyed by text or a word
+/// The list type's name.
+const LIST: string = "List"
+
+/// a type is applied to the type arguments it takes, and a map is keyed by a type of key
 export law type_applied_as_declared {
     kind: "type.applied"
     reads_view: applied_refused

@@ -4614,11 +4614,44 @@ impl Shapes {
         }
     }
 
-    /// Whether a map files `t`s as its keys, a declared one seen through its name.
+    /// Whether a map files `t`s as its keys, a declared one seen through its name: text, a word, a
+    /// type parameter, or a composite key.
     fn map_keyed(t: SignedType) -> bool {
         match t.head {
-            .Declared(_, _) -> files_as_key(self.unnamed(t), self.enum_of),
-            .Owned(_) or .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Union or .Never or .Meta -> files_as_key(t, self.enum_of),
+            .Declared(_, _) -> files_as_key(self.unnamed(t), self.enum_of) || self.composite_key(t),
+            .Owned(_) or .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Union or .Never or .Meta -> files_as_key(t, self.enum_of) || self.composite_key(t),
+        }
+    }
+
+    /// Whether a map files `t`s as composite keys: a value never absent itself, comparing by value,
+    /// every part of which is text, a word or a composite of them — never a fraction, octets or an
+    /// address.
+    fn composite_key(t: SignedType) -> bool { !t.nullable() && self.compares_by_value(t) && self.key_parts(t, []) }
+
+    /// Whether every part `t` holds is a part of a key, `seen` the declared types already being asked.
+    fn key_parts(t: SignedType, seen: List<string>) -> bool {
+        let ty = self.unnamed(t)
+        if ty.nullable() { return self.key_parts(ty.unwrapped(), seen) }
+        match ty.head {
+            .Owned(word) -> when {
+                ty.args.is_empty() -> MAP_KEYS.contains(word)
+                word == "List" -> ty.args.length == 1 && self.key_parts(ty.args[0], seen)
+                _ -> false
+            },
+            .Declared(_, _) -> {
+                let name = ty.spelled()
+                if seen.contains(name) { return false }
+                let asking = seen.concat([name])
+                let shape = (self.enum_of)(ty)
+                if shape != null {
+                    return shape!
+                        .variants
+                        .all(it.payloads.all((p) -> p.ty != null && self.key_parts(p.ty!, asking)))
+                }
+                let record? = (self.record_of)(ty) else { return false }
+                record.fields.all((f) -> f.ty != null && self.key_parts(f.ty!, asking))
+            },
+            .Parameter(_, _) or .Unnamed(_) or .Inferred or .Function or .Union or .Never or .Meta -> false,
         }
     }
 

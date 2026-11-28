@@ -977,10 +977,23 @@ impl Lowering {
     /// The row a map answers `row` by under the key `k`, read off the key's own layout.
     mut fn map_row(row: string, k: Reg) -> RtSig { self.keyed_by(row, self.layout_of(k)) }
 
-    /// The row that makes a map of `ty`, keyed as its key's layout says: text where `ty` names none.
-    mut fn made_map_row(row: string, ty: SignedType) -> RtSig {
-        let key? = ty.map_key() ?? self.named_over(ty)?.map_key() else { return rt_sig_of(row)! }
-        self.keyed_by(row, self.laid_out(key))
+    /// A new map of `ty`, laid out as `l`, its arrays reserved for `n` keys where a literal names them:
+    /// keyed as its key's layout says — text where `ty` names none — and a composite key's map handed
+    /// its type's descriptor.
+    mut fn made_map(l: Layout, ty: SignedType, n: Reg?) -> Reg {
+        let row = if n == null { "avra_map_new" } else { "avra_map_sized" }
+        let sized = if n == null { [] } else { [n!] }
+        let key? = ty.map_key() ?? self.named_over(ty)?.map_key() else { return self.call_row(l, rt_sig_of(row)!, sized) }
+        let sig = self.keyed_by(row, self.laid_out(key))
+        let keys? = self.laid_out(key).map_keys() else { return self.call_row(l, sig, sized) }
+        match keys {
+            .Text or .Words -> self.call_row(l, sig, sized),
+            .Composite -> {
+                if !self.program.checked.shapes().composite_key(key) { return self.missed_as(unkeyed_composite(key)) }
+                let ops? = self.key_ops(key) else { return self.missed_as(undescribed_key(key)) }
+                self.call_row(l, sig, sized.concat([ops]))
+            },
+        }
     }
 
     /// The row a map of keys laid out as `key` answers `row` by. Typing refuses a key no map files,
@@ -1618,3 +1631,9 @@ fn written_nowhere(_e: ExprId) -> string? { null }
 fn no_trait_key(_name: string, _home: string?) -> string? { null }
 
 fn unsettled_in_body(_s: StmtId, _ty: SignedType, _seeds: List<ConstSeed>) -> NamedValue { NamedValue.Unsettled("a const a body declares, which this program doesn't settle") }
+
+/// A map keyed by `key`s, whose type names no identity a descriptor can be laid out under.
+fn undescribed_key(key: SignedType) -> string { "a map keyed by `${key.spelled()}`, whose type has no identity to name its descriptor" }
+
+/// A map keyed by `key`s, a composite whose parts make no key, which typing refuses.
+fn unkeyed_composite(key: SignedType) -> string { "a map keyed by `${key.spelled()}`, whose parts make no key, past typing" }

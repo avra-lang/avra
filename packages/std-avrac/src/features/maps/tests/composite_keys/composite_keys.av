@@ -1,0 +1,98 @@
+// proves: equal keys hash equal in every layout class — a map grown past its small index files a few
+// hundred keys of each, each found again by an equal key built apart from it, by another expression,
+// and no unequal key is found: a word, text, a flat record, a boxed record holding text, an enum with
+// payloads, a list, a record nested in a record, a record with an absent part; two composites whose
+// parts split their text differently are two keys; a removed key is gone and its equal twin added
+// again opens anew at the end; and a map's keys read back as the values they are.
+type Point = { x: int, y: int }
+
+type Name = { first: string, last: string }
+
+type Placed = { at: Point, name: Name }
+
+type Tagged = { id: int, label: string? }
+
+enum Shape {
+    Dot(at: int)
+    Line(a: int, b: int)
+    Named(s: string)
+    Empty
+}
+
+fn point(i: int) -> Point { Point { x: i % 17, y: i / 17 } }
+
+fn name(i: int) -> Name { Name { first: "f${i % 13}", last: "l${i / 13}" } }
+
+fn shape(i: int) -> Shape {
+    match i % 4 {
+        0 -> Shape.Dot(i),
+        1 -> Shape.Line(i, i + 1),
+        2 -> Shape.Named("s${i}"),
+        _ -> if i == 3 { Shape.Empty } else { Shape.Dot(0 - i) },
+    }
+}
+
+fn tagged(i: int) -> Tagged { Tagged { id: i, label: if i % 3 == 0 { null } else { "t${i}" } } }
+
+fn path(i: int) -> List<int> { [i % 7, i / 7, i] }
+
+const N: int = 300
+
+mut words: Map<int, int> = {}
+mut texts: Map<string, int> = {}
+mut points: Map<Point, int> = {}
+mut names: Map<Name, int> = {}
+mut placed: Map<Placed, int> = {}
+mut shapes: Map<Shape, int> = {}
+mut paths: Map<List<int>, int> = {}
+mut tags: Map<Tagged, int> = {}
+for i in 0..N {
+    words.set(i * 7, i)
+    texts.set("k${i}", i)
+    points.set(point(i), i)
+    names.set(name(i), i)
+    placed.set(Placed { at: point(i), name: name(i) }, i)
+    shapes.set(shape(i), i)
+    paths.set(path(i), i)
+    tags.set(tagged(i), i)
+}
+
+fn found(hits: List<bool>) -> int { hits.filter(it).length }
+
+let again = [
+    found([words.get(i * 7) == i for i in 0..N]),
+    found([texts.get("k" + "${i}") == i for i in 0..N]),
+    found([points.get(Point { y: (i + 17) / 17 - 1, x: (i + 17) % 17 }) == i for i in 0..N]),
+    found(
+        [names.get(Name { first: "f" + "${i % 13}", last: "l" + "${i / 13}" }) == i for i in 0..N],
+    ),
+    found([placed.get(Placed { name: name(i), at: point(i) }) == i for i in 0..N]),
+    found([shapes.get(shape(i)) == i for i in 0..N]),
+    found([paths.get([i % 7, i / 7, i]) == i for i in 0..N]),
+    found(
+        [tags.get(Tagged { id: i, label: if i % 3 == 0 { null } else { "t" + "${i}" } }) == i for i in 0..N],
+    ),
+]
+
+let strangers = [
+    found([points.has(Point { x: i % 17, y: 100 + i }) for i in 0..N]),
+    found([names.has(Name { first: "l${i % 13}", last: "f${i / 13}" }) for i in 0..N]),
+    found([shapes.has(Shape.Line(i + 1, i)) for i in 1..N]),
+    found([paths.has([i % 7, i / 7]) for i in 0..N]),
+    found([tags.has(Tagged { id: i, label: "x" }) for i in 0..N]),
+]
+
+mut split: Map<List<string>, int> = {}
+split.set(["ab", "c"], 1)
+split.set(["a", "bc"], 2)
+split.set(["abc"], 3)
+
+mut back: Map<Point, string> = {}
+let first = Point { x: 1, y: 1 }
+back.set(first, "one")
+back.set(Point { x: 2, y: 2 }, "two")
+let _ = back.remove(point(18))
+back.set(first, "again")
+let order = ["${k.x},${k.y}=${v}" for k, v in back].join(" ")
+
+"${["${c}" for c in again].join(" ")} | ${["${c}" for c in strangers].join(" ")} | ${split.length} ${split.get(["ab", "c"]) ?? 0} ${split.get(["a", "bc"]) ?? 0} | ${order}"

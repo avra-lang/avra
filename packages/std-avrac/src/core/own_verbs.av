@@ -230,7 +230,7 @@ impl Lowering {
     }
 
     /// The map `m`'s one probe for the key `k`: its slot, or a negative word.
-    mut fn slot_of(m: Reg, k: Reg) -> Reg { self.call_row(Layout.Word, self.map_row("avra_map_slot", k), [m, k]) }
+    mut fn slot_of(m: Reg, k: Reg) -> Reg { self.call_crossed(Layout.Word, self.map_row("avra_map_slot", k), [m, k]) }
 
     /// The value the map `subject` holds under `key`, present where the map's probe finds it: the
     /// probe a write of this place under this key lent the read, where it lent one.
@@ -279,7 +279,7 @@ impl Lowering {
         self
             .void_region(self.bin(Layout.Truth, BinOp.Ge, probe, self.const_int(0))) { cx ->
                 cx.stored(cell, cx.lifted(cx.map_value(held.l, m, probe), held.ty, held.opt))
-                cx.run_row(cx.map_row("avra_map_remove_at", k), [m, k, probe])
+                cx.run_crossed(cx.map_row("avra_map_remove_at", k), [m, k, probe])
             }
         self.loaded(l, cell)
     }
@@ -344,7 +344,7 @@ impl Lowering {
     mut fn map_written_at(map: Reg, k: Reg, probe: Reg, x: Reg) {
         match self.layout_of(x) {
             .Maybe(carried) -> self
-                .run_row(
+                .run_crossed(
                     self.map_row("avra_map_set_at_maybe", k),
                     [
                         map,
@@ -432,7 +432,7 @@ impl Lowering {
     mut fn map_written(map: Reg, k: Reg, x: Reg) {
         match self.layout_of(x) {
             .Maybe(carried) -> self
-                .run_row(
+                .run_crossed(
                     self.map_row("avra_map_set_maybe", k),
                     [map, k, self.extracted(Layout.Truth, x, 0), self.extracted(carried, x, 1)],
                 ),

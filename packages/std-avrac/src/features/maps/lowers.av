@@ -11,16 +11,8 @@ impl Lowers for MapLit {
         let ty? = cx.seen_at(e) else { return cx.untyped(e) }
         let keys = [cx.lower(k) for k in map_keys(self.entries)]
         let values = [cx.lower(v) for v in map_values(self.entries)]
-        let dst = if keys.is_empty() {
-            cx.call_row(cx.layout_at(e), cx.made_map_row("avra_map_new", ty), [])
-        } else {
-            cx
-                .call_row(
-                    cx.layout_at(e),
-                    cx.made_map_row("avra_map_sized", ty),
-                    [cx.const_int(keys.length)],
-                )
-        }
+        let dst = cx
+            .made_map(cx.layout_at(e), ty, if keys.is_empty() { null } else { cx.const_int(keys.length) })
         for at, k in keys { cx.map_written(dst, k, values[at]) }
         dst
     }
@@ -30,7 +22,7 @@ impl Lowers for MapLit {
 fn spread_lowered(mut cx: Lowering, e: ExprId, entries: List<MapEntry>) -> Reg {
     let ty? = cx.seen_at(e) else { return cx.untyped(e) }
     let value? = ty.mapped() else { return cx.untyped(e) }
-    let dst = cx.call_row(cx.laid_out(ty), cx.made_map_row("avra_map_new", ty), [])
+    let dst = cx.made_map(cx.laid_out(ty), ty, null)
     for entry in entries {
         match entry {
             .Pair(key, v) -> cx.map_written(dst, cx.lower(key), cx.lower(v)),

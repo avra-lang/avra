@@ -78,8 +78,15 @@ static uint64_t pair_hash(int64_t key, uint64_t s0, uint64_t s1) {
 }
 static uint64_t pair_collides(int64_t key, uint64_t s0, uint64_t s1) { (void)key; (void)s0; (void)s1; return 42; }
 static int64_t pair_same(int64_t a, int64_t b) { return box_word(a, 0) == box_word(b, 0) && box_word(a, 1) == box_word(b, 1); }
-static const AvraKeyOps g_pair_ops = { pair_hash, pair_same };
-static const AvraKeyOps g_colliding_ops = { pair_collides, pair_same };
+// A descriptor, as the compiler lays one out: a list of the hash's code, then the equality's.
+static void* descriptor(AvraKeyHash hash, AvraKeySame same) {
+    void* d = avra_array_new_words();
+    avra_array_push(d, (int64_t)(uintptr_t)hash);
+    avra_array_push(d, (int64_t)(uintptr_t)same);
+    return d;
+}
+static void* g_pair_ops;
+static void* g_colliding_ops;
 
 static int composite(void) { return g_class == COMPOSITE || g_class == COLLIDING; }
 
@@ -92,8 +99,8 @@ static int64_t key_of(int k) {
 
 static void* made(void) {
     if (g_class == WORDS) return avra_map_w_new();
-    if (g_class == COMPOSITE) return avra_map_g_new(&g_pair_ops);
-    if (g_class == COLLIDING) return avra_map_g_new(&g_colliding_ops);
+    if (g_class == COMPOSITE) return avra_map_g_new(g_pair_ops);
+    if (g_class == COLLIDING) return avra_map_g_new(g_colliding_ops);
     return avra_map_new();
 }
 static void set(void* m, int k, int64_t v) {
@@ -214,7 +221,11 @@ int main(void) {
         g_boxes[i] = pair_box(i);
         g_twins[i] = pair_box(i);
     }
+    g_pair_ops = descriptor(pair_hash, pair_same);
+    g_colliding_ops = descriptor(pair_collides, pair_same);
     for (g_class = 0; g_class < CLASSES; g_class++) walked();
+    avra_rc_release(g_pair_ops);
+    avra_rc_release(g_colliding_ops);
     for (int i = 0; i < KEYS; i++) {
         avra_rc_release((void*)g_keys[i]);
         avra_rc_release(g_boxes[i]);

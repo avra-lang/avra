@@ -114,20 +114,6 @@ static inline uint8_t avra_mark_at(const AvraArray* a, int64_t i) {
     return a->marks == 0 ? 0 : a->marks[i];
 }
 
-// A map's key class: how its keys hash and compare. Text and words are the
-// runtime's own; any other class is the address of its key type's descriptor.
-enum { AVRA_KEYS_TEXT = 0, AVRA_KEYS_WORDS = 1 };
-
-// A composite key type's hash and equality, derived by the compiler and laid
-// out once per key type: a map keyed so holds its address as its key class.
-typedef struct {
-    uint64_t (*hash)(int64_t key, uint64_t s0, uint64_t s1);
-    int64_t (*same)(int64_t a, int64_t b);
-} AvraKeyOps;
-
-_Static_assert(_Alignof(AvraKeyOps) > AVRA_KEYS_WORDS,
-               "a descriptor's address is aligned, so it is never a class the runtime keeps for itself");
-
 // An insertion-ordered map keyed by text, by machine words or by a composite
 // key type: keys and values as two arrays, and an index over key hashes. An index of ZERO capacity is
 // UNBUILT — static data arrives so, and the first lookup builds it.
@@ -139,8 +125,19 @@ typedef struct {
     AvraArray* vals;
     int64_t* index;   // the block past its head: a table's words, or a small map's tags
     int64_t icap;     // 0 unbuilt, -1 small, else the table's size
-    int64_t key_class; // AVRA_KEYS_TEXT, AVRA_KEYS_WORDS, or an AvraKeyOps address
+    int64_t key_class; // AVRA_KEYS_TEXT, AVRA_KEYS_WORDS, or a descriptor's address
 } AvraMap;
+
+// A map's key class: how its keys hash and compare. Text and words are the
+// runtime's own; any other class is the address of its key type's descriptor —
+// a list of two code cells, laid out once per key type: its hash, then its
+// equality, each taking a key as a list's cell holds it.
+enum { AVRA_KEYS_TEXT = 0, AVRA_KEYS_WORDS = 1 };
+typedef uint64_t (*AvraKeyHash)(int64_t key, uint64_t s0, uint64_t s1);
+typedef int64_t (*AvraKeySame)(int64_t a, int64_t b);
+
+_Static_assert(_Alignof(AvraArray) > AVRA_KEYS_WORDS,
+               "a descriptor's address is aligned, so it is never a class the runtime keeps for itself");
 
 // A TASK BODY'S SITE is a row of the program's site table: the body's
 // entry and where it was written, `file:line` as C text. The backend

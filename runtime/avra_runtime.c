@@ -3654,15 +3654,16 @@ typedef int64_t MapKey;
 static inline int map_words(const AvraMap* m) { return m->key_class == AVRA_KEYS_WORDS; }
 
 // The descriptor a map keyed by a composite key type holds as its class; null for text and words.
-static inline const AvraKeyOps* map_described(const AvraMap* m) {
-    return m->key_class > AVRA_KEYS_WORDS ? (const AvraKeyOps*)(uintptr_t)m->key_class : NULL;
+static inline const AvraArray* map_described(const AvraMap* m) {
+    return m->key_class > AVRA_KEYS_WORDS ? (const AvraArray*)(uintptr_t)m->key_class : NULL;
 }
 
 // A composite key's hash, its type's own fold under the process's seeds — or, past the probe
 // tripwire, under the SipHash secrets, which the fold takes as its seeds.
 __attribute__((always_inline))
-static inline uint64_t described_hash(const AvraKeyOps* ops, int keyed, MapKey k) {
-    return __builtin_expect(keyed, 0) ? ops->hash(k, g_sip_key[0], g_sip_key[1]) : ops->hash(k, g_text_key[0], g_text_key[1]);
+static inline uint64_t described_hash(const AvraArray* ops, int keyed, MapKey k) {
+    AvraKeyHash hash = (AvraKeyHash)(uintptr_t)ops->data[0];
+    return __builtin_expect(keyed, 0) ? hash(k, g_sip_key[0], g_sip_key[1]) : hash(k, g_text_key[0], g_text_key[1]);
 }
 
 __attribute__((always_inline))
@@ -3674,7 +3675,7 @@ static inline uint64_t word_hash(int keyed, int64_t k) {
 __attribute__((always_inline))
 static inline uint64_t map_key_hash(const AvraMap* m, int keyed, MapKey k) {
     if (map_words(m)) return word_hash(keyed, k);
-    const AvraKeyOps* ops = map_described(m);
+    const AvraArray* ops = map_described(m);
     if (__builtin_expect(ops != NULL, 0)) return described_hash(ops, keyed, k);
     return key_hash(keyed, (const char*)(uintptr_t)k);
 }
@@ -3683,8 +3684,8 @@ __attribute__((always_inline))
 static inline int map_key_same(const AvraMap* m, MapKey a, MapKey b) {
     if (a == b) return 1;
     if (map_words(m)) return 0;
-    const AvraKeyOps* ops = map_described(m);
-    if (__builtin_expect(ops != NULL, 0)) return ops->same(a, b) != 0;
+    const AvraArray* ops = map_described(m);
+    if (__builtin_expect(ops != NULL, 0)) return ((AvraKeySame)(uintptr_t)ops->data[1])(a, b) != 0;
     return avra_streq((const char*)(uintptr_t)a, (const char*)(uintptr_t)b);
 }
 
@@ -4460,6 +4461,13 @@ void avra_map_g_set_at(void* map, void* key, int64_t token, int64_t v) { keyed_s
 void avra_map_g_set_at_maybe(void* map, void* key, int64_t token, int64_t present, int64_t v) { keyed_set_at_maybe(map, (MapKey)(uintptr_t)key, token, present, v); }
 void avra_map_g_set_at_owned(void* map, void* key, int64_t token, void* v) { keyed_set_at_owned(map, (MapKey)(uintptr_t)key, token, v); }
 void avra_map_g_set_at_maybe_owned(void* map, void* key, int64_t token, int64_t present, void* v) { keyed_set_at_maybe_owned(map, (MapKey)(uintptr_t)key, token, present, v); }
+
+// A composite key's hash is a fold over its parts, each mixed into the running word: the seed is
+// its first state, so a word part alone hashes as a word key does.
+int64_t avra_key_mix(int64_t h, int64_t part, int64_t s1) { return (int64_t)wide_mix((uint64_t)h ^ (uint64_t)part, (uint64_t)s1); }
+
+// A text part's own hash, folded in as one part.
+int64_t avra_text_key_hash(const char* s) { return (int64_t)fast_hash(s, str_len(s)); }
 
 // The index walks so far, counted from the first ask — for the
 // runtime's own tests.
